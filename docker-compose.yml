@@ -1,0 +1,113 @@
+# Local development dependencies for the SMS gateway (plan §1, M0).
+#
+# These are the four stores of the data and control planes. The credentials here are throwaway
+# and match internal/config's development defaults, so `make run SVC=router-svc` needs no
+# environment at all. Nothing here is production-shaped: no TLS, no replication, no tuning.
+#
+# Integration tests do NOT use this file — they bring up their own containers through
+# testcontainers-go (strategie-de-test-passerelle.md). This is for running services by hand.
+
+name: go-gateway
+
+services:
+  # Control plane + authority on balances. PostgreSQL 18 is required, not incidental: the schema
+  # uses the native uuidv7() generator (RFC 9562) that landed in 18.
+  postgres:
+    image: postgres:18-alpine
+    container_name: gateway-postgres
+    environment:
+      POSTGRES_USER: gateway
+      POSTGRES_PASSWORD: gateway
+      POSTGRES_DB: gateway
+      # Faster to initialise and irrelevant locally; never do this in production.
+      POSTGRES_INITDB_ARGS: "--auth-host=trust"
+    ports:
+      - "5432:5432"
+    volumes:
+      # Mount at /var/lib/postgresql, NOT at .../data: from 18 the image keeps its data in a
+      # versioned subdirectory and refuses to start against a volume mounted at the old path.
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gateway -d gateway"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  # Operational state: sessions, throttling token buckets, Bloom filters, balance cache.
+  redis:
+    image: redis:7-alpine
+    container_name: gateway-redis
+    # appendonly keeps the keyspace across restarts, which makes a local session registry behave
+    # like the deployed one instead of silently emptying.
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Durable data plane. Redpanda speaks the Kafka protocol and is accepted by plan §1 — it needs
+  # no ZooKeeper/KRaft setup, which keeps the laptop story short.
+  kafka:
+    image: redpandadata/redpanda:v24.2.18
+    container_name: gateway-kafka
+    command:
+      - redpanda
+      - start
+      - --mode=dev-container
+      - --smp=1
+      - --memory=1G
+      - --overprovisioned
+      - --kafka-addr=PLAINTEXT://0.0.0.0:9092
+      # Advertised as localhost:9092 so a service on the host connects the same way CI does.
+      - --advertise-kafka-addr=PLAINTEXT://localhost:9092
+    ports:
+      - "9092:9092"
+      - "9644:9644" # admin API
+    volumes:
+      - kafka-data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+  # CDR / analytics sink.
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8-alpine
+    container_name: gateway-clickhouse
+    environment:
+      CLICKHOUSE_USER: gateway
+      CLICKHOUSE_PASSWORD: gateway
+      CLICKHOUSE_DB: gateway
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ports:
+      - "8123:8123" # HTTP
+      - "9000:9000" # native protocol
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    ulimits:
+      # ClickHouse opens a lot of files; the Docker default is too low and it fails at startup.
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      # 127.0.0.1, not localhost: inside the container localhost resolves to ::1 first, and
+      # ClickHouse listens on IPv4 only, so the probe would fail against a healthy server.
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8123/ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  postgres-data:
+  redis-data:
+  kafka-data:
+  clickhouse-data:

@@ -1,0 +1,126 @@
+# CI quality gates (plan §4, M0). Every job here mirrors a Makefile target, so a green local
+# `make check` means a green pipeline.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A new push to a PR makes the previous run obsolete; cancel it rather than pay for both.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Keep the linter version identical to the Makefile's, or CI and laptops disagree about style.
+  GOLANGCI_VERSION: v2.12.2
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          # go.mod is the single source of the Go version; never pin it a second time here.
+          go-version-file: go.mod
+          cache: true
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: ${{ env.GOLANGCI_VERSION }}
+      - name: Verify formatting
+        run: |
+          # gofmt -l lists non-compliant files; the tree must be formatted, not just lintable.
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::These files are not gofmt-clean:"
+            echo "$unformatted"
+            exit 1
+          fi
+      - name: Verify go.mod is tidy
+        run: |
+          go mod tidy
+          if ! git diff --exit-code -- go.mod go.sum; then
+            echo "::error::go.mod/go.sum are not tidy — run 'make tidy' and commit the result."
+            exit 1
+          fi
+
+  test:
+    name: Test (race)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: go test -race
+        run: go test -race -timeout 10m ./...
+
+  vuln:
+    name: Vulnerabilities
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build every cmd
+        run: go build ./...
+
+  migrate:
+    name: Migrations apply and reverse
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        # PostgreSQL 18: the schema needs the native uuidv7() generator.
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: gateway
+          POSTGRES_PASSWORD: gateway
+          POSTGRES_DB: gateway
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U gateway -d gateway"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      POSTGRES_URL: postgres://gateway:gateway@localhost:5432/gateway?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      # Proves the acceptance criterion rather than asserting it: the schema applies, and its
+      # down migration reverses it cleanly. A down that does not reverse is found here, not
+      # during an incident.
+      - name: migrate up
+        run: go run ./cmd/migrate -dir migrations up
+      - name: migrate down
+        run: go run ./cmd/migrate -dir migrations down
+      - name: migrate up again
+        run: go run ./cmd/migrate -dir migrations up
