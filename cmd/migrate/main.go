@@ -37,7 +37,10 @@ func main() {
 }
 
 func run(dir string, args []string) error {
-	cfg, err := config.Load(serviceName)
+	// Postgres is the only section this tool declares, because it is the only connection it opens.
+	// Validating the rest would refuse a production migration Job that legitimately sets nothing
+	// but POSTGRES_URL, blocking a rollout on a schema migration that never ran.
+	cfg, err := config.Load(serviceName, config.SectionPostgres)
 	if err != nil {
 		return err
 	}

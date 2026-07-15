@@ -115,10 +115,30 @@ type Kafka struct {
 	Timeout time.Duration `env:"TIMEOUT" envDefault:"3s"`
 }
 
-// Load reads the configuration for serviceName from the environment and validates it. Every
-// invalid value is reported at once: an operator fixing a bad deployment should see the whole
-// list, not discover the next problem on the next restart.
-func Load(serviceName string) (Config, error) {
+// Section names a configuration group a binary depends on. A binary declares the sections it
+// actually uses and Load enforces only those: a tool must never be refused a boot over a
+// dependency it does not open a connection to. The migrate command is the case that forced this —
+// it reads POSTGRES_URL and nothing else, yet a full validation blocked a production rollout over
+// a defaulted KAFKA_BROKERS.
+type Section uint8
+
+// The configuration groups a binary can declare.
+const (
+	SectionOTel Section = 1 << iota
+	SectionPostgres
+	SectionKafka
+
+	// SectionAll is what a pipeline service needs, and what a caller declaring nothing gets.
+	SectionAll = SectionOTel | SectionPostgres | SectionKafka
+)
+
+// Load reads the configuration for serviceName from the environment and validates the sections it
+// declares. Every invalid value is reported at once: an operator fixing a bad deployment should see
+// the whole list, not discover the next problem on the next restart.
+//
+// Declaring no section validates everything. That is the safe default: over-validating costs a boot
+// failure an operator can read, while under-validating costs a dependency failing mid-traffic.
+func Load(serviceName string, sections ...Section) (Config, error) {
 	if strings.TrimSpace(serviceName) == "" {
 		return Config{}, fmt.Errorf("load config: service name is empty")
 	}
@@ -129,14 +149,52 @@ func Load(serviceName string) (Config, error) {
 	}
 	cfg.ServiceName = serviceName
 
-	if err := cfg.Validate(); err != nil {
+	if err := cfg.validate(required(sections)); err != nil {
 		return Config{}, fmt.Errorf("load config for %s: %w", serviceName, err)
 	}
 	return cfg, nil
 }
 
-// Validate checks every constraint the type system cannot, and returns all violations joined.
+// required folds the declared sections, defaulting to SectionAll when a caller declares none.
+func required(sections []Section) Section {
+	if len(sections) == 0 {
+		return SectionAll
+	}
+	var s Section
+	for _, section := range sections {
+		s |= section
+	}
+	return s
+}
+
+// Validate checks every constraint the type system cannot, across every section, and returns all
+// violations joined.
 func (c Config) Validate() error {
+	return c.validate(SectionAll)
+}
+
+// validate checks the fields every binary has, plus the declared sections.
+func (c Config) validate(sections Section) error {
+	problems := c.coreProblems()
+	if sections&SectionOTel != 0 {
+		problems = append(problems, c.otelProblems()...)
+	}
+	if sections&SectionPostgres != 0 {
+		problems = append(problems, c.postgresProblems()...)
+	}
+	if sections&SectionKafka != 0 {
+		problems = append(problems, c.kafkaProblems()...)
+	}
+
+	if len(problems) == 0 {
+		return nil
+	}
+	return fmt.Errorf("invalid configuration: %s", strings.Join(problems, "; "))
+}
+
+// coreProblems checks the fields every binary has, so they are never skipped: they carry valid
+// defaults and cost nothing to verify.
+func (c Config) coreProblems() []string {
 	var problems []string
 
 	if !c.Environment.Valid() {
@@ -155,24 +213,36 @@ func (c Config) Validate() error {
 			"SHUTDOWN_TIMEOUT %s must be positive: a service that cannot drain loses in-flight work",
 			c.ShutdownTimeout))
 	}
+	return problems
+}
 
-	if !c.OTel.Disabled {
-		if strings.TrimSpace(c.OTel.Endpoint) == "" {
-			problems = append(problems, "OTEL_EXPORTER_OTLP_ENDPOINT is empty while the SDK is enabled")
-		}
-		if strings.Contains(c.OTel.Endpoint, "://") {
-			problems = append(problems, fmt.Sprintf(
-				"OTEL_EXPORTER_OTLP_ENDPOINT %q must be host:port without a scheme", c.OTel.Endpoint))
-		}
-		if c.OTel.SampleRatio < 0 || c.OTel.SampleRatio > 1 {
-			problems = append(problems, fmt.Sprintf(
-				"OTEL_TRACES_SAMPLER_ARG %v is outside 0.0-1.0", c.OTel.SampleRatio))
-		}
-		if c.Environment.IsProduction() && c.OTel.Insecure {
-			problems = append(problems, "OTEL_EXPORTER_OTLP_INSECURE must be false in production: "+
-				"spans carry identifiers and must not cross the network in clear")
-		}
+func (c Config) otelProblems() []string {
+	if c.OTel.Disabled {
+		return nil
 	}
+
+	var problems []string
+
+	if strings.TrimSpace(c.OTel.Endpoint) == "" {
+		problems = append(problems, "OTEL_EXPORTER_OTLP_ENDPOINT is empty while the SDK is enabled")
+	}
+	if strings.Contains(c.OTel.Endpoint, "://") {
+		problems = append(problems, fmt.Sprintf(
+			"OTEL_EXPORTER_OTLP_ENDPOINT %q must be host:port without a scheme", c.OTel.Endpoint))
+	}
+	if c.OTel.SampleRatio < 0 || c.OTel.SampleRatio > 1 {
+		problems = append(problems, fmt.Sprintf(
+			"OTEL_TRACES_SAMPLER_ARG %v is outside 0.0-1.0", c.OTel.SampleRatio))
+	}
+	if c.Environment.IsProduction() && c.OTel.Insecure {
+		problems = append(problems, "OTEL_EXPORTER_OTLP_INSECURE must be false in production: "+
+			"spans carry identifiers and must not cross the network in clear")
+	}
+	return problems
+}
+
+func (c Config) postgresProblems() []string {
+	var problems []string
 
 	if strings.TrimSpace(c.Postgres.URL) == "" {
 		problems = append(problems, "POSTGRES_URL is empty")
@@ -183,6 +253,18 @@ func (c Config) Validate() error {
 	if c.Postgres.Timeout <= 0 {
 		problems = append(problems, fmt.Sprintf("POSTGRES_TIMEOUT %s must be positive", c.Postgres.Timeout))
 	}
+	// The dev-default guard travels with its section: a binary that declared Postgres is one that
+	// will connect to it, and must not connect to loopback in production. See kafkaProblems for why
+	// a forgotten variable reaches here as the default rather than as an error.
+	if c.Environment.IsProduction() && c.Postgres.URL == defaultPostgresURL {
+		problems = append(problems, "POSTGRES_URL is the localhost development default: "+
+			"set it explicitly in production")
+	}
+	return problems
+}
+
+func (c Config) kafkaProblems() []string {
+	var problems []string
 
 	if len(c.Kafka.Brokers) == 0 {
 		problems = append(problems, "KAFKA_BROKERS is empty")
@@ -201,21 +283,12 @@ func (c Config) Validate() error {
 	// A blank KAFKA_BROKERS in a manifest therefore reads as "localhost:9092" rather than as an
 	// error. On a laptop that is the intent; in production it would silently point a live service
 	// at loopback, so the dev defaults are refused there and must be set explicitly.
-	if c.Environment.IsProduction() {
-		if c.Postgres.URL == defaultPostgresURL {
-			problems = append(problems, "POSTGRES_URL is the localhost development default: "+
-				"set it explicitly in production")
-		}
-		if len(c.Kafka.Brokers) == 1 && c.Kafka.Brokers[0] == defaultKafkaBroker {
-			problems = append(problems, "KAFKA_BROKERS is the localhost development default: "+
-				"set it explicitly in production")
-		}
+	if c.Environment.IsProduction() &&
+		len(c.Kafka.Brokers) == 1 && c.Kafka.Brokers[0] == defaultKafkaBroker {
+		problems = append(problems, "KAFKA_BROKERS is the localhost development default: "+
+			"set it explicitly in production")
 	}
-
-	if len(problems) == 0 {
-		return nil
-	}
-	return fmt.Errorf("invalid configuration: %s", strings.Join(problems, "; "))
+	return problems
 }
 
 // ParseLogLevel maps a configured level name to its slog level.

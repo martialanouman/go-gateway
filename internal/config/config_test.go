@@ -234,6 +234,62 @@ func TestProductionRejectsLocalhostDefaults(t *testing.T) {
 	}
 }
 
+// TestLoadValidatesOnlyDeclaredSections is the migrate tool's boot contract. A production
+// migration Job sets POSTGRES_URL and nothing else, because that is all the migrator opens: it has
+// no Kafka client and no OTLP exporter. Validating the whole Config there refused the boot over a
+// defaulted KAFKA_BROKERS, blocking a rollout on a schema migration that never ran.
+func TestLoadValidatesOnlyDeclaredSections(t *testing.T) {
+	setEnv(t, map[string]string{
+		"ENVIRONMENT":  "production",
+		"POSTGRES_URL": "postgres://u:p@db:5432/gw",
+	})
+
+	cfg, err := config.Load("migrate", config.SectionPostgres)
+	if err != nil {
+		t.Fatalf("Load() error = %v; migrate declares Postgres only and must boot "+
+			"without Kafka or OTel set", err)
+	}
+	if cfg.Postgres.URL != "postgres://u:p@db:5432/gw" {
+		t.Errorf("Postgres.URL = %q, want the configured URL", cfg.Postgres.URL)
+	}
+}
+
+// TestDeclaredSectionKeepsItsProductionGuard is the other half of the contract above: narrowing
+// validation must not weaken the section a binary DID declare. Migrating a localhost database in
+// production stays refused.
+func TestDeclaredSectionKeepsItsProductionGuard(t *testing.T) {
+	// POSTGRES_URL left at its localhost development default.
+	setEnv(t, map[string]string{"ENVIRONMENT": "production"})
+
+	_, err := config.Load("migrate", config.SectionPostgres)
+	if err == nil {
+		t.Fatal("Load() accepted the localhost Postgres default in production")
+	}
+	if !strings.Contains(err.Error(), "POSTGRES_URL") {
+		t.Errorf("error %q should name POSTGRES_URL", err)
+	}
+}
+
+// TestLoadWithoutSectionsValidatesEverything pins the default: a caller declaring nothing is
+// validated in full. Over-validating is a boot failure an operator can read; under-validating is a
+// dependency failing mid-traffic.
+func TestLoadWithoutSectionsValidatesEverything(t *testing.T) {
+	// KAFKA_BROKERS left at its localhost development default.
+	setEnv(t, map[string]string{
+		"ENVIRONMENT":                 "production",
+		"OTEL_EXPORTER_OTLP_INSECURE": "false",
+		"POSTGRES_URL":                "postgres://u:p@db:5432/gw",
+	})
+
+	_, err := config.Load("router-svc")
+	if err == nil {
+		t.Fatal("Load() with no declared sections accepted the localhost Kafka default in production")
+	}
+	if !strings.Contains(err.Error(), "KAFKA_BROKERS") {
+		t.Errorf("error %q should name KAFKA_BROKERS", err)
+	}
+}
+
 // TestDevelopmentAcceptsLocalhostDefaults is the other side: a laptop needs no environment.
 func TestDevelopmentAcceptsLocalhostDefaults(t *testing.T) {
 	setEnv(t, nil)
