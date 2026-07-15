@@ -131,8 +131,8 @@ La couverture est un indicateur, pas une fin : 100 % de lignes couvertes sans le
 |---|---|
 | M0 | Invariant (a) ; squelette CI (`-race`, lint, `govulncheck`) ; migration applique le DDL |
 | M1 | Contrat OpenAPI (admin) ; contraintes de schéma (cardinalité) |
-| M2 | E2E squelette via **faux SMSC** ; ACK durable Kafka ; producteur/consommateur |
-| M3 | Codec SMPP unit + **fuzz** ; invariant (d) ; parité REST/SMPP ; rotation avec grâce |
+| M2 | **Codec SMPP unit + fuzz** (voie sortante) ; E2E squelette via **faux SMSC** ; ACK durable Kafka ; producteur/consommateur |
+| M3 | Invariant (d) ; parité REST/SMPP ; rotation avec grâce ; session/registre |
 | M4 | MO/DLR via faux SMSC ; corrélation DLR ; webhook signé + retry |
 | M5 | Sender ID ; opt-out union de portées ; **Bloom sans faux négatif** ; anti-spam |
 | M6 | Segmentation aux frontières ; **atomicité token-bucket** sous concurrence |

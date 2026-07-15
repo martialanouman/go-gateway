@@ -1,0 +1,64 @@
+# golangci-lint configuration — the executable form of convention-style-go.md §9.
+#
+# SCHEMA NOTE: §9 of the style guide is written for golangci-lint v1. This file is the same rule
+# set expressed in the v2 schema, which the installed binary requires: in v2 the formatters
+# (gofmt, goimports) moved out of `linters:` into their own `formatters:` block, and
+# `linters-settings:` became `linters.settings:`. The rules are unchanged — only the syntax is.
+# When §9 is refreshed, keep the two in step.
+#
+# The CI fails on any finding. Style is decided by the tool, never in review.
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - govet
+    - staticcheck
+    - revive # naming / style (replaces golint)
+    - errcheck # every error handled
+    - ineffassign
+    - unused
+    - unconvert
+    - misspell
+    - gocritic
+    - gosec # no injected SQL, no leaked secrets
+    - bodyclose
+    - contextcheck
+    - noctx
+    - rowserrcheck
+    - sqlclosecheck
+    - nakedret # no naked returns in long funcs
+    - prealloc
+
+  settings:
+    revive:
+      rules:
+        - name: exported # godoc on exported symbols
+        - name: var-naming # MixedCaps, acronym casing
+        - name: receiver-naming # consistent short receivers
+        - name: context-as-argument
+        - name: error-strings # lowercase, no punctuation
+
+  exclusions:
+    rules:
+      # Tests deliberately exercise failure paths and loopback servers; the security and
+      # HTTP-hygiene linters flag idioms there that are correct in a test.
+      - path: _test\.go
+        linters:
+          - gosec
+          - noctx
+          - bodyclose
+
+formatters:
+  enable:
+    - gofmt # formatting is law
+    - goimports # import grouping (local-prefixes below)
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/martialanouman/go-gateway
+
+issues:
+  max-same-issues: 0
