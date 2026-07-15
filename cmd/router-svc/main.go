@@ -86,10 +86,17 @@ func run() error {
 	var wg sync.WaitGroup
 	errCh := make(chan error, 1)
 
+	// Components run under a context run can cancel itself, so a component failing stops the
+	// others exactly as a signal does. Cancelling through signal.NotifyContext's stop would work
+	// too, but it also unregisters the handler, and a second SIGTERM would then fall back to the
+	// default kill.
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if err := ops.Run(ctx, cfg.ShutdownTimeout); err != nil {
+		if err := ops.Run(runCtx, cfg.ShutdownTimeout); err != nil {
 			// Buffered and non-blocking: the first failure is the one that matters, and a
 			// component must never block on reporting.
 			select {
@@ -99,12 +106,26 @@ func run() error {
 		}
 	}()
 
-	<-ctx.Done()
-	logger.Info("shutting down", "reason", context.Cause(ctx))
+	// Stop on whichever comes first. Waiting on ctx.Done alone would park a component's startup
+	// failure in errCh and keep the pod alive — serving nothing, probed by no one — until an
+	// operator noticed and sent SIGTERM.
+	var runErr error
+	select {
+	case <-ctx.Done():
+		logger.Info("shutting down", "reason", context.Cause(ctx))
+	case runErr = <-errCh:
+		logger.Error("component failed, shutting down", "err", runErr)
+	}
+	cancel()
 
-	// Every goroutine above exits on ctx, so this returns within ShutdownTimeout.
+	// Every goroutine above exits on runCtx, so this returns within ShutdownTimeout.
 	wg.Wait()
 
+	if runErr != nil {
+		return runErr
+	}
+
+	// A component may still have failed on the way out.
 	select {
 	case err := <-errCh:
 		return err
