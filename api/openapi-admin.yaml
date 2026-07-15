@@ -1,0 +1,2445 @@
+openapi: 3.1.0
+
+# =====================================================================================================
+#  SMS Gateway — ADMIN API (internal, consumed by the Admin Dashboard)   §5.3
+#
+#  SOURCE OF TRUTH. The chi + Huma implementation MUST conform to this document. Same conventions as the
+#  public spec: OpenAPI 3.1 / JSON Schema 2020-12, nullable via type:[T,"null"], a flat application/json
+#  error model { code, message, errors[] } (Huma's RFC 9457 default overridden via huma.NewError), and
+#  kebab-case operationId.
+#  Schemas are aligned field-for-field with the PostgreSQL control plane (schema_passerelle_sms.sql).
+#  Secrets (passwords, API keys, wrapped content keys, provider auth) are NEVER returned — only masked,
+#  except the one-time secret at credential create/rotate. There is NO self-service surface here: this
+#  API is operator-only and enforces fine-grained scopes (content:read, content:erase, gdpr:erase, ...).
+# =====================================================================================================
+
+info:
+  title: SMS Gateway — Admin API
+  version: "1.0.0"
+  description: |
+    Internal control-plane API for the Admin Dashboard. Provisions and manages customers, SMPP accounts,
+    credentials, connectors, routes, routing scripts, anti-spam, opt-out, inbound numbers, sender-ID
+    rewrite, billing, content policy & RGPD erasure, plus message tracing/search/export and real-time
+    metrics. Operators authenticate with a bearer token; each operation declares the required scope(s).
+  license:
+    name: Proprietary
+
+servers:
+  - url: https://admin.gateway.internal/v1
+    description: Internal (mTLS + operator bearer)
+
+security:
+  - OperatorBearer: []
+
+tags:
+  - name: Customer Groups
+  - name: Customers
+  - name: Sender IDs
+  - name: SMPP Accounts
+  - name: Credentials
+  - name: Connectors
+  - name: Routes
+  - name: Exact Routes
+  - name: Routing Scripts
+  - name: Sessions
+  - name: Anti-spam
+  - name: Suppression
+  - name: Opt-out Keywords
+  - name: Inbound Numbers
+  - name: Sender Rewrite
+  - name: Billing
+  - name: Rate Plans
+  - name: Billing Providers
+  - name: Content & RGPD
+  - name: Messages
+  - name: Metrics
+  - name: Realtime
+
+paths:
+
+  # ============================ CUSTOMER GROUPS (§6.17) ============================
+  /admin/customer-groups:
+    get:
+      tags: [Customer Groups]
+      summary: List customer groups
+      operationId: list-customer-groups
+      parameters: [ { $ref: '#/components/parameters/Status' } ]
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/CustomerGroup' } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [Customer Groups]
+      summary: Create a customer group
+      operationId: create-customer-group
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CustomerGroupCreate' } } } }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/CustomerGroup' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /admin/customer-groups/{id}:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    get:
+      tags: [Customer Groups]
+      summary: Get a customer group
+      operationId: get-customer-group
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/CustomerGroup' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Customer Groups]
+      summary: Update a customer group
+      operationId: update-customer-group
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CustomerGroupUpdate' } } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/CustomerGroup' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+    delete:
+      tags: [Customer Groups]
+      summary: Delete a group (non-destructive — detaches customers, group_id -> null)
+      operationId: delete-customer-group
+      responses:
+        '204': { description: Deleted. }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /admin/customer-groups/{id}/customers:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    get:
+      tags: [Customer Groups]
+      summary: List customers in a group
+      operationId: list-group-customers
+      parameters: [ { $ref: '#/components/parameters/Cursor' }, { $ref: '#/components/parameters/Limit' } ]
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/CustomerPage' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ============================ CUSTOMERS (§6.18) ============================
+  /admin/customers:
+    get:
+      tags: [Customers]
+      summary: List customers
+      operationId: list-customers
+      parameters:
+        - { name: groupId, in: query, schema: { type: string, format: uuid } }
+        - { $ref: '#/components/parameters/Status' }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/CustomerPage' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [Customers]
+      summary: Create a customer
+      operationId: create-customer
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CustomerCreate' } } } }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Customer' } } } }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /admin/customers/{id}:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    get:
+      tags: [Customers]
+      summary: Get a customer
+      operationId: get-customer
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Customer' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Customers]
+      summary: Update a customer
+      operationId: update-customer
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CustomerUpdate' } } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Customer' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+    delete:
+      tags: [Customers]
+      summary: Delete a customer
+      operationId: delete-customer
+      responses:
+        '204': { description: Deleted. }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /admin/customers/{id}/group:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    patch:
+      tags: [Customers]
+      summary: Set (or clear) a customer's group
+      operationId: set-customer-group
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { group_id: { type: [string, "null"], format: uuid } }, required: [group_id] } } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Customer' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /admin/customers/{id}/suspend:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    post:
+      tags: [Customers]
+      summary: Suspend a customer (cascades — suspends all its SMPP accounts)
+      operationId: suspend-customer
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Customer' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ---- Sender IDs (customer-level) ----
+  /admin/customers/{id}/sender-ids:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    get:
+      tags: [Sender IDs]
+      summary: List a customer's sender IDs
+      operationId: list-sender-ids
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/SenderId' } } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      tags: [Sender IDs]
+      summary: Register a sender ID (starts pending carrier approval)
+      operationId: create-sender-id
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/SenderIdCreate' } } } }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/SenderId' } } } }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /admin/customers/{id}/sender-ids/{senderId}:
+    parameters: [ { $ref: '#/components/parameters/Id' }, { $ref: '#/components/parameters/SenderId' } ]
+    patch:
+      tags: [Sender IDs]
+      summary: Update a sender ID (status)
+      operationId: update-sender-id
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/SenderIdUpdate' } } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SenderId' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Sender IDs]
+      summary: Delete a sender ID
+      operationId: delete-sender-id
+      responses:
+        '204': { description: Deleted. }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /admin/customers/{id}/smpp-accounts:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    get:
+      tags: [Customers]
+      summary: List a customer's SMPP accounts
+      operationId: list-customer-accounts
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/SmppAccount' } } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ============================ SMPP ACCOUNTS (§6.18) ============================
+  /admin/smpp-accounts:
+    get:
+      tags: [SMPP Accounts]
+      summary: List SMPP accounts
+      operationId: list-smpp-accounts
+      parameters:
+        - { name: customerId, in: query, schema: { type: string, format: uuid } }
+        - { name: groupId, in: query, schema: { type: string, format: uuid } }
+        - { $ref: '#/components/parameters/Status' }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SmppAccountPage' } } } }
+    post:
+      tags: [SMPP Accounts]
+      summary: Create an SMPP account (requires customerId)
+      operationId: create-smpp-account
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/SmppAccountCreate' } } } }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/SmppAccount' } } } }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /admin/smpp-accounts/{id}:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    get:
+      tags: [SMPP Accounts]
+      summary: Get an SMPP account
+      operationId: get-smpp-account
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SmppAccount' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [SMPP Accounts]
+      summary: Update an SMPP account
+      operationId: update-smpp-account
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/SmppAccountUpdate' } } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SmppAccount' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+    delete:
+      tags: [SMPP Accounts]
+      summary: Delete an SMPP account
+      operationId: delete-smpp-account
+      responses:
+        '204': { description: Deleted. }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /admin/smpp-accounts/{id}/suspend:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    post:
+      tags: [SMPP Accounts]
+      summary: Suspend an SMPP account
+      operationId: suspend-smpp-account
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SmppAccount' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /admin/smpp-accounts/{id}/channels:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    patch:
+      tags: [SMPP Accounts]
+      summary: Enable/disable channels (at least one must stay true)
+      operationId: set-account-channels
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ChannelsUpdate' } } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SmppAccount' } } } }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /admin/smpp-accounts/{id}/session-limits:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    patch:
+      tags: [SMPP Accounts]
+      summary: Set max_sessions and allowed bind types
+      operationId: set-account-session-limits
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/SessionLimitsUpdate' } } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SmppAccount' } } } }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /admin/smpp-accounts/{id}/sessions:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    get:
+      tags: [SMPP Accounts]
+      summary: Live binds vs maxSessions for this account
+      operationId: list-account-sessions
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: object, properties: { max_sessions: { type: integer }, active: { type: integer }, sessions: { type: array, items: { $ref: '#/components/schemas/Session' } } }, required: [max_sessions, active, sessions] } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /admin/smpp-accounts/{id}/sender-id-policy:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    patch:
+      tags: [SMPP Accounts]
+      summary: Set sender-ID authorization policy (§6.19)
+      operationId: set-account-sender-id-policy
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { sender_id_policy: { $ref: '#/components/schemas/SenderIdPolicy' } }, required: [sender_id_policy] } } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SmppAccount' } } } }
+  /admin/smpp-accounts/{id}/smpp-ops:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    patch:
+      tags: [SMPP Accounts]
+      summary: Toggle optional SMPP ops query_sm / cancel_sm (§6.22)
+      operationId: set-account-smpp-ops
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { query_sm_enabled: { type: boolean }, cancel_sm_enabled: { type: boolean } } } } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SmppAccount' } } } }
+
+  # ---- Webhooks (per account) ----
+  /admin/smpp-accounts/{id}/webhooks:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    get:
+      tags: [SMPP Accounts]
+      summary: List webhooks
+      operationId: list-webhooks
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Webhook' } } } } }
+    post:
+      tags: [SMPP Accounts]
+      summary: Create a webhook (one per event_type)
+      operationId: create-webhook
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/WebhookCreate' } } } }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Webhook' } } } }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /admin/smpp-accounts/{id}/webhooks/{webhookId}:
+    parameters: [ { $ref: '#/components/parameters/Id' }, { name: webhookId, in: path, required: true, schema: { type: string, format: uuid } } ]
+    patch:
+      tags: [SMPP Accounts]
+      summary: Update a webhook
+      operationId: update-webhook
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/WebhookUpdate' } } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Webhook' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [SMPP Accounts]
+      summary: Delete a webhook
+      operationId: delete-webhook
+      responses:
+        '204': { description: Deleted. }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ============================ CREDENTIALS (§6.3/§6.18) ============================
+  /admin/smpp-accounts/{id}/credentials:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    get:
+      tags: [Credentials]
+      summary: List credentials (masked — never a secret)
+      operationId: list-credentials
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Credential' } } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      tags: [Credentials]
+      summary: Create a credential — secret returned exactly once
+      operationId: create-credential
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { type: { type: string, enum: [smpp_bind, api_key] }, system_id: { type: [string, "null"], description: 'Required for smpp_bind.' } }, required: [type] } } } }
+      responses:
+        '201': { description: Created; the secret is present once and never retrievable again., content: { application/json: { schema: { $ref: '#/components/schemas/CredentialWithSecret' } } } }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /admin/smpp-accounts/{id}/credentials/{credId}:
+    parameters: [ { $ref: '#/components/parameters/Id' }, { $ref: '#/components/parameters/CredId' } ]
+    patch:
+      tags: [Credentials]
+      summary: Update a credential (status only)
+      operationId: update-credential-status
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { status: { type: string, enum: [active, disabled, revoked] } }, required: [status] } } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Credential' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Credentials]
+      summary: Revoke a credential (force-unbinds live sessions)
+      operationId: revoke-credential
+      responses:
+        '204': { description: Revoked. }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /admin/smpp-accounts/{id}/credentials/{credId}/rotate:
+    parameters: [ { $ref: '#/components/parameters/Id' }, { $ref: '#/components/parameters/CredId' } ]
+    post:
+      tags: [Credentials]
+      summary: Rotate a credential (manual; optional grace window)
+      operationId: rotate-credential
+      requestBody: { required: false, content: { application/json: { schema: { type: object, properties: { grace_period_sec: { type: [integer, "null"], minimum: 0, description: 'Old secret stays valid this long in parallel.' } } } } } }
+      responses:
+        '200': { description: Rotated; new secret present once., content: { application/json: { schema: { $ref: '#/components/schemas/CredentialWithSecret' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ============================ CONNECTORS (§6.13/§6.15) ============================
+  /admin/connectors:
+    get:
+      tags: [Connectors]
+      summary: List SMSC connectors
+      operationId: list-connectors
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Connector' } } } } }
+    post:
+      tags: [Connectors]
+      summary: Create a connector
+      operationId: create-connector
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ConnectorCreate' } } } }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Connector' } } } }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /admin/connectors/{id}:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    get:
+      tags: [Connectors]
+      summary: Get a connector
+      operationId: get-connector
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Connector' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Connectors]
+      summary: Update a connector
+      operationId: update-connector
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ConnectorUpdate' } } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Connector' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+    delete:
+      tags: [Connectors]
+      summary: Delete a connector
+      operationId: delete-connector
+      responses:
+        '204': { description: Deleted. }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /admin/connectors/{id}/rebind:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    post:
+      tags: [Connectors]
+      summary: Manually rebind (reconnect) a connector
+      operationId: rebind-connector
+      responses:
+        '202': { description: Rebind requested., content: { application/json: { schema: { $ref: '#/components/schemas/ConnectorStatus' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /admin/connectors/{id}/status:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    get:
+      tags: [Connectors]
+      summary: Live link_status + breaker_state, per bind in the pool (§6.13/§6.15)
+      operationId: get-connector-status
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ConnectorStatus' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /admin/connectors/{id}/reconnect-policy:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    patch:
+      tags: [Connectors]
+      summary: Set auto-reconnect policy (§6.13)
+      operationId: set-connector-reconnect-policy
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ReconnectPolicy' } } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Connector' } } } }
+  /admin/connectors/{id}/bind-pool:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    patch:
+      tags: [Connectors]
+      summary: Resize the bind pool (§6.8)
+      operationId: set-connector-bind-pool
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { bind_pool_size: { type: integer, minimum: 1, maximum: 32 } }, required: [bind_pool_size] } } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Connector' } } } }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  # ============================ ROUTES (§6.1) ============================
+  /admin/routes:
+    get:
+      tags: [Routes]
+      summary: List routes (ordered by priority)
+      operationId: list-routes
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Route' } } } } }
+    post:
+      tags: [Routes]
+      summary: Create a route
+      operationId: create-route
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/RouteCreate' } } } }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Route' } } } }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /admin/routes/reorder:
+    post:
+      tags: [Routes]
+      summary: Reorder route priorities
+      operationId: reorder-routes
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { ordered_ids: { type: array, items: { type: string, format: uuid } } }, required: [ordered_ids] } } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Route' } } } } }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /admin/routes/{id}:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    get:
+      tags: [Routes]
+      summary: Get a route
+      operationId: get-route
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Route' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Routes]
+      summary: Update a route
+      operationId: update-route
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/RouteUpdate' } } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Route' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Routes]
+      summary: Delete a route
+      operationId: delete-route
+      responses:
+        '204': { description: Deleted. }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ---- Exact routes (MNP) ----
+  /admin/exact-routes:
+    get:
+      tags: [Exact Routes]
+      summary: List exact routes
+      operationId: list-exact-routes
+      parameters: [ { $ref: '#/components/parameters/Cursor' }, { $ref: '#/components/parameters/Limit' } ]
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ExactRoutePage' } } } }
+    post:
+      tags: [Exact Routes]
+      summary: Create/upsert an exact route (MSISDN -> connector|route)
+      operationId: create-exact-route
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ExactRouteCreate' } } } }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/ExactRoute' } } } }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /admin/exact-routes/import:
+    post:
+      tags: [Exact Routes]
+      summary: Bulk MNP import (async)
+      operationId: import-exact-routes
+      requestBody: { required: true, content: { text/csv: { schema: { type: string } }, application/json: { schema: { type: object, properties: { source: { type: string, enum: [mnp_import, carrier_feed] }, rows: { type: array, items: { $ref: '#/components/schemas/ExactRouteCreate' } } }, required: [rows] } } } }
+      responses:
+        '202': { description: Import job accepted., content: { application/json: { schema: { $ref: '#/components/schemas/AsyncJob' } } } }
+  /admin/exact-routes/lookup:
+    get:
+      tags: [Exact Routes]
+      summary: Look up the exact route for an MSISDN
+      operationId: lookup-exact-route
+      parameters: [ { name: msisdn, in: query, required: true, schema: { type: string } } ]
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ExactRoute' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /admin/exact-routes/{msisdn}:
+    parameters: [ { name: msisdn, in: path, required: true, schema: { type: string } } ]
+    patch:
+      tags: [Exact Routes]
+      summary: Update an exact route
+      operationId: update-exact-route
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ExactRouteUpdate' } } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ExactRoute' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Exact Routes]
+      summary: Delete an exact route
+      operationId: delete-exact-route
+      responses:
+        '204': { description: Deleted. }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ============================ ROUTING SCRIPTS (§6.2) ============================
+  /admin/routing-scripts:
+    get:
+      tags: [Routing Scripts]
+      summary: List routing scripts
+      operationId: list-routing-scripts
+      parameters: [ { name: scope, in: query, schema: { $ref: '#/components/schemas/ScriptScope' } }, { name: scopeId, in: query, schema: { type: string, format: uuid } } ]
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/RoutingScript' } } } } }
+    post:
+      tags: [Routing Scripts]
+      summary: Create a routing script (draft)
+      operationId: create-routing-script
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/RoutingScriptCreate' } } } }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/RoutingScript' } } } }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /admin/routing-scripts/{id}:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    get:
+      tags: [Routing Scripts]
+      summary: Get a routing script
+      operationId: get-routing-script
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/RoutingScript' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Routing Scripts]
+      summary: Update a routing script (source/limits)
+      operationId: update-routing-script
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/RoutingScriptUpdate' } } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/RoutingScript' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Routing Scripts]
+      summary: Delete a routing script
+      operationId: delete-routing-script
+      responses:
+        '204': { description: Deleted. }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /admin/routing-scripts/{id}/assign:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    patch:
+      tags: [Routing Scripts]
+      summary: Assign the script to a scope
+      operationId: assign-routing-script
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { scope: { $ref: '#/components/schemas/ScriptScope' }, scope_id: { type: [string, "null"], format: uuid } }, required: [scope] } } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/RoutingScript' } } } }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /admin/routing-scripts/{id}/validate:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    post:
+      tags: [Routing Scripts]
+      summary: Static validation (syntax, limits)
+      operationId: validate-routing-script
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ScriptValidateResult' } } } }
+  /admin/routing-scripts/{id}/test:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    post:
+      tags: [Routing Scripts]
+      summary: Dry-run against a sample message
+      operationId: test-routing-script
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ScriptTestRequest' } } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ScriptTestResult' } } } }
+  /admin/routing-scripts/{id}/publish:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    post:
+      tags: [Routing Scripts]
+      summary: Publish (activate) — rejected if another script is active in the same scope
+      operationId: publish-routing-script
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/RoutingScript' } } } }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /admin/routing-scripts/{id}/versions:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    get:
+      tags: [Routing Scripts]
+      summary: List script versions
+      operationId: list-routing-script-versions
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/ScriptVersion' } } } } }
+
+  # ============================ SESSIONS ============================
+  /admin/sessions:
+    get:
+      tags: [Sessions]
+      summary: List live SMPP sessions
+      operationId: list-sessions
+      parameters:
+        - { name: accountId, in: query, schema: { type: string, format: uuid } }
+        - { name: connectorId, in: query, schema: { type: string, format: uuid } }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SessionPage' } } } }
+  /admin/sessions/{id}:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    delete:
+      tags: [Sessions]
+      summary: Force-disconnect a session
+      operationId: disconnect-session
+      responses:
+        '204': { description: Disconnected. }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ============================ ANTI-SPAM (§6.5) ============================
+  /admin/antispam-rules:
+    get:
+      tags: [Anti-spam]
+      summary: List anti-spam rules
+      operationId: list-antispam-rules
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/AntispamRule' } } } } }
+    post:
+      tags: [Anti-spam]
+      summary: Create an anti-spam rule
+      operationId: create-antispam-rule
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/AntispamRuleCreate' } } } }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/AntispamRule' } } } }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /admin/antispam-rules/{id}:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    patch:
+      tags: [Anti-spam]
+      summary: Update an anti-spam rule
+      operationId: update-antispam-rule
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/AntispamRuleUpdate' } } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/AntispamRule' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Anti-spam]
+      summary: Delete an anti-spam rule
+      operationId: delete-antispam-rule
+      responses:
+        '204': { description: Deleted. }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ============================ SUPPRESSION / OPT-OUT (§6.20) ============================
+  /admin/suppressions:
+    get:
+      tags: [Suppression]
+      summary: List suppressions
+      operationId: list-suppressions
+      parameters:
+        - { name: scope, in: query, schema: { $ref: '#/components/schemas/SuppressionScope' } }
+        - { name: scopeId, in: query, schema: { type: string, format: uuid } }
+        - { name: msisdn, in: query, schema: { type: string } }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SuppressionPage' } } } }
+    post:
+      tags: [Suppression]
+      summary: Add a suppression
+      operationId: create-suppression
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/SuppressionCreate' } } } }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Suppression' } } } }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /admin/suppressions/import:
+    post:
+      tags: [Suppression]
+      summary: Bulk import suppressions (async)
+      operationId: import-suppressions
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { scope: { $ref: '#/components/schemas/SuppressionScope' }, scope_id: { type: [string, "null"], format: uuid }, source: { $ref: '#/components/schemas/SuppressionSource' }, msisdns: { type: array, items: { type: string } } }, required: [scope, msisdns] } } } }
+      responses:
+        '202': { description: Accepted., content: { application/json: { schema: { $ref: '#/components/schemas/AsyncJob' } } } }
+  /admin/suppressions/check:
+    post:
+      tags: [Suppression]
+      summary: Would this recipient be blocked, and by which scope?
+      operationId: check-suppression
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { msisdn: { type: string }, sender_addr: { type: [string, "null"] }, account_id: { type: [string, "null"], format: uuid } }, required: [msisdn] } } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SuppressionCheckResult' } } } }
+  /admin/suppressions/{id}:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    delete:
+      tags: [Suppression]
+      summary: Un-suppress (audit-logged)
+      operationId: delete-suppression
+      responses:
+        '204': { description: Removed. }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /admin/opt-out-keywords:
+    get:
+      tags: [Opt-out Keywords]
+      summary: List opt-out keywords
+      operationId: list-opt-out-keywords
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/OptOutKeyword' } } } } }
+    post:
+      tags: [Opt-out Keywords]
+      summary: Create an opt-out keyword
+      operationId: create-opt-out-keyword
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/OptOutKeywordCreate' } } } }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/OptOutKeyword' } } } }
+  /admin/opt-out-keywords/{id}:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    patch:
+      tags: [Opt-out Keywords]
+      summary: Update an opt-out keyword
+      operationId: update-opt-out-keyword
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/OptOutKeywordUpdate' } } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/OptOutKeyword' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Opt-out Keywords]
+      summary: Delete an opt-out keyword
+      operationId: delete-opt-out-keyword
+      responses:
+        '204': { description: Deleted. }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ============================ INBOUND NUMBERS & KEYWORDS (§6.21) ============================
+  /admin/inbound-numbers:
+    get:
+      tags: [Inbound Numbers]
+      summary: List inbound numbers
+      operationId: list-inbound-numbers
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/InboundNumber' } } } } }
+    post:
+      tags: [Inbound Numbers]
+      summary: Create an inbound number
+      operationId: create-inbound-number
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/InboundNumberCreate' } } } }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/InboundNumber' } } } }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /admin/inbound-numbers/{id}:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    patch:
+      tags: [Inbound Numbers]
+      summary: Update an inbound number
+      operationId: update-inbound-number
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/InboundNumberUpdate' } } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/InboundNumber' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Inbound Numbers]
+      summary: Delete an inbound number
+      operationId: delete-inbound-number
+      responses:
+        '204': { description: Deleted. }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /admin/inbound-numbers/{id}/assign:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    patch:
+      tags: [Inbound Numbers]
+      summary: Assign to an account (dedicated) or clear (shared, keyword-resolved)
+      operationId: assign-inbound-number
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { account_id: { type: [string, "null"], format: uuid } }, required: [account_id] } } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/InboundNumber' } } } }
+  /admin/inbound-numbers/{id}/keywords:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    get:
+      tags: [Inbound Numbers]
+      summary: List keywords for a shared inbound number
+      operationId: list-inbound-keywords
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/InboundKeyword' } } } } }
+    post:
+      tags: [Inbound Numbers]
+      summary: Add a keyword mapping
+      operationId: create-inbound-keyword
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/InboundKeywordCreate' } } } }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/InboundKeyword' } } } }
+  /admin/inbound-numbers/{id}/keywords/{keywordId}:
+    parameters: [ { $ref: '#/components/parameters/Id' }, { name: keywordId, in: path, required: true, schema: { type: string, format: uuid } } ]
+    patch:
+      tags: [Inbound Numbers]
+      summary: Update a keyword mapping
+      operationId: update-inbound-keyword
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/InboundKeywordUpdate' } } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/InboundKeyword' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Inbound Numbers]
+      summary: Delete a keyword mapping
+      operationId: delete-inbound-keyword
+      responses:
+        '204': { description: Deleted. }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /admin/mo/unrouted:
+    get:
+      tags: [Inbound Numbers]
+      summary: List unrouted MO messages
+      operationId: list-unrouted-mo
+      parameters: [ { $ref: '#/components/parameters/Cursor' }, { $ref: '#/components/parameters/Limit' } ]
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/MessageSummaryPage' } } } }
+
+  # ============================ SENDER REWRITE (§6.16) ============================
+  /admin/sender-rewrite-rules:
+    get:
+      tags: [Sender Rewrite]
+      summary: List sender-ID rewrite rules
+      operationId: list-sender-rewrite-rules
+      parameters: [ { name: scope, in: query, schema: { $ref: '#/components/schemas/RewriteScope' } }, { name: scopeId, in: query, schema: { type: string, format: uuid } } ]
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/SenderRewriteRule' } } } } }
+    post:
+      tags: [Sender Rewrite]
+      summary: Create a rewrite rule
+      operationId: create-sender-rewrite-rule
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/SenderRewriteRuleCreate' } } } }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/SenderRewriteRule' } } } }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /admin/sender-rewrite-rules/{id}:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    patch:
+      tags: [Sender Rewrite]
+      summary: Update a rewrite rule
+      operationId: update-sender-rewrite-rule
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/SenderRewriteRuleUpdate' } } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SenderRewriteRule' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Sender Rewrite]
+      summary: Delete a rewrite rule
+      operationId: delete-sender-rewrite-rule
+      responses:
+        '204': { description: Deleted. }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /admin/sender-rewrite-rules/{id}/test:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    post:
+      tags: [Sender Rewrite]
+      summary: Test a rewrite rule against a sample
+      operationId: test-sender-rewrite-rule
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { source_addr: { type: string }, dest_addr: { type: string } }, required: [source_addr, dest_addr] } } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: object, properties: { matched: { type: boolean }, rewritten_source: { type: [string, "null"] } }, required: [matched] } } } }
+
+  # ============================ BILLING (§6.9) ============================
+  /admin/customers/{id}/billing:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    get:
+      tags: [Billing]
+      summary: Get a customer's billing config
+      operationId: get-customer-billing
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/BillingCustomer' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Billing]
+      summary: Update a customer's billing config
+      operationId: update-customer-billing
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/BillingCustomerUpdate' } } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/BillingCustomer' } } } }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /admin/customers/{id}/balances:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    get:
+      tags: [Billing]
+      summary: Get MT and MO balances (per owner, per direction)
+      operationId: get-customer-balances
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Balance' } } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /admin/customers/{id}/billing/topup:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    post:
+      tags: [Billing]
+      summary: Top up a balance (credits, direction, optional account)
+      operationId: topup-balance
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { credits: { type: integer, minimum: 1 }, direction: { $ref: '#/components/schemas/Direction' }, account_id: { type: [string, "null"], format: uuid }, reference: { type: [string, "null"] } }, required: [credits, direction] } } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/LedgerEntry' } } } }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /admin/customers/{id}/billing/transfer:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    post:
+      tags: [Billing]
+      summary: Net-zero transfer between the customer's own balances
+      operationId: transfer-balance
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { credits: { type: integer, minimum: 1 }, direction: { $ref: '#/components/schemas/Direction' }, from_owner_id: { type: string, format: uuid }, to_owner_id: { type: string, format: uuid } }, required: [credits, direction, from_owner_id, to_owner_id] } } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/LedgerEntry' } } } } }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /admin/customers/{id}/billing/scope:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    post:
+      tags: [Billing]
+      summary: Change balance_scope (409 unless ALL balances are zero)
+      operationId: change-balance-scope
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { balance_scope: { $ref: '#/components/schemas/BalanceScope' } }, required: [balance_scope] } } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Customer' } } } }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /admin/customers/{id}/billing/ledger:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    get:
+      tags: [Billing]
+      summary: Read the billing ledger
+      operationId: get-billing-ledger
+      parameters:
+        - { name: direction, in: query, schema: { $ref: '#/components/schemas/Direction' } }
+        - { name: accountId, in: query, schema: { type: string, format: uuid } }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/LedgerPage' } } } }
+
+  /admin/rate-plans:
+    get:
+      tags: [Rate Plans]
+      summary: List rate plans
+      operationId: list-rate-plans
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/RatePlan' } } } } }
+    post:
+      tags: [Rate Plans]
+      summary: Create a rate plan
+      operationId: create-rate-plan
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/RatePlanCreate' } } } }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/RatePlan' } } } }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /admin/rate-plans/{id}:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    patch:
+      tags: [Rate Plans]
+      summary: Update a rate plan
+      operationId: update-rate-plan
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/RatePlanUpdate' } } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/RatePlan' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Rate Plans]
+      summary: Delete a rate plan
+      operationId: delete-rate-plan
+      responses:
+        '204': { description: Deleted. }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /admin/billing-providers:
+    get:
+      tags: [Billing Providers]
+      summary: List external billing providers
+      operationId: list-billing-providers
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/ExternalBillingProvider' } } } } }
+    post:
+      tags: [Billing Providers]
+      summary: Create an external billing provider
+      operationId: create-billing-provider
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ExternalBillingProviderCreate' } } } }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/ExternalBillingProvider' } } } }
+  /admin/billing-providers/{id}:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    patch:
+      tags: [Billing Providers]
+      summary: Update an external billing provider
+      operationId: update-billing-provider
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ExternalBillingProviderUpdate' } } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ExternalBillingProvider' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Billing Providers]
+      summary: Delete an external billing provider
+      operationId: delete-billing-provider
+      responses:
+        '204': { description: Deleted. }
+  /admin/billing-providers/{id}/test-connection:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    post:
+      tags: [Billing Providers]
+      summary: Test connectivity to the provider
+      operationId: test-billing-provider
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: object, properties: { ok: { type: boolean }, latency_ms: { type: [integer, "null"] }, detail: { type: [string, "null"] } }, required: [ok] } } } }
+
+  # ============================ CONTENT & RGPD (§6.14/§6.23) ============================
+  /admin/platform/content-policy:
+    get:
+      tags: [Content & RGPD]
+      summary: Get platform default content policy
+      operationId: get-platform-content-policy
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ContentPolicy' } } } }
+    patch:
+      tags: [Content & RGPD]
+      summary: Update platform default content policy
+      operationId: update-platform-content-policy
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ContentPolicy' } } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ContentPolicy' } } } }
+  /admin/customers/{id}/content-policy:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    get:
+      tags: [Content & RGPD]
+      summary: Get a customer's content policy
+      operationId: get-customer-content-policy
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ContentPolicy' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Content & RGPD]
+      summary: Update a customer's content policy
+      operationId: update-customer-content-policy
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ContentPolicy' } } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ContentPolicy' } } } }
+  /admin/messages/{id}/content:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    get:
+      tags: [Content & RGPD]
+      summary: Decrypt and return a message body (scope content:read, audited)
+      operationId: get-message-content
+      security: [ { OperatorBearer: [content:read] } ]
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/MessageContent' } } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /admin/customers/{id}/content/erase:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    post:
+      tags: [Content & RGPD]
+      summary: Content-only crypto-shred (scope content:erase)
+      operationId: erase-customer-content
+      security: [ { OperatorBearer: [content:erase] } ]
+      responses:
+        '202': { description: Accepted., content: { application/json: { schema: { $ref: '#/components/schemas/AsyncJob' } } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /admin/customers/{id}/content/rotate-key:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    post:
+      tags: [Content & RGPD]
+      summary: Rotate the customer's content encryption key
+      operationId: rotate-content-key
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ContentKey' } } } }
+  /admin/gdpr/erase:
+    post:
+      tags: [Content & RGPD]
+      summary: On-demand RGPD erasure (scope gdpr:erase, async, irreversible)
+      operationId: gdpr-erase
+      security: [ { OperatorBearer: [gdpr:erase] } ]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { subject_type: { type: string, enum: [customer, msisdn] }, id: { type: string, description: 'Customer UUID or MSISDN depending on subject_type.' } }, required: [subject_type, id] } } } }
+      responses:
+        '202': { description: Accepted., content: { application/json: { schema: { $ref: '#/components/schemas/GdprEraseJob' } } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /admin/gdpr/erase/{jobId}:
+    parameters: [ { name: jobId, in: path, required: true, schema: { type: string, format: uuid } } ]
+    get:
+      tags: [Content & RGPD]
+      summary: RGPD erase job status + attestation
+      operationId: get-gdpr-erase-job
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/GdprEraseJob' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ============================ MESSAGES: TRACE / SEARCH / EXPORT ============================
+  /admin/messages/{id}/trace:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    get:
+      tags: [Messages]
+      summary: Span timeline for a message (never carries the body)
+      operationId: get-message-trace
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/MessageTrace' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /admin/messages/search:
+    get:
+      tags: [Messages]
+      summary: Search CDR (by traceId, account, customer, group, status, ...)
+      operationId: search-messages
+      parameters:
+        - { name: traceId, in: query, schema: { type: string, format: uuid } }
+        - { name: accountId, in: query, schema: { type: string, format: uuid } }
+        - { name: customerId, in: query, schema: { type: string, format: uuid } }
+        - { name: groupId, in: query, schema: { type: string, format: uuid } }
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/CdrStatus' } }
+        - { name: direction, in: query, schema: { $ref: '#/components/schemas/Direction' } }
+        - { name: msisdn, in: query, schema: { type: string } }
+        - { name: from_date, in: query, schema: { type: string, format: date-time } }
+        - { name: to_date, in: query, schema: { type: string, format: date-time } }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/MessageSummaryPage' } } } }
+  /admin/messages/export:
+    post:
+      tags: [Messages]
+      summary: Create an async CDR export job (audited, row-capped, role-based MSISDN mask)
+      operationId: create-message-export
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/MessageExportRequest' } } } }
+      responses:
+        '202': { description: Accepted., content: { application/json: { schema: { $ref: '#/components/schemas/ExportJob' } } } }
+  /admin/messages/export/{jobId}:
+    parameters: [ { name: jobId, in: path, required: true, schema: { type: string, format: uuid } } ]
+    get:
+      tags: [Messages]
+      summary: Export job status + download URL when ready
+      operationId: get-message-export
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ExportJob' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ============================ METRICS & REALTIME ============================
+  /admin/metrics/summary:
+    get:
+      tags: [Metrics]
+      summary: Rolling summary counters
+      operationId: get-metrics-summary
+      parameters: [ { name: window, in: query, schema: { type: string, default: 5m, examples: [5m, 1h] } } ]
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/MetricsSummary' } } } }
+  /admin/metrics/traffic:
+    get:
+      tags: [Metrics]
+      summary: Traffic time series grouped by dimension
+      operationId: get-traffic-metrics
+      parameters:
+        - { name: groupBy, in: query, schema: { type: string, enum: [connector, customer, group], default: connector } }
+        - { name: window, in: query, schema: { type: string, default: 1h } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/TrafficMetrics' } } } }
+  /admin/stream/metrics:
+    get:
+      tags: [Realtime]
+      summary: WebSocket — live metrics stream
+      description: Upgrade to a WebSocket. Emits MetricsSummary frames. `101 Switching Protocols` on upgrade.
+      operationId: stream-metrics
+      responses:
+        '101': { description: Switching Protocols (WebSocket). }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /admin/stream/sessions:
+    get:
+      tags: [Realtime]
+      summary: WebSocket — live session events
+      operationId: stream-sessions
+      responses:
+        '101': { description: Switching Protocols (WebSocket). }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /admin/stream/billing-alerts:
+    get:
+      tags: [Realtime]
+      summary: WebSocket — MT low-balance / MT overdraft-attempt / MO floor-reached alerts
+      operationId: stream-billing-alerts
+      responses:
+        '101': { description: Switching Protocols (WebSocket). }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+components:
+
+  securitySchemes:
+    OperatorBearer:
+      type: oauth2
+      description: |
+        Operator bearer token (JWT). Scopes gate sensitive operations: `content:read`, `content:erase`,
+        `gdpr:erase`, plus coarse `admin:read` / `admin:write`. The transport is additionally protected
+        by mTLS on the internal network.
+      flows:
+        clientCredentials:
+          tokenUrl: https://admin.gateway.internal/oauth/token
+          scopes:
+            admin:read: Read control-plane resources.
+            admin:write: Mutate control-plane resources.
+            content:read: Decrypt and read message bodies.
+            content:erase: Crypto-shred customer content.
+            gdpr:erase: Execute RGPD erasure.
+
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    SenderId:
+      name: senderId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    CredId:
+      name: credId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    Status:
+      name: status
+      in: query
+      required: false
+      schema: { type: string }
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      schema: { type: string }
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 500, default: 50 }
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid operator token.
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    Forbidden:
+      description: Authenticated but missing the required scope.
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    NotFound:
+      description: Resource not found.
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    Conflict:
+      description: Conflicting state (e.g. non-zero balances, duplicate active script/credential).
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    ValidationError:
+      description: Semantic validation failed; see errors[].
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+
+  schemas:
+
+    # ---- shared ----
+    Error:
+      type: object
+      description: |
+        Flat error model (application/json). `code` is the stable machine-readable error code — the
+        cross-protocol contract also carried by SMPP command_status (engineering guide §11). `message`
+        is human-readable. `errors[]` carries per-field detail on validation failures. The numeric HTTP
+        status is on the status line, not duplicated in the body.
+      properties:
+        code:
+          type: string
+          description: Stable machine-readable error code.
+          examples: [forbidden_scope, conflict, validation_error, message_not_found, insufficient_credit]
+        message:
+          type: string
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              field: { type: string }
+              message: { type: string }
+            required: [field, message]
+      required: [code, message]
+    AsyncJob:
+      type: object
+      properties:
+        job_id: { type: string, format: uuid }
+        status: { type: string, enum: [queued, running, completed, failed] }
+        progress: { type: [number, "null"], minimum: 0, maximum: 1 }
+        created_at: { type: string, format: date-time }
+        finished_at: { type: [string, "null"], format: date-time }
+        detail: { type: [string, "null"] }
+      required: [job_id, status, created_at]
+    PageMeta:
+      type: object
+      properties:
+        next_cursor: { type: [string, "null"] }
+        has_more: { type: boolean }
+      required: [has_more]
+
+    # ---- enums (aligned with the DDL) ----
+    Direction: { type: string, enum: [mt, mo] }
+    BalanceScope: { type: string, enum: [customer, smpp_account] }
+    SenderIdPolicy: { type: string, enum: [strict, allow_unregistered_numeric, disabled] }
+    ContentStorage: { type: string, enum: [inherit, off, stored_plaintext, stored_encrypted] }
+    DistributionStrategy: { type: string, enum: [static, round_robin, weighted, failover_priority, least_loaded, hash_based] }
+    BindType: { type: string, enum: [tx, rx, trx] }
+    LinkStatus: { type: string, enum: [up, reconnecting, down] }
+    BreakerState: { type: string, enum: [closed, open, half_open] }
+    ScriptScope: { type: string, enum: [platform, customer, smpp_account] }
+    RewriteScope: { type: string, enum: [platform, customer, smpp_account, connector] }
+    SuppressionScope: { type: string, enum: [inbound_number, smpp_account, customer, platform] }
+    SuppressionSource: { type: string, enum: [mo_stop, admin, import, carrier, regulator] }
+    CdrStatus: { type: string, enum: [enroute, delivered, failed, expired, rejected, rerouted] }
+
+    # ---- customer groups ----
+    CustomerGroup:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: [string, "null"] }
+        status: { type: string, enum: [active, archived] }
+        created_by: { type: [string, "null"], format: uuid }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required: [id, name, status, created_at, updated_at]
+    CustomerGroupCreate:
+      type: object
+      additionalProperties: false
+      properties:
+        name: { type: string }
+        description: { type: [string, "null"] }
+      required: [name]
+    CustomerGroupUpdate:
+      type: object
+      additionalProperties: false
+      properties:
+        name: { type: string }
+        description: { type: [string, "null"] }
+        status: { type: string, enum: [active, archived] }
+
+    # ---- customers ----
+    Customer:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        status: { type: string, enum: [active, suspended, closed] }
+        group_id: { type: [string, "null"], format: uuid }
+        rate_plan_id: { type: [string, "null"], format: uuid }
+        billing_enabled: { type: boolean }
+        billing_mode: { type: [string, "null"], enum: [prepaid, postpaid, null] }
+        overdraft_enabled: { type: boolean }
+        overdraft_limit: { type: [integer, "null"], minimum: 0 }
+        balance_scope: { $ref: '#/components/schemas/BalanceScope' }
+        mo_billing_floor: { type: [integer, "null"] }
+        content_storage: { $ref: '#/components/schemas/ContentStorage' }
+        content_retention_days: { type: [integer, "null"], minimum: 0 }
+        content_key_id: { type: [string, "null"], format: uuid }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required: [id, name, status, billing_enabled, balance_scope, content_storage, created_at, updated_at]
+    CustomerCreate:
+      type: object
+      additionalProperties: false
+      properties:
+        name: { type: string }
+        group_id: { type: [string, "null"], format: uuid }
+        rate_plan_id: { type: [string, "null"], format: uuid }
+        billing_enabled: { type: boolean, default: false }
+        billing_mode: { type: [string, "null"], enum: [prepaid, postpaid, null] }
+        overdraft_enabled: { type: boolean, default: false }
+        overdraft_limit: { type: [integer, "null"], minimum: 0 }
+        balance_scope: { $ref: '#/components/schemas/BalanceScope' }
+        mo_billing_floor: { type: [integer, "null"] }
+        content_storage: { $ref: '#/components/schemas/ContentStorage' }
+        content_retention_days: { type: [integer, "null"], minimum: 0 }
+      required: [name]
+    CustomerUpdate:
+      type: object
+      additionalProperties: false
+      properties:
+        name: { type: string }
+        status: { type: string, enum: [active, suspended, closed] }
+        rate_plan_id: { type: [string, "null"], format: uuid }
+        billing_enabled: { type: boolean }
+        billing_mode: { type: [string, "null"], enum: [prepaid, postpaid, null] }
+        overdraft_enabled: { type: boolean }
+        overdraft_limit: { type: [integer, "null"], minimum: 0 }
+        mo_billing_floor: { type: [integer, "null"] }
+        content_storage: { $ref: '#/components/schemas/ContentStorage' }
+        content_retention_days: { type: [integer, "null"], minimum: 0 }
+
+    CustomerPage:
+      type: object
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          properties:
+            data: { type: array, items: { $ref: '#/components/schemas/Customer' } }
+          required: [data]
+
+    # ---- sender ids ----
+    SenderId:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        customer_id: { type: string, format: uuid }
+        address: { type: string }
+        status: { type: string, enum: [pending_carrier_approval, active, disabled] }
+        created_by: { type: [string, "null"], format: uuid }
+        approved_at: { type: [string, "null"], format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required: [id, customer_id, address, status, created_at, updated_at]
+    SenderIdCreate:
+      type: object
+      additionalProperties: false
+      properties:
+        address: { type: string, maxLength: 20 }
+      required: [address]
+    SenderIdUpdate:
+      type: object
+      additionalProperties: false
+      properties:
+        status: { type: string, enum: [pending_carrier_approval, active, disabled] }
+
+    # ---- smpp accounts ----
+    SmppAccount:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        customer_id: { type: string, format: uuid }
+        name: { type: string }
+        status: { type: string, enum: [active, suspended, closed] }
+        smpp_enabled: { type: boolean }
+        rest_enabled: { type: boolean }
+        sender_id_policy: { $ref: '#/components/schemas/SenderIdPolicy' }
+        query_sm_enabled: { type: boolean }
+        cancel_sm_enabled: { type: boolean }
+        allowed_bind_types: { $ref: '#/components/schemas/BindType' }
+        max_sessions: { type: integer, minimum: 0 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required: [id, customer_id, name, status, smpp_enabled, rest_enabled, sender_id_policy, allowed_bind_types, max_sessions, created_at, updated_at]
+    SmppAccountCreate:
+      type: object
+      additionalProperties: false
+      properties:
+        customer_id: { type: string, format: uuid }
+        name: { type: string }
+        smpp_enabled: { type: boolean, default: true }
+        rest_enabled: { type: boolean, default: true }
+        sender_id_policy: { $ref: '#/components/schemas/SenderIdPolicy' }
+        query_sm_enabled: { type: boolean, default: true }
+        cancel_sm_enabled: { type: boolean, default: true }
+        allowed_bind_types: { $ref: '#/components/schemas/BindType' }
+        max_sessions: { type: integer, minimum: 0, default: 1 }
+      required: [customer_id, name]
+    SmppAccountUpdate:
+      type: object
+      additionalProperties: false
+      properties:
+        name: { type: string }
+        status: { type: string, enum: [active, suspended, closed] }
+    ChannelsUpdate:
+      type: object
+      additionalProperties: false
+      description: At least one channel must remain true.
+      properties:
+        smpp_enabled: { type: boolean }
+        rest_enabled: { type: boolean }
+      required: [smpp_enabled, rest_enabled]
+    SessionLimitsUpdate:
+      type: object
+      additionalProperties: false
+      properties:
+        max_sessions: { type: integer, minimum: 0 }
+        allowed_bind_types: { $ref: '#/components/schemas/BindType' }
+      required: [max_sessions, allowed_bind_types]
+    SmppAccountPage:
+      type: object
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          properties:
+            data: { type: array, items: { $ref: '#/components/schemas/SmppAccount' } }
+          required: [data]
+
+    # ---- webhooks (per account) ----
+    Webhook:
+      type: object
+      description: Per-account MO/DLR webhook. `secret` is write-only and never returned.
+      properties:
+        id: { type: string, format: uuid }
+        account_id: { type: string, format: uuid }
+        event_type: { type: string, enum: [mo, dlr] }
+        url: { type: string, format: uri }
+        retry_policy_json: { type: object, additionalProperties: true }
+        status: { type: string, enum: [active, disabled] }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required: [id, account_id, event_type, url, status]
+    WebhookCreate:
+      type: object
+      additionalProperties: false
+      properties:
+        event_type: { type: string, enum: [mo, dlr] }
+        url: { type: string, format: uri }
+        secret: { type: string, description: Write-only HMAC-SHA256 signing secret. }
+        retry_policy_json: { type: object, additionalProperties: true }
+      required: [event_type, url, secret]
+    WebhookUpdate:
+      type: object
+      additionalProperties: false
+      properties:
+        url: { type: string, format: uri }
+        secret: { type: string, description: Write-only; rotates the signing secret. }
+        retry_policy_json: { type: object, additionalProperties: true }
+        status: { type: string, enum: [active, disabled] }
+
+    # ---- credentials ----
+    Credential:
+      type: object
+      description: Masked view — never carries a secret.
+      properties:
+        id: { type: string, format: uuid }
+        account_id: { type: string, format: uuid }
+        type: { type: string, enum: [smpp_bind, api_key] }
+        system_id: { type: [string, "null"], description: Set for smpp_bind. }
+        status: { type: string, enum: [active, disabled, revoked] }
+        last_used_at: { type: [string, "null"], format: date-time }
+        grace_expires_at: { type: [string, "null"], format: date-time }
+        created_at: { type: string, format: date-time }
+        rotated_at: { type: [string, "null"], format: date-time }
+      required: [id, account_id, type, status, created_at]
+    CredentialWithSecret:
+      type: object
+      description: Returned ONCE at creation/rotation. The secret is never retrievable again.
+      allOf:
+        - $ref: '#/components/schemas/Credential'
+        - type: object
+          properties:
+            secret: { type: string, description: The plaintext SMPP password or API key — shown once. }
+          required: [secret]
+
+    # ---- connectors ----
+    Connector:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        host: { type: string }
+        port: { type: integer, minimum: 1, maximum: 65535 }
+        bind_type: { $ref: '#/components/schemas/BindType' }
+        system_id: { type: string }
+        vendor_profile: { type: [string, "null"] }
+        system_type: { type: string }
+        interface_version: { type: integer, description: '52 = SMPP v3.4 (0x34), 80 = v5.0 (0x50).' }
+        addr_ton: { type: integer }
+        addr_npi: { type: integer }
+        address_range: { type: string }
+        source_addr_ton: { type: integer }
+        source_addr_npi: { type: integer }
+        dest_addr_ton: { type: integer }
+        dest_addr_npi: { type: integer }
+        data_coding_default: { type: [integer, "null"] }
+        registered_delivery_default: { type: integer }
+        replace_if_present_flag_default: { type: integer }
+        esm_class_default: { type: integer }
+        priority_flag_default: { type: integer }
+        validity_period_default: { type: [string, "null"] }
+        sm_default_msg_id: { type: integer }
+        enquire_link_interval_sec: { type: integer, minimum: 1 }
+        enquire_link_max_missed: { type: integer, minimum: 1 }
+        bind_timeout_ms: { type: integer, minimum: 1 }
+        response_timeout_ms: { type: integer, minimum: 1 }
+        window_size: { type: integer, minimum: 1 }
+        bind_pool_size: { type: integer, minimum: 1, maximum: 32 }
+        throughput_limit_per_sec: { type: [integer, "null"], minimum: 1 }
+        tls_enabled: { type: boolean }
+        tls_config_json: { type: [object, "null"], additionalProperties: true }
+        priority_tier: { type: integer }
+        status: { type: string, enum: [active, degraded, disabled] }
+        auto_reconnect_enabled: { type: boolean }
+        reconnect_initial_delay_ms: { type: integer, minimum: 1 }
+        reconnect_multiplier: { type: number, minimum: 1.0 }
+        reconnect_max_delay_ms: { type: integer, minimum: 1 }
+        reconnect_jitter_pct: { type: integer, minimum: 0, maximum: 100 }
+        reconnect_max_attempts: { type: integer, minimum: 0 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required: [id, name, host, port, bind_type, system_id, bind_pool_size, window_size, status, auto_reconnect_enabled]
+    ConnectorCreate:
+      type: object
+      additionalProperties: false
+      properties:
+        name: { type: string }
+        host: { type: string }
+        port: { type: integer, minimum: 1, maximum: 65535 }
+        bind_type: { $ref: '#/components/schemas/BindType' }
+        system_id: { type: string }
+        password: { type: string, description: Write-only; stored hashed, never returned. }
+        vendor_profile: { type: [string, "null"] }
+        interface_version: { type: integer, default: 52 }
+        data_coding_default: { type: [integer, "null"] }
+        window_size: { type: integer, minimum: 1, default: 10 }
+        bind_pool_size: { type: integer, minimum: 1, maximum: 32, default: 1 }
+        throughput_limit_per_sec: { type: [integer, "null"], minimum: 1 }
+        tls_enabled: { type: boolean, default: false }
+        tls_config_json: { type: [object, "null"], additionalProperties: true }
+        priority_tier: { type: integer, default: 0 }
+        auto_reconnect_enabled: { type: boolean, default: false }
+      required: [name, host, port, bind_type, system_id, password]
+    ConnectorUpdate:
+      type: object
+      additionalProperties: false
+      description: Any connector field may be updated except id. `password` is write-only.
+      properties:
+        name: { type: string }
+        host: { type: string }
+        port: { type: integer, minimum: 1, maximum: 65535 }
+        bind_type: { $ref: '#/components/schemas/BindType' }
+        system_id: { type: string }
+        password: { type: string }
+        vendor_profile: { type: [string, "null"] }
+        data_coding_default: { type: [integer, "null"] }
+        window_size: { type: integer, minimum: 1 }
+        throughput_limit_per_sec: { type: [integer, "null"], minimum: 1 }
+        tls_enabled: { type: boolean }
+        tls_config_json: { type: [object, "null"], additionalProperties: true }
+        priority_tier: { type: integer }
+        status: { type: string, enum: [active, degraded, disabled] }
+    ReconnectPolicy:
+      type: object
+      additionalProperties: false
+      properties:
+        auto_reconnect_enabled: { type: boolean }
+        reconnect_initial_delay_ms: { type: integer, minimum: 1 }
+        reconnect_multiplier: { type: number, minimum: 1.0 }
+        reconnect_max_delay_ms: { type: integer, minimum: 1 }
+        reconnect_jitter_pct: { type: integer, minimum: 0, maximum: 100 }
+        reconnect_max_attempts: { type: integer, minimum: 0 }
+      required: [auto_reconnect_enabled]
+    ConnectorStatus:
+      type: object
+      description: Runtime health. link_status and breaker_state are DISTINCT and never conflated (§6.13).
+      properties:
+        connector_id: { type: string, format: uuid }
+        breaker_state: { $ref: '#/components/schemas/BreakerState' }
+        binds:
+          type: array
+          items:
+            type: object
+            properties:
+              bind_index: { type: integer }
+              pod_id: { type: string }
+              link_status: { $ref: '#/components/schemas/LinkStatus' }
+              breaker_state: { $ref: '#/components/schemas/BreakerState' }
+              in_flight: { type: integer }
+            required: [bind_index, link_status, breaker_state]
+      required: [connector_id, breaker_state, binds]
+
+    # ---- routes ----
+    Route:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        priority: { type: integer }
+        match_account_id: { type: [string, "null"], format: uuid }
+        match_customer_id: { type: [string, "null"], format: uuid }
+        match_sender_pattern: { type: [string, "null"] }
+        match_dest_pattern: { type: [string, "null"] }
+        match_content_pattern: { type: [string, "null"] }
+        distribution_strategy: { $ref: '#/components/schemas/DistributionStrategy' }
+        target_connector_id: { type: [string, "null"], format: uuid }
+        fallback_route_id: { type: [string, "null"], format: uuid }
+        status: { type: string, enum: [active, disabled] }
+        targets:
+          type: array
+          description: Present when distribution_strategy != static (>= 2 targets).
+          items: { $ref: '#/components/schemas/RouteTarget' }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required: [id, name, priority, distribution_strategy, status, created_at, updated_at]
+    RouteTarget:
+      type: object
+      properties:
+        connector_id: { type: string, format: uuid }
+        weight: { type: integer, minimum: 1 }
+        priority: { type: integer }
+      required: [connector_id]
+    RouteCreate:
+      type: object
+      additionalProperties: false
+      properties:
+        name: { type: string }
+        priority: { type: integer, default: 100 }
+        match_account_id: { type: [string, "null"], format: uuid }
+        match_customer_id: { type: [string, "null"], format: uuid }
+        match_sender_pattern: { type: [string, "null"] }
+        match_dest_pattern: { type: [string, "null"] }
+        match_content_pattern: { type: [string, "null"] }
+        distribution_strategy: { $ref: '#/components/schemas/DistributionStrategy' }
+        target_connector_id: { type: [string, "null"], format: uuid, description: Required when strategy = static. }
+        fallback_route_id: { type: [string, "null"], format: uuid }
+        targets: { type: array, items: { $ref: '#/components/schemas/RouteTarget' } }
+      required: [name, distribution_strategy]
+    RouteUpdate:
+      type: object
+      additionalProperties: false
+      properties:
+        name: { type: string }
+        priority: { type: integer }
+        match_account_id: { type: [string, "null"], format: uuid }
+        match_customer_id: { type: [string, "null"], format: uuid }
+        match_sender_pattern: { type: [string, "null"] }
+        match_dest_pattern: { type: [string, "null"] }
+        match_content_pattern: { type: [string, "null"] }
+        distribution_strategy: { $ref: '#/components/schemas/DistributionStrategy' }
+        target_connector_id: { type: [string, "null"], format: uuid }
+        fallback_route_id: { type: [string, "null"], format: uuid }
+        targets: { type: array, items: { $ref: '#/components/schemas/RouteTarget' } }
+        status: { type: string, enum: [active, disabled] }
+
+    # ---- exact routes ----
+    ExactRoute:
+      type: object
+      properties:
+        msisdn: { type: string }
+        target_type: { type: string, enum: [connector, route] }
+        target_id: { type: string, format: uuid }
+        source: { type: string, enum: [mnp_import, manual, carrier_feed] }
+        imported_at: { type: [string, "null"], format: date-time }
+        updated_at: { type: string, format: date-time }
+      required: [msisdn, target_type, target_id, source, updated_at]
+    ExactRouteCreate:
+      type: object
+      additionalProperties: false
+      properties:
+        msisdn: { type: string }
+        target_type: { type: string, enum: [connector, route] }
+        target_id: { type: string, format: uuid }
+        source: { type: string, enum: [mnp_import, manual, carrier_feed], default: manual }
+      required: [msisdn, target_type, target_id]
+    ExactRouteUpdate:
+      type: object
+      additionalProperties: false
+      properties:
+        target_type: { type: string, enum: [connector, route] }
+        target_id: { type: string, format: uuid }
+        source: { type: string, enum: [mnp_import, manual, carrier_feed] }
+    ExactRoutePage:
+      type: object
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          properties: { data: { type: array, items: { $ref: '#/components/schemas/ExactRoute' } } }
+          required: [data]
+
+    # ---- routing scripts ----
+    RoutingScript:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        scope: { $ref: '#/components/schemas/ScriptScope' }
+        scope_id: { type: [string, "null"], format: uuid }
+        name: { type: string }
+        language: { type: string, enum: [js, lua] }
+        source_code: { type: string }
+        checksum: { type: string }
+        status: { type: string, enum: [draft, active, disabled] }
+        timeout_ms: { type: integer, minimum: 1, maximum: 20 }
+        max_instructions: { type: [integer, "null"] }
+        max_memory_kb: { type: [integer, "null"] }
+        created_by: { type: [string, "null"], format: uuid }
+        created_at: { type: string, format: date-time }
+        published_at: { type: [string, "null"], format: date-time }
+      required: [id, scope, name, language, source_code, checksum, status, timeout_ms, created_at]
+    RoutingScriptCreate:
+      type: object
+      additionalProperties: false
+      properties:
+        scope: { $ref: '#/components/schemas/ScriptScope' }
+        scope_id: { type: [string, "null"], format: uuid }
+        name: { type: string }
+        language: { type: string, enum: [js, lua] }
+        source_code: { type: string }
+        timeout_ms: { type: integer, minimum: 1, maximum: 20, default: 2 }
+        max_instructions: { type: [integer, "null"] }
+        max_memory_kb: { type: [integer, "null"] }
+      required: [scope, name, language, source_code]
+    RoutingScriptUpdate:
+      type: object
+      additionalProperties: false
+      properties:
+        name: { type: string }
+        source_code: { type: string }
+        timeout_ms: { type: integer, minimum: 1, maximum: 20 }
+        max_instructions: { type: [integer, "null"] }
+        max_memory_kb: { type: [integer, "null"] }
+    ScriptValidateResult:
+      type: object
+      properties:
+        valid: { type: boolean }
+        checksum: { type: [string, "null"] }
+        errors: { type: array, items: { type: object, properties: { line: { type: [integer, "null"] }, message: { type: string } }, required: [message] } }
+      required: [valid]
+    ScriptTestRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        message:
+          type: object
+          properties:
+            source_addr: { type: string }
+            dest_addr: { type: string }
+            content: { type: string }
+            account_id: { type: [string, "null"], format: uuid }
+            customer_id: { type: [string, "null"], format: uuid }
+          required: [source_addr, dest_addr, content]
+      required: [message]
+    ScriptTestResult:
+      type: object
+      properties:
+        route_id: { type: [string, "null"], format: uuid, description: Null means fall through to declarative. }
+        took_ms: { type: number }
+        instructions: { type: [integer, "null"] }
+        timed_out: { type: boolean }
+        error: { type: [string, "null"] }
+        logs: { type: array, items: { type: string } }
+      required: [took_ms, timed_out]
+    ScriptVersion:
+      type: object
+      properties:
+        version: { type: integer }
+        checksum: { type: string }
+        status: { type: string, enum: [draft, active, disabled] }
+        created_by: { type: [string, "null"], format: uuid }
+        created_at: { type: string, format: date-time }
+        published_at: { type: [string, "null"], format: date-time }
+      required: [version, checksum, status, created_at]
+
+    # ---- sessions ----
+    Session:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        account_id: { type: [string, "null"], format: uuid }
+        connector_id: { type: [string, "null"], format: uuid }
+        bind_id: { type: string }
+        bind_type: { $ref: '#/components/schemas/BindType' }
+        direction: { type: string, enum: [user, smsc], description: 'user = ESME client bind; smsc = outbound.' }
+        pod_id: { type: string }
+        remote_addr: { type: [string, "null"] }
+        window_size: { type: integer }
+        connected_at: { type: string, format: date-time }
+        last_enquire_link: { type: [string, "null"], format: date-time }
+      required: [id, bind_id, bind_type, pod_id, connected_at]
+    SessionPage:
+      type: object
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          properties: { data: { type: array, items: { $ref: '#/components/schemas/Session' } } }
+          required: [data]
+
+    # ---- anti-spam ----
+    AntispamRule:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        rule_type: { type: string, enum: [velocity, content_blacklist, duplicate, reputation] }
+        scope: { type: string, enum: [global, customer, smpp_account] }
+        scope_id: { type: [string, "null"], format: uuid }
+        config_json: { type: object, additionalProperties: true }
+        action: { type: string, enum: [block, flag, throttle] }
+        status: { type: string, enum: [active, disabled] }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required: [id, rule_type, scope, action, status]
+    AntispamRuleCreate:
+      type: object
+      additionalProperties: false
+      properties:
+        rule_type: { type: string, enum: [velocity, content_blacklist, duplicate, reputation] }
+        scope: { type: string, enum: [global, customer, smpp_account] }
+        scope_id: { type: [string, "null"], format: uuid }
+        config_json: { type: object, additionalProperties: true }
+        action: { type: string, enum: [block, flag, throttle] }
+      required: [rule_type, scope, action]
+    AntispamRuleUpdate:
+      type: object
+      additionalProperties: false
+      properties:
+        config_json: { type: object, additionalProperties: true }
+        action: { type: string, enum: [block, flag, throttle] }
+        status: { type: string, enum: [active, disabled] }
+
+    # ---- suppression / opt-out ----
+    Suppression:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        scope: { $ref: '#/components/schemas/SuppressionScope' }
+        scope_id: { type: [string, "null"], format: uuid }
+        msisdn: { type: string }
+        source: { $ref: '#/components/schemas/SuppressionSource' }
+        reason: { type: [string, "null"] }
+        created_at: { type: string, format: date-time }
+      required: [id, scope, msisdn, source, created_at]
+    SuppressionCreate:
+      type: object
+      additionalProperties: false
+      properties:
+        scope: { $ref: '#/components/schemas/SuppressionScope' }
+        scope_id: { type: [string, "null"], format: uuid }
+        msisdn: { type: string }
+        source: { $ref: '#/components/schemas/SuppressionSource' }
+        reason: { type: [string, "null"] }
+      required: [scope, msisdn, source]
+    SuppressionCheckResult:
+      type: object
+      properties:
+        blocked: { type: boolean }
+        matched_scopes:
+          type: array
+          items:
+            type: object
+            properties:
+              scope: { $ref: '#/components/schemas/SuppressionScope' }
+              scope_id: { type: [string, "null"], format: uuid }
+            required: [scope]
+      required: [blocked, matched_scopes]
+    SuppressionPage:
+      type: object
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          properties: { data: { type: array, items: { $ref: '#/components/schemas/Suppression' } } }
+          required: [data]
+
+    OptOutKeyword:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        country_code: { type: [string, "null"] }
+        keyword: { type: string }
+        action: { type: string, enum: [suppress, unsuppress, help] }
+        match_type: { type: string, enum: [exact, prefix] }
+        auto_reply_template: { type: [string, "null"] }
+        status: { type: string, enum: [active, disabled] }
+      required: [id, keyword, action, match_type, status]
+    OptOutKeywordCreate:
+      type: object
+      additionalProperties: false
+      properties:
+        country_code: { type: [string, "null"] }
+        keyword: { type: string }
+        action: { type: string, enum: [suppress, unsuppress, help] }
+        match_type: { type: string, enum: [exact, prefix], default: exact }
+        auto_reply_template: { type: [string, "null"] }
+      required: [keyword, action]
+    OptOutKeywordUpdate:
+      type: object
+      additionalProperties: false
+      properties:
+        keyword: { type: string }
+        action: { type: string, enum: [suppress, unsuppress, help] }
+        match_type: { type: string, enum: [exact, prefix] }
+        auto_reply_template: { type: [string, "null"] }
+        status: { type: string, enum: [active, disabled] }
+
+    # ---- inbound numbers / keywords ----
+    InboundNumber:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        address: { type: string }
+        number_type: { type: string, enum: [shortcode, longcode, alphanumeric] }
+        country_code: { type: string }
+        mccmnc: { type: [string, "null"] }
+        connector_id: { type: [string, "null"], format: uuid }
+        account_id: { type: [string, "null"], format: uuid, description: Dedicated account; null = shared. }
+        status: { type: string, enum: [active, disabled] }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required: [id, address, number_type, country_code, status]
+    InboundNumberCreate:
+      type: object
+      additionalProperties: false
+      properties:
+        address: { type: string }
+        number_type: { type: string, enum: [shortcode, longcode, alphanumeric] }
+        country_code: { type: string }
+        mccmnc: { type: [string, "null"] }
+        connector_id: { type: [string, "null"], format: uuid }
+        account_id: { type: [string, "null"], format: uuid }
+      required: [address, number_type, country_code]
+    InboundNumberUpdate:
+      type: object
+      additionalProperties: false
+      properties:
+        number_type: { type: string, enum: [shortcode, longcode, alphanumeric] }
+        mccmnc: { type: [string, "null"] }
+        connector_id: { type: [string, "null"], format: uuid }
+        status: { type: string, enum: [active, disabled] }
+    InboundKeyword:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        inbound_number_id: { type: string, format: uuid }
+        keyword: { type: string }
+        match_type: { type: string, enum: [exact, prefix, regex] }
+        account_id: { type: string, format: uuid }
+        priority: { type: integer }
+        status: { type: string, enum: [active, disabled] }
+      required: [id, inbound_number_id, keyword, match_type, account_id, status]
+    InboundKeywordCreate:
+      type: object
+      additionalProperties: false
+      properties:
+        keyword: { type: string }
+        match_type: { type: string, enum: [exact, prefix, regex], default: prefix }
+        account_id: { type: string, format: uuid }
+        priority: { type: integer, default: 0 }
+      required: [keyword, account_id]
+    InboundKeywordUpdate:
+      type: object
+      additionalProperties: false
+      properties:
+        keyword: { type: string }
+        match_type: { type: string, enum: [exact, prefix, regex] }
+        account_id: { type: string, format: uuid }
+        priority: { type: integer }
+        status: { type: string, enum: [active, disabled] }
+
+    # ---- sender rewrite ----
+    SenderRewriteRule:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        scope: { $ref: '#/components/schemas/RewriteScope' }
+        scope_id: { type: [string, "null"], format: uuid }
+        direction: { $ref: '#/components/schemas/Direction' }
+        match_sender_pattern: { type: [string, "null"] }
+        match_dest_pattern: { type: [string, "null"] }
+        rewrite_type: { type: string, enum: [static, fallback_pool, truncate, sanitize] }
+        rewrite_to: { type: [string, "null"] }
+        fallback_pool_json: { type: [array, "null"], items: { type: string } }
+        max_length: { type: [integer, "null"], minimum: 1 }
+        sanitize_charset_json: { type: [object, "null"], additionalProperties: true }
+        priority: { type: integer }
+        reason: { type: [string, "null"] }
+        status: { type: string, enum: [active, disabled] }
+        created_by: { type: [string, "null"], format: uuid }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required: [id, scope, direction, rewrite_type, priority, status]
+    SenderRewriteRuleCreate:
+      type: object
+      additionalProperties: false
+      properties:
+        scope: { $ref: '#/components/schemas/RewriteScope' }
+        scope_id: { type: [string, "null"], format: uuid }
+        direction: { $ref: '#/components/schemas/Direction' }
+        match_sender_pattern: { type: [string, "null"] }
+        match_dest_pattern: { type: [string, "null"] }
+        rewrite_type: { type: string, enum: [static, fallback_pool, truncate, sanitize] }
+        rewrite_to: { type: [string, "null"], description: Required when rewrite_type = static. }
+        fallback_pool_json: { type: [array, "null"], items: { type: string } }
+        max_length: { type: [integer, "null"], minimum: 1 }
+        sanitize_charset_json: { type: [object, "null"], additionalProperties: true }
+        priority: { type: integer, default: 100 }
+        reason: { type: [string, "null"] }
+      required: [scope, rewrite_type]
+    SenderRewriteRuleUpdate:
+      type: object
+      additionalProperties: false
+      properties:
+        match_sender_pattern: { type: [string, "null"] }
+        match_dest_pattern: { type: [string, "null"] }
+        rewrite_type: { type: string, enum: [static, fallback_pool, truncate, sanitize] }
+        rewrite_to: { type: [string, "null"] }
+        fallback_pool_json: { type: [array, "null"], items: { type: string } }
+        max_length: { type: [integer, "null"], minimum: 1 }
+        sanitize_charset_json: { type: [object, "null"], additionalProperties: true }
+        priority: { type: integer }
+        reason: { type: [string, "null"] }
+        status: { type: string, enum: [active, disabled] }
+
+    # ---- billing ----
+    Balance:
+      type: object
+      properties:
+        owner_type: { $ref: '#/components/schemas/BalanceScope' }
+        owner_id: { type: string, format: uuid }
+        direction: { $ref: '#/components/schemas/Direction' }
+        credits: { type: integer, description: Integer SMS credit count (may be negative). }
+        updated_at: { type: string, format: date-time }
+      required: [owner_type, owner_id, direction, credits]
+    BillingCustomer:
+      type: object
+      properties:
+        customer_id: { type: string, format: uuid }
+        billing_mode: { type: string, enum: [prepaid, postpaid] }
+        overdraft_enabled: { type: boolean }
+        overdraft_limit: { type: [integer, "null"], minimum: 0 }
+        credit_limit: { type: [integer, "null"], minimum: 0 }
+        credit_limit_is_hard: { type: boolean }
+        external_billing_provider_id: { type: [string, "null"], format: uuid }
+        updated_at: { type: string, format: date-time }
+      required: [customer_id, billing_mode, overdraft_enabled, credit_limit_is_hard]
+    BillingCustomerUpdate:
+      type: object
+      additionalProperties: false
+      properties:
+        billing_mode: { type: string, enum: [prepaid, postpaid] }
+        overdraft_enabled: { type: boolean }
+        overdraft_limit: { type: [integer, "null"], minimum: 0 }
+        credit_limit: { type: [integer, "null"], minimum: 0 }
+        credit_limit_is_hard: { type: boolean }
+        external_billing_provider_id: { type: [string, "null"], format: uuid }
+    LedgerEntry:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        owner_type: { $ref: '#/components/schemas/BalanceScope' }
+        owner_id: { type: string, format: uuid }
+        direction: { $ref: '#/components/schemas/Direction' }
+        customer_id: { type: string, format: uuid }
+        account_id: { type: [string, "null"], format: uuid }
+        message_id: { type: [string, "null"], format: uuid }
+        entry_type: { type: string, enum: [reserve, capture, release, refund, topup, adjustment] }
+        credits: { type: integer, description: Signed. }
+        balance_after: { type: integer }
+        reference: { type: [string, "null"] }
+        created_at: { type: string, format: date-time }
+      required: [id, owner_type, owner_id, direction, customer_id, entry_type, credits, balance_after, created_at]
+    LedgerPage:
+      type: object
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          properties: { data: { type: array, items: { $ref: '#/components/schemas/LedgerEntry' } } }
+          required: [data]
+
+    RatePlan:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        credits_per_segment_mt_json: { type: object, additionalProperties: true, description: Integer credits per MT segment, by MCC-MNC/country + sender type. }
+        credits_per_segment_mo_json: { type: object, additionalProperties: true }
+        billing_mode: { type: string, enum: [prepaid, postpaid, either] }
+        charge_on: { type: string, enum: [submission, delivery] }
+        status: { type: string, enum: [active, disabled] }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required: [id, name, credits_per_segment_mt_json, credits_per_segment_mo_json, billing_mode, charge_on, status]
+    RatePlanCreate:
+      type: object
+      additionalProperties: false
+      properties:
+        name: { type: string }
+        credits_per_segment_mt_json: { type: object, additionalProperties: true }
+        credits_per_segment_mo_json: { type: object, additionalProperties: true }
+        billing_mode: { type: string, enum: [prepaid, postpaid, either], default: either }
+        charge_on: { type: string, enum: [submission, delivery], default: submission }
+      required: [name, credits_per_segment_mt_json, credits_per_segment_mo_json]
+    RatePlanUpdate:
+      type: object
+      additionalProperties: false
+      properties:
+        name: { type: string }
+        credits_per_segment_mt_json: { type: object, additionalProperties: true }
+        credits_per_segment_mo_json: { type: object, additionalProperties: true }
+        billing_mode: { type: string, enum: [prepaid, postpaid, either] }
+        charge_on: { type: string, enum: [submission, delivery] }
+        status: { type: string, enum: [active, disabled] }
+
+    ExternalBillingProvider:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        base_url: { type: string, format: uri }
+        auth_config_json: { type: object, additionalProperties: true, description: Masked on read. }
+        mode: { type: string, enum: [balance_check, consume_delegate_async, consume_delegate_sync, both] }
+        cache_ttl_ms: { type: integer, minimum: 0 }
+        sync_call_timeout_ms: { type: [integer, "null"], minimum: 1 }
+        failure_policy: { type: string, enum: [fail_open, fail_closed] }
+        status: { type: string, enum: [active, disabled] }
+      required: [id, name, base_url, mode, failure_policy, status]
+    ExternalBillingProviderCreate:
+      type: object
+      additionalProperties: false
+      properties:
+        name: { type: string }
+        base_url: { type: string, format: uri }
+        auth_config_json: { type: object, additionalProperties: true }
+        mode: { type: string, enum: [balance_check, consume_delegate_async, consume_delegate_sync, both] }
+        cache_ttl_ms: { type: integer, minimum: 0, default: 1000 }
+        sync_call_timeout_ms: { type: [integer, "null"], minimum: 1 }
+        failure_policy: { type: string, enum: [fail_open, fail_closed], default: fail_open }
+      required: [name, base_url, mode]
+    ExternalBillingProviderUpdate:
+      type: object
+      additionalProperties: false
+      properties:
+        name: { type: string }
+        base_url: { type: string, format: uri }
+        auth_config_json: { type: object, additionalProperties: true }
+        mode: { type: string, enum: [balance_check, consume_delegate_async, consume_delegate_sync, both] }
+        cache_ttl_ms: { type: integer, minimum: 0 }
+        sync_call_timeout_ms: { type: [integer, "null"], minimum: 1 }
+        failure_policy: { type: string, enum: [fail_open, fail_closed] }
+        status: { type: string, enum: [active, disabled] }
+
+    # ---- content & rgpd ----
+    ContentPolicy:
+      type: object
+      additionalProperties: false
+      description: Governs CDR body storage only; logs/traces never carry the body (§6.11).
+      properties:
+        content_storage: { $ref: '#/components/schemas/ContentStorage' }
+        content_retention_days: { type: [integer, "null"], minimum: 0 }
+      required: [content_storage]
+    ContentKey:
+      type: object
+      description: Metadata only — the wrapped key material is never exposed via the API.
+      properties:
+        id: { type: string, format: uuid }
+        customer_id: { type: string, format: uuid }
+        kms_key_ref: { type: string }
+        status: { type: string, enum: [active, retired, destroyed] }
+        created_at: { type: string, format: date-time }
+        retired_at: { type: [string, "null"], format: date-time }
+        destroyed_at: { type: [string, "null"], format: date-time }
+      required: [id, customer_id, kms_key_ref, status, created_at]
+    MessageContent:
+      type: object
+      description: Decrypted body — returned only under content:read, and audited.
+      properties:
+        message_id: { type: string, format: uuid }
+        text: { type: string }
+        encoding: { type: string, enum: [gsm7, ucs2, binary] }
+        decrypted_at: { type: string, format: date-time }
+      required: [message_id, text, decrypted_at]
+    GdprEraseJob:
+      type: object
+      properties:
+        job_id: { type: string, format: uuid }
+        subject_type: { type: string, enum: [customer, msisdn] }
+        subject_id: { type: string }
+        status: { type: string, enum: [queued, running, completed, failed] }
+        attestation: { type: [string, "null"], description: Erasure attestation reference when completed. }
+        created_at: { type: string, format: date-time }
+        finished_at: { type: [string, "null"], format: date-time }
+      required: [job_id, subject_type, subject_id, status, created_at]
+
+    # ---- messages: trace / search / export ----
+    MessageTrace:
+      type: object
+      description: OpenTelemetry span timeline. NEVER carries the body — at most a truncated content_hash.
+      properties:
+        message_id: { type: string, format: uuid }
+        trace_id: { type: string, format: uuid }
+        spans:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string, examples: ['pipeline.senderid_auth', 'connector.submit_sm'] }
+              start: { type: string, format: date-time }
+              end: { type: [string, "null"], format: date-time }
+              duration_ms: { type: [number, "null"] }
+              status: { type: string, enum: [ok, error] }
+              attributes: { type: object, additionalProperties: true }
+            required: [name, start, status]
+      required: [message_id, trace_id, spans]
+    MessageSummary:
+      type: object
+      description: CDR projection (columnar store). No body.
+      properties:
+        message_id: { type: string, format: uuid }
+        trace_id: { type: string, format: uuid }
+        account_id: { type: string, format: uuid }
+        customer_id: { type: string, format: uuid }
+        direction: { $ref: '#/components/schemas/Direction' }
+        source_addr: { type: string }
+        dest_addr: { type: string }
+        original_source_addr: { type: [string, "null"] }
+        connector_id: { type: [string, "null"], format: uuid }
+        route_id: { type: [string, "null"], format: uuid }
+        status: { $ref: '#/components/schemas/CdrStatus' }
+        error_code: { type: [string, "null"] }
+        segment_count: { type: integer }
+        encoding: { type: [string, "null"], enum: [gsm7, ucs2, binary, null] }
+        submitted_at: { type: string, format: date-time }
+        delivered_at: { type: [string, "null"], format: date-time }
+        latency_ms: { type: [integer, "null"] }
+        billed: { type: boolean }
+        credits_charged: { type: [integer, "null"] }
+      required: [message_id, trace_id, account_id, customer_id, direction, source_addr, dest_addr, status, segment_count, submitted_at]
+    MessageSummaryPage:
+      type: object
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          properties: { data: { type: array, items: { $ref: '#/components/schemas/MessageSummary' } } }
+          required: [data]
+    MessageExportRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        filters:
+          type: object
+          additionalProperties: true
+          description: Same predicates as search-messages (accountId, customerId, status, date range...).
+        format: { type: string, enum: [csv, parquet, jsonl], default: csv }
+        mask_msisdn: { type: boolean, default: true, description: Role-based MSISDN masking (§5.3). }
+      required: [filters]
+    ExportJob:
+      type: object
+      properties:
+        job_id: { type: string, format: uuid }
+        status: { type: string, enum: [queued, running, completed, failed] }
+        row_count: { type: [integer, "null"] }
+        download_url: { type: [string, "null"], format: uri, description: Present when completed; expires. }
+        expires_at: { type: [string, "null"], format: date-time }
+        created_at: { type: string, format: date-time }
+      required: [job_id, status, created_at]
+
+    # ---- metrics ----
+    MetricsSummary:
+      type: object
+      properties:
+        window: { type: string }
+        submitted: { type: integer }
+        delivered: { type: integer }
+        failed: { type: integer }
+        rejected: { type: integer }
+        mo_received: { type: integer }
+        ingest_latency_ms_p50: { type: [number, "null"] }
+        ingest_latency_ms_p99: { type: [number, "null"] }
+        e2e_latency_ms_p50: { type: [number, "null"] }
+        e2e_latency_ms_p99: { type: [number, "null"] }
+        active_sessions: { type: integer }
+      required: [window]
+    TrafficMetrics:
+      type: object
+      properties:
+        group_by: { type: string, enum: [connector, customer, group] }
+        window: { type: string }
+        series:
+          type: array
+          items:
+            type: object
+            properties:
+              key: { type: string, description: Dimension value (connector/customer/group id or name). }
+              points:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    t: { type: string, format: date-time }
+                    submitted: { type: integer }
+                    delivered: { type: integer }
+                    failed: { type: integer }
+                  required: [t]
+            required: [key, points]
+      required: [group_by, window, series]

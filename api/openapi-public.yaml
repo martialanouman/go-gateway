@@ -1,0 +1,553 @@
+openapi: 3.1.0
+
+# =====================================================================================================
+#  SMS Gateway — PUBLIC REST API (customer-facing)   §5.2 of specification-technique-passerelle-sms.md
+#
+#  SOURCE OF TRUTH. This document is the contract; the chi + Huma implementation MUST conform to it.
+#  Conventions (aligned with Huma v2):
+#    - OpenAPI 3.1 / JSON Schema 2020-12. Nullable is expressed as type: [T, "null"].
+#    - Errors use a flat application/json model: { code, message, errors[] }. `code` is a stable
+#      machine-readable string; the HTTP status line carries the numeric status (not in the body).
+#      Huma's default RFC 9457 model is overridden via a custom huma.NewError to emit this shape.
+#    - operationId is kebab-case and maps 1:1 to a Huma operation registration.
+#    - Every response body carries a read-only `$schema` link in the running Huma server; it is omitted
+#      from these schemas for readability (Huma injects it automatically).
+#  This API is intentionally MINIMAL: send, receive (via webhook / SMPP), and check status of OWN
+#  messages. No self-service configuration exists — provisioning is admin-only (see openapi-admin.yaml).
+# =====================================================================================================
+
+info:
+  title: SMS Gateway — Public API
+  version: "1.0.0"
+  description: |
+    Public, customer-facing REST surface of the SMS gateway. A customer authenticates with the API key
+    of one of its SMPP accounts and may: submit MT messages (single or batch), query the status of its
+    own messages, cancel a not-yet-dispatched message, and read its own account (sender IDs, quotas).
+
+    MO (mobile-originated) messages and DLR (delivery receipts) are **pushed** to the account's
+    configured webhook, or delivered over SMPP `deliver_sm` when the account holds a bind — see the
+    `webhooks` section. They are never polled from this API (though `GET /messages/{id}` gives status).
+
+    **Submission is asynchronous.** A `202 Accepted` means the message is durably queued (Kafka
+    `mt.inbound`); routing, billing and delivery happen out of band. `segment_count`, final `status`
+    and `credits_charged` become available on later `GET /messages/{id}` calls and via DLR.
+  contact:
+    name: SMS Gateway Platform Team
+  license:
+    name: Proprietary
+
+servers:
+  - url: https://api.gateway.example.com/v1
+    description: Production
+
+security:
+  - BearerApiKey: []
+  - HmacSignature: []
+
+tags:
+  - name: Messages
+    description: Submit, query, list and cancel MT messages.
+  - name: Account
+    description: Read-only view of the caller's own account.
+  - name: System
+    description: Liveness / readiness.
+
+paths:
+
+  /messages:
+    post:
+      tags: [Messages]
+      summary: Submit MT SMS (single or batch)
+      description: |
+        Submit one message or a batch. The gateway authenticates the API key → SMPP account → customer,
+        validates the channel and quota, and acknowledges as soon as the message is durably queued.
+        Sender-ID authorization, opt-out, anti-spam, routing, rate-limit and billing are applied out of
+        band and may still reject a message afterwards (surfaced via status/DLR).
+      operationId: submit-messages
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: '#/components/schemas/SubmitMessageRequest'
+                - $ref: '#/components/schemas/SubmitBatchRequest'
+            examples:
+              single:
+                summary: Single message
+                value:
+                  to: "+2250700000000"
+                  from: "ACME"
+                  text: "Your OTP is 123456"
+                  registered_delivery: true
+              batch:
+                summary: Batch of two
+                value:
+                  messages:
+                    - { to: "+2250700000001", from: "ACME", text: "Hello A" }
+                    - { to: "+2250700000002", from: "ACME", text: "Hello B" }
+      responses:
+        '202':
+          description: Accepted and durably queued.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/AcceptedMessage'
+                  - $ref: '#/components/schemas/BatchAcceptResult'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '402': { $ref: '#/components/responses/InsufficientCredit' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+    get:
+      tags: [Messages]
+      summary: Search / list own messages
+      description: Cursor-paginated list of the caller's own messages, most recent first.
+      operationId: list-messages
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema: { $ref: '#/components/schemas/MessageStatus' }
+        - name: direction
+          in: query
+          required: false
+          schema: { type: string, enum: [mt, mo] }
+        - name: from_date
+          in: query
+          description: Inclusive lower bound on submitted_at (RFC 3339).
+          required: false
+          schema: { type: string, format: date-time }
+        - name: to_date
+          in: query
+          description: Exclusive upper bound on submitted_at (RFC 3339).
+          required: false
+          schema: { type: string, format: date-time }
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A page of messages.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessagePage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /messages/{id}:
+    get:
+      tags: [Messages]
+      summary: Get message status
+      operationId: get-message
+      parameters:
+        - $ref: '#/components/parameters/MessageId'
+      responses:
+        '200':
+          description: Message status.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Message' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /messages/{id}/cancel:
+    post:
+      tags: [Messages]
+      summary: Cancel a queued (not-yet-dispatched) message
+      description: |
+        Cancels a message that has not yet been submitted to the SMSC. If it has already been dispatched,
+        the request fails with `409` (equivalent to SMPP `ESME_RCANCELFAIL`).
+      operationId: cancel-message
+      parameters:
+        - $ref: '#/components/parameters/MessageId'
+      responses:
+        '200':
+          description: Cancelled.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Message' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Already dispatched — cannot cancel.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /account:
+    get:
+      tags: [Account]
+      summary: Read own account info, sender IDs, quotas
+      description: Read-only view of the authenticated account. No configuration can be changed here.
+      operationId: get-account
+      responses:
+        '200':
+          description: Account view.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountInfo' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /health:
+    get:
+      tags: [System]
+      summary: Liveness / readiness probe
+      operationId: health
+      security: []
+      responses:
+        '200':
+          description: Service healthy.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+        '503':
+          description: Service degraded or not ready.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+
+# -----------------------------------------------------------------------------------------------------
+#  Webhooks — MO and DLR are PUSHED to the account's configured endpoint (§5.2). OpenAPI 3.1 `webhooks`.
+#  Every delivery is signed HMAC-SHA256 over the raw body; the signature is in `X-Signature`, the
+#  unix-seconds timestamp in `X-Timestamp`. Reject if |now - timestamp| is large or the signature fails.
+# -----------------------------------------------------------------------------------------------------
+webhooks:
+
+  mo:
+    post:
+      summary: Inbound MO delivered to the customer
+      operationId: on-mo
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MoWebhookEvent' }
+      responses:
+        '200':
+          description: Acknowledged. Non-2xx triggers signed retries with backoff, then dead-letter.
+
+  dlr:
+    post:
+      summary: Delivery receipt for a previously submitted MT
+      operationId: on-dlr
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DlrWebhookEvent' }
+      responses:
+        '200':
+          description: Acknowledged. Non-2xx triggers signed retries with backoff, then dead-letter.
+
+components:
+
+  securitySchemes:
+    BearerApiKey:
+      type: http
+      scheme: bearer
+      bearerFormat: API-Key
+      description: |
+        `Authorization: Bearer <api_key>`. The API key belongs to exactly one SMPP account; the account
+        must have `rest_enabled = true`. Keys are shown once at creation/rotation and stored only hashed.
+    HmacSignature:
+      type: apiKey
+      in: header
+      name: X-Signature
+      description: |
+        HMAC-SHA256 request signing (alternative to Bearer). Send `X-Api-Key`, `X-Timestamp`
+        (unix seconds) and `X-Signature = hex(HMAC_SHA256(secret, timestamp + "\n" + method + "\n" +
+        path + "\n" + sha256(body)))`. Requests with a stale timestamp are rejected.
+
+  parameters:
+    MessageId:
+      name: id
+      in: path
+      required: true
+      description: Message ID (UUIDv7). Scoped to the caller's account; not a secret.
+      schema: { type: string, format: uuid }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: Client-chosen key; a repeat with the same key returns the original result (24 h window).
+      schema: { type: string, maxLength: 128 }
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: Opaque pagination cursor from a previous `next_cursor`.
+      schema: { type: string }
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+
+  responses:
+    BadRequest:
+      description: Malformed request.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: |
+        Authenticated but not allowed — e.g. sender ID not authorized (`sender_id_not_authorized`) or
+        recipient opted out (`recipient_opted_out`). The `code` field disambiguates.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: No such resource in the caller's scope.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    InsufficientCredit:
+      description: Prepaid MT balance would go below its floor (`insufficient_credit`).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    ValidationError:
+      description: Semantic validation failed; see `errors[]` for per-field detail.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    TooManyRequests:
+      description: Rate limit exceeded.
+      headers:
+        Retry-After:
+          description: Seconds to wait before retrying.
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+
+    # ---- Error model (flat: code + message + optional per-field errors) --------------------------------
+    Error:
+      type: object
+      description: |
+        Flat error response (application/json). `code` is the stable machine-readable error code — the
+        cross-protocol contract also carried by SMPP command_status (engineering guide §11). `message`
+        is human-readable. `errors[]` lists per-field problems on validation failures. The numeric HTTP
+        status is on the status line and is NOT duplicated in the body.
+      properties:
+        code:
+          type: string
+          description: Stable machine-readable error code.
+          examples: [sender_id_not_authorized, recipient_opted_out, insufficient_credit, rate_limited, validation_error]
+        message:
+          type: string
+          description: Human-readable explanation for this occurrence.
+        errors:
+          type: array
+          description: Per-field validation errors (present on validation_error).
+          items:
+            type: object
+            properties:
+              field: { type: string, description: 'Field path, e.g. to or messages.0.text.' }
+              message: { type: string }
+            required: [field, message]
+      required: [code, message]
+
+    # ---- Enums --------------------------------------------------------------------------------------
+    Encoding:
+      type: string
+      description: Requested encoding. `auto` lets the gateway pick GSM-7 / UCS-2 / 8-bit.
+      enum: [auto, gsm7, ucs2, binary]
+      default: auto
+    MessageStatus:
+      type: string
+      description: |
+        Lifecycle of a message. `accepted` = durably queued; `enroute` = handed to SMSC; terminal states
+        are delivered/failed/expired/rejected/cancelled. `rerouted` is transient (fallback chain).
+      enum: [accepted, enroute, delivered, failed, expired, rejected, rerouted, cancelled]
+
+    # ---- Requests -----------------------------------------------------------------------------------
+    SubmitMessageRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        to:
+          type: string
+          description: Destination MSISDN in E.164 (normalized server-side).
+          pattern: '^\+?[1-9][0-9]{6,14}$'
+          examples: ["+2250700000000"]
+        from:
+          type: string
+          description: Source address / sender ID. Must be an authorized sender ID per the account policy.
+          maxLength: 20
+          examples: ["ACME"]
+        text:
+          type: string
+          description: Message body. Long bodies are segmented (UDH) and billed per segment.
+          minLength: 1
+          maxLength: 2000
+        encoding: { $ref: '#/components/schemas/Encoding' }
+        registered_delivery:
+          type: boolean
+          description: Request a DLR for this message.
+          default: true
+        validity_period:
+          type: [string, "null"]
+          description: SMPP validity period (relative duration or absolute). Null = carrier default.
+        priority:
+          type: integer
+          minimum: 0
+          maximum: 3
+          default: 0
+        client_ref:
+          type: [string, "null"]
+          description: Free-form client reference echoed back on status and DLR.
+          maxLength: 128
+        data_coding:
+          type: [integer, "null"]
+          description: Advanced — explicit SMPP data_coding override. Null = derived from `encoding`.
+          minimum: 0
+          maximum: 255
+      required: [to, from, text]
+    SubmitBatchRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        messages:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          items: { $ref: '#/components/schemas/SubmitMessageRequest' }
+      required: [messages]
+
+    # ---- Responses ----------------------------------------------------------------------------------
+    AcceptedMessage:
+      type: object
+      description: Result of accepting a single submission (segment_count/status resolve out of band).
+      properties:
+        id: { type: string, format: uuid, description: Message ID (UUIDv7). }
+        trace_id: { type: string, format: uuid, description: Trace ID for end-to-end lookup. }
+        status:
+          $ref: '#/components/schemas/MessageStatus'
+        client_ref: { type: [string, "null"] }
+        accepted_at: { type: string, format: date-time }
+      required: [id, trace_id, status, accepted_at]
+    BatchAcceptResult:
+      type: object
+      description: Per-item outcome of a batch submission.
+      properties:
+        accepted:
+          type: array
+          items: { $ref: '#/components/schemas/AcceptedMessage' }
+        rejected:
+          type: array
+          items:
+            type: object
+            properties:
+              index: { type: integer, description: Zero-based index in the submitted batch. }
+              to: { type: string }
+              error: { $ref: '#/components/schemas/Error' }
+            required: [index, error]
+      required: [accepted, rejected]
+    Message:
+      type: object
+      description: Customer-facing view of a message. Internal routing/connector details are not exposed.
+      properties:
+        id: { type: string, format: uuid }
+        trace_id: { type: string, format: uuid }
+        direction: { type: string, enum: [mt, mo] }
+        to: { type: string, description: Destination MSISDN (E.164). }
+        from: { type: string, description: Source address actually used on the wire. }
+        status: { $ref: '#/components/schemas/MessageStatus' }
+        segment_count: { type: [integer, "null"], minimum: 1 }
+        encoding: { type: [string, "null"], enum: [gsm7, ucs2, binary, null] }
+        client_ref: { type: [string, "null"] }
+        error_code: { type: [string, "null"], description: Carrier / gateway error code for failed states. }
+        credits_charged: { type: [integer, "null"], description: Integer SMS credits billed, if billing on. }
+        submitted_at: { type: string, format: date-time }
+        delivered_at: { type: [string, "null"], format: date-time }
+      required: [id, trace_id, direction, to, from, status, submitted_at]
+    MessagePage:
+      type: object
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/Message' }
+        next_cursor: { type: [string, "null"], description: Cursor for the next page; null at the end. }
+        has_more: { type: boolean }
+      required: [data, has_more]
+    AccountInfo:
+      type: object
+      description: Read-only projection of the caller's SMPP account and its customer-level sender IDs.
+      properties:
+        account_id: { type: string, format: uuid }
+        customer_id: { type: string, format: uuid }
+        name: { type: string }
+        status: { type: string, enum: [active, suspended, closed] }
+        channels:
+          type: object
+          properties:
+            smpp_enabled: { type: boolean }
+            rest_enabled: { type: boolean }
+          required: [smpp_enabled, rest_enabled]
+        sender_id_policy: { type: string, enum: [strict, allow_unregistered_numeric, disabled] }
+        sender_ids:
+          type: array
+          items:
+            type: object
+            properties:
+              address: { type: string }
+              status: { type: string, enum: [pending_carrier_approval, active, disabled] }
+            required: [address, status]
+        rate_limits:
+          type: [object, "null"]
+          properties:
+            max_per_sec: { type: [integer, "null"] }
+            max_per_day: { type: [integer, "null"] }
+            burst_capacity: { type: [integer, "null"] }
+      required: [account_id, customer_id, name, status, channels, sender_id_policy, sender_ids]
+    Health:
+      type: object
+      properties:
+        status: { type: string, enum: [ok, degraded] }
+        version: { type: string }
+        time: { type: string, format: date-time }
+      required: [status]
+
+    # ---- Webhook payloads ---------------------------------------------------------------------------
+    MoWebhookEvent:
+      type: object
+      description: Inbound MO message routed to this account (§6.21). Body present per content policy.
+      properties:
+        event: { type: string, const: mo }
+        message_id: { type: string, format: uuid }
+        trace_id: { type: string, format: uuid }
+        account_id: { type: string, format: uuid }
+        from: { type: string, description: Originating MSISDN (E.164). }
+        to: { type: string, description: Inbound number / shortcode that received the MO. }
+        keyword: { type: [string, "null"], description: Matched keyword for shared inbound numbers. }
+        text: { type: string }
+        segment_count: { type: integer, minimum: 1 }
+        encoding: { type: string, enum: [gsm7, ucs2, binary] }
+        received_at: { type: string, format: date-time }
+      required: [event, message_id, trace_id, account_id, from, to, text, received_at]
+    DlrWebhookEvent:
+      type: object
+      description: Delivery receipt correlated to a previously submitted MT by message_id.
+      properties:
+        event: { type: string, const: dlr }
+        message_id: { type: string, format: uuid }
+        trace_id: { type: string, format: uuid }
+        client_ref: { type: [string, "null"] }
+        status: { $ref: '#/components/schemas/MessageStatus' }
+        error_code: { type: [string, "null"] }
+        submitted_at: { type: string, format: date-time }
+        delivered_at: { type: [string, "null"], format: date-time }
+      required: [event, message_id, trace_id, status]
