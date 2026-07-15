@@ -31,7 +31,9 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        # v9 is the action line that drives golangci-lint v2; v6 only ever spoke v1, and would
+        # either reject the version below or install a v1 binary that cannot read a v2 config.
+        uses: golangci/golangci-lint-action@v9
         with:
           version: ${{ env.GOLANGCI_VERSION }}
       - name: Verify formatting
