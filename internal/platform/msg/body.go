@@ -2,6 +2,8 @@
 package msg
 
 import (
+	"fmt"
+	"io"
 	"log/slog"
 )
 
@@ -9,10 +11,10 @@ import (
 const Redacted = "[REDACTED]"
 
 // Body wraps message content so it cannot leak. Every rendering path a body could plausibly
-// escape through — %v/%s via String, encoding/json via MarshalJSON, log/slog via LogValue,
-// and OTel span attributes (which stringify through String) — yields Redacted instead of the
-// plaintext. The plaintext is reachable only through Reveal, which is explicit, greppable and
-// audited at its call sites. This is invariant (a): the body never appears in a log or a span,
+// escape through — the whole fmt family via Format, encoding/json via MarshalJSON, log/slog via
+// LogValue, and OTel span attributes (which stringify through String) — yields Redacted instead
+// of the plaintext. The plaintext is reachable only through Reveal, which is explicit, greppable
+// and audited at its call sites. This is invariant (a): the body never appears in a log or a span,
 // under any storage policy or environment (guide de codage §11, spec §6.11/§6.23).
 //
 // The zero value is a valid empty body. Body is a value type; copies are safe.
@@ -31,9 +33,22 @@ func NewBodyString(s string) Body {
 	return Body{b: []byte(s)}
 }
 
-// String satisfies fmt.Stringer with the redacted placeholder, so a Body caught by %v, %s or a
-// span attribute cannot print its content. It deliberately has a value receiver so that both
-// Body and *Body are redacted.
+// Format satisfies fmt.Formatter with the redacted placeholder, and is what closes the fmt family
+// completely. String alone is not enough: fmt reaches Stringer only for the string-ish verbs
+// (%v, %s, %q, %x, %X), consults GoStringer for %#v, and nothing at all for %d — so those last two
+// would fall through to reflection and print the plaintext bytes as hex or decimal. Formatter is
+// consulted first and for every verb (%T and %p aside, which render the type and address, not the
+// content), including when a Body sits as a field of a struct being dumped. Every verb therefore
+// yields Redacted, whatever a caller asks for.
+func (Body) Format(f fmt.State, _ rune) {
+	// The write cannot fail usefully: the sink is the caller's buffer, and a Body has no error
+	// channel to report on.
+	_, _ = io.WriteString(f, Redacted)
+}
+
+// String satisfies fmt.Stringer with the redacted placeholder, for the consumers that type-assert
+// it directly rather than going through fmt — OTel span attributes (attribute.Stringer) and other
+// loggers. It deliberately has a value receiver so that both Body and *Body are redacted.
 func (Body) String() string {
 	return Redacted
 }

@@ -169,6 +169,60 @@ func TestInvariantA_BodyNeverLeaksInJSON(t *testing.T) {
 	}
 }
 
+// hexBytes renders s the way fmt dumps a []byte it reached through reflection ("0x50, 0x4c, ...").
+// It is what a %#v leak actually looks like.
+func hexBytes(s string) string {
+	parts := make([]string, 0, len(s))
+	for _, c := range []byte(s) {
+		parts = append(parts, fmt.Sprintf("%#x", c))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// TestInvariantA_BodyNeverLeaksThroughFmtVerbs covers the fmt surface verb by verb.
+//
+// String is reached only for the string-ish verbs (%v %s %q %x %X). %#v consults GoStringer, and
+// %d consults nothing at all — both otherwise fall through to reflection and print Body's bytes.
+// Note that the plaintext canary the other tests rely on cannot see this leak: %#v and %d render
+// the bytes as hex and decimal, not as the marker string, so strings.Contains(out, plaintext)
+// stays happily green while the content is on screen. Hence exact equality here: every verb must
+// render Redacted and nothing else.
+func TestInvariantA_BodyNeverLeaksThroughFmtVerbs(t *testing.T) {
+	b := msg.NewBodyString(plaintext)
+
+	for _, verb := range []string{"%v", "%+v", "%#v", "%s", "%q", "%d", "%x", "%X"} {
+		t.Run(verb, func(t *testing.T) {
+			if got := fmt.Sprintf(verb, b); got != msg.Redacted {
+				t.Errorf("INVARIANT (a) VIOLATED: fmt.Sprintf(%q, body) = %s, want %s",
+					verb, got, msg.Redacted)
+			}
+		})
+	}
+}
+
+// TestInvariantA_BodyNestedInStructNeverLeaksThroughFmtVerbs is the shape that actually reaches a
+// log: nobody prints a bare Body, they dump the envelope holding it.
+func TestInvariantA_BodyNestedInStructNeverLeaksThroughFmtVerbs(t *testing.T) {
+	m := newMessage()
+
+	for _, verb := range []string{"%v", "%+v", "%#v", "%s"} {
+		t.Run(verb, func(t *testing.T) {
+			got := fmt.Sprintf(verb, m)
+
+			if strings.Contains(got, plaintext) {
+				t.Fatalf("INVARIANT (a) VIOLATED: body plaintext leaked through %s:\n%s", verb, got)
+			}
+			if hex := hexBytes(plaintext[:4]); strings.Contains(got, hex) {
+				t.Fatalf("INVARIANT (a) VIOLATED: body bytes leaked as hex (%s) through %s:\n%s",
+					hex, verb, got)
+			}
+			if !strings.Contains(got, msg.Redacted) {
+				t.Errorf("body did not render as %q through %s; got:\n%s", msg.Redacted, verb, got)
+			}
+		})
+	}
+}
+
 // TestRevealReturnsPlaintext pins the escape hatch: Reveal is the one way to the content, and it
 // must return it intact — a Body that redacted its own Reveal would be useless.
 func TestRevealReturnsPlaintext(t *testing.T) {
