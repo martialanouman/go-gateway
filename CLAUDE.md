@@ -48,6 +48,7 @@ Tout le code métier vit sous `internal/`. Interfaces définies côté consommat
 - **Secrets** (mots de passe bind, clés API) stockés en hash, révélés une seule fois à la création/rotation. Comparaison en temps constant.
 - **Modèle d'erreur plat** `{ code, message, errors[] }` en `application/json` (surcharge `huma.NewError`). `code` = contrat partagé avec les `command_status` SMPP et `cdr.error_code`. Réf : guide d'ingénierie §11.
 - **Les contrats sont la source de vérité** : implémente pour conformer `openapi-*.yaml` et `schema_passerelle_sms.sql`, jamais l'inverse.
+- **Versions & API des bibliothèques : TOUJOURS via Context7 (`ctx7`).** Avant d'ajouter, de mettre à jour ou d'utiliser l'API d'une bibliothèque (celles de la §1.2 du plan d'exécution : chi, huma, pgx, franz-go, go-redis, goja…), appelle le skill `ctx7` pour récupérer la **doc à jour** et la **version correcte** à installer. Ne devine JAMAIS un numéro de version ni une signature d'API depuis la mémoire — les API changent entre versions majeures (pgx v4→v5, huma v1→v2…).
 
 ## Les 4 invariants (tests bloquants, verts à vie)
 
@@ -65,6 +66,7 @@ Pyramide : beaucoup d'unitaires (logique de domaine), des intégrations (`testco
 
 ## Recettes fréquentes
 
+- **Ajouter une dépendance** : d'abord `ctx7` (Context7) pour la bonne version et l'API à jour, puis `go get`, puis `make tidy`. Jamais de version devinée.
 - **Ajouter un code d'erreur** : 3 endroits en même temps — `internal/platform/errors` (sentinelle + mapping HTTP/SMPP), le champ `code` des deux `api/openapi-*.yaml`, et la §11.3 du guide d'ingénierie.
 - **Ajouter un endpoint Admin** : le déclarer d'abord dans `api/openapi-admin.yaml`, puis l'implémenter chi+huma pour conformer, puis test de contrat.
 - **Changer le schéma** : éditer `db/schema_passerelle_sms.sql` **et** ajouter une migration `golang-migrate` correspondante dans `migrations/`.
