@@ -444,6 +444,14 @@ func TestAnyTCPDialCheck(t *testing.T) {
 		{"live one listed first", []string{live, deadAddr}, false},
 		{"all down", []string{deadAddr}, true},
 		{"none configured", nil, true},
+		// The case the closed ports above cannot cover: a broker that swallows the SYN instead of
+		// refusing it, which is what a firewall or a partition looks like. Dialling sequentially on
+		// one shared budget lets it eat the whole timeout and reports the live broker — dialled
+		// next on an already-expired context — as unreachable too.
+		// 192.0.2.1 is RFC 5737 TEST-NET-1, unroutable by definition. On a network that answers it
+		// with a prompt ICMP unreachable this case passes either way; it proves the fix where it
+		// can and never false-fails.
+		{"blackholed broker listed first", []string{"192.0.2.1:9092", live}, false},
 	}
 
 	for _, tc := range tests {

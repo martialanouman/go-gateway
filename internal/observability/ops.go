@@ -264,19 +264,42 @@ func AnyTCPDialCheck(name string, addrs []string, timeout time.Duration) Readine
 				return errors.New("no addresses configured")
 			}
 
+			// Every address gets the full timeout, and they run concurrently. Dialling in sequence
+			// on one shared budget lets a single blackholed broker — a firewall dropping the SYN, a
+			// partition — consume all of it, leaving the healthy brokers to fail instantly on an
+			// expired context: a working cluster reported unreachable, which is the outage this
+			// check exists to avoid. Giving each dial its own budget sequentially would instead
+			// stretch the probe to len(addrs)*timeout and overrun the kubelet's own probe timeout.
+			// Concurrent dials keep the whole probe bounded by timeout.
 			ctx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
 
-			var d net.Dialer
-			errs := make([]error, 0, len(addrs))
-			for _, addr := range addrs {
-				conn, err := d.DialContext(ctx, "tcp", addr)
-				if err != nil {
-					errs = append(errs, fmt.Errorf("dial %s: %w", addr, err))
-					continue
+			var wg sync.WaitGroup
+			errs := make([]error, len(addrs))
+			for i, addr := range addrs {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+
+					var d net.Dialer
+					conn, err := d.DialContext(ctx, "tcp", addr)
+					if err != nil {
+						// Each goroutine owns its own index, so the slice needs no lock, and
+						// wg.Wait orders every write before the reads below.
+						errs[i] = fmt.Errorf("dial %s: %w", addr, err)
+						return
+					}
+					_ = conn.Close() // best-effort: the probe only needed the handshake
+					cancel()         // one reachable broker is enough; stop the others dialling
+				}()
+			}
+			// Bounded by the context above, so no goroutine outlives the probe.
+			wg.Wait()
+
+			for _, err := range errs {
+				if err == nil {
+					return nil
 				}
-				_ = conn.Close() // best-effort: the probe only needed the handshake
-				return nil
 			}
 			return fmt.Errorf("no reachable address: %w", errors.Join(errs...))
 		},
