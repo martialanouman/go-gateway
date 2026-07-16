@@ -318,6 +318,7 @@ Chaque erreur de domaine a exactement un statut HTTP et un `command_status` SMPP
 | `queue_full` | 503 | `ESME_RMSGQFUL` (0x14) | Backpressure aval saturé (§6.4/§6.12) | Oui (backoff) |
 | `insufficient_credit` | 402 | ext. `0x00000400` | Réservation MT (§6.9) | Non (jusqu'à recharge) |
 | `message_not_found` | 404 | `ESME_RINVMSGID` (0x0C) | `query_sm` / statut (§6.22) | Non |
+| `not_found` | 404 | — (API Admin) | Ressource du plan de contrôle inexistante (client, compte, connecteur, route…) | Non |
 | `cancel_failed` | 409 | `ESME_RCANCELFAIL` (0x11) | `cancel_sm` déjà envoyé (§6.22) | Non |
 | `operation_not_supported` | 405 | `ESME_RINVCMDID` (0x03) | Op SMPP désactivée / non supportée (§6.22) | Non |
 | `validation_error` | 422 | `ESME_RINVMSGLEN` (0x01) | Validation de requête | Non |

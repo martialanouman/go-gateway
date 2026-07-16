@@ -53,6 +53,7 @@ const (
 	ErrQueueFull             Code = "queue_full"
 	ErrInsufficientCredit    Code = "insufficient_credit"
 	ErrMessageNotFound       Code = "message_not_found"
+	ErrNotFound              Code = "not_found"
 	ErrCancelFailed          Code = "cancel_failed"
 	ErrOperationNotSupported Code = "operation_not_supported"
 	ErrValidation            Code = "validation_error"
@@ -123,6 +124,11 @@ var catalogue = map[Code]Mapping{
 	ErrQueueFull:             {HTTPStatus: 503, SMPPStatus: StatusMsgQueueFull, Retryable: true},
 	ErrInsufficientCredit:    {HTTPStatus: 402, SMPPStatus: StatusInsufficientCredit},
 	ErrMessageNotFound:       {HTTPStatus: 404, SMPPStatus: StatusInvalidMsgID},
+	// not_found is the generic Admin-API 404: an addressed control-plane resource (customer,
+	// account, connector, route, sender ID, credential) does not exist. It is distinct from
+	// message_not_found, which is a query_sm/GET-message concern and carries ESME_RINVMSGID; a
+	// missing customer has no SMPP surface, so this code has none.
+	ErrNotFound:              {HTTPStatus: 404},
 	ErrCancelFailed:          {HTTPStatus: 409, SMPPStatus: StatusCancelFail},
 	ErrOperationNotSupported: {HTTPStatus: 405, SMPPStatus: StatusInvalidCmdID},
 	ErrValidation:            {HTTPStatus: 422, SMPPStatus: StatusInvalidMsgLen},

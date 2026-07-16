@@ -20,6 +20,7 @@ var knownVars = []string{
 	"OTEL_TRACES_SAMPLER_ARG",
 	"POSTGRES_URL", "POSTGRES_MAX_CONNS", "POSTGRES_TIMEOUT",
 	"KAFKA_BROKERS", "KAFKA_TIMEOUT",
+	"HTTP_PORT", "HTTP_READ_HEADER_TIMEOUT", "HTTP_ADMIN_TOKENS",
 }
 
 // setEnv installs a clean environment holding exactly kv. Each variable goes through t.Setenv
@@ -66,6 +67,15 @@ func TestLoadDefaults(t *testing.T) {
 	if got, want := cfg.Kafka.Brokers, []string{"localhost:9092"}; len(got) != 1 || got[0] != want[0] {
 		t.Errorf("Kafka.Brokers = %v, want %v", got, want)
 	}
+	if cfg.HTTP.Port != 8081 {
+		t.Errorf("HTTP.Port = %d, want 8081 (plan §1.4)", cfg.HTTP.Port)
+	}
+	if cfg.HTTP.ReadHeaderTimeout != 5*time.Second {
+		t.Errorf("HTTP.ReadHeaderTimeout = %s, want 5s", cfg.HTTP.ReadHeaderTimeout)
+	}
+	if len(cfg.HTTP.AdminTokens) != 0 {
+		t.Errorf("HTTP.AdminTokens = %v, want empty by default", cfg.HTTP.AdminTokens)
+	}
 }
 
 func TestLoadFromEnvironment(t *testing.T) {
@@ -81,11 +91,24 @@ func TestLoadFromEnvironment(t *testing.T) {
 		"POSTGRES_MAX_CONNS":          "42",
 		"KAFKA_BROKERS":               "k1:9092,k2:9092,k3:9092",
 		"KAFKA_TIMEOUT":               "7s",
+		"HTTP_PORT":                   "8090",
+		"HTTP_READ_HEADER_TIMEOUT":    "3s",
+		"HTTP_ADMIN_TOKENS":           "tok-one:admin:read|admin:write,tok-two:admin:read",
 	})
 
 	cfg, err := config.Load("rest-api-svc")
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
+	}
+
+	if cfg.HTTP.Port != 8090 {
+		t.Errorf("HTTP.Port = %d, want 8090", cfg.HTTP.Port)
+	}
+	if cfg.HTTP.ReadHeaderTimeout != 3*time.Second {
+		t.Errorf("HTTP.ReadHeaderTimeout = %s, want 3s", cfg.HTTP.ReadHeaderTimeout)
+	}
+	if len(cfg.HTTP.AdminTokens) != 2 {
+		t.Errorf("HTTP.AdminTokens = %v, want 2 entries", cfg.HTTP.AdminTokens)
 	}
 
 	if cfg.Environment != config.EnvProduction {
@@ -138,6 +161,9 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		{"kafka brokers blank", map[string]string{"KAFKA_BROKERS": " "}, "KAFKA_BROKERS"},
 		{"kafka brokers blank entry", map[string]string{"KAFKA_BROKERS": "k1:9092, "}, "KAFKA_BROKERS"},
 		{"kafka timeout zero", map[string]string{"KAFKA_TIMEOUT": "0s"}, "KAFKA_TIMEOUT"},
+		{"http port zero", map[string]string{"HTTP_PORT": "0"}, "HTTP_PORT"},
+		{"http port too high", map[string]string{"HTTP_PORT": "70000"}, "HTTP_PORT"},
+		{"http read header timeout zero", map[string]string{"HTTP_READ_HEADER_TIMEOUT": "0s"}, "HTTP_READ_HEADER_TIMEOUT"},
 	}
 
 	for _, tc := range tests {
@@ -152,6 +178,24 @@ func TestLoadRejectsInvalid(t *testing.T) {
 				t.Errorf("error %q should name the offending variable %q", err, tc.wantMsg)
 			}
 		})
+	}
+}
+
+// TestHTTPPortCollidingWithOpsPortIsRejected: the business API and the ops server are separate
+// listeners on separate ports (plan §1.4). Equal ports mean one silently wins the bind and the
+// other never comes up — a failure that must surface at boot, not from a probe that never answers.
+func TestHTTPPortCollidingWithOpsPortIsRejected(t *testing.T) {
+	setEnv(t, map[string]string{
+		"OPS_PORT":  "8081",
+		"HTTP_PORT": "8081",
+	})
+
+	_, err := config.Load("admin-api-svc")
+	if err == nil {
+		t.Fatal("Load() accepted an HTTP port equal to the ops port")
+	}
+	if !strings.Contains(err.Error(), "HTTP_PORT") || !strings.Contains(err.Error(), "OPS_PORT") {
+		t.Errorf("error %q should name both HTTP_PORT and OPS_PORT", err)
 	}
 }
 
@@ -370,8 +414,10 @@ func TestServiceNameIsNotConfigurable(t *testing.T) {
 // config at boot must not put it in the log (guide de codage §10/§11).
 func TestConfigLogValueHidesPostgresPassword(t *testing.T) {
 	const password = "sup3r-s3cret-canary"
+	const adminToken = "operator-token-canary-abcdefgh"
 	setEnv(t, map[string]string{
-		"POSTGRES_URL": "postgres://gateway:" + password + "@db:5432/gw",
+		"POSTGRES_URL":      "postgres://gateway:" + password + "@db:5432/gw",
+		"HTTP_ADMIN_TOKENS": adminToken + ":admin:read|admin:write",
 	})
 
 	cfg, err := config.Load("router-svc")
@@ -385,8 +431,14 @@ func TestConfigLogValueHidesPostgresPassword(t *testing.T) {
 	if strings.Contains(buf.String(), password) {
 		t.Fatalf("postgres password leaked into the boot log:\n%s", buf.String())
 	}
+	if strings.Contains(buf.String(), adminToken) {
+		t.Fatalf("admin token leaked into the boot log:\n%s", buf.String())
+	}
 	if !strings.Contains(buf.String(), "postgres_url_set") {
 		t.Errorf("boot log should still report whether the URL is set:\n%s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "http_admin_tokens_set") {
+		t.Errorf("boot log should report whether admin tokens are set:\n%s", buf.String())
 	}
 	if !json.Valid(buf.Bytes()) {
 		t.Errorf("boot log is not valid JSON:\n%s", buf.String())

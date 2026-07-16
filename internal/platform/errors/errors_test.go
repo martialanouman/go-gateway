@@ -34,6 +34,7 @@ func TestCatalogueMatchesSpec(t *testing.T) {
 		{errs.ErrQueueFull, "queue_full", 503, 0x14, true},
 		{errs.ErrInsufficientCredit, "insufficient_credit", 402, 0x00000400, false},
 		{errs.ErrMessageNotFound, "message_not_found", 404, 0x0C, false},
+		{errs.ErrNotFound, "not_found", 404, 0, false},
 		{errs.ErrCancelFailed, "cancel_failed", 409, 0x11, false},
 		{errs.ErrOperationNotSupported, "operation_not_supported", 405, 0x03, false},
 		{errs.ErrValidation, "validation_error", 422, 0x01, false},

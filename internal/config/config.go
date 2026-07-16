@@ -65,6 +65,7 @@ type Config struct {
 	OTel     OTel     `envPrefix:"OTEL_"`
 	Postgres Postgres `envPrefix:"POSTGRES_"`
 	Kafka    Kafka    `envPrefix:"KAFKA_"`
+	HTTP     HTTP     `envPrefix:"HTTP_"`
 }
 
 // OTel configures tracing export. The variable names follow the OpenTelemetry specification so
@@ -115,6 +116,25 @@ type Kafka struct {
 	Timeout time.Duration `env:"TIMEOUT" envDefault:"3s"`
 }
 
+// HTTP configures a service's client-facing REST listener. Only the HTTP services declare
+// SectionHTTP; the pipeline services carry the defaults and never validate them. The port is
+// distinct from OpsPort on purpose: the business API is reached through an ingress, the ops port
+// never is (plan §1.4 — admin-api-svc listens on 8081).
+type HTTP struct {
+	// Port is the client-facing listen port. admin-api-svc defaults to 8081 (plan §1.4).
+	Port int `env:"PORT" envDefault:"8081"`
+
+	// ReadHeaderTimeout bounds how long the server waits for request headers. Without it a
+	// Slowloris client holds a connection open indefinitely; gosec (G112) refuses an http.Server
+	// that leaves it unset.
+	ReadHeaderTimeout time.Duration `env:"READ_HEADER_TIMEOUT" envDefault:"5s"`
+
+	// AdminTokens are the operator bearer tokens the M1 stand-in verifier accepts, as
+	// "token:scope|scope" entries (internal/auth). They are secret-bearing and never logged. The
+	// real identity provider (OIDC/mTLS) replaces them at M12.
+	AdminTokens []string `env:"ADMIN_TOKENS" envSeparator:","`
+}
+
 // Section names a configuration group a binary depends on. A binary declares the sections it
 // actually uses and Load enforces only those: a tool must never be refused a boot over a
 // dependency it does not open a connection to. The migrate command is the case that forced this —
@@ -127,9 +147,12 @@ const (
 	SectionOTel Section = 1 << iota
 	SectionPostgres
 	SectionKafka
+	SectionHTTP
 
-	// SectionAll is what a pipeline service needs, and what a caller declaring nothing gets.
-	SectionAll = SectionOTel | SectionPostgres | SectionKafka
+	// SectionAll is what a caller declaring nothing gets. It must include every section, or
+	// Validate() — which runs validate(SectionAll) — would quietly stop being a full check. The
+	// cost of a section a binary does not use is nil: its fields carry valid defaults.
+	SectionAll = SectionOTel | SectionPostgres | SectionKafka | SectionHTTP
 )
 
 // Load reads the configuration for serviceName from the environment and validates the sections it
@@ -184,6 +207,9 @@ func (c Config) validate(sections Section) error {
 	}
 	if sections&SectionKafka != 0 {
 		problems = append(problems, c.kafkaProblems()...)
+	}
+	if sections&SectionHTTP != 0 {
+		problems = append(problems, c.httpProblems()...)
 	}
 
 	if len(problems) == 0 {
@@ -291,6 +317,32 @@ func (c Config) kafkaProblems() []string {
 	return problems
 }
 
+func (c Config) httpProblems() []string {
+	var problems []string
+
+	if c.HTTP.Port < 1 || c.HTTP.Port > 65535 {
+		problems = append(problems, fmt.Sprintf("HTTP_PORT %d is outside 1-65535", c.HTTP.Port))
+	}
+	// A business port equal to the ops port is not two servers sharing a listener — it is one
+	// silently winning the bind and the other failing at boot. Catch it here, where the message is
+	// readable, not at 3am from a probe that never answers.
+	if c.HTTP.Port == c.OpsPort {
+		problems = append(problems, fmt.Sprintf(
+			"HTTP_PORT %d collides with OPS_PORT: the business API and the ops server need distinct ports",
+			c.HTTP.Port))
+	}
+	if c.HTTP.ReadHeaderTimeout <= 0 {
+		problems = append(problems, fmt.Sprintf(
+			"HTTP_READ_HEADER_TIMEOUT %s must be positive: an unbounded header read is a Slowloris vector",
+			c.HTTP.ReadHeaderTimeout))
+	}
+	// AdminTokens is deliberately NOT validated here. It is specific to admin-api-svc's stand-in
+	// verifier, yet SectionHTTP is part of SectionAll and rest-api-svc also carries an HTTP section
+	// without operator tokens. The "at least one usable token in production" policy therefore lives
+	// where the tokens are consumed (internal/auth.NewStaticVerifier), not in the shared validator.
+	return problems
+}
+
 // ParseLogLevel maps a configured level name to its slog level.
 func ParseLogLevel(s string) (slog.Level, error) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
@@ -321,5 +373,9 @@ func (c Config) LogValue() slog.Value {
 		slog.String("otel_endpoint", c.OTel.Endpoint),
 		slog.Bool("postgres_url_set", strings.TrimSpace(c.Postgres.URL) != ""),
 		slog.Any("kafka_brokers", c.Kafka.Brokers),
+		slog.Int("http_port", c.HTTP.Port),
+		// The tokens themselves are secrets and never logged: only whether any are configured, which
+		// is all a boot diagnosis needs.
+		slog.Bool("http_admin_tokens_set", len(c.HTTP.AdminTokens) > 0),
 	)
 }
