@@ -74,6 +74,11 @@ func (r *RouteRepo) Get(ctx context.Context, id uuid.UUID) (cp.Route, error) {
 
 // List returns every route (ordered by priority) with its targets. The contract returns a bare
 // array (no pagination).
+//
+// Known limitation (M1): this reads targets per route (1 + N round-trips), outside any transaction,
+// so a large listing is neither a single snapshot nor batched. Acceptable at the control plane's
+// low QPS; the fix when it matters is a single `WHERE route_id = ANY($1)` fetch keyed by the route
+// ids, joined in memory.
 func (r *RouteRepo) List(ctx context.Context) ([]cp.Route, error) {
 	rows, err := r.q.ListRoutes(ctx)
 	if err != nil {
