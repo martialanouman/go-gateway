@@ -58,7 +58,7 @@ func registerSenderIDs(api huma.API, senders SenderIDStore, customers CustomerSt
 		OperationID: "list-sender-ids", Method: http.MethodGet, Path: "/admin/customers/{id}/sender-ids",
 		Summary: "List a customer's sender IDs", Tags: []string{"Sender IDs"},
 		Security: scopeSecurity(auth.ScopeAdminRead),
-		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound},
+		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity},
 	}, h.list)
 
 	register(api, huma.Operation{
@@ -74,7 +74,7 @@ func registerSenderIDs(api huma.API, senders SenderIDStore, customers CustomerSt
 		Path:    "/admin/customers/{id}/sender-ids/{senderId}",
 		Summary: "Update a sender ID's status", Tags: []string{"Sender IDs"},
 		Security: scopeSecurity(auth.ScopeAdminWrite),
-		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound},
+		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity},
 	}, h.update)
 
 	register(api, huma.Operation{
@@ -83,7 +83,7 @@ func registerSenderIDs(api huma.API, senders SenderIDStore, customers CustomerSt
 		DefaultStatus: http.StatusNoContent,
 		Summary:       "Delete a sender ID", Tags: []string{"Sender IDs"},
 		Security: scopeSecurity(auth.ScopeAdminWrite),
-		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound},
+		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity},
 	}, h.delete)
 }
 

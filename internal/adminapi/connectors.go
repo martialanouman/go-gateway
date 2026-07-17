@@ -184,7 +184,7 @@ func registerConnectors(api huma.API, store ConnectorStore) {
 		OperationID: "get-connector", Method: http.MethodGet, Path: "/admin/connectors/{id}",
 		Summary: "Get a connector", Tags: []string{"Connectors"},
 		Security: scopeSecurity(auth.ScopeAdminRead),
-		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound},
+		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity},
 	}, h.get)
 
 	register(api, huma.Operation{
@@ -199,7 +199,7 @@ func registerConnectors(api huma.API, store ConnectorStore) {
 		DefaultStatus: http.StatusNoContent,
 		Summary:       "Delete a connector", Tags: []string{"Connectors"},
 		Security: scopeSecurity(auth.ScopeAdminWrite),
-		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusConflict},
+		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusConflict, http.StatusUnprocessableEntity},
 	}, h.delete)
 }
 

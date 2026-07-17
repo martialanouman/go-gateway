@@ -150,7 +150,7 @@ func registerCustomers(api huma.API, store CustomerStore) {
 		OperationID: "list-customers", Method: http.MethodGet, Path: "/admin/customers",
 		Summary: "List customers", Tags: []string{"Customers"},
 		Security: scopeSecurity(auth.ScopeAdminRead),
-		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden},
+		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusUnprocessableEntity},
 	}, h.list)
 
 	register(api, huma.Operation{
@@ -165,7 +165,7 @@ func registerCustomers(api huma.API, store CustomerStore) {
 		OperationID: "get-customer", Method: http.MethodGet, Path: "/admin/customers/{id}",
 		Summary: "Get a customer", Tags: []string{"Customers"},
 		Security: scopeSecurity(auth.ScopeAdminRead),
-		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound},
+		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity},
 	}, h.get)
 
 	register(api, huma.Operation{
@@ -180,14 +180,14 @@ func registerCustomers(api huma.API, store CustomerStore) {
 		DefaultStatus: http.StatusNoContent,
 		Summary:       "Delete a customer", Tags: []string{"Customers"},
 		Security: scopeSecurity(auth.ScopeAdminWrite),
-		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusConflict},
+		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusConflict, http.StatusUnprocessableEntity},
 	}, h.delete)
 
 	register(api, huma.Operation{
 		OperationID: "suspend-customer", Method: http.MethodPost, Path: "/admin/customers/{id}/suspend",
 		Summary: "Suspend a customer (cascades to its accounts)", Tags: []string{"Customers"},
 		Security: scopeSecurity(auth.ScopeAdminWrite),
-		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound},
+		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity},
 	}, h.suspend)
 }
 

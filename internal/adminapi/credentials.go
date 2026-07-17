@@ -63,7 +63,7 @@ func registerCredentials(api huma.API, creds CredentialStore, accounts AccountSt
 		OperationID: "list-credentials", Method: http.MethodGet, Path: "/admin/smpp-accounts/{id}/credentials",
 		Summary: "List an account's credentials", Tags: []string{"Credentials"},
 		Security: scopeSecurity(auth.ScopeAdminRead),
-		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound},
+		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity},
 	}, h.list)
 
 	register(api, huma.Operation{
@@ -79,7 +79,7 @@ func registerCredentials(api huma.API, creds CredentialStore, accounts AccountSt
 		Path:    "/admin/smpp-accounts/{id}/credentials/{credId}",
 		Summary: "Update a credential's status", Tags: []string{"Credentials"},
 		Security: scopeSecurity(auth.ScopeAdminWrite),
-		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound},
+		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity},
 	}, h.updateStatus)
 
 	register(api, huma.Operation{
@@ -88,7 +88,7 @@ func registerCredentials(api huma.API, creds CredentialStore, accounts AccountSt
 		DefaultStatus: http.StatusNoContent,
 		Summary:       "Revoke a credential (row is kept, status set to revoked)", Tags: []string{"Credentials"},
 		Security: scopeSecurity(auth.ScopeAdminWrite),
-		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound},
+		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity},
 	}, h.revoke)
 
 	register(api, huma.Operation{
@@ -96,7 +96,7 @@ func registerCredentials(api huma.API, creds CredentialStore, accounts AccountSt
 		Path:    "/admin/smpp-accounts/{id}/credentials/{credId}/rotate",
 		Summary: "Rotate a credential (new secret returned once)", Tags: []string{"Credentials"},
 		Security: scopeSecurity(auth.ScopeAdminWrite),
-		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound},
+		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity},
 	}, h.rotate)
 }
 

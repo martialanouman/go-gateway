@@ -114,7 +114,7 @@ func registerAccounts(api huma.API, store AccountStore) {
 		OperationID: "list-smpp-accounts", Method: http.MethodGet, Path: "/admin/smpp-accounts",
 		Summary: "List SMPP accounts", Tags: []string{"SMPP Accounts"},
 		Security: scopeSecurity(auth.ScopeAdminRead),
-		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden},
+		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusUnprocessableEntity},
 	}, h.list)
 
 	register(api, huma.Operation{
@@ -129,7 +129,7 @@ func registerAccounts(api huma.API, store AccountStore) {
 		OperationID: "get-smpp-account", Method: http.MethodGet, Path: "/admin/smpp-accounts/{id}",
 		Summary: "Get an SMPP account", Tags: []string{"SMPP Accounts"},
 		Security: scopeSecurity(auth.ScopeAdminRead),
-		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound},
+		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity},
 	}, h.get)
 
 	register(api, huma.Operation{
@@ -144,7 +144,7 @@ func registerAccounts(api huma.API, store AccountStore) {
 		DefaultStatus: http.StatusNoContent,
 		Summary:       "Delete an SMPP account", Tags: []string{"SMPP Accounts"},
 		Security: scopeSecurity(auth.ScopeAdminWrite),
-		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound},
+		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity},
 	}, h.delete)
 
 	register(api, huma.Operation{

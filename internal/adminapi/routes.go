@@ -124,14 +124,14 @@ func registerRoutes(api huma.API, store RouteStore) {
 		OperationID: "get-route", Method: http.MethodGet, Path: "/admin/routes/{id}",
 		Summary: "Get a route", Tags: []string{"Routes"},
 		Security: scopeSecurity(auth.ScopeAdminRead),
-		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound},
+		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity},
 	}, h.get)
 
 	register(api, huma.Operation{
 		OperationID: "update-route", Method: http.MethodPatch, Path: "/admin/routes/{id}",
 		Summary: "Update a route", Tags: []string{"Routes"},
 		Security: scopeSecurity(auth.ScopeAdminWrite),
-		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound},
+		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity},
 	}, h.update)
 
 	register(api, huma.Operation{
@@ -139,7 +139,7 @@ func registerRoutes(api huma.API, store RouteStore) {
 		DefaultStatus: http.StatusNoContent,
 		Summary:       "Delete a route", Tags: []string{"Routes"},
 		Security: scopeSecurity(auth.ScopeAdminWrite),
-		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound},
+		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity},
 	}, h.delete)
 }
 
