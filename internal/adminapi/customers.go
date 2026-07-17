@@ -202,9 +202,6 @@ type listCustomersOutput struct{ Body customerPage }
 
 func (h *customerHandlers) list(ctx context.Context, in *listCustomersInput) (*listCustomersOutput, error) {
 	filter := cp.CustomerFilter{Limit: in.Limit}
-	if filter.Limit == 0 {
-		filter.Limit = 50
-	}
 
 	if in.GroupID != "" {
 		id, err := uuid.Parse(in.GroupID)

@@ -174,9 +174,6 @@ type listAccountsOutput struct{ Body accountPage }
 
 func (h *accountHandlers) list(ctx context.Context, in *listAccountsInput) (*listAccountsOutput, error) {
 	filter := cp.AccountFilter{Limit: in.Limit}
-	if filter.Limit == 0 {
-		filter.Limit = 50
-	}
 	if in.CustomerID != "" {
 		id, err := uuid.Parse(in.CustomerID)
 		if err != nil {

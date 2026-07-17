@@ -44,6 +44,10 @@ const (
 	argonThreads = 4
 	argonKeyLen  = 32
 	argonSaltLen = 16
+
+	// maxArgonMemoryKiB caps the memory a hash may request on verify (1 GiB), so a crafted PHC
+	// string cannot make argon2.IDKey allocate an unbounded amount. Well above the 64 MiB default.
+	maxArgonMemoryKiB = 1 << 20
 )
 
 // GenerateAPIKey returns a new API key "sgw_<43 base64url chars>" carrying 256 bits of entropy, and
@@ -143,6 +147,17 @@ func parsePHC(encoded string) (argonParams, []byte, []byte, error) {
 	want, err := base64.RawStdEncoding.DecodeString(parts[5])
 	if err != nil {
 		return argonParams{}, nil, nil, errors.New("verify bind password: malformed hash")
+	}
+
+	// Bound the parameters decoded from an untrusted/corrupt hash. argon2.IDKey PANICS on time<1 or
+	// threads<1, and an empty hash segment would make the constant-time compare of two empty slices
+	// return equal — accepting ANY password. A crafted memory value would also let a hash trigger a
+	// gigabyte allocation. Reject all of these before deriving.
+	if p.time < 1 || p.threads < 1 || p.memory < 1 || p.memory > maxArgonMemoryKiB {
+		return argonParams{}, nil, nil, errors.New("verify bind password: parameters out of range")
+	}
+	if len(salt) == 0 || len(want) == 0 {
+		return argonParams{}, nil, nil, errors.New("verify bind password: empty salt or hash")
 	}
 	return p, salt, want, nil
 }

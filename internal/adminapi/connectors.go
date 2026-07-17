@@ -128,7 +128,7 @@ type connectorCreateBody struct {
 	Port                  int            `json:"port" minimum:"1" maximum:"65535"`
 	BindType              string         `json:"bind_type" enum:"tx,rx,trx"`
 	SystemID              string         `json:"system_id"`
-	Password              string         `json:"password" doc:"Write-only; stored hashed, never returned."`
+	Password              string         `json:"password" minLength:"1" doc:"Write-only; stored hashed, never returned."`
 	VendorProfile         *string        `json:"vendor_profile,omitempty" nullable:"true"`
 	InterfaceVersion      *int           `json:"interface_version,omitempty"`
 	DataCodingDefault     *int           `json:"data_coding_default,omitempty" nullable:"true"`
@@ -147,7 +147,7 @@ type connectorUpdateBody struct {
 	Port                  *int           `json:"port,omitempty" minimum:"1" maximum:"65535"`
 	BindType              *string        `json:"bind_type,omitempty" enum:"tx,rx,trx"`
 	SystemID              *string        `json:"system_id,omitempty"`
-	Password              *string        `json:"password,omitempty"`
+	Password              *string        `json:"password,omitempty" minLength:"1"`
 	VendorProfile         *string        `json:"vendor_profile,omitempty" nullable:"true"`
 	DataCodingDefault     *int           `json:"data_coding_default,omitempty" nullable:"true"`
 	WindowSize            *int           `json:"window_size,omitempty" minimum:"1"`

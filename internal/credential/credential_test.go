@@ -104,12 +104,24 @@ func TestVerifyBindPasswordAcceptsTheRightPasswordAndRejectsWrong(t *testing.T) 
 	}
 }
 
-// TestVerifyBindPasswordRejectsAMalformedHash: a corrupt encoding is an error, not a panic and not
-// a silent accept.
+// TestVerifyBindPasswordRejectsAMalformedHash: a corrupt encoding is an error — never a panic and
+// never a silent accept. Covers the argon2-panic parameters (t=0 / p=0) and the empty-hash segment
+// that would otherwise make a compare of two empty slices accept ANY password.
 func TestVerifyBindPasswordRejectsAMalformedHash(t *testing.T) {
-	for _, bad := range []string{"", "not-a-hash", "$argon2id$broken", "$bcrypt$v=19$m=1,t=1,p=1$x$y"} {
-		if _, err := credential.VerifyBindPassword("x", bad); err == nil {
-			t.Errorf("VerifyBindPassword(%q) = nil error, want a decode error", bad)
+	bad := []string{
+		"", "not-a-hash", "$argon2id$broken", "$bcrypt$v=19$m=1,t=1,p=1$x$y",
+		"$argon2id$v=19$m=65536,t=0,p=4$c2FsdHNhbHQ$aGFzaGhhc2g", // t=0 -> argon2 panics without the guard
+		"$argon2id$v=19$m=65536,t=1,p=0$c2FsdHNhbHQ$aGFzaGhhc2g", // p=0 -> argon2 panics without the guard
+		"$argon2id$v=19$m=65536,t=1,p=4$c2FsdHNhbHQ$",            // empty hash -> would false-accept
+		"$argon2id$v=19$m=99999999999,t=1,p=4$c2FsdA$aGFzaA",     // memory bomb
+	}
+	for _, enc := range bad {
+		ok, err := credential.VerifyBindPassword("x", enc)
+		if err == nil {
+			t.Errorf("VerifyBindPassword(%q) = nil error, want a decode/range error", enc)
+		}
+		if ok {
+			t.Errorf("VerifyBindPassword(%q) accepted a password against a malformed hash", enc)
 		}
 	}
 }

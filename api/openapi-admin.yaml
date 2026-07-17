@@ -1793,7 +1793,7 @@ components:
         port: { type: integer, minimum: 1, maximum: 65535 }
         bind_type: { $ref: '#/components/schemas/BindType' }
         system_id: { type: string }
-        password: { type: string, description: "Write-only; stored hashed, never returned." }
+        password: { type: string, minLength: 1, description: "Write-only; stored hashed, never returned." }
         vendor_profile: { type: [string, "null"] }
         interface_version: { type: integer, default: 52 }
         data_coding_default: { type: [integer, "null"] }
@@ -1815,7 +1815,7 @@ components:
         port: { type: integer, minimum: 1, maximum: 65535 }
         bind_type: { $ref: '#/components/schemas/BindType' }
         system_id: { type: string }
-        password: { type: string }
+        password: { type: string, minLength: 1 }
         vendor_profile: { type: [string, "null"] }
         data_coding_default: { type: [integer, "null"] }
         window_size: { type: integer, minimum: 1 }
