@@ -1,0 +1,501 @@
+opencollection: 1.0.0
+info:
+  name: SMS Gateway — Admin API
+  summary: |
+    OpenCollection for the internal Admin API (api/openapi-admin.yaml).
+    Contains only the endpoints currently implemented by admin-api-svc
+    (internal/adminapi), grouped by tag.
+
+    Auth: operator bearer token. The service reads HTTP_ADMIN_TOKENS as
+    "token:scope|scope" entries and the client sends only the token (subject)
+    part as `Authorization: Bearer <token>`. For local runs configure e.g.
+      HTTP_ADMIN_TOKENS=dev-operator-token:admin:read|admin:write
+    and set the `operatorToken` env var to `dev-operator-token`.
+
+    Path IDs are collection variables (customerId, accountId, ...) so mutating
+    requests are runnable once you paste real UUIDs. Optional query filters are
+    present but disabled by default.
+config:
+  environments:
+    - name: Local
+      description: admin-api-svc on localhost (HTTP_PORT=8081, mounted at /v1).
+      variables:
+        - name: baseUrl
+          value: http://localhost:8081/v1
+        - name: operatorToken
+          value: dev-operator-token
+request:
+  auth:
+    type: bearer
+    token: '{{operatorToken}}'
+  headers:
+    - name: Accept
+      value: application/json
+  variables:
+    - name: customerId
+      value: 00000000-0000-0000-0000-000000000000
+    - name: groupId
+      value: 00000000-0000-0000-0000-000000000000
+    - name: accountId
+      value: 00000000-0000-0000-0000-000000000000
+    - name: senderId
+      value: 00000000-0000-0000-0000-000000000000
+    - name: credId
+      value: 00000000-0000-0000-0000-000000000000
+    - name: connectorId
+      value: 00000000-0000-0000-0000-000000000000
+    - name: routeId
+      value: 00000000-0000-0000-0000-000000000000
+items:
+  - info:
+      name: Customers
+      type: folder
+    items:
+      - info:
+          name: list-customers
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/customers'
+          params:
+            - name: groupId
+              value: '{{groupId}}'
+              type: query
+              disabled: true
+            - name: status
+              value: active
+              type: query
+              disabled: true
+            - name: cursor
+              value: ''
+              type: query
+              disabled: true
+            - name: limit
+              value: '50'
+              type: query
+              disabled: true
+        docs: List customers (scope admin:read).
+      - info:
+          name: create-customer
+          type: http
+        http:
+          method: POST
+          url: '{{baseUrl}}/admin/customers'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "name": "Acme Corp",
+                "billing_enabled": false,
+                "overdraft_enabled": false,
+                "balance_scope": "customer",
+                "content_storage": "inherit"
+              }
+        docs: Create a customer (scope admin:write).
+      - info:
+          name: get-customer
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/customers/{{customerId}}'
+        docs: Get a customer (scope admin:read).
+      - info:
+          name: update-customer
+          type: http
+        http:
+          method: PATCH
+          url: '{{baseUrl}}/admin/customers/{{customerId}}'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "name": "Acme Corporation",
+                "status": "active",
+                "billing_enabled": true
+              }
+        docs: Update a customer (scope admin:write).
+      - info:
+          name: delete-customer
+          type: http
+        http:
+          method: DELETE
+          url: '{{baseUrl}}/admin/customers/{{customerId}}'
+        docs: Delete a customer (scope admin:write).
+      - info:
+          name: suspend-customer
+          type: http
+        http:
+          method: POST
+          url: '{{baseUrl}}/admin/customers/{{customerId}}/suspend'
+        docs: Suspend a customer (cascades to its SMPP accounts).
+  - info:
+      name: Sender IDs
+      type: folder
+    items:
+      - info:
+          name: list-sender-ids
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/customers/{{customerId}}/sender-ids'
+        docs: List a customer's sender IDs (scope admin:read).
+      - info:
+          name: create-sender-id
+          type: http
+        http:
+          method: POST
+          url: '{{baseUrl}}/admin/customers/{{customerId}}/sender-ids'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "address": "ACME"
+              }
+        docs: Register a sender ID (starts pending carrier approval).
+      - info:
+          name: update-sender-id
+          type: http
+        http:
+          method: PATCH
+          url: '{{baseUrl}}/admin/customers/{{customerId}}/sender-ids/{{senderId}}'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "status": "active"
+              }
+        docs: Update a sender ID status.
+      - info:
+          name: delete-sender-id
+          type: http
+        http:
+          method: DELETE
+          url: '{{baseUrl}}/admin/customers/{{customerId}}/sender-ids/{{senderId}}'
+        docs: Delete a sender ID.
+  - info:
+      name: SMPP Accounts
+      type: folder
+    items:
+      - info:
+          name: list-smpp-accounts
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/smpp-accounts'
+          params:
+            - name: customerId
+              value: '{{customerId}}'
+              type: query
+              disabled: true
+            - name: groupId
+              value: '{{groupId}}'
+              type: query
+              disabled: true
+            - name: status
+              value: active
+              type: query
+              disabled: true
+            - name: cursor
+              value: ''
+              type: query
+              disabled: true
+            - name: limit
+              value: '50'
+              type: query
+              disabled: true
+        docs: List SMPP accounts (scope admin:read).
+      - info:
+          name: create-smpp-account
+          type: http
+        http:
+          method: POST
+          url: '{{baseUrl}}/admin/smpp-accounts'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "customer_id": "{{customerId}}",
+                "name": "acme-primary",
+                "smpp_enabled": true,
+                "rest_enabled": true,
+                "sender_id_policy": "strict",
+                "allowed_bind_types": "trx",
+                "max_sessions": 4
+              }
+        docs: Create an SMPP account (requires customer_id).
+      - info:
+          name: get-smpp-account
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/smpp-accounts/{{accountId}}'
+        docs: Get an SMPP account (scope admin:read).
+      - info:
+          name: update-smpp-account
+          type: http
+        http:
+          method: PATCH
+          url: '{{baseUrl}}/admin/smpp-accounts/{{accountId}}'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "name": "acme-primary",
+                "status": "active"
+              }
+        docs: Update an SMPP account (scope admin:write).
+      - info:
+          name: delete-smpp-account
+          type: http
+        http:
+          method: DELETE
+          url: '{{baseUrl}}/admin/smpp-accounts/{{accountId}}'
+        docs: Delete an SMPP account (scope admin:write).
+      - info:
+          name: set-account-channels
+          type: http
+        http:
+          method: PATCH
+          url: '{{baseUrl}}/admin/smpp-accounts/{{accountId}}/channels'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "smpp_enabled": true,
+                "rest_enabled": true
+              }
+        docs: Enable/disable channels (at least one must stay true).
+      - info:
+          name: set-account-session-limits
+          type: http
+        http:
+          method: PATCH
+          url: '{{baseUrl}}/admin/smpp-accounts/{{accountId}}/session-limits'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "max_sessions": 4,
+                "allowed_bind_types": "trx"
+              }
+        docs: Set max_sessions and allowed bind types.
+  - info:
+      name: Credentials
+      type: folder
+    items:
+      - info:
+          name: list-credentials
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/smpp-accounts/{{accountId}}/credentials'
+        docs: List credentials (masked — never a secret).
+      - info:
+          name: create-credential
+          type: http
+        http:
+          method: POST
+          url: '{{baseUrl}}/admin/smpp-accounts/{{accountId}}/credentials'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "type": "smpp_bind",
+                "system_id": "acme_sysid"
+              }
+        docs: Create a credential — secret returned exactly once.
+      - info:
+          name: update-credential-status
+          type: http
+        http:
+          method: PATCH
+          url: '{{baseUrl}}/admin/smpp-accounts/{{accountId}}/credentials/{{credId}}'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "status": "disabled"
+              }
+        docs: Update a credential (status only).
+      - info:
+          name: revoke-credential
+          type: http
+        http:
+          method: DELETE
+          url: '{{baseUrl}}/admin/smpp-accounts/{{accountId}}/credentials/{{credId}}'
+        docs: Revoke a credential (force-unbinds live sessions).
+      - info:
+          name: rotate-credential
+          type: http
+        http:
+          method: POST
+          url: '{{baseUrl}}/admin/smpp-accounts/{{accountId}}/credentials/{{credId}}/rotate'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "grace_period_sec": 3600
+              }
+        docs: Rotate a credential (optional grace window); new secret once.
+  - info:
+      name: Connectors
+      type: folder
+    items:
+      - info:
+          name: list-connectors
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/connectors'
+        docs: List SMSC connectors (scope admin:read).
+      - info:
+          name: create-connector
+          type: http
+        http:
+          method: POST
+          url: '{{baseUrl}}/admin/connectors'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "name": "carrier-a-primary",
+                "host": "smsc.carrier-a.example.com",
+                "port": 2775,
+                "bind_type": "trx",
+                "system_id": "gateway",
+                "password": "smsc-password",
+                "interface_version": 52,
+                "window_size": 10,
+                "bind_pool_size": 2,
+                "tls_enabled": false,
+                "auto_reconnect_enabled": true
+              }
+        docs: Create a connector (scope admin:write).
+      - info:
+          name: get-connector
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/connectors/{{connectorId}}'
+        docs: Get a connector (scope admin:read).
+      - info:
+          name: update-connector
+          type: http
+        http:
+          method: PATCH
+          url: '{{baseUrl}}/admin/connectors/{{connectorId}}'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "window_size": 20,
+                "status": "active"
+              }
+        docs: Update a connector (scope admin:write).
+      - info:
+          name: delete-connector
+          type: http
+        http:
+          method: DELETE
+          url: '{{baseUrl}}/admin/connectors/{{connectorId}}'
+        docs: Delete a connector (scope admin:write).
+  - info:
+      name: Routes
+      type: folder
+    items:
+      - info:
+          name: list-routes
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/routes'
+        docs: List routes ordered by priority (scope admin:read).
+      - info:
+          name: create-route
+          type: http
+        http:
+          method: POST
+          url: '{{baseUrl}}/admin/routes'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "name": "default-static",
+                "priority": 100,
+                "distribution_strategy": "static",
+                "target_connector_id": "{{connectorId}}"
+              }
+        docs: Create a route (scope admin:write).
+      - info:
+          name: get-route
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/routes/{{routeId}}'
+        docs: Get a route (scope admin:read).
+      - info:
+          name: update-route
+          type: http
+        http:
+          method: PATCH
+          url: '{{baseUrl}}/admin/routes/{{routeId}}'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "priority": 50,
+                "status": "active"
+              }
+        docs: Update a route (scope admin:write).
+      - info:
+          name: delete-route
+          type: http
+        http:
+          method: DELETE
+          url: '{{baseUrl}}/admin/routes/{{routeId}}'
+        docs: Delete a route (scope admin:write).
