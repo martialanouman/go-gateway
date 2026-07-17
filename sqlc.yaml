@@ -1,0 +1,33 @@
+version: "2"
+sql:
+  - engine: "postgresql"
+    schema: "migrations"
+    queries: "internal/storage/postgres/queries"
+    gen:
+      go:
+        package: "sqlcgen"
+        out: "internal/storage/postgres/sqlcgen"
+        sql_package: "pgx/v5"
+        emit_pointers_for_null_types: true
+        emit_interface: false
+        emit_empty_slices: true
+        # Map the database types to Go stdlib / google-uuid types at generation time, so the
+        # repositories convert only the genuinely awkward columns (jsonb) by hand. pgx decodes each
+        # of these natively, so nothing is lost.
+        overrides:
+          - db_type: "uuid"
+            go_type:
+              import: "github.com/google/uuid"
+              package: "uuid"
+              type: "UUID"
+          - db_type: "uuid"
+            nullable: true
+            go_type:
+              import: "github.com/google/uuid"
+              package: "uuid"
+              type: "UUID"
+              pointer: true
+          # timestamptz and numeric are deliberately NOT overridden: forcing time.Time collides with
+          # sqlc's own auto-import of "time", and the numeric override does not match the db_type
+          # sqlc reports. Both stay their pgtype and are converted in convert.go (tsVal/tsPtr,
+          # numFloat).

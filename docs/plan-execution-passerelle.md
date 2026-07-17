@@ -243,6 +243,11 @@ Dès que ce flux passe un test bout-en-bout, l'architecture est prouvée. Les ja
 - Suspendre un client cascade sur ses comptes (statut effectif = min).
 - Test de contrat vert.
 
+**Dette connue (issue de la revue M1, à traiter à un jalon ultérieur) :**
+
+- **Null-clearing des champs nullable.** Les `UPDATE` partiels utilisent `COALESCE(narg, col)`, donc un `PATCH { "champ": null }` sur un champ nullable (`overdraft_limit`, `throughput_limit_per_sec`, `match_*`…) est un no-op silencieux : impossible de remettre une valeur à `NULL` via l'Admin API. Le tri-state (absent / null explicite / valeur) est reporté ; **y revenir si aucun jalon ultérieur ne le résout**. Réf : `internal/controlplane/doc.go`.
+- **N+1 sur `list-routes` / `get-route`.** Les `route_targets` sont lus par route, hors transaction. Acceptable au débit du plan de contrôle ; à batcher (`WHERE route_id = ANY($1)`) quand le volume l'exigera. Réf : `internal/storage/postgres/routes.go`.
+
 ---
 
 ## 6. M2 — Squelette vertical MT (REST → faux SMSC → CDR)

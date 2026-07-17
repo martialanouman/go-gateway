@@ -124,43 +124,60 @@ paths:
         - { $ref: '#/components/parameters/Status' }
         - { $ref: '#/components/parameters/Cursor' }
         - { $ref: '#/components/parameters/Limit' }
+      security: [ { OperatorBearer: [ admin:read ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/CustomerPage' } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
     post:
       tags: [Customers]
       summary: Create a customer
       operationId: create-customer
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CustomerCreate' } } } }
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Customer' } } } }
         '422': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /admin/customers/{id}:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
     get:
       tags: [Customers]
       summary: Get a customer
       operationId: get-customer
+      security: [ { OperatorBearer: [ admin:read ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Customer' } } } }
         '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
     patch:
       tags: [Customers]
       summary: Update a customer
       operationId: update-customer
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CustomerUpdate' } } } }
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Customer' } } } }
         '404': { $ref: '#/components/responses/NotFound' }
         '422': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
     delete:
       tags: [Customers]
       summary: Delete a customer
       operationId: delete-customer
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '204': { description: Deleted. }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
   /admin/customers/{id}/group:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
     patch:
@@ -177,9 +194,13 @@ paths:
       tags: [Customers]
       summary: Suspend a customer (cascades — suspends all its SMPP accounts)
       operationId: suspend-customer
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Customer' } } } }
         '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
 
   # ---- Sender IDs (customer-level) ----
   /admin/customers/{id}/sender-ids:
@@ -188,17 +209,25 @@ paths:
       tags: [Sender IDs]
       summary: List a customer's sender IDs
       operationId: list-sender-ids
+      security: [ { OperatorBearer: [ admin:read ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/SenderId' } } } } }
         '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
     post:
       tags: [Sender IDs]
       summary: Register a sender ID (starts pending carrier approval)
       operationId: create-sender-id
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/SenderIdCreate' } } } }
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/SenderId' } } } }
         '422': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
   /admin/customers/{id}/sender-ids/{senderId}:
     parameters: [ { $ref: '#/components/parameters/Id' }, { $ref: '#/components/parameters/SenderId' } ]
     patch:
@@ -206,16 +235,24 @@ paths:
       summary: Update a sender ID (status)
       operationId: update-sender-id
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/SenderIdUpdate' } } } }
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SenderId' } } } }
         '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
     delete:
       tags: [Sender IDs]
       summary: Delete a sender ID
       operationId: delete-sender-id
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '204': { description: Deleted. }
         '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
   /admin/customers/{id}/smpp-accounts:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
     get:
@@ -238,41 +275,60 @@ paths:
         - { $ref: '#/components/parameters/Status' }
         - { $ref: '#/components/parameters/Cursor' }
         - { $ref: '#/components/parameters/Limit' }
+      security: [ { OperatorBearer: [ admin:read ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SmppAccountPage' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
     post:
       tags: [SMPP Accounts]
       summary: Create an SMPP account (requires customerId)
       operationId: create-smpp-account
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/SmppAccountCreate' } } } }
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/SmppAccount' } } } }
         '422': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
   /admin/smpp-accounts/{id}:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
     get:
       tags: [SMPP Accounts]
       summary: Get an SMPP account
       operationId: get-smpp-account
+      security: [ { OperatorBearer: [ admin:read ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SmppAccount' } } } }
         '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
     patch:
       tags: [SMPP Accounts]
       summary: Update an SMPP account
       operationId: update-smpp-account
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/SmppAccountUpdate' } } } }
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SmppAccount' } } } }
         '404': { $ref: '#/components/responses/NotFound' }
         '422': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
     delete:
       tags: [SMPP Accounts]
       summary: Delete an SMPP account
       operationId: delete-smpp-account
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '204': { description: Deleted. }
         '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
   /admin/smpp-accounts/{id}/suspend:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
     post:
@@ -289,9 +345,13 @@ paths:
       summary: Enable/disable channels (at least one must stay true)
       operationId: set-account-channels
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ChannelsUpdate' } } } }
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SmppAccount' } } } }
         '422': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /admin/smpp-accounts/{id}/session-limits:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
     patch:
@@ -299,9 +359,13 @@ paths:
       summary: Set max_sessions and allowed bind types
       operationId: set-account-session-limits
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/SessionLimitsUpdate' } } } }
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SmppAccount' } } } }
         '422': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /admin/smpp-accounts/{id}/sessions:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
     get:
@@ -372,17 +436,25 @@ paths:
       tags: [Credentials]
       summary: List credentials (masked — never a secret)
       operationId: list-credentials
+      security: [ { OperatorBearer: [ admin:read ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Credential' } } } } }
         '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
     post:
       tags: [Credentials]
       summary: Create a credential — secret returned exactly once
       operationId: create-credential
       requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { type: { type: string, enum: [smpp_bind, api_key] }, system_id: { type: [string, "null"], description: 'Required for smpp_bind.' } }, required: [type] } } } }
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '201': { description: Created; the secret is present once and never retrievable again., content: { application/json: { schema: { $ref: '#/components/schemas/CredentialWithSecret' } } } }
         '409': { $ref: '#/components/responses/Conflict' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
   /admin/smpp-accounts/{id}/credentials/{credId}:
     parameters: [ { $ref: '#/components/parameters/Id' }, { $ref: '#/components/parameters/CredId' } ]
     patch:
@@ -390,16 +462,25 @@ paths:
       summary: Update a credential (status only)
       operationId: update-credential-status
       requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { status: { type: string, enum: [active, disabled, revoked] } }, required: [status] } } } }
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Credential' } } } }
         '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
     delete:
       tags: [Credentials]
       summary: Revoke a credential (force-unbinds live sessions)
       operationId: revoke-credential
+      security: [ { OperatorBearer: [ admin:write ] } ]
+      description: The credential row is retained with status=revoked; re-creating this type on the account conflicts (409). Use rotate to issue a new secret.
       responses:
         '204': { description: Revoked. }
         '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
   /admin/smpp-accounts/{id}/credentials/{credId}/rotate:
     parameters: [ { $ref: '#/components/parameters/Id' }, { $ref: '#/components/parameters/CredId' } ]
     post:
@@ -407,9 +488,13 @@ paths:
       summary: Rotate a credential (manual; optional grace window)
       operationId: rotate-credential
       requestBody: { required: false, content: { application/json: { schema: { type: object, properties: { grace_period_sec: { type: [integer, "null"], minimum: 0, description: 'Old secret stays valid this long in parallel.' } } } } } }
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '200': { description: Rotated; new secret present once., content: { application/json: { schema: { $ref: '#/components/schemas/CredentialWithSecret' } } } }
         '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
 
   # ============================ CONNECTORS (§6.13/§6.15) ============================
   /admin/connectors:
@@ -417,41 +502,60 @@ paths:
       tags: [Connectors]
       summary: List SMSC connectors
       operationId: list-connectors
+      security: [ { OperatorBearer: [ admin:read ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Connector' } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
     post:
       tags: [Connectors]
       summary: Create a connector
       operationId: create-connector
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ConnectorCreate' } } } }
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Connector' } } } }
         '422': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
   /admin/connectors/{id}:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
     get:
       tags: [Connectors]
       summary: Get a connector
       operationId: get-connector
+      security: [ { OperatorBearer: [ admin:read ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Connector' } } } }
         '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
     patch:
       tags: [Connectors]
       summary: Update a connector
       operationId: update-connector
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ConnectorUpdate' } } } }
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Connector' } } } }
         '404': { $ref: '#/components/responses/NotFound' }
         '422': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
     delete:
       tags: [Connectors]
       summary: Delete a connector
       operationId: delete-connector
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '204': { description: Deleted. }
         '409': { $ref: '#/components/responses/Conflict' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
   /admin/connectors/{id}/rebind:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
     post:
@@ -496,16 +600,22 @@ paths:
       tags: [Routes]
       summary: List routes (ordered by priority)
       operationId: list-routes
+      security: [ { OperatorBearer: [ admin:read ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Route' } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
     post:
       tags: [Routes]
       summary: Create a route
       operationId: create-route
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/RouteCreate' } } } }
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Route' } } } }
         '422': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /admin/routes/reorder:
     post:
       tags: [Routes]
@@ -521,24 +631,36 @@ paths:
       tags: [Routes]
       summary: Get a route
       operationId: get-route
+      security: [ { OperatorBearer: [ admin:read ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Route' } } } }
         '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
     patch:
       tags: [Routes]
       summary: Update a route
       operationId: update-route
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/RouteUpdate' } } } }
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Route' } } } }
         '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
     delete:
       tags: [Routes]
       summary: Delete a route
       operationId: delete-route
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '204': { description: Deleted. }
         '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
 
   # ---- Exact routes (MNP) ----
   /admin/exact-routes:
@@ -1671,7 +1793,7 @@ components:
         port: { type: integer, minimum: 1, maximum: 65535 }
         bind_type: { $ref: '#/components/schemas/BindType' }
         system_id: { type: string }
-        password: { type: string, description: Write-only; stored hashed, never returned. }
+        password: { type: string, minLength: 1, description: "Write-only; stored hashed, never returned." }
         vendor_profile: { type: [string, "null"] }
         interface_version: { type: integer, default: 52 }
         data_coding_default: { type: [integer, "null"] }
@@ -1693,7 +1815,7 @@ components:
         port: { type: integer, minimum: 1, maximum: 65535 }
         bind_type: { $ref: '#/components/schemas/BindType' }
         system_id: { type: string }
-        password: { type: string }
+        password: { type: string, minLength: 1 }
         vendor_profile: { type: [string, "null"] }
         data_coding_default: { type: [integer, "null"] }
         window_size: { type: integer, minimum: 1 }
