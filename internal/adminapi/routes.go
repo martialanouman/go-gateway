@@ -255,12 +255,38 @@ func (h *routeHandlers) update(ctx context.Context, in *updateRouteInput) (*rout
 	if patch.FallbackRouteID, err = parseIDPtr("fallback_route_id", in.Body.FallbackRouteID); err != nil {
 		return nil, err
 	}
-	if in.Body.Targets != nil {
+	targetsProvided := in.Body.Targets != nil
+	if targetsProvided {
 		targets, terr := parseTargets(in.Body.Targets)
 		if terr != nil {
 			return nil, terr
 		}
 		patch.Targets = targets
+	}
+
+	// Validate the strategy invariant against the EFFECTIVE post-update state (patch value where
+	// provided, current value otherwise), so a partial update cannot leave a route in a state
+	// create-route would have rejected — e.g. PATCH {"targets":[]} on a weighted route. The
+	// current route is read first for the effective values (and to 404 a missing route cleanly).
+	// The read-then-write is not transactional; acceptable for a single-operator control plane.
+	current, err := h.store.Get(ctx, id)
+	if err != nil {
+		return nil, humaerr.FromError(err)
+	}
+	effStrategy := current.DistributionStrategy
+	if patch.DistributionStrategy != nil {
+		effStrategy = *patch.DistributionStrategy
+	}
+	effConnector := current.TargetConnectorID
+	if patch.TargetConnectorID != nil {
+		effConnector = patch.TargetConnectorID
+	}
+	effTargets := current.Targets
+	if targetsProvided {
+		effTargets = patch.Targets
+	}
+	if err := validateStrategy(effStrategy, effConnector, effTargets); err != nil {
+		return nil, err
 	}
 
 	r, err := h.store.Update(ctx, id, patch)
