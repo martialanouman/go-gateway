@@ -22,9 +22,9 @@ type staticEntry struct {
 }
 
 // NewStaticVerifier parses "token:scope|scope" entries (config.HTTP.AdminTokens). Each entry's
-// token is the subject; the pipe-separated scopes must be known. An empty list is allowed on a
-// laptop but yields a verifier that rejects everything — the production requirement lives with the
-// caller.
+// token is the subject; the pipe-separated scopes must be known. An empty list is allowed (a
+// verifier that rejects everything), which is valid on a laptop; cmd/admin-api-svc enforces the
+// "at least one token in production" policy before wiring this verifier.
 func NewStaticVerifier(entries []string) (*StaticVerifier, error) {
 	parsed := make([]staticEntry, 0, len(entries))
 	for i, raw := range entries {

@@ -44,6 +44,15 @@ func run() error {
 		return err
 	}
 
+	// Operator tokens are specific to this service (not the pipeline binaries that share the HTTP
+	// section), so the "at least one in production" policy is enforced here, at the point of use,
+	// rather than in the shared config validator. Without it a production Admin API would boot,
+	// pass readiness, and answer every request with 401 — a silent, fully non-functional service.
+	if cfg.Environment.IsProduction() && len(cfg.HTTP.AdminTokens) == 0 {
+		return fmt.Errorf("HTTP_ADMIN_TOKENS must be set in production: " +
+			"the Admin API would otherwise reject every operator request")
+	}
+
 	logger, err := observability.NewLogger(os.Stdout, cfg)
 	if err != nil {
 		return err

@@ -339,7 +339,7 @@ func (c Config) httpProblems() []string {
 	// AdminTokens is deliberately NOT validated here. It is specific to admin-api-svc's stand-in
 	// verifier, yet SectionHTTP is part of SectionAll and rest-api-svc also carries an HTTP section
 	// without operator tokens. The "at least one usable token in production" policy therefore lives
-	// where the tokens are consumed (internal/auth.NewStaticVerifier), not in the shared validator.
+	// in cmd/admin-api-svc (the point of use), not in this shared validator.
 	return problems
 }
 
