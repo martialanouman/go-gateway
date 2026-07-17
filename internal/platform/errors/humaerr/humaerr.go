@@ -12,6 +12,7 @@ package humaerr
 
 import (
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sync"
 
@@ -158,19 +159,50 @@ func FailValidation(message string, fields ...FieldError) huma.StatusError {
 	}
 }
 
-// FromError maps a domain error to the wire model. An error carrying no code becomes
-// internal_error and a 500: an unmapped error reaching a client is a bug, and it must look like one
-// rather than leak an internal message under a misleading status.
+// FromError maps a domain error to the wire model.
+//
+// A server-side fault (any 5xx code, or an error carrying no code at all) is rendered with a STATIC
+// message and never the wrapped error string: that string can carry infrastructure detail — SQL
+// constraint and table names, a database host/user, SQLSTATE text — which must not reach a client.
+// The underlying error is logged instead, so operators keep the diagnosis. A client 4xx keeps its
+// wrapped message (only a benign operation label plus the code).
 func FromError(err error) huma.StatusError {
 	code, ok := errs.CodeOf(err)
 	if !ok {
+		logInternal(err)
 		return Fail(errs.ErrInternal, "internal error")
+	}
+	if status, mapped := errs.HTTPStatus(code); !mapped || status >= 500 {
+		logInternal(err)
+		return Fail(code, "%s", staticMessage(code))
 	}
 	return Fail(code, "%s", messageFor(code, err))
 }
 
-// messageFor picks the human message for a coded error. For a plain sentinel (whose Error() is just
-// the code) it returns a stable phrase; for a wrapped error it keeps the operator-facing context.
+// logInternal records a server-side fault with its full detail on the configured logger, so the
+// information withheld from the client is still available to operators.
+func logInternal(err error) {
+	if err == nil {
+		return
+	}
+	// No request context is available at this mapping boundary; the plain (non-context) logger is
+	// used deliberately, so trace correlation happens upstream where the context lives.
+	slog.Default().Error("admin api internal error", "err", err.Error())
+}
+
+// staticMessage is the safe, detail-free client message for a server-side code.
+func staticMessage(code errs.Code) string {
+	switch code {
+	case errs.ErrServiceUnavailable:
+		return "service unavailable"
+	default:
+		return "internal error"
+	}
+}
+
+// messageFor picks the human message for a coded 4xx error. For a plain sentinel (whose Error() is
+// just the code) it returns a stable phrase; for a wrapped error it keeps the operator-facing
+// context, which for a 4xx is only the operation label — never infrastructure detail.
 func messageFor(code errs.Code, err error) string {
 	if msg := err.Error(); msg != string(code) {
 		return msg

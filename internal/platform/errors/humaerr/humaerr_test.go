@@ -183,3 +183,43 @@ func TestAnErrorWithNoCodeBecomesInternalErrorAnd500(t *testing.T) {
 		t.Errorf("code = %v, want internal_error", m["code"])
 	}
 }
+
+// TestFromErrorHidesInternalDetailOnA5xx pins the boundary: a coded-internal error wrapping
+// infrastructure detail (as the postgres layer produces via errors.Join(pgErr, ErrInternal)) must
+// reach the client as a static message — never the underlying string with host/table/constraint
+// names. Regression guard for the info-disclosure fix.
+func TestFromErrorHidesInternalDetailOnA5xx(t *testing.T) {
+	leak := "create connector: failed to connect to host=db.internal user=gateway dbname=gw: refused"
+	wrapped := fmt.Errorf("%s: %w", leak, goerrors.Join(goerrors.New(leak), errs.ErrInternal))
+
+	model := humaerr.FromError(wrapped)
+	if model.GetStatus() != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", model.GetStatus())
+	}
+
+	body, _ := json.Marshal(model)
+	for _, secret := range []string{"host=", "db.internal", "gateway", "connect", "refused"} {
+		if strings.Contains(string(body), secret) {
+			t.Errorf("500 body leaked internal detail %q: %s", secret, body)
+		}
+	}
+	var m map[string]any
+	_ = json.Unmarshal(body, &m)
+	if m["code"] != "internal_error" || m["message"] != "internal error" {
+		t.Errorf("body = %v, want {code:internal_error, message:\"internal error\"}", m)
+	}
+}
+
+// TestFromErrorKeepsClient4xxContext: a 4xx keeps its wrapped operation label (benign) so operators
+// still see which operation conflicted.
+func TestFromErrorKeepsClient4xxContext(t *testing.T) {
+	wrapped := fmt.Errorf("create credential: %w", errs.ErrConflict)
+	model := humaerr.FromError(wrapped)
+
+	if model.GetStatus() != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", model.GetStatus())
+	}
+	if !strings.Contains(model.Error(), "create credential") {
+		t.Errorf("4xx message = %q, want it to keep the operation label", model.Error())
+	}
+}
