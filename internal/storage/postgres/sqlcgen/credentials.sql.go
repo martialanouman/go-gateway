@@ -54,6 +54,53 @@ func (q *Queries) CreateCredential(ctx context.Context, arg CreateCredentialPara
 	return i, err
 }
 
+const getAPIKeyPrincipal = `-- name: GetAPIKeyPrincipal :one
+SELECT
+    a.id          AS account_id,
+    a.customer_id AS customer_id,
+    a.status      AS account_status,
+    a.rest_enabled AS rest_enabled,
+    c.status      AS customer_status
+FROM control_plane.credentials cr
+JOIN control_plane.smpp_accounts a ON a.id = cr.account_id
+JOIN control_plane.customers c ON c.id = a.customer_id
+WHERE cr.type = 'api_key'
+  AND cr.status = 'active'
+  AND (
+        cr.api_key_hash = $1
+     OR (cr.previous_secret_hash = $1
+         AND cr.grace_expires_at IS NOT NULL
+         AND cr.grace_expires_at > now())
+  )
+`
+
+type GetAPIKeyPrincipalRow struct {
+	AccountID      uuid.UUID
+	CustomerID     uuid.UUID
+	AccountStatus  string
+	RestEnabled    bool
+	CustomerStatus string
+}
+
+// REST authentication lookup (§1.9): the presented key is SHA-256 hashed by internal/credential,
+// then found by that hash on the single api_key credential. The rotation grace window is honoured —
+// the previous secret keeps working until grace_expires_at. Only the credential status is gated
+// here (a revoked key is simply invalid); rest_enabled and the account/customer statuses are
+// RETURNED, not filtered, so the verifier can answer with the right code (401 vs 403) rather than a
+// blanket "not found".
+func (q *Queries) GetAPIKeyPrincipal(ctx context.Context, apiKeyHash *string) (GetAPIKeyPrincipalRow, error) {
+	row := q.db.QueryRow(ctx, getAPIKeyPrincipal, apiKeyHash)
+	var i GetAPIKeyPrincipalRow
+	err := row.Scan(
+		&i.AccountID,
+		&i.CustomerID,
+		&i.AccountStatus,
+		&i.RestEnabled,
+		&i.CustomerStatus,
+	)
+	return i, err
+}
+
 const getCredential = `-- name: GetCredential :one
 SELECT id, account_id, type, system_id, password_hash, api_key_hash, status, last_used_at, previous_secret_hash, grace_expires_at, created_at, rotated_at FROM control_plane.credentials WHERE account_id = $1 AND id = $2
 `
