@@ -145,18 +145,22 @@ func (s *Service) handler(b *bind) kafka.Handler {
 // larger than a single short_message travels in the message_payload TLV — M2 does not segment.
 func buildSubmit(r pipeline.RoutedMT) *smpp.SubmitSM {
 	source, sourceTON, sourceNPI := sourceAddr(r.From)
+	dcs := submitDataCoding(r)
 	sm := &smpp.SubmitSM{SMFields: smpp.SMFields{
 		SourceAddr:      source,
 		DestinationAddr: r.To,
-		DataCoding:      submitDataCoding(r),
+		DataCoding:      dcs,
 	}}
 	sm.SourceAddrTON, sm.SourceAddrNPI = sourceTON, sourceNPI
 	sm.DestAddrTON, sm.DestAddrNPI = smpp.TONInternational, smpp.NPIISDN
 	if r.RegisteredDelivery {
 		sm.RegisteredDelivery = smpp.RegisteredDeliveryReceipt
 	}
+	if r.ValidityPeriod != nil {
+		sm.ValidityPeriod = *r.ValidityPeriod // already an SMPP validity (relative/absolute) per the contract
+	}
 
-	body := encodeBody(r) // audited: body -> SMSC wire, never logged
+	body := encodeBody(r.Body.Reveal(), dcs) // audited: body -> SMSC wire, never logged
 	if len(body) > 254 {
 		sm.TLVs.Set(smpp.TagMessagePayload, body)
 	} else {
@@ -174,13 +178,14 @@ func submitDataCoding(r pipeline.RoutedMT) uint8 {
 	return dataCoding(r.Encoding)
 }
 
-// encodeBody reveals the body and renders it for the wire per the resolved encoding. UCS-2 is
-// UTF-16BE on the SMPP wire, so the UTF-8 bytes msg.Body carries are transcoded here; gsm7 and binary
-// go out as-is (GSM-7 packing and segmentation are the encoding milestone, not M2). Revealing is an
-// audited egress: the plaintext reaches the SMSC wire, never a log or span.
-func encodeBody(r pipeline.RoutedMT) []byte {
-	body := r.Body.Reveal()
-	if r.Encoding == encoding.UCS2 {
+// encodeBody renders the revealed body for the wire per the EFFECTIVE data_coding — the same byte
+// buildSubmit writes to the submit_sm — so the DCS label and the bytes always agree. A UCS-2 DCS
+// means UTF-16BE on the wire, so the UTF-8 bytes msg.Body carries are transcoded; every other DCS
+// (GSM-7, binary, or a raw client override) goes out as-is (GSM-7 packing and segmentation are the
+// encoding milestone, not M2). The caller reveals the plaintext — an audited egress that reaches the
+// SMSC wire, never a log or span.
+func encodeBody(body []byte, dcs uint8) []byte {
+	if dcs == smpp.DataCodingUCS2 {
 		return utf16BE(body)
 	}
 	return body

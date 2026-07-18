@@ -206,6 +206,79 @@ func TestConnectorTypesAlphanumericSource(t *testing.T) {
 	}
 }
 
+// TestConnectorDCSAndBodyAgree pins that the wire body is transcoded to match the EFFECTIVE
+// data_coding, not r.Encoding: a UCS-2 override with encoding=gsm7 must still ship UTF-16BE, so the
+// DCS label and the bytes never disagree.
+func TestConnectorDCSAndBodyAgree(t *testing.T) {
+	const text = "héllo" // non-ASCII: UTF-8 and UTF-16BE differ
+	dc := int(smpp.DataCodingUCS2)
+	var body []byte
+	var dcs uint8
+	r := routed()
+	r.Encoding = "gsm7"
+	r.DataCoding = &dc
+	r.Body = msg.NewBodyString(text)
+	_ = runOnce(t, func(sm smpp.SubmitSM) fakesmsc.Resp {
+		body = append([]byte(nil), sm.ShortMessage...)
+		dcs = sm.DataCoding
+		return fakesmsc.OK()
+	}, r)
+
+	if dcs != smpp.DataCodingUCS2 {
+		t.Fatalf("data_coding = %#x, want the UCS-2 override %#x", dcs, smpp.DataCodingUCS2)
+	}
+	if !bytes.Equal(body, utf16BE(text)) {
+		t.Errorf("body = % x, want UTF-16BE % x to match the UCS-2 DCS", body, utf16BE(text))
+	}
+}
+
+// TestConnectorSetsValidityPeriod pins that the client's validity_period reaches the submit_sm.
+func TestConnectorSetsValidityPeriod(t *testing.T) {
+	vp := "000000010000000R" // SMPP relative validity (16 chars), passed through per the contract
+	var seen string
+	r := routed()
+	r.ValidityPeriod = &vp
+	_ = runOnce(t, func(sm smpp.SubmitSM) fakesmsc.Resp {
+		seen = sm.ValidityPeriod
+		return fakesmsc.OK()
+	}, r)
+
+	if seen != vp {
+		t.Errorf("validity_period on the wire = %q, want %q", seen, vp)
+	}
+}
+
+// TestConnectorToleratesZeroEnquireConfig pins the bind config clamps: a zero EnquireLinkInterval
+// must not panic time.NewTicker(0) (which would crash the process), and MaxMissed 0 must not tear
+// the bind down. If the clamp were missing, the enquire goroutine would panic and crash this test.
+func TestConnectorToleratesZeroEnquireConfig(t *testing.T) {
+	r := routed()
+	smsc := fakesmsc.Start(t, fakesmsc.Config{OnSubmit: func(smpp.SubmitSM) fakesmsc.Resp { return fakesmsc.OK() }})
+	rec, err := pipeline.EncodeRouted(r)
+	if err != nil {
+		t.Fatalf("encode routed: %v", err)
+	}
+	cdr := &fakeCDR{}
+	rrec := otelrec.New(t)
+	svc := connectorpool.New(connectorpool.Deps{
+		Consumer: &fakeConsumer{records: []kafka.Record{rec}},
+		CDR:      cdr,
+		Bind: connectorpool.BindConfig{
+			Addr: smsc.Addr(), SystemID: "esme", Password: "pw",
+			DialTimeout: 3 * time.Second, ResponseTimeout: 3 * time.Second,
+			EnquireLinkInterval: 0, EnquireLinkMaxMissed: 0, WindowSize: 10,
+		},
+		Tracer: observability.Tracer(rrec.Provider(), "connector-pool"),
+	})
+
+	if err := svc.Run(context.Background()); err != nil {
+		t.Fatalf("Run with zero enquire config: %v", err)
+	}
+	if len(cdr.rows) != 1 {
+		t.Fatalf("expected 1 CDR row, got %d", len(cdr.rows))
+	}
+}
+
 // utf16BE is the test's independent UTF-16BE reference (mirrors the connector's transcoding).
 func utf16BE(s string) []byte {
 	units := utf16.Encode([]rune(s))

@@ -70,6 +70,17 @@ func dialAndBind(ctx context.Context, cfg BindConfig, logger *slog.Logger) (*bin
 	if window < 1 {
 		window = 1
 	}
+	// Clamp the enquire_link settings like WindowSize: a non-positive interval would panic
+	// time.NewTicker in enquireLoop (crashing the process right after a successful bind), and a
+	// maxMissed of 0 would tear the bind down on the very first missed keep-alive.
+	enquireInterval := cfg.EnquireLinkInterval
+	if enquireInterval <= 0 {
+		enquireInterval = 30 * time.Second
+	}
+	maxMissed := cfg.EnquireLinkMaxMissed
+	if maxMissed < 1 {
+		maxMissed = 1
+	}
 	b := &bind{
 		conn:            conn,
 		respTimeout:     cfg.ResponseTimeout,
@@ -78,8 +89,8 @@ func dialAndBind(ctx context.Context, cfg BindConfig, logger *slog.Logger) (*bin
 		window:          make(chan struct{}, window),
 		pending:         make(map[uint32]chan smpp.PDU),
 		done:            make(chan struct{}),
-		enquireInterval: cfg.EnquireLinkInterval,
-		maxMissed:       cfg.EnquireLinkMaxMissed,
+		enquireInterval: enquireInterval,
+		maxMissed:       maxMissed,
 	}
 
 	b.wg.Add(2)
