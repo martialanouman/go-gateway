@@ -102,9 +102,10 @@ func registerMessages(api huma.API, s *server) {
 		Summary:     "Get message status",
 		Tags:        []string{"Messages"},
 		Security:    bearerSecurity(),
-		// 422 (malformed id) and 500 (CDR read failure) are real handler outcomes; declare them so the
-		// served contract matches what the endpoint can return.
-		Errors: []int{http.StatusUnauthorized, http.StatusNotFound, http.StatusUnprocessableEntity, http.StatusInternalServerError},
+		// 403 (suspended account / disabled REST channel, from the shared apiKeyMiddleware), 422
+		// (malformed id) and 500 (CDR read failure) are all real outcomes of an authenticated get;
+		// declare them so the served contract matches what the endpoint can return.
+		Errors: []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity, http.StatusInternalServerError},
 	}, s.getMessage)
 }
 
