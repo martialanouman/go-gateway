@@ -20,6 +20,7 @@ import (
 
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/observability"
+	"github.com/martialanouman/go-gateway/internal/platform/buildinfo"
 	"github.com/martialanouman/go-gateway/internal/restapi"
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
@@ -27,9 +28,6 @@ import (
 )
 
 const serviceName = "rest-api-svc"
-
-// version is reported by the public health endpoint. A real build stamps it via -ldflags.
-var version = "dev"
 
 // Accepted-row worker pool sizing. The pool absorbs bursts off the request path; these are ample for
 // M2 and become configurable when throughput tuning matters.
@@ -97,7 +95,7 @@ func run() error {
 		Accepted:   accepted,
 		Tracer:     tracer,
 		Logger:     logger,
-		Version:    version,
+		Version:    buildinfo.Version,
 	})
 
 	srv := &http.Server{
@@ -119,16 +117,27 @@ func run() error {
 
 	logger.InfoContext(ctx, "starting", "config", cfg)
 
-	var wg sync.WaitGroup
-	errCh := make(chan error, 3)
-	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	// Ordered shutdown matters here: the HTTP listener must stop and fully drain BEFORE the
+	// accepted-row writer, or a request that earns its 202 during the drain would call
+	// Accepted.Enqueue after the writer's workers have already exited — silently dropping the
+	// accepted CDR row and re-opening the 404 window get-message is meant to close. So each
+	// component gets its own cancel, detached from the signal context, and shutdown drives them in
+	// order: HTTP → writer → ops. (Cancelling one shared context would stop all three at once.)
+	httpCtx, cancelHTTP := context.WithCancel(context.WithoutCancel(ctx))
+	writerCtx, cancelWriter := context.WithCancel(context.WithoutCancel(ctx))
+	opsCtx, cancelOps := context.WithCancel(context.WithoutCancel(ctx))
+	defer cancelOps()
+	defer cancelWriter()
+	defer cancelHTTP()
 
-	supervise := func(name string, fn func(context.Context) error) {
+	errCh := make(chan error, 3)
+	var httpWg, writerWg, opsWg sync.WaitGroup
+
+	supervise := func(wg *sync.WaitGroup, name string, c context.Context, fn func(context.Context) error) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := fn(runCtx); err != nil {
+			if err := fn(c); err != nil {
 				select {
 				case errCh <- fmt.Errorf("%s: %w", name, err):
 				default:
@@ -137,9 +146,9 @@ func run() error {
 		}()
 	}
 
-	supervise("ops server", func(c context.Context) error { return ops.Run(c, cfg.ShutdownTimeout) })
-	supervise("accepted writer", accepted.Run)
-	supervise("rest http server", func(c context.Context) error { return runHTTP(c, srv, cfg.ShutdownTimeout, logger) })
+	supervise(&opsWg, "ops server", opsCtx, func(c context.Context) error { return ops.Run(c, cfg.ShutdownTimeout) })
+	supervise(&writerWg, "accepted writer", writerCtx, accepted.Run)
+	supervise(&httpWg, "rest http server", httpCtx, func(c context.Context) error { return runHTTP(c, srv, cfg.ShutdownTimeout, logger) })
 
 	var runErr error
 	select {
@@ -148,8 +157,15 @@ func run() error {
 	case runErr = <-errCh:
 		logger.Error("component failed, shutting down", "err", runErr)
 	}
-	cancel()
-	wg.Wait()
+
+	// Drain in order: stop the HTTP server and let it finish in-flight requests (their Enqueue lands
+	// in the writer's buffer), then stop the writer so it drains that buffer, then the ops server.
+	cancelHTTP()
+	httpWg.Wait()
+	cancelWriter()
+	writerWg.Wait()
+	cancelOps()
+	opsWg.Wait()
 
 	if runErr != nil {
 		return runErr
