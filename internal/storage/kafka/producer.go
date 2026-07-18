@@ -56,14 +56,7 @@ func (p *Producer) Ping(ctx context.Context) error { return p.cl.Ping(ctx) }
 // ReadyCheck adapts the producer to a readiness probe: Kafka is a vital dependency of every service
 // that accepts messages, since a message cannot be durably accepted when it is gone (plan §1.5).
 func (p *Producer) ReadyCheck(name string, timeout time.Duration) observability.ReadinessCheck {
-	return observability.ReadinessCheck{
-		Name: name,
-		Probe: func(ctx context.Context) error {
-			ctx, cancel := context.WithTimeout(ctx, timeout)
-			defer cancel()
-			return p.cl.Ping(ctx)
-		},
-	}
+	return observability.PingCheck(name, timeout, p.cl.Ping)
 }
 
 // Close flushes any buffered records and releases the client. Because Produce is synchronous there

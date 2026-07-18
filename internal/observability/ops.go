@@ -39,6 +39,20 @@ type ReadinessCheck struct {
 	Probe func(ctx context.Context) error
 }
 
+// PingCheck builds a ReadinessCheck that calls ping under a per-probe timeout. Every store adapter's
+// readiness check is this exact shape (a timeout-bounded ping), so they delegate here rather than
+// re-inlining it; each passes its own client's Ping.
+func PingCheck(name string, timeout time.Duration, ping func(context.Context) error) ReadinessCheck {
+	return ReadinessCheck{
+		Name: name,
+		Probe: func(ctx context.Context) error {
+			ctx, cancel := context.WithTimeout(ctx, timeout)
+			defer cancel()
+			return ping(ctx)
+		},
+	}
+}
+
 // OpsServer serves the operations endpoints every service exposes on the ops port (plan §1.4):
 //
 //	/metrics  Prometheus exposition

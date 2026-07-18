@@ -56,12 +56,5 @@ func NewPool(ctx context.Context, cfg config.Postgres) (*pgxpool.Pool, error) {
 // check anticipated swapping to once a client existed. It honours ctx and bounds itself at timeout,
 // because the kubelet calls it every few seconds.
 func PingCheck(name string, pool *pgxpool.Pool, timeout time.Duration) observability.ReadinessCheck {
-	return observability.ReadinessCheck{
-		Name: name,
-		Probe: func(ctx context.Context) error {
-			ctx, cancel := context.WithTimeout(ctx, timeout)
-			defer cancel()
-			return pool.Ping(ctx)
-		},
-	}
+	return observability.PingCheck(name, timeout, pool.Ping)
 }

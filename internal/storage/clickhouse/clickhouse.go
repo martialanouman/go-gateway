@@ -46,14 +46,7 @@ func (c *Conn) Ping(ctx context.Context) error { return c.conn.Ping(ctx) }
 // reads the CDR) and for writing the enroute/failed rows; it is NOT on the 202-acceptance path,
 // which depends only on the durable Kafka write (§1.10).
 func (c *Conn) ReadyCheck(name string, timeout time.Duration) observability.ReadinessCheck {
-	return observability.ReadinessCheck{
-		Name: name,
-		Probe: func(ctx context.Context) error {
-			ctx, cancel := context.WithTimeout(ctx, timeout)
-			defer cancel()
-			return c.conn.Ping(ctx)
-		},
-	}
+	return observability.PingCheck(name, timeout, c.conn.Ping)
 }
 
 // Close releases the connection pool.
