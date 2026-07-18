@@ -358,11 +358,17 @@ func (c Config) clickhouseProblems() []string {
 		problems = append(problems, fmt.Sprintf("CLICKHOUSE_TIMEOUT %s must be positive", c.ClickHouse.Timeout))
 	}
 	// The dev-default guard travels with its section, as for Postgres/Kafka: a service that declared
-	// ClickHouse will connect to it, and must not connect to loopback in production.
-	if c.Environment.IsProduction() &&
-		len(c.ClickHouse.Addr) == 1 && c.ClickHouse.Addr[0] == defaultClickHouseAddr {
-		problems = append(problems, "CLICKHOUSE_ADDR is the localhost development default: "+
-			"set it explicitly in production")
+	// ClickHouse will connect to it, and must not connect to loopback in production. Addr is a list, so
+	// a single loopback entry among several must still be rejected — otherwise a production node
+	// silently reads/writes CDRs against a local store.
+	if c.Environment.IsProduction() {
+		for _, addr := range c.ClickHouse.Addr {
+			if addr == defaultClickHouseAddr {
+				problems = append(problems, "CLICKHOUSE_ADDR contains the localhost development default "+
+					"("+defaultClickHouseAddr+"): set every node explicitly in production")
+				break
+			}
+		}
 	}
 	return problems
 }

@@ -259,6 +259,11 @@ func TestProductionRejectsLocalhostDefaults(t *testing.T) {
 			"KAFKA_BROKERS": "",
 		}, "KAFKA_BROKERS"},
 		{"both defaulted", nil, "POSTGRES_URL"},
+		{"clickhouse localhost among nodes", map[string]string{
+			"POSTGRES_URL":    "postgres://u:p@db:5432/gw",
+			"KAFKA_BROKERS":   "k1:9092",
+			"CLICKHOUSE_ADDR": "ch1:9000,localhost:9000",
+		}, "CLICKHOUSE_ADDR"},
 	}
 
 	for _, tc := range tests {
