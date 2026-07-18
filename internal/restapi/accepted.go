@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/martialanouman/go-gateway/internal/platform/e164"
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
 )
 
@@ -15,9 +16,10 @@ const (
 	// acceptedBatchSize flushes a worker's buffer once it reaches this many rows: one ClickHouse
 	// round-trip amortizes the prepare+send cost across the batch instead of paying it per row.
 	acceptedBatchSize = 128
-	// acceptedFlushInterval bounds how long a partial batch waits before flushing, so low traffic
-	// still lands rows promptly (get-message must not 404 a just-accepted message for long).
-	acceptedFlushInterval = 250 * time.Millisecond
+	// acceptedFlushInterval bounds how long a partial batch waits before flushing. It is short so a
+	// just-accepted message lands almost immediately at low traffic (keeping the get-message 404 window
+	// tight); under load the batch fills to acceptedBatchSize and flushes on size well before this.
+	acceptedFlushInterval = 25 * time.Millisecond
 )
 
 // AcceptedWriter writes the accepted CDR row off the request path (§1.10): submit-messages earns
@@ -131,11 +133,19 @@ func (w *AcceptedWriter) work(ctx context.Context) {
 	}
 }
 
-// writeBatch flushes a batch of rows on a bounded, detached context: the requests that produced the
-// rows have long returned, so the write must not depend on their (cancelled) contexts, but it must
-// still be bounded. A failed batch is logged and dropped — the connector's enroute row supersedes an
-// accepted projection, so get-message shows enroute a moment later, never a persistent 404.
+// writeBatch normalizes each row's destination — the heavy phone parse the request path deliberately
+// deferred here — then flushes the batch on a bounded, detached context: the requests that produced
+// the rows have long returned, so the write must not depend on their (cancelled) contexts, but it
+// must still be bounded. Normalization is best-effort: a number that fails to parse keeps its raw
+// form (the router is the single rejection authority). A failed batch is logged and dropped — the
+// connector's enroute row supersedes an accepted projection, so get-message shows enroute a moment
+// later, never a persistent 404.
 func (w *AcceptedWriter) writeBatch(rows []clickhouse.CDRRow) {
+	for i := range rows {
+		if norm, err := e164.Normalize(rows[i].DestAddr); err == nil {
+			rows[i].DestAddr = norm
+		}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), acceptedWriteTimeout)
 	defer cancel()
 	if err := w.cdr.InsertBatch(ctx, rows); err != nil {

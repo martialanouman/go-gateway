@@ -417,7 +417,8 @@ components:
           default: true
         validity_period:
           type: [string, "null"]
-          description: SMPP validity period (relative duration or absolute). Null = carrier default.
+          maxLength: 16
+          description: SMPP validity period (relative duration or absolute), max 16 chars. Null = carrier default.
         priority:
           type: integer
           minimum: 0

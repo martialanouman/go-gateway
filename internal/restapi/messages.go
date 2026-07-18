@@ -7,7 +7,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/martialanouman/go-gateway/internal/pipeline"
-	"github.com/martialanouman/go-gateway/internal/platform/e164"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 	"github.com/martialanouman/go-gateway/internal/platform/errors/humaerr"
 	"github.com/martialanouman/go-gateway/internal/platform/msg"
@@ -23,7 +22,7 @@ type SubmitMessageRequest struct {
 	Text               string  `json:"text" minLength:"1" maxLength:"2000" doc:"Message body."`
 	Encoding           string  `json:"encoding,omitempty" enum:"auto,gsm7,ucs2,binary" default:"auto"`
 	RegisteredDelivery *bool   `json:"registered_delivery,omitempty" doc:"Request a DLR (default true)."`
-	ValidityPeriod     *string `json:"validity_period,omitempty"`
+	ValidityPeriod     *string `json:"validity_period,omitempty" maxLength:"16" doc:"SMPP validity period (relative or absolute), max 16 chars."`
 	Priority           int     `json:"priority,omitempty" minimum:"0" maximum:"3" default:"0"`
 	ClientRef          *string `json:"client_ref,omitempty" maxLength:"128"`
 	DataCoding         *int    `json:"data_coding,omitempty" minimum:"0" maximum:"255"`
@@ -131,8 +130,10 @@ type getMessageOutput struct {
 }
 
 // getMessage reads the current status of a message from the CDR, scoped to the caller's account.
-// A message that does not exist in the caller's scope is 404. Thanks to the accepted row (§1.10),
-// a just-accepted message is found here without a 404 window.
+// A message that does not exist in the caller's scope is 404. The accepted row (§1.10) is written
+// off the request path within a few tens of ms, so it closes the just-accepted 404 window in the
+// common case; under saturation the row may be dropped and a just-accepted GET can 404 until the
+// connector's enroute row lands.
 func (s *server) getMessage(ctx context.Context, in *getMessageInput) (*getMessageOutput, error) {
 	principal, ok := principalFromContext(ctx)
 	if !ok {
@@ -157,15 +158,11 @@ func (s *server) getMessage(ctx context.Context, in *getMessageInput) (*getMessa
 }
 
 // acceptedRow builds the pre-dispatch accepted CDR row from the inbound envelope. The destination is
-// normalized best-effort to the same canonical form the router will store, so a message's accepted
-// row and its later enroute/rejected rows spell the destination the same way; the router stays the
-// single rejection authority, so a number that fails to normalize keeps its raw form here and still
-// earns its 202 (the router writes the rejected row). The body is never included (invariant a).
+// left as submitted here: the AcceptedWriter normalizes it off the request path (the phone parse is
+// too heavy to run inline at the ingest rate), to the same canonical form the router stores, so a
+// message spells its destination the same across all its lifecycle rows. The body is never included
+// (invariant a).
 func acceptedRow(env pipeline.InboundMT) clickhouse.CDRRow {
-	dest := env.To
-	if norm, err := e164.Normalize(env.To); err == nil {
-		dest = norm
-	}
 	return clickhouse.CDRRow{
 		MessageID:    env.MessageID,
 		TraceID:      env.TraceID,
@@ -173,7 +170,7 @@ func acceptedRow(env pipeline.InboundMT) clickhouse.CDRRow {
 		CustomerID:   env.CustomerID,
 		Direction:    clickhouse.DirectionMT,
 		SourceAddr:   env.From,
-		DestAddr:     dest,
+		DestAddr:     env.To,
 		SubmittedAt:  env.SubmittedAt,
 		Status:       clickhouse.StatusAccepted,
 		SegmentCount: 1,
