@@ -87,7 +87,7 @@ func spanContains(s sdktrace.ReadOnlySpan, secret string) bool {
 		return true
 	}
 	for _, a := range s.Attributes() {
-		if strings.Contains(string(a.Key), secret) || strings.Contains(a.Value.Emit(), secret) {
+		if strings.Contains(string(a.Key), secret) || strings.Contains(a.Value.String(), secret) {
 			return true
 		}
 	}
@@ -96,7 +96,7 @@ func spanContains(s sdktrace.ReadOnlySpan, secret string) bool {
 			return true
 		}
 		for _, a := range e.Attributes {
-			if strings.Contains(a.Value.Emit(), secret) {
+			if strings.Contains(a.Value.String(), secret) {
 				return true
 			}
 		}
