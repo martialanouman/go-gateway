@@ -684,6 +684,7 @@ TTL toDate(submitted_at) + INTERVAL 90 DAY;     -- CDR retention (configurable);
 -- =====================================================================================================
 /*
 -- Redis / Dragonfly (cluster mode):
+sess:{account_id}                                  -- sorted-set of "{pod_id}:{bind_id}" (score = expiry ts); atomic max_sessions quota at bind (Lua, §6.3, inv. d)
 session:{bind_id}                                  -- session metadata + TTL heartbeat
 ratelimit:{entity_type}:{entity_id}:{window}       -- atomic token-bucket counters (Lua)
 dedupe:{account_id}:{content_hash}                  -- short-TTL set for duplicate-message anti-spam
