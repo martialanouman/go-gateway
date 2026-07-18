@@ -69,10 +69,10 @@ type fakeCDRWriter struct {
 	rows []clickhouse.CDRRow
 }
 
-func (f *fakeCDRWriter) Insert(_ context.Context, row clickhouse.CDRRow) error {
+func (f *fakeCDRWriter) InsertBatch(_ context.Context, rows []clickhouse.CDRRow) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.rows = append(f.rows, row)
+	f.rows = append(f.rows, rows...)
 	return nil
 }
 
@@ -218,6 +218,11 @@ func TestSubmitAcceptedAndDurable(t *testing.T) {
 	waitFor(t, func() bool { return h.cdrWrite.count() == 1 }, "accepted CDR row")
 	if h.cdrWrite.rows[0].Status != clickhouse.StatusAccepted {
 		t.Errorf("accepted row status: got %q", h.cdrWrite.rows[0].Status)
+	}
+	// The accepted row's destination is normalized to the same canonical (no-"+") form the router
+	// stores, so a message spells its destination the same across all its lifecycle rows.
+	if got := h.cdrWrite.rows[0].DestAddr; got != "2250700000000" {
+		t.Errorf("accepted row dest = %q, want the normalized 2250700000000", got)
 	}
 }
 

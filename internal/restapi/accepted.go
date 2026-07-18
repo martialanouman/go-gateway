@@ -8,9 +8,17 @@ import (
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
 )
 
-// acceptedWriteTimeout bounds a single accepted-row insert, including during the shutdown drain, so
-// a stalled ClickHouse cannot hold the service from terminating.
-const acceptedWriteTimeout = 5 * time.Second
+const (
+	// acceptedWriteTimeout bounds a single accepted-row batch flush, including during the shutdown
+	// drain, so a stalled ClickHouse cannot hold the service from terminating.
+	acceptedWriteTimeout = 5 * time.Second
+	// acceptedBatchSize flushes a worker's buffer once it reaches this many rows: one ClickHouse
+	// round-trip amortizes the prepare+send cost across the batch instead of paying it per row.
+	acceptedBatchSize = 128
+	// acceptedFlushInterval bounds how long a partial batch waits before flushing, so low traffic
+	// still lands rows promptly (get-message must not 404 a just-accepted message for long).
+	acceptedFlushInterval = 250 * time.Millisecond
+)
 
 // AcceptedWriter writes the accepted CDR row off the request path (§1.10): submit-messages earns
 // its 202 from the durable Kafka write and never blocks on ClickHouse, so the accepted row is a
@@ -27,9 +35,10 @@ type AcceptedWriter struct {
 	logger  *slog.Logger
 }
 
-// CDRWriter appends CDR rows. *clickhouse.CDRWriter satisfies it.
+// CDRWriter writes a batch of CDR rows. *clickhouse.CDRWriter satisfies it. The accepted-row pool
+// only ever writes in batches, off the request path.
 type CDRWriter interface {
-	Insert(ctx context.Context, row clickhouse.CDRRow) error
+	InsertBatch(ctx context.Context, rows []clickhouse.CDRRow) error
 }
 
 // NewAcceptedWriter builds a pool with the given worker count and queue depth. Both are clamped to
@@ -81,18 +90,40 @@ func (w *AcceptedWriter) Run(ctx context.Context) error {
 }
 
 func (w *AcceptedWriter) work(ctx context.Context) {
+	buf := make([]clickhouse.CDRRow, 0, acceptedBatchSize)
+	ticker := time.NewTicker(acceptedFlushInterval)
+	defer ticker.Stop()
+
+	// flush writes the buffer on a detached, bounded context (see writeBatch): the requests are gone.
+	flush := func() { //nolint:contextcheck // detached on purpose: the request context is gone
+		if len(buf) == 0 {
+			return
+		}
+		w.writeBatch(buf)
+		buf = buf[:0]
+	}
+
 	for {
 		select {
 		case row := <-w.ch:
-			w.write(row) //nolint:contextcheck // detached on purpose: the request context is gone
+			buf = append(buf, row)
+			if len(buf) >= acceptedBatchSize {
+				flush()
+			}
+		case <-ticker.C:
+			flush()
 		case <-ctx.Done():
-			// Drain what is buffered, then exit. Each worker drains until the channel is empty; a
-			// concurrent receive by another worker is safe.
+			// Drain what is buffered, then flush the remainder and exit. Each worker drains until the
+			// channel is empty; a concurrent receive by another worker is safe.
 			for {
 				select {
 				case row := <-w.ch:
-					w.write(row) //nolint:contextcheck // detached: run the write to completion on shutdown
+					buf = append(buf, row)
+					if len(buf) >= acceptedBatchSize {
+						flush()
+					}
 				default:
+					flush()
 					return
 				}
 			}
@@ -100,12 +131,14 @@ func (w *AcceptedWriter) work(ctx context.Context) {
 	}
 }
 
-// write inserts one row on a bounded, detached context: the request that produced the row has long
-// returned, so the write must not depend on its (cancelled) context, but it must still be bounded.
-func (w *AcceptedWriter) write(row clickhouse.CDRRow) {
+// writeBatch flushes a batch of rows on a bounded, detached context: the requests that produced the
+// rows have long returned, so the write must not depend on their (cancelled) contexts, but it must
+// still be bounded. A failed batch is logged and dropped — the connector's enroute row supersedes an
+// accepted projection, so get-message shows enroute a moment later, never a persistent 404.
+func (w *AcceptedWriter) writeBatch(rows []clickhouse.CDRRow) {
 	ctx, cancel := context.WithTimeout(context.Background(), acceptedWriteTimeout)
 	defer cancel()
-	if err := w.cdr.Insert(ctx, row); err != nil {
-		w.logger.Error("accepted-row write failed", "message_id", row.MessageID, "err", err)
+	if err := w.cdr.InsertBatch(ctx, rows); err != nil {
+		w.logger.Error("accepted-row batch write failed", "rows", len(rows), "err", err)
 	}
 }

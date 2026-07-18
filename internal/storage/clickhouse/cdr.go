@@ -132,8 +132,9 @@ type CDRWriter struct {
 // NewCDRWriter builds a writer over conn.
 func NewCDRWriter(c *Conn) *CDRWriter { return &CDRWriter{conn: c.conn} }
 
-// Insert writes one CDR row, deriving the version from the status rank. A single-row batch is used
-// per call: correct and simple for M2's volume. High-throughput batching is a later optimization.
+// Insert writes one CDR row, deriving the version from the status rank. The synchronous single-row
+// path is what the router and connector use, where the row must be durable before the Kafka offset
+// is committed (§7.3); high-volume callers off the request path use InsertBatch instead.
 func (w *CDRWriter) Insert(ctx context.Context, row CDRRow) error {
 	if !row.Status.Valid() {
 		return fmt.Errorf("clickhouse: unknown CDR status %q", row.Status)
@@ -142,14 +143,7 @@ func (w *CDRWriter) Insert(ctx context.Context, row CDRRow) error {
 	if err != nil {
 		return fmt.Errorf("clickhouse: prepare cdr batch: %w", err)
 	}
-	if err := batch.Append(
-		row.MessageID, row.TraceID, row.AccountID, row.CustomerID,
-		string(row.Direction), row.SourceAddr, row.DestAddr, row.OriginalSourceAddr,
-		row.ConnectorID, row.RouteID, row.RoutingScriptID, row.SubmittedAt, row.DeliveredAt,
-		string(row.Status), row.ErrorCode, row.SegmentCount, string(row.Encoding),
-		row.ContentCiphertext, row.ContentKeyID, row.LatencyMs, boolToUint8(row.Billed),
-		row.CreditsCharged, row.Status.Rank(),
-	); err != nil {
+	if err := appendCDR(batch, row); err != nil {
 		_ = batch.Abort()
 		return fmt.Errorf("clickhouse: append cdr row: %w", err)
 	}
@@ -157,6 +151,47 @@ func (w *CDRWriter) Insert(ctx context.Context, row CDRRow) error {
 		return fmt.Errorf("clickhouse: send cdr row: %w", err)
 	}
 	return nil
+}
+
+// InsertBatch writes multiple CDR rows as one batch — a single prepare and a single send instead of
+// two round-trips per row — for the accepted-row writer's off-request-path projections. It is
+// all-or-nothing like Insert: a bad row aborts the batch, and the (best-effort) caller logs and
+// drops it. An empty slice is a no-op.
+func (w *CDRWriter) InsertBatch(ctx context.Context, rows []CDRRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	batch, err := w.conn.PrepareBatch(ctx, "INSERT INTO cdr ("+cdrColumns+")")
+	if err != nil {
+		return fmt.Errorf("clickhouse: prepare cdr batch: %w", err)
+	}
+	for _, row := range rows {
+		if !row.Status.Valid() {
+			_ = batch.Abort()
+			return fmt.Errorf("clickhouse: unknown CDR status %q", row.Status)
+		}
+		if err := appendCDR(batch, row); err != nil {
+			_ = batch.Abort()
+			return fmt.Errorf("clickhouse: append cdr row: %w", err)
+		}
+	}
+	if err := batch.Send(); err != nil {
+		return fmt.Errorf("clickhouse: send cdr batch: %w", err)
+	}
+	return nil
+}
+
+// appendCDR appends one row's columns to a prepared cdr batch, in cdrColumns order, deriving the
+// ReplacingMergeTree version from the status rank.
+func appendCDR(batch driver.Batch, row CDRRow) error {
+	return batch.Append(
+		row.MessageID, row.TraceID, row.AccountID, row.CustomerID,
+		string(row.Direction), row.SourceAddr, row.DestAddr, row.OriginalSourceAddr,
+		row.ConnectorID, row.RouteID, row.RoutingScriptID, row.SubmittedAt, row.DeliveredAt,
+		string(row.Status), row.ErrorCode, row.SegmentCount, string(row.Encoding),
+		row.ContentCiphertext, row.ContentKeyID, row.LatencyMs, boolToUint8(row.Billed),
+		row.CreditsCharged, row.Status.Rank(),
+	)
 }
 
 // CDRReader reads the current status of a message.

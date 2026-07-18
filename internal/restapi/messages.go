@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/martialanouman/go-gateway/internal/pipeline"
+	"github.com/martialanouman/go-gateway/internal/platform/e164"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 	"github.com/martialanouman/go-gateway/internal/platform/errors/humaerr"
 	"github.com/martialanouman/go-gateway/internal/platform/msg"
@@ -156,9 +157,15 @@ func (s *server) getMessage(ctx context.Context, in *getMessageInput) (*getMessa
 }
 
 // acceptedRow builds the pre-dispatch accepted CDR row from the inbound envelope. The destination is
-// the address as submitted (normalization happens in the router); the body is never included
-// (invariant a).
+// normalized best-effort to the same canonical form the router will store, so a message's accepted
+// row and its later enroute/rejected rows spell the destination the same way; the router stays the
+// single rejection authority, so a number that fails to normalize keeps its raw form here and still
+// earns its 202 (the router writes the rejected row). The body is never included (invariant a).
 func acceptedRow(env pipeline.InboundMT) clickhouse.CDRRow {
+	dest := env.To
+	if norm, err := e164.Normalize(env.To); err == nil {
+		dest = norm
+	}
 	return clickhouse.CDRRow{
 		MessageID:    env.MessageID,
 		TraceID:      env.TraceID,
@@ -166,7 +173,7 @@ func acceptedRow(env pipeline.InboundMT) clickhouse.CDRRow {
 		CustomerID:   env.CustomerID,
 		Direction:    clickhouse.DirectionMT,
 		SourceAddr:   env.From,
-		DestAddr:     env.To,
+		DestAddr:     dest,
 		SubmittedAt:  env.SubmittedAt,
 		Status:       clickhouse.StatusAccepted,
 		SegmentCount: 1,

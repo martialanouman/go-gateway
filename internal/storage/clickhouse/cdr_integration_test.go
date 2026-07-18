@@ -86,6 +86,67 @@ func TestCDRVersionedReadWrite(t *testing.T) {
 	}
 }
 
+// TestCDRInsertBatch writes several accepted rows in one batch (the accepted-writer's hot path) and
+// reads each back, proving the multi-row prepare+send lands every row.
+func TestCDRInsertBatch(t *testing.T) {
+	cfg := chtest.Config(t)
+	conn, err := clickhouse.NewConn(cfg)
+	if err != nil {
+		t.Fatalf("new conn: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	writer := clickhouse.NewCDRWriter(conn)
+	reader := clickhouse.NewCDRReader(conn)
+	ctx := context.Background()
+
+	customerID := uuid.New()
+	accountID := uuid.New()
+	submittedAt := time.Now().UTC().Truncate(time.Millisecond)
+
+	const n = 5
+	ids := make([]uuid.UUID, n)
+	rows := make([]clickhouse.CDRRow, n)
+	for i := range rows {
+		ids[i] = uuid.New()
+		rows[i] = clickhouse.CDRRow{
+			MessageID:    ids[i],
+			TraceID:      uuid.New(),
+			AccountID:    accountID,
+			CustomerID:   customerID,
+			Direction:    clickhouse.DirectionMT,
+			SourceAddr:   "GATEWAY",
+			DestAddr:     "2250700000000",
+			SubmittedAt:  submittedAt,
+			Status:       clickhouse.StatusAccepted,
+			SegmentCount: 1,
+			Encoding:     clickhouse.EncodingGSM7,
+		}
+	}
+
+	if err := writer.InsertBatch(ctx, rows); err != nil {
+		t.Fatalf("InsertBatch: %v", err)
+	}
+
+	for i, id := range ids {
+		got, found, err := reader.Current(ctx, customerID, accountID, id)
+		if err != nil {
+			t.Fatalf("read row %d: %v", i, err)
+		}
+		if !found {
+			t.Fatalf("row %d (%s) not found after InsertBatch", i, id)
+		}
+		if got.Status != clickhouse.StatusAccepted {
+			t.Errorf("row %d status: got %q want accepted", i, got.Status)
+		}
+	}
+
+	// An empty batch is a no-op, not an error.
+	if err := writer.InsertBatch(ctx, nil); err != nil {
+		t.Errorf("InsertBatch(nil) = %v, want nil (no-op)", err)
+	}
+}
+
 func TestCDRCurrentScopedToAccount(t *testing.T) {
 	cfg := chtest.Config(t)
 	conn, err := clickhouse.NewConn(cfg)
