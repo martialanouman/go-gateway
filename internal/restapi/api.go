@@ -4,7 +4,6 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -13,6 +12,7 @@ import (
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 
 	"github.com/martialanouman/go-gateway/internal/platform/errors/humaerr"
+	"github.com/martialanouman/go-gateway/internal/platform/humaspec"
 )
 
 // serverURL is the contract's declared server. Mounting chi at /v1 and registering operations at
@@ -70,7 +70,7 @@ func New(deps Deps) (*chi.Mux, huma.API) {
 	registerMessages(api, srv)
 	registerHealth(api, srv)
 
-	pruneBoilerplateResponses(api)
+	humaspec.Prune(api, codesMetaKey)
 
 	return root, api
 }
@@ -90,7 +90,9 @@ func registerMessages(api huma.API, s *server) {
 		Security:    bearerSecurity(),
 		// M2 serves single submissions; batch (BatchAcceptResult) arrives later.
 		DefaultStatus: http.StatusAccepted,
-		Errors:        []int{http.StatusBadRequest, http.StatusUnauthorized, http.StatusPaymentRequired, http.StatusForbidden, http.StatusUnprocessableEntity, http.StatusTooManyRequests},
+		// 500 (encode failure) and 503 (ingest log unavailable) are real handler outcomes, so they
+		// belong in the served contract — a client generated from the spec must know to retry them.
+		Errors: []int{http.StatusBadRequest, http.StatusUnauthorized, http.StatusPaymentRequired, http.StatusForbidden, http.StatusUnprocessableEntity, http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusServiceUnavailable},
 	}, s.submit)
 
 	register(api, huma.Operation{
@@ -100,7 +102,9 @@ func registerMessages(api huma.API, s *server) {
 		Summary:     "Get message status",
 		Tags:        []string{"Messages"},
 		Security:    bearerSecurity(),
-		Errors:      []int{http.StatusUnauthorized, http.StatusNotFound},
+		// 422 (malformed id) and 500 (CDR read failure) are real handler outcomes; declare them so the
+		// served contract matches what the endpoint can return.
+		Errors: []int{http.StatusUnauthorized, http.StatusNotFound, http.StatusUnprocessableEntity, http.StatusInternalServerError},
 	}, s.getMessage)
 }
 
@@ -116,54 +120,13 @@ func registerHealth(api huma.API, s *server) {
 	}, s.health)
 }
 
-// The registration helpers below mirror internal/adminapi: they record each operation's intended
-// error codes so pruneBoilerplateResponses can strip the extras huma injects, making the served
-// spec match the contract exactly for the operations M2 implements.
-
+// codesMetaKey is the metadata key under which register stashes an operation's intended error codes
+// for humaspec.Prune. It is per-API: the public and admin contracts declare different error sets.
 const codesMetaKey = "m2_error_codes"
 
+// register wires an operation, recording its intended error codes so humaspec.Prune can strip the
+// boilerplate responses huma injects. It is a thin, package-specific binding of humaspec.Register to
+// this API's metadata key (Go has no generic methods, so the key cannot be carried on a receiver).
 func register[I, O any](api huma.API, op huma.Operation, handler func(context.Context, *I) (*O, error)) {
-	if op.Metadata == nil {
-		op.Metadata = map[string]any{}
-	}
-	op.Metadata[codesMetaKey] = append([]int(nil), op.Errors...)
-	huma.Register(api, op, handler)
-}
-
-func pruneBoilerplateResponses(api huma.API) {
-	for _, item := range api.OpenAPI().Paths {
-		for _, op := range operationsOf(item) {
-			if op == nil {
-				continue
-			}
-			allowed := declaredCodes(op)
-			for code := range op.Responses {
-				if !allowed[code] {
-					delete(op.Responses, code)
-				}
-			}
-		}
-	}
-}
-
-func declaredCodes(op *huma.Operation) map[string]bool {
-	allowed := map[string]bool{}
-	for code := range op.Responses {
-		if len(code) == 3 && (code[0] == '2' || code[0] == '3') {
-			allowed[code] = true
-		}
-	}
-	if codes, ok := op.Metadata[codesMetaKey].([]int); ok {
-		for _, code := range codes {
-			allowed[strconv.Itoa(code)] = true
-		}
-	}
-	return allowed
-}
-
-func operationsOf(item *huma.PathItem) []*huma.Operation {
-	return []*huma.Operation{
-		item.Get, item.Post, item.Put, item.Patch, item.Delete,
-		item.Head, item.Options, item.Trace,
-	}
+	humaspec.Register(api, codesMetaKey, op, handler)
 }
