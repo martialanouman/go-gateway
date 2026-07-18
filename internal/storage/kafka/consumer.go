@@ -66,7 +66,10 @@ func (c *Consumer) Run(ctx context.Context, handle Handler) error {
 			return fmt.Errorf("kafka: fetch in group %s: %w", c.group, err)
 		}
 
-		var procErr error
+		var (
+			procErr error
+			handled []*kgo.Record
+		)
 		fetches.EachRecord(func(kr *kgo.Record) {
 			if procErr != nil {
 				return // stop at the first failure; its offset stays uncommitted for redelivery
@@ -76,16 +79,26 @@ func (c *Consumer) Run(ctx context.Context, handle Handler) error {
 				procErr = fmt.Errorf("handle %s[%d]@%d: %w", kr.Topic, kr.Partition, kr.Offset, err)
 				return
 			}
-			if err := c.cl.CommitRecords(ctx, kr); err != nil {
-				procErr = fmt.Errorf("commit %s[%d]@%d: %w", kr.Topic, kr.Partition, kr.Offset, err)
-				return
-			}
+			handled = append(handled, kr)
 		})
+
+		// Commit the successfully-handled prefix in one request rather than one broker round-trip per
+		// record — at the 8000 msg/s target a per-record commit RTT would dominate the consume loop. The
+		// at-least-once guarantee is unchanged: only handled records are committed, and anything past the
+		// first failure stays uncommitted for redelivery.
+		if len(handled) > 0 {
+			if err := c.cl.CommitRecords(ctx, handled...); err != nil {
+				if ctx.Err() != nil {
+					return nil
+				}
+				return fmt.Errorf("kafka: commit in group %s: %w", c.group, err)
+			}
+		}
 		if procErr != nil {
-			// A handler or commit that fails purely because ctx was cancelled is a graceful stop, not a
-			// fault: PollFetches can hand back a batch a hair before cancellation propagates, so the
-			// downstream Produce/Submit or CommitRecords aborts with context.Canceled. Treat that like the
-			// post-fetch check above — return nil so the supervisor sees a clean shutdown, not a crash.
+			// A handler that fails purely because ctx was cancelled is a graceful stop, not a fault:
+			// PollFetches can hand back a batch a hair before cancellation propagates, so the downstream
+			// Produce/Submit aborts with context.Canceled. Treat that like the post-fetch check above —
+			// return nil so the supervisor sees a clean shutdown, not a crash.
 			if ctx.Err() != nil {
 				return nil
 			}
@@ -99,14 +112,7 @@ func (c *Consumer) Ping(ctx context.Context) error { return c.cl.Ping(ctx) }
 
 // ReadyCheck adapts the consumer to a readiness probe.
 func (c *Consumer) ReadyCheck(name string, timeout time.Duration) observability.ReadinessCheck {
-	return observability.ReadinessCheck{
-		Name: name,
-		Probe: func(ctx context.Context) error {
-			ctx, cancel := context.WithTimeout(ctx, timeout)
-			defer cancel()
-			return c.cl.Ping(ctx)
-		},
-	}
+	return observability.PingCheck(name, timeout, c.cl.Ping)
 }
 
 // Close leaves the group and releases the client. Because offsets are committed synchronously as
