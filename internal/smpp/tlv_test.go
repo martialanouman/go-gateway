@@ -31,7 +31,7 @@ func TestTLVMarshalRoundTripInResp(t *testing.T) {
 		{Tag: 0x1400, Value: []byte{}},
 		{Tag: TagReceiptedMessageID, Value: []byte("smsc-0001")},
 	}
-	b, err := Marshal(PDU{Sequence: 1, Body: &SubmitSMResp{messageIDResp{MessageID: "m", TLVs: want}}})
+	b, err := Marshal(PDU{Sequence: 1, Body: &SubmitSMResp{MessageIDResp{MessageID: "m", TLVs: want}}})
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}

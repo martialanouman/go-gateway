@@ -9,29 +9,29 @@ import (
 // reused as fuzz seeds.
 func samplePDUs() []PDU {
 	return []PDU{
-		{Sequence: 1, Body: &BindTransmitter{bindFields{
+		{Sequence: 1, Body: &BindTransmitter{BindFields{
 			SystemID: "esme01", Password: "s3cret", SystemType: "SMPP",
 			InterfaceVersion: InterfaceVersion34, AddrTON: TONInternational, AddrNPI: NPIISDN,
 		}}},
-		{Sequence: 2, Body: &BindReceiver{bindFields{SystemID: "esme01", Password: "s3cret"}}},
-		{Sequence: 3, Body: &BindTransceiver{bindFields{SystemID: "esme01", Password: "s3cret"}}},
-		{Sequence: 1, Body: &BindTransmitterResp{bindRespFields{SystemID: "SMSC-A",
+		{Sequence: 2, Body: &BindReceiver{BindFields{SystemID: "esme01", Password: "s3cret"}}},
+		{Sequence: 3, Body: &BindTransceiver{BindFields{SystemID: "esme01", Password: "s3cret"}}},
+		{Sequence: 1, Body: &BindTransmitterResp{BindRespFields{SystemID: "SMSC-A",
 			TLVs: TLVList{{Tag: TagSCInterfaceVersion, Value: []byte{0x34}}}}}},
-		{Sequence: 2, Body: &BindReceiverResp{bindRespFields{SystemID: "SMSC-A"}}},
-		{Sequence: 3, Body: &BindTransceiverResp{bindRespFields{SystemID: "SMSC-A"}}},
-		{Sequence: 10, Body: &SubmitSM{smFields{
+		{Sequence: 2, Body: &BindReceiverResp{BindRespFields{SystemID: "SMSC-A"}}},
+		{Sequence: 3, Body: &BindTransceiverResp{BindRespFields{SystemID: "SMSC-A"}}},
+		{Sequence: 10, Body: &SubmitSM{SMFields{
 			SourceAddrTON: TONAlphanumeric, SourceAddr: "GATEWAY",
 			DestAddrTON: TONInternational, DestAddrNPI: NPIISDN, DestinationAddr: "22507000000",
 			ESMClass: ESMClassDefault, RegisteredDelivery: RegisteredDeliveryReceipt,
 			DataCoding: DataCodingGSM7, ShortMessage: []byte("hello world"),
 		}}},
-		{Sequence: 10, Body: &SubmitSMResp{messageIDResp{MessageID: "smsc-msg-0001"}}},
-		{Sequence: 11, Body: &DeliverSM{smFields{
+		{Sequence: 10, Body: &SubmitSMResp{MessageIDResp{MessageID: "smsc-msg-0001"}}},
+		{Sequence: 11, Body: &DeliverSM{SMFields{
 			SourceAddr: "22507000000", DestinationAddr: "GATEWAY",
 			ESMClass: ESMClassMCDeliveryReceipt, ShortMessage: []byte("id:smsc-msg-0001 stat:DELIVRD"),
 			TLVs: TLVList{{Tag: TagReceiptedMessageID, Value: []byte("smsc-msg-0001")}},
 		}}},
-		{Sequence: 11, Body: &DeliverSMResp{messageIDResp{}}},
+		{Sequence: 11, Body: &DeliverSMResp{MessageIDResp{}}},
 		{Sequence: 20, Body: &EnquireLink{}},
 		{Sequence: 20, Body: &EnquireLinkResp{}},
 		{Sequence: 30, Body: &Unbind{}},
@@ -73,7 +73,7 @@ func TestMarshalUnmarshalRoundTrip(t *testing.T) {
 }
 
 func TestSubmitSMFieldsPreserved(t *testing.T) {
-	want := &SubmitSM{smFields{
+	want := &SubmitSM{SMFields{
 		ServiceType: "WAP", SourceAddr: "GATEWAY", DestinationAddr: "22507000000",
 		ESMClass: ESMClassUDHIndicator, DataCoding: DataCodingUCS2,
 		ShortMessage: []byte{0x01, 0x02, 0x00, 0x03}, // includes a NUL: proves octet-string handling
@@ -105,7 +105,7 @@ func TestSubmitSMFieldsPreserved(t *testing.T) {
 func TestMessagePayloadTLVForLargeBody(t *testing.T) {
 	// A body larger than 254 octets travels in the message_payload TLV with an empty short_message.
 	large := bytes.Repeat([]byte("A"), 400)
-	sm := &SubmitSM{smFields{
+	sm := &SubmitSM{SMFields{
 		DestinationAddr: "22507000000",
 		TLVs:            TLVList{{Tag: TagMessagePayload, Value: large}},
 	}}
@@ -124,7 +124,7 @@ func TestMessagePayloadTLVForLargeBody(t *testing.T) {
 }
 
 func TestMarshalRejectsOverlongShortMessage(t *testing.T) {
-	sm := &SubmitSM{smFields{ShortMessage: bytes.Repeat([]byte("x"), 255)}}
+	sm := &SubmitSM{SMFields{ShortMessage: bytes.Repeat([]byte("x"), 255)}}
 	if _, err := Marshal(PDU{Body: sm}); err != ErrMessageTooLong {
 		t.Fatalf("got %v, want ErrMessageTooLong", err)
 	}
@@ -164,7 +164,7 @@ func TestUnmarshalRejectsMalformed(t *testing.T) {
 }
 
 func TestUnmarshalTruncatedSubmitSM(t *testing.T) {
-	full, _ := Marshal(PDU{Sequence: 1, Body: &SubmitSM{smFields{DestinationAddr: "123", ShortMessage: []byte("hi")}}})
+	full, _ := Marshal(PDU{Sequence: 1, Body: &SubmitSM{SMFields{DestinationAddr: "123", ShortMessage: []byte("hi")}}})
 	// Chop the body mid-field and fix command_length to the truncated size: must fail cleanly.
 	for cut := headerLen + 1; cut < len(full); cut++ {
 		truncated := append([]byte{}, full[:cut]...)

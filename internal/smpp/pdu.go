@@ -39,9 +39,9 @@ func newBody(id CommandID) (Body, error) {
 	}
 }
 
-// bindFields is the shared body of the three bind requests (SMPP v3.4 §4.1.1); they differ only in
+// BindFields is the shared body of the three bind requests (SMPP v3.4 §4.1.1); they differ only in
 // command id.
-type bindFields struct {
+type BindFields struct {
 	SystemID         string
 	Password         string
 	SystemType       string
@@ -51,7 +51,7 @@ type bindFields struct {
 	AddressRange     string
 }
 
-func (b *bindFields) marshal(w *writer) {
+func (b *BindFields) marshal(w *writer) {
 	w.cOctetString(b.SystemID)
 	w.cOctetString(b.Password)
 	w.cOctetString(b.SystemType)
@@ -61,7 +61,7 @@ func (b *bindFields) marshal(w *writer) {
 	w.cOctetString(b.AddressRange)
 }
 
-func (b *bindFields) unmarshal(r *reader) error {
+func (b *BindFields) unmarshal(r *reader) error {
 	b.SystemID = r.cOctetString(16)
 	b.Password = r.cOctetString(9)
 	b.SystemType = r.cOctetString(13)
@@ -73,56 +73,56 @@ func (b *bindFields) unmarshal(r *reader) error {
 }
 
 // BindTransmitter opens a transmit-only session (the ESME may submit_sm).
-type BindTransmitter struct{ bindFields }
+type BindTransmitter struct{ BindFields }
 
 func (*BindTransmitter) commandID() CommandID { return CmdBindTransmitter }
 
 // BindReceiver opens a receive-only session (the ESME receives deliver_sm).
-type BindReceiver struct{ bindFields }
+type BindReceiver struct{ BindFields }
 
 func (*BindReceiver) commandID() CommandID { return CmdBindReceiver }
 
 // BindTransceiver opens a bidirectional session.
-type BindTransceiver struct{ bindFields }
+type BindTransceiver struct{ BindFields }
 
 func (*BindTransceiver) commandID() CommandID { return CmdBindTransceiver }
 
-// bindRespFields is the shared body of the three bind responses: the SMSC's system_id and optional
+// BindRespFields is the shared body of the three bind responses: the SMSC's system_id and optional
 // TLVs (typically sc_interface_version).
-type bindRespFields struct {
+type BindRespFields struct {
 	SystemID string
 	TLVs     TLVList
 }
 
-func (b *bindRespFields) marshal(w *writer) {
+func (b *BindRespFields) marshal(w *writer) {
 	w.cOctetString(b.SystemID)
 	b.TLVs.marshal(w)
 }
 
-func (b *bindRespFields) unmarshal(r *reader) error {
+func (b *BindRespFields) unmarshal(r *reader) error {
 	b.SystemID = r.cOctetString(16)
 	b.TLVs = readTLVs(r)
 	return r.err
 }
 
 // BindTransmitterResp answers a BindTransmitter.
-type BindTransmitterResp struct{ bindRespFields }
+type BindTransmitterResp struct{ BindRespFields }
 
 func (*BindTransmitterResp) commandID() CommandID { return CmdBindTransmitterResp }
 
 // BindReceiverResp answers a BindReceiver.
-type BindReceiverResp struct{ bindRespFields }
+type BindReceiverResp struct{ BindRespFields }
 
 func (*BindReceiverResp) commandID() CommandID { return CmdBindReceiverResp }
 
 // BindTransceiverResp answers a BindTransceiver.
-type BindTransceiverResp struct{ bindRespFields }
+type BindTransceiverResp struct{ BindRespFields }
 
 func (*BindTransceiverResp) commandID() CommandID { return CmdBindTransceiverResp }
 
-// smFields is the shared body of submit_sm and deliver_sm (SMPP v3.4 §4.4 / §4.6): identical wire
+// SMFields is the shared body of submit_sm and deliver_sm (SMPP v3.4 §4.4 / §4.6): identical wire
 // layout, distinguished only by direction and command id.
-type smFields struct {
+type SMFields struct {
 	ServiceType          string
 	SourceAddrTON        uint8
 	SourceAddrNPI        uint8
@@ -146,7 +146,7 @@ type smFields struct {
 	TLVs         TLVList
 }
 
-func (m *smFields) marshal(w *writer) {
+func (m *SMFields) marshal(w *writer) {
 	if len(m.ShortMessage) > 254 {
 		w.err = ErrMessageTooLong
 		return
@@ -172,7 +172,7 @@ func (m *smFields) marshal(w *writer) {
 	m.TLVs.marshal(w)
 }
 
-func (m *smFields) unmarshal(r *reader) error {
+func (m *SMFields) unmarshal(r *reader) error {
 	m.ServiceType = r.cOctetString(6)
 	m.SourceAddrTON = r.byte()
 	m.SourceAddrNPI = r.byte()
@@ -196,41 +196,41 @@ func (m *smFields) unmarshal(r *reader) error {
 }
 
 // SubmitSM carries a mobile-terminated message from the ESME to the SMSC.
-type SubmitSM struct{ smFields }
+type SubmitSM struct{ SMFields }
 
 func (*SubmitSM) commandID() CommandID { return CmdSubmitSM }
 
 // DeliverSM carries a mobile-originated message or a delivery receipt from the SMSC to the ESME;
 // the ESMClassMCDeliveryReceipt bit tells them apart (M4).
-type DeliverSM struct{ smFields }
+type DeliverSM struct{ SMFields }
 
 func (*DeliverSM) commandID() CommandID { return CmdDeliverSM }
 
-// messageIDResp is the shared body of submit_sm_resp and deliver_sm_resp: the assigned message id
+// MessageIDResp is the shared body of submit_sm_resp and deliver_sm_resp: the assigned message id
 // (empty for deliver_sm_resp) and optional TLVs.
-type messageIDResp struct {
+type MessageIDResp struct {
 	MessageID string
 	TLVs      TLVList
 }
 
-func (m *messageIDResp) marshal(w *writer) {
+func (m *MessageIDResp) marshal(w *writer) {
 	w.cOctetString(m.MessageID)
 	m.TLVs.marshal(w)
 }
 
-func (m *messageIDResp) unmarshal(r *reader) error {
+func (m *MessageIDResp) unmarshal(r *reader) error {
 	m.MessageID = r.cOctetString(65)
 	m.TLVs = readTLVs(r)
 	return r.err
 }
 
 // SubmitSMResp returns the SMSC-assigned message id for a submit_sm.
-type SubmitSMResp struct{ messageIDResp }
+type SubmitSMResp struct{ MessageIDResp }
 
 func (*SubmitSMResp) commandID() CommandID { return CmdSubmitSMResp }
 
 // DeliverSMResp acknowledges a deliver_sm; its message id is conventionally empty.
-type DeliverSMResp struct{ messageIDResp }
+type DeliverSMResp struct{ MessageIDResp }
 
 func (*DeliverSMResp) commandID() CommandID { return CmdDeliverSMResp }
 
