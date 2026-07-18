@@ -91,6 +91,17 @@ func (m *Migrator) Down() error {
 	return nil
 }
 
+// Version reports the current schema version and whether it is dirty.
+func (m *Migrator) Version() (uint, bool, error) {
+	return m.m.Version()
+}
+
+// Force sets the migration version without running migrations, clearing a dirty flag after a manual
+// repair.
+func (m *Migrator) Force(version int) error {
+	return m.m.Force(version)
+}
+
 // Close releases the migrator's own connection. It does not touch the service's Conn.
 func (m *Migrator) Close() error {
 	srcErr, dbErr := m.m.Close()

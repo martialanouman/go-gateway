@@ -42,8 +42,12 @@ down-clean: ## Stop the dependencies AND delete their data
 	$(COMPOSE) down -v
 
 .PHONY: migrate
-migrate: ## Apply the pending migrations (make migrate CMD=down to reverse them)
-	go run ./cmd/migrate -dir $(MIGRATIONS) $(or $(CMD),up)
+migrate: ## Apply the pending Postgres migrations (make migrate CMD=down to reverse them)
+	go run ./cmd/migrate -store postgres -dir $(MIGRATIONS) $(or $(CMD),up)
+
+.PHONY: migrate-clickhouse
+migrate-clickhouse: ## Apply the pending ClickHouse CDR migrations (CMD=down to reverse them)
+	go run ./cmd/migrate -store clickhouse $(or $(CMD),up)
 
 ## ---------------------------------------------------------------------------- build & run
 
@@ -55,6 +59,10 @@ build: ## Compile every cmd/
 run: ## Run a service: make run SVC=router-svc
 	@if [ -z "$(SVC)" ]; then echo "usage: make run SVC=router-svc"; exit 2; fi
 	go run ./cmd/$(SVC)
+
+.PHONY: fake-smsc
+fake-smsc: ## Run the in-repo fake SMSC (SMPP peer) on :2775 for local pipeline runs
+	go run ./cmd/fake-smsc
 
 .PHONY: generate
 generate: ## Run every code generator (sqlc, go:generate)
