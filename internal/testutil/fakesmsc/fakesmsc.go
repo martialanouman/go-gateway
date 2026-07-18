@@ -160,12 +160,12 @@ func (s *Server) handle(c *conn, pdu smpp.PDU) bool {
 			BindRespFields: smpp.BindRespFields{SystemID: systemID},
 		}})
 	case *smpp.BindReceiver:
-		c.canRecv = true
+		s.markReceiver(c)
 		s.reply(c, smpp.PDU{Sequence: pdu.Sequence, Body: &smpp.BindReceiverResp{
 			BindRespFields: smpp.BindRespFields{SystemID: systemID},
 		}})
 	case *smpp.BindTransceiver:
-		c.canRecv = true
+		s.markReceiver(c)
 		s.reply(c, smpp.PDU{Sequence: pdu.Sequence, Body: &smpp.BindTransceiverResp{
 			BindRespFields: smpp.BindRespFields{SystemID: systemID},
 		}})
@@ -183,6 +183,15 @@ func (s *Server) handle(c *conn, pdu smpp.PDU) bool {
 		s.logf("fakesmsc: ignoring command %#x", pdu.CommandID())
 	}
 	return false
+}
+
+// markReceiver flags a connection as bound to receive deliver_sm. It writes c.canRecv under s.mu,
+// the same lock sendToReceivers reads it under, so the bind goroutine and a test-driven SendDLR do
+// not race on the field.
+func (s *Server) markReceiver(c *conn) {
+	s.mu.Lock()
+	c.canRecv = true
+	s.mu.Unlock()
 }
 
 func (s *Server) handleSubmit(c *conn, seq uint32, body *smpp.SubmitSM) {
