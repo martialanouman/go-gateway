@@ -62,10 +62,11 @@ type Config struct {
 	// terminationGracePeriodSeconds, or the kubelet SIGKILLs mid-drain (guide de codage §5).
 	ShutdownTimeout time.Duration `env:"SHUTDOWN_TIMEOUT" envDefault:"30s"`
 
-	OTel     OTel     `envPrefix:"OTEL_"`
-	Postgres Postgres `envPrefix:"POSTGRES_"`
-	Kafka    Kafka    `envPrefix:"KAFKA_"`
-	HTTP     HTTP     `envPrefix:"HTTP_"`
+	OTel       OTel       `envPrefix:"OTEL_"`
+	Postgres   Postgres   `envPrefix:"POSTGRES_"`
+	Kafka      Kafka      `envPrefix:"KAFKA_"`
+	ClickHouse ClickHouse `envPrefix:"CLICKHOUSE_"`
+	HTTP       HTTP       `envPrefix:"HTTP_"`
 }
 
 // OTel configures tracing export. The variable names follow the OpenTelemetry specification so
@@ -93,8 +94,9 @@ type OTel struct {
 const (
 	// #nosec G101 -- not a credential: the throwaway localhost pair from docker-compose.yml.
 	// Real deployments must override it, which Validate enforces on the production tier.
-	defaultPostgresURL = "postgres://gateway:gateway@localhost:5432/gateway?sslmode=disable"
-	defaultKafkaBroker = "localhost:9092"
+	defaultPostgresURL    = "postgres://gateway:gateway@localhost:5432/gateway?sslmode=disable"
+	defaultKafkaBroker    = "localhost:9092"
+	defaultClickHouseAddr = "localhost:9000"
 )
 
 // Postgres is the control-plane database (plan §1). It is also the target of the migration
@@ -114,6 +116,22 @@ type Kafka struct {
 
 	// Timeout bounds readiness probes and, later, client operations.
 	Timeout time.Duration `env:"TIMEOUT" envDefault:"3s"`
+}
+
+// ClickHouse is the CDR / analytics sink (plan §1.10). It is a vital dependency of the services
+// that read or write the CDR: rest-api-svc reads it for get-message and writes the accepted row,
+// connector-pool-svc writes the enroute/rejected/failed row.
+type ClickHouse struct {
+	// Addr is the native-protocol endpoint list ("host:port", port 9000 by default).
+	Addr []string `env:"ADDR" envDefault:"localhost:9000" envSeparator:","`
+
+	Database string `env:"DATABASE" envDefault:"gateway"`
+	Username string `env:"USERNAME" envDefault:"gateway"`
+	// Password is secret-bearing and never logged.
+	Password string `env:"PASSWORD" envDefault:"gateway"`
+
+	// Timeout bounds readiness probes and dial/query operations.
+	Timeout time.Duration `env:"TIMEOUT" envDefault:"5s"`
 }
 
 // HTTP configures a service's client-facing REST listener. Only the HTTP services declare
@@ -147,12 +165,13 @@ const (
 	SectionOTel Section = 1 << iota
 	SectionPostgres
 	SectionKafka
+	SectionClickHouse
 	SectionHTTP
 
 	// SectionAll is what a caller declaring nothing gets. It must include every section, or
 	// Validate() — which runs validate(SectionAll) — would quietly stop being a full check. The
 	// cost of a section a binary does not use is nil: its fields carry valid defaults.
-	SectionAll = SectionOTel | SectionPostgres | SectionKafka | SectionHTTP
+	SectionAll = SectionOTel | SectionPostgres | SectionKafka | SectionClickHouse | SectionHTTP
 )
 
 // Load reads the configuration for serviceName from the environment and validates the sections it
@@ -207,6 +226,9 @@ func (c Config) validate(sections Section) error {
 	}
 	if sections&SectionKafka != 0 {
 		problems = append(problems, c.kafkaProblems()...)
+	}
+	if sections&SectionClickHouse != 0 {
+		problems = append(problems, c.clickhouseProblems()...)
 	}
 	if sections&SectionHTTP != 0 {
 		problems = append(problems, c.httpProblems()...)
@@ -317,6 +339,34 @@ func (c Config) kafkaProblems() []string {
 	return problems
 }
 
+func (c Config) clickhouseProblems() []string {
+	var problems []string
+
+	if len(c.ClickHouse.Addr) == 0 {
+		problems = append(problems, "CLICKHOUSE_ADDR is empty")
+	}
+	for _, a := range c.ClickHouse.Addr {
+		if strings.TrimSpace(a) == "" {
+			problems = append(problems, "CLICKHOUSE_ADDR contains an empty entry")
+			break
+		}
+	}
+	if strings.TrimSpace(c.ClickHouse.Database) == "" {
+		problems = append(problems, "CLICKHOUSE_DATABASE is empty")
+	}
+	if c.ClickHouse.Timeout <= 0 {
+		problems = append(problems, fmt.Sprintf("CLICKHOUSE_TIMEOUT %s must be positive", c.ClickHouse.Timeout))
+	}
+	// The dev-default guard travels with its section, as for Postgres/Kafka: a service that declared
+	// ClickHouse will connect to it, and must not connect to loopback in production.
+	if c.Environment.IsProduction() &&
+		len(c.ClickHouse.Addr) == 1 && c.ClickHouse.Addr[0] == defaultClickHouseAddr {
+		problems = append(problems, "CLICKHOUSE_ADDR is the localhost development default: "+
+			"set it explicitly in production")
+	}
+	return problems
+}
+
 func (c Config) httpProblems() []string {
 	var problems []string
 
@@ -373,6 +423,10 @@ func (c Config) LogValue() slog.Value {
 		slog.String("otel_endpoint", c.OTel.Endpoint),
 		slog.Bool("postgres_url_set", strings.TrimSpace(c.Postgres.URL) != ""),
 		slog.Any("kafka_brokers", c.Kafka.Brokers),
+		slog.Any("clickhouse_addr", c.ClickHouse.Addr),
+		slog.String("clickhouse_database", c.ClickHouse.Database),
+		// The ClickHouse password is a secret: log only whether one is set.
+		slog.Bool("clickhouse_password_set", c.ClickHouse.Password != ""),
 		slog.Int("http_port", c.HTTP.Port),
 		// The tokens themselves are secrets and never logged: only whether any are configured, which
 		// is all a boot diagnosis needs.

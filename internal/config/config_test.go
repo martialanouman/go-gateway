@@ -20,6 +20,7 @@ var knownVars = []string{
 	"OTEL_TRACES_SAMPLER_ARG",
 	"POSTGRES_URL", "POSTGRES_MAX_CONNS", "POSTGRES_TIMEOUT",
 	"KAFKA_BROKERS", "KAFKA_TIMEOUT",
+	"CLICKHOUSE_ADDR", "CLICKHOUSE_DATABASE", "CLICKHOUSE_USERNAME", "CLICKHOUSE_PASSWORD", "CLICKHOUSE_TIMEOUT",
 	"HTTP_PORT", "HTTP_READ_HEADER_TIMEOUT", "HTTP_ADMIN_TOKENS",
 }
 
@@ -91,6 +92,7 @@ func TestLoadFromEnvironment(t *testing.T) {
 		"POSTGRES_MAX_CONNS":          "42",
 		"KAFKA_BROKERS":               "k1:9092,k2:9092,k3:9092",
 		"KAFKA_TIMEOUT":               "7s",
+		"CLICKHOUSE_ADDR":             "ch1:9000,ch2:9000",
 		"HTTP_PORT":                   "8090",
 		"HTTP_READ_HEADER_TIMEOUT":    "3s",
 		"HTTP_ADMIN_TOKENS":           "tok-one:admin:read|admin:write,tok-two:admin:read",
@@ -131,6 +133,9 @@ func TestLoadFromEnvironment(t *testing.T) {
 	}
 	if cfg.Kafka.Timeout != 7*time.Second {
 		t.Errorf("Kafka.Timeout = %s, want 7s", cfg.Kafka.Timeout)
+	}
+	if len(cfg.ClickHouse.Addr) != 2 {
+		t.Errorf("ClickHouse.Addr = %v, want 2 entries", cfg.ClickHouse.Addr)
 	}
 }
 
@@ -353,6 +358,7 @@ func TestDisabledOTelSkipsExporterValidation(t *testing.T) {
 		"OTEL_EXPORTER_OTLP_INSECURE": "true",
 		"POSTGRES_URL":                "postgres://u:p@db:5432/gw",
 		"KAFKA_BROKERS":               "k1:9092",
+		"CLICKHOUSE_ADDR":             "ch1:9000",
 	})
 
 	cfg, err := config.Load("router-svc")
