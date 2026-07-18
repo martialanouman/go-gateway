@@ -108,12 +108,13 @@ func run() error {
 		Logger: logger,
 	})
 
-	// Vital dependencies (plan §1.5): Kafka (no work without it) and ClickHouse (the outcome is
-	// recorded there). A dead SMSC bind fails Run, which restarts the service — it is a liveness
-	// concern, not a readiness one.
+	// Vital dependencies (plan §1.5): Kafka (no work without it), ClickHouse (the outcome is recorded
+	// there) and the SMSC bind itself — the pool cannot deliver a single message without a live bind,
+	// and an idle-time bind drop would otherwise leave the pod Ready with nothing behind it.
 	ops, err := observability.NewOpsServer(cfg, logger,
 		consumer.ReadyCheck("kafka", cfg.Kafka.Timeout),
 		chConn.ReadyCheck("clickhouse", cfg.ClickHouse.Timeout),
+		observability.ReadinessCheck{Name: "smsc-bind", Probe: svc.BindReady},
 	)
 	if err != nil {
 		return fmt.Errorf("init ops server: %w", err)

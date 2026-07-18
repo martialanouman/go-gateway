@@ -6,8 +6,10 @@ package connectorpool
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 
 	"go.opentelemetry.io/otel/trace"
 
@@ -17,6 +19,9 @@ import (
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
 )
+
+// errBindNotReady is reported by the readiness probe while the SMSC bind is not established.
+var errBindNotReady = errors.New("connectorpool: smsc bind not established")
 
 // Consumer reads mt.routed. *kafka.Consumer satisfies it.
 type Consumer interface {
@@ -40,6 +45,11 @@ type Deps struct {
 // Service is the connector pool.
 type Service struct {
 	deps Deps
+
+	// bound reports whether the SMSC bind is currently established. It gates the readiness probe, so
+	// a bind that drops — including an idle-time drop no in-flight Submit would notice — takes the
+	// pod out of rotation until Run re-dials.
+	bound atomic.Bool
 }
 
 // New builds a Service. A nil logger defaults to slog.Default.
@@ -50,9 +60,24 @@ func New(deps Deps) *Service {
 	return &Service{deps: deps}
 }
 
+// BindReady is the readiness probe for the SMSC bind: nil while the bind is established, an error
+// once it is down. The connector pool cannot deliver a single message without a live bind, so this
+// is a vital readiness dependency (plan §1.5) — register it alongside Kafka and ClickHouse.
+func (s *Service) BindReady(context.Context) error {
+	if s.bound.Load() {
+		return nil
+	}
+	return errBindNotReady
+}
+
 // Run binds to the SMSC, then consumes mt.routed until ctx is cancelled, unbinding cleanly on exit.
 // A failure to bind returns an error (the service restarts); a per-message infrastructure failure
 // leaves the offset uncommitted for reprocessing.
+//
+// The bind is also watched independently of the consumer: if it drops while idle — no mt.routed
+// flowing, so no Submit is in flight to surface the failure — the consumer would otherwise block on
+// Kafka forever with a dead bind while the pod stayed Ready. When that happens Run flips readiness,
+// tears the consumer down and returns an error so the supervisor re-dials.
 func (s *Service) Run(ctx context.Context) error {
 	b, err := dialAndBind(ctx, s.deps.Bind, s.deps.Logger)
 	if err != nil {
@@ -64,7 +89,26 @@ func (s *Service) Run(ctx context.Context) error {
 	//nolint:contextcheck // deliberate detach for the shutdown unbind
 	defer b.Close()
 
-	return s.deps.Consumer.Run(ctx, s.handler(b))
+	s.bound.Store(true)
+	defer s.bound.Store(false)
+
+	consumerCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	consumerErr := make(chan error, 1)
+	go func() { consumerErr <- s.deps.Consumer.Run(consumerCtx, s.handler(b)) }()
+
+	select {
+	case err := <-consumerErr:
+		return err
+	case <-b.done:
+		// The bind died on its own (idle drop, enquire_link timeout, peer close). Take the pod out of
+		// rotation immediately, unwind the consumer, and surface the failure so the service restarts.
+		s.bound.Store(false)
+		cancel()
+		<-consumerErr
+		return fmt.Errorf("connectorpool: smsc bind dropped: %w", errBindClosed)
+	}
 }
 
 func (s *Service) handler(b *bind) kafka.Handler {
@@ -135,7 +179,7 @@ func cdrRow(r pipeline.RoutedMT, resp smpp.PDU) clickhouse.CDRRow {
 		Status:       status,
 		ErrorCode:    errorCode,
 		SegmentCount: segmentCount(r.SegmentCount),
-		Encoding:     mapEncoding(r.Encoding),
+		Encoding:     clickhouse.EncodingOf(r.Encoding),
 		Billed:       false,
 	}
 }
@@ -171,17 +215,6 @@ func dataCoding(encoding string) uint8 {
 		return smpp.DataCodingBinary
 	default:
 		return smpp.DataCodingGSM7
-	}
-}
-
-func mapEncoding(encoding string) clickhouse.Encoding {
-	switch encoding {
-	case "ucs2":
-		return clickhouse.EncodingUCS2
-	case "binary":
-		return clickhouse.EncodingBinary
-	default:
-		return clickhouse.EncodingGSM7
 	}
 }
 
