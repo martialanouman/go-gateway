@@ -9,6 +9,8 @@ import (
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/google/uuid"
+
+	"github.com/martialanouman/go-gateway/internal/platform/encoding"
 )
 
 // Status is a CDR lifecycle status. It doubles as the source of the ReplacingMergeTree `version`
@@ -72,14 +74,14 @@ const (
 
 // EncodingOf projects a requested or resolved encoding string onto the CDR enum. Anything that is
 // not an explicit ucs2/binary — including "auto" and any unknown value — resolves to GSM-7, the M2
-// default. This is the single projection every producer of a CDR row uses (the router, the REST
-// accepted row, the connector outcome), so an added encoding is a one-site change here rather than
-// three switches drifting out of step.
-func EncodingOf(encoding string) Encoding {
-	switch encoding {
-	case "ucs2":
+// default. This is the projection every producer of a CDR row uses (the router, the REST accepted
+// row, the connector outcome); the encoding vocabulary itself is shared (internal/platform/encoding)
+// so an added value lands in one place.
+func EncodingOf(requested string) Encoding {
+	switch requested {
+	case encoding.UCS2:
 		return EncodingUCS2
-	case "binary":
+	case encoding.Binary:
 		return EncodingBinary
 	default:
 		return EncodingGSM7
