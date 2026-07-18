@@ -43,6 +43,7 @@ func TestCatalogueMatchesSpec(t *testing.T) {
 		{errs.ErrConflict, "conflict", 409, 0, false},
 		{errs.ErrInternal, "internal_error", 500, 0x08, true},
 		{errs.ErrServiceUnavailable, "service_unavailable", 503, 0x08, true},
+		{errs.ErrSubmitFailed, "submit_failed", 0, 0x45, false},
 	}
 
 	for _, tc := range tests {
@@ -78,6 +79,34 @@ func TestCatalogueMatchesSpec(t *testing.T) {
 	if got, want := len(errs.Codes()), len(tests); got != want {
 		t.Errorf("catalogue holds %d codes, spec §11.3 lists %d — a code was added without updating "+
 			"the spec transcription (or vice versa)", got, want)
+	}
+}
+
+// TestCodeFromSMPPStatus pins the outcome-side reverse mapping the connector records in
+// cdr.error_code: every result is a published contract code, never an ad-hoc string.
+func TestCodeFromSMPPStatus(t *testing.T) {
+	tests := []struct {
+		status uint32
+		want   errs.Code
+	}{
+		{errs.StatusThrottled, errs.ErrRateLimited},
+		{errs.StatusSubmitFail, errs.ErrSubmitFailed},
+		{errs.StatusInvalidDstAddr, errs.ErrInvalidDestination},
+		{errs.StatusInvalidSrcAddr, errs.ErrInvalidSource},
+		{errs.StatusMsgQueueFull, errs.ErrQueueFull},
+		{errs.StatusInvalidMsgLen, errs.ErrValidation},
+		{errs.StatusInsufficientCredit, errs.ErrInsufficientCredit},
+		{errs.StatusSysErr, errs.ErrInternal},
+		{errs.StatusInvalidCmdID, errs.ErrInternal}, // unmapped -> internal_error, not a raw hex string
+	}
+	for _, tc := range tests {
+		got := errs.CodeFromSMPPStatus(tc.status)
+		if got != tc.want {
+			t.Errorf("CodeFromSMPPStatus(%#x) = %q, want %q", tc.status, got, tc.want)
+		}
+		if !got.Valid() {
+			t.Errorf("CodeFromSMPPStatus(%#x) = %q, which is not a published code", tc.status, got)
+		}
 	}
 }
 

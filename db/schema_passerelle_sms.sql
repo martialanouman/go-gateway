@@ -625,9 +625,25 @@ END$$;
 COMMIT;
 
 -- =====================================================================================================
---  APPENDIX A — CDR / analytics store (ClickHouse dialect, §3.4)
---  NOT PostgreSQL. Do NOT run this against Postgres. Kept here as the authoritative CDR DDL reference.
+--  APPENDIX A — CDR / analytics store (ClickHouse dialect, §3.4) — VERSIONED write model (§1.10)
+--  NOT PostgreSQL. Do NOT run this against Postgres. Authoritative CDR DDL reference; the shipped
+--  ClickHouse migration (migrations/clickhouse/0001_cdr.up.sql) is derived from it and MUST agree.
 --  message_id / trace_id are UUIDv7 generated at ingress; the sink carries them, it does not generate.
+--
+--  Per-message mutation is infeasible at 8000 msg/s, so a status change is a NEW row with the same
+--  message_id and a higher `version`. ReplacingMergeTree keeps the highest-version row per sorting
+--  key; a read takes the latest version explicitly (argMax / FINAL), correct even before a merge.
+--
+--  `version` is a LIFECYCLE RANK, not a timestamp: the later stage always supersedes, independent of
+--  which service wrote the row or of clock skew between hosts. Ranks (spaced for M4+):
+--      accepted=10  enroute=20  rejected=20  rerouted=30  delivered=40  failed=50  expired=50  cancelled=60
+--
+--  `submitted_at` is IMMUTABLE and repeated on every row for a message, keeping all of a message's
+--  status rows in one partition even when a later status arrives on another day.
+--
+--  The status enum is the full REST MessageStatus lifecycle: it adds `accepted` (the pre-dispatch
+--  row that keeps GET /messages/{id} 404-free, §1.10) and `cancelled` (M3) to the six the
+--  connector/DLR path writes.
 -- =====================================================================================================
 /*
 CREATE TABLE cdr
@@ -645,7 +661,7 @@ CREATE TABLE cdr
     routing_script_id     Nullable(UUID),
     submitted_at          DateTime64(3),
     delivered_at          Nullable(DateTime64(3)),
-    status                Enum8('enroute'=1,'delivered'=2,'failed'=3,'expired'=4,'rejected'=5,'rerouted'=6),
+    status                Enum8('accepted'=1,'enroute'=2,'delivered'=3,'failed'=4,'expired'=5,'rejected'=6,'rerouted'=7,'cancelled'=8),
     error_code            Nullable(String),
     segment_count         UInt16,
     encoding              Enum8('gsm7'=1,'ucs2'=2,'binary'=3),
@@ -653,11 +669,12 @@ CREATE TABLE cdr
     content_key_id        Nullable(UUID),       -- which content_keys row decrypts it; destroyed key => unreadable
     latency_ms            Nullable(UInt32),
     billed                UInt8,                -- 0/1
-    credits_charged       Nullable(Int32)
+    credits_charged       Nullable(Int32),
+    version               UInt64                -- lifecycle rank; ReplacingMergeTree keeps the max
 )
-ENGINE = MergeTree
+ENGINE = ReplacingMergeTree(version)
 PARTITION BY toDate(submitted_at)               -- daily partitions, TTL tiering (§6.14)
-ORDER BY (customer_id, account_id, submitted_at, message_id)
+ORDER BY (customer_id, account_id, submitted_at, message_id)  -- all four immutable per message
 TTL toDate(submitted_at) + INTERVAL 90 DAY;     -- CDR retention (configurable); body has its own shorter TTL
 */
 

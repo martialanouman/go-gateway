@@ -3,7 +3,6 @@ package adminapi
 import (
 	"context"
 	"log/slog"
-	"strconv"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/martialanouman/go-gateway/internal/auth"
 	"github.com/martialanouman/go-gateway/internal/platform/errors/humaerr"
+	"github.com/martialanouman/go-gateway/internal/platform/humaspec"
 )
 
 // operatorScheme is the security scheme name shared by the contract and the middleware.
@@ -66,7 +66,7 @@ func New(deps Deps) (*chi.Mux, huma.API) {
 	registerRoutes(api, deps.Routes)
 	registerSenderIDs(api, deps.SenderIDs, deps.Customers)
 
-	pruneBoilerplateResponses(api)
+	humaspec.Prune(api, codesMetaKey)
 
 	return root, api
 }
@@ -93,68 +93,15 @@ func operatorSecurityScheme() *huma.SecurityScheme {
 	}
 }
 
-// pruneBoilerplateResponses narrows each operation's documented responses to exactly the set the
-// contract declares: its success status plus the error codes passed in Operation.Errors. Huma
-// otherwise injects a 500, a default, and a 422 (for input validation) that the M1 contract does not
-// enumerate, and the strict contract test compares the exact set of codes. This makes the served
-// spec, the compared spec, and the contract identical. It documents nothing away that matters: a
-// handler can still return any of those statuses; they are simply not enumerated, exactly as in the
-// contract.
-func pruneBoilerplateResponses(api huma.API) {
-	for _, item := range api.OpenAPI().Paths {
-		for _, op := range operationsOf(item) {
-			if op == nil {
-				continue
-			}
-			allowed := declaredCodes(op)
-			for code := range op.Responses {
-				if !allowed[code] {
-					delete(op.Responses, code)
-				}
-			}
-		}
-	}
-}
-
-// declaredCodes is the set of response codes an operation is meant to expose: its success status
-// (2xx/3xx already present) plus the codes recorded at registration. Reading op.Errors here would
-// not work — Huma appends its own 422 and 500 to that slice during registration, so the intended set
-// is captured separately in metadata by register().
-func declaredCodes(op *huma.Operation) map[string]bool {
-	allowed := map[string]bool{}
-	for code := range op.Responses {
-		if len(code) == 3 && (code[0] == '2' || code[0] == '3') {
-			allowed[code] = true
-		}
-	}
-	if codes, ok := op.Metadata[codesMetaKey].([]int); ok {
-		for _, code := range codes {
-			allowed[strconv.Itoa(code)] = true
-		}
-	}
-	return allowed
-}
-
-// codesMetaKey is where register() stashes an operation's intended error codes, before Huma mixes
-// its own into Operation.Errors.
+// codesMetaKey is the metadata key under which register stashes an operation's intended error codes
+// for humaspec.Prune. It is per-API: the public and admin contracts declare different error sets.
 const codesMetaKey = "m1_error_codes"
 
-// register wires an operation and records the error codes it is meant to expose, so
-// pruneBoilerplateResponses can later strip the codes Huma injects on top.
+// register wires an operation, recording its intended error codes so humaspec.Prune can strip the
+// boilerplate responses huma injects. It is a thin, package-specific binding of humaspec.Register to
+// this API's metadata key (Go has no generic methods, so the key cannot be carried on a receiver).
 func register[I, O any](api huma.API, op huma.Operation, handler func(context.Context, *I) (*O, error)) {
-	if op.Metadata == nil {
-		op.Metadata = map[string]any{}
-	}
-	op.Metadata[codesMetaKey] = append([]int(nil), op.Errors...)
-	huma.Register(api, op, handler)
-}
-
-// operationsOf returns the operations present on a path item.
-func operationsOf(item *huma.PathItem) []*huma.Operation {
-	return []*huma.Operation{
-		item.Get, item.Post, item.Put, item.Patch, item.Delete,
-		item.Head, item.Options, item.Trace,
-	}
+	humaspec.Register(api, codesMetaKey, op, handler)
 }
 
 // scopeSecurity is the per-operation security block for a required scope. It is both the published

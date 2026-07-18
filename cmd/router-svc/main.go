@@ -1,50 +1,47 @@
-// Command router-svc runs the MT pipeline.
-//
-// At M0 it processes no message: it is the canonical service skeleton every other cmd/ main is
-// modelled on (guide de codage §5). What it establishes is the lifecycle — load and validate
-// configuration, install telemetry, serve the ops port, run until SIGTERM, then drain within a
-// bounded window.
+// Command router-svc runs the MT pipeline: it consumes mt.inbound, normalises and routes each
+// message, and publishes mt.routed (M2). A message rejected by the pipeline gets a rejected CDR row
+// so get-message reflects it. The lifecycle — load and validate config, install telemetry, load the
+// route snapshot, serve the ops port, run the consumer, drain on SIGTERM — follows the canonical
+// skeleton (guide de codage §5).
 package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"log/slog"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 	"time"
 
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/observability"
+	"github.com/martialanouman/go-gateway/internal/pipeline"
+	"github.com/martialanouman/go-gateway/internal/platform/supervisor"
+	"github.com/martialanouman/go-gateway/internal/router"
+	"github.com/martialanouman/go-gateway/internal/routing"
+	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
+	"github.com/martialanouman/go-gateway/internal/storage/kafka"
+	"github.com/martialanouman/go-gateway/internal/storage/postgres"
 )
 
-// serviceName identifies this binary in logs, traces and metrics. It is a constant, not a
-// setting: telemetry attributed to a service that can be renamed at runtime is worthless.
+// serviceName identifies this binary in logs, traces and metrics, and is the consumer group id.
 const serviceName = "router-svc"
 
 func main() {
-	// main holds no defer: log.Fatal exits the process without running them, so the lifecycle —
-	// including signal handling — lives in run, where deferred cleanup actually happens.
 	if err := run(); err != nil {
-		// The only tolerated Fatal is startup (guide de codage §5/§10): the logger may not exist
-		// yet, and a service that cannot boot correctly must not boot at all.
 		log.Fatalf("%s: %v", serviceName, err)
 	}
 }
 
-// run holds the whole lifecycle so that every path returns an error instead of exiting, which is
-// what makes the sequence testable and the drain reachable.
 func run() error {
-	// SIGTERM is how Kubernetes asks a pod to stop; Interrupt is how a developer does. Both
-	// cancel ctx, which every goroutine below watches.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
 
-	cfg, err := config.Load(serviceName)
+	// Postgres for the startup route snapshot, Kafka for the data plane, ClickHouse for rejected
+	// CDR rows. No HTTP: the router has no client-facing listener.
+	cfg, err := config.Load(serviceName, config.SectionOTel, config.SectionPostgres, config.SectionKafka, config.SectionClickHouse)
 	if err != nil {
 		return err
 	}
@@ -59,91 +56,107 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("init tracing: %w", err)
 	}
-	// nolint:contextcheck // Detaching is the point: see drainTracing's comment.
-	defer drainTracing(shutdownTracing, cfg.ShutdownTimeout, logger)
+	//nolint:contextcheck // Detaching is the point: see DrainTracing's comment.
+	defer observability.DrainTracing(shutdownTracing, cfg.ShutdownTimeout, logger)
 
-	// Vital dependencies for THIS service (plan §1.5). Kafka only: with Redis down the router
-	// fails closed on throttling and messages stay durable in Kafka, so it is still doing its
-	// job; with Kafka gone it can neither read work nor durably hand it on, so it must leave the
-	// load balancer. Adding a non-vital dependency here would drain healthy pods over a
-	// degradation they could absorb.
-	//
-	// The probe is a TCP dial: M0 has no Kafka client yet, and reachability is the outage that
-	// matters. Swap it for a client-level ping when franz-go lands at M2.
-	kafkaCheck := observability.AnyTCPDialCheck("kafka", cfg.Kafka.Brokers, cfg.Kafka.Timeout)
+	pool, err := postgres.NewPool(ctx, cfg.Postgres)
+	if err != nil {
+		return fmt.Errorf("connect postgres: %w", err)
+	}
+	defer pool.Close()
 
-	ops, err := observability.NewOpsServer(cfg, logger, kafkaCheck)
+	chConn, err := clickhouse.NewConn(cfg.ClickHouse)
+	if err != nil {
+		return fmt.Errorf("connect clickhouse: %w", err)
+	}
+	defer func() { _ = chConn.Close() }()
+
+	producer, err := kafka.NewProducer(cfg.Kafka)
+	if err != nil {
+		return fmt.Errorf("kafka producer: %w", err)
+	}
+	defer producer.Close()
+
+	consumer, err := kafka.NewConsumer(cfg.Kafka, serviceName, kafka.TopicMTInbound)
+	if err != nil {
+		return fmt.Errorf("kafka consumer: %w", err)
+	}
+	defer consumer.Close()
+
+	// The route snapshot is loaded once at startup (config-sync's hot reload is a later milestone).
+	// Postgres is a hard boot dependency — the router cannot route without routes — so a transient
+	// outage must not permanently brick a (re)starting pod: retry with backoff until Postgres answers
+	// or the context is cancelled, rather than exiting on the first failure.
+	resolver, err := loadSnapshotWithRetry(ctx, postgres.NewRouteRepo(pool), logger)
+	if err != nil {
+		return fmt.Errorf("load route snapshot: %w", err)
+	}
+
+	tracer := observability.Tracer(nil, serviceName)
+	pl := pipeline.New(tracer, resolver)
+	rtr := router.New(router.Deps{
+		Consumer: consumer,
+		Producer: producer,
+		Pipeline: pl,
+		CDR:      clickhouse.NewCDRWriter(chConn),
+		Tracer:   tracer,
+		Logger:   logger,
+	})
+
+	// Vital dependency (plan §1.5): Kafka alone. The router's core job — consume mt.inbound,
+	// normalise, route, publish mt.routed — needs only Kafka and the in-memory snapshot. ClickHouse
+	// is touched only to write a rejected CDR row, and Postgres is startup-only (immutable snapshot);
+	// gating readiness on either would drain healthy pods over a store the happy path does not use.
+	ops, err := observability.NewOpsServer(cfg, logger,
+		consumer.ReadyCheck("kafka", cfg.Kafka.Timeout),
+	)
 	if err != nil {
 		return fmt.Errorf("init ops server: %w", err)
 	}
 
 	logger.InfoContext(ctx, "starting", "config", cfg)
 
-	// The ops server is the only long-running component at M0. Later milestones add the Kafka
-	// consumer and the pipeline here, each supervised the same way: started under ctx, awaited
-	// in the same group, so one failing component brings the service down predictably rather
-	// than leaving a half-dead pod behind.
-	var wg sync.WaitGroup
-	errCh := make(chan error, 1)
-
-	// Components run under a context run can cancel itself, so a component failing stops the
-	// others exactly as a signal does. Cancelling through signal.NotifyContext's stop would work
-	// too, but it also unregisters the handler, and a second SIGTERM would then fall back to the
-	// default kill.
-	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		if err := ops.Run(runCtx, cfg.ShutdownTimeout); err != nil {
-			// Buffered and non-blocking: the first failure is the one that matters, and a
-			// component must never block on reporting.
-			select {
-			case errCh <- fmt.Errorf("ops server: %w", err):
-			default:
-			}
-		}
-	}()
-
-	// Stop on whichever comes first. Waiting on ctx.Done alone would park a component's startup
-	// failure in errCh and keep the pod alive — serving nothing, probed by no one — until an
-	// operator noticed and sent SIGTERM.
-	var runErr error
-	select {
-	case <-ctx.Done():
-		logger.Info("shutting down", "reason", context.Cause(ctx))
-	case runErr = <-errCh:
-		logger.Error("component failed, shutting down", "err", runErr)
-	}
-	cancel()
-
-	// Every goroutine above exits on runCtx, so this returns within ShutdownTimeout.
-	wg.Wait()
-
-	if runErr != nil {
-		return runErr
-	}
-
-	// A component may still have failed on the way out.
-	select {
-	case err := <-errCh:
+	// Ops and the router pipeline tear down together — neither must outlive the other — so the
+	// unordered supervisor fits (guide de codage §5).
+	var g supervisor.Group
+	g.Add("ops server", func(c context.Context) error { return ops.Run(c, cfg.ShutdownTimeout) })
+	g.Add("router", rtr.Run)
+	if err := g.Run(ctx, logger); err != nil {
 		return err
-	default:
 	}
 
 	logger.Info("stopped")
 	return nil
 }
 
-// drainTracing flushes buffered spans on the way out. It runs on a context detached from the
-// cancelled service context — one that is already done would abort the flush immediately and
-// throw away the spans of the very shutdown an operator is trying to understand.
-func drainTracing(shutdown observability.ShutdownFunc, timeout time.Duration, logger *slog.Logger) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
+// loadSnapshotWithRetry loads the route snapshot, retrying transient failures with capped
+// exponential backoff until it succeeds or ctx is cancelled. Postgres is a hard boot dependency —
+// the router cannot route without routes — so retrying (rather than exiting on the first error)
+// keeps a (re)starting pod from being bricked by a transient Postgres outage.
+func loadSnapshotWithRetry(ctx context.Context, lister routing.RouteLister, logger *slog.Logger) (*routing.SnapshotResolver, error) {
+	const (
+		initialBackoff = 500 * time.Millisecond
+		maxBackoff     = 30 * time.Second
+	)
 
-	if err := shutdown(ctx); err != nil && !errors.Is(err, context.Canceled) {
-		logger.Warn("flush traces on shutdown", "err", err)
+	backoff := initialBackoff
+	for attempt := 1; ; attempt++ {
+		resolver, err := routing.LoadSnapshot(ctx, lister)
+		if err == nil {
+			return resolver, nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		logger.WarnContext(ctx, "route snapshot load failed, retrying",
+			"attempt", attempt, "backoff", backoff.String(), "err", err)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(backoff):
+		}
+		if backoff *= 2; backoff > maxBackoff {
+			backoff = maxBackoff
+		}
 	}
 }

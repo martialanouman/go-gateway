@@ -35,3 +35,28 @@ UPDATE control_plane.credentials SET
     rotated_at = now()
 WHERE account_id = @account_id AND id = @id
 RETURNING *;
+
+-- name: GetAPIKeyPrincipal :one
+-- REST authentication lookup (§1.9): the presented key is SHA-256 hashed by internal/credential,
+-- then found by that hash on the single api_key credential. The rotation grace window is honoured —
+-- the previous secret keeps working until grace_expires_at. Only the credential status is gated
+-- here (a revoked key is simply invalid); rest_enabled and the account/customer statuses are
+-- RETURNED, not filtered, so the verifier can answer with the right code (401 vs 403) rather than a
+-- blanket "not found".
+SELECT
+    a.id          AS account_id,
+    a.customer_id AS customer_id,
+    a.status      AS account_status,
+    a.rest_enabled AS rest_enabled,
+    c.status      AS customer_status
+FROM control_plane.credentials cr
+JOIN control_plane.smpp_accounts a ON a.id = cr.account_id
+JOIN control_plane.customers c ON c.id = a.customer_id
+WHERE cr.type = 'api_key'
+  AND cr.status = 'active'
+  AND (
+        cr.api_key_hash = @api_key_hash
+     OR (cr.previous_secret_hash = @api_key_hash
+         AND cr.grace_expires_at IS NOT NULL
+         AND cr.grace_expires_at > now())
+  );

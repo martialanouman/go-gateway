@@ -103,6 +103,8 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '422': { $ref: '#/components/responses/ValidationError' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
     get:
       tags: [Messages]
@@ -153,7 +155,10 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Message' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '500': { $ref: '#/components/responses/InternalError' }
 
   /messages/{id}/cancel:
     post:
@@ -330,6 +335,18 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
+    InternalError:
+      description: Unexpected server error (`internal_error`). Safe to retry.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    ServiceUnavailable:
+      description: |
+        A durable dependency (e.g. the ingest log) is temporarily unavailable
+        (`service_unavailable`); the message was not accepted. Safe to retry.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
 
   schemas:
 
@@ -400,7 +417,8 @@ components:
           default: true
         validity_period:
           type: [string, "null"]
-          description: SMPP validity period (relative duration or absolute). Null = carrier default.
+          maxLength: 16
+          description: SMPP validity period (relative duration or absolute), max 16 chars. Null = carrier default.
         priority:
           type: integer
           minimum: 0
