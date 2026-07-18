@@ -91,8 +91,13 @@ func TestCodeFromSMPPStatus(t *testing.T) {
 	}{
 		{errs.StatusThrottled, errs.ErrRateLimited},
 		{errs.StatusSubmitFail, errs.ErrSubmitFailed},
+		{errs.StatusInvalidDstAddr, errs.ErrInvalidDestination},
+		{errs.StatusInvalidSrcAddr, errs.ErrInvalidSource},
+		{errs.StatusMsgQueueFull, errs.ErrQueueFull},
+		{errs.StatusInvalidMsgLen, errs.ErrValidation},
+		{errs.StatusInsufficientCredit, errs.ErrInsufficientCredit},
 		{errs.StatusSysErr, errs.ErrInternal},
-		{0x0000000B, errs.ErrInternal}, // unmapped -> internal_error, not a raw hex string
+		{errs.StatusInvalidCmdID, errs.ErrInternal}, // unmapped -> internal_error, not a raw hex string
 	}
 	for _, tc := range tests {
 		got := errs.CodeFromSMPPStatus(tc.status)

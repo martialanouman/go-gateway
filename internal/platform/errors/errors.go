@@ -196,6 +196,16 @@ func CodeFromSMPPStatus(status uint32) Code {
 		return ErrRateLimited
 	case StatusSubmitFail:
 		return ErrSubmitFailed
+	case StatusInvalidDstAddr:
+		return ErrInvalidDestination
+	case StatusInvalidSrcAddr:
+		return ErrInvalidSource
+	case StatusMsgQueueFull:
+		return ErrQueueFull
+	case StatusInvalidMsgLen:
+		return ErrValidation
+	case StatusInsufficientCredit:
+		return ErrInsufficientCredit
 	default:
 		return ErrInternal
 	}
