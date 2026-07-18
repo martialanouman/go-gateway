@@ -1,0 +1,25 @@
+# Release artifacts (GoReleaser output).
+/dist/
+
+# Compiled service binaries built ad-hoc at the repo root (`go build ./cmd/<svc>`). The tracked
+# build path is GoReleaser's /dist; these root binaries are never checked in.
+/rest-api-svc
+/router-svc
+/connector-pool-svc
+/admin-api-svc
+/migrate
+/fake-smsc
+
+# Go build & test artifacts.
+*.test
+*.out
+coverage.*
+
+# Local environment overrides.
+.env
+.env.*
+
+# OS / editor cruft.
+.DS_Store
+*.swp
+.idea/
