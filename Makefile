@@ -13,6 +13,10 @@ COMPOSE     := docker compose
 GOLANGCI_VERSION   := v2.12.2
 SQLC_VERSION       := v1.30.0
 GOVULNCHECK_VERSION := latest
+BUF_VERSION              := v1.72.0
+# protoc-gen-go tracks the google.golang.org/protobuf runtime version in go.mod — keep them in step.
+PROTOC_GEN_GO_VERSION      := v1.36.11
+PROTOC_GEN_GO_GRPC_VERSION := v1.6.2
 
 .PHONY: help
 help: ## Show this help
@@ -22,10 +26,13 @@ help: ## Show this help
 ## ---------------------------------------------------------------------------- tooling
 
 .PHONY: tools
-tools: ## Install the Go binaries the workflow needs (sqlc, govulncheck, golangci-lint)
+tools: ## Install the Go binaries the workflow needs (sqlc, govulncheck, golangci-lint, buf + protoc plugins)
 	go install github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION)
 	go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_VERSION)
+	go install github.com/bufbuild/buf/cmd/buf@$(BUF_VERSION)
+	go install google.golang.org/protobuf/cmd/protoc-gen-go@$(PROTOC_GEN_GO_VERSION)
+	go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@$(PROTOC_GEN_GO_GRPC_VERSION)
 
 ## ---------------------------------------------------------------------------- dependencies
 
@@ -64,8 +71,12 @@ run: ## Run a service: make run SVC=router-svc
 fake-smsc: ## Run the in-repo fake SMSC (SMPP peer) on :2775 for local pipeline runs
 	go run ./cmd/fake-smsc
 
+.PHONY: proto
+proto: ## Generate gRPC code from api/proto/*.proto (buf) — output committed under internal/.../pb
+	buf generate
+
 .PHONY: generate
-generate: ## Run every code generator (sqlc, go:generate)
+generate: proto ## Run every code generator (sqlc, go:generate, buf)
 	go generate ./...
 
 .PHONY: tidy

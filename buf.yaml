@@ -1,0 +1,18 @@
+# buf module + lint/breaking config for the gRPC contracts under api/proto/ (plan §1.7, M3).
+#
+# The task fixes a flat path (api/proto/session.proto) with an unversioned package, and the plan (§7)
+# fixes the service name "SessionRegistry" (no "Service" suffix), so the lint rules that would demand
+# versioned/directory-matching packages and a Service suffix are excepted here on purpose.
+version: v2
+modules:
+  - path: api/proto
+lint:
+  use:
+    - STANDARD
+  except:
+    - PACKAGE_DIRECTORY_MATCH
+    - PACKAGE_VERSION_SUFFIX
+    - SERVICE_SUFFIX
+breaking:
+  use:
+    - FILE

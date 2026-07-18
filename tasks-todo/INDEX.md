@@ -23,7 +23,7 @@ Légende : `[x]` = fait (dans `tasks-done/`) · `[ ]` = à faire (dans `tasks-to
 ---
 
 ## M3 — Ingress SMPP serveur + sessions + complétion API publique
-- [ ] step-020 — Proto SessionRegistry + génération du code gRPC
+- [x] step-020 — Proto SessionRegistry + génération du code gRPC
 - [ ] step-021 — Registre de sessions Redis (bind/unbind/lookup atomiques, max_sessions)
 - [ ] step-022 — session-manager-svc : serveur gRPC SessionRegistry (:7000)
 - [ ] step-023 — Machine à états de session SMPP serveur (internal/smpp/session)

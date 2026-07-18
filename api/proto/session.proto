@@ -1,0 +1,88 @@
+// SessionRegistry is the authoritative registry of live SMPP ESME binds (plan §7, M3).
+//
+// A single account may hold several concurrent binds spread across pods; the registry keeps the
+// account -> {pod_id, bind_id}[] table, enforces max_sessions at bind time (invariant d), and routes
+// an inbound deliver_sm to the pod that owns the target bind. The registry never speaks SMPP: PDUs
+// cross it as opaque bytes already encoded by internal/smpp.
+syntax = "proto3";
+
+package session;
+
+option go_package = "github.com/martialanouman/go-gateway/internal/session/pb;pb";
+
+// SessionRegistry is served by session-manager-svc (gRPC :7000). Bind/Unbind/Lookup mutate and read
+// the cross-pod registry; Deliver forwards an inbound deliver_sm to the pod owning the target bind.
+service SessionRegistry {
+  // Bind registers a new session, enforcing the account's max_sessions ceiling atomically.
+  rpc Bind(BindRequest) returns (BindResponse);
+  // Unbind removes a session from the registry (graceful unbind or connection loss).
+  rpc Unbind(UnbindRequest) returns (UnbindResponse);
+  // Lookup returns the live sessions for an account, used to route return traffic.
+  rpc Lookup(LookupRequest) returns (LookupResponse);
+  // Deliver forwards an already-encoded deliver_sm to the pod owning the target bind.
+  rpc Deliver(DeliverRequest) returns (DeliverResponse);
+}
+
+// BindType mirrors control_plane.smpp_accounts.allowed_bind_types (a single kind per account).
+enum BindType {
+  BIND_TYPE_UNSPECIFIED = 0;
+  BIND_TYPE_TX = 1;
+  BIND_TYPE_RX = 2;
+  BIND_TYPE_TRX = 3;
+}
+
+// Session identifies one live bind. account_id/system_id come from the control plane (account_id is a
+// UUID carried as a string); pod_id/bind_id are operational Redis-registry identifiers.
+message Session {
+  string account_id = 1;
+  string system_id = 2;
+  string pod_id = 3;
+  string bind_id = 4;
+  BindType bind_type = 5;
+}
+
+// BindRequest carries the session to register plus the account's max_sessions ceiling, so the registry
+// is the sole atomic arbiter of invariant d without reading control-plane config itself.
+message BindRequest {
+  Session session = 1;
+  int32 max_sessions = 2;
+}
+
+// BindResponse reports whether the bind was accepted and the account's session count after it.
+message BindResponse {
+  bool accepted = 1;
+  int32 active_sessions = 2;
+}
+
+// UnbindRequest names the session to remove.
+message UnbindRequest {
+  string account_id = 1;
+  string bind_id = 2;
+}
+
+// UnbindResponse reports whether a session was actually removed.
+message UnbindResponse {
+  bool removed = 1;
+}
+
+// LookupRequest names the account whose live sessions are requested.
+message LookupRequest {
+  string account_id = 1;
+}
+
+// LookupResponse returns the account's live sessions.
+message LookupResponse {
+  repeated Session sessions = 1;
+}
+
+// DeliverRequest targets a bind and carries a deliver_sm already encoded by internal/smpp as opaque
+// bytes; the registry forwards it verbatim without parsing SMPP.
+message DeliverRequest {
+  string bind_id = 1;
+  bytes pdu = 2;
+}
+
+// DeliverResponse reports whether the PDU reached the owning bind.
+message DeliverResponse {
+  bool delivered = 1;
+}
