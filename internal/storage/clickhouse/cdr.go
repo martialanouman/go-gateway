@@ -134,23 +134,10 @@ func NewCDRWriter(c *Conn) *CDRWriter { return &CDRWriter{conn: c.conn} }
 
 // Insert writes one CDR row, deriving the version from the status rank. The synchronous single-row
 // path is what the router and connector use, where the row must be durable before the Kafka offset
-// is committed (§7.3); high-volume callers off the request path use InsertBatch instead.
+// is committed (§7.3); high-volume callers off the request path use InsertBatch instead. It is a
+// one-row batch, so the single- and batch-write paths share one implementation.
 func (w *CDRWriter) Insert(ctx context.Context, row CDRRow) error {
-	if !row.Status.Valid() {
-		return fmt.Errorf("clickhouse: unknown CDR status %q", row.Status)
-	}
-	batch, err := w.conn.PrepareBatch(ctx, "INSERT INTO cdr ("+cdrColumns+")")
-	if err != nil {
-		return fmt.Errorf("clickhouse: prepare cdr batch: %w", err)
-	}
-	if err := appendCDR(batch, row); err != nil {
-		_ = batch.Abort()
-		return fmt.Errorf("clickhouse: append cdr row: %w", err)
-	}
-	if err := batch.Send(); err != nil {
-		return fmt.Errorf("clickhouse: send cdr row: %w", err)
-	}
-	return nil
+	return w.InsertBatch(ctx, []CDRRow{row})
 }
 
 // InsertBatch writes multiple CDR rows as one batch — a single prepare and a single send instead of
