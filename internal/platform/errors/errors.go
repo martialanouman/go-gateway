@@ -62,6 +62,10 @@ const (
 	ErrConflict              Code = "conflict"
 	ErrInternal              Code = "internal_error"
 	ErrServiceUnavailable    Code = "service_unavailable"
+	// ErrSubmitFailed is the outbound outcome recorded in cdr.error_code when the SMSC rejects a
+	// submit_sm with ESME_RSUBMITFAIL. It is an outcome code, not a REST request error, so it has no
+	// HTTP surface.
+	ErrSubmitFailed Code = "submit_failed"
 )
 
 // SMPP v3.4 command_status values used by the mapping. Errors with no standard SMPP code use
@@ -137,6 +141,9 @@ var catalogue = map[Code]Mapping{
 	ErrConflict:              {HTTPStatus: 409},
 	ErrInternal:              {HTTPStatus: 500, SMPPStatus: StatusSysErr, Retryable: true},
 	ErrServiceUnavailable:    {HTTPStatus: 503, SMPPStatus: StatusSysErr, Retryable: true},
+	// submit_failed is an outbound SMSC outcome (ESME_RSUBMITFAIL) recorded in the CDR, not a REST
+	// request error, so it carries the SMPP surface only.
+	ErrSubmitFailed: {SMPPStatus: StatusSubmitFail},
 }
 
 // Valid reports whether c is a published code. Use it on any code arriving from outside.
@@ -174,6 +181,24 @@ func SMPPStatus(c Code) (uint32, bool) {
 // Retryable reports whether a client should replay a request rejected with c (§11.4).
 func Retryable(c Code) bool {
 	return catalogue[c].Retryable
+}
+
+// CodeFromSMPPStatus maps an SMSC submit_sm_resp command_status to the platform Code recorded in
+// cdr.error_code. It is the outcome-side reverse of the catalogue's SMPP surface: the connector
+// records what the SMSC returned, so it needs status->code (the catalogue itself is code->status,
+// and StatusSubmitFail is a many-to-one target, so it cannot be inverted mechanically). An unmapped
+// status falls back to internal_error rather than leaking a raw hex status into the contract; the
+// precise command_status still belongs in a log or span at the call site. ESME_ROK is success and
+// must not be passed here.
+func CodeFromSMPPStatus(status uint32) Code {
+	switch status {
+	case StatusThrottled:
+		return ErrRateLimited
+	case StatusSubmitFail:
+		return ErrSubmitFailed
+	default:
+		return ErrInternal
+	}
 }
 
 // CodeOf extracts the Code carried by err, unwrapping the chain. It reports false for a nil

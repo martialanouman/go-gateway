@@ -327,6 +327,7 @@ Chaque erreur de domaine a exactement un statut HTTP et un `command_status` SMPP
 | `conflict` | 409 | — (API Admin) | État conflictuel (soldes ≠ 0, script déjà actif) | Non |
 | `internal_error` | 500 | `ESME_RSYSERR` (0x08) | Panne inattendue | Oui (backoff, idempotent) |
 | `service_unavailable` | 503 | `ESME_RSYSERR` (0x08) | Dépendance dégradée fail-closed (§6.4/§6.9) | Oui (backoff) |
+| `submit_failed` | — (issue sortante) | `ESME_RSUBMITFAIL` (0x45) | Le SMSC a rejeté le `submit_sm` — enregistré dans `cdr.error_code`, pas une erreur de requête REST | Non |
 
 ### 11.4 Rejouabilité et idempotence
 
