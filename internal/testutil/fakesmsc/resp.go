@@ -24,6 +24,10 @@ func Throttled() Resp { return Resp{status: errs.StatusThrottled} }
 // SysErr rejects the submission with ESME_RSYSERR.
 func SysErr() Resp { return Resp{status: errs.StatusSysErr} }
 
+// SubmitFailed rejects the submission with ESME_RSUBMITFAIL — a permanent (non-retryable) failure,
+// unlike Throttled/SysErr, so the connector records a terminal failed CDR rather than redelivering.
+func SubmitFailed() Resp { return Resp{status: errs.StatusSubmitFail} }
+
 // Delay accepts the submission but waits d before answering, simulating a slow link. The response
 // is otherwise an OK.
 func Delay(d time.Duration) Resp { return Resp{status: smpp.StatusOK, delay: d} }

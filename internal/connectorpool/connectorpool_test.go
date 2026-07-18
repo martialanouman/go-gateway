@@ -47,7 +47,9 @@ func routed() pipeline.RoutedMT {
 	}
 }
 
-func runOnce(t *testing.T, resp func(smpp.SubmitSM) fakesmsc.Resp, r pipeline.RoutedMT) *fakeCDR {
+// runService drives the connector through one mt.routed record and returns the CDR sink and Run's
+// error, so a test can assert either a committed outcome (nil) or a redelivery (non-nil).
+func runService(t *testing.T, resp func(smpp.SubmitSM) fakesmsc.Resp, r pipeline.RoutedMT) (*fakeCDR, error) {
 	t.Helper()
 	smsc := fakesmsc.Start(t, fakesmsc.Config{OnSubmit: resp})
 	rec, err := pipeline.EncodeRouted(r)
@@ -68,7 +70,15 @@ func runOnce(t *testing.T, resp func(smpp.SubmitSM) fakesmsc.Resp, r pipeline.Ro
 		Tracer: observability.Tracer(rrec.Provider(), "connector-pool"),
 	})
 
-	if err := svc.Run(context.Background()); err != nil {
+	return cdr, svc.Run(context.Background())
+}
+
+// runOnce drives one record and fails the test if Run returns an error (i.e. the message was
+// redelivered rather than committed).
+func runOnce(t *testing.T, resp func(smpp.SubmitSM) fakesmsc.Resp, r pipeline.RoutedMT) *fakeCDR {
+	t.Helper()
+	cdr, err := runService(t, resp, r)
+	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	return cdr
@@ -99,8 +109,24 @@ func TestConnectorWritesEnrouteOnOK(t *testing.T) {
 	}
 }
 
-func TestConnectorWritesFailedOnThrottled(t *testing.T) {
-	cdr := runOnce(t, func(smpp.SubmitSM) fakesmsc.Resp { return fakesmsc.Throttled() }, routed())
+// TestConnectorRedeliversOnTransientRejection pins that a retryable SMSC status (throttled) is
+// backpressure, not a terminal failure: the handler returns an error so the record is redelivered,
+// and NO failed CDR row is written (which would lose the message).
+func TestConnectorRedeliversOnTransientRejection(t *testing.T) {
+	cdr, err := runService(t, func(smpp.SubmitSM) fakesmsc.Resp { return fakesmsc.Throttled() }, routed())
+
+	if err == nil {
+		t.Fatal("throttled submit must return an error (no commit → redelivery), got nil")
+	}
+	if len(cdr.rows) != 0 {
+		t.Errorf("throttled submit must not write a CDR row, got %d", len(cdr.rows))
+	}
+}
+
+// TestConnectorWritesFailedOnPermanentRejection pins that a non-retryable SMSC status (submit_fail)
+// is terminal: a failed CDR is written with the contract error_code and the record is committed.
+func TestConnectorWritesFailedOnPermanentRejection(t *testing.T) {
+	cdr := runOnce(t, func(smpp.SubmitSM) fakesmsc.Resp { return fakesmsc.SubmitFailed() }, routed())
 
 	if len(cdr.rows) != 1 {
 		t.Fatalf("expected 1 CDR row, got %d", len(cdr.rows))
@@ -109,8 +135,8 @@ func TestConnectorWritesFailedOnThrottled(t *testing.T) {
 	if row.Status != clickhouse.StatusFailed {
 		t.Errorf("status: got %q want failed", row.Status)
 	}
-	if row.ErrorCode == nil || *row.ErrorCode != "rate_limited" {
-		t.Errorf("error_code: got %v want rate_limited", row.ErrorCode)
+	if row.ErrorCode == nil || *row.ErrorCode != "submit_failed" {
+		t.Errorf("error_code: got %v want submit_failed", row.ErrorCode)
 	}
 }
 
@@ -245,6 +271,28 @@ func TestConnectorSetsValidityPeriod(t *testing.T) {
 
 	if seen != vp {
 		t.Errorf("validity_period on the wire = %q, want %q", seen, vp)
+	}
+}
+
+// TestConnectorDropsOverlongValidityPeriod pins the poison-loop guard: a validity_period longer than
+// the 16-char SMPP C-Octet String is dropped rather than marshalled into an unterminated PDU that the
+// SMSC would reject by dropping the bind (blocking the partition on redelivery). The submit still
+// succeeds, just without a validity.
+func TestConnectorDropsOverlongValidityPeriod(t *testing.T) {
+	overlong := "00000001000000000000R" // 21 chars, > 16
+	var seen string
+	r := routed()
+	r.ValidityPeriod = &overlong
+	cdr := runOnce(t, func(sm smpp.SubmitSM) fakesmsc.Resp {
+		seen = sm.ValidityPeriod
+		return fakesmsc.OK()
+	}, r)
+
+	if seen != "" {
+		t.Errorf("over-length validity_period should be dropped, wire carried %q", seen)
+	}
+	if len(cdr.rows) != 1 || cdr.rows[0].Status != clickhouse.StatusEnroute {
+		t.Errorf("submit should still succeed (enroute), got %+v", cdr.rows)
 	}
 }
 

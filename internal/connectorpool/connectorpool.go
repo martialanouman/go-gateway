@@ -27,6 +27,11 @@ import (
 // errBindNotReady is reported by the readiness probe while the SMSC bind is not established.
 var errBindNotReady = errors.New("connectorpool: smsc bind not established")
 
+// errTransientReject marks an SMSC submit_sm_resp whose command_status is retryable (throttled,
+// system error, queue full). The handler returns it so the record is not committed and is
+// redelivered, rather than recording the message as a terminal failure and losing it.
+var errTransientReject = errors.New("connectorpool: transient smsc rejection")
+
 // Consumer reads mt.routed. *kafka.Consumer satisfies it.
 type Consumer interface {
 	Run(ctx context.Context, handle kafka.Handler) error
@@ -133,6 +138,15 @@ func (s *Service) handler(b *bind) kafka.Handler {
 			return fmt.Errorf("connectorpool: submit_sm: %w", err)
 		}
 
+		// A transient SMSC rejection (throttled, system error, queue full) is backpressure, not a
+		// terminal outcome: do not write a failed CDR and do not commit, so the message is redelivered
+		// rather than lost. Permanent rejections (invalid address, submit_fail) fall through to the CDR
+		// write below. Proper rate-limited backoff is M7; this reuses the same "return error → no commit
+		// → reprocess" path the submit errors above use.
+		if resp.Status != smpp.StatusOK && errs.Retryable(errs.CodeFromSMPPStatus(resp.Status)) {
+			return fmt.Errorf("connectorpool: submit_sm rejected transiently (status 0x%08x): %w", resp.Status, errTransientReject)
+		}
+
 		if err := s.deps.CDR.Insert(ctx, cdrRow(routed, resp)); err != nil {
 			return fmt.Errorf("connectorpool: write cdr: %w", err)
 		}
@@ -156,8 +170,12 @@ func buildSubmit(r pipeline.RoutedMT) *smpp.SubmitSM {
 	if r.RegisteredDelivery {
 		sm.RegisteredDelivery = smpp.RegisteredDeliveryReceipt
 	}
-	if r.ValidityPeriod != nil {
-		sm.ValidityPeriod = *r.ValidityPeriod // already an SMPP validity (relative/absolute) per the contract
+	// The SMPP validity_period is a 16-char C-Octet String; a longer value would marshal a PDU with no
+	// NUL terminator, which the SMSC rejects by dropping the connection — poisoning the partition on
+	// redelivery. REST bounds it (maxLength 16), but guard here too so a malformed mt.routed record can
+	// never crash the bind: an over-length value is dropped rather than sent.
+	if r.ValidityPeriod != nil && len(*r.ValidityPeriod) <= 16 {
+		sm.ValidityPeriod = *r.ValidityPeriod
 	}
 
 	body := encodeBody(r.Body.Reveal(), dcs) // audited: body -> SMSC wire, never logged
