@@ -82,6 +82,13 @@ func (c *Consumer) Run(ctx context.Context, handle Handler) error {
 			}
 		})
 		if procErr != nil {
+			// A handler or commit that fails purely because ctx was cancelled is a graceful stop, not a
+			// fault: PollFetches can hand back a batch a hair before cancellation propagates, so the
+			// downstream Produce/Submit or CommitRecords aborts with context.Canceled. Treat that like the
+			// post-fetch check above — return nil so the supervisor sees a clean shutdown, not a crash.
+			if ctx.Err() != nil {
+				return nil
+			}
 			return procErr
 		}
 	}
