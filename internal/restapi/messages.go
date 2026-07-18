@@ -170,7 +170,7 @@ func acceptedRow(env pipeline.InboundMT) clickhouse.CDRRow {
 		SubmittedAt:  env.SubmittedAt,
 		Status:       clickhouse.StatusAccepted,
 		SegmentCount: 1,
-		Encoding:     mapEncoding(env.Encoding),
+		Encoding:     clickhouse.EncodingOf(env.Encoding),
 		Billed:       false,
 	}
 }
@@ -212,16 +212,4 @@ func registeredDelivery(v *bool) bool {
 		return true // contract default
 	}
 	return *v
-}
-
-// mapEncoding projects a requested/resolved encoding onto the CDR enum (auto -> gsm7 in M2).
-func mapEncoding(encoding string) clickhouse.Encoding {
-	switch encoding {
-	case "ucs2":
-		return clickhouse.EncodingUCS2
-	case "binary":
-		return clickhouse.EncodingBinary
-	default:
-		return clickhouse.EncodingGSM7
-	}
 }

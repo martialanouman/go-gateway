@@ -121,20 +121,7 @@ func rejectedRow(in pipeline.InboundMT, code errs.Code) clickhouse.CDRRow {
 		Status:       clickhouse.StatusRejected,
 		ErrorCode:    &errorCode,
 		SegmentCount: 1,
-		Encoding:     mapEncoding(in.Encoding),
+		Encoding:     clickhouse.EncodingOf(in.Encoding),
 		Billed:       false,
-	}
-}
-
-// mapEncoding projects a requested encoding onto the CDR enum. auto (and anything unrecognised)
-// resolves to GSM-7, matching the pipeline's M2 behaviour.
-func mapEncoding(requested string) clickhouse.Encoding {
-	switch requested {
-	case "ucs2":
-		return clickhouse.EncodingUCS2
-	case "binary":
-		return clickhouse.EncodingBinary
-	default:
-		return clickhouse.EncodingGSM7
 	}
 }

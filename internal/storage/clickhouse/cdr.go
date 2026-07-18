@@ -70,6 +70,22 @@ const (
 	EncodingBinary Encoding = "binary"
 )
 
+// EncodingOf projects a requested or resolved encoding string onto the CDR enum. Anything that is
+// not an explicit ucs2/binary — including "auto" and any unknown value — resolves to GSM-7, the M2
+// default. This is the single projection every producer of a CDR row uses (the router, the REST
+// accepted row, the connector outcome), so an added encoding is a one-site change here rather than
+// three switches drifting out of step.
+func EncodingOf(encoding string) Encoding {
+	switch encoding {
+	case "ucs2":
+		return EncodingUCS2
+	case "binary":
+		return EncodingBinary
+	default:
+		return EncodingGSM7
+	}
+}
+
 // CDRRow is one CDR row: one lifecycle snapshot of a message. Every status change writes a new row
 // carrying the same message_id and immutable submitted_at; the writer derives `version` from
 // Status, so callers never set it. content_ciphertext/content_key_id exist for stored content and
