@@ -2,7 +2,10 @@ package observability
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
@@ -18,6 +21,19 @@ import (
 // the graceful drain, with a bounded context: a collector that has gone away must not keep a pod
 // from terminating.
 type ShutdownFunc func(context.Context) error
+
+// DrainTracing flushes buffered spans on the way out, on a context detached from the (already
+// cancelled) service context so the shutdown's own spans are not thrown away. Every service main
+// defers it right after InitTracing; a context.Canceled from the drain is the expected result of a
+// prompt shutdown and is not logged.
+func DrainTracing(shutdown ShutdownFunc, timeout time.Duration, logger *slog.Logger) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	if err := shutdown(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		logger.Warn("flush traces on shutdown", "err", err)
+	}
+}
 
 // InitTracing installs the global tracer provider and the W3C propagators, and returns the
 // function that drains it.

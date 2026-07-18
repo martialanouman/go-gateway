@@ -64,8 +64,8 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("init tracing: %w", err)
 	}
-	//nolint:contextcheck // Detaching is the point: see drainTracing's comment.
-	defer drainTracing(shutdownTracing, cfg.ShutdownTimeout, logger)
+	//nolint:contextcheck // Detaching is the point: see DrainTracing's comment.
+	defer observability.DrainTracing(shutdownTracing, cfg.ShutdownTimeout, logger)
 
 	pool, err := postgres.NewPool(ctx, cfg.Postgres)
 	if err != nil {
@@ -201,16 +201,5 @@ func runHTTP(ctx context.Context, srv *http.Server, timeout time.Duration, logge
 			return fmt.Errorf("drain rest http server: %w", err)
 		}
 		return nil
-	}
-}
-
-// drainTracing flushes buffered spans on the way out, on a context detached from the cancelled
-// service context.
-func drainTracing(shutdown observability.ShutdownFunc, timeout time.Duration, logger *slog.Logger) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	if err := shutdown(ctx); err != nil && !errors.Is(err, context.Canceled) {
-		logger.Warn("flush traces on shutdown", "err", err)
 	}
 }

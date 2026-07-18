@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
-	"sync"
 	"syscall"
 	"time"
 
@@ -21,6 +20,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/auth"
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/observability"
+	"github.com/martialanouman/go-gateway/internal/platform/supervisor"
 	"github.com/martialanouman/go-gateway/internal/storage/postgres"
 )
 
@@ -63,8 +63,8 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("init tracing: %w", err)
 	}
-	// nolint:contextcheck // Detaching is the point: see drainTracing's comment.
-	defer drainTracing(shutdownTracing, cfg.ShutdownTimeout, logger)
+	//nolint:contextcheck // Detaching is the point: see DrainTracing's comment.
+	defer observability.DrainTracing(shutdownTracing, cfg.ShutdownTimeout, logger)
 
 	pool, err := postgres.NewPool(ctx, cfg.Postgres)
 	if err != nil {
@@ -106,51 +106,13 @@ func run() error {
 	logger.InfoContext(ctx, "starting", "config", cfg)
 
 	// The ops server and the business HTTP server are supervised together: one failing brings the
-	// service down predictably rather than leaving a half-dead pod (guide de codage §5).
-	var wg sync.WaitGroup
-	errCh := make(chan error, 1)
-	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		if err := ops.Run(runCtx, cfg.ShutdownTimeout); err != nil {
-			select {
-			case errCh <- fmt.Errorf("ops server: %w", err):
-			default:
-			}
-		}
-	}()
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		if err := runHTTP(runCtx, srv, cfg.ShutdownTimeout, logger); err != nil {
-			select {
-			case errCh <- fmt.Errorf("admin http server: %w", err):
-			default:
-			}
-		}
-	}()
-
-	var runErr error
-	select {
-	case <-ctx.Done():
-		logger.Info("shutting down", "reason", context.Cause(ctx))
-	case runErr = <-errCh:
-		logger.Error("component failed, shutting down", "err", runErr)
-	}
-	cancel()
-	wg.Wait()
-
-	if runErr != nil {
-		return runErr
-	}
-	select {
-	case err := <-errCh:
+	// service down predictably rather than leaving a half-dead pod (guide de codage §5). Neither has a
+	// teardown-ordering constraint, so the unordered supervisor fits.
+	var g supervisor.Group
+	g.Add("ops server", func(c context.Context) error { return ops.Run(c, cfg.ShutdownTimeout) })
+	g.Add("admin http server", func(c context.Context) error { return runHTTP(c, srv, cfg.ShutdownTimeout, logger) })
+	if err := g.Run(ctx, logger); err != nil {
 		return err
-	default:
 	}
 
 	logger.Info("stopped")
@@ -182,16 +144,5 @@ func runHTTP(ctx context.Context, srv *http.Server, timeout time.Duration, logge
 			return fmt.Errorf("drain admin http server: %w", err)
 		}
 		return nil
-	}
-}
-
-// drainTracing flushes buffered spans on the way out, on a context detached from the cancelled
-// service context.
-func drainTracing(shutdown observability.ShutdownFunc, timeout time.Duration, logger *slog.Logger) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	if err := shutdown(ctx); err != nil && !errors.Is(err, context.Canceled) {
-		logger.Warn("flush traces on shutdown", "err", err)
 	}
 }

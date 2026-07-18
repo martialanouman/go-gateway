@@ -9,13 +9,11 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"log/slog"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 	"time"
 
@@ -24,6 +22,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/connectorpool"
 	"github.com/martialanouman/go-gateway/internal/observability"
+	"github.com/martialanouman/go-gateway/internal/platform/supervisor"
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
 )
@@ -74,8 +73,8 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("init tracing: %w", err)
 	}
-	//nolint:contextcheck // Detaching is the point: see drainTracing's comment.
-	defer drainTracing(shutdownTracing, cfg.ShutdownTimeout, logger)
+	//nolint:contextcheck // Detaching is the point: see DrainTracing's comment.
+	defer observability.DrainTracing(shutdownTracing, cfg.ShutdownTimeout, logger)
 
 	chConn, err := clickhouse.NewConn(cfg.ClickHouse)
 	if err != nil {
@@ -122,63 +121,14 @@ func run() error {
 
 	logger.InfoContext(ctx, "starting", "config", cfg, "connector_addr", bindEnv.Addr)
 
-	var wg sync.WaitGroup
-	errCh := make(chan error, 2)
-	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		if err := ops.Run(runCtx, cfg.ShutdownTimeout); err != nil {
-			select {
-			case errCh <- fmt.Errorf("ops server: %w", err):
-			default:
-			}
-		}
-	}()
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		if err := svc.Run(runCtx); err != nil {
-			select {
-			case errCh <- fmt.Errorf("connector pool: %w", err):
-			default:
-			}
-		}
-	}()
-
-	var runErr error
-	select {
-	case <-ctx.Done():
-		logger.Info("shutting down", "reason", context.Cause(ctx))
-	case runErr = <-errCh:
-		logger.Error("component failed, shutting down", "err", runErr)
-	}
-	cancel()
-	wg.Wait()
-
-	if runErr != nil {
-		return runErr
-	}
-	select {
-	case err := <-errCh:
+	// Ops and the connector pool tear down together; the unordered supervisor fits (guide de codage §5).
+	var g supervisor.Group
+	g.Add("ops server", func(c context.Context) error { return ops.Run(c, cfg.ShutdownTimeout) })
+	g.Add("connector pool", svc.Run)
+	if err := g.Run(ctx, logger); err != nil {
 		return err
-	default:
 	}
 
 	logger.Info("stopped")
 	return nil
-}
-
-// drainTracing flushes buffered spans on the way out, on a context detached from the cancelled
-// service context.
-func drainTracing(shutdown observability.ShutdownFunc, timeout time.Duration, logger *slog.Logger) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	if err := shutdown(ctx); err != nil && !errors.Is(err, context.Canceled) {
-		logger.Warn("flush traces on shutdown", "err", err)
-	}
 }
