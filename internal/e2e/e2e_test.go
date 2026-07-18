@@ -129,7 +129,7 @@ func buildStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg config
 	rtr := router.New(router.Deps{
 		Consumer: routerConsumer,
 		Producer: producer,
-		Pipeline: pipeline.New(routerTracer, resolver, ""),
+		Pipeline: pipeline.New(routerTracer, resolver),
 		CDR:      cdrWriter,
 		Tracer:   routerTracer,
 	})

@@ -47,14 +47,14 @@ func TestPipelineHappyPathEmitsEveryStageSpan(t *testing.T) {
 	rec := otelrec.New(t)
 	tracer := observability.Tracer(rec.Provider(), "router")
 	connector := uuid.New()
-	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: connector}}, "")
+	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: connector}})
 
 	out, err := p.Process(context.Background(), inbound("+2250700000000"))
 	if err != nil {
 		t.Fatalf("Process: %v", err)
 	}
-	if out.To != "+2250700000000" {
-		t.Errorf("dest not normalized: %q", out.To)
+	if out.To != "2250700000000" {
+		t.Errorf("dest not normalized to digits-only form: %q", out.To)
 	}
 	if out.ConnectorID != connector {
 		t.Errorf("connector: got %s want %s", out.ConnectorID, connector)
@@ -78,7 +78,7 @@ func TestPipelineHappyPathEmitsEveryStageSpan(t *testing.T) {
 func TestPipelineRejectsInvalidDestination(t *testing.T) {
 	rec := otelrec.New(t)
 	tracer := observability.Tracer(rec.Provider(), "router")
-	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}}, "")
+	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}})
 
 	_, err := p.Process(context.Background(), inbound("not-a-number"))
 	if code, _ := errs.CodeOf(err); code != errs.ErrInvalidDestination {
@@ -96,7 +96,7 @@ func TestPipelineRejectsInvalidDestination(t *testing.T) {
 func TestPipelineRejectsNoRoute(t *testing.T) {
 	rec := otelrec.New(t)
 	tracer := observability.Tracer(rec.Provider(), "router")
-	p := pipeline.New(tracer, stubResolver{err: errs.ErrNoRoute}, "")
+	p := pipeline.New(tracer, stubResolver{err: errs.ErrNoRoute})
 
 	_, err := p.Process(context.Background(), inbound("+2250700000000"))
 	if code, _ := errs.CodeOf(err); code != errs.ErrNoRoute {

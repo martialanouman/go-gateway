@@ -68,7 +68,7 @@ func newRouter(t *testing.T, resolver pipeline.Resolver, prod router.Producer, c
 	return router.New(router.Deps{
 		Consumer: cons,
 		Producer: prod,
-		Pipeline: pipeline.New(tracer, resolver, ""),
+		Pipeline: pipeline.New(tracer, resolver),
 		CDR:      cdr,
 		Tracer:   tracer,
 	})

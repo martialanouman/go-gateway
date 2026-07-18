@@ -10,33 +10,29 @@ import (
 
 func TestNormalize(t *testing.T) {
 	tests := []struct {
-		name   string
-		raw    string
-		region string
-		want   string
+		name string
+		raw  string
+		want string
 	}{
-		{"already e164", "+2250700000000", "CI", "+2250700000000"},
-		{"e164 ignores region", "+33612345678", "CI", "+33612345678"},
-		{"national with default region", "0700000000", "CI", "+2250700000000"},
-		{"french national", "0612345678", "FR", "+33612345678"},
-		{"spaces stripped", "+225 07 00 00 00 00", "CI", "+2250700000000"},
-		{"dashes stripped", "+225-07-00-00-00-00", "CI", "+2250700000000"},
-		{"parentheses stripped", "+33 (0)6 12 34 56 78", "FR", "+33612345678"},
-		{"dots stripped", "06.12.34.56.78", "FR", "+33612345678"},
-		{"surrounding whitespace", "  +2250700000000  ", "CI", "+2250700000000"},
-		{"lowercase region", "0700000000", "ci", "+2250700000000"},
-		{"international 00 prefix", "002250700000000", "CI", "+2250700000000"},
-		{"empty region with e164", "+2250700000000", "", "+2250700000000"},
+		{"already e164", "+2250700000000", "2250700000000"},
+		{"e164 french", "+33612345678", "33612345678"},
+		{"no plus, full country code", "2250700000000", "2250700000000"},
+		{"no plus french", "33612345678", "33612345678"},
+		{"spaces stripped", "+225 07 00 00 00 00", "2250700000000"},
+		{"dashes stripped", "+225-07-00-00-00-00", "2250700000000"},
+		{"parentheses stripped", "+33 (6) 12 34 56 78", "33612345678"},
+		{"surrounding whitespace", "  +2250700000000  ", "2250700000000"},
+		{"no plus with spaces", "225 07 00 00 00 00", "2250700000000"},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := e164.Normalize(tc.raw, tc.region)
+			got, err := e164.Normalize(tc.raw)
 			if err != nil {
-				t.Fatalf("Normalize(%q, %q) error = %v", tc.raw, tc.region, err)
+				t.Fatalf("Normalize(%q) error = %v", tc.raw, err)
 			}
 			if got != tc.want {
-				t.Errorf("Normalize(%q, %q) = %q, want %q", tc.raw, tc.region, got, tc.want)
+				t.Errorf("Normalize(%q) = %q, want %q", tc.raw, got, tc.want)
 			}
 		})
 	}
@@ -45,12 +41,12 @@ func TestNormalize(t *testing.T) {
 // TestNormalizeIsIdempotent pins the property downstream state depends on: normalizing an
 // already-normalized number must be a no-op, or opt-out and route keys would drift.
 func TestNormalizeIsIdempotent(t *testing.T) {
-	for _, raw := range []string{"0700000000", "+225 07 00 00 00 00", "+2250700000000"} {
-		once, err := e164.Normalize(raw, "CI")
+	for _, raw := range []string{"2250700000000", "+225 07 00 00 00 00", "+2250700000000"} {
+		once, err := e164.Normalize(raw)
 		if err != nil {
 			t.Fatalf("Normalize(%q) error = %v", raw, err)
 		}
-		twice, err := e164.Normalize(once, "CI")
+		twice, err := e164.Normalize(once)
 		if err != nil {
 			t.Fatalf("Normalize(%q) error = %v", once, err)
 		}
@@ -65,16 +61,15 @@ func TestNormalizeIsIdempotent(t *testing.T) {
 func TestNormalizeConvergesOnOneForm(t *testing.T) {
 	spellings := []string{
 		"+2250700000000",
-		"0700000000",
+		"2250700000000",
 		"+225 07 00 00 00 00",
 		"+225-07-00-00-00-00",
-		"002250700000000",
 		"  +2250700000000 ",
 	}
 
-	const want = "+2250700000000"
+	const want = "2250700000000"
 	for _, raw := range spellings {
-		got, err := e164.Normalize(raw, "CI")
+		got, err := e164.Normalize(raw)
 		if err != nil {
 			t.Fatalf("Normalize(%q) error = %v", raw, err)
 		}
@@ -86,26 +81,25 @@ func TestNormalizeConvergesOnOneForm(t *testing.T) {
 
 func TestNormalizeRejects(t *testing.T) {
 	tests := []struct {
-		name   string
-		raw    string
-		region string
+		name string
+		raw  string
 	}{
-		{"empty", "", "CI"},
-		{"whitespace only", "   ", "CI"},
-		{"letters", "not-a-number", "CI"},
-		{"too short", "07", "CI"},
-		{"national without region", "0700000000", ""},
-		{"unknown country code", "+9990700000000", "CI"},
-		{"invalid for region", "+225000000000", "CI"},
-		{"digits only, no region", "123", ""},
-		{"way too long", "+2250700000000000000000000", "CI"},
+		{"empty", ""},
+		{"whitespace only", "   "},
+		{"letters", "not-a-number"},
+		{"too short", "07"},
+		{"national without country code", "0700000000"},
+		{"unknown country code", "9990700000000"},
+		{"invalid for country code", "225000000000"},
+		{"digits too short", "123"},
+		{"way too long", "2250700000000000000000000"},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := e164.Normalize(tc.raw, tc.region)
+			got, err := e164.Normalize(tc.raw)
 			if err == nil {
-				t.Fatalf("Normalize(%q, %q) = %q, want error", tc.raw, tc.region, got)
+				t.Fatalf("Normalize(%q) = %q, want error", tc.raw, got)
 			}
 			if !errors.Is(err, e164.ErrInvalidNumber) {
 				t.Errorf("error = %v, want it to wrap ErrInvalidNumber", err)
@@ -120,7 +114,7 @@ func TestNormalizeRejects(t *testing.T) {
 // TestNormalizeErrorMentionsInput keeps rejections diagnosable: an operator must be able to see
 // which number failed. An MSISDN is an identifier, not message content — safe to surface.
 func TestNormalizeErrorMentionsInput(t *testing.T) {
-	_, err := e164.Normalize("07", "CI")
+	_, err := e164.Normalize("07")
 	if err == nil {
 		t.Fatal("want error")
 	}
@@ -131,47 +125,43 @@ func TestNormalizeErrorMentionsInput(t *testing.T) {
 
 func TestIsValid(t *testing.T) {
 	tests := []struct {
-		raw    string
-		region string
-		want   bool
+		raw  string
+		want bool
 	}{
-		{"+2250700000000", "CI", true},
-		{"0700000000", "CI", true},
-		{"not-a-number", "CI", false},
-		{"", "CI", false},
-		{"0700000000", "", false},
+		{"+2250700000000", true},
+		{"2250700000000", true},
+		{"not-a-number", false},
+		{"", false},
+		{"0700000000", false},
 	}
 
 	for _, tc := range tests {
-		t.Run(tc.raw+"/"+tc.region, func(t *testing.T) {
-			if got := e164.IsValid(tc.raw, tc.region); got != tc.want {
-				t.Errorf("IsValid(%q, %q) = %v, want %v", tc.raw, tc.region, got, tc.want)
+		t.Run(tc.raw, func(t *testing.T) {
+			if got := e164.IsValid(tc.raw); got != tc.want {
+				t.Errorf("IsValid(%q) = %v, want %v", tc.raw, got, tc.want)
 			}
 		})
 	}
 }
 
 func FuzzNormalizeNeverPanics(f *testing.F) {
-	seeds := []string{"+2250700000000", "0700000000", "", "+", "00", "not-a-number", "+225 07 00 00 00 00"}
+	seeds := []string{"+2250700000000", "2250700000000", "", "+", "00", "not-a-number", "+225 07 00 00 00 00"}
 	for _, s := range seeds {
-		f.Add(s, "CI")
+		f.Add(s)
 	}
 
-	f.Fuzz(func(t *testing.T, raw, region string) {
-		got, err := e164.Normalize(raw, region)
+	f.Fuzz(func(t *testing.T, raw string) {
+		got, err := e164.Normalize(raw)
 		if err != nil {
 			return
 		}
-		// A successful normalization must always yield canonical E.164.
-		if !strings.HasPrefix(got, "+") {
-			t.Errorf("Normalize(%q, %q) = %q, want a leading +", raw, region, got)
+		// A successful normalization must always yield canonical digits-only E.164 (no leading +).
+		if len(got) < 1 || len(got) > 15 {
+			t.Errorf("Normalize(%q) = %q, length %d outside E.164 bounds", raw, got, len(got))
 		}
-		if len(got) < 2 || len(got) > 16 {
-			t.Errorf("Normalize(%q, %q) = %q, length %d outside E.164 bounds", raw, region, got, len(got))
-		}
-		for _, r := range got[1:] {
+		for _, r := range got {
 			if r < '0' || r > '9' {
-				t.Errorf("Normalize(%q, %q) = %q, contains non-digit %q", raw, region, got, r)
+				t.Errorf("Normalize(%q) = %q, contains non-digit %q", raw, got, r)
 			}
 		}
 	})

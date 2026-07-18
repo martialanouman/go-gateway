@@ -85,13 +85,16 @@ func run() error {
 	defer consumer.Close()
 
 	// The route snapshot is loaded once at startup (config-sync's hot reload is a later milestone).
-	resolver, err := routing.LoadSnapshot(ctx, postgres.NewRouteRepo(pool))
+	// Postgres is a hard boot dependency — the router cannot route without routes — so a transient
+	// outage must not permanently brick a (re)starting pod: retry with backoff until Postgres answers
+	// or the context is cancelled, rather than exiting on the first failure.
+	resolver, err := loadSnapshotWithRetry(ctx, postgres.NewRouteRepo(pool), logger)
 	if err != nil {
 		return fmt.Errorf("load route snapshot: %w", err)
 	}
 
 	tracer := observability.Tracer(nil, serviceName)
-	pl := pipeline.New(tracer, resolver, "")
+	pl := pipeline.New(tracer, resolver)
 	rtr := router.New(router.Deps{
 		Consumer: consumer,
 		Producer: producer,
@@ -101,12 +104,12 @@ func run() error {
 		Logger:   logger,
 	})
 
-	// Vital dependencies (plan §1.5): Kafka (no work without it) and ClickHouse (the rejection path
-	// writes to it). Postgres is startup-only — the snapshot is immutable — so its loss does not make
-	// the router unready.
+	// Vital dependency (plan §1.5): Kafka alone. The router's core job — consume mt.inbound,
+	// normalise, route, publish mt.routed — needs only Kafka and the in-memory snapshot. ClickHouse
+	// is touched only to write a rejected CDR row, and Postgres is startup-only (immutable snapshot);
+	// gating readiness on either would drain healthy pods over a store the happy path does not use.
 	ops, err := observability.NewOpsServer(cfg, logger,
 		consumer.ReadyCheck("kafka", cfg.Kafka.Timeout),
-		chConn.ReadyCheck("clickhouse", cfg.ClickHouse.Timeout),
 	)
 	if err != nil {
 		return fmt.Errorf("init ops server: %w", err)
@@ -162,6 +165,38 @@ func run() error {
 
 	logger.Info("stopped")
 	return nil
+}
+
+// loadSnapshotWithRetry loads the route snapshot, retrying transient failures with capped
+// exponential backoff until it succeeds or ctx is cancelled. Postgres is a hard boot dependency —
+// the router cannot route without routes — so retrying (rather than exiting on the first error)
+// keeps a (re)starting pod from being bricked by a transient Postgres outage.
+func loadSnapshotWithRetry(ctx context.Context, lister routing.RouteLister, logger *slog.Logger) (*routing.SnapshotResolver, error) {
+	const (
+		initialBackoff = 500 * time.Millisecond
+		maxBackoff     = 30 * time.Second
+	)
+
+	backoff := initialBackoff
+	for attempt := 1; ; attempt++ {
+		resolver, err := routing.LoadSnapshot(ctx, lister)
+		if err == nil {
+			return resolver, nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		logger.WarnContext(ctx, "route snapshot load failed, retrying",
+			"attempt", attempt, "backoff", backoff.String(), "err", err)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(backoff):
+		}
+		if backoff *= 2; backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+	}
 }
 
 // drainTracing flushes buffered spans on the way out, on a context detached from the cancelled

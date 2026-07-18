@@ -30,15 +30,15 @@ type Resolver interface {
 // E.164 normalization and declarative route resolution; the compliance and metering stages are
 // explicit pass-through STUBs that still emit their span.
 type Pipeline struct {
-	tracer        trace.Tracer
-	resolver      Resolver
-	defaultRegion string
+	tracer   trace.Tracer
+	resolver Resolver
 }
 
-// New builds a Pipeline. defaultRegion is the ISO region for national-form numbers; it is ignored
-// for numbers that already carry a "+" country code, which is what M2 clients send.
-func New(tracer trace.Tracer, resolver Resolver, defaultRegion string) *Pipeline {
-	return &Pipeline{tracer: tracer, resolver: resolver, defaultRegion: defaultRegion}
+// New builds a Pipeline. Destinations are normalized to their canonical digits-only form; the
+// public contract carries a full country code (the "+" being optional), so no default region is
+// needed. See internal/platform/e164.
+func New(tracer trace.Tracer, resolver Resolver) *Pipeline {
+	return &Pipeline{tracer: tracer, resolver: resolver}
 }
 
 // Process runs the pipeline on an inbound message and returns the routed message. On a rejection it
@@ -63,7 +63,7 @@ func (p *Pipeline) Process(ctx context.Context, in InboundMT) (RoutedMT, error) 
 	// 1. E.164 normalization of the destination. Source normalization is a sender-id concern (M5),
 	// so From is left as the client sent it.
 	if err := p.stage(ctx, "pipeline.e164", func(context.Context) error {
-		norm, err := e164.Normalize(in.To, p.defaultRegion)
+		norm, err := e164.Normalize(in.To)
 		if err != nil {
 			return errs.ErrInvalidDestination
 		}
