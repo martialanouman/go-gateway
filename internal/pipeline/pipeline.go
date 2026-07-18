@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/martialanouman/go-gateway/internal/platform/e164"
+	"github.com/martialanouman/go-gateway/internal/platform/encoding"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 )
 
@@ -56,6 +57,7 @@ func (p *Pipeline) Process(ctx context.Context, in InboundMT) (RoutedMT, error) 
 		Body:               in.Body,
 		RegisteredDelivery: in.RegisteredDelivery,
 		ValidityPeriod:     in.ValidityPeriod,
+		DataCoding:         in.DataCoding,
 		SubmittedAt:        in.SubmittedAt,
 		SegmentCount:       1,
 	}
@@ -133,13 +135,8 @@ func (p *Pipeline) stubStage(ctx context.Context, name string) {
 	span.End()
 }
 
-// resolveEncoding maps the requested encoding to the resolved one the CDR records. M2 does not
-// auto-detect: auto (and anything unrecognised) resolves to GSM-7.
+// resolveEncoding maps the requested encoding to the resolved one the CDR records, deferring to the
+// shared vocabulary so the auto->gsm7 rule lives in one place (internal/platform/encoding).
 func resolveEncoding(requested string) string {
-	switch requested {
-	case "gsm7", "ucs2", "binary":
-		return requested
-	default:
-		return "gsm7"
-	}
+	return encoding.Resolve(requested)
 }

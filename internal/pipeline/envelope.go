@@ -47,6 +47,7 @@ type RoutedMT struct {
 	Encoding           string // resolved: gsm7|ucs2|binary
 	RegisteredDelivery bool
 	ValidityPeriod     *string
+	DataCoding         *int // client data_coding override, carried through to the SMSC (nil = derive from Encoding)
 	ConnectorID        uuid.UUID
 	RouteID            *uuid.UUID
 	SegmentCount       int

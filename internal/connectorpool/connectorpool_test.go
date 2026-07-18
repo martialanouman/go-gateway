@@ -1,9 +1,12 @@
 package connectorpool_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"testing"
 	"time"
+	"unicode/utf16"
 
 	"github.com/google/uuid"
 
@@ -124,4 +127,91 @@ func TestConnectorSubmitsBodyOnTheWire(t *testing.T) {
 	if seen != text {
 		t.Errorf("SMSC received short_message %q, want %q", seen, text)
 	}
+}
+
+// TestConnectorTranscodesUCS2Body pins that a ucs2 message reaches the wire as UTF-16BE with the
+// UCS-2 data_coding, not as the raw UTF-8 bytes msg.Body stores (which the handset would garble).
+func TestConnectorTranscodesUCS2Body(t *testing.T) {
+	const text = "café ☕" // non-ASCII: UTF-8 and UTF-16BE differ
+	var seen []byte
+	var dcs uint8
+	r := routed()
+	r.Encoding = "ucs2"
+	r.Body = msg.NewBodyString(text)
+	_ = runOnce(t, func(sm smpp.SubmitSM) fakesmsc.Resp {
+		seen = append([]byte(nil), sm.ShortMessage...)
+		dcs = sm.DataCoding
+		return fakesmsc.OK()
+	}, r)
+
+	want := utf16BE(text)
+	if !bytes.Equal(seen, want) {
+		t.Errorf("ucs2 body on the wire = % x, want UTF-16BE % x (not raw UTF-8 % x)", seen, want, []byte(text))
+	}
+	if dcs != smpp.DataCodingUCS2 {
+		t.Errorf("data_coding = %#x, want UCS-2 %#x", dcs, smpp.DataCodingUCS2)
+	}
+}
+
+// TestConnectorHonorsDataCodingOverride pins that a client-supplied data_coding reaches the SMSC
+// verbatim rather than being derived from the encoding.
+func TestConnectorHonorsDataCodingOverride(t *testing.T) {
+	override := 245 // a message-class / flash DCS the encoding would never produce
+	var seen uint8
+	r := routed()
+	r.Encoding = "gsm7"
+	r.DataCoding = &override
+	_ = runOnce(t, func(sm smpp.SubmitSM) fakesmsc.Resp {
+		seen = sm.DataCoding
+		return fakesmsc.OK()
+	}, r)
+
+	if seen != uint8(override) {
+		t.Errorf("data_coding = %d, want the client override %d", seen, override)
+	}
+}
+
+// TestConnectorTypesNumericSourceAsInternational pins that a "+"-prefixed numeric MSISDN source is
+// sent plus-stripped with international/ISDN typing, not as an alphanumeric sender id.
+func TestConnectorTypesNumericSourceAsInternational(t *testing.T) {
+	var addr string
+	var ton, npi uint8
+	r := routed()
+	r.From = "+12065550100"
+	_ = runOnce(t, func(sm smpp.SubmitSM) fakesmsc.Resp {
+		addr, ton, npi = sm.SourceAddr, sm.SourceAddrTON, sm.SourceAddrNPI
+		return fakesmsc.OK()
+	}, r)
+
+	if addr != "12065550100" {
+		t.Errorf("source addr = %q, want the plus-stripped MSISDN 12065550100", addr)
+	}
+	if ton != smpp.TONInternational || npi != smpp.NPIISDN {
+		t.Errorf("source TON/NPI = %#x/%#x, want international/ISDN %#x/%#x", ton, npi, smpp.TONInternational, smpp.NPIISDN)
+	}
+}
+
+// TestConnectorTypesAlphanumericSource keeps a non-numeric sender id typed as alphanumeric.
+func TestConnectorTypesAlphanumericSource(t *testing.T) {
+	var ton uint8
+	r := routed()
+	r.From = "ACME"
+	_ = runOnce(t, func(sm smpp.SubmitSM) fakesmsc.Resp {
+		ton = sm.SourceAddrTON
+		return fakesmsc.OK()
+	}, r)
+
+	if ton != smpp.TONAlphanumeric {
+		t.Errorf("alphanumeric sender TON = %#x, want %#x", ton, smpp.TONAlphanumeric)
+	}
+}
+
+// utf16BE is the test's independent UTF-16BE reference (mirrors the connector's transcoding).
+func utf16BE(s string) []byte {
+	units := utf16.Encode([]rune(s))
+	out := make([]byte, 2*len(units))
+	for i, u := range units {
+		binary.BigEndian.PutUint16(out[2*i:], u)
+	}
+	return out
 }

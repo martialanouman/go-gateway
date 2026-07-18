@@ -6,14 +6,18 @@ package connectorpool
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync/atomic"
+	"unicode/utf16"
 
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/martialanouman/go-gateway/internal/pipeline"
+	"github.com/martialanouman/go-gateway/internal/platform/encoding"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 	"github.com/martialanouman/go-gateway/internal/smpp"
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
@@ -140,25 +144,56 @@ func (s *Service) handler(b *bind) kafka.Handler {
 // (like the Kafka payload): the plaintext goes onto the SMSC wire, never into a log or span. A body
 // larger than a single short_message travels in the message_payload TLV — M2 does not segment.
 func buildSubmit(r pipeline.RoutedMT) *smpp.SubmitSM {
+	source, sourceTON, sourceNPI := sourceAddr(r.From)
 	sm := &smpp.SubmitSM{SMFields: smpp.SMFields{
-		SourceAddr:      r.From,
+		SourceAddr:      source,
 		DestinationAddr: r.To,
-		DataCoding:      dataCoding(r.Encoding),
+		DataCoding:      submitDataCoding(r),
 	}}
-	sourceTON, sourceNPI := addrTypeOf(r.From)
 	sm.SourceAddrTON, sm.SourceAddrNPI = sourceTON, sourceNPI
 	sm.DestAddrTON, sm.DestAddrNPI = smpp.TONInternational, smpp.NPIISDN
 	if r.RegisteredDelivery {
 		sm.RegisteredDelivery = smpp.RegisteredDeliveryReceipt
 	}
 
-	body := r.Body.Reveal() // audited: body -> SMSC wire, never logged
+	body := encodeBody(r) // audited: body -> SMSC wire, never logged
 	if len(body) > 254 {
 		sm.TLVs.Set(smpp.TagMessagePayload, body)
 	} else {
 		sm.ShortMessage = body
 	}
 	return sm
+}
+
+// submitDataCoding is the wire data_coding byte. An explicit, in-range client override wins (the
+// client is driving the DCS directly); otherwise it is derived from the resolved encoding.
+func submitDataCoding(r pipeline.RoutedMT) uint8 {
+	if dc := r.DataCoding; dc != nil && *dc >= 0 && *dc <= 255 {
+		return uint8(*dc) //nolint:gosec // bounded to 0..255 on the line above
+	}
+	return dataCoding(r.Encoding)
+}
+
+// encodeBody reveals the body and renders it for the wire per the resolved encoding. UCS-2 is
+// UTF-16BE on the SMPP wire, so the UTF-8 bytes msg.Body carries are transcoded here; gsm7 and binary
+// go out as-is (GSM-7 packing and segmentation are the encoding milestone, not M2). Revealing is an
+// audited egress: the plaintext reaches the SMSC wire, never a log or span.
+func encodeBody(r pipeline.RoutedMT) []byte {
+	body := r.Body.Reveal()
+	if r.Encoding == encoding.UCS2 {
+		return utf16BE(body)
+	}
+	return body
+}
+
+// utf16BE transcodes UTF-8 bytes to big-endian UTF-16 (UCS-2 on the SMPP wire).
+func utf16BE(utf8 []byte) []byte {
+	units := utf16.Encode([]rune(string(utf8)))
+	out := make([]byte, 2*len(units))
+	for i, u := range units {
+		binary.BigEndian.PutUint16(out[2*i:], u)
+	}
+	return out
 }
 
 // cdrRow builds the enroute (or failed) CDR row from the submit_sm_resp.
@@ -185,48 +220,48 @@ func cdrRow(r pipeline.RoutedMT, resp smpp.PDU) clickhouse.CDRRow {
 }
 
 // outcome maps a submit_sm_resp command_status to a CDR status. ESME_ROK is enroute; anything else
-// is a failed send, with an error_code derived from the SMPP status.
+// is a failed send, with an error_code drawn from the shared platform/errors contract (never an
+// ad-hoc string), so a client reading GET /messages sees a documented code.
 func outcome(cmdStatus uint32) (clickhouse.Status, *string) {
 	if cmdStatus == smpp.StatusOK {
 		return clickhouse.StatusEnroute, nil
 	}
-	code := smppErrorCode(cmdStatus)
+	code := string(errs.CodeFromSMPPStatus(cmdStatus))
 	return clickhouse.StatusFailed, &code
 }
 
-func smppErrorCode(status uint32) string {
-	switch status {
-	case errs.StatusThrottled:
-		return string(errs.ErrRateLimited)
-	case errs.StatusSysErr:
-		return string(errs.ErrInternal)
-	case errs.StatusSubmitFail:
-		return "submit_failed"
-	default:
-		return fmt.Sprintf("smpp_status_0x%08x", status)
-	}
-}
-
-func dataCoding(encoding string) uint8 {
-	switch encoding {
-	case "ucs2":
+// dataCoding derives the SMPP data_coding byte from the resolved encoding, using the shared encoding
+// vocabulary (internal/platform/encoding) so the value set does not drift across the pipeline.
+func dataCoding(enc string) uint8 {
+	switch enc {
+	case encoding.UCS2:
 		return smpp.DataCodingUCS2
-	case "binary":
+	case encoding.Binary:
 		return smpp.DataCodingBinary
 	default:
 		return smpp.DataCodingGSM7
 	}
 }
 
-// addrTypeOf picks the TON/NPI for a source address: an all-digit sender is treated as an
-// international MSISDN, anything else as an alphanumeric sender id.
-func addrTypeOf(addr string) (ton, npi uint8) {
-	for _, r := range addr {
+// sourceAddr maps a submitted source address to its wire form and TON/NPI. A numeric MSISDN
+// (optionally "+"-prefixed) becomes a plus-stripped international/ISDN address; anything else passes
+// through as an alphanumeric sender id. Source normalization proper is an M5 concern — this is only
+// the wire typing the SMSC requires, so a "+1206…" MSISDN is not mistyped as an alphanumeric sender.
+func sourceAddr(addr string) (wire string, ton, npi uint8) {
+	digits := strings.TrimPrefix(addr, "+")
+	if digits != "" && isAllDigits(digits) {
+		return digits, smpp.TONInternational, smpp.NPIISDN
+	}
+	return addr, smpp.TONAlphanumeric, smpp.NPIUnknown
+}
+
+func isAllDigits(s string) bool {
+	for _, r := range s {
 		if r < '0' || r > '9' {
-			return smpp.TONAlphanumeric, smpp.NPIUnknown
+			return false
 		}
 	}
-	return smpp.TONInternational, smpp.NPIISDN
+	return true
 }
 
 func segmentCount(n int) uint16 {
