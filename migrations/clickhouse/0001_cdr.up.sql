@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS cdr
     error_code            Nullable(String),
     segment_count         UInt16,
     encoding              Enum8('gsm7'=1,'ucs2'=2,'binary'=3),
-    content_ciphertext    Nullable(String),   -- present only when content_storage is stored_* ; NEVER in logs
+    content_ciphertext    Nullable(String),   -- present only when content_storage is stored_* (NEVER in logs)
     content_key_id        Nullable(UUID),
     latency_ms            Nullable(UInt32),
     billed                UInt8,               -- 0/1
@@ -50,4 +50,4 @@ CREATE TABLE IF NOT EXISTS cdr
 ENGINE = ReplacingMergeTree(version)
 PARTITION BY toDate(submitted_at)               -- daily partitions, TTL tiering (§6.14)
 ORDER BY (customer_id, account_id, submitted_at, message_id)  -- all four immutable per message
-TTL toDate(submitted_at) + INTERVAL 90 DAY;     -- CDR retention (configurable); body has its own shorter TTL
+TTL toDate(submitted_at) + INTERVAL 90 DAY      -- CDR retention (configurable); body has its own shorter TTL
