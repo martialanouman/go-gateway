@@ -1,0 +1,55 @@
+# Release automation (plan §4). On every merge to main, derive the next SemVer from the conventional
+# commits since the last tag, create and push that tag, then build the service binaries and cut a
+# GitHub Release from it. A merge that carries no feat/fix (docs, chore, ci only) cuts no release.
+#
+# Everything runs in one job on purpose: a tag pushed with GITHUB_TOKEN does not trigger another
+# workflow, so a separate `on: push: tags` release job would never fire.
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+# Never cancel a release that is already publishing; queue instead.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write # create tags and the GitHub Release
+
+jobs:
+  release:
+    name: Tag and release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history and tags: the version bump and the changelog both need previous tags.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Compute the next SemVer from the conventional commits since the last tag, then create and push
+      # it. default_bump: false means no bump (and so no tag, no release) when nothing versionable
+      # landed — a docs/chore/ci-only merge is not a release.
+      - name: Compute version and tag
+        id: tag
+        uses: mathieudutour/github-tag-action@v6.2
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          default_bump: false
+
+      - name: Release with GoReleaser
+        if: steps.tag.outputs.new_tag != ''
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Build from the tag just created rather than whatever tag git describes at HEAD.
+          GORELEASER_CURRENT_TAG: ${{ steps.tag.outputs.new_tag }}

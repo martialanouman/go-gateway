@@ -1,0 +1,89 @@
+# GoReleaser config (schema v2). Builds the deployable services and cuts a GitHub Release for the
+# tag the release workflow creates. Version metadata is stamped into internal/platform/buildinfo via
+# -ldflags so every binary reports the release version. fake-smsc is intentionally omitted: it is a
+# local test peer, not a deployable. Container images are a later step (see the commented dockers
+# block) once the Dockerfiles exist.
+version: 2
+
+project_name: go-gateway
+
+before:
+  hooks:
+    - go mod download
+
+builds:
+  - id: rest-api-svc
+    main: ./cmd/rest-api-svc
+    binary: rest-api-svc
+    env: [CGO_ENABLED=0]
+    goos: [linux]
+    goarch: [amd64, arm64]
+    ldflags: &ldflags
+      - -s -w
+      - -X github.com/martialanouman/go-gateway/internal/platform/buildinfo.Version={{ .Version }}
+      - -X github.com/martialanouman/go-gateway/internal/platform/buildinfo.Commit={{ .Commit }}
+      - -X github.com/martialanouman/go-gateway/internal/platform/buildinfo.Date={{ .Date }}
+  - id: router-svc
+    main: ./cmd/router-svc
+    binary: router-svc
+    env: [CGO_ENABLED=0]
+    goos: [linux]
+    goarch: [amd64, arm64]
+    ldflags: *ldflags
+  - id: connector-pool-svc
+    main: ./cmd/connector-pool-svc
+    binary: connector-pool-svc
+    env: [CGO_ENABLED=0]
+    goos: [linux]
+    goarch: [amd64, arm64]
+    ldflags: *ldflags
+  - id: admin-api-svc
+    main: ./cmd/admin-api-svc
+    binary: admin-api-svc
+    env: [CGO_ENABLED=0]
+    goos: [linux]
+    goarch: [amd64, arm64]
+    ldflags: *ldflags
+  - id: migrate
+    main: ./cmd/migrate
+    binary: migrate
+    env: [CGO_ENABLED=0]
+    goos: [linux]
+    goarch: [amd64, arm64]
+    ldflags: *ldflags
+
+archives:
+  - id: default
+    formats: ["tar.gz"]
+    name_template: "{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  use: git
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^ci:"
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\(.+\))??!?:.*$'
+      order: 0
+    - title: Bug fixes
+      regexp: '^.*?fix(\(.+\))??!?:.*$'
+      order: 1
+    - title: Others
+      order: 999
+
+release:
+  prerelease: auto
+
+# Container images: enable once the service Dockerfiles land (release decision — images come in a
+# later step). Each service would get a `dockers:` entry tagged with {{ .Version }}, pushed to GHCR.
+# dockers:
+#   - image_templates: ["ghcr.io/martialanouman/go-gateway/rest-api-svc:{{ .Version }}"]
+#     ...
