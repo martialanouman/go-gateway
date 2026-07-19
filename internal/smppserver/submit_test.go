@@ -113,6 +113,36 @@ func TestOnSubmitResolvesEncodingFromDataCoding(t *testing.T) {
 	}
 }
 
+func TestOnSubmitCarriesValidityAndPriority(t *testing.T) {
+	ci := &captureIngestor{}
+	l := New(nil, nil, ci, Options{}, discardLog())
+	req := submitReq()
+	req.ValidityPeriod = "000002000000000R" // relative 2 days (SMPP v3.4 §7.1.1)
+	req.PriorityFlag = 2
+
+	l.onSubmit(context.Background(), &connState{accountID: uuid.New(), customerID: uuid.New()})(
+		context.Background(), req)
+
+	if ci.env.ValidityPeriod == nil || *ci.env.ValidityPeriod != "000002000000000R" {
+		t.Errorf("validity_period not carried: %v", ci.env.ValidityPeriod)
+	}
+	if ci.env.Priority != 2 {
+		t.Errorf("priority = %d, want 2", ci.env.Priority)
+	}
+}
+
+func TestOnSubmitEmptyValidityMapsNil(t *testing.T) {
+	ci := &captureIngestor{}
+	l := New(nil, nil, ci, Options{}, discardLog())
+
+	l.onSubmit(context.Background(), &connState{accountID: uuid.New(), customerID: uuid.New()})(
+		context.Background(), submitReq()) // submitReq leaves ValidityPeriod empty
+
+	if ci.env.ValidityPeriod != nil {
+		t.Errorf("empty validity_period must map to nil, got %v", *ci.env.ValidityPeriod)
+	}
+}
+
 func TestOnSubmitUsesMessagePayloadWhenShortMessageEmpty(t *testing.T) {
 	const long = "this body is carried in the message_payload TLV because it is empty in short_message"
 	ci := &captureIngestor{}

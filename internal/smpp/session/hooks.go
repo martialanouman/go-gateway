@@ -63,8 +63,13 @@ type SubmitRequest struct {
 	ESMClass           uint8
 	DataCoding         uint8
 	RegisteredDelivery uint8
-	Body               msg.Body
-	TLVs               smpp.TLVList
+	// ValidityPeriod is the submit_sm validity_period (empty when the ESME leaves it default); PriorityFlag
+	// is priority_flag. Both are carried so the ingest path reaches the pipeline with the same fields a
+	// REST submit does (protocol parity).
+	ValidityPeriod string
+	PriorityFlag   uint8
+	Body           msg.Body
+	TLVs           smpp.TLVList
 }
 
 // SubmitResult is a SubmitHandler's decision. Status is an SMPP command_status: smpp.StatusOK

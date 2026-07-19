@@ -180,6 +180,8 @@ func (s *Session) handleSubmit(ctx context.Context, seq uint32, sm *smpp.SubmitS
 		ESMClass:           sm.ESMClass,
 		DataCoding:         sm.DataCoding,
 		RegisteredDelivery: sm.RegisteredDelivery,
+		ValidityPeriod:     sm.ValidityPeriod,
+		PriorityFlag:       sm.PriorityFlag,
 		Body:               msg.NewBody(sm.ShortMessage),
 		TLVs:               sm.TLVs,
 	}

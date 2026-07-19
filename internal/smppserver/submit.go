@@ -47,6 +47,8 @@ func (l *Listener) onSubmit(_ context.Context, st *connState) session.SubmitHand
 			Encoding:           encoding.FromDataCoding(req.DataCoding),
 			ESMClass:           req.ESMClass,
 			RegisteredDelivery: req.RegisteredDelivery&smpp.RegisteredDeliveryReceiptMask != 0,
+			ValidityPeriod:     optionalString(req.ValidityPeriod),
+			Priority:           int(req.PriorityFlag),
 			DataCoding:         &dataCoding,
 			SubmittedAt:        l.opts.Now(),
 		}
@@ -59,6 +61,15 @@ func (l *Listener) onSubmit(_ context.Context, st *connState) session.SubmitHand
 		}
 		return session.SubmitResult{Status: smpp.StatusOK, MessageID: messageID.String()}
 	}
+}
+
+// optionalString maps an SMPP C-Octet String field to the envelope's optional pointer: an empty
+// field (the ESME left it default) is nil, any value is carried.
+func optionalString(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 // submitBody resolves the message body of a submit_sm. A body larger than the 254-octet short_message
