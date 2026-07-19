@@ -119,14 +119,16 @@ func run() error {
 		logger,
 	)
 
-	// Vital dependencies (plan §1.5): PostgreSQL gates authenticating a bind, Kafka gates durably
-	// accepting a submit_sm, ClickHouse gates the accepted CDR projection. All remove the pod from the
-	// LB when unreachable. The SessionRegistry dependency is surfaced per-bind (ESME_RSYSERR) rather
-	// than gating readiness, since a lazy gRPC client reports no meaningful state until traffic flows.
+	// Vital dependencies (plan §1.5): PostgreSQL gates authenticating a bind, and Kafka gates durably
+	// accepting a submit_sm — both remove the pod from the LB when unreachable. ClickHouse is
+	// deliberately NOT vital here: unlike rest-api-svc it backs no GET surface, only the best-effort
+	// accepted CDR row (Enqueue drops on saturation, the connector's enroute row supersedes it), so a
+	// ClickHouse outage must not refuse binds and submits while the durable path (Kafka) is healthy.
+	// The SessionRegistry dependency is surfaced per-bind (ESME_RSYSERR) rather than gating readiness,
+	// since a lazy gRPC client reports no meaningful state until traffic flows.
 	ops, err := observability.NewOpsServer(cfg, logger,
 		postgres.PingCheck("postgres", pool, cfg.Postgres.Timeout),
 		producer.ReadyCheck("kafka", cfg.Kafka.Timeout),
-		chConn.ReadyCheck("clickhouse", cfg.ClickHouse.Timeout),
 	)
 	if err != nil {
 		return fmt.Errorf("init ops server: %w", err)
