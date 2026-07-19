@@ -8,10 +8,11 @@
 // remote peer, so it must never panic on malformed input. Every read is bounds-checked and the
 // first error short-circuits the rest (see codec.go); a fuzz test (FuzzUnmarshal) guards this.
 //
-// Scope for M2 is the outbound leg: bind_transmitter/receiver/transceiver (+resp), submit_sm
-// (+resp), deliver_sm (+resp), enquire_link (+resp) and unbind (+resp), plus generic_nack. TLV
-// and UDH are supported, and payloads larger than 254 octets travel in the message_payload TLV.
-// replace_sm and data_sm are out of scope and unsupported (specification §5.1).
+// Scope is the outbound leg plus the inbound server operations: bind_transmitter/receiver/
+// transceiver (+resp), submit_sm (+resp), deliver_sm (+resp), query_sm (+resp), cancel_sm (+resp),
+// enquire_link (+resp) and unbind (+resp), plus generic_nack. TLV and UDH are supported, and
+// payloads larger than 254 octets travel in the message_payload TLV. replace_sm and data_sm are out
+// of scope and unsupported (specification §5.1).
 package smpp
 
 import "errors"
@@ -28,17 +29,26 @@ const (
 	CmdBindReceiverResp    CommandID = 0x80000001
 	CmdBindTransmitter     CommandID = 0x00000002
 	CmdBindTransmitterResp CommandID = 0x80000002
+	CmdQuerySM             CommandID = 0x00000003
+	CmdQuerySMResp         CommandID = 0x80000003
 	CmdSubmitSM            CommandID = 0x00000004
 	CmdSubmitSMResp        CommandID = 0x80000004
 	CmdDeliverSM           CommandID = 0x00000005
 	CmdDeliverSMResp       CommandID = 0x80000005
 	CmdUnbind              CommandID = 0x00000006
 	CmdUnbindResp          CommandID = 0x80000006
+	CmdCancelSM            CommandID = 0x00000008
+	CmdCancelSMResp        CommandID = 0x80000008
 	CmdBindTransceiver     CommandID = 0x00000009
 	CmdBindTransceiverResp CommandID = 0x80000009
 	CmdEnquireLink         CommandID = 0x00000015
 	CmdEnquireLinkResp     CommandID = 0x80000015
 )
+
+// MessageStateUnknown is the query_sm_resp message_state for a message whose state the server cannot
+// resolve (SMPP v3.4 §5.2.28). Valid message_state values run 1..8; 0 is undefined, so UNKNOWN (7) is
+// the honest answer while the real state lookup is unimplemented.
+const MessageStateUnknown uint8 = 7
 
 // StatusOK is command_status ESME_ROK: success, and the only status a request ever carries. The
 // error command_status values live in internal/platform/errors, which owns the mapping between a
@@ -69,9 +79,15 @@ const (
 	DataCodingUCS2   uint8 = 0x08
 )
 
-// RegisteredDeliveryReceipt is the registered_delivery bit (SMPP v3.4 §5.2.17): request a
-// delivery receipt on final state.
-const RegisteredDeliveryReceipt uint8 = 0x01
+// registered_delivery SMSC-delivery-receipt field (SMPP v3.4 §5.2.17): bits 1-0 select when a
+// receipt is requested — 0x01 on success or failure, 0x02 on failure only. RegisteredDeliveryReceipt
+// is the success-or-failure value; RegisteredDeliveryReceiptMask covers the whole field, so a caller
+// tests "is any receipt requested?" as `rd & RegisteredDeliveryReceiptMask != 0` and does not miss
+// the failure-only request.
+const (
+	RegisteredDeliveryReceipt     uint8 = 0x01
+	RegisteredDeliveryReceiptMask uint8 = 0x03
+)
 
 // Address type-of-number / numbering-plan-indicator values the gateway uses by default
 // (SMPP v3.4 §5.2.5–5.2.6).

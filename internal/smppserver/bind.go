@@ -114,9 +114,3 @@ func registryBindStatus(err error) uint32 {
 	}
 	return errs.StatusSysErr
 }
-
-// rejectSubmit answers every submit_sm with ESME_RSUBMITFAIL until the MT pipeline lands (step-025).
-// It never touches the message body, so nothing can leak (invariant a).
-func rejectSubmit(_ context.Context, _ session.SubmitRequest) session.SubmitResult {
-	return session.SubmitResult{Status: errs.StatusSubmitFail}
-}

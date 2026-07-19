@@ -106,9 +106,12 @@ SELECT
     cr.password_hash     AS password_hash,
     cr.status            AS credential_status,
     a.id                 AS account_id,
+    a.customer_id        AS customer_id,
     a.smpp_enabled       AS smpp_enabled,
     a.allowed_bind_types AS allowed_bind_types,
     a.max_sessions       AS max_sessions,
+    a.query_sm_enabled   AS query_sm_enabled,
+    a.cancel_sm_enabled  AS cancel_sm_enabled,
     a.status             AS account_status,
     c.status             AS customer_status
 FROM control_plane.credentials cr
@@ -123,9 +126,12 @@ type GetBindPrincipalRow struct {
 	PasswordHash     *string
 	CredentialStatus string
 	AccountID        uuid.UUID
+	CustomerID       uuid.UUID
 	SmppEnabled      bool
 	AllowedBindTypes string
 	MaxSessions      int32
+	QuerySmEnabled   bool
+	CancelSmEnabled  bool
 	AccountStatus    string
 	CustomerStatus   string
 }
@@ -145,9 +151,12 @@ func (q *Queries) GetBindPrincipal(ctx context.Context, systemID *string) (GetBi
 		&i.PasswordHash,
 		&i.CredentialStatus,
 		&i.AccountID,
+		&i.CustomerID,
 		&i.SmppEnabled,
 		&i.AllowedBindTypes,
 		&i.MaxSessions,
+		&i.QuerySmEnabled,
+		&i.CancelSmEnabled,
 		&i.AccountStatus,
 		&i.CustomerStatus,
 	)

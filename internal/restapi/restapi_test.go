@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
+	"github.com/martialanouman/go-gateway/internal/ingest"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	"github.com/martialanouman/go-gateway/internal/restapi"
@@ -100,7 +101,7 @@ func newHarness(t *testing.T, principals restapi.PrincipalStore, reader restapi.
 	rec := otelrec.New(t)
 	producer := &fakeProducer{}
 	cdrWrite := &fakeCDRWriter{}
-	accepted := restapi.NewAcceptedWriter(cdrWrite, 2, 16, nil)
+	accepted := ingest.NewAcceptedWriter(cdrWrite, 2, 16, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -109,9 +110,8 @@ func newHarness(t *testing.T, principals restapi.PrincipalStore, reader restapi.
 
 	mux, _ := restapi.New(restapi.Deps{
 		Principals: principals,
-		Producer:   producer,
+		Ingestor:   ingest.NewIngestor(producer, accepted, nil),
 		CDRReader:  reader,
-		Accepted:   accepted,
 		Tracer:     observability.Tracer(rec.Provider(), "rest-api"),
 		Version:    "test",
 	})

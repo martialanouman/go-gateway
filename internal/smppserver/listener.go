@@ -61,10 +61,13 @@ func (l *Listener) Run(ctx context.Context) error {
 // own goroutine in sequence, so the fields need no lock; the refresh goroutine only reads fields set
 // before it starts and never mutated after.
 type connState struct {
-	accountID   string
-	bindID      string
-	maxSessions int32
-	bound       bool
+	accountID       uuid.UUID
+	customerID      uuid.UUID
+	bindID          string
+	maxSessions     int32
+	querySMEnabled  bool
+	cancelSMEnabled bool
+	bound           bool
 
 	refreshStop context.CancelFunc
 	refreshDone chan struct{}
@@ -84,7 +87,9 @@ func (l *Listener) serve(ctx context.Context, nc net.Conn) {
 		IdleTimeout: l.opts.IdleTimeout,
 		Logger:      l.logger,
 		OnBind:      l.onBind(ctx, st),
-		OnSubmit:    rejectSubmit,
+		OnSubmit:    l.onSubmit(ctx, st),
+		OnQuery:     l.onQuery(ctx, st),
+		OnCancel:    l.onCancel(ctx, st),
 	})
 	_ = sess.Serve(ctx)
 
@@ -129,8 +134,11 @@ func (l *Listener) onBind(ctx context.Context, st *connState) session.BindHandle
 			return session.BindResult{Status: errs.StatusBindFail}
 		}
 
-		st.accountID = cred.AccountID.String()
+		st.accountID = cred.AccountID
+		st.customerID = cred.CustomerID
 		st.maxSessions = cred.MaxSessions
+		st.querySMEnabled = cred.QuerySMEnabled
+		st.cancelSMEnabled = cred.CancelSMEnabled
 		st.bound = true
 		l.startRefresh(ctx, st, req.Mode)
 
@@ -168,7 +176,7 @@ func (l *Listener) refreshLoop(ctx context.Context, st *connState, mode session.
 			rctx, cancel := context.WithTimeout(ctx, registryCallTimeout)
 			_, err := l.registry.Bind(rctx, &registrypb.BindRequest{
 				Session: &registrypb.Session{
-					AccountId: st.accountID,
+					AccountId: st.accountID.String(),
 					PodId:     l.opts.PodID,
 					BindId:    st.bindID,
 					BindType:  pbBindType(mode),
@@ -192,7 +200,7 @@ func (l *Listener) releaseToken(parent context.Context, st *connState) {
 	defer cancel()
 
 	if _, err := l.registry.Unbind(ctx, &registrypb.UnbindRequest{
-		AccountId: st.accountID,
+		AccountId: st.accountID.String(),
 		BindId:    st.bindID,
 	}); err != nil {
 		// The token will lapse on its own TTL, so this is a warning, not a fault. errors.Is guards

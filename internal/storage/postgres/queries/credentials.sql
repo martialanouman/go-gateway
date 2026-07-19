@@ -49,9 +49,12 @@ SELECT
     cr.password_hash     AS password_hash,
     cr.status            AS credential_status,
     a.id                 AS account_id,
+    a.customer_id        AS customer_id,
     a.smpp_enabled       AS smpp_enabled,
     a.allowed_bind_types AS allowed_bind_types,
     a.max_sessions       AS max_sessions,
+    a.query_sm_enabled   AS query_sm_enabled,
+    a.cancel_sm_enabled  AS cancel_sm_enabled,
     a.status             AS account_status,
     c.status             AS customer_status
 FROM control_plane.credentials cr

@@ -17,14 +17,18 @@ import (
 // unchanged to mt.routed and onto every CDR row so the CDR partition stays stable (§1.10). The
 // address fields are as the client sent them; the router normalises them.
 type InboundMT struct {
-	MessageID          uuid.UUID
-	TraceID            uuid.UUID
-	AccountID          uuid.UUID
-	CustomerID         uuid.UUID
-	From               string
-	To                 string
-	Body               msg.Body
-	Encoding           string // requested: auto|gsm7|ucs2|binary
+	MessageID  uuid.UUID
+	TraceID    uuid.UUID
+	AccountID  uuid.UUID
+	CustomerID uuid.UUID
+	From       string
+	To         string
+	Body       msg.Body
+	Encoding   string // requested: auto|gsm7|ucs2|binary
+	// ESMClass is the SMPP esm_class byte as submitted (message mode/type, UDH indicator — SMPP v3.4
+	// §5.2.12). It carries the UDHI bit the router needs to detect pre-segmented content. REST leaves
+	// it 0 (a plain point-to-point message); an SMPP submit_sm maps it straight from the PDU.
+	ESMClass           uint8
 	RegisteredDelivery bool
 	ValidityPeriod     *string
 	Priority           int

@@ -189,6 +189,20 @@ func Retryable(c Code) bool {
 	return catalogue[c].Retryable
 }
 
+// SMPPStatusForError maps err to the SMPP command_status an SMPP boundary should answer: the SMPP
+// surface of the Code err carries, or ESME_RSYSERR when err carries no code, its code has no SMPP
+// surface, or err is nil. It is the SMPP counterpart of humaerr.FromError — the one place the SMPP
+// boundary turns a domain error into a command_status, so the flat-code↔status contract stays in this
+// package (§11).
+func SMPPStatusForError(err error) uint32 {
+	if code, ok := CodeOf(err); ok {
+		if status, mapped := SMPPStatus(code); mapped {
+			return status
+		}
+	}
+	return StatusSysErr
+}
+
 // CodeFromSMPPStatus maps an SMSC submit_sm_resp command_status to the platform Code recorded in
 // cdr.error_code. It is the outcome-side reverse of the catalogue's SMPP surface: the connector
 // records what the SMSC returned, so it needs status->code (the catalogue itself is code->status,

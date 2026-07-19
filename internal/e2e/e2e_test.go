@@ -22,6 +22,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/connectorpool"
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	"github.com/martialanouman/go-gateway/internal/credential"
+	"github.com/martialanouman/go-gateway/internal/ingest"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	"github.com/martialanouman/go-gateway/internal/restapi"
@@ -106,12 +107,11 @@ func buildStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg config
 	cdrWriter := clickhouse.NewCDRWriter(chConn)
 	cdrReader := clickhouse.NewCDRReader(chConn)
 
-	accepted := restapi.NewAcceptedWriter(cdrWriter, 2, 64, nil)
+	accepted := ingest.NewAcceptedWriter(cdrWriter, 2, 64, nil)
 	mux, _ := restapi.New(restapi.Deps{
 		Principals: postgres.NewAPIKeyRepo(pool),
-		Producer:   producer,
+		Ingestor:   ingest.NewIngestor(producer, accepted, nil),
 		CDRReader:  cdrReader,
-		Accepted:   accepted,
 		Tracer:     observability.Tracer(rec.Provider(), "rest-api"),
 		Version:    "e2e",
 	})

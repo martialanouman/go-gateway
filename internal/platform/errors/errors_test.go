@@ -8,6 +8,27 @@ import (
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 )
 
+func TestSMPPStatusForError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want uint32
+	}{
+		{"code with smpp surface", errs.ErrInvalidDestination, errs.StatusInvalidDstAddr},
+		{"wrapped code keeps its status", fmt.Errorf("produce: %w", errs.ErrServiceUnavailable), errs.StatusSysErr},
+		{"code with no smpp surface falls back", errs.ErrForbiddenScope, errs.StatusSysErr},
+		{"non-coded error falls back", goerrors.New("plain"), errs.StatusSysErr},
+		{"nil falls back", nil, errs.StatusSysErr},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := errs.SMPPStatusForError(tc.err); got != tc.want {
+				t.Errorf("SMPPStatusForError(%v) = %#x, want %#x", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestCatalogueMatchesSpec transcribes the §11.3 table of the engineering guide independently of
 // the implementation. It is the contract test: if the code and the spec disagree, one of them is
 // wrong and this fails. Do not "fix" it by copying from errors.go — check the spec.

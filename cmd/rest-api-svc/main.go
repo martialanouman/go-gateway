@@ -14,13 +14,14 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
-	"sync"
 	"syscall"
 	"time"
 
 	"github.com/martialanouman/go-gateway/internal/config"
+	"github.com/martialanouman/go-gateway/internal/ingest"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/platform/buildinfo"
+	"github.com/martialanouman/go-gateway/internal/platform/supervisor"
 	"github.com/martialanouman/go-gateway/internal/restapi"
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
@@ -85,14 +86,14 @@ func run() error {
 	}
 	defer producer.Close()
 
-	accepted := restapi.NewAcceptedWriter(clickhouse.NewCDRWriter(chConn), acceptedWorkers, acceptedQueueSize, logger)
+	accepted := ingest.NewAcceptedWriter(clickhouse.NewCDRWriter(chConn), acceptedWorkers, acceptedQueueSize, logger)
+	ingestor := ingest.NewIngestor(producer, accepted, logger)
 	tracer := observability.Tracer(nil, serviceName)
 
 	handler, _ := restapi.New(restapi.Deps{
 		Principals: postgres.NewAPIKeyRepo(pool),
-		Producer:   producer,
+		Ingestor:   ingestor,
 		CDRReader:  clickhouse.NewCDRReader(chConn),
-		Accepted:   accepted,
 		Tracer:     tracer,
 		Logger:     logger,
 		Version:    buildinfo.Version,
@@ -118,62 +119,16 @@ func run() error {
 	logger.InfoContext(ctx, "starting", "config", cfg)
 
 	// Ordered shutdown matters here: the HTTP listener must stop and fully drain BEFORE the
-	// accepted-row writer, or a request that earns its 202 during the drain would call
-	// Accepted.Enqueue after the writer's workers have already exited — silently dropping the
-	// accepted CDR row and re-opening the 404 window get-message is meant to close. So each
-	// component gets its own cancel, detached from the signal context, and shutdown drives them in
-	// order: HTTP → writer → ops. (Cancelling one shared context would stop all three at once.)
-	httpCtx, cancelHTTP := context.WithCancel(context.WithoutCancel(ctx))
-	writerCtx, cancelWriter := context.WithCancel(context.WithoutCancel(ctx))
-	opsCtx, cancelOps := context.WithCancel(context.WithoutCancel(ctx))
-	defer cancelOps()
-	defer cancelWriter()
-	defer cancelHTTP()
-
-	errCh := make(chan error, 3)
-	var httpWg, writerWg, opsWg sync.WaitGroup
-
-	supervise := func(wg *sync.WaitGroup, name string, c context.Context, fn func(context.Context) error) {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err := fn(c); err != nil {
-				select {
-				case errCh <- fmt.Errorf("%s: %w", name, err):
-				default:
-				}
-			}
-		}()
-	}
-
-	supervise(&opsWg, "ops server", opsCtx, func(c context.Context) error { return ops.Run(c, cfg.ShutdownTimeout) })
-	supervise(&writerWg, "accepted writer", writerCtx, accepted.Run)
-	supervise(&httpWg, "rest http server", httpCtx, func(c context.Context) error { return runHTTP(c, srv, cfg.ShutdownTimeout, logger) })
-
-	var runErr error
-	select {
-	case <-ctx.Done():
-		logger.Info("shutting down", "reason", context.Cause(ctx))
-	case runErr = <-errCh:
-		logger.Error("component failed, shutting down", "err", runErr)
-	}
-
-	// Drain in order: stop the HTTP server and let it finish in-flight requests (their Enqueue lands
-	// in the writer's buffer), then stop the writer so it drains that buffer, then the ops server.
-	cancelHTTP()
-	httpWg.Wait()
-	cancelWriter()
-	writerWg.Wait()
-	cancelOps()
-	opsWg.Wait()
-
-	if runErr != nil {
-		return runErr
-	}
-	select {
-	case err := <-errCh:
+	// accepted-row writer, or a request that earns its 202 during the drain would call Accepted.Enqueue
+	// after the writer's workers have already exited — silently dropping the accepted CDR row and
+	// re-opening the 404 window get-message is meant to close. supervisor.Ordered drains in reverse
+	// registration order, so registering ops → writer → http yields the http → writer → ops drain.
+	var g supervisor.Ordered
+	g.Add("ops server", func(c context.Context) error { return ops.Run(c, cfg.ShutdownTimeout) })
+	g.Add("accepted writer", accepted.Run)
+	g.Add("rest http server", func(c context.Context) error { return runHTTP(c, srv, cfg.ShutdownTimeout, logger) })
+	if err := g.Run(ctx, logger); err != nil {
 		return err
-	default:
 	}
 
 	logger.Info("stopped")
