@@ -67,6 +67,8 @@ type Config struct {
 	Kafka      Kafka      `envPrefix:"KAFKA_"`
 	ClickHouse ClickHouse `envPrefix:"CLICKHOUSE_"`
 	HTTP       HTTP       `envPrefix:"HTTP_"`
+	Redis      Redis      `envPrefix:"REDIS_"`
+	GRPC       GRPC       `envPrefix:"GRPC_"`
 }
 
 // OTel configures tracing export. The variable names follow the OpenTelemetry specification so
@@ -97,6 +99,7 @@ const (
 	defaultPostgresURL    = "postgres://gateway:gateway@localhost:5432/gateway?sslmode=disable"
 	defaultKafkaBroker    = "localhost:9092"
 	defaultClickHouseAddr = "localhost:9000"
+	defaultRedisURL       = "redis://localhost:6379"
 )
 
 // Postgres is the control-plane database (plan §1). It is also the target of the migration
@@ -153,6 +156,25 @@ type HTTP struct {
 	AdminTokens []string `env:"ADMIN_TOKENS" envSeparator:","`
 }
 
+// Redis is the operational-state store (plan §1): sessions, throttling, Bloom filters, the balance
+// cache. It is a vital dependency of session-manager-svc, whose /readyz fails when Redis is
+// unreachable (plan §1.5): the session registry cannot enforce max_sessions without it.
+type Redis struct {
+	// URL is a redis:// connection string. It may carry a password, so it is never logged.
+	URL string `env:"URL" envDefault:"redis://localhost:6379"`
+
+	// Timeout bounds readiness probes and dial/command operations.
+	Timeout time.Duration `env:"TIMEOUT" envDefault:"3s"`
+}
+
+// GRPC configures a service's internal gRPC listener. The inter-pod services (session-manager-svc on
+// :7000, plan §1.4) serve on it. Like HTTP.Port it is distinct from OpsPort on purpose: the RPC
+// surface is reached pod-to-pod, the ops port never is.
+type GRPC struct {
+	// Port is the gRPC listen port. session-manager-svc defaults to 7000 (plan §1.4).
+	Port int `env:"PORT" envDefault:"7000"`
+}
+
 // Section names a configuration group a binary depends on. A binary declares the sections it
 // actually uses and Load enforces only those: a tool must never be refused a boot over a
 // dependency it does not open a connection to. The migrate command is the case that forced this —
@@ -167,11 +189,14 @@ const (
 	SectionKafka
 	SectionClickHouse
 	SectionHTTP
+	SectionRedis
+	SectionGRPC
 
 	// SectionAll is what a caller declaring nothing gets. It must include every section, or
 	// Validate() — which runs validate(SectionAll) — would quietly stop being a full check. The
 	// cost of a section a binary does not use is nil: its fields carry valid defaults.
-	SectionAll = SectionOTel | SectionPostgres | SectionKafka | SectionClickHouse | SectionHTTP
+	SectionAll = SectionOTel | SectionPostgres | SectionKafka | SectionClickHouse | SectionHTTP |
+		SectionRedis | SectionGRPC
 )
 
 // Load reads the configuration for serviceName from the environment and validates the sections it
@@ -232,6 +257,12 @@ func (c Config) validate(sections Section) error {
 	}
 	if sections&SectionHTTP != 0 {
 		problems = append(problems, c.httpProblems()...)
+	}
+	if sections&SectionRedis != 0 {
+		problems = append(problems, c.redisProblems()...)
+	}
+	if sections&SectionGRPC != 0 {
+		problems = append(problems, c.grpcProblems()...)
 	}
 
 	if len(problems) == 0 {
@@ -399,6 +430,42 @@ func (c Config) httpProblems() []string {
 	return problems
 }
 
+func (c Config) redisProblems() []string {
+	var problems []string
+
+	if strings.TrimSpace(c.Redis.URL) == "" {
+		problems = append(problems, "REDIS_URL is empty")
+	}
+	if c.Redis.Timeout <= 0 {
+		problems = append(problems, fmt.Sprintf("REDIS_TIMEOUT %s must be positive", c.Redis.Timeout))
+	}
+	// The dev-default guard travels with its section, as for Postgres/Kafka/ClickHouse: a service that
+	// declared Redis will connect to it, and must not connect to loopback in production. See
+	// kafkaProblems for why a forgotten variable reaches here as the default rather than as an error.
+	if c.Environment.IsProduction() && c.Redis.URL == defaultRedisURL {
+		problems = append(problems, "REDIS_URL is the localhost development default: "+
+			"set it explicitly in production")
+	}
+	return problems
+}
+
+func (c Config) grpcProblems() []string {
+	var problems []string
+
+	if c.GRPC.Port < 1 || c.GRPC.Port > 65535 {
+		problems = append(problems, fmt.Sprintf("GRPC_PORT %d is outside 1-65535", c.GRPC.Port))
+	}
+	// As with HTTP.Port, a gRPC port equal to the ops port is not two servers sharing a listener — it
+	// is one silently winning the bind and the other failing at boot. Catch it here, where the message
+	// is readable, not at 3am from a probe that never answers.
+	if c.GRPC.Port == c.OpsPort {
+		problems = append(problems, fmt.Sprintf(
+			"GRPC_PORT %d collides with OPS_PORT: the gRPC surface and the ops server need distinct ports",
+			c.GRPC.Port))
+	}
+	return problems
+}
+
 // ParseLogLevel maps a configured level name to its slog level.
 func ParseLogLevel(s string) (slog.Level, error) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
@@ -437,5 +504,8 @@ func (c Config) LogValue() slog.Value {
 		// The tokens themselves are secrets and never logged: only whether any are configured, which
 		// is all a boot diagnosis needs.
 		slog.Bool("http_admin_tokens_set", len(c.HTTP.AdminTokens) > 0),
+		// The Redis URL can embed a password, so it is reduced to a boolean, as the Postgres URL is.
+		slog.Bool("redis_url_set", strings.TrimSpace(c.Redis.URL) != ""),
+		slog.Int("grpc_port", c.GRPC.Port),
 	)
 }

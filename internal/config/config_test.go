@@ -22,6 +22,7 @@ var knownVars = []string{
 	"KAFKA_BROKERS", "KAFKA_TIMEOUT",
 	"CLICKHOUSE_ADDR", "CLICKHOUSE_DATABASE", "CLICKHOUSE_USERNAME", "CLICKHOUSE_PASSWORD", "CLICKHOUSE_TIMEOUT",
 	"HTTP_PORT", "HTTP_READ_HEADER_TIMEOUT", "HTTP_ADMIN_TOKENS",
+	"REDIS_URL", "REDIS_TIMEOUT", "GRPC_PORT",
 }
 
 // setEnv installs a clean environment holding exactly kv. Each variable goes through t.Setenv
@@ -96,6 +97,9 @@ func TestLoadFromEnvironment(t *testing.T) {
 		"HTTP_PORT":                   "8090",
 		"HTTP_READ_HEADER_TIMEOUT":    "3s",
 		"HTTP_ADMIN_TOKENS":           "tok-one:admin:read|admin:write,tok-two:admin:read",
+		"REDIS_URL":                   "redis://cache:6379",
+		"REDIS_TIMEOUT":               "4s",
+		"GRPC_PORT":                   "7100",
 	})
 
 	cfg, err := config.Load("rest-api-svc")
@@ -136,6 +140,15 @@ func TestLoadFromEnvironment(t *testing.T) {
 	}
 	if len(cfg.ClickHouse.Addr) != 2 {
 		t.Errorf("ClickHouse.Addr = %v, want 2 entries", cfg.ClickHouse.Addr)
+	}
+	if cfg.Redis.URL != "redis://cache:6379" {
+		t.Errorf("Redis.URL = %q, want redis://cache:6379", cfg.Redis.URL)
+	}
+	if cfg.Redis.Timeout != 4*time.Second {
+		t.Errorf("Redis.Timeout = %s, want 4s", cfg.Redis.Timeout)
+	}
+	if cfg.GRPC.Port != 7100 {
+		t.Errorf("GRPC.Port = %d, want 7100", cfg.GRPC.Port)
 	}
 }
 
@@ -264,6 +277,11 @@ func TestProductionRejectsLocalhostDefaults(t *testing.T) {
 			"KAFKA_BROKERS":   "k1:9092",
 			"CLICKHOUSE_ADDR": "ch1:9000,localhost:9000",
 		}, "CLICKHOUSE_ADDR"},
+		{"redis defaulted", map[string]string{
+			"POSTGRES_URL":    "postgres://u:p@db:5432/gw",
+			"KAFKA_BROKERS":   "k1:9092",
+			"CLICKHOUSE_ADDR": "ch1:9000",
+		}, "REDIS_URL"},
 	}
 
 	for _, tc := range tests {
@@ -364,6 +382,7 @@ func TestDisabledOTelSkipsExporterValidation(t *testing.T) {
 		"POSTGRES_URL":                "postgres://u:p@db:5432/gw",
 		"KAFKA_BROKERS":               "k1:9092",
 		"CLICKHOUSE_ADDR":             "ch1:9000",
+		"REDIS_URL":                   "redis://cache:6379",
 	})
 
 	cfg, err := config.Load("router-svc")
