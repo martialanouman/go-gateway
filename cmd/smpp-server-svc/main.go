@@ -19,9 +19,11 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
+	"github.com/martialanouman/go-gateway/internal/bindthrottle"
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/ingest"
 	"github.com/martialanouman/go-gateway/internal/observability"
@@ -31,6 +33,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
 	"github.com/martialanouman/go-gateway/internal/storage/postgres"
+	redisstore "github.com/martialanouman/go-gateway/internal/storage/redis"
 )
 
 // serviceName identifies this binary in logs, traces and metrics.
@@ -56,7 +59,8 @@ func run() error {
 	// PostgreSQL (bind auth), Kafka (produce mt.inbound), ClickHouse (accepted CDR row) and gRPC to
 	// session-manager (max_sessions). No HTTP business surface of its own — the SMPP listener is it.
 	cfg, err := config.Load(serviceName,
-		config.SectionOTel, config.SectionPostgres, config.SectionKafka, config.SectionClickHouse, config.SectionSMPP)
+		config.SectionOTel, config.SectionPostgres, config.SectionKafka, config.SectionClickHouse,
+		config.SectionRedis, config.SectionSMPP)
 	if err != nil {
 		return err
 	}
@@ -105,16 +109,39 @@ func run() error {
 	}
 	defer func() { _ = registryConn.Close() }()
 
+	// Redis backs the anti-brute-force throttle on the bind (step-026). It is deliberately NOT a
+	// readiness dependency (see the ops server below): the throttle fails open, so a Redis outage must
+	// degrade brute-force protection, not remove the pod from the load balancer.
+	rdb, err := redisstore.NewClient(ctx, cfg.Redis)
+	if err != nil {
+		return fmt.Errorf("connect redis: %w", err)
+	}
+	defer func() { _ = rdb.Close() }()
+
+	throttle := bindthrottle.New(rdb, bindthrottle.Config{
+		MaxFailures: cfg.SMPP.BindMaxFailures,
+		Window:      cfg.SMPP.BindFailureWindow,
+		BackoffBase: cfg.SMPP.BindBackoffBase,
+		BackoffMax:  cfg.SMPP.BindBackoffMax,
+	})
+	throttleBlocked := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "smpp_bind_throttle_blocked_total",
+		Help: "SMPP binds refused by the anti-brute-force throttle before authentication.",
+	}, []string{"subject"}) // bounded label: "system_id" | "ip"
+
 	listener := smppserver.New(
 		postgres.NewBindRepo(pool),
 		registrypb.NewSessionRegistryClient(registryConn),
 		ingestor,
 		smppserver.Options{
-			Addr:        fmt.Sprintf(":%d", cfg.SMPP.Port),
-			PodID:       podID(cfg, logger),
-			SystemID:    serviceName,
-			IdleTimeout: cfg.SMPP.IdleTimeout,
-			Tracer:      observability.Tracer(nil, serviceName),
+			Addr:            fmt.Sprintf(":%d", cfg.SMPP.Port),
+			PodID:           podID(cfg, logger),
+			SystemID:        serviceName,
+			IdleTimeout:     cfg.SMPP.IdleTimeout,
+			Tracer:          observability.Tracer(nil, serviceName),
+			Throttle:        throttle,
+			ThrottleBlocked: throttleBlocked,
+			MaxConns:        cfg.SMPP.MaxConns,
 		},
 		logger,
 	)
@@ -125,7 +152,9 @@ func run() error {
 	// accepted CDR row (Enqueue drops on saturation, the connector's enroute row supersedes it), so a
 	// ClickHouse outage must not refuse binds and submits while the durable path (Kafka) is healthy.
 	// The SessionRegistry dependency is surfaced per-bind (ESME_RSYSERR) rather than gating readiness,
-	// since a lazy gRPC client reports no meaningful state until traffic flows.
+	// since a lazy gRPC client reports no meaningful state until traffic flows. Redis is likewise NOT a
+	// readiness gate: the bind throttle fails open, so a Redis outage weakens brute-force protection but
+	// must not pull the pod from the LB and cut SMPP capacity.
 	ops, err := observability.NewOpsServer(cfg, logger,
 		postgres.PingCheck("postgres", pool, cfg.Postgres.Timeout),
 		producer.ReadyCheck("kafka", cfg.Kafka.Timeout),
@@ -133,6 +162,10 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("init ops server: %w", err)
 	}
+	// The throttle's block counter is this service's first business metric; register it on the ops
+	// registry so it surfaces on /metrics. The counter carries no high-cardinality label (never a
+	// system_id or an IP), per the ops registry's cardinality rule.
+	ops.Registry().MustRegister(throttleBlocked)
 
 	logger.InfoContext(ctx, "starting", "config", cfg)
 

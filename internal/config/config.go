@@ -199,6 +199,27 @@ type SMPP struct {
 	// releasing its registry token. It stands in for the enquire_link keep-alive (deferred) and is
 	// aligned with the registry's session TTL so a silent peer's slot is not held past the drop.
 	IdleTimeout time.Duration `env:"IDLE_TIMEOUT" envDefault:"60s"`
+
+	// BindMaxFailures is how many bind failures a system_id or a source IP may accumulate within
+	// BindFailureWindow before the next attempt is throttled — refused with a backoff, before argon2id
+	// runs, so a brute-force flood cannot make the server pay that CPU cost (step-026).
+	BindMaxFailures int `env:"BIND_MAX_FAILURES" envDefault:"5"`
+
+	// BindFailureWindow is how long a bind failure is remembered. Each new failure slides the window
+	// forward, so a lockout lifts only after a full quiet window.
+	BindFailureWindow time.Duration `env:"BIND_FAILURE_WINDOW" envDefault:"15m"`
+
+	// BindBackoffBase is the delay applied to the first throttled bind (at the threshold); it doubles
+	// once per failure past the threshold.
+	BindBackoffBase time.Duration `env:"BIND_BACKOFF_BASE" envDefault:"1s"`
+
+	// BindBackoffMax caps the progressive bind backoff, so the tarpit delay never grows without bound.
+	BindBackoffMax time.Duration `env:"BIND_BACKOFF_MAX" envDefault:"30s"`
+
+	// MaxConns caps concurrent accepted SMPP connections. max_sessions is only enforced after a
+	// successful bind, so this is the ceiling that bounds the goroutines and file descriptors an
+	// unauthenticated flood (notably of tarpitted binds) can pin. Size it to the file-descriptor ulimit.
+	MaxConns int `env:"MAX_CONNS" envDefault:"16384"`
 }
 
 // Section names a configuration group a binary depends on. A binary declares the sections it
@@ -527,6 +548,40 @@ func (c Config) smppProblems() []string {
 		problems = append(problems, "SMPP_SESSION_MANAGER_ADDR is the localhost development default: "+
 			"set it explicitly in production")
 	}
+	// Anti-brute-force thresholds (step-026). A non-positive threshold or window would either throttle
+	// every bind or never throttle one; a non-positive backoff would defeat the tarpit. A window under a
+	// second truncates to a zero EXPIRE, so it is rejected as well.
+	if c.SMPP.BindMaxFailures < 1 {
+		problems = append(problems, fmt.Sprintf(
+			"SMPP_BIND_MAX_FAILURES %d must be positive", c.SMPP.BindMaxFailures))
+	}
+	if c.SMPP.BindFailureWindow < time.Second {
+		problems = append(problems, fmt.Sprintf(
+			"SMPP_BIND_FAILURE_WINDOW %s must be at least 1s", c.SMPP.BindFailureWindow))
+	}
+	if c.SMPP.BindBackoffBase <= 0 {
+		problems = append(problems, fmt.Sprintf(
+			"SMPP_BIND_BACKOFF_BASE %s must be positive", c.SMPP.BindBackoffBase))
+	}
+	if c.SMPP.BindBackoffMax < c.SMPP.BindBackoffBase {
+		problems = append(problems, fmt.Sprintf(
+			"SMPP_BIND_BACKOFF_MAX %s must be at least SMPP_BIND_BACKOFF_BASE %s",
+			c.SMPP.BindBackoffMax, c.SMPP.BindBackoffBase))
+	}
+	// Sanity ceilings: a very long window enlarges Redis key lifetime (memory), and a very long tarpit
+	// pins a connection slot far past any legitimate retry cadence.
+	if c.SMPP.BindFailureWindow > time.Hour {
+		problems = append(problems, fmt.Sprintf(
+			"SMPP_BIND_FAILURE_WINDOW %s exceeds the 1h ceiling", c.SMPP.BindFailureWindow))
+	}
+	if c.SMPP.BindBackoffMax > 5*time.Minute {
+		problems = append(problems, fmt.Sprintf(
+			"SMPP_BIND_BACKOFF_MAX %s exceeds the 5m ceiling", c.SMPP.BindBackoffMax))
+	}
+	if c.SMPP.MaxConns < 1 {
+		problems = append(problems, fmt.Sprintf(
+			"SMPP_MAX_CONNS %d must be positive", c.SMPP.MaxConns))
+	}
 	return problems
 }
 
@@ -575,5 +630,10 @@ func (c Config) LogValue() slog.Value {
 		slog.String("smpp_session_manager_addr", c.SMPP.SessionManagerAddr),
 		slog.String("smpp_pod_id", c.SMPP.PodID),
 		slog.Duration("smpp_idle_timeout", c.SMPP.IdleTimeout),
+		slog.Int("smpp_bind_max_failures", c.SMPP.BindMaxFailures),
+		slog.Duration("smpp_bind_failure_window", c.SMPP.BindFailureWindow),
+		slog.Duration("smpp_bind_backoff_base", c.SMPP.BindBackoffBase),
+		slog.Duration("smpp_bind_backoff_max", c.SMPP.BindBackoffMax),
+		slog.Int("smpp_max_conns", c.SMPP.MaxConns),
 	)
 }
