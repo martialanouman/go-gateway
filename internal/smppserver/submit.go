@@ -7,6 +7,7 @@ import (
 
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
+	"github.com/martialanouman/go-gateway/internal/platform/msg"
 	"github.com/martialanouman/go-gateway/internal/platform/uuidx"
 	"github.com/martialanouman/go-gateway/internal/smpp"
 	"github.com/martialanouman/go-gateway/internal/smpp/session"
@@ -52,7 +53,7 @@ func (l *Listener) onSubmit(_ context.Context, st *connState) session.SubmitHand
 			CustomerID: customerID,
 			From:       req.Source,
 			To:         req.Destination,
-			Body:       req.Body, // already a masking msg.Body; never revealed here (invariant a)
+			Body:       submitBody(req), // already a masking msg.Body; never revealed here (invariant a)
 			// The router resolves the wire encoding; an SMPP submit carries data_coding instead of the
 			// REST encoding enum, so we pass "auto" and let data_coding drive downstream.
 			Encoding:           "auto",
@@ -70,6 +71,19 @@ func (l *Listener) onSubmit(_ context.Context, st *connState) session.SubmitHand
 		}
 		return session.SubmitResult{Status: smpp.StatusOK, MessageID: messageID.String()}
 	}
+}
+
+// submitBody resolves the message body of a submit_sm. A body larger than the 254-octet short_message
+// field travels in the message_payload TLV with short_message empty (SMPP v3.4 §5.2.30); in that case
+// the TLV carries the content. The result stays a masking msg.Body, so the plaintext never escapes
+// into a log or span here (invariant a).
+func submitBody(req session.SubmitRequest) msg.Body {
+	if req.Body.IsEmpty() {
+		if payload, ok := req.TLVs.Get(smpp.TagMessagePayload); ok {
+			return msg.NewBody(payload)
+		}
+	}
+	return req.Body
 }
 
 // smppStatusFor maps an ingest error's flat Code to an SMPP command_status, falling back to

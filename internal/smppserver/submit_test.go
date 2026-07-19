@@ -96,6 +96,26 @@ func TestOnSubmitMapsPDUToEnvelope(t *testing.T) {
 	}
 }
 
+func TestOnSubmitUsesMessagePayloadWhenShortMessageEmpty(t *testing.T) {
+	const long = "this body is carried in the message_payload TLV because it is empty in short_message"
+	ci := &captureIngestor{}
+	l := New(nil, nil, ci, Options{}, discardLog())
+
+	req := submitReq()
+	req.Body = msg.NewBody(nil) // short_message empty, as an SMSC sends a >254-octet message
+	req.TLVs = smpp.TLVList{{Tag: smpp.TagMessagePayload, Value: []byte(long)}}
+
+	res := l.onSubmit(context.Background(), &connState{accountID: uuid.NewString(), customerID: uuid.NewString()})(
+		context.Background(), req)
+
+	if res.Status != smpp.StatusOK {
+		t.Fatalf("status = %#x, want ESME_ROK", res.Status)
+	}
+	if got := string(ci.env.Body.Reveal()); got != long {
+		t.Errorf("body = %q, want the message_payload content %q", got, long)
+	}
+}
+
 func TestOnSubmitRegisteredDeliveryOffMapsFalse(t *testing.T) {
 	ci := &captureIngestor{}
 	l := New(nil, nil, ci, Options{}, discardLog())
