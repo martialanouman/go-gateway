@@ -50,6 +50,8 @@ func (r *BindRepo) BindCredentialBySystemID(ctx context.Context, systemID string
 		SMPPEnabled:      row.SmppEnabled,
 		AllowedBindType:  cp.BindType(row.AllowedBindTypes),
 		MaxSessions:      row.MaxSessions,
+		QuerySMEnabled:   row.QuerySmEnabled,
+		CancelSMEnabled:  row.CancelSmEnabled,
 		AccountStatus:    cp.AccountStatus(row.AccountStatus),
 		CustomerStatus:   cp.CustomerStatus(row.CustomerStatus),
 	}, true, nil

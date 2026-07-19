@@ -61,11 +61,13 @@ func (l *Listener) Run(ctx context.Context) error {
 // own goroutine in sequence, so the fields need no lock; the refresh goroutine only reads fields set
 // before it starts and never mutated after.
 type connState struct {
-	accountID   string
-	customerID  string
-	bindID      string
-	maxSessions int32
-	bound       bool
+	accountID       string
+	customerID      string
+	bindID          string
+	maxSessions     int32
+	querySMEnabled  bool
+	cancelSMEnabled bool
+	bound           bool
 
 	refreshStop context.CancelFunc
 	refreshDone chan struct{}
@@ -133,6 +135,8 @@ func (l *Listener) onBind(ctx context.Context, st *connState) session.BindHandle
 		st.accountID = cred.AccountID.String()
 		st.customerID = cred.CustomerID.String()
 		st.maxSessions = cred.MaxSessions
+		st.querySMEnabled = cred.QuerySMEnabled
+		st.cancelSMEnabled = cred.CancelSMEnabled
 		st.bound = true
 		l.startRefresh(ctx, st, req.Mode)
 

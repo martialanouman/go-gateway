@@ -41,8 +41,12 @@ type BindCredential struct {
 	SMPPEnabled      bool
 	AllowedBindType  BindType
 	MaxSessions      int32
-	AccountStatus    AccountStatus
-	CustomerStatus   CustomerStatus
+	// QuerySMEnabled and CancelSMEnabled gate the optional SMPP operations (§6.22): a disabled op is
+	// answered ESME_RINVCMDID, as if unsupported. They are account switches, resolved once at bind.
+	QuerySMEnabled  bool
+	CancelSMEnabled bool
+	AccountStatus   AccountStatus
+	CustomerStatus  CustomerStatus
 }
 
 // EffectiveStatus is the status the bind actually experiences: the more restrictive of the account's
