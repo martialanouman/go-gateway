@@ -61,8 +61,8 @@ func (l *Listener) Run(ctx context.Context) error {
 // own goroutine in sequence, so the fields need no lock; the refresh goroutine only reads fields set
 // before it starts and never mutated after.
 type connState struct {
-	accountID       string
-	customerID      string
+	accountID       uuid.UUID
+	customerID      uuid.UUID
 	bindID          string
 	maxSessions     int32
 	querySMEnabled  bool
@@ -134,8 +134,8 @@ func (l *Listener) onBind(ctx context.Context, st *connState) session.BindHandle
 			return session.BindResult{Status: errs.StatusBindFail}
 		}
 
-		st.accountID = cred.AccountID.String()
-		st.customerID = cred.CustomerID.String()
+		st.accountID = cred.AccountID
+		st.customerID = cred.CustomerID
 		st.maxSessions = cred.MaxSessions
 		st.querySMEnabled = cred.QuerySMEnabled
 		st.cancelSMEnabled = cred.CancelSMEnabled
@@ -176,7 +176,7 @@ func (l *Listener) refreshLoop(ctx context.Context, st *connState, mode session.
 			rctx, cancel := context.WithTimeout(ctx, registryCallTimeout)
 			_, err := l.registry.Bind(rctx, &registrypb.BindRequest{
 				Session: &registrypb.Session{
-					AccountId: st.accountID,
+					AccountId: st.accountID.String(),
 					PodId:     l.opts.PodID,
 					BindId:    st.bindID,
 					BindType:  pbBindType(mode),
@@ -200,7 +200,7 @@ func (l *Listener) releaseToken(parent context.Context, st *connState) {
 	defer cancel()
 
 	if _, err := l.registry.Unbind(ctx, &registrypb.UnbindRequest{
-		AccountId: st.accountID,
+		AccountId: st.accountID.String(),
 		BindId:    st.bindID,
 	}); err != nil {
 		// The token will lapse on its own TTL, so this is a warning, not a fault. errors.Is guards

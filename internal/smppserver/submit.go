@@ -3,8 +3,6 @@ package smppserver
 import (
 	"context"
 
-	"github.com/google/uuid"
-
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 	"github.com/martialanouman/go-gateway/internal/platform/msg"
@@ -29,28 +27,16 @@ func (l *Listener) onSubmit(_ context.Context, st *connState) session.SubmitHand
 		sctx, span := l.opts.Tracer.Start(sctx, "smpp.submit")
 		defer span.End()
 
-		// accountID/customerID were resolved and stored at bind; a parse failure here means a bound
-		// session carries a malformed id, which is a server fault, not a client error.
-		accountID, err := uuid.Parse(st.accountID)
-		if err != nil {
-			l.logger.ErrorContext(sctx, "smpp submit: malformed account id on bound session", "err", err)
-			return session.SubmitResult{Status: errs.StatusSysErr}
-		}
-		customerID, err := uuid.Parse(st.customerID)
-		if err != nil {
-			l.logger.ErrorContext(sctx, "smpp submit: malformed customer id on bound session", "err", err)
-			return session.SubmitResult{Status: errs.StatusSysErr}
-		}
-
 		messageID := uuidx.New()
 		traceID := uuidx.New()
 		dataCoding := int(req.DataCoding)
 
+		// accountID/customerID were resolved to typed uuids at bind, so the hot path does no parsing.
 		env := pipeline.InboundMT{
 			MessageID:  messageID,
 			TraceID:    traceID,
-			AccountID:  accountID,
-			CustomerID: customerID,
+			AccountID:  st.accountID,
+			CustomerID: st.customerID,
 			From:       req.Source,
 			To:         req.Destination,
 			Body:       submitBody(req), // already a masking msg.Body; never revealed here (invariant a)
@@ -66,7 +52,7 @@ func (l *Listener) onSubmit(_ context.Context, st *connState) session.SubmitHand
 		if err := l.ingestor.Accept(sctx, env); err != nil {
 			status := smppStatusFor(err)
 			l.logger.ErrorContext(sctx, "smpp submit: ingest failed",
-				"message_id", messageID, "account_id", accountID, "command_status", status)
+				"message_id", messageID, "account_id", st.accountID, "command_status", status)
 			return session.SubmitResult{Status: status}
 		}
 		return session.SubmitResult{Status: smpp.StatusOK, MessageID: messageID.String()}

@@ -60,7 +60,7 @@ func TestOnSubmitMapsPDUToEnvelope(t *testing.T) {
 	ci := &captureIngestor{}
 	l := New(nil, nil, ci, Options{}, discardLog())
 
-	st := &connState{accountID: acc.String(), customerID: cust.String()}
+	st := &connState{accountID: acc, customerID: cust}
 	res := l.onSubmit(context.Background(), st)(context.Background(), submitReq())
 
 	if res.Status != smpp.StatusOK {
@@ -105,7 +105,7 @@ func TestOnSubmitUsesMessagePayloadWhenShortMessageEmpty(t *testing.T) {
 	req.Body = msg.NewBody(nil) // short_message empty, as an SMSC sends a >254-octet message
 	req.TLVs = smpp.TLVList{{Tag: smpp.TagMessagePayload, Value: []byte(long)}}
 
-	res := l.onSubmit(context.Background(), &connState{accountID: uuid.NewString(), customerID: uuid.NewString()})(
+	res := l.onSubmit(context.Background(), &connState{accountID: uuid.New(), customerID: uuid.New()})(
 		context.Background(), req)
 
 	if res.Status != smpp.StatusOK {
@@ -122,7 +122,7 @@ func TestOnSubmitRegisteredDeliveryOffMapsFalse(t *testing.T) {
 	req := submitReq()
 	req.RegisteredDelivery = 0
 
-	l.onSubmit(context.Background(), &connState{accountID: uuid.NewString(), customerID: uuid.NewString()})(
+	l.onSubmit(context.Background(), &connState{accountID: uuid.New(), customerID: uuid.New()})(
 		context.Background(), req)
 
 	if ci.env.RegisteredDelivery {
@@ -144,7 +144,7 @@ func TestOnSubmitIngestErrorMapsToCommandStatus(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ci := &captureIngestor{err: tc.err}
 			l := New(nil, nil, ci, Options{}, discardLog())
-			res := l.onSubmit(context.Background(), &connState{accountID: uuid.NewString(), customerID: uuid.NewString()})(
+			res := l.onSubmit(context.Background(), &connState{accountID: uuid.New(), customerID: uuid.New()})(
 				context.Background(), submitReq())
 			if res.Status != tc.want {
 				t.Errorf("status = %#x, want %#x", res.Status, tc.want)
@@ -158,7 +158,7 @@ func TestOnSubmitIngestErrorMapsToCommandStatus(t *testing.T) {
 
 func TestOnSubmitNilIngestorRejects(t *testing.T) {
 	l := New(nil, nil, nil, Options{}, discardLog())
-	res := l.onSubmit(context.Background(), &connState{accountID: uuid.NewString(), customerID: uuid.NewString()})(
+	res := l.onSubmit(context.Background(), &connState{accountID: uuid.New(), customerID: uuid.New()})(
 		context.Background(), submitReq())
 	if res.Status != errs.StatusSubmitFail {
 		t.Errorf("nil ingestor status = %#x, want ESME_RSUBMITFAIL", res.Status)
@@ -259,7 +259,7 @@ func submitViaSMPP(t *testing.T, acc, cust uuid.UUID) (kafka.Record, clickhouse.
 	runAccepted(t, accepted)
 
 	l := New(nil, nil, ingest.NewIngestor(producer, accepted, nil), Options{}, discardLog())
-	res := l.onSubmit(context.Background(), &connState{accountID: acc.String(), customerID: cust.String()})(
+	res := l.onSubmit(context.Background(), &connState{accountID: acc, customerID: cust})(
 		context.Background(), submitReq())
 	if res.Status != smpp.StatusOK {
 		t.Fatalf("SMPP submit status = %#x, want ESME_ROK", res.Status)
