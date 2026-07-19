@@ -6,11 +6,18 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"time"
 
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 	"github.com/martialanouman/go-gateway/internal/platform/msg"
 	"github.com/martialanouman/go-gateway/internal/smpp"
 )
+
+// deadlineConn is the subset of net.Conn used to enforce Config.IdleTimeout. A conn that does not
+// implement it (a bare io.ReadWriteCloser) silently opts out of the idle timeout.
+type deadlineConn interface {
+	SetReadDeadline(t time.Time) error
+}
 
 // readLoop reads and dispatches PDUs until the session ends. An orderly close (peer EOF, a
 // shutdown-triggered net.ErrClosed, or an unbind) returns nil. A decodable-but-invalid frame is
@@ -18,6 +25,7 @@ import (
 // framing stays intact. Any other error is a genuine socket fault.
 func (s *Session) readLoop(ctx context.Context) error {
 	for {
+		s.armReadDeadline()
 		pdu, err := smpp.ReadPDU(s.conn)
 		if err != nil {
 			// A read error once we are shutting down (ctx cancel, unbind, write fault) is our own
@@ -27,6 +35,12 @@ func (s *Session) readLoop(ctx context.Context) error {
 			}
 			switch {
 			case errors.Is(err, io.EOF), errors.Is(err, net.ErrClosed):
+				return nil
+			case isTimeout(err):
+				// The IdleTimeout deadline fired: the peer has gone silent. Dropping it is an
+				// orderly close (Serve returns nil), not a fault — step-024 releases the session
+				// token after Serve regardless.
+				s.logger.Warn("session: idle timeout", "timeout", s.cfg.IdleTimeout)
 				return nil
 			case errors.Is(err, smpp.ErrUnknownCommand),
 				errors.Is(err, smpp.ErrMalformedBody),
@@ -46,6 +60,25 @@ func (s *Session) readLoop(ctx context.Context) error {
 	}
 }
 
+// armReadDeadline sets the next read's idle deadline when Config.IdleTimeout is enabled and the
+// conn supports deadlines. It is a no-op otherwise, so a zero IdleTimeout leaves the read blocking
+// indefinitely. Called before every ReadPDU so the deadline measures inactivity, not total age.
+func (s *Session) armReadDeadline() {
+	if s.cfg.IdleTimeout <= 0 {
+		return
+	}
+	if dc, ok := s.conn.(deadlineConn); ok {
+		_ = dc.SetReadDeadline(time.Now().Add(s.cfg.IdleTimeout))
+	}
+}
+
+// isTimeout reports whether err is a deadline expiry. ReadPDU returns the reader's error verbatim,
+// so a SetReadDeadline expiry arrives as a net.Error with Timeout() true.
+func isTimeout(err error) bool {
+	var nerr net.Error
+	return errors.As(err, &nerr) && nerr.Timeout()
+}
+
 // handle applies one decoded PDU to the state machine and returns true when the session must close
 // (after unbind). It runs on the read goroutine, the sole owner of s.st.
 func (s *Session) handle(ctx context.Context, pdu smpp.PDU) bool {
@@ -61,9 +94,7 @@ func (s *Session) handle(ctx context.Context, pdu smpp.PDU) bool {
 	case *smpp.EnquireLink:
 		s.reply(smpp.PDU{Sequence: pdu.Sequence, Body: &smpp.EnquireLinkResp{}})
 	case *smpp.Unbind:
-		if s.cfg.OnUnbind != nil {
-			s.cfg.OnUnbind(ctx)
-		}
+		s.callOnUnbind(ctx)
 		s.reply(smpp.PDU{Sequence: pdu.Sequence, Body: &smpp.UnbindResp{}})
 		s.st = stUnbound
 		return true
@@ -87,19 +118,16 @@ func (s *Session) handleBind(ctx context.Context, seq uint32, mode BindMode, f *
 		return
 	}
 
-	res := BindResult{Status: smpp.StatusOK, SystemID: s.cfg.SystemID}
-	if s.cfg.OnBind != nil {
-		res = s.cfg.OnBind(ctx, BindRequest{
-			Mode:             mode,
-			SystemID:         f.SystemID,
-			Password:         f.Password,
-			SystemType:       f.SystemType,
-			InterfaceVersion: f.InterfaceVersion,
-			AddrTON:          f.AddrTON,
-			AddrNPI:          f.AddrNPI,
-			AddressRange:     f.AddressRange,
-		})
-	}
+	res := s.callOnBind(ctx, BindRequest{
+		Mode:             mode,
+		SystemID:         f.SystemID,
+		Password:         f.Password,
+		SystemType:       f.SystemType,
+		InterfaceVersion: f.InterfaceVersion,
+		AddrTON:          f.AddrTON,
+		AddrNPI:          f.AddrNPI,
+		AddressRange:     f.AddressRange,
+	})
 
 	systemID := res.SystemID
 	if systemID == "" {
@@ -155,10 +183,7 @@ func (s *Session) handleSubmit(ctx context.Context, seq uint32, sm *smpp.SubmitS
 		"src", req.Source, "dst", req.Destination,
 		"body", req.Body, "body_len", req.Body.Len())
 
-	res := SubmitResult{Status: smpp.StatusOK}
-	if s.cfg.OnSubmit != nil {
-		res = s.cfg.OnSubmit(ctx, req)
-	}
+	res := s.callOnSubmit(ctx, req)
 
 	out := &smpp.SubmitSMResp{}
 	if res.Status == smpp.StatusOK {

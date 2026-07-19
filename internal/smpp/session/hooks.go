@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 
+	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 	"github.com/martialanouman/go-gateway/internal/platform/msg"
 	"github.com/martialanouman/go-gateway/internal/smpp"
 )
@@ -63,4 +64,52 @@ type SubmitRequest struct {
 type SubmitResult struct {
 	Status    uint32
 	MessageID string
+}
+
+// callOnBind runs the OnBind hook under panic recovery. The hooks are caller-supplied extension
+// points (step-024 wires auth and max_sessions there); a panic in one must not tear down the read
+// goroutine — and, through it, the process that multiplexes every other session. A panic rejects
+// the bind with ESME_RSYSERR and keeps the session open. A nil hook accepts with Config defaults.
+func (s *Session) callOnBind(ctx context.Context, req BindRequest) (res BindResult) {
+	if s.cfg.OnBind == nil {
+		return BindResult{Status: smpp.StatusOK, SystemID: s.cfg.SystemID}
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			// The panic value is logged for diagnosis; it never carries the message body (invariant
+			// a) — a hook that panicked with the body would itself be violating the invariant.
+			s.logger.Error("session: OnBind panicked", "panic", r)
+			res = BindResult{Status: errs.StatusSysErr}
+		}
+	}()
+	return s.cfg.OnBind(ctx, req)
+}
+
+// callOnSubmit runs the OnSubmit hook under panic recovery. A panic rejects the submit_sm with
+// ESME_RSYSERR and keeps the session alive. A nil hook accepts with an empty message id.
+func (s *Session) callOnSubmit(ctx context.Context, req SubmitRequest) (res SubmitResult) {
+	if s.cfg.OnSubmit == nil {
+		return SubmitResult{Status: smpp.StatusOK}
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			s.logger.Error("session: OnSubmit panicked", "panic", r)
+			res = SubmitResult{Status: errs.StatusSysErr}
+		}
+	}()
+	return s.cfg.OnSubmit(ctx, req)
+}
+
+// callOnUnbind runs the OnUnbind hook under panic recovery. The hook is advisory, so a panic is
+// logged and swallowed: the session unbinds and closes regardless. A nil hook is a no-op.
+func (s *Session) callOnUnbind(ctx context.Context) {
+	if s.cfg.OnUnbind == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			s.logger.Error("session: OnUnbind panicked", "panic", r)
+		}
+	}()
+	s.cfg.OnUnbind(ctx)
 }

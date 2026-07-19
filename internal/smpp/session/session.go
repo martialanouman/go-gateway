@@ -41,6 +41,13 @@ type Config struct {
 	WindowSize int
 	// ResponseTimeout bounds Send's wait for a response. Values <= 0 use defaultResponseTimeout.
 	ResponseTimeout time.Duration
+	// IdleTimeout drops a session whose peer has sent nothing for this long, reclaiming the
+	// goroutine and its window slot instead of leaking them on a dead-but-open connection. It is a
+	// read deadline reset before each PDU read; an expiry closes the session as an orderly shutdown
+	// (Serve returns nil). Zero disables it — the zero-value Config keeps a session open
+	// indefinitely. step-024 sets it (this is also the dead-peer detection standing in for the
+	// enquire_link keep-alive, which is deferred). Requires a conn that supports SetReadDeadline.
+	IdleTimeout time.Duration
 	// Logger receives the session's structured logs. nil uses slog.Default. The message body is
 	// never logged (invariant a); only its length is.
 	Logger *slog.Logger

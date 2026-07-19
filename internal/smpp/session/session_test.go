@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"strings"
@@ -17,6 +18,12 @@ import (
 	"github.com/martialanouman/go-gateway/internal/smpp"
 	"github.com/martialanouman/go-gateway/internal/smpp/session"
 )
+
+// discardLogger silences the session's structured logs (a recovered panic logs an Error) so test
+// output stays clean.
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
 
 const ioDeadline = 3 * time.Second
 
@@ -455,6 +462,102 @@ func TestSession_DoesNotLogBody(t *testing.T) {
 	}
 	if !strings.Contains(out, msg.Redacted) {
 		t.Errorf("expected %q in log output, got:\n%s", msg.Redacted, out)
+	}
+}
+
+// TestSession_BindHookPanicRecovered pins that a panicking OnBind rejects the bind with
+// ESME_RSYSERR instead of tearing down the read goroutine, and the session keeps serving.
+func TestSession_BindHookPanicRecovered(t *testing.T) {
+	t.Parallel()
+	cfg := session.Config{
+		Logger: discardLogger(),
+		OnBind: func(context.Context, session.BindRequest) session.BindResult {
+			panic("boom in OnBind")
+		},
+	}
+	client, _, _, _ := newSession(t, cfg)
+
+	resp := roundtrip(t, client, bindReq(session.BindTransmitter, 1))
+	if resp.CommandID() != smpp.CmdBindTransmitterResp {
+		t.Fatalf("resp cmd = %#x, want bind_transmitter_resp", resp.CommandID())
+	}
+	if resp.Status != errs.StatusSysErr {
+		t.Errorf("bind status = %#x, want ESME_RSYSERR (%#x)", resp.Status, errs.StatusSysErr)
+	}
+	// The session survived the panic: it stays open (bind was rejected) and still answers.
+	if r := roundtrip(t, client, smpp.PDU{Sequence: 2, Body: &smpp.EnquireLink{}}); r.CommandID() != smpp.CmdEnquireLinkResp {
+		t.Errorf("session did not survive bind panic: enquire resp cmd = %#x", r.CommandID())
+	}
+}
+
+// TestSession_SubmitHookPanicRecovered pins that a panicking OnSubmit rejects the submit_sm with
+// ESME_RSYSERR and the session keeps serving.
+func TestSession_SubmitHookPanicRecovered(t *testing.T) {
+	t.Parallel()
+	cfg := session.Config{
+		Logger: discardLogger(),
+		OnSubmit: func(context.Context, session.SubmitRequest) session.SubmitResult {
+			panic("boom in OnSubmit")
+		},
+	}
+	client, _, _, _ := newSession(t, cfg)
+	bindOK(t, client, session.BindTransmitter)
+
+	resp := roundtrip(t, client, smpp.PDU{Sequence: 2, Body: &smpp.SubmitSM{}})
+	if resp.CommandID() != smpp.CmdSubmitSMResp {
+		t.Fatalf("resp cmd = %#x, want submit_sm_resp", resp.CommandID())
+	}
+	if resp.Status != errs.StatusSysErr {
+		t.Errorf("submit status = %#x, want ESME_RSYSERR (%#x)", resp.Status, errs.StatusSysErr)
+	}
+	if r := roundtrip(t, client, smpp.PDU{Sequence: 3, Body: &smpp.EnquireLink{}}); r.CommandID() != smpp.CmdEnquireLinkResp {
+		t.Errorf("session did not survive submit panic: enquire resp cmd = %#x", r.CommandID())
+	}
+}
+
+// TestSession_IdleTimeout pins that a peer gone silent past Config.IdleTimeout is dropped as an
+// orderly close (Serve returns nil) and its connection is closed.
+func TestSession_IdleTimeout(t *testing.T) {
+	t.Parallel()
+	client, _, _, errc := newSession(t, session.Config{
+		Logger:      discardLogger(),
+		IdleTimeout: 150 * time.Millisecond,
+	})
+	bindOK(t, client, session.BindTransceiver)
+
+	// Send nothing further: the read deadline must fire and end the session on its own.
+	if err := waitErr(t, errc); err != nil {
+		t.Errorf("Serve after idle timeout = %v, want nil", err)
+	}
+	// The session closed its side: a client read observes it.
+	_ = client.SetReadDeadline(time.Now().Add(ioDeadline))
+	if _, err := smpp.ReadPDU(client); err == nil {
+		t.Error("expected read error after idle timeout closed the connection")
+	}
+}
+
+// TestSession_IdleTimeoutResetsOnActivity pins that the idle deadline measures inactivity, not
+// total session age: a peer that keeps sending within IdleTimeout is never dropped. An absolute
+// (set-once) deadline would fail this; the per-read reset makes it pass.
+func TestSession_IdleTimeoutResetsOnActivity(t *testing.T) {
+	t.Parallel()
+	const idle = 300 * time.Millisecond
+	client, _, _, errc := newSession(t, session.Config{Logger: discardLogger(), IdleTimeout: idle})
+	bindOK(t, client, session.BindTransceiver)
+
+	// Stay active with a gap well under IdleTimeout across several rounds (~3x margin for CI/race).
+	for i := 0; i < 5; i++ {
+		time.Sleep(idle / 3)
+		r := roundtrip(t, client, smpp.PDU{Sequence: uint32(100 + i), Body: &smpp.EnquireLink{}})
+		if r.CommandID() != smpp.CmdEnquireLinkResp {
+			t.Fatalf("round %d: session dropped under activity, resp cmd = %#x", i, r.CommandID())
+		}
+	}
+	// Serve is still running: the total elapsed time exceeds IdleTimeout, yet no close occurred.
+	select {
+	case err := <-errc:
+		t.Fatalf("Serve returned early = %v, want still running", err)
+	default:
 	}
 }
 
