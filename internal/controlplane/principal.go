@@ -35,6 +35,7 @@ func (p APIKeyPrincipal) EffectiveStatus() AccountStatus {
 // is consumed immediately by internal/credential, and must never be logged.
 type BindCredential struct {
 	AccountID        uuid.UUID
+	CustomerID       uuid.UUID
 	PasswordHash     string
 	CredentialStatus CredentialStatus
 	SMPPEnabled      bool

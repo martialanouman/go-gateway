@@ -49,6 +49,7 @@ SELECT
     cr.password_hash     AS password_hash,
     cr.status            AS credential_status,
     a.id                 AS account_id,
+    a.customer_id        AS customer_id,
     a.smpp_enabled       AS smpp_enabled,
     a.allowed_bind_types AS allowed_bind_types,
     a.max_sessions       AS max_sessions,

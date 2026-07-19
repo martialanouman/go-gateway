@@ -106,6 +106,7 @@ SELECT
     cr.password_hash     AS password_hash,
     cr.status            AS credential_status,
     a.id                 AS account_id,
+    a.customer_id        AS customer_id,
     a.smpp_enabled       AS smpp_enabled,
     a.allowed_bind_types AS allowed_bind_types,
     a.max_sessions       AS max_sessions,
@@ -123,6 +124,7 @@ type GetBindPrincipalRow struct {
 	PasswordHash     *string
 	CredentialStatus string
 	AccountID        uuid.UUID
+	CustomerID       uuid.UUID
 	SmppEnabled      bool
 	AllowedBindTypes string
 	MaxSessions      int32
@@ -145,6 +147,7 @@ func (q *Queries) GetBindPrincipal(ctx context.Context, systemID *string) (GetBi
 		&i.PasswordHash,
 		&i.CredentialStatus,
 		&i.AccountID,
+		&i.CustomerID,
 		&i.SmppEnabled,
 		&i.AllowedBindTypes,
 		&i.MaxSessions,

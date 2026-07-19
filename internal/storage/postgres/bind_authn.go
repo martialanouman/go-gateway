@@ -44,6 +44,7 @@ func (r *BindRepo) BindCredentialBySystemID(ctx context.Context, systemID string
 	}
 	return cp.BindCredential{
 		AccountID:        row.AccountID,
+		CustomerID:       row.CustomerID,
 		PasswordHash:     *row.PasswordHash,
 		CredentialStatus: cp.CredentialStatus(row.CredentialStatus),
 		SMPPEnabled:      row.SmppEnabled,

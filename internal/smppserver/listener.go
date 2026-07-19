@@ -62,6 +62,7 @@ func (l *Listener) Run(ctx context.Context) error {
 // before it starts and never mutated after.
 type connState struct {
 	accountID   string
+	customerID  string
 	bindID      string
 	maxSessions int32
 	bound       bool
@@ -130,6 +131,7 @@ func (l *Listener) onBind(ctx context.Context, st *connState) session.BindHandle
 		}
 
 		st.accountID = cred.AccountID.String()
+		st.customerID = cred.CustomerID.String()
 		st.maxSessions = cred.MaxSessions
 		st.bound = true
 		l.startRefresh(ctx, st, req.Mode)
