@@ -59,10 +59,35 @@ builds:
     goarch: [amd64, arm64]
     ldflags: *ldflags
 
+# One archive per service, not one bundle: each cmd/ is deployed independently (its own
+# pod/container), so an operator pulls only the service they run. Without a per-build `ids` filter
+# GoReleaser packs every binary into a single archive per platform and names it after the first build
+# ({{ .Binary }} resolves to router-svc), which reads as "only router-svc was released".
 archives:
-  - id: default
+  - id: rest-api-svc
+    ids: [rest-api-svc]
     formats: ["tar.gz"]
-    name_template: "{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    name_template: &archive_name "{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+  - id: router-svc
+    ids: [router-svc]
+    formats: ["tar.gz"]
+    name_template: *archive_name
+  - id: connector-pool-svc
+    ids: [connector-pool-svc]
+    formats: ["tar.gz"]
+    name_template: *archive_name
+  - id: admin-api-svc
+    ids: [admin-api-svc]
+    formats: ["tar.gz"]
+    name_template: *archive_name
+  - id: session-manager-svc
+    ids: [session-manager-svc]
+    formats: ["tar.gz"]
+    name_template: *archive_name
+  - id: migrate
+    ids: [migrate]
+    formats: ["tar.gz"]
+    name_template: *archive_name
 
 checksum:
   name_template: "checksums.txt"
