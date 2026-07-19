@@ -56,6 +56,10 @@ type Config struct {
 	OnBind BindHandler
 	// OnSubmit decides each submit_sm. nil answers StatusOK with an empty message id.
 	OnSubmit SubmitHandler
+	// OnQuery decides each query_sm. nil answers StatusOK with a zero-value state (skeleton).
+	OnQuery QueryHandler
+	// OnCancel decides each cancel_sm. nil answers StatusOK.
+	OnCancel CancelHandler
 	// OnUnbind is notified on unbind. nil is a no-op.
 	OnUnbind UnbindHandler
 }

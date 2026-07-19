@@ -88,6 +88,8 @@ func (l *Listener) serve(ctx context.Context, nc net.Conn) {
 		Logger:      l.logger,
 		OnBind:      l.onBind(ctx, st),
 		OnSubmit:    l.onSubmit(ctx, st),
+		OnQuery:     l.onQuery(ctx, st),
+		OnCancel:    l.onCancel(ctx, st),
 	})
 	_ = sess.Serve(ctx)
 

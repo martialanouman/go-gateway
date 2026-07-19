@@ -91,6 +91,10 @@ func (s *Session) handle(ctx context.Context, pdu smpp.PDU) bool {
 		s.handleBind(ctx, pdu.Sequence, BindTransceiver, &body.BindFields)
 	case *smpp.SubmitSM:
 		s.handleSubmit(ctx, pdu.Sequence, body)
+	case *smpp.QuerySM:
+		s.handleQuery(ctx, pdu.Sequence, body)
+	case *smpp.CancelSM:
+		s.handleCancel(ctx, pdu.Sequence, body)
 	case *smpp.EnquireLink:
 		s.reply(smpp.PDU{Sequence: pdu.Sequence, Body: &smpp.EnquireLinkResp{}})
 	case *smpp.Unbind:
@@ -190,6 +194,54 @@ func (s *Session) handleSubmit(ctx context.Context, seq uint32, sm *smpp.SubmitS
 		out.MessageID = res.MessageID
 	}
 	s.reply(smpp.PDU{Status: res.Status, Sequence: seq, Body: out})
+}
+
+// handleQuery rejects an out-of-sequence query_sm (before bind, or on a receiver bind) with
+// ESME_RINVBNDSTS, otherwise runs OnQuery and answers query_sm_resp. A non-OK status still rides a
+// query_sm_resp so the ESME correlates it by sequence_number.
+func (s *Session) handleQuery(ctx context.Context, seq uint32, q *smpp.QuerySM) {
+	if !s.st.canSubmit() {
+		s.reply(smpp.PDU{Status: errs.StatusInvalidBindStatus, Sequence: seq, Body: &smpp.QuerySMResp{}})
+		return
+	}
+
+	res := s.callOnQuery(ctx, QueryRequest{
+		MessageID:     q.MessageID,
+		SourceAddrTON: q.SourceAddrTON,
+		SourceAddrNPI: q.SourceAddrNPI,
+		SourceAddr:    q.SourceAddr,
+	})
+
+	out := &smpp.QuerySMResp{}
+	if res.Status == smpp.StatusOK {
+		out.MessageID = res.MessageID
+		out.FinalDate = res.FinalDate
+		out.MessageState = res.MessageState
+		out.ErrorCode = res.ErrorCode
+	}
+	s.reply(smpp.PDU{Status: res.Status, Sequence: seq, Body: out})
+}
+
+// handleCancel rejects an out-of-sequence cancel_sm (before bind, or on a receiver bind) with
+// ESME_RINVBNDSTS, otherwise runs OnCancel and answers an empty cancel_sm_resp with the decision's
+// status.
+func (s *Session) handleCancel(ctx context.Context, seq uint32, c *smpp.CancelSM) {
+	if !s.st.canSubmit() {
+		s.reply(smpp.PDU{Status: errs.StatusInvalidBindStatus, Sequence: seq, Body: &smpp.CancelSMResp{}})
+		return
+	}
+
+	res := s.callOnCancel(ctx, CancelRequest{
+		ServiceType:     c.ServiceType,
+		MessageID:       c.MessageID,
+		SourceAddrTON:   c.SourceAddrTON,
+		SourceAddrNPI:   c.SourceAddrNPI,
+		SourceAddr:      c.SourceAddr,
+		DestAddrTON:     c.DestAddrTON,
+		DestAddrNPI:     c.DestAddrNPI,
+		DestinationAddr: c.DestinationAddr,
+	})
+	s.reply(smpp.PDU{Status: res.Status, Sequence: seq, Body: &smpp.CancelSMResp{}})
 }
 
 // route hands a response to the Send waiting on its sequence_number. A response with no waiter

@@ -18,6 +18,14 @@ type BindHandler func(ctx context.Context, req BindRequest) BindResult
 // response.
 type SubmitHandler func(ctx context.Context, req SubmitRequest) SubmitResult
 
+// QueryHandler decides the outcome of a query_sm. It runs on the session's read goroutine. step-025
+// wires the account's query_sm_enabled toggle here; the real message-state lookup is later work.
+type QueryHandler func(ctx context.Context, req QueryRequest) QueryResult
+
+// CancelHandler decides the outcome of a cancel_sm. It runs on the session's read goroutine. step-025
+// wires the cancel_sm_enabled toggle here; the real cancellation semantics arrive at step-030.
+type CancelHandler func(ctx context.Context, req CancelRequest) CancelResult
+
 // UnbindHandler is notified when the ESME unbinds, before the session sends unbind_resp and closes.
 // It is advisory: the session unbinds regardless.
 type UnbindHandler func(ctx context.Context)
@@ -66,6 +74,45 @@ type SubmitResult struct {
 	MessageID string
 }
 
+// QueryRequest is the query_sm content handed to a QueryHandler: the message_id to look up, scoped to
+// its original source address.
+type QueryRequest struct {
+	MessageID     string
+	SourceAddrTON uint8
+	SourceAddrNPI uint8
+	SourceAddr    string
+}
+
+// QueryResult is a QueryHandler's decision. Status is an SMPP command_status: smpp.StatusOK answers a
+// query_sm_resp carrying MessageID/FinalDate/MessageState/ErrorCode; any other value rejects with that
+// status (e.g. errs.StatusInvalidCmdID when the operation is disabled).
+type QueryResult struct {
+	Status       uint32
+	MessageID    string
+	FinalDate    string
+	MessageState uint8
+	ErrorCode    uint8
+}
+
+// CancelRequest is the cancel_sm content handed to a CancelHandler: a single message_id, or a batch
+// keyed by source/destination when message_id is empty.
+type CancelRequest struct {
+	ServiceType     string
+	MessageID       string
+	SourceAddrTON   uint8
+	SourceAddrNPI   uint8
+	SourceAddr      string
+	DestAddrTON     uint8
+	DestAddrNPI     uint8
+	DestinationAddr string
+}
+
+// CancelResult is a CancelHandler's decision. Status is an SMPP command_status: smpp.StatusOK answers
+// an empty cancel_sm_resp; any other value rejects with that status.
+type CancelResult struct {
+	Status uint32
+}
+
 // callOnBind runs the OnBind hook under panic recovery. The hooks are caller-supplied extension
 // points (step-024 wires auth and max_sessions there); a panic in one must not tear down the read
 // goroutine — and, through it, the process that multiplexes every other session. A panic rejects
@@ -98,6 +145,36 @@ func (s *Session) callOnSubmit(ctx context.Context, req SubmitRequest) (res Subm
 		}
 	}()
 	return s.cfg.OnSubmit(ctx, req)
+}
+
+// callOnQuery runs the OnQuery hook under panic recovery. A panic rejects the query_sm with
+// ESME_RSYSERR and keeps the session alive. A nil hook accepts with a zero-value state (skeleton).
+func (s *Session) callOnQuery(ctx context.Context, req QueryRequest) (res QueryResult) {
+	if s.cfg.OnQuery == nil {
+		return QueryResult{Status: smpp.StatusOK, MessageID: req.MessageID}
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			s.logger.Error("session: OnQuery panicked", "panic", r)
+			res = QueryResult{Status: errs.StatusSysErr}
+		}
+	}()
+	return s.cfg.OnQuery(ctx, req)
+}
+
+// callOnCancel runs the OnCancel hook under panic recovery. A panic rejects the cancel_sm with
+// ESME_RSYSERR and keeps the session alive. A nil hook accepts.
+func (s *Session) callOnCancel(ctx context.Context, req CancelRequest) (res CancelResult) {
+	if s.cfg.OnCancel == nil {
+		return CancelResult{Status: smpp.StatusOK}
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			s.logger.Error("session: OnCancel panicked", "panic", r)
+			res = CancelResult{Status: errs.StatusSysErr}
+		}
+	}()
+	return s.cfg.OnCancel(ctx, req)
 }
 
 // callOnUnbind runs the OnUnbind hook under panic recovery. The hook is advisory, so a panic is
