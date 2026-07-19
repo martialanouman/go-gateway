@@ -50,7 +50,7 @@ func (l *Listener) onSubmit(_ context.Context, st *connState) session.SubmitHand
 		}
 
 		if err := l.ingestor.Accept(sctx, env); err != nil {
-			status := smppStatusFor(err)
+			status := errs.SMPPStatusForError(err)
 			l.logger.ErrorContext(sctx, "smpp submit: ingest failed",
 				"message_id", messageID, "account_id", st.accountID, "command_status", status)
 			return session.SubmitResult{Status: status}
@@ -70,15 +70,4 @@ func submitBody(req session.SubmitRequest) msg.Body {
 		}
 	}
 	return req.Body
-}
-
-// smppStatusFor maps an ingest error's flat Code to an SMPP command_status, falling back to
-// ESME_RSYSERR for a code with no SMPP surface or an error carrying no code (guide §11).
-func smppStatusFor(err error) uint32 {
-	if code, ok := errs.CodeOf(err); ok {
-		if status, mapped := errs.SMPPStatus(code); mapped {
-			return status
-		}
-	}
-	return errs.StatusSysErr
 }
