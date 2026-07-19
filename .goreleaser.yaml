@@ -44,6 +44,13 @@ builds:
     goos: [linux]
     goarch: [amd64, arm64]
     ldflags: *ldflags
+  - id: session-manager-svc
+    main: ./cmd/session-manager-svc
+    binary: session-manager-svc
+    env: [CGO_ENABLED=0]
+    goos: [linux]
+    goarch: [amd64, arm64]
+    ldflags: *ldflags
   - id: migrate
     main: ./cmd/migrate
     binary: migrate
