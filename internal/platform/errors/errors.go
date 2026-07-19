@@ -71,8 +71,14 @@ const (
 // SMPP v3.4 command_status values used by the mapping. Errors with no standard SMPP code use
 // the reserved vendor range 0x00000400+.
 const (
-	StatusInvalidMsgLen  uint32 = 0x00000001 // ESME_RINVMSGLEN
-	StatusInvalidCmdID   uint32 = 0x00000003 // ESME_RINVCMDID
+	StatusInvalidMsgLen uint32 = 0x00000001 // ESME_RINVMSGLEN
+	StatusInvalidCmdID  uint32 = 0x00000003 // ESME_RINVCMDID
+	// StatusInvalidBindStatus rejects a PDU sent in the wrong session state (submit_sm before
+	// bind, submit_sm on a receiver bind). It is a protocol-state status, not a business Code,
+	// so it lives here as a raw constant and has no catalogue entry.
+	StatusInvalidBindStatus uint32 = 0x00000004 // ESME_RINVBNDSTS
+	// StatusAlreadyBound rejects a second bind on a session that is already bound.
+	StatusAlreadyBound   uint32 = 0x00000005 // ESME_RALYBND
 	StatusSysErr         uint32 = 0x00000008 // ESME_RSYSERR
 	StatusInvalidSrcAddr uint32 = 0x0000000A // ESME_RINVSRCADR
 	StatusInvalidDstAddr uint32 = 0x0000000B // ESME_RINVDSTADR
