@@ -24,9 +24,9 @@ Un ESME bindé soumet un `submit_sm` : le message emprunte **exactement le même
 - Le message suit le CDR (`accepted` puis `enroute` via connector-pool en e2e).
 
 ## Definition of Done
-- [ ] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts
-- [ ] critères couverts par tests · godoc sur l'exporté · aucun invariant (a/b/c/d) violé
-- [ ] parité REST/SMPP prouvée par test
+- [x] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts
+- [x] critères couverts par tests · godoc sur l'exporté · aucun invariant (a/b/c/d) violé
+- [x] parité REST/SMPP prouvée par test
 
 ## Hors périmètre
 Sémantique réelle de `cancel_sm` (step-030) ; limite de débit `query_sm` (M6) ; MO/DLR entrants (M4).
