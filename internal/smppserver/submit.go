@@ -44,7 +44,7 @@ func (l *Listener) onSubmit(_ context.Context, st *connState) session.SubmitHand
 			// REST encoding enum, so we pass "auto" and let data_coding drive downstream.
 			Encoding:           "auto",
 			ESMClass:           req.ESMClass,
-			RegisteredDelivery: req.RegisteredDelivery&smpp.RegisteredDeliveryReceipt != 0,
+			RegisteredDelivery: req.RegisteredDelivery&smpp.RegisteredDeliveryReceiptMask != 0,
 			DataCoding:         &dataCoding,
 			SubmittedAt:        l.opts.Now(),
 		}

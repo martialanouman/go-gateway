@@ -74,9 +74,15 @@ const (
 	DataCodingUCS2   uint8 = 0x08
 )
 
-// RegisteredDeliveryReceipt is the registered_delivery bit (SMPP v3.4 §5.2.17): request a
-// delivery receipt on final state.
-const RegisteredDeliveryReceipt uint8 = 0x01
+// registered_delivery SMSC-delivery-receipt field (SMPP v3.4 §5.2.17): bits 1-0 select when a
+// receipt is requested — 0x01 on success or failure, 0x02 on failure only. RegisteredDeliveryReceipt
+// is the success-or-failure value; RegisteredDeliveryReceiptMask covers the whole field, so a caller
+// tests "is any receipt requested?" as `rd & RegisteredDeliveryReceiptMask != 0` and does not miss
+// the failure-only request.
+const (
+	RegisteredDeliveryReceipt     uint8 = 0x01
+	RegisteredDeliveryReceiptMask uint8 = 0x03
+)
 
 // Address type-of-number / numbering-plan-indicator values the gateway uses by default
 // (SMPP v3.4 §5.2.5–5.2.6).

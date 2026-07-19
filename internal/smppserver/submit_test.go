@@ -116,6 +116,20 @@ func TestOnSubmitUsesMessagePayloadWhenShortMessageEmpty(t *testing.T) {
 	}
 }
 
+func TestOnSubmitRegisteredDeliveryFailureOnlyMapsTrue(t *testing.T) {
+	ci := &captureIngestor{}
+	l := New(nil, nil, ci, Options{}, discardLog())
+	req := submitReq()
+	req.RegisteredDelivery = 0x02 // SMSC delivery receipt on failure only (SMPP v3.4 §5.2.17)
+
+	l.onSubmit(context.Background(), &connState{accountID: uuid.New(), customerID: uuid.New()})(
+		context.Background(), req)
+
+	if !ci.env.RegisteredDelivery {
+		t.Error("registered_delivery = 0x02 (failure-only receipt) must map to true")
+	}
+}
+
 func TestOnSubmitRegisteredDeliveryOffMapsFalse(t *testing.T) {
 	ci := &captureIngestor{}
 	l := New(nil, nil, ci, Options{}, discardLog())
