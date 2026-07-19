@@ -32,6 +32,18 @@ func samplePDUs() []PDU {
 			TLVs: TLVList{{Tag: TagReceiptedMessageID, Value: []byte("smsc-msg-0001")}},
 		}}},
 		{Sequence: 11, Body: &DeliverSMResp{MessageIDResp{}}},
+		{Sequence: 12, Body: &QuerySM{
+			MessageID: "smsc-msg-0001", SourceAddrTON: TONAlphanumeric, SourceAddr: "GATEWAY",
+		}},
+		{Sequence: 12, Body: &QuerySMResp{
+			MessageID: "smsc-msg-0001", FinalDate: "250719120000000+", MessageState: 2, ErrorCode: 0,
+		}},
+		{Sequence: 13, Body: &CancelSM{
+			ServiceType: "", MessageID: "smsc-msg-0001",
+			SourceAddrTON: TONAlphanumeric, SourceAddr: "GATEWAY",
+			DestAddrTON: TONInternational, DestAddrNPI: NPIISDN, DestinationAddr: "22507000000",
+		}},
+		{Sequence: 13, Body: &CancelSMResp{}},
 		{Sequence: 20, Body: &EnquireLink{}},
 		{Sequence: 20, Body: &EnquireLinkResp{}},
 		{Sequence: 30, Body: &Unbind{}},
@@ -194,6 +206,14 @@ func commandName(id CommandID) string {
 		return "submit_sm"
 	case CmdSubmitSMResp:
 		return "submit_sm_resp"
+	case CmdQuerySM:
+		return "query_sm"
+	case CmdQuerySMResp:
+		return "query_sm_resp"
+	case CmdCancelSM:
+		return "cancel_sm"
+	case CmdCancelSMResp:
+		return "cancel_sm_resp"
 	case CmdDeliverSM:
 		return "deliver_sm"
 	case CmdDeliverSMResp:

@@ -20,6 +20,14 @@ func newBody(id CommandID) (Body, error) {
 		return &SubmitSM{}, nil
 	case CmdSubmitSMResp:
 		return &SubmitSMResp{}, nil
+	case CmdQuerySM:
+		return &QuerySM{}, nil
+	case CmdQuerySMResp:
+		return &QuerySMResp{}, nil
+	case CmdCancelSM:
+		return &CancelSM{}, nil
+	case CmdCancelSMResp:
+		return &CancelSMResp{}, nil
 	case CmdDeliverSM:
 		return &DeliverSM{}, nil
 	case CmdDeliverSMResp:
@@ -233,6 +241,104 @@ func (*SubmitSMResp) commandID() CommandID { return CmdSubmitSMResp }
 type DeliverSMResp struct{ MessageIDResp }
 
 func (*DeliverSMResp) commandID() CommandID { return CmdDeliverSMResp }
+
+// QuerySM asks the SMSC for the state of a previously submitted message (SMPP v3.4 §4.8.1), keyed by
+// its message_id scoped to the original source address.
+type QuerySM struct {
+	MessageID     string
+	SourceAddrTON uint8
+	SourceAddrNPI uint8
+	SourceAddr    string
+}
+
+func (*QuerySM) commandID() CommandID { return CmdQuerySM }
+
+func (q *QuerySM) marshal(w *writer) {
+	w.cOctetString(q.MessageID)
+	w.byte(q.SourceAddrTON)
+	w.byte(q.SourceAddrNPI)
+	w.cOctetString(q.SourceAddr)
+}
+
+func (q *QuerySM) unmarshal(r *reader) error {
+	q.MessageID = r.cOctetString(65)
+	q.SourceAddrTON = r.byte()
+	q.SourceAddrNPI = r.byte()
+	q.SourceAddr = r.cOctetString(21)
+	return r.err
+}
+
+// QuerySMResp returns the queried message's state (SMPP v3.4 §4.8.2): the message_id echoed, the
+// final_date (empty when the message is not yet in a final state), the message_state and a network
+// error_code.
+type QuerySMResp struct {
+	MessageID    string
+	FinalDate    string
+	MessageState uint8
+	ErrorCode    uint8
+}
+
+func (*QuerySMResp) commandID() CommandID { return CmdQuerySMResp }
+
+func (q *QuerySMResp) marshal(w *writer) {
+	w.cOctetString(q.MessageID)
+	w.cOctetString(q.FinalDate)
+	w.byte(q.MessageState)
+	w.byte(q.ErrorCode)
+}
+
+func (q *QuerySMResp) unmarshal(r *reader) error {
+	q.MessageID = r.cOctetString(65)
+	q.FinalDate = r.cOctetString(17)
+	q.MessageState = r.byte()
+	q.ErrorCode = r.byte()
+	return r.err
+}
+
+// CancelSM requests cancellation of one previously submitted message by message_id, or of a batch by
+// source/destination address when message_id is empty (SMPP v3.4 §4.9.1).
+type CancelSM struct {
+	ServiceType     string
+	MessageID       string
+	SourceAddrTON   uint8
+	SourceAddrNPI   uint8
+	SourceAddr      string
+	DestAddrTON     uint8
+	DestAddrNPI     uint8
+	DestinationAddr string
+}
+
+func (*CancelSM) commandID() CommandID { return CmdCancelSM }
+
+func (c *CancelSM) marshal(w *writer) {
+	w.cOctetString(c.ServiceType)
+	w.cOctetString(c.MessageID)
+	w.byte(c.SourceAddrTON)
+	w.byte(c.SourceAddrNPI)
+	w.cOctetString(c.SourceAddr)
+	w.byte(c.DestAddrTON)
+	w.byte(c.DestAddrNPI)
+	w.cOctetString(c.DestinationAddr)
+}
+
+func (c *CancelSM) unmarshal(r *reader) error {
+	c.ServiceType = r.cOctetString(6)
+	c.MessageID = r.cOctetString(65)
+	c.SourceAddrTON = r.byte()
+	c.SourceAddrNPI = r.byte()
+	c.SourceAddr = r.cOctetString(21)
+	c.DestAddrTON = r.byte()
+	c.DestAddrNPI = r.byte()
+	c.DestinationAddr = r.cOctetString(21)
+	return r.err
+}
+
+// CancelSMResp acknowledges a cancel_sm; it has no body (SMPP v3.4 §4.9.2).
+type CancelSMResp struct{}
+
+func (*CancelSMResp) commandID() CommandID    { return CmdCancelSMResp }
+func (*CancelSMResp) marshal(*writer)         {}
+func (*CancelSMResp) unmarshal(*reader) error { return nil }
 
 // EnquireLink is the keep-alive probe (SMPP v3.4 §4.11); it has no body.
 type EnquireLink struct{}

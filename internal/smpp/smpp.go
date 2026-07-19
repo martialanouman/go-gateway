@@ -8,10 +8,11 @@
 // remote peer, so it must never panic on malformed input. Every read is bounds-checked and the
 // first error short-circuits the rest (see codec.go); a fuzz test (FuzzUnmarshal) guards this.
 //
-// Scope for M2 is the outbound leg: bind_transmitter/receiver/transceiver (+resp), submit_sm
-// (+resp), deliver_sm (+resp), enquire_link (+resp) and unbind (+resp), plus generic_nack. TLV
-// and UDH are supported, and payloads larger than 254 octets travel in the message_payload TLV.
-// replace_sm and data_sm are out of scope and unsupported (specification §5.1).
+// Scope is the outbound leg plus the inbound server operations: bind_transmitter/receiver/
+// transceiver (+resp), submit_sm (+resp), deliver_sm (+resp), query_sm (+resp), cancel_sm (+resp),
+// enquire_link (+resp) and unbind (+resp), plus generic_nack. TLV and UDH are supported, and
+// payloads larger than 254 octets travel in the message_payload TLV. replace_sm and data_sm are out
+// of scope and unsupported (specification §5.1).
 package smpp
 
 import "errors"
@@ -28,12 +29,16 @@ const (
 	CmdBindReceiverResp    CommandID = 0x80000001
 	CmdBindTransmitter     CommandID = 0x00000002
 	CmdBindTransmitterResp CommandID = 0x80000002
+	CmdQuerySM             CommandID = 0x00000003
+	CmdQuerySMResp         CommandID = 0x80000003
 	CmdSubmitSM            CommandID = 0x00000004
 	CmdSubmitSMResp        CommandID = 0x80000004
 	CmdDeliverSM           CommandID = 0x00000005
 	CmdDeliverSMResp       CommandID = 0x80000005
 	CmdUnbind              CommandID = 0x00000006
 	CmdUnbindResp          CommandID = 0x80000006
+	CmdCancelSM            CommandID = 0x00000008
+	CmdCancelSMResp        CommandID = 0x80000008
 	CmdBindTransceiver     CommandID = 0x00000009
 	CmdBindTransceiverResp CommandID = 0x80000009
 	CmdEnquireLink         CommandID = 0x00000015
