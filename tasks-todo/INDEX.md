@@ -66,6 +66,7 @@ Légende : `[x]` = fait (dans `tasks-done/`) · `[ ]` = à faire (dans `tasks-to
 - [ ] step-085 — Brancher l'étape débit dans le pipeline + précédence des plafonds
 - [ ] step-086 — Throttling adaptatif AIMD piloté par `ESME_RTHROTTLED`
 - [ ] step-087 — Limite de débit dédiée pour `query_sm`
+- [ ] step-088 — Fenêtrage du `submit_sm` entrant (traitement concurrent borné par session)
 
 ## M7 — Routage avancé
 - [ ] step-100 — Repo `exact_routes` (numéros exacts, portabilité)
