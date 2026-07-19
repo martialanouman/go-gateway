@@ -40,10 +40,11 @@ type Registry interface {
 	Unbind(ctx context.Context, in *registrypb.UnbindRequest, opts ...grpc.CallOption) (*registrypb.UnbindResponse, error)
 }
 
-// releaseTimeout bounds the Unbind that frees a session token after a connection ends. It runs on a
+// registryCallTimeout bounds a single registry RPC on the session-token lifecycle path: the periodic
+// refresh Bind and the final Unbind that frees the token after a connection ends. The Unbind runs on a
 // fresh context so a token is released even while the pod is draining (the connection's own context is
 // already cancelled by then).
-const releaseTimeout = 5 * time.Second
+const registryCallTimeout = 5 * time.Second
 
 // defaultRefreshInterval refreshes a live bind's registry token at half the registry's default session
 // TTL, so the token is renewed twice per lifetime and never lapses under a session that is still alive.

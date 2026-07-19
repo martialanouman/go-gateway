@@ -165,7 +165,7 @@ func (l *Listener) refreshLoop(ctx context.Context, st *connState, mode session.
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			rctx, cancel := context.WithTimeout(ctx, releaseTimeout)
+			rctx, cancel := context.WithTimeout(ctx, registryCallTimeout)
 			_, err := l.registry.Bind(rctx, &registrypb.BindRequest{
 				Session: &registrypb.Session{
 					AccountId: st.accountID,
@@ -188,7 +188,7 @@ func (l *Listener) refreshLoop(ctx context.Context, st *connState, mode session.
 // with WithoutCancel so the Unbind still succeeds while the pod is draining (the connection's context is
 // already cancelled by then), while keeping its trace context; a fresh timeout bounds the call.
 func (l *Listener) releaseToken(parent context.Context, st *connState) {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), releaseTimeout)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), registryCallTimeout)
 	defer cancel()
 
 	if _, err := l.registry.Unbind(ctx, &registrypb.UnbindRequest{
