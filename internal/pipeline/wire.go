@@ -28,6 +28,7 @@ type inboundWire struct {
 	To                 string    `json:"to"`
 	Body               []byte    `json:"body"`
 	Encoding           string    `json:"encoding"`
+	ESMClass           uint8     `json:"esm_class,omitempty"`
 	RegisteredDelivery bool      `json:"registered_delivery"`
 	ValidityPeriod     *string   `json:"validity_period,omitempty"`
 	Priority           int       `json:"priority"`
@@ -67,6 +68,7 @@ func EncodeInbound(env InboundMT) (kafka.Record, error) {
 		To:                 env.To,
 		Body:               env.Body.Reveal(), // audited: body -> durable value, never a header
 		Encoding:           env.Encoding,
+		ESMClass:           env.ESMClass,
 		RegisteredDelivery: env.RegisteredDelivery,
 		ValidityPeriod:     env.ValidityPeriod,
 		Priority:           env.Priority,
@@ -102,6 +104,7 @@ func DecodeInbound(rec kafka.Record) (InboundMT, error) {
 		To:                 w.To,
 		Body:               msg.NewBody(w.Body),
 		Encoding:           w.Encoding,
+		ESMClass:           w.ESMClass,
 		RegisteredDelivery: w.RegisteredDelivery,
 		ValidityPeriod:     w.ValidityPeriod,
 		Priority:           w.Priority,
