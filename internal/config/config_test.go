@@ -23,6 +23,7 @@ var knownVars = []string{
 	"CLICKHOUSE_ADDR", "CLICKHOUSE_DATABASE", "CLICKHOUSE_USERNAME", "CLICKHOUSE_PASSWORD", "CLICKHOUSE_TIMEOUT",
 	"HTTP_PORT", "HTTP_READ_HEADER_TIMEOUT", "HTTP_ADMIN_TOKENS",
 	"REDIS_URL", "REDIS_TIMEOUT", "GRPC_PORT",
+	"SMPP_PORT", "SMPP_SESSION_MANAGER_ADDR", "SMPP_POD_ID", "SMPP_IDLE_TIMEOUT",
 }
 
 // setEnv installs a clean environment holding exactly kv. Each variable goes through t.Setenv
@@ -100,6 +101,10 @@ func TestLoadFromEnvironment(t *testing.T) {
 		"REDIS_URL":                   "redis://cache:6379",
 		"REDIS_TIMEOUT":               "4s",
 		"GRPC_PORT":                   "7100",
+		"SMPP_PORT":                   "2825",
+		"SMPP_SESSION_MANAGER_ADDR":   "sessionmgr:7000",
+		"SMPP_POD_ID":                 "pod-7",
+		"SMPP_IDLE_TIMEOUT":           "90s",
 	})
 
 	cfg, err := config.Load("rest-api-svc")
@@ -149,6 +154,18 @@ func TestLoadFromEnvironment(t *testing.T) {
 	}
 	if cfg.GRPC.Port != 7100 {
 		t.Errorf("GRPC.Port = %d, want 7100", cfg.GRPC.Port)
+	}
+	if cfg.SMPP.Port != 2825 {
+		t.Errorf("SMPP.Port = %d, want 2825", cfg.SMPP.Port)
+	}
+	if cfg.SMPP.SessionManagerAddr != "sessionmgr:7000" {
+		t.Errorf("SMPP.SessionManagerAddr = %q, want sessionmgr:7000", cfg.SMPP.SessionManagerAddr)
+	}
+	if cfg.SMPP.PodID != "pod-7" {
+		t.Errorf("SMPP.PodID = %q, want pod-7", cfg.SMPP.PodID)
+	}
+	if cfg.SMPP.IdleTimeout != 90*time.Second {
+		t.Errorf("SMPP.IdleTimeout = %s, want 90s", cfg.SMPP.IdleTimeout)
 	}
 }
 
@@ -383,6 +400,7 @@ func TestDisabledOTelSkipsExporterValidation(t *testing.T) {
 		"KAFKA_BROKERS":               "k1:9092",
 		"CLICKHOUSE_ADDR":             "ch1:9000",
 		"REDIS_URL":                   "redis://cache:6379",
+		"SMPP_SESSION_MANAGER_ADDR":   "sessionmgr:7000",
 	})
 
 	cfg, err := config.Load("router-svc")
