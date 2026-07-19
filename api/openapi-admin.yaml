@@ -447,7 +447,7 @@ paths:
       tags: [Credentials]
       summary: Create a credential — secret returned exactly once
       operationId: create-credential
-      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { type: { type: string, enum: [smpp_bind, api_key] }, system_id: { type: [string, "null"], description: 'Required for smpp_bind.' } }, required: [type] } } } }
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { type: { type: string, enum: [smpp_bind, api_key] }, system_id: { type: [string, "null"], minLength: 1, maxLength: 15, description: 'Required for smpp_bind. Bounded by the SMPP bind field (v3.4 §4.1.1).' } }, required: [type] } } } }
       security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '201': { description: Created; the secret is present once and never retrievable again., content: { application/json: { schema: { $ref: '#/components/schemas/CredentialWithSecret' } } } }

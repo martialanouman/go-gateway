@@ -127,6 +127,52 @@ func TestInvariantDMaxSessions(t *testing.T) {
 	}
 }
 
+// TestBindWithGeneratedCredential is the regression guard for the bug where GenerateBindPassword issued
+// a 32-char password that no ESME could send (the SMPP password field caps at 8 chars). It seeds a
+// credential with the real generator and binds with the exact secret it returned.
+func TestBindWithGeneratedCredential(t *testing.T) {
+	pool := pgtest.Pool(t)
+	rdb := redistest.Client(t)
+	registry := startRegistry(t, rdb)
+
+	ctx := context.Background()
+	customers := postgres.NewCustomerRepo(pool)
+	accounts := postgres.NewAccountRepo(pool)
+	creds := postgres.NewCredentialRepo(pool)
+
+	customer, err := customers.Create(ctx, cp.NewCustomer{Name: "Co-" + uuid.NewString()})
+	if err != nil {
+		t.Fatalf("create customer: %v", err)
+	}
+	account, err := accounts.Create(ctx, cp.NewAccount{CustomerID: customer.ID, Name: "app-" + uuid.NewString()})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+
+	// The password comes from the production generator — the whole point of the regression is that its
+	// output is SMPP-legal and therefore bindable.
+	password, hash, err := credential.GenerateBindPassword()
+	if err != nil {
+		t.Fatalf("generate bind password: %v", err)
+	}
+	systemID := strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
+	if _, err := creds.Create(ctx, cp.NewCredential{
+		AccountID:    account.ID,
+		Type:         cp.CredentialSMPPBind,
+		SystemID:     &systemID,
+		PasswordHash: &hash,
+	}); err != nil {
+		t.Fatalf("create credential: %v", err)
+	}
+
+	addr := startListener(t, pool, registry)
+	e := dialESME(t, addr)
+	defer e.close()
+	if got := e.bind(t, smppsession.BindTransceiver, systemID, password); got != smpp.StatusOK {
+		t.Fatalf("bind with generated password status = %#x, want ESME_ROK", got)
+	}
+}
+
 // --- helpers ---
 
 type seedOpts struct {
