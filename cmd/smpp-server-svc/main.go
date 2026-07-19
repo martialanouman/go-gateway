@@ -17,7 +17,6 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 
 	"google.golang.org/grpc"
@@ -26,6 +25,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/ingest"
 	"github.com/martialanouman/go-gateway/internal/observability"
+	"github.com/martialanouman/go-gateway/internal/platform/supervisor"
 	registrypb "github.com/martialanouman/go-gateway/internal/session/pb"
 	"github.com/martialanouman/go-gateway/internal/smppserver"
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
@@ -139,60 +139,15 @@ func run() error {
 	// Ordered shutdown matters here (as in rest-api-svc): the SMPP listener must stop and fully drain
 	// its connections BEFORE the accepted-row writer, or a submit_sm that earns its submit_sm_resp
 	// during the drain would Enqueue after the writer's workers have exited — silently dropping the
-	// accepted CDR row and re-opening the get-message 404 window (§1.10). Each component gets its own
-	// cancel, detached from the signal context, and shutdown drives them in order: listener → writer →
-	// ops. (Cancelling one shared context would stop all three at once.)
-	listenerCtx, cancelListener := context.WithCancel(context.WithoutCancel(ctx))
-	writerCtx, cancelWriter := context.WithCancel(context.WithoutCancel(ctx))
-	opsCtx, cancelOps := context.WithCancel(context.WithoutCancel(ctx))
-	defer cancelOps()
-	defer cancelWriter()
-	defer cancelListener()
-
-	errCh := make(chan error, 3)
-	var listenerWg, writerWg, opsWg sync.WaitGroup
-
-	supervise := func(wg *sync.WaitGroup, name string, c context.Context, fn func(context.Context) error) {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err := fn(c); err != nil {
-				select {
-				case errCh <- fmt.Errorf("%s: %w", name, err):
-				default:
-				}
-			}
-		}()
-	}
-
-	supervise(&opsWg, "ops server", opsCtx, func(c context.Context) error { return ops.Run(c, cfg.ShutdownTimeout) })
-	supervise(&writerWg, "accepted writer", writerCtx, accepted.Run)
-	supervise(&listenerWg, "smpp listener", listenerCtx, listener.Run)
-
-	var runErr error
-	select {
-	case <-ctx.Done():
-		logger.Info("shutting down", "reason", context.Cause(ctx))
-	case runErr = <-errCh:
-		logger.Error("component failed, shutting down", "err", runErr)
-	}
-
-	// Drain in order: stop the listener and let it finish in-flight connections (their Enqueue lands
-	// in the writer's buffer), then stop the writer so it drains that buffer, then the ops server.
-	cancelListener()
-	listenerWg.Wait()
-	cancelWriter()
-	writerWg.Wait()
-	cancelOps()
-	opsWg.Wait()
-
-	if runErr != nil {
-		return runErr
-	}
-	select {
-	case err := <-errCh:
+	// accepted CDR row and re-opening the get-message 404 window (§1.10). supervisor.Ordered drains in
+	// reverse registration order, so registering ops → writer → listener yields the listener → writer →
+	// ops drain.
+	var g supervisor.Ordered
+	g.Add("ops server", func(c context.Context) error { return ops.Run(c, cfg.ShutdownTimeout) })
+	g.Add("accepted writer", accepted.Run)
+	g.Add("smpp listener", listener.Run)
+	if err := g.Run(ctx, logger); err != nil {
 		return err
-	default:
 	}
 
 	logger.Info("stopped")
