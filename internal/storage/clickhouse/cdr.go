@@ -88,22 +88,6 @@ func EncodingOf(requested string) Encoding {
 	}
 }
 
-// EncodingOfDataCoding projects an SMPP data_coding byte onto the CDR enum (SMPP v3.4 §5.2.19 /
-// GSM 03.38): 0x08 is UCS-2, 0x04 is 8-bit binary, and anything else — including 0x00, the default
-// alphabet — is GSM-7. It is the data_coding counterpart of EncodingOf: an SMPP submission carries its
-// coding in data_coding rather than the REST encoding enum, so the accepted CDR row derives its
-// encoding from here instead of from a bare "auto".
-func EncodingOfDataCoding(dataCoding int) Encoding {
-	switch dataCoding {
-	case 0x08:
-		return EncodingUCS2
-	case 0x04:
-		return EncodingBinary
-	default:
-		return EncodingGSM7
-	}
-}
-
 // CDRRow is one CDR row: one lifecycle snapshot of a message. Every status change writes a new row
 // carrying the same message_id and immutable submitted_at; the writer derives `version` from
 // Status, so callers never set it. content_ciphertext/content_key_id exist for stored content and

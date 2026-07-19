@@ -91,8 +91,25 @@ func TestOnSubmitMapsPDUToEnvelope(t *testing.T) {
 	if !env.RegisteredDelivery {
 		t.Error("registered_delivery bit not mapped to true")
 	}
-	if env.Encoding != "auto" {
-		t.Errorf("encoding = %q, want auto", env.Encoding)
+	if env.Encoding != "gsm7" {
+		t.Errorf("encoding = %q, want gsm7 (resolved from data_coding 0)", env.Encoding)
+	}
+}
+
+func TestOnSubmitResolvesEncodingFromDataCoding(t *testing.T) {
+	ci := &captureIngestor{}
+	l := New(nil, nil, ci, Options{}, discardLog())
+	req := submitReq()
+	req.DataCoding = smpp.DataCodingUCS2
+
+	l.onSubmit(context.Background(), &connState{accountID: uuid.New(), customerID: uuid.New()})(
+		context.Background(), req)
+
+	if ci.env.Encoding != "ucs2" {
+		t.Errorf("encoding = %q, want ucs2 (resolved from data_coding)", ci.env.Encoding)
+	}
+	if ci.env.DataCoding == nil || *ci.env.DataCoding != int(smpp.DataCodingUCS2) {
+		t.Errorf("data_coding override not carried: %v", ci.env.DataCoding)
 	}
 }
 
@@ -246,9 +263,12 @@ func submitViaREST(t *testing.T, acc, cust uuid.UUID) (kafka.Record, clickhouse.
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
+	// A concrete encoding matching what the SMPP side resolves from data_coding=0, so the two
+	// envelopes' Encoding fields are comparable (REST expresses coding via the enum, SMPP via
+	// data_coding, and both must land on the same resolved value).
 	body, _ := json.Marshal(map[string]any{
 		"to": "+2250700000000", "from": "ACME", "text": "Your OTP is 123456",
-		"encoding": "auto", "data_coding": int(smpp.DataCodingGSM7), "registered_delivery": true,
+		"encoding": "gsm7", "data_coding": int(smpp.DataCodingGSM7), "registered_delivery": true,
 	})
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/messages", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")

@@ -82,17 +82,9 @@ func AcceptedRow(env pipeline.InboundMT) clickhouse.CDRRow {
 		SubmittedAt:  env.SubmittedAt,
 		Status:       clickhouse.StatusAccepted,
 		SegmentCount: 1,
-		Encoding:     acceptedEncoding(env),
-		Billed:       false,
+		// Encoding is authoritative in the envelope (REST resolves it from its enum, an SMPP submit from
+		// data_coding at ingestion), so the accepted row and the connector's enroute row agree.
+		Encoding: clickhouse.EncodingOf(env.Encoding),
+		Billed:   false,
 	}
-}
-
-// acceptedEncoding resolves the CDR encoding of a submission. An SMPP submit carries its coding in
-// data_coding and leaves Encoding as "auto", so data_coding wins when present; otherwise the REST
-// encoding enum drives it. Either way the accepted row records the real coding, not a bare gsm7.
-func acceptedEncoding(env pipeline.InboundMT) clickhouse.Encoding {
-	if env.DataCoding != nil {
-		return clickhouse.EncodingOfDataCoding(*env.DataCoding)
-	}
-	return clickhouse.EncodingOf(env.Encoding)
 }

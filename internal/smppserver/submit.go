@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/martialanouman/go-gateway/internal/pipeline"
+	"github.com/martialanouman/go-gateway/internal/platform/encoding"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 	"github.com/martialanouman/go-gateway/internal/platform/msg"
 	"github.com/martialanouman/go-gateway/internal/platform/uuidx"
@@ -40,9 +41,10 @@ func (l *Listener) onSubmit(_ context.Context, st *connState) session.SubmitHand
 			From:       req.Source,
 			To:         req.Destination,
 			Body:       submitBody(req), // already a masking msg.Body; never revealed here (invariant a)
-			// The router resolves the wire encoding; an SMPP submit carries data_coding instead of the
-			// REST encoding enum, so we pass "auto" and let data_coding drive downstream.
-			Encoding:           "auto",
+			// An SMPP submit expresses its coding through data_coding, not the REST encoding enum, so we
+			// resolve Encoding from data_coding (the whole pipeline keys the CDR and wire on Encoding) and
+			// still carry the raw data_coding as the client override the connector honours.
+			Encoding:           encoding.FromDataCoding(req.DataCoding),
 			ESMClass:           req.ESMClass,
 			RegisteredDelivery: req.RegisteredDelivery&smpp.RegisteredDeliveryReceiptMask != 0,
 			DataCoding:         &dataCoding,
