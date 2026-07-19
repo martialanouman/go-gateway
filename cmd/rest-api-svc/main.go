@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/martialanouman/go-gateway/internal/config"
+	"github.com/martialanouman/go-gateway/internal/ingest"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/platform/buildinfo"
 	"github.com/martialanouman/go-gateway/internal/restapi"
@@ -85,14 +86,14 @@ func run() error {
 	}
 	defer producer.Close()
 
-	accepted := restapi.NewAcceptedWriter(clickhouse.NewCDRWriter(chConn), acceptedWorkers, acceptedQueueSize, logger)
+	accepted := ingest.NewAcceptedWriter(clickhouse.NewCDRWriter(chConn), acceptedWorkers, acceptedQueueSize, logger)
+	ingestor := ingest.NewIngestor(producer, accepted, logger)
 	tracer := observability.Tracer(nil, serviceName)
 
 	handler, _ := restapi.New(restapi.Deps{
 		Principals: postgres.NewAPIKeyRepo(pool),
-		Producer:   producer,
+		Ingestor:   ingestor,
 		CDRReader:  clickhouse.NewCDRReader(chConn),
-		Accepted:   accepted,
 		Tracer:     tracer,
 		Logger:     logger,
 		Version:    buildinfo.Version,

@@ -1,4 +1,4 @@
-package restapi
+package ingest
 
 import (
 	"context"
@@ -22,11 +22,11 @@ const (
 	acceptedFlushInterval = 25 * time.Millisecond
 )
 
-// AcceptedWriter writes the accepted CDR row off the request path (§1.10): submit-messages earns
-// its 202 from the durable Kafka write and never blocks on ClickHouse, so the accepted row is a
-// best-effort read-model projection written by this bounded pool. If a write is ever dropped under
-// saturation, the connector's enroute row still supersedes it — get-message shows enroute a moment
-// later, never a 404.
+// AcceptedWriter writes the accepted CDR row off the request path (§1.10): a submission earns its
+// acknowledgement from the durable Kafka write and never blocks on ClickHouse, so the accepted row
+// is a best-effort read-model projection written by this bounded pool. If a write is ever dropped
+// under saturation, the connector's enroute row still supersedes it — get-message shows enroute a
+// moment later, never a 404.
 //
 // The pool is bounded and supervised: workers stop on ctx and are joined by Run, so there is no
 // orphan goroutine (guide §5).

@@ -79,20 +79,13 @@ func (s *server) submit(ctx context.Context, in *submitInput) (*submitOutput, er
 		SubmittedAt:        now,
 	}
 
-	rec, err := pipeline.EncodeInbound(env)
-	if err != nil {
-		s.deps.Logger.ErrorContext(ctx, "encode mt.inbound", "message_id", messageID, "err", err)
-		return nil, humaerr.FromError(errs.ErrInternal)
-	}
-
 	// Durability boundary (§6.7 / §7.3): the 202 is earned only once the record is durably written.
-	if err := s.deps.Producer.Produce(ctx, rec); err != nil {
-		s.deps.Logger.ErrorContext(ctx, "produce mt.inbound", "message_id", messageID, "err", err)
-		return nil, humaerr.FromError(errs.ErrServiceUnavailable)
+	// Ingestor.Accept encodes, produces durably and projects the accepted CDR row off the request
+	// path — the same helper the SMPP submit_sm path uses, so both surfaces reach the pipeline
+	// identically.
+	if err := s.deps.Ingestor.Accept(ctx, env); err != nil {
+		return nil, humaerr.FromError(err)
 	}
-
-	// 202 earned. The accepted CDR row is written asynchronously, never blocking this response.
-	s.deps.Accepted.Enqueue(acceptedRow(env))
 
 	return &submitOutput{Body: AcceptedMessage{
 		ID:         messageID.String(),
@@ -155,28 +148,6 @@ func (s *server) getMessage(ctx context.Context, in *getMessageInput) (*getMessa
 	}
 
 	return &getMessageOutput{Body: messageFromRow(row)}, nil
-}
-
-// acceptedRow builds the pre-dispatch accepted CDR row from the inbound envelope. The destination is
-// left as submitted here: the AcceptedWriter normalizes it off the request path (the phone parse is
-// too heavy to run inline at the ingest rate), to the same canonical form the router stores, so a
-// message spells its destination the same across all its lifecycle rows. The body is never included
-// (invariant a).
-func acceptedRow(env pipeline.InboundMT) clickhouse.CDRRow {
-	return clickhouse.CDRRow{
-		MessageID:    env.MessageID,
-		TraceID:      env.TraceID,
-		AccountID:    env.AccountID,
-		CustomerID:   env.CustomerID,
-		Direction:    clickhouse.DirectionMT,
-		SourceAddr:   env.From,
-		DestAddr:     env.To,
-		SubmittedAt:  env.SubmittedAt,
-		Status:       clickhouse.StatusAccepted,
-		SegmentCount: 1,
-		Encoding:     clickhouse.EncodingOf(env.Encoding),
-		Billed:       false,
-	}
 }
 
 // messageFromRow projects a CDR row onto the customer-facing Message. client_ref is not stored in
