@@ -62,6 +62,52 @@ func TestCreateSmppBindWithoutSystemIDIs422(t *testing.T) {
 	}
 }
 
+// TestCreateSmppBindWithTooLongSystemIDIs422: system_id is bounded by the SMPP bind field (15 chars,
+// v3.4 §4.1.1); a longer value is a 422 at creation rather than a stored-but-unbindable credential.
+func TestCreateSmppBindWithTooLongSystemIDIs422(t *testing.T) {
+	accountID := uuid.New()
+	api := credAPI(t, newFakeCredentialStore(), newFakeAccountStore())
+
+	w := httptest.NewRecorder()
+	api.ServeHTTP(w, authed(t, http.MethodPost,
+		"/v1/admin/smpp-accounts/"+accountID.String()+"/credentials",
+		`{"type":"smpp_bind","system_id":"this-system-id-is-way-too-long"}`))
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body=%s", w.Code, w.Body)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &got)
+	if got["code"] != "validation_error" {
+		t.Errorf("code = %v, want validation_error", got["code"])
+	}
+}
+
+// TestCreateSmppBindReturnsAnSMPPLegalPassword: a successful bind credential returns a one-time secret
+// that fits the SMPP password field (<= 8 chars), so the issued password is actually bindable.
+func TestCreateSmppBindReturnsAnSMPPLegalPassword(t *testing.T) {
+	accountID := uuid.New()
+	api := credAPI(t, newFakeCredentialStore(), newFakeAccountStore())
+
+	w := httptest.NewRecorder()
+	api.ServeHTTP(w, authed(t, http.MethodPost,
+		"/v1/admin/smpp-accounts/"+accountID.String()+"/credentials",
+		`{"type":"smpp_bind","system_id":"esme01"}`))
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body=%s", w.Code, w.Body)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &got)
+	secret, _ := got["secret"].(string)
+	if len(secret) == 0 || len(secret) > 8 {
+		t.Errorf("secret is %d chars, want 1..8 (SMPP password field limit)", len(secret))
+	}
+	if got["type"] != "smpp_bind" {
+		t.Errorf("type = %v, want smpp_bind", got["type"])
+	}
+}
+
 // TestSecondCredentialOfATypeIs409: the cardinality rule surfaces as a conflict.
 func TestSecondCredentialOfATypeIs409(t *testing.T) {
 	accountID := uuid.New()

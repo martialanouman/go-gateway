@@ -35,6 +35,13 @@ const APIKeyPrefix = "sgw_"
 // apiKeyBytes is the random payload length of an API key: 256 bits of entropy.
 const apiKeyBytes = 32
 
+// bindPasswordBytes is the random payload length of an SMPP bind password. base64url encodes 6 octets
+// as exactly 8 characters (~48 bits of entropy), which fits the SMPP v3.4 §4.1.1 password field — a
+// C-Octet String bounded to 9 octets (8 usable chars + NUL). A longer password cannot travel in a bind
+// PDU: the codec rejects the frame before authentication. 48 bits is sufficient for a machine-to-machine
+// bind behind network controls and the anti-brute-force throttle (step-026).
+const bindPasswordBytes = 6
+
 // argon2id parameters. They target roughly 50-100ms on the deployment class; because they are
 // encoded in the PHC string with each hash, they can be raised later without a migration — old
 // hashes still verify against their own recorded parameters.
@@ -74,9 +81,11 @@ func VerifyAPIKey(key, hash string) bool {
 	return subtle.ConstantTimeCompare([]byte(HashAPIKey(key)), []byte(hash)) == 1
 }
 
-// GenerateBindPassword returns a new SMPP bind password and its argon2id hash.
+// GenerateBindPassword returns a new SMPP bind password and its argon2id hash. The password is 8
+// characters — the most a bind PDU's password field admits (bindPasswordBytes) — so the generated
+// secret is actually usable over SMPP.
 func GenerateBindPassword() (password, hash string, err error) {
-	buf := make([]byte, 24)
+	buf := make([]byte, bindPasswordBytes)
 	if _, err := rand.Read(buf); err != nil {
 		return "", "", fmt.Errorf("generate bind password: %w", err)
 	}

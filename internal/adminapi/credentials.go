@@ -128,8 +128,10 @@ func (h *credentialHandlers) list(ctx context.Context, in *listCredentialsInput)
 }
 
 type createCredentialBody struct {
-	Type     string  `json:"type" enum:"smpp_bind,api_key"`
-	SystemID *string `json:"system_id,omitempty" nullable:"true" doc:"Required for smpp_bind."`
+	Type string `json:"type" enum:"smpp_bind,api_key"`
+	// SystemID is bounded by the SMPP bind field (a C-Octet String of at most 16 octets, 15 chars,
+	// SMPP v3.4 §4.1.1): a longer value is stored but can never appear in a bind PDU.
+	SystemID *string `json:"system_id,omitempty" nullable:"true" minLength:"1" maxLength:"15" doc:"Required for smpp_bind. Bounded by the SMPP bind field (v3.4 §4.1.1)."`
 }
 type createCredentialInput struct {
 	ID   string `path:"id" format:"uuid"`

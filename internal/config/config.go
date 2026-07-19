@@ -69,6 +69,7 @@ type Config struct {
 	HTTP       HTTP       `envPrefix:"HTTP_"`
 	Redis      Redis      `envPrefix:"REDIS_"`
 	GRPC       GRPC       `envPrefix:"GRPC_"`
+	SMPP       SMPP       `envPrefix:"SMPP_"`
 }
 
 // OTel configures tracing export. The variable names follow the OpenTelemetry specification so
@@ -100,6 +101,10 @@ const (
 	defaultKafkaBroker    = "localhost:9092"
 	defaultClickHouseAddr = "localhost:9000"
 	defaultRedisURL       = "redis://localhost:6379"
+
+	// defaultSessionManagerAddr is the throwaway localhost target from docker-compose.yml. Like the
+	// other loopback defaults, Validate refuses it on the production tier.
+	defaultSessionManagerAddr = "localhost:7000"
 )
 
 // Postgres is the control-plane database (plan §1). It is also the target of the migration
@@ -175,6 +180,27 @@ type GRPC struct {
 	Port int `env:"PORT" envDefault:"7000"`
 }
 
+// SMPP configures smpp-server-svc: its client-facing SMPP listener and the session-manager it calls
+// to enforce max_sessions. Only smpp-server-svc declares SectionSMPP.
+type SMPP struct {
+	// Port is the SMPP listen port. smpp-server-svc defaults to 2775 (plan §1.4). It is distinct from
+	// OpsPort on purpose: ESMEs reach the SMPP port through an ingress, the ops port never is.
+	Port int `env:"PORT" envDefault:"2775"`
+
+	// SessionManagerAddr is the host:port of the SessionRegistry gRPC service (session-manager-svc,
+	// :7000). The bind path calls it to reserve and release a session token, the socle of invariant d.
+	SessionManagerAddr string `env:"SESSION_MANAGER_ADDR" envDefault:"localhost:7000"`
+
+	// PodID identifies this pod in the session registry, so a token can be traced to the pod owning
+	// the connection and released when that pod drains. Empty falls back to the OS hostname at startup.
+	PodID string `env:"POD_ID"`
+
+	// IdleTimeout drops a bind whose peer has gone silent for this long, reclaiming the goroutine and
+	// releasing its registry token. It stands in for the enquire_link keep-alive (deferred) and is
+	// aligned with the registry's session TTL so a silent peer's slot is not held past the drop.
+	IdleTimeout time.Duration `env:"IDLE_TIMEOUT" envDefault:"60s"`
+}
+
 // Section names a configuration group a binary depends on. A binary declares the sections it
 // actually uses and Load enforces only those: a tool must never be refused a boot over a
 // dependency it does not open a connection to. The migrate command is the case that forced this —
@@ -191,12 +217,13 @@ const (
 	SectionHTTP
 	SectionRedis
 	SectionGRPC
+	SectionSMPP
 
 	// SectionAll is what a caller declaring nothing gets. It must include every section, or
 	// Validate() — which runs validate(SectionAll) — would quietly stop being a full check. The
 	// cost of a section a binary does not use is nil: its fields carry valid defaults.
 	SectionAll = SectionOTel | SectionPostgres | SectionKafka | SectionClickHouse | SectionHTTP |
-		SectionRedis | SectionGRPC
+		SectionRedis | SectionGRPC | SectionSMPP
 )
 
 // Load reads the configuration for serviceName from the environment and validates the sections it
@@ -263,6 +290,9 @@ func (c Config) validate(sections Section) error {
 	}
 	if sections&SectionGRPC != 0 {
 		problems = append(problems, c.grpcProblems()...)
+	}
+	if sections&SectionSMPP != 0 {
+		problems = append(problems, c.smppProblems()...)
 	}
 
 	if len(problems) == 0 {
@@ -466,6 +496,40 @@ func (c Config) grpcProblems() []string {
 	return problems
 }
 
+func (c Config) smppProblems() []string {
+	var problems []string
+
+	if c.SMPP.Port < 1 || c.SMPP.Port > 65535 {
+		problems = append(problems, fmt.Sprintf("SMPP_PORT %d is outside 1-65535", c.SMPP.Port))
+	}
+	// As with HTTP/GRPC, an SMPP port equal to the ops port is not two servers sharing a listener — it
+	// is one silently winning the bind and the other failing at boot. Catch it here, readably.
+	if c.SMPP.Port == c.OpsPort {
+		problems = append(problems, fmt.Sprintf(
+			"SMPP_PORT %d collides with OPS_PORT: the SMPP listener and the ops server need distinct ports",
+			c.SMPP.Port))
+	}
+	if strings.TrimSpace(c.SMPP.SessionManagerAddr) == "" {
+		problems = append(problems, "SMPP_SESSION_MANAGER_ADDR is empty: the bind path cannot enforce max_sessions")
+	}
+	if strings.Contains(c.SMPP.SessionManagerAddr, "://") {
+		problems = append(problems, fmt.Sprintf(
+			"SMPP_SESSION_MANAGER_ADDR %q must be host:port without a scheme", c.SMPP.SessionManagerAddr))
+	}
+	if c.SMPP.IdleTimeout <= 0 {
+		problems = append(problems, fmt.Sprintf(
+			"SMPP_IDLE_TIMEOUT %s must be positive: a bind with no idle drop leaks its registry token on a dead peer",
+			c.SMPP.IdleTimeout))
+	}
+	// The dev-default guard travels with its section, as for Postgres/Redis: a service that declared
+	// SMPP will call session-manager, and must not call loopback in production.
+	if c.Environment.IsProduction() && c.SMPP.SessionManagerAddr == defaultSessionManagerAddr {
+		problems = append(problems, "SMPP_SESSION_MANAGER_ADDR is the localhost development default: "+
+			"set it explicitly in production")
+	}
+	return problems
+}
+
 // ParseLogLevel maps a configured level name to its slog level.
 func ParseLogLevel(s string) (slog.Level, error) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
@@ -507,5 +571,9 @@ func (c Config) LogValue() slog.Value {
 		// The Redis URL can embed a password, so it is reduced to a boolean, as the Postgres URL is.
 		slog.Bool("redis_url_set", strings.TrimSpace(c.Redis.URL) != ""),
 		slog.Int("grpc_port", c.GRPC.Port),
+		slog.Int("smpp_port", c.SMPP.Port),
+		slog.String("smpp_session_manager_addr", c.SMPP.SessionManagerAddr),
+		slog.String("smpp_pod_id", c.SMPP.PodID),
+		slog.Duration("smpp_idle_timeout", c.SMPP.IdleTimeout),
 	)
 }

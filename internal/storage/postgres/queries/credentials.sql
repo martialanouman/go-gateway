@@ -36,6 +36,31 @@ UPDATE control_plane.credentials SET
 WHERE account_id = @account_id AND id = @id
 RETURNING *;
 
+-- name: GetBindPrincipal :one
+-- SMPP bind authentication lookup (§1.9, invariant d): the presented system_id resolves the single
+-- live bind credential — the partial unique index credentials_system_id_uq covers exactly
+-- type = 'smpp_bind' AND status <> 'revoked', so this WHERE rides that index and can match at most one
+-- row. The argon2id password_hash is verified in Go by internal/credential (constant time), never in
+-- SQL. As with GetAPIKeyPrincipal the credential/channel/account/customer statuses are RETURNED, not
+-- filtered, so the caller answers with the right SMPP command_status (ESME_RINVPASWD vs ESME_RBINDFAIL)
+-- rather than a blanket "not found". Rotation grace (previous_secret_hash/grace_expires_at) lands in
+-- step-027; step-024 verifies only the current password_hash.
+SELECT
+    cr.password_hash     AS password_hash,
+    cr.status            AS credential_status,
+    a.id                 AS account_id,
+    a.smpp_enabled       AS smpp_enabled,
+    a.allowed_bind_types AS allowed_bind_types,
+    a.max_sessions       AS max_sessions,
+    a.status             AS account_status,
+    c.status             AS customer_status
+FROM control_plane.credentials cr
+JOIN control_plane.smpp_accounts a ON a.id = cr.account_id
+JOIN control_plane.customers c ON c.id = a.customer_id
+WHERE cr.type = 'smpp_bind'
+  AND cr.status <> 'revoked'
+  AND cr.system_id = @system_id;
+
 -- name: GetAPIKeyPrincipal :one
 -- REST authentication lookup (§1.9): the presented key is SHA-256 hashed by internal/credential,
 -- then found by that hash on the single api_key credential. The rotation grace window is honoured —

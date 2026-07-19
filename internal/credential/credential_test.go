@@ -107,6 +107,24 @@ func TestVerifyBindPasswordAcceptsTheRightPasswordAndRejectsWrong(t *testing.T) 
 // TestVerifyBindPasswordRejectsAMalformedHash: a corrupt encoding is an error — never a panic and
 // never a silent accept. Covers the argon2-panic parameters (t=0 / p=0) and the empty-hash segment
 // that would otherwise make a compare of two empty slices accept ANY password.
+// TestBindPasswordFitsTheSMPPField: a generated bind password must fit the SMPP v3.4 §4.1.1 password
+// field — a C-Octet String of at most 9 octets (8 usable chars + NUL) — or an ESME could never send
+// it in a bind PDU. This is a regression guard for the 32-char default that made generated passwords
+// unbindable.
+func TestBindPasswordFitsTheSMPPField(t *testing.T) {
+	const smppPasswordMaxChars = 8
+	for range 100 {
+		password, _, err := credential.GenerateBindPassword()
+		if err != nil {
+			t.Fatalf("GenerateBindPassword() error = %v", err)
+		}
+		if len(password) > smppPasswordMaxChars {
+			t.Fatalf("bind password %q is %d chars, want <= %d (SMPP field limit)",
+				password, len(password), smppPasswordMaxChars)
+		}
+	}
+}
+
 func TestVerifyBindPasswordRejectsAMalformedHash(t *testing.T) {
 	bad := []string{
 		"", "not-a-hash", "$argon2id$broken", "$bcrypt$v=19$m=1,t=1,p=1$x$y",
