@@ -45,6 +45,11 @@ const (
 	CmdEnquireLinkResp     CommandID = 0x80000015
 )
 
+// MessageStateUnknown is the query_sm_resp message_state for a message whose state the server cannot
+// resolve (SMPP v3.4 §5.2.28). Valid message_state values run 1..8; 0 is undefined, so UNKNOWN (7) is
+// the honest answer while the real state lookup is unimplemented.
+const MessageStateUnknown uint8 = 7
+
 // StatusOK is command_status ESME_ROK: success, and the only status a request ever carries. The
 // error command_status values live in internal/platform/errors, which owns the mapping between a
 // gateway Code and its SMPP status; the codec treats command_status as an opaque uint32 so it

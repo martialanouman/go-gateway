@@ -18,8 +18,13 @@ func (l *Listener) onQuery(_ context.Context, st *connState) session.QueryHandle
 		if !st.querySMEnabled {
 			return session.QueryResult{Status: errs.StatusInvalidCmdID}
 		}
-		// Skeleton: acknowledge with the queried id and an unknown (0) message state.
-		return session.QueryResult{Status: smpp.StatusOK, MessageID: req.MessageID}
+		// Skeleton: acknowledge with the queried id and a valid UNKNOWN state — the real message-state
+		// lookup (and its dedicated rate limit) is M6.
+		return session.QueryResult{
+			Status:       smpp.StatusOK,
+			MessageID:    req.MessageID,
+			MessageState: smpp.MessageStateUnknown,
+		}
 	}
 }
 

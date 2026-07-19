@@ -20,7 +20,7 @@ func TestOnQueryToggle(t *testing.T) {
 		}
 	})
 
-	t.Run("enabled is a skeleton OK echoing the id", func(t *testing.T) {
+	t.Run("enabled is a skeleton OK echoing the id with a valid state", func(t *testing.T) {
 		res := l.onQuery(context.Background(), &connState{querySMEnabled: true})(
 			context.Background(), session.QueryRequest{MessageID: "m1"})
 		if res.Status != smpp.StatusOK {
@@ -28,6 +28,11 @@ func TestOnQueryToggle(t *testing.T) {
 		}
 		if res.MessageID != "m1" {
 			t.Errorf("message id = %q, want m1", res.MessageID)
+		}
+		// message_state must be a valid SMPP v3.4 value (1..8); the skeleton has no real lookup yet, so
+		// it reports UNKNOWN rather than the undefined 0.
+		if res.MessageState != smpp.MessageStateUnknown {
+			t.Errorf("message_state = %d, want UNKNOWN (%d)", res.MessageState, smpp.MessageStateUnknown)
 		}
 	})
 }
