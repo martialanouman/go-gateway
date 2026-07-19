@@ -17,10 +17,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
 	"google.golang.org/grpc"
 
+	"github.com/martialanouman/go-gateway/internal/bindthrottle"
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	"github.com/martialanouman/go-gateway/internal/session"
@@ -43,6 +45,17 @@ type Registry interface {
 	Unbind(ctx context.Context, in *registrypb.UnbindRequest, opts ...grpc.CallOption) (*registrypb.UnbindResponse, error)
 }
 
+// BindThrottle is the anti-brute-force layer the bind path consults before authentication. Check
+// reports whether a bind must be refused with a backoff; RecordFailure counts an unsuccessful bind;
+// Reset clears a system_id's counter after a success. *bindthrottle.Throttle satisfies it, a fake
+// satisfies it in tests, and a nil BindThrottle disables throttling. Every call is treated fail-open by
+// the caller: a Redis error lets the bind proceed, so an outage never takes down the SMPP ingress.
+type BindThrottle interface {
+	Check(ctx context.Context, systemID, ip string) (bindthrottle.Decision, error)
+	RecordFailure(ctx context.Context, systemID, ip string) error
+	Reset(ctx context.Context, systemID string) error
+}
+
 // Ingestor runs the shared MT ingestion sequence for a submit_sm: encode the envelope, produce it
 // durably to mt.inbound, and project the accepted CDR row. *ingest.Ingestor satisfies it. It is the
 // same helper the REST submit path uses, which is what makes the two surfaces reach the pipeline
@@ -60,6 +73,11 @@ const registryCallTimeout = 5 * time.Second
 // defaultRefreshInterval refreshes a live bind's registry token at half the registry's default session
 // TTL, so the token is renewed twice per lifetime and never lapses under a session that is still alive.
 const defaultRefreshInterval = session.DefaultSessionTTL / 2
+
+// defaultMaxConns is the fallback concurrent-connection ceiling when Options.MaxConns is unset. It is
+// generous enough not to constrain legitimate ESME fan-in, while still bounding the goroutines and file
+// descriptors a flood of tarpitted binds can hold. Operators size it to their file-descriptor ulimit.
+const defaultMaxConns = 16384
 
 // Options configures a Listener. Addr, PodID and SystemID are required in production wiring; the
 // timeouts fall back to sane defaults.
@@ -82,6 +100,17 @@ type Options struct {
 	Tracer trace.Tracer
 	// Now supplies the submit_sm accept timestamp; nil defaults to time.Now. Injectable for tests.
 	Now func() time.Time
+	// Throttle is the anti-brute-force layer consulted before each bind's authentication. Nil disables
+	// throttling (bind-only tests leave it nil); production wiring passes a *bindthrottle.Throttle.
+	Throttle BindThrottle
+	// ThrottleBlocked counts binds refused by the throttle, labelled by the subject that tripped
+	// ("system_id" or "ip" — both bounded, never the value). Nil skips the metric, so tests need not
+	// wire a registry.
+	ThrottleBlocked *prometheus.CounterVec
+	// MaxConns caps concurrent accepted connections, bounding the goroutines and file descriptors an
+	// unauthenticated peer can pin — in particular under the throttle's tarpit backoff. Zero uses
+	// defaultMaxConns. It is a hard ceiling: beyond it, new connections wait in the kernel backlog.
+	MaxConns int
 }
 
 // Listener accepts SMPP connections and drives each through an authenticated bind. Construct it with
@@ -118,6 +147,9 @@ func New(creds CredentialStore, registry Registry, ingestor Ingestor, opts Optio
 	}
 	if opts.Now == nil {
 		opts.Now = time.Now
+	}
+	if opts.MaxConns <= 0 {
+		opts.MaxConns = defaultMaxConns
 	}
 	return &Listener{creds: creds, registry: registry, ingestor: ingestor, opts: opts, logger: logger, ready: make(chan struct{})}
 }

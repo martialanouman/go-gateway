@@ -24,6 +24,8 @@ var knownVars = []string{
 	"HTTP_PORT", "HTTP_READ_HEADER_TIMEOUT", "HTTP_ADMIN_TOKENS",
 	"REDIS_URL", "REDIS_TIMEOUT", "GRPC_PORT",
 	"SMPP_PORT", "SMPP_SESSION_MANAGER_ADDR", "SMPP_POD_ID", "SMPP_IDLE_TIMEOUT",
+	"SMPP_BIND_MAX_FAILURES", "SMPP_BIND_FAILURE_WINDOW", "SMPP_BIND_BACKOFF_BASE", "SMPP_BIND_BACKOFF_MAX",
+	"SMPP_MAX_CONNS",
 }
 
 // setEnv installs a clean environment holding exactly kv. Each variable goes through t.Setenv
@@ -79,6 +81,21 @@ func TestLoadDefaults(t *testing.T) {
 	if len(cfg.HTTP.AdminTokens) != 0 {
 		t.Errorf("HTTP.AdminTokens = %v, want empty by default", cfg.HTTP.AdminTokens)
 	}
+	if cfg.SMPP.BindMaxFailures != 5 {
+		t.Errorf("SMPP.BindMaxFailures = %d, want 5", cfg.SMPP.BindMaxFailures)
+	}
+	if cfg.SMPP.BindFailureWindow != 15*time.Minute {
+		t.Errorf("SMPP.BindFailureWindow = %s, want 15m", cfg.SMPP.BindFailureWindow)
+	}
+	if cfg.SMPP.BindBackoffBase != time.Second {
+		t.Errorf("SMPP.BindBackoffBase = %s, want 1s", cfg.SMPP.BindBackoffBase)
+	}
+	if cfg.SMPP.BindBackoffMax != 30*time.Second {
+		t.Errorf("SMPP.BindBackoffMax = %s, want 30s", cfg.SMPP.BindBackoffMax)
+	}
+	if cfg.SMPP.MaxConns != 16384 {
+		t.Errorf("SMPP.MaxConns = %d, want 16384", cfg.SMPP.MaxConns)
+	}
 }
 
 func TestLoadFromEnvironment(t *testing.T) {
@@ -105,6 +122,11 @@ func TestLoadFromEnvironment(t *testing.T) {
 		"SMPP_SESSION_MANAGER_ADDR":   "sessionmgr:7000",
 		"SMPP_POD_ID":                 "pod-7",
 		"SMPP_IDLE_TIMEOUT":           "90s",
+		"SMPP_BIND_MAX_FAILURES":      "8",
+		"SMPP_BIND_FAILURE_WINDOW":    "20m",
+		"SMPP_BIND_BACKOFF_BASE":      "2s",
+		"SMPP_BIND_BACKOFF_MAX":       "1m",
+		"SMPP_MAX_CONNS":              "9000",
 	})
 
 	cfg, err := config.Load("rest-api-svc")
@@ -166,6 +188,21 @@ func TestLoadFromEnvironment(t *testing.T) {
 	}
 	if cfg.SMPP.IdleTimeout != 90*time.Second {
 		t.Errorf("SMPP.IdleTimeout = %s, want 90s", cfg.SMPP.IdleTimeout)
+	}
+	if cfg.SMPP.BindMaxFailures != 8 {
+		t.Errorf("SMPP.BindMaxFailures = %d, want 8", cfg.SMPP.BindMaxFailures)
+	}
+	if cfg.SMPP.BindFailureWindow != 20*time.Minute {
+		t.Errorf("SMPP.BindFailureWindow = %s, want 20m", cfg.SMPP.BindFailureWindow)
+	}
+	if cfg.SMPP.BindBackoffBase != 2*time.Second {
+		t.Errorf("SMPP.BindBackoffBase = %s, want 2s", cfg.SMPP.BindBackoffBase)
+	}
+	if cfg.SMPP.BindBackoffMax != time.Minute {
+		t.Errorf("SMPP.BindBackoffMax = %s, want 1m", cfg.SMPP.BindBackoffMax)
+	}
+	if cfg.SMPP.MaxConns != 9000 {
+		t.Errorf("SMPP.MaxConns = %d, want 9000", cfg.SMPP.MaxConns)
 	}
 }
 
