@@ -17,9 +17,12 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 	"google.golang.org/grpc"
 
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
+	"github.com/martialanouman/go-gateway/internal/pipeline"
 	"github.com/martialanouman/go-gateway/internal/session"
 	registrypb "github.com/martialanouman/go-gateway/internal/session/pb"
 )
@@ -38,6 +41,14 @@ type CredentialStore interface {
 type Registry interface {
 	Bind(ctx context.Context, in *registrypb.BindRequest, opts ...grpc.CallOption) (*registrypb.BindResponse, error)
 	Unbind(ctx context.Context, in *registrypb.UnbindRequest, opts ...grpc.CallOption) (*registrypb.UnbindResponse, error)
+}
+
+// Ingestor runs the shared MT ingestion sequence for a submit_sm: encode the envelope, produce it
+// durably to mt.inbound, and project the accepted CDR row. *ingest.Ingestor satisfies it. It is the
+// same helper the REST submit path uses, which is what makes the two surfaces reach the pipeline
+// identically (protocol parity).
+type Ingestor interface {
+	Accept(ctx context.Context, env pipeline.InboundMT) error
 }
 
 // registryCallTimeout bounds a single registry RPC on the session-token lifecycle path: the periodic
@@ -67,6 +78,10 @@ type Options struct {
 	// defaultRefreshInterval (half the registry's default session TTL), so a token never lapses under a
 	// live session.
 	RefreshInterval time.Duration
+	// Tracer opens the submit_sm ingestion span. Nil uses a no-op tracer, so tests need not wire one.
+	Tracer trace.Tracer
+	// Now supplies the submit_sm accept timestamp; nil defaults to time.Now. Injectable for tests.
+	Now func() time.Time
 }
 
 // Listener accepts SMPP connections and drives each through an authenticated bind. Construct it with
@@ -74,6 +89,7 @@ type Options struct {
 type Listener struct {
 	creds    CredentialStore
 	registry Registry
+	ingestor Ingestor
 	opts     Options
 	logger   *slog.Logger
 
@@ -87,15 +103,23 @@ type Listener struct {
 }
 
 // New returns a Listener. A nil logger uses slog.Default. RefreshInterval defaults to half the
-// registry's default session TTL so a live bind's token is refreshed well before it lapses.
-func New(creds CredentialStore, registry Registry, opts Options, logger *slog.Logger) *Listener {
+// registry's default session TTL so a live bind's token is refreshed well before it lapses. A nil
+// ingestor rejects every submit_sm with ESME_RSUBMITFAIL, which is how the bind-only tests build it;
+// production wiring passes an *ingest.Ingestor so submit_sm reaches the MT pipeline.
+func New(creds CredentialStore, registry Registry, ingestor Ingestor, opts Options, logger *slog.Logger) *Listener {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	if opts.RefreshInterval <= 0 {
 		opts.RefreshInterval = defaultRefreshInterval
 	}
-	return &Listener{creds: creds, registry: registry, opts: opts, logger: logger, ready: make(chan struct{})}
+	if opts.Tracer == nil {
+		opts.Tracer = noop.NewTracerProvider().Tracer("smppserver")
+	}
+	if opts.Now == nil {
+		opts.Now = time.Now
+	}
+	return &Listener{creds: creds, registry: registry, ingestor: ingestor, opts: opts, logger: logger, ready: make(chan struct{})}
 }
 
 // Addr blocks until Run has bound the listener, then returns its resolved address, or ctx's error if

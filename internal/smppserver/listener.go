@@ -85,7 +85,7 @@ func (l *Listener) serve(ctx context.Context, nc net.Conn) {
 		IdleTimeout: l.opts.IdleTimeout,
 		Logger:      l.logger,
 		OnBind:      l.onBind(ctx, st),
-		OnSubmit:    rejectSubmit,
+		OnSubmit:    l.onSubmit(ctx, st),
 	})
 	_ = sess.Serve(ctx)
 

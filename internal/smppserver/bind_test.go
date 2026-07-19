@@ -124,7 +124,7 @@ func TestAuthorize(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			l := New(tc.store, nil, Options{}, slog.New(slog.DiscardHandler))
+			l := New(tc.store, nil, nil, Options{}, slog.New(slog.DiscardHandler))
 			pw := testPassword
 			if tc.name == "wrong password is invalid password" {
 				pw = "wrong"
@@ -157,7 +157,7 @@ func TestAuthorizeNeverLogsSecrets(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	for _, s := range stores {
-		l := New(s, nil, Options{}, logger)
+		l := New(s, nil, nil, Options{}, logger)
 		l.authorize(context.Background(), session.BindRequest{SystemID: sid, Password: pw})
 	}
 

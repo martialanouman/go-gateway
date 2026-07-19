@@ -251,7 +251,7 @@ func startRegistry(t *testing.T, rdb *redis.Client) registrypb.SessionRegistryCl
 // startListener runs a Listener on an ephemeral SMPP port and returns its resolved address.
 func startListener(t *testing.T, pool *pgxpool.Pool, registry registrypb.SessionRegistryClient) string {
 	t.Helper()
-	l := smppserver.New(postgres.NewBindRepo(pool), registry, smppserver.Options{
+	l := smppserver.New(postgres.NewBindRepo(pool), registry, nil, smppserver.Options{
 		Addr:     "127.0.0.1:0",
 		PodID:    "pod-test",
 		SystemID: "smpp-server-svc",

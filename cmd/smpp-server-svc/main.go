@@ -1,10 +1,13 @@
 // Command smpp-server-svc is the SMPP bind front door (plan §7, M3, SMPP :2775). It accepts ESME
 // connections, authenticates each bind against the control plane (PostgreSQL), enforces
 // allowed_bind_types, and reserves a session token against the SessionRegistry gRPC service so
-// max_sessions is honoured (invariant d). submit_sm is rejected until the MT pipeline lands (step-025).
+// max_sessions is honoured (invariant d). A bound ESME's submit_sm travels the same MT pipeline as a
+// REST submit: it is produced durably to mt.inbound (the boundary that earns the submit_sm_resp) and
+// its accepted CDR row is written off the connection's path (step-025).
 //
-// It follows the canonical service lifecycle of cmd/session-manager-svc: PostgreSQL for auth, a gRPC
-// client to session-manager for the quota, and the SMPP listener supervised alongside the ops port.
+// It follows the canonical service lifecycle of cmd/rest-api-svc: PostgreSQL for auth, a gRPC client
+// to session-manager for the quota, Kafka for the durable produce, ClickHouse for the accepted CDR
+// row, and the SMPP listener supervised alongside the ops port.
 package main
 
 import (
@@ -14,21 +17,31 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/martialanouman/go-gateway/internal/config"
+	"github.com/martialanouman/go-gateway/internal/ingest"
 	"github.com/martialanouman/go-gateway/internal/observability"
-	"github.com/martialanouman/go-gateway/internal/platform/supervisor"
 	registrypb "github.com/martialanouman/go-gateway/internal/session/pb"
 	"github.com/martialanouman/go-gateway/internal/smppserver"
+	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
+	"github.com/martialanouman/go-gateway/internal/storage/kafka"
 	"github.com/martialanouman/go-gateway/internal/storage/postgres"
 )
 
 // serviceName identifies this binary in logs, traces and metrics.
 const serviceName = "smpp-server-svc"
+
+// Accepted-row worker pool sizing, mirroring rest-api-svc: the pool absorbs bursts off the
+// connection's path and is ample for M3.
+const (
+	acceptedWorkers   = 4
+	acceptedQueueSize = 1024
+)
 
 func main() {
 	if err := run(); err != nil {
@@ -40,9 +53,10 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
 
-	// The SMPP server authenticates against PostgreSQL and calls session-manager over gRPC; it opens no
-	// Redis, Kafka, ClickHouse or HTTP surface of its own, so it declares just the sections it uses.
-	cfg, err := config.Load(serviceName, config.SectionOTel, config.SectionPostgres, config.SectionSMPP)
+	// PostgreSQL (bind auth), Kafka (produce mt.inbound), ClickHouse (accepted CDR row) and gRPC to
+	// session-manager (max_sessions). No HTTP business surface of its own — the SMPP listener is it.
+	cfg, err := config.Load(serviceName,
+		config.SectionOTel, config.SectionPostgres, config.SectionKafka, config.SectionClickHouse, config.SectionSMPP)
 	if err != nil {
 		return err
 	}
@@ -66,6 +80,21 @@ func run() error {
 	}
 	defer pool.Close()
 
+	chConn, err := clickhouse.NewConn(cfg.ClickHouse)
+	if err != nil {
+		return fmt.Errorf("connect clickhouse: %w", err)
+	}
+	defer func() { _ = chConn.Close() }()
+
+	producer, err := kafka.NewProducer(cfg.Kafka)
+	if err != nil {
+		return fmt.Errorf("kafka producer: %w", err)
+	}
+	defer producer.Close()
+
+	accepted := ingest.NewAcceptedWriter(clickhouse.NewCDRWriter(chConn), acceptedWorkers, acceptedQueueSize, logger)
+	ingestor := ingest.NewIngestor(producer, accepted, logger)
+
 	// The SessionRegistry client is a pod-to-pod internal call, so transport security is terminated at
 	// the mesh, not here (insecure credentials). NewClient is lazy: it opens no connection until the
 	// first bind, so a session-manager that is briefly down does not block startup — a bind during that
@@ -79,35 +108,89 @@ func run() error {
 	listener := smppserver.New(
 		postgres.NewBindRepo(pool),
 		registrypb.NewSessionRegistryClient(registryConn),
+		ingestor,
 		smppserver.Options{
 			Addr:        fmt.Sprintf(":%d", cfg.SMPP.Port),
 			PodID:       podID(cfg, logger),
 			SystemID:    serviceName,
 			IdleTimeout: cfg.SMPP.IdleTimeout,
+			Tracer:      observability.Tracer(nil, serviceName),
 		},
 		logger,
 	)
 
-	// PostgreSQL is vital: without it no bind can be authenticated, so a pod that cannot reach it must
-	// leave the load balancer (plan §1.5). The SessionRegistry dependency is surfaced per-bind
-	// (ESME_RSYSERR) rather than gating readiness, since a lazy gRPC client reports no meaningful state
-	// until traffic flows.
-	pgCheck := postgres.PingCheck("postgres", pool, cfg.Postgres.Timeout)
-	ops, err := observability.NewOpsServer(cfg, logger, pgCheck)
+	// Vital dependencies (plan §1.5): PostgreSQL gates authenticating a bind, Kafka gates durably
+	// accepting a submit_sm, ClickHouse gates the accepted CDR projection. All remove the pod from the
+	// LB when unreachable. The SessionRegistry dependency is surfaced per-bind (ESME_RSYSERR) rather
+	// than gating readiness, since a lazy gRPC client reports no meaningful state until traffic flows.
+	ops, err := observability.NewOpsServer(cfg, logger,
+		postgres.PingCheck("postgres", pool, cfg.Postgres.Timeout),
+		producer.ReadyCheck("kafka", cfg.Kafka.Timeout),
+		chConn.ReadyCheck("clickhouse", cfg.ClickHouse.Timeout),
+	)
 	if err != nil {
 		return fmt.Errorf("init ops server: %w", err)
 	}
 
 	logger.InfoContext(ctx, "starting", "config", cfg)
 
-	// The ops server and the SMPP listener are supervised together: one failing brings the service down
-	// predictably rather than leaving a half-dead pod (guide de codage §5). Neither has a
-	// teardown-ordering constraint, so the unordered supervisor fits.
-	var g supervisor.Group
-	g.Add("ops server", func(c context.Context) error { return ops.Run(c, cfg.ShutdownTimeout) })
-	g.Add("smpp listener", listener.Run)
-	if err := g.Run(ctx, logger); err != nil {
+	// Ordered shutdown matters here (as in rest-api-svc): the SMPP listener must stop and fully drain
+	// its connections BEFORE the accepted-row writer, or a submit_sm that earns its submit_sm_resp
+	// during the drain would Enqueue after the writer's workers have exited — silently dropping the
+	// accepted CDR row and re-opening the get-message 404 window (§1.10). Each component gets its own
+	// cancel, detached from the signal context, and shutdown drives them in order: listener → writer →
+	// ops. (Cancelling one shared context would stop all three at once.)
+	listenerCtx, cancelListener := context.WithCancel(context.WithoutCancel(ctx))
+	writerCtx, cancelWriter := context.WithCancel(context.WithoutCancel(ctx))
+	opsCtx, cancelOps := context.WithCancel(context.WithoutCancel(ctx))
+	defer cancelOps()
+	defer cancelWriter()
+	defer cancelListener()
+
+	errCh := make(chan error, 3)
+	var listenerWg, writerWg, opsWg sync.WaitGroup
+
+	supervise := func(wg *sync.WaitGroup, name string, c context.Context, fn func(context.Context) error) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := fn(c); err != nil {
+				select {
+				case errCh <- fmt.Errorf("%s: %w", name, err):
+				default:
+				}
+			}
+		}()
+	}
+
+	supervise(&opsWg, "ops server", opsCtx, func(c context.Context) error { return ops.Run(c, cfg.ShutdownTimeout) })
+	supervise(&writerWg, "accepted writer", writerCtx, accepted.Run)
+	supervise(&listenerWg, "smpp listener", listenerCtx, listener.Run)
+
+	var runErr error
+	select {
+	case <-ctx.Done():
+		logger.Info("shutting down", "reason", context.Cause(ctx))
+	case runErr = <-errCh:
+		logger.Error("component failed, shutting down", "err", runErr)
+	}
+
+	// Drain in order: stop the listener and let it finish in-flight connections (their Enqueue lands
+	// in the writer's buffer), then stop the writer so it drains that buffer, then the ops server.
+	cancelListener()
+	listenerWg.Wait()
+	cancelWriter()
+	writerWg.Wait()
+	cancelOps()
+	opsWg.Wait()
+
+	if runErr != nil {
+		return runErr
+	}
+	select {
+	case err := <-errCh:
 		return err
+	default:
 	}
 
 	logger.Info("stopped")
