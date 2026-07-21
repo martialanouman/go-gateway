@@ -30,7 +30,7 @@ Légende : `[x]` = fait (dans `tasks-done/`) · `[ ]` = à faire (dans `tasks-to
 - [x] step-024 — smpp-server-svc : listener :2775, auth bind + max_sessions (invariant d)
 - [x] step-025 — submit_sm → mt.inbound (pipeline identique REST) + bascules query/cancel
 - [x] step-026 — Anti-brute-force sur le bind SMPP
-- [ ] step-027 — Rotation d'identifiant de bind avec fenêtre de grâce
+- [x] step-027 — Rotation d'identifiant de bind avec fenêtre de grâce
 - [ ] step-028 — API publique : get-account (projection lecture seule)
 - [ ] step-029 — API publique : list-messages (pagination par curseur sur le CDR)
 - [ ] step-030 — cancel-message (REST) + parité cancel_sm (SMPP)
