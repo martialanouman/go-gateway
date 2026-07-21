@@ -9,6 +9,7 @@ import (
 	"context"
 
 	uuid "github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const createCredential = `-- name: CreateCredential :one
@@ -103,7 +104,9 @@ func (q *Queries) GetAPIKeyPrincipal(ctx context.Context, apiKeyHash *string) (G
 
 const getBindPrincipal = `-- name: GetBindPrincipal :one
 SELECT
-    cr.password_hash     AS password_hash,
+    cr.password_hash        AS password_hash,
+    cr.previous_secret_hash AS previous_secret_hash,
+    cr.grace_expires_at     AS grace_expires_at,
     cr.status            AS credential_status,
     a.id                 AS account_id,
     a.customer_id        AS customer_id,
@@ -123,17 +126,19 @@ WHERE cr.type = 'smpp_bind'
 `
 
 type GetBindPrincipalRow struct {
-	PasswordHash     *string
-	CredentialStatus string
-	AccountID        uuid.UUID
-	CustomerID       uuid.UUID
-	SmppEnabled      bool
-	AllowedBindTypes string
-	MaxSessions      int32
-	QuerySmEnabled   bool
-	CancelSmEnabled  bool
-	AccountStatus    string
-	CustomerStatus   string
+	PasswordHash       *string
+	PreviousSecretHash *string
+	GraceExpiresAt     pgtype.Timestamptz
+	CredentialStatus   string
+	AccountID          uuid.UUID
+	CustomerID         uuid.UUID
+	SmppEnabled        bool
+	AllowedBindTypes   string
+	MaxSessions        int32
+	QuerySmEnabled     bool
+	CancelSmEnabled    bool
+	AccountStatus      string
+	CustomerStatus     string
 }
 
 // SMPP bind authentication lookup (§1.9, invariant d): the presented system_id resolves the single
@@ -142,13 +147,17 @@ type GetBindPrincipalRow struct {
 // row. The argon2id password_hash is verified in Go by internal/credential (constant time), never in
 // SQL. As with GetAPIKeyPrincipal the credential/channel/account/customer statuses are RETURNED, not
 // filtered, so the caller answers with the right SMPP command_status (ESME_RINVPASWD vs ESME_RBINDFAIL)
-// rather than a blanket "not found". Rotation grace (previous_secret_hash/grace_expires_at) lands in
-// step-027; step-024 verifies only the current password_hash.
+// rather than a blanket "not found". The rotation grace window is honoured, but UNLIKE
+// GetAPIKeyPrincipal it cannot be decided here: an argon2id hash is not comparable in SQL, so the
+// previous hash and its expiry are returned raw and the caller (internal/smppserver) verifies the
+// secret and enforces the deadline against an injectable clock.
 func (q *Queries) GetBindPrincipal(ctx context.Context, systemID *string) (GetBindPrincipalRow, error) {
 	row := q.db.QueryRow(ctx, getBindPrincipal, systemID)
 	var i GetBindPrincipalRow
 	err := row.Scan(
 		&i.PasswordHash,
+		&i.PreviousSecretHash,
+		&i.GraceExpiresAt,
 		&i.CredentialStatus,
 		&i.AccountID,
 		&i.CustomerID,
