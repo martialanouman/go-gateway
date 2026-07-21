@@ -26,10 +26,10 @@ Légende : `[x]` = fait (dans `tasks-done/`) · `[ ]` = à faire (dans `tasks-to
 - [x] step-020 — Proto SessionRegistry + génération du code gRPC
 - [x] step-021 — Registre de sessions Redis (bind/unbind/lookup atomiques, max_sessions)
 - [x] step-022 — session-manager-svc : serveur gRPC SessionRegistry (:7000)
-- [ ] step-023 — Machine à états de session SMPP serveur (internal/smpp/session)
-- [ ] step-024 — smpp-server-svc : listener :2775, auth bind + max_sessions (invariant d)
-- [ ] step-025 — submit_sm → mt.inbound (pipeline identique REST) + bascules query/cancel
-- [ ] step-026 — Anti-brute-force sur le bind SMPP
+- [x] step-023 — Machine à états de session SMPP serveur (internal/smpp/session)
+- [x] step-024 — smpp-server-svc : listener :2775, auth bind + max_sessions (invariant d)
+- [x] step-025 — submit_sm → mt.inbound (pipeline identique REST) + bascules query/cancel
+- [x] step-026 — Anti-brute-force sur le bind SMPP
 - [ ] step-027 — Rotation d'identifiant de bind avec fenêtre de grâce
 - [ ] step-028 — API publique : get-account (projection lecture seule)
 - [ ] step-029 — API publique : list-messages (pagination par curseur sur le CDR)
