@@ -48,11 +48,11 @@ func (l *Listener) authorize(ctx context.Context, req session.BindRequest) (cp.B
 		return cp.BindCredential{}, errs.StatusInvalidPasswd
 	}
 	if !ok && graceIsOpen(cred, l.opts.Now()) {
-		ok, err = credential.VerifyBindPassword(req.Password, *cred.PreviousSecretHash)
-		if err != nil {
+		// No early return on error, unlike the branch above: VerifyBindPassword reports (false, err), so a
+		// malformed previous hash already falls through to the rejection below. Only the log is needed.
+		if ok, err = credential.VerifyBindPassword(req.Password, *cred.PreviousSecretHash); err != nil {
 			l.logger.ErrorContext(ctx, "smpp bind: stored previous secret hash malformed",
 				"err", err, "account_id", cred.AccountID)
-			return cp.BindCredential{}, errs.StatusInvalidPasswd
 		}
 	}
 	if !ok {
@@ -77,9 +77,10 @@ func (l *Listener) authorize(ctx context.Context, req session.BindRequest) (cp.B
 // graceIsOpen reports whether cred carries a rotation grace window still open at now, i.e. whether the
 // superseded secret is worth verifying at all (§6.3, step-027).
 //
-// The guard runs BEFORE the second argon2id derivation, deliberately: that derivation costs ~50-100ms,
-// and paying it on every failed bind — rather than only during the rare grace window — would hand back
-// a slice of the CPU amplification step-026 closed. An empty previous hash is treated as absent, and a
+// The guard runs BEFORE the second argon2id derivation, deliberately: that derivation is by far the
+// costliest step of a bind (argon2id at m=64MiB, see internal/credential), and paying it on every failed
+// bind — rather than only during the rare grace window — would hand back a slice of the CPU
+// amplification step-026 closed. An empty previous hash is treated as absent, and a
 // hash without a deadline never opens the window: the pair is only meaningful together, so a row where
 // one column survived without the other cannot resurrect a dead secret. The comparison is exclusive at
 // the deadline, matching the SQL grace_expires_at > now() the REST path uses.
