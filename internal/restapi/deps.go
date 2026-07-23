@@ -1,7 +1,7 @@
-// Package restapi is the public REST surface (rest-api-svc): submit-messages, get-message and the
-// public health check, wired chi + huma to conform to api/openapi-public.yaml. M2 serves the single
-// submit, the status read and health; the list/cancel/account operations and the Idempotency-Key
-// header arrive at M3.
+// Package restapi is the public REST surface (rest-api-svc): submit-messages, get-message,
+// get-account and the public health check, wired chi + huma to conform to api/openapi-public.yaml.
+// M2 served the single submit, the status read and health; get-account lands at M3; the list/cancel
+// operations and the Idempotency-Key header follow.
 package restapi
 
 import (
@@ -29,6 +29,23 @@ type CDRReader interface {
 	Current(ctx context.Context, customerID, accountID, messageID uuid.UUID) (clickhouse.CDRRow, bool, error)
 }
 
+// AccountReader reads the caller's own SMPP account for get-account. *postgres.AccountRepo satisfies
+// it.
+type AccountReader interface {
+	Get(ctx context.Context, id uuid.UUID) (cp.Account, error)
+}
+
+// SenderIDReader lists a customer's sender IDs for get-account. *postgres.SenderIDRepo satisfies it.
+type SenderIDReader interface {
+	ListByCustomer(ctx context.Context, customerID uuid.UUID) ([]cp.SenderID, error)
+}
+
+// RateLimitReader reads the account's throughput limit for get-account. The bool is false when no
+// limit row is configured. *postgres.RateLimitRepo satisfies it.
+type RateLimitReader interface {
+	RateLimit(ctx context.Context, accountID uuid.UUID) (cp.RateLimit, bool, error)
+}
+
 // Deps are the REST service's collaborators. A nil Principals disables the auth middleware, which is
 // how the contract test builds the API purely to read its spec.
 type Deps struct {
@@ -38,8 +55,12 @@ type Deps struct {
 	// identically.
 	Ingestor  *ingest.Ingestor
 	CDRReader CDRReader
-	Tracer    trace.Tracer
-	Logger    *slog.Logger
+	// Accounts, SenderIDs and RateLimits back the read-only get-account projection.
+	Accounts   AccountReader
+	SenderIDs  SenderIDReader
+	RateLimits RateLimitReader
+	Tracer     trace.Tracer
+	Logger     *slog.Logger
 	// Now supplies the accept/submit timestamp; defaults to time.Now. Injectable for tests.
 	Now func() time.Time
 	// Version is reported by the health endpoint.

@@ -197,6 +197,8 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/AccountInfo' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
 
   /health:
     get:
@@ -516,6 +518,10 @@ components:
             rest_enabled: { type: boolean }
           required: [smpp_enabled, rest_enabled]
         sender_id_policy: { type: string, enum: [strict, allow_unregistered_numeric, disabled] }
+        max_sessions:
+          type: integer
+          minimum: 0
+          description: Max concurrent SMPP binds allowed for this account.
         sender_ids:
           type: array
           items:
@@ -530,7 +536,7 @@ components:
             max_per_sec: { type: [integer, "null"] }
             max_per_day: { type: [integer, "null"] }
             burst_capacity: { type: [integer, "null"] }
-      required: [account_id, customer_id, name, status, channels, sender_id_policy, sender_ids]
+      required: [account_id, customer_id, name, status, channels, sender_id_policy, max_sessions, sender_ids]
     Health:
       type: object
       properties:
