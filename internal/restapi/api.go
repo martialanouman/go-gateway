@@ -68,6 +68,7 @@ func New(deps Deps) (*chi.Mux, huma.API) {
 
 	srv := &server{deps: deps}
 	registerMessages(api, srv)
+	registerAccount(api, srv)
 	registerHealth(api, srv)
 
 	humaspec.Prune(api, codesMetaKey)
@@ -107,6 +108,21 @@ func registerMessages(api huma.API, s *server) {
 		// declare them so the served contract matches what the endpoint can return.
 		Errors: []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity, http.StatusInternalServerError},
 	}, s.getMessage)
+}
+
+func registerAccount(api huma.API, s *server) {
+	register(api, huma.Operation{
+		OperationID: "get-account",
+		Method:      http.MethodGet,
+		Path:        "/account",
+		Summary:     "Read own account info, sender IDs, quotas",
+		Tags:        []string{"Account"},
+		Security:    bearerSecurity(),
+		// 403 (suspended account / disabled REST channel, from the shared apiKeyMiddleware) and 500
+		// (any of the three control-plane reads failing) are real outcomes of an authenticated get,
+		// so they belong in the served contract — matching get-message.
+		Errors: []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusInternalServerError},
+	}, s.getAccount)
 }
 
 func registerHealth(api huma.API, s *server) {
