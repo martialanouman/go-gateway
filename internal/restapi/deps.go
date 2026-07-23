@@ -24,9 +24,12 @@ type PrincipalStore interface {
 	PrincipalByAPIKeyHash(ctx context.Context, hash string) (cp.APIKeyPrincipal, bool, error)
 }
 
-// CDRReader reads a message's current status for get-message. *clickhouse.CDRReader satisfies it.
+// CDRReader reads messages from the CDR: a single message's current status for get-message, and a
+// cursor-paginated page for list-messages. Both are scoped to (customer_id, account_id).
+// *clickhouse.CDRReader satisfies it.
 type CDRReader interface {
 	Current(ctx context.Context, customerID, accountID, messageID uuid.UUID) (clickhouse.CDRRow, bool, error)
+	List(ctx context.Context, customerID, accountID uuid.UUID, filter clickhouse.CDRListFilter, limit int) ([]clickhouse.CDRRow, error)
 }
 
 // AccountReader reads the caller's own SMPP account for get-account. *postgres.AccountRepo satisfies
