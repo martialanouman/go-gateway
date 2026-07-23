@@ -98,7 +98,8 @@ type Options struct {
 	RefreshInterval time.Duration
 	// Tracer opens the submit_sm ingestion span. Nil uses a no-op tracer, so tests need not wire one.
 	Tracer trace.Tracer
-	// Now supplies the submit_sm accept timestamp; nil defaults to time.Now. Injectable for tests.
+	// Now supplies the submit_sm accept timestamp and the instant a rotation grace window is judged
+	// against at bind; nil defaults to time.Now. Injectable for tests.
 	Now func() time.Time
 	// Throttle is the anti-brute-force layer consulted before each bind's authentication. Nil disables
 	// throttling (bind-only tests leave it nil); production wiring passes a *bindthrottle.Throttle.

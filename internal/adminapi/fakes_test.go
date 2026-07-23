@@ -3,6 +3,7 @@ package adminapi_test
 import (
 	"context"
 	"sync"
+	"testing"
 	"time"
 
 	"github.com/google/uuid"
@@ -246,6 +247,9 @@ type fakeCredentialStore struct {
 	mu    sync.Mutex
 	byID  map[uuid.UUID]cp.Credential
 	types map[string]bool // "<accountID>:<type>" occupancy, revoked slots stay occupied
+	// lastRotation is what the handler passed to the most recent Rotate, so a test can assert the
+	// grace_period_sec -> time.Duration conversion that is otherwise invisible.
+	lastRotation *cp.CredentialRotation
 }
 
 func newFakeCredentialStore() *fakeCredentialStore {
@@ -309,17 +313,35 @@ func (s *fakeCredentialStore) SetStatus(_ context.Context, accountID, credID uui
 	return c, nil
 }
 
-func (s *fakeCredentialStore) Rotate(_ context.Context, accountID, credID uuid.UUID, _ cp.CredentialRotation) (cp.Credential, error) {
+func (s *fakeCredentialStore) Rotate(_ context.Context, accountID, credID uuid.UUID, rot cp.CredentialRotation) (cp.Credential, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	c, ok := s.byID[credID]
 	if !ok || c.AccountID != accountID {
 		return cp.Credential{}, errs.ErrNotFound
 	}
+	// The rotation is recorded, not discarded: the handler's seconds -> Duration conversion is only
+	// observable here, and getting it wrong turns every grace window into an immediate cutover.
+	s.lastRotation = &rot
 	now := time.Now()
 	c.RotatedAt = &now
+	if rot.Grace != nil {
+		expiry := now.Add(*rot.Grace)
+		c.GraceExpiresAt = &expiry
+	}
 	s.byID[credID] = c
 	return c, nil
+}
+
+// rotation returns the CredentialRotation the handler last built, or fails the test if none was.
+func (s *fakeCredentialStore) rotation(t *testing.T) cp.CredentialRotation {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.lastRotation == nil {
+		t.Fatal("Rotate was never called")
+	}
+	return *s.lastRotation
 }
 
 // fakeConnectorStore is an in-memory ConnectorStore for handler unit tests.

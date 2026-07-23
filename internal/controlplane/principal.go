@@ -1,6 +1,10 @@
 package controlplane
 
-import "github.com/google/uuid"
+import (
+	"time"
+
+	"github.com/google/uuid"
+)
 
 // APIKeyPrincipal identifies the account and customer behind a presented REST API key, with the
 // flags the authentication layer needs to authorise a request. It is a projection for the auth
@@ -31,16 +35,23 @@ func (p APIKeyPrincipal) EffectiveStatus() AccountStatus {
 // right SMPP command_status: an unknown system_id or a wrong password is ESME_RINVPASWD, while a
 // known bind on a disabled channel or a suspended account is ESME_RBINDFAIL — not "not found".
 //
-// PasswordHash is secret-bearing (an argon2id PHC string): it exists only on the authentication path,
-// is consumed immediately by internal/credential, and must never be logged.
+// PasswordHash and PreviousSecretHash are secret-bearing (argon2id PHC strings): they exist only on
+// the authentication path, are consumed immediately by internal/credential, and must never be logged.
+// Neither is ever carried into a control-plane DTO — the Admin read path has no field for them.
 type BindCredential struct {
-	AccountID        uuid.UUID
-	CustomerID       uuid.UUID
-	PasswordHash     string
-	CredentialStatus CredentialStatus
-	SMPPEnabled      bool
-	AllowedBindType  BindType
-	MaxSessions      int32
+	AccountID    uuid.UUID
+	CustomerID   uuid.UUID
+	PasswordHash string
+	// PreviousSecretHash and GraceExpiresAt describe a rotation grace window (§6.3, step-027): after a
+	// rotation with a grace period, the superseded secret keeps binding until GraceExpiresAt, then is
+	// cut off for good. Both are nil outside a window, and the pair is only meaningful together — a
+	// hash without a deadline must never authenticate.
+	PreviousSecretHash *string
+	GraceExpiresAt     *time.Time
+	CredentialStatus   CredentialStatus
+	SMPPEnabled        bool
+	AllowedBindType    BindType
+	MaxSessions        int32
 	// QuerySMEnabled and CancelSMEnabled gate the optional SMPP operations (§6.22): a disabled op is
 	// answered ESME_RINVCMDID, as if unsupported. They are account switches, resolved once at bind.
 	QuerySMEnabled  bool

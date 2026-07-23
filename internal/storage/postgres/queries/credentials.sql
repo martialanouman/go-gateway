@@ -43,10 +43,14 @@ RETURNING *;
 -- row. The argon2id password_hash is verified in Go by internal/credential (constant time), never in
 -- SQL. As with GetAPIKeyPrincipal the credential/channel/account/customer statuses are RETURNED, not
 -- filtered, so the caller answers with the right SMPP command_status (ESME_RINVPASWD vs ESME_RBINDFAIL)
--- rather than a blanket "not found". Rotation grace (previous_secret_hash/grace_expires_at) lands in
--- step-027; step-024 verifies only the current password_hash.
+-- rather than a blanket "not found". The rotation grace window is honoured, but UNLIKE
+-- GetAPIKeyPrincipal it cannot be decided here: an argon2id hash is not comparable in SQL, so the
+-- previous hash and its expiry are returned raw and the caller (internal/smppserver) verifies the
+-- secret and enforces the deadline against an injectable clock.
 SELECT
-    cr.password_hash     AS password_hash,
+    cr.password_hash        AS password_hash,
+    cr.previous_secret_hash AS previous_secret_hash,
+    cr.grace_expires_at     AS grace_expires_at,
     cr.status            AS credential_status,
     a.id                 AS account_id,
     a.customer_id        AS customer_id,

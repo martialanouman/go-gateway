@@ -31,6 +31,10 @@ func NewBindRepo(pool *pgxpool.Pool) *BindRepo {
 // account is suspended, so the caller can answer ESME_RBINDFAIL for those rather than a blanket miss.
 // A credential whose password_hash is unexpectedly null (a shape the DDL forbids for smpp_bind) is
 // treated as not found rather than trusted. A genuine database error is returned as-is.
+//
+// The rotation grace columns travel raw (previous_secret_hash, grace_expires_at): an argon2id hash
+// cannot be compared in SQL, so the deadline is enforced by the caller against its own clock rather
+// than by the query's now() — which is what makes the post-grace cut-off testable without Postgres.
 func (r *BindRepo) BindCredentialBySystemID(ctx context.Context, systemID string) (cp.BindCredential, bool, error) {
 	row, err := r.q.GetBindPrincipal(ctx, &systemID)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -43,16 +47,18 @@ func (r *BindRepo) BindCredentialBySystemID(ctx context.Context, systemID string
 		return cp.BindCredential{}, false, nil
 	}
 	return cp.BindCredential{
-		AccountID:        row.AccountID,
-		CustomerID:       row.CustomerID,
-		PasswordHash:     *row.PasswordHash,
-		CredentialStatus: cp.CredentialStatus(row.CredentialStatus),
-		SMPPEnabled:      row.SmppEnabled,
-		AllowedBindType:  cp.BindType(row.AllowedBindTypes),
-		MaxSessions:      row.MaxSessions,
-		QuerySMEnabled:   row.QuerySmEnabled,
-		CancelSMEnabled:  row.CancelSmEnabled,
-		AccountStatus:    cp.AccountStatus(row.AccountStatus),
-		CustomerStatus:   cp.CustomerStatus(row.CustomerStatus),
+		AccountID:          row.AccountID,
+		CustomerID:         row.CustomerID,
+		PasswordHash:       *row.PasswordHash,
+		PreviousSecretHash: row.PreviousSecretHash,
+		GraceExpiresAt:     tsPtr(row.GraceExpiresAt),
+		CredentialStatus:   cp.CredentialStatus(row.CredentialStatus),
+		SMPPEnabled:        row.SmppEnabled,
+		AllowedBindType:    cp.BindType(row.AllowedBindTypes),
+		MaxSessions:        row.MaxSessions,
+		QuerySMEnabled:     row.QuerySmEnabled,
+		CancelSMEnabled:    row.CancelSmEnabled,
+		AccountStatus:      cp.AccountStatus(row.AccountStatus),
+		CustomerStatus:     cp.CustomerStatus(row.CustomerStatus),
 	}, true, nil
 }

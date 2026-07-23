@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -156,3 +157,84 @@ func TestListCredentialsNeverReturnsASecret(t *testing.T) {
 		t.Errorf("list response carries a secret field: %s", w.Body)
 	}
 }
+
+// createCredForRotation issues an api_key on a fresh account and returns the store, the mounted API and
+// the credential id, so a rotation test starts from a credential that actually exists.
+func createCredForRotation(t *testing.T) (*fakeCredentialStore, http.Handler, string, string) {
+	t.Helper()
+	store := newFakeCredentialStore()
+	accountID := uuid.New()
+	api := credAPI(t, store, newFakeAccountStore())
+
+	w := httptest.NewRecorder()
+	api.ServeHTTP(w, authed(t, http.MethodPost,
+		"/v1/admin/smpp-accounts/"+accountID.String()+"/credentials", `{"type":"api_key"}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("seed create: status = %d, body=%s", w.Code, w.Body)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &got)
+	credID, _ := got["id"].(string)
+	return store, api, accountID.String(), credID
+}
+
+func rotatePath(accountID, credID string) string {
+	return "/v1/admin/smpp-accounts/" + accountID + "/credentials/" + credID + "/rotate"
+}
+
+// TestRotateTranslatesGracePeriodSecondsToADuration pins the one conversion nothing else observes:
+// grace_period_sec is seconds on the wire and a time.Duration in the domain. Dropping the
+// `* time.Second` would turn a 600-second window into 600 nanoseconds — every rotation becomes an
+// immediate cutover that severs live ESMEs, which is exactly what the grace window exists to prevent.
+func TestRotateTranslatesGracePeriodSecondsToADuration(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want *time.Duration
+	}{
+		{"seconds become the matching duration", `{"grace_period_sec":600}`, ptr(10 * time.Minute)},
+		{"a zero window is a zero duration, not absent", `{"grace_period_sec":0}`, ptr(time.Duration(0))},
+		{"an omitted field is an immediate cutover", `{}`, nil},
+		{"an absent body is an immediate cutover", ``, nil},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store, api, accountID, credID := createCredForRotation(t)
+
+			w := httptest.NewRecorder()
+			api.ServeHTTP(w, authed(t, http.MethodPost, rotatePath(accountID, credID), tc.body))
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body)
+			}
+
+			got := store.rotation(t).Grace
+			switch {
+			case tc.want == nil && got != nil:
+				t.Errorf("Grace = %v, want nil (immediate cutover)", *got)
+			case tc.want != nil && got == nil:
+				t.Errorf("Grace = nil, want %v", *tc.want)
+			case tc.want != nil && *got != *tc.want:
+				t.Errorf("Grace = %v, want %v", *got, *tc.want)
+			}
+		})
+	}
+}
+
+// TestRotateRejectsAnUnboundedGraceWindow: the window is capped, so a typo when rotating a leaked
+// secret (86400000 for 86400) cannot leave the compromised secret binding for years.
+func TestRotateRejectsAnUnboundedGraceWindow(t *testing.T) {
+	store, api, accountID, credID := createCredForRotation(t)
+
+	w := httptest.NewRecorder()
+	api.ServeHTTP(w, authed(t, http.MethodPost, rotatePath(accountID, credID), `{"grace_period_sec":86400000}`))
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body=%s", w.Code, w.Body)
+	}
+	if store.lastRotation != nil {
+		t.Error("a rejected rotation still reached the store")
+	}
+}
+
+func ptr[T any](v T) *T { return &v }

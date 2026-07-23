@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
@@ -138,6 +139,145 @@ func TestAuthorize(t *testing.T) {
 				t.Errorf("authorize() status = %#x, want %#x", got, tc.want)
 			}
 		})
+	}
+}
+
+const rotatedPassword = "r0t4t3d-bind-pw"
+
+// graceNow is the instant every rotation-grace test is anchored on, so a credential's window can be
+// placed before or after "now" without touching the wall clock.
+var graceNow = time.Date(2026, 7, 21, 12, 0, 0, 0, time.UTC)
+
+// rotatedCred is a credential whose secret has just been rotated: PasswordHash holds the NEW secret
+// and PreviousSecretHash the old one, with a grace window ending at expiry.
+func rotatedCred(t *testing.T, expiry *time.Time) cp.BindCredential {
+	t.Helper()
+	c := activeCred(t)
+	newHash, err := credential.HashBindPassword(rotatedPassword)
+	if err != nil {
+		t.Fatalf("hash rotated password: %v", err)
+	}
+	old := c.PasswordHash // activeCred hashes testPassword
+	c.PasswordHash = newHash
+	c.PreviousSecretHash = &old
+	c.GraceExpiresAt = expiry
+	return c
+}
+
+// TestAuthorizeRotationGrace covers the rotation grace window at the bind (step-027): during the
+// window BOTH secrets bind; once it closes the previous secret is dead, permanently. The clock is
+// injected, so the cut-off is proven without sleeping.
+func TestAuthorizeRotationGrace(t *testing.T) {
+	open := graceNow.Add(time.Hour)    // window still open at graceNow
+	closed := graceNow.Add(-time.Hour) // window expired an hour ago
+
+	tests := []struct {
+		name     string
+		cred     cp.BindCredential
+		password string
+		want     uint32
+	}{
+		{
+			name:     "previous secret binds during the grace window",
+			cred:     rotatedCred(t, &open),
+			password: testPassword,
+			want:     smpp.StatusOK,
+		},
+		{
+			name:     "previous secret is refused once the window has closed",
+			cred:     rotatedCred(t, &closed),
+			password: testPassword,
+			want:     errs.StatusInvalidPasswd,
+		},
+		{
+			name:     "new secret binds while the window is open",
+			cred:     rotatedCred(t, &open),
+			password: rotatedPassword,
+			want:     smpp.StatusOK,
+		},
+		{
+			name:     "new secret binds after the window has closed",
+			cred:     rotatedCred(t, &closed),
+			password: rotatedPassword,
+			want:     smpp.StatusOK,
+		},
+		{
+			name:     "a previous hash with no expiry never authenticates",
+			cred:     mutate(rotatedCred(t, &open), func(c *cp.BindCredential) { c.GraceExpiresAt = nil }),
+			password: testPassword,
+			want:     errs.StatusInvalidPasswd,
+		},
+		{
+			name:     "an expiry with no previous hash falls through to a plain rejection",
+			cred:     mutate(rotatedCred(t, &open), func(c *cp.BindCredential) { c.PreviousSecretHash = nil }),
+			password: testPassword,
+			want:     errs.StatusInvalidPasswd,
+		},
+		{
+			name:     "an empty previous hash never authenticates",
+			cred:     mutate(rotatedCred(t, &open), func(c *cp.BindCredential) { empty := ""; c.PreviousSecretHash = &empty }),
+			password: "",
+			want:     errs.StatusInvalidPasswd,
+		},
+		{
+			name:     "a malformed previous hash is refused, not trusted",
+			cred:     mutate(rotatedCred(t, &open), func(c *cp.BindCredential) { bad := "not-a-phc"; c.PreviousSecretHash = &bad }),
+			password: testPassword,
+			want:     errs.StatusInvalidPasswd,
+		},
+		{
+			name:     "a wrong secret is refused even with the window open",
+			cred:     rotatedCred(t, &open),
+			password: "neither-of-them",
+			want:     errs.StatusInvalidPasswd,
+		},
+		{
+			name:     "the window is exclusive at its expiry instant",
+			cred:     rotatedCred(t, &graceNow),
+			password: testPassword,
+			want:     errs.StatusInvalidPasswd,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := Options{Now: func() time.Time { return graceNow }}
+			l := New(fakeStore{cred: tc.cred, found: true}, nil, nil, opts, slog.New(slog.DiscardHandler))
+			_, got := l.authorize(context.Background(), session.BindRequest{
+				Mode:     session.BindTransceiver,
+				SystemID: "sid-1",
+				Password: tc.password,
+			})
+			if got != tc.want {
+				t.Errorf("authorize() status = %#x, want %#x", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestAuthorizeGraceNeverLogsSecrets drives the grace paths that log (a malformed previous hash) and
+// asserts neither the system_id nor either secret reaches the log (§1.9, invariant a).
+func TestAuthorizeGraceNeverLogsSecrets(t *testing.T) {
+	const sid = "UNIQUE_SYSTEM_ID_XYZ"
+	const pw = "UNIQUE_PASSWORD_XYZ"
+
+	open := graceNow.Add(time.Hour)
+	cred := mutate(rotatedCred(t, &open), func(c *cp.BindCredential) { bad := "not-a-phc"; c.PreviousSecretHash = &bad })
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	opts := Options{Now: func() time.Time { return graceNow }}
+	l := New(fakeStore{cred: cred, found: true}, nil, nil, opts, logger)
+	l.authorize(context.Background(), session.BindRequest{SystemID: sid, Password: pw})
+
+	if strings.Contains(buf.String(), sid) {
+		t.Errorf("log contains the system_id %q", sid)
+	}
+	if strings.Contains(buf.String(), pw) {
+		t.Errorf("log contains the password %q", pw)
+	}
+	if strings.Contains(buf.String(), testPassword) || strings.Contains(buf.String(), rotatedPassword) {
+		t.Error("log contains a bind secret")
 	}
 }
 

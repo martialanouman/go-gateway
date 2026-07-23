@@ -240,7 +240,10 @@ func (h *credentialHandlers) revoke(ctx context.Context, in *credentialIDInput) 
 }
 
 type rotateCredentialBody struct {
-	GracePeriodSec *int `json:"grace_period_sec,omitempty" minimum:"0" nullable:"true" doc:"Old secret stays valid this long in parallel."`
+	// The ceiling is a blast-radius bound, not a technical limit: a grace window covers an ESME's
+	// reconnection, which is minutes to hours. Without a maximum, a typo when rotating a LEAKED secret
+	// (86400000 for 86400) would keep the compromised secret binding for years.
+	GracePeriodSec *int `json:"grace_period_sec,omitempty" minimum:"0" maximum:"604800" nullable:"true" doc:"Old secret stays valid this long in parallel. At most 7 days."`
 }
 type rotateCredentialInput struct {
 	ID     string `path:"id" format:"uuid"`

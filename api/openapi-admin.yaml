@@ -487,7 +487,7 @@ paths:
       tags: [Credentials]
       summary: Rotate a credential (manual; optional grace window)
       operationId: rotate-credential
-      requestBody: { required: false, content: { application/json: { schema: { type: object, properties: { grace_period_sec: { type: [integer, "null"], minimum: 0, description: 'Old secret stays valid this long in parallel.' } } } } } }
+      requestBody: { required: false, content: { application/json: { schema: { type: object, properties: { grace_period_sec: { type: [integer, "null"], minimum: 0, maximum: 604800, description: 'Old secret stays valid this long in parallel. At most 7 days.' } } } } } }
       security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '200': { description: Rotated; new secret present once., content: { application/json: { schema: { $ref: '#/components/schemas/CredentialWithSecret' } } } }
