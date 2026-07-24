@@ -1,6 +1,6 @@
 # step-031 — En-tête Idempotency-Key (REST, fenêtre 24 h Redis)
 
-> **Jalon :** M3 (§7 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
+> **Jalon :** M3 (§7 `docs/plan-execution-passerelle.md`) · **Statut :** FAIT
 > **Dépend de :** — · **Bloque :** —
 
 ## But
@@ -26,9 +26,9 @@ Rendre `POST /messages` idempotent : un rejeu avec la même `Idempotency-Key` (f
 - Concurrence (`go test -race`) : N requêtes simultanées même clé → 1 publication.
 
 ## Definition of Done
-- [ ] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts
-- [ ] critères couverts par tests · godoc sur l'exporté · aucun invariant (a/b/c/d) violé
-- [ ] unicité de publication sous concurrence prouvée
+- [x] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts
+- [x] critères couverts par tests · godoc sur l'exporté · aucun invariant (a/b/c/d) violé
+- [x] unicité de publication sous concurrence prouvée
 
 ## Hors périmètre
 Idempotence côté SMPP (le protocole n'a pas d'en-tête équivalent) ; persistance longue durée au-delà de 24 h.
