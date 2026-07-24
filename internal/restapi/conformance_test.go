@@ -30,8 +30,8 @@ type contractOp struct {
 // not yet serve (they land at M3). The conformance test asserts the served spec is exactly the
 // implemented set: it matches the contract for what it serves, and serves nothing it should not.
 var (
-	implemented = map[string]bool{"submit-messages": true, "get-message": true, "get-account": true, "health": true}
-	deferred    = map[string]bool{"list-messages": true, "cancel-message": true}
+	implemented = map[string]bool{"submit-messages": true, "get-message": true, "get-account": true, "list-messages": true, "health": true}
+	deferred    = map[string]bool{"cancel-message": true}
 )
 
 func loadContract(t *testing.T) contractDoc {

@@ -59,10 +59,27 @@ type fakeCDRReader struct {
 	row   clickhouse.CDRRow
 	found bool
 	err   error
+
+	// listRows/listErr drive List; gotFilter/gotLimit capture its last call for assertions.
+	listRows  []clickhouse.CDRRow
+	listErr   error
+	gotFilter clickhouse.CDRListFilter
+	gotLimit  int
 }
 
 func (f fakeCDRReader) Current(context.Context, uuid.UUID, uuid.UUID, uuid.UUID) (clickhouse.CDRRow, bool, error) {
 	return f.row, f.found, f.err
+}
+
+// List is a pointer receiver so the handler test can read back the filter and limit the handler
+// passed (a value receiver would capture a copy).
+func (f *fakeCDRReader) List(_ context.Context, _, _ uuid.UUID, filter clickhouse.CDRListFilter, limit int) ([]clickhouse.CDRRow, error) {
+	f.gotFilter = filter
+	f.gotLimit = limit
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	return f.listRows, nil
 }
 
 type fakeCDRWriter struct {
@@ -148,7 +165,7 @@ func (h *harness) do(t *testing.T, method, path, auth string, body any) *http.Re
 }
 
 func TestHealthIsPublic(t *testing.T) {
-	h := newHarness(t, fakePrincipals{}, fakeCDRReader{})
+	h := newHarness(t, fakePrincipals{}, &fakeCDRReader{})
 	resp := h.do(t, http.MethodGet, "/v1/health", "", nil)
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
@@ -162,7 +179,7 @@ func TestHealthIsPublic(t *testing.T) {
 }
 
 func TestSubmitRequiresAuth(t *testing.T) {
-	h := newHarness(t, fakePrincipals{found: false}, fakeCDRReader{})
+	h := newHarness(t, fakePrincipals{found: false}, &fakeCDRReader{})
 	resp := h.do(t, http.MethodPost, "/v1/messages", "", map[string]any{
 		"to": "+2250700000000", "from": "ACME", "text": "hi",
 	})
@@ -174,7 +191,7 @@ func TestSubmitRequiresAuth(t *testing.T) {
 
 func TestSubmitAcceptedAndDurable(t *testing.T) {
 	principal := activePrincipal()
-	h := newHarness(t, fakePrincipals{principal: principal, found: true}, fakeCDRReader{})
+	h := newHarness(t, fakePrincipals{principal: principal, found: true}, &fakeCDRReader{})
 
 	resp := h.do(t, http.MethodPost, "/v1/messages", "sgw_testkey", map[string]any{
 		"to": "+2250700000000", "from": "ACME", "text": "Your OTP is 123456",
@@ -229,7 +246,7 @@ func TestSubmitAcceptedAndDurable(t *testing.T) {
 func TestSubmitRejectsWhenRestDisabled(t *testing.T) {
 	principal := activePrincipal()
 	principal.RESTEnabled = false
-	h := newHarness(t, fakePrincipals{principal: principal, found: true}, fakeCDRReader{})
+	h := newHarness(t, fakePrincipals{principal: principal, found: true}, &fakeCDRReader{})
 
 	resp := h.do(t, http.MethodPost, "/v1/messages", "sgw_key", map[string]any{
 		"to": "+2250700000000", "from": "ACME", "text": "hi",
@@ -241,7 +258,7 @@ func TestSubmitRejectsWhenRestDisabled(t *testing.T) {
 }
 
 func TestSubmitRejectsBatchBody(t *testing.T) {
-	h := newHarness(t, fakePrincipals{principal: activePrincipal(), found: true}, fakeCDRReader{})
+	h := newHarness(t, fakePrincipals{principal: activePrincipal(), found: true}, &fakeCDRReader{})
 	resp := h.do(t, http.MethodPost, "/v1/messages", "sgw_key", map[string]any{
 		"messages": []map[string]any{{"to": "+2250700000000", "from": "ACME", "text": "hi"}},
 	})
@@ -260,7 +277,7 @@ func TestGetMessageFoundAndNotFound(t *testing.T) {
 		SegmentCount: 1, Encoding: clickhouse.EncodingGSM7, SubmittedAt: time.Now().UTC(),
 	}
 
-	found := newHarness(t, fakePrincipals{principal: principal, found: true}, fakeCDRReader{row: row, found: true})
+	found := newHarness(t, fakePrincipals{principal: principal, found: true}, &fakeCDRReader{row: row, found: true})
 	resp := found.do(t, http.MethodGet, "/v1/messages/"+id.String(), "sgw_key", nil)
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
@@ -272,7 +289,7 @@ func TestGetMessageFoundAndNotFound(t *testing.T) {
 		t.Errorf("message: got status=%q id=%q", msg.Status, msg.ID)
 	}
 
-	missing := newHarness(t, fakePrincipals{principal: principal, found: true}, fakeCDRReader{found: false})
+	missing := newHarness(t, fakePrincipals{principal: principal, found: true}, &fakeCDRReader{found: false})
 	resp2 := missing.do(t, http.MethodGet, "/v1/messages/"+uuid.New().String(), "sgw_key", nil)
 	defer func() { _ = resp2.Body.Close() }()
 	if resp2.StatusCode != http.StatusNotFound {

@@ -408,3 +408,7 @@ type fakeReader struct{}
 func (fakeReader) Current(context.Context, uuid.UUID, uuid.UUID, uuid.UUID) (clickhouse.CDRRow, bool, error) {
 	return clickhouse.CDRRow{}, false, nil
 }
+
+func (fakeReader) List(context.Context, uuid.UUID, uuid.UUID, clickhouse.CDRListFilter, int) ([]clickhouse.CDRRow, error) {
+	return nil, nil
+}

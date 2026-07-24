@@ -201,6 +201,22 @@ func (r *CDRReader) Current(ctx context.Context, customerID, accountID, messageI
 		WHERE customer_id = ? AND account_id = ? AND message_id = ?
 		LIMIT 1`
 
+	out, err := scanCDRRow(r.conn.QueryRow(ctx, query, customerID, accountID, messageID).Scan)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return CDRRow{}, false, nil
+		}
+		return CDRRow{}, false, fmt.Errorf("clickhouse: read cdr for %s: %w", messageID, err)
+	}
+	return out, true, nil
+}
+
+// scanCDRRow scans one CDR row via a Scan function — driver.Row and driver.Rows share the
+// `Scan(dest ...any) error` signature, so Current and List reuse it and stay in lockstep with
+// cdrColumns. The enum columns come back as strings and the boolean as uint8; they are converted
+// here. The `version` column is read (it closes cdrColumns) but not surfaced: it is an internal
+// ReplacingMergeTree artefact, and FINAL already yields the highest-version row.
+func scanCDRRow(scan func(dest ...any) error) (CDRRow, error) {
 	var (
 		out       CDRRow
 		direction string
@@ -209,25 +225,107 @@ func (r *CDRReader) Current(ctx context.Context, customerID, accountID, messageI
 		billed    uint8
 		version   uint64
 	)
-	err := r.conn.QueryRow(ctx, query, customerID, accountID, messageID).Scan(
+	if err := scan(
 		&out.MessageID, &out.TraceID, &out.AccountID, &out.CustomerID,
 		&direction, &out.SourceAddr, &out.DestAddr, &out.OriginalSourceAddr,
 		&out.ConnectorID, &out.RouteID, &out.RoutingScriptID, &out.SubmittedAt, &out.DeliveredAt,
 		&status, &out.ErrorCode, &out.SegmentCount, &encoding,
 		&out.ContentCiphertext, &out.ContentKeyID, &out.LatencyMs, &billed,
 		&out.CreditsCharged, &version,
-	)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return CDRRow{}, false, nil
-		}
-		return CDRRow{}, false, fmt.Errorf("clickhouse: read cdr for %s: %w", messageID, err)
+	); err != nil {
+		return CDRRow{}, err
 	}
 	out.Direction = Direction(direction)
 	out.Status = Status(status)
 	out.Encoding = Encoding(encoding)
 	out.Billed = billed != 0
-	return out, true, nil
+	return out, nil
+}
+
+// CDRKey is a keyset pagination position: the (submitted_at, message_id) of a page's last row. Both
+// are immutable per message and form the tail of the CDR sorting key, so together they order rows
+// deterministically — no two rows share a key, so paging never skips or repeats a message.
+type CDRKey struct {
+	SubmittedAt time.Time
+	MessageID   uuid.UUID
+}
+
+// CDRListFilter narrows a CDR listing. Every field is optional (a nil pointer means "no
+// constraint"). FromDate is an inclusive lower bound and ToDate an exclusive upper bound on
+// submitted_at. After is the keyset cursor: only rows strictly before it in the
+// (submitted_at DESC, message_id DESC) order are returned.
+type CDRListFilter struct {
+	Status    *Status
+	Direction *Direction
+	FromDate  *time.Time
+	ToDate    *time.Time
+	After     *CDRKey
+}
+
+// List returns a page of a caller's CDR rows, newest first, scoped to (customer_id, account_id) —
+// the sorting-key prefix, which both enforces account isolation and keeps the read off a full scan.
+// It applies the filter's optional narrowing and keyset cursor and returns at most limit rows in
+// (submitted_at DESC, message_id DESC) order. FINAL collapses the ReplacingMergeTree, so status
+// reflects the latest lifecycle version; ClickHouse does not push a predicate to PREWHERE under
+// FINAL by default, so the status filter is evaluated on the merged row. Callers request limit+1 to
+// detect whether a further page exists.
+func (r *CDRReader) List(ctx context.Context, customerID, accountID uuid.UUID, f CDRListFilter, limit int) ([]CDRRow, error) {
+	query := `SELECT ` + cdrColumns + `
+		FROM cdr FINAL
+		WHERE customer_id = ? AND account_id = ?`
+	args := []any{customerID, accountID}
+
+	// submitted_at, direction and the keyset are immutable per message, so they filter correctly
+	// regardless of FINAL; status is versioned but, per the note above, is still evaluated post-merge.
+	if f.FromDate != nil {
+		query += ` AND submitted_at >= ?`
+		args = append(args, *f.FromDate)
+	}
+	if f.ToDate != nil {
+		query += ` AND submitted_at < ?`
+		args = append(args, *f.ToDate)
+	}
+	if f.Direction != nil {
+		query += ` AND direction = ?`
+		args = append(args, string(*f.Direction))
+	}
+	if f.After != nil {
+		// Keyset comparison on an integer-millisecond expression rather than the raw DateTime64
+		// column: binding a time.Time lets the server infer a coarser precision, which silently drops
+		// the whole page once many messages share a submitted_at millisecond (routine at peak
+		// throughput). The expanded OR form (instead of a tuple literal) keeps the comparison explicit;
+		// message_id — immutable and unique — is the deterministic tiebreaker, matching the ORDER BY.
+		query += ` AND (toUnixTimestamp64Milli(submitted_at) < ? OR (toUnixTimestamp64Milli(submitted_at) = ? AND message_id < ?))`
+		ms := f.After.SubmittedAt.UnixMilli()
+		args = append(args, ms, ms, f.After.MessageID)
+	}
+	if f.Status != nil {
+		query += ` AND status = ?`
+		args = append(args, string(*f.Status))
+	}
+	query += `
+		ORDER BY submitted_at DESC, message_id DESC
+		LIMIT ?`
+	args = append(args, limit)
+
+	rows, err := r.conn.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("clickhouse: list cdr: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := make([]CDRRow, 0, limit)
+	for rows.Next() {
+		row, err := scanCDRRow(rows.Scan)
+		if err != nil {
+			return nil, fmt.Errorf("clickhouse: scan cdr row: %w", err)
+		}
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("clickhouse: list cdr: %w", err)
+	}
+	return out, nil
 }
 
 func boolToUint8(b bool) uint8 {

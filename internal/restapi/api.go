@@ -108,6 +108,19 @@ func registerMessages(api huma.API, s *server) {
 		// declare them so the served contract matches what the endpoint can return.
 		Errors: []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity, http.StatusInternalServerError},
 	}, s.getMessage)
+
+	register(api, huma.Operation{
+		OperationID: "list-messages",
+		Method:      http.MethodGet,
+		Path:        "/messages",
+		Summary:     "Search / list own messages",
+		Tags:        []string{"Messages"},
+		Security:    bearerSecurity(),
+		// The contract declares only 401 and 422 for this operation, so the served spec must not
+		// advertise more: 422 also covers a malformed cursor. (403 from the shared middleware and 500
+		// from a CDR read failure remain real runtime outcomes, but the narrow contract governs.)
+		Errors: []int{http.StatusUnauthorized, http.StatusUnprocessableEntity},
+	}, s.listMessages)
 }
 
 func registerAccount(api huma.API, s *server) {
