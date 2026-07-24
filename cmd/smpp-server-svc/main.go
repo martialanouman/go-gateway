@@ -24,6 +24,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/martialanouman/go-gateway/internal/bindthrottle"
+	"github.com/martialanouman/go-gateway/internal/cancel"
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/ingest"
 	"github.com/martialanouman/go-gateway/internal/observability"
@@ -124,6 +125,17 @@ func run() error {
 		BackoffBase: cfg.SMPP.BindBackoffBase,
 		BackoffMax:  cfg.SMPP.BindBackoffMax,
 	})
+
+	// The cancel_sm handler cancels a not-yet-dispatched message: it reads the message's current CDR
+	// state (ClickHouse), flags the cancel intent in Redis for the connector pool to honour before
+	// submit_sm, and writes the cancelled CDR row. Cancellation is SMPP-only — there is no REST surface
+	// (ADR-0009).
+	canceller := cancel.NewCanceller(
+		clickhouse.NewCDRReader(chConn),
+		clickhouse.NewCDRWriter(chConn),
+		cancel.NewRedisFlags(rdb),
+		logger,
+	)
 	throttleBlocked := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "smpp_bind_throttle_blocked_total",
 		Help: "SMPP binds refused by the anti-brute-force throttle before authentication.",
@@ -142,6 +154,7 @@ func run() error {
 			Throttle:        throttle,
 			ThrottleBlocked: throttleBlocked,
 			MaxConns:        cfg.SMPP.MaxConns,
+			Canceller:       canceller,
 		},
 		logger,
 	)

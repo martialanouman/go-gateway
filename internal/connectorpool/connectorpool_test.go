@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"testing"
 	"time"
 	"unicode/utf16"
@@ -37,6 +38,16 @@ type fakeCDR struct{ rows []clickhouse.CDRRow }
 func (f *fakeCDR) Insert(_ context.Context, row clickhouse.CDRRow) error {
 	f.rows = append(f.rows, row)
 	return nil
+}
+
+// fakeFlags stands in for the shared cancel-flag store.
+type fakeFlags struct {
+	cancelled bool
+	err       error
+}
+
+func (f *fakeFlags) Exists(_ context.Context, _ uuid.UUID) (bool, error) {
+	return f.cancelled, f.err
 }
 
 func routed() pipeline.RoutedMT {
@@ -82,6 +93,82 @@ func runOnce(t *testing.T, resp func(smpp.SubmitSM) fakesmsc.Resp, r pipeline.Ro
 		t.Fatalf("Run: %v", err)
 	}
 	return cdr
+}
+
+// runWithFlags drives one record through the connector with a cancel-flag store wired, returning the
+// CDR sink, whether the SMSC saw a submit, and Run's error.
+func runWithFlags(t *testing.T, flags connectorpool.CancelFlags, r pipeline.RoutedMT) (*fakeCDR, *bool, error) {
+	t.Helper()
+	submitted := false
+	smsc := fakesmsc.Start(t, fakesmsc.Config{OnSubmit: func(smpp.SubmitSM) fakesmsc.Resp {
+		submitted = true
+		return fakesmsc.OK()
+	}})
+	rec, err := pipeline.EncodeRouted(r)
+	if err != nil {
+		t.Fatalf("encode routed: %v", err)
+	}
+	cdr := &fakeCDR{}
+	rrec := otelrec.New(t)
+	svc := connectorpool.New(connectorpool.Deps{
+		Consumer:    &fakeConsumer{records: []kafka.Record{rec}},
+		CDR:         cdr,
+		CancelFlags: flags,
+		Bind: connectorpool.BindConfig{
+			Addr: smsc.Addr(), SystemID: "esme", Password: "pw",
+			DialTimeout: 3 * time.Second, ResponseTimeout: 3 * time.Second,
+			EnquireLinkInterval: time.Minute, EnquireLinkMaxMissed: 3, WindowSize: 10,
+		},
+		Tracer: observability.Tracer(rrec.Provider(), "connector-pool"),
+	})
+	return cdr, &submitted, svc.Run(context.Background())
+}
+
+// TestConnectorSkipsCancelledMessage pins that a message flagged cancelled before dispatch is NOT
+// submitted to the SMSC, that the connector writes the cancelled CDR row itself (so a Canceller crash
+// after flagging cannot leave the message unrecorded), and that the offset is committed (Run nil).
+func TestConnectorSkipsCancelledMessage(t *testing.T) {
+	cdr, submitted, err := runWithFlags(t, &fakeFlags{cancelled: true}, routed())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if *submitted {
+		t.Error("a cancelled message must not be submitted to the SMSC")
+	}
+	if len(cdr.rows) != 1 || cdr.rows[0].Status != clickhouse.StatusCancelled {
+		t.Errorf("connector must write a cancelled CDR row when honouring the flag, got %+v", cdr.rows)
+	}
+}
+
+// TestConnectorSubmitsWhenNotCancelled pins that an un-flagged message is submitted normally and its
+// enroute row written.
+func TestConnectorSubmitsWhenNotCancelled(t *testing.T) {
+	cdr, submitted, err := runWithFlags(t, &fakeFlags{cancelled: false}, routed())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !*submitted {
+		t.Error("a non-cancelled message must be submitted")
+	}
+	if len(cdr.rows) != 1 || cdr.rows[0].Status != clickhouse.StatusEnroute {
+		t.Errorf("expected one enroute row, got %+v", cdr.rows)
+	}
+}
+
+// TestConnectorDispatchesWhenCancelFlagUnavailable pins the fail-open behaviour: a Redis failure
+// reading the cancel flag must NOT halt delivery — cancellation is best-effort, so the connector logs
+// and dispatches the message normally rather than stalling all outbound traffic on a Redis outage.
+func TestConnectorDispatchesWhenCancelFlagUnavailable(t *testing.T) {
+	cdr, submitted, err := runWithFlags(t, &fakeFlags{err: errors.New("redis down")}, routed())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !*submitted {
+		t.Error("fail-open: a message must still be submitted when the cancel flag cannot be read")
+	}
+	if len(cdr.rows) != 1 || cdr.rows[0].Status != clickhouse.StatusEnroute {
+		t.Errorf("expected one enroute row, got %+v", cdr.rows)
+	}
 }
 
 func TestConnectorWritesEnrouteOnOK(t *testing.T) {
