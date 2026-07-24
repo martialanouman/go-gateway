@@ -2,10 +2,15 @@ package restapi
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/martialanouman/go-gateway/internal/idempotency"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 	"github.com/martialanouman/go-gateway/internal/platform/errors/humaerr"
@@ -13,6 +18,11 @@ import (
 	"github.com/martialanouman/go-gateway/internal/platform/uuidx"
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
 )
+
+// awaitTimeout bounds how long a concurrent submit of the same Idempotency-Key waits for the winning
+// request to confirm its publish before giving up with a retriable 503. The reserve→finalize window is
+// a single durable produce, so this is generous headroom, not a latency the happy path ever pays.
+const awaitTimeout = 2 * time.Second
 
 // SubmitMessageRequest is the single-submission body (api/openapi-public.yaml SubmitMessageRequest).
 // M2 serves single submissions only; a batch-shaped body fails validation and returns 422.
@@ -28,9 +38,11 @@ type SubmitMessageRequest struct {
 	DataCoding         *int    `json:"data_coding,omitempty" minimum:"0" maximum:"255"`
 }
 
-// submitInput is the huma input for submit-messages.
+// submitInput is the huma input for submit-messages. IdempotencyKey is the optional client-chosen key
+// (api/openapi-public.yaml IdempotencyKey parameter); an empty value means no idempotency.
 type submitInput struct {
-	Body SubmitMessageRequest
+	IdempotencyKey string `header:"Idempotency-Key" maxLength:"128" doc:"Client-chosen key; a repeat with the same key returns the original result (24 h window)."`
+	Body           SubmitMessageRequest
 }
 
 // AcceptedMessage is the 202 body (api/openapi-public.yaml AcceptedMessage).
@@ -79,6 +91,19 @@ func (s *server) submit(ctx context.Context, in *submitInput) (*submitOutput, er
 		SubmittedAt:        now,
 	}
 
+	accepted := AcceptedMessage{
+		ID:         messageID.String(),
+		TraceID:    traceID.String(),
+		Status:     string(clickhouse.StatusAccepted),
+		ClientRef:  in.Body.ClientRef,
+		AcceptedAt: now,
+	}
+
+	idemKey := strings.TrimSpace(in.IdempotencyKey)
+	if idemKey != "" && s.deps.Idempotency != nil {
+		return s.submitIdempotent(ctx, principal.AccountID.String(), idemKey, in.Body, env, accepted)
+	}
+
 	// Durability boundary (§6.7 / §7.3): the 202 is earned only once the record is durably written.
 	// Ingestor.Accept encodes, produces durably and projects the accepted CDR row off the request
 	// path — the same helper the SMPP submit_sm path uses, so both surfaces reach the pipeline
@@ -87,13 +112,79 @@ func (s *server) submit(ctx context.Context, in *submitInput) (*submitOutput, er
 		return nil, humaerr.FromError(err)
 	}
 
-	return &submitOutput{Body: AcceptedMessage{
-		ID:         messageID.String(),
-		TraceID:    traceID.String(),
-		Status:     string(clickhouse.StatusAccepted),
-		ClientRef:  in.Body.ClientRef,
-		AcceptedAt: now,
-	}}, nil
+	return &submitOutput{Body: accepted}, nil
+}
+
+// submitIdempotent runs the two-phase idempotent submit for a request carrying an Idempotency-Key.
+// Reserve claims the slot atomically; the winner publishes and finalizes; a repeat replays the stored
+// result; a concurrent in-flight repeat awaits the winner; a same-key request with a different body is
+// a 409. The 202-earned-only-when-durable invariant holds: a result is replayed only after the winner's
+// publish is confirmed (state "done"), never during the pending window.
+func (s *server) submitIdempotent(ctx context.Context, accountID, idemKey string, body SubmitMessageRequest, env pipeline.InboundMT, accepted AcceptedMessage) (*submitOutput, error) {
+	bodyHash, err := hashSubmitBody(body)
+	if err != nil {
+		return nil, humaerr.FromError(errs.ErrInternal)
+	}
+	response, err := json.Marshal(accepted)
+	if err != nil {
+		return nil, humaerr.FromError(errs.ErrInternal)
+	}
+
+	res, err := s.deps.Idempotency.Reserve(ctx, accountID, idemKey, bodyHash, response)
+	if err != nil {
+		// Redis is unreachable: we cannot honor the idempotency guarantee, so fail retriably rather than
+		// risk publishing the same message twice on a client retry.
+		return nil, humaerr.FromError(errs.ErrServiceUnavailable)
+	}
+
+	switch res.Outcome {
+	case idempotency.Reserved:
+		if err := s.deps.Ingestor.Accept(ctx, env); err != nil {
+			// The message was not durably queued: release the slot so a retry can reserve afresh instead
+			// of waiting out the 24 h window on a message that was never sent.
+			_ = s.deps.Idempotency.Release(ctx, accountID, idemKey)
+			return nil, humaerr.FromError(err)
+		}
+		// The message is durably queued — the 202 is earned. If the finalize flip fails (a transient
+		// Redis blip) the message still went out, so we must not turn a queued message into an error;
+		// billing is idempotent by message_id, so a rare concurrent re-publish is absorbed downstream.
+		_ = s.deps.Idempotency.Finalize(ctx, accountID, idemKey)
+		return &submitOutput{Body: accepted}, nil
+	case idempotency.Replay:
+		return replaySubmit(res.Response)
+	case idempotency.Pending:
+		stored, err := s.deps.Idempotency.Await(ctx, accountID, idemKey, awaitTimeout)
+		if err != nil {
+			// The winner is taking unusually long (or Redis blipped): retriable rather than block forever.
+			return nil, humaerr.FromError(errs.ErrServiceUnavailable)
+		}
+		return replaySubmit(stored)
+	case idempotency.Conflict:
+		return nil, humaerr.FromError(errs.ErrIdempotencyConflict)
+	default:
+		return nil, humaerr.FromError(errs.ErrInternal)
+	}
+}
+
+// replaySubmit decodes a stored 202 body and returns it as the response.
+func replaySubmit(stored []byte) (*submitOutput, error) {
+	var accepted AcceptedMessage
+	if err := json.Unmarshal(stored, &accepted); err != nil {
+		return nil, humaerr.FromError(errs.ErrInternal)
+	}
+	return &submitOutput{Body: accepted}, nil
+}
+
+// hashSubmitBody is the deterministic fingerprint of a submission body: a SHA-256 of its canonical JSON.
+// It is a one-way digest (never the cleartext body) used only to detect a same-key replay with a
+// changed body — so invariant (a) is preserved.
+func hashSubmitBody(body SubmitMessageRequest) (string, error) {
+	b, err := json.Marshal(body)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 // getMessageInput is the huma input for get-message.

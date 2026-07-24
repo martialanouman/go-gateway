@@ -101,6 +101,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '402': { $ref: '#/components/responses/InsufficientCredit' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/ValidationError' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
         '500': { $ref: '#/components/responses/InternalError' }
@@ -286,6 +287,13 @@ components:
       description: |
         Authenticated but not allowed — e.g. sender ID not authorized (`sender_id_not_authorized`) or
         recipient opted out (`recipient_opted_out`). The `code` field disambiguates.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Conflict:
+      description: |
+        The `Idempotency-Key` was already used for a different request body within its 24 h window
+        (`idempotency_conflict`). Reuse a key only for a byte-identical retry.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }

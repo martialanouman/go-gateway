@@ -1,7 +1,7 @@
 // Package restapi is the public REST surface (rest-api-svc): submit-messages, get-message,
-// get-account and the public health check, wired chi + huma to conform to api/openapi-public.yaml.
-// M2 served the single submit, the status read and health; get-account lands at M3; the list/cancel
-// operations and the Idempotency-Key header follow.
+// list-messages, get-account and the public health check, wired chi + huma to conform to
+// api/openapi-public.yaml. submit-messages honors the Idempotency-Key header (step-031); the SMPP
+// cancel surface stays protocol-only (ADR-0009).
 package restapi
 
 import (
@@ -12,6 +12,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
+	"github.com/martialanouman/go-gateway/internal/idempotency"
 	"github.com/martialanouman/go-gateway/internal/ingest"
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
 
@@ -49,6 +50,17 @@ type RateLimitReader interface {
 	RateLimit(ctx context.Context, accountID uuid.UUID) (cp.RateLimit, bool, error)
 }
 
+// IdempotencyStore backs the Idempotency-Key window on submit-messages: it reserves a slot atomically,
+// finalizes it once the message is durably published, releases it on a publish failure, and lets a
+// concurrent submit await the winner's result. *idempotency.Store satisfies it. A nil store disables
+// idempotency — the header is then ignored, which is how the surface behaved before step-031.
+type IdempotencyStore interface {
+	Reserve(ctx context.Context, accountID, idemKey, bodyHash string, response []byte) (idempotency.Result, error)
+	Finalize(ctx context.Context, accountID, idemKey string) error
+	Release(ctx context.Context, accountID, idemKey string) error
+	Await(ctx context.Context, accountID, idemKey string, timeout time.Duration) ([]byte, error)
+}
+
 // Deps are the REST service's collaborators. A nil Principals disables the auth middleware, which is
 // how the contract test builds the API purely to read its spec.
 type Deps struct {
@@ -62,8 +74,10 @@ type Deps struct {
 	Accounts   AccountReader
 	SenderIDs  SenderIDReader
 	RateLimits RateLimitReader
-	Tracer     trace.Tracer
-	Logger     *slog.Logger
+	// Idempotency backs the Idempotency-Key header on submit-messages. Nil disables it.
+	Idempotency IdempotencyStore
+	Tracer      trace.Tracer
+	Logger      *slog.Logger
 	// Now supplies the accept/submit timestamp; defaults to time.Now. Injectable for tests.
 	Now func() time.Time
 	// Version is reported by the health endpoint.
