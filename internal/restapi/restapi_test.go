@@ -114,6 +114,12 @@ type harness struct {
 }
 
 func newHarness(t *testing.T, principals restapi.PrincipalStore, reader restapi.CDRReader) *harness {
+	return buildHarness(t, principals, reader, nil)
+}
+
+// buildHarness is the shared builder; idempotency is nil for the M2 tests and set by the
+// Idempotency-Key tests.
+func buildHarness(t *testing.T, principals restapi.PrincipalStore, reader restapi.CDRReader, idem restapi.IdempotencyStore) *harness {
 	t.Helper()
 	rec := otelrec.New(t)
 	producer := &fakeProducer{}
@@ -126,11 +132,12 @@ func newHarness(t *testing.T, principals restapi.PrincipalStore, reader restapi.
 	t.Cleanup(func() { cancel(); <-done })
 
 	mux, _ := restapi.New(restapi.Deps{
-		Principals: principals,
-		Ingestor:   ingest.NewIngestor(producer, accepted, nil),
-		CDRReader:  reader,
-		Tracer:     observability.Tracer(rec.Provider(), "rest-api"),
-		Version:    "test",
+		Principals:  principals,
+		Ingestor:    ingest.NewIngestor(producer, accepted, nil),
+		CDRReader:   reader,
+		Idempotency: idem,
+		Tracer:      observability.Tracer(rec.Provider(), "rest-api"),
+		Version:     "test",
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)

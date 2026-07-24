@@ -91,9 +91,10 @@ func registerMessages(api huma.API, s *server) {
 		Security:    bearerSecurity(),
 		// M2 serves single submissions; batch (BatchAcceptResult) arrives later.
 		DefaultStatus: http.StatusAccepted,
-		// 500 (encode failure) and 503 (ingest log unavailable) are real handler outcomes, so they
-		// belong in the served contract — a client generated from the spec must know to retry them.
-		Errors: []int{http.StatusBadRequest, http.StatusUnauthorized, http.StatusPaymentRequired, http.StatusForbidden, http.StatusUnprocessableEntity, http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusServiceUnavailable},
+		// 409 (same Idempotency-Key, different body), 500 (encode failure) and 503 (ingest log
+		// unavailable, or an idempotency-store outage) are real handler outcomes, so they belong in the
+		// served contract — a client generated from the spec must know to expect and retry them.
+		Errors: []int{http.StatusBadRequest, http.StatusUnauthorized, http.StatusPaymentRequired, http.StatusForbidden, http.StatusConflict, http.StatusUnprocessableEntity, http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusServiceUnavailable},
 	}, s.submit)
 
 	register(api, huma.Operation{

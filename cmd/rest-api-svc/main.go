@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/martialanouman/go-gateway/internal/config"
+	"github.com/martialanouman/go-gateway/internal/idempotency"
 	"github.com/martialanouman/go-gateway/internal/ingest"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/platform/buildinfo"
@@ -26,6 +27,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
 	"github.com/martialanouman/go-gateway/internal/storage/postgres"
+	redisstore "github.com/martialanouman/go-gateway/internal/storage/redis"
 )
 
 const serviceName = "rest-api-svc"
@@ -47,10 +49,12 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
 
-	// Postgres (API-key lookup), Kafka (produce mt.inbound), ClickHouse (CDR read/write), HTTP
-	// (business listener). The deployment sets HTTP_PORT=8080 (plan §1.4); the shared default is 8081.
+	// Postgres (API-key lookup), Kafka (produce mt.inbound), ClickHouse (CDR read/write), Redis
+	// (Idempotency-Key window), HTTP (business listener). The deployment sets HTTP_PORT=8080
+	// (plan §1.4); the shared default is 8081.
 	cfg, err := config.Load(serviceName,
-		config.SectionOTel, config.SectionPostgres, config.SectionKafka, config.SectionClickHouse, config.SectionHTTP)
+		config.SectionOTel, config.SectionPostgres, config.SectionKafka, config.SectionClickHouse,
+		config.SectionRedis, config.SectionHTTP)
 	if err != nil {
 		return err
 	}
@@ -86,20 +90,31 @@ func run() error {
 	}
 	defer producer.Close()
 
+	// Redis backs the Idempotency-Key window on POST /messages. Like the other stores, it is required at
+	// boot (NewClient pings and fails fast). At runtime, though, a Redis outage fails only idempotent
+	// submits — each returns a per-request 503 — so Redis is deliberately NOT wired into /readyz: a blip
+	// must not pull the pod out and take reads and non-idempotent submits down with it.
+	rdb, err := redisstore.NewClient(ctx, cfg.Redis)
+	if err != nil {
+		return fmt.Errorf("connect redis: %w", err)
+	}
+	defer func() { _ = rdb.Close() }()
+
 	accepted := ingest.NewAcceptedWriter(clickhouse.NewCDRWriter(chConn), acceptedWorkers, acceptedQueueSize, logger)
 	ingestor := ingest.NewIngestor(producer, accepted, logger)
 	tracer := observability.Tracer(nil, serviceName)
 
 	handler, _ := restapi.New(restapi.Deps{
-		Principals: postgres.NewAPIKeyRepo(pool),
-		Ingestor:   ingestor,
-		CDRReader:  clickhouse.NewCDRReader(chConn),
-		Accounts:   postgres.NewAccountRepo(pool),
-		SenderIDs:  postgres.NewSenderIDRepo(pool),
-		RateLimits: postgres.NewRateLimitRepo(pool),
-		Tracer:     tracer,
-		Logger:     logger,
-		Version:    buildinfo.Version,
+		Principals:  postgres.NewAPIKeyRepo(pool),
+		Ingestor:    ingestor,
+		CDRReader:   clickhouse.NewCDRReader(chConn),
+		Accounts:    postgres.NewAccountRepo(pool),
+		SenderIDs:   postgres.NewSenderIDRepo(pool),
+		RateLimits:  postgres.NewRateLimitRepo(pool),
+		Idempotency: idempotency.New(rdb),
+		Tracer:      tracer,
+		Logger:      logger,
+		Version:     buildinfo.Version,
 	})
 
 	srv := &http.Server{
