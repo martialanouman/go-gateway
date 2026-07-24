@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -23,6 +22,11 @@ import (
 // request to confirm its publish before giving up with a retriable 503. The reserve→finalize window is
 // a single durable produce, so this is generous headroom, not a latency the happy path ever pays.
 const awaitTimeout = 2 * time.Second
+
+// idemOpTimeout bounds the post-publish Finalize (and the on-failure Release). These run on a
+// cancellation-detached context so a client that hangs up right after its message is durably queued
+// cannot leave the entry stuck "pending" — which would 503 every retry of that key until its 24 h TTL.
+const idemOpTimeout = 2 * time.Second
 
 // SubmitMessageRequest is the single-submission body (api/openapi-public.yaml SubmitMessageRequest).
 // M2 serves single submissions only; a batch-shaped body fails validation and returns 422.
@@ -99,9 +103,10 @@ func (s *server) submit(ctx context.Context, in *submitInput) (*submitOutput, er
 		AcceptedAt: now,
 	}
 
-	idemKey := strings.TrimSpace(in.IdempotencyKey)
-	if idemKey != "" && s.deps.Idempotency != nil {
-		return s.submitIdempotent(ctx, principal.AccountID.String(), idemKey, in.Body, env, accepted)
+	// The Idempotency-Key is an opaque client token (net/http already trims surrounding header
+	// whitespace); an empty value, or no store configured, means the M2 non-idempotent path.
+	if in.IdempotencyKey != "" && s.deps.Idempotency != nil {
+		return s.submitIdempotent(ctx, principal.AccountID.String(), in.IdempotencyKey, in.Body, env, accepted)
 	}
 
 	// Durability boundary (§6.7 / §7.3): the 202 is earned only once the record is durably written.
@@ -142,13 +147,13 @@ func (s *server) submitIdempotent(ctx context.Context, accountID, idemKey string
 		if err := s.deps.Ingestor.Accept(ctx, env); err != nil {
 			// The message was not durably queued: release the slot so a retry can reserve afresh instead
 			// of waiting out the 24 h window on a message that was never sent.
-			_ = s.deps.Idempotency.Release(ctx, accountID, idemKey)
+			s.releaseIdempotent(ctx, accountID, idemKey)
 			return nil, humaerr.FromError(err)
 		}
-		// The message is durably queued — the 202 is earned. If the finalize flip fails (a transient
-		// Redis blip) the message still went out, so we must not turn a queued message into an error;
-		// billing is idempotent by message_id, so a rare concurrent re-publish is absorbed downstream.
-		_ = s.deps.Idempotency.Finalize(ctx, accountID, idemKey)
+		// The message is durably queued — the 202 is earned. Finalize flips the entry to "done" so
+		// retries replay it; it runs detached from the request ctx so a client that hangs up here cannot
+		// freeze the entry "pending".
+		s.finalizeIdempotent(ctx, accountID, idemKey)
 		return &submitOutput{Body: accepted}, nil
 	case idempotency.Replay:
 		return replaySubmit(res.Response)
@@ -166,7 +171,34 @@ func (s *server) submitIdempotent(ctx context.Context, accountID, idemKey string
 	}
 }
 
-// replaySubmit decodes a stored 202 body and returns it as the response.
+// finalizeIdempotent flips a reserved entry to "done" after a successful publish, detached from the
+// request ctx (which cancels on client disconnect) with its own short deadline. A failure leaves the
+// entry "pending" until its 24 h TTL — safe for the sent message (never a double publish), but it 503s
+// that key's retries, so it is logged rather than swallowed.
+func (s *server) finalizeIdempotent(ctx context.Context, accountID, idemKey string) {
+	bg, cancel := context.WithTimeout(context.WithoutCancel(ctx), idemOpTimeout)
+	defer cancel()
+	if err := s.deps.Idempotency.Finalize(bg, accountID, idemKey); err != nil {
+		s.deps.Logger.WarnContext(ctx, "idempotency finalize failed; entry stays pending until its TTL",
+			"error", err)
+	}
+}
+
+// releaseIdempotent frees a reservation whose publish failed, detached from the request ctx so a
+// cancelled request still clears the slot for the client's retry. A failure is logged, not surfaced:
+// the caller already returns the publish error.
+func (s *server) releaseIdempotent(ctx context.Context, accountID, idemKey string) {
+	bg, cancel := context.WithTimeout(context.WithoutCancel(ctx), idemOpTimeout)
+	defer cancel()
+	if err := s.deps.Idempotency.Release(bg, accountID, idemKey); err != nil {
+		s.deps.Logger.WarnContext(ctx, "idempotency release failed; entry stays pending until its TTL",
+			"error", err)
+	}
+}
+
+// replaySubmit decodes a stored 202 body and returns it as the response. A replay intentionally returns
+// the original result verbatim — including the winner's id, trace_id and accepted_at — so a retry that
+// receives it is told exactly what the first request produced.
 func replaySubmit(stored []byte) (*submitOutput, error) {
 	var accepted AcceptedMessage
 	if err := json.Unmarshal(stored, &accepted); err != nil {

@@ -90,9 +90,10 @@ func run() error {
 	}
 	defer producer.Close()
 
-	// Redis backs the Idempotency-Key window on POST /messages. A Redis outage fails only idempotent
-	// submits (per-request 503), so it is not wired as a vital readiness check that would also pull the
-	// pod out for reads.
+	// Redis backs the Idempotency-Key window on POST /messages. Like the other stores, it is required at
+	// boot (NewClient pings and fails fast). At runtime, though, a Redis outage fails only idempotent
+	// submits — each returns a per-request 503 — so Redis is deliberately NOT wired into /readyz: a blip
+	// must not pull the pod out and take reads and non-idempotent submits down with it.
 	rdb, err := redisstore.NewClient(ctx, cfg.Redis)
 	if err != nil {
 		return fmt.Errorf("connect redis: %w", err)

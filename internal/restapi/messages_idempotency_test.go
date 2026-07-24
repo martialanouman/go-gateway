@@ -21,6 +21,11 @@ type fakeIdemStore struct {
 	mu         sync.Mutex
 	entries    map[string]*idemEntry
 	reserveErr error
+
+	// finalizeHadDeadline records whether Finalize's context carried its own deadline — proof it was
+	// the detached (WithoutCancel + timeout) context, not the cancellable request context.
+	finalizeHadDeadline bool
+	finalizeCalled      bool
 }
 
 type idemEntry struct {
@@ -54,9 +59,12 @@ func (f *fakeIdemStore) Reserve(_ context.Context, accountID, idemKey, bodyHash 
 	return idempotency.Result{Outcome: idempotency.Pending, Response: e.response}, nil
 }
 
-func (f *fakeIdemStore) Finalize(_ context.Context, accountID, idemKey string) error {
+func (f *fakeIdemStore) Finalize(ctx context.Context, accountID, idemKey string) error {
+	_, hasDeadline := ctx.Deadline()
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.finalizeCalled = true
+	f.finalizeHadDeadline = hasDeadline
 	if e, ok := f.entries[accountID+"|"+idemKey]; ok {
 		e.done = true
 	}
@@ -139,6 +147,29 @@ func TestSubmitIdempotentReplaysAndPublishesOnce(t *testing.T) {
 	}
 	if h.producer.count() != 1 {
 		t.Fatalf("expected exactly 1 publish across the original + replay, got %d", h.producer.count())
+	}
+}
+
+func TestSubmitIdempotentFinalizeIsDetachedFromRequest(t *testing.T) {
+	store := newFakeIdemStore()
+	h := buildHarness(t, fakePrincipals{principal: activePrincipal(), found: true}, &fakeCDRReader{}, store)
+
+	resp := postWithKey(t, h, "sgw_key", "key-final", map[string]any{"to": "+2250700000000", "from": "ACME", "text": "hi"})
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("submit: got %d want 202", resp.StatusCode)
+	}
+
+	store.mu.Lock()
+	called, detached := store.finalizeCalled, store.finalizeHadDeadline
+	store.mu.Unlock()
+	if !called {
+		t.Fatal("Finalize was not called after a successful publish")
+	}
+	// A client disconnect cancels the request context; Finalize must run on a detached context (its own
+	// deadline) so it cannot be skipped and leave the entry poisoned "pending" for 24 h.
+	if !detached {
+		t.Fatal("Finalize ran on the request context; it must be detached with its own deadline")
 	}
 }
 
