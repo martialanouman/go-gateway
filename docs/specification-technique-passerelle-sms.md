@@ -546,7 +546,6 @@ Le `deliver_sm` d'un SMSC arrive → `connector-pool-svc` → publication sur `m
 POST   /messages                     # Submit MT SMS (single or batch)
 GET    /messages/{id}                # Get message status
 GET    /messages                     # Search/list own messages (paginated)
-POST   /messages/{id}/cancel         # Cancel a queued (not-yet-dispatched) message
 GET    /account                      # Read-only: own account info, active sender IDs, quota/rate limits
 GET    /health
 ```
@@ -985,7 +984,7 @@ Un **client** détient 1..N **comptes SMPP**.
 ### 6.22 Opérations SMPP optionnelles : `query_sm` & `cancel_sm`
 
 - **`query_sm`** — état d'un message par son ID, résolu contre le magasin de statut/CDR.
-- **`cancel_sm`** — annule un message pas encore envoyé au SMSC ; s'il a déjà été soumis, `ESME_RCANCELFAIL`. Sémantique identique à `POST /messages/{id}/cancel`.
+- **`cancel_sm`** — annule un message pas encore envoyé au SMSC ; s'il a déjà été soumis, `ESME_RCANCELFAIL` ; s'il est inconnu, `ESME_RINVMSGID`. L'annulation est **réservée au canal SMPP** — pas de surface REST (voir [ADR-0009](adr/0009-annulation-reservee-smpp.md)).
 - **Désactivables par compte** (`query_sm_enabled`/`cancel_sm_enabled`, défaut `true`) : une opération désactivée répond `ESME_RINVCMDID`.
 - **`query_sm` est un vecteur de polling** : un client qui l'interroge en boucle reporte sa charge sur le magasin CDR ; il est soumis à une **limite de débit dédiée**. Les DLR restent le mécanisme poussé recommandé.
 

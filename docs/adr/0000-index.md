@@ -12,6 +12,7 @@ Les décisions structurantes de la passerelle, une par fichier, au format ADR st
 | [0006](0006-client-compte-smpp-distincts.md) | Client et compte SMPP distincts ; cardinalité des identifiants | Accepted |
 | [0007](0007-opt-out-scope-canal.md) | Opt-out scopé au canal avec union à l'application | Accepted |
 | [0008](0008-contenu-chiffre-cle-client.md) | Stockage de contenu chiffré par clé client, jamais loggé | Accepted |
+| [0009](0009-annulation-reservee-smpp.md) | Annulation d'un message réservée au canal SMPP (pas de surface REST) | Accepted |
 
 ## Convention
 

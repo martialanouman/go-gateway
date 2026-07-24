@@ -26,12 +26,14 @@ type contractOp struct {
 	Security    []map[string][]string `yaml:"security"`
 }
 
-// implemented are the operations M2 serves; deferred are the ones the contract declares but M2 does
-// not yet serve (they land at M3). The conformance test asserts the served spec is exactly the
-// implemented set: it matches the contract for what it serves, and serves nothing it should not.
+// implemented are the operations the public API serves. deferred lists operations the contract
+// declares but does not serve yet — none currently: cancel-message was removed from the contract
+// because cancellation is SMPP-only (ADR-0009). The conformance test asserts the served spec is
+// exactly the implemented set: it matches the contract for what it serves, and serves nothing it
+// should not.
 var (
 	implemented = map[string]bool{"submit-messages": true, "get-message": true, "get-account": true, "list-messages": true, "health": true}
-	deferred    = map[string]bool{"cancel-message": true}
+	deferred    = map[string]bool{}
 )
 
 func loadContract(t *testing.T) contractDoc {

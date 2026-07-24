@@ -291,7 +291,7 @@ Dès que ce flux passe un test bout-en-bout, l'architecture est prouvée. Les ja
 - `cmd/smpp-server-svc` : écoute SMPP :2775, machine à états de session (`internal/smpp/session`), auth bind (`system_id` → `credentials` `smpp_bind`, mot de passe en temps constant, `allowed_bind_types`), `submit_sm` → `mt.inbound` (**pipeline identique**), `enquire_link`, `unbind`, fenêtre (`window_size`). `query_sm`/`cancel_sm` selon bascules (`ESME_RINVCMDID` si désactivé).
 - Anti-brute-force : compteur par `system_id`/IP (Redis TTL), backoff, événement de sécurité auditable.
 - Rotation d'identifiant : fenêtre de grâce (`previous_secret_hash`/`grace_expires_at`).
-- **Complétion de l'API publique** (`api/openapi-public.yaml`, Redis désormais disponible) : `list-messages` (pagination par curseur sur le CDR), `get-account` (projection lecture seule), `cancel-message` (**même sémantique que `cancel_sm`** : annule un message pas encore envoyé, sinon `409`/`ESME_RCANCELFAIL`), et l'en-tête **`Idempotency-Key`** (Redis, fenêtre 24 h : un rejeu avec la même clé renvoie le résultat d'origine ; même clé + corps différent → `409 idempotency_conflict`). Test de contrat public.
+- **Complétion de l'API publique** (`api/openapi-public.yaml`, Redis désormais disponible) : `list-messages` (pagination par curseur sur le CDR), `get-account` (projection lecture seule), et l'en-tête **`Idempotency-Key`** (Redis, fenêtre 24 h : un rejeu avec la même clé renvoie le résultat d'origine ; même clé + corps différent → `409 idempotency_conflict`). Test de contrat public. **Annulation :** `cancel_sm` (SMPP) uniquement — pas de surface REST (annule un message pas encore envoyé, sinon `ESME_RCANCELFAIL` ; voir [ADR-0009](adr/0009-annulation-reservee-smpp.md)).
 
 **Nouvelles dépendances :** grpc, protobuf, go-redis (registre de sessions).
 
@@ -304,7 +304,7 @@ Dès que ce flux passe un test bout-en-bout, l'architecture est prouvée. Les ja
 - Op désactivée → `ESME_RINVCMDID`.
 - **Parité protocole** : le même message soumis en REST et en SMPP produit un traitement identique en aval (test dédié).
 - Rotation avec `gracePeriodSec` : ancien secret valide pendant la fenêtre, coupé après.
-- `cancel-message`/`cancel_sm` : annulation d'un message en file → `200` + CDR `cancelled` ; déjà envoyé → `409`/`ESME_RCANCELFAIL` (mêmes résultats via REST et SMPP).
+- `cancel_sm` (SMPP-only, ADR-0009) : annulation d'un message en file → `ESME_ROK` + CDR `cancelled` ; déjà envoyé → `ESME_RCANCELFAIL` ; inconnu → `ESME_RINVMSGID`.
 - `Idempotency-Key` : rejeu même clé + même corps → réponse d'origine, un seul message publié ; même clé + corps différent → `409 idempotency_conflict`.
 
 ---

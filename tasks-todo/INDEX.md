@@ -33,7 +33,7 @@ Légende : `[x]` = fait (dans `tasks-done/`) · `[ ]` = à faire (dans `tasks-to
 - [x] step-027 — Rotation d'identifiant de bind avec fenêtre de grâce
 - [ ] step-028 — API publique : get-account (projection lecture seule)
 - [ ] step-029 — API publique : list-messages (pagination par curseur sur le CDR)
-- [ ] step-030 — cancel-message (REST) + parité cancel_sm (SMPP)
+- [ ] step-030 — cancel_sm (SMPP) : annulation SMPP-only, sans surface REST (ADR-0009)
 - [ ] step-031 — En-tête Idempotency-Key (REST, fenêtre 24 h Redis)
 - [ ] step-032 — Déconnexion forcée des sessions SMPP (fin de grâce, révocation, suspension)
 

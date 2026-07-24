@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"unicode/utf16"
 
+	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/martialanouman/go-gateway/internal/pipeline"
@@ -42,13 +43,28 @@ type CDRWriter interface {
 	Insert(ctx context.Context, row clickhouse.CDRRow) error
 }
 
+// CancelFlags reports whether a message was cancelled (via cancel_sm) before it reached the SMSC.
+// *cancel.RedisFlags satisfies it. New defaults a nil CancelFlags to a no-op that reports nothing
+// cancelled, so the hot path never branches on nil and a missing wiring cannot silently disable the
+// check without the no-op being explicit.
+type CancelFlags interface {
+	Exists(ctx context.Context, messageID uuid.UUID) (bool, error)
+}
+
+// noopCancelFlags is the New default when no flag store is wired: it reports nothing cancelled, so the
+// connector dispatches normally. Tests that do not exercise cancellation rely on it.
+type noopCancelFlags struct{}
+
+func (noopCancelFlags) Exists(context.Context, uuid.UUID) (bool, error) { return false, nil }
+
 // Deps are the connector pool's collaborators.
 type Deps struct {
-	Consumer Consumer
-	CDR      CDRWriter
-	Bind     BindConfig
-	Tracer   trace.Tracer
-	Logger   *slog.Logger
+	Consumer    Consumer
+	CDR         CDRWriter
+	CancelFlags CancelFlags
+	Bind        BindConfig
+	Tracer      trace.Tracer
+	Logger      *slog.Logger
 }
 
 // Service is the connector pool.
@@ -61,10 +77,14 @@ type Service struct {
 	bound atomic.Bool
 }
 
-// New builds a Service. A nil logger defaults to slog.Default.
+// New builds a Service. A nil logger defaults to slog.Default; a nil CancelFlags defaults to a no-op
+// that reports nothing cancelled.
 func New(deps Deps) *Service {
 	if deps.Logger == nil {
 		deps.Logger = slog.Default()
+	}
+	if deps.CancelFlags == nil {
+		deps.CancelFlags = noopCancelFlags{}
 	}
 	return &Service{deps: deps}
 }
@@ -128,6 +148,27 @@ func (s *Service) handler(b *bind) kafka.Handler {
 		routed, err := pipeline.DecodeRouted(rec)
 		if err != nil {
 			return fmt.Errorf("connectorpool: decode mt.routed: %w", err)
+		}
+
+		// A cancel_sm may have flagged this message before it reached the SMSC. Redis is best-effort
+		// here: cancellation is itself best-effort (an already-dispatched message cannot be recalled), so
+		// a flag-read failure fails OPEN — we log and dispatch rather than halt all outbound delivery on a
+		// Redis outage.
+		cancelled, err := s.deps.CancelFlags.Exists(ctx, routed.MessageID)
+		if err != nil {
+			s.deps.Logger.WarnContext(ctx, "connector: cancel-flag check failed, dispatching anyway",
+				"message_id", routed.MessageID, "err", err)
+		} else if cancelled {
+			// Honour the cancel: record the cancelled outcome and commit without submitting. Writing the
+			// row here (not only in the Canceller) is what makes the skip safe: it is idempotent under
+			// ReplacingMergeTree (rank 60, collapsing with the Canceller's row) and closes the window where
+			// the Canceller crashed after flagging but before writing the row — otherwise the message would
+			// be neither sent nor recorded, leaving the CDR stuck on accepted.
+			if err := s.deps.CDR.Insert(ctx, cancelledRow(routed)); err != nil {
+				return fmt.Errorf("connectorpool: write cancelled cdr: %w", err)
+			}
+			s.deps.Logger.InfoContext(ctx, "connector: message cancelled before dispatch", "message_id", routed.MessageID)
+			return nil
 		}
 
 		resp, err := b.Submit(ctx, buildSubmit(routed))
@@ -236,6 +277,27 @@ func cdrRow(r pipeline.RoutedMT, resp smpp.PDU) clickhouse.CDRRow {
 		SubmittedAt:  r.SubmittedAt,
 		Status:       status,
 		ErrorCode:    errorCode,
+		SegmentCount: segmentCount(r.SegmentCount),
+		Encoding:     clickhouse.EncodingOf(r.Encoding),
+		Billed:       false,
+	}
+}
+
+// cancelledRow builds the cancelled CDR row (rank 60) for a message a cancel_sm flagged before
+// dispatch. It mirrors cdrRow's identifier projection but records no connector outcome (the message
+// was never submitted). It is written in addition to the Canceller's own row: idempotent under
+// ReplacingMergeTree (same ORDER BY key and rank), it closes the crash window between flag and row.
+func cancelledRow(r pipeline.RoutedMT) clickhouse.CDRRow {
+	return clickhouse.CDRRow{
+		MessageID:    r.MessageID,
+		TraceID:      r.TraceID,
+		AccountID:    r.AccountID,
+		CustomerID:   r.CustomerID,
+		Direction:    clickhouse.DirectionMT,
+		SourceAddr:   r.From,
+		DestAddr:     r.To,
+		SubmittedAt:  r.SubmittedAt,
+		Status:       clickhouse.StatusCancelled,
 		SegmentCount: segmentCount(r.SegmentCount),
 		Encoding:     clickhouse.EncodingOf(r.Encoding),
 		Billed:       false,

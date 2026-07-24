@@ -160,30 +160,6 @@ paths:
         '422': { $ref: '#/components/responses/ValidationError' }
         '500': { $ref: '#/components/responses/InternalError' }
 
-  /messages/{id}/cancel:
-    post:
-      tags: [Messages]
-      summary: Cancel a queued (not-yet-dispatched) message
-      description: |
-        Cancels a message that has not yet been submitted to the SMSC. If it has already been dispatched,
-        the request fails with `409` (equivalent to SMPP `ESME_RCANCELFAIL`).
-      operationId: cancel-message
-      parameters:
-        - $ref: '#/components/parameters/MessageId'
-      responses:
-        '200':
-          description: Cancelled.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Message' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '409':
-          description: Already dispatched — cannot cancel.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Error' }
-
   /account:
     get:
       tags: [Account]

@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
@@ -62,6 +63,14 @@ type BindThrottle interface {
 // identically (protocol parity).
 type Ingestor interface {
 	Accept(ctx context.Context, env pipeline.InboundMT) error
+}
+
+// Canceller cancels a not-yet-dispatched message for a cancel_sm, scoped to the bind's account.
+// *cancel.Canceller satisfies it. It returns a platform error whose SMPP surface the caller maps once
+// via errs.SMPPStatusForError (an unknown message → ESME_RINVMSGID, an already-dispatched one →
+// ESME_RCANCELFAIL); a nil error is a successful cancel (ESME_ROK).
+type Canceller interface {
+	Cancel(ctx context.Context, customerID, accountID, messageID uuid.UUID) error
 }
 
 // registryCallTimeout bounds a single registry RPC on the session-token lifecycle path: the periodic
@@ -112,6 +121,10 @@ type Options struct {
 	// unauthenticated peer can pin — in particular under the throttle's tarpit backoff. Zero uses
 	// defaultMaxConns. It is a hard ceiling: beyond it, new connections wait in the kernel backlog.
 	MaxConns int
+	// Canceller cancels a not-yet-dispatched message for an enabled cancel_sm. Nil rejects every
+	// enabled cancel_sm with ESME_RCANCELFAIL (bind-only tests leave it nil); production wiring passes
+	// a *cancel.Canceller.
+	Canceller Canceller
 }
 
 // Listener accepts SMPP connections and drives each through an authenticated bind. Construct it with

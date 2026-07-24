@@ -4,10 +4,28 @@ import (
 	"context"
 	"testing"
 
+	"github.com/google/uuid"
+
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 	"github.com/martialanouman/go-gateway/internal/smpp"
 	"github.com/martialanouman/go-gateway/internal/smpp/session"
 )
+
+// fakeCanceller records the scope it was called with and returns a fixed error, standing in for the
+// shared *cancel.Canceller.
+type fakeCanceller struct {
+	err        error
+	called     bool
+	customerID uuid.UUID
+	accountID  uuid.UUID
+	messageID  uuid.UUID
+}
+
+func (f *fakeCanceller) Cancel(_ context.Context, customerID, accountID, messageID uuid.UUID) error {
+	f.called = true
+	f.customerID, f.accountID, f.messageID = customerID, accountID, messageID
+	return f.err
+}
 
 func TestOnQueryToggle(t *testing.T) {
 	l := New(nil, nil, nil, Options{}, discardLog())
@@ -37,22 +55,88 @@ func TestOnQueryToggle(t *testing.T) {
 	})
 }
 
-func TestOnCancelToggle(t *testing.T) {
+func TestOnCancelDisabledIsInvalidCmdID(t *testing.T) {
+	l := New(nil, nil, nil, Options{Canceller: &fakeCanceller{}}, discardLog())
+
+	res := l.onCancel(context.Background(), &connState{cancelSMEnabled: false})(
+		context.Background(), session.CancelRequest{MessageID: uuid.NewString()})
+	if res.Status != errs.StatusInvalidCmdID {
+		t.Errorf("status = %#x, want ESME_RINVCMDID (%#x)", res.Status, errs.StatusInvalidCmdID)
+	}
+}
+
+// TestOnCancelNilCancellerFails pins the fail-closed fallback: cancel_sm enabled on the account but no
+// Canceller wired (bind-only build) rejects with ESME_RCANCELFAIL rather than silently acking.
+func TestOnCancelNilCancellerFails(t *testing.T) {
 	l := New(nil, nil, nil, Options{}, discardLog())
 
-	t.Run("disabled is ESME_RINVCMDID", func(t *testing.T) {
-		res := l.onCancel(context.Background(), &connState{cancelSMEnabled: false})(
-			context.Background(), session.CancelRequest{MessageID: "m1"})
-		if res.Status != errs.StatusInvalidCmdID {
-			t.Errorf("status = %#x, want ESME_RINVCMDID (%#x)", res.Status, errs.StatusInvalidCmdID)
-		}
-	})
+	res := l.onCancel(context.Background(), &connState{cancelSMEnabled: true})(
+		context.Background(), session.CancelRequest{MessageID: uuid.NewString()})
+	if res.Status != errs.StatusCancelFail {
+		t.Errorf("status = %#x, want ESME_RCANCELFAIL (%#x)", res.Status, errs.StatusCancelFail)
+	}
+}
 
-	t.Run("enabled is a skeleton OK", func(t *testing.T) {
-		res := l.onCancel(context.Background(), &connState{cancelSMEnabled: true})(
-			context.Background(), session.CancelRequest{MessageID: "m1"})
-		if res.Status != smpp.StatusOK {
-			t.Errorf("status = %#x, want StatusOK", res.Status)
-		}
-	})
+// TestOnCancelMapsCancellerOutcome pins that the Canceller's domain error is mapped once to its SMPP
+// command_status, and that a nil error is ESME_ROK.
+func TestOnCancelMapsCancellerOutcome(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want uint32
+	}{
+		{"queued cancels", nil, smpp.StatusOK},
+		{"already dispatched", errs.ErrCancelFailed, errs.StatusCancelFail},
+		{"unknown message", errs.ErrMessageNotFound, errs.StatusInvalidMsgID},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fc := &fakeCanceller{err: tc.err}
+			l := New(nil, nil, nil, Options{Canceller: fc}, discardLog())
+
+			res := l.onCancel(context.Background(), &connState{cancelSMEnabled: true})(
+				context.Background(), session.CancelRequest{MessageID: uuid.NewString()})
+			if res.Status != tc.want {
+				t.Errorf("status = %#x, want %#x", res.Status, tc.want)
+			}
+			if !fc.called {
+				t.Error("Canceller was not invoked")
+			}
+		})
+	}
+}
+
+// TestOnCancelScopesToBindAccount pins that the cancel is scoped to the bound connection's account
+// (invariant: a bind cannot cancel another account's message), and that the message_id is parsed and
+// forwarded verbatim.
+func TestOnCancelScopesToBindAccount(t *testing.T) {
+	fc := &fakeCanceller{}
+	l := New(nil, nil, nil, Options{Canceller: fc}, discardLog())
+	st := &connState{cancelSMEnabled: true, accountID: uuid.New(), customerID: uuid.New()}
+	msgID := uuid.New()
+
+	l.onCancel(context.Background(), st)(context.Background(), session.CancelRequest{MessageID: msgID.String()})
+
+	if fc.accountID != st.accountID || fc.customerID != st.customerID {
+		t.Errorf("scope = (cust %s, acct %s), want (cust %s, acct %s)", fc.customerID, fc.accountID, st.customerID, st.accountID)
+	}
+	if fc.messageID != msgID {
+		t.Errorf("message id = %s, want %s", fc.messageID, msgID)
+	}
+}
+
+// TestOnCancelRejectsMalformedMessageID pins that a message_id that is not a UUID is answered
+// ESME_RINVMSGID without ever calling the Canceller (it names no message).
+func TestOnCancelRejectsMalformedMessageID(t *testing.T) {
+	fc := &fakeCanceller{}
+	l := New(nil, nil, nil, Options{Canceller: fc}, discardLog())
+
+	res := l.onCancel(context.Background(), &connState{cancelSMEnabled: true})(
+		context.Background(), session.CancelRequest{MessageID: "not-a-uuid"})
+	if res.Status != errs.StatusInvalidMsgID {
+		t.Errorf("status = %#x, want ESME_RINVMSGID (%#x)", res.Status, errs.StatusInvalidMsgID)
+	}
+	if fc.called {
+		t.Error("Canceller must not be called for a malformed message_id")
+	}
 }

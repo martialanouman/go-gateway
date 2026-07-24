@@ -19,12 +19,14 @@ import (
 
 	"github.com/caarlos0/env/v11"
 
+	"github.com/martialanouman/go-gateway/internal/cancel"
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/connectorpool"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/platform/supervisor"
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
+	redisstore "github.com/martialanouman/go-gateway/internal/storage/redis"
 )
 
 const serviceName = "connector-pool-svc"
@@ -53,7 +55,8 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
 
-	cfg, err := config.Load(serviceName, config.SectionOTel, config.SectionKafka, config.SectionClickHouse)
+	cfg, err := config.Load(serviceName,
+		config.SectionOTel, config.SectionKafka, config.SectionClickHouse, config.SectionRedis)
 	if err != nil {
 		return err
 	}
@@ -88,10 +91,22 @@ func run() error {
 	}
 	defer consumer.Close()
 
+	// Redis backs the cancel-flag check before each submit_sm: a cancel_sm on smpp-server-svc flags a
+	// message here so it is not dispatched. NewClient pings eagerly, so Redis must be reachable at boot
+	// (a startup outage crash-loops the pod, as everywhere else). At RUNTIME it is deliberately NOT a
+	// readiness dependency and the flag check fails OPEN (connectorpool.handler): a Redis outage lets
+	// delivery continue rather than halting all outbound traffic — cancellation is best-effort.
+	rdb, err := redisstore.NewClient(ctx, cfg.Redis)
+	if err != nil {
+		return fmt.Errorf("connect redis: %w", err)
+	}
+	defer func() { _ = rdb.Close() }()
+
 	tracer := observability.Tracer(nil, serviceName)
 	svc := connectorpool.New(connectorpool.Deps{
-		Consumer: consumer,
-		CDR:      clickhouse.NewCDRWriter(chConn),
+		Consumer:    consumer,
+		CDR:         clickhouse.NewCDRWriter(chConn),
+		CancelFlags: cancel.NewRedisFlags(rdb),
 		Bind: connectorpool.BindConfig{
 			Addr:                 bindEnv.Addr,
 			SystemID:             bindEnv.SystemID,
