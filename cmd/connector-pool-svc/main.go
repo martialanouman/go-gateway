@@ -22,6 +22,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/cancel"
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/connectorpool"
+	"github.com/martialanouman/go-gateway/internal/dlrmap"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/platform/supervisor"
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
@@ -107,6 +108,7 @@ func run() error {
 		Consumer:    consumer,
 		CDR:         clickhouse.NewCDRWriter(chConn),
 		CancelFlags: cancel.NewRedisFlags(rdb),
+		DLRMap:      dlrmap.NewRedisMap(rdb),
 		Bind: connectorpool.BindConfig{
 			Addr:                 bindEnv.Addr,
 			SystemID:             bindEnv.SystemID,

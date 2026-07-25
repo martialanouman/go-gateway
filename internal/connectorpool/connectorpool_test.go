@@ -50,6 +50,104 @@ func (f *fakeFlags) Exists(_ context.Context, _ uuid.UUID) (bool, error) {
 	return f.cancelled, f.err
 }
 
+// dlrPut is one recorded DLRMap.Put call.
+type dlrPut struct {
+	connectorID    uuid.UUID
+	smscMsgID      string
+	messageID      uuid.UUID
+	traceID        uuid.UUID
+	validityPeriod *string
+}
+
+// fakeDLRMap records the mappings the connector writes, so a test can assert a successful submit is
+// remembered. A non-nil err drives the best-effort failure path.
+type fakeDLRMap struct {
+	puts []dlrPut
+	err  error
+}
+
+func (f *fakeDLRMap) Put(_ context.Context, connectorID uuid.UUID, smscMsgID string, messageID, traceID uuid.UUID, validityPeriod *string) error {
+	f.puts = append(f.puts, dlrPut{connectorID, smscMsgID, messageID, traceID, validityPeriod})
+	return f.err
+}
+
+// runWithDLRMap drives one record through the connector with a DLR map wired, returning the CDR sink
+// and Run's error.
+func runWithDLRMap(t *testing.T, dlr connectorpool.DLRMap, resp func(smpp.SubmitSM) fakesmsc.Resp, r pipeline.RoutedMT) (*fakeCDR, error) {
+	t.Helper()
+	smsc := fakesmsc.Start(t, fakesmsc.Config{OnSubmit: resp})
+	rec, err := pipeline.EncodeRouted(r)
+	if err != nil {
+		t.Fatalf("encode routed: %v", err)
+	}
+	cdr := &fakeCDR{}
+	rrec := otelrec.New(t)
+	svc := connectorpool.New(connectorpool.Deps{
+		Consumer: &fakeConsumer{records: []kafka.Record{rec}},
+		CDR:      cdr,
+		DLRMap:   dlr,
+		Bind: connectorpool.BindConfig{
+			Addr: smsc.Addr(), SystemID: "esme", Password: "pw",
+			DialTimeout: 3 * time.Second, ResponseTimeout: 3 * time.Second,
+			EnquireLinkInterval: time.Minute, EnquireLinkMaxMissed: 3, WindowSize: 10,
+		},
+		Tracer: observability.Tracer(rrec.Provider(), "connector-pool"),
+	})
+	return cdr, svc.Run(context.Background())
+}
+
+// TestConnectorRecordsDLRMappingOnEnroute: a successful submit records smsc_msg_id -> message_id, with
+// the connector id and trace id, so a later receipt can be correlated (step-044). The fake SMSC
+// assigns "0000000000000001" as its first message id.
+func TestConnectorRecordsDLRMappingOnEnroute(t *testing.T) {
+	r := routed()
+	dlr := &fakeDLRMap{}
+	_, err := runWithDLRMap(t, dlr, func(smpp.SubmitSM) fakesmsc.Resp { return fakesmsc.OK() }, r)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(dlr.puts) != 1 {
+		t.Fatalf("expected 1 DLR mapping, got %d", len(dlr.puts))
+	}
+	got := dlr.puts[0]
+	if got.connectorID != r.ConnectorID || got.messageID != r.MessageID || got.traceID != r.TraceID {
+		t.Errorf("mapping ids = %+v, want connector %s / message %s / trace %s",
+			got, r.ConnectorID, r.MessageID, r.TraceID)
+	}
+	if got.smscMsgID != "0000000000000001" {
+		t.Errorf("smsc_msg_id = %q, want 0000000000000001", got.smscMsgID)
+	}
+}
+
+// TestConnectorSkipsDLRMappingOnFailedSubmit: a permanent SMSC rejection has no smsc_msg_id and is not
+// enroute, so no mapping is recorded.
+func TestConnectorSkipsDLRMappingOnFailedSubmit(t *testing.T) {
+	dlr := &fakeDLRMap{}
+	cdr, err := runWithDLRMap(t, dlr, func(smpp.SubmitSM) fakesmsc.Resp { return fakesmsc.SubmitFailed() }, routed())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(cdr.rows) != 1 || cdr.rows[0].Status != clickhouse.StatusFailed {
+		t.Fatalf("expected one failed CDR row, got %+v", cdr.rows)
+	}
+	if len(dlr.puts) != 0 {
+		t.Errorf("a failed submit must record no DLR mapping, got %+v", dlr.puts)
+	}
+}
+
+// TestConnectorDLRMappingWriteIsBestEffort: a Redis failure writing the mapping must NOT fail the
+// record — the message is already enroute, so Run commits and the enroute row still stands.
+func TestConnectorDLRMappingWriteIsBestEffort(t *testing.T) {
+	dlr := &fakeDLRMap{err: errors.New("redis down")}
+	cdr, err := runWithDLRMap(t, dlr, func(smpp.SubmitSM) fakesmsc.Resp { return fakesmsc.OK() }, routed())
+	if err != nil {
+		t.Fatalf("Run must commit despite a DLR-map write failure: %v", err)
+	}
+	if len(cdr.rows) != 1 || cdr.rows[0].Status != clickhouse.StatusEnroute {
+		t.Errorf("expected one enroute row, got %+v", cdr.rows)
+	}
+}
+
 func routed() pipeline.RoutedMT {
 	return pipeline.RoutedMT{
 		MessageID: uuid.New(), TraceID: uuid.New(), AccountID: uuid.New(), CustomerID: uuid.New(),

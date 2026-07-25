@@ -40,7 +40,7 @@ Légende : `[x]` = fait (dans `tasks-done/`) · `[ ]` = à faire (dans `tasks-to
 ## M4 — Voie retour MO/DLR + webhooks + numéros entrants
 - [x] step-040 — Numéros entrants : repo + Admin (CRUD + assign)
 - [x] step-041 — Mots-clés entrants : repo + Admin (CRUD)
-- [ ] step-042 — Mapping de corrélation DLR à l'envoi (dlrmap Redis, §1.11)
+- [x] step-042 — Mapping de corrélation DLR à l'envoi (dlrmap Redis, §1.11)
 - [ ] step-043 — Réception deliver_sm : classification MO vs DLR → mo.inbound / dlr.events
 - [ ] step-044 — mo-dlr-router-svc : squelette + corrélation DLR → CDR
 - [ ] step-045 — Résolution MO (dédié / mot-clé / non routé) + list-unrouted-mo
