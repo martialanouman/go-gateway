@@ -945,6 +945,8 @@ paths:
       operationId: list-inbound-numbers
       responses:
         '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/InboundNumber' } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
     post:
       tags: [Inbound Numbers]
       summary: Create an inbound number
@@ -953,6 +955,9 @@ paths:
       responses:
         '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/InboundNumber' } } } }
         '422': { $ref: '#/components/responses/ValidationError' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /admin/inbound-numbers/{id}:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
     patch:
@@ -963,6 +968,9 @@ paths:
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/InboundNumber' } } } }
         '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
     delete:
       tags: [Inbound Numbers]
       summary: Delete an inbound number
@@ -970,6 +978,8 @@ paths:
       responses:
         '204': { description: Deleted. }
         '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /admin/inbound-numbers/{id}/assign:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
     patch:
@@ -979,6 +989,10 @@ paths:
       requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { account_id: { type: [string, "null"], format: uuid } }, required: [account_id] } } } }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/InboundNumber' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /admin/inbound-numbers/{id}/keywords:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
     get:

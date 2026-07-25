@@ -46,6 +46,8 @@ request:
       value: 00000000-0000-0000-0000-000000000000
     - name: routeId
       value: 00000000-0000-0000-0000-000000000000
+    - name: inboundNumberId
+      value: 00000000-0000-0000-0000-000000000000
 items:
   - info:
       name: Customers
@@ -499,3 +501,72 @@ items:
           method: DELETE
           url: '{{baseUrl}}/admin/routes/{{routeId}}'
         docs: Delete a route (scope admin:write).
+  - info:
+      name: Inbound Numbers
+      type: folder
+    items:
+      - info:
+          name: list-inbound-numbers
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/inbound-numbers'
+        docs: List inbound numbers (scope admin:read).
+      - info:
+          name: create-inbound-number
+          type: http
+        http:
+          method: POST
+          url: '{{baseUrl}}/admin/inbound-numbers'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "address": "36000",
+                "number_type": "shortcode",
+                "country_code": "FR",
+                "connector_id": "{{connectorId}}"
+              }
+        docs: Create an inbound number (scope admin:write).
+      - info:
+          name: update-inbound-number
+          type: http
+        http:
+          method: PATCH
+          url: '{{baseUrl}}/admin/inbound-numbers/{{inboundNumberId}}'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "status": "disabled"
+              }
+        docs: Update an inbound number (scope admin:write).
+      - info:
+          name: delete-inbound-number
+          type: http
+        http:
+          method: DELETE
+          url: '{{baseUrl}}/admin/inbound-numbers/{{inboundNumberId}}'
+        docs: Delete an inbound number (scope admin:write).
+      - info:
+          name: assign-inbound-number
+          type: http
+        http:
+          method: PATCH
+          url: '{{baseUrl}}/admin/inbound-numbers/{{inboundNumberId}}/assign'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "account_id": "{{accountId}}"
+              }
+        docs: Assign an inbound number to an account, or clear to shared (scope admin:write).

@@ -38,7 +38,7 @@ Légende : `[x]` = fait (dans `tasks-done/`) · `[ ]` = à faire (dans `tasks-to
 - [x] step-032 — Déconnexion forcée des sessions SMPP (fin de grâce, révocation, suspension)
 
 ## M4 — Voie retour MO/DLR + webhooks + numéros entrants
-- [ ] step-040 — Numéros entrants : repo + Admin (CRUD + assign)
+- [x] step-040 — Numéros entrants : repo + Admin (CRUD + assign)
 - [ ] step-041 — Mots-clés entrants : repo + Admin (CRUD)
 - [ ] step-042 — Mapping de corrélation DLR à l'envoi (dlrmap Redis, §1.11)
 - [ ] step-043 — Réception deliver_sm : classification MO vs DLR → mo.inbound / dlr.events

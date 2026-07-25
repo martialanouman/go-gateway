@@ -24,9 +24,9 @@ Gérer les numéros entrants (dédiés/partagés) via l'Admin API : socle de la 
 - Test de synchro collection.
 
 ## Definition of Done
-- [ ] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts
-- [ ] critères couverts par tests · godoc sur l'exporté · aucun invariant (a/b/c/d) violé
-- [ ] `api/collections/admin-api.yaml` synchronisé
+- [x] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts
+- [x] critères couverts par tests · godoc sur l'exporté · aucun invariant (a/b/c/d) violé
+- [x] `api/collections/admin-api.yaml` synchronisé
 
 ## Hors périmètre
 Mots-clés entrants (step-041) ; résolution MO en runtime (step-045).
