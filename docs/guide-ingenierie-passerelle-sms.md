@@ -328,6 +328,8 @@ Chaque erreur de domaine a exactement un statut HTTP et un `command_status` SMPP
 | `internal_error` | 500 | `ESME_RSYSERR` (0x08) | Panne inattendue | Oui (backoff, idempotent) |
 | `service_unavailable` | 503 | `ESME_RSYSERR` (0x08) | Dépendance dégradée fail-closed (§6.4/§6.9) | Oui (backoff) |
 | `submit_failed` | — (issue sortante) | `ESME_RSUBMITFAIL` (0x45) | Le SMSC a rejeté le `submit_sm` — enregistré dans `cdr.error_code`, pas une erreur de requête REST | Non |
+| `delivery_failed` | — (issue sortante) | — | Un accusé de réception rapporte le message comme non délivrable (message_state UNDELIV/DELETED/REJECTD) — enregistré dans `cdr.error_code` | Non |
+| `delivery_expired` | — (issue sortante) | — | Un accusé de réception rapporte l'expiration du message avant remise (message_state EXPIRED) — enregistré dans `cdr.error_code` | Non |
 
 ### 11.4 Rejouabilité et idempotence
 

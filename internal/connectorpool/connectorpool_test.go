@@ -55,11 +55,8 @@ func (f *fakeFlags) Exists(_ context.Context, _ uuid.UUID) (bool, error) {
 
 // dlrPut is one recorded DLRMap.Put call.
 type dlrPut struct {
-	connectorID    uuid.UUID
-	smscMsgID      string
-	messageID      uuid.UUID
-	traceID        uuid.UUID
-	validityPeriod *string
+	smscMsgID string
+	routed    pipeline.RoutedMT
 }
 
 // fakeDLRMap records the mappings the connector writes, so a test can assert a successful submit is
@@ -69,8 +66,8 @@ type fakeDLRMap struct {
 	err  error
 }
 
-func (f *fakeDLRMap) Put(_ context.Context, connectorID uuid.UUID, smscMsgID string, messageID, traceID uuid.UUID, validityPeriod *string) error {
-	f.puts = append(f.puts, dlrPut{connectorID, smscMsgID, messageID, traceID, validityPeriod})
+func (f *fakeDLRMap) Put(_ context.Context, smscMsgID string, r pipeline.RoutedMT) error {
+	f.puts = append(f.puts, dlrPut{smscMsgID, r})
 	return f.err
 }
 
@@ -113,9 +110,11 @@ func TestConnectorRecordsDLRMappingOnEnroute(t *testing.T) {
 		t.Fatalf("expected 1 DLR mapping, got %d", len(dlr.puts))
 	}
 	got := dlr.puts[0]
-	if got.connectorID != r.ConnectorID || got.messageID != r.MessageID || got.traceID != r.TraceID {
-		t.Errorf("mapping ids = %+v, want connector %s / message %s / trace %s",
-			got, r.ConnectorID, r.MessageID, r.TraceID)
+	// The full routed envelope (the CDR projection step-044 needs) travels with the mapping.
+	if got.routed.MessageID != r.MessageID || got.routed.ConnectorID != r.ConnectorID ||
+		got.routed.AccountID != r.AccountID || got.routed.CustomerID != r.CustomerID {
+		t.Errorf("mapping routed = %+v, want message %s / connector %s / account %s / customer %s",
+			got.routed, r.MessageID, r.ConnectorID, r.AccountID, r.CustomerID)
 	}
 	if got.smscMsgID != "0000000000000001" {
 		t.Errorf("smsc_msg_id = %q, want 0000000000000001", got.smscMsgID)

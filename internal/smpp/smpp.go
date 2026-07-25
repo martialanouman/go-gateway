@@ -45,10 +45,21 @@ const (
 	CmdEnquireLinkResp     CommandID = 0x80000015
 )
 
-// MessageStateUnknown is the query_sm_resp message_state for a message whose state the server cannot
-// resolve (SMPP v3.4 §5.2.28). Valid message_state values run 1..8; 0 is undefined, so UNKNOWN (7) is
-// the honest answer while the real state lookup is unimplemented.
-const MessageStateUnknown uint8 = 7
+// The SMPP v3.4 message_state values (§5.2.28), carried in a delivery receipt's message_state TLV and
+// in a query_sm_resp. States 1, 6 and 7 are non-terminal (the message is still in flight or its state
+// is unknown); 2 is the success terminal; 3/4/5/8 are failure terminals.
+const (
+	MessageStateEnroute       uint8 = 1
+	MessageStateDelivered     uint8 = 2
+	MessageStateExpired       uint8 = 3
+	MessageStateDeleted       uint8 = 4
+	MessageStateUndeliverable uint8 = 5
+	MessageStateAccepted      uint8 = 6
+	// MessageStateUnknown is the honest answer for a message whose state the server cannot resolve. It
+	// is also the query_sm_resp default while the real state lookup is unimplemented.
+	MessageStateUnknown  uint8 = 7
+	MessageStateRejected uint8 = 8
+)
 
 // StatusOK is command_status ESME_ROK: success, and the only status a request ever carries. The
 // error command_status values live in internal/platform/errors, which owns the mapping between a

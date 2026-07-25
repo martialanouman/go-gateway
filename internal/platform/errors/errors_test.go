@@ -103,6 +103,29 @@ func TestCatalogueMatchesSpec(t *testing.T) {
 	}
 }
 
+// TestOutcomeOnlyCodes pins the wire form of the CDR outcome codes that reach neither REST nor SMPP
+// (a delivery receipt is not a command response). They are deliberately bare constants, NOT catalogue
+// entries — TestEveryCodeReachesASurface would reject a code that maps nowhere — so this guards their
+// snake_case string against a typo or a drift from the guide §11.3 rows.
+func TestOutcomeOnlyCodes(t *testing.T) {
+	cases := []struct {
+		code errs.Code
+		want string
+	}{
+		{errs.ErrDeliveryFailed, "delivery_failed"},
+		{errs.ErrDeliveryExpired, "delivery_expired"},
+	}
+	for _, c := range cases {
+		if string(c.code) != c.want {
+			t.Errorf("code = %q, want %q", c.code, c.want)
+		}
+		// These outcome codes are intentionally outside the catalogue (no HTTP/SMPP surface).
+		if _, ok := errs.Map(c.code); ok {
+			t.Errorf("%q must not be a catalogue entry (it reaches no surface)", c.code)
+		}
+	}
+}
+
 // TestCodeFromSMPPStatus pins the outcome-side reverse mapping the connector records in
 // cdr.error_code: every result is a published contract code, never an ad-hoc string.
 func TestCodeFromSMPPStatus(t *testing.T) {

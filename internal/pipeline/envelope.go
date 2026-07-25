@@ -86,11 +86,15 @@ type MOInbound struct {
 // metadata — so there is no Body field. ReceivedAt is when the connector processed the receipt.
 //
 // DELIVERY GUARANTEE (consumers must handle both): (1) At-least-once — the same receipt may be
-// published twice (a crash between publish and ack, then the SMSC retries), so dedup on
-// (SMSCMessageID, State). (2) No ordering — the connector publishes with a bounded worker pool, so two
-// receipts for the same SMSCMessageID (an intermediate then a final state) may arrive out of order
-// even on the same partition. The consumer (step-044) must apply state monotonically (never let an
-// earlier state overwrite a more advanced one), not trust arrival order.
+// published twice (a crash between publish and ack, then the SMSC retries). (2) No ordering — the
+// connector publishes with a bounded worker pool, so receipts for one SMSCMessageID may arrive out of
+// order even on the same partition. The DLR consumer (step-044) absorbs both through the CDR itself:
+// each terminal receipt writes a versioned row whose ReplacingMergeTree rank decides the current
+// state, so a duplicate same-state receipt collapses idempotently and a non-terminal receipt never
+// supersedes a terminal one. Distinct terminal states (delivered vs failed/expired) are mutually
+// exclusive for a well-behaved message; if an anomalous out-of-order pair ever occurred, the CDR rank
+// (not arrival order) decides — a composite-rank refinement making delivered sticky is deferred (the
+// CDR schema anticipates widening the rank at M4+).
 type DLREvent struct {
 	ConnectorID   uuid.UUID
 	SMSCMessageID string

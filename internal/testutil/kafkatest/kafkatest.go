@@ -28,7 +28,10 @@ const image = "redpandadata/redpanda:v24.2.18"
 
 // topics are pre-created with several partitions so partition keying (mt.routed keyed by logical
 // message id, §7.3) is actually exercised rather than degenerating to a single partition.
-var topics = []string{kafka.TopicMTInbound, kafka.TopicMTRouted}
+var topics = []string{
+	kafka.TopicMTInbound, kafka.TopicMTRouted,
+	kafka.TopicMOInbound, kafka.TopicDLREvents,
+}
 
 const (
 	topicPartitions   = 4
