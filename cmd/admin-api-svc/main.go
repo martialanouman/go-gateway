@@ -97,15 +97,16 @@ func run() error {
 	defer func() { _ = registryConn.Close() }()
 
 	router, _ := adminapi.New(adminapi.Deps{
-		Customers:    postgres.NewCustomerRepo(pool),
-		Accounts:     postgres.NewAccountRepo(pool),
-		Credentials:  postgres.NewCredentialRepo(pool),
-		Connectors:   postgres.NewConnectorRepo(pool),
-		Routes:       postgres.NewRouteRepo(pool),
-		SenderIDs:    postgres.NewSenderIDRepo(pool),
-		Disconnector: adminapi.NewGRPCDisconnector(registrypb.NewSessionRegistryClient(registryConn)),
-		Verifier:     verifier,
-		Logger:       logger,
+		Customers:      postgres.NewCustomerRepo(pool),
+		Accounts:       postgres.NewAccountRepo(pool),
+		Credentials:    postgres.NewCredentialRepo(pool),
+		Connectors:     postgres.NewConnectorRepo(pool),
+		Routes:         postgres.NewRouteRepo(pool),
+		SenderIDs:      postgres.NewSenderIDRepo(pool),
+		InboundNumbers: postgres.NewInboundNumberRepo(pool),
+		Disconnector:   adminapi.NewGRPCDisconnector(registrypb.NewSessionRegistryClient(registryConn)),
+		Verifier:       verifier,
+		Logger:         logger,
 	})
 
 	srv := &http.Server{

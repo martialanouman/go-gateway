@@ -73,6 +73,18 @@ type SenderIDStore interface {
 	Delete(ctx context.Context, customerID, senderID uuid.UUID) error
 }
 
+// InboundNumberStore is the persistence the inbound-number handlers need. List returns a bare slice
+// (the contract does not paginate). There is no Get: the contract has no get-inbound-number. Assign
+// dedicates the number to an account, or clears it (nil = shared) — a dedicated method because a nil
+// account_id means "set NULL", not "leave unchanged".
+type InboundNumberStore interface {
+	Create(ctx context.Context, in cp.NewInboundNumber) (cp.InboundNumber, error)
+	List(ctx context.Context) ([]cp.InboundNumber, error)
+	Update(ctx context.Context, id uuid.UUID, p cp.InboundNumberPatch) (cp.InboundNumber, error)
+	Delete(ctx context.Context, id uuid.UUID) error
+	Assign(ctx context.Context, id uuid.UUID, accountID *uuid.UUID) (cp.InboundNumber, error)
+}
+
 // Disconnector force-closes the live SMPP sessions whose authorization has ceased (a revoked or
 // disabled credential, a suspended account or customer), so a control-plane change reaches sessions
 // already bound (step-032). It is best-effort: the control-plane mutation is authoritative and must
@@ -88,13 +100,14 @@ type Disconnector interface {
 // New tolerates a nil store (the contract test builds the API without any), but a running server
 // wires them all.
 type Deps struct {
-	Customers    CustomerStore
-	Accounts     AccountStore
-	Credentials  CredentialStore
-	Connectors   ConnectorStore
-	Routes       RouteStore
-	SenderIDs    SenderIDStore
-	Disconnector Disconnector
-	Verifier     auth.TokenVerifier
-	Logger       *slog.Logger
+	Customers      CustomerStore
+	Accounts       AccountStore
+	Credentials    CredentialStore
+	Connectors     ConnectorStore
+	Routes         RouteStore
+	SenderIDs      SenderIDStore
+	InboundNumbers InboundNumberStore
+	Disconnector   Disconnector
+	Verifier       auth.TokenVerifier
+	Logger         *slog.Logger
 }

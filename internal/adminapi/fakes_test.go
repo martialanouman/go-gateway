@@ -554,3 +554,92 @@ func (s *fakeSenderIDStore) Delete(_ context.Context, customerID, senderID uuid.
 	delete(s.byID, senderID)
 	return nil
 }
+
+// fakeInboundNumberStore is an in-memory InboundNumberStore for handler unit tests. createErr drives
+// the 409/422 paths; Assign stores the pointer as given so a nil (clear to shared) is observable.
+type fakeInboundNumberStore struct {
+	mu        sync.Mutex
+	byID      map[uuid.UUID]cp.InboundNumber
+	createErr error
+}
+
+func newFakeInboundNumberStore() *fakeInboundNumberStore {
+	return &fakeInboundNumberStore{byID: map[uuid.UUID]cp.InboundNumber{}}
+}
+
+func (s *fakeInboundNumberStore) Create(_ context.Context, in cp.NewInboundNumber) (cp.InboundNumber, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.createErr != nil {
+		return cp.InboundNumber{}, s.createErr
+	}
+	n := cp.InboundNumber{
+		ID:          uuid.New(),
+		Address:     in.Address,
+		NumberType:  in.NumberType,
+		CountryCode: in.CountryCode,
+		MCCMNC:      in.MCCMNC,
+		ConnectorID: in.ConnectorID,
+		AccountID:   in.AccountID,
+		Status:      cp.InboundNumberActive,
+	}
+	s.byID[n.ID] = n
+	return n, nil
+}
+
+func (s *fakeInboundNumberStore) List(_ context.Context) ([]cp.InboundNumber, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]cp.InboundNumber, 0, len(s.byID))
+	for _, n := range s.byID {
+		out = append(out, n)
+	}
+	return out, nil
+}
+
+func (s *fakeInboundNumberStore) Update(_ context.Context, id uuid.UUID, p cp.InboundNumberPatch) (cp.InboundNumber, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n, ok := s.byID[id]
+	if !ok {
+		return cp.InboundNumber{}, errs.ErrNotFound
+	}
+	if p.NumberType != nil {
+		n.NumberType = *p.NumberType
+	}
+	if p.MCCMNC != nil {
+		n.MCCMNC = p.MCCMNC
+	}
+	if p.ConnectorID != nil {
+		n.ConnectorID = p.ConnectorID
+	}
+	if p.Status != nil {
+		n.Status = *p.Status
+	}
+	s.byID[id] = n
+	return n, nil
+}
+
+func (s *fakeInboundNumberStore) Delete(_ context.Context, id uuid.UUID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.byID[id]; !ok {
+		return errs.ErrNotFound
+	}
+	delete(s.byID, id)
+	return nil
+}
+
+func (s *fakeInboundNumberStore) Assign(_ context.Context, id uuid.UUID, accountID *uuid.UUID) (cp.InboundNumber, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n, ok := s.byID[id]
+	if !ok {
+		return cp.InboundNumber{}, errs.ErrNotFound
+	}
+	// Stored verbatim: a nil clears the dedication (shared), which the handler must pass through from
+	// an explicit JSON null.
+	n.AccountID = accountID
+	s.byID[id] = n
+	return n, nil
+}

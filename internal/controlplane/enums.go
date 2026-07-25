@@ -275,6 +275,47 @@ func (s RouteStatus) Valid() bool {
 	}
 }
 
+// NumberType is the kind of an inbound number (control_plane.inbound_numbers.number_type): a short
+// code, a long code, or an alphanumeric sender the provider owns for the return path.
+type NumberType string
+
+// The inbound-number kinds.
+const (
+	NumberShortcode    NumberType = "shortcode"
+	NumberLongcode     NumberType = "longcode"
+	NumberAlphanumeric NumberType = "alphanumeric"
+)
+
+// Valid reports whether t is a published number type.
+func (t NumberType) Valid() bool {
+	switch t {
+	case NumberShortcode, NumberLongcode, NumberAlphanumeric:
+		return true
+	default:
+		return false
+	}
+}
+
+// InboundNumberStatus is an inbound number's enablement state
+// (control_plane.inbound_numbers.status).
+type InboundNumberStatus string
+
+// The inbound-number enablement states.
+const (
+	InboundNumberActive   InboundNumberStatus = "active"
+	InboundNumberDisabled InboundNumberStatus = "disabled"
+)
+
+// Valid reports whether s is a published inbound-number status.
+func (s InboundNumberStatus) Valid() bool {
+	switch s {
+	case InboundNumberActive, InboundNumberDisabled:
+		return true
+	default:
+		return false
+	}
+}
+
 // ConnectorStatus is an SMSC connector's coarse config status
 // (control_plane.smsc_connectors.status). It is distinct from runtime health (link_status,
 // breaker_state), which is never conflated with it.
