@@ -12,12 +12,16 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/grpc"
@@ -160,18 +164,21 @@ func run() error {
 		logger,
 	)
 
-	// Vital dependencies (plan §1.5): PostgreSQL gates authenticating a bind, and Kafka gates durably
-	// accepting a submit_sm — both remove the pod from the LB when unreachable. ClickHouse is
-	// deliberately NOT vital here: unlike rest-api-svc it backs no GET surface, only the best-effort
-	// accepted CDR row (Enqueue drops on saturation, the connector's enroute row supersedes it), so a
-	// ClickHouse outage must not refuse binds and submits while the durable path (Kafka) is healthy.
-	// The SessionRegistry dependency is surfaced per-bind (ESME_RSYSERR) rather than gating readiness,
-	// since a lazy gRPC client reports no meaningful state until traffic flows. Redis is likewise NOT a
-	// readiness gate: the bind throttle fails open, so a Redis outage weakens brute-force protection but
-	// must not pull the pod from the LB and cut SMPP capacity.
+	// The pod-local Deliver gRPC surface: step-048 dials this pod (after a Lookup) to push a deliver_sm
+	// to a bind this pod owns. It shares cfg.GRPC.Port (reserved for the SMPP server's registry surface);
+	// only Deliver is served here, the rest of SessionRegistry lives in session-manager.
+	grpcServer := grpc.NewServer()
+	registrypb.RegisterSessionRegistryServer(grpcServer, smppserver.NewDeliverServer(listener, logger))
+
+	// Vital dependencies (plan §1.5): PostgreSQL alone — it gates authenticating a bind, so a pod that
+	// cannot reach it can accept no session and must leave the LB. Kafka is deliberately NOT vital
+	// (step-046): a receiver/transceiver bind delivers deliver_sm (MO/DLR) with no Kafka involvement, so
+	// a Kafka outage must not remove the pod and cut delivery; a submit_sm that cannot be produced fails
+	// per-PDU with ESME_RSYSERR instead. ClickHouse is likewise not vital (only the best-effort accepted
+	// CDR row). The SessionRegistry client and Redis (bind throttle, fail-open) are surfaced per-bind,
+	// not as readiness gates.
 	ops, err := observability.NewOpsServer(cfg, logger,
 		postgres.PingCheck("postgres", pool, cfg.Postgres.Timeout),
-		producer.ReadyCheck("kafka", cfg.Kafka.Timeout),
 	)
 	if err != nil {
 		return fmt.Errorf("init ops server: %w", err)
@@ -199,6 +206,11 @@ func run() error {
 	g.Add("disconnect subscriber", func(c context.Context) error {
 		return smppserver.RunDisconnectSubscriber(c, redisstore.Subscribe(c, rdb, disconnect.Channel), listener, logger)
 	})
+	// The Deliver gRPC server is registered last so it drains first (reverse order): it stops accepting
+	// deliveries before the listener closes the binds they target, so no Deliver races a draining socket.
+	g.Add("deliver grpc server", func(c context.Context) error {
+		return runGRPC(c, grpcServer, cfg.GRPC.Port, cfg.ShutdownTimeout, logger)
+	})
 	if err := g.Run(ctx, logger); err != nil {
 		return err
 	}
@@ -210,6 +222,46 @@ func run() error {
 // podID resolves this pod's registry identity: the configured value, or the OS hostname as a fallback
 // (what a Kubernetes pod's hostname already is). A last-resort empty id still lets binds succeed; it
 // only makes a token harder to trace to its pod, which a warning flags.
+// runGRPC serves the pod-local Deliver surface until ctx is cancelled, then drains within timeout. It
+// mirrors session-manager's runGRPC: GracefulStop lets an in-flight Deliver finish, then a hard Stop
+// caps the drain so the goroutine always has a stop condition.
+func runGRPC(ctx context.Context, srv *grpc.Server, port int, timeout time.Duration, logger *slog.Logger) error {
+	var lc net.ListenConfig
+	lis, err := lc.Listen(ctx, "tcp", ":"+strconv.Itoa(port))
+	if err != nil {
+		return fmt.Errorf("listen grpc: %w", err)
+	}
+
+	serveErr := make(chan error, 1)
+	go func() {
+		logger.Info("deliver grpc listening", "addr", lis.Addr().String())
+		serveErr <- srv.Serve(lis)
+	}()
+
+	select {
+	case err := <-serveErr:
+		if errors.Is(err, grpc.ErrServerStopped) {
+			return nil
+		}
+		return err
+	case <-ctx.Done():
+		stopped := make(chan struct{})
+		go func() {
+			srv.GracefulStop()
+			close(stopped)
+		}()
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		select {
+		case <-stopped:
+			return nil
+		case <-timer.C:
+			srv.Stop()
+			return nil
+		}
+	}
+}
+
 func podID(cfg config.Config, logger *slog.Logger) string {
 	if cfg.SMPP.PodID != "" {
 		return cfg.SMPP.PodID

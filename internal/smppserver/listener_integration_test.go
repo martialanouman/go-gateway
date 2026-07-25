@@ -37,7 +37,7 @@ func TestBindValidAndRejections(t *testing.T) {
 	registry := startRegistry(t, rdb)
 
 	t.Run("valid transceiver bind is accepted", func(t *testing.T) {
-		sid, pw := seedBind(t, pool, seedOpts{maxSessions: 1, bindType: cp.BindTRX})
+		sid, pw, _ := seedBind(t, pool, seedOpts{maxSessions: 1, bindType: cp.BindTRX})
 		addr := startListener(t, pool, registry)
 
 		e := dialESME(t, addr)
@@ -48,7 +48,7 @@ func TestBindValidAndRejections(t *testing.T) {
 	})
 
 	t.Run("wrong password is ESME_RINVPASWD", func(t *testing.T) {
-		sid, _ := seedBind(t, pool, seedOpts{maxSessions: 1, bindType: cp.BindTRX})
+		sid, _, _ := seedBind(t, pool, seedOpts{maxSessions: 1, bindType: cp.BindTRX})
 		addr := startListener(t, pool, registry)
 
 		e := dialESME(t, addr)
@@ -70,7 +70,7 @@ func TestBindValidAndRejections(t *testing.T) {
 	})
 
 	t.Run("bind type outside allowed_bind_types is ESME_RBINDFAIL", func(t *testing.T) {
-		sid, pw := seedBind(t, pool, seedOpts{maxSessions: 1, bindType: cp.BindTX})
+		sid, pw, _ := seedBind(t, pool, seedOpts{maxSessions: 1, bindType: cp.BindTX})
 		addr := startListener(t, pool, registry)
 
 		e := dialESME(t, addr)
@@ -82,7 +82,7 @@ func TestBindValidAndRejections(t *testing.T) {
 	})
 
 	t.Run("smpp_enabled=false is ESME_RBINDFAIL", func(t *testing.T) {
-		sid, pw := seedBind(t, pool, seedOpts{maxSessions: 1, bindType: cp.BindTRX, smppDisabled: true})
+		sid, pw, _ := seedBind(t, pool, seedOpts{maxSessions: 1, bindType: cp.BindTRX, smppDisabled: true})
 		addr := startListener(t, pool, registry)
 
 		e := dialESME(t, addr)
@@ -100,7 +100,7 @@ func TestInvariantDMaxSessions(t *testing.T) {
 	rdb := redistest.Client(t)
 	registry := startRegistry(t, rdb)
 
-	sid, pw := seedBind(t, pool, seedOpts{maxSessions: 1, bindType: cp.BindTRX})
+	sid, pw, _ := seedBind(t, pool, seedOpts{maxSessions: 1, bindType: cp.BindTRX})
 	addr := startListener(t, pool, registry)
 
 	// First bind fills the single slot.
@@ -184,7 +184,7 @@ type seedOpts struct {
 
 // seedBind creates a customer, an SMPP account (with the given quota, bind type and channel state) and
 // its bind credential, returning the system_id and clear-text password an ESME uses to bind.
-func seedBind(t *testing.T, pool *pgxpool.Pool, opts seedOpts) (systemID, password string) {
+func seedBind(t *testing.T, pool *pgxpool.Pool, opts seedOpts) (systemID, password string, accountID uuid.UUID) {
 	t.Helper()
 	ctx := context.Background()
 	customers := postgres.NewCustomerRepo(pool)
@@ -225,7 +225,7 @@ func seedBind(t *testing.T, pool *pgxpool.Pool, opts seedOpts) (systemID, passwo
 	}); err != nil {
 		t.Fatalf("create credential: %v", err)
 	}
-	return systemID, password
+	return systemID, password, account.ID
 }
 
 // startRegistry serves the real SessionRegistry (Redis-backed) on an ephemeral gRPC port and returns a
@@ -252,6 +252,13 @@ func startRegistry(t *testing.T, rdb *redis.Client) registrypb.SessionRegistryCl
 
 // startListener runs a Listener on an ephemeral SMPP port and returns its resolved address.
 func startListener(t *testing.T, pool *pgxpool.Pool, registry registrypb.SessionRegistryClient) string {
+	addr, _ := startListenerRef(t, pool, registry)
+	return addr
+}
+
+// startListenerRef starts the listener and returns both its address and the *Listener, so a test can
+// reach its pod-local surfaces (e.g. Deliver, step-046).
+func startListenerRef(t *testing.T, pool *pgxpool.Pool, registry registrypb.SessionRegistryClient) (string, *smppserver.Listener) {
 	t.Helper()
 	l := smppserver.New(postgres.NewBindRepo(pool), registry, nil, smppserver.Options{
 		Addr:     "127.0.0.1:0",
@@ -269,7 +276,7 @@ func startListener(t *testing.T, pool *pgxpool.Pool, registry registrypb.Session
 	if err != nil {
 		t.Fatalf("listener addr: %v", err)
 	}
-	return addr
+	return addr, l
 }
 
 func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
