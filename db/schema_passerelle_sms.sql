@@ -486,6 +486,25 @@ CREATE INDEX inbound_keywords_lookup_idx
   ON control_plane.inbound_keywords(inbound_number_id, priority) WHERE status = 'active';
 
 -- -----------------------------------------------------------------------------------------------------
+-- 18b. Unrouted MO (§6.21) — mobile-originated messages that resolved to no account, kept for the
+-- operator to see (list-unrouted-mo) and fix the config. A configuration anomaly, not a billable CDR:
+-- a distinct table, never the message body (invariant a). Volume is low (an anomaly, not a flow).
+-- -----------------------------------------------------------------------------------------------------
+CREATE TABLE control_plane.unrouted_mo (
+  id                uuid PRIMARY KEY DEFAULT uuidv7(),
+  received_at       timestamptz NOT NULL DEFAULT now(),
+  connector_id      uuid,                                   -- the link the MO arrived on (no FK: M2 env-injected)
+  inbound_number_id uuid REFERENCES control_plane.inbound_numbers(id) ON DELETE SET NULL, -- null if the number is unknown
+  source_addr       text NOT NULL,                          -- the subscriber MSISDN (E.164)
+  dest_addr         text NOT NULL,                          -- the inbound number the MO targeted
+  segment_count     integer NOT NULL DEFAULT 1,
+  encoding          text NOT NULL,
+  reason            text NOT NULL CHECK (reason IN ('unknown_number','number_disabled','no_keyword_match'))
+);
+-- Keyset pagination for list-unrouted-mo: newest first, id breaks ties.
+CREATE INDEX unrouted_mo_page_idx ON control_plane.unrouted_mo(received_at DESC, id DESC);
+
+-- -----------------------------------------------------------------------------------------------------
 -- 19. Exact routes (§6.1) — MSISDN -> target; typically bulk-loaded from an MNP/portability database
 -- -----------------------------------------------------------------------------------------------------
 CREATE TABLE control_plane.exact_routes (

@@ -16,6 +16,10 @@ const (
 	TopicMTRouted = "mt.routed"
 	// TopicMOInbound carries mobile-originated messages from the SMSC (M4).
 	TopicMOInbound = "mo.inbound"
+	// TopicMORouted carries mobile-originated messages after account resolution (M4): the delivery
+	// intent step-048 consumes to hand the MO to the account's active bind or webhook. Partition key =
+	// the resolved account, so one account's MO stay ordered.
+	TopicMORouted = "mo.routed"
 	// TopicDLREvents carries delivery-receipt events (M4).
 	TopicDLREvents = "dlr.events"
 	// TopicMTDeadLetter is the parking topic for MT messages that exhausted handling (M7+).

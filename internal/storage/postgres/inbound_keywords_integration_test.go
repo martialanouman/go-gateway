@@ -117,6 +117,50 @@ func TestInboundKeywordRepoListOrderedByPriority(t *testing.T) {
 	}
 }
 
+// TestInboundKeywordRepoListAll proves ListAll returns active keywords across numbers for the MO
+// snapshot, and excludes disabled ones.
+func TestInboundKeywordRepoListAll(t *testing.T) {
+	repo, numberID, accountID := keywordDeps(t, "39000")
+	ctx := context.Background()
+
+	active, err := repo.Create(ctx, cp.NewInboundKeyword{
+		InboundNumberID: numberID, Keyword: "INFO", MatchType: cp.MatchPrefix, AccountID: accountID,
+	})
+	if err != nil {
+		t.Fatalf("create active: %v", err)
+	}
+	disabledKw, err := repo.Create(ctx, cp.NewInboundKeyword{
+		InboundNumberID: numberID, Keyword: "OLD", MatchType: cp.MatchExact, AccountID: accountID,
+	})
+	if err != nil {
+		t.Fatalf("create disabled: %v", err)
+	}
+	disabled := cp.InboundKeywordDisabled
+	if _, err := repo.Update(ctx, numberID, disabledKw.ID, cp.InboundKeywordPatch{Status: &disabled}); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+
+	all, err := repo.ListAll(ctx)
+	if err != nil {
+		t.Fatalf("ListAll: %v", err)
+	}
+	var sawActive, sawDisabled bool
+	for _, kw := range all {
+		if kw.ID == active.ID {
+			sawActive = true
+		}
+		if kw.ID == disabledKw.ID {
+			sawDisabled = true
+		}
+	}
+	if !sawActive {
+		t.Error("ListAll must include the active keyword")
+	}
+	if sawDisabled {
+		t.Error("ListAll must exclude the disabled keyword")
+	}
+}
+
 // TestInboundKeywordRepoScopedToNumber proves a keyword is only visible and mutable within its own
 // number: listing a different number omits it, and updating/deleting it under the wrong number is a
 // not-found.

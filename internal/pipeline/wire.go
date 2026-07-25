@@ -235,6 +235,76 @@ func DecodeMO(rec kafka.Record) (MOInbound, error) {
 	}, nil
 }
 
+// moRoutedWire is the JSON body of an mo.routed record. Body is the revealed plaintext as base64.
+type moRoutedWire struct {
+	MessageID       uuid.UUID `json:"message_id"`
+	TraceID         uuid.UUID `json:"trace_id"`
+	AccountID       uuid.UUID `json:"account_id"`
+	CustomerID      uuid.UUID `json:"customer_id"`
+	InboundNumberID uuid.UUID `json:"inbound_number_id"`
+	ConnectorID     uuid.UUID `json:"connector_id"`
+	From            string    `json:"from"`
+	To              string    `json:"to"`
+	Body            []byte    `json:"body"`
+	DataCoding      uint8     `json:"data_coding"`
+	Encoding        string    `json:"encoding"`
+	ESMClass        uint8     `json:"esm_class,omitempty"`
+	ReceivedAt      time.Time `json:"received_at"`
+}
+
+// EncodeMORouted builds the mo.routed record for env, keyed by the resolved account so one account's
+// MO keep their partition order. The headers carry the newly minted ids.
+func EncodeMORouted(env MORouted) (kafka.Record, error) {
+	value, err := json.Marshal(moRoutedWire{
+		MessageID:       env.MessageID,
+		TraceID:         env.TraceID,
+		AccountID:       env.AccountID,
+		CustomerID:      env.CustomerID,
+		InboundNumberID: env.InboundNumberID,
+		ConnectorID:     env.ConnectorID,
+		From:            env.From,
+		To:              env.To,
+		Body:            env.Body.Reveal(), // audited: body -> durable value, never a header
+		DataCoding:      env.DataCoding,
+		Encoding:        env.Encoding,
+		ESMClass:        env.ESMClass,
+		ReceivedAt:      env.ReceivedAt,
+	})
+	if err != nil {
+		return kafka.Record{}, fmt.Errorf("pipeline: encode mo.routed: %w", err)
+	}
+	key := env.AccountID
+	return kafka.Record{
+		Topic:   kafka.TopicMORouted,
+		Key:     key[:],
+		Value:   value,
+		Headers: idHeaders(env.MessageID, env.TraceID, env.AccountID, env.CustomerID),
+	}, nil
+}
+
+// DecodeMORouted parses an mo.routed record, re-wrapping the body into msg.Body immediately.
+func DecodeMORouted(rec kafka.Record) (MORouted, error) {
+	var w moRoutedWire
+	if err := json.Unmarshal(rec.Value, &w); err != nil {
+		return MORouted{}, fmt.Errorf("pipeline: decode mo.routed: %w", err)
+	}
+	return MORouted{
+		MessageID:       w.MessageID,
+		TraceID:         w.TraceID,
+		AccountID:       w.AccountID,
+		CustomerID:      w.CustomerID,
+		InboundNumberID: w.InboundNumberID,
+		ConnectorID:     w.ConnectorID,
+		From:            w.From,
+		To:              w.To,
+		Body:            msg.NewBody(w.Body),
+		DataCoding:      w.DataCoding,
+		Encoding:        w.Encoding,
+		ESMClass:        w.ESMClass,
+		ReceivedAt:      w.ReceivedAt,
+	}, nil
+}
+
 // EncodeDLR builds the dlr.events record for env, keyed by the SMSC message id so a message's receipts
 // stay ordered and land where the correlator (step-044) looks them up. A DLR carries no body, so its
 // wire form is field-identical to the domain type — the conversion keeps the two in lockstep (a new

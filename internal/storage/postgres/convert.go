@@ -104,6 +104,9 @@ func afterPtr(id uuid.UUID) *uuid.UUID {
 // tsVal reads a NOT NULL timestamptz column into a time.Time.
 func tsVal(ts pgtype.Timestamptz) time.Time { return ts.Time }
 
+// tsFrom builds a valid timestamptz parameter from a time.Time.
+func tsFrom(t time.Time) pgtype.Timestamptz { return pgtype.Timestamptz{Time: t, Valid: true} }
+
 // tsPtr reads a nullable timestamptz column into a *time.Time (nil when SQL NULL).
 func tsPtr(ts pgtype.Timestamptz) *time.Time {
 	if !ts.Valid {

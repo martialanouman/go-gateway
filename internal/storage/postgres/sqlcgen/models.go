@@ -352,6 +352,18 @@ type ControlPlaneSuppression struct {
 	CreatedAt pgtype.Timestamptz
 }
 
+type ControlPlaneUnroutedMo struct {
+	ID              uuid.UUID
+	ReceivedAt      pgtype.Timestamptz
+	ConnectorID     *uuid.UUID
+	InboundNumberID *uuid.UUID
+	SourceAddr      string
+	DestAddr        string
+	SegmentCount    int32
+	Encoding        string
+	Reason          string
+}
+
 type ControlPlaneWebhook struct {
 	ID              uuid.UUID
 	AccountID       uuid.UUID
