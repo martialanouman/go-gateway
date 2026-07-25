@@ -574,6 +574,52 @@ func TestSession_CleanCloseOnEOF(t *testing.T) {
 	}
 }
 
+// TestSession_ServerInitiatedClose pins that Close() terminates a bound session from the server
+// side: the ESME observes an outbound unbind (an orderly close, not an abrupt reset), then the
+// socket closes and Serve returns nil. This is the primitive step-032 uses to force-disconnect a
+// session whose authorization has ceased.
+func TestSession_ServerInitiatedClose(t *testing.T) {
+	t.Parallel()
+	client, sess, _, errc := newSession(t, session.Config{Logger: discardLogger()})
+	bindOK(t, client, session.BindTransceiver)
+
+	// Close from another goroutine: the outbound unbind write is synchronous over net.Pipe, so it
+	// needs a concurrent reader (the test, below).
+	go sess.Close()
+
+	pdu := readPDU(t, client)
+	if pdu.CommandID() != smpp.CmdUnbind {
+		t.Fatalf("server-initiated close cmd = %#x, want unbind", pdu.CommandID())
+	}
+	if err := waitErr(t, errc); err != nil {
+		t.Errorf("Serve after Close = %v, want nil", err)
+	}
+	// The socket is closed: a further client read observes it.
+	_ = client.SetReadDeadline(time.Now().Add(ioDeadline))
+	if _, err := smpp.ReadPDU(client); err == nil {
+		t.Error("expected read error after Close closed the connection")
+	}
+}
+
+// TestSession_CloseIdempotent pins that a second Close() is a harmless no-op: no panic, no second
+// unbind, no double-close of the connection. A disconnect order that races the session's own
+// teardown must not fault.
+func TestSession_CloseIdempotent(t *testing.T) {
+	t.Parallel()
+	client, sess, _, errc := newSession(t, session.Config{Logger: discardLogger()})
+	bindOK(t, client, session.BindTransceiver)
+
+	go sess.Close()
+	if pdu := readPDU(t, client); pdu.CommandID() != smpp.CmdUnbind {
+		t.Fatalf("first close cmd = %#x, want unbind", pdu.CommandID())
+	}
+	if err := waitErr(t, errc); err != nil {
+		t.Fatalf("Serve after first Close = %v, want nil", err)
+	}
+	// Second Close after the session has already torn down: must not block or panic.
+	sess.Close()
+}
+
 func TestSession_ContextCancel(t *testing.T) {
 	t.Parallel()
 	client, _, cancel, errc := newSession(t, session.Config{})

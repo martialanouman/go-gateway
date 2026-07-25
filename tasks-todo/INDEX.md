@@ -35,7 +35,7 @@ Légende : `[x]` = fait (dans `tasks-done/`) · `[ ]` = à faire (dans `tasks-to
 - [x] step-029 — API publique : list-messages (pagination par curseur sur le CDR)
 - [x] step-030 — cancel_sm (SMPP) : annulation SMPP-only, sans surface REST (ADR-0009)
 - [x] step-031 — En-tête Idempotency-Key (REST, fenêtre 24 h Redis)
-- [ ] step-032 — Déconnexion forcée des sessions SMPP (fin de grâce, révocation, suspension)
+- [x] step-032 — Déconnexion forcée des sessions SMPP (fin de grâce, révocation, suspension)
 
 ## M4 — Voie retour MO/DLR + webhooks + numéros entrants
 - [ ] step-040 — Numéros entrants : repo + Admin (CRUD + assign)

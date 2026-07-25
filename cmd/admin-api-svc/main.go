@@ -16,11 +16,15 @@ import (
 	"syscall"
 	"time"
 
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+
 	"github.com/martialanouman/go-gateway/internal/adminapi"
 	"github.com/martialanouman/go-gateway/internal/auth"
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/platform/supervisor"
+	registrypb "github.com/martialanouman/go-gateway/internal/session/pb"
 	"github.com/martialanouman/go-gateway/internal/storage/postgres"
 )
 
@@ -38,8 +42,12 @@ func run() error {
 	defer stop()
 
 	// The Admin API talks to Postgres and serves HTTP; it has no Kafka client, so it declares only
-	// the sections it uses, exactly as cmd/migrate does.
-	cfg, err := config.Load(serviceName, config.SectionOTel, config.SectionPostgres, config.SectionHTTP)
+	// the sections it uses, exactly as cmd/migrate does. It also declares SectionSMPP — not to serve
+	// SMPP, but for the one field SESSION_MANAGER_ADDR: a control-plane mutation (revoke, suspend) must
+	// force-disconnect the affected live binds via session-manager's SessionRegistry (step-032), and the
+	// address of that service is the same env var every session-manager client already uses.
+	cfg, err := config.Load(serviceName,
+		config.SectionOTel, config.SectionPostgres, config.SectionHTTP, config.SectionSMPP)
 	if err != nil {
 		return err
 	}
@@ -77,15 +85,27 @@ func run() error {
 		return fmt.Errorf("build operator token verifier: %w", err)
 	}
 
+	// The SessionRegistry client fans a force-disconnect out to the smpp-server pods when a credential
+	// is revoked/disabled or an account/customer suspended (step-032). Transport security terminates at
+	// the mesh (insecure). NewClient is lazy: it opens no connection until the first Disconnect, so a
+	// session-manager that is briefly down does not block startup — and a Disconnect during that window
+	// fails best-effort without failing the control-plane mutation.
+	registryConn, err := grpc.NewClient(cfg.SMPP.SessionManagerAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return fmt.Errorf("dial session manager at %q: %w", cfg.SMPP.SessionManagerAddr, err)
+	}
+	defer func() { _ = registryConn.Close() }()
+
 	router, _ := adminapi.New(adminapi.Deps{
-		Customers:   postgres.NewCustomerRepo(pool),
-		Accounts:    postgres.NewAccountRepo(pool),
-		Credentials: postgres.NewCredentialRepo(pool),
-		Connectors:  postgres.NewConnectorRepo(pool),
-		Routes:      postgres.NewRouteRepo(pool),
-		SenderIDs:   postgres.NewSenderIDRepo(pool),
-		Verifier:    verifier,
-		Logger:      logger,
+		Customers:    postgres.NewCustomerRepo(pool),
+		Accounts:     postgres.NewAccountRepo(pool),
+		Credentials:  postgres.NewCredentialRepo(pool),
+		Connectors:   postgres.NewConnectorRepo(pool),
+		Routes:       postgres.NewRouteRepo(pool),
+		SenderIDs:    postgres.NewSenderIDRepo(pool),
+		Disconnector: adminapi.NewGRPCDisconnector(registrypb.NewSessionRegistryClient(registryConn)),
+		Verifier:     verifier,
+		Logger:       logger,
 	})
 
 	srv := &http.Server{

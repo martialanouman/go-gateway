@@ -2,6 +2,7 @@ package adminapi
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -104,11 +105,13 @@ type accountPage struct {
 }
 
 type accountHandlers struct {
-	store AccountStore
+	store  AccountStore
+	disc   Disconnector
+	logger *slog.Logger
 }
 
-func registerAccounts(api huma.API, store AccountStore) {
-	h := &accountHandlers{store: store}
+func registerAccounts(api huma.API, store AccountStore, disc Disconnector, logger *slog.Logger) {
+	h := &accountHandlers{store: store, disc: disc, logger: logger}
 
 	register(api, huma.Operation{
 		OperationID: "list-smpp-accounts", Method: http.MethodGet, Path: "/admin/smpp-accounts",
@@ -265,6 +268,11 @@ func (h *accountHandlers) update(ctx context.Context, in *updateAccountInput) (*
 	})
 	if err != nil {
 		return nil, humaerr.FromError(err)
+	}
+	// An account left non-active by this update (suspended or closed) must lose its live binds too
+	// (step-032) — this PATCH is the account-suspension path (there is no dedicated suspend endpoint yet).
+	if a.Status != cp.AccountActive {
+		disconnectAccount(ctx, h.disc, h.logger, id, "account_"+string(a.Status))
 	}
 	return &accountOutput{Body: toAccountDTO(a)}, nil
 }

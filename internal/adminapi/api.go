@@ -59,9 +59,9 @@ func New(deps Deps) (*chi.Mux, huma.API) {
 		api.UseMiddleware(auth.Middleware(api, deps.Verifier, operatorScheme))
 	}
 
-	registerCustomers(api, deps.Customers)
-	registerAccounts(api, deps.Accounts)
-	registerCredentials(api, deps.Credentials, deps.Accounts)
+	registerCustomers(api, deps.Customers, deps.Disconnector, deps.Logger)
+	registerAccounts(api, deps.Accounts, deps.Disconnector, deps.Logger)
+	registerCredentials(api, deps.Credentials, deps.Accounts, deps.Disconnector, deps.Logger)
 	registerConnectors(api, deps.Connectors)
 	registerRoutes(api, deps.Routes)
 	registerSenderIDs(api, deps.SenderIDs, deps.Customers)

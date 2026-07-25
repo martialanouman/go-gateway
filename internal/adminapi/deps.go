@@ -73,16 +73,28 @@ type SenderIDStore interface {
 	Delete(ctx context.Context, customerID, senderID uuid.UUID) error
 }
 
+// Disconnector force-closes the live SMPP sessions whose authorization has ceased (a revoked or
+// disabled credential, a suspended account or customer), so a control-plane change reaches sessions
+// already bound (step-032). It is best-effort: the control-plane mutation is authoritative and must
+// not fail because the fan-out did, so a handler logs a Disconnect error and still returns success.
+// session-manager's SessionRegistry.Disconnect satisfies it (see GRPCDisconnector). A nil Disconnector
+// disables the fan-out (the contract test wires none).
+type Disconnector interface {
+	DisconnectAccount(ctx context.Context, accountID uuid.UUID, reason string) error
+	DisconnectCustomer(ctx context.Context, customerID uuid.UUID, reason string) error
+}
+
 // Deps are the collaborators the Admin API needs. Later milestones add a store field per resource;
 // New tolerates a nil store (the contract test builds the API without any), but a running server
 // wires them all.
 type Deps struct {
-	Customers   CustomerStore
-	Accounts    AccountStore
-	Credentials CredentialStore
-	Connectors  ConnectorStore
-	Routes      RouteStore
-	SenderIDs   SenderIDStore
-	Verifier    auth.TokenVerifier
-	Logger      *slog.Logger
+	Customers    CustomerStore
+	Accounts     AccountStore
+	Credentials  CredentialStore
+	Connectors   ConnectorStore
+	Routes       RouteStore
+	SenderIDs    SenderIDStore
+	Disconnector Disconnector
+	Verifier     auth.TokenVerifier
+	Logger       *slog.Logger
 }

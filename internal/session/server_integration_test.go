@@ -18,6 +18,7 @@ import (
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 	"github.com/martialanouman/go-gateway/internal/session"
 	"github.com/martialanouman/go-gateway/internal/session/pb"
+	redisstore "github.com/martialanouman/go-gateway/internal/storage/redis"
 	"github.com/martialanouman/go-gateway/internal/testutil/redistest"
 )
 
@@ -29,7 +30,8 @@ func newTestClient(t *testing.T) pb.SessionRegistryClient {
 
 	rdb := redistest.Client(t)
 	srv := grpc.NewServer()
-	pb.RegisterSessionRegistryServer(srv, session.NewServer(session.NewRegistry(rdb)))
+	pb.RegisterSessionRegistryServer(srv,
+		session.NewServer(session.NewRegistry(rdb), redisstore.NewPubSubPublisher(rdb)))
 
 	lis := bufconn.Listen(1 << 20)
 	go func() { _ = srv.Serve(lis) }()

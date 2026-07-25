@@ -10,6 +10,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
+	"github.com/martialanouman/go-gateway/internal/session/disconnect"
 	"github.com/martialanouman/go-gateway/internal/session/pb"
 )
 
@@ -18,19 +19,29 @@ import (
 // a rejection into an SMPP command_status without parsing a human message.
 const errorDomain = "session-manager-svc"
 
+// Publisher fans a force-disconnect order out to the smpp-server pods. It is the Redis pub/sub
+// PUBLISH abstracted behind a payload-oriented method so the Disconnect path is testable without
+// Redis. *redisstore.PubSubPublisher satisfies it in production.
+type Publisher interface {
+	Publish(ctx context.Context, channel string, payload []byte) error
+}
+
 // Server adapts the Redis-backed Registry to the SessionRegistry gRPC contract (api/proto/session.proto).
 // It is a pure translator: it maps the wire messages to Registry calls and back, and turns the
 // registry's sentinel errors into gRPC statuses that carry the shared error Code. It holds no state of
-// its own beyond the registry, so a single instance serves every connection.
+// its own beyond the registry and the disconnect publisher, so a single instance serves every
+// connection.
 type Server struct {
 	pb.UnimplementedSessionRegistryServer
 
 	reg *Registry
+	pub Publisher
 }
 
-// NewServer returns a SessionRegistry server backed by reg.
-func NewServer(reg *Registry) *Server {
-	return &Server{reg: reg}
+// NewServer returns a SessionRegistry server backed by reg for the bind registry and pub for the
+// force-disconnect fan-out.
+func NewServer(reg *Registry, pub Publisher) *Server {
+	return &Server{reg: reg, pub: pub}
 }
 
 // Bind registers the session carried by req against its account's max_sessions ceiling. The pod_id is
@@ -110,6 +121,42 @@ func (s *Server) Lookup(ctx context.Context, req *pb.LookupRequest) (*pb.LookupR
 // never happened.
 func (s *Server) Deliver(_ context.Context, _ *pb.DeliverRequest) (*pb.DeliverResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "deliver: MO forwarding lands in step-046/048")
+}
+
+// Disconnect fans a force-close order out to every owning pod by publishing a disconnect.Event on
+// the shared Redis channel; the pods do the actual socket close asynchronously (step-032). The
+// registry itself is never mutated here — an unbind on the closed socket frees the max_sessions slot
+// on the pod's own path. Publishing is idempotent: a repeated order simply targets sessions that are
+// already gone. The scope must be a concrete account or customer; an unspecified scope or empty id
+// is rejected rather than fanned out to an over-broad set of sessions.
+func (s *Server) Disconnect(ctx context.Context, req *pb.DisconnectRequest) (*pb.DisconnectResponse, error) {
+	scope, err := disconnectScope(req.GetScope())
+	if err != nil {
+		return nil, err
+	}
+	if req.GetId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "disconnect: id is required")
+	}
+
+	// Reason is a machine label, never a secret; it is safe to carry and later log (§1.9).
+	payload := disconnect.Encode(disconnect.Event{Scope: scope, ID: req.GetId(), Reason: req.GetReason()})
+	if err := s.pub.Publish(ctx, disconnect.Channel, payload); err != nil {
+		return nil, status.Errorf(codes.Internal, "disconnect: publish: %v", err)
+	}
+	return &pb.DisconnectResponse{Published: true}, nil
+}
+
+// disconnectScope maps the wire scope to the domain scope, rejecting the unspecified (zero) value so
+// a malformed request can never fan out to every session.
+func disconnectScope(s pb.DisconnectScope) (disconnect.Scope, error) {
+	switch s {
+	case pb.DisconnectScope_DISCONNECT_SCOPE_ACCOUNT:
+		return disconnect.ScopeAccount, nil
+	case pb.DisconnectScope_DISCONNECT_SCOPE_CUSTOMER:
+		return disconnect.ScopeCustomer, nil
+	default:
+		return "", status.Errorf(codes.InvalidArgument, "disconnect: scope must be account or customer, got %v", s)
+	}
 }
 
 // quotaExceeded builds the ResourceExhausted status for a bind refused at the max_sessions ceiling. The

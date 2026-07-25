@@ -67,7 +67,8 @@ func run() error {
 	defer func() { _ = rdb.Close() }()
 
 	grpcServer := grpc.NewServer()
-	pb.RegisterSessionRegistryServer(grpcServer, session.NewServer(session.NewRegistry(rdb)))
+	pb.RegisterSessionRegistryServer(grpcServer,
+		session.NewServer(session.NewRegistry(rdb), redisstore.NewPubSubPublisher(rdb)))
 
 	// Redis is vital: without it the registry can neither enforce max_sessions nor answer a lookup, so
 	// a pod that cannot reach it must leave the load balancer (plan §1.5). The probe pings the client,

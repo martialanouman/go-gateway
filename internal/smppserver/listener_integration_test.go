@@ -24,6 +24,7 @@ import (
 	smppsession "github.com/martialanouman/go-gateway/internal/smpp/session"
 	"github.com/martialanouman/go-gateway/internal/smppserver"
 	"github.com/martialanouman/go-gateway/internal/storage/postgres"
+	redisstore "github.com/martialanouman/go-gateway/internal/storage/redis"
 	"github.com/martialanouman/go-gateway/internal/testutil/pgtest"
 	"github.com/martialanouman/go-gateway/internal/testutil/redistest"
 )
@@ -236,7 +237,8 @@ func startRegistry(t *testing.T, rdb *redis.Client) registrypb.SessionRegistryCl
 		t.Fatalf("listen registry: %v", err)
 	}
 	srv := grpc.NewServer()
-	registrypb.RegisterSessionRegistryServer(srv, session.NewServer(session.NewRegistry(rdb)))
+	registrypb.RegisterSessionRegistryServer(srv,
+		session.NewServer(session.NewRegistry(rdb), redisstore.NewPubSubPublisher(rdb)))
 	go func() { _ = srv.Serve(lis) }()
 	t.Cleanup(srv.Stop)
 
