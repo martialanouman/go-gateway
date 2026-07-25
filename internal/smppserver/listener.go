@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
+	"github.com/martialanouman/go-gateway/internal/session/disconnect"
 	registrypb "github.com/martialanouman/go-gateway/internal/session/pb"
 	"github.com/martialanouman/go-gateway/internal/smpp"
 	"github.com/martialanouman/go-gateway/internal/smpp/session"
@@ -87,6 +88,12 @@ type connState struct {
 
 	refreshStop context.CancelFunc
 	refreshDone chan struct{}
+
+	// graceStop/graceDone control the pod-local cutoff armed for a bind authenticated with the grace
+	// (previous) secret: it force-closes the session when the rotation grace window ends (step-032).
+	// nil unless this bind authenticated via grace.
+	graceStop context.CancelFunc
+	graceDone chan struct{}
 }
 
 // serve drives one accepted connection through an authenticated SMPP session, then releases its
@@ -99,23 +106,41 @@ func (l *Listener) serve(ctx context.Context, nc net.Conn) {
 	st := &connState{bindID: uuid.NewString()}
 	clientIP := remoteIP(nc)
 
-	sess := session.New(nc, session.Config{
+	// onBound runs on a successful bind, inside Serve. It records the live session in the pod-local
+	// registry (so a force-disconnect can reach this socket) and, for a grace-authenticated bind, arms
+	// the cutoff that closes it when the rotation grace window ends. sess is captured by reference: it
+	// is assigned just below, before Serve — and thus before onBound can ever run.
+	var sess *session.Session
+	onBound := func(viaGrace bool, graceExpiresAt *time.Time) {
+		l.registerSession(st, sess)
+		if viaGrace && graceExpiresAt != nil {
+			l.startGraceDeadline(ctx, st, sess, *graceExpiresAt)
+		}
+	}
+
+	sess = session.New(nc, session.Config{
 		SystemID:    l.opts.SystemID,
 		IdleTimeout: l.opts.IdleTimeout,
 		Logger:      l.logger,
-		OnBind:      l.onBind(ctx, st, clientIP),
+		OnBind:      l.onBind(ctx, st, clientIP, onBound),
 		OnSubmit:    l.onSubmit(ctx, st),
 		OnQuery:     l.onQuery(ctx, st),
 		OnCancel:    l.onCancel(ctx, st),
 	})
 	_ = sess.Serve(ctx)
 
-	// Stop the refresh loop (if any) before releasing, so a refresh cannot race the Unbind.
+	// Stop the refresh loop (if any) before releasing, so a refresh cannot race the Unbind. Stop the
+	// grace cutoff too, so a session that ended before its grace deadline leaks no timer goroutine.
 	if st.refreshStop != nil {
 		st.refreshStop()
 		<-st.refreshDone
 	}
+	if st.graceStop != nil {
+		st.graceStop()
+		<-st.graceDone
+	}
 	if st.bound {
+		l.deregisterSession(st.bindID)
 		l.releaseToken(ctx, st)
 	}
 }
@@ -125,7 +150,7 @@ func (l *Listener) serve(ctx context.Context, nc net.Conn) {
 // cost past the threshold); on success it reserves a session token against the registry (invariant d),
 // starts the refresh loop that keeps it alive and clears the throttle counter; on any rejection it
 // returns the mapped command_status without touching the registry.
-func (l *Listener) onBind(ctx context.Context, st *connState, clientIP string) session.BindHandler {
+func (l *Listener) onBind(ctx context.Context, st *connState, clientIP string, onBound func(viaGrace bool, graceExpiresAt *time.Time)) session.BindHandler {
 	return func(bctx context.Context, req session.BindRequest) session.BindResult {
 		// A throttled subject is refused before authentication, so a brute-force flood cannot make the
 		// server pay the argon2id cost. The refusal answers ESME_RINVPASWD — indistinguishable from a
@@ -135,7 +160,7 @@ func (l *Listener) onBind(ctx context.Context, st *connState, clientIP string) s
 			return session.BindResult{Status: errs.StatusInvalidPasswd}
 		}
 
-		cred, cmdStatus := l.authorize(bctx, req)
+		cred, cmdStatus, viaGrace := l.authorize(bctx, req)
 		if cmdStatus != smpp.StatusOK {
 			// An authentication or authorisation failure feeds the throttle; a registry quota rejection
 			// (below) does not, since valid credentials over max_sessions are no brute-force signal.
@@ -171,6 +196,12 @@ func (l *Listener) onBind(ctx context.Context, st *connState, clientIP string) s
 		st.cancelSMEnabled = cred.CancelSMEnabled
 		st.bound = true
 		l.startRefresh(ctx, st, req.Mode)
+
+		// Publish the live session (and arm the grace cutoff if this bind used the previous secret) only
+		// now that st carries the account/customer identity a scoped Disconnect matches on.
+		if onBound != nil {
+			onBound(viaGrace, cred.GraceExpiresAt)
+		}
 
 		// A successful bind clears the system_id's failure counter (the IP counter is left to decay on
 		// its own window, so one success cannot launder an attacker sharing the source IP).
@@ -264,6 +295,113 @@ func remoteIP(nc net.Conn) string {
 		return nc.RemoteAddr().String()
 	}
 	return host
+}
+
+// liveSession is one bind this pod owns, held so a force-disconnect can reach its socket. account and
+// customer ids select the session on a scoped Disconnect; sess is the closable SMPP session.
+type liveSession struct {
+	accountID  uuid.UUID
+	customerID uuid.UUID
+	bindID     string
+	sess       *session.Session
+}
+
+// registerSession records a freshly bound session in the pod-local registry, keyed by bind_id, so a
+// later Disconnect order can reach its socket. It reads the account/customer identity from st, which
+// onBind has already populated.
+func (l *Listener) registerSession(st *connState, sess *session.Session) {
+	l.sessMu.Lock()
+	defer l.sessMu.Unlock()
+	l.sessions[st.bindID] = &liveSession{
+		accountID:  st.accountID,
+		customerID: st.customerID,
+		bindID:     st.bindID,
+		sess:       sess,
+	}
+}
+
+// deregisterSession drops a session from the pod-local registry once its connection has ended, so the
+// map never holds a dead bind. It is idempotent: a bind_id already gone is a no-op.
+func (l *Listener) deregisterSession(bindID string) {
+	l.sessMu.Lock()
+	delete(l.sessions, bindID)
+	l.sessMu.Unlock()
+}
+
+// Disconnect force-closes every live session this pod owns for the scoped account or customer,
+// answering a fan-out order (step-032) triggered by a revocation or a suspension. It snapshots the
+// matching sessions under the lock, then closes them outside it, so a slow socket write can never
+// stall the disconnect fan-out or block a concurrent bind. It is bounded by the pod's own live-session
+// count and idempotent: a session already gone is closed again harmlessly, and a repeated order is a
+// no-op. Identifiers and the reason are logged; a secret or a body never is (§1.9).
+func (l *Listener) Disconnect(scope disconnect.Scope, id, reason string) {
+	l.sessMu.Lock()
+	targets := make([]*liveSession, 0)
+	for _, ls := range l.sessions {
+		if scopeMatches(ls, scope, id) {
+			targets = append(targets, ls)
+		}
+	}
+	l.sessMu.Unlock()
+
+	for _, ls := range targets {
+		l.forceClose(ls, reason)
+	}
+}
+
+// scopeMatches reports whether ls belongs to the scoped account or customer. An unknown scope matches
+// nothing (Decode already rejects one, so this is defence in depth).
+func scopeMatches(ls *liveSession, scope disconnect.Scope, id string) bool {
+	switch scope {
+	case disconnect.ScopeAccount:
+		return ls.accountID.String() == id
+	case disconnect.ScopeCustomer:
+		return ls.customerID.String() == id
+	default:
+		return false
+	}
+}
+
+// forceClose terminates one live session and records why. The socket close makes Serve return, which
+// runs the connection's own cleanup (deregisterSession + releaseToken), so the max_sessions slot is
+// freed on the pod's normal path. Close is idempotent, so racing another force-close or the session's
+// own teardown is safe.
+func (l *Listener) forceClose(ls *liveSession, reason string) {
+	l.logger.Info("smpp session force-disconnected",
+		"account_id", ls.accountID, "bind_id", ls.bindID, "reason", reason)
+	ls.sess.Close()
+}
+
+// startGraceDeadline launches the pod-local cutoff for a bind authenticated with the previous
+// (grace) secret: it closes the session when the rotation grace window ends. It reads deadline as
+// given (step-027 wrote it; the cutoff never recomputes it) and is cancellable via st.graceStop,
+// joined through st.graceDone — so a session that unbinds before the deadline leaks no goroutine.
+func (l *Listener) startGraceDeadline(ctx context.Context, st *connState, sess *session.Session, deadline time.Time) {
+	gctx, cancel := context.WithCancel(ctx)
+	st.graceStop = cancel
+	st.graceDone = make(chan struct{})
+	go l.graceDeadlineLoop(gctx, st, sess, deadline, st.graceDone)
+}
+
+// graceDeadlineLoop force-closes the session at deadline, or exits early if the session ends first
+// (ctx cancelled). The delay is measured against the injectable clock, so a test advances time
+// without sleeping; a deadline already in the past fires immediately.
+func (l *Listener) graceDeadlineLoop(ctx context.Context, st *connState, sess *session.Session, deadline time.Time, done chan struct{}) {
+	defer close(done)
+
+	d := deadline.Sub(l.opts.Now())
+	if d < 0 {
+		d = 0
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return
+	case <-timer.C:
+		l.forceClose(&liveSession{accountID: st.accountID, bindID: st.bindID, sess: sess}, "grace_expired")
+	}
 }
 
 // startRefresh launches the per-session token refresh loop, cancellable via st.refreshStop and joined

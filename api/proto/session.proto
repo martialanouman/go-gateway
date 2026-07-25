@@ -21,6 +21,33 @@ service SessionRegistry {
   rpc Lookup(LookupRequest) returns (LookupResponse);
   // Deliver forwards an already-encoded deliver_sm to the pod owning the target bind.
   rpc Deliver(DeliverRequest) returns (DeliverResponse);
+  // Disconnect force-closes the live sessions of an account or customer whose authorization has
+  // ceased after the bind (grace lapse, revocation, suspension). The registry fans the order out to
+  // every owning pod; the actual socket close happens asynchronously there (step-032).
+  rpc Disconnect(DisconnectRequest) returns (DisconnectResponse);
+}
+
+// DisconnectScope names what a Disconnect targets. A customer-wide scope suspends every account of a
+// customer without the caller enumerating them or issuing one call per account.
+enum DisconnectScope {
+  DISCONNECT_SCOPE_UNSPECIFIED = 0;
+  DISCONNECT_SCOPE_ACCOUNT = 1;
+  DISCONNECT_SCOPE_CUSTOMER = 2;
+}
+
+// DisconnectRequest names the account or customer whose sessions must be closed. id is the
+// corresponding UUID as a string; reason is a short machine label (e.g. "credential_revoked")
+// logged on the close, never a secret.
+message DisconnectRequest {
+  DisconnectScope scope = 1;
+  string id = 2;
+  string reason = 3;
+}
+
+// DisconnectResponse reports whether the order was published to the fan-out. Because pods close
+// their sessions asynchronously, it does not count the sessions actually closed.
+message DisconnectResponse {
+  bool published = 1;
 }
 
 // BindType mirrors control_plane.smpp_accounts.allowed_bind_types (a single kind per account).

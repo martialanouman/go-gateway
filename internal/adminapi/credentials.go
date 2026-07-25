@@ -2,6 +2,7 @@ package adminapi
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -54,10 +55,12 @@ type credentialWithSecretDTO struct {
 type credentialHandlers struct {
 	creds    CredentialStore
 	accounts AccountStore
+	disc     Disconnector
+	logger   *slog.Logger
 }
 
-func registerCredentials(api huma.API, creds CredentialStore, accounts AccountStore) {
-	h := &credentialHandlers{creds: creds, accounts: accounts}
+func registerCredentials(api huma.API, creds CredentialStore, accounts AccountStore, disc Disconnector, logger *slog.Logger) {
+	h := &credentialHandlers{creds: creds, accounts: accounts, disc: disc, logger: logger}
 
 	register(api, huma.Operation{
 		OperationID: "list-credentials", Method: http.MethodGet, Path: "/admin/smpp-accounts/{id}/credentials",
@@ -215,9 +218,15 @@ func (h *credentialHandlers) updateStatus(ctx context.Context, in *updateCredent
 	if err != nil {
 		return nil, err
 	}
-	c, err := h.creds.SetStatus(ctx, accountID, credID, cp.CredentialStatus(in.Body.Status))
+	status := cp.CredentialStatus(in.Body.Status)
+	c, err := h.creds.SetStatus(ctx, accountID, credID, status)
 	if err != nil {
 		return nil, humaerr.FromError(err)
+	}
+	// A credential that is no longer active must not keep its live binds open (step-032). Re-activating
+	// one, by contrast, closes nothing.
+	if status != cp.CredentialActive {
+		disconnectAccount(ctx, h.disc, h.logger, accountID, "credential_"+string(status))
 	}
 	return &credentialOutput{Body: toCredentialDTO(c)}, nil
 }
@@ -236,6 +245,8 @@ func (h *credentialHandlers) revoke(ctx context.Context, in *credentialIDInput) 
 	if _, err := h.creds.SetStatus(ctx, accountID, credID, cp.CredentialRevoked); err != nil {
 		return nil, humaerr.FromError(err)
 	}
+	// The revoked credential's live binds must fall, not just the next one be refused (step-032).
+	disconnectAccount(ctx, h.disc, h.logger, accountID, "credential_revoked")
 	return &deleteOutput{}, nil
 }
 

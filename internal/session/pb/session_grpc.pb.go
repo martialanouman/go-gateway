@@ -26,10 +26,11 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	SessionRegistry_Bind_FullMethodName    = "/session.SessionRegistry/Bind"
-	SessionRegistry_Unbind_FullMethodName  = "/session.SessionRegistry/Unbind"
-	SessionRegistry_Lookup_FullMethodName  = "/session.SessionRegistry/Lookup"
-	SessionRegistry_Deliver_FullMethodName = "/session.SessionRegistry/Deliver"
+	SessionRegistry_Bind_FullMethodName       = "/session.SessionRegistry/Bind"
+	SessionRegistry_Unbind_FullMethodName     = "/session.SessionRegistry/Unbind"
+	SessionRegistry_Lookup_FullMethodName     = "/session.SessionRegistry/Lookup"
+	SessionRegistry_Deliver_FullMethodName    = "/session.SessionRegistry/Deliver"
+	SessionRegistry_Disconnect_FullMethodName = "/session.SessionRegistry/Disconnect"
 )
 
 // SessionRegistryClient is the client API for SessionRegistry service.
@@ -47,6 +48,10 @@ type SessionRegistryClient interface {
 	Lookup(ctx context.Context, in *LookupRequest, opts ...grpc.CallOption) (*LookupResponse, error)
 	// Deliver forwards an already-encoded deliver_sm to the pod owning the target bind.
 	Deliver(ctx context.Context, in *DeliverRequest, opts ...grpc.CallOption) (*DeliverResponse, error)
+	// Disconnect force-closes the live sessions of an account or customer whose authorization has
+	// ceased after the bind (grace lapse, revocation, suspension). The registry fans the order out to
+	// every owning pod; the actual socket close happens asynchronously there (step-032).
+	Disconnect(ctx context.Context, in *DisconnectRequest, opts ...grpc.CallOption) (*DisconnectResponse, error)
 }
 
 type sessionRegistryClient struct {
@@ -97,6 +102,16 @@ func (c *sessionRegistryClient) Deliver(ctx context.Context, in *DeliverRequest,
 	return out, nil
 }
 
+func (c *sessionRegistryClient) Disconnect(ctx context.Context, in *DisconnectRequest, opts ...grpc.CallOption) (*DisconnectResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DisconnectResponse)
+	err := c.cc.Invoke(ctx, SessionRegistry_Disconnect_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SessionRegistryServer is the server API for SessionRegistry service.
 // All implementations must embed UnimplementedSessionRegistryServer
 // for forward compatibility.
@@ -112,6 +127,10 @@ type SessionRegistryServer interface {
 	Lookup(context.Context, *LookupRequest) (*LookupResponse, error)
 	// Deliver forwards an already-encoded deliver_sm to the pod owning the target bind.
 	Deliver(context.Context, *DeliverRequest) (*DeliverResponse, error)
+	// Disconnect force-closes the live sessions of an account or customer whose authorization has
+	// ceased after the bind (grace lapse, revocation, suspension). The registry fans the order out to
+	// every owning pod; the actual socket close happens asynchronously there (step-032).
+	Disconnect(context.Context, *DisconnectRequest) (*DisconnectResponse, error)
 	mustEmbedUnimplementedSessionRegistryServer()
 }
 
@@ -133,6 +152,9 @@ func (UnimplementedSessionRegistryServer) Lookup(context.Context, *LookupRequest
 }
 func (UnimplementedSessionRegistryServer) Deliver(context.Context, *DeliverRequest) (*DeliverResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Deliver not implemented")
+}
+func (UnimplementedSessionRegistryServer) Disconnect(context.Context, *DisconnectRequest) (*DisconnectResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Disconnect not implemented")
 }
 func (UnimplementedSessionRegistryServer) mustEmbedUnimplementedSessionRegistryServer() {}
 func (UnimplementedSessionRegistryServer) testEmbeddedByValue()                         {}
@@ -227,6 +249,24 @@ func _SessionRegistry_Deliver_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SessionRegistry_Disconnect_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DisconnectRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SessionRegistryServer).Disconnect(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SessionRegistry_Disconnect_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SessionRegistryServer).Disconnect(ctx, req.(*DisconnectRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // SessionRegistry_ServiceDesc is the grpc.ServiceDesc for SessionRegistry service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -249,6 +289,10 @@ var SessionRegistry_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Deliver",
 			Handler:    _SessionRegistry_Deliver_Handler,
+		},
+		{
+			MethodName: "Disconnect",
+			Handler:    _SessionRegistry_Disconnect_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

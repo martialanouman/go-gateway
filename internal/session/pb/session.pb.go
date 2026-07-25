@@ -28,6 +28,57 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// DisconnectScope names what a Disconnect targets. A customer-wide scope suspends every account of a
+// customer without the caller enumerating them or issuing one call per account.
+type DisconnectScope int32
+
+const (
+	DisconnectScope_DISCONNECT_SCOPE_UNSPECIFIED DisconnectScope = 0
+	DisconnectScope_DISCONNECT_SCOPE_ACCOUNT     DisconnectScope = 1
+	DisconnectScope_DISCONNECT_SCOPE_CUSTOMER    DisconnectScope = 2
+)
+
+// Enum value maps for DisconnectScope.
+var (
+	DisconnectScope_name = map[int32]string{
+		0: "DISCONNECT_SCOPE_UNSPECIFIED",
+		1: "DISCONNECT_SCOPE_ACCOUNT",
+		2: "DISCONNECT_SCOPE_CUSTOMER",
+	}
+	DisconnectScope_value = map[string]int32{
+		"DISCONNECT_SCOPE_UNSPECIFIED": 0,
+		"DISCONNECT_SCOPE_ACCOUNT":     1,
+		"DISCONNECT_SCOPE_CUSTOMER":    2,
+	}
+)
+
+func (x DisconnectScope) Enum() *DisconnectScope {
+	p := new(DisconnectScope)
+	*p = x
+	return p
+}
+
+func (x DisconnectScope) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (DisconnectScope) Descriptor() protoreflect.EnumDescriptor {
+	return file_session_proto_enumTypes[0].Descriptor()
+}
+
+func (DisconnectScope) Type() protoreflect.EnumType {
+	return &file_session_proto_enumTypes[0]
+}
+
+func (x DisconnectScope) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use DisconnectScope.Descriptor instead.
+func (DisconnectScope) EnumDescriptor() ([]byte, []int) {
+	return file_session_proto_rawDescGZIP(), []int{0}
+}
+
 // BindType mirrors control_plane.smpp_accounts.allowed_bind_types (a single kind per account).
 type BindType int32
 
@@ -65,11 +116,11 @@ func (x BindType) String() string {
 }
 
 func (BindType) Descriptor() protoreflect.EnumDescriptor {
-	return file_session_proto_enumTypes[0].Descriptor()
+	return file_session_proto_enumTypes[1].Descriptor()
 }
 
 func (BindType) Type() protoreflect.EnumType {
-	return &file_session_proto_enumTypes[0]
+	return &file_session_proto_enumTypes[1]
 }
 
 func (x BindType) Number() protoreflect.EnumNumber {
@@ -78,7 +129,116 @@ func (x BindType) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use BindType.Descriptor instead.
 func (BindType) EnumDescriptor() ([]byte, []int) {
+	return file_session_proto_rawDescGZIP(), []int{1}
+}
+
+// DisconnectRequest names the account or customer whose sessions must be closed. id is the
+// corresponding UUID as a string; reason is a short machine label (e.g. "credential_revoked")
+// logged on the close, never a secret.
+type DisconnectRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Scope         DisconnectScope        `protobuf:"varint,1,opt,name=scope,proto3,enum=session.DisconnectScope" json:"scope,omitempty"`
+	Id            string                 `protobuf:"bytes,2,opt,name=id,proto3" json:"id,omitempty"`
+	Reason        string                 `protobuf:"bytes,3,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DisconnectRequest) Reset() {
+	*x = DisconnectRequest{}
+	mi := &file_session_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DisconnectRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DisconnectRequest) ProtoMessage() {}
+
+func (x *DisconnectRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_session_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DisconnectRequest.ProtoReflect.Descriptor instead.
+func (*DisconnectRequest) Descriptor() ([]byte, []int) {
 	return file_session_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *DisconnectRequest) GetScope() DisconnectScope {
+	if x != nil {
+		return x.Scope
+	}
+	return DisconnectScope_DISCONNECT_SCOPE_UNSPECIFIED
+}
+
+func (x *DisconnectRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *DisconnectRequest) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+// DisconnectResponse reports whether the order was published to the fan-out. Because pods close
+// their sessions asynchronously, it does not count the sessions actually closed.
+type DisconnectResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Published     bool                   `protobuf:"varint,1,opt,name=published,proto3" json:"published,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DisconnectResponse) Reset() {
+	*x = DisconnectResponse{}
+	mi := &file_session_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DisconnectResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DisconnectResponse) ProtoMessage() {}
+
+func (x *DisconnectResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_session_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DisconnectResponse.ProtoReflect.Descriptor instead.
+func (*DisconnectResponse) Descriptor() ([]byte, []int) {
+	return file_session_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *DisconnectResponse) GetPublished() bool {
+	if x != nil {
+		return x.Published
+	}
+	return false
 }
 
 // Session identifies one live bind. account_id/system_id come from the control plane (account_id is a
@@ -96,7 +256,7 @@ type Session struct {
 
 func (x *Session) Reset() {
 	*x = Session{}
-	mi := &file_session_proto_msgTypes[0]
+	mi := &file_session_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -108,7 +268,7 @@ func (x *Session) String() string {
 func (*Session) ProtoMessage() {}
 
 func (x *Session) ProtoReflect() protoreflect.Message {
-	mi := &file_session_proto_msgTypes[0]
+	mi := &file_session_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -121,7 +281,7 @@ func (x *Session) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Session.ProtoReflect.Descriptor instead.
 func (*Session) Descriptor() ([]byte, []int) {
-	return file_session_proto_rawDescGZIP(), []int{0}
+	return file_session_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *Session) GetAccountId() string {
@@ -171,7 +331,7 @@ type BindRequest struct {
 
 func (x *BindRequest) Reset() {
 	*x = BindRequest{}
-	mi := &file_session_proto_msgTypes[1]
+	mi := &file_session_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -183,7 +343,7 @@ func (x *BindRequest) String() string {
 func (*BindRequest) ProtoMessage() {}
 
 func (x *BindRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_session_proto_msgTypes[1]
+	mi := &file_session_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -196,7 +356,7 @@ func (x *BindRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BindRequest.ProtoReflect.Descriptor instead.
 func (*BindRequest) Descriptor() ([]byte, []int) {
-	return file_session_proto_rawDescGZIP(), []int{1}
+	return file_session_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *BindRequest) GetSession() *Session {
@@ -224,7 +384,7 @@ type BindResponse struct {
 
 func (x *BindResponse) Reset() {
 	*x = BindResponse{}
-	mi := &file_session_proto_msgTypes[2]
+	mi := &file_session_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -236,7 +396,7 @@ func (x *BindResponse) String() string {
 func (*BindResponse) ProtoMessage() {}
 
 func (x *BindResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_session_proto_msgTypes[2]
+	mi := &file_session_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -249,7 +409,7 @@ func (x *BindResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BindResponse.ProtoReflect.Descriptor instead.
 func (*BindResponse) Descriptor() ([]byte, []int) {
-	return file_session_proto_rawDescGZIP(), []int{2}
+	return file_session_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *BindResponse) GetAccepted() bool {
@@ -277,7 +437,7 @@ type UnbindRequest struct {
 
 func (x *UnbindRequest) Reset() {
 	*x = UnbindRequest{}
-	mi := &file_session_proto_msgTypes[3]
+	mi := &file_session_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -289,7 +449,7 @@ func (x *UnbindRequest) String() string {
 func (*UnbindRequest) ProtoMessage() {}
 
 func (x *UnbindRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_session_proto_msgTypes[3]
+	mi := &file_session_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -302,7 +462,7 @@ func (x *UnbindRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UnbindRequest.ProtoReflect.Descriptor instead.
 func (*UnbindRequest) Descriptor() ([]byte, []int) {
-	return file_session_proto_rawDescGZIP(), []int{3}
+	return file_session_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *UnbindRequest) GetAccountId() string {
@@ -329,7 +489,7 @@ type UnbindResponse struct {
 
 func (x *UnbindResponse) Reset() {
 	*x = UnbindResponse{}
-	mi := &file_session_proto_msgTypes[4]
+	mi := &file_session_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -341,7 +501,7 @@ func (x *UnbindResponse) String() string {
 func (*UnbindResponse) ProtoMessage() {}
 
 func (x *UnbindResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_session_proto_msgTypes[4]
+	mi := &file_session_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -354,7 +514,7 @@ func (x *UnbindResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UnbindResponse.ProtoReflect.Descriptor instead.
 func (*UnbindResponse) Descriptor() ([]byte, []int) {
-	return file_session_proto_rawDescGZIP(), []int{4}
+	return file_session_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *UnbindResponse) GetRemoved() bool {
@@ -374,7 +534,7 @@ type LookupRequest struct {
 
 func (x *LookupRequest) Reset() {
 	*x = LookupRequest{}
-	mi := &file_session_proto_msgTypes[5]
+	mi := &file_session_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -386,7 +546,7 @@ func (x *LookupRequest) String() string {
 func (*LookupRequest) ProtoMessage() {}
 
 func (x *LookupRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_session_proto_msgTypes[5]
+	mi := &file_session_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -399,7 +559,7 @@ func (x *LookupRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LookupRequest.ProtoReflect.Descriptor instead.
 func (*LookupRequest) Descriptor() ([]byte, []int) {
-	return file_session_proto_rawDescGZIP(), []int{5}
+	return file_session_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *LookupRequest) GetAccountId() string {
@@ -419,7 +579,7 @@ type LookupResponse struct {
 
 func (x *LookupResponse) Reset() {
 	*x = LookupResponse{}
-	mi := &file_session_proto_msgTypes[6]
+	mi := &file_session_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -431,7 +591,7 @@ func (x *LookupResponse) String() string {
 func (*LookupResponse) ProtoMessage() {}
 
 func (x *LookupResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_session_proto_msgTypes[6]
+	mi := &file_session_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -444,7 +604,7 @@ func (x *LookupResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LookupResponse.ProtoReflect.Descriptor instead.
 func (*LookupResponse) Descriptor() ([]byte, []int) {
-	return file_session_proto_rawDescGZIP(), []int{6}
+	return file_session_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *LookupResponse) GetSessions() []*Session {
@@ -466,7 +626,7 @@ type DeliverRequest struct {
 
 func (x *DeliverRequest) Reset() {
 	*x = DeliverRequest{}
-	mi := &file_session_proto_msgTypes[7]
+	mi := &file_session_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -478,7 +638,7 @@ func (x *DeliverRequest) String() string {
 func (*DeliverRequest) ProtoMessage() {}
 
 func (x *DeliverRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_session_proto_msgTypes[7]
+	mi := &file_session_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -491,7 +651,7 @@ func (x *DeliverRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeliverRequest.ProtoReflect.Descriptor instead.
 func (*DeliverRequest) Descriptor() ([]byte, []int) {
-	return file_session_proto_rawDescGZIP(), []int{7}
+	return file_session_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *DeliverRequest) GetBindId() string {
@@ -518,7 +678,7 @@ type DeliverResponse struct {
 
 func (x *DeliverResponse) Reset() {
 	*x = DeliverResponse{}
-	mi := &file_session_proto_msgTypes[8]
+	mi := &file_session_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -530,7 +690,7 @@ func (x *DeliverResponse) String() string {
 func (*DeliverResponse) ProtoMessage() {}
 
 func (x *DeliverResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_session_proto_msgTypes[8]
+	mi := &file_session_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -543,7 +703,7 @@ func (x *DeliverResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeliverResponse.ProtoReflect.Descriptor instead.
 func (*DeliverResponse) Descriptor() ([]byte, []int) {
-	return file_session_proto_rawDescGZIP(), []int{8}
+	return file_session_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *DeliverResponse) GetDelivered() bool {
@@ -557,7 +717,13 @@ var File_session_proto protoreflect.FileDescriptor
 
 const file_session_proto_rawDesc = "" +
 	"\n" +
-	"\rsession.proto\x12\asession\"\xa5\x01\n" +
+	"\rsession.proto\x12\asession\"k\n" +
+	"\x11DisconnectRequest\x12.\n" +
+	"\x05scope\x18\x01 \x01(\x0e2\x18.session.DisconnectScopeR\x05scope\x12\x0e\n" +
+	"\x02id\x18\x02 \x01(\tR\x02id\x12\x16\n" +
+	"\x06reason\x18\x03 \x01(\tR\x06reason\"2\n" +
+	"\x12DisconnectResponse\x12\x1c\n" +
+	"\tpublished\x18\x01 \x01(\bR\tpublished\"\xa5\x01\n" +
 	"\aSession\x12\x1d\n" +
 	"\n" +
 	"account_id\x18\x01 \x01(\tR\taccountId\x12\x1b\n" +
@@ -586,17 +752,23 @@ const file_session_proto_rawDesc = "" +
 	"\abind_id\x18\x01 \x01(\tR\x06bindId\x12\x10\n" +
 	"\x03pdu\x18\x02 \x01(\fR\x03pdu\"/\n" +
 	"\x0fDeliverResponse\x12\x1c\n" +
-	"\tdelivered\x18\x01 \x01(\bR\tdelivered*\\\n" +
+	"\tdelivered\x18\x01 \x01(\bR\tdelivered*p\n" +
+	"\x0fDisconnectScope\x12 \n" +
+	"\x1cDISCONNECT_SCOPE_UNSPECIFIED\x10\x00\x12\x1c\n" +
+	"\x18DISCONNECT_SCOPE_ACCOUNT\x10\x01\x12\x1d\n" +
+	"\x19DISCONNECT_SCOPE_CUSTOMER\x10\x02*\\\n" +
 	"\bBindType\x12\x19\n" +
 	"\x15BIND_TYPE_UNSPECIFIED\x10\x00\x12\x10\n" +
 	"\fBIND_TYPE_TX\x10\x01\x12\x10\n" +
 	"\fBIND_TYPE_RX\x10\x02\x12\x11\n" +
-	"\rBIND_TYPE_TRX\x10\x032\xfa\x01\n" +
+	"\rBIND_TYPE_TRX\x10\x032\xc1\x02\n" +
 	"\x0fSessionRegistry\x123\n" +
 	"\x04Bind\x12\x14.session.BindRequest\x1a\x15.session.BindResponse\x129\n" +
 	"\x06Unbind\x12\x16.session.UnbindRequest\x1a\x17.session.UnbindResponse\x129\n" +
 	"\x06Lookup\x12\x16.session.LookupRequest\x1a\x17.session.LookupResponse\x12<\n" +
-	"\aDeliver\x12\x17.session.DeliverRequest\x1a\x18.session.DeliverResponseB=Z;github.com/martialanouman/go-gateway/internal/session/pb;pbb\x06proto3"
+	"\aDeliver\x12\x17.session.DeliverRequest\x1a\x18.session.DeliverResponse\x12E\n" +
+	"\n" +
+	"Disconnect\x12\x1a.session.DisconnectRequest\x1a\x1b.session.DisconnectResponseB=Z;github.com/martialanouman/go-gateway/internal/session/pb;pbb\x06proto3"
 
 var (
 	file_session_proto_rawDescOnce sync.Once
@@ -610,37 +782,43 @@ func file_session_proto_rawDescGZIP() []byte {
 	return file_session_proto_rawDescData
 }
 
-var file_session_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_session_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
+var file_session_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_session_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
 var file_session_proto_goTypes = []any{
-	(BindType)(0),           // 0: session.BindType
-	(*Session)(nil),         // 1: session.Session
-	(*BindRequest)(nil),     // 2: session.BindRequest
-	(*BindResponse)(nil),    // 3: session.BindResponse
-	(*UnbindRequest)(nil),   // 4: session.UnbindRequest
-	(*UnbindResponse)(nil),  // 5: session.UnbindResponse
-	(*LookupRequest)(nil),   // 6: session.LookupRequest
-	(*LookupResponse)(nil),  // 7: session.LookupResponse
-	(*DeliverRequest)(nil),  // 8: session.DeliverRequest
-	(*DeliverResponse)(nil), // 9: session.DeliverResponse
+	(DisconnectScope)(0),       // 0: session.DisconnectScope
+	(BindType)(0),              // 1: session.BindType
+	(*DisconnectRequest)(nil),  // 2: session.DisconnectRequest
+	(*DisconnectResponse)(nil), // 3: session.DisconnectResponse
+	(*Session)(nil),            // 4: session.Session
+	(*BindRequest)(nil),        // 5: session.BindRequest
+	(*BindResponse)(nil),       // 6: session.BindResponse
+	(*UnbindRequest)(nil),      // 7: session.UnbindRequest
+	(*UnbindResponse)(nil),     // 8: session.UnbindResponse
+	(*LookupRequest)(nil),      // 9: session.LookupRequest
+	(*LookupResponse)(nil),     // 10: session.LookupResponse
+	(*DeliverRequest)(nil),     // 11: session.DeliverRequest
+	(*DeliverResponse)(nil),    // 12: session.DeliverResponse
 }
 var file_session_proto_depIdxs = []int32{
-	0, // 0: session.Session.bind_type:type_name -> session.BindType
-	1, // 1: session.BindRequest.session:type_name -> session.Session
-	1, // 2: session.LookupResponse.sessions:type_name -> session.Session
-	2, // 3: session.SessionRegistry.Bind:input_type -> session.BindRequest
-	4, // 4: session.SessionRegistry.Unbind:input_type -> session.UnbindRequest
-	6, // 5: session.SessionRegistry.Lookup:input_type -> session.LookupRequest
-	8, // 6: session.SessionRegistry.Deliver:input_type -> session.DeliverRequest
-	3, // 7: session.SessionRegistry.Bind:output_type -> session.BindResponse
-	5, // 8: session.SessionRegistry.Unbind:output_type -> session.UnbindResponse
-	7, // 9: session.SessionRegistry.Lookup:output_type -> session.LookupResponse
-	9, // 10: session.SessionRegistry.Deliver:output_type -> session.DeliverResponse
-	7, // [7:11] is the sub-list for method output_type
-	3, // [3:7] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	0,  // 0: session.DisconnectRequest.scope:type_name -> session.DisconnectScope
+	1,  // 1: session.Session.bind_type:type_name -> session.BindType
+	4,  // 2: session.BindRequest.session:type_name -> session.Session
+	4,  // 3: session.LookupResponse.sessions:type_name -> session.Session
+	5,  // 4: session.SessionRegistry.Bind:input_type -> session.BindRequest
+	7,  // 5: session.SessionRegistry.Unbind:input_type -> session.UnbindRequest
+	9,  // 6: session.SessionRegistry.Lookup:input_type -> session.LookupRequest
+	11, // 7: session.SessionRegistry.Deliver:input_type -> session.DeliverRequest
+	2,  // 8: session.SessionRegistry.Disconnect:input_type -> session.DisconnectRequest
+	6,  // 9: session.SessionRegistry.Bind:output_type -> session.BindResponse
+	8,  // 10: session.SessionRegistry.Unbind:output_type -> session.UnbindResponse
+	10, // 11: session.SessionRegistry.Lookup:output_type -> session.LookupResponse
+	12, // 12: session.SessionRegistry.Deliver:output_type -> session.DeliverResponse
+	3,  // 13: session.SessionRegistry.Disconnect:output_type -> session.DisconnectResponse
+	9,  // [9:14] is the sub-list for method output_type
+	4,  // [4:9] is the sub-list for method input_type
+	4,  // [4:4] is the sub-list for extension type_name
+	4,  // [4:4] is the sub-list for extension extendee
+	0,  // [0:4] is the sub-list for field type_name
 }
 
 func init() { file_session_proto_init() }
@@ -653,8 +831,8 @@ func file_session_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_session_proto_rawDesc), len(file_session_proto_rawDesc)),
-			NumEnums:      1,
-			NumMessages:   9,
+			NumEnums:      2,
+			NumMessages:   11,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

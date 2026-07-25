@@ -130,7 +130,7 @@ func TestAuthorize(t *testing.T) {
 			if tc.name == "wrong password is invalid password" {
 				pw = "wrong"
 			}
-			_, got := l.authorize(context.Background(), session.BindRequest{
+			_, got, _ := l.authorize(context.Background(), session.BindRequest{
 				Mode:     tc.mode,
 				SystemID: "sid-1",
 				Password: pw,
@@ -243,7 +243,7 @@ func TestAuthorizeRotationGrace(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			opts := Options{Now: func() time.Time { return graceNow }}
 			l := New(fakeStore{cred: tc.cred, found: true}, nil, nil, opts, slog.New(slog.DiscardHandler))
-			_, got := l.authorize(context.Background(), session.BindRequest{
+			_, got, _ := l.authorize(context.Background(), session.BindRequest{
 				Mode:     session.BindTransceiver,
 				SystemID: "sid-1",
 				Password: tc.password,

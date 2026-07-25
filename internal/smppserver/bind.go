@@ -17,7 +17,8 @@ import (
 )
 
 // authorize authenticates and authorises a bind against the control plane, returning the resolved
-// credential and smpp.StatusOK on success, or a rejection command_status. It performs no registry
+// credential, smpp.StatusOK, and whether the grace (previous) secret is what authenticated it. On
+// failure it returns a rejection command_status and viaGrace=false. It performs no registry
 // interaction — reserving the session token (invariant d) is the caller's next step.
 //
 // The failure codes are deliberate (§11.3): an unknown system_id and a wrong password both answer
@@ -28,15 +29,16 @@ import (
 // A secret that fails against the current hash gets a second chance against the superseded one while a
 // rotation grace window is open (graceIsOpen), so a rotation does not sever live ESMEs. Both attempts
 // go through credential.VerifyBindPassword and so share its constant-time comparison and its refusal
-// of malformed hashes. Past the deadline the previous secret is simply never tried again.
-func (l *Listener) authorize(ctx context.Context, req session.BindRequest) (cp.BindCredential, uint32) {
+// of malformed hashes. Past the deadline the previous secret is simply never tried again. viaGrace lets
+// the caller arm the pod-local cutoff that closes this session when the grace window ends (step-032).
+func (l *Listener) authorize(ctx context.Context, req session.BindRequest) (cred cp.BindCredential, cmdStatus uint32, viaGrace bool) {
 	cred, found, err := l.creds.BindCredentialBySystemID(ctx, req.SystemID)
 	if err != nil {
 		l.logger.ErrorContext(ctx, "smpp bind: credential lookup failed", "err", err)
-		return cp.BindCredential{}, errs.StatusSysErr
+		return cp.BindCredential{}, errs.StatusSysErr, false
 	}
 	if !found {
-		return cp.BindCredential{}, errs.StatusInvalidPasswd
+		return cp.BindCredential{}, errs.StatusInvalidPasswd, false
 	}
 
 	ok, err := credential.VerifyBindPassword(req.Password, cred.PasswordHash)
@@ -45,7 +47,7 @@ func (l *Listener) authorize(ctx context.Context, req session.BindRequest) (cp.B
 		// bind (never accept on a broken hash) and log without the secret.
 		l.logger.ErrorContext(ctx, "smpp bind: stored password hash malformed",
 			"err", err, "account_id", cred.AccountID)
-		return cp.BindCredential{}, errs.StatusInvalidPasswd
+		return cp.BindCredential{}, errs.StatusInvalidPasswd, false
 	}
 	if !ok && graceIsOpen(cred, l.opts.Now()) {
 		// No early return on error, unlike the branch above: VerifyBindPassword reports (false, err), so a
@@ -54,24 +56,25 @@ func (l *Listener) authorize(ctx context.Context, req session.BindRequest) (cp.B
 			l.logger.ErrorContext(ctx, "smpp bind: stored previous secret hash malformed",
 				"err", err, "account_id", cred.AccountID)
 		}
+		viaGrace = ok
 	}
 	if !ok {
-		return cp.BindCredential{}, errs.StatusInvalidPasswd
+		return cp.BindCredential{}, errs.StatusInvalidPasswd, false
 	}
 
 	if cred.CredentialStatus != cp.CredentialActive {
-		return cp.BindCredential{}, errs.StatusBindFail
+		return cp.BindCredential{}, errs.StatusBindFail, false
 	}
 	if !cred.SMPPEnabled {
-		return cp.BindCredential{}, errs.StatusBindFail
+		return cp.BindCredential{}, errs.StatusBindFail, false
 	}
 	if cred.EffectiveStatus() != cp.AccountActive {
-		return cp.BindCredential{}, errs.StatusBindFail
+		return cp.BindCredential{}, errs.StatusBindFail, false
 	}
 	if cred.AllowedBindType != bindTypeForMode(req.Mode) {
-		return cp.BindCredential{}, errs.StatusBindFail
+		return cp.BindCredential{}, errs.StatusBindFail, false
 	}
-	return cred, smpp.StatusOK
+	return cred, smpp.StatusOK, viaGrace
 }
 
 // graceIsOpen reports whether cred carries a rotation grace window still open at now, i.e. whether the

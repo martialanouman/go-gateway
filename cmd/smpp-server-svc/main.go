@@ -29,6 +29,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/ingest"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/platform/supervisor"
+	"github.com/martialanouman/go-gateway/internal/session/disconnect"
 	registrypb "github.com/martialanouman/go-gateway/internal/session/pb"
 	"github.com/martialanouman/go-gateway/internal/smppserver"
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
@@ -192,6 +193,12 @@ func run() error {
 	g.Add("ops server", func(c context.Context) error { return ops.Run(c, cfg.ShutdownTimeout) })
 	g.Add("accepted writer", accepted.Run)
 	g.Add("smpp listener", listener.Run)
+	// The disconnect subscriber force-closes this pod's sessions when a revocation or suspension is
+	// fanned out by session-manager (step-032). It is fail-open (a Redis blip degrades disconnects, not
+	// binds), so it is registered after the listener — it drains first, before connections are cut.
+	g.Add("disconnect subscriber", func(c context.Context) error {
+		return smppserver.RunDisconnectSubscriber(c, redisstore.Subscribe(c, rdb, disconnect.Channel), listener, logger)
+	})
 	if err := g.Run(ctx, logger); err != nil {
 		return err
 	}

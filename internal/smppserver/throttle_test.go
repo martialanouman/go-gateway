@@ -83,7 +83,7 @@ func TestOnBindThrottleBlocks(t *testing.T) {
 	ft := &fakeThrottle{dec: bindthrottle.Decision{Blocked: true, RetryAfter: 0, Failures: 7}}
 	l := New(store, nil, nil, Options{Throttle: ft}, discardLog())
 
-	res := l.onBind(context.Background(), &connState{bindID: "b1"}, "10.0.0.1")(
+	res := l.onBind(context.Background(), &connState{bindID: "b1"}, "10.0.0.1", nil)(
 		context.Background(), session.BindRequest{SystemID: "sid-1", Password: "pw"})
 
 	if res.Status != errs.StatusInvalidPasswd {
@@ -106,7 +106,7 @@ func TestOnBindRecordsAuthFailure(t *testing.T) {
 	ft := &fakeThrottle{dec: bindthrottle.Decision{Blocked: false}}
 	l := New(store, nil, nil, Options{Throttle: ft}, discardLog())
 
-	res := l.onBind(context.Background(), &connState{bindID: "b1"}, "10.0.0.1")(
+	res := l.onBind(context.Background(), &connState{bindID: "b1"}, "10.0.0.1", nil)(
 		context.Background(), session.BindRequest{SystemID: "sid-1", Password: "pw"})
 
 	if res.Status != errs.StatusInvalidPasswd {
@@ -129,7 +129,7 @@ func TestOnBindSuccessResets(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel) // stop the refresh goroutine started on success
 
-	res := l.onBind(ctx, &connState{bindID: "b1"}, "10.0.0.1")(
+	res := l.onBind(ctx, &connState{bindID: "b1"}, "10.0.0.1", nil)(
 		ctx, session.BindRequest{SystemID: "sid-42", Password: testPassword, Mode: session.BindTransceiver})
 
 	if res.Status != smpp.StatusOK {
@@ -153,7 +153,7 @@ func TestOnBindFailsOpenOnThrottleError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	res := l.onBind(ctx, &connState{bindID: "b1"}, "10.0.0.1")(
+	res := l.onBind(ctx, &connState{bindID: "b1"}, "10.0.0.1", nil)(
 		ctx, session.BindRequest{SystemID: "sid-1", Password: testPassword, Mode: session.BindTransceiver})
 
 	if res.Status != smpp.StatusOK {
@@ -172,7 +172,7 @@ func TestThrottleSecurityEventNoSecret(t *testing.T) {
 	ft := &fakeThrottle{dec: bindthrottle.Decision{Blocked: true, Failures: 9}}
 	l := New(&fakeStore{}, nil, nil, Options{Throttle: ft}, logger)
 
-	l.onBind(context.Background(), &connState{bindID: "b1"}, "203.0.113.7")(
+	l.onBind(context.Background(), &connState{bindID: "b1"}, "203.0.113.7", nil)(
 		context.Background(), session.BindRequest{SystemID: sid, Password: pw})
 
 	out := buf.String()
@@ -195,7 +195,7 @@ func TestThrottleBlockedMetricLabelled(t *testing.T) {
 	ft := &fakeThrottle{dec: bindthrottle.Decision{Blocked: true, Subject: bindthrottle.SubjectIP, Failures: 6}}
 	l := New(&fakeStore{}, nil, nil, Options{Throttle: ft, ThrottleBlocked: vec}, discardLog())
 
-	l.onBind(context.Background(), &connState{bindID: "b1"}, "10.0.0.1")(
+	l.onBind(context.Background(), &connState{bindID: "b1"}, "10.0.0.1", nil)(
 		context.Background(), session.BindRequest{SystemID: "sid", Password: "pw"})
 
 	if got := counterValue(t, vec.WithLabelValues(bindthrottle.SubjectIP)); got != 1 {

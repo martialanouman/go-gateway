@@ -2,6 +2,7 @@ package adminapi
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -140,11 +141,13 @@ type customerPage struct {
 
 // customerHandlers holds the store the customer operations use.
 type customerHandlers struct {
-	store CustomerStore
+	store  CustomerStore
+	disc   Disconnector
+	logger *slog.Logger
 }
 
-func registerCustomers(api huma.API, store CustomerStore) {
-	h := &customerHandlers{store: store}
+func registerCustomers(api huma.API, store CustomerStore, disc Disconnector, logger *slog.Logger) {
+	h := &customerHandlers{store: store, disc: disc, logger: logger}
 
 	register(api, huma.Operation{
 		OperationID: "list-customers", Method: http.MethodGet, Path: "/admin/customers",
@@ -289,6 +292,11 @@ func (h *customerHandlers) update(ctx context.Context, in *updateCustomerInput) 
 	if err != nil {
 		return nil, humaerr.FromError(err)
 	}
+	// A customer left non-active by this update loses its live binds too (step-032), covering the
+	// status-PATCH path alongside the dedicated suspend endpoint.
+	if c.Status != cp.CustomerActive {
+		disconnectCustomer(ctx, h.disc, h.logger, id, "customer_"+string(c.Status))
+	}
 	return &customerOutput{Body: toCustomerDTO(c)}, nil
 }
 
@@ -314,6 +322,9 @@ func (h *customerHandlers) suspend(ctx context.Context, in *customerIDInput) (*c
 	if err != nil {
 		return nil, humaerr.FromError(err)
 	}
+	// Suspending a customer cascades to its accounts (in the store) and must fell their live binds too
+	// (step-032), not merely refuse the next one.
+	disconnectCustomer(ctx, h.disc, h.logger, id, "customer_suspended")
 	return &customerOutput{Body: toCustomerDTO(c)}, nil
 }
 

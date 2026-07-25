@@ -27,6 +27,11 @@ import (
 // request (deliver_sm) when Config.ResponseTimeout is unset.
 const defaultResponseTimeout = 10 * time.Second
 
+// unbindWriteTimeout bounds the best-effort outbound unbind sent by Close, so an unresponsive peer
+// with a full send buffer can never pin the caller (a force-disconnect may close many sessions in a
+// row). It only applies when the connection supports SetWriteDeadline.
+const unbindWriteTimeout = 5 * time.Second
+
 // ErrClosed is returned by Send when the session is shutting down.
 var ErrClosed = errors.New("session: closed")
 
@@ -159,6 +164,36 @@ func (s *Session) reply(pdu smpp.PDU) {
 	if err := s.write(pdu); err != nil && !s.isClosing() {
 		s.logger.Error("session: write failed", "err", err, "command", pdu.CommandID())
 	}
+}
+
+// Close terminates a session from the server side: it makes a best-effort attempt to send an
+// outbound unbind — so a well-behaved ESME sees an orderly close rather than a bare socket reset —
+// then closes the connection, which makes Serve return. It is how step-032 force-disconnects a bind
+// whose authorization has ceased (grace lapse, revocation, suspension). It never waits for the
+// unbind_resp (a silent peer must not hold the close open) and never blocks indefinitely on the
+// write (bounded by unbindWriteTimeout). Close is idempotent and safe to call from another
+// goroutine: a second call, or a call racing the session's own teardown, is a no-op.
+func (s *Session) Close() {
+	s.sendUnbind()
+	s.shutdown()
+}
+
+// sendUnbind writes a single server-initiated unbind, bounded by a write deadline when the
+// connection supports one. A write failure (closed session, timed-out peer) is deliberately ignored:
+// the unbind is a courtesy, and shutdown closes the socket regardless.
+//
+// The deadline is set OUTSIDE writeMu, on purpose. If the read loop holds writeMu blocked in a write
+// to a stalled peer, sendUnbind cannot acquire the lock; setting the connection-wide deadline first
+// unblocks that wedged write so Close never hangs indefinitely (the non-blocking guarantee). The cost
+// is that a concurrent in-progress write on a session being destroyed may be cut at the deadline —
+// acceptable, since the socket is about to close anyway. Do NOT move this inside write()/writeMu: that
+// reintroduces the unbounded block this is here to prevent.
+func (s *Session) sendUnbind() {
+	if d, ok := s.conn.(interface{ SetWriteDeadline(time.Time) error }); ok {
+		_ = d.SetWriteDeadline(time.Now().Add(unbindWriteTimeout))
+		defer func() { _ = d.SetWriteDeadline(time.Time{}) }()
+	}
+	_ = s.write(smpp.PDU{Sequence: s.serverSeq.Add(1), Body: &smpp.Unbind{}})
 }
 
 func (s *Session) shutdown() {

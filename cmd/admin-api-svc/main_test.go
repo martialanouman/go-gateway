@@ -12,9 +12,11 @@ import (
 func TestRunRequiresAdminTokensInProduction(t *testing.T) {
 	t.Setenv("ENVIRONMENT", "production")
 	t.Setenv("OTEL_SDK_DISABLED", "true")
-	// A non-localhost URL so the production config guard passes; the pool is never opened because the
-	// token check fires first.
+	// Non-localhost dependency addresses so the production config guards pass; the pool and the
+	// session-manager client are never opened because the token check fires first. SMPP_SESSION_MANAGER_ADDR
+	// is required now that the Admin API calls session-manager to force-disconnect on revoke/suspend (step-032).
 	t.Setenv("POSTGRES_URL", "postgres://u:p@db.internal:5432/gw")
+	t.Setenv("SMPP_SESSION_MANAGER_ADDR", "session-manager.internal:7000")
 	// HTTP_ADMIN_TOKENS deliberately unset.
 
 	err := run()

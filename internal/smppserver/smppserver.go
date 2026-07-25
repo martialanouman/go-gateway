@@ -138,6 +138,13 @@ type Listener struct {
 
 	wg sync.WaitGroup
 
+	// sessMu guards sessions, the pod-local registry of live binds keyed by bind_id. It backs the
+	// downward force-disconnect (step-032): a Disconnect order iterates it to close the sessions this
+	// pod owns for a revoked/suspended account or customer. It is separate from mu (which only guards
+	// addr) so the disconnect fan-out never contends with Addr.
+	sessMu   sync.Mutex
+	sessions map[string]*liveSession
+
 	// ready is closed once Run has bound the listener, publishing addr. It lets Addr report the
 	// resolved port after an ephemeral (":0") bind.
 	ready chan struct{}
@@ -165,7 +172,15 @@ func New(creds CredentialStore, registry Registry, ingestor Ingestor, opts Optio
 	if opts.MaxConns <= 0 {
 		opts.MaxConns = defaultMaxConns
 	}
-	return &Listener{creds: creds, registry: registry, ingestor: ingestor, opts: opts, logger: logger, ready: make(chan struct{})}
+	return &Listener{
+		creds:    creds,
+		registry: registry,
+		ingestor: ingestor,
+		opts:     opts,
+		logger:   logger,
+		sessions: make(map[string]*liveSession),
+		ready:    make(chan struct{}),
+	}
 }
 
 // Addr blocks until Run has bound the listener, then returns its resolved address, or ctx's error if
