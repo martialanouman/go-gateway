@@ -171,6 +171,95 @@ func DecodeRouted(rec kafka.Record) (RoutedMT, error) {
 	}, nil
 }
 
+// moWire is the JSON body of an mo.inbound record. Body is the revealed plaintext as base64 ([]byte),
+// the same audited pattern as the MT envelopes.
+type moWire struct {
+	ConnectorID uuid.UUID `json:"connector_id"`
+	From        string    `json:"from"`
+	To          string    `json:"to"`
+	Body        []byte    `json:"body"`
+	DataCoding  uint8     `json:"data_coding"`
+	ESMClass    uint8     `json:"esm_class,omitempty"`
+	ReceivedAt  time.Time `json:"received_at"`
+}
+
+// dlrWire is the JSON body of a dlr.events record. A receipt carries no message body.
+type dlrWire struct {
+	ConnectorID   uuid.UUID `json:"connector_id"`
+	SMSCMessageID string    `json:"smsc_message_id"`
+	State         uint8     `json:"state"`
+	Stat          string    `json:"stat,omitempty"`
+	ErrorCode     string    `json:"error_code,omitempty"`
+	SubmitDate    string    `json:"submit_date,omitempty"`
+	DoneDate      string    `json:"done_date,omitempty"`
+	ReceivedAt    time.Time `json:"received_at"`
+}
+
+// EncodeMO builds the mo.inbound record for env, keyed by the inbound number so one number's MO keep
+// their partition order (the account is resolved downstream, step-045). It carries no id headers: an
+// MO has no message/account id yet.
+func EncodeMO(env MOInbound) (kafka.Record, error) {
+	value, err := json.Marshal(moWire{
+		ConnectorID: env.ConnectorID,
+		From:        env.From,
+		To:          env.To,
+		Body:        env.Body.Reveal(), // audited: body -> durable value, never a header
+		DataCoding:  env.DataCoding,
+		ESMClass:    env.ESMClass,
+		ReceivedAt:  env.ReceivedAt,
+	})
+	if err != nil {
+		return kafka.Record{}, fmt.Errorf("pipeline: encode mo.inbound: %w", err)
+	}
+	return kafka.Record{
+		Topic: kafka.TopicMOInbound,
+		Key:   []byte(env.To),
+		Value: value,
+	}, nil
+}
+
+// DecodeMO parses an mo.inbound record, re-wrapping the body into msg.Body immediately.
+func DecodeMO(rec kafka.Record) (MOInbound, error) {
+	var w moWire
+	if err := json.Unmarshal(rec.Value, &w); err != nil {
+		return MOInbound{}, fmt.Errorf("pipeline: decode mo.inbound: %w", err)
+	}
+	return MOInbound{
+		ConnectorID: w.ConnectorID,
+		From:        w.From,
+		To:          w.To,
+		Body:        msg.NewBody(w.Body),
+		DataCoding:  w.DataCoding,
+		ESMClass:    w.ESMClass,
+		ReceivedAt:  w.ReceivedAt,
+	}, nil
+}
+
+// EncodeDLR builds the dlr.events record for env, keyed by the SMSC message id so a message's receipts
+// stay ordered and land where the correlator (step-044) looks them up. A DLR carries no body, so its
+// wire form is field-identical to the domain type — the conversion keeps the two in lockstep (a new
+// field on one must be added to the other or this stops compiling).
+func EncodeDLR(env DLREvent) (kafka.Record, error) {
+	value, err := json.Marshal(dlrWire(env))
+	if err != nil {
+		return kafka.Record{}, fmt.Errorf("pipeline: encode dlr.events: %w", err)
+	}
+	return kafka.Record{
+		Topic: kafka.TopicDLREvents,
+		Key:   []byte(env.SMSCMessageID),
+		Value: value,
+	}, nil
+}
+
+// DecodeDLR parses a dlr.events record.
+func DecodeDLR(rec kafka.Record) (DLREvent, error) {
+	var w dlrWire
+	if err := json.Unmarshal(rec.Value, &w); err != nil {
+		return DLREvent{}, fmt.Errorf("pipeline: decode dlr.events: %w", err)
+	}
+	return DLREvent(w), nil
+}
+
 // idHeaders builds the identifier headers every pipeline record carries (§7.3). Identifiers only —
 // never the body.
 func idHeaders(messageID, traceID, accountID, customerID uuid.UUID) []kafka.Header {

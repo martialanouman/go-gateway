@@ -73,12 +73,31 @@ func (noopDLRMap) Put(context.Context, uuid.UUID, string, uuid.UUID, uuid.UUID, 
 	return nil
 }
 
+// Producer publishes the return path (mo.inbound, dlr.events) durably. *kafka.Producer satisfies it.
+// New defaults a nil Producer to a no-op, so a bind with no producer wired acknowledges deliver_sm as
+// before (the M2 behaviour) rather than panicking.
+type Producer interface {
+	Produce(ctx context.Context, rec kafka.Record) error
+}
+
+// noopProducer is the New default when no producer is wired: it drops the record. With it, a
+// deliver_sm is acknowledged without publishing (the pre-M4 behaviour), which the MT-only tests rely
+// on.
+type noopProducer struct{}
+
+func (noopProducer) Produce(context.Context, kafka.Record) error { return nil }
+
 // Deps are the connector pool's collaborators.
 type Deps struct {
 	Consumer    Consumer
 	CDR         CDRWriter
 	CancelFlags CancelFlags
 	DLRMap      DLRMap
+	Producer    Producer
+	// ConnectorID identifies the SMSC link this pool binds, stamped onto every mo.inbound / dlr.events
+	// record so the return-path router can correlate a receipt (step-044). At M2 it is injected from
+	// env; M3+ sources it from the connectors control plane.
+	ConnectorID uuid.UUID
 	Bind        BindConfig
 	Tracer      trace.Tracer
 	Logger      *slog.Logger
@@ -106,6 +125,9 @@ func New(deps Deps) *Service {
 	if deps.DLRMap == nil {
 		deps.DLRMap = noopDLRMap{}
 	}
+	if deps.Producer == nil {
+		deps.Producer = noopProducer{}
+	}
 	return &Service{deps: deps}
 }
 
@@ -128,7 +150,7 @@ func (s *Service) BindReady(context.Context) error {
 // Kafka forever with a dead bind while the pod stayed Ready. When that happens Run flips readiness,
 // tears the consumer down and returns an error so the supervisor re-dials.
 func (s *Service) Run(ctx context.Context) error {
-	b, err := dialAndBind(ctx, s.deps.Bind, s.deps.Logger)
+	b, err := dialAndBind(ctx, s.deps.Bind, s.deps.Logger, s.handleDeliver)
 	if err != nil {
 		return err
 	}

@@ -39,6 +39,18 @@ func (s *Server) SendDLR(smscMsgID string, state DLRState) error {
 	return s.sendToReceivers(pdu)
 }
 
+// SendMO emits a mobile-originated deliver_sm (not a delivery receipt) from source to dest carrying
+// body, to every bound receiver/transceiver. esm_class is left at the default (no MC-delivery-receipt
+// bit), so the connector classifies it as an MO. It mirrors SendDLR for the return-path tests.
+func (s *Server) SendMO(source, dest, body string) error {
+	pdu := &smpp.DeliverSM{}
+	pdu.ESMClass = smpp.ESMClassDefault
+	pdu.SourceAddr = source
+	pdu.DestinationAddr = dest
+	pdu.ShortMessage = []byte(body)
+	return s.sendToReceivers(smpp.PDU{Sequence: s.seq.Add(1), Body: pdu})
+}
+
 // sendToReceivers writes pdu to every connection eligible to receive deliver_sm.
 func (s *Server) sendToReceivers(pdu smpp.PDU) error {
 	s.mu.Lock()
