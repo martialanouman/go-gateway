@@ -316,6 +316,48 @@ func (s InboundNumberStatus) Valid() bool {
 	}
 }
 
+// MatchType is how an inbound keyword is matched against a shared number's MO text
+// (control_plane.inbound_keywords.match_type): an exact word, a leading prefix, or a regexp.
+type MatchType string
+
+// The inbound-keyword match modes.
+const (
+	MatchExact  MatchType = "exact"
+	MatchPrefix MatchType = "prefix"
+	MatchRegex  MatchType = "regex"
+)
+
+// Valid reports whether m is a published match type.
+func (m MatchType) Valid() bool {
+	switch m {
+	case MatchExact, MatchPrefix, MatchRegex:
+		return true
+	default:
+		return false
+	}
+}
+
+// InboundKeywordStatus is an inbound keyword's enablement state
+// (control_plane.inbound_keywords.status). It shares its values with InboundNumberStatus but is a
+// distinct type: the two are not interchangeable and the type system should keep them apart.
+type InboundKeywordStatus string
+
+// The inbound-keyword enablement states.
+const (
+	InboundKeywordActive   InboundKeywordStatus = "active"
+	InboundKeywordDisabled InboundKeywordStatus = "disabled"
+)
+
+// Valid reports whether s is a published inbound-keyword status.
+func (s InboundKeywordStatus) Valid() bool {
+	switch s {
+	case InboundKeywordActive, InboundKeywordDisabled:
+		return true
+	default:
+		return false
+	}
+}
+
 // ConnectorStatus is an SMSC connector's coarse config status
 // (control_plane.smsc_connectors.status). It is distinct from runtime health (link_status,
 // breaker_state), which is never conflated with it.

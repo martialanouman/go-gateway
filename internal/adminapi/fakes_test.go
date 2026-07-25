@@ -643,3 +643,86 @@ func (s *fakeInboundNumberStore) Assign(_ context.Context, id uuid.UUID, account
 	s.byID[id] = n
 	return n, nil
 }
+
+// fakeInboundKeywordStore is an in-memory InboundKeywordStore for handler unit tests. Every operation
+// is scoped by inbound_number_id: a keyword whose number differs from the path id is invisible, so the
+// scoping the real query enforces is exercised without Docker.
+type fakeInboundKeywordStore struct {
+	mu        sync.Mutex
+	byID      map[uuid.UUID]cp.InboundKeyword
+	order     []uuid.UUID
+	createErr error
+}
+
+func newFakeInboundKeywordStore() *fakeInboundKeywordStore {
+	return &fakeInboundKeywordStore{byID: map[uuid.UUID]cp.InboundKeyword{}}
+}
+
+func (s *fakeInboundKeywordStore) Create(_ context.Context, in cp.NewInboundKeyword) (cp.InboundKeyword, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.createErr != nil {
+		return cp.InboundKeyword{}, s.createErr
+	}
+	kw := cp.InboundKeyword{
+		ID:              uuid.New(),
+		InboundNumberID: in.InboundNumberID,
+		Keyword:         in.Keyword,
+		MatchType:       in.MatchType,
+		AccountID:       in.AccountID,
+		Priority:        in.Priority,
+		Status:          cp.InboundKeywordActive,
+	}
+	s.byID[kw.ID] = kw
+	s.order = append(s.order, kw.ID)
+	return kw, nil
+}
+
+func (s *fakeInboundKeywordStore) ListByInboundNumber(_ context.Context, inboundNumberID uuid.UUID) ([]cp.InboundKeyword, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]cp.InboundKeyword, 0)
+	for _, id := range s.order {
+		if kw := s.byID[id]; kw.InboundNumberID == inboundNumberID {
+			out = append(out, kw)
+		}
+	}
+	return out, nil
+}
+
+func (s *fakeInboundKeywordStore) Update(_ context.Context, inboundNumberID, keywordID uuid.UUID, p cp.InboundKeywordPatch) (cp.InboundKeyword, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	kw, ok := s.byID[keywordID]
+	if !ok || kw.InboundNumberID != inboundNumberID {
+		return cp.InboundKeyword{}, errs.ErrNotFound
+	}
+	if p.Keyword != nil {
+		kw.Keyword = *p.Keyword
+	}
+	if p.MatchType != nil {
+		kw.MatchType = *p.MatchType
+	}
+	if p.AccountID != nil {
+		kw.AccountID = *p.AccountID
+	}
+	if p.Priority != nil {
+		kw.Priority = *p.Priority
+	}
+	if p.Status != nil {
+		kw.Status = *p.Status
+	}
+	s.byID[keywordID] = kw
+	return kw, nil
+}
+
+func (s *fakeInboundKeywordStore) Delete(_ context.Context, inboundNumberID, keywordID uuid.UUID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	kw, ok := s.byID[keywordID]
+	if !ok || kw.InboundNumberID != inboundNumberID {
+		return errs.ErrNotFound
+	}
+	delete(s.byID, keywordID)
+	return nil
+}

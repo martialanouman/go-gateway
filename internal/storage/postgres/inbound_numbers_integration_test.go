@@ -43,8 +43,18 @@ func TestInboundNumberRepoCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List() error = %v", err)
 	}
-	if len(list) != 1 || list[0].ID != created.ID {
-		t.Errorf("List() = %+v, want the one created number", list)
+	// List returns every inbound number in the shared test database, so assert the created one is
+	// present rather than that it is the only row — sibling tests (e.g. the keyword suite) legitimately
+	// add their own numbers to the same table.
+	found := false
+	for _, n := range list {
+		if n.ID == created.ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("List() = %+v, does not contain the created number %s", list, created.ID)
 	}
 
 	disabled := cp.InboundNumberDisabled

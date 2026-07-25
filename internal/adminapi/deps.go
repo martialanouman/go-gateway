@@ -85,6 +85,17 @@ type InboundNumberStore interface {
 	Assign(ctx context.Context, id uuid.UUID, accountID *uuid.UUID) (cp.InboundNumber, error)
 }
 
+// InboundKeywordStore is the persistence the inbound-keyword handlers need. Every operation is scoped
+// by inbound_number_id (the path id): keywords are nested under a shared inbound number, so update and
+// delete address a keyword only within its number. List returns a bare slice; the contract does not
+// paginate keywords.
+type InboundKeywordStore interface {
+	Create(ctx context.Context, in cp.NewInboundKeyword) (cp.InboundKeyword, error)
+	ListByInboundNumber(ctx context.Context, inboundNumberID uuid.UUID) ([]cp.InboundKeyword, error)
+	Update(ctx context.Context, inboundNumberID, keywordID uuid.UUID, p cp.InboundKeywordPatch) (cp.InboundKeyword, error)
+	Delete(ctx context.Context, inboundNumberID, keywordID uuid.UUID) error
+}
+
 // Disconnector force-closes the live SMPP sessions whose authorization has ceased (a revoked or
 // disabled credential, a suspended account or customer), so a control-plane change reaches sessions
 // already bound (step-032). It is best-effort: the control-plane mutation is authoritative and must
@@ -100,14 +111,15 @@ type Disconnector interface {
 // New tolerates a nil store (the contract test builds the API without any), but a running server
 // wires them all.
 type Deps struct {
-	Customers      CustomerStore
-	Accounts       AccountStore
-	Credentials    CredentialStore
-	Connectors     ConnectorStore
-	Routes         RouteStore
-	SenderIDs      SenderIDStore
-	InboundNumbers InboundNumberStore
-	Disconnector   Disconnector
-	Verifier       auth.TokenVerifier
-	Logger         *slog.Logger
+	Customers       CustomerStore
+	Accounts        AccountStore
+	Credentials     CredentialStore
+	Connectors      ConnectorStore
+	Routes          RouteStore
+	SenderIDs       SenderIDStore
+	InboundNumbers  InboundNumberStore
+	InboundKeywords InboundKeywordStore
+	Disconnector    Disconnector
+	Verifier        auth.TokenVerifier
+	Logger          *slog.Logger
 }
