@@ -81,6 +81,7 @@ type connState struct {
 	accountID       uuid.UUID
 	customerID      uuid.UUID
 	bindID          string
+	mode            session.BindMode
 	maxSessions     int32
 	querySMEnabled  bool
 	cancelSMEnabled bool
@@ -194,6 +195,7 @@ func (l *Listener) onBind(ctx context.Context, st *connState, clientIP string, o
 		st.maxSessions = cred.MaxSessions
 		st.querySMEnabled = cred.QuerySMEnabled
 		st.cancelSMEnabled = cred.CancelSMEnabled
+		st.mode = req.Mode
 		st.bound = true
 		l.startRefresh(ctx, st, req.Mode)
 
@@ -298,11 +300,13 @@ func remoteIP(nc net.Conn) string {
 }
 
 // liveSession is one bind this pod owns, held so a force-disconnect can reach its socket. account and
-// customer ids select the session on a scoped Disconnect; sess is the closable SMPP session.
+// customer ids select the session on a scoped Disconnect; sess is the closable SMPP session. mode is
+// the bind role, read (immutably) by Deliver to refuse a transmitter, which cannot receive deliver_sm.
 type liveSession struct {
 	accountID  uuid.UUID
 	customerID uuid.UUID
 	bindID     string
+	mode       session.BindMode
 	sess       *session.Session
 }
 
@@ -316,6 +320,7 @@ func (l *Listener) registerSession(st *connState, sess *session.Session) {
 		accountID:  st.accountID,
 		customerID: st.customerID,
 		bindID:     st.bindID,
+		mode:       st.mode,
 		sess:       sess,
 	}
 }
