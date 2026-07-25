@@ -62,16 +62,14 @@ func (noopCancelFlags) Exists(context.Context, uuid.UUID) (bool, error) { return
 // satisfies it. New defaults a nil DLRMap to a no-op, so the hot path never branches on nil and a
 // missing wiring is explicit rather than a silent panic.
 type DLRMap interface {
-	Put(ctx context.Context, connectorID uuid.UUID, smscMsgID string, messageID, traceID uuid.UUID, validityPeriod *string) error
+	Put(ctx context.Context, smscMsgID string, r pipeline.RoutedMT) error
 }
 
 // noopDLRMap is the New default when no DLR map is wired: it records nothing. Tests that do not
 // exercise DLR correlation rely on it.
 type noopDLRMap struct{}
 
-func (noopDLRMap) Put(context.Context, uuid.UUID, string, uuid.UUID, uuid.UUID, *string) error {
-	return nil
-}
+func (noopDLRMap) Put(context.Context, string, pipeline.RoutedMT) error { return nil }
 
 // Producer publishes the return path (mo.inbound, dlr.events) durably. *kafka.Producer satisfies it.
 // New defaults a nil Producer to a no-op, so a bind with no producer wired acknowledges deliver_sm as
@@ -252,7 +250,7 @@ func (s *Service) recordDLRMapping(ctx context.Context, r pipeline.RoutedMT, res
 	if !ok || body.MessageID == "" {
 		return
 	}
-	if err := s.deps.DLRMap.Put(ctx, r.ConnectorID, body.MessageID, r.MessageID, r.TraceID, r.ValidityPeriod); err != nil {
+	if err := s.deps.DLRMap.Put(ctx, body.MessageID, r); err != nil {
 		s.deps.Logger.WarnContext(ctx, "connector: dlr mapping write failed, a later receipt will be uncorrelated",
 			"message_id", r.MessageID, "connector_id", r.ConnectorID, "err", err)
 	}

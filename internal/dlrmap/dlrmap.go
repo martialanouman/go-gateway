@@ -8,11 +8,14 @@ package dlrmap
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/martialanouman/go-gateway/internal/pipeline"
 )
 
 // The TTL bounds. maxTTL mirrors cancel.flagTTL: 72h covers the maximum SMS validity, past which no
@@ -38,11 +41,41 @@ func NewRedisMap(rdb *redis.Client) *RedisMap {
 	return &RedisMap{rdb: rdb}
 }
 
-// mapping is the stored value: the ids a later receipt correlates back to. It NEVER carries the
-// message body (invariant a) — only the two logical ids.
+// mapping is the stored JSON value: the full CDR projection a later delivery receipt needs to write
+// its versioned row WITHOUT re-reading ClickHouse. The CDR is a ReplacingMergeTree read with FINAL, so
+// a delivered/failed/expired row supersedes the enroute row WHOLE — it must therefore carry every
+// column that matters (the ORDER BY key customer_id/account_id/submitted_at/message_id AND the
+// descriptive columns source/dest/connector/route/segment/encoding), else the delivered snapshot would
+// blank them. It NEVER carries the message body (invariant a): only descriptive metadata.
 type mapping struct {
-	MessageID string `json:"message_id"`
-	TraceID   string `json:"trace_id"`
+	MessageID    string    `json:"message_id"`
+	TraceID      string    `json:"trace_id"`
+	AccountID    string    `json:"account_id"`
+	CustomerID   string    `json:"customer_id"`
+	SourceAddr   string    `json:"source_addr"`
+	DestAddr     string    `json:"dest_addr"`
+	ConnectorID  string    `json:"connector_id"`
+	RouteID      *string   `json:"route_id,omitempty"`
+	SegmentCount int       `json:"segment_count"`
+	Encoding     string    `json:"encoding"`
+	SubmittedAt  time.Time `json:"submitted_at"`
+}
+
+// Mapping is the resolved DLR correlation the return-path router reads back (step-044): the full CDR
+// projection of the submitted message, so it can write a collapsing delivered/failed/expired row and
+// compute latency without a ClickHouse read. It never carries the message body.
+type Mapping struct {
+	MessageID    uuid.UUID
+	TraceID      uuid.UUID
+	AccountID    uuid.UUID
+	CustomerID   uuid.UUID
+	SourceAddr   string
+	DestAddr     string
+	ConnectorID  uuid.UUID
+	RouteID      *uuid.UUID
+	SegmentCount int
+	Encoding     string
+	SubmittedAt  time.Time
 }
 
 // key scopes an entry by (connector_id, smsc_msg_id): connector_id disambiguates the same
@@ -53,18 +86,104 @@ func key(connectorID uuid.UUID, smscMsgID string) string {
 	return "dlrmap:{" + connectorID.String() + ":" + smscMsgID + "}"
 }
 
-// Put remembers smsc_msg_id -> {message_id, trace_id} with a TTL derived from validityPeriod. It is
-// called on a successful submit; the caller treats a failure as best-effort (the message is already
-// enroute).
-func (m *RedisMap) Put(ctx context.Context, connectorID uuid.UUID, smscMsgID string, messageID, traceID uuid.UUID, validityPeriod *string) error {
-	value, err := json.Marshal(mapping{MessageID: messageID.String(), TraceID: traceID.String()})
-	if err != nil {
-		return fmt.Errorf("dlrmap: marshal %s: %w", messageID, err)
+// Put remembers smsc_msg_id -> the submitted message's CDR projection, with a TTL derived from its
+// validity_period. It is called on a successful submit; the caller treats a failure as best-effort
+// (the message is already enroute). It takes the routed envelope because that is what the caller holds
+// and it carries every projected field; the message body it also carries is deliberately ignored (it
+// is never read here, so invariant (a) holds — nothing but metadata reaches Redis).
+func (m *RedisMap) Put(ctx context.Context, smscMsgID string, r pipeline.RoutedMT) error {
+	var routeID *string
+	if r.RouteID != nil {
+		s := r.RouteID.String()
+		routeID = &s
 	}
-	if err := m.rdb.Set(ctx, key(connectorID, smscMsgID), value, ttlForValidity(validityPeriod)).Err(); err != nil {
-		return fmt.Errorf("dlrmap: put %s/%s: %w", connectorID, smscMsgID, err)
+	value, err := json.Marshal(mapping{
+		MessageID:    r.MessageID.String(),
+		TraceID:      r.TraceID.String(),
+		AccountID:    r.AccountID.String(),
+		CustomerID:   r.CustomerID.String(),
+		SourceAddr:   r.From,
+		DestAddr:     r.To,
+		ConnectorID:  r.ConnectorID.String(),
+		RouteID:      routeID,
+		SegmentCount: r.SegmentCount,
+		Encoding:     r.Encoding,
+		SubmittedAt:  r.SubmittedAt,
+	})
+	if err != nil {
+		return fmt.Errorf("dlrmap: marshal %s: %w", r.MessageID, err)
+	}
+	if err := m.rdb.Set(ctx, key(r.ConnectorID, smscMsgID), value, ttlForValidity(r.ValidityPeriod)).Err(); err != nil {
+		return fmt.Errorf("dlrmap: put %s/%s: %w", r.ConnectorID, smscMsgID, err)
 	}
 	return nil
+}
+
+// Get resolves the mapping a receipt references. found is false (with a nil error) when no mapping is
+// stored — an expired or unknown smsc_msg_id, which the caller counts and logs rather than failing.
+// A parse error on a stored value is returned as an error (a corrupt entry, not a normal miss).
+func (m *RedisMap) Get(ctx context.Context, connectorID uuid.UUID, smscMsgID string) (Mapping, bool, error) {
+	raw, err := m.rdb.Get(ctx, key(connectorID, smscMsgID)).Bytes()
+	if errors.Is(err, redis.Nil) {
+		return Mapping{}, false, nil
+	}
+	if err != nil {
+		return Mapping{}, false, fmt.Errorf("dlrmap: get %s/%s: %w", connectorID, smscMsgID, err)
+	}
+	var w mapping
+	if err := json.Unmarshal(raw, &w); err != nil {
+		return Mapping{}, false, fmt.Errorf("dlrmap: unmarshal %s/%s: %w", connectorID, smscMsgID, err)
+	}
+	out, err := w.resolve()
+	if err != nil {
+		return Mapping{}, false, fmt.Errorf("dlrmap: parse %s/%s: %w", connectorID, smscMsgID, err)
+	}
+	return out, true, nil
+}
+
+// resolve parses the stored string ids into a typed Mapping.
+func (w mapping) resolve() (Mapping, error) {
+	messageID, err := uuid.Parse(w.MessageID)
+	if err != nil {
+		return Mapping{}, fmt.Errorf("message_id: %w", err)
+	}
+	traceID, err := uuid.Parse(w.TraceID)
+	if err != nil {
+		return Mapping{}, fmt.Errorf("trace_id: %w", err)
+	}
+	accountID, err := uuid.Parse(w.AccountID)
+	if err != nil {
+		return Mapping{}, fmt.Errorf("account_id: %w", err)
+	}
+	customerID, err := uuid.Parse(w.CustomerID)
+	if err != nil {
+		return Mapping{}, fmt.Errorf("customer_id: %w", err)
+	}
+	connectorID, err := uuid.Parse(w.ConnectorID)
+	if err != nil {
+		return Mapping{}, fmt.Errorf("connector_id: %w", err)
+	}
+	var routeID *uuid.UUID
+	if w.RouteID != nil {
+		id, err := uuid.Parse(*w.RouteID)
+		if err != nil {
+			return Mapping{}, fmt.Errorf("route_id: %w", err)
+		}
+		routeID = &id
+	}
+	return Mapping{
+		MessageID:    messageID,
+		TraceID:      traceID,
+		AccountID:    accountID,
+		CustomerID:   customerID,
+		SourceAddr:   w.SourceAddr,
+		DestAddr:     w.DestAddr,
+		ConnectorID:  connectorID,
+		RouteID:      routeID,
+		SegmentCount: w.SegmentCount,
+		Encoding:     w.Encoding,
+		SubmittedAt:  w.SubmittedAt,
+	}, nil
 }
 
 // ttlForValidity derives an entry's TTL from the SMPP validity_period. A parsable relative period is

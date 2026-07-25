@@ -66,6 +66,15 @@ const (
 	// submit_sm with ESME_RSUBMITFAIL. It is an outcome code, not a REST request error, so it has no
 	// HTTP surface.
 	ErrSubmitFailed Code = "submit_failed"
+	// ErrDeliveryFailed is the outbound outcome recorded in cdr.error_code when a delivery receipt
+	// reports the message as permanently undeliverable, deleted or rejected by the network (SMPP
+	// message_state UNDELIV/DELETED/REJECTD). Like submit_failed it is an outcome code, not a REST
+	// request error, so it has no HTTP surface.
+	ErrDeliveryFailed Code = "delivery_failed"
+	// ErrDeliveryExpired is the outbound outcome recorded in cdr.error_code when a delivery receipt
+	// reports the message expired before delivery (SMPP message_state EXPIRED). An outcome code with
+	// no HTTP surface.
+	ErrDeliveryExpired Code = "delivery_expired"
 )
 
 // SMPP v3.4 command_status values used by the mapping. Errors with no standard SMPP code use
