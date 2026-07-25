@@ -148,3 +148,18 @@ func accountFromRow(row sqlcgen.ControlPlaneSmppAccount) cp.Account {
 		UpdatedAt:        tsVal(row.UpdatedAt),
 	}
 }
+
+// ListAccountCustomers returns the account -> customer map for the MO router's snapshot (step-045):
+// resolving an inbound number or keyword to an account needs the owning customer for the routed
+// envelope.
+func (r *AccountRepo) ListAccountCustomers(ctx context.Context) (map[uuid.UUID]uuid.UUID, error) {
+	rows, err := r.q.ListAccountCustomers(ctx)
+	if err != nil {
+		return nil, translate("list account customers", err)
+	}
+	out := make(map[uuid.UUID]uuid.UUID, len(rows))
+	for _, row := range rows {
+		out[row.ID] = row.CustomerID
+	}
+	return out, nil
+}

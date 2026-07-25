@@ -109,6 +109,37 @@ func (q *Queries) GetAccount(ctx context.Context, id uuid.UUID) (ControlPlaneSmp
 	return i, err
 }
 
+const listAccountCustomers = `-- name: ListAccountCustomers :many
+SELECT id, customer_id FROM control_plane.smpp_accounts
+`
+
+type ListAccountCustomersRow struct {
+	ID         uuid.UUID
+	CustomerID uuid.UUID
+}
+
+// Lightweight account -> customer projection for the MO router's snapshot (step-045): resolving an
+// inbound number or keyword to an account needs the owning customer for the routed envelope.
+func (q *Queries) ListAccountCustomers(ctx context.Context) ([]ListAccountCustomersRow, error) {
+	rows, err := q.db.Query(ctx, listAccountCustomers)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAccountCustomersRow{}
+	for rows.Next() {
+		var i ListAccountCustomersRow
+		if err := rows.Scan(&i.ID, &i.CustomerID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAccounts = `-- name: ListAccounts :many
 SELECT a.id, a.customer_id, a.name, a.status, a.smpp_enabled, a.rest_enabled, a.sender_id_policy, a.query_sm_enabled, a.cancel_sm_enabled, a.allowed_bind_types, a.max_sessions, a.created_at, a.updated_at FROM control_plane.smpp_accounts a
 WHERE ($1::uuid IS NULL OR a.customer_id = $1)

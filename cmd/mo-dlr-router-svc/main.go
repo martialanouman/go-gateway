@@ -23,6 +23,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/platform/supervisor"
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
+	"github.com/martialanouman/go-gateway/internal/storage/postgres"
 	redisstore "github.com/martialanouman/go-gateway/internal/storage/redis"
 )
 
@@ -39,7 +40,8 @@ func run() error {
 	defer stop()
 
 	cfg, err := config.Load(serviceName,
-		config.SectionOTel, config.SectionKafka, config.SectionClickHouse, config.SectionRedis)
+		config.SectionOTel, config.SectionKafka, config.SectionClickHouse, config.SectionRedis,
+		config.SectionPostgres)
 	if err != nil {
 		return err
 	}
@@ -96,27 +98,80 @@ func run() error {
 		Logger:   logger,
 	})
 
+	// --- MO leg (step-045): resolve mo.inbound to an account and publish mo.routed ---
+	pool, err := postgres.NewPool(ctx, cfg.Postgres)
+	if err != nil {
+		return fmt.Errorf("open postgres pool: %w", err)
+	}
+	defer pool.Close()
+
+	// The routing table is cold-loaded once at boot; a hot reload is a later milestone.
+	snapshot, err := modlrrouter.LoadSnapshot(ctx, logger,
+		postgres.NewInboundNumberRepo(pool), postgres.NewInboundKeywordRepo(pool), postgres.NewAccountRepo(pool))
+	if err != nil {
+		return fmt.Errorf("load mo routing snapshot: %w", err)
+	}
+
+	producer, err := kafka.NewProducer(cfg.Kafka)
+	if err != nil {
+		return fmt.Errorf("kafka producer: %w", err)
+	}
+	defer producer.Close()
+
+	moConsumer, err := kafka.NewConsumer(cfg.Kafka, serviceName+"-mo", kafka.TopicMOInbound)
+	if err != nil {
+		return fmt.Errorf("kafka mo consumer: %w", err)
+	}
+	defer moConsumer.Close()
+
+	// mo_unrouted_total{connector_id, reason}: bounded labels (few connectors, three reasons) — never a
+	// MSISDN or body, per the cardinality rule.
+	unroutedTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "mo_unrouted_total",
+		Help: "Mobile-originated messages that resolved to no account, by connector and reason.",
+	}, []string{"connector_id", "reason"})
+
+	moRouter := modlrrouter.NewMORouter(modlrrouter.MODeps{
+		Consumer: moConsumer,
+		Snapshot: snapshot,
+		Producer: producer,
+		Unrouted: postgres.NewUnroutedMORepo(pool),
+		Metric:   unroutedMetric{vec: unroutedTotal},
+		Tracer:   observability.Tracer(nil, serviceName),
+		Logger:   logger,
+	})
+
 	// Vital dependencies (plan §1.5): Kafka (no work without it) and ClickHouse (the delivery outcome is
 	// recorded there). Redis is intentionally absent — see its comment above.
 	ops, err := observability.NewOpsServer(cfg, logger,
 		consumer.ReadyCheck("kafka", cfg.Kafka.Timeout),
+		producer.ReadyCheck("kafka-producer", cfg.Kafka.Timeout),
 		chConn.ReadyCheck("clickhouse", cfg.ClickHouse.Timeout),
+		postgres.PingCheck("postgres", pool, cfg.Postgres.Timeout),
 	)
 	if err != nil {
 		return fmt.Errorf("init ops server: %w", err)
 	}
-	ops.Registry().MustRegister(unmapped)
+	ops.Registry().MustRegister(unmapped, unroutedTotal)
 
 	logger.InfoContext(ctx, "starting", "config", cfg)
 
 	// Ops and the router tear down together; the unordered supervisor fits (guide de codage §5).
 	var g supervisor.Group
 	g.Add("ops server", func(c context.Context) error { return ops.Run(c, cfg.ShutdownTimeout) })
-	g.Add("mo-dlr router", svc.Run)
+	g.Add("dlr router", svc.Run)
+	g.Add("mo router", moRouter.Run)
 	if err := g.Run(ctx, logger); err != nil {
 		return err
 	}
 
 	logger.Info("stopped")
 	return nil
+}
+
+// unroutedMetric adapts a Prometheus CounterVec to modlrrouter.UnroutedMetric.
+type unroutedMetric struct{ vec *prometheus.CounterVec }
+
+func (m unroutedMetric) Inc(connectorID, reason string) {
+	m.vec.WithLabelValues(connectorID, reason).Inc()
 }

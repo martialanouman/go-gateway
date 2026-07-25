@@ -54,3 +54,8 @@ RETURNING *;
 
 -- name: SuspendAccount :one
 UPDATE control_plane.smpp_accounts SET status = 'suspended' WHERE id = @id RETURNING *;
+
+-- name: ListAccountCustomers :many
+-- Lightweight account -> customer projection for the MO router's snapshot (step-045): resolving an
+-- inbound number or keyword to an account needs the owning customer for the routed envelope.
+SELECT id, customer_id FROM control_plane.smpp_accounts;
