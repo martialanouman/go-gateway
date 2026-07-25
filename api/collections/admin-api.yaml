@@ -48,6 +48,8 @@ request:
       value: 00000000-0000-0000-0000-000000000000
     - name: inboundNumberId
       value: 00000000-0000-0000-0000-000000000000
+    - name: keywordId
+      value: 00000000-0000-0000-0000-000000000000
 items:
   - info:
       name: Customers
@@ -570,3 +572,52 @@ items:
                 "account_id": "{{accountId}}"
               }
         docs: Assign an inbound number to an account, or clear to shared (scope admin:write).
+      - info:
+          name: list-inbound-keywords
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/inbound-numbers/{{inboundNumberId}}/keywords'
+        docs: List the keyword mappings of a shared inbound number (scope admin:read).
+      - info:
+          name: create-inbound-keyword
+          type: http
+        http:
+          method: POST
+          url: '{{baseUrl}}/admin/inbound-numbers/{{inboundNumberId}}/keywords'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "keyword": "INFO",
+                "match_type": "prefix",
+                "account_id": "{{accountId}}",
+                "priority": 0
+              }
+        docs: Add a keyword mapping to a shared inbound number (scope admin:write).
+      - info:
+          name: update-inbound-keyword
+          type: http
+        http:
+          method: PATCH
+          url: '{{baseUrl}}/admin/inbound-numbers/{{inboundNumberId}}/keywords/{{keywordId}}'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "status": "disabled"
+              }
+        docs: Update a keyword mapping (scope admin:write).
+      - info:
+          name: delete-inbound-keyword
+          type: http
+        http:
+          method: DELETE
+          url: '{{baseUrl}}/admin/inbound-numbers/{{inboundNumberId}}/keywords/{{keywordId}}'
+        docs: Delete a keyword mapping (scope admin:write).

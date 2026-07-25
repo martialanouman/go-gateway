@@ -67,6 +67,11 @@ var m1Operations = []opRef{
 	{"update-inbound-number", "patch", "/admin/inbound-numbers/{id}"},
 	{"delete-inbound-number", "delete", "/admin/inbound-numbers/{id}"},
 	{"assign-inbound-number", "patch", "/admin/inbound-numbers/{id}/assign"},
+
+	{"list-inbound-keywords", "get", "/admin/inbound-numbers/{id}/keywords"},
+	{"create-inbound-keyword", "post", "/admin/inbound-numbers/{id}/keywords"},
+	{"update-inbound-keyword", "patch", "/admin/inbound-numbers/{id}/keywords/{keywordId}"},
+	{"delete-inbound-keyword", "delete", "/admin/inbound-numbers/{id}/keywords/{keywordId}"},
 }
 
 // loadContract reads api/openapi-admin.yaml (the source of truth) into a generic tree.
