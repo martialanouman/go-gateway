@@ -1,0 +1,166 @@
+package adminapi
+
+import (
+	"context"
+	"encoding/base64"
+	"errors"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/danielgtaylor/huma/v2"
+	"github.com/google/uuid"
+
+	"github.com/martialanouman/go-gateway/internal/auth"
+	cp "github.com/martialanouman/go-gateway/internal/controlplane"
+	humaerr "github.com/martialanouman/go-gateway/internal/platform/errors/humaerr"
+)
+
+// messageSummaryDTO is the wire form of a CDR/MO summary (contract schema MessageSummary). For an
+// unrouted MO — which has no account yet — account_id, customer_id and trace_id are the nil UUID: the
+// contract makes them required (non-null), and the nil UUID is a present, valid value, so the sentinel
+// is confined to this serialization layer and never reaches the unrouted_mo store.
+type messageSummaryDTO struct {
+	MessageID          string     `json:"message_id" format:"uuid"`
+	TraceID            string     `json:"trace_id" format:"uuid"`
+	AccountID          string     `json:"account_id" format:"uuid"`
+	CustomerID         string     `json:"customer_id" format:"uuid"`
+	Direction          string     `json:"direction" enum:"mt,mo"`
+	SourceAddr         string     `json:"source_addr"`
+	DestAddr           string     `json:"dest_addr"`
+	OriginalSourceAddr *string    `json:"original_source_addr,omitempty" nullable:"true"`
+	ConnectorID        *string    `json:"connector_id,omitempty" format:"uuid" nullable:"true"`
+	RouteID            *string    `json:"route_id,omitempty" format:"uuid" nullable:"true"`
+	Status             string     `json:"status" enum:"enroute,delivered,failed,expired,rejected,rerouted"`
+	ErrorCode          *string    `json:"error_code,omitempty" nullable:"true"`
+	SegmentCount       int        `json:"segment_count"`
+	Encoding           *string    `json:"encoding,omitempty" enum:"gsm7,ucs2,binary" nullable:"true"`
+	SubmittedAt        time.Time  `json:"submitted_at" format:"date-time"`
+	DeliveredAt        *time.Time `json:"delivered_at,omitempty" format:"date-time" nullable:"true"`
+	LatencyMs          *int       `json:"latency_ms,omitempty" nullable:"true"`
+	Billed             bool       `json:"billed,omitempty"`
+	CreditsCharged     *int       `json:"credits_charged,omitempty" nullable:"true"`
+}
+
+// toUnroutedSummaryDTO projects an unrouted MO onto a MessageSummary. An unrouted MO reached no
+// account, so its status is 'rejected' and the routing failure reason travels in error_code; the
+// remaining delivery fields are unset.
+func toUnroutedSummaryDTO(u cp.UnroutedMO) messageSummaryDTO {
+	reason := string(u.Reason)
+	encoding := u.Encoding
+	return messageSummaryDTO{
+		MessageID:    idString(u.ID),
+		TraceID:      idString(uuid.Nil),
+		AccountID:    idString(uuid.Nil),
+		CustomerID:   idString(uuid.Nil),
+		Direction:    "mo",
+		SourceAddr:   u.SourceAddr,
+		DestAddr:     u.DestAddr,
+		ConnectorID:  idPtr(u.ConnectorID),
+		Status:       "rejected",
+		ErrorCode:    &reason,
+		SegmentCount: u.SegmentCount,
+		Encoding:     &encoding,
+		SubmittedAt:  u.ReceivedAt,
+		Billed:       false,
+	}
+}
+
+// unroutedMOPageDTO is a cursor-paginated page of unrouted MO (contract MessageSummaryPage). Data is
+// always a (possibly empty) array; the embedded PageMeta carries next_cursor (null on the last page)
+// and has_more, matching the contract's allOf[PageMeta, {data}].
+type unroutedMOPageDTO struct {
+	Data []messageSummaryDTO `json:"data"`
+	PageMeta
+}
+
+type unroutedMOHandlers struct {
+	store UnroutedMOStore
+}
+
+func registerUnroutedMO(api huma.API, store UnroutedMOStore) {
+	h := &unroutedMOHandlers{store: store}
+	register(api, huma.Operation{
+		OperationID: "list-unrouted-mo", Method: http.MethodGet, Path: "/admin/mo/unrouted",
+		Summary: "List unrouted MO messages", Tags: []string{"Inbound Numbers"},
+		Security: scopeSecurity(auth.ScopeAdminRead),
+	}, h.list)
+}
+
+type listUnroutedMOInput struct {
+	Cursor string `query:"cursor" doc:"Opaque pagination cursor from a previous next_cursor."`
+	Limit  int    `query:"limit" minimum:"1" maximum:"200" default:"50" doc:"Maximum rows to return."`
+}
+
+type listUnroutedMOOutput struct {
+	Body unroutedMOPageDTO
+}
+
+func (h *unroutedMOHandlers) list(ctx context.Context, in *listUnroutedMOInput) (*listUnroutedMOOutput, error) {
+	var after *cp.UnroutedMOKey
+	if in.Cursor != "" {
+		key, err := decodeUnroutedCursor(in.Cursor)
+		if err != nil {
+			return nil, huma.Error422UnprocessableEntity("invalid cursor")
+		}
+		after = &key
+	}
+
+	// Fetch one extra row to learn whether a further page exists without a second query.
+	rows, err := h.store.List(ctx, in.Limit+1, after)
+	if err != nil {
+		return nil, humaerr.FromError(err)
+	}
+	hasMore := len(rows) > in.Limit
+	if hasMore {
+		rows = rows[:in.Limit]
+	}
+
+	page := unroutedMOPageDTO{
+		Data:     make([]messageSummaryDTO, 0, len(rows)),
+		PageMeta: PageMeta{HasMore: hasMore},
+	}
+	for _, r := range rows {
+		page.Data = append(page.Data, toUnroutedSummaryDTO(r))
+	}
+	if hasMore {
+		last := rows[len(rows)-1]
+		cursor := encodeUnroutedCursor(cp.UnroutedMOKey{ReceivedAt: last.ReceivedAt, ID: last.ID})
+		page.NextCursor = &cursor
+	}
+	return &listUnroutedMOOutput{Body: page}, nil
+}
+
+// unroutedCursorSep separates the two keyset fields inside the pre-base64 cursor payload.
+const unroutedCursorSep = "|"
+
+// encodeUnroutedCursor renders a keyset position as an opaque base64url token. received_at is encoded
+// at MICROSECOND precision to round-trip the unrouted_mo.received_at timestamptz column exactly — a
+// coarser precision (e.g. milliseconds) would drop rows sharing a millisecond from the keyset page.
+func encodeUnroutedCursor(k cp.UnroutedMOKey) string {
+	payload := strconv.FormatInt(k.ReceivedAt.UnixMicro(), 10) + unroutedCursorSep + k.ID.String()
+	return base64.RawURLEncoding.EncodeToString([]byte(payload))
+}
+
+// decodeUnroutedCursor parses a token produced by encodeUnroutedCursor; a malformed token is an error
+// the handler maps to 422.
+func decodeUnroutedCursor(s string) (cp.UnroutedMOKey, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(s)
+	if err != nil {
+		return cp.UnroutedMOKey{}, err
+	}
+	ts, id, ok := strings.Cut(string(raw), unroutedCursorSep)
+	if !ok {
+		return cp.UnroutedMOKey{}, errors.New("cursor: missing separator")
+	}
+	us, err := strconv.ParseInt(ts, 10, 64)
+	if err != nil {
+		return cp.UnroutedMOKey{}, err
+	}
+	messageID, err := uuid.Parse(id)
+	if err != nil {
+		return cp.UnroutedMOKey{}, err
+	}
+	return cp.UnroutedMOKey{ReceivedAt: time.UnixMicro(us).UTC(), ID: messageID}, nil
+}

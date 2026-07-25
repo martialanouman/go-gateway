@@ -67,6 +67,7 @@ func New(deps Deps) (*chi.Mux, huma.API) {
 	registerSenderIDs(api, deps.SenderIDs, deps.Customers)
 	registerInboundNumbers(api, deps.InboundNumbers)
 	registerInboundKeywords(api, deps.InboundKeywords)
+	registerUnroutedMO(api, deps.UnroutedMO)
 
 	humaspec.Prune(api, codesMetaKey)
 
