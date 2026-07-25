@@ -38,6 +38,20 @@ func (r *InboundKeywordRepo) Create(ctx context.Context, in cp.NewInboundKeyword
 	return inboundKeywordFromRow(row), nil
 }
 
+// ListAll returns every active keyword across all shared numbers, ordered by number then priority,
+// for the MO router's in-memory snapshot (step-045).
+func (r *InboundKeywordRepo) ListAll(ctx context.Context) ([]cp.InboundKeyword, error) {
+	rows, err := r.q.ListAllInboundKeywords(ctx)
+	if err != nil {
+		return nil, translate("list all inbound keywords", err)
+	}
+	out := make([]cp.InboundKeyword, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, inboundKeywordFromRow(row))
+	}
+	return out, nil
+}
+
 // ListByInboundNumber returns the keywords of one inbound number, ordered by priority then id.
 func (r *InboundKeywordRepo) ListByInboundNumber(ctx context.Context, inboundNumberID uuid.UUID) ([]cp.InboundKeyword, error) {
 	rows, err := r.q.ListInboundKeywords(ctx, inboundNumberID)

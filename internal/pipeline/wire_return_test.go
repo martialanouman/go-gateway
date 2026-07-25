@@ -72,6 +72,55 @@ func TestMOBodyMaskedRendering(t *testing.T) {
 	}
 }
 
+// TestMORoutedRoundTrip: an MORouted survives Encode -> Decode intact, including the masked body, and
+// is keyed by the resolved account for mo.routed.
+func TestMORoutedRoundTrip(t *testing.T) {
+	const text = "routed mo body"
+	env := pipeline.MORouted{
+		MessageID:       uuid.New(),
+		TraceID:         uuid.New(),
+		AccountID:       uuid.New(),
+		CustomerID:      uuid.New(),
+		InboundNumberID: uuid.New(),
+		ConnectorID:     uuid.New(),
+		From:            "22507000001",
+		To:              "36000",
+		Body:            msg.NewBodyString(text),
+		DataCoding:      0,
+		Encoding:        "gsm7",
+		ReceivedAt:      time.Now().UTC().Truncate(time.Second),
+	}
+
+	rec, err := pipeline.EncodeMORouted(env)
+	if err != nil {
+		t.Fatalf("EncodeMORouted: %v", err)
+	}
+	if rec.Topic != kafka.TopicMORouted {
+		t.Errorf("topic = %q, want %q", rec.Topic, kafka.TopicMORouted)
+	}
+	if key := env.AccountID; string(rec.Key) != string(key[:]) {
+		t.Errorf("key = %x, want the account id %x", rec.Key, key[:])
+	}
+	if strings.Contains(string(rec.Value), text) {
+		// the plaintext must be base64 in the value, never raw.
+		t.Error("body appears raw in the record value; it must be base64")
+	}
+
+	got, err := pipeline.DecodeMORouted(rec)
+	if err != nil {
+		t.Fatalf("DecodeMORouted: %v", err)
+	}
+	if got.MessageID != env.MessageID || got.AccountID != env.AccountID || got.CustomerID != env.CustomerID ||
+		got.InboundNumberID != env.InboundNumberID || got.ConnectorID != env.ConnectorID ||
+		got.From != env.From || got.To != env.To || got.Encoding != env.Encoding ||
+		!got.ReceivedAt.Equal(env.ReceivedAt) {
+		t.Errorf("round trip mismatch:\n got  %+v\n want %+v", got, env)
+	}
+	if string(got.Body.Reveal()) != text {
+		t.Errorf("body = %q, want %q", got.Body.Reveal(), text)
+	}
+}
+
 // TestDLRRoundTrip: a DLREvent survives Encode -> Decode, keyed by the SMSC message id for dlr.events.
 func TestDLRRoundTrip(t *testing.T) {
 	env := pipeline.DLREvent{

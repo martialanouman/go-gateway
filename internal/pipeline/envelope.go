@@ -78,6 +78,28 @@ type MOInbound struct {
 	ReceivedAt  time.Time
 }
 
+// MORouted is a mobile-originated message after account resolution (step-045), carried on mo.routed
+// for the delivery step (step-048) to hand to the account's active bind or webhook. The router mints
+// MessageID and TraceID at resolution (an MO has none before), resolves AccountID (a dedicated number
+// or a matched keyword) and its CustomerID, and remembers which InboundNumberID and ConnectorID it
+// came in on. Body is the MO content, masked (invariant a); it rides the record value only. Keyed by
+// AccountID so one account's MO stay ordered.
+type MORouted struct {
+	MessageID       uuid.UUID
+	TraceID         uuid.UUID
+	AccountID       uuid.UUID
+	CustomerID      uuid.UUID
+	InboundNumberID uuid.UUID
+	ConnectorID     uuid.UUID
+	From            string
+	To              string
+	Body            msg.Body
+	DataCoding      uint8
+	Encoding        string
+	ESMClass        uint8
+	ReceivedAt      time.Time
+}
+
 // DLREvent is a delivery receipt a SMSC returned for a message we submitted, carried on dlr.events.
 // SMSCMessageID is the id the SMSC assigned at submit time (the key into the dlrmap, §1.11); the
 // return-path router resolves it back to our message id (step-044). State is the SMPP message_state;

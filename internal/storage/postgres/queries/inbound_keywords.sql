@@ -8,6 +8,13 @@ INSERT INTO control_plane.inbound_keywords (
 )
 RETURNING *;
 
+-- name: ListAllInboundKeywords :many
+-- Every active keyword across all shared numbers, for the MO router's in-memory snapshot (step-045).
+-- Ordered by number then priority then id so the snapshot evaluates keywords in the right order.
+SELECT * FROM control_plane.inbound_keywords
+WHERE status = 'active'
+ORDER BY inbound_number_id, priority, id;
+
 -- name: ListInboundKeywords :many
 -- Ordered by priority then id: priority drives MO evaluation (inbound_keywords_lookup_idx), and id is
 -- a stable tie-break so equal priorities list deterministically.

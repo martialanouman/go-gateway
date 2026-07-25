@@ -71,6 +71,44 @@ func (q *Queries) DeleteInboundKeyword(ctx context.Context, arg DeleteInboundKey
 	return result.RowsAffected(), nil
 }
 
+const listAllInboundKeywords = `-- name: ListAllInboundKeywords :many
+SELECT id, inbound_number_id, keyword, match_type, account_id, priority, status, created_at, updated_at FROM control_plane.inbound_keywords
+WHERE status = 'active'
+ORDER BY inbound_number_id, priority, id
+`
+
+// Every active keyword across all shared numbers, for the MO router's in-memory snapshot (step-045).
+// Ordered by number then priority then id so the snapshot evaluates keywords in the right order.
+func (q *Queries) ListAllInboundKeywords(ctx context.Context) ([]ControlPlaneInboundKeyword, error) {
+	rows, err := q.db.Query(ctx, listAllInboundKeywords)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ControlPlaneInboundKeyword{}
+	for rows.Next() {
+		var i ControlPlaneInboundKeyword
+		if err := rows.Scan(
+			&i.ID,
+			&i.InboundNumberID,
+			&i.Keyword,
+			&i.MatchType,
+			&i.AccountID,
+			&i.Priority,
+			&i.Status,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listInboundKeywords = `-- name: ListInboundKeywords :many
 SELECT id, inbound_number_id, keyword, match_type, account_id, priority, status, created_at, updated_at FROM control_plane.inbound_keywords
 WHERE inbound_number_id = $1
