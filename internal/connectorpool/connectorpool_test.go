@@ -5,6 +5,9 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"log/slog"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf16"
@@ -520,4 +523,170 @@ func utf16BE(s string) []byte {
 		binary.BigEndian.PutUint16(out[2*i:], u)
 	}
 	return out
+}
+
+// --- return path (deliver_sm classification + publication) ---
+
+// recordingProducer captures the records the connector publishes on the return path and signals each
+// one on got, so a test can wait for the async publish.
+type recordingProducer struct {
+	mu   sync.Mutex
+	recs []kafka.Record
+	got  chan struct{}
+}
+
+func newRecordingProducer() *recordingProducer {
+	return &recordingProducer{got: make(chan struct{}, 16)}
+}
+
+func (p *recordingProducer) Produce(_ context.Context, rec kafka.Record) error {
+	p.mu.Lock()
+	p.recs = append(p.recs, rec)
+	p.mu.Unlock()
+	p.got <- struct{}{}
+	return nil
+}
+
+func (p *recordingProducer) records() []kafka.Record {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]kafka.Record(nil), p.recs...)
+}
+
+// blockingConsumer keeps Run alive (no mt.routed to process) until the context is cancelled, so the
+// bind stays up while the SMSC pushes a deliver_sm.
+type blockingConsumer struct{}
+
+func (blockingConsumer) Run(ctx context.Context, _ kafka.Handler) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// syncBuffer is a mutex-guarded buffer so the test can read the log while the service writes it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func waitFor(timeout time.Duration, cond func() bool) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return cond()
+}
+
+// runReturnPath binds the connector to a fake SMSC, waits for the bind, invokes send (which pushes a
+// deliver_sm), and returns the captured records once one is published plus the full service log.
+func runReturnPath(t *testing.T, connectorID uuid.UUID, send func(*fakesmsc.Server)) ([]kafka.Record, string) {
+	t.Helper()
+	smsc := fakesmsc.Start(t, fakesmsc.Config{})
+	prod := newRecordingProducer()
+	logBuf := &syncBuffer{}
+	rrec := otelrec.New(t)
+
+	svc := connectorpool.New(connectorpool.Deps{
+		Consumer:    blockingConsumer{},
+		CDR:         &fakeCDR{},
+		Producer:    prod,
+		ConnectorID: connectorID,
+		Bind: connectorpool.BindConfig{
+			Addr: smsc.Addr(), SystemID: "esme", Password: "pw",
+			DialTimeout: 3 * time.Second, ResponseTimeout: 3 * time.Second,
+			EnquireLinkInterval: time.Minute, EnquireLinkMaxMissed: 3, WindowSize: 10,
+		},
+		Tracer: observability.Tracer(rrec.Provider(), "connector-pool"),
+		Logger: slog.New(slog.NewTextHandler(logBuf, nil)),
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- svc.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+
+	if !waitFor(2*time.Second, func() bool { return svc.BindReady(context.Background()) == nil }) {
+		t.Fatal("bind not ready in time")
+	}
+	send(smsc)
+
+	select {
+	case <-prod.got:
+	case <-time.After(3 * time.Second):
+		t.Fatal("no record produced from deliver_sm")
+	}
+	return prod.records(), logBuf.String()
+}
+
+// TestConnectorPublishesMOToMOInbound: a mobile-originated deliver_sm is classified as an MO and
+// published on mo.inbound with the source, the inbound number and the (masked) body — and the body
+// never appears in the log (invariant a).
+func TestConnectorPublishesMOToMOInbound(t *testing.T) {
+	const body = "bonjour ceci est un MO"
+	connID := uuid.New()
+	recs, logs := runReturnPath(t, connID, func(s *fakesmsc.Server) {
+		if err := s.SendMO("22507000001", "36000", body); err != nil {
+			t.Errorf("SendMO: %v", err)
+		}
+	})
+
+	if len(recs) != 1 || recs[0].Topic != kafka.TopicMOInbound {
+		t.Fatalf("records = %+v, want one on mo.inbound", recs)
+	}
+	mo, err := pipeline.DecodeMO(recs[0])
+	if err != nil {
+		t.Fatalf("DecodeMO: %v", err)
+	}
+	if mo.ConnectorID != connID || mo.From != "22507000001" || mo.To != "36000" {
+		t.Errorf("mo = %+v, want connector %s / from 22507000001 / to 36000", mo, connID)
+	}
+	if string(mo.Body.Reveal()) != body {
+		t.Errorf("body = %q, want %q", mo.Body.Reveal(), body)
+	}
+	if strings.Contains(logs, body) || strings.Contains(logs, "bonjour") {
+		t.Errorf("the MO body leaked into the log (invariant a):\n%s", logs)
+	}
+}
+
+// TestConnectorPublishesDLRToDLREvents: a delivery-receipt deliver_sm is classified as a DLR and
+// published on dlr.events with the SMSC message id and state extracted.
+func TestConnectorPublishesDLRToDLREvents(t *testing.T) {
+	const smscID = "00000000000000ab"
+	connID := uuid.New()
+	recs, _ := runReturnPath(t, connID, func(s *fakesmsc.Server) {
+		if err := s.SendDLR(smscID, fakesmsc.Delivered); err != nil {
+			t.Errorf("SendDLR: %v", err)
+		}
+	})
+
+	if len(recs) != 1 || recs[0].Topic != kafka.TopicDLREvents {
+		t.Fatalf("records = %+v, want one on dlr.events", recs)
+	}
+	dlr, err := pipeline.DecodeDLR(recs[0])
+	if err != nil {
+		t.Fatalf("DecodeDLR: %v", err)
+	}
+	if dlr.ConnectorID != connID || dlr.SMSCMessageID != smscID {
+		t.Errorf("dlr = %+v, want connector %s / smsc id %s", dlr, connID, smscID)
+	}
+	if dlr.State != 2 || dlr.Stat != "DELIVRD" {
+		t.Errorf("dlr state/stat = %d/%q, want 2/DELIVRD", dlr.State, dlr.Stat)
+	}
 }

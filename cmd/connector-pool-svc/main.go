@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/caarlos0/env/v11"
+	"github.com/google/uuid"
 
 	"github.com/martialanouman/go-gateway/internal/cancel"
 	"github.com/martialanouman/go-gateway/internal/config"
@@ -39,6 +40,7 @@ type connectorEnv struct {
 	SystemID             string        `env:"CONNECTOR_SYSTEM_ID" envDefault:"gateway"`
 	Password             string        `env:"CONNECTOR_PASSWORD" envDefault:"gateway"`
 	SystemType           string        `env:"CONNECTOR_SYSTEM_TYPE" envDefault:""`
+	ID                   uuid.UUID     `env:"CONNECTOR_ID" envDefault:"00000000-0000-0000-0000-000000000001"`
 	DialTimeout          time.Duration `env:"CONNECTOR_DIAL_TIMEOUT" envDefault:"5s"`
 	ResponseTimeout      time.Duration `env:"CONNECTOR_RESPONSE_TIMEOUT" envDefault:"5s"`
 	EnquireLinkInterval  time.Duration `env:"CONNECTOR_ENQUIRE_LINK_INTERVAL" envDefault:"30s"`
@@ -92,6 +94,14 @@ func run() error {
 	}
 	defer consumer.Close()
 
+	// The producer publishes the return path (mo.inbound, dlr.events) durably (acks=all): a deliver_sm
+	// from the SMSC is acknowledged only once its MO/DLR is on Kafka (step-043).
+	producer, err := kafka.NewProducer(cfg.Kafka)
+	if err != nil {
+		return fmt.Errorf("kafka producer: %w", err)
+	}
+	defer producer.Close()
+
 	// Redis backs the cancel-flag check before each submit_sm: a cancel_sm on smpp-server-svc flags a
 	// message here so it is not dispatched. NewClient pings eagerly, so Redis must be reachable at boot
 	// (a startup outage crash-loops the pod, as everywhere else). At RUNTIME it is deliberately NOT a
@@ -109,6 +119,8 @@ func run() error {
 		CDR:         clickhouse.NewCDRWriter(chConn),
 		CancelFlags: cancel.NewRedisFlags(rdb),
 		DLRMap:      dlrmap.NewRedisMap(rdb),
+		Producer:    producer,
+		ConnectorID: bindEnv.ID,
 		Bind: connectorpool.BindConfig{
 			Addr:                 bindEnv.Addr,
 			SystemID:             bindEnv.SystemID,
@@ -129,6 +141,7 @@ func run() error {
 	// and an idle-time bind drop would otherwise leave the pod Ready with nothing behind it.
 	ops, err := observability.NewOpsServer(cfg, logger,
 		consumer.ReadyCheck("kafka", cfg.Kafka.Timeout),
+		producer.ReadyCheck("kafka-producer", cfg.Kafka.Timeout),
 		chConn.ReadyCheck("clickhouse", cfg.ClickHouse.Timeout),
 		observability.ReadinessCheck{Name: "smsc-bind", Probe: svc.BindReady},
 	)

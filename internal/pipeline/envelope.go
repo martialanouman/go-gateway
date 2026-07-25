@@ -57,3 +57,47 @@ type RoutedMT struct {
 	SegmentCount       int
 	SubmittedAt        time.Time
 }
+
+// MOInbound is a mobile-originated message a SMSC delivered to one of our inbound numbers, carried on
+// mo.inbound before routing to an account (step-045). It has no message id yet — that is minted when
+// the return-path router accepts it. From is the subscriber's address as the SMSC sent it (normalised
+// to E.164 downstream); To is our inbound number. ConnectorID names the link it arrived on. Body is
+// the MO content, masked (invariant a). ReceivedAt is when the connector processed the deliver_sm.
+//
+// ORDERING: the connector publishes with a bounded worker pool, so records are NOT guaranteed to be
+// produced in arrival order even within one partition key (the inbound number). The consumer
+// (step-045) must not assume partition order — reassemble a multipart MO by its UDH reference, not by
+// arrival sequence.
+type MOInbound struct {
+	ConnectorID uuid.UUID
+	From        string
+	To          string
+	Body        msg.Body
+	DataCoding  uint8
+	ESMClass    uint8
+	ReceivedAt  time.Time
+}
+
+// DLREvent is a delivery receipt a SMSC returned for a message we submitted, carried on dlr.events.
+// SMSCMessageID is the id the SMSC assigned at submit time (the key into the dlrmap, §1.11); the
+// return-path router resolves it back to our message id (step-044). State is the SMPP message_state;
+// Stat is its textual form ("DELIVRD"…); ErrorCode is the receipt's network error. SubmitDate and
+// DoneDate are the raw receipt timestamps when present. A DLR carries no message body — only receipt
+// metadata — so there is no Body field. ReceivedAt is when the connector processed the receipt.
+//
+// DELIVERY GUARANTEE (consumers must handle both): (1) At-least-once — the same receipt may be
+// published twice (a crash between publish and ack, then the SMSC retries), so dedup on
+// (SMSCMessageID, State). (2) No ordering — the connector publishes with a bounded worker pool, so two
+// receipts for the same SMSCMessageID (an intermediate then a final state) may arrive out of order
+// even on the same partition. The consumer (step-044) must apply state monotonically (never let an
+// earlier state overwrite a more advanced one), not trust arrival order.
+type DLREvent struct {
+	ConnectorID   uuid.UUID
+	SMSCMessageID string
+	State         uint8
+	Stat          string
+	ErrorCode     string
+	SubmitDate    string
+	DoneDate      string
+	ReceivedAt    time.Time
+}

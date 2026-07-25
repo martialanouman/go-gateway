@@ -16,6 +16,15 @@ import (
 // errBindClosed is returned by a bind operation once the connection is shutting down.
 var errBindClosed = errors.New("connectorpool: bind closed")
 
+// The return-path worker pool bounds. deliverBuffer sizes the channel the reader hands deliver_sm to;
+// it is kept small (a couple of SMSC windows) on purpose — a large buffer only delays backpressure,
+// and the reader blocking on a full channel is exactly how a slow Kafka slows the SMSC (its window
+// closes). maxDeliverWorkers caps the publishers: beyond the SMSC window they would never have work.
+const (
+	deliverBuffer     = 32
+	maxDeliverWorkers = 8
+)
+
 // BindConfig configures the single outbound SMPP bind of M2. In production these fields come from
 // the connectors control plane; at M2 they are injected (env-backed), which is what lets a test
 // point the pool at the ephemeral fake SMSC address.
@@ -52,6 +61,15 @@ type bind struct {
 	done      chan struct{}
 	wg        sync.WaitGroup
 
+	// The return path (deliver_sm): the single reader hands each deliver_sm to deliverCh, and a bounded
+	// worker pool publishes it (onDeliver) and only then acknowledges — so the reader never does Kafka
+	// I/O and the MT response correlation it also drives is never blocked by a slow publish. bindCtx is
+	// cancelled on shutdown so an in-flight publish cannot outlive the bind.
+	deliverCh  chan smpp.PDU
+	onDeliver  func(context.Context, *smpp.DeliverSM) error
+	bindCtx    context.Context
+	bindCancel context.CancelFunc
+
 	enquireInterval time.Duration
 	maxMissed       int
 }
@@ -59,11 +77,17 @@ type bind struct {
 // dialAndBind connects, performs the bind handshake and starts the connection's goroutines. It
 // returns a ready bind or an error; on any handshake failure it tears the connection down before
 // returning.
-func dialAndBind(ctx context.Context, cfg BindConfig, logger *slog.Logger) (*bind, error) {
+func dialAndBind(ctx context.Context, cfg BindConfig, logger *slog.Logger, onDeliver func(context.Context, *smpp.DeliverSM) error) (*bind, error) {
 	d := net.Dialer{Timeout: cfg.DialTimeout}
 	conn, err := d.DialContext(ctx, "tcp", cfg.Addr)
 	if err != nil {
 		return nil, fmt.Errorf("connectorpool: dial %s: %w", cfg.Addr, err)
+	}
+
+	// A nil handler means "no return-path processing wired": acknowledge the deliver_sm without
+	// publishing, which is the pre-M4 behaviour the MT-only tests rely on.
+	if onDeliver == nil {
+		onDeliver = func(context.Context, *smpp.DeliverSM) error { return nil }
 	}
 
 	window := cfg.WindowSize
@@ -81,6 +105,7 @@ func dialAndBind(ctx context.Context, cfg BindConfig, logger *slog.Logger) (*bin
 	if maxMissed < 1 {
 		maxMissed = 1
 	}
+	bindCtx, bindCancel := context.WithCancel(context.Background())
 	b := &bind{
 		conn:            conn,
 		respTimeout:     cfg.ResponseTimeout,
@@ -89,6 +114,10 @@ func dialAndBind(ctx context.Context, cfg BindConfig, logger *slog.Logger) (*bin
 		window:          make(chan struct{}, window),
 		pending:         make(map[uint32]chan smpp.PDU),
 		done:            make(chan struct{}),
+		deliverCh:       make(chan smpp.PDU, deliverBuffer),
+		onDeliver:       onDeliver,
+		bindCtx:         bindCtx,
+		bindCancel:      bindCancel,
 		enquireInterval: enquireInterval,
 		maxMissed:       maxMissed,
 	}
@@ -96,6 +125,17 @@ func dialAndBind(ctx context.Context, cfg BindConfig, logger *slog.Logger) (*bin
 	b.wg.Add(2)
 	go b.writeLoop()
 	go b.readLoop()
+
+	// The return-path publishers: at most one per SMSC window slot, capped. They stop on b.done, joined
+	// by Close, so a handshake failure below tears them down with everything else.
+	workers := window
+	if workers > maxDeliverWorkers {
+		workers = maxDeliverWorkers
+	}
+	b.wg.Add(workers)
+	for range workers {
+		go b.deliverWorker()
+	}
 
 	resp, err := b.roundtrip(ctx, &smpp.BindTransceiver{BindFields: smpp.BindFields{
 		SystemID:         cfg.SystemID,
@@ -225,8 +265,14 @@ func (b *bind) dispatch(pdu smpp.PDU) {
 	case *smpp.EnquireLink:
 		b.enqueue(smpp.PDU{Sequence: pdu.Sequence, Body: &smpp.EnquireLinkResp{}})
 	case *smpp.DeliverSM:
-		// MO / DLR: acknowledged so the SMSC's window frees; correlation and forwarding are M4.
-		b.enqueue(smpp.PDU{Sequence: pdu.Sequence, Body: &smpp.DeliverSMResp{}})
+		// Hand the MO/DLR to the worker pool, which publishes it and only then acknowledges. Blocking
+		// here when the buffer is full is the intended backpressure: a slow return path slows the reader,
+		// closing the SMSC window, rather than dropping a deliver_sm or acknowledging one we could not
+		// publish.
+		select {
+		case b.deliverCh <- pdu:
+		case <-b.done:
+		}
 	default:
 		b.mu.Lock()
 		ch := b.pending[pdu.Sequence]
@@ -238,6 +284,41 @@ func (b *bind) dispatch(pdu smpp.PDU) {
 			}
 		}
 	}
+}
+
+// deliverWorker publishes deliver_sm handed to it by the reader, then acknowledges. It stops on
+// b.done; a deliver_sm still buffered at shutdown is neither published nor acknowledged, so the SMSC
+// retries it (at-least-once — no loss, an occasional duplicate the consumers dedup). Several workers
+// run concurrently, so publication does NOT preserve arrival order even within one partition key; the
+// consumers own ordering (dedup + monotonic state / UDH reassembly — see pipeline.DLREvent/MOInbound).
+func (b *bind) deliverWorker() {
+	defer b.wg.Done()
+	for {
+		select {
+		case pdu := <-b.deliverCh:
+			b.processDeliver(pdu)
+		case <-b.done:
+			return
+		}
+	}
+}
+
+// processDeliver publishes one deliver_sm and, only on success, sends its deliver_sm_resp. The
+// acknowledgement is the point where responsibility for the MO/DLR transfers to us, so it is withheld
+// until the publish is durable: a publish failure leaves the deliver_sm unacknowledged and the SMSC
+// resends it. It never logs the message body (invariant a).
+func (b *bind) processDeliver(pdu smpp.PDU) {
+	ds, ok := pdu.Body.(*smpp.DeliverSM)
+	if !ok {
+		return
+	}
+	if err := b.onDeliver(b.bindCtx, ds); err != nil {
+		if !b.isClosing() {
+			b.logger.Warn("connectorpool: deliver_sm publish failed, not acknowledging (smsc will retry)", "err", err)
+		}
+		return
+	}
+	b.enqueue(smpp.PDU{Sequence: pdu.Sequence, Body: &smpp.DeliverSMResp{}})
 }
 
 // enqueue writes a PDU unless the bind is shutting down. Used by the reader to answer server
@@ -280,6 +361,7 @@ func (b *bind) enquireLoop() {
 func (b *bind) shutdown() {
 	b.closeOnce.Do(func() {
 		close(b.done)
+		b.bindCancel() // cancel any in-flight return-path publish so a worker cannot outlive the bind
 		_ = b.conn.Close()
 	})
 }
