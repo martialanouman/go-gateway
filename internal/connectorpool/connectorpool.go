@@ -57,11 +57,28 @@ type noopCancelFlags struct{}
 
 func (noopCancelFlags) Exists(context.Context, uuid.UUID) (bool, error) { return false, nil }
 
+// DLRMap remembers smsc_msg_id -> message_id after a successful submit, so a later deliver_sm
+// (delivery receipt) can be correlated back to the message (step-044 reads it). *dlrmap.RedisMap
+// satisfies it. New defaults a nil DLRMap to a no-op, so the hot path never branches on nil and a
+// missing wiring is explicit rather than a silent panic.
+type DLRMap interface {
+	Put(ctx context.Context, connectorID uuid.UUID, smscMsgID string, messageID, traceID uuid.UUID, validityPeriod *string) error
+}
+
+// noopDLRMap is the New default when no DLR map is wired: it records nothing. Tests that do not
+// exercise DLR correlation rely on it.
+type noopDLRMap struct{}
+
+func (noopDLRMap) Put(context.Context, uuid.UUID, string, uuid.UUID, uuid.UUID, *string) error {
+	return nil
+}
+
 // Deps are the connector pool's collaborators.
 type Deps struct {
 	Consumer    Consumer
 	CDR         CDRWriter
 	CancelFlags CancelFlags
+	DLRMap      DLRMap
 	Bind        BindConfig
 	Tracer      trace.Tracer
 	Logger      *slog.Logger
@@ -85,6 +102,9 @@ func New(deps Deps) *Service {
 	}
 	if deps.CancelFlags == nil {
 		deps.CancelFlags = noopCancelFlags{}
+	}
+	if deps.DLRMap == nil {
+		deps.DLRMap = noopDLRMap{}
 	}
 	return &Service{deps: deps}
 }
@@ -191,7 +211,28 @@ func (s *Service) handler(b *bind) kafka.Handler {
 		if err := s.deps.CDR.Insert(ctx, cdrRow(routed, resp)); err != nil {
 			return fmt.Errorf("connectorpool: write cdr: %w", err)
 		}
+		s.recordDLRMapping(ctx, routed, resp)
 		return nil
+	}
+}
+
+// recordDLRMapping remembers smsc_msg_id -> message_id after a successful submit, so a later
+// deliver_sm (delivery receipt) can be correlated back to this message (step-044). It is best-effort:
+// the message is already enroute, so a mapping-write failure — or a non-ROK response, or a response
+// carrying no smsc_msg_id — must never fail the record. A write error is logged and counted only by
+// the log; the consequence (a later receipt arriving uncorrelated) is handled in step-044. The log
+// carries the ids, never the body (invariant a).
+func (s *Service) recordDLRMapping(ctx context.Context, r pipeline.RoutedMT, resp smpp.PDU) {
+	if resp.Status != smpp.StatusOK {
+		return
+	}
+	body, ok := resp.Body.(*smpp.SubmitSMResp)
+	if !ok || body.MessageID == "" {
+		return
+	}
+	if err := s.deps.DLRMap.Put(ctx, r.ConnectorID, body.MessageID, r.MessageID, r.TraceID, r.ValidityPeriod); err != nil {
+		s.deps.Logger.WarnContext(ctx, "connector: dlr mapping write failed, a later receipt will be uncorrelated",
+			"message_id", r.MessageID, "connector_id", r.ConnectorID, "err", err)
 	}
 }
 
