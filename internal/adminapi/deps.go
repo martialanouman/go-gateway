@@ -96,6 +96,13 @@ type InboundKeywordStore interface {
 	Delete(ctx context.Context, inboundNumberID, keywordID uuid.UUID) error
 }
 
+// UnroutedMOStore is the read side of the unrouted-MO operator queue (list-unrouted-mo). It is
+// keyset-paginated by (received_at, id): List returns up to limit rows newest-first, starting strictly
+// after the cursor position (nil = the first page). *postgres.UnroutedMORepo satisfies it.
+type UnroutedMOStore interface {
+	List(ctx context.Context, limit int, after *cp.UnroutedMOKey) ([]cp.UnroutedMO, error)
+}
+
 // Disconnector force-closes the live SMPP sessions whose authorization has ceased (a revoked or
 // disabled credential, a suspended account or customer), so a control-plane change reaches sessions
 // already bound (step-032). It is best-effort: the control-plane mutation is authoritative and must
@@ -119,6 +126,7 @@ type Deps struct {
 	SenderIDs       SenderIDStore
 	InboundNumbers  InboundNumberStore
 	InboundKeywords InboundKeywordStore
+	UnroutedMO      UnroutedMOStore
 	Disconnector    Disconnector
 	Verifier        auth.TokenVerifier
 	Logger          *slog.Logger

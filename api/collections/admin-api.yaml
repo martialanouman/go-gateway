@@ -621,3 +621,10 @@ items:
           method: DELETE
           url: '{{baseUrl}}/admin/inbound-numbers/{{inboundNumberId}}/keywords/{{keywordId}}'
         docs: Delete a keyword mapping (scope admin:write).
+      - info:
+          name: list-unrouted-mo
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/mo/unrouted?limit=50'
+        docs: List mobile-originated messages that resolved to no account (scope admin:read).
