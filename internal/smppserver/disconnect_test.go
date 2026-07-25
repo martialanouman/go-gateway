@@ -59,6 +59,27 @@ func (r *trackedRegistry) unbindCount() int {
 	return r.unbinds
 }
 
+// waitUnbinds blocks until the registry has recorded want unbinds, or fails after a bounded wait.
+// The session close the client observes (expectClosed) and the server-side token release
+// (Listener.releaseToken -> Unbind) run in different goroutines: the cutoff/Disconnect closes the
+// socket while serve() independently releases the token after Serve returns. Reading unbindCount()
+// once, right after expectClosed, therefore races the release and flakes under load. Polling closes
+// that gap without coupling the test to the interleaving.
+func waitUnbinds(t *testing.T, r *trackedRegistry, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if got := r.unbindCount(); got == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Errorf("registry unbinds = %d, want %d (grace cutoff released the token)", r.unbindCount(), want)
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // startTestListener runs a Listener on an ephemeral port with the given store/registry/opts and returns
 // its resolved address. Everything is torn down on cleanup.
 func startTestListener(t *testing.T, store CredentialStore, reg Registry, opts Options) (*Listener, string) {
@@ -189,9 +210,7 @@ func TestDisconnectClosesAccountAndSparesNeighbour(t *testing.T) {
 	expectAlive(t, cb, 2)
 
 	// The force-closed session released its token (the max_sessions slot is freed); the survivor did not.
-	if got := reg.unbindCount(); got != 1 {
-		t.Errorf("registry unbinds = %d, want 1 (only the closed session)", got)
-	}
+	waitUnbinds(t, reg, 1)
 }
 
 // TestDisconnectCustomerScopeClosesAllAccounts drives two binds under the same customer (distinct
@@ -254,9 +273,7 @@ func TestGraceCutoffClosesLiveSession(t *testing.T) {
 
 	// The cutoff fires at the deadline; the read blocks until it does (no sleep).
 	expectClosed(t, c)
-	if got := reg.unbindCount(); got != 1 {
-		t.Errorf("registry unbinds = %d, want 1 (grace cutoff released the token)", got)
-	}
+	waitUnbinds(t, reg, 1)
 }
 
 // TestGraceCutoffSparesNewSecretSession pins that the grace cutoff never touches a session that
