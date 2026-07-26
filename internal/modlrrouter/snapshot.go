@@ -160,10 +160,9 @@ func (ck compiledKeyword) matches(text string) bool {
 }
 
 // normalizeAddr renders an address in the form the snapshot is keyed by: the E.164 form for a real
-// number, or the trimmed raw value for a short code / alphanumeric sender that is not E.164.
+// number, or the trimmed raw value for a short code / alphanumeric sender that is not E.164. The
+// opt-out inbound_number scope keys on the same convention (e164.NormalizeAddr), so a sender resolves
+// to the same inbound number in both places.
 func normalizeAddr(a string) string {
-	if n, err := e164.Normalize(a); err == nil {
-		return n
-	}
-	return strings.TrimSpace(a)
+	return e164.NormalizeAddr(a)
 }
