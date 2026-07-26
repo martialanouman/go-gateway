@@ -531,7 +531,11 @@ CREATE TABLE control_plane.suppressions (
   CONSTRAINT suppressions_uq UNIQUE NULLS NOT DISTINCT (scope, scope_id, msisdn),
   CONSTRAINT suppressions_scope_ck CHECK (
     (scope = 'platform' AND scope_id IS NULL) OR (scope <> 'platform' AND scope_id IS NOT NULL)
-  )
+  ),
+  -- Enforce the canonical E.164-minus-"+" form (digits only, country code 1-9). No write path (admin,
+  -- import, carrier, MO STOP) may store a non-normalized value: the opt-out Bloom and exact lookup key
+  -- on this exact form, so a "+225…" or padded value would silently defeat suppression (§6.20).
+  CONSTRAINT suppressions_msisdn_canonical_ck CHECK (msisdn ~ '^[1-9][0-9]+$')
 );
 -- opt-out check hot path: given a msisdn, find any applicable scope fast
 CREATE INDEX suppressions_msisdn_idx ON control_plane.suppressions(msisdn);

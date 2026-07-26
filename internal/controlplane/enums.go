@@ -379,3 +379,107 @@ func (s ConnectorStatus) Valid() bool {
 		return false
 	}
 }
+
+// SuppressionScope is the scope a suppression applies to (control_plane.suppressions.scope). A MT is
+// blocked if the destination is suppressed in ANY applicable scope (§6.20).
+type SuppressionScope string
+
+// The suppression scopes, from narrowest to widest.
+const (
+	SuppressionScopeInboundNumber SuppressionScope = "inbound_number"
+	SuppressionScopeAccount       SuppressionScope = "smpp_account"
+	SuppressionScopeCustomer      SuppressionScope = "customer"
+	SuppressionScopePlatform      SuppressionScope = "platform"
+)
+
+// Valid reports whether s is a published suppression scope.
+func (s SuppressionScope) Valid() bool {
+	switch s {
+	case SuppressionScopeInboundNumber, SuppressionScopeAccount, SuppressionScopeCustomer, SuppressionScopePlatform:
+		return true
+	default:
+		return false
+	}
+}
+
+// SuppressionSource records how a suppression was created (control_plane.suppressions.source).
+type SuppressionSource string
+
+// The suppression sources.
+const (
+	SuppressionSourceMOStop    SuppressionSource = "mo_stop"
+	SuppressionSourceAdmin     SuppressionSource = "admin"
+	SuppressionSourceImport    SuppressionSource = "import"
+	SuppressionSourceCarrier   SuppressionSource = "carrier"
+	SuppressionSourceRegulator SuppressionSource = "regulator"
+)
+
+// Valid reports whether s is a published suppression source.
+func (s SuppressionSource) Valid() bool {
+	switch s {
+	case SuppressionSourceMOStop, SuppressionSourceAdmin, SuppressionSourceImport,
+		SuppressionSourceCarrier, SuppressionSourceRegulator:
+		return true
+	default:
+		return false
+	}
+}
+
+// OptOutAction is what an opt-out keyword does when matched (control_plane.opt_out_keywords.action).
+type OptOutAction string
+
+// The opt-out keyword actions.
+const (
+	OptOutActionSuppress   OptOutAction = "suppress"
+	OptOutActionUnsuppress OptOutAction = "unsuppress"
+	OptOutActionHelp       OptOutAction = "help"
+)
+
+// Valid reports whether a is a published opt-out action.
+func (a OptOutAction) Valid() bool {
+	switch a {
+	case OptOutActionSuppress, OptOutActionUnsuppress, OptOutActionHelp:
+		return true
+	default:
+		return false
+	}
+}
+
+// OptOutMatchType is how an opt-out keyword matches an inbound message
+// (control_plane.opt_out_keywords.match_type).
+type OptOutMatchType string
+
+// The opt-out keyword match types.
+const (
+	OptOutMatchExact  OptOutMatchType = "exact"
+	OptOutMatchPrefix OptOutMatchType = "prefix"
+)
+
+// Valid reports whether m is a published opt-out match type.
+func (m OptOutMatchType) Valid() bool {
+	switch m {
+	case OptOutMatchExact, OptOutMatchPrefix:
+		return true
+	default:
+		return false
+	}
+}
+
+// OptOutKeywordStatus is an opt-out keyword's config status (control_plane.opt_out_keywords.status).
+type OptOutKeywordStatus string
+
+// The opt-out keyword statuses.
+const (
+	OptOutKeywordActive   OptOutKeywordStatus = "active"
+	OptOutKeywordDisabled OptOutKeywordStatus = "disabled"
+)
+
+// Valid reports whether s is a published opt-out keyword status.
+func (s OptOutKeywordStatus) Valid() bool {
+	switch s {
+	case OptOutKeywordActive, OptOutKeywordDisabled:
+		return true
+	default:
+		return false
+	}
+}
