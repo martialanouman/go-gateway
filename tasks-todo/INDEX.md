@@ -63,7 +63,7 @@ Légende : `[x]` = fait (dans `tasks-done/`) · `[ ]` = à faire (dans `tasks-to
 - [x] step-081 — Détection d'encodage GSM-7/UCS-2/8-bit + calcul du nombre de segments
 - [x] step-082 — Découper les messages longs en segments UDH (étape pipeline)
 - [x] step-083 — Réassembler les MO concaténés (multipart)
-- [ ] step-084 — Token-bucket Lua atomique + repo `rate_limits`
+- [x] step-084 — Token-bucket Lua atomique + repo `rate_limits`
 - [ ] step-085 — Brancher l'étape débit dans le pipeline + précédence des plafonds
 - [ ] step-086 — Throttling adaptatif AIMD piloté par `ESME_RTHROTTLED`
 - [ ] step-087 — Limite de débit dédiée pour `query_sm`

@@ -36,3 +36,45 @@ func (q *Queries) GetRateLimit(ctx context.Context, arg GetRateLimitParams) (Get
 	err := row.Scan(&i.MaxPerSec, &i.MaxPerDay, &i.BurstCapacity)
 	return i, err
 }
+
+const listRateLimits = `-- name: ListRateLimits :many
+SELECT entity_type, entity_id, max_per_sec, max_per_day, burst_capacity
+FROM control_plane.rate_limits
+ORDER BY entity_type, entity_id
+`
+
+type ListRateLimitsRow struct {
+	EntityType    string
+	EntityID      uuid.UUID
+	MaxPerSec     *int32
+	MaxPerDay     *int32
+	BurstCapacity *int32
+}
+
+// Every configured throughput limit, for the router's cold-loaded snapshot (step-085): the pipeline
+// resolves an account/connector/route limit by (entity_type, entity_id) without a per-message read.
+func (q *Queries) ListRateLimits(ctx context.Context) ([]ListRateLimitsRow, error) {
+	rows, err := q.db.Query(ctx, listRateLimits)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRateLimitsRow{}
+	for rows.Next() {
+		var i ListRateLimitsRow
+		if err := rows.Scan(
+			&i.EntityType,
+			&i.EntityID,
+			&i.MaxPerSec,
+			&i.MaxPerDay,
+			&i.BurstCapacity,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
