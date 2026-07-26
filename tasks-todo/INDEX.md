@@ -45,7 +45,7 @@ Légende : `[x]` = fait (dans `tasks-done/`) · `[ ]` = à faire (dans `tasks-to
 - [x] step-044 — mo-dlr-router-svc : squelette + corrélation DLR → CDR
 - [x] step-045 — Résolution MO (dédié / mot-clé / non routé) + list-unrouted-mo
 - [x] step-046 — Remise deliver_sm côté smpp-server via SessionRegistry.Deliver
-- [ ] step-047 — Webhooks signés HMAC-SHA256 (retries, dead-letter)
+- [x] step-047 — Webhooks signés HMAC-SHA256 (retries, dead-letter)
 - [ ] step-048 — Décision de remise MO : bind actif (gRPC) ou webhook
 
 ## M5 — Conformité sur le chemin critique
