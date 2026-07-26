@@ -57,6 +57,38 @@ func testSender(sink webhook.DeadLetterSink, logger *slog.Logger) *webhook.Sende
 		webhook.WithJitter(func() float64 { return 0 }))
 }
 
+// TestSendMaxAttemptsCapsPolicy: WithMaxAttempts bounds the hot-path retries below the webhook's own
+// policy, so a persistently failing endpoint is hit only the capped number of times before it
+// dead-letters — the guard that keeps one bad endpoint from stalling the delivery consumer.
+func TestSendMaxAttemptsCapsPolicy(t *testing.T) {
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		w.WriteHeader(http.StatusInternalServerError) // retryable
+	}))
+	defer srv.Close()
+
+	// The webhook's policy asks for 10 attempts; the cap must win at 2.
+	wh := webhookFor(srv.URL)
+	wh.RetryPolicyJSON = []byte(`{"max_attempts":10,"initial_backoff_ms":1}`)
+
+	sink := &fakeSink{}
+	sender := webhook.NewSender(nil, sink, slog.New(slog.NewTextHandler(io.Discard, nil)),
+		webhook.WithSleep(func(context.Context, time.Duration) error { return nil }),
+		webhook.WithJitter(func() float64 { return 0 }),
+		webhook.WithMaxAttempts(2))
+
+	if err := sender.Send(context.Background(), wh, webhook.Event{ID: "evt-cap", Payload: []byte(`{}`)}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if got := atomic.LoadInt32(&hits); got != 2 {
+		t.Errorf("endpoint hit %d times, want 2 (cap below the policy's 10)", got)
+	}
+	if sink.count() != 1 {
+		t.Errorf("capped-out event must be dead-lettered once, got %d", sink.count())
+	}
+}
+
 func webhookFor(url string) cp.Webhook {
 	return cp.Webhook{
 		ID: uuid.New(), AccountID: uuid.New(), EventType: cp.WebhookEventMO,

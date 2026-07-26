@@ -24,8 +24,16 @@ const (
 	TopicDLREvents = "dlr.events"
 	// TopicMTDeadLetter is the parking topic for MT messages that exhausted handling (M7+).
 	TopicMTDeadLetter = "mt.dead-letter"
-	// TopicMODeadLetter is the parking topic for MO messages that exhausted handling (M7+).
+	// TopicMODeadLetter is the parking topic for MO messages that could not be delivered to the account
+	// (no live bind and no active webhook), kept for the operator to replay (step-048).
 	TopicMODeadLetter = "mo.dead-letter"
+	// TopicDLRDeadLetter is the parking topic for DLR receipts that could not be delivered to the
+	// account (step-048), mirroring mo.dead-letter.
+	TopicDLRDeadLetter = "dlr.dead-letter"
+	// TopicWebhookDeadLetter parks webhook events whose delivery was abandoned — retries exhausted or a
+	// permanent rejection (step-048). Distinct from mo/dlr.dead-letter: those park an event that had no
+	// delivery path at all, this parks one that reached the account's webhook but never got a 2xx.
+	TopicWebhookDeadLetter = "webhook.dead-letter"
 	// TopicMTReroutePark holds MT messages awaiting a fallback connector (M7).
 	TopicMTReroutePark = "mt.reroute-park"
 	// TopicMetricsStream feeds the real-time WebSocket metrics (M11).
