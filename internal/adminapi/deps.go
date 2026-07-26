@@ -129,6 +129,7 @@ type Deps struct {
 	UnroutedMO      UnroutedMOStore
 	Suppressions    SuppressionAdminStore
 	OptOutKeywords  OptOutKeywordStore
+	AntispamRules   AntispamRuleStore
 	Disconnector    Disconnector
 	Verifier        auth.TokenVerifier
 	Logger          *slog.Logger

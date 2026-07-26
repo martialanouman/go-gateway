@@ -85,6 +85,11 @@ var m1Operations = []opRef{
 	{"create-opt-out-keyword", "post", "/admin/opt-out-keywords"},
 	{"update-opt-out-keyword", "patch", "/admin/opt-out-keywords/{id}"},
 	{"delete-opt-out-keyword", "delete", "/admin/opt-out-keywords/{id}"},
+
+	{"list-antispam-rules", "get", "/admin/antispam-rules"},
+	{"create-antispam-rule", "post", "/admin/antispam-rules"},
+	{"update-antispam-rule", "patch", "/admin/antispam-rules/{id}"},
+	{"delete-antispam-rule", "delete", "/admin/antispam-rules/{id}"},
 }
 
 // loadContract reads api/openapi-admin.yaml (the source of truth) into a generic tree.

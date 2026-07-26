@@ -753,3 +753,56 @@ items:
           method: DELETE
           url: '{{baseUrl}}/admin/opt-out-keywords/{{optOutKeywordId}}'
         docs: Delete an opt-out keyword (scope admin:write).
+  - info:
+      name: Anti-spam
+      type: folder
+    items:
+      - info:
+          name: list-antispam-rules
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/antispam-rules'
+        docs: List anti-spam rules (scope admin:read).
+      - info:
+          name: create-antispam-rule
+          type: http
+        http:
+          method: POST
+          url: '{{baseUrl}}/admin/antispam-rules'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "rule_type": "content_blacklist",
+                "scope": "global",
+                "action": "block",
+                "config_json": { "patterns": ["(?i)\\bviagra\\b"] }
+              }
+        docs: Create an anti-spam rule (scope admin:write).
+      - info:
+          name: update-antispam-rule
+          type: http
+        http:
+          method: PATCH
+          url: '{{baseUrl}}/admin/antispam-rules/{{antispamRuleId}}'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "status": "disabled"
+              }
+        docs: Update an anti-spam rule (scope admin:write).
+      - info:
+          name: delete-antispam-rule
+          type: http
+        http:
+          method: DELETE
+          url: '{{baseUrl}}/admin/antispam-rules/{{antispamRuleId}}'
+        docs: Delete an anti-spam rule (scope admin:write).
