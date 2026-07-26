@@ -127,6 +127,8 @@ type Deps struct {
 	InboundNumbers  InboundNumberStore
 	InboundKeywords InboundKeywordStore
 	UnroutedMO      UnroutedMOStore
+	Suppressions    SuppressionAdminStore
+	OptOutKeywords  OptOutKeywordStore
 	Disconnector    Disconnector
 	Verifier        auth.TokenVerifier
 	Logger          *slog.Logger

@@ -42,6 +42,55 @@ func (q *Queries) CreateSuppression(ctx context.Context, arg CreateSuppressionPa
 	return result.RowsAffected(), nil
 }
 
+const createSuppressionReturning = `-- name: CreateSuppressionReturning :one
+INSERT INTO control_plane.suppressions (scope, scope_id, msisdn, source, reason)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING id, scope, scope_id, msisdn, source, reason, created_at
+`
+
+type CreateSuppressionReturningParams struct {
+	Scope   string
+	ScopeID *uuid.UUID
+	Msisdn  string
+	Source  string
+	Reason  *string
+}
+
+// Admin create (step-064): NOT idempotent — a duplicate violates suppressions_uq -> 409 (unlike the
+// MO STOP path, which dedups). Returns the created row.
+func (q *Queries) CreateSuppressionReturning(ctx context.Context, arg CreateSuppressionReturningParams) (ControlPlaneSuppression, error) {
+	row := q.db.QueryRow(ctx, createSuppressionReturning,
+		arg.Scope,
+		arg.ScopeID,
+		arg.Msisdn,
+		arg.Source,
+		arg.Reason,
+	)
+	var i ControlPlaneSuppression
+	err := row.Scan(
+		&i.ID,
+		&i.Scope,
+		&i.ScopeID,
+		&i.Msisdn,
+		&i.Source,
+		&i.Reason,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const deleteSuppressionByID = `-- name: DeleteSuppressionByID :execrows
+DELETE FROM control_plane.suppressions WHERE id = $1
+`
+
+func (q *Queries) DeleteSuppressionByID(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteSuppressionByID, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteSuppressionByKey = `-- name: DeleteSuppressionByKey :execrows
 DELETE FROM control_plane.suppressions
 WHERE scope = $1 AND scope_id IS NOT DISTINCT FROM $2 AND msisdn = $3
@@ -57,6 +106,36 @@ type DeleteSuppressionByKeyParams struct {
 // NOT DISTINCT FROM so the platform scope matches a NULL argument.
 func (q *Queries) DeleteSuppressionByKey(ctx context.Context, arg DeleteSuppressionByKeyParams) (int64, error) {
 	result, err := q.db.Exec(ctx, deleteSuppressionByKey, arg.Scope, arg.ScopeID, arg.Msisdn)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const importSuppressions = `-- name: ImportSuppressions :execrows
+INSERT INTO control_plane.suppressions (scope, scope_id, msisdn, source)
+SELECT $1, $2, m, $3
+FROM unnest($4::text[]) AS m
+ON CONFLICT ON CONSTRAINT suppressions_uq DO NOTHING
+`
+
+type ImportSuppressionsParams struct {
+	Scope   string
+	ScopeID *uuid.UUID
+	Source  string
+	Msisdns []string
+}
+
+// Idempotent bulk insert (step-064): every msisdn in one statement, ON CONFLICT DO NOTHING against
+// suppressions_uq. Returns the number of NEW rows inserted (duplicates are skipped). Every msisdn
+// must already be E.164-normalized (the CHECK rejects a non-canonical value, failing the whole batch).
+func (q *Queries) ImportSuppressions(ctx context.Context, arg ImportSuppressionsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, importSuppressions,
+		arg.Scope,
+		arg.ScopeID,
+		arg.Source,
+		arg.Msisdns,
+	)
 	if err != nil {
 		return 0, err
 	}
@@ -96,6 +175,60 @@ SELECT id, scope, scope_id, msisdn, source, reason, created_at FROM control_plan
 // these rows at boot. The msisdn is already E.164-normalized at write.
 func (q *Queries) ListSuppressions(ctx context.Context) ([]ControlPlaneSuppression, error) {
 	rows, err := q.db.Query(ctx, listSuppressions)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ControlPlaneSuppression{}
+	for rows.Next() {
+		var i ControlPlaneSuppression
+		if err := rows.Scan(
+			&i.ID,
+			&i.Scope,
+			&i.ScopeID,
+			&i.Msisdn,
+			&i.Source,
+			&i.Reason,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSuppressionsPage = `-- name: ListSuppressionsPage :many
+SELECT id, scope, scope_id, msisdn, source, reason, created_at FROM control_plane.suppressions
+WHERE ($1::text    IS NULL OR scope    = $1)
+  AND ($2::uuid IS NULL OR scope_id = $2)
+  AND ($3::text   IS NULL OR msisdn   = $3)
+  AND ($4::uuid    IS NULL OR id       > $4)
+ORDER BY id
+LIMIT $5
+`
+
+type ListSuppressionsPageParams struct {
+	Scope   *string
+	ScopeID *uuid.UUID
+	Msisdn  *string
+	After   *uuid.UUID
+	Lim     int32
+}
+
+// Keyset pagination on the UUIDv7 id, with optional scope / scope_id / msisdn filters (step-064). The
+// caller asks for limit+1 rows to learn whether a further page exists.
+func (q *Queries) ListSuppressionsPage(ctx context.Context, arg ListSuppressionsPageParams) ([]ControlPlaneSuppression, error) {
+	rows, err := q.db.Query(ctx, listSuppressionsPage,
+		arg.Scope,
+		arg.ScopeID,
+		arg.Msisdn,
+		arg.After,
+		arg.Lim,
+	)
 	if err != nil {
 		return nil, err
 	}

@@ -7,7 +7,64 @@ package sqlcgen
 
 import (
 	"context"
+
+	uuid "github.com/google/uuid"
 )
+
+const createOptOutKeyword = `-- name: CreateOptOutKeyword :one
+INSERT INTO control_plane.opt_out_keywords (country_code, keyword, action, match_type, auto_reply_template)
+VALUES (
+    $1,
+    $2,
+    $3,
+    COALESCE($4::text, 'exact'),
+    $5
+)
+RETURNING id, country_code, keyword, action, match_type, auto_reply_template, status, created_at, updated_at
+`
+
+type CreateOptOutKeywordParams struct {
+	CountryCode       *string
+	Keyword           string
+	Action            string
+	MatchType         *string
+	AutoReplyTemplate *string
+}
+
+func (q *Queries) CreateOptOutKeyword(ctx context.Context, arg CreateOptOutKeywordParams) (ControlPlaneOptOutKeyword, error) {
+	row := q.db.QueryRow(ctx, createOptOutKeyword,
+		arg.CountryCode,
+		arg.Keyword,
+		arg.Action,
+		arg.MatchType,
+		arg.AutoReplyTemplate,
+	)
+	var i ControlPlaneOptOutKeyword
+	err := row.Scan(
+		&i.ID,
+		&i.CountryCode,
+		&i.Keyword,
+		&i.Action,
+		&i.MatchType,
+		&i.AutoReplyTemplate,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const deleteOptOutKeyword = `-- name: DeleteOptOutKeyword :execrows
+DELETE FROM control_plane.opt_out_keywords WHERE id = $1
+`
+
+func (q *Queries) DeleteOptOutKeyword(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteOptOutKeyword, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
 
 const listActiveOptOutKeywords = `-- name: ListActiveOptOutKeywords :many
 SELECT id, country_code, keyword, action, match_type, auto_reply_template, status, created_at, updated_at FROM control_plane.opt_out_keywords WHERE status = 'active' ORDER BY country_code, keyword
@@ -43,4 +100,84 @@ func (q *Queries) ListActiveOptOutKeywords(ctx context.Context) ([]ControlPlaneO
 		return nil, err
 	}
 	return items, nil
+}
+
+const listOptOutKeywords = `-- name: ListOptOutKeywords :many
+SELECT id, country_code, keyword, action, match_type, auto_reply_template, status, created_at, updated_at FROM control_plane.opt_out_keywords ORDER BY country_code, keyword
+`
+
+// Every opt-out keyword (active AND disabled), for the Admin list (step-064).
+func (q *Queries) ListOptOutKeywords(ctx context.Context) ([]ControlPlaneOptOutKeyword, error) {
+	rows, err := q.db.Query(ctx, listOptOutKeywords)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ControlPlaneOptOutKeyword{}
+	for rows.Next() {
+		var i ControlPlaneOptOutKeyword
+		if err := rows.Scan(
+			&i.ID,
+			&i.CountryCode,
+			&i.Keyword,
+			&i.Action,
+			&i.MatchType,
+			&i.AutoReplyTemplate,
+			&i.Status,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const updateOptOutKeyword = `-- name: UpdateOptOutKeyword :one
+UPDATE control_plane.opt_out_keywords SET
+    keyword             = COALESCE($1, keyword),
+    action              = COALESCE($2, action),
+    match_type          = COALESCE($3, match_type),
+    auto_reply_template = COALESCE($4, auto_reply_template),
+    status              = COALESCE($5, status),
+    updated_at          = now()
+WHERE id = $6
+RETURNING id, country_code, keyword, action, match_type, auto_reply_template, status, created_at, updated_at
+`
+
+type UpdateOptOutKeywordParams struct {
+	Keyword           *string
+	Action            *string
+	MatchType         *string
+	AutoReplyTemplate *string
+	Status            *string
+	ID                uuid.UUID
+}
+
+func (q *Queries) UpdateOptOutKeyword(ctx context.Context, arg UpdateOptOutKeywordParams) (ControlPlaneOptOutKeyword, error) {
+	row := q.db.QueryRow(ctx, updateOptOutKeyword,
+		arg.Keyword,
+		arg.Action,
+		arg.MatchType,
+		arg.AutoReplyTemplate,
+		arg.Status,
+		arg.ID,
+	)
+	var i ControlPlaneOptOutKeyword
+	err := row.Scan(
+		&i.ID,
+		&i.CountryCode,
+		&i.Keyword,
+		&i.Action,
+		&i.MatchType,
+		&i.AutoReplyTemplate,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
