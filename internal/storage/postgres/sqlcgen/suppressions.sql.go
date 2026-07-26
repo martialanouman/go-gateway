@@ -11,6 +11,58 @@ import (
 	uuid "github.com/google/uuid"
 )
 
+const createSuppression = `-- name: CreateSuppression :execrows
+INSERT INTO control_plane.suppressions (scope, scope_id, msisdn, source, reason)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT ON CONSTRAINT suppressions_uq DO NOTHING
+`
+
+type CreateSuppressionParams struct {
+	Scope   string
+	ScopeID *uuid.UUID
+	Msisdn  string
+	Source  string
+	Reason  *string
+}
+
+// Idempotent write (step-063): a repeated STOP for the same (scope, scope_id, msisdn) does not
+// duplicate. ON CONFLICT targets suppressions_uq (NULLS NOT DISTINCT), so the platform scope
+// (scope_id NULL) dedups too. Returns rows affected: 0 = already suppressed.
+func (q *Queries) CreateSuppression(ctx context.Context, arg CreateSuppressionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, createSuppression,
+		arg.Scope,
+		arg.ScopeID,
+		arg.Msisdn,
+		arg.Source,
+		arg.Reason,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteSuppressionByKey = `-- name: DeleteSuppressionByKey :execrows
+DELETE FROM control_plane.suppressions
+WHERE scope = $1 AND scope_id IS NOT DISTINCT FROM $2 AND msisdn = $3
+`
+
+type DeleteSuppressionByKeyParams struct {
+	Scope   string
+	ScopeID *uuid.UUID
+	Msisdn  string
+}
+
+// Remove a suppression by its natural key (step-063 unsuppress / START). scope_id compared with IS
+// NOT DISTINCT FROM so the platform scope matches a NULL argument.
+func (q *Queries) DeleteSuppressionByKey(ctx context.Context, arg DeleteSuppressionByKeyParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteSuppressionByKey, arg.Scope, arg.ScopeID, arg.Msisdn)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const isSuppressed = `-- name: IsSuppressed :one
 SELECT EXISTS (
   SELECT 1 FROM control_plane.suppressions

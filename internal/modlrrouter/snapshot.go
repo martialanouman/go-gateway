@@ -105,6 +105,7 @@ type resolution struct {
 	accountID       uuid.UUID
 	customerID      uuid.UUID
 	inboundNumberID *uuid.UUID
+	country         string // the inbound number's country (empty when the number is unknown)
 	reason          cp.UnroutedReason
 }
 
@@ -119,27 +120,28 @@ func (s *Snapshot) resolve(dest string, body []byte) resolution {
 	}
 	id := num.ID
 	if num.Status != cp.InboundNumberActive {
-		return resolution{reason: cp.UnroutedNumberDisabled, inboundNumberID: &id}
+		return resolution{reason: cp.UnroutedNumberDisabled, inboundNumberID: &id, country: num.CountryCode}
 	}
 	if num.AccountID != nil {
-		return s.route(*num.AccountID, id)
+		return s.route(*num.AccountID, id, num.CountryCode)
 	}
 	text := string(body)
 	for _, ck := range s.keywords[num.ID] {
 		if ck.matches(text) {
-			return s.route(ck.accountID, id)
+			return s.route(ck.accountID, id, num.CountryCode)
 		}
 	}
-	return resolution{reason: cp.UnroutedNoKeywordMatch, inboundNumberID: &id}
+	return resolution{reason: cp.UnroutedNoKeywordMatch, inboundNumberID: &id, country: num.CountryCode}
 }
 
 // route builds a routed resolution, resolving the account's customer from the snapshot.
-func (s *Snapshot) route(accountID, inboundNumberID uuid.UUID) resolution {
+func (s *Snapshot) route(accountID, inboundNumberID uuid.UUID, country string) resolution {
 	return resolution{
 		routed:          true,
 		accountID:       accountID,
 		customerID:      s.customer[accountID],
 		inboundNumberID: &inboundNumberID,
+		country:         country,
 	}
 }
 

@@ -54,6 +54,7 @@ type routedWire struct {
 	RouteID            *uuid.UUID `json:"route_id,omitempty"`
 	SegmentCount       int        `json:"segment_count"`
 	SubmittedAt        time.Time  `json:"submitted_at"`
+	Billable           bool       `json:"billable"`
 }
 
 // EncodeInbound builds the mt.inbound record for env, keyed by account so an account's submissions
@@ -133,6 +134,7 @@ func EncodeRouted(env RoutedMT) (kafka.Record, error) {
 		RouteID:            env.RouteID,
 		SegmentCount:       env.SegmentCount,
 		SubmittedAt:        env.SubmittedAt,
+		Billable:           env.Billable,
 	})
 	if err != nil {
 		return kafka.Record{}, fmt.Errorf("pipeline: encode mt.routed: %w", err)
@@ -168,6 +170,7 @@ func DecodeRouted(rec kafka.Record) (RoutedMT, error) {
 		RouteID:            w.RouteID,
 		SegmentCount:       w.SegmentCount,
 		SubmittedAt:        w.SubmittedAt,
+		Billable:           w.Billable,
 	}, nil
 }
 

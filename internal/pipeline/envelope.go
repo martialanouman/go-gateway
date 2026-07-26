@@ -56,6 +56,12 @@ type RoutedMT struct {
 	RouteID            *uuid.UUID
 	SegmentCount       int
 	SubmittedAt        time.Time
+	// Billable is whether this MT counts against the customer's balance (M9). Client traffic is always
+	// billable — router-svc sets it true; only a system message produced straight to mt.routed by
+	// mo-dlr-router-svc (a STOP auto-reply, §6.20) sets it false. It is deliberately absent from
+	// InboundMT and every client-facing surface, so a client cannot submit a "free" message: the
+	// security boundary is who may produce to mt.routed, not a validated flag.
+	Billable bool
 }
 
 // MOInbound is a mobile-originated message a SMSC delivered to one of our inbound numbers, carried on

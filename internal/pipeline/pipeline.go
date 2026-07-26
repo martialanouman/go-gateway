@@ -81,6 +81,9 @@ func (p *Pipeline) Process(ctx context.Context, in InboundMT) (RoutedMT, error) 
 		DataCoding:         in.DataCoding,
 		SubmittedAt:        in.SubmittedAt,
 		SegmentCount:       1,
+		// Client traffic is always billable; only a system message (a STOP auto-reply produced straight
+		// to mt.routed, §6.20) is not — and that path never runs this pipeline.
+		Billable: true,
 	}
 
 	// 1. E.164 normalization of the destination. Source normalization is a sender-id concern (M5),
