@@ -59,7 +59,7 @@ Légende : `[x]` = fait (dans `tasks-done/`) · `[ ]` = à faire (dans `tasks-to
 - [x] step-067 — Admin anti-spam : *-antispam-rule
 
 ## M6 — Encodage/segmentation + gestion du débit
-- [ ] step-080 — Poser le socle Redis + moteur de scripts Lua (EVALSHA atomique)
+- [x] step-080 — Poser le socle Redis + moteur de scripts Lua (EVALSHA atomique)
 - [ ] step-081 — Détection d'encodage GSM-7/UCS-2/8-bit + calcul du nombre de segments
 - [ ] step-082 — Découper les messages longs en segments UDH (étape pipeline)
 - [ ] step-083 — Réassembler les MO concaténés (multipart)
