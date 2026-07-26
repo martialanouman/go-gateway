@@ -1,0 +1,18 @@
+-- Per-segment CDR granularity (step-082c). A long MT is now dispatched as N segments (step-082b), and
+-- each segment gets its own lifecycle: the connector writes one enroute/failed row per segment and the
+-- DLR path one delivered/expired row per segment. To keep those rows distinct (instead of collapsing
+-- into one under ReplacingMergeTree), segment_seq joins the sorting key.
+--
+-- Semantics: segment_seq = 0 is a MESSAGE-LEVEL row (the pre-dispatch `accepted` placeholder and a
+-- pipeline `rejected` row, both written before segmentation); segment_seq = 1..N is a per-segment
+-- outcome (enroute/delivered/failed/cancelled), and a single-message flow with no pre-dispatch row
+-- (an MO, a STOP auto-reply) writes its one row at segment_seq = 1. The read path aggregates the
+-- per-segment rows back to one message status.
+--
+-- ADD COLUMN and MODIFY ORDER BY MUST share one ALTER: ClickHouse only lets a column join the sorting
+-- key when it was added in the same statement WITHOUT a default expression. Existing rows then take the
+-- type's zero (segment_seq 0). That is right for the pre-dispatch placeholders but NOT for historical
+-- terminal rows (enroute/delivered/failed), which were written before segment_seq existed and now read
+-- as 0 too; the read path therefore counts any DISPATCHED status (not accepted/rejected) as a segment
+-- regardless of segment_seq, so those historical messages still aggregate correctly (see cdrDispatched).
+ALTER TABLE cdr ADD COLUMN segment_seq UInt16, MODIFY ORDER BY (customer_id, account_id, submitted_at, message_id, segment_seq);

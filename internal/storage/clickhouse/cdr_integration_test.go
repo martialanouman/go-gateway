@@ -63,6 +63,7 @@ func TestCDRVersionedReadWrite(t *testing.T) {
 	connectorID := uuid.New()
 	enroute := accepted
 	enroute.Status = clickhouse.StatusEnroute
+	enroute.SegmentSeq = 1 // a dispatched segment (the accepted placeholder stays segment_seq 0)
 	enroute.ConnectorID = &connectorID
 	if err := writer.Insert(ctx, enroute); err != nil {
 		t.Fatalf("insert enroute: %v", err)
@@ -245,7 +246,7 @@ func TestCDRListPaginationCoversAllRows(t *testing.T) {
 			MessageID: id, TraceID: uuid.New(), AccountID: accountID, CustomerID: customerID,
 			Direction: clickhouse.DirectionMT, SourceAddr: "GATEWAY", DestAddr: "2250700000000",
 			SubmittedAt: base.Add(time.Duration(i) * time.Second),
-			Status:      clickhouse.StatusEnroute, SegmentCount: 1, Encoding: clickhouse.EncodingGSM7,
+			Status:      clickhouse.StatusEnroute, SegmentCount: 1, SegmentSeq: 1, Encoding: clickhouse.EncodingGSM7,
 		}
 		want[n-1-i] = id // newest (largest submitted_at) first
 	}
@@ -299,7 +300,7 @@ func TestCDRListPaginationTiesOnSameMillisecond(t *testing.T) {
 		rows[i] = clickhouse.CDRRow{
 			MessageID: id, TraceID: uuid.New(), AccountID: accountID, CustomerID: customerID,
 			Direction: clickhouse.DirectionMT, SourceAddr: "GATEWAY", DestAddr: "2250700000000",
-			SubmittedAt: same, Status: clickhouse.StatusEnroute, SegmentCount: 1, Encoding: clickhouse.EncodingGSM7,
+			SubmittedAt: same, Status: clickhouse.StatusEnroute, SegmentCount: 1, SegmentSeq: 1, Encoding: clickhouse.EncodingGSM7,
 		}
 	}
 	if err := writer.InsertBatch(ctx, rows); err != nil {
@@ -338,7 +339,7 @@ func TestCDRListScopedToAccount(t *testing.T) {
 	if err := writer.Insert(ctx, clickhouse.CDRRow{
 		MessageID: uuid.New(), TraceID: uuid.New(), AccountID: owner, CustomerID: ownerCustomer,
 		Direction: clickhouse.DirectionMT, DestAddr: "22507000000", SubmittedAt: time.Now().UTC().Truncate(time.Millisecond),
-		Status: clickhouse.StatusEnroute, SegmentCount: 1, Encoding: clickhouse.EncodingGSM7,
+		Status: clickhouse.StatusEnroute, SegmentCount: 1, SegmentSeq: 1, Encoding: clickhouse.EncodingGSM7,
 	}); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
@@ -378,6 +379,7 @@ func TestCDRListStatusIsLatestVersion(t *testing.T) {
 	}
 	enroute := accepted
 	enroute.Status = clickhouse.StatusEnroute
+	enroute.SegmentSeq = 1 // a dispatched segment
 	if err := writer.InsertBatch(ctx, []clickhouse.CDRRow{accepted, enroute}); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
@@ -420,7 +422,7 @@ func TestCDRListFilters(t *testing.T) {
 		return clickhouse.CDRRow{
 			MessageID: uuid.New(), TraceID: uuid.New(), AccountID: accountID, CustomerID: customerID,
 			Direction: dir, SourceAddr: "GATEWAY", DestAddr: "2250700000000",
-			SubmittedAt: at, Status: clickhouse.StatusEnroute, SegmentCount: 1, Encoding: clickhouse.EncodingGSM7,
+			SubmittedAt: at, Status: clickhouse.StatusEnroute, SegmentCount: 1, SegmentSeq: 1, Encoding: clickhouse.EncodingGSM7,
 		}
 	}
 	// Two MT (t0, t2) and one MO (t1).
@@ -444,4 +446,185 @@ func TestCDRListFilters(t *testing.T) {
 	if len(got) != 1 || got[0].Direction != clickhouse.DirectionMO {
 		t.Errorf("date range filter: got %+v want the single t1 MO row", got)
 	}
+}
+
+// TestCDRAggregatesSegmentsToMessageStatus is the step-082c core: a multi-segment message is stored as
+// N per-segment rows (plus a message-level placeholder) and the read path folds them back to ONE
+// status, per the spec §6.6 precedence — delivered only when EVERY segment is delivered, failed as soon
+// as one fails, and the dispatched total (not the placeholder's provisional 1) as segment_count.
+func TestCDRAggregatesSegmentsToMessageStatus(t *testing.T) {
+	cfg := chtest.Config(t)
+	conn, err := clickhouse.NewConn(cfg)
+	if err != nil {
+		t.Fatalf("new conn: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	writer := clickhouse.NewCDRWriter(conn)
+	reader := clickhouse.NewCDRReader(conn)
+	ctx := context.Background()
+	customerID := uuid.New()
+	accountID := uuid.New()
+
+	// seg builds one CDR row for a message: seq 0 is the message-level placeholder, seq >= 1 a segment.
+	// A delivered segment carries its delivered_at, exactly as the DLR path writes it.
+	seg := func(msgID uuid.UUID, at time.Time, status clickhouse.Status, seq, total uint16) clickhouse.CDRRow {
+		row := clickhouse.CDRRow{
+			MessageID: msgID, TraceID: uuid.New(), AccountID: accountID, CustomerID: customerID,
+			Direction: clickhouse.DirectionMT, SourceAddr: "GATEWAY", DestAddr: "2250700000000",
+			SubmittedAt: at, Status: status, SegmentCount: total, SegmentSeq: seq, Encoding: clickhouse.EncodingGSM7,
+		}
+		if status == clickhouse.StatusDelivered {
+			deliveredAt := at.Add(time.Second)
+			row.DeliveredAt = &deliveredAt
+		}
+		return row
+	}
+	statusOf := func(t *testing.T, msgID uuid.UUID) clickhouse.CDRRow {
+		t.Helper()
+		row, found, err := reader.Current(ctx, customerID, accountID, msgID)
+		if err != nil || !found {
+			t.Fatalf("read %s: found=%v err=%v", msgID, found, err)
+		}
+		return row
+	}
+
+	t.Run("delivered only when every segment is delivered", func(t *testing.T) {
+		at := time.Now().UTC().Truncate(time.Millisecond)
+		id := uuid.New()
+		// accepted placeholder + 3 segments, all delivered.
+		rows := []clickhouse.CDRRow{
+			seg(id, at, clickhouse.StatusAccepted, 0, 1),
+			seg(id, at, clickhouse.StatusEnroute, 1, 3), seg(id, at, clickhouse.StatusDelivered, 1, 3),
+			seg(id, at, clickhouse.StatusEnroute, 2, 3), seg(id, at, clickhouse.StatusDelivered, 2, 3),
+			seg(id, at, clickhouse.StatusEnroute, 3, 3), seg(id, at, clickhouse.StatusDelivered, 3, 3),
+		}
+		if err := writer.InsertBatch(ctx, rows); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+		got := statusOf(t, id)
+		if got.Status != clickhouse.StatusDelivered {
+			t.Errorf("status = %q, want delivered (all 3 segments delivered)", got.Status)
+		}
+		if got.SegmentCount != 3 {
+			t.Errorf("segment_count = %d, want the dispatched total 3 (not the placeholder's 1)", got.SegmentCount)
+		}
+		if got.DeliveredAt == nil {
+			t.Error("delivered_at should be set once the whole message is delivered")
+		}
+	})
+
+	t.Run("one segment still enroute keeps the message enroute", func(t *testing.T) {
+		at := time.Now().UTC().Truncate(time.Millisecond)
+		id := uuid.New()
+		rows := []clickhouse.CDRRow{
+			seg(id, at, clickhouse.StatusEnroute, 1, 2), seg(id, at, clickhouse.StatusDelivered, 1, 2),
+			seg(id, at, clickhouse.StatusEnroute, 2, 2), // segment 2 not delivered yet
+		}
+		if err := writer.InsertBatch(ctx, rows); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+		if got := statusOf(t, id); got.Status != clickhouse.StatusEnroute {
+			t.Errorf("status = %q, want enroute (segment 2 not delivered)", got.Status)
+		}
+	})
+
+	t.Run("any failed segment fails the message", func(t *testing.T) {
+		at := time.Now().UTC().Truncate(time.Millisecond)
+		id := uuid.New()
+		rows := []clickhouse.CDRRow{
+			seg(id, at, clickhouse.StatusEnroute, 1, 2), seg(id, at, clickhouse.StatusDelivered, 1, 2),
+			seg(id, at, clickhouse.StatusEnroute, 2, 2), seg(id, at, clickhouse.StatusFailed, 2, 2),
+		}
+		if err := writer.InsertBatch(ctx, rows); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+		if got := statusOf(t, id); got.Status != clickhouse.StatusFailed {
+			t.Errorf("status = %q, want failed (segment 2 failed even though segment 1 delivered)", got.Status)
+		}
+	})
+
+	t.Run("pre-dispatch shows accepted with a provisional count", func(t *testing.T) {
+		at := time.Now().UTC().Truncate(time.Millisecond)
+		id := uuid.New()
+		if err := writer.Insert(ctx, seg(id, at, clickhouse.StatusAccepted, 0, 1)); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+		got := statusOf(t, id)
+		if got.Status != clickhouse.StatusAccepted {
+			t.Errorf("status = %q, want accepted (no segment dispatched yet)", got.Status)
+		}
+		if got.SegmentCount != 1 {
+			t.Errorf("segment_count = %d, want the provisional 1 pre-dispatch", got.SegmentCount)
+		}
+	})
+
+	t.Run("a message-level rejection wins and keeps its error_code", func(t *testing.T) {
+		at := time.Now().UTC().Truncate(time.Millisecond)
+		id := uuid.New()
+		rejected := seg(id, at, clickhouse.StatusRejected, 0, 1)
+		code := "invalid_destination"
+		rejected.ErrorCode = &code
+		if err := writer.Insert(ctx, rejected); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+		got := statusOf(t, id)
+		if got.Status != clickhouse.StatusRejected {
+			t.Errorf("status = %q, want rejected", got.Status)
+		}
+		if got.ErrorCode == nil || *got.ErrorCode != code {
+			t.Errorf("error_code = %v, want %q preserved through aggregation", got.ErrorCode, code)
+		}
+	})
+
+	t.Run("a segment expiry surfaces as expired, distinct from failed", func(t *testing.T) {
+		at := time.Now().UTC().Truncate(time.Millisecond)
+		id := uuid.New()
+		rows := []clickhouse.CDRRow{
+			seg(id, at, clickhouse.StatusEnroute, 1, 2), seg(id, at, clickhouse.StatusDelivered, 1, 2),
+			seg(id, at, clickhouse.StatusEnroute, 2, 2), seg(id, at, clickhouse.StatusExpired, 2, 2),
+		}
+		if err := writer.InsertBatch(ctx, rows); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+		if got := statusOf(t, id); got.Status != clickhouse.StatusExpired {
+			t.Errorf("status = %q, want expired (a segment expired, none hard-failed)", got.Status)
+		}
+	})
+
+	t.Run("a pre-per-segment terminal row (segment_seq 0) still aggregates", func(t *testing.T) {
+		// A message dispatched before step-082c added segment_seq: its terminal rows carry segment_seq 0
+		// (the column's zero). The read path must still report delivered, not fold it to accepted.
+		at := time.Now().UTC().Truncate(time.Millisecond)
+		id := uuid.New()
+		rows := []clickhouse.CDRRow{
+			seg(id, at, clickhouse.StatusAccepted, 0, 1),
+			seg(id, at, clickhouse.StatusEnroute, 0, 1),
+			seg(id, at, clickhouse.StatusDelivered, 0, 1),
+		}
+		if err := writer.InsertBatch(ctx, rows); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+		if got := statusOf(t, id); got.Status != clickhouse.StatusDelivered {
+			t.Errorf("status = %q, want delivered (a legacy seq-0 terminal row must not fold to accepted)", got.Status)
+		}
+	})
+
+	t.Run("a redelivered segment does not double-count", func(t *testing.T) {
+		at := time.Now().UTC().Truncate(time.Millisecond)
+		id := uuid.New()
+		// At-least-once: segment 1 of a 2-segment message is delivered TWICE (same key, same version).
+		// It must collapse — delivered_segs stays 1, so the message is NOT falsely delivered.
+		rows := []clickhouse.CDRRow{
+			seg(id, at, clickhouse.StatusDelivered, 1, 2),
+			seg(id, at, clickhouse.StatusDelivered, 1, 2), // duplicate of segment 1
+			seg(id, at, clickhouse.StatusEnroute, 2, 2),
+		}
+		if err := writer.InsertBatch(ctx, rows); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+		if got := statusOf(t, id); got.Status != clickhouse.StatusEnroute {
+			t.Errorf("status = %q, want enroute — a duplicated segment 1 must not count as two deliveries", got.Status)
+		}
+	})
 }

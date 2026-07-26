@@ -221,6 +221,7 @@ func (d *StopDetector) autoReply(ctx context.Context, in StopInput, kw OptOutMat
 		Body:         msg.NewBodyString(*kw.Template),
 		Encoding:     encoding.Resolve("auto"), // M5 single-segment stub, as the router pipeline does
 		ConnectorID:  in.MO.ConnectorID,
+		SegmentSeq:   1, // a single-segment reply: one per-segment CDR row (step-082c), never a seq-0 placeholder
 		SegmentCount: 1,
 		SubmittedAt:  in.MO.ReceivedAt,
 		Billable:     false, // a STOP auto-reply is never billed (§6.20)

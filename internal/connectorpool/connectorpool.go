@@ -324,6 +324,7 @@ func cdrRow(r pipeline.RoutedMT, resp smpp.PDU) clickhouse.CDRRow {
 		Status:       status,
 		ErrorCode:    errorCode,
 		SegmentCount: segmentCount(r.SegmentCount),
+		SegmentSeq:   segmentSeq(r.SegmentSeq),
 		Encoding:     clickhouse.EncodingOf(r.Encoding),
 		Billed:       false,
 	}
@@ -345,6 +346,7 @@ func cancelledRow(r pipeline.RoutedMT) clickhouse.CDRRow {
 		SubmittedAt:  r.SubmittedAt,
 		Status:       clickhouse.StatusCancelled,
 		SegmentCount: segmentCount(r.SegmentCount),
+		SegmentSeq:   segmentSeq(r.SegmentSeq),
 		Encoding:     clickhouse.EncodingOf(r.Encoding),
 		Billed:       false,
 	}
@@ -400,4 +402,14 @@ func segmentCount(n int) uint16 {
 		return 1
 	}
 	return uint16(n) //nolint:gosec // segment count is a small positive integer
+}
+
+// segmentSeq maps a routed segment's 1-based sequence to the CDR column. A connector row is always a
+// dispatched segment, so a missing/zero value defaults to 1 (never 0, which the read path reserves for
+// the pre-dispatch message-level row).
+func segmentSeq(n int) uint16 {
+	if n < 1 {
+		return 1
+	}
+	return uint16(n) //nolint:gosec // segment sequence is a small positive integer
 }

@@ -374,6 +374,12 @@ components:
       description: |
         Lifecycle of a message. `accepted` = durably queued; `enroute` = handed to SMSC; terminal states
         are delivered/failed/expired/rejected/cancelled. `rerouted` is transient (fallback chain).
+
+        A long message is split into several segments, each dispatched independently; this status is
+        AGGREGATED across them: `delivered` only once EVERY segment is delivered, `failed` if any segment
+        hard-fails, `expired` if a segment expires and none hard-failed, otherwise the least-advanced
+        state still in flight (`enroute`, or `accepted` before dispatch). Any failure or expiry outranks a
+        partial delivery. `segment_count` is the number of segments (a provisional 1 until dispatch).
       enum: [accepted, enroute, delivered, failed, expired, rejected, rerouted, cancelled]
 
     # ---- Requests -----------------------------------------------------------------------------------

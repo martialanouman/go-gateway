@@ -57,6 +57,7 @@ type mapping struct {
 	ConnectorID  string    `json:"connector_id"`
 	RouteID      *string   `json:"route_id,omitempty"`
 	SegmentCount int       `json:"segment_count"`
+	SegmentSeq   int       `json:"segment_seq"`
 	Encoding     string    `json:"encoding"`
 	SubmittedAt  time.Time `json:"submitted_at"`
 }
@@ -74,6 +75,7 @@ type Mapping struct {
 	ConnectorID  uuid.UUID
 	RouteID      *uuid.UUID
 	SegmentCount int
+	SegmentSeq   int
 	Encoding     string
 	SubmittedAt  time.Time
 }
@@ -107,6 +109,7 @@ func (m *RedisMap) Put(ctx context.Context, smscMsgID string, r pipeline.RoutedM
 		ConnectorID:  r.ConnectorID.String(),
 		RouteID:      routeID,
 		SegmentCount: r.SegmentCount,
+		SegmentSeq:   r.SegmentSeq,
 		Encoding:     r.Encoding,
 		SubmittedAt:  r.SubmittedAt,
 	})
@@ -181,6 +184,7 @@ func (w mapping) resolve() (Mapping, error) {
 		ConnectorID:  connectorID,
 		RouteID:      routeID,
 		SegmentCount: w.SegmentCount,
+		SegmentSeq:   w.SegmentSeq,
 		Encoding:     w.Encoding,
 		SubmittedAt:  w.SubmittedAt,
 	}, nil
