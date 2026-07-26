@@ -2,6 +2,7 @@ package adminapi
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -277,6 +278,12 @@ func (h *connectorHandlers) update(ctx context.Context, in *updateConnectorInput
 	if err != nil {
 		return nil, notFound("connector")
 	}
+	// A connector's throughput_limit_per_sec is its hard technical ceiling; its operational rate_limit
+	// must never exceed it (spec §6.4 NOTE — an application check, there being no cross-table CHECK).
+	// Reject an update that would lower the ceiling below the configured operational limit.
+	if err := h.checkThroughputAtLeastRateLimit(ctx, id, in.Body.ThroughputLimitPerSec); err != nil {
+		return nil, err
+	}
 	patch := cp.ConnectorPatch{
 		Name:                  in.Body.Name,
 		Host:                  in.Body.Host,
@@ -304,6 +311,27 @@ func (h *connectorHandlers) update(ctx context.Context, in *updateConnectorInput
 		return nil, humaerr.FromError(err)
 	}
 	return &connectorOutput{Body: toConnectorDTO(c)}, nil
+}
+
+// checkThroughputAtLeastRateLimit rejects (422) an update that would set a connector's technical ceiling
+// below its configured operational rate_limit. A nil throughput (unchanged) or a connector with no
+// operational limit passes.
+func (h *connectorHandlers) checkThroughputAtLeastRateLimit(ctx context.Context, connectorID uuid.UUID, throughput *int) error {
+	if throughput == nil {
+		return nil
+	}
+	limit, ok, err := h.store.RateLimit(ctx, connectorID)
+	if err != nil {
+		return humaerr.FromError(err)
+	}
+	if !ok || limit.MaxPerSec == nil || *throughput >= *limit.MaxPerSec {
+		return nil
+	}
+	return humaerr.FailValidation("throughput_limit_per_sec below the connector's operational rate limit",
+		humaerr.FieldError{
+			Field:   "throughput_limit_per_sec",
+			Message: fmt.Sprintf("must be >= the connector's rate_limit max_per_sec (%d)", *limit.MaxPerSec),
+		})
 }
 
 func (h *connectorHandlers) delete(ctx context.Context, in *connectorIDInput) (*deleteOutput, error) {
