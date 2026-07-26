@@ -170,11 +170,12 @@ func (p *Pipeline) Process(ctx context.Context, in InboundMT) (RoutedMT, error) 
 		return RoutedMT{}, err
 	}
 
-	// 6. Encoding / segmentation. M2 assumes a single segment; auto resolves to GSM-7. Real
-	// detection and UDH segmentation land with the encoding milestone.
+	// 6. Encoding / segmentation (§6.6). Detect the encoding (GSM-7 / UCS-2 / binary) and count the
+	// segments a long message needs — the actual UDH splitting lands in step-082. The body is read in
+	// memory only for detection, never logged (invariant a). data_coding_default is auto-detect (nil)
+	// until a per-connector config snapshot exists; a connector's explicit default is a later wiring.
 	if err := p.stage(ctx, "pipeline.encoding", func(context.Context) error {
-		out.Encoding = resolveEncoding(in.Encoding)
-		out.SegmentCount = 1
+		out.Encoding, out.SegmentCount = encoding.DetectAndCount(in.Encoding, nil, in.Body.Reveal())
 		return nil
 	}); err != nil {
 		return RoutedMT{}, err
@@ -207,10 +208,4 @@ func (p *Pipeline) stage(ctx context.Context, name string, fn func(context.Conte
 func (p *Pipeline) stubStage(ctx context.Context, name string) {
 	_, span := p.tracer.Start(ctx, name)
 	span.End()
-}
-
-// resolveEncoding maps the requested encoding to the resolved one the CDR records, deferring to the
-// shared vocabulary so the auto->gsm7 rule lives in one place (internal/platform/encoding).
-func resolveEncoding(requested string) string {
-	return encoding.Resolve(requested)
 }
