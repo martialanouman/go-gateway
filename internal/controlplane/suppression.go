@@ -19,6 +19,16 @@ type Suppression struct {
 	CreatedAt time.Time
 }
 
+// NewSuppression is the input to write a suppression (§6.20). ScopeID is nil for the platform scope.
+// MSISDN must be E.164-normalized (the schema enforces the canonical form).
+type NewSuppression struct {
+	Scope   SuppressionScope
+	ScopeID *uuid.UUID
+	MSISDN  string
+	Source  SuppressionSource
+	Reason  *string
+}
+
 // OptOutKeyword is an inbound keyword (STOP, START, HELP…) that toggles suppression or triggers a
 // help reply (§6.20). CountryCode nil applies to all countries. AutoReplyTemplate, when set, is sent
 // back as an MT that is never billed.

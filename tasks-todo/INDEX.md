@@ -52,7 +52,7 @@ Légende : `[x]` = fait (dans `tasks-done/`) · `[ ]` = à faire (dans `tasks-to
 - [x] step-060 — Étape pipeline : autorisation Sender ID (§6.19)
 - [x] step-061 — Opt-out : repos suppressions/keywords + Bloom par portée
 - [x] step-062 — Étape pipeline : opt-out MT bloquant (union des portées)
-- [ ] step-063 — Détection STOP côté MO : suppression scopée + auto-réponse (jamais facturée)
+- [x] step-063 — Détection STOP côté MO : suppression scopée + auto-réponse (jamais facturée)
 - [ ] step-064 — Admin opt-out : suppressions + opt-out keywords
 - [ ] step-065 — Anti-spam : moteur + règles contenu & doublons (étape MT activée)
 - [ ] step-066 — Anti-spam : vélocité + réputation (état partagé Redis, fail-open)

@@ -145,12 +145,28 @@ func run() error {
 		Help: "Mobile-originated messages that resolved to no account, by connector and reason.",
 	}, []string{"connector_id", "reason"})
 
+	// STOP detection (step-063): opt-out keywords are cold-loaded once at boot (hot reload is a later
+	// milestone). A matched STOP writes a suppression scoped to the inbound number and emits a
+	// never-billed auto-reply straight to mt.routed (the same producer — the record names the topic).
+	optOutKeywords, err := modlrrouter.LoadOptOutKeywords(ctx, postgres.NewOptOutKeywordRepo(pool))
+	if err != nil {
+		return fmt.Errorf("load opt-out keywords: %w", err)
+	}
+	stopDetector := modlrrouter.NewStopDetector(modlrrouter.StopDeps{
+		Keywords: optOutKeywords,
+		Suppress: postgres.NewSuppressionRepo(pool),
+		Producer: producer,
+		Tracer:   observability.Tracer(nil, serviceName),
+		Logger:   logger,
+	})
+
 	moRouter := modlrrouter.NewMORouter(modlrrouter.MODeps{
 		Consumer: moConsumer,
 		Snapshot: snapshot,
 		Producer: producer,
 		Unrouted: postgres.NewUnroutedMORepo(pool),
 		Metric:   unroutedMetric{vec: unroutedTotal},
+		Stop:     stopDetector,
 		Tracer:   observability.Tracer(nil, serviceName),
 		Logger:   logger,
 	})

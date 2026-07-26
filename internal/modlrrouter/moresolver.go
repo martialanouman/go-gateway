@@ -43,8 +43,11 @@ type MODeps struct {
 	Producer Producer
 	Unrouted UnroutedWriter
 	Metric   UnroutedMetric
-	Tracer   trace.Tracer
-	Logger   *slog.Logger
+	// Stop applies opt-out keywords (STOP/START/HELP) to each MO (step-063). Optional: a nil detector
+	// disables opt-out detection (the MO is still routed).
+	Stop   *StopDetector
+	Tracer trace.Tracer
+	Logger *slog.Logger
 }
 
 // MORouter resolves mobile-originated messages to an account and publishes the delivery intent.
@@ -86,6 +89,21 @@ func (r *MORouter) handler() kafka.Handler {
 		// outcome. A one-way hash of the body in the id derivation is not the body.
 		body := mo.Body.Reveal()
 		res := r.deps.Snapshot.resolve(dest, body)
+
+		// Opt-out / STOP detection (§6.20) runs on any MO to a known, ACTIVE inbound number — routed or
+		// not — and NEVER interrupts delivery: it may write a suppression and emit a never-billed
+		// auto-reply, then the MO is still delivered below. A disabled number is out of service (no MT is
+		// sent from it), so a STOP to it is moot and an auto-reply "from" it would be wrong — skip. A
+		// transient failure returns (the MO is reprocessed; every effect is idempotent).
+		if r.deps.Stop != nil && res.inboundNumberID != nil && res.reason != cp.UnroutedNumberDisabled {
+			if err := r.deps.Stop.Detect(ctx, StopInput{
+				MO: mo, InboundNumber: dest, From: normalizeAddr(mo.From), Body: body,
+				InboundNumberID: *res.inboundNumberID, Country: res.country,
+				AccountID: res.accountID, CustomerID: res.customerID,
+			}); err != nil {
+				return err
+			}
+		}
 
 		if !res.routed {
 			return r.recordUnrouted(ctx, span, mo, dest, res.reason, res.inboundNumberID)
