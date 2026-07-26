@@ -24,6 +24,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/dlrmap"
 	"github.com/martialanouman/go-gateway/internal/modlrrouter"
 	"github.com/martialanouman/go-gateway/internal/observability"
+	"github.com/martialanouman/go-gateway/internal/pipeline/antispam"
 	"github.com/martialanouman/go-gateway/internal/platform/supervisor"
 	registrypb "github.com/martialanouman/go-gateway/internal/session/pb"
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
@@ -167,6 +168,7 @@ func run() error {
 		Unrouted: postgres.NewUnroutedMORepo(pool),
 		Metric:   unroutedMetric{vec: unroutedTotal},
 		Stop:     stopDetector,
+		Velocity: moVelocity{state: antispam.NewRedisState(rdb)},
 		Tracer:   observability.Tracer(nil, serviceName),
 		Logger:   logger,
 	})
@@ -276,6 +278,15 @@ func run() error {
 
 	logger.Info("stopped")
 	return nil
+}
+
+// moVelocity adapts antispam.RedisState to modlrrouter.MOVelocityRecorder: it records an inbound MO
+// into its source's global velocity counter (step-066), the same key a "by source" MT velocity rule
+// reads, so a sender's MT and MO traffic count together.
+type moVelocity struct{ state *antispam.RedisState }
+
+func (m moVelocity) RecordSource(ctx context.Context, from string) error {
+	return m.state.Record(ctx, antispam.MOSourceVelocityKey(from))
 }
 
 // unroutedMetric adapts a Prometheus CounterVec to modlrrouter.UnroutedMetric.

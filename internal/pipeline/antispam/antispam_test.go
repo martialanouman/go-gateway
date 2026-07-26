@@ -13,32 +13,61 @@ import (
 	"github.com/martialanouman/go-gateway/internal/pipeline/antispam"
 )
 
+const src = "22507000009" // a placeholder source for tests that do not exercise per-source rules
+
 type fakeRuleLister struct{ rules []cp.AntispamRule }
 
 func (f fakeRuleLister) ListActive(context.Context) ([]cp.AntispamRule, error) { return f.rules, nil }
 
-// fakeChecker records seen fingerprints in memory, mimicking Redis SET NX EX: the first sighting is
-// new, every later one is a duplicate. A preset err drives the transient-fault path.
-type fakeChecker struct {
-	seen map[string]bool
-	err  error
-	last string
+// fakeState is an in-memory StateStore mimicking Redis: duplicate SET NX, a sliding-window hit
+// counter, and a reputation map. A preset err drives the fail-open path on every operation.
+type fakeState struct {
+	seen     map[string]bool
+	counts   map[string]int
+	scores   map[string]int
+	err      error
+	lastDup  string
+	lastHit  string
+	hitCalls int
 }
 
-func (c *fakeChecker) Seen(_ context.Context, fingerprint string, _ time.Duration) (bool, error) {
-	if c.err != nil {
-		return false, c.err
+func newFakeState() *fakeState {
+	return &fakeState{seen: map[string]bool{}, counts: map[string]int{}, scores: map[string]int{}}
+}
+
+func (s *fakeState) Seen(_ context.Context, fingerprint string, _ time.Duration) (bool, error) {
+	if s.err != nil {
+		return false, s.err
 	}
-	c.last = fingerprint
-	if c.seen == nil {
-		c.seen = map[string]bool{}
-	}
-	if c.seen[fingerprint] {
+	s.lastDup = fingerprint
+	if s.seen[fingerprint] {
 		return true, nil
 	}
-	c.seen[fingerprint] = true
+	s.seen[fingerprint] = true
 	return false, nil
 }
+
+func (s *fakeState) Hit(_ context.Context, key string, _ time.Duration) (int, error) {
+	if s.err != nil {
+		return 0, s.err
+	}
+	s.lastHit = key
+	s.hitCalls++
+	s.counts[key]++
+	return s.counts[key], nil
+}
+
+func (s *fakeState) Reputation(_ context.Context, source string) (int, bool, error) {
+	if s.err != nil {
+		return 0, false, s.err
+	}
+	score, ok := s.scores[source]
+	return score, ok, nil
+}
+
+type fakeMetric struct{ failOpens int }
+
+func (m *fakeMetric) FailOpen() { m.failOpens++ }
 
 func contentRule(scope cp.AntispamScope, scopeID *uuid.UUID, action cp.AntispamAction, patterns ...string) cp.AntispamRule {
 	cfg, _ := json.Marshal(map[string]any{"patterns": patterns})
@@ -50,9 +79,19 @@ func dupRule(scope cp.AntispamScope, scopeID *uuid.UUID, action cp.AntispamActio
 	return cp.AntispamRule{ID: uuid.New(), RuleType: cp.AntispamDuplicate, Scope: scope, ScopeID: scopeID, ConfigJSON: cfg, Action: action, Status: cp.AntispamRuleActive}
 }
 
-func engineWith(t *testing.T, checker antispam.DuplicateChecker, rules ...cp.AntispamRule) *antispam.Engine {
+func velRule(scope cp.AntispamScope, scopeID *uuid.UUID, action cp.AntispamAction, max, windowSec int, by string) cp.AntispamRule {
+	cfg, _ := json.Marshal(map[string]any{"max": max, "window_seconds": windowSec, "by": by})
+	return cp.AntispamRule{ID: uuid.New(), RuleType: cp.AntispamVelocity, Scope: scope, ScopeID: scopeID, ConfigJSON: cfg, Action: action, Status: cp.AntispamRuleActive}
+}
+
+func repRule(scope cp.AntispamScope, scopeID *uuid.UUID, action cp.AntispamAction, minScore int) cp.AntispamRule {
+	cfg, _ := json.Marshal(map[string]any{"min_score": minScore})
+	return cp.AntispamRule{ID: uuid.New(), RuleType: cp.AntispamReputation, Scope: scope, ScopeID: scopeID, ConfigJSON: cfg, Action: action, Status: cp.AntispamRuleActive}
+}
+
+func engineWith(t *testing.T, state antispam.StateStore, metric antispam.Metric, rules ...cp.AntispamRule) *antispam.Engine {
 	t.Helper()
-	e, err := antispam.New(context.Background(), fakeRuleLister{rules}, checker, nil)
+	e, err := antispam.New(context.Background(), fakeRuleLister{rules}, state, metric, nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -60,129 +99,195 @@ func engineWith(t *testing.T, checker antispam.DuplicateChecker, rules ...cp.Ant
 }
 
 func TestContentBlacklistBlocks(t *testing.T) {
-	e := engineWith(t, nil, contentRule(cp.AntispamScopeGlobal, nil, cp.AntispamActionBlock, `(?i)\bviagra\b`, `(?i)loan`))
+	e := engineWith(t, nil, nil, contentRule(cp.AntispamScopeGlobal, nil, cp.AntispamActionBlock, `(?i)\bviagra\b`, `(?i)loan`))
 
-	action, err := e.Evaluate(context.Background(), uuid.New(), uuid.New(), "2250700000001", []byte("cheap VIAGRA now"))
+	action, err := e.Evaluate(context.Background(), uuid.New(), uuid.New(), src, "2250700000001", []byte("cheap VIAGRA now"))
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}
 	if action != cp.AntispamActionBlock {
 		t.Errorf("action = %q, want block", action)
 	}
-
-	// A clean message matches nothing.
-	action, _ = e.Evaluate(context.Background(), uuid.New(), uuid.New(), "2250700000001", []byte("your appointment is confirmed"))
-	if action != "" {
+	if action, _ := e.Evaluate(context.Background(), uuid.New(), uuid.New(), src, "2250700000001", []byte("your appointment is confirmed")); action != "" {
 		t.Errorf("clean message action = %q, want none", action)
 	}
 }
 
 func TestContentFlagDoesNotBlock(t *testing.T) {
-	e := engineWith(t, nil, contentRule(cp.AntispamScopeGlobal, nil, cp.AntispamActionFlag, `(?i)promo`))
-	action, _ := e.Evaluate(context.Background(), uuid.New(), uuid.New(), "2250700000001", []byte("PROMO code inside"))
+	e := engineWith(t, nil, nil, contentRule(cp.AntispamScopeGlobal, nil, cp.AntispamActionFlag, `(?i)promo`))
+	action, _ := e.Evaluate(context.Background(), uuid.New(), uuid.New(), src, "2250700000001", []byte("PROMO code inside"))
 	if action != cp.AntispamActionFlag {
 		t.Errorf("action = %q, want flag (non-blocking)", action)
 	}
 }
 
 func TestDuplicateWithinWindow(t *testing.T) {
-	checker := &fakeChecker{}
-	e := engineWith(t, checker, dupRule(cp.AntispamScopeGlobal, nil, cp.AntispamActionBlock, 60))
-
+	e := engineWith(t, newFakeState(), nil, dupRule(cp.AntispamScopeGlobal, nil, cp.AntispamActionBlock, 60))
 	acct, cust := uuid.New(), uuid.New()
 	body := []byte("identical body")
-	// First sighting: not a duplicate.
-	if action, _ := e.Evaluate(context.Background(), acct, cust, "2250700000001", body); action != "" {
+	if action, _ := e.Evaluate(context.Background(), acct, cust, src, "2250700000001", body); action != "" {
 		t.Errorf("first sighting action = %q, want none", action)
 	}
-	// Second identical (dest+body) sighting within the window: the configured action.
-	if action, _ := e.Evaluate(context.Background(), acct, cust, "2250700000001", body); action != cp.AntispamActionBlock {
+	if action, _ := e.Evaluate(context.Background(), acct, cust, src, "2250700000001", body); action != cp.AntispamActionBlock {
 		t.Errorf("duplicate action = %q, want block", action)
 	}
-	// A different destination is a different fingerprint, not a duplicate.
-	if action, _ := e.Evaluate(context.Background(), acct, cust, "2250700000002", body); action != "" {
+	if action, _ := e.Evaluate(context.Background(), acct, cust, src, "2250700000002", body); action != "" {
 		t.Errorf("different-dest action = %q, want none", action)
 	}
 }
 
-// TestDuplicateIsolatedPerAccountScope is the tenant-isolation guard: two accounts each with an
-// account-scoped duplicate rule must not deduplicate against each other. Account Y's first send of a
-// body already sent by account X (same dest) is NOT a duplicate — the fingerprint is namespaced by
-// scope.
 func TestDuplicateIsolatedPerAccountScope(t *testing.T) {
 	acctX, acctY := uuid.New(), uuid.New()
-	e := engineWith(t, &fakeChecker{},
+	e := engineWith(t, newFakeState(), nil,
 		dupRule(cp.AntispamScopeAccount, &acctX, cp.AntispamActionBlock, 60),
 		dupRule(cp.AntispamScopeAccount, &acctY, cp.AntispamActionBlock, 60),
 	)
 	body := []byte("Merci de votre visite")
-
-	// X sends first: not a duplicate (posts X's key).
-	if action, _ := e.Evaluate(context.Background(), acctX, uuid.New(), "2250700000001", body); action != "" {
+	if action, _ := e.Evaluate(context.Background(), acctX, uuid.New(), src, "2250700000001", body); action != "" {
 		t.Fatalf("X first send action = %q, want none", action)
 	}
-	// Y sends the same body to the same dest: must NOT be a duplicate — it's Y's first send.
-	if action, _ := e.Evaluate(context.Background(), acctY, uuid.New(), "2250700000001", body); action != "" {
+	if action, _ := e.Evaluate(context.Background(), acctY, uuid.New(), src, "2250700000001", body); action != "" {
 		t.Errorf("Y first send action = %q, want none (cross-tenant isolation)", action)
 	}
-	// Y sending it AGAIN is a duplicate within Y's own scope.
-	if action, _ := e.Evaluate(context.Background(), acctY, uuid.New(), "2250700000001", body); action != cp.AntispamActionBlock {
+	if action, _ := e.Evaluate(context.Background(), acctY, uuid.New(), src, "2250700000001", body); action != cp.AntispamActionBlock {
 		t.Errorf("Y repeat action = %q, want block", action)
 	}
 }
 
-// TestScopePrecedence: the most-specific matching content rule wins. An account flag rule outranks a
-// global block rule for that account's messages.
 func TestScopePrecedence(t *testing.T) {
 	acct := uuid.New()
-	e := engineWith(t, nil,
+	e := engineWith(t, nil, nil,
 		contentRule(cp.AntispamScopeGlobal, nil, cp.AntispamActionBlock, `(?i)deal`),
 		contentRule(cp.AntispamScopeAccount, &acct, cp.AntispamActionFlag, `(?i)deal`),
 	)
-	action, _ := e.Evaluate(context.Background(), acct, uuid.New(), "2250700000001", []byte("great DEAL"))
-	if action != cp.AntispamActionFlag {
+	if action, _ := e.Evaluate(context.Background(), acct, uuid.New(), src, "2250700000001", []byte("great DEAL")); action != cp.AntispamActionFlag {
 		t.Errorf("action = %q, want flag (account rule outranks global)", action)
 	}
-	// A different account falls through to the global block rule.
-	action, _ = e.Evaluate(context.Background(), uuid.New(), uuid.New(), "2250700000001", []byte("great DEAL"))
-	if action != cp.AntispamActionBlock {
+	if action, _ := e.Evaluate(context.Background(), uuid.New(), uuid.New(), src, "2250700000001", []byte("great DEAL")); action != cp.AntispamActionBlock {
 		t.Errorf("action = %q, want block (global applies)", action)
 	}
 }
 
-func TestDuplicateRedisFaultIsTransient(t *testing.T) {
-	checker := &fakeChecker{err: context.DeadlineExceeded}
-	e := engineWith(t, checker, dupRule(cp.AntispamScopeGlobal, nil, cp.AntispamActionBlock, 60))
-	if _, err := e.Evaluate(context.Background(), uuid.New(), uuid.New(), "2250700000001", []byte("x")); err == nil {
-		t.Fatal("a Redis fault must surface as an error (transient), not a silent pass")
+// TestVelocityOverThreshold: once the sliding-window count exceeds max, the rule's action applies;
+// under the threshold the message passes.
+func TestVelocityOverThreshold(t *testing.T) {
+	from := "22507000001"
+	e := engineWith(t, newFakeState(), nil, velRule(cp.AntispamScopeGlobal, nil, cp.AntispamActionThrottle, 2, 60, "source"))
+	acct, cust := uuid.New(), uuid.New()
+
+	// Hits 1 and 2 are within the limit (max=2).
+	for i := 1; i <= 2; i++ {
+		if action, _ := e.Evaluate(context.Background(), acct, cust, from, "2250700000001", []byte("hi")); action != "" {
+			t.Errorf("hit %d action = %q, want none (under limit)", i, action)
+		}
+	}
+	// Hit 3 exceeds max → throttle.
+	if action, _ := e.Evaluate(context.Background(), acct, cust, from, "2250700000001", []byte("hi")); action != cp.AntispamActionThrottle {
+		t.Errorf("over-limit action = %q, want throttle", action)
 	}
 }
 
-// TestFingerprintIsNotTheBody reinforces invariant (a): the duplicate key handed to Redis is a hash,
-// never the plaintext body.
+// TestReputationBelowThreshold: a source scored below the rule's minimum triggers the action; an
+// unscored source is neutral.
+func TestReputationBelowThreshold(t *testing.T) {
+	state := newFakeState()
+	badSource := "22507000002"
+	state.scores[badSource] = 10
+	e := engineWith(t, state, nil, repRule(cp.AntispamScopeGlobal, nil, cp.AntispamActionBlock, 50))
+
+	if action, _ := e.Evaluate(context.Background(), uuid.New(), uuid.New(), badSource, "2250700000001", []byte("hi")); action != cp.AntispamActionBlock {
+		t.Errorf("low-reputation action = %q, want block", action)
+	}
+	// An unscored source passes.
+	if action, _ := e.Evaluate(context.Background(), uuid.New(), uuid.New(), "22507000003", "2250700000001", []byte("hi")); action != "" {
+		t.Errorf("unscored source action = %q, want none", action)
+	}
+}
+
+// TestFailOpenOnRedisFault is the load-bearing §1.5 guard: a Redis fault on a velocity/duplicate/
+// reputation check does NOT block or error — the message passes, flagged, and the fail-open metric is
+// counted. Static content rules stay in force.
+func TestFailOpenOnRedisFault(t *testing.T) {
+	metric := &fakeMetric{}
+	state := &fakeState{err: context.DeadlineExceeded}
+	e := engineWith(t, state, metric,
+		velRule(cp.AntispamScopeGlobal, nil, cp.AntispamActionBlock, 1, 60, "source"),
+		contentRule(cp.AntispamScopeGlobal, nil, cp.AntispamActionBlock, `(?i)spam`),
+	)
+
+	// A clean message under a Redis fault: fail open → flagged, not blocked; metric counted.
+	action, err := e.Evaluate(context.Background(), uuid.New(), uuid.New(), src, "2250700000001", []byte("hello"))
+	if err != nil {
+		t.Fatalf("fail-open must not return an error: %v", err)
+	}
+	if action != cp.AntispamActionFlag {
+		t.Errorf("action = %q, want flag (fail open)", action)
+	}
+	if metric.failOpens == 0 {
+		t.Error("a fail-open must be counted")
+	}
+	// Content rules still apply even under a Redis fault: a spam body is still blocked.
+	if action, _ := e.Evaluate(context.Background(), uuid.New(), uuid.New(), src, "2250700000001", []byte("buy SPAM")); action != cp.AntispamActionBlock {
+		t.Errorf("action = %q, want block (content stays in force under fail-open)", action)
+	}
+}
+
 func TestFingerprintIsNotTheBody(t *testing.T) {
-	checker := &fakeChecker{}
-	e := engineWith(t, checker, dupRule(cp.AntispamScopeGlobal, nil, cp.AntispamActionFlag, 60))
+	state := newFakeState()
+	e := engineWith(t, state, nil, dupRule(cp.AntispamScopeGlobal, nil, cp.AntispamActionFlag, 60))
 	const secret = "topsecretbody"
-	if _, err := e.Evaluate(context.Background(), uuid.New(), uuid.New(), "2250700000001", []byte(secret)); err != nil {
+	if _, err := e.Evaluate(context.Background(), uuid.New(), uuid.New(), src, "2250700000001", []byte(secret)); err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}
-	if checker.last == "" {
+	if state.lastDup == "" {
 		t.Fatal("expected a fingerprint to be recorded")
 	}
-	if strings.Contains(checker.last, secret) {
-		t.Errorf("fingerprint %q contains the plaintext body — invariant (a) violated", checker.last)
+	if strings.Contains(state.lastDup, secret) {
+		t.Errorf("fingerprint %q contains the plaintext body — invariant (a) violated", state.lastDup)
 	}
 }
 
-// TestBadConfigRuleDropped: a rule with an invalid regex or config is dropped, not fatal — anti-spam
-// keeps working with the remaining rules.
 func TestBadConfigRuleDropped(t *testing.T) {
-	e := engineWith(t, nil,
-		contentRule(cp.AntispamScopeGlobal, nil, cp.AntispamActionBlock, `[unclosed`), // invalid regex
-		contentRule(cp.AntispamScopeGlobal, nil, cp.AntispamActionBlock, `(?i)spam`),  // valid
+	e := engineWith(t, nil, nil,
+		contentRule(cp.AntispamScopeGlobal, nil, cp.AntispamActionBlock, `[unclosed`),
+		contentRule(cp.AntispamScopeGlobal, nil, cp.AntispamActionBlock, `(?i)spam`),
 	)
-	if action, _ := e.Evaluate(context.Background(), uuid.New(), uuid.New(), "2250700000001", []byte("this is SPAM")); action != cp.AntispamActionBlock {
+	if action, _ := e.Evaluate(context.Background(), uuid.New(), uuid.New(), src, "2250700000001", []byte("this is SPAM")); action != cp.AntispamActionBlock {
 		t.Errorf("action = %q, want block (the valid rule still applies)", action)
+	}
+}
+
+// TestMOSourceVelocityKeyMatchesGlobalSourceRule: the key inbound MO records into is exactly the key a
+// global "by source" velocity rule reads, so MT and MO traffic share one window.
+func TestMOSourceVelocityKeyMatchesGlobalSourceRule(t *testing.T) {
+	from := "22507000004"
+	state := newFakeState()
+	e := engineWith(t, state, nil, velRule(cp.AntispamScopeGlobal, nil, cp.AntispamActionThrottle, 10, 60, "source"))
+
+	// An MT evaluation hits the source's velocity key…
+	if _, err := e.Evaluate(context.Background(), uuid.New(), uuid.New(), from, "2250700000001", []byte("hi")); err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	// …which must equal the exported MO-recording key (namespaced with the velocity prefix at the store
+	// boundary, so compare the suffix the engine and the recorder agree on).
+	if want := antispam.MOSourceVelocityKey(from); state.lastHit != want {
+		t.Errorf("velocity key = %q, want %q (MO and MT must share the key)", state.lastHit, want)
+	}
+}
+
+// TestVelocitySourceNormalized is the MAJEUR guard: an MT sent from a non-canonical source ("+225…")
+// must key on the SAME velocity counter as the MO path records under the canonical form ("225…"), so a
+// sender's traffic is never split by spelling.
+func TestVelocitySourceNormalized(t *testing.T) {
+	state := newFakeState()
+	e := engineWith(t, state, nil, velRule(cp.AntispamScopeGlobal, nil, cp.AntispamActionThrottle, 10, 60, "source"))
+
+	// MT from the "+"-prefixed spelling.
+	if _, err := e.Evaluate(context.Background(), uuid.New(), uuid.New(), "+2250700000001", "36000", []byte("hi")); err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	// The MO path records the canonical spelling.
+	if want := antispam.MOSourceVelocityKey("2250700000001"); state.lastHit != want {
+		t.Errorf("MT velocity key = %q, want %q — the two spellings must share one counter", state.lastHit, want)
 	}
 }

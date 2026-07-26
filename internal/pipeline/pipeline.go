@@ -49,11 +49,13 @@ type OptOutChecker interface {
 
 // AntispamEvaluator evaluates a message against the active anti-spam rules and returns the action to
 // take — block, flag, throttle, or empty (no match) — per spec §6.20. It is implemented over an
-// immutable rule snapshot with a Redis duplicate check (internal/pipeline/antispam); the interface
-// lives here, consumer-side. body is the revealed message body, read in memory only (invariant a). A
-// non-nil error is a transient fault (the duplicate store) the caller must not treat as "clean".
+// immutable rule snapshot with Redis-backed velocity/duplicate/reputation checks
+// (internal/pipeline/antispam); the interface lives here, consumer-side. body is the revealed message
+// body, read in memory only (invariant a). The Redis-backed checks FAIL OPEN (§1.5): a store fault
+// flags the message rather than blocking it, so the error return is currently always nil (retained
+// for interface stability).
 type AntispamEvaluator interface {
-	Evaluate(ctx context.Context, accountID, customerID uuid.UUID, dest string, body []byte) (cp.AntispamAction, error)
+	Evaluate(ctx context.Context, accountID, customerID uuid.UUID, from, dest string, body []byte) (cp.AntispamAction, error)
 }
 
 // Pipeline runs the ordered MT stages the router applies to every message (spec §6.1). The order is
@@ -139,7 +141,7 @@ func (p *Pipeline) Process(ctx context.Context, in InboundMT) (RoutedMT, error) 
 	// (invariant b). Content is read in memory only — the span carries the action, never the body
 	// (invariant a). block rejects; flag/throttle annotate the span without stopping the message.
 	if err := p.stage(ctx, "pipeline.anti_spam", func(ctx context.Context) error {
-		action, err := p.antispam.Evaluate(ctx, in.AccountID, in.CustomerID, out.To, in.Body.Reveal())
+		action, err := p.antispam.Evaluate(ctx, in.AccountID, in.CustomerID, in.From, out.To, in.Body.Reveal())
 		if err != nil {
 			return err
 		}

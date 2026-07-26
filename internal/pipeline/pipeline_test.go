@@ -47,7 +47,7 @@ type stubAntispam struct {
 	err    error
 }
 
-func (s stubAntispam) Evaluate(context.Context, uuid.UUID, uuid.UUID, string, []byte) (cp.AntispamAction, error) {
+func (s stubAntispam) Evaluate(context.Context, uuid.UUID, uuid.UUID, string, string, []byte) (cp.AntispamAction, error) {
 	return s.action, s.err
 }
 
