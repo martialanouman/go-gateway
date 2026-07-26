@@ -97,6 +97,27 @@ func TestSplitDeterministic(t *testing.T) {
 	}
 }
 
+// TestConcatRefDistinctForSharedTimestampPrefix guards against deriving the concatenation reference
+// from a UUIDv7's leading (timestamp) octets: two messages minted in the same ~50-day window share
+// those octets, yet must still get DISTINCT references or a handset merges their segments. The two ids
+// here share every octet but the trailing entropy byte — a reference read from the prefix would
+// collide, one read from the tail must not.
+func TestConcatRefDistinctForSharedTimestampPrefix(t *testing.T) {
+	var a, b uuid.UUID
+	for i := range a {
+		a[i] = 0x11
+	}
+	b = a
+	b[15] = 0x22 // differ only in the trailing (rand_b) octet, as two same-millisecond v7 ids would
+
+	body := []byte(strings.Repeat("a", 200)) // long enough to segment and carry a reference
+	refA := pipeenc.Split(a, body, platenc.GSM7)[0].Ref
+	refB := pipeenc.Split(b, body, platenc.GSM7)[0].Ref
+	if refA == refB {
+		t.Errorf("concat references collide (%d) for ids sharing a timestamp prefix — reference must come from the high-entropy tail", refA)
+	}
+}
+
 // FuzzSplit reinforces robustness: whatever the encoding and body, Split never panics, always yields
 // at least one segment, numbers them 1..N sharing one Total, and every multi-segment payload begins
 // with a parseable UDH.

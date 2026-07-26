@@ -52,7 +52,9 @@ type routedWire struct {
 	DataCoding         *int       `json:"data_coding,omitempty"`
 	ConnectorID        uuid.UUID  `json:"connector_id"`
 	RouteID            *uuid.UUID `json:"route_id,omitempty"`
+	SegmentSeq         int        `json:"segment_seq"`
 	SegmentCount       int        `json:"segment_count"`
+	HasUDH             bool       `json:"has_udh,omitempty"`
 	SubmittedAt        time.Time  `json:"submitted_at"`
 	Billable           bool       `json:"billable"`
 }
@@ -132,7 +134,9 @@ func EncodeRouted(env RoutedMT) (kafka.Record, error) {
 		DataCoding:         env.DataCoding,
 		ConnectorID:        env.ConnectorID,
 		RouteID:            env.RouteID,
+		SegmentSeq:         env.SegmentSeq,
 		SegmentCount:       env.SegmentCount,
+		HasUDH:             env.HasUDH,
 		SubmittedAt:        env.SubmittedAt,
 		Billable:           env.Billable,
 	})
@@ -168,7 +172,9 @@ func DecodeRouted(rec kafka.Record) (RoutedMT, error) {
 		DataCoding:         w.DataCoding,
 		ConnectorID:        w.ConnectorID,
 		RouteID:            w.RouteID,
+		SegmentSeq:         w.SegmentSeq,
 		SegmentCount:       w.SegmentCount,
+		HasUDH:             w.HasUDH,
 		SubmittedAt:        w.SubmittedAt,
 		Billable:           w.Billable,
 	}, nil

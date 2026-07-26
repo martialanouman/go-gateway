@@ -342,24 +342,25 @@ func TestConnectorSubmitsBodyOnTheWire(t *testing.T) {
 	}
 }
 
-// TestConnectorTranscodesUCS2Body pins that a ucs2 message reaches the wire as UTF-16BE with the
-// UCS-2 data_coding, not as the raw UTF-8 bytes msg.Body stores (which the handset would garble).
-func TestConnectorTranscodesUCS2Body(t *testing.T) {
-	const text = "café ☕" // non-ASCII: UTF-8 and UTF-16BE differ
+// TestConnectorShipsBodyVerbatim pins that the connector no longer encodes: Body already carries the
+// segment's wire bytes (the pipeline's Split produced them in the resolved encoding), so a UCS-2
+// payload — supplied here as the UTF-16BE bytes it is on the wire — reaches the SMSC unchanged, under
+// the UCS-2 data_coding derived from the encoding. Transcoding now lives with segmentation, not here.
+func TestConnectorShipsBodyVerbatim(t *testing.T) {
+	wire := utf16BE("café ☕") // the UCS-2 wire bytes the pipeline would produce
 	var seen []byte
 	var dcs uint8
 	r := routed()
 	r.Encoding = "ucs2"
-	r.Body = msg.NewBodyString(text)
+	r.Body = msg.NewBody(wire)
 	_ = runOnce(t, func(sm smpp.SubmitSM) fakesmsc.Resp {
 		seen = append([]byte(nil), sm.ShortMessage...)
 		dcs = sm.DataCoding
 		return fakesmsc.OK()
 	}, r)
 
-	want := utf16BE(text)
-	if !bytes.Equal(seen, want) {
-		t.Errorf("ucs2 body on the wire = % x, want UTF-16BE % x (not raw UTF-8 % x)", seen, want, []byte(text))
+	if !bytes.Equal(seen, wire) {
+		t.Errorf("body on the wire = % x, want it shipped verbatim % x", seen, wire)
 	}
 	if dcs != smpp.DataCodingUCS2 {
 		t.Errorf("data_coding = %#x, want UCS-2 %#x", dcs, smpp.DataCodingUCS2)
@@ -419,29 +420,70 @@ func TestConnectorTypesAlphanumericSource(t *testing.T) {
 	}
 }
 
-// TestConnectorDCSAndBodyAgree pins that the wire body is transcoded to match the EFFECTIVE
-// data_coding, not r.Encoding: a UCS-2 override with encoding=gsm7 must still ship UTF-16BE, so the
-// DCS label and the bytes never disagree.
-func TestConnectorDCSAndBodyAgree(t *testing.T) {
-	const text = "héllo" // non-ASCII: UTF-8 and UTF-16BE differ
-	dc := int(smpp.DataCodingUCS2)
-	var body []byte
-	var dcs uint8
+// TestConnectorSetsUDHIndicatorForSegment pins that a segment carrying a concatenation UDH ships with
+// esm_class's UDH indicator set and the payload (UDH + content) verbatim in short_message, so the SMSC
+// and the handset parse and reassemble it. A single segment with no UDH leaves esm_class clear.
+func TestConnectorSetsUDHIndicatorForSegment(t *testing.T) {
+	payload := append([]byte{0x05, 0x00, 0x03, 0x2a, 0x02, 0x01}, []byte("part one")...) // 6-octet concat UDH + content
+	var esm uint8
+	var seen []byte
 	r := routed()
-	r.Encoding = "gsm7"
-	r.DataCoding = &dc
-	r.Body = msg.NewBodyString(text)
+	r.HasUDH = true
+	r.SegmentSeq, r.SegmentCount = 1, 2
+	r.Body = msg.NewBody(payload)
 	_ = runOnce(t, func(sm smpp.SubmitSM) fakesmsc.Resp {
-		body = append([]byte(nil), sm.ShortMessage...)
-		dcs = sm.DataCoding
+		esm = sm.ESMClass
+		seen = append([]byte(nil), sm.ShortMessage...)
 		return fakesmsc.OK()
 	}, r)
 
-	if dcs != smpp.DataCodingUCS2 {
-		t.Fatalf("data_coding = %#x, want the UCS-2 override %#x", dcs, smpp.DataCodingUCS2)
+	if esm&smpp.ESMClassUDHIndicator == 0 {
+		t.Errorf("esm_class = %#x, want the UDH indicator %#x set", esm, smpp.ESMClassUDHIndicator)
 	}
-	if !bytes.Equal(body, utf16BE(text)) {
-		t.Errorf("body = % x, want UTF-16BE % x to match the UCS-2 DCS", body, utf16BE(text))
+	if !bytes.Equal(seen, payload) {
+		t.Errorf("short_message = % x, want the UDH payload verbatim % x", seen, payload)
+	}
+}
+
+// TestConnectorNoUDHIndicatorForSingleSegment pins the complement: a lone segment carries no UDH bit.
+func TestConnectorNoUDHIndicatorForSingleSegment(t *testing.T) {
+	var esm uint8
+	r := routed() // HasUDH false
+	_ = runOnce(t, func(sm smpp.SubmitSM) fakesmsc.Resp {
+		esm = sm.ESMClass
+		return fakesmsc.OK()
+	}, r)
+
+	if esm&smpp.ESMClassUDHIndicator != 0 {
+		t.Errorf("esm_class = %#x, want the UDH indicator clear for a single segment", esm)
+	}
+}
+
+// TestConnectorOverlongSegmentFallsBackToMessagePayload pins the defensive guard: a segment whose
+// encoded bytes exceed short_message's 254-octet limit (reachable for long accented GSM-7 until
+// bit-packing lands) is carried in the message_payload TLV instead, so an over-length PDU never
+// poisons the bind. The submit still completes — the SMSC accepts it — and short_message stays empty.
+func TestConnectorOverlongSegmentFallsBackToMessagePayload(t *testing.T) {
+	payload := bytes.Repeat([]byte{0x41}, 300) // > 254 octets
+	var short []byte
+	var tlv []byte
+	var haveTLV bool
+	r := routed()
+	r.HasUDH = true
+	r.Body = msg.NewBody(payload)
+	_, err := runService(t, func(sm smpp.SubmitSM) fakesmsc.Resp {
+		short = append([]byte(nil), sm.ShortMessage...)
+		tlv, haveTLV = sm.TLVs.Get(smpp.TagMessagePayload)
+		return fakesmsc.OK()
+	}, r)
+	if err != nil {
+		t.Fatalf("an over-length segment must still submit, not crash the bind: %v", err)
+	}
+	if len(short) != 0 {
+		t.Errorf("short_message = % x, want empty (payload moved to the TLV)", short)
+	}
+	if !haveTLV || !bytes.Equal(tlv, payload) {
+		t.Errorf("message_payload TLV present=%v, want the payload verbatim", haveTLV)
 	}
 }
 

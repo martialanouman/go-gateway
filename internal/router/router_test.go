@@ -1,7 +1,9 @@
 package router_test
 
 import (
+	"bytes"
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -129,6 +131,46 @@ func TestRouterPublishesRoutedOnSuccess(t *testing.T) {
 	}
 	if len(cdr.rows) != 0 {
 		t.Errorf("no CDR row expected on the happy path, got %d", len(cdr.rows))
+	}
+}
+
+// TestRouterFansOutOneRecordPerSegment: a long message is published as one mt.routed record per
+// segment, every record keyed by the logical message id (so the segments share a partition and stay
+// ordered on one bind) and numbered 1..N with a UDH.
+func TestRouterFansOutOneRecordPerSegment(t *testing.T) {
+	connector := uuid.New()
+	in := inbound("+2250700000000")
+	in.Body = msg.NewBodyString(strings.Repeat("a", 161)) // 161 GSM-7 chars -> 2 segments
+	inRec, err := pipeline.EncodeInbound(in)
+	if err != nil {
+		t.Fatalf("encode inbound: %v", err)
+	}
+
+	prod := &fakeProducer{}
+	r := newRouter(t, stubResolver{conn: connector}, prod, &fakeCDR{}, &fakeConsumer{records: []kafka.Record{inRec}})
+
+	if err := r.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if len(prod.produced) != 2 {
+		t.Fatalf("expected 2 mt.routed records (one per segment), got %d", len(prod.produced))
+	}
+	key := in.MessageID
+	for i, rec := range prod.produced {
+		if !bytes.Equal(rec.Key, key[:]) {
+			t.Errorf("record %d key = %x, want the message id %x (segments must share a partition)", i, rec.Key, key[:])
+		}
+		routed, derr := pipeline.DecodeRouted(rec)
+		if derr != nil {
+			t.Fatalf("decode routed %d: %v", i, derr)
+		}
+		if routed.SegmentSeq != i+1 || routed.SegmentCount != 2 || !routed.HasUDH {
+			t.Errorf("record %d = {seq:%d count:%d udh:%v}, want seq %d / count 2 / udh", i, routed.SegmentSeq, routed.SegmentCount, routed.HasUDH, i+1)
+		}
+		if routed.ConnectorID != connector {
+			t.Errorf("record %d connector = %s, want %s", i, routed.ConnectorID, connector)
+		}
 	}
 }
 

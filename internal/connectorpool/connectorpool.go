@@ -6,13 +6,11 @@ package connectorpool
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
 	"sync/atomic"
-	"unicode/utf16"
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/trace"
@@ -256,21 +254,27 @@ func (s *Service) recordDLRMapping(ctx context.Context, r pipeline.RoutedMT, res
 	}
 }
 
-// buildSubmit maps a routed message onto a submit_sm. Revealing the body here is an audited egress
-// (like the Kafka payload): the plaintext goes onto the SMSC wire, never into a log or span. A body
-// larger than a single short_message travels in the message_payload TLV — M2 does not segment.
+// buildSubmit maps one routed SEGMENT onto a submit_sm. Body already carries the segment's wire
+// short_message — the concatenation UDH followed by the encoded content when the message spans several
+// segments, the bare encoded content when it does not (internal/pipeline/encoding.Split produced it in
+// the resolved encoding), so the connector no longer encodes: it puts the bytes on the wire verbatim.
+// Revealing the body here is an audited egress (like the Kafka payload): the plaintext goes onto the
+// SMSC wire, never into a log or span. When the segment begins with a UDH, esm_class's UDH indicator is
+// set so the SMSC and the handset parse and reassemble it.
 func buildSubmit(r pipeline.RoutedMT) *smpp.SubmitSM {
 	source, sourceTON, sourceNPI := sourceAddr(r.From)
-	dcs := submitDataCoding(r)
 	sm := &smpp.SubmitSM{SMFields: smpp.SMFields{
 		SourceAddr:      source,
 		DestinationAddr: r.To,
-		DataCoding:      dcs,
+		DataCoding:      submitDataCoding(r),
 	}}
 	sm.SourceAddrTON, sm.SourceAddrNPI = sourceTON, sourceNPI
 	sm.DestAddrTON, sm.DestAddrNPI = smpp.TONInternational, smpp.NPIISDN
 	if r.RegisteredDelivery {
 		sm.RegisteredDelivery = smpp.RegisteredDeliveryReceipt
+	}
+	if r.HasUDH {
+		sm.ESMClass = smpp.ESMClassUDHIndicator
 	}
 	// The SMPP validity_period is a 16-char C-Octet String; a longer value would marshal a PDU with no
 	// NUL terminator, which the SMSC rejects by dropping the connection — poisoning the partition on
@@ -280,8 +284,12 @@ func buildSubmit(r pipeline.RoutedMT) *smpp.SubmitSM {
 		sm.ValidityPeriod = *r.ValidityPeriod
 	}
 
-	body := encodeBody(r.Body.Reveal(), dcs) // audited: body -> SMSC wire, never logged
+	body := r.Body.Reveal() // audited: segment wire bytes -> SMSC wire, never logged
 	if len(body) > 254 {
+		// A segment normally fits in short_message: UCS-2 (<=133 octets) and binary (<=133) always do,
+		// and GSM-7 does once bit-packed. Until packing lands, an accented GSM-7 segment carried as
+		// unpacked UTF-8 can exceed 254 octets; fall back to message_payload so an over-length PDU never
+		// poisons the bind. Concatenation is degraded in that path — the fix is GSM-7 packing (follow-up).
 		sm.TLVs.Set(smpp.TagMessagePayload, body)
 	} else {
 		sm.ShortMessage = body
@@ -296,29 +304,6 @@ func submitDataCoding(r pipeline.RoutedMT) uint8 {
 		return uint8(*dc) //nolint:gosec // bounded to 0..255 on the line above
 	}
 	return dataCoding(r.Encoding)
-}
-
-// encodeBody renders the revealed body for the wire per the EFFECTIVE data_coding — the same byte
-// buildSubmit writes to the submit_sm — so the DCS label and the bytes always agree. A UCS-2 DCS
-// means UTF-16BE on the wire, so the UTF-8 bytes msg.Body carries are transcoded; every other DCS
-// (GSM-7, binary, or a raw client override) goes out as-is (GSM-7 packing and segmentation are the
-// encoding milestone, not M2). The caller reveals the plaintext — an audited egress that reaches the
-// SMSC wire, never a log or span.
-func encodeBody(body []byte, dcs uint8) []byte {
-	if dcs == smpp.DataCodingUCS2 {
-		return utf16BE(body)
-	}
-	return body
-}
-
-// utf16BE transcodes UTF-8 bytes to big-endian UTF-16 (UCS-2 on the SMPP wire).
-func utf16BE(utf8 []byte) []byte {
-	units := utf16.Encode([]rune(string(utf8)))
-	out := make([]byte, 2*len(units))
-	for i, u := range units {
-		binary.BigEndian.PutUint16(out[2*i:], u)
-	}
-	return out
 }
 
 // cdrRow builds the enroute (or failed) CDR row from the submit_sm_resp.

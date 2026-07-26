@@ -82,7 +82,9 @@ func TestRoutedRoundTrip(t *testing.T) {
 		Encoding:     "gsm7",
 		ConnectorID:  uuid.New(),
 		RouteID:      &routeID,
-		SegmentCount: 1,
+		SegmentSeq:   2,
+		SegmentCount: 3,
+		HasUDH:       true,
 		SubmittedAt:  time.Now().UTC().Truncate(time.Millisecond),
 	}
 
@@ -105,8 +107,8 @@ func TestRoutedRoundTrip(t *testing.T) {
 	if out.ConnectorID != in.ConnectorID || out.RouteID == nil || *out.RouteID != routeID {
 		t.Error("routing fields not preserved")
 	}
-	if out.SegmentCount != 1 || string(out.Body.Reveal()) != "hi" {
-		t.Error("body/segment not preserved")
+	if out.SegmentSeq != 2 || out.SegmentCount != 3 || !out.HasUDH || string(out.Body.Reveal()) != "hi" {
+		t.Error("body/segment fields not preserved")
 	}
 }
 
