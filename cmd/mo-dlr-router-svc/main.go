@@ -10,24 +10,38 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/dlrmap"
 	"github.com/martialanouman/go-gateway/internal/modlrrouter"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/platform/supervisor"
+	registrypb "github.com/martialanouman/go-gateway/internal/session/pb"
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
 	"github.com/martialanouman/go-gateway/internal/storage/postgres"
 	redisstore "github.com/martialanouman/go-gateway/internal/storage/redis"
+	"github.com/martialanouman/go-gateway/internal/webhook"
 )
 
 const serviceName = "mo-dlr-router-svc"
+
+// Bounds on inline webhook delivery so one failing account endpoint cannot stall the delivery
+// consumer's serial loop (head-of-line blocking) for more than a few seconds before the event
+// dead-letters. See the sender wiring in run() for the rationale and the deferred-retry follow-up.
+const (
+	webhookHotPathTimeout     = 5 * time.Second
+	webhookHotPathMaxAttempts = 3
+)
 
 func main() {
 	if err := run(); err != nil {
@@ -41,7 +55,7 @@ func run() error {
 
 	cfg, err := config.Load(serviceName,
 		config.SectionOTel, config.SectionKafka, config.SectionClickHouse, config.SectionRedis,
-		config.SectionPostgres)
+		config.SectionPostgres, config.SectionSMPP)
 	if err != nil {
 		return err
 	}
@@ -141,6 +155,83 @@ func run() error {
 		Logger:   logger,
 	})
 
+	// --- Delivery leg (step-048): hand each resolved MO/DLR to a live bind, else the webhook, else a
+	// durable dead-letter. The SessionRegistry client resolves an account's binds; PodClients dials the
+	// owning pod's SessionRegistry.Deliver (address templated from pod_id). ---
+	registryConn, err := grpc.NewClient(cfg.SMPP.SessionManagerAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return fmt.Errorf("dial session registry: %w", err)
+	}
+	defer func() { _ = registryConn.Close() }()
+
+	pods := modlrrouter.NewPodClients(modlrrouter.NewTemplateResolver(cfg.SMPP.PodAddrTemplate))
+	defer pods.Close()
+
+	// The webhook sender owns its retries and parks an exhausted event on webhook.dead-letter (step-047
+	// interface, wired here). The deliverer never parks a webhook event itself.
+	//
+	// Send runs INLINE on the delivery consumer goroutine, which processes records serially: an
+	// unresponsive endpoint would otherwise block the whole partition's return traffic (head-of-line).
+	// So we bound the hot path — a short per-request timeout and a small attempt cap — and let an
+	// exhausted event fall to the durable dead-letter rather than stall. The richer answer (a deferred
+	// webhook.retry topic drained by its own paced consumer, so transient failures retry off the hot
+	// path without dead-lettering) is a dedicated follow-up, out of scope for this delivery-decision PR.
+	webhookClient := &http.Client{
+		Timeout:       webhookHotPathTimeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	sender := webhook.NewSender(webhookClient, modlrrouter.NewWebhookDeadLetterSink(producer), logger,
+		webhook.WithMaxAttempts(webhookHotPathMaxAttempts))
+
+	// mo_dlr_undelivered_total{event_type, reason}: bounded labels (two event types, two reasons) — the
+	// count of events that reached neither a bind nor a webhook and were dead-lettered.
+	undeliveredTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "mo_dlr_undelivered_total",
+		Help: "Return-path events dead-lettered because no bind and no webhook could take them.",
+	}, []string{"event_type", "reason"})
+	// dlr_delivery_mapping_miss_total: a DLR whose dlrmap TTL elapsed before delivery — distinct from
+	// step-044's CDR-side dlr_unmapped_total (the two dlr.events consumers miss independently).
+	dlrMappingMiss := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "dlr_delivery_mapping_miss_total",
+		Help: "Delivery receipts dropped at the delivery stage because their dlrmap entry had expired.",
+	})
+
+	deliverer := modlrrouter.NewDeliverer(modlrrouter.DelivererDeps{
+		Lookup:   modlrrouter.NewRegistryLookup(registrypb.NewSessionRegistryClient(registryConn)),
+		Pods:     pods,
+		Webhooks: postgres.NewWebhookRepo(pool),
+		Sender:   sender,
+		Producer: producer,
+		Metric:   deliveryMetric{vec: undeliveredTotal},
+		Logger:   logger,
+	})
+
+	moDeliveryConsumer, err := kafka.NewConsumer(cfg.Kafka, serviceName+"-mo-delivery", kafka.TopicMORouted)
+	if err != nil {
+		return fmt.Errorf("kafka mo delivery consumer: %w", err)
+	}
+	defer moDeliveryConsumer.Close()
+	moDelivery := modlrrouter.NewMODeliveryRouter(modlrrouter.MODeliveryDeps{
+		Consumer:  moDeliveryConsumer,
+		Deliverer: deliverer,
+		Tracer:    observability.Tracer(nil, serviceName),
+		Logger:    logger,
+	})
+
+	dlrDeliveryConsumer, err := kafka.NewConsumer(cfg.Kafka, serviceName+"-dlr-delivery", kafka.TopicDLREvents)
+	if err != nil {
+		return fmt.Errorf("kafka dlr delivery consumer: %w", err)
+	}
+	defer dlrDeliveryConsumer.Close()
+	dlrDelivery := modlrrouter.NewDLRDeliveryRouter(modlrrouter.DLRDeliveryDeps{
+		Consumer:    dlrDeliveryConsumer,
+		Resolver:    dlrmap.NewRedisMap(rdb),
+		Deliverer:   deliverer,
+		MappingMiss: dlrMappingMiss,
+		Tracer:      observability.Tracer(nil, serviceName),
+		Logger:      logger,
+	})
+
 	// Vital dependencies (plan §1.5): Kafka (no work without it) and ClickHouse (the delivery outcome is
 	// recorded there). Redis is intentionally absent — see its comment above.
 	ops, err := observability.NewOpsServer(cfg, logger,
@@ -152,7 +243,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("init ops server: %w", err)
 	}
-	ops.Registry().MustRegister(unmapped, unroutedTotal)
+	ops.Registry().MustRegister(unmapped, unroutedTotal, undeliveredTotal, dlrMappingMiss)
 
 	logger.InfoContext(ctx, "starting", "config", cfg)
 
@@ -161,6 +252,8 @@ func run() error {
 	g.Add("ops server", func(c context.Context) error { return ops.Run(c, cfg.ShutdownTimeout) })
 	g.Add("dlr router", svc.Run)
 	g.Add("mo router", moRouter.Run)
+	g.Add("mo delivery", moDelivery.Run)
+	g.Add("dlr delivery", dlrDelivery.Run)
 	if err := g.Run(ctx, logger); err != nil {
 		return err
 	}
@@ -174,4 +267,11 @@ type unroutedMetric struct{ vec *prometheus.CounterVec }
 
 func (m unroutedMetric) Inc(connectorID, reason string) {
 	m.vec.WithLabelValues(connectorID, reason).Inc()
+}
+
+// deliveryMetric adapts a Prometheus CounterVec to modlrrouter.DeliveryMetric.
+type deliveryMetric struct{ vec *prometheus.CounterVec }
+
+func (m deliveryMetric) UndeliveredInc(eventType, reason string) {
+	m.vec.WithLabelValues(eventType, reason).Inc()
 }

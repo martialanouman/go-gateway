@@ -49,12 +49,13 @@ type DeadLetterSink interface {
 
 // Sender delivers events to webhooks. It is safe for concurrent use.
 type Sender struct {
-	client     *http.Client
-	deadLetter DeadLetterSink
-	logger     *slog.Logger
-	now        func() time.Time
-	sleep      func(ctx context.Context, d time.Duration) error
-	jitter     func() float64
+	client      *http.Client
+	deadLetter  DeadLetterSink
+	logger      *slog.Logger
+	now         func() time.Time
+	sleep       func(ctx context.Context, d time.Duration) error
+	jitter      func() float64
+	maxAttempts int // 0 = honour the per-webhook policy; >0 caps it (see WithMaxAttempts).
 }
 
 // Option overrides a Sender default (the clock, the backoff sleep, the jitter source) for tests.
@@ -70,6 +71,12 @@ func WithSleep(sleep func(ctx context.Context, d time.Duration) error) Option {
 
 // WithJitter overrides the [0,1) jitter source for deterministic tests.
 func WithJitter(j func() float64) Option { return func(s *Sender) { s.jitter = j } }
+
+// WithMaxAttempts caps the number of send attempts below whatever a webhook's own retry policy asks
+// for. A caller that runs Send inline on a hot path (e.g. a Kafka consumer goroutine) uses this to
+// bound how long one failing endpoint blocks that goroutine, trading in-band retries for an earlier
+// dead-letter. n <= 0 leaves the per-webhook policy untouched.
+func WithMaxAttempts(n int) Option { return func(s *Sender) { s.maxAttempts = n } }
 
 // NewSender builds a sender. A nil client defaults to one with a strict per-request timeout; a nil
 // logger to slog.Default; a nil dead-letter sink to a no-op (the event is dropped after exhaustion —
@@ -112,6 +119,10 @@ func NewSender(client *http.Client, deadLetter DeadLetterSink, logger *slog.Logg
 // wh.Status (whether a disabled webhook suppresses delivery is the resolver's decision, step-048).
 func (s *Sender) Send(ctx context.Context, wh cp.Webhook, ev Event) error {
 	policy := parseRetryPolicy(wh.RetryPolicyJSON)
+	maxAttempts := policy.MaxAttempts
+	if s.maxAttempts > 0 && s.maxAttempts < maxAttempts {
+		maxAttempts = s.maxAttempts
+	}
 	backoff := policy.InitialBackoff
 
 	for attempt := 1; ; attempt++ {
@@ -122,7 +133,7 @@ func (s *Sender) Send(ctx context.Context, wh cp.Webhook, ev Event) error {
 		case outcomePermanent:
 			return s.park(ctx, wh, ev, reason)
 		default: // outcomeRetryable
-			if attempt >= policy.MaxAttempts {
+			if attempt >= maxAttempts {
 				return s.park(ctx, wh, ev, reason)
 			}
 			if err := s.sleep(ctx, applyJitter(backoff, s.jitter())); err != nil {
