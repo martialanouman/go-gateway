@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 
+	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	"github.com/martialanouman/go-gateway/internal/platform/msg"
@@ -74,6 +75,13 @@ func (allowAllOptOut) IsOptedOut(context.Context, uuid.UUID, uuid.UUID, string, 
 	return false, nil
 }
 
+// allowAllAntispam passes every message; anti-spam is covered in the pipeline/antispam tests.
+type allowAllAntispam struct{}
+
+func (allowAllAntispam) Evaluate(context.Context, uuid.UUID, uuid.UUID, string, []byte) (cp.AntispamAction, error) {
+	return "", nil
+}
+
 func newRouter(t *testing.T, resolver pipeline.Resolver, prod router.Producer, cdr router.CDRWriter, cons router.Consumer) *router.Router {
 	t.Helper()
 	rec := otelrec.New(t)
@@ -81,7 +89,7 @@ func newRouter(t *testing.T, resolver pipeline.Resolver, prod router.Producer, c
 	return router.New(router.Deps{
 		Consumer: cons,
 		Producer: prod,
-		Pipeline: pipeline.New(tracer, resolver, allowAllSenderIDs{}, allowAllOptOut{}),
+		Pipeline: pipeline.New(tracer, resolver, allowAllSenderIDs{}, allowAllOptOut{}, allowAllAntispam{}),
 		CDR:      cdr,
 		Tracer:   tracer,
 	})

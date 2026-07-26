@@ -25,6 +25,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/ingest"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
+	"github.com/martialanouman/go-gateway/internal/pipeline/antispam"
 	"github.com/martialanouman/go-gateway/internal/pipeline/optout"
 	"github.com/martialanouman/go-gateway/internal/pipeline/senderid"
 	"github.com/martialanouman/go-gateway/internal/restapi"
@@ -141,11 +142,15 @@ func buildStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg config
 		t.Fatalf("load inbound-number index: %v", err)
 	}
 	enforcer := optout.NewEnforcer(optout.NewGuard(optSnap, suppressions), inboundIdx)
+	spam, err := antispam.New(context.Background(), postgres.NewAntispamRuleRepo(pool), nil, nil)
+	if err != nil {
+		t.Fatalf("load anti-spam engine: %v", err)
+	}
 	routerTracer := observability.Tracer(rec.Provider(), "router")
 	rtr := router.New(router.Deps{
 		Consumer: routerConsumer,
 		Producer: producer,
-		Pipeline: pipeline.New(routerTracer, resolver, authorizer, enforcer),
+		Pipeline: pipeline.New(routerTracer, resolver, authorizer, enforcer, spam),
 		CDR:      cdrWriter,
 		Tracer:   routerTracer,
 	})

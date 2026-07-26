@@ -3,11 +3,13 @@ package pipeline
 import (
 	"context"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/google/uuid"
 
+	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	"github.com/martialanouman/go-gateway/internal/platform/e164"
 	"github.com/martialanouman/go-gateway/internal/platform/encoding"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
@@ -45,6 +47,15 @@ type OptOutChecker interface {
 	IsOptedOut(ctx context.Context, accountID, customerID uuid.UUID, from, dest string) (bool, error)
 }
 
+// AntispamEvaluator evaluates a message against the active anti-spam rules and returns the action to
+// take — block, flag, throttle, or empty (no match) — per spec §6.20. It is implemented over an
+// immutable rule snapshot with a Redis duplicate check (internal/pipeline/antispam); the interface
+// lives here, consumer-side. body is the revealed message body, read in memory only (invariant a). A
+// non-nil error is a transient fault (the duplicate store) the caller must not treat as "clean".
+type AntispamEvaluator interface {
+	Evaluate(ctx context.Context, accountID, customerID uuid.UUID, dest string, body []byte) (cp.AntispamAction, error)
+}
+
 // Pipeline runs the ordered MT stages the router applies to every message (spec §6.1). The order is
 // frozen: a routing short-cut may skip route resolution, never a compliance stage. It implements
 // E.164 normalization, sender-ID authorization (M5) and declarative route resolution; the remaining
@@ -54,13 +65,14 @@ type Pipeline struct {
 	resolver  Resolver
 	senderIDs SenderIDAuthorizer
 	optOut    OptOutChecker
+	antispam  AntispamEvaluator
 }
 
 // New builds a Pipeline. Destinations are normalized to their canonical digits-only form; the
 // public contract carries a full country code (the "+" being optional), so no default region is
 // needed. See internal/platform/e164.
-func New(tracer trace.Tracer, resolver Resolver, senderIDs SenderIDAuthorizer, optOut OptOutChecker) *Pipeline {
-	return &Pipeline{tracer: tracer, resolver: resolver, senderIDs: senderIDs, optOut: optOut}
+func New(tracer trace.Tracer, resolver Resolver, senderIDs SenderIDAuthorizer, optOut OptOutChecker, antispam AntispamEvaluator) *Pipeline {
+	return &Pipeline{tracer: tracer, resolver: resolver, senderIDs: senderIDs, optOut: optOut, antispam: antispam}
 }
 
 // Process runs the pipeline on an inbound message and returns the routed message. On a rejection it
@@ -123,8 +135,24 @@ func (p *Pipeline) Process(ctx context.Context, in InboundMT) (RoutedMT, error) 
 		return RoutedMT{}, err
 	}
 
-	// 4. STUB M6: anti-spam — pass-through until M6. See plan §8.
-	p.stubStage(ctx, "pipeline.anti_spam")
+	// 4. Anti-spam (§6.20). A frozen compliance stage, never short-circuited by an exact route
+	// (invariant b). Content is read in memory only — the span carries the action, never the body
+	// (invariant a). block rejects; flag/throttle annotate the span without stopping the message.
+	if err := p.stage(ctx, "pipeline.anti_spam", func(ctx context.Context) error {
+		action, err := p.antispam.Evaluate(ctx, in.AccountID, in.CustomerID, out.To, in.Body.Reveal())
+		if err != nil {
+			return err
+		}
+		if action == cp.AntispamActionBlock {
+			return errs.ErrContentBlocked
+		}
+		if action != "" {
+			trace.SpanFromContext(ctx).SetAttributes(attribute.String("anti_spam.action", string(action)))
+		}
+		return nil
+	}); err != nil {
+		return RoutedMT{}, err
+	}
 
 	// 5. Route resolution (declarative static only in M2). A short-cut here would skip only this
 	// stage, never the compliance stages above (spec §6.1).

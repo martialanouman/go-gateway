@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
@@ -38,6 +39,16 @@ type stubOptOut struct {
 
 func (s stubOptOut) IsOptedOut(context.Context, uuid.UUID, uuid.UUID, string, string) (bool, error) {
 	return s.optedOut, s.err
+}
+
+// stubAntispam returns a fixed anti-spam action. The zero value passes every message (empty action).
+type stubAntispam struct {
+	action cp.AntispamAction
+	err    error
+}
+
+func (s stubAntispam) Evaluate(context.Context, uuid.UUID, uuid.UUID, string, []byte) (cp.AntispamAction, error) {
+	return s.action, s.err
 }
 
 // capturingOptOut records the arguments it was called with, so a test can assert the pipeline
@@ -76,7 +87,7 @@ func TestPipelineHappyPathEmitsEveryStageSpan(t *testing.T) {
 	rec := otelrec.New(t)
 	tracer := observability.Tracer(rec.Provider(), "router")
 	connector := uuid.New()
-	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: connector}}, stubAuthorizer{}, stubOptOut{})
+	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: connector}}, stubAuthorizer{}, stubOptOut{}, stubAntispam{})
 
 	out, err := p.Process(context.Background(), inbound("+2250700000000"))
 	if err != nil {
@@ -107,7 +118,7 @@ func TestPipelineHappyPathEmitsEveryStageSpan(t *testing.T) {
 func TestPipelineRejectsInvalidDestination(t *testing.T) {
 	rec := otelrec.New(t)
 	tracer := observability.Tracer(rec.Provider(), "router")
-	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}}, stubAuthorizer{}, stubOptOut{})
+	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}}, stubAuthorizer{}, stubOptOut{}, stubAntispam{})
 
 	_, err := p.Process(context.Background(), inbound("not-a-number"))
 	if code, _ := errs.CodeOf(err); code != errs.ErrInvalidDestination {
@@ -128,7 +139,7 @@ func TestPipelineRejectsUnauthorizedSenderID(t *testing.T) {
 	rec := otelrec.New(t)
 	tracer := observability.Tracer(rec.Provider(), "router")
 	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}},
-		stubAuthorizer{err: errs.ErrSenderIDNotAuthorized}, stubOptOut{})
+		stubAuthorizer{err: errs.ErrSenderIDNotAuthorized}, stubOptOut{}, stubAntispam{})
 
 	_, err := p.Process(context.Background(), inbound("+2250700000000"))
 	if code, _ := errs.CodeOf(err); code != errs.ErrSenderIDNotAuthorized {
@@ -149,7 +160,7 @@ func TestPipelineRejectsOptedOutRecipient(t *testing.T) {
 	rec := otelrec.New(t)
 	tracer := observability.Tracer(rec.Provider(), "router")
 	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}},
-		stubAuthorizer{}, stubOptOut{optedOut: true})
+		stubAuthorizer{}, stubOptOut{optedOut: true}, stubAntispam{})
 
 	_, err := p.Process(context.Background(), inbound("+2250700000000"))
 	if code, _ := errs.CodeOf(err); code != errs.ErrRecipientOptedOut {
@@ -171,7 +182,7 @@ func TestPipelineOptOutTransientErrorIsNotACode(t *testing.T) {
 	rec := otelrec.New(t)
 	tracer := observability.Tracer(rec.Provider(), "router")
 	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}},
-		stubAuthorizer{}, stubOptOut{err: errors.New("suppressions store down")})
+		stubAuthorizer{}, stubOptOut{err: errors.New("suppressions store down")}, stubAntispam{})
 
 	_, err := p.Process(context.Background(), inbound("+2250700000000"))
 	if err == nil {
@@ -190,7 +201,7 @@ func TestPipelineForwardsOptOutIdentifiers(t *testing.T) {
 	rec := otelrec.New(t)
 	tracer := observability.Tracer(rec.Provider(), "router")
 	spy := &capturingOptOut{}
-	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}}, stubAuthorizer{}, spy)
+	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}}, stubAuthorizer{}, spy, stubAntispam{})
 
 	in := inbound("+2250700000000")
 	if _, err := p.Process(context.Background(), in); err != nil {
@@ -210,10 +221,47 @@ func TestPipelineForwardsOptOutIdentifiers(t *testing.T) {
 	}
 }
 
+// TestPipelineRejectsSpamContent: the anti-spam stage blocks a message with content_blocked, after
+// opt-out but before route resolution, and never leaks the body.
+func TestPipelineRejectsSpamContent(t *testing.T) {
+	rec := otelrec.New(t)
+	tracer := observability.Tracer(rec.Provider(), "router")
+	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}},
+		stubAuthorizer{}, stubOptOut{}, stubAntispam{action: cp.AntispamActionBlock})
+
+	_, err := p.Process(context.Background(), inbound("+2250700000000"))
+	if code, _ := errs.CodeOf(err); code != errs.ErrContentBlocked {
+		t.Fatalf("code: got %q want content_blocked", code)
+	}
+	if !rec.Recorded("pipeline.anti_spam") {
+		t.Error("anti_spam span should have been emitted")
+	}
+	if rec.Recorded("pipeline.route") {
+		t.Error("route span must NOT be emitted after an anti-spam block (frozen order, invariant b)")
+	}
+	rec.AssertNoBody(t, "topsecretbody")
+}
+
+// TestPipelineSpamFlagDoesNotBlock: a flag/throttle action annotates but never stops the message —
+// it routes normally.
+func TestPipelineSpamFlagDoesNotBlock(t *testing.T) {
+	rec := otelrec.New(t)
+	tracer := observability.Tracer(rec.Provider(), "router")
+	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}},
+		stubAuthorizer{}, stubOptOut{}, stubAntispam{action: cp.AntispamActionFlag})
+
+	if _, err := p.Process(context.Background(), inbound("+2250700000000")); err != nil {
+		t.Fatalf("a flagged message must still route: %v", err)
+	}
+	if !rec.Recorded("pipeline.route") {
+		t.Error("a flagged message must reach route resolution")
+	}
+}
+
 func TestPipelineRejectsNoRoute(t *testing.T) {
 	rec := otelrec.New(t)
 	tracer := observability.Tracer(rec.Provider(), "router")
-	p := pipeline.New(tracer, stubResolver{err: errs.ErrNoRoute}, stubAuthorizer{}, stubOptOut{})
+	p := pipeline.New(tracer, stubResolver{err: errs.ErrNoRoute}, stubAuthorizer{}, stubOptOut{}, stubAntispam{})
 
 	_, err := p.Process(context.Background(), inbound("+2250700000000"))
 	if code, _ := errs.CodeOf(err); code != errs.ErrNoRoute {

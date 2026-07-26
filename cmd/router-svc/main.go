@@ -15,9 +15,12 @@ import (
 	"syscall"
 	"time"
 
+	goredis "github.com/redis/go-redis/v9"
+
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
+	"github.com/martialanouman/go-gateway/internal/pipeline/antispam"
 	"github.com/martialanouman/go-gateway/internal/pipeline/optout"
 	"github.com/martialanouman/go-gateway/internal/pipeline/senderid"
 	"github.com/martialanouman/go-gateway/internal/platform/supervisor"
@@ -26,6 +29,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
 	"github.com/martialanouman/go-gateway/internal/storage/postgres"
+	redisstore "github.com/martialanouman/go-gateway/internal/storage/redis"
 )
 
 // serviceName identifies this binary in logs, traces and metrics, and is the consumer group id.
@@ -43,7 +47,7 @@ func run() error {
 
 	// Postgres for the startup route snapshot, Kafka for the data plane, ClickHouse for rejected
 	// CDR rows. No HTTP: the router has no client-facing listener.
-	cfg, err := config.Load(serviceName, config.SectionOTel, config.SectionPostgres, config.SectionKafka, config.SectionClickHouse)
+	cfg, err := config.Load(serviceName, config.SectionOTel, config.SectionPostgres, config.SectionKafka, config.SectionClickHouse, config.SectionRedis)
 	if err != nil {
 		return err
 	}
@@ -111,8 +115,23 @@ func run() error {
 		return fmt.Errorf("load opt-out enforcer: %w", err)
 	}
 
+	// The anti-spam engine (§6.20): content rules compiled once at boot, duplicates checked in Redis.
+	// Redis is a boot dependency (NewClient pings eagerly), so it retries with the same discipline as
+	// the other snapshots — a transient outage must not crashloop a (re)starting pod.
+	rdb, err := loadWithRetry(ctx, logger, "redis", func(ctx context.Context) (*goredis.Client, error) {
+		return redisstore.NewClient(ctx, cfg.Redis)
+	})
+	if err != nil {
+		return fmt.Errorf("connect redis: %w", err)
+	}
+	defer func() { _ = rdb.Close() }()
+	spam, err := loadAntispamWithRetry(ctx, postgres.NewAntispamRuleRepo(pool), antispam.NewRedisDuplicateChecker(rdb), logger)
+	if err != nil {
+		return fmt.Errorf("load anti-spam engine: %w", err)
+	}
+
 	tracer := observability.Tracer(nil, serviceName)
-	pl := pipeline.New(tracer, resolver, senderIDs, optOut)
+	pl := pipeline.New(tracer, resolver, senderIDs, optOut, spam)
 	rtr := router.New(router.Deps{
 		Consumer: consumer,
 		Producer: producer,
@@ -180,6 +199,14 @@ func loadOptOutEnforcerWithRetry(ctx context.Context, suppressions optout.Suppre
 			return nil, err
 		}
 		return optout.NewEnforcer(optout.NewGuard(snap, exact), index), nil
+	})
+}
+
+// loadAntispamWithRetry loads the anti-spam engine (compiled rule snapshot + Redis duplicate check),
+// with the same boot-retry discipline as the other snapshots.
+func loadAntispamWithRetry(ctx context.Context, lister antispam.RuleLister, checker antispam.DuplicateChecker, logger *slog.Logger) (*antispam.Engine, error) {
+	return loadWithRetry(ctx, logger, "anti-spam engine", func(ctx context.Context) (*antispam.Engine, error) {
+		return antispam.New(ctx, lister, checker, logger)
 	})
 }
 
