@@ -18,24 +18,31 @@ func TestDetectAndCount(t *testing.T) {
 		wantEnc   string
 		wantSegs  int
 	}{
-		// --- GSM-7 boundaries (160 single, 153 multi) ---
+		// --- GSM-7 boundaries (160 single, 152 multi: a 16-bit-ref UDH costs 8 septets) ---
 		{"empty is one gsm7 segment", "auto", nil, "", encoding.GSM7, 1},
 		{"gsm7 160 -> 1 seg", "auto", nil, strings.Repeat("a", 160), encoding.GSM7, 1},
-		{"gsm7 161 -> 2 segs at 153", "auto", nil, strings.Repeat("a", 161), encoding.GSM7, 2},
-		{"gsm7 306 (2*153) -> 2 segs", "auto", nil, strings.Repeat("a", 306), encoding.GSM7, 2},
-		{"gsm7 307 -> 3 segs", "auto", nil, strings.Repeat("a", 307), encoding.GSM7, 3},
+		{"gsm7 161 -> 2 segs at 152", "auto", nil, strings.Repeat("a", 161), encoding.GSM7, 2},
+		{"gsm7 304 (2*152) -> 2 segs", "auto", nil, strings.Repeat("a", 304), encoding.GSM7, 2},
+		{"gsm7 305 -> 3 segs", "auto", nil, strings.Repeat("a", 305), encoding.GSM7, 3},
 
 		// --- GSM-7 extension chars count as two septets ---
 		{"80 euro signs = 160 septets -> 1 seg", "auto", nil, strings.Repeat("€", 80), encoding.GSM7, 1},
 		{"81 euro signs = 162 septets -> 2 segs", "auto", nil, strings.Repeat("€", 81), encoding.GSM7, 2},
 		{"braces are extension chars", "auto", nil, strings.Repeat("{", 80), encoding.GSM7, 1},
+		// A multi-segment message counts each extension char as two septets against the 152 multi limit:
+		// 76 euro signs fill a segment exactly (152), so 153 need three (76 + 76 + 1). Split packs the
+		// same way — TestSplitCountMatchesDetect guards the two never disagree.
+		{"153 euro signs -> 3 segs", "auto", nil, strings.Repeat("€", 153), encoding.GSM7, 3},
 
-		// --- UCS-2 boundaries (70 single, 67 multi) ---
+		// --- UCS-2 boundaries (70 single, 66 multi: a 16-bit-ref UDH leaves 133 octets = 66 units) ---
 		{"non-gsm char -> ucs2", "auto", nil, "ю", encoding.UCS2, 1},
 		{"ucs2 70 -> 1 seg", "auto", nil, strings.Repeat("ю", 70), encoding.UCS2, 1},
-		{"ucs2 71 -> 2 segs at 67", "auto", nil, strings.Repeat("ю", 71), encoding.UCS2, 2},
+		{"ucs2 71 -> 2 segs at 66", "auto", nil, strings.Repeat("ю", 71), encoding.UCS2, 2},
 		{"emoji is a surrogate pair (2 units)", "auto", nil, strings.Repeat("😀", 35), encoding.UCS2, 1},
 		{"36 emoji = 72 units -> 2 segs", "auto", nil, strings.Repeat("😀", 36), encoding.UCS2, 2},
+		// A surrogate pair is two units against the 66 multi limit: 33 emoji fill a segment exactly (66),
+		// so 67 need three (33 + 33 + 1). Split packs identically (TestSplitCountMatchesDetect).
+		{"67 emoji -> 3 segs", "auto", nil, strings.Repeat("😀", 67), encoding.UCS2, 3},
 
 		// --- explicit client override wins over content ---
 		{"forced ucs2 on ascii", "ucs2", nil, "hello", encoding.UCS2, 1},
