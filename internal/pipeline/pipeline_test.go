@@ -3,6 +3,7 @@ package pipeline_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 	"github.com/martialanouman/go-gateway/internal/platform/msg"
+	"github.com/martialanouman/go-gateway/internal/smpp"
 	"github.com/martialanouman/go-gateway/internal/testutil/otelrec"
 )
 
@@ -71,6 +73,7 @@ var allStages = []string{
 	"pipeline.anti_spam",
 	"pipeline.route",
 	"pipeline.encoding",
+	"pipeline.segment",
 	"pipeline.rate_limit",
 	"pipeline.credit",
 }
@@ -89,7 +92,7 @@ func TestPipelineHappyPathEmitsEveryStageSpan(t *testing.T) {
 	connector := uuid.New()
 	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: connector}}, stubAuthorizer{}, stubOptOut{}, stubAntispam{})
 
-	out, err := p.Process(context.Background(), inbound("+2250700000000"))
+	out, segs, err := p.Process(context.Background(), inbound("+2250700000000"))
 	if err != nil {
 		t.Fatalf("Process: %v", err)
 	}
@@ -104,6 +107,13 @@ func TestPipelineHappyPathEmitsEveryStageSpan(t *testing.T) {
 	}
 	if out.SegmentCount != 1 {
 		t.Errorf("segment_count: got %d want 1", out.SegmentCount)
+	}
+	// A short message is exactly one segment, carrying the bare content with no UDH.
+	if len(segs) != 1 {
+		t.Fatalf("segments: got %d want 1", len(segs))
+	}
+	if segs[0].Seq != 1 || segs[0].Total != 1 || segs[0].HasUDH {
+		t.Errorf("single segment = %+v, want seq 1 / total 1 / no UDH", segs[0])
 	}
 
 	for _, name := range allStages {
@@ -120,7 +130,7 @@ func TestPipelineRejectsInvalidDestination(t *testing.T) {
 	tracer := observability.Tracer(rec.Provider(), "router")
 	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}}, stubAuthorizer{}, stubOptOut{}, stubAntispam{})
 
-	_, err := p.Process(context.Background(), inbound("not-a-number"))
+	_, _, err := p.Process(context.Background(), inbound("not-a-number"))
 	if code, _ := errs.CodeOf(err); code != errs.ErrInvalidDestination {
 		t.Fatalf("code: got %q want invalid_destination", code)
 	}
@@ -141,7 +151,7 @@ func TestPipelineRejectsUnauthorizedSenderID(t *testing.T) {
 	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}},
 		stubAuthorizer{err: errs.ErrSenderIDNotAuthorized}, stubOptOut{}, stubAntispam{})
 
-	_, err := p.Process(context.Background(), inbound("+2250700000000"))
+	_, _, err := p.Process(context.Background(), inbound("+2250700000000"))
 	if code, _ := errs.CodeOf(err); code != errs.ErrSenderIDNotAuthorized {
 		t.Fatalf("code: got %q want sender_id_not_authorized", code)
 	}
@@ -162,7 +172,7 @@ func TestPipelineRejectsOptedOutRecipient(t *testing.T) {
 	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}},
 		stubAuthorizer{}, stubOptOut{optedOut: true}, stubAntispam{})
 
-	_, err := p.Process(context.Background(), inbound("+2250700000000"))
+	_, _, err := p.Process(context.Background(), inbound("+2250700000000"))
 	if code, _ := errs.CodeOf(err); code != errs.ErrRecipientOptedOut {
 		t.Fatalf("code: got %q want recipient_opted_out", code)
 	}
@@ -184,7 +194,7 @@ func TestPipelineOptOutTransientErrorIsNotACode(t *testing.T) {
 	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}},
 		stubAuthorizer{}, stubOptOut{err: errors.New("suppressions store down")}, stubAntispam{})
 
-	_, err := p.Process(context.Background(), inbound("+2250700000000"))
+	_, _, err := p.Process(context.Background(), inbound("+2250700000000"))
 	if err == nil {
 		t.Fatal("expected an error from the opt-out store fault")
 	}
@@ -204,7 +214,7 @@ func TestPipelineForwardsOptOutIdentifiers(t *testing.T) {
 	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}}, stubAuthorizer{}, spy, stubAntispam{})
 
 	in := inbound("+2250700000000")
-	if _, err := p.Process(context.Background(), in); err != nil {
+	if _, _, err := p.Process(context.Background(), in); err != nil {
 		t.Fatalf("Process: %v", err)
 	}
 	if spy.accountID != in.AccountID {
@@ -229,7 +239,7 @@ func TestPipelineRejectsSpamContent(t *testing.T) {
 	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}},
 		stubAuthorizer{}, stubOptOut{}, stubAntispam{action: cp.AntispamActionBlock})
 
-	_, err := p.Process(context.Background(), inbound("+2250700000000"))
+	_, _, err := p.Process(context.Background(), inbound("+2250700000000"))
 	if code, _ := errs.CodeOf(err); code != errs.ErrContentBlocked {
 		t.Fatalf("code: got %q want content_blocked", code)
 	}
@@ -250,7 +260,7 @@ func TestPipelineSpamFlagDoesNotBlock(t *testing.T) {
 	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}},
 		stubAuthorizer{}, stubOptOut{}, stubAntispam{action: cp.AntispamActionFlag})
 
-	if _, err := p.Process(context.Background(), inbound("+2250700000000")); err != nil {
+	if _, _, err := p.Process(context.Background(), inbound("+2250700000000")); err != nil {
 		t.Fatalf("a flagged message must still route: %v", err)
 	}
 	if !rec.Recorded("pipeline.route") {
@@ -263,11 +273,101 @@ func TestPipelineRejectsNoRoute(t *testing.T) {
 	tracer := observability.Tracer(rec.Provider(), "router")
 	p := pipeline.New(tracer, stubResolver{err: errs.ErrNoRoute}, stubAuthorizer{}, stubOptOut{}, stubAntispam{})
 
-	_, err := p.Process(context.Background(), inbound("+2250700000000"))
+	_, _, err := p.Process(context.Background(), inbound("+2250700000000"))
 	if code, _ := errs.CodeOf(err); code != errs.ErrNoRoute {
 		t.Fatalf("code: got %q want no_route", code)
 	}
 	if !rec.Recorded("pipeline.route") {
 		t.Error("route span should have been emitted")
+	}
+}
+
+// TestPipelineSplitsLongMessageIntoSegments: a message past one segment is split into concatenated
+// segments, each carrying a well-formed UDH that round-trips through ParseUDH under one shared
+// reference, and the segment span carries the count but never the body (invariant a).
+func TestPipelineSplitsLongMessageIntoSegments(t *testing.T) {
+	rec := otelrec.New(t)
+	tracer := observability.Tracer(rec.Provider(), "router")
+	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}}, stubAuthorizer{}, stubOptOut{}, stubAntispam{})
+
+	in := inbound("+2250700000000")
+	in.Body = msg.NewBodyString(strings.Repeat("a", 161)) // 161 GSM-7 chars -> 2 segments (152 + 9)
+
+	out, segs, err := p.Process(context.Background(), in)
+	if err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if out.SegmentCount != 2 || len(segs) != 2 {
+		t.Fatalf("segment_count=%d, len(segs)=%d, want 2/2", out.SegmentCount, len(segs))
+	}
+	for i, s := range segs {
+		if s.Seq != i+1 || s.Total != 2 || !s.HasUDH {
+			t.Errorf("segment %d = {seq:%d total:%d udh:%v}, want seq %d / total 2 / udh", i+1, s.Seq, s.Total, s.HasUDH, i+1)
+		}
+		concat, _, hasConcat, perr := smpp.ParseUDH(s.Payload)
+		if perr != nil || !hasConcat {
+			t.Fatalf("segment %d UDH: parse err=%v hasConcat=%v", i+1, perr, hasConcat)
+		}
+		if concat.Reference != segs[0].Ref {
+			t.Errorf("segment %d reference %d differs from %d", i+1, concat.Reference, segs[0].Ref)
+		}
+	}
+	if !rec.Recorded("pipeline.segment") {
+		t.Error("pipeline.segment span should have been emitted")
+	}
+	rec.AssertNoBody(t, "aaaa")
+}
+
+// TestPipelineDataCodingDrivesSegmentationCharset locks Q2 of the design: a client that drives the
+// wire DCS (data_coding) fixes the charset the message is segmented in, so segment boundaries match
+// the bytes on the wire. Plain ASCII would auto-detect as one GSM-7 segment; data_coding=UCS-2 makes
+// it two UCS-2 segments (100 code units > the 70-unit single-segment limit).
+func TestPipelineDataCodingDrivesSegmentationCharset(t *testing.T) {
+	rec := otelrec.New(t)
+	tracer := observability.Tracer(rec.Provider(), "router")
+	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}}, stubAuthorizer{}, stubOptOut{}, stubAntispam{})
+
+	ucs2 := int(smpp.DataCodingUCS2)
+	in := inbound("+2250700000000")
+	in.Encoding = "auto"
+	in.DataCoding = &ucs2
+	in.Body = msg.NewBodyString(strings.Repeat("a", 100))
+
+	out, segs, err := p.Process(context.Background(), in)
+	if err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if out.Encoding != "ucs2" {
+		t.Errorf("encoding = %q, want ucs2 (data_coding drives the charset)", out.Encoding)
+	}
+	if len(segs) != 2 {
+		t.Fatalf("segments = %d, want 2 (100 UCS-2 units past the 70 single limit)", len(segs))
+	}
+}
+
+// TestPipelinePreSegmentedUDHIBypass: a client that already segmented its own SMPP submit (esm_class
+// UDH indicator set) is passed through as a single record carrying its UDH verbatim — never re-split.
+func TestPipelinePreSegmentedUDHIBypass(t *testing.T) {
+	rec := otelrec.New(t)
+	tracer := observability.Tracer(rec.Provider(), "router")
+	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}}, stubAuthorizer{}, stubOptOut{}, stubAntispam{})
+
+	raw := strings.Repeat("x", 200) // would be 2 segments if we re-split, but the client already did
+	in := inbound("+2250700000000")
+	in.ESMClass = smpp.ESMClassUDHIndicator
+	in.Body = msg.NewBodyString(raw)
+
+	out, segs, err := p.Process(context.Background(), in)
+	if err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if out.SegmentCount != 1 || len(segs) != 1 {
+		t.Fatalf("segment_count=%d len(segs)=%d, want 1/1 (never re-split a pre-segmented submit)", out.SegmentCount, len(segs))
+	}
+	if !segs[0].HasUDH {
+		t.Error("a pre-segmented submit must keep its UDH indicator")
+	}
+	if string(segs[0].Payload) != raw {
+		t.Error("a pre-segmented body must pass through verbatim")
 	}
 }

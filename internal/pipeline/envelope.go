@@ -1,7 +1,7 @@
 // Package pipeline is the MT processing pipeline: the message envelopes that travel the Kafka data
 // plane, the ordered stages the router runs, and the WIRE codec that moves an envelope on and off a
-// Kafka record. It sits above internal/storage/kafka (the transport) and internal/smpp (unused
-// here); it never logs or spans a message body (invariant a).
+// Kafka record. It sits above internal/storage/kafka (the transport) and uses internal/smpp for the
+// esm_class UDH indicator and segment encoding; it never logs or spans a message body (invariant a).
 package pipeline
 
 import (
@@ -37,9 +37,12 @@ type InboundMT struct {
 	SubmittedAt        time.Time
 }
 
-// RoutedMT is a message after the router's pipeline: destination normalised to E.164, encoding
-// resolved, and a connector chosen. It is carried on mt.routed, keyed by the logical message id so
-// every segment reaches the same connector bind in order (§7.3). M2 assumes a single segment.
+// RoutedMT is ONE segment of a message after the router's pipeline: destination normalised to E.164,
+// encoding resolved, a connector chosen, and the body carrying the segment's wire short_message
+// (the concatenation UDH followed by the encoded content when the message spans several segments, the
+// bare encoded content when it does not — internal/pipeline/encoding.Split produces it). It is carried
+// on mt.routed, keyed by the logical message id so every segment of a message reaches the same
+// connector bind in order (§7.3). A short message is a single segment (Seq 1, Count 1).
 type RoutedMT struct {
 	MessageID          uuid.UUID
 	TraceID            uuid.UUID
@@ -54,8 +57,17 @@ type RoutedMT struct {
 	DataCoding         *int // client data_coding override, carried through to the SMSC (nil = derive from Encoding)
 	ConnectorID        uuid.UUID
 	RouteID            *uuid.UUID
-	SegmentCount       int
-	SubmittedAt        time.Time
+	// SegmentSeq is this segment's 1-based position; SegmentCount is the total number of segments the
+	// message was split into. All segments of a message share MessageID, ConnectorID and SegmentCount,
+	// and are produced under the same partition key so they stay ordered on one bind.
+	SegmentSeq   int
+	SegmentCount int
+	// HasUDH tells the connector to set esm_class's UDH indicator: Body begins with a concatenation
+	// User Data Header. It is carried explicitly rather than derived from SegmentCount > 1 because a
+	// client that pre-segments its own SMPP submit (UDHI already set on the inbound esm_class) travels
+	// as a single record that nonetheless carries a UDH (SegmentCount 1, HasUDH true).
+	HasUDH      bool
+	SubmittedAt time.Time
 	// Billable is whether this MT counts against the customer's balance (M9). Client traffic is always
 	// billable — router-svc sets it true; only a system message produced straight to mt.routed by
 	// mo-dlr-router-svc (a STOP auto-reply, §6.20) sets it false. It is deliberately absent from

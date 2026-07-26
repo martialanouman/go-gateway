@@ -73,10 +73,15 @@ func Split(messageID uuid.UUID, body []byte, enc string) []Segment {
 	return segs
 }
 
-// concatRef derives a 16-bit concatenation reference from the logical message id. It is deterministic
-// so a replay reuses the same reference; a 16-bit reference keeps collisions rare at high volume.
+// concatRef derives a 16-bit concatenation reference from the logical message id, DETERMINISTICALLY
+// so a replay reuses the same reference. It reads the LAST two octets, never the first: MessageID is a
+// UUIDv7 whose leading octets are the high bits of its millisecond timestamp — they only change once
+// every ~50 days, so a reference taken from them would be shared by every long message in that window
+// and a handset would merge the segments of two unrelated messages sent to one recipient. The trailing
+// octets are the v7 rand_b field (full entropy), so distinct messages get distinct references and
+// collisions stay rare at high volume.
 func concatRef(messageID uuid.UUID) uint16 {
-	return binary.BigEndian.Uint16(messageID[:2])
+	return binary.BigEndian.Uint16(messageID[14:])
 }
 
 // splitByCost greedily packs runes into segments whose cumulative cost stays within the limit, never

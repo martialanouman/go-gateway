@@ -10,9 +10,11 @@ import (
 	"github.com/google/uuid"
 
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
+	pipeenc "github.com/martialanouman/go-gateway/internal/pipeline/encoding"
 	"github.com/martialanouman/go-gateway/internal/platform/e164"
 	"github.com/martialanouman/go-gateway/internal/platform/encoding"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
+	"github.com/martialanouman/go-gateway/internal/smpp"
 )
 
 // Route is the outcome of route resolution: the connector to send through and the route that
@@ -60,8 +62,9 @@ type AntispamEvaluator interface {
 
 // Pipeline runs the ordered MT stages the router applies to every message (spec §6.1). The order is
 // frozen: a routing short-cut may skip route resolution, never a compliance stage. It implements
-// E.164 normalization, sender-ID authorization (M5) and declarative route resolution; the remaining
-// compliance and metering stages are explicit pass-through STUBs that still emit their span.
+// E.164 normalization, sender-ID authorization (M5), declarative route resolution, encoding
+// resolution and UDH segmentation (M6); the remaining metering stages (rate limit, credit) are
+// explicit pass-through STUBs that still emit their span.
 type Pipeline struct {
 	tracer    trace.Tracer
 	resolver  Resolver
@@ -77,11 +80,14 @@ func New(tracer trace.Tracer, resolver Resolver, senderIDs SenderIDAuthorizer, o
 	return &Pipeline{tracer: tracer, resolver: resolver, senderIDs: senderIDs, optOut: optOut, antispam: antispam}
 }
 
-// Process runs the pipeline on an inbound message and returns the routed message. On a rejection it
-// returns an error carrying a platform Code (invalid_destination, no_route, …); the caller records
-// a rejected CDR row and does not publish to mt.routed. The body is passed through untouched and
+// Process runs the pipeline on an inbound message and returns the routed template plus the segments
+// it was split into — one mt.routed record per segment (the router fans them out, all under the same
+// partition key so they stay ordered on one bind). On a rejection it returns an error carrying a
+// platform Code (invalid_destination, no_route, …); the caller records a rejected CDR row and does not
+// publish. The returned template's own Body is the original message; each segment carries its own wire
+// short_message in Segment.Payload. The body is read in memory only for encoding and segmentation and
 // never appears in a span (invariant a).
-func (p *Pipeline) Process(ctx context.Context, in InboundMT) (RoutedMT, error) {
+func (p *Pipeline) Process(ctx context.Context, in InboundMT) (RoutedMT, []pipeenc.Segment, error) {
 	out := RoutedMT{
 		MessageID:          in.MessageID,
 		TraceID:            in.TraceID,
@@ -110,7 +116,7 @@ func (p *Pipeline) Process(ctx context.Context, in InboundMT) (RoutedMT, error) 
 		out.To = norm
 		return nil
 	}); err != nil {
-		return RoutedMT{}, err
+		return RoutedMT{}, nil, err
 	}
 
 	// 2. Sender-ID authorization (§6.19). A frozen compliance stage: never short-circuited by an exact
@@ -118,7 +124,7 @@ func (p *Pipeline) Process(ctx context.Context, in InboundMT) (RoutedMT, error) 
 	if err := p.stage(ctx, "pipeline.sender_id", func(ctx context.Context) error {
 		return p.senderIDs.Authorize(ctx, in.AccountID, in.CustomerID, in.From)
 	}); err != nil {
-		return RoutedMT{}, err
+		return RoutedMT{}, nil, err
 	}
 
 	// 3. Opt-out / suppression (§6.20). A frozen compliance stage, never short-circuited by an exact
@@ -134,7 +140,7 @@ func (p *Pipeline) Process(ctx context.Context, in InboundMT) (RoutedMT, error) 
 		}
 		return nil
 	}); err != nil {
-		return RoutedMT{}, err
+		return RoutedMT{}, nil, err
 	}
 
 	// 4. Anti-spam (§6.20). A frozen compliance stage, never short-circuited by an exact route
@@ -153,7 +159,7 @@ func (p *Pipeline) Process(ctx context.Context, in InboundMT) (RoutedMT, error) 
 		}
 		return nil
 	}); err != nil {
-		return RoutedMT{}, err
+		return RoutedMT{}, nil, err
 	}
 
 	// 5. Route resolution (declarative static only in M2). A short-cut here would skip only this
@@ -167,26 +173,61 @@ func (p *Pipeline) Process(ctx context.Context, in InboundMT) (RoutedMT, error) 
 		out.RouteID = route.RouteID
 		return nil
 	}); err != nil {
-		return RoutedMT{}, err
+		return RoutedMT{}, nil, err
 	}
 
-	// 6. Encoding / segmentation (§6.6). Detect the encoding (GSM-7 / UCS-2 / binary) and count the
-	// segments a long message needs — the actual UDH splitting lands in step-082. The body is read in
-	// memory only for detection, never logged (invariant a). data_coding_default is auto-detect (nil)
-	// until a per-connector config snapshot exists; a connector's explicit default is a later wiring.
+	// 6. Encoding (§6.6). Resolve the wire encoding (GSM-7 / UCS-2 / binary) and count the segments.
+	// The body is read in memory only for detection, never logged (invariant a). A client that drove
+	// the DCS directly (data_coding, always set on the SMPP path) fixes the charset the message is both
+	// sent AND segmented in, so it takes precedence: segmenting in a different charset than the wire
+	// byte would size the segments wrong. Otherwise the requested encoding enum (or auto-detect) wins.
+	// A connector data_coding_default is a later wiring (nil for now).
+	body := in.Body.Reveal() // audited: body -> in-memory encoding/segmentation only, never logged
 	if err := p.stage(ctx, "pipeline.encoding", func(context.Context) error {
-		out.Encoding, out.SegmentCount = encoding.DetectAndCount(in.Encoding, nil, in.Body.Reveal())
+		// Only the encoding matters here; the segment stage below is the authority on SegmentCount
+		// (DetectAndCount's own count would be wrong for a pre-segmented body anyway).
+		out.Encoding, _ = encoding.DetectAndCount(requestedEncoding(in), nil, body)
 		return nil
 	}); err != nil {
-		return RoutedMT{}, err
+		return RoutedMT{}, nil, err
 	}
 
-	// 7. STUB M7: rate limit — pass-through until M7. See plan §8.
+	// 7. Segmentation (§6.6). Split the body into the concatenated segments the SMSC wire carries, one
+	// mt.routed record each (the router fans them out). It precedes rate-limit and credit so those meter
+	// per segment (step-084/085). A client that pre-segmented its own SMPP submit (esm_class UDH
+	// indicator already set) is never re-split: its body already carries a UDH and travels whole. The
+	// span carries only the segment count, never the body (invariant a).
+	var segments []pipeenc.Segment
+	if err := p.stage(ctx, "pipeline.segment", func(ctx context.Context) error {
+		if in.ESMClass&smpp.ESMClassUDHIndicator != 0 {
+			segments = []pipeenc.Segment{{Seq: 1, Total: 1, Payload: body, HasUDH: true}}
+		} else {
+			segments = pipeenc.Split(in.MessageID, body, out.Encoding)
+		}
+		out.SegmentCount = len(segments)
+		trace.SpanFromContext(ctx).SetAttributes(attribute.Int("segment.count", len(segments)))
+		return nil
+	}); err != nil {
+		return RoutedMT{}, nil, err
+	}
+
+	// 8. STUB M7: rate limit — pass-through until M7. See plan §8.
 	p.stubStage(ctx, "pipeline.rate_limit")
-	// 8. STUB (billing): MT credit reserve — pass-through until billing lands. See plan §8.
+	// 9. STUB (billing): MT credit reserve — pass-through until billing lands. See plan §8.
 	p.stubStage(ctx, "pipeline.credit")
 
-	return out, nil
+	return out, segments, nil
+}
+
+// requestedEncoding resolves the encoding request the detector sees. A client-supplied data_coding
+// (always set on the SMPP path, optional on REST) is the charset the message will be sent in, so it
+// dictates how the message is segmented too; its charset is derived through the shared FromDataCoding
+// vocabulary. Without one, the requested encoding enum (auto|gsm7|ucs2|binary) is used as before.
+func requestedEncoding(in InboundMT) string {
+	if dc := in.DataCoding; dc != nil && *dc >= 0 && *dc <= 255 {
+		return encoding.FromDataCoding(uint8(*dc)) //nolint:gosec // bounded to 0..255 on the line above
+	}
+	return in.Encoding
 }
 
 // stage runs one pipeline step under its own span. The span records a rejection's code (never a

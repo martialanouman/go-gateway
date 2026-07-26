@@ -14,6 +14,7 @@ import (
 
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
+	"github.com/martialanouman/go-gateway/internal/platform/msg"
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
 )
@@ -79,7 +80,7 @@ func (r *Router) handle(ctx context.Context, rec kafka.Record) error {
 		return fmt.Errorf("router: decode mt.inbound: %w", err)
 	}
 
-	routed, perr := r.deps.Pipeline.Process(ctx, in)
+	routed, segments, perr := r.deps.Pipeline.Process(ctx, in)
 	if perr != nil {
 		code, ok := errs.CodeOf(perr)
 		if !ok {
@@ -94,12 +95,28 @@ func (r *Router) handle(ctx context.Context, rec kafka.Record) error {
 		return nil
 	}
 
-	out, err := pipeline.EncodeRouted(routed)
-	if err != nil {
-		return fmt.Errorf("router: encode mt.routed: %w", err)
-	}
-	if err := r.deps.Producer.Produce(ctx, out); err != nil {
-		return fmt.Errorf("router: publish mt.routed: %w", err)
+	// Fan out one mt.routed record per segment. Every record keeps the message's key (MessageID), so
+	// all segments land on one partition and reach the same bind in order (§7.3). Produce is synchronous
+	// and idempotent; the offset commits (this returns nil) only after ALL segments are acknowledged, so
+	// a crash mid-fan-out reprocesses the whole message and re-produces byte-identical records (the
+	// split is deterministic), which the SMSC/handset reassemble to the same place (same ref/seq/total).
+	// The CDR is still message-grained here: its ORDER BY has no segment_seq, so the N per-segment rows
+	// collapse under ReplacingMergeTree into one row per message reflecting the highest-version segment
+	// outcome — a partially-failed multi-segment message can be mis-reported until per-segment CDR lands
+	// (step-082c adds segment_seq to the CDR key and get-message aggregation).
+	for _, seg := range segments {
+		rec := routed
+		rec.Body = msg.NewBody(seg.Payload) // audited: segment wire bytes ride the record value only
+		rec.SegmentSeq = seg.Seq
+		rec.SegmentCount = seg.Total
+		rec.HasUDH = seg.HasUDH
+		out, err := pipeline.EncodeRouted(rec)
+		if err != nil {
+			return fmt.Errorf("router: encode mt.routed: %w", err)
+		}
+		if err := r.deps.Producer.Produce(ctx, out); err != nil {
+			return fmt.Errorf("router: publish mt.routed: %w", err)
+		}
 	}
 	return nil
 }
