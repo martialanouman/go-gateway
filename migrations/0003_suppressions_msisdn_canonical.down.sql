@@ -1,0 +1,1 @@
+ALTER TABLE control_plane.suppressions DROP CONSTRAINT suppressions_msisdn_canonical_ck;

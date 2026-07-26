@@ -4,6 +4,7 @@ go 1.26.5
 
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.47.0
+	github.com/bits-and-blooms/bloom/v3 v3.7.1
 	github.com/caarlos0/env/v11 v11.4.1
 	github.com/danielgtaylor/huma/v2 v2.39.0
 	github.com/go-chi/chi/v5 v5.3.1
@@ -40,6 +41,7 @@ require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/andybalholm/brotli v1.2.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
+	github.com/bits-and-blooms/bitset v1.24.2 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
