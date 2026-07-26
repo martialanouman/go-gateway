@@ -25,6 +25,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/modlrrouter"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/pipeline/antispam"
+	"github.com/martialanouman/go-gateway/internal/pipeline/encoding"
 	"github.com/martialanouman/go-gateway/internal/platform/supervisor"
 	registrypb "github.com/martialanouman/go-gateway/internal/session/pb"
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
@@ -42,6 +43,10 @@ const serviceName = "mo-dlr-router-svc"
 const (
 	webhookHotPathTimeout     = 5 * time.Second
 	webhookHotPathMaxAttempts = 3
+	// moReassemblyTTL bounds how long the segments of a concatenated MO are buffered while awaiting the
+	// rest (step-083). A group that does not complete within it evicts, so an orphaned half-message
+	// cannot accumulate. Handsets and SMSCs reassemble on a similar order of minutes.
+	moReassemblyTTL = 10 * time.Minute
 )
 
 func main() {
@@ -162,15 +167,16 @@ func run() error {
 	})
 
 	moRouter := modlrrouter.NewMORouter(modlrrouter.MODeps{
-		Consumer: moConsumer,
-		Snapshot: snapshot,
-		Producer: producer,
-		Unrouted: postgres.NewUnroutedMORepo(pool),
-		Metric:   unroutedMetric{vec: unroutedTotal},
-		Stop:     stopDetector,
-		Velocity: moVelocity{state: antispam.NewRedisState(rdb)},
-		Tracer:   observability.Tracer(nil, serviceName),
-		Logger:   logger,
+		Consumer:    moConsumer,
+		Snapshot:    snapshot,
+		Producer:    producer,
+		Unrouted:    postgres.NewUnroutedMORepo(pool),
+		Metric:      unroutedMetric{vec: unroutedTotal},
+		Stop:        stopDetector,
+		Velocity:    moVelocity{state: antispam.NewRedisState(rdb)},
+		Reassembler: encoding.NewReassembler(rdb, moReassemblyTTL),
+		Tracer:      observability.Tracer(nil, serviceName),
+		Logger:      logger,
 	})
 
 	// --- Delivery leg (step-048): hand each resolved MO/DLR to a live bind, else the webhook, else a

@@ -15,6 +15,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	"github.com/martialanouman/go-gateway/internal/platform/msg"
+	"github.com/martialanouman/go-gateway/internal/smpp"
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
 )
 
@@ -212,5 +213,123 @@ func TestMORouterSkipsUndecodable(t *testing.T) {
 	}
 	if len(prod.recs) != 0 || len(unrouted.rows) != 0 {
 		t.Errorf("undecodable record should do nothing: routed=%d unrouted=%d", len(prod.recs), len(unrouted.rows))
+	}
+}
+
+// stubReassembler is a controllable MOReassembler for the router tests: it records what it was offered
+// and returns a fixed (assembled, complete) verdict, so a test drives the buffered and completed paths
+// without a Redis buffer.
+type stubReassembler struct {
+	assembled        []byte
+	complete         bool
+	called           bool
+	gotRef           uint16
+	gotTotal, gotSeq int
+	gotContent       string
+	gotFrom, gotTo   string
+	gotConnector     uuid.UUID
+}
+
+func (s *stubReassembler) Offer(_ context.Context, from, to string, connectorID uuid.UUID, ref uint16, total, seq int, content []byte) ([]byte, bool, error) {
+	s.called = true
+	s.gotFrom, s.gotTo, s.gotConnector = from, to, connectorID
+	s.gotRef, s.gotTotal, s.gotSeq, s.gotContent = ref, total, seq, string(content)
+	return s.assembled, s.complete, nil
+}
+
+// moConcatRecord encodes an mo.inbound record for one segment of a concatenated MO: the body carries a
+// concatenation UDH and esm_class marks it (UDHI), exactly as a real deliver_sm would.
+func moConcatRecord(t *testing.T, connectorID uuid.UUID, from, to string, c smpp.Concat, content string) kafka.Record {
+	t.Helper()
+	rec, err := pipeline.EncodeMO(pipeline.MOInbound{
+		ConnectorID: connectorID, From: from, To: to,
+		Body:     msg.NewBody(smpp.EncodeConcatUDH(c, []byte(content))),
+		ESMClass: smpp.ESMClassUDHIndicator, DataCoding: 0, ReceivedAt: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("EncodeMO: %v", err)
+	}
+	return rec
+}
+
+// TestMORouterBuffersIncompleteSegment: a segment that does not complete its group routes NOTHING — it
+// is buffered (committed) and the router waits for the rest. The router must hand the parsed
+// reference/total/sequence and the UDH-stripped content to the reassembler.
+func TestMORouterBuffersIncompleteSegment(t *testing.T) {
+	connector := uuid.New()
+	reasm := &stubReassembler{complete: false}
+	prod := &fakeProducer{}
+
+	_, err := runMO(t, modlrrouter.MODeps{
+		Snapshot: moSnapshot(t, nil, nil, nil), Producer: prod, Unrouted: &fakeUnrouted{}, Reassembler: reasm,
+	}, moConcatRecord(t, connector, "22507000001", "36000",
+		smpp.Concat{Reference: 7, Total: 3, Sequence: 2, Ref16: true}, "middle"))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(prod.recs) != 0 {
+		t.Errorf("an incomplete segment must not route anything, got %d records", len(prod.recs))
+	}
+	if reasm.gotRef != 7 || reasm.gotTotal != 3 || reasm.gotSeq != 2 || reasm.gotContent != "middle" {
+		t.Errorf("reassembler offered {ref:%d total:%d seq:%d content:%q}, want 7/3/2/\"middle\" (UDH stripped)",
+			reasm.gotRef, reasm.gotTotal, reasm.gotSeq, reasm.gotContent)
+	}
+}
+
+// TestMORouterRoutesReassembledMessage: once the reassembler reports the group complete, the router
+// routes ONE MO carrying the assembled body, with the UDH indicator cleared.
+func TestMORouterRoutesReassembledMessage(t *testing.T) {
+	account, customer := uuid.New(), uuid.New()
+	numID, connector := uuid.New(), uuid.New()
+	snap := moSnapshot(t,
+		[]cp.InboundNumber{{ID: numID, Address: "36000", Status: cp.InboundNumberActive, AccountID: &account}},
+		nil, map[uuid.UUID]uuid.UUID{account: customer})
+	reasm := &stubReassembler{assembled: []byte("the whole reassembled message"), complete: true}
+	prod := &fakeProducer{}
+
+	_, err := runMO(t, modlrrouter.MODeps{Snapshot: snap, Producer: prod, Unrouted: &fakeUnrouted{}, Reassembler: reasm},
+		moConcatRecord(t, connector, "22507000001", "36000",
+			smpp.Concat{Reference: 9, Total: 2, Sequence: 2, Ref16: true}, "last part"))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(prod.recs) != 1 {
+		t.Fatalf("a completed group must route exactly one MO, got %d", len(prod.recs))
+	}
+	routed, err := pipeline.DecodeMORouted(prod.recs[0])
+	if err != nil {
+		t.Fatalf("DecodeMORouted: %v", err)
+	}
+	if string(routed.Body.Reveal()) != "the whole reassembled message" {
+		t.Errorf("routed body = %q, want the assembled message", routed.Body.Reveal())
+	}
+	if routed.ESMClass&smpp.ESMClassUDHIndicator != 0 {
+		t.Errorf("the reassembled MO must clear the UDH indicator, esm_class = %#x", routed.ESMClass)
+	}
+}
+
+// TestMORouterRejectsMalformedConcatHeader: a concatenation UDH with an out-of-range total (0) comes
+// from an untrusted deliver_sm; it must NOT be buffered (which would route a phantom empty message or
+// wait forever) — the router treats it as a single message and never calls the reassembler.
+func TestMORouterRejectsMalformedConcatHeader(t *testing.T) {
+	account, customer := uuid.New(), uuid.New()
+	numID, connector := uuid.New(), uuid.New()
+	snap := moSnapshot(t,
+		[]cp.InboundNumber{{ID: numID, Address: "36000", Status: cp.InboundNumberActive, AccountID: &account}},
+		nil, map[uuid.UUID]uuid.UUID{account: customer})
+	reasm := &stubReassembler{complete: false} // would route nothing if it were ever consulted
+	prod := &fakeProducer{}
+
+	_, err := runMO(t, modlrrouter.MODeps{Snapshot: snap, Producer: prod, Unrouted: &fakeUnrouted{}, Reassembler: reasm},
+		moConcatRecord(t, connector, "22507000001", "36000",
+			smpp.Concat{Reference: 3, Total: 0, Sequence: 0, Ref16: true}, "garbage"))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if reasm.called {
+		t.Error("a malformed concat header must not reach the reassembler")
+	}
+	if len(prod.recs) != 1 {
+		t.Errorf("a malformed concat must route as a single message, got %d records", len(prod.recs))
 	}
 }
