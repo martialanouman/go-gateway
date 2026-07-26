@@ -12,6 +12,7 @@ import (
 
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
+	"github.com/martialanouman/go-gateway/internal/platform/msg"
 	"github.com/martialanouman/go-gateway/internal/smpp"
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
 )
@@ -50,14 +51,24 @@ type MODeps struct {
 	// count feeds the anti-spam velocity a later MT is checked against. Optional and best-effort: a
 	// recording failure never interrupts MO delivery.
 	Velocity MOVelocityRecorder
-	Tracer   trace.Tracer
-	Logger   *slog.Logger
+	// Reassembler joins the segments of a concatenated MO (step-083). Optional: a nil reassembler routes
+	// every MO as-is (a multipart MO is then delivered as its separate segments, the pre-083 behaviour).
+	Reassembler MOReassembler
+	Tracer      trace.Tracer
+	Logger      *slog.Logger
 }
 
 // MOVelocityRecorder records one inbound MO from a source into its velocity counter.
 // A small adapter over *antispam.RedisState satisfies it.
 type MOVelocityRecorder interface {
 	RecordSource(ctx context.Context, from string) error
+}
+
+// MOReassembler buffers the segments of a concatenated MO and returns the assembled body once every
+// segment has arrived (step-083). *encoding.Reassembler satisfies it; the interface lives here,
+// consumer-side. complete is false while segments are still missing (the segment is buffered).
+type MOReassembler interface {
+	Offer(ctx context.Context, from, to string, connectorID uuid.UUID, ref uint16, total, seq int, content []byte) (assembled []byte, complete bool, err error)
 }
 
 // MORouter resolves mobile-originated messages to an account and publishes the delivery intent.
@@ -81,6 +92,33 @@ func (r *MORouter) Run(ctx context.Context) error {
 	return r.deps.Consumer.Run(ctx, r.handler())
 }
 
+// reassemble buffers one segment of a concatenated MO and, once every segment has arrived, returns the
+// single logical MO with its body assembled and the UDH indicator cleared. An MO whose UDH is not a
+// concatenation (a malformed or non-concat header) is passed through unchanged as a complete message.
+// The body is revealed for header parsing only and never logged (invariant a).
+func (r *MORouter) reassemble(ctx context.Context, mo pipeline.MOInbound) (pipeline.MOInbound, bool, error) {
+	concat, content, hasConcat, err := smpp.ParseUDH(mo.Body.Reveal())
+	if err != nil || !hasConcat {
+		return mo, true, nil
+	}
+	// The concatenation header comes from an untrusted peer (a deliver_sm) and is not bounds-checked by
+	// ParseUDH: a malformed total/sequence (0, or sequence past total) must not be buffered — it would
+	// either route a phantom empty message or wait forever for parts that cannot arrive. Treat it as a
+	// single, complete message instead.
+	if concat.Total < 1 || concat.Sequence < 1 || concat.Sequence > concat.Total {
+		return mo, true, nil
+	}
+	assembled, complete, err := r.deps.Reassembler.Offer(ctx, mo.From, mo.To, mo.ConnectorID,
+		concat.Reference, int(concat.Total), int(concat.Sequence), content)
+	if err != nil || !complete {
+		return pipeline.MOInbound{}, complete, err
+	}
+	out := mo
+	out.Body = msg.NewBody(assembled)
+	out.ESMClass = mo.ESMClass &^ smpp.ESMClassUDHIndicator // the reassembled MO carries no UDH
+	return out, true, nil
+}
+
 func (r *MORouter) handler() kafka.Handler {
 	return func(ctx context.Context, rec kafka.Record) error {
 		ctx, span := r.deps.Tracer.Start(ctx, "mo.route")
@@ -91,6 +129,22 @@ func (r *MORouter) handler() kafka.Handler {
 			// An undecodable record is permanently bad: log and commit, never wedge the partition.
 			r.deps.Logger.ErrorContext(ctx, "modlrrouter: undecodable mo.inbound record, skipping", "err", err)
 			return nil
+		}
+
+		// Reassemble a concatenated MO before any processing (step-083): it arrives as several
+		// deliver_sm, one segment each, so buffer them by reference and only process the complete logical
+		// message. A segment that does not yet complete the group is committed (durably buffered in Redis)
+		// and waits for the rest; a transient buffer fault returns so the segment is reprocessed.
+		if r.deps.Reassembler != nil && mo.ESMClass&smpp.ESMClassUDHIndicator != 0 {
+			assembled, complete, err := r.reassemble(ctx, mo)
+			if err != nil {
+				return err
+			}
+			if !complete {
+				span.SetAttributes(attribute.Bool("mo.segment_buffered", true))
+				return nil
+			}
+			mo = assembled
 		}
 
 		dest := normalizeAddr(mo.To)
