@@ -831,6 +831,8 @@ paths:
       operationId: list-antispam-rules
       responses:
         '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/AntispamRule' } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
     post:
       tags: [Anti-spam]
       summary: Create an anti-spam rule
@@ -839,6 +841,8 @@ paths:
       responses:
         '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/AntispamRule' } } } }
         '422': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /admin/antispam-rules/{id}:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
     patch:
@@ -849,6 +853,9 @@ paths:
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/AntispamRule' } } } }
         '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
     delete:
       tags: [Anti-spam]
       summary: Delete an anti-spam rule
@@ -856,6 +863,8 @@ paths:
       responses:
         '204': { description: Deleted. }
         '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
   # ============================ SUPPRESSION / OPT-OUT (§6.20) ============================
   /admin/suppressions:

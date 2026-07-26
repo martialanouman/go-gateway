@@ -7,7 +7,80 @@ package sqlcgen
 
 import (
 	"context"
+
+	uuid "github.com/google/uuid"
 )
+
+const createAntispamRule = `-- name: CreateAntispamRule :one
+INSERT INTO control_plane.antispam_rules (rule_type, scope, scope_id, config_json, action)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING id, rule_type, scope, scope_id, config_json, action, status, created_at, updated_at
+`
+
+type CreateAntispamRuleParams struct {
+	RuleType   string
+	Scope      string
+	ScopeID    *uuid.UUID
+	ConfigJson []byte
+	Action     string
+}
+
+// A scope/scope_id mismatch violates antispam_scope_ck (global -> scope_id NULL) -> 422.
+func (q *Queries) CreateAntispamRule(ctx context.Context, arg CreateAntispamRuleParams) (ControlPlaneAntispamRule, error) {
+	row := q.db.QueryRow(ctx, createAntispamRule,
+		arg.RuleType,
+		arg.Scope,
+		arg.ScopeID,
+		arg.ConfigJson,
+		arg.Action,
+	)
+	var i ControlPlaneAntispamRule
+	err := row.Scan(
+		&i.ID,
+		&i.RuleType,
+		&i.Scope,
+		&i.ScopeID,
+		&i.ConfigJson,
+		&i.Action,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const deleteAntispamRule = `-- name: DeleteAntispamRule :execrows
+DELETE FROM control_plane.antispam_rules WHERE id = $1
+`
+
+func (q *Queries) DeleteAntispamRule(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteAntispamRule, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const getAntispamRule = `-- name: GetAntispamRule :one
+SELECT id, rule_type, scope, scope_id, config_json, action, status, created_at, updated_at FROM control_plane.antispam_rules WHERE id = $1
+`
+
+func (q *Queries) GetAntispamRule(ctx context.Context, id uuid.UUID) (ControlPlaneAntispamRule, error) {
+	row := q.db.QueryRow(ctx, getAntispamRule, id)
+	var i ControlPlaneAntispamRule
+	err := row.Scan(
+		&i.ID,
+		&i.RuleType,
+		&i.Scope,
+		&i.ScopeID,
+		&i.ConfigJson,
+		&i.Action,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
 
 const listActiveAntispamRules = `-- name: ListActiveAntispamRules :many
 SELECT id, rule_type, scope, scope_id, config_json, action, status, created_at, updated_at FROM control_plane.antispam_rules WHERE status = 'active' ORDER BY scope, id
@@ -43,4 +116,78 @@ func (q *Queries) ListActiveAntispamRules(ctx context.Context) ([]ControlPlaneAn
 		return nil, err
 	}
 	return items, nil
+}
+
+const listAntispamRules = `-- name: ListAntispamRules :many
+SELECT id, rule_type, scope, scope_id, config_json, action, status, created_at, updated_at FROM control_plane.antispam_rules ORDER BY scope, id
+`
+
+// Every anti-spam rule, active and disabled, for the Admin list (step-067).
+func (q *Queries) ListAntispamRules(ctx context.Context) ([]ControlPlaneAntispamRule, error) {
+	rows, err := q.db.Query(ctx, listAntispamRules)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ControlPlaneAntispamRule{}
+	for rows.Next() {
+		var i ControlPlaneAntispamRule
+		if err := rows.Scan(
+			&i.ID,
+			&i.RuleType,
+			&i.Scope,
+			&i.ScopeID,
+			&i.ConfigJson,
+			&i.Action,
+			&i.Status,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const updateAntispamRule = `-- name: UpdateAntispamRule :one
+UPDATE control_plane.antispam_rules SET
+    config_json = COALESCE($1, config_json),
+    action      = COALESCE($2, action),
+    status      = COALESCE($3, status),
+    updated_at  = now()
+WHERE id = $4
+RETURNING id, rule_type, scope, scope_id, config_json, action, status, created_at, updated_at
+`
+
+type UpdateAntispamRuleParams struct {
+	ConfigJson []byte
+	Action     *string
+	Status     *string
+	ID         uuid.UUID
+}
+
+func (q *Queries) UpdateAntispamRule(ctx context.Context, arg UpdateAntispamRuleParams) (ControlPlaneAntispamRule, error) {
+	row := q.db.QueryRow(ctx, updateAntispamRule,
+		arg.ConfigJson,
+		arg.Action,
+		arg.Status,
+		arg.ID,
+	)
+	var i ControlPlaneAntispamRule
+	err := row.Scan(
+		&i.ID,
+		&i.RuleType,
+		&i.Scope,
+		&i.ScopeID,
+		&i.ConfigJson,
+		&i.Action,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }

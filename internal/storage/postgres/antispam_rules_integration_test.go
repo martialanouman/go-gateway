@@ -14,6 +14,10 @@ import (
 func TestAntispamRuleRepoListActive(t *testing.T) {
 	pool := pgtest.Pool(t)
 	ctx := context.Background()
+	// antispam_rules is a global table read unfiltered; start clean so shared-pool tests are isolated.
+	if _, err := pool.Exec(ctx, "DELETE FROM control_plane.antispam_rules"); err != nil {
+		t.Fatalf("clean antispam_rules: %v", err)
+	}
 
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO control_plane.antispam_rules (rule_type, scope, config_json, action, status) VALUES

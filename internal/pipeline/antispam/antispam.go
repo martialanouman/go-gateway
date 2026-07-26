@@ -18,6 +18,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -419,8 +420,65 @@ func compileVelocity(logger *slog.Logger, r cp.AntispamRule) (velocityRule, bool
 	}, true
 }
 
+// ValidateRuleConfig validates a rule's config_json for its type, so the Admin API (step-067) rejects
+// a bad rule at write time instead of the engine silently dropping it at load. It is the single
+// source of truth for what a well-formed rule config is. An empty/"{}" config is valid only for types
+// that need no parameters (none currently — all require a field), so a missing field is an error.
+func ValidateRuleConfig(ruleType cp.AntispamRuleType, config json.RawMessage) error {
+	switch ruleType {
+	case cp.AntispamContentBlacklist:
+		var cfg contentConfig
+		if err := json.Unmarshal(config, &cfg); err != nil {
+			return fmt.Errorf("content rule: invalid config: %w", err)
+		}
+		if len(cfg.Patterns) == 0 {
+			return errors.New("content rule: at least one pattern is required")
+		}
+		for _, p := range cfg.Patterns {
+			if _, err := regexp.Compile(p); err != nil {
+				return fmt.Errorf("content rule: pattern %q does not compile: %w", p, err)
+			}
+		}
+	case cp.AntispamDuplicate:
+		var cfg duplicateConfig
+		if err := json.Unmarshal(config, &cfg); err != nil {
+			return fmt.Errorf("duplicate rule: invalid config: %w", err)
+		}
+		if cfg.WindowSeconds <= 0 {
+			return errors.New("duplicate rule: window_seconds must be positive")
+		}
+	case cp.AntispamVelocity:
+		var cfg velocityConfig
+		if err := json.Unmarshal(config, &cfg); err != nil {
+			return fmt.Errorf("velocity rule: invalid config: %w", err)
+		}
+		if cfg.Max <= 0 || cfg.WindowSeconds <= 0 {
+			return errors.New("velocity rule: max and window_seconds must be positive")
+		}
+		if time.Duration(cfg.WindowSeconds)*time.Second > recordMaxTTL {
+			return fmt.Errorf("velocity rule: window_seconds must not exceed %d", int(recordMaxTTL.Seconds()))
+		}
+		if cfg.By != "" && cfg.By != "source" && cfg.By != "account" {
+			return errors.New(`velocity rule: "by" must be "source" or "account"`)
+		}
+	case cp.AntispamReputation:
+		var cfg reputationConfig
+		if err := json.Unmarshal(config, &cfg); err != nil {
+			return fmt.Errorf("reputation rule: invalid config: %w", err)
+		}
+		// min_score is required but may be any integer (reputation scores can be negative): its absence
+		// would silently make the rule a no-op, so reject it.
+		if cfg.MinScore == nil {
+			return errors.New("reputation rule: min_score is required")
+		}
+	default:
+		return fmt.Errorf("unknown rule type %q", ruleType)
+	}
+	return nil
+}
+
 type reputationConfig struct {
-	MinScore int `json:"min_score"`
+	MinScore *int `json:"min_score"`
 }
 
 func compileReputation(logger *slog.Logger, r cp.AntispamRule) (reputationRule, bool) {
@@ -429,5 +487,9 @@ func compileReputation(logger *slog.Logger, r cp.AntispamRule) (reputationRule, 
 		logger.Warn("antispam: dropping reputation rule with bad config", "rule_id", r.ID, "err", err)
 		return reputationRule{}, false
 	}
-	return reputationRule{action: r.Action, minScore: cfg.MinScore}, true
+	if cfg.MinScore == nil {
+		logger.Warn("antispam: dropping reputation rule without min_score", "rule_id", r.ID)
+		return reputationRule{}, false
+	}
+	return reputationRule{action: r.Action, minScore: *cfg.MinScore}, true
 }

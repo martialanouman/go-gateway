@@ -108,6 +108,7 @@ func run() error {
 		UnroutedMO:      postgres.NewUnroutedMORepo(pool),
 		Suppressions:    postgres.NewSuppressionRepo(pool),
 		OptOutKeywords:  postgres.NewOptOutKeywordRepo(pool),
+		AntispamRules:   postgres.NewAntispamRuleRepo(pool),
 		Disconnector:    adminapi.NewGRPCDisconnector(registrypb.NewSessionRegistryClient(registryConn)),
 		Verifier:        verifier,
 		Logger:          logger,

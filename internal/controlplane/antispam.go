@@ -90,6 +90,24 @@ func (s AntispamRuleStatus) Valid() bool {
 	}
 }
 
+// NewAntispamRule is the input to create an anti-spam rule (Admin, step-067). ScopeID is nil for the
+// global scope (the schema's antispam_scope_ck enforces the pairing).
+type NewAntispamRule struct {
+	RuleType   AntispamRuleType
+	Scope      AntispamScope
+	ScopeID    *uuid.UUID
+	ConfigJSON json.RawMessage
+	Action     AntispamAction
+}
+
+// AntispamRulePatch is a partial update of an anti-spam rule (Admin, step-067). A nil field is left
+// unchanged; rule_type and scope are immutable (delete and recreate to change them).
+type AntispamRulePatch struct {
+	ConfigJSON json.RawMessage
+	Action     *AntispamAction
+	Status     *AntispamRuleStatus
+}
+
 // AntispamRule is one anti-spam rule (§6.20). ConfigJSON is a rule-type-specific object: a
 // content_blacklist carries {"patterns": [...regex]}, a duplicate carries {"window_seconds": N}.
 type AntispamRule struct {
