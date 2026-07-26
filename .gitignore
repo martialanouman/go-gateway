@@ -10,6 +10,11 @@
 /migrate
 /fake-smsc
 
+# Contracts package: the .d.ts are generated at publish time from the YAML, never checked in —
+# a committed copy would be one more thing that can drift from its source.
+/api/dist/
+/api/node_modules/
+
 # Go build & test artifacts.
 *.test
 *.out
