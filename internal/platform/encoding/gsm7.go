@@ -37,23 +37,12 @@ func gsm7Representable(body []byte) bool {
 	return true
 }
 
-// gsm7Septets returns the septets body occupies once encoded as GSM-7: a basic rune is one septet, an
-// extension rune two, and any rune outside the alphabet is substituted by a single '?' (one septet) —
-// so a message a client forced to GSM-7 is billed as the GSM-7 it will actually be sent as, never
-// mis-counted as UCS-2. Use gsm7Representable first when the goal is detection rather than counting.
-func gsm7Septets(body []byte) int {
-	septets := 0
-	for _, r := range string(body) {
-		if inSet(gsm7ExtensionSet, r) {
-			septets += 2 // escape + character
-		} else {
-			septets++ // a basic rune, or a non-representable rune substituted by '?'
-		}
-	}
-	return septets
-}
-
 func inSet(set map[rune]struct{}, r rune) bool {
 	_, ok := set[r]
 	return ok
 }
+
+// IsGSM7Extension reports whether r is a GSM-7 extension-table character (it costs two septets: the
+// escape 0x1B then the character). The segmentation package uses it to size segments identically to
+// how this package counts them.
+func IsGSM7Extension(r rune) bool { return inSet(gsm7ExtensionSet, r) }
