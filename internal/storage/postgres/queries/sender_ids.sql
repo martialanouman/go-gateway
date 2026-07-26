@@ -8,6 +8,11 @@ RETURNING *;
 -- name: ListSenderIDsByCustomer :many
 SELECT * FROM control_plane.sender_ids WHERE customer_id = @customer_id ORDER BY address;
 
+-- name: ListActiveSenderIDs :many
+-- All active sender IDs across customers, for the sender-ID authorization snapshot (step-060). Only
+-- 'active' rows count: a pending or disabled registration must not authorize a source address.
+SELECT * FROM control_plane.sender_ids WHERE status = 'active';
+
 -- name: UpdateSenderID :one
 UPDATE control_plane.sender_ids SET status = COALESCE(sqlc.narg('status'), status)
 WHERE customer_id = @customer_id AND id = @id

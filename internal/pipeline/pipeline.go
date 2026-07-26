@@ -26,20 +26,29 @@ type Resolver interface {
 	Resolve(ctx context.Context, dest string) (Route, error)
 }
 
+// SenderIDAuthorizer authorizes a message's source address against the account's sender-ID policy and
+// its customer's registered sender IDs (spec §6.19). It is implemented over an immutable snapshot
+// (internal/pipeline/senderid); the interface lives here, consumer-side. A rejection returns
+// errs.ErrSenderIDNotAuthorized.
+type SenderIDAuthorizer interface {
+	Authorize(ctx context.Context, accountID, customerID uuid.UUID, from string) error
+}
+
 // Pipeline runs the ordered MT stages the router applies to every message (spec §6.1). The order is
-// frozen: a routing short-cut may skip route resolution, never a compliance stage. M2 implements
-// E.164 normalization and declarative route resolution; the compliance and metering stages are
-// explicit pass-through STUBs that still emit their span.
+// frozen: a routing short-cut may skip route resolution, never a compliance stage. It implements
+// E.164 normalization, sender-ID authorization (M5) and declarative route resolution; the remaining
+// compliance and metering stages are explicit pass-through STUBs that still emit their span.
 type Pipeline struct {
-	tracer   trace.Tracer
-	resolver Resolver
+	tracer    trace.Tracer
+	resolver  Resolver
+	senderIDs SenderIDAuthorizer
 }
 
 // New builds a Pipeline. Destinations are normalized to their canonical digits-only form; the
 // public contract carries a full country code (the "+" being optional), so no default region is
 // needed. See internal/platform/e164.
-func New(tracer trace.Tracer, resolver Resolver) *Pipeline {
-	return &Pipeline{tracer: tracer, resolver: resolver}
+func New(tracer trace.Tracer, resolver Resolver, senderIDs SenderIDAuthorizer) *Pipeline {
+	return &Pipeline{tracer: tracer, resolver: resolver, senderIDs: senderIDs}
 }
 
 // Process runs the pipeline on an inbound message and returns the routed message. On a rejection it
@@ -75,8 +84,14 @@ func (p *Pipeline) Process(ctx context.Context, in InboundMT) (RoutedMT, error) 
 		return RoutedMT{}, err
 	}
 
-	// 2. STUB M5: sender-ID authorization — pass-through until M5. See plan §8.
-	p.stubStage(ctx, "pipeline.sender_id")
+	// 2. Sender-ID authorization (§6.19). A frozen compliance stage: never short-circuited by an exact
+	// route (invariant b). The span carries only the rejection code, never the body (invariant a).
+	if err := p.stage(ctx, "pipeline.sender_id", func(ctx context.Context) error {
+		return p.senderIDs.Authorize(ctx, in.AccountID, in.CustomerID, in.From)
+	}); err != nil {
+		return RoutedMT{}, err
+	}
+
 	// 3. STUB M5: opt-out / suppression — pass-through until M5. See plan §8.
 	p.stubStage(ctx, "pipeline.opt_out")
 	// 4. STUB M6: anti-spam — pass-through until M6. See plan §8.

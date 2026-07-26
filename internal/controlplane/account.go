@@ -39,6 +39,15 @@ type NewAccount struct {
 	MaxSessions      *int
 }
 
+// AccountSenderIDPolicy is the account -> (customer, sender-ID policy) projection the sender-ID
+// authorization stage snapshots at startup (step-060): the policy is per account, but the registered
+// sender IDs it is checked against are per customer.
+type AccountSenderIDPolicy struct {
+	AccountID  uuid.UUID
+	CustomerID uuid.UUID
+	Policy     SenderIDPolicy
+}
+
 // AccountPatch is a partial update of an account. Per the contract's SmppAccountUpdate, only the
 // name and status are updatable here; channels and session limits have their own endpoints.
 type AccountPatch struct {

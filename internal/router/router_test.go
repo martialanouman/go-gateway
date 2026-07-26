@@ -61,6 +61,12 @@ func inbound(to string) pipeline.InboundMT {
 	}
 }
 
+// allowAllSenderIDs authorizes every source address, so the router tests exercise routing and CDR
+// outcomes without a sender-ID policy in the way (that stage is covered in the pipeline tests).
+type allowAllSenderIDs struct{}
+
+func (allowAllSenderIDs) Authorize(context.Context, uuid.UUID, uuid.UUID, string) error { return nil }
+
 func newRouter(t *testing.T, resolver pipeline.Resolver, prod router.Producer, cdr router.CDRWriter, cons router.Consumer) *router.Router {
 	t.Helper()
 	rec := otelrec.New(t)
@@ -68,7 +74,7 @@ func newRouter(t *testing.T, resolver pipeline.Resolver, prod router.Producer, c
 	return router.New(router.Deps{
 		Consumer: cons,
 		Producer: prod,
-		Pipeline: pipeline.New(tracer, resolver),
+		Pipeline: pipeline.New(tracer, resolver, allowAllSenderIDs{}),
 		CDR:      cdr,
 		Tracer:   tracer,
 	})

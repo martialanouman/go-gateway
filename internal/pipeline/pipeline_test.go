@@ -23,6 +23,12 @@ func (s stubResolver) Resolve(context.Context, string) (pipeline.Route, error) {
 	return s.route, s.err
 }
 
+// stubAuthorizer authorizes a source address, or rejects it with a fixed error. The zero value
+// allows everything.
+type stubAuthorizer struct{ err error }
+
+func (s stubAuthorizer) Authorize(context.Context, uuid.UUID, uuid.UUID, string) error { return s.err }
+
 // allStages is the frozen ordered set of spans the pipeline must emit, STUBs included (plan §6).
 var allStages = []string{
 	"pipeline.e164",
@@ -47,7 +53,7 @@ func TestPipelineHappyPathEmitsEveryStageSpan(t *testing.T) {
 	rec := otelrec.New(t)
 	tracer := observability.Tracer(rec.Provider(), "router")
 	connector := uuid.New()
-	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: connector}})
+	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: connector}}, stubAuthorizer{})
 
 	out, err := p.Process(context.Background(), inbound("+2250700000000"))
 	if err != nil {
@@ -78,7 +84,7 @@ func TestPipelineHappyPathEmitsEveryStageSpan(t *testing.T) {
 func TestPipelineRejectsInvalidDestination(t *testing.T) {
 	rec := otelrec.New(t)
 	tracer := observability.Tracer(rec.Provider(), "router")
-	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}})
+	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}}, stubAuthorizer{})
 
 	_, err := p.Process(context.Background(), inbound("not-a-number"))
 	if code, _ := errs.CodeOf(err); code != errs.ErrInvalidDestination {
@@ -93,10 +99,31 @@ func TestPipelineRejectsInvalidDestination(t *testing.T) {
 	}
 }
 
+// TestPipelineRejectsUnauthorizedSenderID: the sender-ID stage rejects an unauthorized source with
+// sender_id_not_authorized, before route resolution, and never leaks the body into a span.
+func TestPipelineRejectsUnauthorizedSenderID(t *testing.T) {
+	rec := otelrec.New(t)
+	tracer := observability.Tracer(rec.Provider(), "router")
+	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}},
+		stubAuthorizer{err: errs.ErrSenderIDNotAuthorized})
+
+	_, err := p.Process(context.Background(), inbound("+2250700000000"))
+	if code, _ := errs.CodeOf(err); code != errs.ErrSenderIDNotAuthorized {
+		t.Fatalf("code: got %q want sender_id_not_authorized", code)
+	}
+	if !rec.Recorded("pipeline.sender_id") {
+		t.Error("sender_id span should have been emitted")
+	}
+	if rec.Recorded("pipeline.route") {
+		t.Error("route span must NOT be emitted after a sender-ID rejection (frozen order, invariant b)")
+	}
+	rec.AssertNoBody(t, "topsecretbody")
+}
+
 func TestPipelineRejectsNoRoute(t *testing.T) {
 	rec := otelrec.New(t)
 	tracer := observability.Tracer(rec.Provider(), "router")
-	p := pipeline.New(tracer, stubResolver{err: errs.ErrNoRoute})
+	p := pipeline.New(tracer, stubResolver{err: errs.ErrNoRoute}, stubAuthorizer{})
 
 	_, err := p.Process(context.Background(), inbound("+2250700000000"))
 	if code, _ := errs.CodeOf(err); code != errs.ErrNoRoute {

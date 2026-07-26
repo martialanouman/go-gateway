@@ -58,6 +58,41 @@ func (q *Queries) DeleteSenderID(ctx context.Context, arg DeleteSenderIDParams) 
 	return result.RowsAffected(), nil
 }
 
+const listActiveSenderIDs = `-- name: ListActiveSenderIDs :many
+SELECT id, customer_id, address, status, created_by, approved_at, created_at, updated_at FROM control_plane.sender_ids WHERE status = 'active'
+`
+
+// All active sender IDs across customers, for the sender-ID authorization snapshot (step-060). Only
+// 'active' rows count: a pending or disabled registration must not authorize a source address.
+func (q *Queries) ListActiveSenderIDs(ctx context.Context) ([]ControlPlaneSenderID, error) {
+	rows, err := q.db.Query(ctx, listActiveSenderIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ControlPlaneSenderID{}
+	for rows.Next() {
+		var i ControlPlaneSenderID
+		if err := rows.Scan(
+			&i.ID,
+			&i.CustomerID,
+			&i.Address,
+			&i.Status,
+			&i.CreatedBy,
+			&i.ApprovedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listSenderIDsByCustomer = `-- name: ListSenderIDsByCustomer :many
 SELECT id, customer_id, address, status, created_by, approved_at, created_at, updated_at FROM control_plane.sender_ids WHERE customer_id = $1 ORDER BY address
 `

@@ -49,7 +49,7 @@ Légende : `[x]` = fait (dans `tasks-done/`) · `[ ]` = à faire (dans `tasks-to
 - [x] step-048 — Décision de remise MO : bind actif (gRPC) ou webhook
 
 ## M5 — Conformité sur le chemin critique
-- [ ] step-060 — Étape pipeline : autorisation Sender ID (§6.19)
+- [x] step-060 — Étape pipeline : autorisation Sender ID (§6.19)
 - [ ] step-061 — Opt-out : repos suppressions/keywords + Bloom par portée
 - [ ] step-062 — Étape pipeline : opt-out MT bloquant (union des portées)
 - [ ] step-063 — Détection STOP côté MO : suppression scopée + auto-réponse (jamais facturée)

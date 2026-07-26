@@ -163,3 +163,21 @@ func (r *AccountRepo) ListAccountCustomers(ctx context.Context) (map[uuid.UUID]u
 	}
 	return out, nil
 }
+
+// ListSenderIDPolicies returns every account's sender-ID policy with its owning customer, for the
+// sender-ID authorization snapshot (step-060).
+func (r *AccountRepo) ListSenderIDPolicies(ctx context.Context) ([]cp.AccountSenderIDPolicy, error) {
+	rows, err := r.q.ListAccountSenderIDPolicies(ctx)
+	if err != nil {
+		return nil, translate("list account sender-id policies", err)
+	}
+	out := make([]cp.AccountSenderIDPolicy, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, cp.AccountSenderIDPolicy{
+			AccountID:  row.ID,
+			CustomerID: row.CustomerID,
+			Policy:     cp.SenderIDPolicy(row.SenderIDPolicy),
+		})
+	}
+	return out, nil
+}

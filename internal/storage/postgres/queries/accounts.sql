@@ -59,3 +59,9 @@ UPDATE control_plane.smpp_accounts SET status = 'suspended' WHERE id = @id RETUR
 -- Lightweight account -> customer projection for the MO router's snapshot (step-045): resolving an
 -- inbound number or keyword to an account needs the owning customer for the routed envelope.
 SELECT id, customer_id FROM control_plane.smpp_accounts;
+
+-- name: ListAccountSenderIDPolicies :many
+-- account -> (customer, sender_id_policy) projection for the sender-ID authorization snapshot
+-- (step-060). The policy is per account; the registered sender IDs it is checked against are per
+-- customer.
+SELECT id, customer_id, sender_id_policy FROM control_plane.smpp_accounts;
