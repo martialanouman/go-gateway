@@ -46,3 +46,26 @@ func (r *RateLimitRepo) RateLimit(ctx context.Context, accountID uuid.UUID) (cp.
 		BurstCapacity: intptr(row.BurstCapacity),
 	}, true, nil
 }
+
+// List returns every configured throughput limit, for the router's cold-loaded rate-limit snapshot
+// (step-085). It reads all three entity kinds (smpp_account/connector/route); an empty result is a
+// valid "nothing configured" state, not an error.
+func (r *RateLimitRepo) List(ctx context.Context) ([]cp.RateLimitEntry, error) {
+	rows, err := r.q.ListRateLimits(ctx)
+	if err != nil {
+		return nil, translate("list rate limits", err)
+	}
+	out := make([]cp.RateLimitEntry, len(rows))
+	for i, row := range rows {
+		out[i] = cp.RateLimitEntry{
+			EntityType: row.EntityType,
+			EntityID:   row.EntityID,
+			Limit: cp.RateLimit{
+				MaxPerSec:     intptr(row.MaxPerSec),
+				MaxPerDay:     intptr(row.MaxPerDay),
+				BurstCapacity: intptr(row.BurstCapacity),
+			},
+		}
+	}
+	return out, nil
+}
