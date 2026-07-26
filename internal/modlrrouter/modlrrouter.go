@@ -183,6 +183,7 @@ func buildCDRRow(dlr pipeline.DLREvent, m dlrmap.Mapping, status clickhouse.Stat
 		Status:       status,
 		ErrorCode:    errorCodeFor(status),
 		SegmentCount: segmentCount(m.SegmentCount),
+		SegmentSeq:   segmentSeq(m.SegmentSeq),
 		Encoding:     clickhouse.EncodingOf(m.Encoding),
 		Billed:       false,
 	}
@@ -214,6 +215,18 @@ func latencyMs(delivered, submitted time.Time) *uint32 {
 
 // segmentCount narrows the stored segment count to the CDR's uint16, flooring at 1.
 func segmentCount(n int) uint16 {
+	if n < 1 {
+		return 1
+	}
+	if n > math.MaxUint16 {
+		return math.MaxUint16
+	}
+	return uint16(n) //nolint:gosec // bounded to [1, MaxUint16] above
+}
+
+// segmentSeq narrows the stored segment sequence to the CDR's uint16. A DLR row is a dispatched
+// segment's outcome, so it floors at 1 (never 0, which the read path reserves for message-level rows).
+func segmentSeq(n int) uint16 {
 	if n < 1 {
 		return 1
 	}
