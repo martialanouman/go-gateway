@@ -63,3 +63,15 @@ func IsValid(raw string) bool {
 	_, err := Normalize(raw)
 	return err == nil
 }
+
+// NormalizeAddr canonicalizes a sender/inbound address for keying, tolerating non-E.164 addresses.
+// A valid MSISDN yields its canonical digits-only form; a short code or alphanumeric address (which
+// does not parse as E.164) falls back to its trimmed self. Use this — not Normalize — when the value
+// may be a shortcode/alphanumeric (inbound-number and opt-out inbound_number-scope keys), so both
+// sides of a lookup agree on the same key.
+func NormalizeAddr(raw string) string {
+	if n, err := Normalize(raw); err == nil {
+		return n
+	}
+	return strings.TrimSpace(raw)
+}

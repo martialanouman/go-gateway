@@ -67,6 +67,13 @@ type allowAllSenderIDs struct{}
 
 func (allowAllSenderIDs) Authorize(context.Context, uuid.UUID, uuid.UUID, string) error { return nil }
 
+// allowAllOptOut passes every message; opt-out enforcement is covered in the pipeline/optout tests.
+type allowAllOptOut struct{}
+
+func (allowAllOptOut) IsOptedOut(context.Context, uuid.UUID, uuid.UUID, string, string) (bool, error) {
+	return false, nil
+}
+
 func newRouter(t *testing.T, resolver pipeline.Resolver, prod router.Producer, cdr router.CDRWriter, cons router.Consumer) *router.Router {
 	t.Helper()
 	rec := otelrec.New(t)
@@ -74,7 +81,7 @@ func newRouter(t *testing.T, resolver pipeline.Resolver, prod router.Producer, c
 	return router.New(router.Deps{
 		Consumer: cons,
 		Producer: prod,
-		Pipeline: pipeline.New(tracer, resolver, allowAllSenderIDs{}),
+		Pipeline: pipeline.New(tracer, resolver, allowAllSenderIDs{}, allowAllOptOut{}),
 		CDR:      cdr,
 		Tracer:   tracer,
 	})

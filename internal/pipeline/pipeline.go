@@ -34,6 +34,17 @@ type SenderIDAuthorizer interface {
 	Authorize(ctx context.Context, accountID, customerID uuid.UUID, from string) error
 }
 
+// OptOutChecker reports whether an MT's destination is suppressed (opted out) in any scope applicable
+// to the message — platform, customer, account, or the sending inbound number (spec §6.20). It is
+// implemented over an immutable Bloom snapshot with exact confirmation (internal/pipeline/optout);
+// the interface lives here, consumer-side. dest is the normalized destination. The (accountID,
+// customerID) order matches SenderIDAuthorizer.Authorize so the two compliance stages read alike. A
+// non-nil error is a transient fault (the exact confirmation store) the caller must not treat as
+// "not suppressed".
+type OptOutChecker interface {
+	IsOptedOut(ctx context.Context, accountID, customerID uuid.UUID, from, dest string) (bool, error)
+}
+
 // Pipeline runs the ordered MT stages the router applies to every message (spec §6.1). The order is
 // frozen: a routing short-cut may skip route resolution, never a compliance stage. It implements
 // E.164 normalization, sender-ID authorization (M5) and declarative route resolution; the remaining
@@ -42,13 +53,14 @@ type Pipeline struct {
 	tracer    trace.Tracer
 	resolver  Resolver
 	senderIDs SenderIDAuthorizer
+	optOut    OptOutChecker
 }
 
 // New builds a Pipeline. Destinations are normalized to their canonical digits-only form; the
 // public contract carries a full country code (the "+" being optional), so no default region is
 // needed. See internal/platform/e164.
-func New(tracer trace.Tracer, resolver Resolver, senderIDs SenderIDAuthorizer) *Pipeline {
-	return &Pipeline{tracer: tracer, resolver: resolver, senderIDs: senderIDs}
+func New(tracer trace.Tracer, resolver Resolver, senderIDs SenderIDAuthorizer, optOut OptOutChecker) *Pipeline {
+	return &Pipeline{tracer: tracer, resolver: resolver, senderIDs: senderIDs, optOut: optOut}
 }
 
 // Process runs the pipeline on an inbound message and returns the routed message. On a rejection it
@@ -92,8 +104,22 @@ func (p *Pipeline) Process(ctx context.Context, in InboundMT) (RoutedMT, error) 
 		return RoutedMT{}, err
 	}
 
-	// 3. STUB M5: opt-out / suppression — pass-through until M5. See plan §8.
-	p.stubStage(ctx, "pipeline.opt_out")
+	// 3. Opt-out / suppression (§6.20). A frozen compliance stage, never short-circuited by an exact
+	// route (invariant b). Blocks if the destination is suppressed in ANY applicable scope. The span
+	// carries only the rejection code, never the body (invariant a).
+	if err := p.stage(ctx, "pipeline.opt_out", func(ctx context.Context) error {
+		optedOut, err := p.optOut.IsOptedOut(ctx, in.AccountID, in.CustomerID, in.From, out.To)
+		if err != nil {
+			return err
+		}
+		if optedOut {
+			return errs.ErrRecipientOptedOut
+		}
+		return nil
+	}); err != nil {
+		return RoutedMT{}, err
+	}
+
 	// 4. STUB M6: anti-spam — pass-through until M6. See plan §8.
 	p.stubStage(ctx, "pipeline.anti_spam")
 

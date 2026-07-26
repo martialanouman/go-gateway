@@ -18,6 +18,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
+	"github.com/martialanouman/go-gateway/internal/pipeline/optout"
 	"github.com/martialanouman/go-gateway/internal/pipeline/senderid"
 	"github.com/martialanouman/go-gateway/internal/platform/supervisor"
 	"github.com/martialanouman/go-gateway/internal/router"
@@ -101,8 +102,17 @@ func run() error {
 		return fmt.Errorf("load sender-id snapshot: %w", err)
 	}
 
+	// The opt-out enforcer (§6.20) is a third immutable boot dependency: a per-scope Bloom over the
+	// suppressions (exact confirmation behind it) and an inbound-number index to resolve the sending
+	// number's scope. Same boot-retry discipline as the routes.
+	suppressions := postgres.NewSuppressionRepo(pool)
+	optOut, err := loadOptOutEnforcerWithRetry(ctx, suppressions, suppressions, postgres.NewInboundNumberRepo(pool), logger)
+	if err != nil {
+		return fmt.Errorf("load opt-out enforcer: %w", err)
+	}
+
 	tracer := observability.Tracer(nil, serviceName)
-	pl := pipeline.New(tracer, resolver, senderIDs)
+	pl := pipeline.New(tracer, resolver, senderIDs, optOut)
 	rtr := router.New(router.Deps{
 		Consumer: consumer,
 		Producer: producer,
@@ -143,37 +153,41 @@ func run() error {
 // the router cannot route without routes — so retrying (rather than exiting on the first error)
 // keeps a (re)starting pod from being bricked by a transient Postgres outage.
 func loadSnapshotWithRetry(ctx context.Context, lister routing.RouteLister, logger *slog.Logger) (*routing.SnapshotResolver, error) {
-	const (
-		initialBackoff = 500 * time.Millisecond
-		maxBackoff     = 30 * time.Second
-	)
-
-	backoff := initialBackoff
-	for attempt := 1; ; attempt++ {
-		resolver, err := routing.LoadSnapshot(ctx, lister)
-		if err == nil {
-			return resolver, nil
-		}
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		logger.WarnContext(ctx, "route snapshot load failed, retrying",
-			"attempt", attempt, "backoff", backoff.String(), "err", err)
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(backoff):
-		}
-		if backoff *= 2; backoff > maxBackoff {
-			backoff = maxBackoff
-		}
-	}
+	return loadWithRetry(ctx, logger, "route snapshot", func(ctx context.Context) (*routing.SnapshotResolver, error) {
+		return routing.LoadSnapshot(ctx, lister)
+	})
 }
 
 // loadSenderIDSnapshotWithRetry loads the sender-ID authorization snapshot, retrying transient
 // failures with capped exponential backoff until it succeeds or ctx is cancelled — the same boot
 // discipline as the route snapshot (Postgres is a hard boot dependency).
 func loadSenderIDSnapshotWithRetry(ctx context.Context, policies senderid.PolicyLister, ids senderid.ActiveSenderIDLister, logger *slog.Logger) (*senderid.Authorizer, error) {
+	return loadWithRetry(ctx, logger, "sender-id snapshot", func(ctx context.Context) (*senderid.Authorizer, error) {
+		return senderid.LoadSnapshot(ctx, policies, ids)
+	})
+}
+
+// loadOptOutEnforcerWithRetry loads the opt-out Bloom snapshot and the inbound-number index and
+// composes the enforcer, with the same boot-retry discipline.
+func loadOptOutEnforcerWithRetry(ctx context.Context, suppressions optout.SuppressionLister, exact optout.ExactChecker, inbound optout.InboundNumberLister, logger *slog.Logger) (*optout.Enforcer, error) {
+	return loadWithRetry(ctx, logger, "opt-out enforcer", func(ctx context.Context) (*optout.Enforcer, error) {
+		snap, err := optout.LoadSnapshot(ctx, suppressions)
+		if err != nil {
+			return nil, err
+		}
+		index, err := optout.LoadInboundNumberIndex(ctx, inbound)
+		if err != nil {
+			return nil, err
+		}
+		return optout.NewEnforcer(optout.NewGuard(snap, exact), index), nil
+	})
+}
+
+// loadWithRetry loads an immutable boot snapshot, retrying transient failures with capped exponential
+// backoff until it succeeds or ctx is cancelled. Postgres is a hard boot dependency, so retrying
+// (rather than exiting on the first error) keeps a (re)starting pod from being bricked by a transient
+// Postgres outage.
+func loadWithRetry[T any](ctx context.Context, logger *slog.Logger, what string, load func(context.Context) (T, error)) (T, error) {
 	const (
 		initialBackoff = 500 * time.Millisecond
 		maxBackoff     = 30 * time.Second
@@ -181,18 +195,20 @@ func loadSenderIDSnapshotWithRetry(ctx context.Context, policies senderid.Policy
 
 	backoff := initialBackoff
 	for attempt := 1; ; attempt++ {
-		authorizer, err := senderid.LoadSnapshot(ctx, policies, ids)
+		v, err := load(ctx)
 		if err == nil {
-			return authorizer, nil
+			return v, nil
 		}
 		if ctx.Err() != nil {
-			return nil, ctx.Err()
+			var zero T
+			return zero, ctx.Err()
 		}
-		logger.WarnContext(ctx, "sender-id snapshot load failed, retrying",
+		logger.WarnContext(ctx, what+" load failed, retrying",
 			"attempt", attempt, "backoff", backoff.String(), "err", err)
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			var zero T
+			return zero, ctx.Err()
 		case <-time.After(backoff):
 		}
 		if backoff *= 2; backoff > maxBackoff {

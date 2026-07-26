@@ -2,6 +2,7 @@ package pipeline_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -29,6 +30,28 @@ type stubAuthorizer struct{ err error }
 
 func (s stubAuthorizer) Authorize(context.Context, uuid.UUID, uuid.UUID, string) error { return s.err }
 
+// stubOptOut answers the opt-out check with fixed values. The zero value passes every message.
+type stubOptOut struct {
+	optedOut bool
+	err      error
+}
+
+func (s stubOptOut) IsOptedOut(context.Context, uuid.UUID, uuid.UUID, string, string) (bool, error) {
+	return s.optedOut, s.err
+}
+
+// capturingOptOut records the arguments it was called with, so a test can assert the pipeline
+// forwards them in the right positions (accountID vs customerID must not be swapped).
+type capturingOptOut struct {
+	accountID, customerID uuid.UUID
+	from, dest            string
+}
+
+func (c *capturingOptOut) IsOptedOut(_ context.Context, accountID, customerID uuid.UUID, from, dest string) (bool, error) {
+	c.accountID, c.customerID, c.from, c.dest = accountID, customerID, from, dest
+	return false, nil
+}
+
 // allStages is the frozen ordered set of spans the pipeline must emit, STUBs included (plan §6).
 var allStages = []string{
 	"pipeline.e164",
@@ -53,7 +76,7 @@ func TestPipelineHappyPathEmitsEveryStageSpan(t *testing.T) {
 	rec := otelrec.New(t)
 	tracer := observability.Tracer(rec.Provider(), "router")
 	connector := uuid.New()
-	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: connector}}, stubAuthorizer{})
+	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: connector}}, stubAuthorizer{}, stubOptOut{})
 
 	out, err := p.Process(context.Background(), inbound("+2250700000000"))
 	if err != nil {
@@ -84,7 +107,7 @@ func TestPipelineHappyPathEmitsEveryStageSpan(t *testing.T) {
 func TestPipelineRejectsInvalidDestination(t *testing.T) {
 	rec := otelrec.New(t)
 	tracer := observability.Tracer(rec.Provider(), "router")
-	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}}, stubAuthorizer{})
+	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}}, stubAuthorizer{}, stubOptOut{})
 
 	_, err := p.Process(context.Background(), inbound("not-a-number"))
 	if code, _ := errs.CodeOf(err); code != errs.ErrInvalidDestination {
@@ -105,7 +128,7 @@ func TestPipelineRejectsUnauthorizedSenderID(t *testing.T) {
 	rec := otelrec.New(t)
 	tracer := observability.Tracer(rec.Provider(), "router")
 	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}},
-		stubAuthorizer{err: errs.ErrSenderIDNotAuthorized})
+		stubAuthorizer{err: errs.ErrSenderIDNotAuthorized}, stubOptOut{})
 
 	_, err := p.Process(context.Background(), inbound("+2250700000000"))
 	if code, _ := errs.CodeOf(err); code != errs.ErrSenderIDNotAuthorized {
@@ -120,10 +143,77 @@ func TestPipelineRejectsUnauthorizedSenderID(t *testing.T) {
 	rec.AssertNoBody(t, "topsecretbody")
 }
 
+// TestPipelineRejectsOptedOutRecipient: the opt-out stage blocks a suppressed destination with
+// recipient_opted_out, after sender-ID but before route resolution, and never leaks the body.
+func TestPipelineRejectsOptedOutRecipient(t *testing.T) {
+	rec := otelrec.New(t)
+	tracer := observability.Tracer(rec.Provider(), "router")
+	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}},
+		stubAuthorizer{}, stubOptOut{optedOut: true})
+
+	_, err := p.Process(context.Background(), inbound("+2250700000000"))
+	if code, _ := errs.CodeOf(err); code != errs.ErrRecipientOptedOut {
+		t.Fatalf("code: got %q want recipient_opted_out", code)
+	}
+	if !rec.Recorded("pipeline.opt_out") {
+		t.Error("opt_out span should have been emitted")
+	}
+	if rec.Recorded("pipeline.route") {
+		t.Error("route span must NOT be emitted after an opt-out rejection (frozen order, invariant b)")
+	}
+	rec.AssertNoBody(t, "topsecretbody")
+}
+
+// TestPipelineOptOutTransientErrorIsNotACode: a store fault in the opt-out check surfaces as a
+// non-code error (the router retries), never a rejection code — a message must not be dropped as
+// opted-out because the database blinked.
+func TestPipelineOptOutTransientErrorIsNotACode(t *testing.T) {
+	rec := otelrec.New(t)
+	tracer := observability.Tracer(rec.Provider(), "router")
+	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}},
+		stubAuthorizer{}, stubOptOut{err: errors.New("suppressions store down")})
+
+	_, err := p.Process(context.Background(), inbound("+2250700000000"))
+	if err == nil {
+		t.Fatal("expected an error from the opt-out store fault")
+	}
+	if code, ok := errs.CodeOf(err); ok {
+		t.Fatalf("transient fault must not carry a rejection code, got %q", code)
+	}
+}
+
+// TestPipelineForwardsOptOutIdentifiers locks the call-site wiring: the pipeline must pass the
+// account id and customer id to the opt-out check in the positions its interface declares, and the
+// NORMALIZED destination. A swap would check the customer scope under the account's id — a silent
+// regulatory false negative.
+func TestPipelineForwardsOptOutIdentifiers(t *testing.T) {
+	rec := otelrec.New(t)
+	tracer := observability.Tracer(rec.Provider(), "router")
+	spy := &capturingOptOut{}
+	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}}, stubAuthorizer{}, spy)
+
+	in := inbound("+2250700000000")
+	if _, err := p.Process(context.Background(), in); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if spy.accountID != in.AccountID {
+		t.Errorf("accountID forwarded = %s, want %s", spy.accountID, in.AccountID)
+	}
+	if spy.customerID != in.CustomerID {
+		t.Errorf("customerID forwarded = %s, want %s", spy.customerID, in.CustomerID)
+	}
+	if spy.from != in.From {
+		t.Errorf("from forwarded = %q, want %q", spy.from, in.From)
+	}
+	if spy.dest != "2250700000000" {
+		t.Errorf("dest forwarded = %q, want the normalized destination", spy.dest)
+	}
+}
+
 func TestPipelineRejectsNoRoute(t *testing.T) {
 	rec := otelrec.New(t)
 	tracer := observability.Tracer(rec.Provider(), "router")
-	p := pipeline.New(tracer, stubResolver{err: errs.ErrNoRoute}, stubAuthorizer{})
+	p := pipeline.New(tracer, stubResolver{err: errs.ErrNoRoute}, stubAuthorizer{}, stubOptOut{})
 
 	_, err := p.Process(context.Background(), inbound("+2250700000000"))
 	if code, _ := errs.CodeOf(err); code != errs.ErrNoRoute {

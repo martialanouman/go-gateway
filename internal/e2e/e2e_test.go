@@ -25,6 +25,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/ingest"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
+	"github.com/martialanouman/go-gateway/internal/pipeline/optout"
 	"github.com/martialanouman/go-gateway/internal/pipeline/senderid"
 	"github.com/martialanouman/go-gateway/internal/restapi"
 	"github.com/martialanouman/go-gateway/internal/router"
@@ -130,11 +131,21 @@ func buildStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg config
 	if err != nil {
 		t.Fatalf("load sender-id snapshot: %v", err)
 	}
+	suppressions := postgres.NewSuppressionRepo(pool)
+	optSnap, err := optout.LoadSnapshot(context.Background(), suppressions)
+	if err != nil {
+		t.Fatalf("load opt-out snapshot: %v", err)
+	}
+	inboundIdx, err := optout.LoadInboundNumberIndex(context.Background(), postgres.NewInboundNumberRepo(pool))
+	if err != nil {
+		t.Fatalf("load inbound-number index: %v", err)
+	}
+	enforcer := optout.NewEnforcer(optout.NewGuard(optSnap, suppressions), inboundIdx)
 	routerTracer := observability.Tracer(rec.Provider(), "router")
 	rtr := router.New(router.Deps{
 		Consumer: routerConsumer,
 		Producer: producer,
-		Pipeline: pipeline.New(routerTracer, resolver, authorizer),
+		Pipeline: pipeline.New(routerTracer, resolver, authorizer, enforcer),
 		CDR:      cdrWriter,
 		Tracer:   routerTracer,
 	})
