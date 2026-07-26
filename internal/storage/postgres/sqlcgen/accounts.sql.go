@@ -140,6 +140,39 @@ func (q *Queries) ListAccountCustomers(ctx context.Context) ([]ListAccountCustom
 	return items, nil
 }
 
+const listAccountSenderIDPolicies = `-- name: ListAccountSenderIDPolicies :many
+SELECT id, customer_id, sender_id_policy FROM control_plane.smpp_accounts
+`
+
+type ListAccountSenderIDPoliciesRow struct {
+	ID             uuid.UUID
+	CustomerID     uuid.UUID
+	SenderIDPolicy string
+}
+
+// account -> (customer, sender_id_policy) projection for the sender-ID authorization snapshot
+// (step-060). The policy is per account; the registered sender IDs it is checked against are per
+// customer.
+func (q *Queries) ListAccountSenderIDPolicies(ctx context.Context) ([]ListAccountSenderIDPoliciesRow, error) {
+	rows, err := q.db.Query(ctx, listAccountSenderIDPolicies)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAccountSenderIDPoliciesRow{}
+	for rows.Next() {
+		var i ListAccountSenderIDPoliciesRow
+		if err := rows.Scan(&i.ID, &i.CustomerID, &i.SenderIDPolicy); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAccounts = `-- name: ListAccounts :many
 SELECT a.id, a.customer_id, a.name, a.status, a.smpp_enabled, a.rest_enabled, a.sender_id_policy, a.query_sm_enabled, a.cancel_sm_enabled, a.allowed_bind_types, a.max_sessions, a.created_at, a.updated_at FROM control_plane.smpp_accounts a
 WHERE ($1::uuid IS NULL OR a.customer_id = $1)

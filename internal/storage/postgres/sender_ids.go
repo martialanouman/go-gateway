@@ -49,6 +49,21 @@ func (r *SenderIDRepo) ListByCustomer(ctx context.Context, customerID uuid.UUID)
 	return out, nil
 }
 
+// ListActive returns every active sender ID across all customers, for the sender-ID authorization
+// snapshot (step-060). A pending or disabled registration is excluded — it must not authorize a
+// source address.
+func (r *SenderIDRepo) ListActive(ctx context.Context) ([]cp.SenderID, error) {
+	rows, err := r.q.ListActiveSenderIDs(ctx)
+	if err != nil {
+		return nil, translate("list active sender ids", err)
+	}
+	out := make([]cp.SenderID, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, senderIDFromRow(row))
+	}
+	return out, nil
+}
+
 // Update changes a sender ID's status, scoped to its customer. A missing row is ErrNotFound.
 func (r *SenderIDRepo) Update(ctx context.Context, customerID, senderID uuid.UUID, p cp.SenderIDPatch) (cp.SenderID, error) {
 	row, err := r.q.UpdateSenderID(ctx, sqlcgen.UpdateSenderIDParams{

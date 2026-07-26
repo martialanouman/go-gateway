@@ -18,6 +18,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
+	"github.com/martialanouman/go-gateway/internal/pipeline/senderid"
 	"github.com/martialanouman/go-gateway/internal/platform/supervisor"
 	"github.com/martialanouman/go-gateway/internal/router"
 	"github.com/martialanouman/go-gateway/internal/routing"
@@ -92,8 +93,16 @@ func run() error {
 		return fmt.Errorf("load route snapshot: %w", err)
 	}
 
+	// The sender-ID authorization snapshot (§6.19) is a second immutable boot dependency, loaded with
+	// the same retry discipline as the routes: the account policies and the customers' active sender
+	// IDs, indexed once for lock-free per-message checks.
+	senderIDs, err := loadSenderIDSnapshotWithRetry(ctx, postgres.NewAccountRepo(pool), postgres.NewSenderIDRepo(pool), logger)
+	if err != nil {
+		return fmt.Errorf("load sender-id snapshot: %w", err)
+	}
+
 	tracer := observability.Tracer(nil, serviceName)
-	pl := pipeline.New(tracer, resolver)
+	pl := pipeline.New(tracer, resolver, senderIDs)
 	rtr := router.New(router.Deps{
 		Consumer: consumer,
 		Producer: producer,
@@ -149,6 +158,37 @@ func loadSnapshotWithRetry(ctx context.Context, lister routing.RouteLister, logg
 			return nil, ctx.Err()
 		}
 		logger.WarnContext(ctx, "route snapshot load failed, retrying",
+			"attempt", attempt, "backoff", backoff.String(), "err", err)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(backoff):
+		}
+		if backoff *= 2; backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+	}
+}
+
+// loadSenderIDSnapshotWithRetry loads the sender-ID authorization snapshot, retrying transient
+// failures with capped exponential backoff until it succeeds or ctx is cancelled — the same boot
+// discipline as the route snapshot (Postgres is a hard boot dependency).
+func loadSenderIDSnapshotWithRetry(ctx context.Context, policies senderid.PolicyLister, ids senderid.ActiveSenderIDLister, logger *slog.Logger) (*senderid.Authorizer, error) {
+	const (
+		initialBackoff = 500 * time.Millisecond
+		maxBackoff     = 30 * time.Second
+	)
+
+	backoff := initialBackoff
+	for attempt := 1; ; attempt++ {
+		authorizer, err := senderid.LoadSnapshot(ctx, policies, ids)
+		if err == nil {
+			return authorizer, nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		logger.WarnContext(ctx, "sender-id snapshot load failed, retrying",
 			"attempt", attempt, "backoff", backoff.String(), "err", err)
 		select {
 		case <-ctx.Done():

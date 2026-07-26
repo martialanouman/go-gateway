@@ -25,6 +25,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/ingest"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
+	"github.com/martialanouman/go-gateway/internal/pipeline/senderid"
 	"github.com/martialanouman/go-gateway/internal/restapi"
 	"github.com/martialanouman/go-gateway/internal/router"
 	"github.com/martialanouman/go-gateway/internal/routing"
@@ -125,11 +126,15 @@ func buildStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg config
 	if err != nil {
 		t.Fatalf("load route snapshot: %v", err)
 	}
+	authorizer, err := senderid.LoadSnapshot(context.Background(), postgres.NewAccountRepo(pool), postgres.NewSenderIDRepo(pool))
+	if err != nil {
+		t.Fatalf("load sender-id snapshot: %v", err)
+	}
 	routerTracer := observability.Tracer(rec.Provider(), "router")
 	rtr := router.New(router.Deps{
 		Consumer: routerConsumer,
 		Producer: producer,
-		Pipeline: pipeline.New(routerTracer, resolver),
+		Pipeline: pipeline.New(routerTracer, resolver, authorizer),
 		CDR:      cdrWriter,
 		Tracer:   routerTracer,
 	})
@@ -190,6 +195,18 @@ func seedControlPlane(t *testing.T, pool *pgxpool.Pool) string {
 	account, err := accounts.Create(ctx, cp.NewAccount{CustomerID: customer.ID, Name: "e2e-app"})
 	if err != nil {
 		t.Fatalf("create account: %v", err)
+	}
+
+	// Register and activate the sender ID the client submits from ("ACME"), so the account's default
+	// strict sender-ID policy (§6.19) authorizes the MT rather than rejecting it.
+	senderIDs := postgres.NewSenderIDRepo(pool)
+	sid, err := senderIDs.Create(ctx, cp.NewSenderID{CustomerID: customer.ID, Address: "ACME"})
+	if err != nil {
+		t.Fatalf("create sender id: %v", err)
+	}
+	activeStatus := cp.SenderIDActive
+	if _, err := senderIDs.Update(ctx, customer.ID, sid.ID, cp.SenderIDPatch{Status: &activeStatus}); err != nil {
+		t.Fatalf("activate sender id: %v", err)
 	}
 
 	key, hash, err := credential.GenerateAPIKey()
