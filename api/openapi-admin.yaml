@@ -871,6 +871,9 @@ paths:
         - { $ref: '#/components/parameters/Limit' }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SuppressionPage' } } } }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
     post:
       tags: [Suppression]
       summary: Add a suppression
@@ -878,15 +881,21 @@ paths:
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/SuppressionCreate' } } } }
       responses:
         '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Suppression' } } } }
+        '422': { $ref: '#/components/responses/ValidationError' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /admin/suppressions/import:
     post:
       tags: [Suppression]
       summary: Bulk import suppressions (async)
       operationId: import-suppressions
-      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { scope: { $ref: '#/components/schemas/SuppressionScope' }, scope_id: { type: [string, "null"], format: uuid }, source: { $ref: '#/components/schemas/SuppressionSource' }, msisdns: { type: array, items: { type: string } } }, required: [scope, msisdns] } } } }
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { scope: { $ref: '#/components/schemas/SuppressionScope' }, scope_id: { type: [string, "null"], format: uuid }, source: { $ref: '#/components/schemas/SuppressionSource' }, msisdns: { type: array, items: { type: string }, maxItems: 10000 } }, required: [scope, msisdns] } } } }
       responses:
         '202': { description: Accepted., content: { application/json: { schema: { $ref: '#/components/schemas/AsyncJob' } } } }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /admin/suppressions/check:
     post:
       tags: [Suppression]
@@ -895,6 +904,9 @@ paths:
       requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { msisdn: { type: string }, sender_addr: { type: [string, "null"] }, account_id: { type: [string, "null"], format: uuid } }, required: [msisdn] } } } }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SuppressionCheckResult' } } } }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /admin/suppressions/{id}:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
     delete:
@@ -904,6 +916,8 @@ paths:
       responses:
         '204': { description: Removed. }
         '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
   /admin/opt-out-keywords:
     get:
@@ -912,6 +926,8 @@ paths:
       operationId: list-opt-out-keywords
       responses:
         '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/OptOutKeyword' } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
     post:
       tags: [Opt-out Keywords]
       summary: Create an opt-out keyword
@@ -919,6 +935,10 @@ paths:
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/OptOutKeywordCreate' } } } }
       responses:
         '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/OptOutKeyword' } } } }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /admin/opt-out-keywords/{id}:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
     patch:
@@ -929,6 +949,9 @@ paths:
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/OptOutKeyword' } } } }
         '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
     delete:
       tags: [Opt-out Keywords]
       summary: Delete an opt-out keyword
@@ -936,6 +959,8 @@ paths:
       responses:
         '204': { description: Deleted. }
         '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
   # ============================ INBOUND NUMBERS & KEYWORDS (§6.21) ============================
   /admin/inbound-numbers:

@@ -628,3 +628,128 @@ items:
           method: GET
           url: '{{baseUrl}}/admin/mo/unrouted?limit=50'
         docs: List mobile-originated messages that resolved to no account (scope admin:read).
+  - info:
+      name: Suppression
+      type: folder
+    items:
+      - info:
+          name: list-suppressions
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/suppressions?limit=50'
+        docs: List suppressions (scope admin:read).
+      - info:
+          name: create-suppression
+          type: http
+        http:
+          method: POST
+          url: '{{baseUrl}}/admin/suppressions'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "scope": "platform",
+                "msisdn": "33612345678",
+                "source": "admin"
+              }
+        docs: Add a suppression (scope admin:write).
+      - info:
+          name: import-suppressions
+          type: http
+        http:
+          method: POST
+          url: '{{baseUrl}}/admin/suppressions/import'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "scope": "platform",
+                "source": "import",
+                "msisdns": ["33612345678", "33698765432"]
+              }
+        docs: Bulk import suppressions, idempotent (scope admin:write).
+      - info:
+          name: check-suppression
+          type: http
+        http:
+          method: POST
+          url: '{{baseUrl}}/admin/suppressions/check'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "msisdn": "33612345678",
+                "sender_addr": "36000",
+                "account_id": "{{accountId}}"
+              }
+        docs: Would this recipient be blocked, and by which scope? (scope admin:read).
+      - info:
+          name: delete-suppression
+          type: http
+        http:
+          method: DELETE
+          url: '{{baseUrl}}/admin/suppressions/{{suppressionId}}'
+        docs: Un-suppress by id, audit-logged (scope admin:write).
+  - info:
+      name: Opt-out Keywords
+      type: folder
+    items:
+      - info:
+          name: list-opt-out-keywords
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/opt-out-keywords'
+        docs: List opt-out keywords (scope admin:read).
+      - info:
+          name: create-opt-out-keyword
+          type: http
+        http:
+          method: POST
+          url: '{{baseUrl}}/admin/opt-out-keywords'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "keyword": "STOP",
+                "action": "suppress",
+                "match_type": "exact",
+                "auto_reply_template": "You are unsubscribed."
+              }
+        docs: Create an opt-out keyword (scope admin:write).
+      - info:
+          name: update-opt-out-keyword
+          type: http
+        http:
+          method: PATCH
+          url: '{{baseUrl}}/admin/opt-out-keywords/{{optOutKeywordId}}'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "status": "disabled"
+              }
+        docs: Update an opt-out keyword (scope admin:write).
+      - info:
+          name: delete-opt-out-keyword
+          type: http
+        http:
+          method: DELETE
+          url: '{{baseUrl}}/admin/opt-out-keywords/{{optOutKeywordId}}'
+        docs: Delete an opt-out keyword (scope admin:write).

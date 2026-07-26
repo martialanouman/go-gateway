@@ -106,6 +106,8 @@ func run() error {
 		InboundNumbers:  postgres.NewInboundNumberRepo(pool),
 		InboundKeywords: postgres.NewInboundKeywordRepo(pool),
 		UnroutedMO:      postgres.NewUnroutedMORepo(pool),
+		Suppressions:    postgres.NewSuppressionRepo(pool),
+		OptOutKeywords:  postgres.NewOptOutKeywordRepo(pool),
 		Disconnector:    adminapi.NewGRPCDisconnector(registrypb.NewSessionRegistryClient(registryConn)),
 		Verifier:        verifier,
 		Logger:          logger,
