@@ -1,11 +1,16 @@
-// Package antispam is the real implementation behind the frozen pipeline.anti_spam stage (step-065).
-// It evaluates a message against the active anti-spam rules — content blacklists (precompiled regex,
-// matched in memory) and duplicates (a fingerprint recorded in Redis with a TTL) — and reports the
-// action to take: block, flag or throttle. Rules are compiled once at startup and resolved most
-// specific first (account, then customer, then global). Velocity and reputation land in step-066.
+// Package antispam is the real implementation behind the frozen pipeline.anti_spam stage. It
+// evaluates a message against the active anti-spam rules — content blacklists (precompiled regex,
+// matched in memory), duplicates (a fingerprint recorded in Redis with a TTL), velocity (sliding
+// window per source/account, atomic Lua) and reputation (a per-source score) — and reports the action
+// to take: block, flag or throttle. Rules are compiled once at startup and resolved most specific
+// first (account, then customer, then global).
 //
-// Invariant (a): the message body is read in memory only. It is never logged, never stored, and the
-// duplicate fingerprint is a one-way hash of (destination, body) — never the body itself.
+// Content rules are always enforced. The Redis-backed rules FAIL OPEN (§1.5, availability first): a
+// store fault flags the message rather than blocking it, and never errors, while the content rules
+// stay in force. This is the opposite of the rate-limit stage, which is fail-closed (M6).
+//
+// Invariant (a): the message body is read in memory only. It is never logged, never stored; the
+// duplicate fingerprint is a one-way hash of (scope, destination, body) — never the body itself.
 package antispam
 
 import (
@@ -21,6 +26,7 @@ import (
 	"github.com/google/uuid"
 
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
+	"github.com/martialanouman/go-gateway/internal/platform/e164"
 )
 
 // RuleLister loads the active anti-spam rules. *postgres.AntispamRuleRepo satisfies it.
@@ -28,11 +34,26 @@ type RuleLister interface {
 	ListActive(ctx context.Context) ([]cp.AntispamRule, error)
 }
 
-// DuplicateChecker records a message fingerprint and reports whether it was already present within
-// the window (an atomic SET NX EX). *RedisDuplicateChecker satisfies it.
-type DuplicateChecker interface {
+// StateStore is the shared Redis-backed anti-spam state: duplicate fingerprints, sliding-window
+// velocity counters, and reputation scores. *RedisState satisfies it. A nil store disables every
+// Redis-backed rule (content rules still apply).
+type StateStore interface {
 	Seen(ctx context.Context, fingerprint string, window time.Duration) (bool, error)
+	Hit(ctx context.Context, key string, window time.Duration) (int, error)
+	Reputation(ctx context.Context, source string) (score int, found bool, err error)
 }
+
+// Metric counts anti-spam events with bounded labels — never the body or a MSISDN (invariant a). A
+// nil metric defaults to a no-op.
+type Metric interface {
+	// FailOpen records that a Redis-backed check could not run and the message was let through
+	// (flagged) rather than blocked (§1.5: velocity anti-spam is fail-open).
+	FailOpen()
+}
+
+type noopMetric struct{}
+
+func (noopMetric) FailOpen() {}
 
 type contentRule struct {
 	action   cp.AntispamAction
@@ -44,21 +65,42 @@ type duplicateRule struct {
 	window time.Duration
 }
 
+// velocityRule counts events per source or per account in a sliding window; over max triggers action.
+type velocityRule struct {
+	action   cp.AntispamAction
+	max      int
+	window   time.Duration
+	bySource bool // key dimension: true = per source (From), false = per account
+}
+
+type reputationRule struct {
+	action   cp.AntispamAction
+	minScore int
+}
+
 // Engine evaluates a message against the compiled rules. It is immutable after New (safe for
-// concurrent reads); the duplicate check delegates to Redis.
+// concurrent reads); the Redis-backed checks (duplicate, velocity, reputation) delegate to the state
+// store and FAIL OPEN — a store fault flags the message rather than blocking it (§1.5).
 type Engine struct {
-	content map[string][]contentRule
-	dup     map[string]duplicateRule // most-specific duplicate rule per scope key
-	checker DuplicateChecker
-	logger  *slog.Logger
+	content    map[string][]contentRule
+	dup        map[string]duplicateRule  // most-specific duplicate rule per scope key
+	velocity   map[string]velocityRule   // most-specific velocity rule per scope key
+	reputation map[string]reputationRule // most-specific reputation rule per scope key
+	state      StateStore
+	metric     Metric
+	logger     *slog.Logger
 }
 
 // New compiles the active rules into an engine. A content rule with an invalid regex, or a rule with
-// an unparseable config, is dropped with a warning rather than failing the whole load — one bad
-// admin row must not disable anti-spam entirely. checker may be nil, which disables duplicate rules.
-func New(ctx context.Context, lister RuleLister, checker DuplicateChecker, logger *slog.Logger) (*Engine, error) {
+// an unparseable config, is dropped with a warning rather than failing the whole load — one bad admin
+// row must not disable anti-spam entirely. state may be nil, which disables every Redis-backed rule
+// (content rules still apply); a nil metric defaults to a no-op.
+func New(ctx context.Context, lister RuleLister, state StateStore, metric Metric, logger *slog.Logger) (*Engine, error) {
 	if logger == nil {
 		logger = slog.Default()
+	}
+	if metric == nil {
+		metric = noopMetric{}
 	}
 	rules, err := lister.ListActive(ctx)
 	if err != nil {
@@ -66,71 +108,171 @@ func New(ctx context.Context, lister RuleLister, checker DuplicateChecker, logge
 	}
 
 	e := &Engine{
-		content: make(map[string][]contentRule),
-		dup:     make(map[string]duplicateRule),
-		checker: checker,
-		logger:  logger,
+		content:    make(map[string][]contentRule),
+		dup:        make(map[string]duplicateRule),
+		velocity:   make(map[string]velocityRule),
+		reputation: make(map[string]reputationRule),
+		state:      state,
+		metric:     metric,
+		logger:     logger,
 	}
 	for _, r := range rules {
 		key := scopeKey(r.Scope, r.ScopeID)
 		switch r.RuleType {
 		case cp.AntispamContentBlacklist:
-			cr, ok := compileContent(logger, r)
-			if ok {
+			if cr, ok := compileContent(logger, r); ok {
 				e.content[key] = append(e.content[key], cr)
 			}
 		case cp.AntispamDuplicate:
-			dr, ok := compileDuplicate(logger, r)
-			if ok {
-				// Keep only the first (rules are ordered so this is deterministic); a single duplicate rule
-				// per scope avoids conflicting SET NX windows for the same fingerprint.
+			// One rule per scope key (rules are ordered, so the first is deterministic); a single check
+			// per scope avoids conflicting windows for the same fingerprint.
+			if dr, ok := compileDuplicate(logger, r); ok {
 				if _, exists := e.dup[key]; !exists {
 					e.dup[key] = dr
 				}
 			}
-		default:
-			// velocity / reputation are step-066.
+		case cp.AntispamVelocity:
+			if vr, ok := compileVelocity(logger, r); ok {
+				if _, exists := e.velocity[key]; !exists {
+					e.velocity[key] = vr
+				}
+			}
+		case cp.AntispamReputation:
+			if rr, ok := compileReputation(logger, r); ok {
+				if _, exists := e.reputation[key]; !exists {
+					e.reputation[key] = rr
+				}
+			}
 		}
 	}
 	return e, nil
 }
 
-// Evaluate returns the action to take for a message from (accountID, customerID) to dest with the
-// given body. It resolves the most-specific content rule that matches and the most-specific
-// applicable duplicate rule, and returns the most restrictive of the two actions (block > throttle >
-// flag). A Redis fault on the duplicate check is returned as an error for the caller to treat as
-// transient — the message is neither passed nor blocked on an infrastructure blip.
-func (e *Engine) Evaluate(ctx context.Context, accountID, customerID uuid.UUID, dest string, body []byte) (cp.AntispamAction, error) {
+// Evaluate returns the action to take for a message from the given sender (from) and (accountID,
+// customerID) to dest with the given body. Content rules (static, in memory) are always enforced. The
+// Redis-backed rules — duplicate, velocity, reputation — are evaluated most-specific first and FAIL
+// OPEN: a store fault does not block or error, it flags the message (§1.5, availability first) while
+// the content rules stay in force. The returned action is the most restrictive that applied. The
+// error return is retained for interface stability; it is currently always nil.
+func (e *Engine) Evaluate(ctx context.Context, accountID, customerID uuid.UUID, from, dest string, body []byte) (cp.AntispamAction, error) {
 	scopes := []string{scopeKey(cp.AntispamScopeAccount, &accountID), scopeKey(cp.AntispamScopeCustomer, &customerID), globalKey}
 
 	action := contentAction(e.content, scopes, body)
 
-	// A content block is already the most restrictive outcome — no duplicate check can change it, and
-	// skipping it avoids posting a fingerprint key for a message we reject anyway.
-	if action == cp.AntispamActionBlock || e.checker == nil {
+	// A content block is the most restrictive outcome — no Redis-backed rule can change it, and
+	// skipping them avoids side-effecting state (a fingerprint / velocity hit) for a rejected message.
+	if action == cp.AntispamActionBlock || e.state == nil {
 		return action, nil
 	}
 
-	// The most-specific applicable duplicate rule wins; check its fingerprint once (a single SET NX so
-	// two rules never fight over the same key). The fingerprint is namespaced by that rule's scope key,
-	// so an account/customer rule deduplicates only within its own tenant — a global rule shares the
-	// "global" namespace by design (platform-wide dedup).
+	// Key the velocity and reputation on the CANONICAL source, the same form the MO path records
+	// (e164.NormalizeAddr), so a sender's MT and MO traffic — and two spellings of one MSISDN — share
+	// one counter instead of splitting silently.
+	source := e164.NormalizeAddr(from)
+
+	failedOpen := false
+	fail := func() { failedOpen = true }
+
+	// Each Redis-backed rule can only raise the action; a block from any of them is terminal, so stop
+	// once reached to avoid side-effecting the remaining checks for an already-rejected message.
+	if action = moreRestrictive(action, e.evalDuplicate(ctx, scopes, dest, body, fail)); action != cp.AntispamActionBlock {
+		if action = moreRestrictive(action, e.evalVelocity(ctx, scopes, source, accountID, fail)); action != cp.AntispamActionBlock {
+			action = moreRestrictive(action, e.evalReputation(ctx, scopes, source, fail))
+		}
+	}
+
+	// Fail open: a Redis fault let a Redis-backed rule through. Flag the message (a metric and, if no
+	// stricter action applied, the flag action) so the pass is observable — never block on it.
+	if failedOpen {
+		e.metric.FailOpen()
+		action = moreRestrictive(action, cp.AntispamActionFlag)
+	}
+	return action, nil
+}
+
+// evalDuplicate returns the action of the most-specific applicable duplicate rule when the message is
+// a duplicate, or "". The fingerprint is namespaced by the rule's scope key, so a tenant-scoped rule
+// deduplicates only within its own tenant. On a store fault it calls fail and returns "".
+func (e *Engine) evalDuplicate(ctx context.Context, scopes []string, dest string, body []byte, fail func()) cp.AntispamAction {
 	for _, sk := range scopes {
 		dr, ok := e.dup[sk]
 		if !ok {
 			continue
 		}
-		seen, err := e.checker.Seen(ctx, fingerprint(sk, dest, body), dr.window)
+		seen, err := e.state.Seen(ctx, fingerprint(sk, dest, body), dr.window)
 		if err != nil {
-			return "", fmt.Errorf("antispam: duplicate check: %w", err)
+			e.logger.WarnContext(ctx, "antispam: duplicate check failed open", "err", err)
+			fail()
+			return ""
 		}
 		if seen {
-			action = moreRestrictive(action, dr.action)
+			return dr.action
 		}
-		break
+		return ""
 	}
+	return ""
+}
 
-	return action, nil
+// evalVelocity returns the action of the most-specific applicable velocity rule when the source (or
+// account) exceeds its sliding-window limit, or "". The counter key is namespaced by the rule's scope
+// so tenants are isolated; a global "by source" rule shares the key inbound MO counting writes to.
+func (e *Engine) evalVelocity(ctx context.Context, scopes []string, from string, accountID uuid.UUID, fail func()) cp.AntispamAction {
+	for _, sk := range scopes {
+		vr, ok := e.velocity[sk]
+		if !ok {
+			continue
+		}
+		n, err := e.state.Hit(ctx, velocityKey(sk, vr.bySource, from, accountID), vr.window)
+		if err != nil {
+			e.logger.WarnContext(ctx, "antispam: velocity check failed open", "err", err)
+			fail()
+			return ""
+		}
+		if n > vr.max {
+			return vr.action
+		}
+		return ""
+	}
+	return ""
+}
+
+// evalReputation returns the action of the most-specific applicable reputation rule when the source's
+// score is below the rule's threshold, or "". An unscored source is neutral (passes).
+func (e *Engine) evalReputation(ctx context.Context, scopes []string, from string, fail func()) cp.AntispamAction {
+	for _, sk := range scopes {
+		rr, ok := e.reputation[sk]
+		if !ok {
+			continue
+		}
+		score, found, err := e.state.Reputation(ctx, from)
+		if err != nil {
+			e.logger.WarnContext(ctx, "antispam: reputation check failed open", "err", err)
+			fail()
+			return ""
+		}
+		if found && score < rr.minScore {
+			return rr.action
+		}
+		return ""
+	}
+	return ""
+}
+
+// velocityKey namespaces a velocity counter by the rule's scope and its counting dimension. A global
+// "by source" rule keys on "global:source:<from>", the exact key inbound MO counting writes to
+// (RecordMOSource), so a sender's MT and MO traffic share one window.
+func velocityKey(scopeKey string, bySource bool, from string, accountID uuid.UUID) string {
+	if bySource {
+		return scopeKey + ":source:" + from
+	}
+	return scopeKey + ":account:" + accountID.String()
+}
+
+// MOSourceVelocityKey is the counter key inbound MO records into: a source's global velocity, so a
+// global "by source" MT rule counts the sender's MT and MO traffic together. The source is
+// canonicalized (e164.NormalizeAddr) to match the form the MT path keys on.
+func MOSourceVelocityKey(from string) string {
+	return globalKey + ":source:" + e164.NormalizeAddr(from)
 }
 
 // contentAction returns the action for the body: the most-specific scope that has any matching
@@ -246,4 +388,46 @@ func compileDuplicate(logger *slog.Logger, r cp.AntispamRule) (duplicateRule, bo
 		return duplicateRule{}, false
 	}
 	return duplicateRule{action: r.Action, window: time.Duration(cfg.WindowSeconds) * time.Second}, true
+}
+
+type velocityConfig struct {
+	Max           int    `json:"max"`
+	WindowSeconds int    `json:"window_seconds"`
+	By            string `json:"by"` // "source" (default) or "account"
+}
+
+func compileVelocity(logger *slog.Logger, r cp.AntispamRule) (velocityRule, bool) {
+	var cfg velocityConfig
+	if err := json.Unmarshal(r.ConfigJSON, &cfg); err != nil {
+		logger.Warn("antispam: dropping velocity rule with bad config", "rule_id", r.ID, "err", err)
+		return velocityRule{}, false
+	}
+	if cfg.Max <= 0 || cfg.WindowSeconds <= 0 {
+		logger.Warn("antispam: dropping velocity rule with non-positive max/window", "rule_id", r.ID)
+		return velocityRule{}, false
+	}
+	// A window longer than the record TTL cannot be counted reliably (older events are already gone).
+	if time.Duration(cfg.WindowSeconds)*time.Second > recordMaxTTL {
+		logger.Warn("antispam: dropping velocity rule whose window exceeds the max retention", "rule_id", r.ID)
+		return velocityRule{}, false
+	}
+	return velocityRule{
+		action:   r.Action,
+		max:      cfg.Max,
+		window:   time.Duration(cfg.WindowSeconds) * time.Second,
+		bySource: cfg.By != "account", // default and any non-"account" value means per source
+	}, true
+}
+
+type reputationConfig struct {
+	MinScore int `json:"min_score"`
+}
+
+func compileReputation(logger *slog.Logger, r cp.AntispamRule) (reputationRule, bool) {
+	var cfg reputationConfig
+	if err := json.Unmarshal(r.ConfigJSON, &cfg); err != nil {
+		logger.Warn("antispam: dropping reputation rule with bad config", "rule_id", r.ID, "err", err)
+		return reputationRule{}, false
+	}
+	return reputationRule{action: r.Action, minScore: cfg.MinScore}, true
 }

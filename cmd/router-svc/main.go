@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/martialanouman/go-gateway/internal/config"
@@ -125,7 +126,13 @@ func run() error {
 		return fmt.Errorf("connect redis: %w", err)
 	}
 	defer func() { _ = rdb.Close() }()
-	spam, err := loadAntispamWithRetry(ctx, postgres.NewAntispamRuleRepo(pool), antispam.NewRedisDuplicateChecker(rdb), logger)
+	// anti_spam_fail_open_total: bounded (no labels) — counts messages let through because a
+	// Redis-backed anti-spam check could not run (§1.5 fail-open). Never a MSISDN or body.
+	failOpenTotal := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "anti_spam_fail_open_total",
+		Help: "Messages passed (flagged) because a Redis-backed anti-spam check failed open.",
+	})
+	spam, err := loadAntispamWithRetry(ctx, postgres.NewAntispamRuleRepo(pool), antispam.NewRedisState(rdb), failOpenMetric{c: failOpenTotal}, logger)
 	if err != nil {
 		return fmt.Errorf("load anti-spam engine: %w", err)
 	}
@@ -151,6 +158,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("init ops server: %w", err)
 	}
+	ops.Registry().MustRegister(failOpenTotal)
 
 	logger.InfoContext(ctx, "starting", "config", cfg)
 
@@ -202,13 +210,18 @@ func loadOptOutEnforcerWithRetry(ctx context.Context, suppressions optout.Suppre
 	})
 }
 
-// loadAntispamWithRetry loads the anti-spam engine (compiled rule snapshot + Redis duplicate check),
+// loadAntispamWithRetry loads the anti-spam engine (compiled rule snapshot + Redis shared state),
 // with the same boot-retry discipline as the other snapshots.
-func loadAntispamWithRetry(ctx context.Context, lister antispam.RuleLister, checker antispam.DuplicateChecker, logger *slog.Logger) (*antispam.Engine, error) {
+func loadAntispamWithRetry(ctx context.Context, lister antispam.RuleLister, state antispam.StateStore, metric antispam.Metric, logger *slog.Logger) (*antispam.Engine, error) {
 	return loadWithRetry(ctx, logger, "anti-spam engine", func(ctx context.Context) (*antispam.Engine, error) {
-		return antispam.New(ctx, lister, checker, logger)
+		return antispam.New(ctx, lister, state, metric, logger)
 	})
 }
+
+// failOpenMetric adapts a Prometheus counter to antispam.Metric.
+type failOpenMetric struct{ c prometheus.Counter }
+
+func (m failOpenMetric) FailOpen() { m.c.Inc() }
 
 // loadWithRetry loads an immutable boot snapshot, retrying transient failures with capped exponential
 // backoff until it succeeds or ctx is cancelled. Postgres is a hard boot dependency, so retrying

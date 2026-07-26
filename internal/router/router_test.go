@@ -78,7 +78,7 @@ func (allowAllOptOut) IsOptedOut(context.Context, uuid.UUID, uuid.UUID, string, 
 // allowAllAntispam passes every message; anti-spam is covered in the pipeline/antispam tests.
 type allowAllAntispam struct{}
 
-func (allowAllAntispam) Evaluate(context.Context, uuid.UUID, uuid.UUID, string, []byte) (cp.AntispamAction, error) {
+func (allowAllAntispam) Evaluate(context.Context, uuid.UUID, uuid.UUID, string, string, []byte) (cp.AntispamAction, error) {
 	return "", nil
 }
 

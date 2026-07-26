@@ -142,7 +142,7 @@ func buildStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg config
 		t.Fatalf("load inbound-number index: %v", err)
 	}
 	enforcer := optout.NewEnforcer(optout.NewGuard(optSnap, suppressions), inboundIdx)
-	spam, err := antispam.New(context.Background(), postgres.NewAntispamRuleRepo(pool), nil, nil)
+	spam, err := antispam.New(context.Background(), postgres.NewAntispamRuleRepo(pool), nil, nil, nil)
 	if err != nil {
 		t.Fatalf("load anti-spam engine: %v", err)
 	}

@@ -45,9 +45,19 @@ type MODeps struct {
 	Metric   UnroutedMetric
 	// Stop applies opt-out keywords (STOP/START/HELP) to each MO (step-063). Optional: a nil detector
 	// disables opt-out detection (the MO is still routed).
-	Stop   *StopDetector
-	Tracer trace.Tracer
-	Logger *slog.Logger
+	Stop *StopDetector
+	// Velocity records each MO into its source's velocity counter (step-066), so a sender's inbound MO
+	// count feeds the anti-spam velocity a later MT is checked against. Optional and best-effort: a
+	// recording failure never interrupts MO delivery.
+	Velocity MOVelocityRecorder
+	Tracer   trace.Tracer
+	Logger   *slog.Logger
+}
+
+// MOVelocityRecorder records one inbound MO from a source into its velocity counter.
+// A small adapter over *antispam.RedisState satisfies it.
+type MOVelocityRecorder interface {
+	RecordSource(ctx context.Context, from string) error
 }
 
 // MORouter resolves mobile-originated messages to an account and publishes the delivery intent.
@@ -102,6 +112,14 @@ func (r *MORouter) handler() kafka.Handler {
 				AccountID: res.accountID, CustomerID: res.customerID,
 			}); err != nil {
 				return err
+			}
+		}
+
+		// Count this MO into its source's velocity (step-066), best-effort: a recording failure is
+		// logged (ids only) and never interrupts delivery — velocity is fail-open (§1.5).
+		if r.deps.Velocity != nil {
+			if err := r.deps.Velocity.RecordSource(ctx, normalizeAddr(mo.From)); err != nil {
+				r.deps.Logger.WarnContext(ctx, "modlrrouter: MO velocity record failed, continuing", "err", err)
 			}
 		}
 

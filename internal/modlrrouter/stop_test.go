@@ -292,6 +292,48 @@ func TestStopFromNonCanonicalSourceSkipsButDelivers(t *testing.T) {
 	}
 }
 
+// fakeVelocity records the sources it was asked to count, and can fail to prove best-effort.
+type fakeVelocity struct {
+	sources []string
+	err     error
+}
+
+func (f *fakeVelocity) RecordSource(_ context.Context, from string) error {
+	f.sources = append(f.sources, from)
+	return f.err
+}
+
+// TestMORecordsSourceVelocity: a routed MO counts its (normalized) source into the velocity, and a
+// recording failure is best-effort — the MO is still delivered.
+func TestMORecordsSourceVelocity(t *testing.T) {
+	account, customer := uuid.New(), uuid.New()
+	numID, connector := uuid.New(), uuid.New()
+	snap := moSnapshot(t,
+		[]cp.InboundNumber{{ID: numID, Address: "36000", CountryCode: "CI", Status: cp.InboundNumberActive, AccountID: &account}},
+		nil, map[uuid.UUID]uuid.UUID{account: customer})
+
+	vel := &fakeVelocity{err: errors.New("redis down")} // failure must not interrupt delivery
+	prod := &fakeProducer{}
+	_, err := runMO(t, modlrrouter.MODeps{Snapshot: snap, Producer: prod, Unrouted: &fakeUnrouted{}, Velocity: vel},
+		moRecord(t, connector, "2250700000001", "36000", "hello"))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(vel.sources) != 1 || vel.sources[0] != "2250700000001" {
+		t.Errorf("recorded sources = %v, want [2250700000001]", vel.sources)
+	}
+	// The MO is still delivered despite the velocity recording failing.
+	moRouted := 0
+	for _, r := range prod.recs {
+		if r.Topic == kafka.TopicMORouted {
+			moRouted++
+		}
+	}
+	if moRouted != 1 {
+		t.Errorf("mo.routed count = %d, want 1 (velocity failure is best-effort)", moRouted)
+	}
+}
+
 func TestStopWriteErrorIsRetryable(t *testing.T) {
 	d := detectorWith(t, []cp.OptOutKeyword{
 		{Keyword: "STOP", Action: cp.OptOutActionSuppress, MatchType: cp.OptOutMatchExact, Status: cp.OptOutKeywordActive},
