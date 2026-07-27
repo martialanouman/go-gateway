@@ -93,6 +93,7 @@ var m1Operations = []opRef{
 
 	{"list-exact-routes", "get", "/admin/exact-routes"},
 	{"create-exact-route", "post", "/admin/exact-routes"},
+	{"import-exact-routes", "post", "/admin/exact-routes/import"},
 	{"lookup-exact-route", "get", "/admin/exact-routes/lookup"},
 	{"update-exact-route", "patch", "/admin/exact-routes/{msisdn}"},
 	{"delete-exact-route", "delete", "/admin/exact-routes/{msisdn}"},

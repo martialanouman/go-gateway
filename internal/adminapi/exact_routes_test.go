@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/martialanouman/go-gateway/internal/adminapi"
+	"github.com/martialanouman/go-gateway/internal/platform/async"
 	"github.com/martialanouman/go-gateway/internal/routing/exact"
 )
 
@@ -24,6 +25,10 @@ type fakeExactRouteStore struct {
 	mu   sync.Mutex
 	rows map[string]exact.Route
 	now  time.Time
+	// Optional synchronization for the async e2e test: BulkUpsert signals bulkStarted, then blocks on
+	// bulkRelease. Both nil (the default) means BulkUpsert never blocks.
+	bulkStarted chan struct{}
+	bulkRelease chan struct{}
 }
 
 func newFakeExactRouteStore() *fakeExactRouteStore {
@@ -74,6 +79,35 @@ func (s *fakeExactRouteStore) Delete(_ context.Context, msisdn string) (bool, er
 	}
 	delete(s.rows, msisdn)
 	return true, nil
+}
+
+func (s *fakeExactRouteStore) BulkUpsert(_ context.Context, routes []exact.Route) error {
+	if s.bulkStarted != nil {
+		close(s.bulkStarted)
+		<-s.bulkRelease // hold the import "in flight" until the test releases it
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, r := range routes {
+		s.now = s.now.Add(time.Second)
+		r.UpdatedAt = s.now
+		s.rows[r.MSISDN] = r
+	}
+	return nil
+}
+
+func (s *fakeExactRouteStore) count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.rows)
+}
+
+// syncRunner runs the job inline, so a test observes the import's effect the moment Go returns — the
+// production path is still the real async runner; only the injected runner collapses time.
+type syncRunner struct{}
+
+func (syncRunner) Go(_ string, job func(context.Context) error) error {
+	return job(context.Background())
 }
 
 // TestExactRouteCreateLookupDeleteRoundTrip: a created override is found by lookup and gone after
@@ -255,5 +289,95 @@ func TestListExactRoutesPaginates(t *testing.T) {
 	}
 	if len(seen) != n {
 		t.Errorf("paged %d rows, want %d", len(seen), n)
+	}
+}
+
+// TestImportExactRoutesAcceptsBatchAndRowsAppear: a bulk import returns 202 with a queued job, and the
+// rows are then visible via list (the sync runner ran the import inline before Go returned).
+func TestImportExactRoutesAcceptsBatchAndRowsAppear(t *testing.T) {
+	store := newFakeExactRouteStore()
+	api := newTestAPIWith(t, adminapi.Deps{ExactRoutes: store, Imports: syncRunner{}})
+
+	body := fmt.Sprintf(`{"source":"mnp_import","rows":[
+		{"msisdn":"+2250700000001","target_type":"connector","target_id":%q},
+		{"msisdn":"2250700000002","target_type":"connector","target_id":%q}]}`,
+		uuid.NewString(), uuid.NewString())
+	w := httptest.NewRecorder()
+	api.ServeHTTP(w, authed(t, http.MethodPost, "/v1/admin/exact-routes/import", body))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", w.Code, w.Body)
+	}
+	var job map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &job)
+	if job["status"] != "queued" || job["job_id"] == nil {
+		t.Errorf("job = %v, want a queued job with a job_id", job)
+	}
+	if store.count() != 2 {
+		t.Errorf("imported %d rows, want 2", store.count())
+	}
+}
+
+// TestImportExactRoutesReplayNoDuplicates: re-importing the same batch (idempotent by msisdn) leaves
+// the same row count — a replayed MNP feed does not duplicate.
+func TestImportExactRoutesReplayNoDuplicates(t *testing.T) {
+	store := newFakeExactRouteStore()
+	api := newTestAPIWith(t, adminapi.Deps{ExactRoutes: store, Imports: syncRunner{}})
+	body := fmt.Sprintf(`{"source":"carrier_feed","rows":[{"msisdn":"2250700000001","target_type":"route","target_id":%q}]}`, uuid.NewString())
+
+	for i := 0; i < 2; i++ {
+		w := httptest.NewRecorder()
+		api.ServeHTTP(w, authed(t, http.MethodPost, "/v1/admin/exact-routes/import", body))
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("import %d status = %d, want 202; body=%s", i, w.Code, w.Body)
+		}
+	}
+	if store.count() != 1 {
+		t.Errorf("after replaying one row: %d rows, want 1 (idempotent)", store.count())
+	}
+}
+
+// TestImportExactRoutesInvalidMSISDNIs422: a bad number fails the whole request synchronously (422),
+// with nothing written — never a silently failed background job.
+func TestImportExactRoutesInvalidMSISDNIs422(t *testing.T) {
+	store := newFakeExactRouteStore()
+	api := newTestAPIWith(t, adminapi.Deps{ExactRoutes: store, Imports: syncRunner{}})
+	body := fmt.Sprintf(`{"rows":[{"msisdn":"nope","target_type":"connector","target_id":%q}]}`, uuid.NewString())
+	w := httptest.NewRecorder()
+	api.ServeHTTP(w, authed(t, http.MethodPost, "/v1/admin/exact-routes/import", body))
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body=%s", w.Code, w.Body)
+	}
+	if store.count() != 0 {
+		t.Errorf("wrote %d rows on a rejected batch, want 0", store.count())
+	}
+}
+
+// TestImportExactRoutesRunsAsynchronously: with the REAL runner, the 202 is returned while the import
+// is provably still in flight (the store's BulkUpsert is blocked), and the rows land after the drain —
+// the endpoint does not hold the connection for the whole import.
+func TestImportExactRoutesRunsAsynchronously(t *testing.T) {
+	store := newFakeExactRouteStore()
+	store.bulkStarted = make(chan struct{})
+	store.bulkRelease = make(chan struct{})
+	runner := async.New(1, nil)
+	api := newTestAPIWith(t, adminapi.Deps{ExactRoutes: store, Imports: runner})
+
+	body := fmt.Sprintf(`{"rows":[{"msisdn":"2250700000001","target_type":"connector","target_id":%q}]}`, uuid.NewString())
+	w := httptest.NewRecorder()
+	api.ServeHTTP(w, authed(t, http.MethodPost, "/v1/admin/exact-routes/import", body))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", w.Code, w.Body)
+	}
+
+	<-store.bulkStarted // the import is running, and the 202 has already been returned above
+	if n := store.count(); n != 0 {
+		t.Errorf("rows visible (%d) before the import finished, want 0 (async)", n)
+	}
+	close(store.bulkRelease)
+	if err := runner.Close(context.Background()); err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	if store.count() != 1 {
+		t.Errorf("after drain: %d rows, want 1", store.count())
 	}
 }

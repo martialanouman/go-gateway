@@ -837,6 +837,25 @@ items:
               }
         docs: Create/upsert an exact route MSISDN -> connector|route (scope admin:write).
       - info:
+          name: import-exact-routes
+          type: http
+        http:
+          method: POST
+          url: '{{baseUrl}}/admin/exact-routes/import'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "source": "mnp_import",
+                "rows": [
+                  { "msisdn": "2250700000001", "target_type": "connector", "target_id": "{{connectorId}}" }
+                ]
+              }
+        docs: Bulk MNP import, async 202 + job_id, idempotent (scope admin:write).
+      - info:
           name: lookup-exact-route
           type: http
         http:

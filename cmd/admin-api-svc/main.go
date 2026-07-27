@@ -23,6 +23,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/auth"
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/observability"
+	"github.com/martialanouman/go-gateway/internal/platform/async"
 	"github.com/martialanouman/go-gateway/internal/platform/supervisor"
 	registrypb "github.com/martialanouman/go-gateway/internal/session/pb"
 	"github.com/martialanouman/go-gateway/internal/storage/postgres"
@@ -80,6 +81,19 @@ func run() error {
 	}
 	defer pool.Close()
 
+	// The bulk-import runner runs exact-route MNP imports in the background (step-103), bounded and
+	// drained on shutdown. Its jobs use the pool, so its drain must complete before pool.Close: this
+	// defer is registered after pool's, and defers run LIFO, so it runs first. The drain uses a
+	// cancel-detached deadline so a SIGTERM does not cut it short.
+	importRunner := async.New(4, logger)
+	defer func() {
+		dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cfg.ShutdownTimeout)
+		defer cancel()
+		if derr := importRunner.Close(dctx); derr != nil {
+			logger.Error("import runner drain incomplete", "err", derr)
+		}
+	}()
+
 	verifier, err := auth.NewStaticVerifier(cfg.HTTP.AdminTokens)
 	if err != nil {
 		return fmt.Errorf("build operator token verifier: %w", err)
@@ -110,6 +124,7 @@ func run() error {
 		OptOutKeywords:  postgres.NewOptOutKeywordRepo(pool),
 		AntispamRules:   postgres.NewAntispamRuleRepo(pool),
 		ExactRoutes:     postgres.NewExactRouteRepo(pool),
+		Imports:         importRunner,
 		Disconnector:    adminapi.NewGRPCDisconnector(registrypb.NewSessionRegistryClient(registryConn)),
 		Verifier:        verifier,
 		Logger:          logger,
