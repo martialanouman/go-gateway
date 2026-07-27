@@ -138,6 +138,37 @@ func TestSubmitProduceTimeout(t *testing.T) {
 	}
 }
 
+// TestCloseDrainsInFlightWorkerPromptly: a server-side Close (a force-disconnect, step-032) cancels the
+// in-flight workers' context so they drain at once — NOT after InboundSubmitTimeout, which is set to an
+// hour here to prove the drain is via cancellation, not the backstop.
+func TestCloseDrainsInFlightWorkerPromptly(t *testing.T) {
+	started := make(chan struct{})
+	drained := make(chan struct{})
+	cfg := session.Config{
+		Logger:               discardLogger(),
+		InboundSubmitTimeout: time.Hour,
+		OnSubmit: func(ctx context.Context, _ session.SubmitRequest) session.SubmitResult {
+			close(started)
+			<-ctx.Done()
+			close(drained)
+			return session.SubmitResult{Status: smpp.StatusOK}
+		},
+	}
+	client, sess, _, errc := newSession(t, cfg)
+	bindOK(t, client, session.BindTransmitter)
+	writePDU(t, client, smpp.PDU{Sequence: 2, Body: &smpp.SubmitSM{}})
+
+	<-started    // the worker is in flight
+	sess.Close() // force-disconnect
+
+	select {
+	case <-drained:
+	case <-time.After(3 * time.Second):
+		t.Fatal("in-flight worker not drained on Close within 3s (it would have waited InboundSubmitTimeout=1h)")
+	}
+	<-errc // Serve returns after the drain
+}
+
 // TestDrainWaitsForInFlightWorkers: cancelling the session drains its in-flight submit workers (their
 // ctx is cancelled) before Serve returns — no orphaned goroutine.
 func TestDrainWaitsForInFlightWorkers(t *testing.T) {

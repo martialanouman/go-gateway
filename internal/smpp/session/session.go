@@ -115,6 +115,11 @@ type Session struct {
 	// st is the state machine, owned exclusively by the Serve goroutine.
 	st state
 
+	// workerCtx bounds the in-flight submit workers (step-088); cancelWork cancels it on shutdown so a
+	// force-disconnect or unbind drains a slow-but-cancellable produce promptly, not only on its timeout.
+	workerCtx  context.Context
+	cancelWork context.CancelFunc
+
 	closeOnce sync.Once
 	done      chan struct{}
 	wg        sync.WaitGroup
@@ -139,15 +144,18 @@ func New(conn io.ReadWriteCloser, cfg Config) *Session {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	workerCtx, cancelWork := context.WithCancel(context.Background())
 	return &Session{
-		conn:    conn,
-		cfg:     cfg,
-		logger:  logger,
-		window:  make(chan struct{}, cfg.WindowSize),
-		inbound: make(chan struct{}, cfg.InboundWindow),
-		pending: make(map[uint32]chan smpp.PDU),
-		done:    make(chan struct{}),
-		st:      stOpen,
+		conn:       conn,
+		cfg:        cfg,
+		logger:     logger,
+		window:     make(chan struct{}, cfg.WindowSize),
+		inbound:    make(chan struct{}, cfg.InboundWindow),
+		pending:    make(map[uint32]chan smpp.PDU),
+		workerCtx:  workerCtx,
+		cancelWork: cancelWork,
+		done:       make(chan struct{}),
+		st:         stOpen,
 	}
 }
 
@@ -229,6 +237,7 @@ func (s *Session) sendUnbind() {
 func (s *Session) shutdown() {
 	s.closeOnce.Do(func() {
 		close(s.done)
+		s.cancelWork() // cancel in-flight submit workers so the drain does not wait on their timeout
 		_ = s.conn.Close()
 	})
 }

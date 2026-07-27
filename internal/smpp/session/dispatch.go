@@ -201,7 +201,9 @@ func (s *Session) handleSubmit(ctx context.Context, seq uint32, sm *smpp.SubmitS
 		return
 	}
 	s.wg.Add(1)
-	go s.submitWorker(ctx, seq, req)
+	//nolint:contextcheck // the worker deliberately uses the session-scoped workerCtx (cancelled on
+	// shutdown to drain promptly), not this handler's per-read ctx which ends when the read returns.
+	go s.submitWorker(seq, req)
 }
 
 // submitWorker runs one submit_sm's OnSubmit off the read goroutine and answers its submit_sm_resp. It
@@ -210,11 +212,13 @@ func (s *Session) handleSubmit(ctx context.Context, seq uint32, sm *smpp.SubmitS
 // Responses may arrive out of order — SMPP correlates by sequence_number — which is conformant. The
 // produce is bounded by InboundSubmitTimeout so a hung Kafka releases the worker (and the shutdown
 // drain) with ESME_RSUBMITFAIL rather than pinning it forever.
-func (s *Session) submitWorker(ctx context.Context, seq uint32, req SubmitRequest) {
+func (s *Session) submitWorker(seq uint32, req SubmitRequest) {
 	defer s.wg.Done()
 	defer func() { <-s.inbound }()
 
-	wctx, cancel := context.WithTimeout(ctx, s.cfg.InboundSubmitTimeout)
+	// workerCtx is the session-scoped context: shutdown() cancels it, so a force-disconnect or unbind
+	// releases this worker promptly rather than waiting out InboundSubmitTimeout on a slow produce.
+	wctx, cancel := context.WithTimeout(s.workerCtx, s.cfg.InboundSubmitTimeout)
 	defer cancel()
 
 	res := s.callOnSubmit(wctx, req)
