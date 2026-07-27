@@ -27,6 +27,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/platform/supervisor"
 	registrypb "github.com/martialanouman/go-gateway/internal/session/pb"
 	"github.com/martialanouman/go-gateway/internal/storage/postgres"
+	redisstore "github.com/martialanouman/go-gateway/internal/storage/redis"
 )
 
 // serviceName identifies this binary in logs, traces and metrics.
@@ -48,7 +49,7 @@ func run() error {
 	// force-disconnect the affected live binds via session-manager's SessionRegistry (step-032), and the
 	// address of that service is the same env var every session-manager client already uses.
 	cfg, err := config.Load(serviceName,
-		config.SectionOTel, config.SectionPostgres, config.SectionHTTP, config.SectionSMPP)
+		config.SectionOTel, config.SectionPostgres, config.SectionHTTP, config.SectionSMPP, config.SectionRedis)
 	if err != nil {
 		return err
 	}
@@ -94,6 +95,15 @@ func run() error {
 		}
 	}()
 
+	// Redis carries the config-change announcement (step-105): the Admin API publishes a coarse event
+	// after each mutation. A publish failure is best-effort (logged, not fatal), so — unlike Postgres —
+	// Redis is not a hard readiness dependency here.
+	rdb, err := redisstore.NewClient(ctx, cfg.Redis)
+	if err != nil {
+		return fmt.Errorf("open redis client: %w", err)
+	}
+	defer func() { _ = rdb.Close() }()
+
 	verifier, err := auth.NewStaticVerifier(cfg.HTTP.AdminTokens)
 	if err != nil {
 		return fmt.Errorf("build operator token verifier: %w", err)
@@ -130,9 +140,13 @@ func run() error {
 		Logger:          logger,
 	})
 
+	// A single seam announces every control-plane mutation on config:changed; config-sync coalesces
+	// those into a data-plane invalidation (step-105). A publish failure never fails the request.
+	handler := adminapi.PublishConfigChanges(router, redisstore.NewPubSubPublisher(rdb), config.ChannelConfigChanged, logger)
+
 	srv := &http.Server{
 		Addr:              ":" + strconv.Itoa(cfg.HTTP.Port),
-		Handler:           router,
+		Handler:           handler,
 		ReadHeaderTimeout: cfg.HTTP.ReadHeaderTimeout,
 	}
 

@@ -58,6 +58,13 @@ builds:
     goos: [linux]
     goarch: [amd64, arm64]
     ldflags: *ldflags
+  - id: config-sync
+    main: ./cmd/config-sync
+    binary: config-sync
+    env: [CGO_ENABLED=0]
+    goos: [linux]
+    goarch: [amd64, arm64]
+    ldflags: *ldflags
   - id: migrate
     main: ./cmd/migrate
     binary: migrate
@@ -93,6 +100,10 @@ archives:
     name_template: *archive_name
   - id: mo-dlr-router-svc
     ids: [mo-dlr-router-svc]
+    formats: ["tar.gz"]
+    name_template: *archive_name
+  - id: config-sync
+    ids: [config-sync]
     formats: ["tar.gz"]
     name_template: *archive_name
   - id: migrate

@@ -413,7 +413,8 @@ breaker:binds:{connector_id}         -- HASH of per (pod_id, bind_index) sub-bin
 breaker:state:{connector_id}         -- derived connector aggregate (closed|open|half_open), read by router-svc only
                                          when (re)building its routing snapshot, never per-message
 connectorload:{connector_id}         -- periodically-published in-flight gauge per connector, for least_loaded (§6.1)
-breaker:events                       -- pub/sub channel for near-immediate routing-snapshot invalidation on transition
+config:changed                       -- pub/sub channel: Admin API announces a control-plane mutation; config-sync coalesces these (§11, M7)
+breaker:events                       -- pub/sub channel for near-immediate routing-snapshot invalidation (config-sync M7, breaker transition M8)
 ```
 
 ### 3.3 Plan de données (broker de messages — Kafka)
