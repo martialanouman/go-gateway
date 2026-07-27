@@ -671,6 +671,9 @@ paths:
       parameters: [ { $ref: '#/components/parameters/Cursor' }, { $ref: '#/components/parameters/Limit' } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ExactRoutePage' } } } }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
     post:
       tags: [Exact Routes]
       summary: Create/upsert an exact route (MSISDN -> connector|route)
@@ -679,6 +682,8 @@ paths:
       responses:
         '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/ExactRoute' } } } }
         '422': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /admin/exact-routes/import:
     post:
       tags: [Exact Routes]
@@ -696,6 +701,9 @@ paths:
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ExactRoute' } } } }
         '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /admin/exact-routes/{msisdn}:
     parameters: [ { name: msisdn, in: path, required: true, schema: { type: string } } ]
     patch:
@@ -706,6 +714,9 @@ paths:
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ExactRoute' } } } }
         '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
     delete:
       tags: [Exact Routes]
       summary: Delete an exact route
@@ -713,6 +724,8 @@ paths:
       responses:
         '204': { description: Deleted. }
         '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
   # ============================ ROUTING SCRIPTS (§6.2) ============================
   /admin/routing-scripts:

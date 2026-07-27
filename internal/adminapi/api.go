@@ -71,6 +71,7 @@ func New(deps Deps) (*chi.Mux, huma.API) {
 	registerSuppressions(api, deps.Suppressions, deps.Accounts, deps.InboundNumbers)
 	registerOptOutKeywords(api, deps.OptOutKeywords)
 	registerAntispamRules(api, deps.AntispamRules)
+	registerExactRoutes(api, deps.ExactRoutes)
 
 	humaspec.Prune(api, codesMetaKey)
 

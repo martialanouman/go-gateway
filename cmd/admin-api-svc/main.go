@@ -109,6 +109,7 @@ func run() error {
 		Suppressions:    postgres.NewSuppressionRepo(pool),
 		OptOutKeywords:  postgres.NewOptOutKeywordRepo(pool),
 		AntispamRules:   postgres.NewAntispamRuleRepo(pool),
+		ExactRoutes:     postgres.NewExactRouteRepo(pool),
 		Disconnector:    adminapi.NewGRPCDisconnector(registrypb.NewSessionRegistryClient(registryConn)),
 		Verifier:        verifier,
 		Logger:          logger,
