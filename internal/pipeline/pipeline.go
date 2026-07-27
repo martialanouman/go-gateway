@@ -24,10 +24,26 @@ type Route struct {
 	RouteID     *uuid.UUID
 }
 
-// Resolver resolves a normalized destination to a connector. It is implemented over an immutable
-// snapshot loaded at startup (internal/routing); the interface lives here, consumer-side.
+// RouteRequest is the context route resolution needs: the normalized destination plus the message
+// metadata a routing script reads (§6.1). It carries NO message body (invariant a).
+type RouteRequest struct {
+	Dest       string // normalized E.164 destination
+	From       string
+	AccountID  uuid.UUID
+	CustomerID uuid.UUID
+	// Segments is always 1 at route resolution: segmentation runs later in the pipeline (frozen order,
+	// §6.1), so the real segment count is not yet known. A script must not route on it.
+	Segments int
+	// ReceivedAtMs is the message's immutable accept time (SubmittedAt) in epoch milliseconds, so a
+	// script can route on time-of-day deterministically (no real clock is exposed to the script).
+	ReceivedAtMs int64
+}
+
+// Resolver resolves a route request to a connector. It is implemented over an immutable snapshot
+// loaded at startup (internal/routing) — exact-number short-cut, then routing script, then the
+// declarative resolver; the interface lives here, consumer-side.
 type Resolver interface {
-	Resolve(ctx context.Context, dest string) (Route, error)
+	Resolve(ctx context.Context, req RouteRequest) (Route, error)
 }
 
 // SenderIDAuthorizer authorizes a message's source address against the account's sender-ID policy and
@@ -176,7 +192,10 @@ func (p *Pipeline) Process(ctx context.Context, in InboundMT) (RoutedMT, []pipee
 	// 5. Route resolution (declarative static only in M2). A short-cut here would skip only this
 	// stage, never the compliance stages above (spec §6.1).
 	if err := p.stage(ctx, "pipeline.route", func(ctx context.Context) error {
-		route, err := p.resolver.Resolve(ctx, out.To)
+		route, err := p.resolver.Resolve(ctx, RouteRequest{
+			Dest: out.To, From: in.From, AccountID: in.AccountID, CustomerID: in.CustomerID,
+			Segments: out.SegmentCount, ReceivedAtMs: in.SubmittedAt.UnixMilli(),
+		})
 		if err != nil {
 			return err
 		}

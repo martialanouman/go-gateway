@@ -124,6 +124,12 @@ func (r *SnapshotResolver) routeForTarget(t exact.Target) (pipeline.Route, bool)
 	return r.current.Load().routeForTarget(t)
 }
 
+// routeByID resolves a route id (as a routing script returns) to its connector via the current
+// snapshot. matched is false when the id is not an active route in the snapshot.
+func (r *SnapshotResolver) routeByID(routeID uuid.UUID) (pipeline.Route, bool) {
+	return r.current.Load().routeForTarget(exact.Target{Type: exact.TargetRoute, ID: routeID})
+}
+
 // resolve matches dest against the immutable compiled routes.
 func (s *Snapshot) resolve(dest string) (pipeline.Route, error) {
 	d := digits(dest)

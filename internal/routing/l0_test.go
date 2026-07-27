@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
+	"github.com/martialanouman/go-gateway/internal/pipeline"
 	"github.com/martialanouman/go-gateway/internal/routing"
 	"github.com/martialanouman/go-gateway/internal/routing/exact"
 )
@@ -47,10 +48,10 @@ func TestL0ConnectorHitShortCircuits(t *testing.T) {
 	ported := "2250700000001"
 	l0 := routing.NewL0Resolver(
 		fakeExact{hits: map[string]exact.Target{ported: {Type: exact.TargetConnector, ID: portedConn}}},
-		buildSnapshot(t, declRoute, declConn),
+		nil, buildSnapshot(t, declRoute, declConn),
 	)
 
-	got, err := l0.Resolve(context.Background(), ported)
+	got, err := l0.Resolve(context.Background(), pipeline.RouteRequest{Dest: ported})
 	if err != nil {
 		t.Fatalf("Resolve(ported): %v", err)
 	}
@@ -66,9 +67,9 @@ func TestL0ConnectorHitShortCircuits(t *testing.T) {
 // chain unchanged.
 func TestL0MissFallsBackToDeclarative(t *testing.T) {
 	declRoute, declConn := uuid.New(), uuid.New()
-	l0 := routing.NewL0Resolver(fakeExact{hits: map[string]exact.Target{}}, buildSnapshot(t, declRoute, declConn))
+	l0 := routing.NewL0Resolver(fakeExact{hits: map[string]exact.Target{}}, nil, buildSnapshot(t, declRoute, declConn))
 
-	got, err := l0.Resolve(context.Background(), "2250700000002")
+	got, err := l0.Resolve(context.Background(), pipeline.RouteRequest{Dest: "2250700000002"})
 	if err != nil {
 		t.Fatalf("Resolve(no override): %v", err)
 	}
@@ -84,10 +85,10 @@ func TestL0RouteTargetResolvesToConnector(t *testing.T) {
 	ported := "2250700000003"
 	l0 := routing.NewL0Resolver(
 		fakeExact{hits: map[string]exact.Target{ported: {Type: exact.TargetRoute, ID: declRoute}}},
-		buildSnapshot(t, declRoute, declConn),
+		nil, buildSnapshot(t, declRoute, declConn),
 	)
 
-	got, err := l0.Resolve(context.Background(), ported)
+	got, err := l0.Resolve(context.Background(), pipeline.RouteRequest{Dest: ported})
 	if err != nil {
 		t.Fatalf("Resolve(route override): %v", err)
 	}
@@ -103,10 +104,10 @@ func TestL0UnresolvableRouteTargetFallsBack(t *testing.T) {
 	ported := "2250700000004"
 	l0 := routing.NewL0Resolver(
 		fakeExact{hits: map[string]exact.Target{ported: {Type: exact.TargetRoute, ID: uuid.New()}}}, // unknown route id
-		buildSnapshot(t, declRoute, declConn),
+		nil, buildSnapshot(t, declRoute, declConn),
 	)
 
-	got, err := l0.Resolve(context.Background(), ported)
+	got, err := l0.Resolve(context.Background(), pipeline.RouteRequest{Dest: ported})
 	if err != nil {
 		t.Fatalf("Resolve(dangling route override): %v", err)
 	}
@@ -120,9 +121,9 @@ func TestL0UnresolvableRouteTargetFallsBack(t *testing.T) {
 func TestL0LookupFaultSurfaces(t *testing.T) {
 	declRoute, declConn := uuid.New(), uuid.New()
 	bad := "2250700000005"
-	l0 := routing.NewL0Resolver(fakeExact{errFor: bad}, buildSnapshot(t, declRoute, declConn))
+	l0 := routing.NewL0Resolver(fakeExact{errFor: bad}, nil, buildSnapshot(t, declRoute, declConn))
 
-	if _, err := l0.Resolve(context.Background(), bad); err == nil {
+	if _, err := l0.Resolve(context.Background(), pipeline.RouteRequest{Dest: bad}); err == nil {
 		t.Fatal("Resolve(lookup fault) = nil error, want the fault surfaced")
 	}
 }

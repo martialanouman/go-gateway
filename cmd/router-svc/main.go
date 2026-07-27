@@ -162,7 +162,24 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("load exact-route bloom: %w", err)
 	}
-	resolver := routing.NewL0Resolver(exact.NewResolver(exactBloom, rdb), snapshot)
+	// The L1 routing-script stage (§6.1): active scripts compiled once into an immutable snapshot,
+	// scope-resolved per message (account → customer → platform). A null result or ANY script fault
+	// falls back to declarative resolution and is metered; the stage sits between exact (L0) and
+	// declarative (L2), never before compliance.
+	scriptRepo := postgres.NewRoutingScriptRepo(pool)
+	scriptSnap, err := loadWithRetry(ctx, logger, "routing-script snapshot", func(ctx context.Context) (*routing.ScriptSnapshot, error) {
+		return routing.BuildScriptSnapshot(ctx, scriptRepo, logger)
+	})
+	if err != nil {
+		return fmt.Errorf("load routing scripts: %w", err)
+	}
+	// routing_script_failures_total: bounded labels (runtime, reason) — never a body or script text.
+	scriptFailures := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "routing_script_failures_total",
+		Help: "Routing scripts that fell back to declarative resolution, by runtime and reason.",
+	}, []string{"runtime", "reason"})
+	scriptResolver := routing.NewScriptResolver(scriptSnap, logger, scriptMeter{c: scriptFailures})
+	resolver := routing.NewL0Resolver(exact.NewResolver(exactBloom, rdb), scriptResolver, snapshot)
 
 	tracer := observability.Tracer(nil, serviceName)
 	pl := pipeline.New(tracer, resolver, senderIDs, optOut, spam, rateLimiter)
@@ -185,7 +202,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("init ops server: %w", err)
 	}
-	ops.Registry().MustRegister(failOpenTotal)
+	ops.Registry().MustRegister(failOpenTotal, scriptFailures)
 
 	// bloom_last_reload / bloom_capacity_bits: labelled by filter (exact | optout), no unbounded labels.
 	// The timestamp lets an alert fire on a stale filter; the capacity tracks growth after a reload.
@@ -233,6 +250,13 @@ func run() error {
 			}
 			bloomReloadTimestamp.WithLabelValues("optout").Set(float64(time.Now().Unix()))
 			bloomCapacityBits.WithLabelValues("optout").Set(float64(optOut.CapacityBits()))
+
+			// Rebuild the routing-script snapshot (recompiles the active scripts) and swap it in.
+			scriptSnap, berr := routing.BuildScriptSnapshot(ctx, scriptRepo, logger)
+			if berr != nil {
+				return berr
+			}
+			scriptResolver.Swap(scriptSnap)
 			return nil
 		},
 		config.WithLogger(logger),
@@ -301,6 +325,11 @@ func loadAntispamWithRetry(ctx context.Context, lister antispam.RuleLister, stat
 type failOpenMetric struct{ c prometheus.Counter }
 
 func (m failOpenMetric) FailOpen() { m.c.Inc() }
+
+// scriptMeter adapts the routing-script failure counter to routing.FailureMeter (bounded labels only).
+type scriptMeter struct{ c *prometheus.CounterVec }
+
+func (m scriptMeter) Inc(language, reason string) { m.c.WithLabelValues(language, reason).Inc() }
 
 // loadWithRetry loads an immutable boot snapshot, retrying transient failures with capped exponential
 // backoff until it succeeds or ctx is cancelled. Postgres is a hard boot dependency, so retrying

@@ -58,3 +58,10 @@ WHERE scope = @scope AND scope_id IS NOT DISTINCT FROM sqlc.narg('scope_id') AND
 UPDATE control_plane.routing_scripts SET status = 'active', published_at = now()
 WHERE id = @id
 RETURNING id, scope, scope_id, name, language, source_code, checksum, status, timeout_ms, max_instructions, max_memory_kb, created_by, created_at, published_at;
+
+-- name: ListActiveRoutingScripts :many
+-- Every active script across all scopes, to build the router's immutable script snapshot (step-110).
+SELECT id, scope, scope_id, name, language, source_code, checksum, status, timeout_ms, max_instructions, max_memory_kb, created_by, created_at, published_at
+FROM control_plane.routing_scripts
+WHERE status = 'active'
+ORDER BY scope, scope_id;
