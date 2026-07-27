@@ -7,9 +7,10 @@ import "errors"
 // distinction is not for control flow — it is for the failure metric's `reason` label and for honest
 // logs (a wall-clock trip must not be reported as a deterministic instruction-limit trip).
 var (
-	// ErrInstructionLimit is the deterministic instruction-ceiling trip. It is Lua-only: gopher-lua has
-	// a per-instruction count hook, so it can enforce a reproducible budget. goja (mainline) has no
-	// per-instruction counter, so JS never returns this — its budget is the wall clock (ErrScriptTimeout).
+	// ErrInstructionLimit is the deterministic instruction-ceiling trip. It is currently RESERVED and
+	// emitted by no runtime: neither goja nor gopher-lua exposes a per-instruction hook, so both bound
+	// execution by the wall clock (ErrScriptTimeout). It stays in the taxonomy for API stability and for
+	// a future runtime that can count instructions deterministically.
 	ErrInstructionLimit = errors.New("script: instruction ceiling exceeded")
 
 	// ErrScriptTimeout is the wall-clock budget trip (timeout_ms), the guard that actually protects the
