@@ -150,7 +150,7 @@ func buildStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg config
 	rtr := router.New(router.Deps{
 		Consumer: routerConsumer,
 		Producer: producer,
-		Pipeline: pipeline.New(routerTracer, resolver, authorizer, enforcer, spam, nil),
+		Pipeline: pipeline.New(routerTracer, declarativeResolver{resolver}, authorizer, enforcer, spam, nil),
 		CDR:      cdrWriter,
 		Tracer:   routerTracer,
 	})
@@ -345,4 +345,13 @@ func ensureNever(t *testing.T, s *stack, id, status string, window time.Duration
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+}
+
+// declarativeResolver adapts the M2 declarative SnapshotResolver (keyed by destination) to the enriched
+// pipeline.Resolver interface (RouteRequest, step-110). The e2e skeleton exercises declarative routing,
+// not the L0/script short-cut, so it resolves on the request's destination alone.
+type declarativeResolver struct{ *routing.SnapshotResolver }
+
+func (d declarativeResolver) Resolve(ctx context.Context, req pipeline.RouteRequest) (pipeline.Route, error) {
+	return d.SnapshotResolver.Resolve(ctx, req.Dest)
 }

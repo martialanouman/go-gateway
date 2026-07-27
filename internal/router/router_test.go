@@ -49,7 +49,7 @@ type stubResolver struct {
 	err  error
 }
 
-func (s stubResolver) Resolve(context.Context, string) (pipeline.Route, error) {
+func (s stubResolver) Resolve(context.Context, pipeline.RouteRequest) (pipeline.Route, error) {
 	if s.err != nil {
 		return pipeline.Route{}, s.err
 	}
