@@ -78,7 +78,7 @@ Légende : `[x]` = fait (dans `tasks-done/`) · `[ ]` = à faire (dans `tasks-to
 - [x] step-105 — `cmd/config-sync` + pub/sub d'invalidation d'instantané
 - [x] step-106 — Hot reload des filtres de Bloom (exact + suppressions) sans downtime
 - [x] step-107 — Repo `routing_scripts` + cycle de statut (draft/active/disabled)
-- [ ] step-108 — Runtime de script JS (goja) poolé, plafond d'instructions = garde primaire
+- [x] step-108 — Runtime de script JS (goja) poolé, plafond d'instructions = garde primaire
 - [ ] step-109 — Runtime de script Lua (gopher-lua) poolé, mêmes gardes
 - [ ] step-110 — Contrat `resolveRoute`, résolution de scope, intégration pipeline (repli déclaratif)
 - [ ] step-111 — Admin routing-scripts : CRUD + list-versions
