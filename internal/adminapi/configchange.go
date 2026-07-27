@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -49,7 +50,7 @@ func PublishConfigChanges(h http.Handler, pub ConfigChangePublisher, channel str
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		h.ServeHTTP(rec, r)
 
-		if !mutating(r.Method) || rec.status < 200 || rec.status >= 300 {
+		if !mutating(r.Method, r.URL.Path) || rec.status < 200 || rec.status >= 300 {
 			return
 		}
 		// Detach from the request (survive a client disconnect) but keep a bound so a hung Redis cannot
@@ -62,11 +63,24 @@ func PublishConfigChanges(h http.Handler, pub ConfigChangePublisher, channel str
 	})
 }
 
-// mutating reports whether a method changes control-plane state (everything but a read).
-func mutating(method string) bool {
+// readOnlyPostSuffixes are POST endpoints that change no control-plane state — diagnostics that must
+// NOT trigger a data-plane invalidation despite being POSTs (they are AdminRead-scoped).
+var readOnlyPostSuffixes = []string{"/validate", "/test"}
+
+// mutating reports whether a request changes control-plane state. A read method never does; a POST to
+// a declared read-only diagnostic (validate/test) does not either — otherwise an operator iterating on
+// a script would fire a fleet-wide snapshot rebuild on every dry-run.
+func mutating(method, path string) bool {
 	switch method {
 	case http.MethodGet, http.MethodHead, http.MethodOptions:
 		return false
+	case http.MethodPost:
+		for _, suffix := range readOnlyPostSuffixes {
+			if strings.HasSuffix(path, suffix) {
+				return false
+			}
+		}
+		return true
 	default:
 		return true
 	}

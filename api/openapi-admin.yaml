@@ -794,6 +794,10 @@ paths:
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/RoutingScript' } } } }
         '409': { $ref: '#/components/responses/Conflict' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /admin/routing-scripts/{id}/validate:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
     post:
@@ -802,6 +806,9 @@ paths:
       operationId: validate-routing-script
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ScriptValidateResult' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /admin/routing-scripts/{id}/test:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
     post:
@@ -811,6 +818,10 @@ paths:
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ScriptTestRequest' } } } }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ScriptTestResult' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /admin/routing-scripts/{id}/publish:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
     post:
@@ -820,6 +831,10 @@ paths:
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/RoutingScript' } } } }
         '409': { $ref: '#/components/responses/Conflict' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /admin/routing-scripts/{id}/versions:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
     get:

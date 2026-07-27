@@ -104,6 +104,10 @@ var m1Operations = []opRef{
 	{"update-routing-script", "patch", "/admin/routing-scripts/{id}"},
 	{"delete-routing-script", "delete", "/admin/routing-scripts/{id}"},
 	{"list-routing-script-versions", "get", "/admin/routing-scripts/{id}/versions"},
+	{"assign-routing-script", "patch", "/admin/routing-scripts/{id}/assign"},
+	{"validate-routing-script", "post", "/admin/routing-scripts/{id}/validate"},
+	{"test-routing-script", "post", "/admin/routing-scripts/{id}/test"},
+	{"publish-routing-script", "post", "/admin/routing-scripts/{id}/publish"},
 }
 
 // loadContract reads api/openapi-admin.yaml (the source of truth) into a generic tree.

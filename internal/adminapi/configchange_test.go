@@ -82,3 +82,18 @@ func TestPublishErrorDoesNotFailRequest(t *testing.T) {
 		t.Errorf("status = %d, want 204 — a publish failure must not change the response", w.Code)
 	}
 }
+
+// TestNoPublishOnReadOnlyPost: a POST to a read-only diagnostic (validate/test) must NOT publish a
+// config-change event, even though it is a POST — otherwise an operator iterating fires spurious
+// data-plane rebuilds.
+func TestNoPublishOnReadOnlyPost(t *testing.T) {
+	for _, path := range []string{"/admin/routing-scripts/x/validate", "/admin/routing-scripts/x/test"} {
+		pub := &fakeChangePublisher{}
+		h := adminapi.PublishConfigChanges(handlerReturning(http.StatusOK), pub, "config:changed", nil)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodPost, path, nil))
+		if pub.count() != 0 {
+			t.Errorf("POST %s published %d events, want 0 (read-only diagnostic)", path, pub.count())
+		}
+	}
+}

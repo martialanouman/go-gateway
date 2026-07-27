@@ -954,3 +954,50 @@ items:
           method: GET
           url: '{{baseUrl}}/admin/routing-scripts/{{routingScriptId}}/versions'
         docs: List the version history for a script's scope (scope admin:read).
+      - info:
+          name: assign-routing-script
+          type: http
+        http:
+          method: PATCH
+          url: '{{baseUrl}}/admin/routing-scripts/{{routingScriptId}}/assign'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "scope": "customer",
+                "scope_id": "{{customerId}}"
+              }
+        docs: Reassign a draft script to a scope (scope admin:write).
+      - info:
+          name: validate-routing-script
+          type: http
+        http:
+          method: POST
+          url: '{{baseUrl}}/admin/routing-scripts/{{routingScriptId}}/validate'
+        docs: Compile-validate a script (scope admin:read).
+      - info:
+          name: test-routing-script
+          type: http
+        http:
+          method: POST
+          url: '{{baseUrl}}/admin/routing-scripts/{{routingScriptId}}/test'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "message": { "source_addr": "BANK", "dest_addr": "2250700000001", "content": "hello" }
+              }
+        docs: Dry-run a script against a sample message (scope admin:read).
+      - info:
+          name: publish-routing-script
+          type: http
+        http:
+          method: POST
+          url: '{{baseUrl}}/admin/routing-scripts/{{routingScriptId}}/publish'
+        docs: Publish (activate) a draft script (scope admin:write).

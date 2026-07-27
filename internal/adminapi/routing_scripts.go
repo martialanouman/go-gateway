@@ -88,6 +88,7 @@ type RoutingScriptAdminStore interface {
 	Delete(ctx context.Context, id uuid.UUID) (bool, error)
 	ListVersions(ctx context.Context, scope script.Scope, scopeID *uuid.UUID) ([]script.Script, error)
 	List(ctx context.Context, after uuid.UUID, limit int) ([]script.Script, error)
+	Assign(ctx context.Context, id uuid.UUID, scope script.Scope, scopeID *uuid.UUID) (script.Script, bool, error)
 	Publish(ctx context.Context, id uuid.UUID) (script.Script, bool, error)
 }
 
@@ -145,6 +146,210 @@ func registerRoutingScripts(api huma.API, store RoutingScriptAdminStore) {
 		Security: scopeSecurity(auth.ScopeAdminRead),
 		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound},
 	}, h.listVersions)
+
+	register(api, huma.Operation{
+		OperationID: "assign-routing-script", Method: http.MethodPatch, Path: "/admin/routing-scripts/{id}/assign",
+		Summary: "Assign the script to a scope", Tags: []string{"Routing Scripts"},
+		Security: scopeSecurity(auth.ScopeAdminWrite),
+		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusConflict, http.StatusUnprocessableEntity},
+	}, h.assign)
+
+	register(api, huma.Operation{
+		OperationID: "validate-routing-script", Method: http.MethodPost, Path: "/admin/routing-scripts/{id}/validate",
+		Summary: "Static validation (syntax, limits)", Tags: []string{"Routing Scripts"},
+		Security: scopeSecurity(auth.ScopeAdminRead),
+		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound},
+	}, h.validate)
+
+	register(api, huma.Operation{
+		OperationID: "test-routing-script", Method: http.MethodPost, Path: "/admin/routing-scripts/{id}/test",
+		Summary: "Dry-run against a sample message", Tags: []string{"Routing Scripts"},
+		Security: scopeSecurity(auth.ScopeAdminRead),
+		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity},
+	}, h.test)
+
+	register(api, huma.Operation{
+		OperationID: "publish-routing-script", Method: http.MethodPost, Path: "/admin/routing-scripts/{id}/publish",
+		Summary: "Publish (activate)", Tags: []string{"Routing Scripts"},
+		Security: scopeSecurity(auth.ScopeAdminWrite),
+		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusConflict, http.StatusUnprocessableEntity},
+	}, h.publish)
+}
+
+type assignRoutingScriptBody struct {
+	Scope   string  `json:"scope" enum:"platform,customer,smpp_account"`
+	ScopeID *string `json:"scope_id,omitempty" format:"uuid" nullable:"true"`
+}
+
+type assignRoutingScriptInput struct {
+	ID   string `path:"id" format:"uuid"`
+	Body assignRoutingScriptBody
+}
+
+// assign reassigns a draft to a different scope. Only a draft can be reassigned (an active script's
+// scope is immutable); the scope/scope_id invariant is re-validated.
+func (h *routingScriptHandlers) assign(ctx context.Context, in *assignRoutingScriptInput) (*routingScriptOutput, error) {
+	id, err := uuid.Parse(in.ID)
+	if err != nil {
+		return nil, notFound("routing script")
+	}
+	current, found, err := h.store.Get(ctx, id)
+	if err != nil {
+		return nil, humaerr.FromError(err)
+	}
+	if !found {
+		return nil, notFound("routing script")
+	}
+	if current.Status != script.StatusDraft {
+		return nil, humaerr.Fail(errs.ErrConflict, "only a draft routing script can be reassigned")
+	}
+	scopeID, err := parseIDPtr("scope_id", in.Body.ScopeID)
+	if err != nil {
+		return nil, err
+	}
+	if verr := validateScriptScope(script.Scope(in.Body.Scope), scopeID); verr != nil {
+		return nil, verr
+	}
+	saved, found, err := h.store.Assign(ctx, id, script.Scope(in.Body.Scope), scopeID)
+	if err != nil {
+		return nil, humaerr.FromError(err)
+	}
+	if !found {
+		return nil, notFound("routing script")
+	}
+	return &routingScriptOutput{Body: toRoutingScriptDTO(saved)}, nil
+}
+
+type scriptValidateResultDTO struct {
+	Valid    bool                 `json:"valid"`
+	Checksum *string              `json:"checksum,omitempty" nullable:"true"`
+	Errors   []scriptValidateItem `json:"errors,omitempty"`
+}
+
+type scriptValidateItem struct {
+	Line    *int   `json:"line,omitempty" nullable:"true"`
+	Message string `json:"message"`
+}
+
+type validateRoutingScriptOutput struct{ Body scriptValidateResultDTO }
+
+// validate compiles the script in the same runtime the router uses. A compile failure is a valid=false
+// result with the (operator-facing) error, not an HTTP error — the operator is diagnosing their own script.
+func (h *routingScriptHandlers) validate(ctx context.Context, in *routingScriptIDInput) (*validateRoutingScriptOutput, error) {
+	s, found, err := h.fetch(ctx, in.ID)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, notFound("routing script")
+	}
+	out := &validateRoutingScriptOutput{Body: scriptValidateResultDTO{Errors: []scriptValidateItem{}}}
+	if _, cerr := script.NewResolver(s); cerr != nil {
+		out.Body.Valid = false
+		out.Body.Errors = append(out.Body.Errors, scriptValidateItem{Message: cerr.Error()})
+		return out, nil
+	}
+	out.Body.Valid = true
+	sum := s.Checksum
+	out.Body.Checksum = &sum
+	return out, nil
+}
+
+type scriptTestMessageBody struct {
+	SourceAddr string  `json:"source_addr"`
+	DestAddr   string  `json:"dest_addr"`
+	Content    string  `json:"content"`
+	AccountID  *string `json:"account_id,omitempty" format:"uuid" nullable:"true"`
+	CustomerID *string `json:"customer_id,omitempty" format:"uuid" nullable:"true"`
+}
+
+type scriptTestRequestBody struct {
+	Message scriptTestMessageBody `json:"message"`
+}
+
+type testRoutingScriptInput struct {
+	ID   string `path:"id" format:"uuid"`
+	Body scriptTestRequestBody
+}
+
+type scriptTestResultDTO struct {
+	RouteID      *string  `json:"route_id,omitempty" format:"uuid" nullable:"true"`
+	TookMs       float64  `json:"took_ms"`
+	Instructions *int64   `json:"instructions,omitempty" nullable:"true"`
+	TimedOut     bool     `json:"timed_out"`
+	Error        *string  `json:"error,omitempty" nullable:"true"`
+	Logs         []string `json:"logs,omitempty"`
+}
+
+type testRoutingScriptOutput struct{ Body scriptTestResultDTO }
+
+// test dry-runs the script against a sample message in the SAME bounded sandbox as production (same
+// timeout/limits), so a script too costly to run in prod fails here too. The sample content is never
+// passed to the script (the routing runtime sees metadata only, invariant a) nor logged.
+func (h *routingScriptHandlers) test(ctx context.Context, in *testRoutingScriptInput) (*testRoutingScriptOutput, error) {
+	s, found, err := h.fetch(ctx, in.ID)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, notFound("routing script")
+	}
+	rt, cerr := script.NewResolver(s)
+	out := &testRoutingScriptOutput{Body: scriptTestResultDTO{Logs: []string{}}}
+	if cerr != nil {
+		msg := cerr.Error()
+		out.Body.Error = &msg
+		return out, nil
+	}
+
+	// account_id/customer_id select WHICH script runs (scope) in production; a direct test runs THIS
+	// script, so the runtime only needs the routing metadata it actually reads (from/to). No body.
+	msg := script.Message{From: in.Body.Message.SourceAddr, To: in.Body.Message.DestAddr, Segments: 1}
+
+	started := time.Now()
+	routeID, rerr := rt.Resolve(ctx, msg)
+	out.Body.TookMs = float64(time.Since(started).Microseconds()) / 1000.0
+
+	switch {
+	case rerr != nil:
+		out.Body.TimedOut = script.Reason(rerr) == "timeout"
+		msg := rerr.Error()
+		out.Body.Error = &msg
+	case routeID != nil:
+		rid := routeID.String()
+		out.Body.RouteID = &rid
+	}
+	return out, nil
+}
+
+// publish activates a draft (demoting any current active in the same scope, per the one-active index).
+// A concurrent publish of two drafts for the same scope surfaces as 409.
+func (h *routingScriptHandlers) publish(ctx context.Context, in *routingScriptIDInput) (*routingScriptOutput, error) {
+	id, err := uuid.Parse(in.ID)
+	if err != nil {
+		return nil, notFound("routing script")
+	}
+	// Compile-check before activating: an uncompilable active script is silently skipped by the router
+	// (declarative fallback), so publishing one would disable routing with a success response. Reject it.
+	current, found, err := h.store.Get(ctx, id)
+	if err != nil {
+		return nil, humaerr.FromError(err)
+	}
+	if !found {
+		return nil, notFound("routing script")
+	}
+	if _, cerr := script.NewResolver(current); cerr != nil {
+		return nil, humaerr.FailValidation("script does not compile",
+			humaerr.FieldError{Field: "source_code", Message: cerr.Error()})
+	}
+	saved, found, err := h.store.Publish(ctx, id)
+	if err != nil {
+		return nil, humaerr.FromError(err)
+	}
+	if !found {
+		return nil, notFound("routing script")
+	}
+	return &routingScriptOutput{Body: toRoutingScriptDTO(saved)}, nil
 }
 
 type listRoutingScriptsInput struct {
