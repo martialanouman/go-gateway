@@ -234,6 +234,10 @@ type SMPP struct {
 	QuerySMRatePerSec int `env:"QUERY_SM_RATE_PER_SEC" envDefault:"20"`
 	// QuerySMBurst is the query_sm burst capacity; zero lets the limiter default it to one second's worth.
 	QuerySMBurst int `env:"QUERY_SM_BURST" envDefault:"40"`
+
+	// InboundWindow bounds how many submit_sm one bind processes concurrently (step-088), decoupling a
+	// submit's produce from the read goroutine. Zero uses the session default.
+	InboundWindow int `env:"INBOUND_WINDOW" envDefault:"256"`
 }
 
 // Section names a configuration group a binary depends on. A binary declares the sections it
