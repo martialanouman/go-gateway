@@ -162,6 +162,49 @@ func (q *Queries) GetRoutingScript(ctx context.Context, id uuid.UUID) (ControlPl
 	return i, err
 }
 
+const listActiveRoutingScripts = `-- name: ListActiveRoutingScripts :many
+SELECT id, scope, scope_id, name, language, source_code, checksum, status, timeout_ms, max_instructions, max_memory_kb, created_by, created_at, published_at
+FROM control_plane.routing_scripts
+WHERE status = 'active'
+ORDER BY scope, scope_id
+`
+
+// Every active script across all scopes, to build the router's immutable script snapshot (step-110).
+func (q *Queries) ListActiveRoutingScripts(ctx context.Context) ([]ControlPlaneRoutingScript, error) {
+	rows, err := q.db.Query(ctx, listActiveRoutingScripts)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ControlPlaneRoutingScript{}
+	for rows.Next() {
+		var i ControlPlaneRoutingScript
+		if err := rows.Scan(
+			&i.ID,
+			&i.Scope,
+			&i.ScopeID,
+			&i.Name,
+			&i.Language,
+			&i.SourceCode,
+			&i.Checksum,
+			&i.Status,
+			&i.TimeoutMs,
+			&i.MaxInstructions,
+			&i.MaxMemoryKb,
+			&i.CreatedBy,
+			&i.CreatedAt,
+			&i.PublishedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRoutingScriptVersions = `-- name: ListRoutingScriptVersions :many
 SELECT id, scope, scope_id, name, language, source_code, checksum, status, timeout_ms, max_instructions, max_memory_kb, created_by, created_at, published_at
 FROM control_plane.routing_scripts

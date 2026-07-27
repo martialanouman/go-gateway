@@ -113,6 +113,16 @@ func (r *RoutingScriptRepo) ListVersions(ctx context.Context, scope script.Scope
 	return toRoutingScripts(rows), nil
 }
 
+// ListActive returns every active script across all scopes — the input to the router's immutable
+// script snapshot (step-110).
+func (r *RoutingScriptRepo) ListActive(ctx context.Context) ([]script.Script, error) {
+	rows, err := r.q.ListActiveRoutingScripts(ctx)
+	if err != nil {
+		return nil, translate("list active routing scripts", err)
+	}
+	return toRoutingScripts(rows), nil
+}
+
 // List returns a page of all scripts in id order, after the cursor (nil UUID for the first page).
 func (r *RoutingScriptRepo) List(ctx context.Context, after uuid.UUID, limit int) ([]script.Script, error) {
 	rows, err := r.q.ListRoutingScripts(ctx, sqlcgen.ListRoutingScriptsParams{

@@ -31,8 +31,10 @@ var (
 // read. The runtime resolves a route from these fields alone. ReceivedAtMs is an epoch-ms timestamp so
 // a script can do time-based routing deterministically (no real clock is exposed).
 type Message struct {
-	From         string `json:"from"`
-	To           string `json:"to"`
-	Segments     int    `json:"segments"`
-	ReceivedAtMs int64  `json:"received_at_ms"`
+	From string `json:"from"`
+	To   string `json:"to"`
+	// Segments is always 1 at routing time — segmentation runs after route resolution (frozen pipeline
+	// order), so the real count is not yet known. A script must not route on it.
+	Segments     int   `json:"segments"`
+	ReceivedAtMs int64 `json:"received_at_ms"`
 }
