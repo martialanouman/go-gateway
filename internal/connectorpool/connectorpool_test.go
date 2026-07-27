@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf16"
@@ -729,5 +730,100 @@ func TestConnectorPublishesDLRToDLREvents(t *testing.T) {
 	}
 	if dlr.State != 2 || dlr.Stat != "DELIVRD" {
 		t.Errorf("dlr state/stat = %d/%q, want 2/DELIVRD", dlr.State, dlr.Stat)
+	}
+}
+
+// continuingConsumer replays its records and, unlike fakeConsumer, does NOT stop on a handler error —
+// it models at-least-once redelivery eventually making progress, so a throttled-then-accepted sequence
+// can be driven through the connector in one Run.
+type continuingConsumer struct{ records []kafka.Record }
+
+func (c *continuingConsumer) Run(ctx context.Context, handle kafka.Handler) error {
+	for _, r := range c.records {
+		_ = handle(ctx, r)
+	}
+	return nil
+}
+
+// recordingThrottle captures the AIMD send-rate after each submit and counts throttle events.
+type recordingThrottle struct {
+	mu        sync.Mutex
+	rates     []float64
+	throttles int
+}
+
+func (m *recordingThrottle) SetRate(rate float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.rates = append(m.rates, rate)
+}
+
+func (m *recordingThrottle) IncThrottled() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.throttles++
+}
+
+// TestConnectorAIMDDropsThenRecovers is the step-086 acceptance: a burst of ESME_RTHROTTLED lowers the
+// connector's send rate; when the SMSC starts accepting again, it recovers.
+func TestConnectorAIMDDropsThenRecovers(t *testing.T) {
+	const throttleBurst = 6
+	var seen atomic.Int32
+	smsc := fakesmsc.Start(t, fakesmsc.Config{OnSubmit: func(smpp.SubmitSM) fakesmsc.Resp {
+		if seen.Add(1) <= throttleBurst {
+			return fakesmsc.Throttled()
+		}
+		return fakesmsc.OK()
+	}})
+
+	// throttleBurst throttled submits, then several accepted ones.
+	recs := make([]kafka.Record, 0, throttleBurst+4)
+	for i := 0; i < throttleBurst+4; i++ {
+		rec, err := pipeline.EncodeRouted(routed())
+		if err != nil {
+			t.Fatalf("encode routed: %v", err)
+		}
+		recs = append(recs, rec)
+	}
+
+	metric := &recordingThrottle{}
+	rrec := otelrec.New(t)
+	svc := connectorpool.New(connectorpool.Deps{
+		Consumer: &continuingConsumer{records: recs},
+		CDR:      &fakeCDR{},
+		Bind: connectorpool.BindConfig{
+			Addr: smsc.Addr(), SystemID: "esme", Password: "pw",
+			DialTimeout: 3 * time.Second, ResponseTimeout: 3 * time.Second,
+			EnquireLinkInterval: time.Minute, EnquireLinkMaxMissed: 3, WindowSize: 10,
+		},
+		MaxSendRate: 1000, // high ceiling so pacing is sub-millisecond and the test stays fast
+		Throttle:    metric,
+		Tracer:      observability.Tracer(rrec.Provider(), "connector-pool"),
+	})
+	if err := svc.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	metric.mu.Lock()
+	defer metric.mu.Unlock()
+	if metric.throttles != throttleBurst {
+		t.Errorf("throttle events = %d, want %d", metric.throttles, throttleBurst)
+	}
+	if len(metric.rates) == 0 {
+		t.Fatal("no rate samples recorded")
+	}
+	// The rate must have fallen well below the 1000 ceiling during the burst...
+	minRate := metric.rates[0]
+	for _, r := range metric.rates {
+		if r < minRate {
+			minRate = r
+		}
+	}
+	if minRate >= 1000 {
+		t.Errorf("min rate = %v, want it dropped below the ceiling 1000 during the throttle burst", minRate)
+	}
+	// ...and recovered above that low by the end, once the SMSC accepted again.
+	if last := metric.rates[len(metric.rates)-1]; last <= minRate {
+		t.Errorf("final rate = %v, want it recovered above the low %v after the SMSC accepted again", last, minRate)
 	}
 }
