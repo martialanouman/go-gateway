@@ -12,16 +12,23 @@ import (
 
 // onQuery returns the session's query_sm hook, bound to this connection's account toggles. When
 // query_sm is disabled on the account the operation is answered ESME_RINVCMDID, as if unsupported
-// (§6.22). When enabled it is a skeleton: it echoes the message_id with an unknown message state —
-// the real message-state lookup and its dedicated rate limit are M6 (out of scope for step-025). The
-// message body is never involved, so nothing can leak (invariant a).
+// (§6.22). When enabled it is rate-limited on a DEDICATED per-account query_sm bucket (step-087) —
+// isolated from the submit_sm budget, so an intensive querier cannot abuse the SMSC nor eat the send
+// allowance — then answered as a skeleton echoing the message_id with an unknown state (the real
+// message-state lookup is a later concern). Over the limit it is refused ESME_RTHROTTLED. The message
+// body is never involved, so nothing can leak (invariant a).
 func (l *Listener) onQuery(_ context.Context, st *connState) session.QueryHandler {
-	return func(_ context.Context, req session.QueryRequest) session.QueryResult {
+	return func(ctx context.Context, req session.QueryRequest) session.QueryResult {
 		if !st.querySMEnabled {
 			return session.QueryResult{Status: errs.StatusInvalidCmdID}
 		}
-		// Skeleton: acknowledge with the queried id and a valid UNKNOWN state — the real message-state
-		// lookup (and its dedicated rate limit) is M6.
+		if l.opts.QueryLimiter != nil && !l.opts.QueryLimiter.Allow(ctx, st.accountID) {
+			if l.opts.QueryThrottled != nil {
+				l.opts.QueryThrottled.Inc()
+			}
+			l.logger.InfoContext(ctx, "smpp query_sm throttled", "account_id", st.accountID)
+			return session.QueryResult{Status: errs.StatusThrottled}
+		}
 		return session.QueryResult{
 			Status:       smpp.StatusOK,
 			MessageID:    req.MessageID,

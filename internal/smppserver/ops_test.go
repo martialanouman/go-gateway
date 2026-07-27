@@ -55,6 +55,59 @@ func TestOnQueryToggle(t *testing.T) {
 	})
 }
 
+// stubQueryLimiter is a controllable QueryLimiter recording the account it was asked about.
+type stubQueryLimiter struct {
+	allow      bool
+	calls      int
+	gotAccount uuid.UUID
+}
+
+func (s *stubQueryLimiter) Allow(_ context.Context, accountID uuid.UUID) bool {
+	s.calls++
+	s.gotAccount = accountID
+	return s.allow
+}
+
+// TestOnQueryRateLimited: an enabled query_sm is checked against the per-account query_sm limiter —
+// over the limit it is refused ESME_RTHROTTLED, under it answers normally, and a disabled query_sm
+// never even reaches the limiter (its own budget is untouched).
+func TestOnQueryRateLimited(t *testing.T) {
+	account := uuid.New()
+
+	t.Run("over the limit is ESME_RTHROTTLED", func(t *testing.T) {
+		lim := &stubQueryLimiter{allow: false}
+		l := New(nil, nil, nil, Options{QueryLimiter: lim}, discardLog())
+		res := l.onQuery(context.Background(), &connState{querySMEnabled: true, accountID: account})(
+			context.Background(), session.QueryRequest{MessageID: "m1"})
+		if res.Status != errs.StatusThrottled {
+			t.Errorf("status = %#x, want ESME_RTHROTTLED (%#x)", res.Status, errs.StatusThrottled)
+		}
+		if lim.gotAccount != account {
+			t.Errorf("limiter checked account %s, want %s", lim.gotAccount, account)
+		}
+	})
+
+	t.Run("under the limit answers normally", func(t *testing.T) {
+		lim := &stubQueryLimiter{allow: true}
+		l := New(nil, nil, nil, Options{QueryLimiter: lim}, discardLog())
+		res := l.onQuery(context.Background(), &connState{querySMEnabled: true, accountID: account})(
+			context.Background(), session.QueryRequest{MessageID: "m1"})
+		if res.Status != smpp.StatusOK || res.MessageID != "m1" {
+			t.Errorf("res = {%#x, %q}, want a StatusOK echoing m1", res.Status, res.MessageID)
+		}
+	})
+
+	t.Run("disabled never reaches the limiter", func(t *testing.T) {
+		lim := &stubQueryLimiter{allow: true}
+		l := New(nil, nil, nil, Options{QueryLimiter: lim}, discardLog())
+		_ = l.onQuery(context.Background(), &connState{querySMEnabled: false, accountID: account})(
+			context.Background(), session.QueryRequest{MessageID: "m1"})
+		if lim.calls != 0 {
+			t.Errorf("limiter consulted %d times for a disabled query_sm, want 0", lim.calls)
+		}
+	})
+}
+
 func TestOnCancelDisabledIsInvalidCmdID(t *testing.T) {
 	l := New(nil, nil, nil, Options{Canceller: &fakeCanceller{}}, discardLog())
 

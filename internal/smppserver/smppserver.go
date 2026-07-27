@@ -125,6 +125,18 @@ type Options struct {
 	// enabled cancel_sm with ESME_RCANCELFAIL (bind-only tests leave it nil); production wiring passes
 	// a *cancel.Canceller.
 	Canceller Canceller
+	// QueryLimiter rate-limits query_sm per account, on a bucket dedicated to query_sm and separate from
+	// the submit_sm budget (§6.22). Nil disables the limit (query_sm is answered without throttling).
+	QueryLimiter QueryLimiter
+	// QueryThrottled counts query_sm refused by the limiter. Nil skips the metric.
+	QueryThrottled prometheus.Counter
+}
+
+// QueryLimiter reports whether an account may issue another query_sm now, consuming one from its
+// DEDICATED query_sm bucket — isolated from the submit_sm budget so an intensive querier cannot eat the
+// send allowance (§6.22). It fails closed on a store outage (the underlying token bucket, step-084).
+type QueryLimiter interface {
+	Allow(ctx context.Context, accountID uuid.UUID) bool
 }
 
 // Listener accepts SMPP connections and drives each through an authenticated bind. Construct it with
