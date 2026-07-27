@@ -32,6 +32,21 @@ func (s State) String() string {
 	}
 }
 
+// ParseState maps a schema token (breaker:state value) back to a State. ok is false for an unknown
+// token — the caller decides how to treat an unreadable aggregate (this package defaults to Closed).
+func ParseState(token string) (State, bool) {
+	switch token {
+	case "closed":
+		return Closed, true
+	case "open":
+		return Open, true
+	case "half_open":
+		return HalfOpen, true
+	default:
+		return Closed, false
+	}
+}
+
 // Config tunes the breaker. FailureRate over a rolling Window (once at least MinRequests are seen)
 // trips it open; after Cooldown it half-opens and admits up to HalfOpenProbes trial requests — enough
 // successes close it, one failure re-opens it.
