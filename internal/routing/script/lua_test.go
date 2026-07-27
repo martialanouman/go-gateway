@@ -12,7 +12,7 @@ import (
 )
 
 func luaScript(src string) script.Script {
-	return script.Script{Name: "t", Language: script.LanguageLua, Source: src, TimeoutMs: 5}
+	return script.Script{Name: "t", Language: script.LanguageLua, Source: src, TimeoutMs: 50}
 }
 
 const luaRoute = "550e8400-e29b-41d4-a716-446655440001"
@@ -144,7 +144,11 @@ func TestLuaNoCoroutineOrDebug(t *testing.T) {
 
 // TestLuaConcurrentReuse: many concurrent resolutions share the state pool safely (run under -race).
 func TestLuaConcurrentReuse(t *testing.T) {
-	rt, _ := script.NewLuaRuntime(luaScript(`function resolveRoute(m) if m.to == "hit" then return "` + luaRoute + `" end return nil end`))
+	// A generous budget: 32 goroutines contending for the state pool under -race can make even a trivial
+	// script's wall-clock exceed a few ms in a loaded CI — that is instrumentation overhead, not a real
+	// timeout, so it must not trip here (production runs without -race under the schema-capped budget).
+	rt, _ := script.NewLuaRuntime(script.Script{Name: "t", Language: script.LanguageLua, TimeoutMs: 500,
+		Source: `function resolveRoute(m) if m.to == "hit" then return "` + luaRoute + `" end return nil end`})
 	want := uuid.MustParse(luaRoute)
 
 	var wg sync.WaitGroup
