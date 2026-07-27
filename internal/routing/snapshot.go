@@ -288,7 +288,7 @@ func (r *SnapshotResolver) resolveFrom(ctx context.Context, snap *Snapshot, cr *
 
 	if conn, ok := r.selectConnector(ctx, cr, dest); ok {
 		routeID := cr.routeID
-		return pipeline.Route{ConnectorID: conn, RouteID: &routeID}, nil
+		return pipeline.Route{ConnectorID: conn, RouteID: &routeID, FallbackChain: r.fallbackChain(ctx, cr)}, nil
 	}
 	// No target retained → follow the route-level fallback if configured.
 	if cr.fallbackRouteID != nil {
@@ -322,6 +322,22 @@ func (r *SnapshotResolver) selectConnector(ctx context.Context, cr *compiledRout
 		return strategy.LeastLoaded(r.availableTargets(cr.targets), func(id uuid.UUID) int { return r.inFlight(ctx, id) })
 	default:
 		return uuid.Nil, false
+	}
+}
+
+// fallbackChain is the ordered connector fallback order the connector pool follows on reroute
+// (step-125), for the breaker-aware strategies only (failover_priority / least_loaded). It is the FULL
+// ordered target list (not availability-filtered): the pool re-checks each connector's breaker at
+// reroute time and skips the open ones, so a connector that recovers can still serve as a later
+// fallback. Other strategies get no chain — a single terminal outcome, no reroute.
+func (r *SnapshotResolver) fallbackChain(ctx context.Context, cr *compiledRoute) []uuid.UUID {
+	switch cr.strategy {
+	case cp.DistributionFailoverPriority:
+		return strategy.FailoverPriorityChain(cr.targets)
+	case cp.DistributionLeastLoaded:
+		return strategy.LeastLoadedChain(cr.targets, func(id uuid.UUID) int { return r.inFlight(ctx, id) })
+	default:
+		return nil
 	}
 }
 

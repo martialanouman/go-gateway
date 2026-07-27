@@ -330,6 +330,7 @@ Chaque erreur de domaine a exactement un statut HTTP et un `command_status` SMPP
 | `submit_failed` | — (issue sortante) | `ESME_RSUBMITFAIL` (0x45) | Le SMSC a rejeté le `submit_sm` — enregistré dans `cdr.error_code`, pas une erreur de requête REST | Non |
 | `delivery_failed` | — (issue sortante) | — | Un accusé de réception rapporte le message comme non délivrable (message_state UNDELIV/DELETED/REJECTD) — enregistré dans `cdr.error_code` | Non |
 | `delivery_expired` | — (issue sortante) | — | Un accusé de réception rapporte l'expiration du message avant remise (message_state EXPIRED) — enregistré dans `cdr.error_code` | Non |
+| `fallback_exhausted` | — (issue sortante) | — | Le message a parcouru toute sa `fallback_chain` et tous les connecteurs se sont dégradés (breaker ouvert ou rejet santé-connecteur) — enregistré dans `cdr.error_code` et comme raison sur `mt.dead-letter` (step-125) | Non |
 
 ### 11.4 Rejouabilité et idempotence
 

@@ -36,10 +36,16 @@ const (
 // leave room for M4+ states. In M2 a message is accepted then exactly one of enroute/rejected/
 // failed, so the enroute/rejected tie never actually occurs.
 var statusRank = map[Status]uint64{
-	StatusAccepted:  10,
+	StatusAccepted: 10,
+	// rerouted ranks BELOW enroute: it is a transient step on the fallback path (a connector degraded,
+	// the message moved on), written by the failing connector BEFORE the destination connector writes
+	// its enroute. The destination's enroute (20) must therefore supersede it — otherwise a message
+	// successfully handed to the fallback connector would read "rerouted" forever whenever the SMSC
+	// sends no delivery receipt (step-125). It still outranks accepted, so an in-flight reroute shows as
+	// rerouted until the new connector reports enroute.
+	StatusRerouted:  15,
 	StatusEnroute:   20,
 	StatusRejected:  20,
-	StatusRerouted:  30,
 	StatusDelivered: 40,
 	StatusFailed:    50,
 	StatusExpired:   50,

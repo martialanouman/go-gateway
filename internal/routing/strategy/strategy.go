@@ -7,6 +7,7 @@ package strategy
 
 import (
 	"hash/fnv"
+	"sort"
 
 	"github.com/google/uuid"
 )
@@ -91,6 +92,48 @@ func LeastLoaded(targets []Target, loadOf func(uuid.UUID) int) (uuid.UUID, bool)
 		}
 	}
 	return best.ConnectorID, true
+}
+
+// FailoverPriorityChain returns every target's connector ordered by priority (lowest first), ties on
+// connector id — the fallback order the connector pool follows when a target degrades (step-125). The
+// head equals FailoverPriority's pick, so the chain is a superset that starts at the primary.
+func FailoverPriorityChain(targets []Target) []uuid.UUID {
+	ordered := append([]Target(nil), targets...)
+	sort.Slice(ordered, func(i, j int) bool {
+		if ordered[i].Priority != ordered[j].Priority {
+			return ordered[i].Priority < ordered[j].Priority
+		}
+		return ordered[i].ConnectorID.String() < ordered[j].ConnectorID.String()
+	})
+	return connectorIDs(ordered)
+}
+
+// LeastLoadedChain returns every target's connector ordered by in-flight load (lowest first), ties on
+// connector id — the reroute fallback order for a least_loaded route (step-125). loadOf must not mutate
+// state (it reads a published Redis gauge). The head equals LeastLoaded's pick.
+func LeastLoadedChain(targets []Target, loadOf func(uuid.UUID) int) []uuid.UUID {
+	ordered := append([]Target(nil), targets...)
+	load := make(map[uuid.UUID]int, len(ordered))
+	for _, t := range ordered {
+		load[t.ConnectorID] = loadOf(t.ConnectorID)
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		li, lj := load[ordered[i].ConnectorID], load[ordered[j].ConnectorID]
+		if li != lj {
+			return li < lj
+		}
+		return ordered[i].ConnectorID.String() < ordered[j].ConnectorID.String()
+	})
+	return connectorIDs(ordered)
+}
+
+// connectorIDs projects a target slice to its connector ids, in order.
+func connectorIDs(targets []Target) []uuid.UUID {
+	ids := make([]uuid.UUID, len(targets))
+	for i, t := range targets {
+		ids[i] = t.ConnectorID
+	}
+	return ids
 }
 
 // hash is a stable non-cryptographic digest of key. FNV-1a is fast and well-distributed; routing keys

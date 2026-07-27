@@ -9,6 +9,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"log/slog"
@@ -21,6 +22,7 @@ import (
 	"github.com/caarlos0/env/v11"
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
+	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/martialanouman/go-gateway/internal/cancel"
 	"github.com/martialanouman/go-gateway/internal/config"
@@ -97,7 +99,18 @@ func run() error {
 	}
 	defer func() { _ = chConn.Close() }()
 
-	consumer, err := kafka.NewConsumer(cfg.Kafka, serviceName, kafka.TopicMTRouted)
+	// Per-connector consumer group (step-125, option B): every pool reads all of mt.routed and skips
+	// records for other connectors, so a rerouted message reaches the next connector's pool. FromLatest
+	// so a brand-new per-connector group does not replay the whole retained topic (mass re-send); a
+	// restart still resumes from its committed offset.
+	//
+	// MIGRATION HAZARD: renaming the group from "connector-pool-svc" to per-connector, with FromLatest,
+	// silently DROPS any mt.routed produced-but-not-yet-consumed at cutover (offset old-commit → head)
+	// — neither the old nor the new group reads it. Safe on a greenfield/zero-traffic cutover only; a
+	// cutover with live traffic MUST first drain mt.routed or seed the new group's offsets from the old
+	// group's committed offsets. See docs runbook before the first production deploy.
+	consumerGroup := serviceName + "-" + bindEnv.ID.String()
+	consumer, err := kafka.NewConsumerFromLatest(cfg.Kafka, consumerGroup, kafka.TopicMTRouted)
 	if err != nil {
 		return fmt.Errorf("kafka consumer: %w", err)
 	}
@@ -151,13 +164,14 @@ func run() error {
 
 	tracer := observability.Tracer(nil, serviceName)
 	svc := connectorpool.New(connectorpool.Deps{
-		Consumer:    consumer,
-		CDR:         clickhouse.NewCDRWriter(chConn),
-		CancelFlags: cancel.NewRedisFlags(rdb),
-		DLRMap:      dlrmap.NewRedisMap(rdb),
-		Producer:    producer,
-		Breaker:     breakerAgg,
-		ConnectorID: bindEnv.ID,
+		Consumer:     consumer,
+		CDR:          clickhouse.NewCDRWriter(chConn),
+		CancelFlags:  cancel.NewRedisFlags(rdb),
+		DLRMap:       dlrmap.NewRedisMap(rdb),
+		Producer:     producer,
+		Breaker:      breakerAgg,
+		BreakerState: breakerStateReader{rdb: rdb},
+		ConnectorID:  bindEnv.ID,
 		Bind: connectorpool.BindConfig{
 			Addr:                 bindEnv.Addr,
 			SystemID:             bindEnv.SystemID,
@@ -212,3 +226,20 @@ type throttleMetric struct {
 
 func (m throttleMetric) SetRate(rate float64) { m.rate.Set(rate) }
 func (m throttleMetric) IncThrottled()        { m.throttled.Inc() }
+
+// breakerStateReader reads a connector's breaker aggregate (breaker:state:{id}) so a reroute can skip a
+// candidate that is itself open (step-125). A missing key or unparsable value reads "not open" (the
+// breaker's own default is closed); it is consulted only on a reroute, never on the hot path.
+type breakerStateReader struct{ rdb *goredis.Client }
+
+func (b breakerStateReader) IsOpen(ctx context.Context, connectorID uuid.UUID) (bool, error) {
+	token, err := b.rdb.Get(ctx, "breaker:state:{"+connectorID.String()+"}").Result()
+	if err != nil {
+		if errors.Is(err, goredis.Nil) {
+			return false, nil // no aggregate yet → treat as available
+		}
+		return false, err
+	}
+	st, ok := breaker.ParseState(token)
+	return ok && st == breaker.Open, nil
+}

@@ -32,6 +32,19 @@ type Consumer struct {
 // NewConsumer joins the given consumer group and subscribes to topics. A group with no committed
 // offset starts at the earliest record, so durably-queued work is processed rather than skipped.
 func NewConsumer(cfg config.Kafka, group string, topics ...string) (*Consumer, error) {
+	return newConsumer(cfg, group, kgo.NewOffset().AtStart(), topics...)
+}
+
+// NewConsumerFromLatest is like NewConsumer but a group with no committed offset starts at the LATEST
+// record. It is for a consumer whose group id is per-instance (e.g. the connector pool's per-connector
+// group, step-125): a fresh group must NOT replay the whole retained topic — that would re-send every
+// historical message. On a restart the group still resumes from its committed offset; only the very
+// first start skips history, which is the intended migration behaviour.
+func NewConsumerFromLatest(cfg config.Kafka, group string, topics ...string) (*Consumer, error) {
+	return newConsumer(cfg, group, kgo.NewOffset().AtEnd(), topics...)
+}
+
+func newConsumer(cfg config.Kafka, group string, reset kgo.Offset, topics ...string) (*Consumer, error) {
 	if group == "" {
 		return nil, fmt.Errorf("kafka: consumer group must not be empty")
 	}
@@ -44,7 +57,7 @@ func NewConsumer(cfg config.Kafka, group string, topics ...string) (*Consumer, e
 		kgo.ConsumeTopics(topics...),
 		// Commit only after work is done; never let franz-go advance offsets on a timer.
 		kgo.DisableAutoCommit(),
-		kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()),
+		kgo.ConsumeResetOffset(reset),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("kafka: new consumer: %w", err)

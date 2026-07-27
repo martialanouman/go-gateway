@@ -57,6 +57,12 @@ type RoutedMT struct {
 	DataCoding         *int // client data_coding override, carried through to the SMSC (nil = derive from Encoding)
 	ConnectorID        uuid.UUID
 	RouteID            *uuid.UUID
+	// FallbackChain is the ordered list of connectors this message may be rerouted through when its
+	// current target degrades (breaker open or a connector-health rejection), computed by the router
+	// from the route's strategy (step-114/125). It travels in the fallback_chain HEADER (routing
+	// metadata, never the body — invariant a), so the connector pool can reroute unilaterally without a
+	// round-trip to the router. Empty means no reroute (a single terminal outcome).
+	FallbackChain []uuid.UUID
 	// SegmentSeq is this segment's 1-based position; SegmentCount is the total number of segments the
 	// message was split into. All segments of a message share MessageID, ConnectorID and SegmentCount,
 	// and are produced under the same partition key so they stay ordered on one bind.

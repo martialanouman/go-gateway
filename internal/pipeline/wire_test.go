@@ -69,6 +69,15 @@ func TestInboundRoundTrip(t *testing.T) {
 	}
 }
 
+// routedFixture is a minimal valid RoutedMT for the fallback-chain header tests.
+func routedFixture() pipeline.RoutedMT {
+	return pipeline.RoutedMT{
+		MessageID: uuid.New(), TraceID: uuid.New(), AccountID: uuid.New(), CustomerID: uuid.New(),
+		From: "GATEWAY", To: "+22507000000", Body: msg.NewBodyString("hi"),
+		Encoding: "gsm7", ConnectorID: uuid.New(), SegmentCount: 1, SubmittedAt: time.Now().UTC().Truncate(time.Millisecond),
+	}
+}
+
 func TestRoutedRoundTrip(t *testing.T) {
 	routeID := uuid.New()
 	in := pipeline.RoutedMT{
@@ -141,5 +150,57 @@ func TestBodyNeverInHeaders(t *testing.T) {
 	// The masked in-process form never shows the plaintext.
 	if strings.Contains(in.Body.String(), secret) {
 		t.Error("msg.Body.String() must not reveal the plaintext")
+	}
+}
+
+func TestRoutedFallbackChainHeaderRoundTrips(t *testing.T) {
+	c1, c2, c3 := uuid.New(), uuid.New(), uuid.New()
+	env := routedFixture()
+	env.FallbackChain = []uuid.UUID{c1, c2, c3}
+	rec, err := pipeline.EncodeRouted(env)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	// The chain travels in the header, never the value/body.
+	if _, ok := rec.Header(kafka.HeaderFallbackChain); !ok {
+		t.Fatal("fallback_chain header missing")
+	}
+	got, err := pipeline.DecodeRouted(rec)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.FallbackChain) != 3 || got.FallbackChain[0] != c1 || got.FallbackChain[2] != c3 {
+		t.Errorf("chain = %v, want [%s %s %s]", got.FallbackChain, c1, c2, c3)
+	}
+}
+
+func TestRoutedNoChainHeaderWhenEmpty(t *testing.T) {
+	rec, err := pipeline.EncodeRouted(routedFixture())
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if _, ok := rec.Header(kafka.HeaderFallbackChain); ok {
+		t.Error("empty chain must not emit a fallback_chain header")
+	}
+	got, _ := pipeline.DecodeRouted(rec)
+	if got.FallbackChain != nil {
+		t.Errorf("chain = %v, want nil", got.FallbackChain)
+	}
+}
+
+func TestDecodeChainToleratesMalformed(t *testing.T) {
+	good := uuid.New()
+	rec, err := pipeline.EncodeRouted(routedFixture())
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	// Hand-craft a messy header: a bad token, a duplicate, whitespace.
+	rec.Headers = append(rec.Headers, kafka.Header{
+		Key:   kafka.HeaderFallbackChain,
+		Value: []byte("not-a-uuid, " + good.String() + " ," + good.String()),
+	})
+	got, _ := pipeline.DecodeRouted(rec)
+	if len(got.FallbackChain) != 1 || got.FallbackChain[0] != good {
+		t.Errorf("chain = %v, want [%s] (bad skipped, dup dropped)", got.FallbackChain, good)
 	}
 }

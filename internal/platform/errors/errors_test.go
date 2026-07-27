@@ -114,6 +114,7 @@ func TestOutcomeOnlyCodes(t *testing.T) {
 	}{
 		{errs.ErrDeliveryFailed, "delivery_failed"},
 		{errs.ErrDeliveryExpired, "delivery_expired"},
+		{errs.ErrFallbackExhausted, "fallback_exhausted"},
 	}
 	for _, c := range cases {
 		if string(c.code) != c.want {
