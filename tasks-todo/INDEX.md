@@ -90,7 +90,7 @@ Légende : `[x]` = fait (dans `tasks-done/`) · `[ ]` = à faire (dans `tasks-to
 ## M8 — Résilience connecteurs  *(bascule au vrai simulateur SMSC)*
 - [x] step-120 — Basculer les tests d'intégration au vrai simulateur SMSC
 - [x] step-121 — Disjoncteur par connecteur : machine à états locale
-- [ ] step-122 — Agrégation multi-pod du disjoncteur par majorité (Redis)
+- [x] step-122 — Agrégation multi-pod du disjoncteur par majorité (Redis)
 - [ ] step-123 — Le routeur lit `breaker:state` à la (re)construction de l'instantané
 - [ ] step-124 — Pool de binds (`bind_pool_size > 1`) + partition par shard
 - [ ] step-125 — `fallback_chain` en en-tête + reroute unilatéral
