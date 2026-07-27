@@ -724,7 +724,8 @@ retry:delayed:{connector_id}                        -- sorted-set delay queue (s
 breaker:binds:{connector_id}                        -- HASH of per (pod_id, bind_index) sub-bind states
 breaker:state:{connector_id}                        -- derived connector aggregate (closed|open|half_open)
 connectorload:{connector_id}                        -- in-flight gauge per connector, for least_loaded (§6.1)
-breaker:events                                      -- pub/sub channel for routing-snapshot invalidation
+config:changed                                      -- pub/sub channel: Admin API announces a control-plane mutation; config-sync coalesces these
+breaker:events                                      -- pub/sub channel for routing-snapshot invalidation (config-sync M7, circuit breaker M8)
 
 -- Kafka topics (data plane):
 mt.inbound        -- raw submissions (SMPP/REST), pre-routing. Partitioned by customer/account hash.

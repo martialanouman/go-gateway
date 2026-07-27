@@ -187,6 +187,25 @@ func run() error {
 	}
 	ops.Registry().MustRegister(failOpenTotal)
 
+	// Hot reload (step-105): on a config-sync invalidation, rebuild the immutable route snapshot and
+	// swap it atomically — the readers pick up the new one lock-free, with no downtime. A rebuild
+	// failure keeps the current snapshot serving (the Watcher logs and does not Swap). The exact-route
+	// Bloom is reloaded on the same channel in step-106.
+	snapshotWatcher := config.NewWatcher(
+		func(ctx context.Context) (config.Stream, error) {
+			return redisstore.Subscribe(ctx, rdb, config.ChannelSnapshotInvalidation), nil
+		},
+		func(ctx context.Context) error {
+			snap, berr := routing.BuildSnapshot(ctx, postgres.NewRouteRepo(pool))
+			if berr != nil {
+				return berr
+			}
+			snapshot.Swap(snap)
+			return nil
+		},
+		config.WithLogger(logger),
+	)
+
 	logger.InfoContext(ctx, "starting", "config", cfg)
 
 	// Ops and the router pipeline tear down together — neither must outlive the other — so the
@@ -194,6 +213,7 @@ func run() error {
 	var g supervisor.Group
 	g.Add("ops server", func(c context.Context) error { return ops.Run(c, cfg.ShutdownTimeout) })
 	g.Add("router", rtr.Run)
+	g.Add("snapshot watcher", snapshotWatcher.Run)
 	if err := g.Run(ctx, logger); err != nil {
 		return err
 	}
