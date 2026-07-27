@@ -59,6 +59,36 @@ func TestExactRouteRepoUpsertIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestExactRouteRepoDeleteAndGetMissing: Get and Delete distinguish present from absent — a missing
+// MSISDN is the "no override" state (found=false, no error), the L0 short-cut's normal fall-through.
+func TestExactRouteRepoDeleteAndGetMissing(t *testing.T) {
+	ctx := context.Background()
+	cleanExactRoutes(t)
+	repo := postgres.NewExactRouteRepo(pgtest.Pool(t))
+
+	// Get of an unconfigured number: not found, no error.
+	if _, found, err := repo.Get(ctx, "+2250799999999"); err != nil || found {
+		t.Fatalf("get missing = (found %v, err %v), want (false, nil)", found, err)
+	}
+	// Delete of an unconfigured number: not found, no error.
+	if found, err := repo.Delete(ctx, "+2250799999999"); err != nil || found {
+		t.Fatalf("delete missing = (found %v, err %v), want (false, nil)", found, err)
+	}
+
+	// Configure one, then delete it: found=true, and it is gone afterwards.
+	if _, err := repo.Upsert(ctx, exact.Route{
+		MSISDN: "+2250700000009", Target: exact.Target{Type: exact.TargetConnector, ID: uuid.New()}, Source: exact.SourceManual,
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if found, err := repo.Delete(ctx, "+2250700000009"); err != nil || !found {
+		t.Fatalf("delete existing = (found %v, err %v), want (true, nil)", found, err)
+	}
+	if _, found, err := repo.Get(ctx, "+2250700000009"); err != nil || found {
+		t.Errorf("get after delete = (found %v, err %v), want (false, nil)", found, err)
+	}
+}
+
 // TestExactRouteRepoListPaginates: List returns msisdn-ordered pages, and the keyset cursor covers
 // every row exactly once.
 func TestExactRouteRepoListPaginates(t *testing.T) {
