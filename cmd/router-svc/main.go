@@ -20,6 +20,7 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/martialanouman/go-gateway/internal/config"
+	"github.com/martialanouman/go-gateway/internal/connector/breaker"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	"github.com/martialanouman/go-gateway/internal/pipeline/antispam"
@@ -133,6 +134,13 @@ func run() error {
 	// least_loaded reads each connector's published in-flight gauge (connectorload:{id}) from Redis —
 	// the mutable overlay beside the immutable route snapshot (step-104/114). A missing gauge reads 0.
 	snapshot.UseLoadReader(connectorLoad{rdb: rdb})
+	// Breaker awareness (step-123): read each connector's aggregate breaker:state once at boot to seed the
+	// availability overlay, then refresh it on every snapshot rebuild below. Reading here (not per message)
+	// keeps the hot path off Redis. A transient read failure just leaves every connector available.
+	breakerAvail := breakerAvailability{rdb: rdb}
+	if err := snapshot.RefreshAvailability(ctx, breakerAvail); err != nil {
+		logger.WarnContext(ctx, "seed breaker availability failed; starting with all connectors available", "err", err)
+	}
 	// anti_spam_fail_open_total: bounded (no labels) — counts messages let through because a
 	// Redis-backed anti-spam check could not run (§1.5 fail-open). Never a MSISDN or body.
 	failOpenTotal := prometheus.NewCounter(prometheus.CounterOpts{
@@ -243,6 +251,13 @@ func run() error {
 				return berr
 			}
 			snapshot.Swap(snap)
+			// Refresh the breaker-availability overlay for the new snapshot's connectors. This is what makes
+			// a breaker:events invalidation exclude a newly-open connector (and readmit a recovered one). A
+			// read failure is not fatal to the rebuild: keep the freshly-swapped routes serving with the last
+			// known availability and let the next invalidation retry.
+			if aerr := snapshot.RefreshAvailability(ctx, breakerAvail); aerr != nil {
+				logger.WarnContext(ctx, "refresh breaker availability failed; serving with stale availability", "err", aerr)
+			}
 
 			if berr := exactBloom.Reload(ctx, exactRepo); berr != nil {
 				return berr
@@ -346,6 +361,41 @@ func (c connectorLoad) InFlight(ctx context.Context, connectorID uuid.UUID) int 
 		return 0
 	}
 	return n
+}
+
+// breakerAvailability reads breaker:state:{id} for a set of connectors (one MGET) and returns those that
+// are open — the routing availability overlay (step-123). It is consulted only at snapshot rebuild, so
+// the per-message resolve path never touches Redis. A missing key (nil) or an unparsable value counts as
+// available (the breaker's own default is closed); an MGET error propagates so the caller keeps the last
+// known availability rather than fencing the whole fleet.
+type breakerAvailability struct{ rdb *goredis.Client }
+
+func (b breakerAvailability) Unavailable(ctx context.Context, connectorIDs []uuid.UUID) (map[uuid.UUID]bool, error) {
+	if len(connectorIDs) == 0 {
+		return nil, nil
+	}
+	keys := make([]string, len(connectorIDs))
+	for i, id := range connectorIDs {
+		keys[i] = "breaker:state:{" + id.String() + "}"
+	}
+	// One MGET for every connector in the snapshot (cold path, once per rebuild). breaker:state keys use
+	// a per-connector hash tag, so on a true Redis Cluster this would span slots (CROSSSLOT); the store
+	// here is single-instance Redis/Dragonfly, where a multi-key read is served directly.
+	vals, err := b.rdb.MGet(ctx, keys...).Result()
+	if err != nil {
+		return nil, err
+	}
+	open := make(map[uuid.UUID]bool)
+	for i, v := range vals {
+		token, ok := v.(string)
+		if !ok {
+			continue // nil (key absent) or unexpected type → available
+		}
+		if st, ok := breaker.ParseState(token); ok && st == breaker.Open {
+			open[connectorIDs[i]] = true
+		}
+	}
+	return open, nil
 }
 
 // loadWithRetry loads an immutable boot snapshot, retrying transient failures with capped exponential

@@ -53,19 +53,82 @@ type LoadReader interface {
 	InFlight(ctx context.Context, connectorID uuid.UUID) int
 }
 
+// AvailabilityReader reports which of the given connectors are currently unavailable — breaker open
+// (breaker:state, step-122). It is consulted ONLY when the snapshot is (re)built (RefreshAvailability),
+// never on the per-message resolve path: the hot path must not touch Redis (§12). The returned map holds
+// the open connectors; any connector absent from it is treated as available. The map becomes the
+// resolver's — the reader must not retain or mutate it after returning.
+type AvailabilityReader interface {
+	Unavailable(ctx context.Context, connectorIDs []uuid.UUID) (map[uuid.UUID]bool, error)
+}
+
 // SnapshotResolver serves route resolution from the current Snapshot, held behind an atomic pointer.
 // Per-message reads Load() lock-free (hot path, ~8000/s); config-sync replaces the whole set with Swap.
-// The round-robin counters and the load reader live in a mutable overlay beside the immutable snapshot,
-// never inside it (step-104): a config swap replaces the routes but the counters persist per route id.
+// The round-robin counters, the load reader and the availability overlay live beside the immutable
+// snapshot, never inside it (step-104): a config swap replaces the routes but the counters persist per
+// route id, and the availability overlay is refreshed at each rebuild (breaker awareness, step-123).
 type SnapshotResolver struct {
-	current    atomic.Pointer[Snapshot]
-	rr         sync.Map   // routeID -> *atomic.Uint64
-	loadReader LoadReader // nil = least_loaded treats every connector as load 0
+	current     atomic.Pointer[Snapshot]
+	rr          sync.Map                        // routeID -> *atomic.Uint64
+	loadReader  LoadReader                      // nil = least_loaded treats every connector as load 0
+	unavailable atomic.Pointer[availabilitySet] // connectors to exclude (breaker open); nil = all available
 }
+
+// availabilitySet is the set of connectors excluded from selection (breaker open). It is replaced whole
+// behind the atomic pointer at each rebuild, never mutated in place — mirroring the immutable snapshot.
+type availabilitySet map[uuid.UUID]bool
 
 // UseLoadReader sets the connector-load source for least_loaded (the mutable overlay). The router wires
 // a Redis-backed reader; a nil reader makes least_loaded pick deterministically as if all loads are 0.
 func (r *SnapshotResolver) UseLoadReader(lr LoadReader) { r.loadReader = lr }
+
+// RefreshAvailability re-reads the breaker state of every connector in the current snapshot and replaces
+// the availability overlay atomically. Call it right after a Swap (and once at boot): it is the ONLY
+// place breaker:state is read, keeping the per-message path free of Redis. A nil reader clears the
+// overlay (everything available). On a reader error the overlay is left unchanged (serve with the last
+// known availability rather than blackhole the whole fleet) and the error is returned for the caller
+// to log.
+func (r *SnapshotResolver) RefreshAvailability(ctx context.Context, reader AvailabilityReader) error {
+	if reader == nil {
+		r.unavailable.Store(&availabilitySet{})
+		return nil
+	}
+	snap := r.current.Load()
+	if snap == nil {
+		return nil
+	}
+	ids := snap.connectorIDs()
+	if len(ids) == 0 {
+		r.unavailable.Store(&availabilitySet{})
+		return nil
+	}
+	open, err := reader.Unavailable(ctx, ids)
+	if err != nil {
+		return err
+	}
+	set := availabilitySet(open)
+	if set == nil {
+		set = availabilitySet{}
+	}
+	r.unavailable.Store(&set)
+	return nil
+}
+
+// availableTargets drops the breaker-open connectors from targets. The common case — nothing open —
+// returns the original slice with no allocation, so the hot path pays nothing when the fleet is healthy.
+func (r *SnapshotResolver) availableTargets(targets []strategy.Target) []strategy.Target {
+	open := r.unavailable.Load()
+	if open == nil || len(*open) == 0 {
+		return targets
+	}
+	filtered := make([]strategy.Target, 0, len(targets))
+	for _, t := range targets {
+		if !(*open)[t.ConnectorID] {
+			filtered = append(filtered, t)
+		}
+	}
+	return filtered
+}
 
 // BuildSnapshot reads the active routes and compiles them for prefix matching, returning an immutable
 // Snapshot. It is the reusable rebuild step config-sync (step-105) calls on invalidation. A static
@@ -251,9 +314,12 @@ func (r *SnapshotResolver) selectConnector(ctx context.Context, cr *compiledRout
 	case cp.DistributionHashBased:
 		return strategy.HashBased(cr.targets, dest)
 	case cp.DistributionFailoverPriority:
-		return strategy.FailoverPriority(cr.targets)
+		// Breaker-aware (step-123): exclude open connectors so failover moves to a healthy target. A
+		// half_open connector stays selectable — its trickle of probe traffic is bounded downstream by
+		// the breaker's half-open probe quota, not here.
+		return strategy.FailoverPriority(r.availableTargets(cr.targets))
 	case cp.DistributionLeastLoaded:
-		return strategy.LeastLoaded(cr.targets, func(id uuid.UUID) int { return r.inFlight(ctx, id) })
+		return strategy.LeastLoaded(r.availableTargets(cr.targets), func(id uuid.UUID) int { return r.inFlight(ctx, id) })
 	default:
 		return uuid.Nil, false
 	}
@@ -324,6 +390,33 @@ func (s *Snapshot) findByID(routeID uuid.UUID) (*compiledRoute, bool) {
 		}
 	}
 	return nil, false
+}
+
+// connectorIDs returns the distinct connectors referenced by the snapshot — a static route's single
+// connector and every non-static route's targets. RefreshAvailability reads their breaker state; the
+// order is deterministic (first appearance) but the caller does not depend on it.
+func (s *Snapshot) connectorIDs() []uuid.UUID {
+	seen := make(map[uuid.UUID]struct{})
+	var ids []uuid.UUID
+	add := func(id uuid.UUID) {
+		if id == uuid.Nil {
+			return
+		}
+		if _, ok := seen[id]; !ok {
+			seen[id] = struct{}{}
+			ids = append(ids, id)
+		}
+	}
+	for i := range s.routes {
+		if s.routes[i].strategy == cp.DistributionStatic {
+			add(s.routes[i].connectorID)
+			continue
+		}
+		for _, t := range s.routes[i].targets {
+			add(t.ConnectorID)
+		}
+	}
+	return ids
 }
 
 // compileTargets converts route targets to the strategy form, sorted by connector id so weighted and
