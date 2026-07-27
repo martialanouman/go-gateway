@@ -23,6 +23,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -32,6 +33,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/ingest"
 	"github.com/martialanouman/go-gateway/internal/observability"
+	"github.com/martialanouman/go-gateway/internal/pipeline/ratelimit"
 	"github.com/martialanouman/go-gateway/internal/platform/supervisor"
 	"github.com/martialanouman/go-gateway/internal/session/disconnect"
 	registrypb "github.com/martialanouman/go-gateway/internal/session/pb"
@@ -146,6 +148,24 @@ func run() error {
 		Help: "SMPP binds refused by the anti-brute-force throttle before authentication.",
 	}, []string{"subject"}) // bounded label: "system_id" | "ip"
 
+	// Dedicated query_sm rate limit (§6.22, step-087): a per-account token bucket, on a bucket separate
+	// from the submit_sm budget, so an intensive querier cannot abuse the SMSC nor eat the send
+	// allowance. It reuses the step-084 Redis limiter (shared across pods, fails closed on an outage).
+	queryThrottled := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "smpp_query_throttled_total",
+		Help: "query_sm operations refused by the dedicated per-account rate limit.",
+	})
+	// A zero rate DISABLES the query_sm limit (nil limiter → onQuery answers without throttling), rather
+	// than passing rate 0 to the bucket — which would deny every query_sm.
+	var queryLimiter smppserver.QueryLimiter
+	if cfg.SMPP.QuerySMRatePerSec > 0 {
+		queryLimiter = queryRateLimiter{
+			limiter:  ratelimit.NewLimiter(rdb),
+			rate:     cfg.SMPP.QuerySMRatePerSec,
+			capacity: cfg.SMPP.QuerySMBurst,
+		}
+	}
+
 	listener := smppserver.New(
 		postgres.NewBindRepo(pool),
 		registrypb.NewSessionRegistryClient(registryConn),
@@ -160,6 +180,8 @@ func run() error {
 			ThrottleBlocked: throttleBlocked,
 			MaxConns:        cfg.SMPP.MaxConns,
 			Canceller:       canceller,
+			QueryLimiter:    queryLimiter,
+			QueryThrottled:  queryThrottled,
 		},
 		logger,
 	)
@@ -186,7 +208,7 @@ func run() error {
 	// The throttle's block counter is this service's first business metric; register it on the ops
 	// registry so it surfaces on /metrics. The counter carries no high-cardinality label (never a
 	// system_id or an IP), per the ops registry's cardinality rule.
-	ops.Registry().MustRegister(throttleBlocked)
+	ops.Registry().MustRegister(throttleBlocked, queryThrottled)
 
 	logger.InfoContext(ctx, "starting", "config", cfg)
 
@@ -272,4 +294,20 @@ func podID(cfg config.Config, logger *slog.Logger) string {
 		return ""
 	}
 	return host
+}
+
+// queryRateLimiter adapts the step-084 token-bucket limiter to smppserver.QueryLimiter: it consumes
+// one token from the account's DEDICATED query_sm bucket (window "query_sm"), separate from the
+// submit_sm budget. It fails closed on a Redis outage (the limiter's local ceiling).
+type queryRateLimiter struct {
+	limiter        *ratelimit.Limiter
+	rate, capacity int
+}
+
+func (q queryRateLimiter) Allow(ctx context.Context, accountID uuid.UUID) bool {
+	capacity := q.capacity
+	if capacity <= 0 {
+		capacity = q.rate // a burst of 0 would deny every query_sm; default to one second's worth
+	}
+	return q.limiter.Allow(ctx, ratelimit.EntityAccount, accountID.String(), "query_sm", q.rate, capacity, 1).Allowed
 }

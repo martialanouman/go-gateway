@@ -131,3 +131,26 @@ func TestLimiterEdgeCapacities(t *testing.T) {
 		t.Errorf("capacity=0 = %+v, want a plain deny", d)
 	}
 }
+
+// TestLimiterWindowsAreIsolated: two windows for the same entity are INDEPENDENT buckets — exhausting
+// the query_sm budget leaves the submit_sm (sec) budget untouched (step-087 isolation).
+func TestLimiterWindowsAreIsolated(t *testing.T) {
+	rdb := redistest.Client(t)
+	frozen := time.Now()
+	lim := ratelimit.NewLimiter(rdb, ratelimit.WithClock(func() time.Time { return frozen }))
+	account := uuid.NewString()
+
+	// Drain the query_sm bucket (capacity 2).
+	for i := 0; i < 2; i++ {
+		if !lim.Allow(context.Background(), "smpp_account", account, "query_sm", 2, 2, 1).Allowed {
+			t.Fatalf("query_sm call %d should be admitted from a full bucket", i+1)
+		}
+	}
+	if lim.Allow(context.Background(), "smpp_account", account, "query_sm", 2, 2, 1).Allowed {
+		t.Fatal("the query_sm bucket should be exhausted")
+	}
+	// The submit (sec) bucket for the SAME account is untouched — a query flood cannot eat the send budget.
+	if !lim.Allow(context.Background(), "smpp_account", account, "sec", 2, 2, 1).Allowed {
+		t.Error("the submit_sm (sec) bucket must be independent of the exhausted query_sm bucket")
+	}
+}

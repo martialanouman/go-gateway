@@ -227,6 +227,13 @@ type SMPP struct {
 	// successful bind, so this is the ceiling that bounds the goroutines and file descriptors an
 	// unauthenticated flood (notably of tarpitted binds) can pin. Size it to the file-descriptor ulimit.
 	MaxConns int `env:"MAX_CONNS" envDefault:"16384"`
+
+	// QuerySMRatePerSec is the per-account query_sm rate limit (§6.22, step-087) — a token bucket
+	// dedicated to query_sm, separate from the submit_sm budget so an intensive querier cannot eat the
+	// send allowance. Zero disables the query_sm limit.
+	QuerySMRatePerSec int `env:"QUERY_SM_RATE_PER_SEC" envDefault:"20"`
+	// QuerySMBurst is the query_sm burst capacity; zero lets the limiter default it to one second's worth.
+	QuerySMBurst int `env:"QUERY_SM_BURST" envDefault:"40"`
 }
 
 // Section names a configuration group a binary depends on. A binary declares the sections it

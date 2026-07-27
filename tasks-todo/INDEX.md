@@ -66,7 +66,7 @@ Légende : `[x]` = fait (dans `tasks-done/`) · `[ ]` = à faire (dans `tasks-to
 - [x] step-084 — Token-bucket Lua atomique + repo `rate_limits`
 - [x] step-085 — Brancher l'étape débit dans le pipeline + précédence des plafonds
 - [x] step-086 — Throttling adaptatif AIMD piloté par `ESME_RTHROTTLED`
-- [ ] step-087 — Limite de débit dédiée pour `query_sm`
+- [x] step-087 — Limite de débit dédiée pour `query_sm`
 - [ ] step-088 — Fenêtrage du `submit_sm` entrant (traitement concurrent borné par session)
 
 ## M7 — Routage avancé
