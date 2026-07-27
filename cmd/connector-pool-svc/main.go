@@ -48,6 +48,9 @@ type connectorEnv struct {
 	EnquireLinkInterval  time.Duration `env:"CONNECTOR_ENQUIRE_LINK_INTERVAL" envDefault:"30s"`
 	EnquireLinkMaxMissed int           `env:"CONNECTOR_ENQUIRE_LINK_MAX_MISSED" envDefault:"3"`
 	WindowSize           int           `env:"CONNECTOR_WINDOW_SIZE" envDefault:"10"`
+	// BindPoolSize is the number of parallel SMPP binds (bind_pool_size, 1..32). Sourced from the
+	// connectors control plane at M3+; the pool shards mt.routed across the binds (step-124).
+	BindPoolSize int `env:"CONNECTOR_BIND_POOL_SIZE" envDefault:"1"`
 	// MaxSendRate is the connector's throughput_limit_per_sec, the ceiling for the adaptive throttle
 	// (step-086). Zero disables the AIMD pacing. Sourced from the connectors control plane at M3+.
 	MaxSendRate float64 `env:"CONNECTOR_MAX_SEND_RATE" envDefault:"0"`
@@ -153,6 +156,7 @@ func run() error {
 			EnquireLinkInterval:  bindEnv.EnquireLinkInterval,
 			EnquireLinkMaxMissed: bindEnv.EnquireLinkMaxMissed,
 			WindowSize:           bindEnv.WindowSize,
+			BindPoolSize:         bindEnv.BindPoolSize,
 		},
 		MaxSendRate: bindEnv.MaxSendRate,
 		Throttle:    throttleMetric{rate: sendRateGauge, throttled: throttledTotal},

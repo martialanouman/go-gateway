@@ -729,7 +729,7 @@ breaker:events                                      -- pub/sub channel for routi
 
 -- Kafka topics (data plane):
 mt.inbound        -- raw submissions (SMPP/REST), pre-routing. Partitioned by customer/account hash.
-mt.routed         -- post-routing. Partitioned by (connector_id, shard_index=hash(message_key)%bind_pool_size)
+mt.routed         -- post-routing. Keyed by message_id (all of a message's segments share it → one partition, in order). The connector pool sub-shards a batch across its binds in memory by hash(message_id)%bind_pool_size (step-124).
 mo.inbound        -- raw deliver_sm from SMSC connectors, pre-routing to accounts
 dlr.events        -- delivery receipt events, correlated to original message ID
 mt.dead-letter / mo.dead-letter   -- failed/expired after retry exhaustion (incl. exhausted fallback_chain)

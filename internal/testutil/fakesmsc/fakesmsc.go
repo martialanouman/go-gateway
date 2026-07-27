@@ -34,26 +34,39 @@ type Config struct {
 	// Addr is the listen address for the standalone process (e.g. ":2775"). Tests leave it empty to
 	// get an ephemeral 127.0.0.1 port.
 	Addr string
+	// RecordSubmits, when true, keeps every submit_sm tagged with the connection it arrived on, readable
+	// via Submits(). A test asserting a message's segments all rode ONE bind, in order, needs it.
+	RecordSubmits bool
+}
+
+// Submit is one recorded submit_sm with the connection (bind) it arrived on. ConnID is stable per TCP
+// connection for the fake's lifetime, so segments sharing a ConnID rode the same bind.
+type Submit struct {
+	ConnID int
+	SM     smpp.SubmitSM
 }
 
 // Server is a running fake SMSC.
 type Server struct {
-	ln     net.Listener
-	cfg    Config
-	logf   func(string, ...any)
-	wg     sync.WaitGroup
-	seq    atomic.Uint32 // sequence numbers for server-initiated PDUs (deliver_sm)
-	msgSeq atomic.Uint64 // assigns SMSC message ids
-	closed atomic.Bool
+	ln      net.Listener
+	cfg     Config
+	logf    func(string, ...any)
+	wg      sync.WaitGroup
+	seq     atomic.Uint32 // sequence numbers for server-initiated PDUs (deliver_sm)
+	msgSeq  atomic.Uint64 // assigns SMSC message ids
+	connSeq atomic.Int64  // assigns per-connection ids
+	closed  atomic.Bool
 
-	mu    sync.Mutex
-	conns map[*conn]struct{}
+	mu      sync.Mutex
+	conns   map[*conn]struct{}
+	submits []Submit // recorded submit_sm, when cfg.RecordSubmits
 }
 
 // conn is one accepted SMPP connection. A per-connection write mutex serialises the handler loop's
 // responses with a test-initiated SendDLR, since a net.Conn is not safe for concurrent writes.
 type conn struct {
 	nc      net.Conn
+	id      int
 	writeMu sync.Mutex
 	canRecv bool // bound as receiver or transceiver: eligible to receive deliver_sm
 }
@@ -96,6 +109,14 @@ func New(cfg Config) (*Server, error) {
 // Addr is the address the fake SMSC listens on, including the resolved port.
 func (s *Server) Addr() string { return s.ln.Addr().String() }
 
+// Submits returns a copy of every recorded submit_sm (in arrival order), each tagged with the bind it
+// rode. Only populated when Config.RecordSubmits is set.
+func (s *Server) Submits() []Submit {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]Submit(nil), s.submits...)
+}
+
 // Close stops accepting, closes every connection and waits for all goroutines to exit.
 func (s *Server) Close() {
 	if !s.closed.CompareAndSwap(false, true) {
@@ -119,7 +140,7 @@ func (s *Server) acceptLoop() {
 		if err != nil {
 			return // listener closed on shutdown
 		}
-		c := &conn{nc: nc}
+		c := &conn{nc: nc, id: int(s.connSeq.Add(1))}
 		s.mu.Lock()
 		s.conns[c] = struct{}{}
 		s.mu.Unlock()
@@ -195,6 +216,11 @@ func (s *Server) markReceiver(c *conn) {
 }
 
 func (s *Server) handleSubmit(c *conn, seq uint32, body *smpp.SubmitSM) {
+	if s.cfg.RecordSubmits {
+		s.mu.Lock()
+		s.submits = append(s.submits, Submit{ConnID: c.id, SM: *body})
+		s.mu.Unlock()
+	}
 	resp := OK()
 	if s.cfg.OnSubmit != nil {
 		resp = s.cfg.OnSubmit(*body)
