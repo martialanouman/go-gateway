@@ -45,26 +45,3 @@ func (r *L0Resolver) Resolve(ctx context.Context, dest string) (pipeline.Route, 
 	}
 	return r.declarative.Resolve(ctx, dest)
 }
-
-// routeForTarget maps an exact-route Target to a pipeline.Route. A connector target routes straight to
-// that connector (no matched route); a route target is resolved to its connector via the compiled
-// routes. matched is false when a route target no longer exists in the snapshot, so the caller falls
-// back.
-//
-// A connector target is trusted without an existence check: the snapshot holds no connector registry,
-// so this mirrors the declarative resolver, which likewise trusts its TargetConnectorID. A dangling
-// connector is caught downstream at send time (circuit-open / disabled), not here.
-func (s *SnapshotResolver) routeForTarget(t exact.Target) (pipeline.Route, bool) {
-	switch t.Type {
-	case exact.TargetConnector:
-		return pipeline.Route{ConnectorID: t.ID}, true
-	case exact.TargetRoute:
-		for _, r := range s.routes {
-			if r.routeID == t.ID {
-				routeID := r.routeID
-				return pipeline.Route{ConnectorID: r.connectorID, RouteID: &routeID}, true
-			}
-		}
-	}
-	return pipeline.Route{}, false
-}
