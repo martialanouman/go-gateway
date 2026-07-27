@@ -38,6 +38,10 @@ type BindConfig struct {
 	EnquireLinkInterval  time.Duration
 	EnquireLinkMaxMissed int
 	WindowSize           int
+	// BindPoolSize is the number of parallel SMPP binds for this connector (bind_pool_size, 1..32,
+	// §6.8). The pool shards mt.routed by hash(message_id) % BindPoolSize so every segment of a message
+	// lands on one bind, in order (step-124). Zero or one means a single bind (the M2 behaviour).
+	BindPoolSize int
 }
 
 // bind owns one SMPP connection. Its concurrency model (guide §5/§9): a single writer goroutine is

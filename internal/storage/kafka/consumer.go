@@ -107,6 +107,106 @@ func (c *Consumer) Run(ctx context.Context, handle Handler) error {
 	}
 }
 
+// BatchHandler processes a whole poll batch and reports, per record aligned by index, whether it was
+// handled (nil) or hit a transient fault (non-nil). It lets a consumer fan a batch out across workers
+// (the connector pool shards it across parallel binds, step-124) instead of one-at-a-time. The contract
+// preserves at-least-once and ordering: the handler MUST fail a record and every LATER record that
+// shares its ordering group, so a committed offset never skips unprocessed work. len(results) must equal
+// len(recs).
+type BatchHandler func(ctx context.Context, recs []Record) []error
+
+// RunBatch polls and processes records a batch at a time, committing — independently per partition — the
+// contiguous run of successfully-handled records up to that partition's first failure. It returns nil on
+// a clean ctx-driven stop and a non-nil error on a fetch fault or when the batch reported any failure
+// (the signal to restart and reprocess the uncommitted records). Like Run, call it from a single
+// supervised goroutine.
+func (c *Consumer) RunBatch(ctx context.Context, handle BatchHandler) error {
+	for {
+		fetches := c.cl.PollFetches(ctx)
+		if ctx.Err() != nil {
+			return nil
+		}
+		if err := firstFetchError(fetches); err != nil {
+			return fmt.Errorf("kafka: fetch in group %s: %w", c.group, err)
+		}
+
+		var krs []*kgo.Record
+		fetches.EachRecord(func(kr *kgo.Record) { krs = append(krs, kr) })
+		if len(krs) == 0 {
+			continue
+		}
+
+		recs := make([]Record, len(krs))
+		for i, kr := range krs {
+			recs[i] = toRecord(kr)
+		}
+		results := handle(ctx, recs)
+
+		// Commit each partition up to (but not including) its first failed record. Offsets only compare
+		// within a partition, so a global prefix would be wrong: a failure in one partition must not hold
+		// back a fully-handled sibling partition, and a success AFTER a failure in the SAME partition must
+		// never be committed (it would skip the gap). krs is in per-partition offset order.
+		if commit := committablePrefix(krs, results); len(commit) > 0 {
+			if err := c.cl.CommitRecords(ctx, commit...); err != nil {
+				if ctx.Err() != nil {
+					return nil
+				}
+				return fmt.Errorf("kafka: commit in group %s: %w", c.group, err)
+			}
+		}
+		if firstErr := firstNonNil(results); firstErr != nil {
+			// A failure that is really just ctx cancellation mid-batch is a graceful stop, not a fault
+			// (PollFetches can hand back a batch a hair before cancellation propagates) — mirror Run.
+			if ctx.Err() != nil {
+				return nil
+			}
+			return fmt.Errorf("kafka: batch handle in group %s: %w", c.group, firstErr)
+		}
+	}
+}
+
+// partitionKey identifies a Kafka partition across topics (a consumer may subscribe to several).
+type partitionKey struct {
+	topic     string
+	partition int32
+}
+
+// committablePrefix returns the records safe to commit: those handled successfully whose offset precedes
+// their partition's first failed offset. results is aligned with krs by index.
+func committablePrefix(krs []*kgo.Record, results []error) []*kgo.Record {
+	firstFail := make(map[partitionKey]int64)
+	for i, kr := range krs {
+		if results[i] == nil {
+			continue
+		}
+		pk := partitionKey{kr.Topic, kr.Partition}
+		if off, ok := firstFail[pk]; !ok || kr.Offset < off {
+			firstFail[pk] = kr.Offset
+		}
+	}
+	var out []*kgo.Record
+	for i, kr := range krs {
+		if results[i] != nil {
+			continue
+		}
+		if off, ok := firstFail[partitionKey{kr.Topic, kr.Partition}]; ok && kr.Offset > off {
+			continue // a later record in a partition with an earlier failure: leave it for redelivery
+		}
+		out = append(out, kr)
+	}
+	return out
+}
+
+// firstNonNil returns the first non-nil error in the slice, or nil.
+func firstNonNil(errs []error) error {
+	for _, e := range errs {
+		if e != nil {
+			return e
+		}
+	}
+	return nil
+}
+
 // Ping reports whether the brokers are reachable.
 func (c *Consumer) Ping(ctx context.Context) error { return c.cl.Ping(ctx) }
 

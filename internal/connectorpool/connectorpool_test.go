@@ -26,20 +26,37 @@ import (
 	"github.com/martialanouman/go-gateway/internal/testutil/otelrec"
 )
 
+// fakeConsumer replays each record as its own single-record batch and stops at the first failure —
+// the sequential, stop-on-error semantics the M2 tests were written against.
 type fakeConsumer struct{ records []kafka.Record }
 
-func (f *fakeConsumer) Run(ctx context.Context, handle kafka.Handler) error {
+func (f *fakeConsumer) RunBatch(ctx context.Context, handle kafka.BatchHandler) error {
 	for _, r := range f.records {
-		if err := handle(ctx, r); err != nil {
-			return err
+		for _, err := range handle(ctx, []kafka.Record{r}) {
+			if err != nil {
+				return err
+			}
 		}
 	}
 	return nil
 }
 
-type fakeCDR struct{ rows []clickhouse.CDRRow }
+// batchConsumer feeds all records as ONE batch, so the pool shards them across its binds concurrently.
+type batchConsumer struct{ records []kafka.Record }
+
+func (b *batchConsumer) RunBatch(ctx context.Context, handle kafka.BatchHandler) error {
+	handle(ctx, b.records)
+	return nil
+}
+
+type fakeCDR struct {
+	mu   sync.Mutex
+	rows []clickhouse.CDRRow
+}
 
 func (f *fakeCDR) Insert(_ context.Context, row clickhouse.CDRRow) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.rows = append(f.rows, row)
 	return nil
 }
@@ -63,11 +80,14 @@ type dlrPut struct {
 // fakeDLRMap records the mappings the connector writes, so a test can assert a successful submit is
 // remembered. A non-nil err drives the best-effort failure path.
 type fakeDLRMap struct {
+	mu   sync.Mutex
 	puts []dlrPut
 	err  error
 }
 
 func (f *fakeDLRMap) Put(_ context.Context, smscMsgID string, r pipeline.RoutedMT) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.puts = append(f.puts, dlrPut{smscMsgID, r})
 	return f.err
 }
@@ -599,7 +619,7 @@ func (p *recordingProducer) records() []kafka.Record {
 // bind stays up while the SMSC pushes a deliver_sm.
 type blockingConsumer struct{}
 
-func (blockingConsumer) Run(ctx context.Context, _ kafka.Handler) error {
+func (blockingConsumer) RunBatch(ctx context.Context, _ kafka.BatchHandler) error {
 	<-ctx.Done()
 	return ctx.Err()
 }
@@ -738,9 +758,9 @@ func TestConnectorPublishesDLRToDLREvents(t *testing.T) {
 // can be driven through the connector in one Run.
 type continuingConsumer struct{ records []kafka.Record }
 
-func (c *continuingConsumer) Run(ctx context.Context, handle kafka.Handler) error {
+func (c *continuingConsumer) RunBatch(ctx context.Context, handle kafka.BatchHandler) error {
 	for _, r := range c.records {
-		_ = handle(ctx, r)
+		_ = handle(ctx, []kafka.Record{r}) // one record per batch, ignore errors (redelivery sim)
 	}
 	return nil
 }
@@ -825,5 +845,146 @@ func TestConnectorAIMDDropsThenRecovers(t *testing.T) {
 	// ...and recovered above that low by the end, once the SMSC accepted again.
 	if last := metric.rates[len(metric.rates)-1]; last <= minRate {
 		t.Errorf("final rate = %v, want it recovered above the low %v after the SMSC accepted again", last, minRate)
+	}
+}
+
+// poolBind is the BindConfig the pool tests share, parameterised by pool size and SMSC address.
+func poolBind(addr string, poolSize int) connectorpool.BindConfig {
+	return connectorpool.BindConfig{
+		Addr: addr, SystemID: "esme", Password: "pw",
+		DialTimeout: 3 * time.Second, ResponseTimeout: 3 * time.Second,
+		EnquireLinkInterval: time.Minute, EnquireLinkMaxMissed: 3, WindowSize: 10,
+		BindPoolSize: poolSize,
+	}
+}
+
+// runPool drives records through a pool of poolSize binds in one batch and returns once processed.
+func runPool(t *testing.T, smsc *fakesmsc.Server, poolSize int, recs []kafka.Record) {
+	t.Helper()
+	rrec := otelrec.New(t)
+	svc := connectorpool.New(connectorpool.Deps{
+		Consumer: &batchConsumer{records: recs},
+		CDR:      &fakeCDR{},
+		Bind:     poolBind(smsc.Addr(), poolSize),
+		Tracer:   observability.Tracer(rrec.Provider(), "connector-pool"),
+	})
+	if err := svc.Run(context.Background()); err != nil {
+		t.Fatalf("Run(pool=%d): %v", poolSize, err)
+	}
+}
+
+// maxConcurrentSubmits runs distinct messages through a pool and reports the peak number of submit_sm
+// in flight at the fake SMSC at once — the concurrency the bind pool achieves.
+func maxConcurrentSubmits(t *testing.T, poolSize, messages int) int32 {
+	t.Helper()
+	var inFlight, maxSeen atomic.Int32
+	smsc := fakesmsc.Start(t, fakesmsc.Config{OnSubmit: func(smpp.SubmitSM) fakesmsc.Resp {
+		cur := inFlight.Add(1)
+		for {
+			m := maxSeen.Load()
+			if cur <= m || maxSeen.CompareAndSwap(m, cur) {
+				break
+			}
+		}
+		time.Sleep(3 * time.Millisecond) // a response latency, so concurrent binds overlap observably
+		inFlight.Add(-1)
+		return fakesmsc.OK()
+	}})
+
+	recs := make([]kafka.Record, 0, messages)
+	for i := 0; i < messages; i++ {
+		rec, err := pipeline.EncodeRouted(routed()) // distinct MessageID each → spread across shards
+		if err != nil {
+			t.Fatalf("encode routed: %v", err)
+		}
+		recs = append(recs, rec)
+	}
+	runPool(t, smsc, poolSize, recs)
+	return maxSeen.Load()
+}
+
+// TestBindPoolRaisesConcurrency is the step-124 throughput acceptance: bind_pool_size=4 submits several
+// messages at once, where a single bind is strictly one-at-a-time. Peak concurrency is the falsifiable
+// proxy for aggregate throughput (a slow-link response latency makes the overlap observable).
+func TestBindPoolRaisesConcurrency(t *testing.T) {
+	const messages = 40
+	single := maxConcurrentSubmits(t, 1, messages)
+	if single != 1 {
+		t.Errorf("single bind peak concurrency = %d, want 1 (one-at-a-time)", single)
+	}
+	pooled := maxConcurrentSubmits(t, 4, messages)
+	if pooled <= single {
+		t.Errorf("pool=4 peak concurrency = %d, want > single-bind %d (parallel binds raise throughput)", pooled, single)
+	}
+}
+
+// TestBindPoolKeepsSegmentsOnOneBindInOrder is the step-124 ordering invariant (§7.3): every segment of
+// a multipart message shares the message id, hashes to one shard, and therefore rides ONE bind, in
+// segment order — even while other messages keep the other binds busy.
+func TestBindPoolKeepsSegmentsOnOneBindInOrder(t *testing.T) {
+	smsc := fakesmsc.Start(t, fakesmsc.Config{
+		RecordSubmits: true,
+		OnSubmit:      func(smpp.SubmitSM) fakesmsc.Resp { return fakesmsc.Delay(time.Millisecond) },
+	})
+
+	const segments = 5
+	multipartID := uuid.New()
+	var recs []kafka.Record
+	// A 5-segment multipart message, all sharing multipartID. Each segment body carries a real 8-bit
+	// concatenation UDH (05 00 03 ref total seq …) so the fake can read back the part number and assert
+	// on-the-wire ordering, not just co-location.
+	for seq := 1; seq <= segments; seq++ {
+		r := routed()
+		r.MessageID = multipartID
+		r.To = "+2250700000042"
+		r.SegmentSeq, r.SegmentCount, r.HasUDH = seq, segments, true
+		r.Body = msg.NewBody([]byte{0x05, 0x00, 0x03, 0xAB, byte(segments), byte(seq), 'h', 'i'})
+		rec, err := pipeline.EncodeRouted(r)
+		if err != nil {
+			t.Fatalf("encode segment %d: %v", seq, err)
+		}
+		recs = append(recs, rec)
+	}
+	// Plus a dozen unrelated single messages to keep the other binds busy and force interleaving.
+	for i := 0; i < 12; i++ {
+		rec, err := pipeline.EncodeRouted(routed())
+		if err != nil {
+			t.Fatalf("encode filler %d: %v", i, err)
+		}
+		recs = append(recs, rec)
+	}
+
+	runPool(t, smsc, 4, recs)
+
+	// Collect the multipart message's segments as the SMSC saw them, in arrival order.
+	var conns []int
+	var seqs []int
+	for _, s := range smsc.Submits() {
+		if s.SM.DestinationAddr != "+2250700000042" {
+			continue
+		}
+		conns = append(conns, s.ConnID)
+		// The UDH concat header carries the 1-based part number in its last byte (…, ref, total, seq).
+		sm := s.SM.ShortMessage
+		if len(sm) >= 6 && sm[0] == 0x05 && sm[1] == 0x00 {
+			seqs = append(seqs, int(sm[5]))
+		}
+	}
+	if len(conns) != segments {
+		t.Fatalf("saw %d segments for the multipart message, want %d", len(conns), segments)
+	}
+	for i, c := range conns {
+		if c != conns[0] {
+			t.Errorf("segment %d rode bind %d, want the same bind %d as the others (§7.3)", i, c, conns[0])
+		}
+	}
+	if len(seqs) != segments {
+		t.Fatalf("extracted %d part numbers from the UDH, want %d (ordering check would be vacuous)", len(seqs), segments)
+	}
+	for i := 1; i < len(seqs); i++ {
+		if seqs[i] <= seqs[i-1] {
+			t.Errorf("segments arrived out of order: %v (want ascending part numbers)", seqs)
+			break
+		}
 	}
 }

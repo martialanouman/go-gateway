@@ -1,15 +1,19 @@
-// Package connectorpool is the outbound SMSC leg (M2): a single SMPP bind to one connector. It
-// consumes mt.routed, submits each message with submit_sm, and records the outcome in the CDR
-// (enroute on ESME_ROK, failed otherwise). M2 has one bind, no circuit breaker, no fallback and no
-// reroute — those are later milestones.
+// Package connectorpool is the outbound SMSC leg: a pool of parallel SMPP binds to one connector. It
+// consumes mt.routed, submits each message with submit_sm, and records the outcome in the CDR (enroute
+// on ESME_ROK, failed otherwise). It shards a poll batch across bind_pool_size binds by
+// hash(message_id) % bind_pool_size, so every segment of a message lands on one bind in order (§7.3);
+// each bind is processed by its own worker so the binds submit concurrently (step-124). No fallback and
+// no reroute yet — those are later milestones.
 package connectorpool
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"log/slog"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/google/uuid"
@@ -31,9 +35,14 @@ var errBindNotReady = errors.New("connectorpool: smsc bind not established")
 // redelivered, rather than recording the message as a terminal failure and losing it.
 var errTransientReject = errors.New("connectorpool: transient smsc rejection")
 
-// Consumer reads mt.routed. *kafka.Consumer satisfies it.
+// errShardHalted marks a batch record left unprocessed because an earlier record in the same shard
+// failed. It is not committed, so redelivery replays the shard in order behind the failure (§7.3).
+var errShardHalted = errors.New("connectorpool: shard halted after an earlier failure")
+
+// Consumer reads mt.routed a batch at a time so the pool can shard a batch across its parallel binds
+// (step-124). *kafka.Consumer satisfies it.
 type Consumer interface {
-	Run(ctx context.Context, handle kafka.Handler) error
+	RunBatch(ctx context.Context, handle kafka.BatchHandler) error
 }
 
 // CDRWriter records the send outcome. *clickhouse.CDRWriter satisfies it.
@@ -167,24 +176,38 @@ func (s *Service) BindReady(context.Context) error {
 	return errBindNotReady
 }
 
-// Run binds to the SMSC, then consumes mt.routed until ctx is cancelled, unbinding cleanly on exit.
-// A failure to bind returns an error (the service restarts); a per-message infrastructure failure
-// leaves the offset uncommitted for reprocessing.
+// Run brings up the bind pool, then consumes mt.routed until ctx is cancelled, unbinding cleanly on
+// exit. A failure to bind any member returns an error (the service restarts); a per-message
+// infrastructure failure leaves the offset uncommitted for reprocessing.
 //
-// The bind is also watched independently of the consumer: if it drops while idle — no mt.routed
-// flowing, so no Submit is in flight to surface the failure — the consumer would otherwise block on
-// Kafka forever with a dead bind while the pod stayed Ready. When that happens Run flips readiness,
-// tears the consumer down and returns an error so the supervisor re-dials.
+// The binds are watched independently of the consumer: if one drops while idle — no mt.routed flowing,
+// so no Submit is in flight to surface the failure — the consumer would otherwise block on Kafka forever
+// with a dead bind while the pod stayed Ready. When any bind dies Run flips readiness, tears the
+// consumer down and returns an error so the supervisor re-dials the whole pool (never re-sharding a
+// live message onto another bind, which would break §7.3 ordering).
 func (s *Service) Run(ctx context.Context) error {
-	b, err := dialAndBind(ctx, s.deps.Bind, s.deps.Logger, s.handleDeliver)
-	if err != nil {
-		return err
+	n := s.deps.Bind.BindPoolSize
+	if n < 1 {
+		n = 1
+	}
+	binds := make([]*bind, 0, n)
+	for i := 0; i < n; i++ {
+		b, err := dialAndBind(ctx, s.deps.Bind, s.deps.Logger, s.handleDeliver)
+		if err != nil {
+			for _, prev := range binds {
+				prev.Close() //nolint:contextcheck // cleanup unbind detaches from ctx, like the shutdown path
+			}
+			return fmt.Errorf("connectorpool: bind %d/%d: %w", i+1, n, err)
+		}
+		binds = append(binds, b)
 	}
 	// Close detaches from ctx on purpose: the unbind must be sent AFTER ctx is cancelled (that is
-	// what triggers the drain), on its own bounded context, exactly like observability's tracing
-	// drain.
-	//nolint:contextcheck // deliberate detach for the shutdown unbind
-	defer b.Close()
+	// what triggers the drain), on its own bounded context, exactly like observability's tracing drain.
+	defer func() { //nolint:contextcheck // deliberate detach for the shutdown unbind (see Close)
+		for _, b := range binds {
+			b.Close()
+		}
+	}()
 
 	s.bound.Store(true)
 	defer s.bound.Store(false)
@@ -192,15 +215,25 @@ func (s *Service) Run(ctx context.Context) error {
 	consumerCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	// A single signal fired by whichever bind dies first (idle drop, enquire_link timeout, peer close).
+	anyDropped := make(chan struct{})
+	var dropOnce sync.Once
+	for _, b := range binds {
+		go func(b *bind) {
+			<-b.done
+			dropOnce.Do(func() { close(anyDropped) })
+		}(b)
+	}
+
 	consumerErr := make(chan error, 1)
-	go func() { consumerErr <- s.deps.Consumer.Run(consumerCtx, s.handler(b)) }()
+	go func() { consumerErr <- s.deps.Consumer.RunBatch(consumerCtx, s.batchHandler(binds)) }()
 
 	select {
 	case err := <-consumerErr:
 		return err
-	case <-b.done:
-		// The bind died on its own (idle drop, enquire_link timeout, peer close). Take the pod out of
-		// rotation immediately, unwind the consumer, and surface the failure so the service restarts.
+	case <-anyDropped:
+		// A bind died on its own. Take the pod out of rotation, unwind the consumer, and surface the
+		// failure so the service restarts and re-dials the whole pool.
 		s.bound.Store(false)
 		cancel()
 		<-consumerErr
@@ -208,78 +241,129 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 }
 
-func (s *Service) handler(b *bind) kafka.Handler {
-	return func(ctx context.Context, rec kafka.Record) error {
-		ctx, span := s.deps.Tracer.Start(ctx, "connector.submit")
-		defer span.End()
-
-		routed, err := pipeline.DecodeRouted(rec)
-		if err != nil {
-			return fmt.Errorf("connectorpool: decode mt.routed: %w", err)
+// batchHandler shards a poll batch across the pool: each record goes to bind[hash(message_id) % N], and
+// each shard's records are processed sequentially by a dedicated goroutine so the binds run
+// concurrently while a message's segments stay ordered on one bind. A record that fails halts the rest
+// of ITS shard (later records marked errored, not committed) so a segment can never overtake an earlier
+// one on redelivery (§7.3); other shards are unaffected.
+func (s *Service) batchHandler(binds []*bind) kafka.BatchHandler {
+	n := len(binds)
+	return func(ctx context.Context, recs []kafka.Record) []error {
+		results := make([]error, len(recs))
+		shards := make(map[int][]int, n) // shard index -> record indices, in batch (offset) order
+		for i, rec := range recs {
+			sh := shardIndex(rec.Key, n)
+			shards[sh] = append(shards[sh], i)
 		}
-
-		// A cancel_sm may have flagged this message before it reached the SMSC. Redis is best-effort
-		// here: cancellation is itself best-effort (an already-dispatched message cannot be recalled), so
-		// a flag-read failure fails OPEN — we log and dispatch rather than halt all outbound delivery on a
-		// Redis outage.
-		cancelled, err := s.deps.CancelFlags.Exists(ctx, routed.MessageID)
-		if err != nil {
-			s.deps.Logger.WarnContext(ctx, "connector: cancel-flag check failed, dispatching anyway",
-				"message_id", routed.MessageID, "err", err)
-		} else if cancelled {
-			// Honour the cancel: record the cancelled outcome and commit without submitting. Writing the
-			// row here (not only in the Canceller) is what makes the skip safe: it is idempotent under
-			// ReplacingMergeTree (rank 60, collapsing with the Canceller's row) and closes the window where
-			// the Canceller crashed after flagging but before writing the row — otherwise the message would
-			// be neither sent nor recorded, leaving the CDR stuck on accepted.
-			if err := s.deps.CDR.Insert(ctx, cancelledRow(routed)); err != nil {
-				return fmt.Errorf("connectorpool: write cancelled cdr: %w", err)
-			}
-			s.deps.Logger.InfoContext(ctx, "connector: message cancelled before dispatch", "message_id", routed.MessageID)
-			return nil
+		var wg sync.WaitGroup
+		for sh, idxs := range shards {
+			wg.Add(1)
+			go func(b *bind, idxs []int) {
+				defer wg.Done()
+				for pos, i := range idxs {
+					if err := s.processOne(ctx, b, recs[i]); err != nil {
+						results[i] = err
+						// Stop this shard: leave every later record of this shard unprocessed and uncommitted
+						// so redelivery replays them in order behind the failure.
+						for _, j := range idxs[pos+1:] {
+							results[j] = errShardHalted
+						}
+						return
+					}
+				}
+			}(binds[sh], idxs)
 		}
+		wg.Wait()
+		return results
+	}
+}
 
-		// Adaptive throttle (step-086): pace to the connector's current AIMD send rate before submitting,
-		// so a throttled SMSC slows our outbound rather than being hammered. It blocks at most one send
-		// interval and honours ctx; it NEVER cuts the bind (that is the circuit breaker's job, M8).
-		if s.aimd != nil {
-			if err := s.aimd.acquire(ctx); err != nil {
-				return fmt.Errorf("connectorpool: throttle wait: %w", err)
-			}
-		}
+// shardIndex maps a record's partition key (the message id, shared by every segment) to a bind, so all
+// of a message's segments hash to the same bind and stay ordered. FNV-1a is enough — the property
+// needed is only a stable, uniform in-run mapping, not cryptographic strength or cross-run stability.
+func shardIndex(key []byte, n int) int {
+	if n <= 1 {
+		return 0
+	}
+	h := fnv.New32a()
+	_, _ = h.Write(key)
+	return int(h.Sum32() % uint32(n)) //nolint:gosec // n is 1..32, the modulo result fits an int
+}
 
-		resp, err := b.Submit(ctx, buildSubmit(routed))
-		if err != nil {
-			// A dead bind, a write failure or a timeout is transient: do not commit, so the message is
-			// reprocessed after a restart. At-least-once means the SMSC may see a duplicate submit; the
-			// versioned CDR collapses the duplicate enroute rows (no dedup until M3).
-			return fmt.Errorf("connectorpool: submit_sm: %w", err)
-		}
+// processOne submits a single routed segment on the given bind and records its outcome. It returns a
+// non-nil error only on a transient fault (bad decode, dead bind, transient SMSC rejection) so the
+// record is left uncommitted for redelivery; a terminal SMSC failure is written to the CDR and returns
+// nil. It is the per-record body the batch handler runs, one shard at a time.
+func (s *Service) processOne(ctx context.Context, b *bind, rec kafka.Record) error {
+	ctx, span := s.deps.Tracer.Start(ctx, "connector.submit")
+	defer span.End()
 
-		// Feed the submit_sm_resp back to the adaptive throttle: an ESME_RTHROTTLED halves the send rate,
-		// a success nudges it back up toward the ceiling (step-086).
-		if s.aimd != nil {
-			if s.aimd.observe(resp.Status) {
-				s.deps.Throttle.IncThrottled()
-			}
-			s.deps.Throttle.SetRate(s.aimd.currentRate())
-		}
+	routed, err := pipeline.DecodeRouted(rec)
+	if err != nil {
+		return fmt.Errorf("connectorpool: decode mt.routed: %w", err)
+	}
 
-		// A transient SMSC rejection (throttled, system error, queue full) is backpressure, not a
-		// terminal outcome: do not write a failed CDR and do not commit, so the message is redelivered
-		// rather than lost. Permanent rejections (invalid address, submit_fail) fall through to the CDR
-		// write below. Proper rate-limited backoff is M7; this reuses the same "return error → no commit
-		// → reprocess" path the submit errors above use.
-		if resp.Status != smpp.StatusOK && errs.Retryable(errs.CodeFromSMPPStatus(resp.Status)) {
-			return fmt.Errorf("connectorpool: submit_sm rejected transiently (status 0x%08x): %w", resp.Status, errTransientReject)
+	// A cancel_sm may have flagged this message before it reached the SMSC. Redis is best-effort
+	// here: cancellation is itself best-effort (an already-dispatched message cannot be recalled), so
+	// a flag-read failure fails OPEN — we log and dispatch rather than halt all outbound delivery on a
+	// Redis outage.
+	cancelled, err := s.deps.CancelFlags.Exists(ctx, routed.MessageID)
+	if err != nil {
+		s.deps.Logger.WarnContext(ctx, "connector: cancel-flag check failed, dispatching anyway",
+			"message_id", routed.MessageID, "err", err)
+	} else if cancelled {
+		// Honour the cancel: record the cancelled outcome and commit without submitting. Writing the
+		// row here (not only in the Canceller) is what makes the skip safe: it is idempotent under
+		// ReplacingMergeTree (rank 60, collapsing with the Canceller's row) and closes the window where
+		// the Canceller crashed after flagging but before writing the row — otherwise the message would
+		// be neither sent nor recorded, leaving the CDR stuck on accepted.
+		if err := s.deps.CDR.Insert(ctx, cancelledRow(routed)); err != nil {
+			return fmt.Errorf("connectorpool: write cancelled cdr: %w", err)
 		}
-
-		if err := s.deps.CDR.Insert(ctx, cdrRow(routed, resp)); err != nil {
-			return fmt.Errorf("connectorpool: write cdr: %w", err)
-		}
-		s.recordDLRMapping(ctx, routed, resp)
+		s.deps.Logger.InfoContext(ctx, "connector: message cancelled before dispatch", "message_id", routed.MessageID)
 		return nil
 	}
+
+	// Adaptive throttle (step-086): pace to the connector's current AIMD send rate before submitting,
+	// so a throttled SMSC slows our outbound rather than being hammered. It blocks at most one send
+	// interval and honours ctx; it NEVER cuts the bind (that is the circuit breaker's job, M8).
+	if s.aimd != nil {
+		if err := s.aimd.acquire(ctx); err != nil {
+			return fmt.Errorf("connectorpool: throttle wait: %w", err)
+		}
+	}
+
+	resp, err := b.Submit(ctx, buildSubmit(routed))
+	if err != nil {
+		// A dead bind, a write failure or a timeout is transient: do not commit, so the message is
+		// reprocessed after a restart. At-least-once means the SMSC may see a duplicate submit; the
+		// versioned CDR collapses the duplicate enroute rows (no dedup until M3).
+		return fmt.Errorf("connectorpool: submit_sm: %w", err)
+	}
+
+	// Feed the submit_sm_resp back to the adaptive throttle: an ESME_RTHROTTLED halves the send rate,
+	// a success nudges it back up toward the ceiling (step-086).
+	if s.aimd != nil {
+		if s.aimd.observe(resp.Status) {
+			s.deps.Throttle.IncThrottled()
+		}
+		s.deps.Throttle.SetRate(s.aimd.currentRate())
+	}
+
+	// A transient SMSC rejection (throttled, system error, queue full) is backpressure, not a
+	// terminal outcome: do not write a failed CDR and do not commit, so the message is redelivered
+	// rather than lost. Permanent rejections (invalid address, submit_fail) fall through to the CDR
+	// write below. Proper rate-limited backoff is M7; this reuses the same "return error → no commit
+	// → reprocess" path the submit errors above use.
+	if resp.Status != smpp.StatusOK && errs.Retryable(errs.CodeFromSMPPStatus(resp.Status)) {
+		return fmt.Errorf("connectorpool: submit_sm rejected transiently (status 0x%08x): %w", resp.Status, errTransientReject)
+	}
+
+	if err := s.deps.CDR.Insert(ctx, cdrRow(routed, resp)); err != nil {
+		return fmt.Errorf("connectorpool: write cdr: %w", err)
+	}
+	s.recordDLRMapping(ctx, routed, resp)
+	return nil
 }
 
 // recordDLRMapping remembers smsc_msg_id -> message_id after a successful submit, so a later
