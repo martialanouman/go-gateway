@@ -150,8 +150,8 @@ saved_views
 ### 3.2 Sources de données externes (lues via l'API Admin de la passerelle)
 
 - Clients, comptes SMPP et sous-ressources, connecteurs, routes, scripts, règles anti-spam, sessions, suppressions, numéros entrants → plan de contrôle de la passerelle (PostgreSQL) via l'API Admin.
-- Métriques temps réel → pipeline de métriques de la passerelle (Prometheus/Thanos + flux WS/SSE).
-- Recherche/historique CDR + traces → magasin CDR (ClickHouse) et backend de tracing via les endpoints de l'API Admin (jamais d'accès direct).
+- Métriques temps réel → **exclusivement via l'API Admin** : instantané REST (`get-metrics-summary`, `get-traffic-metrics`) puis flux `stream-metrics`. Le tableau de bord n'interroge jamais Prometheus/Thanos directement ; seul Alertmanager le fait, pour les alertes infra (§6.8).
+- Recherche/historique CDR + traces → magasin CDR (ClickHouse) et backend de tracing via `search-messages` / `get-message-trace` (jamais d'accès direct). Il n'existe **pas** de lecture unitaire de CDR côté passerelle : la fiche d'un message se compose côté BFF.
 - Corps d'un message → endpoint de lecture de contenu gardé par `content:read` (§6.19).
 - Facturation → plan de contrôle via les endpoints de facturation.
 - Alertes d'infrastructure → Alertmanager pousse vers un webhook du BFF (§6.8), inséré dans `notifications`.
@@ -171,9 +171,9 @@ saved_views
 |  |  Sessions, Traffic, CDR,      |  + |    session cookie/JWT               |  |
 |  |  Anti-spam, Suppressions,     |  WS |  - Proxy/aggregation to Gateway    |  |
 |  |  Inbound numbers, Sender      |    |    Admin API                       |  |
-|  |  rewrite, Billing, Content,   |    |  - WebSocket fan-out hub (splits   |  |
-|  |  Alerts, Audit, Operators     |    |    the gateway's single metrics    |  |
-|  |  State: TanStack Query         |    |    stream into per-topic channels)  |  |
+|  |  rewrite, Billing, Content,   |    |  - WebSocket hub: merges the 3     |  |
+|  |  Alerts, Audit, Operators     |    |    gateway WS streams into one     |  |
+|  |  State: TanStack Query         |    |    multiplexed client socket        |  |
 |  |  Real-time: WS client           |    |  - Permission enforcement (§6.10)  |  |
 |  +-----------------------------+    |  - Owns: operators, roles/perms,   |  |
 |                                       |    audit_log, alert_rules,          |  |
@@ -198,13 +198,13 @@ saved_views
 - **Sécurité de type de bout en bout** : les fonctions serveur sont appelées comme du RPC typé.
 - **Centralisation** : application des permissions, journalisation d'audit, diffusion WebSocket (le navigateur ne parle jamais directement à la passerelle).
 - **Cible Node auto-hébergée** (pas edge/serverless) car le hub de diffusion WebSocket a besoin d'un processus longue durée.
-- **HA multi-instance** : ≥2 instances BFF derrière un load balancer (affinité WS), coordonnées par une **couche pub/sub partagée** (Redis Pub/Sub) sur laquelle le flux de métriques de la passerelle est publié une fois puis re-diffusé par chaque instance. Plus de SPOF, déploiements sans coupure.
+- **HA multi-instance** : ≥2 instances BFF derrière un load balancer (affinité WS), coordonnées par une **couche pub/sub partagée** (Redis Pub/Sub) sur laquelle les trois flux de la passerelle sont consommés une seule fois, republiés, puis re-diffusés par chaque instance. Plus de SPOF, déploiements sans coupure — et la passerelle ne voit pas son nombre d'abonnés WS croître avec le nombre d'instances BFF.
 
 ### 4.2 Architecture Frontend
 
 - **Framework** : TanStack Start (React + TypeScript, Vite, routage fichiers, SSR + fonctions serveur/BFF). **Gestionnaire** : pnpm.
 - **État serveur** : TanStack Query (cache, refetch, pagination), associé au pattern loader de TanStack Router.
-- **Temps réel** : une WebSocket par client, multiplexée par sujet (`metrics.traffic`, `metrics.connectors`, `sessions.events`, `notifications`, `billing.alerts`). La passerelle expose un flux de métriques unique ; le BFF le **scinde** en sujets côté serveur avant diffusion.
+- **Temps réel** : une WebSocket par client, multiplexée par sujet (`metrics.traffic`, `metrics.connectors`, `sessions.events`, `notifications`, `billing.alerts`). La passerelle expose **trois** flux WebSocket distincts — `stream-metrics`, `stream-sessions`, `stream-billing-alerts` — que le BFF **agrège**, avec ses propres notifications, en une seule socket client. Le sens du travail est donc l'inverse d'un simple fan-out : plusieurs connexions montantes, une seule descendante par opérateur.
 - **Graphiques** : visx/Recharts pour les séries temporelles ; tableaux virtualisés pour les grandes listes.
 - **Éditeur de script** : Monaco (JS/Lua), diagnostics de lint en ligne, exécuteur de payload en split-pane.
 - **Flux d'auth** : login email/mot de passe + MFA géré par la couche serveur (§6.9) ; l'UI se rend selon l'ensemble de permissions retourné par `/auth/me`, jamais un contrôle de rôle codé en dur.
@@ -216,6 +216,11 @@ saved_views
 Le client parle uniquement à son propre serveur TanStack Start (le BFF), qui parle à l'API Admin de la passerelle (§5.3 compagnon) et à son petit schéma PostgreSQL.
 
 ### 5.1 API BFF — `dashboard.gateway.example.com/api`
+
+> Surface du BFF, **pas** celle de la passerelle. Elle est alignée sur les 133 opérations d'
+> `api/openapi-admin.yaml` (préfixe `/admin`, consommé par le BFF via
+> `@martialanouman/gateway-api-contracts`) ; les commentaires signalent les endroits où la forme BFF
+> et la forme passerelle diffèrent. Toute évolution du contrat doit être répercutée ici.
 
 ```
 # Auth (email/password + MFA — TOTP + WebAuthn/passkey; §6.9)
@@ -238,8 +243,10 @@ GET                     /customers/{id}/smpp-accounts
 
 # SMPP accounts (channels, quotas, sessions, webhooks, credentials)
 GET/POST/PATCH/DELETE  /smpp-accounts                    # POST requires customerId; ?customerId=/?groupId=
+POST                    /smpp-accounts/{id}/suspend       # cascade descendante de suspend-customer
 PATCH                   /smpp-accounts/{id}/channels
 PATCH                   /smpp-accounts/{id}/session-limits
+GET                     /smpp-accounts/{id}/sessions      # binds vivants vs max_sessions — alimente l'écart de §6.5
 PATCH                   /smpp-accounts/{id}/sender-id-policy
 PATCH                   /smpp-accounts/{id}/smpp-ops       # query_sm / cancel_sm toggles
 GET/POST/PATCH/DELETE  /smpp-accounts/{id}/webhooks
@@ -252,13 +259,15 @@ POST    /smpp-accounts/{id}/credentials/{credId}/rotate  # manual, optional grac
 # Connectors / routes / exact routes / scripts / sessions / anti-spam
 GET/POST/PATCH/DELETE  /connectors
 POST                    /connectors/{id}/rebind
+GET                     /connectors/{id}/status           # link_status par bind + breaker_state, distincts (§6.5)
 PATCH                   /connectors/{id}/reconnect-policy
 PATCH                   /connectors/{id}/bind-pool
 GET/POST/PATCH/DELETE  /routes
 POST                    /routes/reorder
-GET/POST/PATCH/DELETE  /exact-routes                     # routes:read / routes:write
+GET/POST                /exact-routes                     # routes:read / routes:write
+PATCH/DELETE            /exact-routes/{msisdn}            # la clé EST le MSISDN — pas d'id de substitution
 POST                    /exact-routes/import              # routes:import
-GET                     /exact-routes/lookup?msisdn=
+GET                     /exact-routes/lookup?msisdn=      # lecture unitaire : pas de GET /exact-routes/{msisdn}
 GET/POST/PATCH/DELETE  /routing-scripts
 PATCH                   /routing-scripts/{id}/assign
 POST                    /routing-scripts/{id}/validate
@@ -308,8 +317,10 @@ POST    /gdpr/erase                                  # { subjectType: customer|m
 GET     /gdpr/erase/{jobId}
 
 # CDR / search / export
-GET     /messages?account=&customer=&group=&status=&dateFrom=&dateTo=&connector=&page=
-GET     /messages/{id}
+GET     /messages?account=&customer=&group=&status=&dateFrom=&dateTo=&connector=&cursor=&limit=
+                                                     # -> search-messages ; pagination par CURSEUR, pas par numéro de page
+GET     /messages/{id}                               # composé côté BFF (search-messages filtré + trace) —
+                                                     # la passerelle n'expose pas de lecture unitaire de CDR
 GET     /messages/{id}/trace
 POST    /messages/export                             # async; cdr:export_bulk, row-cap, role-based MSISDN mask
 GET     /messages/export/{jobId}
@@ -318,6 +329,8 @@ GET     /messages/export/{jobId}
 GET     /metrics/summary?window=
 GET     /metrics/traffic?groupBy=&window=            # connector | customer | account | group
 WS      /stream                                      # multiplexed: metrics.*, sessions.events, notifications, billing.alerts
+                                                     # côté passerelle, TROIS flux distincts à agréger :
+                                                     # stream-metrics, stream-sessions, stream-billing-alerts
 
 # Dashboard-owned resources
 GET/POST/PATCH/DELETE  /alert-rules
@@ -382,7 +395,7 @@ Le client envoie `{"action":"subscribe","topics":[...]}` au montage et `unsubscr
 - Table en direct des binds actifs (utilisateur + SMSC, par onglets), mise à jour en deltas.
 - Déconnexion forcée avec confirmation, journalisée.
 - **`max_sessions` par compte** : réglable depuis la page du compte, affichage « sessions vivantes / limite ». Une baisse de quota **ne coupe pas** les binds vivants (spec compagnon §6.3) ; badge d'écart explicite (« 8 vivantes / limite 4 »), forcer la convergence exige une déconnexion explicite ; avertissement avant sauvegarde si la valeur est inférieure aux sessions ouvertes.
-- **Santé des connecteurs** : `link_status` (up|reconnecting|down) et `breaker_state` (closed|open|half_open) affichés **séparément** ; badge d'avertissement pour un connecteur s'appuyant sur le disjoncteur mais sans auto-reconnexion.
+- **Santé des connecteurs** (`get-connector-status`) : `link_status` (up|reconnecting|down) et `breaker_state` (closed|open|half_open) affichés **séparément** ; badge d'avertissement pour un connecteur s'appuyant sur le disjoncteur mais sans auto-reconnexion. La réponse détaille l'état **par bind du pool** — la vue doit donc supporter un connecteur dont certains binds sont up et d'autres non, pas un état unique par connecteur.
 
 ### 6.6 UI anti-spam & réputation
 
