@@ -886,3 +886,71 @@ items:
           method: DELETE
           url: '{{baseUrl}}/admin/exact-routes/2250700000001'
         docs: Delete an exact route (scope admin:write).
+  - info:
+      name: Routing Scripts
+      type: folder
+    items:
+      - info:
+          name: list-routing-scripts
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/routing-scripts'
+        docs: List routing scripts, optionally filtered by scope (scope admin:read).
+      - info:
+          name: create-routing-script
+          type: http
+        http:
+          method: POST
+          url: '{{baseUrl}}/admin/routing-scripts'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "scope": "platform",
+                "name": "night-routing",
+                "language": "js",
+                "source_code": "function resolveRoute(m){ return null }",
+                "timeout_ms": 2
+              }
+        docs: Create a draft routing script (scope admin:write).
+      - info:
+          name: get-routing-script
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/routing-scripts/{{routingScriptId}}'
+        docs: Get a routing script (scope admin:read).
+      - info:
+          name: update-routing-script
+          type: http
+        http:
+          method: PATCH
+          url: '{{baseUrl}}/admin/routing-scripts/{{routingScriptId}}'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "source_code": "function resolveRoute(m){ return null }"
+              }
+        docs: Update a draft routing script's source/limits (scope admin:write).
+      - info:
+          name: delete-routing-script
+          type: http
+        http:
+          method: DELETE
+          url: '{{baseUrl}}/admin/routing-scripts/{{routingScriptId}}'
+        docs: Delete a routing script (scope admin:write).
+      - info:
+          name: list-routing-script-versions
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/routing-scripts/{{routingScriptId}}/versions'
+        docs: List the version history for a script's scope (scope admin:read).

@@ -134,6 +134,7 @@ func run() error {
 		OptOutKeywords:  postgres.NewOptOutKeywordRepo(pool),
 		AntispamRules:   postgres.NewAntispamRuleRepo(pool),
 		ExactRoutes:     postgres.NewExactRouteRepo(pool),
+		RoutingScripts:  postgres.NewRoutingScriptRepo(pool),
 		Imports:         importRunner,
 		Disconnector:    adminapi.NewGRPCDisconnector(registrypb.NewSessionRegistryClient(registryConn)),
 		Verifier:        verifier,
