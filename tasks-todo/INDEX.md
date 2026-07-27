@@ -88,7 +88,7 @@ Légende : `[x]` = fait (dans `tasks-done/`) · `[ ]` = à faire (dans `tasks-to
 - [x] step-115 — Invariant (b) : un message routé L0 traverse toute la conformité
 
 ## M8 — Résilience connecteurs  *(bascule au vrai simulateur SMSC)*
-- [ ] step-120 — Basculer les tests d'intégration au vrai simulateur SMSC
+- [x] step-120 — Basculer les tests d'intégration au vrai simulateur SMSC
 - [ ] step-121 — Disjoncteur par connecteur : machine à états locale
 - [ ] step-122 — Agrégation multi-pod du disjoncteur par majorité (Redis)
 - [ ] step-123 — Le routeur lit `breaker:state` à la (re)construction de l'instantané
