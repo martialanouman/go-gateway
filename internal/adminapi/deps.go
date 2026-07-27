@@ -133,6 +133,7 @@ type Deps struct {
 	Suppressions    SuppressionAdminStore
 	OptOutKeywords  OptOutKeywordStore
 	AntispamRules   AntispamRuleStore
+	ExactRoutes     ExactRouteAdminStore
 	Disconnector    Disconnector
 	Verifier        auth.TokenVerifier
 	Logger          *slog.Logger

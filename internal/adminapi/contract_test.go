@@ -90,6 +90,12 @@ var m1Operations = []opRef{
 	{"create-antispam-rule", "post", "/admin/antispam-rules"},
 	{"update-antispam-rule", "patch", "/admin/antispam-rules/{id}"},
 	{"delete-antispam-rule", "delete", "/admin/antispam-rules/{id}"},
+
+	{"list-exact-routes", "get", "/admin/exact-routes"},
+	{"create-exact-route", "post", "/admin/exact-routes"},
+	{"lookup-exact-route", "get", "/admin/exact-routes/lookup"},
+	{"update-exact-route", "patch", "/admin/exact-routes/{msisdn}"},
+	{"delete-exact-route", "delete", "/admin/exact-routes/{msisdn}"},
 }
 
 // loadContract reads api/openapi-admin.yaml (the source of truth) into a generic tree.

@@ -806,3 +806,64 @@ items:
           method: DELETE
           url: '{{baseUrl}}/admin/antispam-rules/{{antispamRuleId}}'
         docs: Delete an anti-spam rule (scope admin:write).
+  - info:
+      name: Exact Routes
+      type: folder
+    items:
+      - info:
+          name: list-exact-routes
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/exact-routes?limit=50'
+        docs: List exact routes, keyset-paginated by msisdn (scope admin:read).
+      - info:
+          name: create-exact-route
+          type: http
+        http:
+          method: POST
+          url: '{{baseUrl}}/admin/exact-routes'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "msisdn": "2250700000001",
+                "target_type": "connector",
+                "target_id": "{{connectorId}}",
+                "source": "manual"
+              }
+        docs: Create/upsert an exact route MSISDN -> connector|route (scope admin:write).
+      - info:
+          name: lookup-exact-route
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/exact-routes/lookup?msisdn=2250700000001'
+        docs: Resolve the exact route for one MSISDN (scope admin:read).
+      - info:
+          name: update-exact-route
+          type: http
+        http:
+          method: PATCH
+          url: '{{baseUrl}}/admin/exact-routes/2250700000001'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "target_type": "route",
+                "target_id": "{{routeId}}"
+              }
+        docs: Update an exact route (scope admin:write).
+      - info:
+          name: delete-exact-route
+          type: http
+        http:
+          method: DELETE
+          url: '{{baseUrl}}/admin/exact-routes/2250700000001'
+        docs: Delete an exact route (scope admin:write).
