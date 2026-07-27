@@ -75,6 +75,25 @@ func TestRoundRobinRotates(t *testing.T) {
 	}
 }
 
+// TestFailoverPriority: picks the lowest priority number (evaluated first).
+func TestFailoverPriority(t *testing.T) {
+	primary, secondary := uuid.New(), uuid.New()
+	targets := []strategy.Target{{ConnectorID: secondary, Priority: 5}, {ConnectorID: primary, Priority: 1}}
+	if got, _ := strategy.FailoverPriority(targets); got != primary {
+		t.Errorf("failover -> %s, want the priority-1 %s", got, primary)
+	}
+}
+
+// TestLeastLoaded: picks the connector with the smallest load; a missing gauge reads 0.
+func TestLeastLoaded(t *testing.T) {
+	busy, idle := uuid.New(), uuid.New()
+	targets := []strategy.Target{{ConnectorID: busy}, {ConnectorID: idle}}
+	load := map[uuid.UUID]int{busy: 50, idle: 2}
+	if got, _ := strategy.LeastLoaded(targets, func(id uuid.UUID) int { return load[id] }); got != idle {
+		t.Errorf("least_loaded -> %s, want the idle %s", got, idle)
+	}
+}
+
 // TestEmptyTargets: every strategy reports ok=false with no targets.
 func TestEmptyTargets(t *testing.T) {
 	if _, ok := strategy.Weighted(nil, "k"); ok {
@@ -85,5 +104,11 @@ func TestEmptyTargets(t *testing.T) {
 	}
 	if _, ok := strategy.RoundRobin(nil, 0); ok {
 		t.Error("RoundRobin(nil) ok=true, want false")
+	}
+	if _, ok := strategy.FailoverPriority(nil); ok {
+		t.Error("FailoverPriority(nil) ok=true, want false")
+	}
+	if _, ok := strategy.LeastLoaded(nil, func(uuid.UUID) int { return 0 }); ok {
+		t.Error("LeastLoaded(nil) ok=true, want false")
 	}
 }

@@ -46,14 +46,26 @@ type compiledRoute struct {
 	fallbackRouteID *uuid.UUID        // route-level fallback (step-114)
 }
 
+// LoadReader reads a connector's in-flight gauge (connectorload:{id}, Appendix B) for least_loaded. A
+// missing gauge reads 0. It is part of the mutable overlay — volatile state read beside the immutable
+// snapshot, never compiled into it (step-104).
+type LoadReader interface {
+	InFlight(ctx context.Context, connectorID uuid.UUID) int
+}
+
 // SnapshotResolver serves route resolution from the current Snapshot, held behind an atomic pointer.
 // Per-message reads Load() lock-free (hot path, ~8000/s); config-sync replaces the whole set with Swap.
-// The round-robin counters live in a mutable overlay (rr) beside the immutable snapshot, never inside
-// it (step-104): a config swap replaces the routes but the counters persist per route id.
+// The round-robin counters and the load reader live in a mutable overlay beside the immutable snapshot,
+// never inside it (step-104): a config swap replaces the routes but the counters persist per route id.
 type SnapshotResolver struct {
-	current atomic.Pointer[Snapshot]
-	rr      sync.Map // routeID -> *atomic.Uint64
+	current    atomic.Pointer[Snapshot]
+	rr         sync.Map   // routeID -> *atomic.Uint64
+	loadReader LoadReader // nil = least_loaded treats every connector as load 0
 }
+
+// UseLoadReader sets the connector-load source for least_loaded (the mutable overlay). The router wires
+// a Redis-backed reader; a nil reader makes least_loaded pick deterministically as if all loads are 0.
+func (r *SnapshotResolver) UseLoadReader(lr LoadReader) { r.loadReader = lr }
 
 // BuildSnapshot reads the active routes and compiles them for prefix matching, returning an immutable
 // Snapshot. It is the reusable rebuild step config-sync (step-105) calls on invalidation. A static
@@ -76,7 +88,9 @@ func BuildSnapshot(ctx context.Context, lister RouteLister) (*Snapshot, error) {
 		if r.DistributionStrategy == cp.DistributionStatic && r.TargetConnectorID == nil {
 			continue
 		}
-		if r.DistributionStrategy != cp.DistributionStatic && len(r.Targets) == 0 {
+		// A non-static route with no targets is dead unless it has a fallback to chain to: skip the
+		// truly-dead ones (fall through) but compile a 0-target route that falls back (step-114).
+		if r.DistributionStrategy != cp.DistributionStatic && len(r.Targets) == 0 && r.FallbackRouteID == nil {
 			continue
 		}
 		prefix := ""
@@ -98,6 +112,11 @@ func BuildSnapshot(ctx context.Context, lister RouteLister) (*Snapshot, error) {
 		compiled = append(compiled, cr)
 	}
 
+	// Drop any 0-target route whose fallback chain cannot reach a connector (its fallback was disabled
+	// or deleted): keeping it would let it shadow — and black-hole — a less-specific route that could
+	// deliver. Dropping it lets match fall through to that route instead.
+	compiled = pruneDeadFallbacks(compiled)
+
 	// Most specific first: a longer prefix outranks a shorter one; equal lengths tie-break on the
 	// lower priority number (evaluated first, per the schema).
 	sort.SliceStable(compiled, func(i, j int) bool {
@@ -110,17 +129,50 @@ func BuildSnapshot(ctx context.Context, lister RouteLister) (*Snapshot, error) {
 	return &Snapshot{routes: compiled}, nil
 }
 
-// selectableStrategy reports whether a strategy can pick a connector today. failover_priority and
-// least_loaded arrive in step-114; compiling them now would make a matching route black-hole its
-// traffic (match → no connector → ErrNoRoute) and shadow a working fallback, so they are skipped until
-// then — a route with those strategies falls through to a less-specific route, as before this step.
-func selectableStrategy(s cp.DistributionStrategy) bool {
-	switch s {
-	case cp.DistributionStatic, cp.DistributionRoundRobin, cp.DistributionWeighted, cp.DistributionHashBased:
-		return true
-	default:
+// canSelect reports whether a route can pick a connector directly (a static connector or at least one
+// target), independent of any fallback.
+func (cr *compiledRoute) canSelect() bool {
+	return cr.connectorID != uuid.Nil || len(cr.targets) > 0
+}
+
+// pruneDeadFallbacks removes routes that can neither select a connector directly nor reach one through
+// their fallback chain (cycle-guarded). This runs once at build time, off the hot path.
+func pruneDeadFallbacks(compiled []compiledRoute) []compiledRoute {
+	byID := make(map[uuid.UUID]*compiledRoute, len(compiled))
+	for i := range compiled {
+		byID[compiled[i].routeID] = &compiled[i]
+	}
+	var delivers func(cr *compiledRoute, visited map[uuid.UUID]bool) bool
+	delivers = func(cr *compiledRoute, visited map[uuid.UUID]bool) bool {
+		if cr.canSelect() {
+			return true
+		}
+		if visited[cr.routeID] {
+			return false // fallback cycle with no selectable route
+		}
+		visited[cr.routeID] = true
+		if cr.fallbackRouteID != nil {
+			if fb, ok := byID[*cr.fallbackRouteID]; ok {
+				return delivers(fb, visited)
+			}
+		}
 		return false
 	}
+	// A fresh slice, not an in-place filter: byID holds pointers into `compiled`, so it must not be
+	// overwritten while delivers still reads it.
+	kept := make([]compiledRoute, 0, len(compiled))
+	for i := range compiled {
+		if delivers(&compiled[i], map[uuid.UUID]bool{}) {
+			kept = append(kept, compiled[i])
+		}
+	}
+	return kept
+}
+
+// selectableStrategy reports whether a strategy can pick a connector. All six are supported as of
+// step-114; an unknown value (never valid per the schema CHECK) is skipped defensively.
+func selectableStrategy(s cp.DistributionStrategy) bool {
+	return s.Valid()
 }
 
 // NewResolver wraps a prebuilt Snapshot as the current one. config-sync builds the first snapshot and
@@ -154,29 +206,41 @@ func (r *SnapshotResolver) Swap(snap *Snapshot) {
 // retains no target). dest is the E.164 form ("+225…"); matching is on its digits, so a "225" prefix
 // matches "+225…". A non-static route selects a connector from its targets via its distribution
 // strategy (dest is the hash/weight key, so all segments of a message route alike).
-func (r *SnapshotResolver) Resolve(_ context.Context, dest string) (pipeline.Route, error) {
-	cr, ok := r.current.Load().match(dest)
+func (r *SnapshotResolver) Resolve(ctx context.Context, dest string) (pipeline.Route, error) {
+	snap := r.current.Load()
+	cr, ok := snap.match(dest)
 	if !ok {
 		return pipeline.Route{}, errs.ErrNoRoute
 	}
-	return r.route(cr, dest)
+	return r.resolveFrom(ctx, snap, cr, dest, map[uuid.UUID]bool{})
 }
 
-// route selects a connector for a matched route via its strategy. ErrNoRoute when no target is retained
-// (step-114 chains fallback_route here).
-func (r *SnapshotResolver) route(cr *compiledRoute, dest string) (pipeline.Route, error) {
-	conn, ok := r.selectConnector(cr, dest)
-	if !ok {
-		return pipeline.Route{}, errs.ErrNoRoute
+// resolveFrom selects a connector for cr, chaining to its fallback_route when it retains no target
+// (spec §6.1: route-level fallback). visited guards against a fallback cycle.
+func (r *SnapshotResolver) resolveFrom(ctx context.Context, snap *Snapshot, cr *compiledRoute, dest string, visited map[uuid.UUID]bool) (pipeline.Route, error) {
+	if visited[cr.routeID] {
+		return pipeline.Route{}, errs.ErrNoRoute // fallback cycle
 	}
-	routeID := cr.routeID
-	return pipeline.Route{ConnectorID: conn, RouteID: &routeID}, nil
+	visited[cr.routeID] = true
+
+	if conn, ok := r.selectConnector(ctx, cr, dest); ok {
+		routeID := cr.routeID
+		return pipeline.Route{ConnectorID: conn, RouteID: &routeID}, nil
+	}
+	// No target retained → follow the route-level fallback if configured.
+	if cr.fallbackRouteID != nil {
+		if fb, ok := snap.findByID(*cr.fallbackRouteID); ok {
+			return r.resolveFrom(ctx, snap, fb, dest, visited)
+		}
+	}
+	return pipeline.Route{}, errs.ErrNoRoute
 }
 
 // selectConnector applies a route's distribution strategy. static returns the single connector;
-// round_robin uses the mutable per-route counter; weighted/hash_based are deterministic in dest.
-// failover_priority/least_loaded are compiled but not yet selected (step-114) → ok=false for now.
-func (r *SnapshotResolver) selectConnector(cr *compiledRoute, dest string) (uuid.UUID, bool) {
+// round_robin uses the mutable per-route counter; weighted/hash_based are deterministic in dest;
+// failover_priority picks the lowest-priority target; least_loaded reads the connector-load overlay.
+// ok is false only when the route retains no target (an empty target set) → the caller falls back.
+func (r *SnapshotResolver) selectConnector(ctx context.Context, cr *compiledRoute, dest string) (uuid.UUID, bool) {
 	switch cr.strategy {
 	case cp.DistributionStatic:
 		return cr.connectorID, true
@@ -186,9 +250,21 @@ func (r *SnapshotResolver) selectConnector(cr *compiledRoute, dest string) (uuid
 		return strategy.Weighted(cr.targets, dest)
 	case cp.DistributionHashBased:
 		return strategy.HashBased(cr.targets, dest)
+	case cp.DistributionFailoverPriority:
+		return strategy.FailoverPriority(cr.targets)
+	case cp.DistributionLeastLoaded:
+		return strategy.LeastLoaded(cr.targets, func(id uuid.UUID) int { return r.inFlight(ctx, id) })
 	default:
 		return uuid.Nil, false
 	}
+}
+
+// inFlight reads a connector's load gauge via the overlay's reader, or 0 when no reader is wired.
+func (r *SnapshotResolver) inFlight(ctx context.Context, connectorID uuid.UUID) int {
+	if r.loadReader == nil {
+		return 0
+	}
+	return r.loadReader.InFlight(ctx, connectorID)
 }
 
 // rrNext returns the next monotonic counter value for a route's round-robin rotation, from the mutable
@@ -208,23 +284,25 @@ func (r *SnapshotResolver) rrNext(routeID uuid.UUID) uint64 {
 //
 // A connector target is trusted without an existence check: the snapshot holds no connector registry,
 // so this mirrors the declarative resolver. A dangling connector is caught downstream at send time.
-func (r *SnapshotResolver) routeForTarget(t exact.Target, dest string) (pipeline.Route, bool) {
+func (r *SnapshotResolver) routeForTarget(ctx context.Context, t exact.Target, dest string) (pipeline.Route, bool) {
 	switch t.Type {
 	case exact.TargetConnector:
 		return pipeline.Route{ConnectorID: t.ID}, true
 	case exact.TargetRoute:
-		if cr, ok := r.current.Load().findByID(t.ID); ok {
-			route, err := r.route(cr, dest)
+		snap := r.current.Load()
+		if cr, ok := snap.findByID(t.ID); ok {
+			route, err := r.resolveFrom(ctx, snap, cr, dest, map[uuid.UUID]bool{})
 			return route, err == nil
 		}
 	}
 	return pipeline.Route{}, false
 }
 
-// routeByID resolves a route id (as a routing script returns) to a connector via that route's strategy.
-// matched is false when the id is not an active route in the snapshot or retains no target.
-func (r *SnapshotResolver) routeByID(routeID uuid.UUID, dest string) (pipeline.Route, bool) {
-	return r.routeForTarget(exact.Target{Type: exact.TargetRoute, ID: routeID}, dest)
+// routeByID resolves a route id (as a routing script returns) to a connector via that route's strategy
+// (with its fallback chain). matched is false when the id is not an active route in the snapshot or
+// retains no target.
+func (r *SnapshotResolver) routeByID(ctx context.Context, routeID uuid.UUID, dest string) (pipeline.Route, bool) {
+	return r.routeForTarget(ctx, exact.Target{Type: exact.TargetRoute, ID: routeID}, dest)
 }
 
 // match returns the first compiled route whose prefix matches dest's digits (most specific first).
