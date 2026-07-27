@@ -81,7 +81,7 @@ Légende : `[x]` = fait (dans `tasks-done/`) · `[ ]` = à faire (dans `tasks-to
 - [x] step-108 — Runtime de script JS (goja) poolé, plafond d'instructions = garde primaire
 - [x] step-109 — Runtime de script Lua (gopher-lua) poolé, mêmes gardes
 - [x] step-110 — Contrat `resolveRoute`, résolution de scope, intégration pipeline (repli déclaratif)
-- [ ] step-111 — Admin routing-scripts : CRUD + list-versions
+- [x] step-111 — Admin routing-scripts : CRUD + list-versions
 - [ ] step-112 — Admin assign / validate / test / publish routing-script
 - [ ] step-113 — Stratégies de distribution déterministes : round_robin, weighted, hash_based
 - [ ] step-114 — Stratégies failover_priority, least_loaded + fallback_route

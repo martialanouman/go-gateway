@@ -739,6 +739,9 @@ paths:
       parameters: [ { name: scope, in: query, schema: { $ref: '#/components/schemas/ScriptScope' } }, { name: scopeId, in: query, schema: { type: string, format: uuid } } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/RoutingScript' } } } } }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
     post:
       tags: [Routing Scripts]
       summary: Create a routing script (draft)
@@ -747,6 +750,8 @@ paths:
       responses:
         '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/RoutingScript' } } } }
         '422': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /admin/routing-scripts/{id}:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
     get:
@@ -756,6 +761,8 @@ paths:
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/RoutingScript' } } } }
         '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
     patch:
       tags: [Routing Scripts]
       summary: Update a routing script (source/limits)
@@ -764,6 +771,10 @@ paths:
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/RoutingScript' } } } }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
     delete:
       tags: [Routing Scripts]
       summary: Delete a routing script
@@ -771,6 +782,8 @@ paths:
       responses:
         '204': { description: Deleted. }
         '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /admin/routing-scripts/{id}/assign:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
     patch:
@@ -815,6 +828,9 @@ paths:
       operationId: list-routing-script-versions
       responses:
         '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/ScriptVersion' } } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
   # ============================ SESSIONS ============================
   /admin/sessions:
