@@ -3,6 +3,7 @@ package exact
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/bits-and-blooms/bloom/v3"
 )
@@ -26,24 +27,58 @@ type MSISDNLister interface {
 	List(ctx context.Context, after string, limit int) ([]Route, error)
 }
 
-// Bloom is an immutable in-memory membership filter over the configured exact-route MSISDNs — the L0
-// fast path's negative gate. MightContain==false is a definitive miss (no Redis read); ==true is a
-// possible hit that Redis must confirm. Safe for concurrent reads: nothing mutates it after LoadBloom
-// (hot reload swaps the whole filter, step-106).
+// Bloom is an in-memory membership filter over the configured exact-route MSISDNs — the L0 fast path's
+// negative gate. MightContain==false is a definitive miss (no Redis read); ==true is a possible hit
+// that Redis must confirm. The filter is held behind an atomic pointer so Reload can swap a freshly
+// built filter in under live traffic, lock-free and with no routing hole: readers see either the whole
+// old filter or the whole new one, never a partial (step-106).
 type Bloom struct {
-	filter *bloom.BloomFilter
+	current atomic.Pointer[bloom.BloomFilter]
 }
 
 // LoadBloom builds the filter by paging every exact-route MSISDN once at startup. It never yields a
-// false negative, so "absent" is a certain "no override" (spec §6.1). Hot reload without a restart
-// arrives with config-sync (step-106); here the filter is loaded once.
+// false negative, so "absent" is a certain "no override" (spec §6.1). config-sync calls Reload
+// thereafter to hot-swap it without a restart.
 func LoadBloom(ctx context.Context, lister MSISDNLister) (*Bloom, error) {
+	filter, err := buildFilter(ctx, lister)
+	if err != nil {
+		return nil, err
+	}
+	b := &Bloom{}
+	b.current.Store(filter)
+	return b, nil
+}
+
+// Reload rebuilds the filter from the current exact_routes and swaps it in atomically. On a build
+// failure the current filter keeps serving (nothing is swapped), so a transient Postgres blip never
+// leaves the L0 gate empty. Safe to call concurrently with MightContain.
+func (b *Bloom) Reload(ctx context.Context, lister MSISDNLister) error {
+	filter, err := buildFilter(ctx, lister)
+	if err != nil {
+		return err
+	}
+	b.current.Store(filter)
+	return nil
+}
+
+// MightContain reports whether msisdn may be a configured exact route. false is definitive (the caller
+// skips Redis and resolves normally); true means "confirm against Redis" (it may be a false positive).
+func (b *Bloom) MightContain(msisdn string) bool {
+	return b.current.Load().TestString(msisdn)
+}
+
+// CapacityBits is the filter's bit-array size (m), for a reload-size metric.
+func (b *Bloom) CapacityBits() uint { return b.current.Load().Cap() }
+
+// buildFilter pages every exact-route MSISDN and builds a fresh filter. It is the shared core of
+// LoadBloom and Reload.
+func buildFilter(ctx context.Context, lister MSISDNLister) (*bloom.BloomFilter, error) {
 	var msisdns []string
 	after := ""
 	for {
 		page, err := lister.List(ctx, after, bloomPageSize)
 		if err != nil {
-			return nil, fmt.Errorf("exact: load bloom: %w", err)
+			return nil, fmt.Errorf("exact: build bloom: %w", err)
 		}
 		if len(page) == 0 {
 			break
@@ -56,12 +91,11 @@ func LoadBloom(ctx context.Context, lister MSISDNLister) (*Bloom, error) {
 			break
 		}
 	}
-	return newBloom(msisdns), nil
+	return newFilter(msisdns), nil
 }
 
-// newBloom sizes and fills a filter for the given MSISDNs. It is the shared core of LoadBloom and the
-// in-memory test constructor.
-func newBloom(msisdns []string) *Bloom {
+// newFilter sizes and fills a Bloom filter for the given MSISDNs.
+func newFilter(msisdns []string) *bloom.BloomFilter {
 	capacity := len(msisdns)
 	if capacity < minBloomCapacity {
 		capacity = minBloomCapacity
@@ -70,11 +104,12 @@ func newBloom(msisdns []string) *Bloom {
 	for _, m := range msisdns {
 		filter.AddString(m)
 	}
-	return &Bloom{filter: filter}
+	return filter
 }
 
-// MightContain reports whether msisdn may be a configured exact route. false is definitive (the caller
-// skips Redis and resolves normally); true means "confirm against Redis" (it may be a false positive).
-func (b *Bloom) MightContain(msisdn string) bool {
-	return b.filter.TestString(msisdn)
+// newBloom wraps a filter over the given MSISDNs — the in-memory test constructor.
+func newBloom(msisdns []string) *Bloom {
+	b := &Bloom{}
+	b.current.Store(newFilter(msisdns))
+	return b
 }

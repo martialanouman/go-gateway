@@ -3,6 +3,7 @@ package optout
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/google/uuid"
 
@@ -57,7 +58,7 @@ func (i *InboundNumberIndex) Resolve(from string) (uuid.UUID, bool) {
 // first suppressed scope and consults the database only behind a Bloom hit (via Guard).
 type Enforcer struct {
 	guard   *Guard
-	inbound *InboundNumberIndex
+	inbound atomic.Pointer[InboundNumberIndex]
 }
 
 // NewEnforcer composes the opt-out Guard with the inbound-number index. A nil index is treated as
@@ -66,8 +67,30 @@ func NewEnforcer(guard *Guard, inbound *InboundNumberIndex) *Enforcer {
 	if inbound == nil {
 		inbound = &InboundNumberIndex{byAddr: map[string]uuid.UUID{}}
 	}
-	return &Enforcer{guard: guard, inbound: inbound}
+	e := &Enforcer{guard: guard}
+	e.inbound.Store(inbound)
+	return e
 }
+
+// Reload hot-swaps BOTH opt-out inputs from the current control plane (step-106): the per-scope Bloom
+// snapshot (from suppressions) and the inbound-number index (which resolves an MT's sender to its
+// inbound_number scope). Reloading only the Bloom would leave a STOP to a newly-provisioned inbound
+// number unenforced until restart, so both move together. Each is swapped atomically; on a build
+// failure the current value keeps serving, and the returned error triggers an idempotent retry.
+func (e *Enforcer) Reload(ctx context.Context, supp SuppressionLister, inbound InboundNumberLister) error {
+	if err := e.guard.Reload(ctx, supp); err != nil {
+		return err
+	}
+	idx, err := LoadInboundNumberIndex(ctx, inbound)
+	if err != nil {
+		return err
+	}
+	e.inbound.Store(idx)
+	return nil
+}
+
+// CapacityBits is the opt-out Bloom's total bit-array size, for a reload-size metric.
+func (e *Enforcer) CapacityBits() uint { return e.guard.CapacityBits() }
 
 // IsOptedOut reports whether dest is suppressed in any scope applicable to an MT from (accountID,
 // customerID) sent as from. The (accountID, customerID) order matches SenderIDAuthorizer.Authorize so
@@ -87,7 +110,7 @@ func (e *Enforcer) IsOptedOut(ctx context.Context, accountID, customerID uuid.UU
 	}
 	// The inbound_number scope applies only when this MT is sent from one of our inbound numbers — the
 	// channel a recipient's STOP targets (the default scope of an MO STOP, §6.20).
-	if id, ok := e.inbound.Resolve(from); ok {
+	if id, ok := e.inbound.Load().Resolve(from); ok {
 		if ok, err := e.guard.IsSuppressed(ctx, cp.SuppressionScopeInboundNumber, &id, dest); err != nil || ok {
 			return ok, err
 		}

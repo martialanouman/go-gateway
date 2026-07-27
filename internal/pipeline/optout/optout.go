@@ -9,6 +9,7 @@ package optout
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/bits-and-blooms/bloom/v3"
 	"github.com/google/uuid"
@@ -84,15 +85,40 @@ func (s *Snapshot) MightBeSuppressed(scope cp.SuppressionScope, scopeID *uuid.UU
 }
 
 // Guard is the two-stage opt-out check: the in-memory Bloom snapshot gates the exact confirmation, so
-// the database is consulted only when a destination might be suppressed.
+// the database is consulted only when a destination might be suppressed. The snapshot is held behind an
+// atomic pointer so Reload can swap a freshly built one under live traffic, lock-free (step-106).
 type Guard struct {
-	snapshot *Snapshot
+	snapshot atomic.Pointer[Snapshot]
 	exact    ExactChecker
 }
 
 // NewGuard composes a Bloom snapshot with the exact checker behind it.
 func NewGuard(snapshot *Snapshot, exact ExactChecker) *Guard {
-	return &Guard{snapshot: snapshot, exact: exact}
+	g := &Guard{exact: exact}
+	g.snapshot.Store(snapshot)
+	return g
+}
+
+// Reload rebuilds the per-scope Bloom snapshot from the current suppressions and swaps it in
+// atomically. On a build failure the current snapshot keeps serving (nothing is swapped), so a
+// transient database blip never leaves the opt-out gate empty. Safe to call concurrently with
+// IsSuppressed.
+func (g *Guard) Reload(ctx context.Context, lister SuppressionLister) error {
+	snap, err := LoadSnapshot(ctx, lister)
+	if err != nil {
+		return err
+	}
+	g.snapshot.Store(snap)
+	return nil
+}
+
+// CapacityBits is the total bit-array size across every scope's filter, for a reload-size metric.
+func (g *Guard) CapacityBits() uint {
+	var total uint
+	for _, f := range g.snapshot.Load().filters {
+		total += f.Cap()
+	}
+	return total
 }
 
 // IsSuppressed reports whether msisdn is suppressed in the given scope. It short-circuits to false
@@ -100,7 +126,7 @@ func NewGuard(snapshot *Snapshot, exact ExactChecker) *Guard {
 // otherwise. An error from the exact check is returned for the caller to treat as transient. msisdn
 // must be E.164-normalized; scopeID is nil for the platform scope.
 func (g *Guard) IsSuppressed(ctx context.Context, scope cp.SuppressionScope, scopeID *uuid.UUID, msisdn string) (bool, error) {
-	if !g.snapshot.MightBeSuppressed(scope, scopeID, msisdn) {
+	if !g.snapshot.Load().MightBeSuppressed(scope, scopeID, msisdn) {
 		return false, nil
 	}
 	return g.exact.IsSuppressed(ctx, scope, scopeID, msisdn)
