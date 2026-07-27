@@ -663,7 +663,7 @@ COMMIT;
 --
 --  `version` is a LIFECYCLE RANK, not a timestamp: the later stage always supersedes, independent of
 --  which service wrote the row or of clock skew between hosts. Ranks (spaced for M4+):
---      accepted=10  enroute=20  rejected=20  rerouted=30  delivered=40  failed=50  expired=50  cancelled=60
+--      accepted=10  rerouted=15  enroute=20  rejected=20  delivered=40  failed=50  expired=50  cancelled=60  (rerouted < enroute: a fallback step superseded by the destination's enroute, step-125)
 --
 --  `submitted_at` is IMMUTABLE and repeated on every row for a message, keeping all of a message's
 --  status rows in one partition even when a later status arrives on another day.

@@ -22,6 +22,10 @@ import (
 type Route struct {
 	ConnectorID uuid.UUID
 	RouteID     *uuid.UUID
+	// FallbackChain is the ordered connector fallback order for this route (failover_priority /
+	// least_loaded), carried to mt.routed so the connector pool can reroute unilaterally (step-125).
+	// Empty for strategies without a meaningful fallback order.
+	FallbackChain []uuid.UUID
 }
 
 // RouteRequest is the context route resolution needs: the normalized destination plus the message
@@ -201,6 +205,7 @@ func (p *Pipeline) Process(ctx context.Context, in InboundMT) (RoutedMT, []pipee
 		}
 		out.ConnectorID = route.ConnectorID
 		out.RouteID = route.RouteID
+		out.FallbackChain = route.FallbackChain
 		return nil
 	}); err != nil {
 		return RoutedMT{}, nil, err

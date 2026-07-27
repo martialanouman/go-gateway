@@ -3,6 +3,7 @@ package pipeline
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -144,11 +145,15 @@ func EncodeRouted(env RoutedMT) (kafka.Record, error) {
 		return kafka.Record{}, fmt.Errorf("pipeline: encode mt.routed: %w", err)
 	}
 	key := env.MessageID
+	headers := idHeaders(env.MessageID, env.TraceID, env.AccountID, env.CustomerID)
+	if len(env.FallbackChain) > 0 {
+		headers = append(headers, kafka.Header{Key: kafka.HeaderFallbackChain, Value: encodeChain(env.FallbackChain)})
+	}
 	return kafka.Record{
 		Topic:   kafka.TopicMTRouted,
 		Key:     key[:],
 		Value:   value,
-		Headers: idHeaders(env.MessageID, env.TraceID, env.AccountID, env.CustomerID),
+		Headers: headers,
 	}, nil
 }
 
@@ -157,6 +162,10 @@ func DecodeRouted(rec kafka.Record) (RoutedMT, error) {
 	var w routedWire
 	if err := json.Unmarshal(rec.Value, &w); err != nil {
 		return RoutedMT{}, fmt.Errorf("pipeline: decode mt.routed: %w", err)
+	}
+	var chain []uuid.UUID
+	if raw, ok := rec.Header(kafka.HeaderFallbackChain); ok {
+		chain = decodeChain(raw)
 	}
 	return RoutedMT{
 		MessageID:          w.MessageID,
@@ -172,12 +181,52 @@ func DecodeRouted(rec kafka.Record) (RoutedMT, error) {
 		DataCoding:         w.DataCoding,
 		ConnectorID:        w.ConnectorID,
 		RouteID:            w.RouteID,
+		FallbackChain:      chain,
 		SegmentSeq:         w.SegmentSeq,
 		SegmentCount:       w.SegmentCount,
 		HasUDH:             w.HasUDH,
 		SubmittedAt:        w.SubmittedAt,
 		Billable:           w.Billable,
 	}, nil
+}
+
+// maxFallbackChain caps how many connectors are read from the (untrusted) fallback_chain header, so a
+// malformed record can never make the pool loop or allocate without bound.
+const maxFallbackChain = 32
+
+// encodeChain serialises a connector chain as a comma-separated list of UUIDs for the fallback_chain
+// header. Identifiers only — never the body (invariant a).
+func encodeChain(chain []uuid.UUID) []byte {
+	parts := make([]string, len(chain))
+	for i, id := range chain {
+		parts[i] = id.String()
+	}
+	return []byte(strings.Join(parts, ","))
+}
+
+// decodeChain parses the fallback_chain header, tolerating a malformed value: unparsable entries are
+// skipped, duplicates dropped, and the list is capped (the header is untrusted operational data).
+func decodeChain(raw []byte) []uuid.UUID {
+	if len(raw) == 0 {
+		return nil
+	}
+	seen := make(map[uuid.UUID]struct{})
+	var chain []uuid.UUID
+	for _, tok := range strings.Split(string(raw), ",") {
+		if len(chain) >= maxFallbackChain {
+			break
+		}
+		id, err := uuid.Parse(strings.TrimSpace(tok))
+		if err != nil || id == uuid.Nil {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		chain = append(chain, id)
+	}
+	return chain
 }
 
 // moWire is the JSON body of an mo.inbound record. Body is the revealed plaintext as base64 ([]byte),

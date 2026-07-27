@@ -93,7 +93,7 @@ Légende : `[x]` = fait (dans `tasks-done/`) · `[ ]` = à faire (dans `tasks-to
 - [x] step-122 — Agrégation multi-pod du disjoncteur par majorité (Redis)
 - [x] step-123 — Le routeur lit `breaker:state` à la (re)construction de l'instantané
 - [x] step-124 — Pool de binds (`bind_pool_size > 1`) + partition par shard
-- [ ] step-125 — `fallback_chain` en en-tête + reroute unilatéral
+- [x] step-125 — `fallback_chain` en en-tête + reroute unilatéral
 - [ ] step-126 — Draineur borné + `mt.reroute-park` (rafales de reroute)
 - [ ] step-127 — Auto-reconnexion opt-in (backoff + jitter), `link_status` distinct du breaker
 - [ ] step-128 — Admin connecteurs : rebind / status / reconnect-policy / bind-pool

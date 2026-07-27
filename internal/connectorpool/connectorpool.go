@@ -143,8 +143,11 @@ type Deps struct {
 	// BreakerHeartbeat is how often each bind's state is (re)published. It MUST be shorter than the
 	// aggregator's sub-bind TTL so a live bind is never swept from the quorum. Zero uses 2s.
 	BreakerHeartbeat time.Duration
-	Tracer           trace.Tracer
-	Logger           *slog.Logger
+	// BreakerState reads other connectors' breaker aggregate to skip open candidates during a reroute
+	// (step-125). Nil = never skip (advance to the next chain entry regardless).
+	BreakerState BreakerState
+	Tracer       trace.Tracer
+	Logger       *slog.Logger
 }
 
 // Service is the connector pool.
@@ -380,6 +383,15 @@ func (s *Service) processOne(ctx context.Context, b *bind, bindIndex int, rec ka
 		return fmt.Errorf("connectorpool: decode mt.routed: %w", err)
 	}
 
+	// Per-connector addressing (step-125, option B): the pool's group consumes ALL of mt.routed, so a
+	// record for another connector — including one another pool just rerouted — is not ours to send.
+	// Skip and commit it. A message rerouted TO this connector carries our id and is processed normally.
+	// A pool with no ConnectorID configured (uuid.Nil) filters nothing and processes every record (the
+	// pre-step-125 single-connector behaviour).
+	if s.deps.ConnectorID != uuid.Nil && routed.ConnectorID != s.deps.ConnectorID {
+		return nil
+	}
+
 	// A cancel_sm may have flagged this message before it reached the SMSC. Redis is best-effort
 	// here: cancellation is itself best-effort (an already-dispatched message cannot be recalled), so
 	// a flag-read failure fails OPEN — we log and dispatch rather than halt all outbound delivery on a
@@ -401,6 +413,13 @@ func (s *Service) processOne(ctx context.Context, b *bind, bindIndex int, rec ka
 		return nil
 	}
 
+	// Reroute before submitting if this connector's own breaker is already open and the message carries a
+	// fallback chain (step-125): no point pacing and submitting to a connector we know is down — advance
+	// the chain now. Uses the LOCAL breaker (this pod's view), so the hot path never reads Redis.
+	if len(routed.FallbackChain) > 0 && s.breakers != nil && s.breakers[bindIndex].State() == breaker.Open {
+		return s.reroute(ctx, routed, errs.ErrServiceUnavailable)
+	}
+
 	// Adaptive throttle (step-086): pace to the connector's current AIMD send rate before submitting,
 	// so a throttled SMSC slows our outbound rather than being hammered. It blocks at most one send
 	// interval and honours ctx; it NEVER cuts the bind (that is the circuit breaker's job, M8).
@@ -412,11 +431,13 @@ func (s *Service) processOne(ctx context.Context, b *bind, bindIndex int, rec ka
 
 	resp, err := b.Submit(ctx, buildSubmit(routed))
 	if err != nil {
-		// A dead bind, a write failure or a timeout is transient: do not commit, so the message is
-		// reprocessed after a restart. At-least-once means the SMSC may see a duplicate submit; the
-		// versioned CDR collapses the duplicate enroute rows (no dedup until M3). It is also a
-		// connector-health failure for the breaker (no response came back).
+		// A dead bind, a write failure or a timeout is transient and a connector-health failure for the
+		// breaker (no response came back). With a fallback chain, reroute to the next connector; without
+		// one, do not commit so the message is reprocessed after a restart (at-least-once).
 		s.feedBreaker(bindIndex, 0, true)
+		if len(routed.FallbackChain) > 0 {
+			return s.reroute(ctx, routed, errs.ErrServiceUnavailable)
+		}
 		return fmt.Errorf("connectorpool: submit_sm: %w", err)
 	}
 
@@ -431,6 +452,14 @@ func (s *Service) processOne(ctx context.Context, b *bind, bindIndex int, rec ka
 			s.deps.Throttle.IncThrottled()
 		}
 		s.deps.Throttle.SetRate(s.aimd.currentRate())
+	}
+
+	// Reroute on a connector-health rejection when a fallback chain is carried (step-125): this connector
+	// is sick, so try the next healthy one rather than redeliver here or fail. A throttle stays a
+	// redeliver (below) and a permanent per-message reject stays a terminal CDR — only failover-class
+	// statuses reroute, and only when a chain exists.
+	if resp.Status != smpp.StatusOK && len(routed.FallbackChain) > 0 && classifyReroute(resp.Status) == failover {
+		return s.reroute(ctx, routed, errs.CodeFromSMPPStatus(resp.Status))
 	}
 
 	// A transient SMSC rejection (throttled, system error, queue full) is backpressure, not a

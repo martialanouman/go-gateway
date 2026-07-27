@@ -75,6 +75,11 @@ const (
 	// reports the message expired before delivery (SMPP message_state EXPIRED). An outcome code with
 	// no HTTP surface.
 	ErrDeliveryExpired Code = "delivery_expired"
+	// ErrFallbackExhausted is the outbound outcome recorded in cdr.error_code (and the mt.dead-letter
+	// reason) when a message has run through every connector of its fallback_chain and all degraded
+	// (breaker open or a connector-health rejection), so there is nowhere healthy left to send it
+	// (step-125). An outcome code with no HTTP surface.
+	ErrFallbackExhausted Code = "fallback_exhausted"
 )
 
 // SMPP v3.4 command_status values used by the mapping. Errors with no standard SMPP code use

@@ -112,3 +112,38 @@ func TestEmptyTargets(t *testing.T) {
 		t.Error("LeastLoaded(nil) ok=true, want false")
 	}
 }
+
+func TestFailoverPriorityChainOrdersByPriority(t *testing.T) {
+	a := uuid.MustParse("00000000-0000-0000-0000-0000000000aa")
+	b := uuid.MustParse("00000000-0000-0000-0000-0000000000bb")
+	c := uuid.MustParse("00000000-0000-0000-0000-0000000000cc")
+	targets := []strategy.Target{
+		{ConnectorID: c, Priority: 3},
+		{ConnectorID: a, Priority: 1},
+		{ConnectorID: b, Priority: 2},
+	}
+	got := strategy.FailoverPriorityChain(targets)
+	want := []uuid.UUID{a, b, c}
+	if len(got) != 3 || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
+		t.Errorf("chain = %v, want %v (priority order)", got, want)
+	}
+	// The head matches the single-pick strategy.
+	if head, _ := strategy.FailoverPriority(targets); head != got[0] {
+		t.Errorf("chain head %v != FailoverPriority pick %v", got[0], head)
+	}
+}
+
+func TestLeastLoadedChainOrdersByLoad(t *testing.T) {
+	busy := uuid.MustParse("00000000-0000-0000-0000-0000000000b1")
+	idle := uuid.MustParse("00000000-0000-0000-0000-0000000000d1")
+	mid := uuid.MustParse("00000000-0000-0000-0000-0000000000c1")
+	targets := []strategy.Target{{ConnectorID: busy}, {ConnectorID: idle}, {ConnectorID: mid}}
+	load := map[uuid.UUID]int{busy: 100, mid: 10, idle: 1}
+	got := strategy.LeastLoadedChain(targets, func(id uuid.UUID) int { return load[id] })
+	want := []uuid.UUID{idle, mid, busy}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("chain[%d] = %v, want %v (load order)", i, got[i], want[i])
+		}
+	}
+}
