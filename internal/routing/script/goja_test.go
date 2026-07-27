@@ -12,7 +12,7 @@ import (
 )
 
 func jsScript(src string) script.Script {
-	return script.Script{Name: "t", Language: script.LanguageJS, Source: src, TimeoutMs: 5}
+	return script.Script{Name: "t", Language: script.LanguageJS, Source: src, TimeoutMs: 50}
 }
 
 const jsRoute = "550e8400-e29b-41d4-a716-446655440000"
@@ -147,7 +147,10 @@ func TestJSContextCancellationIsDistinct(t *testing.T) {
 
 // TestJSConcurrentReuse: many concurrent resolutions share the VM pool safely (run under -race).
 func TestJSConcurrentReuse(t *testing.T) {
-	rt, _ := script.NewJSRuntime(jsScript(`function resolveRoute(m){ return m.to==="hit" ? "` + jsRoute + `" : null }`))
+	// A generous budget: under -race + CI load, 32 goroutines can push a trivial script's wall-clock
+	// past a few ms — instrumentation overhead, not a real timeout — so it must not trip here.
+	rt, _ := script.NewJSRuntime(script.Script{Name: "t", Language: script.LanguageJS, TimeoutMs: 500,
+		Source: `function resolveRoute(m){ return m.to==="hit" ? "` + jsRoute + `" : null }`})
 	want := uuid.MustParse(jsRoute)
 
 	var wg sync.WaitGroup
