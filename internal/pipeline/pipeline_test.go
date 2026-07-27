@@ -53,6 +53,14 @@ func (s stubAntispam) Evaluate(context.Context, uuid.UUID, uuid.UUID, string, st
 	return s.action, s.err
 }
 
+// stubRateLimiter returns a fixed verdict for the rate-limit stage. The zero value allows every
+// message; a non-nil err rejects (a store fault surfaces as its own error, a breach as ErrRateLimited).
+type stubRateLimiter struct{ err error }
+
+func (s stubRateLimiter) Check(context.Context, uuid.UUID, uuid.UUID, *uuid.UUID, int) error {
+	return s.err
+}
+
 // capturingOptOut records the arguments it was called with, so a test can assert the pipeline
 // forwards them in the right positions (accountID vs customerID must not be swapped).
 type capturingOptOut struct {
@@ -90,7 +98,7 @@ func TestPipelineHappyPathEmitsEveryStageSpan(t *testing.T) {
 	rec := otelrec.New(t)
 	tracer := observability.Tracer(rec.Provider(), "router")
 	connector := uuid.New()
-	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: connector}}, stubAuthorizer{}, stubOptOut{}, stubAntispam{})
+	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: connector}}, stubAuthorizer{}, stubOptOut{}, stubAntispam{}, nil)
 
 	out, segs, err := p.Process(context.Background(), inbound("+2250700000000"))
 	if err != nil {
@@ -128,7 +136,7 @@ func TestPipelineHappyPathEmitsEveryStageSpan(t *testing.T) {
 func TestPipelineRejectsInvalidDestination(t *testing.T) {
 	rec := otelrec.New(t)
 	tracer := observability.Tracer(rec.Provider(), "router")
-	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}}, stubAuthorizer{}, stubOptOut{}, stubAntispam{})
+	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}}, stubAuthorizer{}, stubOptOut{}, stubAntispam{}, nil)
 
 	_, _, err := p.Process(context.Background(), inbound("not-a-number"))
 	if code, _ := errs.CodeOf(err); code != errs.ErrInvalidDestination {
@@ -149,7 +157,7 @@ func TestPipelineRejectsUnauthorizedSenderID(t *testing.T) {
 	rec := otelrec.New(t)
 	tracer := observability.Tracer(rec.Provider(), "router")
 	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}},
-		stubAuthorizer{err: errs.ErrSenderIDNotAuthorized}, stubOptOut{}, stubAntispam{})
+		stubAuthorizer{err: errs.ErrSenderIDNotAuthorized}, stubOptOut{}, stubAntispam{}, nil)
 
 	_, _, err := p.Process(context.Background(), inbound("+2250700000000"))
 	if code, _ := errs.CodeOf(err); code != errs.ErrSenderIDNotAuthorized {
@@ -170,7 +178,7 @@ func TestPipelineRejectsOptedOutRecipient(t *testing.T) {
 	rec := otelrec.New(t)
 	tracer := observability.Tracer(rec.Provider(), "router")
 	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}},
-		stubAuthorizer{}, stubOptOut{optedOut: true}, stubAntispam{})
+		stubAuthorizer{}, stubOptOut{optedOut: true}, stubAntispam{}, nil)
 
 	_, _, err := p.Process(context.Background(), inbound("+2250700000000"))
 	if code, _ := errs.CodeOf(err); code != errs.ErrRecipientOptedOut {
@@ -192,7 +200,7 @@ func TestPipelineOptOutTransientErrorIsNotACode(t *testing.T) {
 	rec := otelrec.New(t)
 	tracer := observability.Tracer(rec.Provider(), "router")
 	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}},
-		stubAuthorizer{}, stubOptOut{err: errors.New("suppressions store down")}, stubAntispam{})
+		stubAuthorizer{}, stubOptOut{err: errors.New("suppressions store down")}, stubAntispam{}, nil)
 
 	_, _, err := p.Process(context.Background(), inbound("+2250700000000"))
 	if err == nil {
@@ -211,7 +219,7 @@ func TestPipelineForwardsOptOutIdentifiers(t *testing.T) {
 	rec := otelrec.New(t)
 	tracer := observability.Tracer(rec.Provider(), "router")
 	spy := &capturingOptOut{}
-	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}}, stubAuthorizer{}, spy, stubAntispam{})
+	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}}, stubAuthorizer{}, spy, stubAntispam{}, nil)
 
 	in := inbound("+2250700000000")
 	if _, _, err := p.Process(context.Background(), in); err != nil {
@@ -237,7 +245,7 @@ func TestPipelineRejectsSpamContent(t *testing.T) {
 	rec := otelrec.New(t)
 	tracer := observability.Tracer(rec.Provider(), "router")
 	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}},
-		stubAuthorizer{}, stubOptOut{}, stubAntispam{action: cp.AntispamActionBlock})
+		stubAuthorizer{}, stubOptOut{}, stubAntispam{action: cp.AntispamActionBlock}, nil)
 
 	_, _, err := p.Process(context.Background(), inbound("+2250700000000"))
 	if code, _ := errs.CodeOf(err); code != errs.ErrContentBlocked {
@@ -258,7 +266,7 @@ func TestPipelineSpamFlagDoesNotBlock(t *testing.T) {
 	rec := otelrec.New(t)
 	tracer := observability.Tracer(rec.Provider(), "router")
 	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}},
-		stubAuthorizer{}, stubOptOut{}, stubAntispam{action: cp.AntispamActionFlag})
+		stubAuthorizer{}, stubOptOut{}, stubAntispam{action: cp.AntispamActionFlag}, nil)
 
 	if _, _, err := p.Process(context.Background(), inbound("+2250700000000")); err != nil {
 		t.Fatalf("a flagged message must still route: %v", err)
@@ -271,7 +279,7 @@ func TestPipelineSpamFlagDoesNotBlock(t *testing.T) {
 func TestPipelineRejectsNoRoute(t *testing.T) {
 	rec := otelrec.New(t)
 	tracer := observability.Tracer(rec.Provider(), "router")
-	p := pipeline.New(tracer, stubResolver{err: errs.ErrNoRoute}, stubAuthorizer{}, stubOptOut{}, stubAntispam{})
+	p := pipeline.New(tracer, stubResolver{err: errs.ErrNoRoute}, stubAuthorizer{}, stubOptOut{}, stubAntispam{}, nil)
 
 	_, _, err := p.Process(context.Background(), inbound("+2250700000000"))
 	if code, _ := errs.CodeOf(err); code != errs.ErrNoRoute {
@@ -282,13 +290,37 @@ func TestPipelineRejectsNoRoute(t *testing.T) {
 	}
 }
 
+// TestPipelineRejectsOverRateLimit: the rate-limit stage rejects a throttled message with rate_limited,
+// AFTER route resolution and segmentation (the cost is the segment count) and before the credit stub.
+func TestPipelineRejectsOverRateLimit(t *testing.T) {
+	rec := otelrec.New(t)
+	tracer := observability.Tracer(rec.Provider(), "router")
+	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}},
+		stubAuthorizer{}, stubOptOut{}, stubAntispam{}, stubRateLimiter{err: errs.ErrRateLimited})
+
+	_, _, err := p.Process(context.Background(), inbound("+2250700000000"))
+	if code, _ := errs.CodeOf(err); code != errs.ErrRateLimited {
+		t.Fatalf("code: got %q want rate_limited", code)
+	}
+	if !rec.Recorded("pipeline.rate_limit") {
+		t.Error("rate_limit span should have been emitted")
+	}
+	if !rec.Recorded("pipeline.route") || !rec.Recorded("pipeline.segment") {
+		t.Error("rate limiting must run AFTER route resolution and segmentation")
+	}
+	if rec.Recorded("pipeline.credit") {
+		t.Error("credit stage must NOT run after a rate-limit rejection (frozen order)")
+	}
+	rec.AssertNoBody(t, "topsecretbody")
+}
+
 // TestPipelineSplitsLongMessageIntoSegments: a message past one segment is split into concatenated
 // segments, each carrying a well-formed UDH that round-trips through ParseUDH under one shared
 // reference, and the segment span carries the count but never the body (invariant a).
 func TestPipelineSplitsLongMessageIntoSegments(t *testing.T) {
 	rec := otelrec.New(t)
 	tracer := observability.Tracer(rec.Provider(), "router")
-	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}}, stubAuthorizer{}, stubOptOut{}, stubAntispam{})
+	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}}, stubAuthorizer{}, stubOptOut{}, stubAntispam{}, nil)
 
 	in := inbound("+2250700000000")
 	in.Body = msg.NewBodyString(strings.Repeat("a", 161)) // 161 GSM-7 chars -> 2 segments (152 + 9)
@@ -325,7 +357,7 @@ func TestPipelineSplitsLongMessageIntoSegments(t *testing.T) {
 func TestPipelineDataCodingDrivesSegmentationCharset(t *testing.T) {
 	rec := otelrec.New(t)
 	tracer := observability.Tracer(rec.Provider(), "router")
-	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}}, stubAuthorizer{}, stubOptOut{}, stubAntispam{})
+	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}}, stubAuthorizer{}, stubOptOut{}, stubAntispam{}, nil)
 
 	ucs2 := int(smpp.DataCodingUCS2)
 	in := inbound("+2250700000000")
@@ -350,7 +382,7 @@ func TestPipelineDataCodingDrivesSegmentationCharset(t *testing.T) {
 func TestPipelinePreSegmentedUDHIBypass(t *testing.T) {
 	rec := otelrec.New(t)
 	tracer := observability.Tracer(rec.Provider(), "router")
-	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}}, stubAuthorizer{}, stubOptOut{}, stubAntispam{})
+	p := pipeline.New(tracer, stubResolver{route: pipeline.Route{ConnectorID: uuid.New()}}, stubAuthorizer{}, stubOptOut{}, stubAntispam{}, nil)
 
 	raw := strings.Repeat("x", 200) // would be 2 segments if we re-split, but the client already did
 	in := inbound("+2250700000000")

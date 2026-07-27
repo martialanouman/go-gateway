@@ -348,11 +348,19 @@ func (s *fakeCredentialStore) rotation(t *testing.T) cp.CredentialRotation {
 type fakeConnectorStore struct {
 	mu        sync.Mutex
 	byID      map[uuid.UUID]cp.Connector
+	rateLimit map[uuid.UUID]cp.RateLimit // a connector's operational limit, for the throughput validation
 	createErr error
 }
 
 func newFakeConnectorStore() *fakeConnectorStore {
-	return &fakeConnectorStore{byID: map[uuid.UUID]cp.Connector{}}
+	return &fakeConnectorStore{byID: map[uuid.UUID]cp.Connector{}, rateLimit: map[uuid.UUID]cp.RateLimit{}}
+}
+
+func (s *fakeConnectorStore) RateLimit(_ context.Context, connectorID uuid.UUID) (cp.RateLimit, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	l, ok := s.rateLimit[connectorID]
+	return l, ok, nil
 }
 
 func (s *fakeConnectorStore) Create(_ context.Context, in cp.NewConnector) (cp.Connector, error) {

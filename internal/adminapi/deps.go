@@ -52,6 +52,9 @@ type ConnectorStore interface {
 	List(ctx context.Context) ([]cp.Connector, error)
 	Update(ctx context.Context, id uuid.UUID, p cp.ConnectorPatch) (cp.Connector, error)
 	Delete(ctx context.Context, id uuid.UUID) error
+	// RateLimit returns the connector's operational rate_limit (found=false when none), so an update
+	// lowering throughput_limit_per_sec below it can be rejected (spec §6.4 NOTE).
+	RateLimit(ctx context.Context, connectorID uuid.UUID) (cp.RateLimit, bool, error)
 }
 
 // RouteStore is the persistence the route handlers need. Create and Update persist the route and

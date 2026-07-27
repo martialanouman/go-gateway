@@ -7,7 +7,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
+
 	"github.com/martialanouman/go-gateway/internal/adminapi"
+	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 )
 
@@ -51,5 +54,33 @@ func TestCreateConnectorDuplicateNameIs409(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &got)
 	if got["code"] != "conflict" {
 		t.Errorf("code = %v, want conflict", got["code"])
+	}
+}
+
+// TestUpdateConnectorThroughputBelowRateLimitIs422: a connector's throughput_limit_per_sec is its hard
+// ceiling and must stay at or above its operational rate_limit; lowering it below rejects with 422.
+func TestUpdateConnectorThroughputBelowRateLimitIs422(t *testing.T) {
+	store := newFakeConnectorStore()
+	id := uuid.New()
+	store.byID[id] = cp.Connector{ID: id, Name: "smsc", Status: cp.ConnectorActive}
+	maxPerSec := 100
+	store.rateLimit[id] = cp.RateLimit{MaxPerSec: &maxPerSec}
+	api := newTestAPIWith(t, adminapi.Deps{Connectors: store})
+
+	w := httptest.NewRecorder()
+	api.ServeHTTP(w, authed(t, http.MethodPatch, "/v1/admin/connectors/"+id.String(), `{"throughput_limit_per_sec":50}`))
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body=%s", w.Code, w.Body)
+	}
+	if !strings.Contains(w.Body.String(), "throughput_limit_per_sec") {
+		t.Errorf("422 body should name the offending field: %s", w.Body)
+	}
+
+	// At or above the operational limit is accepted.
+	w = httptest.NewRecorder()
+	api.ServeHTTP(w, authed(t, http.MethodPatch, "/v1/admin/connectors/"+id.String(), `{"throughput_limit_per_sec":100}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("throughput == rate_limit should be accepted, got %d; body=%s", w.Code, w.Body)
 	}
 }
