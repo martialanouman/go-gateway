@@ -70,7 +70,7 @@ Légende : `[x]` = fait (dans `tasks-done/`) · `[ ]` = à faire (dans `tasks-to
 - [x] step-088 — Fenêtrage du `submit_sm` entrant (traitement concurrent borné par session)
 
 ## M7 — Routage avancé
-- [ ] step-100 — Repo `exact_routes` (numéros exacts, portabilité)
+- [x] step-100 — Repo `exact_routes` (numéros exacts, portabilité)
 - [ ] step-101 — Bloom en mémoire + `exactroute:{msisdn}` Redis + court-circuit L0
 - [ ] step-102 — Admin exact-routes : list / create / update / delete / lookup
 - [ ] step-103 — Admin import-exact-routes (asynchrone)

@@ -107,6 +107,14 @@ func tsVal(ts pgtype.Timestamptz) time.Time { return ts.Time }
 // tsFrom builds a valid timestamptz parameter from a time.Time.
 func tsFrom(t time.Time) pgtype.Timestamptz { return pgtype.Timestamptz{Time: t, Valid: true} }
 
+// tsFromPtr builds a nullable timestamptz parameter from a *time.Time (SQL NULL when nil).
+func tsFromPtr(t *time.Time) pgtype.Timestamptz {
+	if t == nil {
+		return pgtype.Timestamptz{}
+	}
+	return pgtype.Timestamptz{Time: *t, Valid: true}
+}
+
 // tsPtr reads a nullable timestamptz column into a *time.Time (nil when SQL NULL).
 func tsPtr(ts pgtype.Timestamptz) *time.Time {
 	if !ts.Valid {
