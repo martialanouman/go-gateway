@@ -120,13 +120,14 @@ func (l *Listener) serve(ctx context.Context, nc net.Conn) {
 	}
 
 	sess = session.New(nc, session.Config{
-		SystemID:    l.opts.SystemID,
-		IdleTimeout: l.opts.IdleTimeout,
-		Logger:      l.logger,
-		OnBind:      l.onBind(ctx, st, clientIP, onBound),
-		OnSubmit:    l.onSubmit(ctx, st),
-		OnQuery:     l.onQuery(ctx, st),
-		OnCancel:    l.onCancel(ctx, st),
+		SystemID:      l.opts.SystemID,
+		IdleTimeout:   l.opts.IdleTimeout,
+		InboundWindow: l.opts.InboundWindow,
+		Logger:        l.logger,
+		OnBind:        l.onBind(ctx, st, clientIP, onBound),
+		OnSubmit:      l.onSubmit(ctx, st),
+		OnQuery:       l.onQuery(ctx, st),
+		OnCancel:      l.onCancel(ctx, st),
 	})
 	_ = sess.Serve(ctx)
 

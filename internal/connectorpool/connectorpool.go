@@ -69,6 +69,21 @@ type noopDLRMap struct{}
 
 func (noopDLRMap) Put(context.Context, string, pipeline.RoutedMT) error { return nil }
 
+// ThrottleMetric observes the adaptive throttle (step-086): the connector's current send rate after
+// each submit and each ESME_RTHROTTLED event. A wrapper over Prometheus satisfies it; New defaults a
+// nil one to a no-op. It carries no label — a pod binds one connector, so the metric is per-pod
+// (cardinality-bounded, never a message id or MSISDN).
+type ThrottleMetric interface {
+	SetRate(rate float64)
+	IncThrottled()
+}
+
+// noopThrottle is the New default when no throttle metric is wired.
+type noopThrottle struct{}
+
+func (noopThrottle) SetRate(float64) {}
+func (noopThrottle) IncThrottled()   {}
+
 // Producer publishes the return path (mo.inbound, dlr.events) durably. *kafka.Producer satisfies it.
 // New defaults a nil Producer to a no-op, so a bind with no producer wired acknowledges deliver_sm as
 // before (the M2 behaviour) rather than panicking.
@@ -95,13 +110,21 @@ type Deps struct {
 	// env; M3+ sources it from the connectors control plane.
 	ConnectorID uuid.UUID
 	Bind        BindConfig
-	Tracer      trace.Tracer
-	Logger      *slog.Logger
+	// MaxSendRate is the connector's throughput_limit_per_sec — the ceiling for the adaptive throttle
+	// (step-086). Zero disables the AIMD pacing (the pre-M6 behaviour).
+	MaxSendRate float64
+	// Throttle observes the adaptive throttle. New defaults a nil one to a no-op.
+	Throttle ThrottleMetric
+	Tracer   trace.Tracer
+	Logger   *slog.Logger
 }
 
 // Service is the connector pool.
 type Service struct {
 	deps Deps
+
+	// aimd is the adaptive send-rate throttle (step-086), nil when MaxSendRate is 0.
+	aimd *aimd
 
 	// bound reports whether the SMSC bind is currently established. It gates the readiness probe, so
 	// a bind that drops — including an idle-time drop no in-flight Submit would notice — takes the
@@ -124,7 +147,14 @@ func New(deps Deps) *Service {
 	if deps.Producer == nil {
 		deps.Producer = noopProducer{}
 	}
-	return &Service{deps: deps}
+	if deps.Throttle == nil {
+		deps.Throttle = noopThrottle{}
+	}
+	s := &Service{deps: deps}
+	if deps.MaxSendRate > 0 {
+		s.aimd = newAIMD(deps.MaxSendRate, nil)
+	}
+	return s
 }
 
 // BindReady is the readiness probe for the SMSC bind: nil while the bind is established, an error
@@ -209,12 +239,30 @@ func (s *Service) handler(b *bind) kafka.Handler {
 			return nil
 		}
 
+		// Adaptive throttle (step-086): pace to the connector's current AIMD send rate before submitting,
+		// so a throttled SMSC slows our outbound rather than being hammered. It blocks at most one send
+		// interval and honours ctx; it NEVER cuts the bind (that is the circuit breaker's job, M8).
+		if s.aimd != nil {
+			if err := s.aimd.acquire(ctx); err != nil {
+				return fmt.Errorf("connectorpool: throttle wait: %w", err)
+			}
+		}
+
 		resp, err := b.Submit(ctx, buildSubmit(routed))
 		if err != nil {
 			// A dead bind, a write failure or a timeout is transient: do not commit, so the message is
 			// reprocessed after a restart. At-least-once means the SMSC may see a duplicate submit; the
 			// versioned CDR collapses the duplicate enroute rows (no dedup until M3).
 			return fmt.Errorf("connectorpool: submit_sm: %w", err)
+		}
+
+		// Feed the submit_sm_resp back to the adaptive throttle: an ESME_RTHROTTLED halves the send rate,
+		// a success nudges it back up toward the ceiling (step-086).
+		if s.aimd != nil {
+			if s.aimd.observe(resp.Status) {
+				s.deps.Throttle.IncThrottled()
+			}
+			s.deps.Throttle.SetRate(s.aimd.currentRate())
 		}
 
 		// A transient SMSC rejection (throttled, system error, queue full) is backpressure, not a

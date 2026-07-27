@@ -189,13 +189,51 @@ func (s *Session) handleSubmit(ctx context.Context, seq uint32, sm *smpp.SubmitS
 		"src", req.Source, "dst", req.Destination,
 		"body", req.Body, "body_len", req.Body.Len())
 
-	res := s.callOnSubmit(ctx, req)
+	// The gate and the request build above stay on the read goroutine — it owns st exclusively. The
+	// blocking work (OnSubmit's synchronous Kafka produce) is dispatched to a bounded worker so the read
+	// goroutine keeps reading: enquire_link, unbind and further submits stay responsive, and a session's
+	// submits process CONCURRENTLY up to InboundWindow (step-088). A non-blocking acquire is the whole
+	// point — a full window fails fast with ESME_RTHROTTLED rather than stalling the read loop.
+	select {
+	case s.inbound <- struct{}{}:
+	default:
+		s.reply(smpp.PDU{Status: errs.StatusThrottled, Sequence: seq, Body: &smpp.SubmitSMResp{}})
+		return
+	}
+	s.wg.Add(1)
+	//nolint:contextcheck // the worker deliberately uses the session-scoped workerCtx (cancelled on
+	// shutdown to drain promptly), not this handler's per-read ctx which ends when the read returns.
+	go s.submitWorker(seq, req)
+}
 
+// submitWorker runs one submit_sm's OnSubmit off the read goroutine and answers its submit_sm_resp. It
+// never reads or mutates st (owned by the read goroutine); it only calls OnSubmit (already under panic
+// recovery) and replies (serialised by writeMu, so it is safe concurrently with the read goroutine).
+// Responses may arrive out of order — SMPP correlates by sequence_number — which is conformant. The
+// produce is bounded by InboundSubmitTimeout so a hung Kafka releases the worker (and the shutdown
+// drain) with ESME_RSUBMITFAIL rather than pinning it forever.
+func (s *Session) submitWorker(seq uint32, req SubmitRequest) {
+	defer s.wg.Done()
+	defer func() { <-s.inbound }()
+
+	// workerCtx is the session-scoped context: shutdown() cancels it, so a force-disconnect or unbind
+	// releases this worker promptly rather than waiting out InboundSubmitTimeout on a slow produce.
+	wctx, cancel := context.WithTimeout(s.workerCtx, s.cfg.InboundSubmitTimeout)
+	defer cancel()
+
+	res := s.callOnSubmit(wctx, req)
+
+	status := res.Status
 	out := &smpp.SubmitSMResp{}
-	if res.Status == smpp.StatusOK {
+	if status == smpp.StatusOK {
 		out.MessageID = res.MessageID
 	}
-	s.reply(smpp.PDU{Status: res.Status, Sequence: seq, Body: out})
+	if wctx.Err() == context.DeadlineExceeded {
+		// The produce did not finish within the backstop: answer submit_failed and drop any partial id.
+		status = errs.StatusSubmitFail
+		out.MessageID = ""
+	}
+	s.reply(smpp.PDU{Status: status, Sequence: seq, Body: out})
 }
 
 // handleQuery rejects an out-of-sequence query_sm (before bind, or on a receiver bind) with

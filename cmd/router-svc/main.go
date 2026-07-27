@@ -23,6 +23,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	"github.com/martialanouman/go-gateway/internal/pipeline/antispam"
 	"github.com/martialanouman/go-gateway/internal/pipeline/optout"
+	"github.com/martialanouman/go-gateway/internal/pipeline/ratelimit"
 	"github.com/martialanouman/go-gateway/internal/pipeline/senderid"
 	"github.com/martialanouman/go-gateway/internal/platform/supervisor"
 	"github.com/martialanouman/go-gateway/internal/router"
@@ -137,8 +138,20 @@ func run() error {
 		return fmt.Errorf("load anti-spam engine: %w", err)
 	}
 
+	// The rate-limit snapshot (§6.4): the operational rate_limits plus each connector's
+	// throughput_limit_per_sec hard ceiling, indexed once at boot. The token bucket that enforces it
+	// lives in Redis (shared across pods) and fails closed on an outage (step-084). Same boot-retry
+	// discipline as the other snapshots.
+	rateSnap, err := loadWithRetry(ctx, logger, "rate-limit snapshot", func(ctx context.Context) (*ratelimit.Snapshot, error) {
+		return ratelimit.LoadSnapshot(ctx, postgres.NewRateLimitRepo(pool), postgres.NewConnectorRepo(pool))
+	})
+	if err != nil {
+		return fmt.Errorf("load rate-limit snapshot: %w", err)
+	}
+	rateLimiter := ratelimit.NewEnforcer(rateSnap, ratelimit.NewLimiter(rdb))
+
 	tracer := observability.Tracer(nil, serviceName)
-	pl := pipeline.New(tracer, resolver, senderIDs, optOut, spam)
+	pl := pipeline.New(tracer, resolver, senderIDs, optOut, spam, rateLimiter)
 	rtr := router.New(router.Deps{
 		Consumer: consumer,
 		Producer: producer,

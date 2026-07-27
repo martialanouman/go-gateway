@@ -2,15 +2,21 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 	"github.com/martialanouman/go-gateway/internal/storage/postgres/sqlcgen"
 )
+
+// entityTypeConnector is the rate_limits.entity_type discriminator for a connector (the table is
+// polymorphic, so the scope lives in the column, not an FK).
+const entityTypeConnector = "connector"
 
 // ConnectorRepo is the SMSC connectors repository. It satisfies adminapi.ConnectorStore
 // structurally. This is where the smallint / numeric / jsonb columns are converted to the int /
@@ -22,6 +28,29 @@ type ConnectorRepo struct {
 // NewConnectorRepo returns the connectors repository backed by pool.
 func NewConnectorRepo(pool *pgxpool.Pool) *ConnectorRepo {
 	return &ConnectorRepo{q: sqlcgen.New(pool)}
+}
+
+// RateLimit returns the operational throughput limit configured for a connector (control_plane.
+// rate_limits, entity_type='connector'). found is false when none is configured (a legitimate "no
+// operational limit" state, not an error). The admin uses it to keep a connector's
+// throughput_limit_per_sec at or above its operational limit (spec §6.4 NOTE — an application check,
+// there being no cross-table CHECK).
+func (r *ConnectorRepo) RateLimit(ctx context.Context, connectorID uuid.UUID) (cp.RateLimit, bool, error) {
+	row, err := r.q.GetRateLimit(ctx, sqlcgen.GetRateLimitParams{
+		EntityType: entityTypeConnector,
+		EntityID:   connectorID,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return cp.RateLimit{}, false, nil
+	}
+	if err != nil {
+		return cp.RateLimit{}, false, translate("get connector rate limit", err)
+	}
+	return cp.RateLimit{
+		MaxPerSec:     intptr(row.MaxPerSec),
+		MaxPerDay:     intptr(row.MaxPerDay),
+		BurstCapacity: intptr(row.BurstCapacity),
+	}, true, nil
 }
 
 // Create inserts a connector. A duplicate name violates the inline UNIQUE constraint, which

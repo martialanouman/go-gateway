@@ -60,24 +60,35 @@ type AntispamEvaluator interface {
 	Evaluate(ctx context.Context, accountID, customerID uuid.UUID, from, dest string, body []byte) (cp.AntispamAction, error)
 }
 
+// RateLimiter applies the account >= route >= connector throughput limits to a message of `segments`
+// segments, consuming that many tokens from each applicable bucket (spec §6.4). It returns
+// errs.ErrRateLimited when a limit is exceeded; the connector's technical ceiling is never crossed. It
+// is implemented over an immutable snapshot plus a Redis token bucket (internal/pipeline/ratelimit) that
+// fails closed on a store outage; the interface lives here, consumer-side. A nil RateLimiter disables
+// the stage (the pre-M6 pass-through).
+type RateLimiter interface {
+	Check(ctx context.Context, accountID, connectorID uuid.UUID, routeID *uuid.UUID, segments int) error
+}
+
 // Pipeline runs the ordered MT stages the router applies to every message (spec §6.1). The order is
 // frozen: a routing short-cut may skip route resolution, never a compliance stage. It implements
 // E.164 normalization, sender-ID authorization (M5), declarative route resolution, encoding
-// resolution and UDH segmentation (M6); the remaining metering stages (rate limit, credit) are
-// explicit pass-through STUBs that still emit their span.
+// resolution, UDH segmentation and rate limiting (M6); the remaining metering stage (credit) is an
+// explicit pass-through STUB that still emits its span.
 type Pipeline struct {
-	tracer    trace.Tracer
-	resolver  Resolver
-	senderIDs SenderIDAuthorizer
-	optOut    OptOutChecker
-	antispam  AntispamEvaluator
+	tracer      trace.Tracer
+	resolver    Resolver
+	senderIDs   SenderIDAuthorizer
+	optOut      OptOutChecker
+	antispam    AntispamEvaluator
+	rateLimiter RateLimiter
 }
 
 // New builds a Pipeline. Destinations are normalized to their canonical digits-only form; the
 // public contract carries a full country code (the "+" being optional), so no default region is
-// needed. See internal/platform/e164.
-func New(tracer trace.Tracer, resolver Resolver, senderIDs SenderIDAuthorizer, optOut OptOutChecker, antispam AntispamEvaluator) *Pipeline {
-	return &Pipeline{tracer: tracer, resolver: resolver, senderIDs: senderIDs, optOut: optOut, antispam: antispam}
+// needed. See internal/platform/e164. A nil rateLimiter leaves the rate-limit stage a pass-through.
+func New(tracer trace.Tracer, resolver Resolver, senderIDs SenderIDAuthorizer, optOut OptOutChecker, antispam AntispamEvaluator, rateLimiter RateLimiter) *Pipeline {
+	return &Pipeline{tracer: tracer, resolver: resolver, senderIDs: senderIDs, optOut: optOut, antispam: antispam, rateLimiter: rateLimiter}
 }
 
 // Process runs the pipeline on an inbound message and returns the routed template plus the segments
@@ -211,8 +222,20 @@ func (p *Pipeline) Process(ctx context.Context, in InboundMT) (RoutedMT, []pipee
 		return RoutedMT{}, nil, err
 	}
 
-	// 8. STUB M7: rate limit — pass-through until M7. See plan §8.
-	p.stubStage(ctx, "pipeline.rate_limit")
+	// 8. Rate limit (§6.4). Consume this message's segments from the account, route and connector
+	// buckets in precedence order; a breach rejects with rate_limited (the caller writes a rejected CDR,
+	// never sends). It comes AFTER segmentation so the cost is the real segment count, and BEFORE the
+	// credit reserve and SMSC send. A routing short-cut (M7) would skip route resolution, never this
+	// stage. The span carries no body (invariant a). A nil limiter is a pass-through (pre-M6).
+	if err := p.stage(ctx, "pipeline.rate_limit", func(ctx context.Context) error {
+		if p.rateLimiter == nil {
+			return nil
+		}
+		return p.rateLimiter.Check(ctx, out.AccountID, out.ConnectorID, out.RouteID, out.SegmentCount)
+	}); err != nil {
+		return RoutedMT{}, nil, err
+	}
+
 	// 9. STUB (billing): MT credit reserve — pass-through until billing lands. See plan §8.
 	p.stubStage(ctx, "pipeline.credit")
 

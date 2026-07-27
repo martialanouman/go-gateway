@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"math"
 	"os"
 	"os/signal"
 	"syscall"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/caarlos0/env/v11"
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/martialanouman/go-gateway/internal/cancel"
 	"github.com/martialanouman/go-gateway/internal/config"
@@ -46,6 +48,9 @@ type connectorEnv struct {
 	EnquireLinkInterval  time.Duration `env:"CONNECTOR_ENQUIRE_LINK_INTERVAL" envDefault:"30s"`
 	EnquireLinkMaxMissed int           `env:"CONNECTOR_ENQUIRE_LINK_MAX_MISSED" envDefault:"3"`
 	WindowSize           int           `env:"CONNECTOR_WINDOW_SIZE" envDefault:"10"`
+	// MaxSendRate is the connector's throughput_limit_per_sec, the ceiling for the adaptive throttle
+	// (step-086). Zero disables the AIMD pacing. Sourced from the connectors control plane at M3+.
+	MaxSendRate float64 `env:"CONNECTOR_MAX_SEND_RATE" envDefault:"0"`
 }
 
 func main() {
@@ -113,6 +118,23 @@ func run() error {
 	}
 	defer func() { _ = rdb.Close() }()
 
+	// Adaptive-throttle metrics (step-086): the current AIMD send rate (gauge) and the count of
+	// ESME_RTHROTTLED events (counter). No labels — a pod binds one connector, so these are per-pod
+	// (cardinality-bounded, never a message id or MSISDN). Registered with the ops registry below.
+	sendRateGauge := prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "connector_send_rate",
+		Help: "Current adaptive (AIMD) send rate for this connector, in submits per second.",
+	})
+	throttledTotal := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "connector_throttled_total",
+		Help: "ESME_RTHROTTLED responses received from the SMSC for this connector.",
+	})
+	if bindEnv.MaxSendRate > 0 {
+		sendRateGauge.Set(bindEnv.MaxSendRate) // start at the ceiling; the AIMD lowers it on throttle
+	} else {
+		sendRateGauge.Set(math.NaN()) // AIMD disabled: report no value rather than a misleading 0
+	}
+
 	tracer := observability.Tracer(nil, serviceName)
 	svc := connectorpool.New(connectorpool.Deps{
 		Consumer:    consumer,
@@ -132,8 +154,10 @@ func run() error {
 			EnquireLinkMaxMissed: bindEnv.EnquireLinkMaxMissed,
 			WindowSize:           bindEnv.WindowSize,
 		},
-		Tracer: tracer,
-		Logger: logger,
+		MaxSendRate: bindEnv.MaxSendRate,
+		Throttle:    throttleMetric{rate: sendRateGauge, throttled: throttledTotal},
+		Tracer:      tracer,
+		Logger:      logger,
 	})
 
 	// Vital dependencies (plan §1.5): Kafka (no work without it), ClickHouse (the outcome is recorded
@@ -148,6 +172,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("init ops server: %w", err)
 	}
+	ops.Registry().MustRegister(sendRateGauge, throttledTotal)
 
 	logger.InfoContext(ctx, "starting", "config", cfg, "connector_addr", bindEnv.Addr)
 
@@ -162,3 +187,12 @@ func run() error {
 	logger.Info("stopped")
 	return nil
 }
+
+// throttleMetric adapts the Prometheus gauge/counter to connectorpool.ThrottleMetric.
+type throttleMetric struct {
+	rate      prometheus.Gauge
+	throttled prometheus.Counter
+}
+
+func (m throttleMetric) SetRate(rate float64) { m.rate.Set(rate) }
+func (m throttleMetric) IncThrottled()        { m.throttled.Inc() }
