@@ -74,7 +74,7 @@ Légende : `[x]` = fait (dans `tasks-done/`) · `[ ]` = à faire (dans `tasks-to
 - [x] step-101 — Bloom en mémoire + `exactroute:{msisdn}` Redis + court-circuit L0
 - [x] step-102 — Admin exact-routes : list / create / update / delete / lookup
 - [x] step-103 — Admin import-exact-routes (asynchrone)
-- [ ] step-104 — Instantané de routage immuable + pointeur atomique
+- [x] step-104 — Instantané de routage immuable + pointeur atomique
 - [ ] step-105 — `cmd/config-sync` + pub/sub d'invalidation d'instantané
 - [ ] step-106 — Hot reload des filtres de Bloom (exact + suppressions) sans downtime
 - [ ] step-107 — Repo `routing_scripts` + cycle de statut (draft/active/disabled)
