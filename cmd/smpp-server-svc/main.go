@@ -155,10 +155,15 @@ func run() error {
 		Name: "smpp_query_throttled_total",
 		Help: "query_sm operations refused by the dedicated per-account rate limit.",
 	})
-	queryLimiter := queryRateLimiter{
-		limiter:  ratelimit.NewLimiter(rdb),
-		rate:     cfg.SMPP.QuerySMRatePerSec,
-		capacity: cfg.SMPP.QuerySMBurst,
+	// A zero rate DISABLES the query_sm limit (nil limiter → onQuery answers without throttling), rather
+	// than passing rate 0 to the bucket — which would deny every query_sm.
+	var queryLimiter smppserver.QueryLimiter
+	if cfg.SMPP.QuerySMRatePerSec > 0 {
+		queryLimiter = queryRateLimiter{
+			limiter:  ratelimit.NewLimiter(rdb),
+			rate:     cfg.SMPP.QuerySMRatePerSec,
+			capacity: cfg.SMPP.QuerySMBurst,
+		}
 	}
 
 	listener := smppserver.New(
@@ -300,5 +305,9 @@ type queryRateLimiter struct {
 }
 
 func (q queryRateLimiter) Allow(ctx context.Context, accountID uuid.UUID) bool {
-	return q.limiter.Allow(ctx, ratelimit.EntityAccount, accountID.String(), "query_sm", q.rate, q.capacity, 1).Allowed
+	capacity := q.capacity
+	if capacity <= 0 {
+		capacity = q.rate // a burst of 0 would deny every query_sm; default to one second's worth
+	}
+	return q.limiter.Allow(ctx, ratelimit.EntityAccount, accountID.String(), "query_sm", q.rate, capacity, 1).Allowed
 }

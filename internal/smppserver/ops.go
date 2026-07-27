@@ -26,7 +26,9 @@ func (l *Listener) onQuery(_ context.Context, st *connState) session.QueryHandle
 			if l.opts.QueryThrottled != nil {
 				l.opts.QueryThrottled.Inc()
 			}
-			l.logger.InfoContext(ctx, "smpp query_sm throttled", "account_id", st.accountID)
+			// Debug, not Info: this is the hot path a query_sm flood hammers, and smpp_query_throttled_total
+			// already carries the signal — an Info per refusal would amplify a flood into a log flood.
+			l.logger.DebugContext(ctx, "smpp query_sm throttled", "account_id", st.accountID)
 			return session.QueryResult{Status: errs.StatusThrottled}
 		}
 		return session.QueryResult{
