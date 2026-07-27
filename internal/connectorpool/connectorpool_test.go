@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/martialanouman/go-gateway/internal/connector/breaker"
 	"github.com/martialanouman/go-gateway/internal/connectorpool"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
@@ -987,4 +988,120 @@ func TestBindPoolKeepsSegmentsOnOneBindInOrder(t *testing.T) {
 			break
 		}
 	}
+}
+
+// fakeAgg captures the breaker states the pool's heartbeat reports.
+type fakeAgg struct {
+	mu     sync.Mutex
+	last   map[int]breaker.State
+	report int
+}
+
+func (f *fakeAgg) Report(_ context.Context, _ string, bindIndex int, s breaker.State) (breaker.State, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.last == nil {
+		f.last = map[int]breaker.State{}
+	}
+	f.last[bindIndex] = s
+	f.report++
+	return s, nil
+}
+
+func (f *fakeAgg) state(idx int) breaker.State {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.last[idx]
+}
+
+func (f *fakeAgg) reports() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.report
+}
+
+// feedThenBlock feeds each record once (one-per-batch) then blocks until ctx is cancelled, keeping the
+// pool alive so the breaker heartbeat can publish.
+type feedThenBlock struct{ records []kafka.Record }
+
+func (c *feedThenBlock) RunBatch(ctx context.Context, handle kafka.BatchHandler) error {
+	for _, r := range c.records {
+		_ = handle(ctx, []kafka.Record{r})
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// TestBreakerOpensAndIsReported: a burst of connector-health failures (ESME_RSYSERR) trips the bind's
+// breaker, and the heartbeat publishes the open state through the injected aggregator (step-121/122
+// wired into the pool).
+func TestBreakerOpensAndIsReported(t *testing.T) {
+	smsc := fakesmsc.Start(t, fakesmsc.Config{OnSubmit: func(smpp.SubmitSM) fakesmsc.Resp { return fakesmsc.SysErr() }})
+	recs := make([]kafka.Record, 0, 5)
+	for i := 0; i < 5; i++ {
+		rec, err := pipeline.EncodeRouted(routed())
+		if err != nil {
+			t.Fatalf("encode: %v", err)
+		}
+		recs = append(recs, rec)
+	}
+
+	agg := &fakeAgg{}
+	rrec := otelrec.New(t)
+	svc := connectorpool.New(connectorpool.Deps{
+		Consumer:         &feedThenBlock{records: recs},
+		CDR:              &fakeCDR{},
+		Bind:             poolBind(smsc.Addr(), 1),
+		Breaker:          agg,
+		BreakerConfig:    breaker.Config{MinRequests: 3, FailureRate: 0.5},
+		BreakerHeartbeat: 10 * time.Millisecond,
+		Tracer:           observability.Tracer(rrec.Provider(), "connector-pool"),
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- svc.Run(ctx) }()
+
+	if !waitFor(3*time.Second, func() bool { return agg.state(0) == breaker.Open }) {
+		cancel()
+		<-done
+		t.Fatalf("breaker did not open (last reported state = %v, %d reports)", agg.state(0), agg.reports())
+	}
+	cancel()
+	<-done
+}
+
+// TestBreakerHealthyReportsClosed: with the SMSC accepting, the heartbeat reports a closed breaker.
+func TestBreakerHealthyReportsClosed(t *testing.T) {
+	smsc := fakesmsc.Start(t, fakesmsc.Config{})
+	rec, err := pipeline.EncodeRouted(routed())
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+
+	agg := &fakeAgg{}
+	rrec := otelrec.New(t)
+	svc := connectorpool.New(connectorpool.Deps{
+		Consumer:         &feedThenBlock{records: []kafka.Record{rec}},
+		CDR:              &fakeCDR{},
+		Bind:             poolBind(smsc.Addr(), 1),
+		Breaker:          agg,
+		BreakerHeartbeat: 10 * time.Millisecond,
+		Tracer:           observability.Tracer(rrec.Provider(), "connector-pool"),
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- svc.Run(ctx) }()
+
+	if !waitFor(2*time.Second, func() bool { return agg.reports() > 0 }) {
+		cancel()
+		<-done
+		t.Fatal("heartbeat never reported")
+	}
+	if got := agg.state(0); got != breaker.Closed {
+		t.Errorf("healthy breaker reported %v, want closed", got)
+	}
+	cancel()
+	<-done
 }

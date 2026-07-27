@@ -15,10 +15,12 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/martialanouman/go-gateway/internal/connector/breaker"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	"github.com/martialanouman/go-gateway/internal/platform/encoding"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
@@ -93,6 +95,14 @@ type noopThrottle struct{}
 func (noopThrottle) SetRate(float64) {}
 func (noopThrottle) IncThrottled()   {}
 
+// BreakerAggregator publishes one sub-bind's circuit-breaker state into the cross-pod connector
+// aggregate (breaker:state, step-122), so the router (step-123) and the reroute path (step-125) can see
+// a connector go open. *breaker.Aggregator satisfies it. A nil BreakerAggregator disables breaker
+// reporting entirely (the pre-M8 behaviour): the pool still delivers, it just publishes no health.
+type BreakerAggregator interface {
+	Report(ctx context.Context, connectorID string, bindIndex int, s breaker.State) (breaker.State, error)
+}
+
 // Producer publishes the return path (mo.inbound, dlr.events) durably. *kafka.Producer satisfies it.
 // New defaults a nil Producer to a no-op, so a bind with no producer wired acknowledges deliver_sm as
 // before (the M2 behaviour) rather than panicking.
@@ -124,8 +134,17 @@ type Deps struct {
 	MaxSendRate float64
 	// Throttle observes the adaptive throttle. New defaults a nil one to a no-op.
 	Throttle ThrottleMetric
-	Tracer   trace.Tracer
-	Logger   *slog.Logger
+	// Breaker publishes each bind's circuit-breaker state to the connector aggregate (step-121/122).
+	// Nil disables breaker reporting. When set, each bind runs a local breaker fed by its submit
+	// outcomes, and a heartbeat reports every bind's state every BreakerHeartbeat.
+	Breaker BreakerAggregator
+	// BreakerConfig tunes the per-bind breaker state machine; the zero value uses breaker defaults.
+	BreakerConfig breaker.Config
+	// BreakerHeartbeat is how often each bind's state is (re)published. It MUST be shorter than the
+	// aggregator's sub-bind TTL so a live bind is never swept from the quorum. Zero uses 2s.
+	BreakerHeartbeat time.Duration
+	Tracer           trace.Tracer
+	Logger           *slog.Logger
 }
 
 // Service is the connector pool.
@@ -135,11 +154,18 @@ type Service struct {
 	// aimd is the adaptive send-rate throttle (step-086), nil when MaxSendRate is 0.
 	aimd *aimd
 
+	// breakers holds one local circuit-breaker per bind_index, fed by that bind's submit outcomes; a
+	// heartbeat publishes their state via deps.Breaker. Nil (len 0) when breaker reporting is disabled.
+	breakers []*breaker.Breaker
+
 	// bound reports whether the SMSC bind is currently established. It gates the readiness probe, so
 	// a bind that drops — including an idle-time drop no in-flight Submit would notice — takes the
 	// pod out of rotation until Run re-dials.
 	bound atomic.Bool
 }
+
+// breakerHeartbeat is the default cadence for republishing every bind's breaker state.
+const breakerHeartbeat = 2 * time.Second
 
 // New builds a Service. A nil logger defaults to slog.Default; a nil CancelFlags defaults to a no-op
 // that reports nothing cancelled.
@@ -215,6 +241,16 @@ func (s *Service) Run(ctx context.Context) error {
 	consumerCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	// Per-bind circuit breakers (step-121), fed by each bind's submit outcomes, published to the
+	// cross-pod aggregate by a heartbeat (step-122). Created here because the pool size is known now.
+	if s.deps.Breaker != nil {
+		s.breakers = make([]*breaker.Breaker, n)
+		for i := range s.breakers {
+			s.breakers[i] = breaker.New(s.deps.BreakerConfig, nil)
+		}
+		go s.runBreakerHeartbeat(consumerCtx)
+	}
+
 	// A single signal fired by whichever bind dies first (idle drop, enquire_link timeout, peer close).
 	anyDropped := make(chan struct{})
 	var dropOnce sync.Once
@@ -258,10 +294,10 @@ func (s *Service) batchHandler(binds []*bind) kafka.BatchHandler {
 		var wg sync.WaitGroup
 		for sh, idxs := range shards {
 			wg.Add(1)
-			go func(b *bind, idxs []int) {
+			go func(sh int, idxs []int) {
 				defer wg.Done()
 				for pos, i := range idxs {
-					if err := s.processOne(ctx, b, recs[i]); err != nil {
+					if err := s.processOne(ctx, binds[sh], sh, recs[i]); err != nil {
 						results[i] = err
 						// Stop this shard: leave every later record of this shard unprocessed and uncommitted
 						// so redelivery replays them in order behind the failure.
@@ -271,11 +307,52 @@ func (s *Service) batchHandler(binds []*bind) kafka.BatchHandler {
 						return
 					}
 				}
-			}(binds[sh], idxs)
+			}(sh, idxs)
 		}
 		wg.Wait()
 		return results
 	}
+}
+
+// runBreakerHeartbeat republishes every bind's current breaker state on a fixed cadence until ctx is
+// cancelled. One periodic report (rather than one per submit) keeps the hot path off Redis while still
+// keeping each sub-bind alive in the aggregate quorum and surfacing time-driven transitions (a State()
+// read advances open → half_open). It starts no work when no breaker is wired.
+func (s *Service) runBreakerHeartbeat(ctx context.Context) {
+	interval := s.deps.BreakerHeartbeat
+	if interval <= 0 {
+		interval = breakerHeartbeat
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	connectorID := s.deps.ConnectorID.String()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			for i, b := range s.breakers {
+				if _, err := s.deps.Breaker.Report(ctx, connectorID, i, b.State()); err != nil && ctx.Err() == nil {
+					s.deps.Logger.WarnContext(ctx, "connector: breaker state report failed", "bind_index", i, "err", err)
+				}
+			}
+		}
+	}
+}
+
+// feedBreaker records a submit outcome into the bind's local breaker. status is the submit_sm_resp
+// command_status; a submitErr (transport failure, no response) is a connector-health failure. It is a
+// no-op when no breaker is wired.
+func (s *Service) feedBreaker(bindIndex int, status uint32, submitErr bool) {
+	if s.breakers == nil {
+		return
+	}
+	b := s.breakers[bindIndex]
+	if submitErr {
+		b.RecordFailure()
+		return
+	}
+	b.Record(status)
 }
 
 // shardIndex maps a record's partition key (the message id, shared by every segment) to a bind, so all
@@ -294,7 +371,7 @@ func shardIndex(key []byte, n int) int {
 // non-nil error only on a transient fault (bad decode, dead bind, transient SMSC rejection) so the
 // record is left uncommitted for redelivery; a terminal SMSC failure is written to the CDR and returns
 // nil. It is the per-record body the batch handler runs, one shard at a time.
-func (s *Service) processOne(ctx context.Context, b *bind, rec kafka.Record) error {
+func (s *Service) processOne(ctx context.Context, b *bind, bindIndex int, rec kafka.Record) error {
 	ctx, span := s.deps.Tracer.Start(ctx, "connector.submit")
 	defer span.End()
 
@@ -337,9 +414,15 @@ func (s *Service) processOne(ctx context.Context, b *bind, rec kafka.Record) err
 	if err != nil {
 		// A dead bind, a write failure or a timeout is transient: do not commit, so the message is
 		// reprocessed after a restart. At-least-once means the SMSC may see a duplicate submit; the
-		// versioned CDR collapses the duplicate enroute rows (no dedup until M3).
+		// versioned CDR collapses the duplicate enroute rows (no dedup until M3). It is also a
+		// connector-health failure for the breaker (no response came back).
+		s.feedBreaker(bindIndex, 0, true)
 		return fmt.Errorf("connectorpool: submit_sm: %w", err)
 	}
+
+	// Feed the outcome to this bind's circuit breaker (step-121): a system error / bind failure is a
+	// health failure, a throttle/queue-full is transient (ignored), a success clears it.
+	s.feedBreaker(bindIndex, resp.Status, false)
 
 	// Feed the submit_sm_resp back to the adaptive throttle: an ESME_RTHROTTLED halves the send rate,
 	// a success nudges it back up toward the ceiling (step-086).

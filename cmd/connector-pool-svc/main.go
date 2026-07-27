@@ -24,6 +24,7 @@ import (
 
 	"github.com/martialanouman/go-gateway/internal/cancel"
 	"github.com/martialanouman/go-gateway/internal/config"
+	"github.com/martialanouman/go-gateway/internal/connector/breaker"
 	"github.com/martialanouman/go-gateway/internal/connectorpool"
 	"github.com/martialanouman/go-gateway/internal/dlrmap"
 	"github.com/martialanouman/go-gateway/internal/observability"
@@ -138,6 +139,16 @@ func run() error {
 		sendRateGauge.Set(math.NaN()) // AIMD disabled: report no value rather than a misleading 0
 	}
 
+	// Circuit-breaker aggregate (step-121/122): each bind runs a local breaker fed by its submit
+	// outcomes; the pool's heartbeat publishes their state into breaker:state:{connector_id}, which the
+	// router reads (step-123) to fence an open connector. podID identifies this pod within the connector's
+	// quorum — the pod hostname, unique per replica.
+	podID, err := os.Hostname()
+	if err != nil || podID == "" {
+		podID = serviceName + "-" + uuid.NewString() // unique per replica so quorum fields never collide
+	}
+	breakerAgg := breaker.NewAggregator(rdb, redisstore.NewPubSubPublisher(rdb), podID)
+
 	tracer := observability.Tracer(nil, serviceName)
 	svc := connectorpool.New(connectorpool.Deps{
 		Consumer:    consumer,
@@ -145,6 +156,7 @@ func run() error {
 		CancelFlags: cancel.NewRedisFlags(rdb),
 		DLRMap:      dlrmap.NewRedisMap(rdb),
 		Producer:    producer,
+		Breaker:     breakerAgg,
 		ConnectorID: bindEnv.ID,
 		Bind: connectorpool.BindConfig{
 			Addr:                 bindEnv.Addr,
