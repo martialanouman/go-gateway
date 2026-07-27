@@ -27,6 +27,16 @@ import (
 // request (deliver_sm) when Config.ResponseTimeout is unset.
 const defaultResponseTimeout = 10 * time.Second
 
+// defaultInboundWindow is the per-session concurrent submit_sm ceiling when Config.InboundWindow is
+// unset — high enough to keep a single bind's throughput off the produce-latency floor, bounded enough
+// that one session cannot spawn unbounded workers.
+const defaultInboundWindow = 100
+
+// defaultInboundSubmitTimeout bounds a submit worker's produce when Config.InboundSubmitTimeout is
+// unset: a generous backstop so a hung Kafka releases the worker (answering ESME_RSUBMITFAIL) rather
+// than pinning it — and the shutdown drain — indefinitely.
+const defaultInboundSubmitTimeout = 15 * time.Second
+
 // unbindWriteTimeout bounds the best-effort outbound unbind sent by Close, so an unresponsive peer
 // with a full send buffer can never pin the caller (a force-disconnect may close many sessions in a
 // row). It only applies when the connection supports SetWriteDeadline.
@@ -44,6 +54,15 @@ type Config struct {
 	// WindowSize bounds how many server-initiated requests (deliver_sm, step-046) may be in flight
 	// at once. Values below 1 are clamped to 1.
 	WindowSize int
+	// InboundWindow bounds how many submit_sm a session processes CONCURRENTLY (step-088): each is
+	// dispatched to a worker so the read goroutine never blocks on its synchronous produce, and the
+	// session's submits run in parallel up to this ceiling. A full window fails fast with ESME_RTHROTTLED
+	// rather than blocking the read loop. Values below 1 are clamped to defaultInboundWindow.
+	InboundWindow int
+	// InboundSubmitTimeout bounds a submit worker's produce so a Kafka that hangs without a cancellation
+	// cannot pin a worker (and thus the shutdown drain) forever; on the deadline the submit is answered
+	// ESME_RSUBMITFAIL. Values <= 0 use defaultInboundSubmitTimeout.
+	InboundSubmitTimeout time.Duration
 	// ResponseTimeout bounds Send's wait for a response. Values <= 0 use defaultResponseTimeout.
 	ResponseTimeout time.Duration
 	// IdleTimeout drops a session whose peer has sent nothing for this long, reclaiming the
@@ -85,12 +104,21 @@ type Session struct {
 	window    chan struct{}
 	serverSeq atomic.Uint32
 
+	// inbound is the inbound submit_sm semaphore: cap == InboundWindow. A slot is held for the lifetime
+	// of a submit worker (step-088).
+	inbound chan struct{}
+
 	// mu guards pending, the table of Send waiters keyed by sequence_number.
 	mu      sync.Mutex
 	pending map[uint32]chan smpp.PDU
 
 	// st is the state machine, owned exclusively by the Serve goroutine.
 	st state
+
+	// workerCtx bounds the in-flight submit workers (step-088); cancelWork cancels it on shutdown so a
+	// force-disconnect or unbind drains a slow-but-cancellable produce promptly, not only on its timeout.
+	workerCtx  context.Context
+	cancelWork context.CancelFunc
 
 	closeOnce sync.Once
 	done      chan struct{}
@@ -103,6 +131,12 @@ func New(conn io.ReadWriteCloser, cfg Config) *Session {
 	if cfg.WindowSize < 1 {
 		cfg.WindowSize = 1
 	}
+	if cfg.InboundWindow < 1 {
+		cfg.InboundWindow = defaultInboundWindow
+	}
+	if cfg.InboundSubmitTimeout <= 0 {
+		cfg.InboundSubmitTimeout = defaultInboundSubmitTimeout
+	}
 	if cfg.ResponseTimeout <= 0 {
 		cfg.ResponseTimeout = defaultResponseTimeout
 	}
@@ -110,14 +144,18 @@ func New(conn io.ReadWriteCloser, cfg Config) *Session {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	workerCtx, cancelWork := context.WithCancel(context.Background())
 	return &Session{
-		conn:    conn,
-		cfg:     cfg,
-		logger:  logger,
-		window:  make(chan struct{}, cfg.WindowSize),
-		pending: make(map[uint32]chan smpp.PDU),
-		done:    make(chan struct{}),
-		st:      stOpen,
+		conn:       conn,
+		cfg:        cfg,
+		logger:     logger,
+		window:     make(chan struct{}, cfg.WindowSize),
+		inbound:    make(chan struct{}, cfg.InboundWindow),
+		pending:    make(map[uint32]chan smpp.PDU),
+		workerCtx:  workerCtx,
+		cancelWork: cancelWork,
+		done:       make(chan struct{}),
+		st:         stOpen,
 	}
 }
 
@@ -199,6 +237,7 @@ func (s *Session) sendUnbind() {
 func (s *Session) shutdown() {
 	s.closeOnce.Do(func() {
 		close(s.done)
+		s.cancelWork() // cancel in-flight submit workers so the drain does not wait on their timeout
 		_ = s.conn.Close()
 	})
 }

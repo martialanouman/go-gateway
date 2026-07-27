@@ -182,6 +182,7 @@ func run() error {
 			Canceller:       canceller,
 			QueryLimiter:    queryLimiter,
 			QueryThrottled:  queryThrottled,
+			InboundWindow:   cfg.SMPP.InboundWindow,
 		},
 		logger,
 	)

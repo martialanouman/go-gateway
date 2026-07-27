@@ -130,6 +130,10 @@ type Options struct {
 	QueryLimiter QueryLimiter
 	// QueryThrottled counts query_sm refused by the limiter. Nil skips the metric.
 	QueryThrottled prometheus.Counter
+	// InboundWindow bounds how many submit_sm a bind processes concurrently (step-088); it decouples a
+	// submit's produce from the read goroutine so enquire_link stays responsive and a bind's throughput
+	// leaves the produce-latency floor. Zero uses the session default.
+	InboundWindow int
 }
 
 // QueryLimiter reports whether an account may issue another query_sm now, consuming one from its
