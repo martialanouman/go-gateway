@@ -73,6 +73,19 @@ run: ## Run a service: make run SVC=router-svc
 fake-smsc: ## Run the in-repo fake SMSC (SMPP peer) on :2775 for local pipeline runs
 	go run ./cmd/fake-smsc
 
+.PHONY: smsc-sim
+SMSC_SIM_IMAGE ?= smsc-simulator:dev
+SMSC_SIM_REPO  ?= https://github.com/martialanouman/go-smsc-simulator
+SMSC_SIM_REF   ?= main
+smsc-sim: ## Build the real SMSC simulator image ($(SMSC_SIM_IMAGE)) used by M8 resilience tests (internal/testutil/smscsim). Pin with SMSC_SIM_REF=<tag>; force a rebuild by removing the image first.
+	@if docker image inspect $(SMSC_SIM_IMAGE) >/dev/null 2>&1; then \
+		echo "$(SMSC_SIM_IMAGE) already present (docker rmi it to rebuild)"; \
+	else \
+		echo "Building $(SMSC_SIM_IMAGE) from $(SMSC_SIM_REPO)@$(SMSC_SIM_REF) …"; \
+		tmp=$$(mktemp -d) && git clone --depth 1 --branch $(SMSC_SIM_REF) $(SMSC_SIM_REPO) $$tmp && \
+		docker build -t $(SMSC_SIM_IMAGE) $$tmp && rm -rf $$tmp; \
+	fi
+
 .PHONY: proto
 proto: ## Generate gRPC code from api/proto/*.proto (buf) — output committed under internal/.../pb
 	buf generate
