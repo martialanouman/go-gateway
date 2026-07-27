@@ -93,6 +93,21 @@ func (r *RoutingScriptRepo) Update(ctx context.Context, id uuid.UUID, s script.S
 	return toRoutingScript(row), true, nil
 }
 
+// Assign reassigns a script to a different scope (draft only, enforced by the caller). found is false
+// when no script matches the id.
+func (r *RoutingScriptRepo) Assign(ctx context.Context, id uuid.UUID, scope script.Scope, scopeID *uuid.UUID) (script.Script, bool, error) {
+	row, err := r.q.AssignRoutingScript(ctx, sqlcgen.AssignRoutingScriptParams{
+		ID: id, Scope: string(scope), ScopeID: scopeID,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return script.Script{}, false, nil
+	}
+	if err != nil {
+		return script.Script{}, false, translate("assign routing script", err)
+	}
+	return toRoutingScript(row), true, nil
+}
+
 // Delete removes a script. found is false when no row matched.
 func (r *RoutingScriptRepo) Delete(ctx context.Context, id uuid.UUID) (bool, error) {
 	n, err := r.q.DeleteRoutingScript(ctx, id)

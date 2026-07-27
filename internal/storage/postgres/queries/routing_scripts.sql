@@ -65,3 +65,11 @@ SELECT id, scope, scope_id, name, language, source_code, checksum, status, timeo
 FROM control_plane.routing_scripts
 WHERE status = 'active'
 ORDER BY scope, scope_id;
+
+-- name: AssignRoutingScript :one
+-- Reassign a DRAFT to a different scope, atomically (the status='draft' guard closes the handler's
+-- read-then-write race: an active script can never be reassigned even if it is published concurrently).
+-- Only the scope/scope_id change; publish is a separate step.
+UPDATE control_plane.routing_scripts SET scope = @scope, scope_id = sqlc.narg('scope_id')
+WHERE id = @id AND status = 'draft'
+RETURNING id, scope, scope_id, name, language, source_code, checksum, status, timeout_ms, max_instructions, max_memory_kb, created_by, created_at, published_at;

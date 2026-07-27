@@ -11,6 +11,43 @@ import (
 	uuid "github.com/google/uuid"
 )
 
+const assignRoutingScript = `-- name: AssignRoutingScript :one
+UPDATE control_plane.routing_scripts SET scope = $1, scope_id = $2
+WHERE id = $3 AND status = 'draft'
+RETURNING id, scope, scope_id, name, language, source_code, checksum, status, timeout_ms, max_instructions, max_memory_kb, created_by, created_at, published_at
+`
+
+type AssignRoutingScriptParams struct {
+	Scope   string
+	ScopeID *uuid.UUID
+	ID      uuid.UUID
+}
+
+// Reassign a DRAFT to a different scope, atomically (the status='draft' guard closes the handler's
+// read-then-write race: an active script can never be reassigned even if it is published concurrently).
+// Only the scope/scope_id change; publish is a separate step.
+func (q *Queries) AssignRoutingScript(ctx context.Context, arg AssignRoutingScriptParams) (ControlPlaneRoutingScript, error) {
+	row := q.db.QueryRow(ctx, assignRoutingScript, arg.Scope, arg.ScopeID, arg.ID)
+	var i ControlPlaneRoutingScript
+	err := row.Scan(
+		&i.ID,
+		&i.Scope,
+		&i.ScopeID,
+		&i.Name,
+		&i.Language,
+		&i.SourceCode,
+		&i.Checksum,
+		&i.Status,
+		&i.TimeoutMs,
+		&i.MaxInstructions,
+		&i.MaxMemoryKb,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.PublishedAt,
+	)
+	return i, err
+}
+
 const createRoutingScript = `-- name: CreateRoutingScript :one
 INSERT INTO control_plane.routing_scripts
     (scope, scope_id, name, language, source_code, checksum, status, timeout_ms, max_instructions, max_memory_kb, created_by)
