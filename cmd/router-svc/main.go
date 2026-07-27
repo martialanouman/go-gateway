@@ -187,10 +187,30 @@ func run() error {
 	}
 	ops.Registry().MustRegister(failOpenTotal)
 
-	// Hot reload (step-105): on a config-sync invalidation, rebuild the immutable route snapshot and
-	// swap it atomically — the readers pick up the new one lock-free, with no downtime. A rebuild
-	// failure keeps the current snapshot serving (the Watcher logs and does not Swap). The exact-route
-	// Bloom is reloaded on the same channel in step-106.
+	// bloom_last_reload / bloom_capacity_bits: labelled by filter (exact | optout), no unbounded labels.
+	// The timestamp lets an alert fire on a stale filter; the capacity tracks growth after a reload.
+	bloomReloadTimestamp := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "bloom_last_reload_timestamp_seconds",
+		Help: "Unix time of the last successful in-memory Bloom filter reload.",
+	}, []string{"filter"})
+	bloomCapacityBits := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "bloom_capacity_bits",
+		Help: "Bit-array size (m) of the in-memory Bloom filter after its last reload.",
+	}, []string{"filter"})
+	ops.Registry().MustRegister(bloomReloadTimestamp, bloomCapacityBits)
+	// Seed both series at boot so the freshness gauge reads "last load", not "last hot reload": a pod
+	// that has not yet received an invalidation still reports current, non-absent filters.
+	bootNow := float64(time.Now().Unix())
+	bloomReloadTimestamp.WithLabelValues("exact").Set(bootNow)
+	bloomCapacityBits.WithLabelValues("exact").Set(float64(exactBloom.CapacityBits()))
+	bloomReloadTimestamp.WithLabelValues("optout").Set(bootNow)
+	bloomCapacityBits.WithLabelValues("optout").Set(float64(optOut.CapacityBits()))
+
+	// Hot reload (step-105/106): on a config-sync invalidation, rebuild the immutable route snapshot and
+	// the two Bloom filters (exact-number routes, opt-out suppressions) and swap each atomically — the
+	// readers pick up the new state lock-free, with no downtime and no routing hole. Each component
+	// keeps its current state on its own build failure; the returned error just makes the Watcher log
+	// and retry on the next notification (rebuilds are idempotent).
 	snapshotWatcher := config.NewWatcher(
 		func(ctx context.Context) (config.Stream, error) {
 			return redisstore.Subscribe(ctx, rdb, config.ChannelSnapshotInvalidation), nil
@@ -201,6 +221,18 @@ func run() error {
 				return berr
 			}
 			snapshot.Swap(snap)
+
+			if berr := exactBloom.Reload(ctx, exactRepo); berr != nil {
+				return berr
+			}
+			bloomReloadTimestamp.WithLabelValues("exact").Set(float64(time.Now().Unix()))
+			bloomCapacityBits.WithLabelValues("exact").Set(float64(exactBloom.CapacityBits()))
+
+			if berr := optOut.Reload(ctx, suppressions, postgres.NewInboundNumberRepo(pool)); berr != nil {
+				return berr
+			}
+			bloomReloadTimestamp.WithLabelValues("optout").Set(float64(time.Now().Unix()))
+			bloomCapacityBits.WithLabelValues("optout").Set(float64(optOut.CapacityBits()))
 			return nil
 		},
 		config.WithLogger(logger),
