@@ -59,6 +59,40 @@ func RoundRobin(targets []Target, n uint64) (uuid.UUID, bool) {
 	return targets[n%uint64(len(targets))].ConnectorID, true
 }
 
+// FailoverPriority picks the target with the lowest priority number (evaluated first). In M7 every
+// target is available (no circuit breaker yet, step-123), so it is deterministic — the primary target.
+// Ties break on connector id for stability. ok is false when there are no targets.
+func FailoverPriority(targets []Target) (uuid.UUID, bool) {
+	if len(targets) == 0 {
+		return uuid.Nil, false
+	}
+	best := targets[0]
+	for _, t := range targets[1:] {
+		if t.Priority < best.Priority || (t.Priority == best.Priority && t.ConnectorID.String() < best.ConnectorID.String()) {
+			best = t
+		}
+	}
+	return best.ConnectorID, true
+}
+
+// LeastLoaded picks the target with the smallest in-flight gauge (connectorload:{id}), read via loadOf
+// (a missing gauge reads 0). Ties break on connector id for stability. ok is false when there are no
+// targets. loadOf must not mutate state (it reads a published Redis gauge, no Go read-modify-write).
+func LeastLoaded(targets []Target, loadOf func(uuid.UUID) int) (uuid.UUID, bool) {
+	if len(targets) == 0 {
+		return uuid.Nil, false
+	}
+	best := targets[0]
+	bestLoad := loadOf(best.ConnectorID)
+	for _, t := range targets[1:] {
+		load := loadOf(t.ConnectorID)
+		if load < bestLoad || (load == bestLoad && t.ConnectorID.String() < best.ConnectorID.String()) {
+			best, bestLoad = t, load
+		}
+	}
+	return best.ConnectorID, true
+}
+
 // hash is a stable non-cryptographic digest of key. FNV-1a is fast and well-distributed; routing keys
 // are not adversarial, so collision resistance is not required.
 func hash(key string) uint64 {

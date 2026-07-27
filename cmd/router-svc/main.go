@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
 	goredis "github.com/redis/go-redis/v9"
 
@@ -128,6 +129,10 @@ func run() error {
 		return fmt.Errorf("connect redis: %w", err)
 	}
 	defer func() { _ = rdb.Close() }()
+
+	// least_loaded reads each connector's published in-flight gauge (connectorload:{id}) from Redis —
+	// the mutable overlay beside the immutable route snapshot (step-104/114). A missing gauge reads 0.
+	snapshot.UseLoadReader(connectorLoad{rdb: rdb})
 	// anti_spam_fail_open_total: bounded (no labels) — counts messages let through because a
 	// Redis-backed anti-spam check could not run (§1.5 fail-open). Never a MSISDN or body.
 	failOpenTotal := prometheus.NewCounter(prometheus.CounterOpts{
@@ -330,6 +335,18 @@ func (m failOpenMetric) FailOpen() { m.c.Inc() }
 type scriptMeter struct{ c *prometheus.CounterVec }
 
 func (m scriptMeter) Inc(language, reason string) { m.c.WithLabelValues(language, reason).Inc() }
+
+// connectorLoad reads the connectorload:{id} in-flight gauge from Redis for the least_loaded strategy.
+// A missing key or a parse/read error reads 0 — least_loaded then degrades to a deterministic pick.
+type connectorLoad struct{ rdb *goredis.Client }
+
+func (c connectorLoad) InFlight(ctx context.Context, connectorID uuid.UUID) int {
+	n, err := c.rdb.Get(ctx, "connectorload:{"+connectorID.String()+"}").Int()
+	if err != nil {
+		return 0
+	}
+	return n
+}
 
 // loadWithRetry loads an immutable boot snapshot, retrying transient failures with capped exponential
 // backoff until it succeeds or ctx is cancelled. Postgres is a hard boot dependency, so retrying

@@ -84,7 +84,7 @@ Légende : `[x]` = fait (dans `tasks-done/`) · `[ ]` = à faire (dans `tasks-to
 - [x] step-111 — Admin routing-scripts : CRUD + list-versions
 - [x] step-112 — Admin assign / validate / test / publish routing-script
 - [x] step-113 — Stratégies de distribution déterministes : round_robin, weighted, hash_based
-- [ ] step-114 — Stratégies failover_priority, least_loaded + fallback_route
+- [x] step-114 — Stratégies failover_priority, least_loaded + fallback_route
 - [ ] step-115 — Invariant (b) : un message routé L0 traverse toute la conformité
 
 ## M8 — Résilience connecteurs  *(bascule au vrai simulateur SMSC)*

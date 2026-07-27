@@ -131,22 +131,127 @@ func TestRoundRobinCounterPersistsAcrossSwap(t *testing.T) {
 	}
 }
 
-// TestFailoverPriorityNotCompiledYet: a failover_priority route is not selectable until step-114, so it
-// is skipped from the snapshot and traffic falls through to a less-specific route rather than being
-// black-holed.
-func TestFailoverPriorityNotCompiledYet(t *testing.T) {
-	connFO, connCatch := uuid.New(), uuid.New()
-	fo := nonStaticRoute(cp.DistributionFailoverPriority, connFO, uuid.New(), [2]int{1, 1})
-	fo.MatchDestPattern = ptr("2250")
-	catch := cp.Route{ID: uuid.New(), Priority: 100, Status: cp.RouteActive, DistributionStrategy: cp.DistributionStatic,
-		TargetConnectorID: &connCatch} // catch-all
-	r, _ := routing.LoadSnapshot(context.Background(), fakeLister{routes: []cp.Route{fo, catch}})
+// fakeLoad is an injected connector-load reader for least_loaded.
+type fakeLoad map[uuid.UUID]int
+
+func (f fakeLoad) InFlight(_ context.Context, id uuid.UUID) int { return f[id] }
+
+// TestResolveFailoverPriority: a failover_priority route picks the lowest-priority target (the primary;
+// in M7 all targets are available, no breaker).
+func TestResolveFailoverPriority(t *testing.T) {
+	primary, secondary := uuid.New(), uuid.New()
+	route := cp.Route{ID: uuid.New(), Priority: 100, Status: cp.RouteActive, DistributionStrategy: cp.DistributionFailoverPriority,
+		MatchDestPattern: ptr("225"),
+		Targets: []cp.RouteTarget{
+			{ConnectorID: secondary, Priority: 2},
+			{ConnectorID: primary, Priority: 1},
+		}}
+	r, _ := routing.LoadSnapshot(context.Background(), fakeLister{routes: []cp.Route{route}})
 
 	got, err := r.Resolve(context.Background(), "+2250700000001")
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	if got.ConnectorID != connCatch {
-		t.Errorf("failover route not skipped: routed to %s, want the catch-all %s", got.ConnectorID, connCatch)
+	if got.ConnectorID != primary {
+		t.Errorf("failover routed to %s, want the priority-1 target %s", got.ConnectorID, primary)
+	}
+}
+
+// TestResolveLeastLoaded: a least_loaded route picks the connector with the smallest injected load
+// gauge (read via the overlay's LoadReader, no Go read-modify-write).
+func TestResolveLeastLoaded(t *testing.T) {
+	busy, idle := uuid.New(), uuid.New()
+	route := cp.Route{ID: uuid.New(), Priority: 100, Status: cp.RouteActive, DistributionStrategy: cp.DistributionLeastLoaded,
+		MatchDestPattern: ptr("225"),
+		Targets:          []cp.RouteTarget{{ConnectorID: busy, Weight: 1}, {ConnectorID: idle, Weight: 1}}}
+	r, _ := routing.LoadSnapshot(context.Background(), fakeLister{routes: []cp.Route{route}})
+	r.UseLoadReader(fakeLoad{busy: 100, idle: 3})
+
+	got, err := r.Resolve(context.Background(), "+2250700000001")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got.ConnectorID != idle {
+		t.Errorf("least_loaded routed to %s, want the idle connector %s", got.ConnectorID, idle)
+	}
+}
+
+// TestFallbackRoute: a primary route with no retained target (empty target set) chains to its
+// fallback_route rather than dropping the message.
+func TestFallbackRoute(t *testing.T) {
+	fallbackConn := uuid.New()
+	fallback := cp.Route{ID: uuid.New(), Priority: 100, Status: cp.RouteActive, DistributionStrategy: cp.DistributionStatic,
+		TargetConnectorID: &fallbackConn} // catch-all fallback
+	primary := cp.Route{ID: uuid.New(), Priority: 50, Status: cp.RouteActive, DistributionStrategy: cp.DistributionWeighted,
+		MatchDestPattern: ptr("225"), Targets: nil, FallbackRouteID: &fallback.ID} // no targets → falls back
+	r, _ := routing.LoadSnapshot(context.Background(), fakeLister{routes: []cp.Route{primary, fallback}})
+
+	got, err := r.Resolve(context.Background(), "+2250700000001")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got.ConnectorID != fallbackConn {
+		t.Errorf("no-target primary routed to %s, want the fallback %s", got.ConnectorID, fallbackConn)
+	}
+}
+
+// TestFallbackToDisabledRouteFallsThrough: a 0-target route whose fallback is disabled (skipped from
+// the snapshot) is itself dropped, so traffic falls through to a less-specific route rather than being
+// black-holed (the MAJEUR fix).
+func TestFallbackToDisabledRouteFallsThrough(t *testing.T) {
+	catchConn, disabledConn := uuid.New(), uuid.New()
+	disabled := cp.Route{ID: uuid.New(), Priority: 100, Status: cp.RouteDisabled, DistributionStrategy: cp.DistributionStatic,
+		TargetConnectorID: &disabledConn} // the fallback target — DISABLED
+	primary := cp.Route{ID: uuid.New(), Priority: 50, Status: cp.RouteActive, DistributionStrategy: cp.DistributionWeighted,
+		MatchDestPattern: ptr("225"), Targets: nil, FallbackRouteID: &disabled.ID} // 0 targets, fallback→disabled
+	catch := cp.Route{ID: uuid.New(), Priority: 100, Status: cp.RouteActive, DistributionStrategy: cp.DistributionStatic,
+		TargetConnectorID: &catchConn} // catch-all
+
+	r, _ := routing.LoadSnapshot(context.Background(), fakeLister{routes: []cp.Route{primary, disabled, catch}})
+	got, err := r.Resolve(context.Background(), "+2250700000001")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got.ConnectorID != catchConn {
+		t.Errorf("dead-fallback primary routed to %s, want the catch-all fall-through %s", got.ConnectorID, catchConn)
+	}
+}
+
+// TestFallbackCycleTerminates: a fallback cycle A→B→A among 0-target routes is dropped at build time
+// (neither can deliver), so a matching destination falls through and never hangs.
+func TestFallbackCycleTerminates(t *testing.T) {
+	catchConn := uuid.New()
+	idA, idB := uuid.New(), uuid.New()
+	a := cp.Route{ID: idA, Priority: 40, Status: cp.RouteActive, DistributionStrategy: cp.DistributionWeighted,
+		MatchDestPattern: ptr("225"), FallbackRouteID: &idB}
+	b := cp.Route{ID: idB, Priority: 41, Status: cp.RouteActive, DistributionStrategy: cp.DistributionWeighted,
+		MatchDestPattern: ptr("2250"), FallbackRouteID: &idA}
+	catch := cp.Route{ID: uuid.New(), Priority: 100, Status: cp.RouteActive, DistributionStrategy: cp.DistributionStatic, TargetConnectorID: &catchConn}
+
+	r, _ := routing.LoadSnapshot(context.Background(), fakeLister{routes: []cp.Route{a, b, catch}})
+	got, err := r.Resolve(context.Background(), "+2250700000001")
+	if err != nil {
+		t.Fatalf("resolve (cycle must not hang): %v", err)
+	}
+	if got.ConnectorID != catchConn {
+		t.Errorf("cyclic-fallback routes routed to %s, want the catch-all %s", got.ConnectorID, catchConn)
+	}
+}
+
+// TestLeastLoadedNilReaderIsDeterministic: with no load reader wired, least_loaded treats every load as
+// 0 and picks deterministically (smallest connector id), never panics.
+func TestLeastLoadedNilReaderIsDeterministic(t *testing.T) {
+	c1, c2 := uuid.New(), uuid.New()
+	route := cp.Route{ID: uuid.New(), Priority: 100, Status: cp.RouteActive, DistributionStrategy: cp.DistributionLeastLoaded,
+		MatchDestPattern: ptr("225"), Targets: []cp.RouteTarget{{ConnectorID: c1}, {ConnectorID: c2}}}
+	r, _ := routing.LoadSnapshot(context.Background(), fakeLister{routes: []cp.Route{route}})
+	// No UseLoadReader call → nil reader.
+	first, err := r.Resolve(context.Background(), "+2250700000001")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	again, _ := r.Resolve(context.Background(), "+2250700000001")
+	if first.ConnectorID != again.ConnectorID {
+		t.Errorf("least_loaded with nil reader not deterministic: %s != %s", first.ConnectorID, again.ConnectorID)
 	}
 }
