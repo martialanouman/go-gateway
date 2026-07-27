@@ -2,6 +2,7 @@ package connectorpool
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -84,6 +85,28 @@ func TestAIMDAcquirePaces(t *testing.T) {
 	}
 	if time.Since(start) > 20*time.Millisecond {
 		t.Errorf("first send should not be paced (no prior send), waited %v", time.Since(start))
+	}
+}
+
+// TestAIMDAcquireConcurrent exercises the controller under concurrent callers so -race guards the
+// mutex: the connector's real submit path is serial, but the invariant must hold if the handler is ever
+// parallelised. A high rate keeps the pacing negligible so the test stays fast.
+func TestAIMDAcquireConcurrent(t *testing.T) {
+	a := newAIMD(100000, nil)
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 20; j++ {
+				_ = a.acquire(context.Background())
+				a.observe(smpp.StatusOK)
+			}
+		}()
+	}
+	wg.Wait()
+	if r := a.currentRate(); r <= 0 || r > 100000 {
+		t.Errorf("rate after concurrent use = %v, want within (0, 100000]", r)
 	}
 }
 

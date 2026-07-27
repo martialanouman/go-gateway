@@ -63,7 +63,7 @@ func (a *aimd) observe(status uint32) (throttled bool) {
 	return false
 }
 
-// rate is the current permitted sends/sec (for metrics and tests).
+// currentRate is the current permitted sends/sec (for metrics and tests).
 func (a *aimd) currentRate() float64 {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -91,8 +91,10 @@ func (a *aimd) acquire(ctx context.Context) error {
 	wait := earliest.Sub(now)
 	a.mu.Unlock()
 
+	timer := time.NewTimer(wait)
+	defer timer.Stop() // release the timer promptly if ctx wins the race
 	select {
-	case <-time.After(wait):
+	case <-timer.C:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()

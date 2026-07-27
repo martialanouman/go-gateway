@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"math"
 	"os"
 	"os/signal"
 	"syscall"
@@ -128,6 +129,11 @@ func run() error {
 		Name: "connector_throttled_total",
 		Help: "ESME_RTHROTTLED responses received from the SMSC for this connector.",
 	})
+	if bindEnv.MaxSendRate > 0 {
+		sendRateGauge.Set(bindEnv.MaxSendRate) // start at the ceiling; the AIMD lowers it on throttle
+	} else {
+		sendRateGauge.Set(math.NaN()) // AIMD disabled: report no value rather than a misleading 0
+	}
 
 	tracer := observability.Tracer(nil, serviceName)
 	svc := connectorpool.New(connectorpool.Deps{
