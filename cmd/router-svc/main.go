@@ -28,6 +28,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/platform/supervisor"
 	"github.com/martialanouman/go-gateway/internal/router"
 	"github.com/martialanouman/go-gateway/internal/routing"
+	"github.com/martialanouman/go-gateway/internal/routing/exact"
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
 	"github.com/martialanouman/go-gateway/internal/storage/postgres"
@@ -95,7 +96,7 @@ func run() error {
 	// Postgres is a hard boot dependency — the router cannot route without routes — so a transient
 	// outage must not permanently brick a (re)starting pod: retry with backoff until Postgres answers
 	// or the context is cancelled, rather than exiting on the first failure.
-	resolver, err := loadSnapshotWithRetry(ctx, postgres.NewRouteRepo(pool), logger)
+	snapshot, err := loadSnapshotWithRetry(ctx, postgres.NewRouteRepo(pool), logger)
 	if err != nil {
 		return fmt.Errorf("load route snapshot: %w", err)
 	}
@@ -149,6 +150,19 @@ func run() error {
 		return fmt.Errorf("load rate-limit snapshot: %w", err)
 	}
 	rateLimiter := ratelimit.NewEnforcer(rateSnap, ratelimit.NewLimiter(rdb))
+
+	// The L0 exact-number short-cut (§6.1): an in-memory Bloom over every exact_routes MSISDN, loaded
+	// once at boot with the same retry discipline, in front of the shared Redis map. A ported number
+	// routes straight to its target (skipping route resolution only, never compliance); every other
+	// number falls through to the declarative resolver. Config-sync's hot reload is a later milestone.
+	exactRepo := postgres.NewExactRouteRepo(pool)
+	exactBloom, err := loadWithRetry(ctx, logger, "exact-route bloom", func(ctx context.Context) (*exact.Bloom, error) {
+		return exact.LoadBloom(ctx, exactRepo)
+	})
+	if err != nil {
+		return fmt.Errorf("load exact-route bloom: %w", err)
+	}
+	resolver := routing.NewL0Resolver(exact.NewResolver(exactBloom, rdb), snapshot)
 
 	tracer := observability.Tracer(nil, serviceName)
 	pl := pipeline.New(tracer, resolver, senderIDs, optOut, spam, rateLimiter)

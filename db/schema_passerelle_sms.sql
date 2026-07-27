@@ -508,12 +508,16 @@ CREATE INDEX unrouted_mo_page_idx ON control_plane.unrouted_mo(received_at DESC,
 -- 19. Exact routes (§6.1) — MSISDN -> target; typically bulk-loaded from an MNP/portability database
 -- -----------------------------------------------------------------------------------------------------
 CREATE TABLE control_plane.exact_routes (
-  msisdn      text PRIMARY KEY,        -- E.164
+  msisdn      text PRIMARY KEY,        -- E.164 minus "+", digits only (see CHECK) — the L0 Bloom/Redis key form
   target_type text NOT NULL CHECK (target_type IN ('connector','route')),
   target_id   uuid NOT NULL,           -- polymorphic (smsc_connectors.id | routes.id)
   source      text NOT NULL DEFAULT 'manual' CHECK (source IN ('mnp_import','manual','carrier_feed')),
   imported_at timestamptz,
-  updated_at  timestamptz NOT NULL DEFAULT now()
+  updated_at  timestamptz NOT NULL DEFAULT now(),
+  -- The L0 Bloom snapshot and the exactroute:{msisdn} confirmation key are built on this exact form,
+  -- and the router queries it with e164.Normalize output (digits only). A write path storing a
+  -- non-normalized value ("+225…") would silently defeat every override — a routing false negative.
+  CONSTRAINT exact_routes_msisdn_canonical_ck CHECK (msisdn ~ '^[1-9][0-9]+$')
 );
 
 -- -----------------------------------------------------------------------------------------------------

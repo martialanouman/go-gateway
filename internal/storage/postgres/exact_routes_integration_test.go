@@ -31,13 +31,13 @@ func TestExactRouteRepoUpsertIsIdempotent(t *testing.T) {
 
 	first, second := uuid.New(), uuid.New()
 	if _, err := repo.Upsert(ctx, exact.Route{
-		MSISDN: "+2250700000001", Target: exact.Target{Type: exact.TargetConnector, ID: first}, Source: exact.SourceManual,
+		MSISDN: "2250700000001", Target: exact.Target{Type: exact.TargetConnector, ID: first}, Source: exact.SourceManual,
 	}); err != nil {
 		t.Fatalf("first upsert: %v", err)
 	}
 	// Re-upsert the same number to a different target.
 	got, err := repo.Upsert(ctx, exact.Route{
-		MSISDN: "+2250700000001", Target: exact.Target{Type: exact.TargetRoute, ID: second}, Source: exact.SourceCarrierFeed,
+		MSISDN: "2250700000001", Target: exact.Target{Type: exact.TargetRoute, ID: second}, Source: exact.SourceCarrierFeed,
 	})
 	if err != nil {
 		t.Fatalf("second upsert: %v", err)
@@ -47,7 +47,7 @@ func TestExactRouteRepoUpsertIsIdempotent(t *testing.T) {
 	}
 
 	// Exactly one row: Get returns the latest, and a page holds just it.
-	back, found, err := repo.Get(ctx, "+2250700000001")
+	back, found, err := repo.Get(ctx, "2250700000001")
 	if err != nil || !found {
 		t.Fatalf("get: found=%v err=%v", found, err)
 	}
@@ -67,24 +67,24 @@ func TestExactRouteRepoDeleteAndGetMissing(t *testing.T) {
 	repo := postgres.NewExactRouteRepo(pgtest.Pool(t))
 
 	// Get of an unconfigured number: not found, no error.
-	if _, found, err := repo.Get(ctx, "+2250799999999"); err != nil || found {
+	if _, found, err := repo.Get(ctx, "2250799999999"); err != nil || found {
 		t.Fatalf("get missing = (found %v, err %v), want (false, nil)", found, err)
 	}
 	// Delete of an unconfigured number: not found, no error.
-	if found, err := repo.Delete(ctx, "+2250799999999"); err != nil || found {
+	if found, err := repo.Delete(ctx, "2250799999999"); err != nil || found {
 		t.Fatalf("delete missing = (found %v, err %v), want (false, nil)", found, err)
 	}
 
 	// Configure one, then delete it: found=true, and it is gone afterwards.
 	if _, err := repo.Upsert(ctx, exact.Route{
-		MSISDN: "+2250700000009", Target: exact.Target{Type: exact.TargetConnector, ID: uuid.New()}, Source: exact.SourceManual,
+		MSISDN: "2250700000009", Target: exact.Target{Type: exact.TargetConnector, ID: uuid.New()}, Source: exact.SourceManual,
 	}); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-	if found, err := repo.Delete(ctx, "+2250700000009"); err != nil || !found {
+	if found, err := repo.Delete(ctx, "2250700000009"); err != nil || !found {
 		t.Fatalf("delete existing = (found %v, err %v), want (true, nil)", found, err)
 	}
-	if _, found, err := repo.Get(ctx, "+2250700000009"); err != nil || found {
+	if _, found, err := repo.Get(ctx, "2250700000009"); err != nil || found {
 		t.Errorf("get after delete = (found %v, err %v), want (false, nil)", found, err)
 	}
 }
@@ -99,7 +99,7 @@ func TestExactRouteRepoListPaginates(t *testing.T) {
 	const n = 5
 	for i := 0; i < n; i++ {
 		if _, err := repo.Upsert(ctx, exact.Route{
-			MSISDN: fmt.Sprintf("+22507000000%02d", i),
+			MSISDN: fmt.Sprintf("22507000000%02d", i),
 			Target: exact.Target{Type: exact.TargetConnector, ID: uuid.New()}, Source: exact.SourceManual,
 		}); err != nil {
 			t.Fatalf("seed %d: %v", i, err)
@@ -146,7 +146,7 @@ func TestExactRouteRepoBulkUpsert(t *testing.T) {
 	routes := make([]exact.Route, n)
 	for i := range routes {
 		routes[i] = exact.Route{
-			MSISDN: fmt.Sprintf("+22507000001%02d", i),
+			MSISDN: fmt.Sprintf("22507000001%02d", i),
 			Target: exact.Target{Type: exact.TargetConnector, ID: uuid.New()},
 			Source: exact.SourceMNPImport, ImportedAt: &importedAt,
 		}

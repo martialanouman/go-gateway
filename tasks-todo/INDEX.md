@@ -71,7 +71,7 @@ Légende : `[x]` = fait (dans `tasks-done/`) · `[ ]` = à faire (dans `tasks-to
 
 ## M7 — Routage avancé
 - [x] step-100 — Repo `exact_routes` (numéros exacts, portabilité)
-- [ ] step-101 — Bloom en mémoire + `exactroute:{msisdn}` Redis + court-circuit L0
+- [x] step-101 — Bloom en mémoire + `exactroute:{msisdn}` Redis + court-circuit L0
 - [ ] step-102 — Admin exact-routes : list / create / update / delete / lookup
 - [ ] step-103 — Admin import-exact-routes (asynchrone)
 - [ ] step-104 — Instantané de routage immuable + pointeur atomique
