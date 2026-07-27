@@ -13,6 +13,7 @@ COMPOSE     := docker compose
 GOLANGCI_VERSION   := v2.12.2
 SQLC_VERSION       := v1.30.0
 GOVULNCHECK_VERSION := latest
+OASDIFF_VERSION    := v1.26.0
 BUF_VERSION              := v1.72.0
 # protoc-gen-go tracks the google.golang.org/protobuf runtime version in go.mod — keep them in step.
 PROTOC_GEN_GO_VERSION      := v1.36.11
@@ -26,9 +27,10 @@ help: ## Show this help
 ## ---------------------------------------------------------------------------- tooling
 
 .PHONY: tools
-tools: ## Install the Go binaries the workflow needs (sqlc, govulncheck, golangci-lint, buf + protoc plugins)
+tools: ## Install the Go binaries the workflow needs (sqlc, govulncheck, oasdiff, golangci-lint, buf + protoc plugins)
 	go install github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION)
 	go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
+	go install github.com/oasdiff/oasdiff@$(OASDIFF_VERSION)
 	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_VERSION)
 	go install github.com/bufbuild/buf/cmd/buf@$(BUF_VERSION)
 	go install google.golang.org/protobuf/cmd/protoc-gen-go@$(PROTOC_GEN_GO_VERSION)
@@ -101,5 +103,15 @@ fmt: ## Format the tree
 vuln: ## Scan the dependencies for known vulnerabilities
 	govulncheck ./...
 
+.PHONY: contracts
+contracts: ## Refuse a contract change without the matching version bump in api/package.json
+	scripts/check-contracts.sh
+
+.PHONY: contracts-types
+contracts-types: ## Generate the TypeScript types from the contracts and typecheck them (needs Node)
+	cd api && npm ci && npm run build && npm run typecheck
+
+# contracts-types is deliberately out: it would make Node a prerequisite of every `make check`, for a
+# check that only matters when api/**.yaml moves. CI runs it on every PR.
 .PHONY: check
-check: lint test vuln ## Everything CI checks, in one command
+check: lint test vuln contracts ## Everything CI checks, in one command

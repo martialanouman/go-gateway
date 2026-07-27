@@ -68,7 +68,8 @@ Pyramide : beaucoup d'unitaires (logique de domaine), des intégrations (`testco
 
 - **Ajouter une dépendance** : d'abord `ctx7` (Context7) pour la bonne version et l'API à jour, puis `go get`, puis `make tidy`. Jamais de version devinée.
 - **Ajouter un code d'erreur** : 3 endroits en même temps — `internal/platform/errors` (sentinelle + mapping HTTP/SMPP), le champ `code` des deux `api/openapi-*.yaml`, et la §11.3 du guide d'ingénierie.
-- **Ajouter un endpoint Admin** : le déclarer d'abord dans `api/openapi-admin.yaml`, puis l'implémenter chi+huma pour conformer, puis test de contrat.
+- **Ajouter un endpoint Admin** : le déclarer d'abord dans `api/openapi-admin.yaml`, **bumper `version` dans `api/package.json`**, puis l'implémenter chi+huma pour conformer, puis test de contrat.
+- **Modifier un contrat API** : les contrats sont publiés comme package npm versionné et consommés par le tableau de bord (dépôt séparé). Tout changement d'un `api/openapi-*.yaml` exige un bump de `api/package.json` — majeur si `oasdiff` classe la rupture `ERR`. `make contracts` le vérifie. Procédure : `api/README.md`.
 - **Changer le schéma** : éditer `db/schema_passerelle_sms.sql` **et** ajouter une migration `golang-migrate` correspondante dans `migrations/`.
 - **Ajouter une étape de pipeline** : respecter l'ordre §6.1 ; émettre un span ; ne jamais y logger le corps.
 

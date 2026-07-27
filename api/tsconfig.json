@@ -1,0 +1,13 @@
+{
+  "//": "Sert uniquement à valider les .d.ts générés depuis les contrats. skipLibCheck reste à false : sauter la vérification des déclarations reviendrait à ne rien vérifier du tout, puisque le package n'est fait que de déclarations.",
+  "compilerOptions": {
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": false,
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "types": []
+  },
+  "include": ["dist/**/*.d.ts"]
+}

@@ -18,6 +18,7 @@ permissions:
 env:
   # Keep the linter version identical to the Makefile's, or CI and laptops disagree about style.
   GOLANGCI_VERSION: v2.12.2
+  OASDIFF_VERSION: v1.26.0
 
 jobs:
   lint:
@@ -78,6 +79,49 @@ jobs:
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
+
+  contracts:
+    name: Contracts version gate
+    runs-on: ubuntu-latest
+    # Rien à comparer sur un push direct : la garde vit sur la PR, là où le bump peut encore être
+    # corrigé avant qu'une version parte au registre.
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Le script compare HEAD à la branche de base ; il lui faut les refs distantes.
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install oasdiff
+        run: go install github.com/oasdiff/oasdiff@${{ env.OASDIFF_VERSION }}
+      - name: Contract change implies a version bump
+        run: scripts/check-contracts.sh
+        env:
+          BASE_REF: origin/${{ github.base_ref }}
+
+  contracts-types:
+    name: Contracts generate TypeScript
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: api/package-lock.json
+      # Prouve que les contrats se génèrent en TypeScript valide AVANT publication — sinon la
+      # rupture n'apparaîtrait que dans le dépôt du tableau de bord.
+      - name: Generate and typecheck
+        run: |
+          npm ci
+          npm run build
+          npm run typecheck
 
   migrate:
     name: Migrations apply and reverse

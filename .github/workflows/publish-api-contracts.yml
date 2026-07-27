@@ -1,0 +1,67 @@
+# Publie les contrats OpenAPI comme package npm versionné (api/README.md). Le tableau de bord Admin
+# vit dans un dépôt séparé et consomme ce package plutôt qu'une copie des YAML — c'est ce qui rend la
+# divergence entre les deux dépôts structurellement impossible.
+#
+# Volontairement distinct de release.yml : celui-ci tague et construit les binaires Go à chaque
+# feat/fix, cadence qui n'a rien à voir avec celle du contrat. Ici, rien ne part si api/** n'a pas
+# bougé, et la version vient de api/package.json, pas du tag git.
+name: API contracts
+
+on:
+  push:
+    branches: [main]
+    paths: ["api/**"]
+
+# Ne jamais annuler une publication en cours ; mettre en file.
+concurrency:
+  group: publish-api-contracts
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write # publier sur GitHub Packages
+
+jobs:
+  publish:
+    name: Publish contracts package
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: api
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://npm.pkg.github.com
+          cache: npm
+          cache-dependency-path: api/package-lock.json
+
+      - name: Install and generate types
+        run: |
+          npm ci
+          npm run build
+          npm run typecheck
+
+      # Une version publiée ne se republie pas et ne se dépublie pas. Sans ce garde-fou, tout re-run
+      # de workflow échouerait sur un 409 du registre.
+      - name: Skip if this version is already published
+        id: published
+        run: |
+          name=$(jq -r .name package.json)
+          version=$(jq -r .version package.json)
+          if npm view "$name@$version" version >/dev/null 2>&1; then
+            echo "::notice::$name@$version est déjà publié — publication sautée."
+            echo "already=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "$name@$version n'existe pas encore — publication."
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: npm publish
+        if: steps.published.outputs.already != 'true'
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
