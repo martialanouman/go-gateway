@@ -2,6 +2,8 @@ package adminapi
 
 import (
 	"context"
+	"errors"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -9,6 +11,8 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/martialanouman/go-gateway/internal/auth"
+	"github.com/martialanouman/go-gateway/internal/platform/async"
+	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 	humaerr "github.com/martialanouman/go-gateway/internal/platform/errors/humaerr"
 	"github.com/martialanouman/go-gateway/internal/routing/exact"
 )
@@ -60,14 +64,34 @@ type ExactRouteAdminStore interface {
 	List(ctx context.Context, after string, limit int) ([]exact.Route, error)
 	Upsert(ctx context.Context, route exact.Route) (exact.Route, error)
 	Delete(ctx context.Context, msisdn string) (bool, error)
+	BulkUpsert(ctx context.Context, routes []exact.Route) error
+}
+
+// ImportRunner runs a bounded, fire-and-forget background job (the bulk MNP import). *async.Runner
+// satisfies it. ErrBusy/ErrClosed surface as a retryable 503; the interface lives here, consumer-side.
+type ImportRunner interface {
+	Go(name string, job func(ctx context.Context) error) error
 }
 
 type exactRouteHandlers struct {
-	store ExactRouteAdminStore
+	store  ExactRouteAdminStore
+	runner ImportRunner
+	logger *slog.Logger
 }
 
-func registerExactRoutes(api huma.API, store ExactRouteAdminStore) {
-	h := &exactRouteHandlers{store: store}
+func registerExactRoutes(api huma.API, store ExactRouteAdminStore, runner ImportRunner, logger *slog.Logger) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	h := &exactRouteHandlers{store: store, runner: runner, logger: logger}
+
+	register(api, huma.Operation{
+		OperationID: "import-exact-routes", Method: http.MethodPost, Path: "/admin/exact-routes/import",
+		DefaultStatus: http.StatusAccepted,
+		Summary:       "Bulk MNP import (async)", Tags: []string{"Exact Routes"},
+		Security: scopeSecurity(auth.ScopeAdminWrite),
+		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusUnprocessableEntity},
+	}, h.importRoutes)
 
 	register(api, huma.Operation{
 		OperationID: "list-exact-routes", Method: http.MethodGet, Path: "/admin/exact-routes",
@@ -161,6 +185,72 @@ func (h *exactRouteHandlers) create(ctx context.Context, in *createExactRouteInp
 		return nil, humaerr.FromError(err)
 	}
 	return &exactRouteOutput{Body: toExactRouteDTO(saved)}, nil
+}
+
+type importExactRoutesBody struct {
+	Source string                 `json:"source,omitempty" enum:"mnp_import,carrier_feed"`
+	Rows   []exactRouteCreateBody `json:"rows" maxItems:"10000"`
+}
+
+type importExactRoutesInput struct{ Body importExactRoutesBody }
+type importExactRoutesOutput struct{ Body asyncJobDTO }
+
+// importRoutes accepts a bulk MNP/carrier feed and returns 202 immediately. It validates and
+// normalizes every row synchronously — a bad number is a 422 on this request, never a silently failed
+// background job — then runs the idempotent BulkUpsert in the background so the HTTP connection is not
+// held for the whole import. There is no status endpoint: the job_id is fire-and-forget, correlated
+// with the completion/failure log line (spec §6.1; step-106 hot-reloads the Bloom after a large import).
+func (h *exactRouteHandlers) importRoutes(_ context.Context, in *importExactRoutesInput) (*importExactRoutesOutput, error) {
+	source := exact.SourceMNPImport
+	if in.Body.Source != "" {
+		source = exact.Source(in.Body.Source)
+	}
+
+	// Validate up front and dedupe by msisdn (last wins): a clean batch of plain data captured by the
+	// background closure, with no request-scoped state.
+	byMSISDN := make(map[string]int, len(in.Body.Rows))
+	routes := make([]exact.Route, 0, len(in.Body.Rows))
+	for _, row := range in.Body.Rows {
+		msisdn, err := normalizeMSISDN(row.MSISDN)
+		if err != nil {
+			return nil, humaerr.FailValidation("invalid msisdn",
+				humaerr.FieldError{Field: "rows", Message: "an entry is not a valid E.164 number"})
+		}
+		target, err := parseTarget(row.TargetType, row.TargetID)
+		if err != nil {
+			return nil, err
+		}
+		r := exact.Route{MSISDN: msisdn, Target: target, Source: source}
+		if i, dup := byMSISDN[msisdn]; dup {
+			routes[i] = r
+			continue
+		}
+		byMSISDN[msisdn] = len(routes)
+		routes = append(routes, r)
+	}
+
+	jobID := uuid.NewString()
+	logger := h.logger.With("job_id", jobID, "rows", len(routes), "source", string(source))
+	err := h.runner.Go("import-exact-routes", func(jctx context.Context) error {
+		if berr := h.store.BulkUpsert(jctx, routes); berr != nil {
+			return berr
+		}
+		logger.Info("exact-route import completed")
+		return nil
+	})
+	if err != nil {
+		// The runner is saturated or shutting down: a retryable 503, undeclared (a near-unreachable
+		// operational state on an admin-only endpoint), not a client error.
+		if errors.Is(err, async.ErrBusy) || errors.Is(err, async.ErrClosed) {
+			return nil, humaerr.FromError(errs.ErrServiceUnavailable)
+		}
+		return nil, humaerr.FromError(err)
+	}
+
+	now := time.Now().UTC()
+	return &importExactRoutesOutput{Body: asyncJobDTO{
+		JobID: jobID, Status: "queued", Progress: ptr(0.0), CreatedAt: now,
+	}}, nil
 }
 
 type msisdnPathInput struct {

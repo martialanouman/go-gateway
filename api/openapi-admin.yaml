@@ -689,9 +689,12 @@ paths:
       tags: [Exact Routes]
       summary: Bulk MNP import (async)
       operationId: import-exact-routes
-      requestBody: { required: true, content: { text/csv: { schema: { type: string } }, application/json: { schema: { type: object, properties: { source: { type: string, enum: [mnp_import, carrier_feed] }, rows: { type: array, items: { $ref: '#/components/schemas/ExactRouteCreate' } } }, required: [rows] } } } }
+      requestBody: { required: true, content: { text/csv: { schema: { type: string } }, application/json: { schema: { type: object, properties: { source: { type: string, enum: [mnp_import, carrier_feed] }, rows: { type: array, maxItems: 10000, items: { $ref: '#/components/schemas/ExactRouteCreate' } } }, required: [rows] } } } }
       responses:
         '202': { description: Import job accepted., content: { application/json: { schema: { $ref: '#/components/schemas/AsyncJob' } } } }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /admin/exact-routes/lookup:
     get:
       tags: [Exact Routes]
