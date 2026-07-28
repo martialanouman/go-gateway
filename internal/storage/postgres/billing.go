@@ -76,31 +76,81 @@ func (r *BillingRepo) LedgerEntryExists(ctx context.Context, messageID uuid.UUID
 	return exists, nil
 }
 
-// RecordDurable persists one billing movement: it appends the ledger entry AND reconciles the owner's
-// durable balance to entry.BalanceAfter, both in a SINGLE transaction, so the immutable ledger and the
-// authoritative balance can never diverge. The ledger is append-only. It records exactly what the caller
-// computed — the amount and the resulting balance are decided by the atomic Redis path (step-142) or the
-// admin operation (step-148), never here.
+// ReserveEntry reads the reserve ledger entry for messageID: its signed credits (negative — the reserve
+// debit) and the balance right after the reserve. The capture and release paths read it to recover the
+// reserved amount and the post-reserve balance when the short-TTL Redis hold has already lapsed (§6.9).
+// found=false means no reserve entry exists for the message.
+func (r *BillingRepo) ReserveEntry(ctx context.Context, messageID uuid.UUID) (credits int, balanceAfter int, found bool, err error) {
+	row, e := r.q.GetReserveEntry(ctx, &messageID)
+	if errors.Is(e, pgx.ErrNoRows) {
+		return 0, 0, false, nil
+	}
+	if e != nil {
+		return 0, 0, false, translate("get reserve entry", e)
+	}
+	return int(row.Credits), int(row.BalanceAfter), true, nil
+}
+
+// RecordDurable persists one billing movement in a SINGLE transaction and is IDEMPOTENT by
+// (message_id, entry_type). It first claims the movement in the partition-free billing_idempotency table:
+// if that (message_id, entry_type) was already recorded — even on an earlier day, which the ledger's
+// same-day idem index cannot see — the claim conflicts, no balance/ledger write happens, and it returns
+// (currentBalance, applied=false) so the caller can undo any speculative cache change. Otherwise it
+// applies the entry's SIGNED credit delta to the owner's durable balance (credits += delta,
+// order-independent) and appends the append-only ledger row with the resulting balance as balance_after —
+// so the balance is always the exact SUM of the ledger's credits, whatever order concurrent same-owner
+// movements commit in — and returns (newBalance, applied=true). The claim INSERT is the lock, so two
+// concurrent replays cannot both apply (no read-then-write race), and idempotency holds across day
+// boundaries (invariant c), not only within the Redis hold's TTL.
 //
-// It is NOT self-idempotent. Idempotency (invariant c) is the CALLER's responsibility, upheld by the
-// atomic Redis reservation (billing:reservation:{message_id}, step-142) — that is the ONLY guard against
-// a double-capture whose two attempts straddle a day boundary, because billing_ledger_idem_idx includes
-// created_at and so cannot span partitions. A SAME-DAY duplicate insert is rejected by that index and
-// surfaces here as the shared conflict error (errors.Is(err, errs.ErrConflict) from platform/errors); the
-// caller must treat it as an idempotent success (the movement already happened), not a hard failure.
-//
-// Because UpsertBalance sets the balance ABSOLUTELY to entry.BalanceAfter (not a delta), the caller must
-// apply durable writes for an owner IN ORDER — the sequential Redis-authoritative mirroring of step-142
-// guarantees this; an out-of-order replay would let a stale write regress the balance.
-func (r *BillingRepo) RecordDurable(ctx context.Context, entry cp.LedgerEntry) error {
+// Entries with no message_id (top-ups, adjustments) bypass the claim and always apply — they are not
+// message-scoped and carry their own audit reference. The ledger stays append-only; the caller supplies
+// only the delta, never an absolute balance.
+func (r *BillingRepo) RecordDurable(ctx context.Context, entry cp.LedgerEntry) (newBalance int, applied bool, err error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
-		return translate("begin billing tx", err)
+		return 0, false, translate("begin billing tx", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }() // no-op after a successful commit
-
 	qtx := r.q.WithTx(tx)
+
+	// Claim first: a message-scoped movement already recorded (any partition) is a replay — skip the
+	// balance/ledger write and report the current balance so the caller can compensate a speculative cache.
+	if entry.MessageID != nil {
+		claimed, cerr := qtx.ClaimIdempotency(ctx, sqlcgen.ClaimIdempotencyParams{
+			MessageID: *entry.MessageID, EntryType: string(entry.EntryType),
+		})
+		if cerr != nil {
+			return 0, false, translate("claim idempotency", cerr)
+		}
+		if claimed == 0 {
+			bal, berr := qtx.GetBalance(ctx, sqlcgen.GetBalanceParams{
+				OwnerType: entry.OwnerType, OwnerID: entry.OwnerID, Direction: entry.Direction,
+			})
+			if errors.Is(berr, pgx.ErrNoRows) {
+				return 0, false, nil
+			}
+			if berr != nil {
+				return 0, false, translate("get balance on replay", berr)
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return 0, false, translate("commit billing tx", err)
+			}
+			return int(bal), false, nil
+		}
+	}
+
 	//nolint:gosec // credit counts are bounded well within int32 (integer credits, not monetary amounts)
+	balance, err := qtx.AdjustBalance(ctx, sqlcgen.AdjustBalanceParams{
+		OwnerType: entry.OwnerType,
+		OwnerID:   entry.OwnerID,
+		Direction: entry.Direction,
+		Delta:     int32(entry.Credits),
+	})
+	if err != nil {
+		return 0, false, translate("adjust balance", err)
+	}
+	//nolint:gosec // see above: balance is an integer credit count
 	if err := qtx.InsertLedgerEntry(ctx, sqlcgen.InsertLedgerEntryParams{
 		OwnerType:    entry.OwnerType,
 		OwnerID:      entry.OwnerID,
@@ -110,22 +160,13 @@ func (r *BillingRepo) RecordDurable(ctx context.Context, entry cp.LedgerEntry) e
 		MessageID:    entry.MessageID,
 		EntryType:    string(entry.EntryType),
 		Credits:      int32(entry.Credits),
-		BalanceAfter: int32(entry.BalanceAfter),
+		BalanceAfter: balance,
 		Reference:    entry.Reference,
 	}); err != nil {
-		return translate("insert ledger entry", err)
-	}
-	//nolint:gosec // see above: balance is an integer credit count
-	if err := qtx.UpsertBalance(ctx, sqlcgen.UpsertBalanceParams{
-		OwnerType: entry.OwnerType,
-		OwnerID:   entry.OwnerID,
-		Direction: entry.Direction,
-		Credits:   int32(entry.BalanceAfter),
-	}); err != nil {
-		return translate("upsert balance", err)
+		return 0, false, translate("insert ledger entry", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return translate("commit billing tx", err)
+		return 0, false, translate("commit billing tx", err)
 	}
-	return nil
+	return int(balance), true, nil
 }

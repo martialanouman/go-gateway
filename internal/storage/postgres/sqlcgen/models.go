@@ -40,6 +40,12 @@ type ControlPlaneBillingCustomer struct {
 	UpdatedAt                 pgtype.Timestamptz
 }
 
+type ControlPlaneBillingIdempotency struct {
+	MessageID uuid.UUID
+	EntryType string
+	CreatedAt pgtype.Timestamptz
+}
+
 type ControlPlaneBillingLedger struct {
 	ID           uuid.UUID
 	OwnerType    string

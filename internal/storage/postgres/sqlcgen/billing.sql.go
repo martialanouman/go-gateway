@@ -11,6 +11,62 @@ import (
 	uuid "github.com/google/uuid"
 )
 
+const adjustBalance = `-- name: AdjustBalance :one
+INSERT INTO control_plane.balances (owner_type, owner_id, direction, credits)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (owner_type, owner_id, direction)
+DO UPDATE SET credits = control_plane.balances.credits + $4, updated_at = now()
+RETURNING credits
+`
+
+type AdjustBalanceParams struct {
+	OwnerType string
+	OwnerID   uuid.UUID
+	Direction string
+	Delta     int32
+}
+
+// Apply a SIGNED delta to the durable owner balance for a direction (credits += delta), creating the row
+// on first use, and RETURN the resulting balance. The delta form is order-independent: two concurrent
+// movements for the same owner commit in any order and the balance is always the sum of every delta —
+// which is exactly the append-only ledger's SUM(credits). An absolute set would let a stale write clobber
+// a fresher one under the concurrency this system runs at.
+func (q *Queries) AdjustBalance(ctx context.Context, arg AdjustBalanceParams) (int32, error) {
+	row := q.db.QueryRow(ctx, adjustBalance,
+		arg.OwnerType,
+		arg.OwnerID,
+		arg.Direction,
+		arg.Delta,
+	)
+	var credits int32
+	err := row.Scan(&credits)
+	return credits, err
+}
+
+const claimIdempotency = `-- name: ClaimIdempotency :execrows
+INSERT INTO control_plane.billing_idempotency (message_id, entry_type)
+VALUES ($1, $2)
+ON CONFLICT (message_id, entry_type) DO NOTHING
+`
+
+type ClaimIdempotencyParams struct {
+	MessageID uuid.UUID
+	EntryType string
+}
+
+// Claim (message_id, entry_type) in the partition-free idempotency table BEFORE applying a movement
+// (§6.9, invariant c). Returns the number of rows inserted: 1 = first time (proceed), 0 = the movement
+// already happened on some earlier attempt (a replay, possibly across a day boundary the ledger's
+// same-day index cannot see) — the caller skips the balance/ledger writes. The INSERT is the lock, so
+// two concurrent replays cannot both proceed (no read-then-write race).
+func (q *Queries) ClaimIdempotency(ctx context.Context, arg ClaimIdempotencyParams) (int64, error) {
+	result, err := q.db.Exec(ctx, claimIdempotency, arg.MessageID, arg.EntryType)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getBalance = `-- name: GetBalance :one
 SELECT credits
 FROM control_plane.balances
@@ -62,6 +118,30 @@ func (q *Queries) GetBillingCustomer(ctx context.Context, customerID uuid.UUID) 
 		&i.CreditLimitIsHard,
 		&i.ExternalBillingProviderID,
 	)
+	return i, err
+}
+
+const getReserveEntry = `-- name: GetReserveEntry :one
+SELECT credits, balance_after
+FROM control_plane.billing_ledger
+WHERE message_id = $1 AND entry_type = 'reserve'
+ORDER BY created_at DESC
+LIMIT 1
+`
+
+type GetReserveEntryRow struct {
+	Credits      int32
+	BalanceAfter int32
+}
+
+// The reserve ledger entry for a message_id (the amount of record, §6.9). The capture and release paths
+// read it to recover the reserved amount and the post-reserve balance when the short-TTL Redis hold has
+// lapsed. credits is the signed reserve delta (negative); balance_after is the balance right after the
+// reserve. The latest reserve wins (there is at most one per message under normal operation).
+func (q *Queries) GetReserveEntry(ctx context.Context, messageID *uuid.UUID) (GetReserveEntryRow, error) {
+	row := q.db.QueryRow(ctx, getReserveEntry, messageID)
+	var i GetReserveEntryRow
+	err := row.Scan(&i.Credits, &i.BalanceAfter)
 	return i, err
 }
 
@@ -126,31 +206,4 @@ func (q *Queries) LedgerEntryExists(ctx context.Context, arg LedgerEntryExistsPa
 	var entry_exists bool
 	err := row.Scan(&entry_exists)
 	return entry_exists, err
-}
-
-const upsertBalance = `-- name: UpsertBalance :exec
-INSERT INTO control_plane.balances (owner_type, owner_id, direction, credits)
-VALUES ($1, $2, $3, $4)
-ON CONFLICT (owner_type, owner_id, direction)
-DO UPDATE SET credits = EXCLUDED.credits, updated_at = now()
-`
-
-type UpsertBalanceParams struct {
-	OwnerType string
-	OwnerID   uuid.UUID
-	Direction string
-	Credits   int32
-}
-
-// Set the durable owner balance for a direction to `credits`, creating the row on first use. The balance
-// table is the authority Redis caches; the caller passes the balance its atomic path computed, so this
-// write reconciles the durable authority with the cached hot-path value rather than computing anything.
-func (q *Queries) UpsertBalance(ctx context.Context, arg UpsertBalanceParams) error {
-	_, err := q.db.Exec(ctx, upsertBalance,
-		arg.OwnerType,
-		arg.OwnerID,
-		arg.Direction,
-		arg.Credits,
-	)
-	return err
 }
