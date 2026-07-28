@@ -140,11 +140,15 @@ func startSimPool(t *testing.T, cfg simPoolConfig) *simPool {
 // short message — this harness never asserts on content, only on routing/outcome.
 func (p *simPool) injectRouted(t *testing.T, chain []uuid.UUID) routedIdent {
 	t.Helper()
-	id := routedIdent{
-		messageID:  uuid.New(),
-		customerID: uuid.New(),
-		accountID:  uuid.New(),
-	}
+	return p.injectRoutedWithID(t, uuid.New(), chain)
+}
+
+// injectRoutedWithID is injectRouted with a caller-chosen message id — the Kafka partition key AND the
+// pool's shard key (FNV(message_id) % bind_pool_size), so a bind-pool test can spread a burst evenly
+// across the binds instead of leaving the split to a random UUID.
+func (p *simPool) injectRoutedWithID(t *testing.T, messageID uuid.UUID, chain []uuid.UUID) routedIdent {
+	t.Helper()
+	id := routedIdent{messageID: messageID, customerID: uuid.New(), accountID: uuid.New()}
 	rec, err := pipeline.EncodeRouted(pipeline.RoutedMT{
 		MessageID: id.messageID, TraceID: uuid.New(), AccountID: id.accountID, CustomerID: id.customerID,
 		From: "GATEWAY", To: "+2250700000000", Body: msg.NewBodyString("resilience probe"),
