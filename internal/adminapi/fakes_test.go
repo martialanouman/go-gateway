@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/martialanouman/go-gateway/internal/connector/status"
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 )
@@ -422,6 +423,58 @@ func (s *fakeConnectorStore) Delete(_ context.Context, id uuid.UUID) error {
 		return errs.ErrNotFound
 	}
 	delete(s.byID, id)
+	return nil
+}
+
+func (s *fakeConnectorStore) UpdateReconnectPolicy(_ context.Context, id uuid.UUID, p cp.ReconnectPolicy) (cp.Connector, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.byID[id]
+	if !ok {
+		return cp.Connector{}, errs.ErrNotFound
+	}
+	c.AutoReconnectEnabled = p.AutoReconnectEnabled
+	s.byID[id] = c
+	return c, nil
+}
+
+func (s *fakeConnectorStore) UpdateBindPool(_ context.Context, id uuid.UUID, size int) (cp.Connector, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.byID[id]
+	if !ok {
+		return cp.Connector{}, errs.ErrNotFound
+	}
+	c.BindPoolSize = size
+	s.byID[id] = c
+	return c, nil
+}
+
+// fakeConnectorControl is an in-memory ConnectorControl for handler unit tests.
+type fakeConnectorControl struct {
+	mu         sync.Mutex
+	reconfigs  int
+	statusByID map[uuid.UUID]status.Connector
+}
+
+func newFakeConnectorControl() *fakeConnectorControl {
+	return &fakeConnectorControl{statusByID: map[uuid.UUID]status.Connector{}}
+}
+
+func (c *fakeConnectorControl) Read(_ context.Context, connectorID uuid.UUID) (status.Connector, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	st, ok := c.statusByID[connectorID]
+	if !ok {
+		return status.Connector{ConnectorID: connectorID, BreakerState: "closed"}, nil
+	}
+	return st, nil
+}
+
+func (c *fakeConnectorControl) SignalReconfigure(_ context.Context, _ uuid.UUID) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reconfigs++
 	return nil
 }
 

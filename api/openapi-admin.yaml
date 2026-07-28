@@ -562,18 +562,24 @@ paths:
       tags: [Connectors]
       summary: Manually rebind (reconnect) a connector
       operationId: rebind-connector
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '202': { description: Rebind requested., content: { application/json: { schema: { $ref: '#/components/schemas/ConnectorStatus' } } } }
         '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /admin/connectors/{id}/status:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
     get:
       tags: [Connectors]
       summary: Live link_status + breaker_state, per bind in the pool (§6.13/§6.15)
       operationId: get-connector-status
+      security: [ { OperatorBearer: [ admin:read ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ConnectorStatus' } } } }
         '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /admin/connectors/{id}/reconnect-policy:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
     patch:
@@ -581,18 +587,27 @@ paths:
       summary: Set auto-reconnect policy (§6.13)
       operationId: set-connector-reconnect-policy
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ReconnectPolicy' } } } }
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Connector' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /admin/connectors/{id}/bind-pool:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
     patch:
       tags: [Connectors]
       summary: Resize the bind pool (§6.8)
       operationId: set-connector-bind-pool
-      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { bind_pool_size: { type: integer, minimum: 1, maximum: 32 } }, required: [bind_pool_size] } } } }
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { bind_pool_size: { type: integer, minimum: 1, maximum: 32, description: 'Parallel binds PER POOL POD; with R replicas the SMSC sees R x bind_pool_size binds.' } }, required: [bind_pool_size] } } } }
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Connector' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
         '422': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
   # ============================ ROUTES (§6.1) ============================
   /admin/routes:
@@ -1872,7 +1887,7 @@ components:
         status: { type: string, enum: [active, degraded, disabled] }
         auto_reconnect_enabled: { type: boolean }
         reconnect_initial_delay_ms: { type: integer, minimum: 1 }
-        reconnect_multiplier: { type: number, minimum: 1.0 }
+        reconnect_multiplier: { type: number, minimum: 1.0, maximum: 99.99 }
         reconnect_max_delay_ms: { type: integer, minimum: 1 }
         reconnect_jitter_pct: { type: integer, minimum: 0, maximum: 100 }
         reconnect_max_attempts: { type: integer, minimum: 0 }
@@ -1925,7 +1940,7 @@ components:
       properties:
         auto_reconnect_enabled: { type: boolean }
         reconnect_initial_delay_ms: { type: integer, minimum: 1 }
-        reconnect_multiplier: { type: number, minimum: 1.0 }
+        reconnect_multiplier: { type: number, minimum: 1.0, maximum: 99.99 }
         reconnect_max_delay_ms: { type: integer, minimum: 1 }
         reconnect_jitter_pct: { type: integer, minimum: 0, maximum: 100 }
         reconnect_max_attempts: { type: integer, minimum: 0 }

@@ -22,6 +22,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/adminapi"
 	"github.com/martialanouman/go-gateway/internal/auth"
 	"github.com/martialanouman/go-gateway/internal/config"
+	"github.com/martialanouman/go-gateway/internal/connector/status"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/platform/async"
 	"github.com/martialanouman/go-gateway/internal/platform/supervisor"
@@ -121,24 +122,25 @@ func run() error {
 	defer func() { _ = registryConn.Close() }()
 
 	router, _ := adminapi.New(adminapi.Deps{
-		Customers:       postgres.NewCustomerRepo(pool),
-		Accounts:        postgres.NewAccountRepo(pool),
-		Credentials:     postgres.NewCredentialRepo(pool),
-		Connectors:      postgres.NewConnectorRepo(pool),
-		Routes:          postgres.NewRouteRepo(pool),
-		SenderIDs:       postgres.NewSenderIDRepo(pool),
-		InboundNumbers:  postgres.NewInboundNumberRepo(pool),
-		InboundKeywords: postgres.NewInboundKeywordRepo(pool),
-		UnroutedMO:      postgres.NewUnroutedMORepo(pool),
-		Suppressions:    postgres.NewSuppressionRepo(pool),
-		OptOutKeywords:  postgres.NewOptOutKeywordRepo(pool),
-		AntispamRules:   postgres.NewAntispamRuleRepo(pool),
-		ExactRoutes:     postgres.NewExactRouteRepo(pool),
-		RoutingScripts:  postgres.NewRoutingScriptRepo(pool),
-		Imports:         importRunner,
-		Disconnector:    adminapi.NewGRPCDisconnector(registrypb.NewSessionRegistryClient(registryConn)),
-		Verifier:        verifier,
-		Logger:          logger,
+		Customers:        postgres.NewCustomerRepo(pool),
+		Accounts:         postgres.NewAccountRepo(pool),
+		Credentials:      postgres.NewCredentialRepo(pool),
+		Connectors:       postgres.NewConnectorRepo(pool),
+		ConnectorControl: status.NewReader(rdb),
+		Routes:           postgres.NewRouteRepo(pool),
+		SenderIDs:        postgres.NewSenderIDRepo(pool),
+		InboundNumbers:   postgres.NewInboundNumberRepo(pool),
+		InboundKeywords:  postgres.NewInboundKeywordRepo(pool),
+		UnroutedMO:       postgres.NewUnroutedMORepo(pool),
+		Suppressions:     postgres.NewSuppressionRepo(pool),
+		OptOutKeywords:   postgres.NewOptOutKeywordRepo(pool),
+		AntispamRules:    postgres.NewAntispamRuleRepo(pool),
+		ExactRoutes:      postgres.NewExactRouteRepo(pool),
+		RoutingScripts:   postgres.NewRoutingScriptRepo(pool),
+		Imports:          importRunner,
+		Disconnector:     adminapi.NewGRPCDisconnector(registrypb.NewSessionRegistryClient(registryConn)),
+		Verifier:         verifier,
+		Logger:           logger,
 	})
 
 	// A single seam announces every control-plane mutation on config:changed; config-sync coalesces

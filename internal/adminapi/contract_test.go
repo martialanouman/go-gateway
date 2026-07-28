@@ -50,6 +50,10 @@ var m1Operations = []opRef{
 	{"get-connector", "get", "/admin/connectors/{id}"},
 	{"update-connector", "patch", "/admin/connectors/{id}"},
 	{"delete-connector", "delete", "/admin/connectors/{id}"},
+	{"rebind-connector", "post", "/admin/connectors/{id}/rebind"},
+	{"get-connector-status", "get", "/admin/connectors/{id}/status"},
+	{"set-connector-reconnect-policy", "patch", "/admin/connectors/{id}/reconnect-policy"},
+	{"set-connector-bind-pool", "patch", "/admin/connectors/{id}/bind-pool"},
 
 	{"list-routes", "get", "/admin/routes"},
 	{"create-route", "post", "/admin/routes"},

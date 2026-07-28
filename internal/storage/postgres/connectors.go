@@ -139,6 +139,36 @@ func (r *ConnectorRepo) Update(ctx context.Context, id uuid.UUID, p cp.Connector
 	return connectorFromRow(row)
 }
 
+// UpdateReconnectPolicy sets a connector's auto-reconnection policy and returns it, or ErrNotFound
+// (step-128). The backoff knobs are optional; a nil field keeps the stored value.
+func (r *ConnectorRepo) UpdateReconnectPolicy(ctx context.Context, id uuid.UUID, p cp.ReconnectPolicy) (cp.Connector, error) {
+	row, err := r.q.UpdateConnectorReconnectPolicy(ctx, sqlcgen.UpdateConnectorReconnectPolicyParams{
+		ID:                      id,
+		AutoReconnectEnabled:    p.AutoReconnectEnabled,
+		ReconnectInitialDelayMs: i32ptr(p.InitialDelayMs),
+		ReconnectMultiplier:     floatNumeric(p.Multiplier),
+		ReconnectMaxDelayMs:     i32ptr(p.MaxDelayMs),
+		ReconnectJitterPct:      i32ptr(p.JitterPct),
+		ReconnectMaxAttempts:    i32ptr(p.MaxAttempts),
+	})
+	if err != nil {
+		return cp.Connector{}, translate("update reconnect policy", err)
+	}
+	return connectorFromRow(row)
+}
+
+// UpdateBindPool sets a connector's bind_pool_size and returns it, or ErrNotFound (step-128).
+func (r *ConnectorRepo) UpdateBindPool(ctx context.Context, id uuid.UUID, size int) (cp.Connector, error) {
+	row, err := r.q.UpdateConnectorBindPool(ctx, sqlcgen.UpdateConnectorBindPoolParams{
+		ID:           id,
+		BindPoolSize: int32(size), //nolint:gosec // bind_pool_size is contract-bounded 1..32
+	})
+	if err != nil {
+		return cp.Connector{}, translate("update bind pool", err)
+	}
+	return connectorFromRow(row)
+}
+
 // Delete removes a connector, or reports ErrNotFound when nothing matched.
 func (r *ConnectorRepo) Delete(ctx context.Context, id uuid.UUID) error {
 	n, err := r.q.DeleteConnector(ctx, id)

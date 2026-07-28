@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"encoding/json"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -132,4 +133,17 @@ func numFloat(n pgtype.Numeric) float64 {
 		return 0
 	}
 	return f.Float64
+}
+
+// floatNumeric narrows an optional float64 to a nullable numeric parameter (reconnect_multiplier). A nil
+// pointer yields an invalid Numeric, so a COALESCE(narg, col) keeps the stored value.
+func floatNumeric(p *float64) pgtype.Numeric {
+	var n pgtype.Numeric
+	if p == nil {
+		return n // Valid=false → SQL NULL
+	}
+	if err := n.Scan(strconv.FormatFloat(*p, 'f', -1, 64)); err != nil {
+		return pgtype.Numeric{}
+	}
+	return n
 }

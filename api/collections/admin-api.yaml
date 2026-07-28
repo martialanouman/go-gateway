@@ -442,6 +442,54 @@ items:
           method: DELETE
           url: '{{baseUrl}}/admin/connectors/{{connectorId}}'
         docs: Delete a connector (scope admin:write).
+      - info:
+          name: rebind-connector
+          type: http
+        http:
+          method: POST
+          url: '{{baseUrl}}/admin/connectors/{{connectorId}}/rebind'
+        docs: Manually rebind (reconnect) a connector (scope admin:write).
+      - info:
+          name: get-connector-status
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/connectors/{{connectorId}}/status'
+        docs: Live link_status + breaker_state, per bind (scope admin:read).
+      - info:
+          name: set-connector-reconnect-policy
+          type: http
+        http:
+          method: PATCH
+          url: '{{baseUrl}}/admin/connectors/{{connectorId}}/reconnect-policy'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "auto_reconnect_enabled": true,
+                "reconnect_initial_delay_ms": 1000,
+                "reconnect_max_attempts": 0
+              }
+        docs: Set auto-reconnect policy (scope admin:write).
+      - info:
+          name: set-connector-bind-pool
+          type: http
+        http:
+          method: PATCH
+          url: '{{baseUrl}}/admin/connectors/{{connectorId}}/bind-pool'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "bind_pool_size": 4
+              }
+        docs: Resize the bind pool (scope admin:write).
   - info:
       name: Routes
       type: folder
