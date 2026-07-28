@@ -146,8 +146,11 @@ type Deps struct {
 	// BreakerState reads other connectors' breaker aggregate to skip open candidates during a reroute
 	// (step-125). Nil = never skip (advance to the next chain entry regardless).
 	BreakerState BreakerState
-	Tracer       trace.Tracer
-	Logger       *slog.Logger
+	// RerouteLimiter gates a reroute on the target's throughput ceiling: no capacity → park on
+	// mt.reroute-park (step-126). Nil disables parking (every reroute goes straight to mt.routed).
+	RerouteLimiter RerouteLimiter
+	Tracer         trace.Tracer
+	Logger         *slog.Logger
 }
 
 // Service is the connector pool.

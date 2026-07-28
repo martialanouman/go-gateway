@@ -12,6 +12,15 @@ import (
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
 )
 
+// RerouteLimiter gates a reroute on the target connector's throughput ceiling (step-126). AllowConnector
+// consumes `segments` of the target's token bucket and reports whether they were available; a reroute
+// whose target has no capacity is PARKED on mt.reroute-park instead of piling onto it, and the drainer
+// replays parked messages at the same ceiling. *ratelimit.Enforcer satisfies it; a nil RerouteLimiter
+// disables parking (every reroute goes straight to mt.routed, the step-125 behaviour).
+type RerouteLimiter interface {
+	AllowConnector(ctx context.Context, connectorID uuid.UUID, segments int) bool
+}
+
 // BreakerState reports whether a connector's cross-pod breaker aggregate is open (breaker:state, step-122).
 // The connector pool consults it ONLY on a reroute (a rare event), to skip chain candidates that are
 // themselves open — never on the per-message hot path. A *redis-backed reader satisfies it; a nil
@@ -86,8 +95,10 @@ func (s *Service) nextTarget(ctx context.Context, current uuid.UUID, chain []uui
 // records the reroute in the CDR, and republishes the message there. When the chain is exhausted it
 // dead-letters instead. Either way the original record is committed by the caller (return nil) so a
 // redelivery does not re-send on the dead connector. The order is CDR → durable produce (acked) →
-// commit: a crash between produce and commit redelivers (at-least-once, a duplicate the idempotent
-// billing absorbs), never loses (§7.3). reason is the gateway code recorded on the reroute row.
+// commit: a crash between produce and commit redelivers — at-least-once, so the SMSC may see a duplicate
+// submit (a possible duplicate SMS, the accepted §7.3 property; the CDR collapses under
+// ReplacingMergeTree and billing is idempotent by message_id, but the extra submit itself is not undone)
+// — but never loses. reason is the gateway code recorded on the reroute row.
 func (s *Service) reroute(ctx context.Context, r pipeline.RoutedMT, reason errs.Code) error {
 	target, rest, ok := s.nextTarget(ctx, r.ConnectorID, r.FallbackChain)
 	if !ok {
@@ -103,11 +114,19 @@ func (s *Service) reroute(ctx context.Context, r pipeline.RoutedMT, reason errs.
 	if err != nil {
 		return fmt.Errorf("connectorpool: encode reroute: %w", err)
 	}
+	// Park the excess (step-126): if the target has no send capacity now, durably queue the reroute on
+	// mt.reroute-park instead of piling it onto an already-saturated connector. The bounded drainer
+	// replays it to mt.routed at the target's ceiling. Same key (message_id) → order preserved.
+	parked := s.deps.RerouteLimiter != nil && !s.deps.RerouteLimiter.AllowConnector(ctx, target, r.SegmentCount)
+	if parked {
+		rec.Topic = kafka.TopicMTReroutePark
+	}
 	if err := s.deps.Producer.Produce(ctx, rec); err != nil {
 		return fmt.Errorf("connectorpool: produce reroute: %w", err)
 	}
 	s.deps.Logger.InfoContext(ctx, "connector: rerouted to next fallback connector",
-		"message_id", r.MessageID, "from_connector", r.ConnectorID, "to_connector", target, "reason", string(reason))
+		"message_id", r.MessageID, "from_connector", r.ConnectorID, "to_connector", target,
+		"reason", string(reason), "parked", parked)
 	return nil
 }
 

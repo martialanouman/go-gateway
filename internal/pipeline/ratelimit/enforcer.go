@@ -105,6 +105,16 @@ func (e *Enforcer) Check(ctx context.Context, accountID, connectorID uuid.UUID, 
 	return e.check(ctx, EntityConnector, connectorID, segments)
 }
 
+// AllowConnector reports whether the connector's technical ceiling has room for `segments` right now,
+// consuming them when it does. It is the reroute-parking / drain gate (step-126): a reroute that would
+// exceed the target connector's throughput is parked rather than piled onto it, and the drainer paces
+// the replay against the same ceiling. A connector with no configured limit is always allowed. It shares
+// the "sec" bucket with Check, so rerouted, drained and fresh traffic compete for one budget — the
+// connector's real ceiling is never exceeded.
+func (e *Enforcer) AllowConnector(ctx context.Context, connectorID uuid.UUID, segments int) bool {
+	return e.check(ctx, EntityConnector, connectorID, segments) == nil
+}
+
 func (e *Enforcer) check(ctx context.Context, entityType string, id uuid.UUID, segments int) error {
 	limit, ok := e.snap.limit(entityType, id)
 	if !ok {
