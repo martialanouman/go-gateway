@@ -9,14 +9,17 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/martialanouman/go-gateway/internal/config"
+	"github.com/martialanouman/go-gateway/internal/connector/breaker"
 	"github.com/martialanouman/go-gateway/internal/connectorpool"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	"github.com/martialanouman/go-gateway/internal/platform/msg"
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
+	redisstore "github.com/martialanouman/go-gateway/internal/storage/redis"
 	"github.com/martialanouman/go-gateway/internal/testutil/chtest"
 	"github.com/martialanouman/go-gateway/internal/testutil/kafkatest"
 )
@@ -32,6 +35,7 @@ type simPool struct {
 	producer *kafka.Producer
 	cdr      *clickhouse.CDRReader
 	connID   uuid.UUID
+	group    string // the pool's consumer group, for waitGroupStable
 }
 
 // simPoolConfig parameterises startSimPool. Only BindAddr/SystemID/Password are required; the rest carry
@@ -43,12 +47,22 @@ type simPoolConfig struct {
 	Password        string
 	BindPoolSize    int
 	ResponseTimeout time.Duration
+
+	// Resilience wiring (130b), enabled when Redis is non-nil: the per-bind breaker feeds a cross-pod
+	// aggregate published every 100ms (kept well below the test cooldown, the documented invariant).
+	// ConnID lets several pools share ONE connector (the multi-pod aggregate scenario); zero mints a fresh
+	// one. PodID distinguishes replicas in the quorum.
+	Redis         *goredis.Client
+	ConnID        uuid.UUID
+	PodID         string
+	BreakerConfig breaker.Config
 }
 
 // startSimPool brings up a connector pool against the given bind and returns it. Teardown is ordered
 // (cancel → join Run → close Kafka/ClickHouse) via t.Cleanup, so no goroutine outlives the test (P4).
-// The mt.routed consumer reads AtStart, so a record injected before the group stabilises is still
-// consumed (no FromLatest lost-record race) — the connector-id filter discards other pools' records.
+// The mt.routed consumer reads FromLatest (so it never churns through the shared topic's history other
+// tests left behind); the caller must waitGroupStable before injecting so no record is missed. The
+// connector-id filter discards other pools' records.
 func startSimPool(t *testing.T, cfg simPoolConfig) *simPool {
 	t.Helper()
 	kafkaCfg := config.Kafka{Brokers: kafkatest.Brokers(t), Timeout: 3 * time.Second}
@@ -60,8 +74,19 @@ func startSimPool(t *testing.T, cfg simPoolConfig) *simPool {
 	if err != nil {
 		t.Fatalf("kafka producer: %v", err)
 	}
-	connID := uuid.New()
-	consumer, err := kafka.NewConsumer(kafkaCfg, "sim-conn-"+connID.String(), kafka.TopicMTRouted)
+	connID := cfg.ConnID
+	if connID == uuid.Nil {
+		connID = uuid.New()
+	}
+	// A per-pod consumer group name: a distinct connID gives a fresh group; when several pods SHARE a
+	// connID (the multi-pod aggregate scenario) the PodID disambiguates so both actually join the group
+	// and its partitions split between them, exactly as two real pods do.
+	// The consumer group is SHARED by all pods of one connector (same connID) so its partitions split
+	// across them, exactly like real pods; the group reads FromLatest so it never churns through the
+	// mt.routed history other tests left on the shared topic. A record is injected only after
+	// waitGroupStable, so FromLatest loses nothing.
+	group := "sim-conn-" + connID.String()
+	consumer, err := kafka.NewConsumerFromLatest(kafkaCfg, group, kafka.TopicMTRouted)
 	if err != nil {
 		t.Fatalf("kafka consumer: %v", err)
 	}
@@ -70,7 +95,7 @@ func startSimPool(t *testing.T, cfg simPoolConfig) *simPool {
 	if responseTimeout <= 0 {
 		responseTimeout = 500 * time.Millisecond
 	}
-	svc := connectorpool.New(connectorpool.Deps{
+	deps := connectorpool.Deps{
 		Consumer:    consumer,
 		CDR:         clickhouse.NewCDRWriter(chConn),
 		ConnectorID: connID,
@@ -82,7 +107,18 @@ func startSimPool(t *testing.T, cfg simPoolConfig) *simPool {
 		},
 		Tracer: observability.Tracer(nil, "connector-sim"),
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-	})
+	}
+	if cfg.Redis != nil {
+		podID := cfg.PodID
+		if podID == "" {
+			podID = "pod-" + uuid.NewString()
+		}
+		deps.Breaker = breaker.NewAggregator(cfg.Redis, redisstore.NewPubSubPublisher(cfg.Redis), podID)
+		deps.BreakerConfig = cfg.BreakerConfig
+		deps.BreakerHeartbeat = 100 * time.Millisecond // fast, and below the test cooldown (the invariant)
+		deps.PodID = podID
+	}
+	svc := connectorpool.New(deps)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
@@ -96,7 +132,7 @@ func startSimPool(t *testing.T, cfg simPoolConfig) *simPool {
 		_ = chConn.Close()
 	})
 
-	return &simPool{svc: svc, producer: producer, cdr: clickhouse.NewCDRReader(chConn), connID: connID}
+	return &simPool{svc: svc, producer: producer, cdr: clickhouse.NewCDRReader(chConn), connID: connID, group: group}
 }
 
 // injectRouted produces one mt.routed record addressed to this pool's connector, carrying the given
