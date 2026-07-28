@@ -24,6 +24,16 @@ SELECT EXISTS (
   WHERE message_id = @message_id AND entry_type = @entry_type
 ) AS entry_exists;
 
+-- name: ClaimIdempotency :execrows
+-- Claim (message_id, entry_type) in the partition-free idempotency table BEFORE applying a movement
+-- (§6.9, invariant c). Returns the number of rows inserted: 1 = first time (proceed), 0 = the movement
+-- already happened on some earlier attempt (a replay, possibly across a day boundary the ledger's
+-- same-day index cannot see) — the caller skips the balance/ledger writes. The INSERT is the lock, so
+-- two concurrent replays cannot both proceed (no read-then-write race).
+INSERT INTO control_plane.billing_idempotency (message_id, entry_type)
+VALUES (@message_id, @entry_type)
+ON CONFLICT (message_id, entry_type) DO NOTHING;
+
 -- name: InsertLedgerEntry :exec
 -- Append one ledger row. The ledger is APPEND-ONLY (§6.9): a row is never updated once written, so the
 -- history is immutable and auditable. balance_after is supplied by the caller's atomic path.
@@ -34,11 +44,25 @@ VALUES
   (@owner_type, @owner_id, @direction, @customer_id, @account_id, @message_id, @entry_type, @credits,
    @balance_after, @reference);
 
--- name: UpsertBalance :exec
--- Set the durable owner balance for a direction to `credits`, creating the row on first use. The balance
--- table is the authority Redis caches; the caller passes the balance its atomic path computed, so this
--- write reconciles the durable authority with the cached hot-path value rather than computing anything.
+-- name: AdjustBalance :one
+-- Apply a SIGNED delta to the durable owner balance for a direction (credits += delta), creating the row
+-- on first use, and RETURN the resulting balance. The delta form is order-independent: two concurrent
+-- movements for the same owner commit in any order and the balance is always the sum of every delta —
+-- which is exactly the append-only ledger's SUM(credits). An absolute set would let a stale write clobber
+-- a fresher one under the concurrency this system runs at.
 INSERT INTO control_plane.balances (owner_type, owner_id, direction, credits)
-VALUES (@owner_type, @owner_id, @direction, @credits)
+VALUES (@owner_type, @owner_id, @direction, @delta)
 ON CONFLICT (owner_type, owner_id, direction)
-DO UPDATE SET credits = EXCLUDED.credits, updated_at = now();
+DO UPDATE SET credits = control_plane.balances.credits + @delta, updated_at = now()
+RETURNING credits;
+
+-- name: GetReserveEntry :one
+-- The reserve ledger entry for a message_id (the amount of record, §6.9). The capture and release paths
+-- read it to recover the reserved amount and the post-reserve balance when the short-TTL Redis hold has
+-- lapsed. credits is the signed reserve delta (negative); balance_after is the balance right after the
+-- reserve. The latest reserve wins (there is at most one per message under normal operation).
+SELECT credits, balance_after
+FROM control_plane.billing_ledger
+WHERE message_id = @message_id AND entry_type = 'reserve'
+ORDER BY created_at DESC
+LIMIT 1;

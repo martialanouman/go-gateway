@@ -69,22 +69,23 @@ func TestBillingRepoRecordAndIdempotency(t *testing.T) {
 	}
 	messageID := uuid.New()
 
-	entry := func(et cp.EntryType, mid *uuid.UUID, credits, balanceAfter int) cp.LedgerEntry {
+	entry := func(et cp.EntryType, mid *uuid.UUID, credits int) cp.LedgerEntry {
 		return cp.LedgerEntry{
 			OwnerType: cp.OwnerTypeCustomer, OwnerID: customerID, Direction: cp.BillingDirectionMT,
-			CustomerID: customerID, MessageID: mid, EntryType: et, Credits: credits, BalanceAfter: balanceAfter,
+			CustomerID: customerID, MessageID: mid, EntryType: et, Credits: credits,
 		}
 	}
 
-	// topup +100 → 100, then reserve -3 → 97 for the message.
-	if err := repo.RecordDurable(ctx, entry(cp.EntryTopup, nil, 100, 100)); err != nil {
-		t.Fatalf("record topup: %v", err)
+	// topup +100 → the returned balance is the atomic post-adjustment value (applied, no message_id).
+	if bal, applied, err := repo.RecordDurable(ctx, entry(cp.EntryTopup, nil, 100)); err != nil || bal != 100 || !applied {
+		t.Fatalf("record topup = (%d, %v, %v), want (100, true, nil)", bal, applied, err)
 	}
-	if err := repo.RecordDurable(ctx, entry(cp.EntryReserve, &messageID, -3, 97)); err != nil {
-		t.Fatalf("record reserve: %v", err)
+	// reserve -3 → 97.
+	if bal, applied, err := repo.RecordDurable(ctx, entry(cp.EntryReserve, &messageID, -3)); err != nil || bal != 97 || !applied {
+		t.Fatalf("record reserve = (%d, %v, %v), want (97, true, nil)", bal, applied, err)
 	}
 
-	// Balance reconciled to the last balance_after.
+	// Balance reflects the running sum of deltas.
 	if credits, found, err := repo.Balance(ctx, cp.OwnerTypeCustomer, customerID, cp.BillingDirectionMT); err != nil || !found || credits != 97 {
 		t.Fatalf("Balance after reserve = (%d, %v, %v), want (97, true, nil)", credits, found, err)
 	}
@@ -97,10 +98,15 @@ func TestBillingRepoRecordAndIdempotency(t *testing.T) {
 		t.Fatalf("LedgerEntryExists(capture, pre) = (%v, %v), want (false, nil)", ok, err)
 	}
 
+	// Replaying the SAME reserve is idempotent: no second debit, no second row, applied=false, balance held.
+	if bal, applied, err := repo.RecordDurable(ctx, entry(cp.EntryReserve, &messageID, -3)); err != nil || bal != 97 || applied {
+		t.Fatalf("replay reserve = (%d, %v, %v), want (97, false, nil) — idempotent, no double debit", bal, applied, err)
+	}
+
 	// Capture confirms the reservation with credits=0: the reserve already debited, so the balance is
-	// unchanged and the ledger stays self-consistent (balance_after == prev + credits: 97 + 0 == 97).
-	if err := repo.RecordDurable(ctx, entry(cp.EntryCapture, &messageID, 0, 97)); err != nil {
-		t.Fatalf("record capture: %v", err)
+	// unchanged (delta 0 → balance stays 97) and the ledger stays self-consistent.
+	if bal, applied, err := repo.RecordDurable(ctx, entry(cp.EntryCapture, &messageID, 0)); err != nil || bal != 97 || !applied {
+		t.Fatalf("record capture = (%d, %v, %v), want (97, true, nil)", bal, applied, err)
 	}
 	if ok, err := repo.LedgerEntryExists(ctx, messageID, cp.EntryCapture); err != nil || !ok {
 		t.Fatalf("LedgerEntryExists(capture, post) = (%v, %v), want (true, nil)", ok, err)
@@ -109,7 +115,8 @@ func TestBillingRepoRecordAndIdempotency(t *testing.T) {
 		t.Errorf("Balance after capture = %d, want 97 (capture must not double-debit)", credits)
 	}
 
-	// Append-only: every RecordDurable added a row, none was updated — 3 entries for this owner.
+	// Append-only, and the idempotent replay added NOTHING: 3 entries for this owner (topup, reserve,
+	// capture) — the second reserve was a no-op, not a fourth row.
 	var rows int
 	if err := pool.QueryRow(ctx,
 		`SELECT count(*) FROM control_plane.billing_ledger WHERE owner_type = 'customer' AND owner_id = $1`,
@@ -117,7 +124,7 @@ func TestBillingRepoRecordAndIdempotency(t *testing.T) {
 		t.Fatalf("count ledger: %v", err)
 	}
 	if rows != 3 {
-		t.Errorf("ledger rows = %d, want 3 (topup, reserve, capture — append-only)", rows)
+		t.Errorf("ledger rows = %d, want 3 (topup, reserve, capture — replay added no row)", rows)
 	}
 
 	// Audit invariant (§6.14): the balance can be reconstructed by summing the signed credits, so

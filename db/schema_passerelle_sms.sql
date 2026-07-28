@@ -630,6 +630,22 @@ CREATE TABLE control_plane.billing_ledger_2026_07_15
   FOR VALUES FROM ('2026-07-15 00:00:00+00') TO ('2026-07-16 00:00:00+00');
 
 -- -----------------------------------------------------------------------------------------------------
+-- 24b. Billing idempotency (§6.9, invariant c) — AUTHORITATIVE cross-partition guard, NOT partitioned.
+-- The billing_ledger idem index can only dedup within one day partition (Postgres requires the partition
+-- key in a unique index). A message replayed after its Redis hold lapsed AND across a day boundary would
+-- escape it and DOUBLE-DEBIT. RecordDurable claims (message_id, entry_type) here first, in the same tx;
+-- a duplicate INSERT conflicts (0 rows) and the movement is skipped — the INSERT is the lock, no TOCTOU.
+-- Restricted to message-bearing lifecycle types (top-ups/adjustments carry no message_id).
+-- -----------------------------------------------------------------------------------------------------
+CREATE TABLE control_plane.billing_idempotency (
+  message_id uuid NOT NULL,
+  entry_type text NOT NULL CHECK (entry_type IN ('reserve','capture','release','refund')),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (message_id, entry_type)
+);
+CREATE INDEX billing_idempotency_created_idx ON control_plane.billing_idempotency(created_at);
+
+-- -----------------------------------------------------------------------------------------------------
 -- 25. updated_at triggers
 -- -----------------------------------------------------------------------------------------------------
 DO $$

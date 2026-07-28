@@ -49,23 +49,22 @@ type BillingCustomer struct {
 }
 
 // LedgerEntry is one append-only row of the billing ledger (control_plane.billing_ledger, §6.9/§6.14).
-// Credits is the SIGNED delta this entry applies to the balance, and BalanceAfter is the resulting
-// balance, so the ledger is self-consistent — BalanceAfter == (previous BalanceAfter) + Credits — and a
-// balance can be reconstructed by summing Credits (§6.14). By that convention an MT reserve DEBITS
-// (Credits < 0, the balance drops); a capture CONFIRMS the already-reserved debit with Credits == 0 (the
-// balance is unchanged — the reserve moved the credits); a release REFUNDS a failed send (Credits > 0);
-// a topup/refund credits and an adjustment can go either way. This type only records what happened — the
-// caller's atomic path (step-142) decides the amounts. MessageID is nil for a manual top-up/adjustment;
-// AccountID attributes a charge on a shared customer pool back to the originating SMPP account.
+// Credits is the SIGNED delta this entry applies to the balance; the durable balance is the running sum
+// of every entry's Credits (§6.14), computed atomically when the entry is recorded (the caller does NOT
+// supply the resulting balance — an absolute value would race under concurrent same-owner writes). By the
+// convention an MT reserve DEBITS (Credits < 0, the balance drops); a capture CONFIRMS the already-
+// reserved debit with Credits == 0 (the balance is unchanged); a release REFUNDS a failed send
+// (Credits > 0); a topup/refund credits and an adjustment can go either way. This type only records what
+// happened. MessageID is nil for a manual top-up/adjustment; AccountID attributes a charge on a shared
+// customer pool back to the originating SMPP account.
 type LedgerEntry struct {
-	OwnerType    string
-	OwnerID      uuid.UUID
-	Direction    string
-	CustomerID   uuid.UUID
-	AccountID    *uuid.UUID
-	MessageID    *uuid.UUID
-	EntryType    EntryType
-	Credits      int
-	BalanceAfter int
-	Reference    *string
+	OwnerType  string
+	OwnerID    uuid.UUID
+	Direction  string
+	CustomerID uuid.UUID
+	AccountID  *uuid.UUID
+	MessageID  *uuid.UUID
+	EntryType  EntryType
+	Credits    int
+	Reference  *string
 }
