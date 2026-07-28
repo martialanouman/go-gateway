@@ -103,3 +103,14 @@ type ConnectorPatch struct {
 	PriorityTier          *int
 	Status                *ConnectorStatus
 }
+
+// ReconnectPolicy is a partial update of a connector's auto-reconnection policy (step-128, §6.13).
+// AutoReconnectEnabled is always set; the backoff knobs are optional (nil keeps the stored value).
+type ReconnectPolicy struct {
+	AutoReconnectEnabled bool
+	InitialDelayMs       *int
+	Multiplier           *float64
+	MaxDelayMs           *int
+	JitterPct            *int
+	MaxAttempts          *int
+}

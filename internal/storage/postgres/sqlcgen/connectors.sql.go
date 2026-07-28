@@ -9,6 +9,7 @@ import (
 	"context"
 
 	uuid "github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const createConnector = `-- name: CreateConnector :one
@@ -310,6 +311,148 @@ func (q *Queries) UpdateConnector(ctx context.Context, arg UpdateConnectorParams
 		arg.TlsConfigJson,
 		arg.PriorityTier,
 		arg.Status,
+		arg.ID,
+	)
+	var i ControlPlaneSmscConnector
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Host,
+		&i.Port,
+		&i.BindType,
+		&i.SystemID,
+		&i.PasswordHash,
+		&i.VendorProfile,
+		&i.SystemType,
+		&i.InterfaceVersion,
+		&i.AddrTon,
+		&i.AddrNpi,
+		&i.AddressRange,
+		&i.SourceAddrTon,
+		&i.SourceAddrNpi,
+		&i.DestAddrTon,
+		&i.DestAddrNpi,
+		&i.DataCodingDefault,
+		&i.RegisteredDeliveryDefault,
+		&i.ReplaceIfPresentFlagDefault,
+		&i.EsmClassDefault,
+		&i.PriorityFlagDefault,
+		&i.ValidityPeriodDefault,
+		&i.SmDefaultMsgID,
+		&i.EnquireLinkIntervalSec,
+		&i.EnquireLinkMaxMissed,
+		&i.BindTimeoutMs,
+		&i.ResponseTimeoutMs,
+		&i.WindowSize,
+		&i.BindPoolSize,
+		&i.ThroughputLimitPerSec,
+		&i.TlsEnabled,
+		&i.TlsConfigJson,
+		&i.PriorityTier,
+		&i.Status,
+		&i.AutoReconnectEnabled,
+		&i.ReconnectInitialDelayMs,
+		&i.ReconnectMultiplier,
+		&i.ReconnectMaxDelayMs,
+		&i.ReconnectJitterPct,
+		&i.ReconnectMaxAttempts,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const updateConnectorBindPool = `-- name: UpdateConnectorBindPool :one
+UPDATE control_plane.smsc_connectors SET bind_pool_size = $1 WHERE id = $2
+RETURNING id, name, host, port, bind_type, system_id, password_hash, vendor_profile, system_type, interface_version, addr_ton, addr_npi, address_range, source_addr_ton, source_addr_npi, dest_addr_ton, dest_addr_npi, data_coding_default, registered_delivery_default, replace_if_present_flag_default, esm_class_default, priority_flag_default, validity_period_default, sm_default_msg_id, enquire_link_interval_sec, enquire_link_max_missed, bind_timeout_ms, response_timeout_ms, window_size, bind_pool_size, throughput_limit_per_sec, tls_enabled, tls_config_json, priority_tier, status, auto_reconnect_enabled, reconnect_initial_delay_ms, reconnect_multiplier, reconnect_max_delay_ms, reconnect_jitter_pct, reconnect_max_attempts, created_at, updated_at
+`
+
+type UpdateConnectorBindPoolParams struct {
+	BindPoolSize int32
+	ID           uuid.UUID
+}
+
+func (q *Queries) UpdateConnectorBindPool(ctx context.Context, arg UpdateConnectorBindPoolParams) (ControlPlaneSmscConnector, error) {
+	row := q.db.QueryRow(ctx, updateConnectorBindPool, arg.BindPoolSize, arg.ID)
+	var i ControlPlaneSmscConnector
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Host,
+		&i.Port,
+		&i.BindType,
+		&i.SystemID,
+		&i.PasswordHash,
+		&i.VendorProfile,
+		&i.SystemType,
+		&i.InterfaceVersion,
+		&i.AddrTon,
+		&i.AddrNpi,
+		&i.AddressRange,
+		&i.SourceAddrTon,
+		&i.SourceAddrNpi,
+		&i.DestAddrTon,
+		&i.DestAddrNpi,
+		&i.DataCodingDefault,
+		&i.RegisteredDeliveryDefault,
+		&i.ReplaceIfPresentFlagDefault,
+		&i.EsmClassDefault,
+		&i.PriorityFlagDefault,
+		&i.ValidityPeriodDefault,
+		&i.SmDefaultMsgID,
+		&i.EnquireLinkIntervalSec,
+		&i.EnquireLinkMaxMissed,
+		&i.BindTimeoutMs,
+		&i.ResponseTimeoutMs,
+		&i.WindowSize,
+		&i.BindPoolSize,
+		&i.ThroughputLimitPerSec,
+		&i.TlsEnabled,
+		&i.TlsConfigJson,
+		&i.PriorityTier,
+		&i.Status,
+		&i.AutoReconnectEnabled,
+		&i.ReconnectInitialDelayMs,
+		&i.ReconnectMultiplier,
+		&i.ReconnectMaxDelayMs,
+		&i.ReconnectJitterPct,
+		&i.ReconnectMaxAttempts,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const updateConnectorReconnectPolicy = `-- name: UpdateConnectorReconnectPolicy :one
+UPDATE control_plane.smsc_connectors SET
+    auto_reconnect_enabled     = $1,
+    reconnect_initial_delay_ms = COALESCE($2, reconnect_initial_delay_ms),
+    reconnect_multiplier       = COALESCE($3, reconnect_multiplier),
+    reconnect_max_delay_ms     = COALESCE($4, reconnect_max_delay_ms),
+    reconnect_jitter_pct       = COALESCE($5, reconnect_jitter_pct),
+    reconnect_max_attempts     = COALESCE($6, reconnect_max_attempts)
+WHERE id = $7
+RETURNING id, name, host, port, bind_type, system_id, password_hash, vendor_profile, system_type, interface_version, addr_ton, addr_npi, address_range, source_addr_ton, source_addr_npi, dest_addr_ton, dest_addr_npi, data_coding_default, registered_delivery_default, replace_if_present_flag_default, esm_class_default, priority_flag_default, validity_period_default, sm_default_msg_id, enquire_link_interval_sec, enquire_link_max_missed, bind_timeout_ms, response_timeout_ms, window_size, bind_pool_size, throughput_limit_per_sec, tls_enabled, tls_config_json, priority_tier, status, auto_reconnect_enabled, reconnect_initial_delay_ms, reconnect_multiplier, reconnect_max_delay_ms, reconnect_jitter_pct, reconnect_max_attempts, created_at, updated_at
+`
+
+type UpdateConnectorReconnectPolicyParams struct {
+	AutoReconnectEnabled    bool
+	ReconnectInitialDelayMs *int32
+	ReconnectMultiplier     pgtype.Numeric
+	ReconnectMaxDelayMs     *int32
+	ReconnectJitterPct      *int32
+	ReconnectMaxAttempts    *int32
+	ID                      uuid.UUID
+}
+
+func (q *Queries) UpdateConnectorReconnectPolicy(ctx context.Context, arg UpdateConnectorReconnectPolicyParams) (ControlPlaneSmscConnector, error) {
+	row := q.db.QueryRow(ctx, updateConnectorReconnectPolicy,
+		arg.AutoReconnectEnabled,
+		arg.ReconnectInitialDelayMs,
+		arg.ReconnectMultiplier,
+		arg.ReconnectMaxDelayMs,
+		arg.ReconnectJitterPct,
+		arg.ReconnectMaxAttempts,
 		arg.ID,
 	)
 	var i ControlPlaneSmscConnector

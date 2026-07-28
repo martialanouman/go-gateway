@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/martialanouman/go-gateway/internal/auth"
+	"github.com/martialanouman/go-gateway/internal/connector/status"
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 )
 
@@ -55,6 +56,20 @@ type ConnectorStore interface {
 	// RateLimit returns the connector's operational rate_limit (found=false when none), so an update
 	// lowering throughput_limit_per_sec below it can be rejected (spec §6.4 NOTE).
 	RateLimit(ctx context.Context, connectorID uuid.UUID) (cp.RateLimit, bool, error)
+	// UpdateReconnectPolicy and UpdateBindPool are the dedicated partial updates the connector-piloting
+	// endpoints use (step-128), so bind_pool_size and the reconnect knobs are not part of the general
+	// ConnectorUpdate surface.
+	UpdateReconnectPolicy(ctx context.Context, id uuid.UUID, p cp.ReconnectPolicy) (cp.Connector, error)
+	UpdateBindPool(ctx context.Context, id uuid.UUID, size int) (cp.Connector, error)
+}
+
+// ConnectorControl reads a connector's live runtime status and signals a reconfigure (step-128). The
+// Admin API runs in a separate process from the connector pool, so it drives the pool through Redis:
+// Read assembles the per-bind link_status + breaker_state; SignalReconfigure bumps the generation the
+// pool polls to re-dial (rebind / resize / policy change). *status.Reader satisfies it.
+type ConnectorControl interface {
+	Read(ctx context.Context, connectorID uuid.UUID) (status.Connector, error)
+	SignalReconfigure(ctx context.Context, connectorID uuid.UUID) error
 }
 
 // RouteStore is the persistence the route handlers need. Create and Update persist the route and
@@ -121,22 +136,23 @@ type Disconnector interface {
 // New tolerates a nil store (the contract test builds the API without any), but a running server
 // wires them all.
 type Deps struct {
-	Customers       CustomerStore
-	Accounts        AccountStore
-	Credentials     CredentialStore
-	Connectors      ConnectorStore
-	Routes          RouteStore
-	SenderIDs       SenderIDStore
-	InboundNumbers  InboundNumberStore
-	InboundKeywords InboundKeywordStore
-	UnroutedMO      UnroutedMOStore
-	Suppressions    SuppressionAdminStore
-	OptOutKeywords  OptOutKeywordStore
-	AntispamRules   AntispamRuleStore
-	ExactRoutes     ExactRouteAdminStore
-	RoutingScripts  RoutingScriptAdminStore
-	Imports         ImportRunner
-	Disconnector    Disconnector
-	Verifier        auth.TokenVerifier
-	Logger          *slog.Logger
+	Customers        CustomerStore
+	Accounts         AccountStore
+	Credentials      CredentialStore
+	Connectors       ConnectorStore
+	ConnectorControl ConnectorControl
+	Routes           RouteStore
+	SenderIDs        SenderIDStore
+	InboundNumbers   InboundNumberStore
+	InboundKeywords  InboundKeywordStore
+	UnroutedMO       UnroutedMOStore
+	Suppressions     SuppressionAdminStore
+	OptOutKeywords   OptOutKeywordStore
+	AntispamRules    AntispamRuleStore
+	ExactRoutes      ExactRouteAdminStore
+	RoutingScripts   RoutingScriptAdminStore
+	Imports          ImportRunner
+	Disconnector     Disconnector
+	Verifier         auth.TokenVerifier
+	Logger           *slog.Logger
 }

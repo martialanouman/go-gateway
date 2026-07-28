@@ -2,7 +2,10 @@ package postgres_test
 
 import (
 	"context"
+	"errors"
 	"testing"
+
+	"github.com/google/uuid"
 
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
@@ -67,5 +70,61 @@ func TestConnectorRepoDuplicateNameConflicts(t *testing.T) {
 	_, err := repo.Create(ctx, base)
 	if code, _ := errs.CodeOf(err); code != errs.ErrConflict {
 		t.Errorf("duplicate-name Create code = %q, want conflict", code)
+	}
+}
+
+// TestConnectorRepoUpdateReconnectPolicyAndBindPool: the step-128 dedicated updates persist the
+// reconnect knobs (incl. the numeric multiplier) and bind_pool_size, leaving other fields untouched.
+func TestConnectorRepoUpdateReconnectPolicyAndBindPool(t *testing.T) {
+	pool := pgtest.Pool(t)
+	repo := postgres.NewConnectorRepo(pool)
+	ctx := context.Background()
+
+	c, err := repo.Create(ctx, cp.NewConnector{
+		Name: "smsc-reconf", Host: "h", Port: 2775, BindType: cp.BindTRX, SystemID: "s", PasswordHash: "hash",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	delay, mult, attempts := 2500, 1.75, 9
+	got, err := repo.UpdateReconnectPolicy(ctx, c.ID, cp.ReconnectPolicy{
+		AutoReconnectEnabled: true, InitialDelayMs: &delay, Multiplier: &mult, MaxAttempts: &attempts,
+	})
+	if err != nil {
+		t.Fatalf("UpdateReconnectPolicy: %v", err)
+	}
+	if !got.AutoReconnectEnabled || got.ReconnectInitialDelayMs != 2500 || got.ReconnectMultiplier != 1.75 || got.ReconnectMaxAttempts != 9 {
+		t.Errorf("reconnect policy = %+v, want enabled / delay 2500 / multiplier 1.75 / attempts 9", got)
+	}
+	// An unspecified knob keeps its stored value (jitter default 20).
+	if got.ReconnectJitterPct != 20 {
+		t.Errorf("reconnect_jitter_pct = %d, want the untouched default 20", got.ReconnectJitterPct)
+	}
+
+	got, err = repo.UpdateBindPool(ctx, c.ID, 4)
+	if err != nil {
+		t.Fatalf("UpdateBindPool: %v", err)
+	}
+	if got.BindPoolSize != 4 {
+		t.Errorf("bind_pool_size = %d, want 4", got.BindPoolSize)
+	}
+	// The reconnect policy set above survived the bind-pool update.
+	if !got.AutoReconnectEnabled || got.ReconnectMaxAttempts != 9 {
+		t.Errorf("bind-pool update clobbered the reconnect policy: %+v", got)
+	}
+}
+
+// TestConnectorRepoPilotingUpdatesUnknownAreNotFound: both dedicated updates report ErrNotFound for an
+// unknown connector.
+func TestConnectorRepoPilotingUpdatesUnknownAreNotFound(t *testing.T) {
+	pool := pgtest.Pool(t)
+	repo := postgres.NewConnectorRepo(pool)
+	ctx := context.Background()
+	if _, err := repo.UpdateBindPool(ctx, uuid.New(), 2); !errors.Is(err, errs.ErrNotFound) {
+		t.Errorf("UpdateBindPool(unknown) error = %v, want ErrNotFound", err)
+	}
+	if _, err := repo.UpdateReconnectPolicy(ctx, uuid.New(), cp.ReconnectPolicy{AutoReconnectEnabled: true}); !errors.Is(err, errs.ErrNotFound) {
+		t.Errorf("UpdateReconnectPolicy(unknown) error = %v, want ErrNotFound", err)
 	}
 }

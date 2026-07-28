@@ -62,7 +62,7 @@ func New(deps Deps) (*chi.Mux, huma.API) {
 	registerCustomers(api, deps.Customers, deps.Disconnector, deps.Logger)
 	registerAccounts(api, deps.Accounts, deps.Disconnector, deps.Logger)
 	registerCredentials(api, deps.Credentials, deps.Accounts, deps.Disconnector, deps.Logger)
-	registerConnectors(api, deps.Connectors)
+	registerConnectors(api, deps.Connectors, deps.ConnectorControl)
 	registerRoutes(api, deps.Routes)
 	registerSenderIDs(api, deps.SenderIDs, deps.Customers)
 	registerInboundNumbers(api, deps.InboundNumbers)

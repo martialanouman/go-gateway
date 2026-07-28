@@ -45,5 +45,20 @@ UPDATE control_plane.smsc_connectors SET
 WHERE id = @id
 RETURNING *;
 
+-- name: UpdateConnectorReconnectPolicy :one
+UPDATE control_plane.smsc_connectors SET
+    auto_reconnect_enabled     = @auto_reconnect_enabled,
+    reconnect_initial_delay_ms = COALESCE(sqlc.narg('reconnect_initial_delay_ms'), reconnect_initial_delay_ms),
+    reconnect_multiplier       = COALESCE(sqlc.narg('reconnect_multiplier'), reconnect_multiplier),
+    reconnect_max_delay_ms     = COALESCE(sqlc.narg('reconnect_max_delay_ms'), reconnect_max_delay_ms),
+    reconnect_jitter_pct       = COALESCE(sqlc.narg('reconnect_jitter_pct'), reconnect_jitter_pct),
+    reconnect_max_attempts     = COALESCE(sqlc.narg('reconnect_max_attempts'), reconnect_max_attempts)
+WHERE id = @id
+RETURNING *;
+
+-- name: UpdateConnectorBindPool :one
+UPDATE control_plane.smsc_connectors SET bind_pool_size = @bind_pool_size WHERE id = @id
+RETURNING *;
+
 -- name: DeleteConnector :execrows
 DELETE FROM control_plane.smsc_connectors WHERE id = @id;

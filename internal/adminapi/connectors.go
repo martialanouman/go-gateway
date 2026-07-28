@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/martialanouman/go-gateway/internal/auth"
+	"github.com/martialanouman/go-gateway/internal/connector/status"
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	"github.com/martialanouman/go-gateway/internal/credential"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
@@ -68,7 +69,7 @@ type connectorDTO struct {
 	Status                      string         `json:"status" enum:"active,degraded,disabled"`
 	AutoReconnectEnabled        bool           `json:"auto_reconnect_enabled"`
 	ReconnectInitialDelayMs     *int           `json:"reconnect_initial_delay_ms,omitempty" minimum:"1"`
-	ReconnectMultiplier         *float64       `json:"reconnect_multiplier,omitempty" minimum:"1"`
+	ReconnectMultiplier         *float64       `json:"reconnect_multiplier,omitempty" minimum:"1" maximum:"99.99"`
 	ReconnectMaxDelayMs         *int           `json:"reconnect_max_delay_ms,omitempty" minimum:"1"`
 	ReconnectJitterPct          *int           `json:"reconnect_jitter_pct,omitempty" minimum:"0" maximum:"100"`
 	ReconnectMaxAttempts        *int           `json:"reconnect_max_attempts,omitempty" minimum:"0"`
@@ -160,11 +161,12 @@ type connectorUpdateBody struct {
 }
 
 type connectorHandlers struct {
-	store ConnectorStore
+	store   ConnectorStore
+	control ConnectorControl
 }
 
-func registerConnectors(api huma.API, store ConnectorStore) {
-	h := &connectorHandlers{store: store}
+func registerConnectors(api huma.API, store ConnectorStore, control ConnectorControl) {
+	h := &connectorHandlers{store: store, control: control}
 
 	register(api, huma.Operation{
 		OperationID: "list-connectors", Method: http.MethodGet, Path: "/admin/connectors",
@@ -202,6 +204,36 @@ func registerConnectors(api huma.API, store ConnectorStore) {
 		Security: scopeSecurity(auth.ScopeAdminWrite),
 		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusConflict, http.StatusUnprocessableEntity},
 	}, h.delete)
+
+	// Connector piloting (step-128): rebind, live status, reconnect policy, bind-pool resize.
+	register(api, huma.Operation{
+		OperationID: "rebind-connector", Method: http.MethodPost, Path: "/admin/connectors/{id}/rebind",
+		DefaultStatus: http.StatusAccepted,
+		Summary:       "Manually rebind (reconnect) a connector", Tags: []string{"Connectors"},
+		Security: scopeSecurity(auth.ScopeAdminWrite),
+		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound},
+	}, h.rebind)
+
+	register(api, huma.Operation{
+		OperationID: "get-connector-status", Method: http.MethodGet, Path: "/admin/connectors/{id}/status",
+		Summary: "Live link_status + breaker_state, per bind in the pool", Tags: []string{"Connectors"},
+		Security: scopeSecurity(auth.ScopeAdminRead),
+		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound},
+	}, h.status)
+
+	register(api, huma.Operation{
+		OperationID: "set-connector-reconnect-policy", Method: http.MethodPatch, Path: "/admin/connectors/{id}/reconnect-policy",
+		Summary: "Set auto-reconnect policy", Tags: []string{"Connectors"},
+		Security: scopeSecurity(auth.ScopeAdminWrite),
+		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity},
+	}, h.setReconnectPolicy)
+
+	register(api, huma.Operation{
+		OperationID: "set-connector-bind-pool", Method: http.MethodPatch, Path: "/admin/connectors/{id}/bind-pool",
+		Summary: "Resize the bind pool", Tags: []string{"Connectors"},
+		Security: scopeSecurity(auth.ScopeAdminWrite),
+		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity},
+	}, h.setBindPool)
 }
 
 type listConnectorsOutput struct {
@@ -343,4 +375,132 @@ func (h *connectorHandlers) delete(ctx context.Context, in *connectorIDInput) (*
 		return nil, humaerr.FromError(err)
 	}
 	return &deleteOutput{}, nil
+}
+
+// --- Connector piloting (step-128) ---
+
+type bindStatusDTO struct {
+	BindIndex    int    `json:"bind_index"`
+	PodID        string `json:"pod_id,omitempty"`
+	LinkStatus   string `json:"link_status" enum:"up,reconnecting,down"`
+	BreakerState string `json:"breaker_state" enum:"closed,open,half_open"`
+	InFlight     int    `json:"in_flight,omitempty"`
+}
+
+type connectorStatusDTO struct {
+	ConnectorID  string          `json:"connector_id" format:"uuid"`
+	BreakerState string          `json:"breaker_state" enum:"closed,open,half_open"`
+	Binds        []bindStatusDTO `json:"binds"`
+}
+
+type connectorStatusOutput struct{ Body connectorStatusDTO }
+
+func toStatusDTO(c status.Connector) connectorStatusDTO {
+	binds := make([]bindStatusDTO, 0, len(c.Binds))
+	for _, b := range c.Binds {
+		binds = append(binds, bindStatusDTO{
+			BindIndex: b.BindIndex, PodID: b.PodID, LinkStatus: b.LinkStatus,
+			BreakerState: b.BreakerState, InFlight: b.InFlight,
+		})
+	}
+	return connectorStatusDTO{ConnectorID: c.ConnectorID.String(), BreakerState: c.BreakerState, Binds: binds}
+}
+
+// rebind signals the connector's pods to drop and re-establish their binds. The connector must exist;
+// the response is the (immediately-read) live status, which will show the link transitioning.
+func (h *connectorHandlers) rebind(ctx context.Context, in *connectorIDInput) (*connectorStatusOutput, error) {
+	id, err := uuid.Parse(in.ID)
+	if err != nil {
+		return nil, notFound("connector")
+	}
+	if _, err := h.store.Get(ctx, id); err != nil {
+		return nil, humaerr.FromError(err)
+	}
+	if err := h.control.SignalReconfigure(ctx, id); err != nil {
+		return nil, humaerr.FromError(err)
+	}
+	// The signal IS the rebind, and it succeeded — so never fail the 202 on the follow-up status read.
+	// A read error just yields the empty (last-known) status; the client re-polls get-connector-status.
+	st, err := h.control.Read(ctx, id)
+	if err != nil {
+		st = status.Connector{ConnectorID: id, BreakerState: "closed"}
+	}
+	return &connectorStatusOutput{Body: toStatusDTO(st)}, nil
+}
+
+// status returns the connector's live per-bind link_status + breaker_state (kept distinct). An unknown
+// connector is 404; a live connector with nothing published yet returns an empty bind list.
+func (h *connectorHandlers) status(ctx context.Context, in *connectorIDInput) (*connectorStatusOutput, error) {
+	id, err := uuid.Parse(in.ID)
+	if err != nil {
+		return nil, notFound("connector")
+	}
+	if _, err := h.store.Get(ctx, id); err != nil {
+		return nil, humaerr.FromError(err)
+	}
+	st, err := h.control.Read(ctx, id)
+	if err != nil {
+		return nil, humaerr.FromError(err)
+	}
+	return &connectorStatusOutput{Body: toStatusDTO(st)}, nil
+}
+
+type reconnectPolicyBody struct {
+	AutoReconnectEnabled bool     `json:"auto_reconnect_enabled"`
+	InitialDelayMs       *int     `json:"reconnect_initial_delay_ms,omitempty" minimum:"1"`
+	Multiplier           *float64 `json:"reconnect_multiplier,omitempty" minimum:"1" maximum:"99.99"`
+	MaxDelayMs           *int     `json:"reconnect_max_delay_ms,omitempty" minimum:"1"`
+	JitterPct            *int     `json:"reconnect_jitter_pct,omitempty" minimum:"0" maximum:"100"`
+	MaxAttempts          *int     `json:"reconnect_max_attempts,omitempty" minimum:"0"`
+}
+
+type reconnectPolicyInput struct {
+	ID   string `path:"id" format:"uuid"`
+	Body reconnectPolicyBody
+}
+
+// setReconnectPolicy persists the auto-reconnection policy, then signals the pods to pick it up. The
+// persist is authoritative; a failed signal is not fatal (the pool re-reads on its next re-dial).
+func (h *connectorHandlers) setReconnectPolicy(ctx context.Context, in *reconnectPolicyInput) (*connectorOutput, error) {
+	id, err := uuid.Parse(in.ID)
+	if err != nil {
+		return nil, notFound("connector")
+	}
+	c, err := h.store.UpdateReconnectPolicy(ctx, id, cp.ReconnectPolicy{
+		AutoReconnectEnabled: in.Body.AutoReconnectEnabled,
+		InitialDelayMs:       in.Body.InitialDelayMs,
+		Multiplier:           in.Body.Multiplier,
+		MaxDelayMs:           in.Body.MaxDelayMs,
+		JitterPct:            in.Body.JitterPct,
+		MaxAttempts:          in.Body.MaxAttempts,
+	})
+	if err != nil {
+		return nil, humaerr.FromError(err)
+	}
+	_ = h.control.SignalReconfigure(ctx, id) //nolint:errcheck // best-effort: the persist is authoritative
+	return &connectorOutput{Body: toConnectorDTO(c)}, nil
+}
+
+type bindPoolBody struct {
+	BindPoolSize int `json:"bind_pool_size" minimum:"1" maximum:"32" doc:"Parallel binds PER POOL POD; with R replicas the SMSC sees R x bind_pool_size binds."`
+}
+
+type bindPoolInput struct {
+	ID   string `path:"id" format:"uuid"`
+	Body bindPoolBody
+}
+
+// setBindPool persists the new bind_pool_size, then signals the pods to re-dial at the new size. The
+// persist is authoritative; a failed signal is not fatal (the pool re-reads on its next re-dial).
+func (h *connectorHandlers) setBindPool(ctx context.Context, in *bindPoolInput) (*connectorOutput, error) {
+	id, err := uuid.Parse(in.ID)
+	if err != nil {
+		return nil, notFound("connector")
+	}
+	c, err := h.store.UpdateBindPool(ctx, id, in.Body.BindPoolSize)
+	if err != nil {
+		return nil, humaerr.FromError(err)
+	}
+	_ = h.control.SignalReconfigure(ctx, id) //nolint:errcheck // best-effort: the persist is authoritative
+	return &connectorOutput{Body: toConnectorDTO(c)}, nil
 }
