@@ -236,7 +236,18 @@ func (b *bind) roundtrip(ctx context.Context, body smpp.Body) (smpp.PDU, error) 
 	case <-timer.C:
 		return smpp.PDU{}, fmt.Errorf("connectorpool: response timeout for sequence %d", seq)
 	case <-b.done:
-		return smpp.PDU{}, errBindClosed
+		// The connection is closing — but a response may have been dispatched to ch by the reader an
+		// instant before it hit the close (a well-behaved SMSC that rejects a bind with a non-OK
+		// command_status and then drops the socket). Prefer that response, so a bind REJECTION surfaces as
+		// a BindRejectedError (permanent -> reconnect stops) rather than a racy errBindClosed (a link drop ->
+		// reconnect churns forever against credentials that can never work). Both readers signal on b.done,
+		// and select is unordered, so without this the outcome is non-deterministic.
+		select {
+		case resp := <-ch:
+			return resp, nil
+		default:
+			return smpp.PDU{}, errBindClosed
+		}
 	case <-ctx.Done():
 		return smpp.PDU{}, ctx.Err()
 	}

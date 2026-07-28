@@ -70,23 +70,35 @@ func Unmarshal(data []byte) (PDU, error) {
 		return PDU{}, ErrLengthMismatch
 	}
 	id := CommandID(binary.BigEndian.Uint32(data[4:8]))
+	status := binary.BigEndian.Uint32(data[8:12])
 	body, err := newBody(id)
 	if err != nil {
 		return PDU{}, err
 	}
-	r := &reader{buf: data[headerLen:]}
-	if err := body.unmarshal(r); err != nil {
-		return PDU{}, err
-	}
-	if r.err != nil {
-		return PDU{}, r.err
-	}
-	// A well-formed body consumes its whole frame; leftover octets mean the frame is malformed.
-	if r.remaining() != 0 {
-		return PDU{}, ErrMalformedBody
+	// SMPP v3.4 §4.1.2: an ERROR RESPONSE — a RESPONSE PDU (command id high bit set) with a non-zero
+	// command_status — omits its body, so the PDU is the 16-octet header alone; a real SMSC rejecting a
+	// bind sends exactly this. Decode the body on every request and every successful response, but skip it
+	// for an error response: decoding a body that is not there would wrongly fail as ErrMalformedBody,
+	// which made the connector pool mis-read a permanent bind rejection as a link drop (retrying bad
+	// credentials forever). A non-conformant SMSC that still tacks a body onto an error response has it
+	// ignored — harmless, since callers read only Status/Sequence in that case. The status is only
+	// meaningful on responses (a request always carries ESME_ROK), so gating on the response bit keeps a
+	// malformed request from silently skipping its body.
+	if status == StatusOK || uint32(id)&0x80000000 == 0 {
+		r := &reader{buf: data[headerLen:]}
+		if err := body.unmarshal(r); err != nil {
+			return PDU{}, err
+		}
+		if r.err != nil {
+			return PDU{}, r.err
+		}
+		// A well-formed body consumes its whole frame; leftover octets mean the frame is malformed.
+		if r.remaining() != 0 {
+			return PDU{}, ErrMalformedBody
+		}
 	}
 	return PDU{
-		Status:   binary.BigEndian.Uint32(data[8:12]),
+		Status:   status,
 		Sequence: binary.BigEndian.Uint32(data[12:16]),
 		Body:     body,
 	}, nil

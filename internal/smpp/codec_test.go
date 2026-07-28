@@ -232,3 +232,50 @@ func commandName(id CommandID) string {
 		return "unknown"
 	}
 }
+
+// TestUnmarshalErrorResponseHasNoBody covers SMPP v3.4 §4.1.2: an error response (non-zero
+// command_status) carries only the 16-octet header, no body. A real SMSC rejecting a bind with
+// ESME_RINVPASWD sends exactly this; the codec must decode it — not fail as ErrMalformedBody — so the
+// connector pool reads a permanent bind rejection rather than mis-classifying it as a link drop.
+func TestUnmarshalErrorResponseHasNoBody(t *testing.T) {
+	cases := []struct {
+		name   string
+		cmd    CommandID
+		status uint32
+	}{
+		{"bind_transceiver_resp rejected", CmdBindTransceiverResp, 0x0000000E}, // ESME_RINVPASWD
+		{"bind_transmitter_resp rejected", CmdBindTransmitterResp, 0x0000000D}, // ESME_RBINDFAIL
+		{"submit_sm_resp rejected", CmdSubmitSMResp, 0x00000045},               // ESME_RSUBMITFAIL
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// A bare 16-octet header: command_length=16, command_id, command_status, sequence_number.
+			var b [16]byte
+			putU32(b[0:], 16)
+			putU32(b[4:], uint32(tc.cmd))
+			putU32(b[8:], tc.status)
+			putU32(b[12:], 7)
+
+			pdu, err := Unmarshal(b[:])
+			if err != nil {
+				t.Fatalf("Unmarshal error response: %v (a bodyless error response must decode)", err)
+			}
+			if pdu.Status != tc.status {
+				t.Errorf("Status = 0x%08x, want 0x%08x", pdu.Status, tc.status)
+			}
+			if pdu.Sequence != 7 {
+				t.Errorf("Sequence = %d, want 7", pdu.Sequence)
+			}
+			if pdu.Body == nil || pdu.Body.commandID() != tc.cmd {
+				t.Errorf("Body = %T, want the typed body for command 0x%08x", pdu.Body, uint32(tc.cmd))
+			}
+		})
+	}
+}
+
+func putU32(b []byte, v uint32) {
+	b[0] = byte(v >> 24)
+	b[1] = byte(v >> 16)
+	b[2] = byte(v >> 8)
+	b[3] = byte(v)
+}
