@@ -59,9 +59,10 @@ func TestSimBindPoolThroughput(t *testing.T) {
 		ids = append(ids, pool.injectRoutedWithID(t, mid, nil))
 	}
 
-	// ALL messages must reach enroute within ONE 10s window from injection — a shared deadline, so a
-	// serialised (single-bind, ~16s) pool fails while the balanced 4-bind pool (~4-5s) passes.
-	allEnrouteBy := time.Now().Add(10 * time.Second)
+	// ALL messages must reach enroute within ONE 12s window from injection — a shared deadline, so a
+	// serialised (single-bind, ~16s) pool fails while the balanced 4-bind pool (~4-5s, or ~8s if franz-go
+	// splits the burst into two poll batches) passes with margin even on a slow CI.
+	allEnrouteBy := time.Now().Add(12 * time.Second)
 	for _, id := range ids {
 		remaining := time.Until(allEnrouteBy)
 		if remaining <= 0 {
