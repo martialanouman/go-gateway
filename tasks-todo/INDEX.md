@@ -95,7 +95,7 @@ Légende : `[x]` = fait (dans `tasks-done/`) · `[ ]` = à faire (dans `tasks-to
 - [x] step-124 — Pool de binds (`bind_pool_size > 1`) + partition par shard
 - [x] step-125 — `fallback_chain` en en-tête + reroute unilatéral
 - [x] step-126 — Draineur borné + `mt.reroute-park` (rafales de reroute)
-- [ ] step-127 — Auto-reconnexion opt-in (backoff + jitter), `link_status` distinct du breaker
+- [x] step-127 — Auto-reconnexion opt-in (backoff + jitter), `link_status` distinct du breaker
 - [ ] step-128 — Admin connecteurs : rebind / status / reconnect-policy / bind-pool
 - [ ] step-129 — Dead-letter (`mt.dead-letter` / `mo.dead-letter`) + retraitement
 - [ ] step-130 — Dé-`Skip` des tests de résilience + scénarios d'injection de pannes
