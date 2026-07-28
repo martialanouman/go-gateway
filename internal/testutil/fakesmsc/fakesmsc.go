@@ -37,6 +37,9 @@ type Config struct {
 	// RecordSubmits, when true, keeps every submit_sm tagged with the connection it arrived on, readable
 	// via Submits(). A test asserting a message's segments all rode ONE bind, in order, needs it.
 	RecordSubmits bool
+	// RejectBind, when non-zero, rejects every bind_transceiver with this command_status (e.g.
+	// ESME_RINVPASWD) and closes the connection — for testing the reconnect loop's stop/retry paths.
+	RejectBind uint32
 }
 
 // Submit is one recorded submit_sm with the connection (bind) it arrived on. ConnID is stable per TCP
@@ -186,6 +189,12 @@ func (s *Server) handle(c *conn, pdu smpp.PDU) bool {
 			BindRespFields: smpp.BindRespFields{SystemID: systemID},
 		}})
 	case *smpp.BindTransceiver:
+		if st := s.cfg.RejectBind; st != 0 {
+			// Reject the bind with a scripted command_status (e.g. ESME_RINVPASWD) so a test can drive the
+			// reconnect loop's fatal-stop / retry paths. The transceiver is the only bind type the pool uses.
+			s.reply(c, smpp.PDU{Status: st, Sequence: pdu.Sequence, Body: &smpp.BindTransceiverResp{}})
+			return true
+		}
 		s.markReceiver(c)
 		s.reply(c, smpp.PDU{Sequence: pdu.Sequence, Body: &smpp.BindTransceiverResp{
 			BindRespFields: smpp.BindRespFields{SystemID: systemID},
