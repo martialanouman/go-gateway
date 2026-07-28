@@ -1,0 +1,141 @@
+// Billing is the opt-in credit-accounting service (plan §6.9/§13, M9). It reserves, captures and
+// releases MT credits before/after an SMSC send and records MO usage, all keyed by message_id for
+// idempotency under at-least-once delivery (invariant c). Credits are integer counts, never monetary;
+// balances are kept separately per direction (mt/mo) and per owner (customer or smpp_account, chosen by
+// the customer's balance_scope). The enums mirror db/schema_passerelle_sms.sql (tables balances,
+// billing_ledger). This file is the source of truth for the billing API; billing-svc implements it.
+syntax = "proto3";
+
+package billing;
+
+option go_package = "github.com/martialanouman/go-gateway/internal/billing/pb;pb";
+
+// Billing is served by billing-svc (gRPC :7001, plan §1.4). Reserve/Capture/Release account MT credits
+// along the send path; GetBalances reads; RecordMO decrements the separate MO counter. When billing is
+// disabled for a customer the router never calls this service at all (§6.9) — the opt-in is a control
+// upstream of the RPC, not a flag on it.
+service Billing {
+  // Reserve holds `credits` against the owner's MT balance for message_id, before the SMSC send
+  // (pipeline step 8, §6.1). Idempotent: a repeat Reserve for the same message_id returns the existing
+  // reservation rather than double-reserving. A denial (insufficient credit, no overdraft) sets
+  // reserved=false with a machine reason.
+  rpc Reserve(ReserveRequest) returns (ReserveResponse);
+  // Capture commits a prior reservation once the SMSC accepted the message, moving the held credits out
+  // of the balance for good. Idempotent by message_id: a duplicate Capture (double delivery) is a no-op
+  // that returns the same outcome. The amount committed is the one Reserve recorded — the ledger `reserve`
+  // entry for message_id is the amount of record, so Capture recovers it even if the short-TTL Redis
+  // reservation has lapsed (§6.9); the response returns it as credits_charged for the CDR (step-146).
+  rpc Capture(CaptureRequest) returns (CaptureResponse);
+  // Release returns a prior reservation to the balance when the message failed before it was sent.
+  // Idempotent by message_id.
+  rpc Release(ReleaseRequest) returns (ReleaseResponse);
+  // GetBalances returns the owner's current credit balances (one entry per direction that exists).
+  rpc GetBalances(GetBalancesRequest) returns (GetBalancesResponse);
+  // RecordMO decrements the owner's separate MO counter for a received message (§6.9). It is advisory:
+  // MO accounting never blocks MT traffic, so a hit floor is reported, not enforced, here. Idempotent by
+  // message_id: the mo-dlr return path is Kafka at-least-once, so a redelivered MO must not double-count.
+  rpc RecordMO(RecordMORequest) returns (RecordMOResponse);
+}
+
+// Direction separates MT (mobile-terminated, billed on send) from MO (mobile-originated, counted on
+// receipt). Balances and the ledger are per direction (balances.direction, billing_ledger.direction).
+enum Direction {
+  DIRECTION_UNSPECIFIED = 0;
+  DIRECTION_MT = 1;
+  DIRECTION_MO = 2;
+}
+
+// OwnerType is who a balance belongs to, decided by the customer's balance_scope: the whole customer or
+// a single smpp_account (balances.owner_type, billing_ledger.owner_type).
+enum OwnerType {
+  OWNER_TYPE_UNSPECIFIED = 0;
+  OWNER_TYPE_CUSTOMER = 1;
+  OWNER_TYPE_SMPP_ACCOUNT = 2;
+}
+
+// Owner names the balance holder and carries the attribution the ledger records. owner_type + owner_id
+// key the balance; customer_id and account_id mirror billing_ledger.customer_id / account_id so a
+// smpp_account-scoped charge on a shared customer pool is still attributed to the originating account.
+// All ids are UUIDs encoded as strings; account_id is empty when not applicable.
+message Owner {
+  OwnerType owner_type = 1;
+  string owner_id = 2;
+  string customer_id = 3;
+  string account_id = 4;
+}
+
+// ReserveRequest asks to hold `credits` (the message's segment count, positive) against the owner's MT
+// balance. message_id is the idempotency key (invariant c).
+message ReserveRequest {
+  string message_id = 1;
+  Owner owner = 2;
+  int32 credits = 3;
+}
+
+// ReserveResponse reports whether the hold succeeded. A denial (insufficient credit, no overdraft) is a
+// deterministic BUSINESS outcome carried in the response, not a gRPC error — callers must distinguish it
+// from a retryable transport fault. balance_after is the owner's MT balance after the reservation (or the
+// unchanged current balance when denied). code is drawn from the shared platform/errors vocabulary (e.g.
+// "insufficient_balance", which maps to REST 402) so the denial reason never drifts from the one `code`
+// contract shared across REST / SMPP command_status / cdr.error_code; empty on success.
+message ReserveResponse {
+  bool reserved = 1;
+  int32 balance_after = 2;
+  string code = 3;
+}
+
+// CaptureRequest commits the reservation held for message_id. The held amount is the one Reserve
+// recorded, so only the key and owner are needed.
+message CaptureRequest {
+  string message_id = 1;
+  Owner owner = 2;
+}
+
+// CaptureResponse confirms the commit and returns credits_charged — the reserved amount actually moved
+// out of the balance, which the connector pool writes to the CDR (credits_charged, billed=true; step-146).
+// It is NOT necessarily the segment count: credits per segment vary by destination and sender type
+// (credits_per_segment_mt), so the caller must use this value rather than recomputing.
+message CaptureResponse {
+  bool captured = 1;
+  int32 balance_after = 2;
+  int32 credits_charged = 3;
+}
+
+// ReleaseRequest returns the reservation held for message_id to the balance.
+message ReleaseRequest {
+  string message_id = 1;
+  Owner owner = 2;
+}
+
+message ReleaseResponse {
+  bool released = 1;
+  int32 balance_after = 2;
+}
+
+message GetBalancesRequest {
+  Owner owner = 1;
+}
+
+// Balance is one owner balance for a direction.
+message Balance {
+  Direction direction = 1;
+  int32 credits = 2;
+}
+
+message GetBalancesResponse {
+  repeated Balance balances = 1;
+}
+
+// RecordMORequest decrements the owner's MO counter by `credits` (segments, positive) for message_id.
+message RecordMORequest {
+  string message_id = 1;
+  Owner owner = 2;
+  int32 credits = 3;
+}
+
+// RecordMOResponse reports the MO counter after the decrement and whether it fell to/through the
+// configured floor (a "stop + alert" signal, §6.9). It never denies: MO accounting is non-blocking.
+message RecordMOResponse {
+  int32 balance_after = 1;
+  bool floored = 2;
+}

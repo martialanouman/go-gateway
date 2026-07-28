@@ -101,7 +101,7 @@ Légende : `[x]` = fait (dans `tasks-done/`) · `[ ]` = à faire (dans `tasks-to
 - [x] step-130 — Dé-`Skip` des tests de résilience + scénarios d'injection de pannes
 
 ## M9 — Facturation opt-in
-- [ ] step-140 — Poser le contrat gRPC billing + l'outillage protoc
+- [x] step-140 — Poser le contrat gRPC billing + l'outillage protoc
 - [ ] step-141 — Repos Postgres billing : balances, config, grand livre partitionné
 - [ ] step-142 — Réserve/capture/libère MT en Lua atomique, idempotent par message_id
 - [ ] step-143 — Compteur MO séparé : plancher, arrêt + alerte, jamais bloquant pour le MT
