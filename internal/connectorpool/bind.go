@@ -25,6 +25,15 @@ const (
 	maxDeliverWorkers = 8
 )
 
+// BindRejectedError is returned when the SMSC rejects the bind handshake with a non-OK command_status.
+// It carries the status so the reconnect loop can distinguish a permanent authentication failure
+// (ESME_RINVPASWD — stop, do not hammer) from a transient one (retry with backoff), step-127.
+type BindRejectedError struct{ Status uint32 }
+
+func (e *BindRejectedError) Error() string {
+	return fmt.Sprintf("connectorpool: bind rejected with status 0x%08x", e.Status)
+}
+
 // BindConfig configures the single outbound SMPP bind of M2. In production these fields come from
 // the connectors control plane; at M2 they are injected (env-backed), which is what lets a test
 // point the pool at the ephemeral fake SMSC address.
@@ -155,7 +164,7 @@ func dialAndBind(ctx context.Context, cfg BindConfig, logger *slog.Logger, onDel
 	if resp.Status != smpp.StatusOK {
 		b.shutdown()
 		b.wg.Wait()
-		return nil, fmt.Errorf("connectorpool: bind rejected with status 0x%08x", resp.Status)
+		return nil, &BindRejectedError{Status: resp.Status}
 	}
 
 	b.wg.Add(1)

@@ -21,6 +21,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/martialanouman/go-gateway/internal/connector/breaker"
+	"github.com/martialanouman/go-gateway/internal/connector/reconnect"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	"github.com/martialanouman/go-gateway/internal/platform/encoding"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
@@ -149,8 +150,11 @@ type Deps struct {
 	// RerouteLimiter gates a reroute on the target's throughput ceiling: no capacity → park on
 	// mt.reroute-park (step-126). Nil disables parking (every reroute goes straight to mt.routed).
 	RerouteLimiter RerouteLimiter
-	Tracer         trace.Tracer
-	Logger         *slog.Logger
+	// Reconnect is the opt-in auto-reconnection policy (step-127). The zero value is disabled: a dropped
+	// bind is not retried in-process (link_status stays down until a manual rebind, step-128).
+	Reconnect reconnect.Config
+	Tracer    trace.Tracer
+	Logger    *slog.Logger
 }
 
 // Service is the connector pool.
@@ -208,16 +212,45 @@ func (s *Service) BindReady(context.Context) error {
 	return errBindNotReady
 }
 
-// Run brings up the bind pool, then consumes mt.routed until ctx is cancelled, unbinding cleanly on
-// exit. A failure to bind any member returns an error (the service restarts); a per-message
-// infrastructure failure leaves the offset uncommitted for reprocessing.
+// LinkStatus reports the SMSC link state — "up" while a bind is established, "down" while it is not
+// (dropped, or backing off between reconnect attempts). It is the runtime link_status (§6.13), kept
+// strictly distinct from the connector's breaker_state (application health, step-121/122): a live link
+// can carry an open breaker and vice versa.
+func (s *Service) LinkStatus() string {
+	if s.bound.Load() {
+		return "up"
+	}
+	return "down"
+}
+
+// Run keeps the bind pool alive: it runs one dial-and-consume cycle, and when a bind drops it reconnects
+// with the configured backoff (opt-in, step-127) rather than exiting. It returns nil on a clean ctx
+// shutdown, and an error when reconnection is disabled, exhausted, or a permanent authentication failure
+// (ESME_RINVPASWD) makes retrying pointless — the link_status is down throughout the backoff, distinct
+// from the breaker.
+func (s *Service) Run(ctx context.Context) error {
+	loop := reconnect.New(s.deps.Reconnect)
+	return loop.Run(ctx, s.runOnce, isLinkDrop)
+}
+
+// isLinkDrop reports whether an error is a live bind dropping (the only thing the reconnect loop backs
+// off and retries). Everything else propagates: a bind handshake REJECTION — a permanent bad password
+// (ESME_RINVPASWD), or a transient SMSC system error — and a non-link fault such as a Kafka error, so a
+// transient consumer blip restarts the pod rather than churning healthy SMSC binds.
+func isLinkDrop(err error) bool {
+	return errors.Is(err, errBindClosed)
+}
+
+// runOnce brings up the bind pool, then consumes mt.routed until ctx is cancelled, unbinding cleanly on
+// exit. A failure to bind any member returns an error (the reconnect loop decides whether to retry); a
+// per-message infrastructure failure leaves the offset uncommitted for reprocessing.
 //
 // The binds are watched independently of the consumer: if one drops while idle — no mt.routed flowing,
 // so no Submit is in flight to surface the failure — the consumer would otherwise block on Kafka forever
-// with a dead bind while the pod stayed Ready. When any bind dies Run flips readiness, tears the
-// consumer down and returns an error so the supervisor re-dials the whole pool (never re-sharding a
-// live message onto another bind, which would break §7.3 ordering).
-func (s *Service) Run(ctx context.Context) error {
+// with a dead bind while the pod stayed Ready. When any bind dies runOnce flips readiness, tears the
+// consumer down and returns an error so the caller re-dials the whole pool (never re-sharding a live
+// message onto another bind, which would break §7.3 ordering).
+func (s *Service) runOnce(ctx context.Context) error {
 	n := s.deps.Bind.BindPoolSize
 	if n < 1 {
 		n = 1

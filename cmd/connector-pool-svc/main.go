@@ -27,6 +27,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/cancel"
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/connector/breaker"
+	"github.com/martialanouman/go-gateway/internal/connector/reconnect"
 	"github.com/martialanouman/go-gateway/internal/connectorpool"
 	"github.com/martialanouman/go-gateway/internal/dlrmap"
 	"github.com/martialanouman/go-gateway/internal/observability"
@@ -59,6 +60,14 @@ type connectorEnv struct {
 	// MaxSendRate is the connector's throughput_limit_per_sec, the ceiling for the adaptive throttle
 	// (step-086). Zero disables the AIMD pacing. Sourced from the connectors control plane at M3+.
 	MaxSendRate float64 `env:"CONNECTOR_MAX_SEND_RATE" envDefault:"0"`
+	// Auto-reconnection policy (step-127), mirroring the reconnect_* columns. Disabled by default (opt-in);
+	// M3+ sources these from the control plane.
+	AutoReconnect         bool          `env:"CONNECTOR_AUTO_RECONNECT" envDefault:"false"`
+	ReconnectInitialDelay time.Duration `env:"CONNECTOR_RECONNECT_INITIAL_DELAY" envDefault:"1s"`
+	ReconnectMultiplier   float64       `env:"CONNECTOR_RECONNECT_MULTIPLIER" envDefault:"2.0"`
+	ReconnectMaxDelay     time.Duration `env:"CONNECTOR_RECONNECT_MAX_DELAY" envDefault:"60s"`
+	ReconnectJitterPct    int           `env:"CONNECTOR_RECONNECT_JITTER_PCT" envDefault:"20"`
+	ReconnectMaxAttempts  int           `env:"CONNECTOR_RECONNECT_MAX_ATTEMPTS" envDefault:"0"`
 }
 
 func main() {
@@ -191,7 +200,15 @@ func run() error {
 		Breaker:        breakerAgg,
 		BreakerState:   breakerStateReader{rdb: rdb},
 		RerouteLimiter: rerouteLimiter,
-		ConnectorID:    bindEnv.ID,
+		Reconnect: reconnect.Config{
+			Enabled:      bindEnv.AutoReconnect,
+			InitialDelay: bindEnv.ReconnectInitialDelay,
+			Multiplier:   bindEnv.ReconnectMultiplier,
+			MaxDelay:     bindEnv.ReconnectMaxDelay,
+			JitterPct:    bindEnv.ReconnectJitterPct,
+			MaxAttempts:  bindEnv.ReconnectMaxAttempts,
+		},
+		ConnectorID: bindEnv.ID,
 		Bind: connectorpool.BindConfig{
 			Addr:                 bindEnv.Addr,
 			SystemID:             bindEnv.SystemID,
@@ -222,7 +239,18 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("init ops server: %w", err)
 	}
-	ops.Registry().MustRegister(sendRateGauge, throttledTotal)
+	// connector_link_up: the runtime SMSC link_status (1 = up, 0 = down), reported live and kept strictly
+	// distinct from the breaker_state (application health). No labels — one connector per pod.
+	linkUp := prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Name: "connector_link_up",
+		Help: "SMSC link status: 1 when the bind is established, 0 when down (distinct from breaker_state).",
+	}, func() float64 {
+		if svc.LinkStatus() == "up" {
+			return 1
+		}
+		return 0
+	})
+	ops.Registry().MustRegister(sendRateGauge, throttledTotal, linkUp)
 
 	// Bounded reroute drainer (step-126): consumes mt.reroute-park (AtStart — parked messages are durable
 	// and must all be drained) and replays each to mt.routed at the target connector's ceiling. Its own
