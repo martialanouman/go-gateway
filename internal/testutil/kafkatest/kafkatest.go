@@ -31,6 +31,10 @@ const image = "redpandadata/redpanda:v24.2.18"
 var topics = []string{
 	kafka.TopicMTInbound, kafka.TopicMTRouted,
 	kafka.TopicMOInbound, kafka.TopicDLREvents,
+	// Resilience data-plane topics (M7/M8): the connector pool produces reroutes and dead-letters here,
+	// so a test exercising fallback/park/replay or dead-lettering needs them pre-created — otherwise the
+	// first produce fails UNKNOWN_TOPIC_OR_PARTITION and the pool tears down.
+	kafka.TopicMTReroutePark, kafka.TopicMTDeadLetter,
 }
 
 const (

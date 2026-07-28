@@ -56,6 +56,9 @@ type simPoolConfig struct {
 	ConnID        uuid.UUID
 	PodID         string
 	BreakerConfig breaker.Config
+	// RerouteLimiter gates a reroute on the target's throughput ceiling: no capacity → park on
+	// mt.reroute-park for the drainer (step-126). Nil sends every reroute straight to mt.routed.
+	RerouteLimiter connectorpool.RerouteLimiter
 }
 
 // startSimPool brings up a connector pool against the given bind and returns it. Teardown is ordered
@@ -96,7 +99,11 @@ func startSimPool(t *testing.T, cfg simPoolConfig) *simPool {
 		responseTimeout = 500 * time.Millisecond
 	}
 	deps := connectorpool.Deps{
-		Consumer:    consumer,
+		Consumer: consumer,
+		// The pool's OWN producer for reroutes (mt.routed / mt.reroute-park). Without it the pool defaults
+		// to a no-op producer and reroutes vanish silently — sharing the harness producer is safe (a Kafka
+		// producer is concurrency-safe and the test injects on the same one).
+		Producer:    producer,
 		CDR:         clickhouse.NewCDRWriter(chConn),
 		ConnectorID: connID,
 		Bind: connectorpool.BindConfig{
@@ -117,6 +124,7 @@ func startSimPool(t *testing.T, cfg simPoolConfig) *simPool {
 		deps.BreakerConfig = cfg.BreakerConfig
 		deps.BreakerHeartbeat = 100 * time.Millisecond // fast, and below the test cooldown (the invariant)
 		deps.PodID = podID
+		deps.RerouteLimiter = cfg.RerouteLimiter
 	}
 	svc := connectorpool.New(deps)
 
