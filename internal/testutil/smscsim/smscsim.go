@@ -11,6 +11,7 @@ package smscsim
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -132,6 +133,41 @@ func ThrottlingConfig(systemID, password string, capPerSec int) string {
 	return virtualSMSC(systemID, password, scenario, fmt.Sprintf("    throughput_limit_per_sec: %d\n", capPerSec))
 }
 
+// DeadCarrierConfig is a one-virtual-SMSC config on the dead-carrier profile: it fails every submit_sm
+// (a connector-health fault), to drive the circuit breaker open and exercise fallback/reroute.
+func DeadCarrierConfig(systemID, password string) string {
+	return virtualSMSC(systemID, password, `    scenario:
+      profile: dead-carrier
+      latency:
+        distribution: fixed
+        params: { ms: 5 }
+`, "")
+}
+
+// FlakyCarrierConfig is a one-virtual-SMSC config on the flaky-carrier profile: intermittent failures,
+// for a breaker that opens and closes rather than staying pinned.
+func FlakyCarrierConfig(systemID, password string) string {
+	return virtualSMSC(systemID, password, `    scenario:
+      profile: flaky-carrier
+      latency:
+        distribution: fixed
+        params: { ms: 5 }
+`, "")
+}
+
+// SlowCarrierConfig is a one-virtual-SMSC config on the slow-carrier profile: every submit is delayed by
+// latencyMs, to exercise a bind pool's throughput (a larger pool hides the per-submit latency). The
+// simulator constrains slow-carrier latency to [2000,4000] ms.
+func SlowCarrierConfig(systemID, password string, latencyMs int) string {
+	scenario := fmt.Sprintf(`    scenario:
+      profile: slow-carrier
+      latency:
+        distribution: fixed
+        params: { ms: %d }
+`, latencyMs)
+	return virtualSMSC(systemID, password, scenario, "")
+}
+
 // virtualSMSC assembles a single-virtual-SMSC config from the shared preamble, an extra field block,
 // and the scenario block.
 func virtualSMSC(systemID, password, scenarioBlock, extra string) string {
@@ -187,4 +223,88 @@ func (s *Sim) VirtualSMSCs(ctx context.Context) ([]byte, error) {
 		return nil, fmt.Errorf("smscsim: /virtual-smscs status %d", resp.StatusCode)
 	}
 	return io.ReadAll(resp.Body)
+}
+
+// VirtualSMSC is one virtual SMSC's read-only observability snapshot from GET /v1/virtual-smscs. The
+// counters are what a resilience test asserts against: BindCount rises as the connector pool establishes
+// its binds and falls when they drop; RecordedPDUs is the total submit_sm (and other PDUs) the SMSC has
+// seen, so a test can prove traffic actually reached a connector.
+type VirtualSMSC struct {
+	Name          string `json:"name"`
+	Port          int    `json:"port"`
+	ActiveProfile string `json:"active_profile"`
+	BindCount     int    `json:"bind_count"`
+	LogicalClock  int64  `json:"logical_clock"`
+	RecordedPDUs  int    `json:"recorded_pdus"`
+}
+
+// Inventory parses GET /v1/virtual-smscs into the typed snapshots.
+func (s *Sim) Inventory(ctx context.Context) ([]VirtualSMSC, error) {
+	raw, err := s.VirtualSMSCs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out []VirtualSMSC
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("smscsim: decode inventory: %w", err)
+	}
+	return out, nil
+}
+
+// Snapshot returns the named virtual SMSC's current counters, erroring if it is absent.
+func (s *Sim) Snapshot(ctx context.Context, name string) (VirtualSMSC, error) {
+	inv, err := s.Inventory(ctx)
+	if err != nil {
+		return VirtualSMSC{}, err
+	}
+	for _, v := range inv {
+		if v.Name == name {
+			return v, nil
+		}
+	}
+	return VirtualSMSC{}, fmt.Errorf("smscsim: virtual smsc %q not found", name)
+}
+
+// WaitBindCount polls until the named SMSC reports at least want binds, or fails the test at the
+// deadline. Used to prove a pool bound (want=poolSize) or reconnected (bind_count recovered) rather than
+// sleeping for a fixed guess.
+func (s *Sim) WaitBindCount(t *testing.T, name string, want int, within time.Duration) {
+	t.Helper()
+	s.waitCounter(t, name, within, func(v VirtualSMSC) bool { return v.BindCount >= want },
+		func(v VirtualSMSC) string { return fmt.Sprintf("bind_count=%d, want >= %d", v.BindCount, want) })
+}
+
+// WaitRecordedPDUs polls until the named SMSC has recorded at least want PDUs, or fails at the deadline —
+// proving traffic reached the connector (e.g. all rerouted messages landed on the fallback SMSC).
+func (s *Sim) WaitRecordedPDUs(t *testing.T, name string, want int, within time.Duration) {
+	t.Helper()
+	s.waitCounter(t, name, within, func(v VirtualSMSC) bool { return v.RecordedPDUs >= want },
+		func(v VirtualSMSC) string { return fmt.Sprintf("recorded_pdus=%d, want >= %d", v.RecordedPDUs, want) })
+}
+
+// waitCounter polls the named SMSC's snapshot until cond holds or within elapses, failing with the last
+// observed state (rendered by describe). A read error is transient (the sim may be mid-request), retried.
+func (s *Sim) waitCounter(t *testing.T, name string, within time.Duration, cond func(VirtualSMSC) bool, describe func(VirtualSMSC) string) {
+	t.Helper()
+	ctx := context.Background()
+	deadline := time.Now().Add(within)
+	var last VirtualSMSC
+	read := false
+	var lastErr error
+	for time.Now().Before(deadline) {
+		v, err := s.Snapshot(ctx, name)
+		if err == nil {
+			last, read = v, true
+			if cond(v) {
+				return
+			}
+		} else {
+			lastErr = err
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !read {
+		t.Fatalf("smscsim: %q never read a snapshot within %s (last error: %v)", name, within, lastErr)
+	}
+	t.Fatalf("smscsim: %q never satisfied condition within %s (last: %s)", name, within, describe(last))
 }
