@@ -1,8 +1,10 @@
-# buf module + lint/breaking config for the gRPC contracts under api/proto/ (plan §1.7, M3).
+# buf module + lint/breaking config for the gRPC contracts under api/proto/ (plan §1.7, M3+).
 #
-# The task fixes a flat path (api/proto/session.proto) with an unversioned package, and the plan (§7)
-# fixes the service name "SessionRegistry" (no "Service" suffix), so the lint rules that would demand
-# versioned/directory-matching packages and a Service suffix are excepted here on purpose.
+# The contracts use a FLAT layout — one file per service directly under api/proto/, with an unversioned
+# package named after the service (session, billing, …) and no "Service" suffix (the plan fixes names
+# like "SessionRegistry"). Several such files share the one directory. The lint rules that would demand
+# versioned, directory-matching, one-per-directory packages and a Service suffix are therefore excepted
+# on purpose; the per-file breaking-change check still guards every contract.
 version: v2
 modules:
   - path: api/proto
@@ -12,6 +14,7 @@ lint:
   except:
     - PACKAGE_DIRECTORY_MATCH
     - PACKAGE_VERSION_SUFFIX
+    - DIRECTORY_SAME_PACKAGE
     - SERVICE_SUFFIX
 breaking:
   use:

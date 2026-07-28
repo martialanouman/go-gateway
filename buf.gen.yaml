@@ -1,13 +1,15 @@
 # Code generation for api/proto/*.proto (plan §1.7): protos live under api/proto/, generated Go under
-# internal/.../pb. Plugins are local binaries installed by `make tools`; regenerate with `make proto`.
+# internal/<service>/pb. Each proto's go_package option (…/internal/<svc>/pb) decides its output
+# directory: the module= option strips the module prefix and out=. places the file at the remaining
+# path, so a flat proto layout can target several Go packages (session, billing, …). Plugins are local
+# binaries installed by `make tools`; regenerate with `make proto`.
 version: v2
-clean: true
 plugins:
   - local: protoc-gen-go
-    out: internal/session/pb
+    out: .
     opt:
-      - paths=source_relative
+      - module=github.com/martialanouman/go-gateway
   - local: protoc-gen-go-grpc
-    out: internal/session/pb
+    out: .
     opt:
-      - paths=source_relative
+      - module=github.com/martialanouman/go-gateway
