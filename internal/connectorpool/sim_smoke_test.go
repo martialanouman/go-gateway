@@ -22,6 +22,8 @@ func TestSimSmokeEnroute(t *testing.T) {
 	// points at the injection/submit path rather than a race with the bind coming up.
 	pool := startSimPool(t, simPoolConfig{BindAddr: sim.SMPPAddr, SystemID: systemID, Password: password})
 	sim.WaitBindCount(t, smscName, 1, 15*time.Second)
+	// The pool consumes FromLatest; wait for its group to stabilise so the injected record is not missed.
+	waitGroupStable(t, pool.group, 1, 15*time.Second)
 
 	before, err := sim.Snapshot(context.Background(), smscName)
 	if err != nil {
