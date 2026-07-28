@@ -5,6 +5,8 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
@@ -130,10 +132,17 @@ func (s *Service) reroute(ctx context.Context, r pipeline.RoutedMT, reason errs.
 	return nil
 }
 
-// deadLetter records a terminal fallback-chain exhaustion and parks the original envelope on
-// mt.dead-letter for the operator to inspect/replay (step-129). Same CDR → produce → commit order.
+// deadLetter parks a message on mt.dead-letter for the fallback-chain-exhausted reason.
 func (s *Service) deadLetter(ctx context.Context, r pipeline.RoutedMT) error {
-	if err := s.deps.CDR.Insert(ctx, failedRow(r, errs.ErrFallbackExhausted)); err != nil {
+	return s.deadLetterWith(ctx, r, errs.ErrFallbackExhausted)
+}
+
+// deadLetterWith parks the message on mt.dead-letter with the given reason: a final failed CDR row, the
+// reason carried in the dead_letter_reason HEADER (so a replay can strip it and re-record), a counted
+// metric and a span event — so a dead-lettered message is never silently lost (§1.11, step-129). CDR →
+// produce (acked) → the caller commits (return nil): a crash redelivers, never loses.
+func (s *Service) deadLetterWith(ctx context.Context, r pipeline.RoutedMT, reason errs.Code) error {
+	if err := s.deps.CDR.Insert(ctx, failedRow(r, reason)); err != nil {
 		return fmt.Errorf("connectorpool: write failed cdr: %w", err)
 	}
 	rec, err := pipeline.EncodeRouted(r)
@@ -141,11 +150,14 @@ func (s *Service) deadLetter(ctx context.Context, r pipeline.RoutedMT) error {
 		return fmt.Errorf("connectorpool: encode dead-letter: %w", err)
 	}
 	rec.Topic = kafka.TopicMTDeadLetter
+	rec.Headers = append(rec.Headers, kafka.Header{Key: kafka.HeaderDeadLetterReason, Value: []byte(reason)})
 	if err := s.deps.Producer.Produce(ctx, rec); err != nil {
 		return fmt.Errorf("connectorpool: produce dead-letter: %w", err)
 	}
-	s.deps.Logger.WarnContext(ctx, "connector: fallback chain exhausted, dead-lettered",
-		"message_id", r.MessageID, "from_connector", r.ConnectorID)
+	s.deps.DeadLetter.Inc(string(reason))
+	trace.SpanFromContext(ctx).AddEvent("dead_letter", trace.WithAttributes(attribute.String("reason", string(reason))))
+	s.deps.Logger.WarnContext(ctx, "connector: message dead-lettered",
+		"message_id", r.MessageID, "from_connector", r.ConnectorID, "reason", string(reason))
 	return nil
 }
 

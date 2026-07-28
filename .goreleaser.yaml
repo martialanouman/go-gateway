@@ -72,6 +72,13 @@ builds:
     goos: [linux]
     goarch: [amd64, arm64]
     ldflags: *ldflags
+  - id: mt-replay
+    main: ./cmd/mt-replay
+    binary: mt-replay
+    env: [CGO_ENABLED=0]
+    goos: [linux]
+    goarch: [amd64, arm64]
+    ldflags: *ldflags
 
 # One archive per service, not one bundle: each cmd/ is deployed independently (its own
 # pod/container), so an operator pulls only the service they run. Without a per-build `ids` filter
@@ -108,6 +115,10 @@ archives:
     name_template: *archive_name
   - id: migrate
     ids: [migrate]
+    formats: ["tar.gz"]
+    name_template: *archive_name
+  - id: mt-replay
+    ids: [mt-replay]
     formats: ["tar.gz"]
     name_template: *archive_name
 

@@ -331,6 +331,7 @@ Chaque erreur de domaine a exactement un statut HTTP et un `command_status` SMPP
 | `delivery_failed` | — (issue sortante) | — | Un accusé de réception rapporte le message comme non délivrable (message_state UNDELIV/DELETED/REJECTD) — enregistré dans `cdr.error_code` | Non |
 | `delivery_expired` | — (issue sortante) | — | Un accusé de réception rapporte l'expiration du message avant remise (message_state EXPIRED) — enregistré dans `cdr.error_code` | Non |
 | `fallback_exhausted` | — (issue sortante) | — | Le message a parcouru toute sa `fallback_chain` et tous les connecteurs se sont dégradés (breaker ouvert ou rejet santé-connecteur) — enregistré dans `cdr.error_code` et comme raison sur `mt.dead-letter` (step-125) | Non |
+| `retries_exhausted` | — (issue sortante) | — | Un message sans chaîne de repli viable a subi un échec santé-connecteur au-delà de la fenêtre de retry — abandonné sur `mt.dead-letter` plutôt que redélivré indéfiniment sur un connecteur mort (step-129) | Non (rejouable par l'opérateur via l'outil de replay) |
 
 ### 11.4 Rejouabilité et idempotence
 

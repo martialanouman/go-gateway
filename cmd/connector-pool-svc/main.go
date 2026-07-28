@@ -69,6 +69,14 @@ type connectorEnv struct {
 	ReconnectMaxDelay     time.Duration `env:"CONNECTOR_RECONNECT_MAX_DELAY" envDefault:"60s"`
 	ReconnectJitterPct    int           `env:"CONNECTOR_RECONNECT_JITTER_PCT" envDefault:"20"`
 	ReconnectMaxAttempts  int           `env:"CONNECTOR_RECONNECT_MAX_ATTEMPTS" envDefault:"0"`
+	// Dead-letter guards (step-129). RetryWindow dead-letters (retries_exhausted) a message with no
+	// fallback chain that keeps hitting a connector-health failure past this window, so a poison record
+	// cannot redeliver forever on a dead connector. MaxMessageAge dead-letters (delivery_expired) any
+	// message older than this — the gateway's own validity SLA, covering messages that age out in
+	// throttle backpressure. Both default off (the pre-step-129 redeliver-forever behaviour); M3+ may
+	// source them from the control plane's validity policy.
+	RetryWindow   time.Duration `env:"CONNECTOR_RETRY_WINDOW" envDefault:"0"`
+	MaxMessageAge time.Duration `env:"CONNECTOR_MAX_MESSAGE_AGE" envDefault:"0"`
 }
 
 func main() {
@@ -166,6 +174,14 @@ func run() error {
 		Name: "connector_throttled_total",
 		Help: "ESME_RTHROTTLED responses received from the SMSC for this connector.",
 	})
+	// connector_dead_letter_total{reason}: messages parked on mt.dead-letter, by gateway reason
+	// (fallback_exhausted, retries_exhausted, delivery_expired) — so a dead-lettered message is always
+	// counted, never silently lost (step-129). The reason label is a bounded gateway code, never a
+	// message id or MSISDN.
+	deadLetterTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "connector_dead_letter_total",
+		Help: "Messages parked on mt.dead-letter for this connector, labelled by reason.",
+	}, []string{"reason"})
 	if bindEnv.MaxSendRate > 0 {
 		sendRateGauge.Set(bindEnv.MaxSendRate) // start at the ceiling; the AIMD lowers it on throttle
 	} else {
@@ -227,10 +243,13 @@ func run() error {
 			WindowSize:           bindEnv.WindowSize,
 			BindPoolSize:         bindEnv.BindPoolSize,
 		},
-		MaxSendRate: bindEnv.MaxSendRate,
-		Throttle:    throttleMetric{rate: sendRateGauge, throttled: throttledTotal},
-		Tracer:      tracer,
-		Logger:      logger,
+		MaxSendRate:   bindEnv.MaxSendRate,
+		Throttle:      throttleMetric{rate: sendRateGauge, throttled: throttledTotal},
+		DeadLetter:    deadLetterMetric{counter: deadLetterTotal},
+		RetryWindow:   bindEnv.RetryWindow,
+		MaxMessageAge: bindEnv.MaxMessageAge,
+		Tracer:        tracer,
+		Logger:        logger,
 	})
 
 	// Vital dependencies (plan §1.5): Kafka (no work without it), ClickHouse (the outcome is recorded
@@ -256,7 +275,7 @@ func run() error {
 		}
 		return 0
 	})
-	ops.Registry().MustRegister(sendRateGauge, throttledTotal, linkUp)
+	ops.Registry().MustRegister(sendRateGauge, throttledTotal, deadLetterTotal, linkUp)
 
 	// Bounded reroute drainer (step-126): consumes mt.reroute-park (AtStart — parked messages are durable
 	// and must all be drained) and replays each to mt.routed at the target connector's ceiling. Its own
@@ -318,6 +337,11 @@ type throttleMetric struct {
 
 func (m throttleMetric) SetRate(rate float64) { m.rate.Set(rate) }
 func (m throttleMetric) IncThrottled()        { m.throttled.Inc() }
+
+// deadLetterMetric adapts the Prometheus counter vector to connectorpool.DeadLetterMetric.
+type deadLetterMetric struct{ counter *prometheus.CounterVec }
+
+func (m deadLetterMetric) Inc(reason string) { m.counter.WithLabelValues(reason).Inc() }
 
 // breakerStateReader reads a connector's breaker aggregate (breaker:state:{id}) so a reroute can skip a
 // candidate that is itself open (step-125). A missing key or unparsable value reads "not open" (the

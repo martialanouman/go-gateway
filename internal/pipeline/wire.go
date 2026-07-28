@@ -149,6 +149,9 @@ func EncodeRouted(env RoutedMT) (kafka.Record, error) {
 	if len(env.FallbackChain) > 0 {
 		headers = append(headers, kafka.Header{Key: kafka.HeaderFallbackChain, Value: encodeChain(env.FallbackChain)})
 	}
+	if env.ReplayedAt != nil {
+		headers = append(headers, kafka.Header{Key: kafka.HeaderReplayedAt, Value: []byte(env.ReplayedAt.UTC().Format(time.RFC3339Nano))})
+	}
 	return kafka.Record{
 		Topic:   kafka.TopicMTRouted,
 		Key:     key[:],
@@ -167,6 +170,12 @@ func DecodeRouted(rec kafka.Record) (RoutedMT, error) {
 	if raw, ok := rec.Header(kafka.HeaderFallbackChain); ok {
 		chain = decodeChain(raw)
 	}
+	var replayedAt *time.Time
+	if raw, ok := rec.Header(kafka.HeaderReplayedAt); ok {
+		if t, err := time.Parse(time.RFC3339Nano, string(raw)); err == nil {
+			replayedAt = &t
+		}
+	}
 	return RoutedMT{
 		MessageID:          w.MessageID,
 		TraceID:            w.TraceID,
@@ -182,6 +191,7 @@ func DecodeRouted(rec kafka.Record) (RoutedMT, error) {
 		ConnectorID:        w.ConnectorID,
 		RouteID:            w.RouteID,
 		FallbackChain:      chain,
+		ReplayedAt:         replayedAt,
 		SegmentSeq:         w.SegmentSeq,
 		SegmentCount:       w.SegmentCount,
 		HasUDH:             w.HasUDH,
