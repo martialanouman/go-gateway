@@ -22,6 +22,7 @@ import (
 
 	"github.com/martialanouman/go-gateway/internal/connector/breaker"
 	"github.com/martialanouman/go-gateway/internal/connector/reconnect"
+	"github.com/martialanouman/go-gateway/internal/connector/status"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	"github.com/martialanouman/go-gateway/internal/platform/encoding"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
@@ -41,6 +42,11 @@ var errTransientReject = errors.New("connectorpool: transient smsc rejection")
 // errShardHalted marks a batch record left unprocessed because an earlier record in the same shard
 // failed. It is not committed, so redelivery replays the shard in order behind the failure (§7.3).
 var errShardHalted = errors.New("connectorpool: shard halted after an earlier failure")
+
+// errReconfigure is returned by a dial cycle when the reconfigure generation changed (an Admin rebind /
+// resize / policy change): the caller cleanly tears the cycle down and re-dials with fresh config
+// (step-128b). It is not a fault — the outer loop retries immediately, resetting the reconnect backoff.
+var errReconfigure = errors.New("connectorpool: reconfigure requested")
 
 // Consumer reads mt.routed a batch at a time so the pool can shard a batch across its parallel binds
 // (step-124). *kafka.Consumer satisfies it.
@@ -95,6 +101,22 @@ type noopThrottle struct{}
 
 func (noopThrottle) SetRate(float64) {}
 func (noopThrottle) IncThrottled()   {}
+
+// ConfigSource loads a connector's live pool config (bind_pool_size + reconnect policy) from the control
+// plane, so a rebind / resize / policy change takes effect on the next re-dial (step-128b). A nil
+// ConfigSource keeps the static BindConfig.BindPoolSize + Deps.Reconnect (no hot reload).
+type ConfigSource interface {
+	Load(ctx context.Context, connectorID uuid.UUID) (bindPoolSize int, rc reconnect.Config, err error)
+}
+
+// StatusControl is the runtime-status side of the pool (step-128b): it publishes this pod's per-bind
+// link_status + in_flight for the Admin API to read, and reads the reconfigure generation the pool polls
+// to pick up a rebind / resize / policy change. A nil StatusControl disables both (no runtime status, no
+// hot reconfigure). *status.Reader satisfies it.
+type StatusControl interface {
+	PublishBind(ctx context.Context, connectorID uuid.UUID, podID string, bindIndex int, linkStatus string, inFlight int) error
+	Gen(ctx context.Context, connectorID uuid.UUID) (int64, error)
+}
 
 // BreakerAggregator publishes one sub-bind's circuit-breaker state into the cross-pod connector
 // aggregate (breaker:state, step-122), so the router (step-123) and the reroute path (step-125) can see
@@ -153,8 +175,17 @@ type Deps struct {
 	// Reconnect is the opt-in auto-reconnection policy (step-127). The zero value is disabled: a dropped
 	// bind is not retried in-process (link_status stays down until a manual rebind, step-128).
 	Reconnect reconnect.Config
-	Tracer    trace.Tracer
-	Logger    *slog.Logger
+	// ConfigSource re-reads bind_pool_size + reconnect policy on each (re)dial so an Admin change takes
+	// effect (step-128b). Nil = static config from Bind/Reconnect above.
+	ConfigSource ConfigSource
+	// StatusControl publishes per-bind link_status and reads the reconfigure generation (step-128b). Nil
+	// disables runtime status + hot reconfigure.
+	StatusControl StatusControl
+	// PodID identifies this replica in the per-bind status hash (defaults to the hostname).
+	PodID           string
+	StatusHeartbeat time.Duration // per-bind status publish cadence; zero uses BreakerHeartbeat/2s
+	Tracer          trace.Tracer
+	Logger          *slog.Logger
 }
 
 // Service is the connector pool.
@@ -172,7 +203,25 @@ type Service struct {
 	// a bind that drops — including an idle-time drop no in-flight Submit would notice — takes the
 	// pod out of rotation until Run re-dials.
 	bound atomic.Bool
+
+	// link is the 3-state link_status (step-128): up while serving, reconnecting while backing off /
+	// re-dialling, down while parked. Distinct from the breaker (application health).
+	link atomic.Int32
+
+	// poolSize and reconnectCfg are the live config for the current dial cycle, refreshed from the
+	// control plane before each cycle (step-128b). They are read and written only from the single Run
+	// goroutine, sequentially between cycles, so they need no synchronisation.
+	poolSize     int
+	reconnectCfg reconnect.Config
+	podID        string
 }
+
+// link_status states (atomic int).
+const (
+	linkDown         int32 = iota // dropped or parked
+	linkUp                        // a bind is established and serving
+	linkReconnecting              // backing off / re-dialling after a drop or a reconfigure
+)
 
 // breakerHeartbeat is the default cadence for republishing every bind's breaker state.
 const breakerHeartbeat = 2 * time.Second
@@ -195,7 +244,14 @@ func New(deps Deps) *Service {
 	if deps.Throttle == nil {
 		deps.Throttle = noopThrottle{}
 	}
-	s := &Service{deps: deps}
+	s := &Service{deps: deps, podID: deps.PodID}
+	// Seed the live config with the static env values; reloadConfig overwrites from the control plane
+	// only on a successful load, so a Postgres blip keeps the last-good config rather than reverting.
+	s.poolSize = deps.Bind.BindPoolSize
+	if s.poolSize < 1 {
+		s.poolSize = 1
+	}
+	s.reconnectCfg = deps.Reconnect
 	if deps.MaxSendRate > 0 {
 		s.aimd = newAIMD(deps.MaxSendRate, nil)
 	}
@@ -217,20 +273,115 @@ func (s *Service) BindReady(context.Context) error {
 // strictly distinct from the connector's breaker_state (application health, step-121/122): a live link
 // can carry an open breaker and vice versa.
 func (s *Service) LinkStatus() string {
-	if s.bound.Load() {
-		return "up"
+	switch s.link.Load() {
+	case linkUp:
+		return status.LinkUp
+	case linkReconnecting:
+		return status.LinkReconnecting
+	default:
+		return status.LinkDown
 	}
-	return "down"
 }
 
-// Run keeps the bind pool alive: it runs one dial-and-consume cycle, and when a bind drops it reconnects
-// with the configured backoff (opt-in, step-127) rather than exiting. It returns nil on a clean ctx
-// shutdown, and an error when reconnection is disabled, exhausted, or a permanent authentication failure
-// (ESME_RINVPASWD) makes retrying pointless — the link_status is down throughout the backoff, distinct
-// from the breaker.
+// setLink updates the 3-state link status.
+func (s *Service) setLink(state int32) { s.link.Store(state) }
+
+// Run keeps the bind pool alive across reconnects AND reconfigures (step-127/128b). Each outer iteration
+// re-reads the connector's live config (bind_pool_size + reconnect policy) from the control plane, runs a
+// reconnect loop over one dial-and-consume cycle, and reacts to how it ended:
+//   - clean ctx shutdown → return nil;
+//   - reconfigure requested (Admin rebind / resize / policy) → re-read config and re-dial immediately;
+//   - reconnection disabled or exhausted → PARK (stay alive, link down) until a reconfigure or shutdown
+//     — never exit, so k8s does not turn into a harsher reconnect loop than the one the operator chose.
 func (s *Service) Run(ctx context.Context) error {
-	loop := reconnect.New(s.deps.Reconnect)
-	return loop.Run(ctx, s.runOnce, isLinkDrop)
+	for {
+		s.reloadConfig(ctx)
+		loop := reconnect.New(s.reconnectCfg)
+		err := loop.Run(ctx, s.runOnce, isLinkDrop)
+		if ctx.Err() != nil {
+			s.setLink(linkDown)
+			return nil
+		}
+		if errors.Is(err, errReconfigure) {
+			continue // Admin change: re-read config and re-dial (backoff reset)
+		}
+		if err == nil {
+			s.setLink(linkDown)
+			return nil
+		}
+		// Reconnection gave up (disabled, exhausted, or a permanent bind rejection). With a control plane
+		// wired, PARK — stay alive with a down link and wait for an Admin rebind — rather than exit (which
+		// would let k8s restart into a harsher reconnect loop than the operator chose). Without one there
+		// is nothing to un-park us, so surface the error and let the supervisor restart (the pre-128b
+		// behaviour).
+		s.setLink(linkDown)
+		if s.deps.StatusControl == nil {
+			return err
+		}
+		s.deps.Logger.WarnContext(ctx, "connector: link down, parking until reconfigure", "err", err)
+		if perr := s.park(ctx); perr != nil {
+			return perr // ctx cancelled
+		}
+		// park returned nil → a reconfigure arrived; re-read config and re-dial.
+	}
+}
+
+// reloadConfig refreshes the pool size and reconnect policy from the control plane. On a load error it
+// KEEPS the current (last-good) config — set in New to the env defaults and updated only on success — so
+// a transient Postgres blip during a reconfigure never silently reverts a live-configured pool to env.
+func (s *Service) reloadConfig(ctx context.Context) {
+	if s.deps.ConfigSource == nil {
+		return // static config (already seeded in New)
+	}
+	n, rc, err := s.deps.ConfigSource.Load(ctx, s.deps.ConnectorID)
+	if err != nil {
+		s.deps.Logger.WarnContext(ctx, "connector: config reload failed, keeping current config", "err", err)
+		return
+	}
+	if n >= 1 {
+		s.poolSize = n
+	}
+	s.reconnectCfg = rc
+}
+
+// park keeps the pod alive with a down link, polling the reconfigure generation until it changes (an
+// Admin rebind) or ctx is cancelled. It returns nil on a generation change (the caller re-dials) and the
+// ctx error on shutdown. With no StatusControl wired there is nothing to poll, so it blocks until ctx.
+func (s *Service) park(ctx context.Context) error {
+	if s.deps.StatusControl == nil {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	ticker := time.NewTicker(s.statusInterval())
+	defer ticker.Stop()
+	baseline, err := s.deps.StatusControl.Gen(ctx, s.deps.ConnectorID)
+	haveBaseline := err == nil
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			g, err := s.deps.StatusControl.Gen(ctx, s.deps.ConnectorID)
+			if err != nil {
+				continue // a Redis blip is not a reconfigure
+			}
+			if !haveBaseline {
+				baseline, haveBaseline = g, true // first successful read establishes the baseline
+				continue
+			}
+			if g != baseline {
+				return nil // reconfigure requested while parked
+			}
+		}
+	}
+}
+
+// statusInterval is the per-bind status / generation-poll cadence.
+func (s *Service) statusInterval() time.Duration {
+	if s.deps.StatusHeartbeat > 0 {
+		return s.deps.StatusHeartbeat
+	}
+	return breakerHeartbeat
 }
 
 // isLinkDrop reports whether an error is a live bind dropping (the only thing the reconnect loop backs
@@ -251,7 +402,7 @@ func isLinkDrop(err error) bool {
 // consumer down and returns an error so the caller re-dials the whole pool (never re-sharding a live
 // message onto another bind, which would break §7.3 ordering).
 func (s *Service) runOnce(ctx context.Context) error {
-	n := s.deps.Bind.BindPoolSize
+	n := s.poolSize
 	if n < 1 {
 		n = 1
 	}
@@ -275,9 +426,15 @@ func (s *Service) runOnce(ctx context.Context) error {
 	}()
 
 	s.bound.Store(true)
+	s.setLink(linkUp)
 	defer s.bound.Store(false)
 
 	consumerCtx, cancel := context.WithCancel(ctx)
+	// The heartbeats read s.breakers and binds; join them BEFORE this cycle returns (and thus before the
+	// next cycle reassigns s.breakers or Close()s the binds). Deferred first so it runs AFTER cancel (LIFO)
+	// — cancel stops the heartbeats, hbWG.Wait joins them, then the bind-Close defer runs.
+	var hbWG sync.WaitGroup
+	defer hbWG.Wait()
 	defer cancel()
 
 	// Per-bind circuit breakers (step-121), fed by each bind's submit outcomes, published to the
@@ -287,7 +444,21 @@ func (s *Service) runOnce(ctx context.Context) error {
 		for i := range s.breakers {
 			s.breakers[i] = breaker.New(s.deps.BreakerConfig, nil)
 		}
-		go s.runBreakerHeartbeat(consumerCtx)
+		hbWG.Add(1)
+		go func() { defer hbWG.Done(); s.runBreakerHeartbeat(consumerCtx) }()
+	}
+
+	// Runtime-status heartbeat + reconfigure poll (step-128b): publishes each bind's link_status +
+	// in_flight for the Admin API, and closes reconfigure when the generation changes (an Admin rebind /
+	// resize / policy change), so the select below tears the cycle down cleanly and re-dials.
+	reconfigure := make(chan struct{})
+	if s.deps.StatusControl != nil {
+		var once sync.Once
+		hbWG.Add(1)
+		go func() {
+			defer hbWG.Done()
+			s.runStatusHeartbeat(consumerCtx, binds, func() { once.Do(func() { close(reconfigure) }) })
+		}()
 	}
 
 	// A single signal fired by whichever bind dies first (idle drop, enquire_link timeout, peer close).
@@ -308,11 +479,61 @@ func (s *Service) runOnce(ctx context.Context) error {
 		return err
 	case <-anyDropped:
 		// A bind died on its own. Take the pod out of rotation, unwind the consumer, and surface the
-		// failure so the service restarts and re-dials the whole pool.
+		// failure so the reconnect loop backs off and re-dials the whole pool.
 		s.bound.Store(false)
+		s.setLink(linkReconnecting)
 		cancel()
 		<-consumerErr
 		return fmt.Errorf("connectorpool: smsc bind dropped: %w", errBindClosed)
+	case <-reconfigure:
+		// An Admin change: tear down cleanly (cancel consumer → drain/commit the batch → unbind on
+		// defer), then re-dial with fresh config. The clean path — not the "bind dead" path — avoids a
+		// deliberate duplicate on a forced rebind.
+		s.bound.Store(false)
+		s.setLink(linkReconnecting)
+		cancel()
+		<-consumerErr
+		return errReconfigure
+	}
+}
+
+// runStatusHeartbeat publishes each bind's link_status + in_flight on a fixed cadence and polls the
+// reconfigure generation, calling onReconfigure once when it changes. It stops on ctx (one dial cycle).
+func (s *Service) runStatusHeartbeat(ctx context.Context, binds []*bind, onReconfigure func()) {
+	ticker := time.NewTicker(s.statusInterval())
+	defer ticker.Stop()
+	id := s.deps.ConnectorID
+	publish := func() {
+		for i, b := range binds {
+			if err := s.deps.StatusControl.PublishBind(ctx, id, s.podID, i, s.LinkStatus(), b.inFlight()); err != nil && ctx.Err() == nil {
+				s.deps.Logger.WarnContext(ctx, "connector: publish bind status failed", "bind_index", i, "err", err)
+			}
+		}
+	}
+	publish() // publish immediately so status is fresh without waiting a full tick
+	// The baseline is this cycle's OWN first successful generation read, so a Redis blip during
+	// reloadConfig cannot make us re-dial healthy binds in a tight loop.
+	baseline, err := s.deps.StatusControl.Gen(ctx, id)
+	haveBaseline := err == nil
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			publish()
+			g, err := s.deps.StatusControl.Gen(ctx, id)
+			if err != nil {
+				continue
+			}
+			if !haveBaseline {
+				baseline, haveBaseline = g, true
+				continue
+			}
+			if g != baseline {
+				onReconfigure()
+				return
+			}
+		}
 	}
 }
 

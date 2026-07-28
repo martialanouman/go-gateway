@@ -176,6 +176,10 @@ func dialAndBind(ctx context.Context, cfg BindConfig, logger *slog.Logger, onDel
 	return b, nil
 }
 
+// inFlight is the number of submit_sm currently awaiting a response on this bind (the window
+// occupancy). It is a best-effort gauge for the runtime status (step-128b), read without locking.
+func (b *bind) inFlight() int { return len(b.window) }
+
 // Submit sends a submit_sm and returns its submit_sm_resp. It blocks on the window semaphore first,
 // so at most WindowSize submissions are ever outstanding. The window slot is released once the
 // response arrives or the attempt fails.

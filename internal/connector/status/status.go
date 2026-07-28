@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	goredis "github.com/redis/go-redis/v9"
@@ -46,15 +47,18 @@ const (
 )
 
 // BindEntry is the per-bind runtime value the pool publishes into connector:binds (link + load only;
-// the breaker sub-bind state lives in breaker:binds, never conflated).
+// the breaker sub-bind state lives in breaker:binds, never conflated). TS is the publish time (unix ms):
+// Redis hashes have no per-field TTL, so a field stale beyond bindTTL — a bind removed by a shrink or a
+// crashed pod — is dropped by Read rather than lingering forever on the pod-shared key.
 type BindEntry struct {
 	LinkStatus string `json:"link_status"`
 	InFlight   int    `json:"in_flight"`
+	TS         int64  `json:"ts,omitempty"`
 }
 
 // Encode serialises a BindEntry for a connector:binds hash field.
 func (e BindEntry) Encode() []byte {
-	b, _ := json.Marshal(e) //nolint:errchkjson // a fixed two-field struct never fails to marshal
+	b, _ := json.Marshal(e) //nolint:errchkjson // a fixed small struct never fails to marshal
 	return b
 }
 
@@ -114,15 +118,22 @@ func (r *Reader) Read(ctx context.Context, connectorID uuid.UUID) (Connector, er
 		byField[field] = b
 		return b
 	}
+	nowMs := time.Now().UnixMilli()
 	for field, raw := range linkH {
-		b := get(field)
 		var e BindEntry
-		if json.Unmarshal([]byte(raw), &e) == nil {
-			if e.LinkStatus != "" {
-				b.LinkStatus = e.LinkStatus
-			}
-			b.InFlight = e.InFlight
+		if json.Unmarshal([]byte(raw), &e) != nil {
+			continue
 		}
+		// Drop a per-field entry that has gone stale (a shrunk bind or a crashed pod): the pod-shared key
+		// TTL cannot express per-field expiry. A zero TS (unstamped/legacy) is treated as fresh.
+		if e.TS != 0 && nowMs-e.TS > bindTTL.Milliseconds() {
+			continue
+		}
+		b := get(field)
+		if e.LinkStatus != "" {
+			b.LinkStatus = e.LinkStatus
+		}
+		b.InFlight = e.InFlight
 	}
 	for field, raw := range brkH {
 		b := get(field)
@@ -138,6 +149,23 @@ func (r *Reader) Read(ctx context.Context, connectorID uuid.UUID) (Connector, er
 		binds = append(binds, *b)
 	}
 	return Connector{ConnectorID: connectorID, BreakerState: aggState, Binds: binds}, nil
+}
+
+// bindTTL is how long a per-bind status field survives without a refresh, so a dead pod's binds fade
+// from the status rather than lingering forever. The pool republishes every status heartbeat.
+const bindTTL = 30 * time.Second
+
+// PublishBind writes one bind's link_status + in_flight into connector:binds, refreshing the hash TTL.
+// The pool calls it every status heartbeat; the Admin API reads the merged result.
+func (r *Reader) PublishBind(ctx context.Context, connectorID uuid.UUID, podID string, bindIndex int, linkStatus string, inFlight int) error {
+	key := BindsKey(connectorID)
+	field := podID + ":" + strconv.Itoa(bindIndex)
+	val := BindEntry{LinkStatus: linkStatus, InFlight: inFlight, TS: time.Now().UnixMilli()}.Encode()
+	if err := r.rdb.HSet(ctx, key, field, val).Err(); err != nil {
+		return fmt.Errorf("status: publish bind: %w", err)
+	}
+	r.rdb.PExpire(ctx, key, bindTTL) // whole-key backstop; per-field staleness is filtered in Read
+	return nil
 }
 
 // SignalReconfigure increments the connector's reconfigure generation, signalling every pool pod to
