@@ -120,6 +120,14 @@ func (s *Server) Submits() []Submit {
 	return append([]Submit(nil), s.submits...)
 }
 
+// ConnCount is the number of live connections — the number of established binds a pool holds. A test
+// resizing a bind pool asserts on it (step-128b).
+func (s *Server) ConnCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.conns)
+}
+
 // Close stops accepting, closes every connection and waits for all goroutines to exit.
 func (s *Server) Close() {
 	if !s.closed.CompareAndSwap(false, true) {

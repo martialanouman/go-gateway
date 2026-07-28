@@ -28,6 +28,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/connector/breaker"
 	"github.com/martialanouman/go-gateway/internal/connector/reconnect"
+	"github.com/martialanouman/go-gateway/internal/connector/status"
 	"github.com/martialanouman/go-gateway/internal/connectorpool"
 	"github.com/martialanouman/go-gateway/internal/dlrmap"
 	"github.com/martialanouman/go-gateway/internal/observability"
@@ -208,7 +209,12 @@ func run() error {
 			JitterPct:    bindEnv.ReconnectJitterPct,
 			MaxAttempts:  bindEnv.ReconnectMaxAttempts,
 		},
-		ConnectorID: bindEnv.ID,
+		// Hot reconfigure (step-128b): re-read bind_pool_size + reconnect policy from the control plane on
+		// each re-dial, publish per-bind status, and poll the reconfigure generation the Admin API bumps.
+		ConfigSource:  connectorConfigSource{repo: postgres.NewConnectorRepo(pool)},
+		StatusControl: status.NewReader(rdb),
+		PodID:         podID,
+		ConnectorID:   bindEnv.ID,
 		Bind: connectorpool.BindConfig{
 			Addr:                 bindEnv.Addr,
 			SystemID:             bindEnv.SystemID,
@@ -281,6 +287,27 @@ func run() error {
 
 	logger.Info("stopped")
 	return nil
+}
+
+// connectorConfigSource re-reads a connector's live bind_pool_size + reconnect policy from Postgres so an
+// Admin resize / policy change takes effect on the next re-dial (step-128b). The bind endpoint
+// (addr/password) still comes from env — the outbound password cannot be recovered from its hash.
+type connectorConfigSource struct{ repo *postgres.ConnectorRepo }
+
+func (c connectorConfigSource) Load(ctx context.Context, connectorID uuid.UUID) (int, reconnect.Config, error) {
+	conn, err := c.repo.Get(ctx, connectorID)
+	if err != nil {
+		return 0, reconnect.Config{}, err
+	}
+	rc := reconnect.Config{
+		Enabled:      conn.AutoReconnectEnabled,
+		InitialDelay: time.Duration(conn.ReconnectInitialDelayMs) * time.Millisecond,
+		Multiplier:   conn.ReconnectMultiplier,
+		MaxDelay:     time.Duration(conn.ReconnectMaxDelayMs) * time.Millisecond,
+		JitterPct:    conn.ReconnectJitterPct,
+		MaxAttempts:  conn.ReconnectMaxAttempts,
+	}
+	return conn.BindPoolSize, rc, nil
 }
 
 // throttleMetric adapts the Prometheus gauge/counter to connectorpool.ThrottleMetric.

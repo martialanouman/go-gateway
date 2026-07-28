@@ -3,6 +3,7 @@ package status_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -78,5 +79,28 @@ func TestSignalReconfigureIncrements(t *testing.T) {
 	g1, _ := r.Gen(ctx, id)
 	if g1 != 1 {
 		t.Errorf("gen after signal = %d, want 1", g1)
+	}
+}
+
+// TestReaderPrunesStaleBind: a per-bind field not refreshed within bindTTL (a bind removed by a shrink,
+// or a crashed pod) is dropped by Read, even while the pod-shared key TTL is kept alive by other binds.
+func TestReaderPrunesStaleBind(t *testing.T) {
+	rdb := redistest.Client(t)
+	ctx := context.Background()
+	id := uuid.New()
+	r := status.NewReader(rdb)
+
+	// A fresh bind (published now) and a stale one (published 10 minutes ago).
+	fresh := status.BindEntry{LinkStatus: status.LinkUp, TS: time.Now().UnixMilli()}
+	stale := status.BindEntry{LinkStatus: status.LinkUp, TS: time.Now().Add(-10 * time.Minute).UnixMilli()}
+	rdb.HSet(ctx, status.BindsKey(id), "pod-a:0", string(fresh.Encode()))
+	rdb.HSet(ctx, status.BindsKey(id), "pod-a:1", string(stale.Encode()))
+
+	got, err := r.Read(ctx, id)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(got.Binds) != 1 || got.Binds[0].BindIndex != 0 {
+		t.Errorf("binds = %+v, want only the fresh bind 0 (stale bind 1 pruned)", got.Binds)
 	}
 }
