@@ -97,7 +97,7 @@ Légende : `[x]` = fait (dans `tasks-done/`) · `[ ]` = à faire (dans `tasks-to
 - [x] step-126 — Draineur borné + `mt.reroute-park` (rafales de reroute)
 - [x] step-127 — Auto-reconnexion opt-in (backoff + jitter), `link_status` distinct du breaker
 - [x] step-128 — Admin connecteurs : rebind / status / reconnect-policy / bind-pool
-- [ ] step-129 — Dead-letter (`mt.dead-letter` / `mo.dead-letter`) + retraitement
+- [x] step-129 — Dead-letter (`mt.dead-letter` / `mo.dead-letter`) + retraitement
 - [ ] step-130 — Dé-`Skip` des tests de résilience + scénarios d'injection de pannes
 
 ## M9 — Facturation opt-in

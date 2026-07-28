@@ -102,6 +102,19 @@ type noopThrottle struct{}
 func (noopThrottle) SetRate(float64) {}
 func (noopThrottle) IncThrottled()   {}
 
+// DeadLetterMetric counts messages parked on mt.dead-letter, by reason — so a dead-lettered message is
+// always counted, never silently lost (§1.11, step-129). A Prometheus CounterVec satisfies it; New
+// defaults a nil one to a no-op. The reason label is a bounded gateway code (fallback_exhausted,
+// retries_exhausted, delivery_expired), never a message id or MSISDN.
+type DeadLetterMetric interface {
+	Inc(reason string)
+}
+
+// noopDeadLetter is the New default when no dead-letter metric is wired.
+type noopDeadLetter struct{}
+
+func (noopDeadLetter) Inc(string) {}
+
 // ConfigSource loads a connector's live pool config (bind_pool_size + reconnect policy) from the control
 // plane, so a rebind / resize / policy change takes effect on the next re-dial (step-128b). A nil
 // ConfigSource keeps the static BindConfig.BindPoolSize + Deps.Reconnect (no hot reload).
@@ -157,6 +170,15 @@ type Deps struct {
 	MaxSendRate float64
 	// Throttle observes the adaptive throttle. New defaults a nil one to a no-op.
 	Throttle ThrottleMetric
+	// DeadLetter counts messages parked on mt.dead-letter by reason (step-129). New defaults nil to no-op.
+	DeadLetter DeadLetterMetric
+	// RetryWindow is how long a connector-health failure (NOT a throttle) is redelivered before the
+	// message is dead-lettered as retries_exhausted (step-129). Zero disables the window (redeliver
+	// forever, the pre-step-129 behaviour) — the drainer/reroute still bound most cases.
+	RetryWindow time.Duration
+	// MaxMessageAge dead-letters a message older than this (max(SubmittedAt, ReplayedAt)) as
+	// delivery_expired, a gateway SLA (step-129). Zero disables it.
+	MaxMessageAge time.Duration
 	// Breaker publishes each bind's circuit-breaker state to the connector aggregate (step-121/122).
 	// Nil disables breaker reporting. When set, each bind runs a local breaker fed by its submit
 	// outcomes, and a heartbeat reports every bind's state every BreakerHeartbeat.
@@ -214,6 +236,12 @@ type Service struct {
 	poolSize     int
 	reconnectCfg reconnect.Config
 	podID        string
+
+	// retryFirstFail records, per (partition, offset), when a message first hit a connector-health
+	// failure, so the retry window can dead-letter a message that keeps failing past RetryWindow
+	// (step-129). Keyed by the immutable offset (stable across redeliveries). processOne clears the key
+	// on every committed outcome (its deferred cleanup), so it never outlives the record.
+	retryFirstFail sync.Map // "partition:offset" -> time.Time
 }
 
 // link_status states (atomic int).
@@ -243,6 +271,9 @@ func New(deps Deps) *Service {
 	}
 	if deps.Throttle == nil {
 		deps.Throttle = noopThrottle{}
+	}
+	if deps.DeadLetter == nil {
+		deps.DeadLetter = noopDeadLetter{}
 	}
 	s := &Service{deps: deps, podID: deps.PodID}
 	// Seed the live config with the static env values; reloadConfig overwrites from the control plane
@@ -627,13 +658,62 @@ func shardIndex(key []byte, n int) int {
 	return int(h.Sum32() % uint32(n)) //nolint:gosec // n is 1..32, the modulo result fits an int
 }
 
+// expired reports whether a routed message has outlived the gateway's max-age SLA and must be
+// dead-lettered instead of submitted (step-129). The age base is max(SubmittedAt, ReplayedAt): a
+// replayed message uses its replay time, so an operator replay after a long outage is not instantly
+// re-expired on the immutable SubmittedAt. A zero MaxMessageAge disables the check.
+func (s *Service) expired(r pipeline.RoutedMT) bool {
+	if s.deps.MaxMessageAge <= 0 {
+		return false
+	}
+	base := r.SubmittedAt
+	if r.ReplayedAt != nil && r.ReplayedAt.After(base) {
+		base = *r.ReplayedAt
+	}
+	return time.Since(base) > s.deps.MaxMessageAge
+}
+
+// healthRetry handles a connector-health failure for a message with NO viable fallback chain (a dead
+// bind, a submit timeout, or a failover-class SMSC rejection). It leaves the record uncommitted for
+// redelivery until the SAME record has been failing longer than RetryWindow, then dead-letters it as
+// retries_exhausted and commits, so a persistently-failing message is not retried without end (step-129).
+// Throttle / queue-full NEVER reach here: those are pure backpressure, bounded only by the max-age SLA.
+//
+// Redelivery is driven by the reconnect/re-dial cycle (a dropped bind) or by the pod restart the
+// supervisor performs when reconnection gives up — NOT a tight in-process loop, so no pacing is needed
+// here (the reconnect loop and k8s each apply their own backoff). The first-failure time is keyed by the
+// record's immutable (partition, offset) and accumulates across redeliveries for as long as this Service
+// lives (a re-dial keeps it; a process restart resets the window). A zero RetryWindow disables
+// dead-lettering, and the max-age SLA is the ultimate backstop in every case.
+func (s *Service) healthRetry(ctx context.Context, rec kafka.Record, r pipeline.RoutedMT, cause error) error {
+	if s.deps.RetryWindow > 0 {
+		first, _ := s.retryFirstFail.LoadOrStore(retryKey(rec), time.Now())
+		if time.Since(first.(time.Time)) > s.deps.RetryWindow {
+			return s.deadLetterWith(ctx, r, errs.ErrRetriesExhausted)
+		}
+	}
+	return fmt.Errorf("connectorpool: connector-health redelivery: %w", cause)
+}
+
+// retryKey identifies a record for the retry window by its immutable (partition, offset).
+func retryKey(rec kafka.Record) string { return fmt.Sprintf("%d:%d", rec.Partition, rec.Offset) }
+
 // processOne submits a single routed segment on the given bind and records its outcome. It returns a
 // non-nil error only on a transient fault (bad decode, dead bind, transient SMSC rejection) so the
 // record is left uncommitted for redelivery; a terminal SMSC failure is written to the CDR and returns
 // nil. It is the per-record body the batch handler runs, one shard at a time.
-func (s *Service) processOne(ctx context.Context, b *bind, bindIndex int, rec kafka.Record) error {
+func (s *Service) processOne(ctx context.Context, b *bind, bindIndex int, rec kafka.Record) (err error) {
 	ctx, span := s.deps.Tracer.Start(ctx, "connector.submit")
 	defer span.End()
+
+	// A committed outcome (nil return) means this offset advances and will not be redelivered, so any
+	// retry-window entry for it is dead weight — clear it. healthRetry keeps its entry only by returning a
+	// non-nil error (redelivery); every nil path drops it, so the map never outlives a record (step-129).
+	defer func() {
+		if err == nil {
+			s.retryFirstFail.Delete(retryKey(rec))
+		}
+	}()
 
 	routed, err := pipeline.DecodeRouted(rec)
 	if err != nil {
@@ -647,6 +727,13 @@ func (s *Service) processOne(ctx context.Context, b *bind, bindIndex int, rec ka
 	// pre-step-125 single-connector behaviour).
 	if s.deps.ConnectorID != uuid.Nil && routed.ConnectorID != s.deps.ConnectorID {
 		return nil
+	}
+
+	// Gateway max-age SLA (step-129): a message that has outlived MaxMessageAge — whether it aged out in
+	// throttle backpressure or churned across reconnects — is dead-lettered as delivery_expired rather
+	// than submitted, so nothing lingers on the data plane forever. Checked before any submit work.
+	if s.expired(routed) {
+		return s.deadLetterWith(ctx, routed, errs.ErrDeliveryExpired)
 	}
 
 	// A cancel_sm may have flagged this message before it reached the SMSC. Redis is best-effort
@@ -695,7 +782,7 @@ func (s *Service) processOne(ctx context.Context, b *bind, bindIndex int, rec ka
 		if len(routed.FallbackChain) > 0 {
 			return s.reroute(ctx, routed, errs.ErrServiceUnavailable)
 		}
-		return fmt.Errorf("connectorpool: submit_sm: %w", err)
+		return s.healthRetry(ctx, rec, routed, fmt.Errorf("connectorpool: submit_sm: %w", err))
 	}
 
 	// Feed the outcome to this bind's circuit breaker (step-121): a system error / bind failure is a
@@ -725,6 +812,13 @@ func (s *Service) processOne(ctx context.Context, b *bind, bindIndex int, rec ka
 	// write below. Proper rate-limited backoff is M7; this reuses the same "return error → no commit
 	// → reprocess" path the submit errors above use.
 	if resp.Status != smpp.StatusOK && errs.Retryable(errs.CodeFromSMPPStatus(resp.Status)) {
+		// A failover-class health rejection with no fallback chain runs through the retry window, so a
+		// persistently-sick connector eventually dead-letters (retries_exhausted) instead of redelivering
+		// without end. Throttle / queue-full is pure backpressure: redeliver, bounded only by the max-age
+		// SLA checked at the top on the next redelivery.
+		if classifyReroute(resp.Status) == failover {
+			return s.healthRetry(ctx, rec, routed, errTransientReject)
+		}
 		return fmt.Errorf("connectorpool: submit_sm rejected transiently (status 0x%08x): %w", resp.Status, errTransientReject)
 	}
 

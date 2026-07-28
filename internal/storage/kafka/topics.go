@@ -49,4 +49,11 @@ const (
 	HeaderAccountID     = "account_id"
 	HeaderCustomerID    = "customer_id"
 	HeaderFallbackChain = "fallback_chain"
+	// HeaderDeadLetterReason carries WHY a message was parked on a dead-letter topic (step-129). It is
+	// stripped when the message is replayed, so a second dead-lettering records a fresh reason.
+	HeaderDeadLetterReason = "dead_letter_reason"
+	// HeaderReplayedAt is the RFC3339 time a dead-lettered message was replayed (step-129). The gateway
+	// max-age check bases expiry on max(submitted_at, replayed_at), so a replay after a long outage is not
+	// instantly re-expired on its immutable submitted_at.
+	HeaderReplayedAt = "replayed_at"
 )

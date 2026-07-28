@@ -80,6 +80,12 @@ const (
 	// (breaker open or a connector-health rejection), so there is nowhere healthy left to send it
 	// (step-125). An outcome code with no HTTP surface.
 	ErrFallbackExhausted Code = "fallback_exhausted"
+	// ErrRetriesExhausted is the outbound outcome recorded in cdr.error_code (and the mt.dead-letter
+	// reason) when a message with no viable fallback chain kept hitting a connector-health failure and
+	// was still failing past the retry window, so it is dead-lettered rather than redelivered forever
+	// on a dead connector (step-129). Distinct from fallback_exhausted (a chain that ran out) and from
+	// throttling (pure backpressure, never dead-lettered). An outcome code with no HTTP surface.
+	ErrRetriesExhausted Code = "retries_exhausted"
 )
 
 // SMPP v3.4 command_status values used by the mapping. Errors with no standard SMPP code use

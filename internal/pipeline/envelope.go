@@ -63,6 +63,10 @@ type RoutedMT struct {
 	// metadata, never the body — invariant a), so the connector pool can reroute unilaterally without a
 	// round-trip to the router. Empty means no reroute (a single terminal outcome).
 	FallbackChain []uuid.UUID
+	// ReplayedAt is set when this message was replayed from a dead-letter topic (step-129). The connector
+	// pool's gateway max-age check uses max(SubmittedAt, ReplayedAt), so an operator replay after a long
+	// outage is not instantly re-expired on the immutable SubmittedAt. Nil for a normal message.
+	ReplayedAt *time.Time
 	// SegmentSeq is this segment's 1-based position; SegmentCount is the total number of segments the
 	// message was split into. All segments of a message share MessageID, ConnectorID and SegmentCount,
 	// and are produced under the same partition key so they stay ordered on one bind.
