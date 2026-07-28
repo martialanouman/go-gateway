@@ -30,9 +30,11 @@ import (
 	"github.com/martialanouman/go-gateway/internal/connectorpool"
 	"github.com/martialanouman/go-gateway/internal/dlrmap"
 	"github.com/martialanouman/go-gateway/internal/observability"
+	"github.com/martialanouman/go-gateway/internal/pipeline/ratelimit"
 	"github.com/martialanouman/go-gateway/internal/platform/supervisor"
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
+	"github.com/martialanouman/go-gateway/internal/storage/postgres"
 	redisstore "github.com/martialanouman/go-gateway/internal/storage/redis"
 )
 
@@ -70,7 +72,7 @@ func run() error {
 	defer stop()
 
 	cfg, err := config.Load(serviceName,
-		config.SectionOTel, config.SectionKafka, config.SectionClickHouse, config.SectionRedis)
+		config.SectionOTel, config.SectionKafka, config.SectionClickHouse, config.SectionRedis, config.SectionPostgres)
 	if err != nil {
 		return err
 	}
@@ -98,6 +100,14 @@ func run() error {
 		return fmt.Errorf("connect clickhouse: %w", err)
 	}
 	defer func() { _ = chConn.Close() }()
+
+	// Postgres backs the rate-limit snapshot (each connector's throughput_limit_per_sec): the reroute
+	// parking gate and the drainer pace against the fallback connectors' ceilings (step-126).
+	pool, err := postgres.NewPool(ctx, cfg.Postgres)
+	if err != nil {
+		return fmt.Errorf("connect postgres: %w", err)
+	}
+	defer pool.Close()
 
 	// Per-connector consumer group (step-125, option B): every pool reads all of mt.routed and skips
 	// records for other connectors, so a rerouted message reaches the next connector's pool. FromLatest
@@ -162,16 +172,26 @@ func run() error {
 	}
 	breakerAgg := breaker.NewAggregator(rdb, redisstore.NewPubSubPublisher(rdb), podID)
 
+	// Reroute parking gate (step-126): the per-connector token bucket (shared with the router's
+	// rate-limit, so rerouted/drained/fresh traffic compete for one budget) decides whether a reroute
+	// can go straight to mt.routed or must be parked and drained at the fallback connector's ceiling.
+	rateSnap, err := ratelimit.LoadSnapshot(ctx, postgres.NewRateLimitRepo(pool), postgres.NewConnectorRepo(pool))
+	if err != nil {
+		return fmt.Errorf("load rate-limit snapshot: %w", err)
+	}
+	rerouteLimiter := ratelimit.NewEnforcer(rateSnap, ratelimit.NewLimiter(rdb))
+
 	tracer := observability.Tracer(nil, serviceName)
 	svc := connectorpool.New(connectorpool.Deps{
-		Consumer:     consumer,
-		CDR:          clickhouse.NewCDRWriter(chConn),
-		CancelFlags:  cancel.NewRedisFlags(rdb),
-		DLRMap:       dlrmap.NewRedisMap(rdb),
-		Producer:     producer,
-		Breaker:      breakerAgg,
-		BreakerState: breakerStateReader{rdb: rdb},
-		ConnectorID:  bindEnv.ID,
+		Consumer:       consumer,
+		CDR:            clickhouse.NewCDRWriter(chConn),
+		CancelFlags:    cancel.NewRedisFlags(rdb),
+		DLRMap:         dlrmap.NewRedisMap(rdb),
+		Producer:       producer,
+		Breaker:        breakerAgg,
+		BreakerState:   breakerStateReader{rdb: rdb},
+		RerouteLimiter: rerouteLimiter,
+		ConnectorID:    bindEnv.ID,
 		Bind: connectorpool.BindConfig{
 			Addr:                 bindEnv.Addr,
 			SystemID:             bindEnv.SystemID,
@@ -204,12 +224,29 @@ func run() error {
 	}
 	ops.Registry().MustRegister(sendRateGauge, throttledTotal)
 
+	// Bounded reroute drainer (step-126): consumes mt.reroute-park (AtStart — parked messages are durable
+	// and must all be drained) and replays each to mt.routed at the target connector's ceiling. Its own
+	// per-connector group; it skips-and-commits records for other connectors.
+	drainConsumer, err := kafka.NewConsumer(cfg.Kafka, serviceName+"-drain-"+bindEnv.ID.String(), kafka.TopicMTReroutePark)
+	if err != nil {
+		return fmt.Errorf("kafka drain consumer: %w", err)
+	}
+	defer drainConsumer.Close()
+	drainer := connectorpool.NewDrainer(connectorpool.DrainerDeps{
+		Consumer:    drainConsumer,
+		Producer:    producer,
+		Limiter:     rerouteLimiter,
+		ConnectorID: bindEnv.ID,
+		Logger:      logger,
+	})
+
 	logger.InfoContext(ctx, "starting", "config", cfg, "connector_addr", bindEnv.Addr)
 
 	// Ops and the connector pool tear down together; the unordered supervisor fits (guide de codage §5).
 	var g supervisor.Group
 	g.Add("ops server", func(c context.Context) error { return ops.Run(c, cfg.ShutdownTimeout) })
 	g.Add("connector pool", svc.Run)
+	g.Add("reroute-park drainer", drainer.Run)
 	if err := g.Run(ctx, logger); err != nil {
 		return err
 	}

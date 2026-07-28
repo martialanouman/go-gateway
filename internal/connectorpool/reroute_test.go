@@ -203,3 +203,54 @@ func TestRerouteOnBreakerOpenSkipsSubmit(t *testing.T) {
 		t.Errorf("submits = %d, want 2 (the third message was rerouted on the open breaker, not submitted)", got)
 	}
 }
+
+// rerouteServiceLim is rerouteService plus an injected reroute limiter (parking gate, step-126).
+func rerouteServiceLim(t *testing.T, self uuid.UUID, rec kafka.Record, lim connectorpool.RerouteLimiter) *recordingProducer {
+	t.Helper()
+	smsc := fakesmsc.Start(t, fakesmsc.Config{OnSubmit: func(smpp.SubmitSM) fakesmsc.Resp { return fakesmsc.SysErr() }})
+	prod := &recordingProducer{got: make(chan struct{}, 4)}
+	rrec := otelrec.New(t)
+	svc := connectorpool.New(connectorpool.Deps{
+		Consumer:       &fakeConsumer{records: []kafka.Record{rec}},
+		CDR:            &fakeCDR{},
+		Producer:       prod,
+		RerouteLimiter: lim,
+		ConnectorID:    self,
+		Bind:           poolBind(smsc.Addr(), 1),
+		Tracer:         observability.Tracer(rrec.Provider(), "connector-pool"),
+	})
+	if err := svc.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	return prod
+}
+
+// TestRerouteParksWhenTargetSaturated: a reroute whose target has no capacity is published to
+// mt.reroute-park (not mt.routed), preserving the target as ConnectorID for the drainer.
+func TestRerouteParksWhenTargetSaturated(t *testing.T) {
+	a, b := uuid.New(), uuid.New()
+	lim := &fakeRerouteLimiter{} // allow=false → no capacity → park
+	prod := rerouteServiceLim(t, a, chainRouted(t, a, []uuid.UUID{a, b}), lim)
+
+	recs := prod.records()
+	if len(recs) != 1 || recs[0].Topic != kafka.TopicMTReroutePark {
+		t.Fatalf("produced %+v, want one mt.reroute-park record", recs)
+	}
+	got, _ := pipeline.DecodeRouted(recs[0])
+	if got.ConnectorID != b {
+		t.Errorf("parked record connector = %s, want the target %s", got.ConnectorID, b)
+	}
+}
+
+// TestRerouteToRoutedWhenTargetHasCapacity: with capacity, the reroute goes straight to mt.routed.
+func TestRerouteToRoutedWhenTargetHasCapacity(t *testing.T) {
+	a, b := uuid.New(), uuid.New()
+	lim := &fakeRerouteLimiter{}
+	lim.allow.Store(true) // capacity available → direct reroute
+	prod := rerouteServiceLim(t, a, chainRouted(t, a, []uuid.UUID{a, b}), lim)
+
+	recs := prod.records()
+	if len(recs) != 1 || recs[0].Topic != kafka.TopicMTRouted {
+		t.Fatalf("produced %+v, want one mt.routed reroute", recs)
+	}
+}
