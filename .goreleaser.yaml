@@ -51,6 +51,13 @@ builds:
     goos: [linux]
     goarch: [amd64, arm64]
     ldflags: *ldflags
+  - id: billing-svc
+    main: ./cmd/billing-svc
+    binary: billing-svc
+    env: [CGO_ENABLED=0]
+    goos: [linux]
+    goarch: [amd64, arm64]
+    ldflags: *ldflags
   - id: mo-dlr-router-svc
     main: ./cmd/mo-dlr-router-svc
     binary: mo-dlr-router-svc
@@ -103,6 +110,10 @@ archives:
     name_template: *archive_name
   - id: session-manager-svc
     ids: [session-manager-svc]
+    formats: ["tar.gz"]
+    name_template: *archive_name
+  - id: billing-svc
+    ids: [billing-svc]
     formats: ["tar.gz"]
     name_template: *archive_name
   - id: mo-dlr-router-svc
