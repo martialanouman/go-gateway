@@ -2,8 +2,9 @@
 // releases credits ATOMICALLY in Redis Lua (never a Go read-modify-write on shared balance state) and is
 // idempotent by message_id (invariant c). Redis is a CACHE; PostgreSQL (via a LedgerStore) is the durable
 // authority — every Redis mutation is mirrored to the append-only ledger, and a cold cache is rehydrated
-// from the ledger, fail-closed. MO accounting (step-143) and overdraft/postpaid config (step-142b) live
-// elsewhere; this package fixes the strict-prepaid MT lifecycle (floor 0) and the idempotency guarantees.
+// from the ledger, fail-closed. It resolves the per-customer reserve floor (prepaid/overdraft/postpaid,
+// step-142b) from an immutable config snapshot, and bounds cache/durable divergence with a balance-cache
+// TTL. MO accounting (step-143) lives elsewhere.
 //
 // It REQUIRES a non-clustered Redis/Dragonfly: the reserve/release scripts touch the balance key (by
 // owner) and the reservation key (by message_id), which fall on different Cluster slots — call
@@ -45,6 +46,13 @@ const directionMT = cp.BillingDirectionMT
 // norm and the slow ledger-recovery path is only hit after a genuine outage.
 const defaultHoldTTL = 5 * time.Minute
 
+// defaultBalanceCacheTTL bounds how long the balance cache lives before a reserve must rehydrate it from
+// the durable authority. It exists to CAP cache/durable divergence: reserve.lua/release.lua use KEEPTTL,
+// so the key expires this long after each rehydrate regardless of activity, and any drift (from a rare
+// concurrent race, §step-142a review) self-heals on the next rehydrate. Rehydration is always consistent
+// because RecordDurable(reserve) is synchronous — the durable balance already reflects outstanding holds.
+const defaultBalanceCacheTTL = 10 * time.Minute
+
 // LedgerStore is the durable authority (control_plane balances + billing_ledger, step-141). The interface
 // is declared here, consumer-side (convention §2); *postgres.BillingRepo satisfies it.
 type LedgerStore interface {
@@ -75,14 +83,23 @@ type Owner struct {
 // Accountant is the MT billing core: it drives the Lua scripts against Redis and mirrors every movement
 // to the durable LedgerStore.
 type Accountant struct {
-	rdb     *redis.Client
-	store   LedgerStore
-	reserve *redis.Script
-	capture *redis.Script
-	release *redis.Script
-	holdTTL time.Duration
-	logger  *slog.Logger
+	rdb        *redis.Client
+	store      LedgerStore
+	config     ConfigSource
+	reserve    *redis.Script
+	capture    *redis.Script
+	release    *redis.Script
+	holdTTL    time.Duration
+	balanceTTL time.Duration
+	logger     *slog.Logger
 }
+
+// strictPrepaid is the default ConfigSource: every owner reserves against a floor of 0 (strict
+// prepaid, no overdraft). It keeps the Accountant safe by default until real per-customer config is wired
+// in via WithConfigSource.
+type strictPrepaid struct{}
+
+func (strictPrepaid) FloorFor(uuid.UUID) (hasFloor bool, floor int) { return true, 0 }
 
 // Option tunes an Accountant.
 type Option func(*Accountant)
@@ -105,16 +122,38 @@ func WithLogger(l *slog.Logger) Option {
 	}
 }
 
+// WithConfigSource sets the per-customer reserve-floor source (prepaid/overdraft/postpaid). Without it,
+// every owner reserves against strict prepaid (floor 0). config-sync builds the source's snapshot.
+func WithConfigSource(src ConfigSource) Option {
+	return func(a *Accountant) {
+		if src != nil {
+			a.config = src
+		}
+	}
+}
+
+// WithBalanceCacheTTL overrides how long the balance cache lives before a reserve rehydrates it — the
+// bound on cache/durable divergence (see defaultBalanceCacheTTL).
+func WithBalanceCacheTTL(d time.Duration) Option {
+	return func(a *Accountant) {
+		if d > 0 {
+			a.balanceTTL = d
+		}
+	}
+}
+
 // New builds an Accountant over rdb (a non-clustered Redis) and the durable store.
 func New(rdb *redis.Client, store LedgerStore, opts ...Option) *Accountant {
 	a := &Accountant{
-		rdb:     rdb,
-		store:   store,
-		reserve: redis.NewScript(reserveSrc),
-		capture: redis.NewScript(captureSrc),
-		release: redis.NewScript(releaseSrc),
-		holdTTL: defaultHoldTTL,
-		logger:  slog.Default(),
+		rdb:        rdb,
+		store:      store,
+		config:     strictPrepaid{},
+		reserve:    redis.NewScript(reserveSrc),
+		capture:    redis.NewScript(captureSrc),
+		release:    redis.NewScript(releaseSrc),
+		holdTTL:    defaultHoldTTL,
+		balanceTTL: defaultBalanceCacheTTL,
+		logger:     slog.Default(),
 	}
 	for _, o := range opts {
 		o(a)
@@ -159,9 +198,26 @@ func (a *Accountant) Reserve(ctx context.Context, owner Owner, messageID uuid.UU
 	}
 	bkey, rkey := balanceKey(owner), reservationKey(messageID)
 
+	// Per-customer floor: strict prepaid (floor 0), overdraft (floor -limit) or a postpaid hard limit; a
+	// soft/unfloored postpaid customer reserves with has_floor=0. An unknown customer fails closed to strict
+	// prepaid. Read lock-free from the immutable config snapshot (step-142b).
+	hasFloor, floor := a.config.FloorFor(owner.CustomerID)
+	if owner.Type == cp.OwnerTypeSMPPAccount {
+		// The overdraft/credit limit is a CUSTOMER-level figure, but this balance is per SMPP account
+		// (balance_scope=smpp_account). Applying the customer limit to each account balance would multiply the
+		// customer's credit exposure by the number of accounts. Until a per-account limit model exists,
+		// account-scoped balances reserve against strict prepaid (money-safe: no unbounded aggregate
+		// overdraft); the customer limit applies only to a customer-scoped balance. Pre-prod: per-account
+		// limits are a product decision (step-142b notes, memory billing-account-scope-floor).
+		hasFloor, floor = true, 0
+	}
+	floorFlag := 0
+	if hasFloor {
+		floorFlag = 1
+	}
+
 	for attempt := 0; attempt < 2; attempt++ {
-		// has_floor=1, floor=0 → strict prepaid (the balance may not go negative). Overdraft/postpaid is 142b.
-		res, err := a.reserve.Run(ctx, a.rdb, []string{bkey, rkey}, credits, 1, 0, a.holdTTL.Milliseconds()).Slice()
+		res, err := a.reserve.Run(ctx, a.rdb, []string{bkey, rkey}, credits, floorFlag, floor, a.holdTTL.Milliseconds()).Slice()
 		if err != nil {
 			return 0, fmt.Errorf("billing: reserve script: %w", err)
 		}
@@ -425,7 +481,10 @@ func (a *Accountant) rehydrate(ctx context.Context, bkey string, owner Owner) er
 	if !found {
 		bal = 0
 	}
-	if err := a.rdb.SetNX(ctx, bkey, bal, 0).Err(); err != nil {
+	// A BOUNDED TTL (not 0): the cache expires balanceTTL after this rehydrate (reserve.lua/release.lua
+	// preserve it with KEEPTTL), so any cache/durable drift self-heals on the next rehydrate. SetNX still
+	// guards against clobbering a concurrently-warmed value.
+	if err := a.rdb.SetNX(ctx, bkey, bal, a.balanceTTL).Err(); err != nil {
 		return fmt.Errorf("billing: rehydrate set: %w", err)
 	}
 	return nil

@@ -583,7 +583,11 @@ CREATE TABLE control_plane.billing_customers (
   credit_limit                 integer CHECK (credit_limit IS NULL OR credit_limit >= 0),  -- postpaid MT soft-limit
   credit_limit_is_hard         boolean NOT NULL DEFAULT false,
   external_billing_provider_id uuid REFERENCES control_plane.external_billing_providers(id) ON DELETE SET NULL,
-  updated_at                   timestamptz NOT NULL DEFAULT now()
+  updated_at                   timestamptz NOT NULL DEFAULT now(),
+  -- An enabled limit MUST carry its value (§6.9, step-142b): a flag without a value would fail closed to
+  -- strict prepaid on the hot path and silently cut the customer off — reject it at write time instead.
+  CONSTRAINT billing_customers_overdraft_limit_ck   CHECK (NOT overdraft_enabled OR overdraft_limit IS NOT NULL),
+  CONSTRAINT billing_customers_hard_credit_limit_ck CHECK (NOT credit_limit_is_hard OR credit_limit IS NOT NULL)
 );
 
 -- -----------------------------------------------------------------------------------------------------

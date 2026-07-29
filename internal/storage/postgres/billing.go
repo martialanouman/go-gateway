@@ -63,6 +63,28 @@ func (r *BillingRepo) BillingCustomer(ctx context.Context, customerID uuid.UUID)
 	}, true, nil
 }
 
+// ListBillingCustomers returns every customer's MT billing configuration, for config-sync to compile the
+// reserve-floor snapshot (step-142b). Read whole; the snapshot is swapped atomically.
+func (r *BillingRepo) ListBillingCustomers(ctx context.Context) ([]cp.BillingCustomer, error) {
+	rows, err := r.q.ListBillingCustomers(ctx)
+	if err != nil {
+		return nil, translate("list billing customers", err)
+	}
+	out := make([]cp.BillingCustomer, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, cp.BillingCustomer{
+			CustomerID:                row.CustomerID,
+			BillingMode:               cp.BillingMode(row.BillingMode),
+			OverdraftEnabled:          row.OverdraftEnabled,
+			OverdraftLimit:            intptr(row.OverdraftLimit),
+			CreditLimit:               intptr(row.CreditLimit),
+			CreditLimitIsHard:         row.CreditLimitIsHard,
+			ExternalBillingProviderID: row.ExternalBillingProviderID,
+		})
+	}
+	return out, nil
+}
+
 // LedgerEntryExists reports whether a ledger entry of entryType already exists for messageID. It is the
 // authoritative cross-partition idempotency guard (§6.9): the capture path reads it before committing so
 // a redelivered message_id never double-charges, since the same-day unique index cannot span partitions.
