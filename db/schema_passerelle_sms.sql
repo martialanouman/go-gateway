@@ -598,7 +598,7 @@ CREATE TABLE control_plane.billing_ledger (
   customer_id   uuid NOT NULL REFERENCES control_plane.customers(id) ON DELETE CASCADE,
   account_id    uuid REFERENCES control_plane.smpp_accounts(id) ON DELETE SET NULL,  -- attribution for shared pool
   message_id    uuid,      -- null for manual top-ups/adjustments (lives in the CDR store; no FK here)
-  entry_type    text NOT NULL CHECK (entry_type IN ('reserve','capture','release','refund','topup','adjustment')),
+  entry_type    text NOT NULL CHECK (entry_type IN ('reserve','capture','release','refund','topup','adjustment','mo_charge')),
   credits       integer NOT NULL,          -- signed
   balance_after integer NOT NULL,
   reference     text,
@@ -640,7 +640,7 @@ CREATE TABLE control_plane.billing_ledger_2026_07_15
 -- -----------------------------------------------------------------------------------------------------
 CREATE TABLE control_plane.billing_idempotency (
   message_id uuid NOT NULL,
-  entry_type text NOT NULL CHECK (entry_type IN ('reserve','capture','release','refund')),
+  entry_type text NOT NULL CHECK (entry_type IN ('reserve','capture','release','refund','mo_charge')),
   created_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (message_id, entry_type)
 );

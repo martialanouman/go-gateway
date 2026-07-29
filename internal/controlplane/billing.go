@@ -3,8 +3,9 @@ package controlplane
 import "github.com/google/uuid"
 
 // EntryType is a billing_ledger.entry_type — the kind of a ledger movement (§6.9). reserve/capture/
-// release track the MT send lifecycle (hold → commit → refund); refund/topup/adjustment are settlement
-// and operator movements. It mirrors the CHECK constraint on control_plane.billing_ledger.entry_type.
+// release track the MT send lifecycle (hold → commit → refund); mo_charge is a single MO meter debit;
+// refund/topup/adjustment are settlement and operator movements. It mirrors the CHECK constraint on
+// control_plane.billing_ledger.entry_type.
 type EntryType string
 
 // The billing_ledger entry types (control_plane.billing_ledger.entry_type CHECK).
@@ -15,12 +16,15 @@ const (
 	EntryRefund     EntryType = "refund"
 	EntryTopup      EntryType = "topup"
 	EntryAdjustment EntryType = "adjustment"
+	// EntryMOCharge is a single MO meter debit (mobile-originated return path, §6.9): credits < 0 on the
+	// MO balance. Message-scoped and idempotent, unlike the manual topup/adjustment types.
+	EntryMOCharge EntryType = "mo_charge"
 )
 
 // Valid reports whether e is a known entry type.
 func (e EntryType) Valid() bool {
 	switch e {
-	case EntryReserve, EntryCapture, EntryRelease, EntryRefund, EntryTopup, EntryAdjustment:
+	case EntryReserve, EntryCapture, EntryRelease, EntryRefund, EntryTopup, EntryAdjustment, EntryMOCharge:
 		return true
 	}
 	return false
@@ -46,6 +50,7 @@ type BillingCustomer struct {
 	OverdraftLimit            *int
 	CreditLimit               *int
 	CreditLimitIsHard         bool
+	MoBillingFloor            *int // how negative the MO meter may run before accrual stops+alerts; nil = no floor
 	ExternalBillingProviderID *uuid.UUID
 }
 

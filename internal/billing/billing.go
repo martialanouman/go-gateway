@@ -38,8 +38,24 @@ var captureSrc string
 //go:embed lua/release.lua
 var releaseSrc string
 
-// directionMT is the only direction this MT core touches; MO is a separate counter (step-143).
-const directionMT = cp.BillingDirectionMT
+//go:embed lua/recordmo.lua
+var recordMOSrc string
+
+//go:embed lua/undomo.lua
+var undoMOSrc string
+
+// directionMT / directionMO name the two separate balances (§6.9). MT is a blocking prepaid balance; MO is
+// a non-blocking postpaid meter (step-143). They never share a decision path.
+const (
+	directionMT = cp.BillingDirectionMT
+	directionMO = cp.BillingDirectionMO
+)
+
+// defaultMOSeenTTL is the first-layer MO idempotency window (the billing:mo-seen:{message_id} key). A
+// redelivery within it is a cheap no-op that never touches the meter; a redelivery past it falls to the
+// durable idempotency guard (which self-heals, at a tiny near-floor suppression risk). Longer = more Redis
+// keys at MO volume; tune with WithMOSeenTTL.
+const defaultMOSeenTTL = time.Hour
 
 // defaultHoldTTL is how long a reservation hold survives without a capture/release. It MUST exceed the
 // worst SMSC round-trip plus the connector pool's retry window, so the fast path (a live hold) is the
@@ -89,8 +105,11 @@ type Accountant struct {
 	reserve    *redis.Script
 	capture    *redis.Script
 	release    *redis.Script
+	recordMO   *redis.Script
+	undoMO     *redis.Script
 	holdTTL    time.Duration
 	balanceTTL time.Duration
+	moSeenTTL  time.Duration
 	logger     *slog.Logger
 }
 
@@ -100,6 +119,9 @@ type Accountant struct {
 type strictPrepaid struct{}
 
 func (strictPrepaid) FloorFor(uuid.UUID) (hasFloor bool, floor int) { return true, 0 }
+
+// MOFloor: the default MO meter is unbounded (no floor) until real config is wired.
+func (strictPrepaid) MOFloor(uuid.UUID) (floor int, hasFloor bool) { return 0, false }
 
 // Option tunes an Accountant.
 type Option func(*Accountant)
@@ -142,6 +164,15 @@ func WithBalanceCacheTTL(d time.Duration) Option {
 	}
 }
 
+// WithMOSeenTTL overrides the first-layer MO idempotency window (see defaultMOSeenTTL).
+func WithMOSeenTTL(d time.Duration) Option {
+	return func(a *Accountant) {
+		if d > 0 {
+			a.moSeenTTL = d
+		}
+	}
+}
+
 // New builds an Accountant over rdb (a non-clustered Redis) and the durable store.
 func New(rdb *redis.Client, store LedgerStore, opts ...Option) *Accountant {
 	a := &Accountant{
@@ -151,8 +182,11 @@ func New(rdb *redis.Client, store LedgerStore, opts ...Option) *Accountant {
 		reserve:    redis.NewScript(reserveSrc),
 		capture:    redis.NewScript(captureSrc),
 		release:    redis.NewScript(releaseSrc),
+		recordMO:   redis.NewScript(recordMOSrc),
+		undoMO:     redis.NewScript(undoMOSrc),
 		holdTTL:    defaultHoldTTL,
 		balanceTTL: defaultBalanceCacheTTL,
+		moSeenTTL:  defaultMOSeenTTL,
 		logger:     slog.Default(),
 	}
 	for _, o := range opts {
@@ -180,8 +214,16 @@ func balanceKey(o Owner) string {
 	return "billing:balance:" + directionMT + ":" + o.Type + ":" + o.ID.String()
 }
 
+func moBalanceKey(o Owner) string {
+	return "billing:balance:" + directionMO + ":" + o.Type + ":" + o.ID.String()
+}
+
 func reservationKey(messageID uuid.UUID) string {
 	return "billing:reservation:" + messageID.String()
+}
+
+func moSeenKey(messageID uuid.UUID) string {
+	return "billing:mo-seen:" + messageID.String()
 }
 
 // Reserve holds `credits` (the message's segment count, > 0) against the owner's MT balance for
@@ -440,6 +482,101 @@ func (a *Accountant) Release(ctx context.Context, owner Owner, messageID uuid.UU
 	return nil
 }
 
+// MOResult reports the outcome of a RecordMO. Balance is the MO meter after the call. Charged is the
+// credits actually accrued (0 on a duplicate or a suppressed MO). FloorReached is true on exactly the one
+// MO that drove the meter to its floor (the caller alerts once, e.g. step-184 real-time transport).
+// Suppressed is true when the meter was already at its floor and this MO was NOT accrued — a visible,
+// meterable revenue loss the caller should count.
+type MOResult struct {
+	Balance      int
+	Charged      int
+	FloorReached bool
+	Suppressed   bool
+}
+
+// RecordMO accrues one mobile-originated message on the owner's MO meter (§6.9, step-143). The MO meter is
+// a POSTPAID counter that runs negative and NEVER blocks anything — it shares no decision path with the MT
+// balance. Accrual is atomic in Lua and idempotent by message_id (a short-TTL seen-key plus the durable
+// idempotency guard). Accrual STOPS at mo_billing_floor: the MO that crosses accrues in full and reports
+// FloorReached once; later MOs at the floor are Suppressed (not accrued). On a cold cache it rehydrates
+// from the durable authority and retries; on a durable-write failure it compensates the speculative cache
+// debit and returns the error.
+func (a *Accountant) RecordMO(ctx context.Context, owner Owner, messageID uuid.UUID, credits int) (MOResult, error) {
+	if credits <= 0 {
+		return MOResult{}, fmt.Errorf("billing: record MO: credits must be positive, got %d", credits)
+	}
+	bkey, skey := moBalanceKey(owner), moSeenKey(messageID)
+	floor, hasFloor := a.config.MOFloor(owner.CustomerID)
+	floorFlag := 0
+	if hasFloor {
+		floorFlag = 1
+	}
+
+	for attempt := 0; attempt < 2; attempt++ {
+		res, err := a.recordMO.Run(ctx, a.rdb, []string{bkey, skey}, credits, floorFlag, floor, a.moSeenTTL.Milliseconds()).Slice()
+		if err != nil {
+			return MOResult{}, fmt.Errorf("billing: record MO script: %w", err)
+		}
+		switch status := res[0].(string); status {
+		case "cold":
+			if err := a.rehydrateMO(ctx, bkey, owner); err != nil {
+				return MOResult{}, err // fail-closed
+			}
+			continue // retry with the warm cache
+
+		case "duplicate":
+			// Already accrued within the seen window — a no-op. Report the current meter, nothing charged.
+			return MOResult{Balance: toInt(res[1]), Charged: 0}, nil
+
+		case "stopped":
+			// The meter is already at/below the floor: this MO is dropped (accrual stopped). Surface it so
+			// the caller can meter the suppressed-MO revenue loss (it is not written to the ledger).
+			a.logger.WarnContext(ctx, "billing: MO suppressed — meter at floor, not accrued",
+				"customer_id", owner.CustomerID, "owner_type", owner.Type, "owner_id", owner.ID, "message_id", messageID)
+			return MOResult{Balance: toInt(res[1]), Suppressed: true, Charged: 0}, nil
+
+		case "charged":
+			newBalance, crossed := toInt(res[1]), toInt(res[2]) == 1
+			_, applied, err := a.store.RecordDurable(ctx, a.moEntry(owner, messageID, -credits))
+			if err != nil {
+				// Undo the speculative cache debit on an un-cancellable context, then fail closed. INCRBY
+				// preserves the key's TTL; DEL of the seen-key lets a legitimate retry re-accrue.
+				a.undoMOCacheDebit(ctx, bkey, skey, credits, messageID)
+				return MOResult{}, fmt.Errorf("billing: record MO durable: %w", err)
+			}
+			if !applied {
+				// A replay past the seen-TTL: the durable meter already holds it. Undo the speculative
+				// cache re-debit so the meter cannot drift below the durable value.
+				a.undoMOCacheDebit(ctx, bkey, skey, credits, messageID)
+				return MOResult{Balance: newBalance + credits, Charged: 0}, nil
+			}
+			if crossed {
+				a.logger.WarnContext(ctx, "billing: MO meter reached its floor",
+					"customer_id", owner.CustomerID, "owner_type", owner.Type, "owner_id", owner.ID,
+					"balance", newBalance, "floor", floor)
+			}
+			return MOResult{Balance: newBalance, Charged: credits, FloorReached: crossed}, nil
+
+		default:
+			return MOResult{}, fmt.Errorf("billing: record MO unexpected status %q", status)
+		}
+	}
+	return MOResult{}, fmt.Errorf("billing: record MO %s: still cold after rehydration", messageID)
+}
+
+// undoMOCacheDebit reverses a speculative recordmo.lua meter debit whose durable side did not stick (a
+// replay past the seen-TTL, or a durable failure). undomo.lua adds the credits back only if the meter key
+// still exists (preserving its TTL) — never resurrecting an expired key as a phantom positive value — and
+// clears the seen-key so a legitimate retry can re-accrue. On an un-cancellable context so a timed-out
+// request still compensates.
+func (a *Accountant) undoMOCacheDebit(ctx context.Context, bkey, skey string, credits int, messageID uuid.UUID) {
+	ctx = context.WithoutCancel(ctx)
+	if err := a.undoMO.Run(ctx, a.rdb, []string{bkey, skey}, credits).Err(); err != nil {
+		a.logger.ErrorContext(ctx, "billing: MO cache undo failed — meter may drift until rehydration",
+			"message_id", messageID, "err", err)
+	}
+}
+
 // undoReserveCacheDebit reverses a speculative reserve.lua cache debit whose durable side did not stick —
 // a cross-partition replay (RecordDurable applied=false) or a genuine durable failure. release.lua refunds
 // the fresh hold in place if it is still live ("released"); if a concurrent actor already consumed the
@@ -490,6 +627,31 @@ func (a *Accountant) entry(owner Owner, messageID *uuid.UUID, et cp.EntryType, c
 		CustomerID: owner.CustomerID, AccountID: owner.AccountID, MessageID: messageID,
 		EntryType: et, Credits: credits,
 	}
+}
+
+// moEntry builds an MO meter ledger entry (direction=mo, entry_type=mo_charge, credits<0).
+func (a *Accountant) moEntry(owner Owner, messageID uuid.UUID, credits int) cp.LedgerEntry {
+	return cp.LedgerEntry{
+		OwnerType: owner.Type, OwnerID: owner.ID, Direction: directionMO,
+		CustomerID: owner.CustomerID, AccountID: owner.AccountID, MessageID: &messageID,
+		EntryType: cp.EntryMOCharge, Credits: credits,
+	}
+}
+
+// rehydrateMO loads the durable MO meter into the cold cache with SET NX + bounded TTL, mirroring
+// rehydrate for the MO direction. Fail-closed on a durable-read error.
+func (a *Accountant) rehydrateMO(ctx context.Context, bkey string, owner Owner) error {
+	bal, found, err := a.store.Balance(ctx, owner.Type, owner.ID, directionMO)
+	if err != nil {
+		return fmt.Errorf("billing: rehydrate MO balance (fail-closed): %w", err)
+	}
+	if !found {
+		bal = 0
+	}
+	if err := a.rdb.SetNX(ctx, bkey, bal, a.balanceTTL).Err(); err != nil {
+		return fmt.Errorf("billing: rehydrate MO set: %w", err)
+	}
+	return nil
 }
 
 // terminalLockTTL bounds a crashed holder's lock; terminalCriticalTimeout bounds the critical section

@@ -17,6 +17,8 @@ import (
 // limit). The interface is declared consumer-side (convention §2); *ConfigProvider satisfies it.
 type ConfigSource interface {
 	FloorFor(customerID uuid.UUID) (hasFloor bool, floor int)
+	// MOFloor returns the MO meter floor; hasFloor=false means the meter is unbounded (no floor).
+	MOFloor(customerID uuid.UUID) (floor int, hasFloor bool)
 }
 
 // floorConfig is the precompiled reserve floor for one customer.
@@ -59,27 +61,47 @@ func floorForCustomer(c cp.BillingCustomer) floorConfig {
 // (control-plane briefly unreachable) is still served in full — staleness is bounded by config-sync's
 // recovery, never a mass downgrade of every customer to strict prepaid.
 type ConfigSnapshot struct {
-	floors map[uuid.UUID]floorConfig
+	byCustomer map[uuid.UUID]customerConfig
 }
 
-// BuildConfigSnapshot precompiles the reserve floor for each customer's billing configuration.
+// customerConfig is a customer's precompiled billing floors: the MT reserve floor and the MO meter floor.
+type customerConfig struct {
+	mt      floorConfig
+	moFloor *int // mo_billing_floor: how negative the MO meter may run before accrual stops; nil = no floor
+}
+
+// BuildConfigSnapshot precompiles the MT reserve floor and MO meter floor for each customer's config.
 func BuildConfigSnapshot(customers []cp.BillingCustomer) *ConfigSnapshot {
-	floors := make(map[uuid.UUID]floorConfig, len(customers))
+	byCustomer := make(map[uuid.UUID]customerConfig, len(customers))
 	for _, c := range customers {
-		floors[c.CustomerID] = floorForCustomer(c)
+		byCustomer[c.CustomerID] = customerConfig{mt: floorForCustomer(c), moFloor: c.MoBillingFloor}
 	}
-	return &ConfigSnapshot{floors: floors}
+	return &ConfigSnapshot{byCustomer: byCustomer}
 }
 
-// FloorFor returns the reserve floor for a customer. An unknown customer, or a nil snapshot (never built —
-// startup before config-sync's first push), fails closed to strict prepaid (true, 0).
+// FloorFor returns the MT reserve floor for a customer. An unknown customer, or a nil snapshot (never built
+// — startup before config-sync's first push), fails closed to strict prepaid (true, 0).
 func (s *ConfigSnapshot) FloorFor(customerID uuid.UUID) (hasFloor bool, floor int) {
 	if s != nil {
-		if fc, ok := s.floors[customerID]; ok {
-			return fc.hasFloor, fc.floor
+		if c, ok := s.byCustomer[customerID]; ok {
+			return c.mt.hasFloor, c.mt.floor
 		}
 	}
 	return true, 0
+}
+
+// MOFloor returns the MO meter floor for a customer. hasFloor=false means no floor — the MO meter is
+// unbounded and never stops (nil mo_billing_floor, or an unknown/absent customer). The floor is the most
+// negative the meter may reach; accrual stops once the meter is at or below it. A floor of 0 is valid and
+// distinct from nil: the meter starts at 0, so it is already at its floor — no MO accrues (use a negative
+// floor to allow accrual down to it).
+func (s *ConfigSnapshot) MOFloor(customerID uuid.UUID) (floor int, hasFloor bool) {
+	if s != nil {
+		if c, ok := s.byCustomer[customerID]; ok && c.moFloor != nil {
+			return *c.moFloor, true
+		}
+	}
+	return 0, false
 }
 
 // ConfigProvider holds the current ConfigSnapshot behind an atomic pointer. config-sync
@@ -98,6 +120,11 @@ func (p *ConfigProvider) Store(s *ConfigSnapshot) {
 // snapshot has been stored yet.
 func (p *ConfigProvider) FloorFor(customerID uuid.UUID) (hasFloor bool, floor int) {
 	return p.snap.Load().FloorFor(customerID)
+}
+
+// MOFloor reads the current snapshot's MO meter floor for a customer (no floor when no snapshot yet).
+func (p *ConfigProvider) MOFloor(customerID uuid.UUID) (floor int, hasFloor bool) {
+	return p.snap.Load().MOFloor(customerID)
 }
 
 // CustomerLister loads every customer's billing configuration. *postgres.BillingRepo satisfies it;

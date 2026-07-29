@@ -91,7 +91,7 @@ func (q *Queries) GetBalance(ctx context.Context, arg GetBalanceParams) (int32, 
 
 const getBillingCustomer = `-- name: GetBillingCustomer :one
 SELECT billing_mode, overdraft_enabled, overdraft_limit, credit_limit, credit_limit_is_hard,
-       external_billing_provider_id
+       mo_billing_floor, external_billing_provider_id
 FROM control_plane.customers
 WHERE id = $1
 `
@@ -102,6 +102,7 @@ type GetBillingCustomerRow struct {
 	OverdraftLimit            *int32
 	CreditLimit               *int32
 	CreditLimitIsHard         bool
+	MoBillingFloor            *int32
 	ExternalBillingProviderID *uuid.UUID
 }
 
@@ -117,6 +118,7 @@ func (q *Queries) GetBillingCustomer(ctx context.Context, customerID uuid.UUID) 
 		&i.OverdraftLimit,
 		&i.CreditLimit,
 		&i.CreditLimitIsHard,
+		&i.MoBillingFloor,
 		&i.ExternalBillingProviderID,
 	)
 	return i, err
@@ -211,7 +213,7 @@ func (q *Queries) LedgerEntryExists(ctx context.Context, arg LedgerEntryExistsPa
 
 const listBillingCustomers = `-- name: ListBillingCustomers :many
 SELECT id AS customer_id, billing_mode, overdraft_enabled, overdraft_limit, credit_limit,
-       credit_limit_is_hard, external_billing_provider_id
+       credit_limit_is_hard, mo_billing_floor, external_billing_provider_id
 FROM control_plane.customers
 WHERE billing_enabled
 `
@@ -223,6 +225,7 @@ type ListBillingCustomersRow struct {
 	OverdraftLimit            *int32
 	CreditLimit               *int32
 	CreditLimitIsHard         bool
+	MoBillingFloor            *int32
 	ExternalBillingProviderID *uuid.UUID
 }
 
@@ -245,6 +248,7 @@ func (q *Queries) ListBillingCustomers(ctx context.Context) ([]ListBillingCustom
 			&i.OverdraftLimit,
 			&i.CreditLimit,
 			&i.CreditLimitIsHard,
+			&i.MoBillingFloor,
 			&i.ExternalBillingProviderID,
 		); err != nil {
 			return nil, err

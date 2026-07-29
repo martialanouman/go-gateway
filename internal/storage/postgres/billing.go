@@ -68,6 +68,7 @@ func (r *BillingRepo) BillingCustomer(ctx context.Context, customerID uuid.UUID)
 		OverdraftLimit:            intptr(row.OverdraftLimit),
 		CreditLimit:               intptr(row.CreditLimit),
 		CreditLimitIsHard:         row.CreditLimitIsHard,
+		MoBillingFloor:            intptr(row.MoBillingFloor),
 		ExternalBillingProviderID: row.ExternalBillingProviderID,
 	}, true, nil
 }
@@ -89,6 +90,7 @@ func (r *BillingRepo) ListBillingCustomers(ctx context.Context) ([]cp.BillingCus
 			OverdraftLimit:            intptr(row.OverdraftLimit),
 			CreditLimit:               intptr(row.CreditLimit),
 			CreditLimitIsHard:         row.CreditLimitIsHard,
+			MoBillingFloor:            intptr(row.MoBillingFloor),
 			ExternalBillingProviderID: row.ExternalBillingProviderID,
 		})
 	}
