@@ -76,18 +76,17 @@ func TestPostpaidHardLimitFloor(t *testing.T) {
 	}
 }
 
-// TestAccountScopedBalanceIgnoresCustomerOverdraft is the money-safety guard for balance_scope=smpp_account:
-// a customer's overdraft limit must NOT be applied to each per-account balance (that would multiply the
-// customer's credit exposure by the number of accounts). An account-scoped owner reserves against strict
-// prepaid regardless of the customer's overdraft config — no reserve below zero.
-func TestAccountScopedBalanceIgnoresCustomerOverdraft(t *testing.T) {
+// TestAccountScopedSoftPostpaidDoesNotBlock proves the step-142c override removal is correct: an
+// account-scoped balance is floor-driven by its config (the DB forbids overdraft/hard-limit for
+// account-scoped, so only strict-prepaid or soft-postpaid can reach here). A SOFT postpaid customer has no
+// floor, so an account-scoped balance still reserves past zero — it must NOT be forced to strict prepaid.
+func TestAccountScopedSoftPostpaidDoesNotBlock(t *testing.T) {
 	h := newBillingHarness(t, 100)
-	// The customer is configured for a generous overdraft...
-	h.setConfig(cp.BillingCustomer{BillingMode: cp.BillingPrepaid, OverdraftEnabled: true, OverdraftLimit: intptr(1000)})
+	// Soft postpaid (advisory limit, no reserve floor) — a config the DB allows for account-scoped balances.
+	h.setConfig(cp.BillingCustomer{BillingMode: cp.BillingPostpaid, CreditLimit: intptr(50), CreditLimitIsHard: false})
 	ctx := context.Background()
 
-	// ...but this owner is an ACCOUNT-scoped balance (balance_scope=smpp_account): a distinct owner key,
-	// with its own durable balance of 100.
+	// An account-scoped balance (distinct owner key) with its own durable balance of 100.
 	accountID := uuid.New()
 	h.owner.Type = cp.OwnerTypeSMPPAccount
 	h.owner.ID = accountID
@@ -98,17 +97,13 @@ func TestAccountScopedBalanceIgnoresCustomerOverdraft(t *testing.T) {
 		t.Fatalf("seed account balance: %v", err)
 	}
 
-	// 100 - 150 = -50 would be allowed under the customer's -1000 overdraft, but account-scoped balances
-	// are strict prepaid → refused, balance untouched.
-	if _, err := h.acc.Reserve(ctx, h.owner, uuid.New(), 150); !errors.Is(err, errs.ErrInsufficientCredit) {
-		t.Fatalf("account-scoped Reserve past zero = %v, want ErrInsufficientCredit (customer overdraft must not apply)", err)
+	// Soft postpaid → no floor → a reserve past zero succeeds even for an account-scoped balance.
+	bal, err := h.acc.Reserve(ctx, h.owner, uuid.New(), 300)
+	if err != nil {
+		t.Fatalf("account-scoped soft-postpaid Reserve = %v, want success (soft limit never blocks)", err)
 	}
-	if h.balance(t) != 100 {
-		t.Errorf("balance = %d, want 100 (unchanged — no per-account overdraft)", h.balance(t))
-	}
-	// A reserve within the balance still works.
-	if _, err := h.acc.Reserve(ctx, h.owner, uuid.New(), 40); err != nil {
-		t.Fatalf("account-scoped Reserve within balance: %v", err)
+	if bal != -200 {
+		t.Errorf("balance = %d, want -200 (soft postpaid does not block, no strict-prepaid override)", bal)
 	}
 }
 

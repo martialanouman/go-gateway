@@ -200,17 +200,11 @@ func (a *Accountant) Reserve(ctx context.Context, owner Owner, messageID uuid.UU
 
 	// Per-customer floor: strict prepaid (floor 0), overdraft (floor -limit) or a postpaid hard limit; a
 	// soft/unfloored postpaid customer reserves with has_floor=0. An unknown customer fails closed to strict
-	// prepaid. Read lock-free from the immutable config snapshot (step-142b).
+	// prepaid. Read lock-free from the immutable config snapshot (step-142b). An account-scoped balance is
+	// guaranteed by the DB (customers/billing_customers guards, step-142c) never to carry an overdraft or
+	// hard limit, so a per-account floor is always safe (0 strict, or none for soft postpaid) — no override
+	// needed here.
 	hasFloor, floor := a.config.FloorFor(owner.CustomerID)
-	if owner.Type == cp.OwnerTypeSMPPAccount {
-		// The overdraft/credit limit is a CUSTOMER-level figure, but this balance is per SMPP account
-		// (balance_scope=smpp_account). Applying the customer limit to each account balance would multiply the
-		// customer's credit exposure by the number of accounts. Until a per-account limit model exists,
-		// account-scoped balances reserve against strict prepaid (money-safe: no unbounded aggregate
-		// overdraft); the customer limit applies only to a customer-scoped balance. Pre-prod: per-account
-		// limits are a product decision (step-142b notes, memory billing-account-scope-floor).
-		hasFloor, floor = true, 0
-	}
 	floorFlag := 0
 	if hasFloor {
 		floorFlag = 1

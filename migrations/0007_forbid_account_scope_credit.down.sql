@@ -1,0 +1,6 @@
+DROP TRIGGER customers_no_account_scope_flip_with_credit ON control_plane.customers;
+DROP FUNCTION control_plane.forbid_account_scope_flip_with_credit();
+DROP TRIGGER billing_customers_no_account_scope_credit ON control_plane.billing_customers;
+DROP FUNCTION control_plane.forbid_account_scope_credit();
+ALTER TABLE control_plane.customers
+  DROP CONSTRAINT customers_account_scope_no_overdraft_ck;
