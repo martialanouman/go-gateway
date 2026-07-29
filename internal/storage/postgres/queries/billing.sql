@@ -14,6 +14,14 @@ SELECT billing_mode, overdraft_enabled, overdraft_limit, credit_limit, credit_li
 FROM control_plane.billing_customers
 WHERE customer_id = @customer_id;
 
+-- name: ListBillingCustomers :many
+-- Every customer's MT billing configuration, for config-sync to compile the reserve-floor snapshot
+-- (step-142b). Read whole and swapped atomically; a customer absent from the result fails closed to
+-- strict prepaid at read time.
+SELECT customer_id, billing_mode, overdraft_enabled, overdraft_limit, credit_limit, credit_limit_is_hard,
+       external_billing_provider_id
+FROM control_plane.billing_customers;
+
 -- name: LedgerEntryExists :one
 -- The AUTHORITATIVE cross-partition idempotency guard (§6.9): whether a ledger entry of entry_type
 -- already exists for message_id. Read before a capture so a redelivery of the same message_id never

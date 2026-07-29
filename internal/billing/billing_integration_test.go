@@ -23,14 +23,22 @@ type billingHarness struct {
 	acc   *billing.Accountant
 	repo  *postgres.BillingRepo
 	rdb   *redis.Client
+	cfg   *billing.ConfigProvider
 	owner billing.Owner
+}
+
+// setConfig publishes a billing configuration for the harness's customer (overdraft/postpaid floor). An
+// empty provider (the default) fails closed to strict prepaid, so tests that never call this are unchanged.
+func (h *billingHarness) setConfig(c cp.BillingCustomer) {
+	c.CustomerID = h.owner.CustomerID
+	h.cfg.Store(billing.BuildConfigSnapshot([]cp.BillingCustomer{c}))
 }
 
 func newBillingHarness(t *testing.T, initialBalance int) *billingHarness {
 	return newBillingHarnessTTL(t, initialBalance, time.Minute)
 }
 
-func newBillingHarnessTTL(t *testing.T, initialBalance int, holdTTL time.Duration) *billingHarness {
+func newBillingHarnessTTL(t *testing.T, initialBalance int, holdTTL time.Duration, extra ...billing.Option) *billingHarness {
 	t.Helper()
 	pool := pgtest.Pool(t)
 	rdb := redistest.Client(t)
@@ -50,11 +58,13 @@ func newBillingHarnessTTL(t *testing.T, initialBalance int, holdTTL time.Duratio
 		t.Fatalf("seed balance: %v", err)
 	}
 
-	acc := billing.New(rdb, repo, billing.WithHoldTTL(holdTTL))
+	cfg := &billing.ConfigProvider{} // empty → strict prepaid until a test calls setConfig
+	opts := append([]billing.Option{billing.WithHoldTTL(holdTTL), billing.WithConfigSource(cfg)}, extra...)
+	acc := billing.New(rdb, repo, opts...)
 	if err := acc.EnsureNonClustered(ctx); err != nil {
 		t.Fatalf("EnsureNonClustered on a single Redis: %v", err)
 	}
-	return &billingHarness{acc: acc, repo: repo, rdb: rdb, owner: billing.Owner{
+	return &billingHarness{acc: acc, repo: repo, rdb: rdb, cfg: cfg, owner: billing.Owner{
 		Type: cp.OwnerTypeCustomer, ID: customerID, CustomerID: customerID,
 	}}
 }
