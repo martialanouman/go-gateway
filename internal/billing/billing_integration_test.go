@@ -93,6 +93,16 @@ func (h *billingHarness) cachedBalance(t *testing.T) (value int, present bool) {
 	return v, true
 }
 
+// moBalance reads the durable MO meter for the owner.
+func (h *billingHarness) moBalance(t *testing.T) int {
+	t.Helper()
+	credits, _, err := h.repo.Balance(context.Background(), h.owner.Type, h.owner.ID, cp.BillingDirectionMO)
+	if err != nil {
+		t.Fatalf("read MO balance: %v", err)
+	}
+	return credits
+}
+
 func (h *billingHarness) ledgerCount(t *testing.T, entryType cp.EntryType, messageID uuid.UUID) int {
 	t.Helper()
 	ok, err := h.repo.LedgerEntryExists(context.Background(), messageID, entryType)

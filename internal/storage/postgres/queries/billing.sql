@@ -11,7 +11,7 @@ WHERE owner_type = @owner_type AND owner_id = @owner_id AND direction = @directi
 -- consolidation); a missing customer row is not_found. billing_mode NULL means unset (treated as strict
 -- prepaid by the floor mapping).
 SELECT billing_mode, overdraft_enabled, overdraft_limit, credit_limit, credit_limit_is_hard,
-       external_billing_provider_id
+       mo_billing_floor, external_billing_provider_id
 FROM control_plane.customers
 WHERE id = @customer_id;
 
@@ -20,7 +20,7 @@ WHERE id = @customer_id;
 -- reserve-floor snapshot (step-142b/d). Read whole and swapped atomically; a customer absent from the
 -- result (billing disabled, or not yet created) fails closed to strict prepaid at read time.
 SELECT id AS customer_id, billing_mode, overdraft_enabled, overdraft_limit, credit_limit,
-       credit_limit_is_hard, external_billing_provider_id
+       credit_limit_is_hard, mo_billing_floor, external_billing_provider_id
 FROM control_plane.customers
 WHERE billing_enabled;
 
