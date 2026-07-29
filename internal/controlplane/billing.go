@@ -35,9 +35,10 @@ const (
 	BillingDirectionMO   = "mo"
 )
 
-// BillingCustomer is a customer's MT billing configuration (control_plane.billing_customers, §6.9). The
-// balances themselves live in the balances table, not here; this row decides prepaid/postpaid, overdraft
-// and the soft/hard credit limit, and links an optional external billing provider.
+// BillingCustomer is a customer's MT billing configuration, read from control_plane.customers (§6.9,
+// step-142d consolidation). The balances themselves live in the balances table; this is the reserve-floor
+// view of a customer: prepaid/postpaid, overdraft, the soft/hard credit limit, and an optional external
+// billing provider.
 type BillingCustomer struct {
 	CustomerID                uuid.UUID
 	BillingMode               BillingMode

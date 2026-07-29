@@ -1655,6 +1655,8 @@ components:
         billing_mode: { type: [string, "null"], enum: [prepaid, postpaid, null] }
         overdraft_enabled: { type: boolean }
         overdraft_limit: { type: [integer, "null"], minimum: 0 }
+        credit_limit: { type: [integer, "null"], minimum: 0 }
+        credit_limit_is_hard: { type: boolean }
         balance_scope: { $ref: '#/components/schemas/BalanceScope' }
         mo_billing_floor: { type: [integer, "null"] }
         content_storage: { $ref: '#/components/schemas/ContentStorage' }
@@ -1674,6 +1676,8 @@ components:
         billing_mode: { type: [string, "null"], enum: [prepaid, postpaid, null] }
         overdraft_enabled: { type: boolean, default: false }
         overdraft_limit: { type: [integer, "null"], minimum: 0 }
+        credit_limit: { type: [integer, "null"], minimum: 0 }
+        credit_limit_is_hard: { type: boolean, default: false }
         balance_scope: { $ref: '#/components/schemas/BalanceScope' }
         mo_billing_floor: { type: [integer, "null"] }
         content_storage: { $ref: '#/components/schemas/ContentStorage' }
@@ -1690,6 +1694,8 @@ components:
         billing_mode: { type: [string, "null"], enum: [prepaid, postpaid, null] }
         overdraft_enabled: { type: boolean }
         overdraft_limit: { type: [integer, "null"], minimum: 0 }
+        credit_limit: { type: [integer, "null"], minimum: 0 }
+        credit_limit_is_hard: { type: boolean }
         mo_billing_floor: { type: [integer, "null"] }
         content_storage: { $ref: '#/components/schemas/ContentStorage' }
         content_retention_days: { type: [integer, "null"], minimum: 0 }

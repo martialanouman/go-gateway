@@ -10,22 +10,25 @@ import (
 // relationship — balances, rate plan, sender IDs, content policy — while the technical integration
 // lives on its SMPP accounts (ADR-0006).
 type Customer struct {
-	ID                   uuid.UUID
-	Name                 string
-	Status               CustomerStatus
-	GroupID              *uuid.UUID
-	RatePlanID           *uuid.UUID
-	BillingEnabled       bool
-	BillingMode          *BillingMode
-	OverdraftEnabled     bool
-	OverdraftLimit       *int
-	BalanceScope         BalanceScope
-	MoBillingFloor       *int
-	ContentStorage       ContentStorage
-	ContentRetentionDays *int
-	ContentKeyID         *uuid.UUID
-	CreatedAt            time.Time
-	UpdatedAt            time.Time
+	ID                        uuid.UUID
+	Name                      string
+	Status                    CustomerStatus
+	GroupID                   *uuid.UUID
+	RatePlanID                *uuid.UUID
+	BillingEnabled            bool
+	BillingMode               *BillingMode
+	OverdraftEnabled          bool
+	OverdraftLimit            *int
+	CreditLimit               *int
+	CreditLimitIsHard         bool
+	ExternalBillingProviderID *uuid.UUID
+	BalanceScope              BalanceScope
+	MoBillingFloor            *int
+	ContentStorage            ContentStorage
+	ContentRetentionDays      *int
+	ContentKeyID              *uuid.UUID
+	CreatedAt                 time.Time
+	UpdatedAt                 time.Time
 }
 
 // NewCustomer is the input to create a customer. It has no status: creation is always active
@@ -39,6 +42,8 @@ type NewCustomer struct {
 	BillingMode          *BillingMode
 	OverdraftEnabled     bool
 	OverdraftLimit       *int
+	CreditLimit          *int
+	CreditLimitIsHard    bool
 	BalanceScope         *BalanceScope
 	MoBillingFloor       *int
 	ContentStorage       *ContentStorage
@@ -55,6 +60,8 @@ type CustomerPatch struct {
 	BillingMode          *BillingMode
 	OverdraftEnabled     *bool
 	OverdraftLimit       *int
+	CreditLimit          *int
+	CreditLimitIsHard    *bool
 	MoBillingFloor       *int
 	ContentStorage       *ContentStorage
 	ContentRetentionDays *int

@@ -25,7 +25,7 @@ type floorConfig struct {
 	floor    int
 }
 
-// floorForCustomer maps a customer's billing_customers row to its reserve floor (§6.9). Strict prepaid →
+// floorForCustomer maps a customer's billing config to its reserve floor (§6.9). Strict prepaid →
 // floor 0. Overdraft → floor -overdraft_limit. Postpaid HARD credit limit → floor -credit_limit. Postpaid
 // SOFT limit → no floor (advisory, enforced by alerting, never blocks a reserve). A limit flag set with no
 // limit VALUE (overdraft_enabled without overdraft_limit, or credit_limit_is_hard without credit_limit) is
@@ -89,7 +89,7 @@ type ConfigProvider struct {
 	snap atomic.Pointer[ConfigSnapshot]
 }
 
-// Store swaps in a freshly built snapshot (config-sync, on a billing_customers change).
+// Store swaps in a freshly built snapshot (config-sync, on a customers billing-config change).
 func (p *ConfigProvider) Store(s *ConfigSnapshot) {
 	p.snap.Store(s)
 }
@@ -107,7 +107,7 @@ type CustomerLister interface {
 }
 
 // LoadConfigSnapshot builds a fresh snapshot from the durable billing configuration — config-sync
-// calls it on startup and on each billing_customers change, then Stores the result in the provider. On a
+// calls it on startup and on each customers billing-config change, then Stores the result in the provider. On a
 // load error the caller keeps serving the previous (stale) snapshot rather than a mass strict-prepaid
 // downgrade: staleness is bounded by the next successful rebuild, and a control-plane blip never rejects
 // legitimate overdraft/postpaid traffic.

@@ -28,6 +28,8 @@ type customerDTO struct {
 	BillingMode          *string   `json:"billing_mode,omitempty" enum:"prepaid,postpaid" nullable:"true"`
 	OverdraftEnabled     *bool     `json:"overdraft_enabled,omitempty"`
 	OverdraftLimit       *int      `json:"overdraft_limit,omitempty" minimum:"0" nullable:"true"`
+	CreditLimit          *int      `json:"credit_limit,omitempty" minimum:"0" nullable:"true"`
+	CreditLimitIsHard    *bool     `json:"credit_limit_is_hard,omitempty"`
 	BalanceScope         string    `json:"balance_scope" enum:"customer,smpp_account"`
 	MoBillingFloor       *int      `json:"mo_billing_floor,omitempty" nullable:"true"`
 	ContentStorage       string    `json:"content_storage" enum:"inherit,off,stored_plaintext,stored_encrypted"`
@@ -39,6 +41,7 @@ type customerDTO struct {
 
 func toCustomerDTO(c cp.Customer) customerDTO {
 	overdraft := c.OverdraftEnabled
+	hard := c.CreditLimitIsHard
 	return customerDTO{
 		ID:                   idString(c.ID),
 		Name:                 c.Name,
@@ -49,6 +52,8 @@ func toCustomerDTO(c cp.Customer) customerDTO {
 		BillingMode:          (*string)(c.BillingMode),
 		OverdraftEnabled:     &overdraft,
 		OverdraftLimit:       c.OverdraftLimit,
+		CreditLimit:          c.CreditLimit,
+		CreditLimitIsHard:    &hard,
 		BalanceScope:         string(c.BalanceScope),
 		MoBillingFloor:       c.MoBillingFloor,
 		ContentStorage:       string(c.ContentStorage),
@@ -68,6 +73,8 @@ type customerCreateBody struct {
 	BillingMode          *string `json:"billing_mode,omitempty" enum:"prepaid,postpaid" nullable:"true"`
 	OverdraftEnabled     *bool   `json:"overdraft_enabled,omitempty"`
 	OverdraftLimit       *int    `json:"overdraft_limit,omitempty" minimum:"0" nullable:"true"`
+	CreditLimit          *int    `json:"credit_limit,omitempty" minimum:"0" nullable:"true"`
+	CreditLimitIsHard    *bool   `json:"credit_limit_is_hard,omitempty"`
 	BalanceScope         *string `json:"balance_scope,omitempty" enum:"customer,smpp_account"`
 	MoBillingFloor       *int    `json:"mo_billing_floor,omitempty" nullable:"true"`
 	ContentStorage       *string `json:"content_storage,omitempty" enum:"inherit,off,stored_plaintext,stored_encrypted"`
@@ -91,6 +98,8 @@ func (b customerCreateBody) toNew() (cp.NewCustomer, error) {
 		BillingMode:          enumPtr[cp.BillingMode](b.BillingMode),
 		OverdraftEnabled:     deref(b.OverdraftEnabled),
 		OverdraftLimit:       b.OverdraftLimit,
+		CreditLimit:          b.CreditLimit,
+		CreditLimitIsHard:    deref(b.CreditLimitIsHard),
 		BalanceScope:         enumPtr[cp.BalanceScope](b.BalanceScope),
 		MoBillingFloor:       b.MoBillingFloor,
 		ContentStorage:       enumPtr[cp.ContentStorage](b.ContentStorage),
@@ -108,6 +117,8 @@ type customerUpdateBody struct {
 	BillingMode          *string `json:"billing_mode,omitempty" enum:"prepaid,postpaid" nullable:"true"`
 	OverdraftEnabled     *bool   `json:"overdraft_enabled,omitempty"`
 	OverdraftLimit       *int    `json:"overdraft_limit,omitempty" minimum:"0" nullable:"true"`
+	CreditLimit          *int    `json:"credit_limit,omitempty" minimum:"0" nullable:"true"`
+	CreditLimitIsHard    *bool   `json:"credit_limit_is_hard,omitempty"`
 	MoBillingFloor       *int    `json:"mo_billing_floor,omitempty" nullable:"true"`
 	ContentStorage       *string `json:"content_storage,omitempty" enum:"inherit,off,stored_plaintext,stored_encrypted"`
 	ContentRetentionDays *int    `json:"content_retention_days,omitempty" minimum:"0" nullable:"true"`
@@ -126,6 +137,8 @@ func (b customerUpdateBody) toPatch() (cp.CustomerPatch, error) {
 		BillingMode:          enumPtr[cp.BillingMode](b.BillingMode),
 		OverdraftEnabled:     b.OverdraftEnabled,
 		OverdraftLimit:       b.OverdraftLimit,
+		CreditLimit:          b.CreditLimit,
+		CreditLimitIsHard:    b.CreditLimitIsHard,
 		MoBillingFloor:       b.MoBillingFloor,
 		ContentStorage:       enumPtr[cp.ContentStorage](b.ContentStorage),
 		ContentRetentionDays: b.ContentRetentionDays,

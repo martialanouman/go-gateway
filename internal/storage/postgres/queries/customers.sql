@@ -3,7 +3,8 @@
 -- authority on what a defaulted value is.
 INSERT INTO control_plane.customers (
     name, group_id, rate_plan_id, billing_enabled, billing_mode,
-    overdraft_enabled, overdraft_limit, balance_scope, mo_billing_floor,
+    overdraft_enabled, overdraft_limit, credit_limit, credit_limit_is_hard,
+    balance_scope, mo_billing_floor,
     content_storage, content_retention_days
 ) VALUES (
     @name,
@@ -13,6 +14,8 @@ INSERT INTO control_plane.customers (
     sqlc.narg('billing_mode'),
     @overdraft_enabled,
     sqlc.narg('overdraft_limit'),
+    sqlc.narg('credit_limit'),
+    @credit_limit_is_hard,
     COALESCE(sqlc.narg('balance_scope')::text, 'customer'),
     sqlc.narg('mo_billing_floor'),
     COALESCE(sqlc.narg('content_storage')::text, 'inherit'),
@@ -44,6 +47,8 @@ UPDATE control_plane.customers SET
     billing_mode           = COALESCE(sqlc.narg('billing_mode'), billing_mode),
     overdraft_enabled      = COALESCE(sqlc.narg('overdraft_enabled'), overdraft_enabled),
     overdraft_limit        = COALESCE(sqlc.narg('overdraft_limit'), overdraft_limit),
+    credit_limit           = COALESCE(sqlc.narg('credit_limit'), credit_limit),
+    credit_limit_is_hard   = COALESCE(sqlc.narg('credit_limit_is_hard'), credit_limit_is_hard),
     mo_billing_floor       = COALESCE(sqlc.narg('mo_billing_floor'), mo_billing_floor),
     content_storage        = COALESCE(sqlc.narg('content_storage'), content_storage),
     content_retention_days = COALESCE(sqlc.narg('content_retention_days'), content_retention_days)

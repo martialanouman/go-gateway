@@ -114,11 +114,13 @@ func TestConfigLoadedFromRepoAndReRebuild(t *testing.T) {
 	h := newBillingHarness(t, 100)
 	ctx := context.Background()
 
-	// Seed a billing_customers row: prepaid with a 40-credit overdraft.
+	// Configure the customer: billing-enabled prepaid with a 40-credit overdraft (billing config lives on
+	// the customer row, step-142d; only billing-enabled customers enter the snapshot).
 	if _, err := pgtest.Pool(t).Exec(ctx,
-		`INSERT INTO control_plane.billing_customers (customer_id, billing_mode, overdraft_enabled, overdraft_limit)
-		 VALUES ($1, 'prepaid', true, 40)`, h.owner.CustomerID); err != nil {
-		t.Fatalf("seed billing_customers: %v", err)
+		`UPDATE control_plane.customers
+		   SET billing_enabled = true, billing_mode = 'prepaid', overdraft_enabled = true, overdraft_limit = 40
+		 WHERE id = $1`, h.owner.CustomerID); err != nil {
+		t.Fatalf("configure customer overdraft: %v", err)
 	}
 	// config-sync's rebuild: load from the repo, Store in the provider.
 	snap, err := billing.LoadConfigSnapshot(ctx, h.repo)
@@ -137,9 +139,9 @@ func TestConfigLoadedFromRepoAndReRebuild(t *testing.T) {
 
 	// A config change tightens the customer back to strict prepaid; rebuild + Store must take effect.
 	if _, err := pgtest.Pool(t).Exec(ctx,
-		`UPDATE control_plane.billing_customers SET overdraft_enabled = false, overdraft_limit = NULL WHERE customer_id = $1`,
+		`UPDATE control_plane.customers SET overdraft_enabled = false, overdraft_limit = NULL WHERE id = $1`,
 		h.owner.CustomerID); err != nil {
-		t.Fatalf("update billing_customers: %v", err)
+		t.Fatalf("update customer config: %v", err)
 	}
 	snap2, err := billing.LoadConfigSnapshot(ctx, h.repo)
 	if err != nil {

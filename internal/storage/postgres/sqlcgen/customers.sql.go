@@ -14,7 +14,8 @@ import (
 const createCustomer = `-- name: CreateCustomer :one
 INSERT INTO control_plane.customers (
     name, group_id, rate_plan_id, billing_enabled, billing_mode,
-    overdraft_enabled, overdraft_limit, balance_scope, mo_billing_floor,
+    overdraft_enabled, overdraft_limit, credit_limit, credit_limit_is_hard,
+    balance_scope, mo_billing_floor,
     content_storage, content_retention_days
 ) VALUES (
     $1,
@@ -24,12 +25,14 @@ INSERT INTO control_plane.customers (
     $5,
     $6,
     $7,
-    COALESCE($8::text, 'customer'),
+    $8,
     $9,
-    COALESCE($10::text, 'inherit'),
-    $11
+    COALESCE($10::text, 'customer'),
+    $11,
+    COALESCE($12::text, 'inherit'),
+    $13
 )
-RETURNING id, name, status, group_id, rate_plan_id, billing_enabled, billing_mode, overdraft_enabled, overdraft_limit, balance_scope, mo_billing_floor, content_storage, content_retention_days, content_key_id, created_at, updated_at
+RETURNING id, name, status, group_id, rate_plan_id, billing_enabled, billing_mode, overdraft_enabled, overdraft_limit, balance_scope, mo_billing_floor, content_storage, content_retention_days, content_key_id, created_at, updated_at, credit_limit, credit_limit_is_hard, external_billing_provider_id
 `
 
 type CreateCustomerParams struct {
@@ -40,6 +43,8 @@ type CreateCustomerParams struct {
 	BillingMode          *string
 	OverdraftEnabled     bool
 	OverdraftLimit       *int32
+	CreditLimit          *int32
+	CreditLimitIsHard    bool
 	BalanceScope         *string
 	MoBillingFloor       *int32
 	ContentStorage       *string
@@ -57,6 +62,8 @@ func (q *Queries) CreateCustomer(ctx context.Context, arg CreateCustomerParams) 
 		arg.BillingMode,
 		arg.OverdraftEnabled,
 		arg.OverdraftLimit,
+		arg.CreditLimit,
+		arg.CreditLimitIsHard,
 		arg.BalanceScope,
 		arg.MoBillingFloor,
 		arg.ContentStorage,
@@ -80,6 +87,9 @@ func (q *Queries) CreateCustomer(ctx context.Context, arg CreateCustomerParams) 
 		&i.ContentKeyID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.CreditLimit,
+		&i.CreditLimitIsHard,
+		&i.ExternalBillingProviderID,
 	)
 	return i, err
 }
@@ -97,7 +107,7 @@ func (q *Queries) DeleteCustomer(ctx context.Context, id uuid.UUID) (int64, erro
 }
 
 const getCustomer = `-- name: GetCustomer :one
-SELECT id, name, status, group_id, rate_plan_id, billing_enabled, billing_mode, overdraft_enabled, overdraft_limit, balance_scope, mo_billing_floor, content_storage, content_retention_days, content_key_id, created_at, updated_at FROM control_plane.customers WHERE id = $1
+SELECT id, name, status, group_id, rate_plan_id, billing_enabled, billing_mode, overdraft_enabled, overdraft_limit, balance_scope, mo_billing_floor, content_storage, content_retention_days, content_key_id, created_at, updated_at, credit_limit, credit_limit_is_hard, external_billing_provider_id FROM control_plane.customers WHERE id = $1
 `
 
 func (q *Queries) GetCustomer(ctx context.Context, id uuid.UUID) (ControlPlaneCustomer, error) {
@@ -120,12 +130,15 @@ func (q *Queries) GetCustomer(ctx context.Context, id uuid.UUID) (ControlPlaneCu
 		&i.ContentKeyID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.CreditLimit,
+		&i.CreditLimitIsHard,
+		&i.ExternalBillingProviderID,
 	)
 	return i, err
 }
 
 const listCustomers = `-- name: ListCustomers :many
-SELECT id, name, status, group_id, rate_plan_id, billing_enabled, billing_mode, overdraft_enabled, overdraft_limit, balance_scope, mo_billing_floor, content_storage, content_retention_days, content_key_id, created_at, updated_at FROM control_plane.customers
+SELECT id, name, status, group_id, rate_plan_id, billing_enabled, billing_mode, overdraft_enabled, overdraft_limit, balance_scope, mo_billing_floor, content_storage, content_retention_days, content_key_id, created_at, updated_at, credit_limit, credit_limit_is_hard, external_billing_provider_id FROM control_plane.customers
 WHERE ($1::uuid IS NULL OR group_id = $1)
   AND ($2::text  IS NULL OR status   = $2)
   AND ($3::uuid   IS NULL OR id       > $3)
@@ -173,6 +186,9 @@ func (q *Queries) ListCustomers(ctx context.Context, arg ListCustomersParams) ([
 			&i.ContentKeyID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.CreditLimit,
+			&i.CreditLimitIsHard,
+			&i.ExternalBillingProviderID,
 		); err != nil {
 			return nil, err
 		}
@@ -185,7 +201,7 @@ func (q *Queries) ListCustomers(ctx context.Context, arg ListCustomersParams) ([
 }
 
 const suspendCustomer = `-- name: SuspendCustomer :one
-UPDATE control_plane.customers SET status = 'suspended' WHERE id = $1 RETURNING id, name, status, group_id, rate_plan_id, billing_enabled, billing_mode, overdraft_enabled, overdraft_limit, balance_scope, mo_billing_floor, content_storage, content_retention_days, content_key_id, created_at, updated_at
+UPDATE control_plane.customers SET status = 'suspended' WHERE id = $1 RETURNING id, name, status, group_id, rate_plan_id, billing_enabled, billing_mode, overdraft_enabled, overdraft_limit, balance_scope, mo_billing_floor, content_storage, content_retention_days, content_key_id, created_at, updated_at, credit_limit, credit_limit_is_hard, external_billing_provider_id
 `
 
 func (q *Queries) SuspendCustomer(ctx context.Context, id uuid.UUID) (ControlPlaneCustomer, error) {
@@ -208,6 +224,9 @@ func (q *Queries) SuspendCustomer(ctx context.Context, id uuid.UUID) (ControlPla
 		&i.ContentKeyID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.CreditLimit,
+		&i.CreditLimitIsHard,
+		&i.ExternalBillingProviderID,
 	)
 	return i, err
 }
@@ -230,11 +249,13 @@ UPDATE control_plane.customers SET
     billing_mode           = COALESCE($5, billing_mode),
     overdraft_enabled      = COALESCE($6, overdraft_enabled),
     overdraft_limit        = COALESCE($7, overdraft_limit),
-    mo_billing_floor       = COALESCE($8, mo_billing_floor),
-    content_storage        = COALESCE($9, content_storage),
-    content_retention_days = COALESCE($10, content_retention_days)
-WHERE id = $11
-RETURNING id, name, status, group_id, rate_plan_id, billing_enabled, billing_mode, overdraft_enabled, overdraft_limit, balance_scope, mo_billing_floor, content_storage, content_retention_days, content_key_id, created_at, updated_at
+    credit_limit           = COALESCE($8, credit_limit),
+    credit_limit_is_hard   = COALESCE($9, credit_limit_is_hard),
+    mo_billing_floor       = COALESCE($10, mo_billing_floor),
+    content_storage        = COALESCE($11, content_storage),
+    content_retention_days = COALESCE($12, content_retention_days)
+WHERE id = $13
+RETURNING id, name, status, group_id, rate_plan_id, billing_enabled, billing_mode, overdraft_enabled, overdraft_limit, balance_scope, mo_billing_floor, content_storage, content_retention_days, content_key_id, created_at, updated_at, credit_limit, credit_limit_is_hard, external_billing_provider_id
 `
 
 type UpdateCustomerParams struct {
@@ -245,6 +266,8 @@ type UpdateCustomerParams struct {
 	BillingMode          *string
 	OverdraftEnabled     *bool
 	OverdraftLimit       *int32
+	CreditLimit          *int32
+	CreditLimitIsHard    *bool
 	MoBillingFloor       *int32
 	ContentStorage       *string
 	ContentRetentionDays *int32
@@ -262,6 +285,8 @@ func (q *Queries) UpdateCustomer(ctx context.Context, arg UpdateCustomerParams) 
 		arg.BillingMode,
 		arg.OverdraftEnabled,
 		arg.OverdraftLimit,
+		arg.CreditLimit,
+		arg.CreditLimitIsHard,
 		arg.MoBillingFloor,
 		arg.ContentStorage,
 		arg.ContentRetentionDays,
@@ -285,6 +310,9 @@ func (q *Queries) UpdateCustomer(ctx context.Context, arg UpdateCustomerParams) 
 		&i.ContentKeyID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.CreditLimit,
+		&i.CreditLimitIsHard,
+		&i.ExternalBillingProviderID,
 	)
 	return i, err
 }

@@ -98,7 +98,7 @@ CREATE TABLE control_plane.rate_plans (
 );
 
 -- -----------------------------------------------------------------------------------------------------
--- 3. External billing providers (§6.10) — referenced by billing_customers and customers via config
+-- 3. External billing providers (§6.10) — referenced by customers via config
 -- -----------------------------------------------------------------------------------------------------
 CREATE TABLE control_plane.external_billing_providers (
   id                 uuid PRIMARY KEY DEFAULT uuidv7(),
@@ -132,6 +132,9 @@ CREATE TABLE control_plane.customers (
   billing_mode           text CHECK (billing_mode IN ('prepaid','postpaid')),  -- MT only; MO is always a meter (§6.9)
   overdraft_enabled      boolean NOT NULL DEFAULT false,          -- prepaid MT only
   overdraft_limit        integer CHECK (overdraft_limit IS NULL OR overdraft_limit >= 0),  -- max negative MT balance
+  credit_limit           integer CHECK (credit_limit IS NULL OR credit_limit >= 0),  -- postpaid MT limit (§6.9)
+  credit_limit_is_hard   boolean NOT NULL DEFAULT false,          -- hard = a reserve floor; soft = advisory/alerting
+  external_billing_provider_id uuid REFERENCES control_plane.external_billing_providers(id) ON DELETE SET NULL,
   balance_scope          text NOT NULL DEFAULT 'customer'
                            CHECK (balance_scope IN ('customer','smpp_account')),  -- who owns balances (§6.9)
   mo_billing_floor       integer,                                 -- how negative the MO meter may run before stop+alert
@@ -145,13 +148,14 @@ CREATE TABLE control_plane.customers (
   created_at             timestamptz NOT NULL DEFAULT now(),
   updated_at             timestamptz NOT NULL DEFAULT now(),
 
-  -- overdraft only makes sense with a limit
+  -- overdraft / hard credit limit only make sense with their value
   CONSTRAINT customers_overdraft_ck CHECK (NOT overdraft_enabled OR overdraft_limit IS NOT NULL),
-  -- An account-scoped balance may not carry a customer-level overdraft: the limit would apply to EACH
-  -- account balance independently, multiplying the customer's credit exposure by the account count (§6.9,
-  -- step-142c). Account-scoped balances are strict prepaid or soft postpaid only.
-  CONSTRAINT customers_account_scope_no_overdraft_ck
-    CHECK (balance_scope <> 'smpp_account' OR NOT overdraft_enabled)
+  CONSTRAINT customers_hard_credit_limit_ck CHECK (NOT credit_limit_is_hard OR credit_limit IS NOT NULL),
+  -- An account-scoped balance may carry neither a customer-level overdraft nor a hard credit limit: the
+  -- limit would apply to EACH account balance independently, multiplying the customer's credit exposure by
+  -- the account count (§6.9, step-142c/d). Account-scoped balances are strict prepaid or soft postpaid only.
+  CONSTRAINT customers_account_scope_no_credit_ck
+    CHECK (balance_scope <> 'smpp_account' OR (NOT overdraft_enabled AND NOT credit_limit_is_hard))
 );
 CREATE INDEX customers_group_idx ON control_plane.customers(group_id);
 
@@ -578,66 +582,10 @@ CREATE TABLE control_plane.balances (
 );
 
 -- -----------------------------------------------------------------------------------------------------
--- 23. Billing customers (§6.9) — billing config per customer (balances live in `balances`)
+-- 23. (Billing config lives on control_plane.customers — §6.9, ADR consolidation step-142d. The reserve
+--     floor reads customers directly: overdraft_enabled/overdraft_limit, credit_limit/credit_limit_is_hard,
+--     billing_mode, balance_scope. The account-scope ban is a same-table CHECK on customers, no triggers.)
 -- -----------------------------------------------------------------------------------------------------
-CREATE TABLE control_plane.billing_customers (
-  customer_id                  uuid PRIMARY KEY REFERENCES control_plane.customers(id) ON DELETE CASCADE,
-  billing_mode                 text NOT NULL CHECK (billing_mode IN ('prepaid','postpaid')),   -- MT only
-  overdraft_enabled            boolean NOT NULL DEFAULT false,
-  overdraft_limit              integer CHECK (overdraft_limit IS NULL OR overdraft_limit >= 0),
-  credit_limit                 integer CHECK (credit_limit IS NULL OR credit_limit >= 0),  -- postpaid MT soft-limit
-  credit_limit_is_hard         boolean NOT NULL DEFAULT false,
-  external_billing_provider_id uuid REFERENCES control_plane.external_billing_providers(id) ON DELETE SET NULL,
-  updated_at                   timestamptz NOT NULL DEFAULT now(),
-  -- An enabled limit MUST carry its value (§6.9, step-142b): a flag without a value would fail closed to
-  -- strict prepaid on the hot path and silently cut the customer off — reject it at write time instead.
-  CONSTRAINT billing_customers_overdraft_limit_ck   CHECK (NOT overdraft_enabled OR overdraft_limit IS NOT NULL),
-  CONSTRAINT billing_customers_hard_credit_limit_ck CHECK (NOT credit_limit_is_hard OR credit_limit IS NOT NULL)
-);
-
--- An account-scoped balance may not carry an overdraft or a HARD credit limit (§6.9, step-142c): the
--- customer-level figure would apply per account and multiply the credit exposure by the account count.
--- billing_customers has no balance_scope, so this cross-table trigger consults the owning customer. It
--- raises with ERRCODE 23514 (check_violation) so the repo translates it to a clean 422, like a table CHECK.
-CREATE OR REPLACE FUNCTION control_plane.forbid_account_scope_credit()
-RETURNS trigger
-LANGUAGE plpgsql
-AS $$
-BEGIN
-  IF (NEW.overdraft_enabled OR NEW.credit_limit_is_hard)
-     AND (SELECT balance_scope FROM control_plane.customers WHERE id = NEW.customer_id) = 'smpp_account' THEN
-    RAISE EXCEPTION 'overdraft/hard credit limit is not allowed on an account-scoped balance (customer %)', NEW.customer_id
-      USING ERRCODE = '23514';
-  END IF;
-  RETURN NEW;
-END;
-$$;
-
-CREATE TRIGGER billing_customers_no_account_scope_credit
-  BEFORE INSERT OR UPDATE ON control_plane.billing_customers
-  FOR EACH ROW EXECUTE FUNCTION control_plane.forbid_account_scope_credit();
-
--- Reverse direction: flipping a customer to account-scoped must re-check its billing_customers row (the
--- customers CHECK above sees only customers.overdraft_enabled, not credit_limit_is_hard, which lives only
--- in billing_customers). Fires only when balance_scope is written (§6.9, step-142c).
-CREATE OR REPLACE FUNCTION control_plane.forbid_account_scope_flip_with_credit()
-RETURNS trigger
-LANGUAGE plpgsql
-AS $$
-BEGIN
-  IF NEW.balance_scope = 'smpp_account'
-     AND EXISTS (SELECT 1 FROM control_plane.billing_customers
-                 WHERE customer_id = NEW.id AND (overdraft_enabled OR credit_limit_is_hard)) THEN
-    RAISE EXCEPTION 'cannot switch customer % to account-scoped: it has an overdraft or hard credit limit', NEW.id
-      USING ERRCODE = '23514';
-  END IF;
-  RETURN NEW;
-END;
-$$;
-
-CREATE TRIGGER customers_no_account_scope_flip_with_credit
-  BEFORE UPDATE OF balance_scope ON control_plane.customers
-  FOR EACH ROW EXECUTE FUNCTION control_plane.forbid_account_scope_flip_with_credit();
 
 -- -----------------------------------------------------------------------------------------------------
 -- 24. Billing ledger (§6.9/§6.14) — append-only, PARTITIONED BY DAY on created_at
@@ -708,7 +656,7 @@ DECLARE
     'customer_groups','rate_plans','external_billing_providers','customers','smpp_accounts',
     'sender_ids','smsc_connectors','routes','rate_limits','antispam_rules','webhooks',
     'sender_id_rewrite_rules','inbound_numbers','inbound_keywords','exact_routes','opt_out_keywords',
-    'balances','billing_customers'
+    'balances'
   ];
 BEGIN
   FOREACH t IN ARRAY tables LOOP
