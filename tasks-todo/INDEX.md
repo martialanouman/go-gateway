@@ -105,6 +105,7 @@ Légende : `[x]` = fait (dans `tasks-done/`) · `[ ]` = à faire (dans `tasks-to
 - [x] step-141 — Repos Postgres billing : balances, config, grand livre partitionné
 - [x] step-142 — Réserve/capture/libère MT en Lua atomique, idempotent par message_id
 - [x] step-142b — Config facturation (floor overdraft/postpaid) + TTL du cache de solde
+- [x] step-142c — Interdire overdraft/hard limit quand balance_scope=smpp_account
 - [ ] step-143 — Compteur MO séparé : plancher, arrêt + alerte, jamais bloquant pour le MT
 - [ ] step-144 — Câbler billing-svc (gRPC :7001) + port ops
 - [ ] step-145 — Réserve MT dans le router (étape 8) ; désactivée = zéro appel réseau
