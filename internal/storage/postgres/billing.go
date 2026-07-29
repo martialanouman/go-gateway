@@ -13,7 +13,7 @@ import (
 )
 
 // BillingRepo is the durable authority for billing: it reads and writes balances, reads billing
-// configuration, and appends the append-only ledger (control_plane.balances / billing_customers /
+// configuration, and appends the append-only ledger (control_plane.balances / customers /
 // billing_ledger, §6.9). It holds no business logic — the atomic reserve/capture/release accounting is
 // done in Redis Lua (step-142); this repo only persists the durable side that Redis caches, and provides
 // the cross-partition idempotency check the Lua path consults.
@@ -42,8 +42,17 @@ func (r *BillingRepo) Balance(ctx context.Context, ownerType string, ownerID uui
 	return int(credits), true, nil
 }
 
-// BillingCustomer reads a customer's MT billing configuration. found=false means billing is not
-// configured for the customer (a valid "unconfigured" state), not an error.
+// billingModeVal maps the nullable customers.billing_mode to the domain type; a NULL mode is "" (unset),
+// which the floor mapping treats as strict prepaid.
+func billingModeVal(m *string) cp.BillingMode {
+	if m == nil {
+		return ""
+	}
+	return cp.BillingMode(*m)
+}
+
+// BillingCustomer reads a customer's MT billing configuration (which lives on the customer row, §6.9,
+// step-142d). found=false means no such customer, not "unconfigured".
 func (r *BillingRepo) BillingCustomer(ctx context.Context, customerID uuid.UUID) (cp.BillingCustomer, bool, error) {
 	row, err := r.q.GetBillingCustomer(ctx, customerID)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -54,7 +63,7 @@ func (r *BillingRepo) BillingCustomer(ctx context.Context, customerID uuid.UUID)
 	}
 	return cp.BillingCustomer{
 		CustomerID:                customerID,
-		BillingMode:               cp.BillingMode(row.BillingMode),
+		BillingMode:               billingModeVal(row.BillingMode),
 		OverdraftEnabled:          row.OverdraftEnabled,
 		OverdraftLimit:            intptr(row.OverdraftLimit),
 		CreditLimit:               intptr(row.CreditLimit),
@@ -63,8 +72,9 @@ func (r *BillingRepo) BillingCustomer(ctx context.Context, customerID uuid.UUID)
 	}, true, nil
 }
 
-// ListBillingCustomers returns every customer's MT billing configuration, for config-sync to compile the
-// reserve-floor snapshot (step-142b). Read whole; the snapshot is swapped atomically.
+// ListBillingCustomers returns the MT billing configuration of every billing-enabled customer, for
+// config-sync to compile the reserve-floor snapshot (step-142b/d). Read whole; the snapshot is swapped
+// atomically.
 func (r *BillingRepo) ListBillingCustomers(ctx context.Context) ([]cp.BillingCustomer, error) {
 	rows, err := r.q.ListBillingCustomers(ctx)
 	if err != nil {
@@ -74,7 +84,7 @@ func (r *BillingRepo) ListBillingCustomers(ctx context.Context) ([]cp.BillingCus
 	for _, row := range rows {
 		out = append(out, cp.BillingCustomer{
 			CustomerID:                row.CustomerID,
-			BillingMode:               cp.BillingMode(row.BillingMode),
+			BillingMode:               billingModeVal(row.BillingMode),
 			OverdraftEnabled:          row.OverdraftEnabled,
 			OverdraftLimit:            intptr(row.OverdraftLimit),
 			CreditLimit:               intptr(row.CreditLimit),

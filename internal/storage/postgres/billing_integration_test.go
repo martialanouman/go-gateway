@@ -12,8 +12,9 @@ import (
 )
 
 // TestBillingRepoBalanceAndConfig proves the read side against real Postgres: an unseeded balance reads
-// as absent (a valid zero), a configured billing customer maps every column (including the nullable
-// overdraft/credit limits), and an unconfigured customer reads as not-found rather than an error.
+// as absent (a valid zero), a configured customer maps every billing column (including the nullable
+// overdraft/credit limits, which now live on the customer row, step-142d), and a non-existent customer
+// reads as not-found rather than an error.
 func TestBillingRepoBalanceAndConfig(t *testing.T) {
 	pool := pgtest.Pool(t)
 	ctx := context.Background()
@@ -21,14 +22,10 @@ func TestBillingRepoBalanceAndConfig(t *testing.T) {
 
 	var customerID uuid.UUID
 	if err := pool.QueryRow(ctx,
-		`INSERT INTO control_plane.customers (name) VALUES ('billing-repo-test') RETURNING id`).Scan(&customerID); err != nil {
+		`INSERT INTO control_plane.customers
+		   (name, billing_enabled, billing_mode, overdraft_enabled, overdraft_limit, credit_limit, credit_limit_is_hard)
+		 VALUES ('billing-repo-test', true, 'prepaid', true, 500, 1000, true) RETURNING id`).Scan(&customerID); err != nil {
 		t.Fatalf("seed customer: %v", err)
-	}
-	if _, err := pool.Exec(ctx,
-		`INSERT INTO control_plane.billing_customers
-		   (customer_id, billing_mode, overdraft_enabled, overdraft_limit, credit_limit, credit_limit_is_hard)
-		 VALUES ($1, 'prepaid', true, 500, 1000, true)`, customerID); err != nil {
-		t.Fatalf("seed billing_customers: %v", err)
 	}
 
 	// Balance not yet recorded → absent (0, false), not an error.
@@ -48,9 +45,9 @@ func TestBillingRepoBalanceAndConfig(t *testing.T) {
 		t.Errorf("limits = overdraft %v / credit %v, want 500 / 1000", bc.OverdraftLimit, bc.CreditLimit)
 	}
 
-	// An unconfigured customer reads as not-found, not an error.
+	// A non-existent customer reads as not-found, not an error.
 	if _, found, err := repo.BillingCustomer(ctx, uuid.New()); err != nil || found {
-		t.Fatalf("BillingCustomer(unconfigured) = (found=%v, err=%v), want (false, nil)", found, err)
+		t.Fatalf("BillingCustomer(missing) = (found=%v, err=%v), want (false, nil)", found, err)
 	}
 }
 

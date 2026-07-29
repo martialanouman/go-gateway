@@ -29,17 +29,6 @@ type ControlPlaneBalance struct {
 	UpdatedAt pgtype.Timestamptz
 }
 
-type ControlPlaneBillingCustomer struct {
-	CustomerID                uuid.UUID
-	BillingMode               string
-	OverdraftEnabled          bool
-	OverdraftLimit            *int32
-	CreditLimit               *int32
-	CreditLimitIsHard         bool
-	ExternalBillingProviderID *uuid.UUID
-	UpdatedAt                 pgtype.Timestamptz
-}
-
 type ControlPlaneBillingIdempotency struct {
 	MessageID uuid.UUID
 	EntryType string
@@ -103,22 +92,25 @@ type ControlPlaneCredential struct {
 }
 
 type ControlPlaneCustomer struct {
-	ID                   uuid.UUID
-	Name                 string
-	Status               string
-	GroupID              *uuid.UUID
-	RatePlanID           *uuid.UUID
-	BillingEnabled       bool
-	BillingMode          *string
-	OverdraftEnabled     bool
-	OverdraftLimit       *int32
-	BalanceScope         string
-	MoBillingFloor       *int32
-	ContentStorage       string
-	ContentRetentionDays *int32
-	ContentKeyID         *uuid.UUID
-	CreatedAt            pgtype.Timestamptz
-	UpdatedAt            pgtype.Timestamptz
+	ID                        uuid.UUID
+	Name                      string
+	Status                    string
+	GroupID                   *uuid.UUID
+	RatePlanID                *uuid.UUID
+	BillingEnabled            bool
+	BillingMode               *string
+	OverdraftEnabled          bool
+	OverdraftLimit            *int32
+	BalanceScope              string
+	MoBillingFloor            *int32
+	ContentStorage            string
+	ContentRetentionDays      *int32
+	ContentKeyID              *uuid.UUID
+	CreatedAt                 pgtype.Timestamptz
+	UpdatedAt                 pgtype.Timestamptz
+	CreditLimit               *int32
+	CreditLimitIsHard         bool
+	ExternalBillingProviderID *uuid.UUID
 }
 
 type ControlPlaneCustomerGroup struct {

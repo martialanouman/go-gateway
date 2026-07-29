@@ -92,12 +92,12 @@ func (q *Queries) GetBalance(ctx context.Context, arg GetBalanceParams) (int32, 
 const getBillingCustomer = `-- name: GetBillingCustomer :one
 SELECT billing_mode, overdraft_enabled, overdraft_limit, credit_limit, credit_limit_is_hard,
        external_billing_provider_id
-FROM control_plane.billing_customers
-WHERE customer_id = $1
+FROM control_plane.customers
+WHERE id = $1
 `
 
 type GetBillingCustomerRow struct {
-	BillingMode               string
+	BillingMode               *string
 	OverdraftEnabled          bool
 	OverdraftLimit            *int32
 	CreditLimit               *int32
@@ -105,8 +105,9 @@ type GetBillingCustomerRow struct {
 	ExternalBillingProviderID *uuid.UUID
 }
 
-// A customer's MT billing configuration. A missing row means billing is not configured for the customer
-// — the caller treats absence as "unconfigured", not an error.
+// A customer's MT billing configuration. Billing config lives on the customer row itself (§6.9, step-142d
+// consolidation); a missing customer row is not_found. billing_mode NULL means unset (treated as strict
+// prepaid by the floor mapping).
 func (q *Queries) GetBillingCustomer(ctx context.Context, customerID uuid.UUID) (GetBillingCustomerRow, error) {
 	row := q.db.QueryRow(ctx, getBillingCustomer, customerID)
 	var i GetBillingCustomerRow
@@ -209,14 +210,15 @@ func (q *Queries) LedgerEntryExists(ctx context.Context, arg LedgerEntryExistsPa
 }
 
 const listBillingCustomers = `-- name: ListBillingCustomers :many
-SELECT customer_id, billing_mode, overdraft_enabled, overdraft_limit, credit_limit, credit_limit_is_hard,
-       external_billing_provider_id
-FROM control_plane.billing_customers
+SELECT id AS customer_id, billing_mode, overdraft_enabled, overdraft_limit, credit_limit,
+       credit_limit_is_hard, external_billing_provider_id
+FROM control_plane.customers
+WHERE billing_enabled
 `
 
 type ListBillingCustomersRow struct {
 	CustomerID                uuid.UUID
-	BillingMode               string
+	BillingMode               *string
 	OverdraftEnabled          bool
 	OverdraftLimit            *int32
 	CreditLimit               *int32
@@ -224,9 +226,9 @@ type ListBillingCustomersRow struct {
 	ExternalBillingProviderID *uuid.UUID
 }
 
-// Every customer's MT billing configuration, for config-sync to compile the reserve-floor snapshot
-// (step-142b). Read whole and swapped atomically; a customer absent from the result fails closed to
-// strict prepaid at read time.
+// The MT billing configuration of every billing-enabled customer, for config-sync to compile the
+// reserve-floor snapshot (step-142b/d). Read whole and swapped atomically; a customer absent from the
+// result (billing disabled, or not yet created) fails closed to strict prepaid at read time.
 func (q *Queries) ListBillingCustomers(ctx context.Context) ([]ListBillingCustomersRow, error) {
 	rows, err := q.db.Query(ctx, listBillingCustomers)
 	if err != nil {

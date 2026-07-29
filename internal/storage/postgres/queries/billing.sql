@@ -7,20 +7,22 @@ FROM control_plane.balances
 WHERE owner_type = @owner_type AND owner_id = @owner_id AND direction = @direction;
 
 -- name: GetBillingCustomer :one
--- A customer's MT billing configuration. A missing row means billing is not configured for the customer
--- — the caller treats absence as "unconfigured", not an error.
+-- A customer's MT billing configuration. Billing config lives on the customer row itself (§6.9, step-142d
+-- consolidation); a missing customer row is not_found. billing_mode NULL means unset (treated as strict
+-- prepaid by the floor mapping).
 SELECT billing_mode, overdraft_enabled, overdraft_limit, credit_limit, credit_limit_is_hard,
        external_billing_provider_id
-FROM control_plane.billing_customers
-WHERE customer_id = @customer_id;
+FROM control_plane.customers
+WHERE id = @customer_id;
 
 -- name: ListBillingCustomers :many
--- Every customer's MT billing configuration, for config-sync to compile the reserve-floor snapshot
--- (step-142b). Read whole and swapped atomically; a customer absent from the result fails closed to
--- strict prepaid at read time.
-SELECT customer_id, billing_mode, overdraft_enabled, overdraft_limit, credit_limit, credit_limit_is_hard,
-       external_billing_provider_id
-FROM control_plane.billing_customers;
+-- The MT billing configuration of every billing-enabled customer, for config-sync to compile the
+-- reserve-floor snapshot (step-142b/d). Read whole and swapped atomically; a customer absent from the
+-- result (billing disabled, or not yet created) fails closed to strict prepaid at read time.
+SELECT id AS customer_id, billing_mode, overdraft_enabled, overdraft_limit, credit_limit,
+       credit_limit_is_hard, external_billing_provider_id
+FROM control_plane.customers
+WHERE billing_enabled;
 
 -- name: LedgerEntryExists :one
 -- The AUTHORITATIVE cross-partition idempotency guard (§6.9): whether a ledger entry of entry_type

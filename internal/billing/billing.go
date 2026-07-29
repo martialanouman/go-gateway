@@ -201,7 +201,7 @@ func (a *Accountant) Reserve(ctx context.Context, owner Owner, messageID uuid.UU
 	// Per-customer floor: strict prepaid (floor 0), overdraft (floor -limit) or a postpaid hard limit; a
 	// soft/unfloored postpaid customer reserves with has_floor=0. An unknown customer fails closed to strict
 	// prepaid. Read lock-free from the immutable config snapshot (step-142b). An account-scoped balance is
-	// guaranteed by the DB (customers/billing_customers guards, step-142c) never to carry an overdraft or
+	// guaranteed by the DB (customers same-table CHECK, step-142c/d) never to carry an overdraft or
 	// hard limit, so a per-account floor is always safe (0 strict, or none for soft postpaid) — no override
 	// needed here.
 	hasFloor, floor := a.config.FloorFor(owner.CustomerID)
