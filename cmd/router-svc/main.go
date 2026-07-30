@@ -18,12 +18,16 @@ import (
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
 	goredis "github.com/redis/go-redis/v9"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 
+	"github.com/martialanouman/go-gateway/internal/billing/pb"
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/connector/breaker"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	"github.com/martialanouman/go-gateway/internal/pipeline/antispam"
+	"github.com/martialanouman/go-gateway/internal/pipeline/credit"
 	"github.com/martialanouman/go-gateway/internal/pipeline/optout"
 	"github.com/martialanouman/go-gateway/internal/pipeline/ratelimit"
 	"github.com/martialanouman/go-gateway/internal/pipeline/senderid"
@@ -52,7 +56,7 @@ func run() error {
 
 	// Postgres for the startup route snapshot, Kafka for the data plane, ClickHouse for rejected
 	// CDR rows. No HTTP: the router has no client-facing listener.
-	cfg, err := config.Load(serviceName, config.SectionOTel, config.SectionPostgres, config.SectionKafka, config.SectionClickHouse, config.SectionRedis)
+	cfg, err := config.Load(serviceName, config.SectionOTel, config.SectionPostgres, config.SectionKafka, config.SectionClickHouse, config.SectionRedis, config.SectionBilling)
 	if err != nil {
 		return err
 	}
@@ -194,8 +198,31 @@ func run() error {
 	scriptResolver := routing.NewScriptResolver(scriptSnap, logger, scriptMeter{c: scriptFailures})
 	resolver := routing.NewL0Resolver(exact.NewResolver(exactBloom, rdb), scriptResolver, snapshot)
 
+	// The credit stage (§6.9, step-145): a per-customer billing-scope snapshot gates the reserve, so a
+	// billing-disabled customer makes ZERO billing round-trip, and the billing gRPC client reserves credit
+	// for the rest. billing-svc is reached lazily (grpc.NewClient opens no connection until the first RPC),
+	// so a router that bills nobody never touches it and a down billing-svc does not block startup. The
+	// scope snapshot is a boot dependency with the same retry discipline as the others, and — crucially — is
+	// rebuilt on every config invalidation below, so enabling billing for a customer takes effect without a
+	// restart.
+	billingRepo := postgres.NewBillingRepo(pool)
+	creditSnap, err := loadWithRetry(ctx, logger, "billing scope snapshot", func(ctx context.Context) (*credit.Snapshot, error) {
+		return credit.LoadSnapshot(ctx, billingRepo)
+	})
+	if err != nil {
+		return fmt.Errorf("load billing scope snapshot: %w", err)
+	}
+	var creditHolder credit.Holder
+	creditHolder.Store(creditSnap)
+	billingConn, err := grpc.NewClient(cfg.Billing.Addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return fmt.Errorf("dial billing at %q: %w", cfg.Billing.Addr, err)
+	}
+	defer func() { _ = billingConn.Close() }()
+	reserver := credit.NewReserver(&creditHolder, pb.NewBillingClient(billingConn), credit.WithTimeout(cfg.Billing.ReserveTimeout))
+
 	tracer := observability.Tracer(nil, serviceName)
-	pl := pipeline.New(tracer, resolver, senderIDs, optOut, spam, rateLimiter)
+	pl := pipeline.New(tracer, resolver, senderIDs, optOut, spam, rateLimiter, reserver)
 	rtr := router.New(router.Deps{
 		Consumer: consumer,
 		Producer: producer,
@@ -277,6 +304,15 @@ func run() error {
 				return berr
 			}
 			scriptResolver.Swap(scriptSnap)
+
+			// Rebuild the billing-scope snapshot so a customers-config change (billing enabled/disabled, a
+			// balance-scope flip) takes effect without a restart. Skipping this would strand the credit gate on
+			// the boot snapshot: a customer newly enabled for billing would flow free until the pod restarts.
+			bsnap, berr := credit.LoadSnapshot(ctx, billingRepo)
+			if berr != nil {
+				return berr
+			}
+			creditHolder.Store(bsnap)
 			return nil
 		},
 		config.WithLogger(logger),

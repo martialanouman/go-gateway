@@ -3,6 +3,7 @@ package router_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
+	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 	"github.com/martialanouman/go-gateway/internal/platform/msg"
 	"github.com/martialanouman/go-gateway/internal/router"
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
@@ -84,14 +86,31 @@ func (allowAllAntispam) Evaluate(context.Context, uuid.UUID, uuid.UUID, string, 
 	return "", nil
 }
 
+// stubReserver returns a fixed credit-stage verdict, so a router test can drive the reserve outcome without
+// a billing client: a coded error rejects, a raw error is transient, the zero value reserves nothing.
+type stubReserver struct {
+	reserved  bool
+	ownerType string
+	err       error
+}
+
+func (s stubReserver) Reserve(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, int) (bool, string, error) {
+	return s.reserved, s.ownerType, s.err
+}
+
 func newRouter(t *testing.T, resolver pipeline.Resolver, prod router.Producer, cdr router.CDRWriter, cons router.Consumer) *router.Router {
+	t.Helper()
+	return newRouterWithReserver(t, resolver, nil, prod, cdr, cons)
+}
+
+func newRouterWithReserver(t *testing.T, resolver pipeline.Resolver, reserver pipeline.CreditReserver, prod router.Producer, cdr router.CDRWriter, cons router.Consumer) *router.Router {
 	t.Helper()
 	rec := otelrec.New(t)
 	tracer := observability.Tracer(rec.Provider(), "router")
 	return router.New(router.Deps{
 		Consumer: cons,
 		Producer: prod,
-		Pipeline: pipeline.New(tracer, resolver, allowAllSenderIDs{}, allowAllOptOut{}, allowAllAntispam{}, nil),
+		Pipeline: pipeline.New(tracer, resolver, allowAllSenderIDs{}, allowAllOptOut{}, allowAllAntispam{}, nil, reserver),
 		CDR:      cdr,
 		Tracer:   tracer,
 	})
@@ -204,5 +223,93 @@ func TestRouterWritesRejectedCDROnPipelineRejection(t *testing.T) {
 	}
 	if row.ErrorCode == nil || *row.ErrorCode != "invalid_destination" {
 		t.Errorf("error_code: got %v want invalid_destination", row.ErrorCode)
+	}
+}
+
+// TestRouterPublishesBilledRoutedOnReserve: a billed customer whose reserve succeeds is published to
+// mt.routed carrying Billable=true and the resolved OwnerType, the settlement contract connector-pool reads
+// to capture the identical balance key (step-146). Closes the reserve→publish loop end-to-end at the router.
+func TestRouterPublishesBilledRoutedOnReserve(t *testing.T) {
+	connector := uuid.New()
+	in := inbound("+2250700000000")
+	inRec, err := pipeline.EncodeInbound(in)
+	if err != nil {
+		t.Fatalf("encode inbound: %v", err)
+	}
+
+	prod := &fakeProducer{}
+	r := newRouterWithReserver(t, stubResolver{conn: connector},
+		stubReserver{reserved: true, ownerType: cp.OwnerTypeCustomer},
+		prod, &fakeCDR{}, &fakeConsumer{records: []kafka.Record{inRec}})
+
+	if err := r.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(prod.produced) != 1 {
+		t.Fatalf("expected 1 mt.routed record, got %d", len(prod.produced))
+	}
+	routed, err := pipeline.DecodeRouted(prod.produced[0])
+	if err != nil {
+		t.Fatalf("decode routed: %v", err)
+	}
+	if !routed.Billable || routed.OwnerType != cp.OwnerTypeCustomer {
+		t.Errorf("(Billable, OwnerType) = (%v, %q), want (true, customer)", routed.Billable, routed.OwnerType)
+	}
+}
+
+// TestRouterRejectsInsufficientCredit: a billed message the customer cannot afford is rejected with
+// insufficient_credit — NO mt.routed for any segment, one rejected CDR (not billed), no ledger (the reserve
+// never committed in billing-svc). A multi-segment body proves the WHOLE message is rejected, not one segment.
+func TestRouterRejectsInsufficientCredit(t *testing.T) {
+	in := inbound("+2250700000000")
+	in.Body = msg.NewBodyString(strings.Repeat("a", 161)) // 2 segments
+	inRec, err := pipeline.EncodeInbound(in)
+	if err != nil {
+		t.Fatalf("encode inbound: %v", err)
+	}
+
+	prod := &fakeProducer{}
+	cdr := &fakeCDR{}
+	r := newRouterWithReserver(t, stubResolver{conn: uuid.New()}, stubReserver{err: errs.ErrInsufficientCredit},
+		prod, cdr, &fakeConsumer{records: []kafka.Record{inRec}})
+
+	if err := r.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(prod.produced) != 0 {
+		t.Errorf("an unaffordable message must publish no segment to mt.routed, got %d", len(prod.produced))
+	}
+	if len(cdr.rows) != 1 {
+		t.Fatalf("expected 1 rejected CDR row, got %d", len(cdr.rows))
+	}
+	row := cdr.rows[0]
+	if row.Status != clickhouse.StatusRejected || row.ErrorCode == nil || *row.ErrorCode != "insufficient_credit" {
+		t.Errorf("row = {status:%q code:%v}, want rejected/insufficient_credit", row.Status, row.ErrorCode)
+	}
+	if row.Billed {
+		t.Error("a rejected message must not be marked billed")
+	}
+}
+
+// TestRouterRetriesOnBillingTransportError: a billing-svc transport fault is transient — the router returns
+// the error (leaving the offset uncommitted for redelivery) and writes NEITHER a CDR NOR mt.routed, so a
+// billing outage never becomes a permanent rejected row or an unbilled send (fail-closed).
+func TestRouterRetriesOnBillingTransportError(t *testing.T) {
+	in := inbound("+2250700000000")
+	inRec, err := pipeline.EncodeInbound(in)
+	if err != nil {
+		t.Fatalf("encode inbound: %v", err)
+	}
+
+	prod := &fakeProducer{}
+	cdr := &fakeCDR{}
+	r := newRouterWithReserver(t, stubResolver{conn: uuid.New()}, stubReserver{err: errors.New("billing-svc unavailable")},
+		prod, cdr, &fakeConsumer{records: []kafka.Record{inRec}})
+
+	if err := r.Run(context.Background()); err == nil {
+		t.Fatal("a billing transport fault must surface as an error so the offset is not committed")
+	}
+	if len(prod.produced) != 0 || len(cdr.rows) != 0 {
+		t.Errorf("a transient billing fault must write neither mt.routed (%d) nor a CDR (%d)", len(prod.produced), len(cdr.rows))
 	}
 }

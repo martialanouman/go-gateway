@@ -97,6 +97,25 @@ func (r *BillingRepo) ListBillingCustomers(ctx context.Context) ([]cp.BillingCus
 	return out, nil
 }
 
+// ListBillingScopes returns the identity and balance scope of every billing-enabled customer, for
+// router-svc to compile the credit-stage snapshot (step-145). Presence in the result is the billing-enabled
+// flag itself; a customer absent from it is not billed. balance_scope is NOT NULL in the schema (default
+// 'customer'), so the domain value maps straight through.
+func (r *BillingRepo) ListBillingScopes(ctx context.Context) ([]cp.CustomerBillingScope, error) {
+	rows, err := r.q.ListBillingScopes(ctx)
+	if err != nil {
+		return nil, translate("list billing scopes", err)
+	}
+	out := make([]cp.CustomerBillingScope, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, cp.CustomerBillingScope{
+			CustomerID: row.CustomerID,
+			Scope:      cp.BalanceScope(row.BalanceScope),
+		})
+	}
+	return out, nil
+}
+
 // LedgerEntryExists reports whether a ledger entry of entryType already exists for messageID. It is the
 // authoritative cross-partition idempotency guard (§6.9): the capture path reads it before committing so
 // a redelivered message_id never double-charges, since the same-day unique index cannot span partitions.

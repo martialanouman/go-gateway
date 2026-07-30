@@ -90,11 +90,23 @@ type RateLimiter interface {
 	Check(ctx context.Context, accountID, connectorID uuid.UUID, routeID *uuid.UUID, segments int) error
 }
 
+// CreditReserver reserves MT credit for a message before the SMSC send (§6.9, step-145). reserved reports
+// whether a reservation now exists: false means billing is disabled for the customer — a cached-boolean
+// decision that makes NO billing round-trip — so nothing is settled downstream. When reserved, ownerType is
+// the balance owner the reservation was made against (customer | smpp_account), pinned onto mt.routed so
+// connector-pool captures the identical key (step-146). A business denial (insufficient funds) returns
+// errs.ErrInsufficientCredit (a coded reject → rejected CDR, HTTP 402); a transport fault is returned raw so
+// the caller retries (fail-closed: a billed message is not sent until billing answers). It is implemented
+// over an immutable per-customer snapshot plus the billing gRPC client (internal/pipeline/credit); the
+// interface lives here, consumer-side. A nil CreditReserver disables the stage (the pre-billing pass-through).
+type CreditReserver interface {
+	Reserve(ctx context.Context, accountID, customerID, messageID uuid.UUID, segments int) (reserved bool, ownerType string, err error)
+}
+
 // Pipeline runs the ordered MT stages the router applies to every message (spec §6.1). The order is
 // frozen: a routing short-cut may skip route resolution, never a compliance stage. It implements
 // E.164 normalization, sender-ID authorization (M5), declarative route resolution, encoding
-// resolution, UDH segmentation and rate limiting (M6); the remaining metering stage (credit) is an
-// explicit pass-through STUB that still emits its span.
+// resolution, UDH segmentation, rate limiting (M6) and the opt-in credit reserve (M9, step-145).
 type Pipeline struct {
 	tracer      trace.Tracer
 	resolver    Resolver
@@ -102,13 +114,15 @@ type Pipeline struct {
 	optOut      OptOutChecker
 	antispam    AntispamEvaluator
 	rateLimiter RateLimiter
+	credit      CreditReserver
 }
 
 // New builds a Pipeline. Destinations are normalized to their canonical digits-only form; the
 // public contract carries a full country code (the "+" being optional), so no default region is
-// needed. See internal/platform/e164. A nil rateLimiter leaves the rate-limit stage a pass-through.
-func New(tracer trace.Tracer, resolver Resolver, senderIDs SenderIDAuthorizer, optOut OptOutChecker, antispam AntispamEvaluator, rateLimiter RateLimiter) *Pipeline {
-	return &Pipeline{tracer: tracer, resolver: resolver, senderIDs: senderIDs, optOut: optOut, antispam: antispam, rateLimiter: rateLimiter}
+// needed. See internal/platform/e164. A nil rateLimiter leaves the rate-limit stage a pass-through, and a
+// nil credit reserver leaves the credit stage a pass-through (the pre-billing behaviour).
+func New(tracer trace.Tracer, resolver Resolver, senderIDs SenderIDAuthorizer, optOut OptOutChecker, antispam AntispamEvaluator, rateLimiter RateLimiter, credit CreditReserver) *Pipeline {
+	return &Pipeline{tracer: tracer, resolver: resolver, senderIDs: senderIDs, optOut: optOut, antispam: antispam, rateLimiter: rateLimiter, credit: credit}
 }
 
 // Process runs the pipeline on an inbound message and returns the routed template plus the segments
@@ -132,9 +146,10 @@ func (p *Pipeline) Process(ctx context.Context, in InboundMT) (RoutedMT, []pipee
 		DataCoding:         in.DataCoding,
 		SubmittedAt:        in.SubmittedAt,
 		SegmentCount:       1,
-		// Client traffic is always billable; only a system message (a STOP auto-reply produced straight
-		// to mt.routed, §6.20) is not — and that path never runs this pipeline.
-		Billable: true,
+		// Billable means "a reservation exists" and is set by the credit stage below only when billing is
+		// enabled for the customer AND the reserve succeeds. It starts false: a billing-disabled customer
+		// (or a nil credit stage, pre-billing) produces an unbilled mt.routed with nothing to settle.
+		Billable: false,
 	}
 
 	// 1. E.164 normalization of the destination. Source normalization is a sender-id concern (M5),
@@ -260,8 +275,29 @@ func (p *Pipeline) Process(ctx context.Context, in InboundMT) (RoutedMT, []pipee
 		return RoutedMT{}, nil, err
 	}
 
-	// 9. STUB (billing): MT credit reserve — pass-through until billing lands. See plan §8.
-	p.stubStage(ctx, "pipeline.credit")
+	// 9. Credit reserve (§6.9). Reserve this message's segments against the customer's balance, AFTER
+	// segmentation (so the cost is the real segment count) and BEFORE the SMSC send. Billing is opt-in: a
+	// disabled customer is skipped with ZERO billing round-trip (a cached-boolean decision). Insufficient
+	// funds rejects with insufficient_credit (the caller writes a rejected CDR, never sends, no ledger); a
+	// transport fault is returned raw so the router retries (fail-closed). A successful reserve pins Billable
+	// and the resolved owner onto the routed message for connector-pool to capture (step-146). The span
+	// carries no body (invariant a). A nil reserver is a pass-through (pre-billing).
+	if err := p.stage(ctx, "pipeline.credit", func(ctx context.Context) error {
+		if p.credit == nil {
+			return nil
+		}
+		reserved, ownerType, err := p.credit.Reserve(ctx, out.AccountID, out.CustomerID, out.MessageID, out.SegmentCount)
+		if err != nil {
+			return err
+		}
+		if reserved {
+			out.Billable = true
+			out.OwnerType = ownerType
+		}
+		return nil
+	}); err != nil {
+		return RoutedMT{}, nil, err
+	}
 
 	return out, segments, nil
 }
@@ -288,12 +324,4 @@ func (p *Pipeline) stage(ctx context.Context, name string, fn func(context.Conte
 		return err
 	}
 	return nil
-}
-
-// stubStage emits the span of a not-yet-implemented stage. A STUB is never silent: it appears in the
-// trace exactly like a real stage, so the pipeline's shape is visible before its logic exists
-// (plan §0.3).
-func (p *Pipeline) stubStage(ctx context.Context, name string) {
-	_, span := p.tracer.Start(ctx, name)
-	span.End()
 }

@@ -24,6 +24,15 @@ SELECT id AS customer_id, billing_mode, overdraft_enabled, overdraft_limit, cred
 FROM control_plane.customers
 WHERE billing_enabled;
 
+-- name: ListBillingScopes :many
+-- The identity and balance scope of every billing-enabled customer, for router-svc to compile the
+-- credit-stage gate + owner-resolution snapshot (step-145). Presence in the result IS the billing-enabled
+-- flag: a customer absent from it (billing disabled, or not yet created) is not billed and makes NO billing
+-- round-trip. balance_scope NULL defaults to 'customer' at read time (the schema default).
+SELECT id AS customer_id, balance_scope
+FROM control_plane.customers
+WHERE billing_enabled;
+
 -- name: LedgerEntryExists :one
 -- The AUTHORITATIVE cross-partition idempotency guard (§6.9): whether a ledger entry of entry_type
 -- already exists for message_id. Read before a capture so a redelivery of the same message_id never

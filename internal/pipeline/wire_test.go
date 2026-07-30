@@ -95,6 +95,8 @@ func TestRoutedRoundTrip(t *testing.T) {
 		SegmentCount: 3,
 		HasUDH:       true,
 		SubmittedAt:  time.Now().UTC().Truncate(time.Millisecond),
+		Billable:     true,
+		OwnerType:    "smpp_account",
 	}
 
 	rec, err := pipeline.EncodeRouted(in)
@@ -118,6 +120,11 @@ func TestRoutedRoundTrip(t *testing.T) {
 	}
 	if out.SegmentSeq != 2 || out.SegmentCount != 3 || !out.HasUDH || string(out.Body.Reveal()) != "hi" {
 		t.Error("body/segment fields not preserved")
+	}
+	// The billing settlement contract (step-145): connector-pool reads Billable to decide whether to
+	// capture at all, and OwnerType to capture against the identical balance key the router reserved.
+	if !out.Billable || out.OwnerType != "smpp_account" {
+		t.Errorf("(Billable, OwnerType) = (%v, %q), want (true, smpp_account)", out.Billable, out.OwnerType)
 	}
 }
 

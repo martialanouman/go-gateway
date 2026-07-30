@@ -70,6 +70,7 @@ type Config struct {
 	Redis      Redis      `envPrefix:"REDIS_"`
 	GRPC       GRPC       `envPrefix:"GRPC_"`
 	SMPP       SMPP       `envPrefix:"SMPP_"`
+	Billing    Billing    `envPrefix:"BILLING_"`
 }
 
 // OTel configures tracing export. The variable names follow the OpenTelemetry specification so
@@ -105,6 +106,10 @@ const (
 	// defaultSessionManagerAddr is the throwaway localhost target from docker-compose.yml. Like the
 	// other loopback defaults, Validate refuses it on the production tier.
 	defaultSessionManagerAddr = "localhost:7000"
+
+	// defaultBillingAddr is the throwaway localhost target for billing-svc (:7001). Like the other loopback
+	// defaults, Validate refuses it on the production tier.
+	defaultBillingAddr = "localhost:7001"
 )
 
 // Postgres is the control-plane database (plan §1). It is also the target of the migration
@@ -180,6 +185,25 @@ type GRPC struct {
 	Port int `env:"PORT" envDefault:"7000"`
 }
 
+// Billing configures a service's CLIENT connection to billing-svc (the gRPC server on :7001, step-144).
+// router-svc declares SectionBilling to reserve MT credit (step-145); connector-pool-svc will to capture
+// (step-146). It is a client dial target, not a listen port — distinct from GRPC, which is a server's own
+// listener.
+type Billing struct {
+	// Addr is the host:port of the billing gRPC service (billing-svc, :7001). The credit stage dials it
+	// lazily to reserve credit; billing being disabled for a customer is a cached-boolean decision upstream
+	// of the RPC, so a healthy router that bills nobody never opens this connection.
+	Addr string `env:"ADDR" envDefault:"localhost:7001"`
+
+	// ReserveTimeout bounds a single credit-reserve RPC. It is short so a hung billing-svc turns into a
+	// retryable error rather than stalling the consumer past its session timeout. It must stay comfortably
+	// above billing-svc's synchronous durable-write latency, though: a deadline shorter than a legitimate
+	// reserve commit would spuriously fail-closed and retry under load — hence a knob ops can widen without a
+	// redeploy. Reserve is idempotent by message_id, so a deadline that fires after the server committed heals
+	// on redelivery without double-charging.
+	ReserveTimeout time.Duration `env:"RESERVE_TIMEOUT" envDefault:"200ms"`
+}
+
 // SMPP configures smpp-server-svc: its client-facing SMPP listener and the session-manager it calls
 // to enforce max_sessions. Only smpp-server-svc declares SectionSMPP.
 type SMPP struct {
@@ -245,7 +269,7 @@ type SMPP struct {
 // dependency it does not open a connection to. The migrate command is the case that forced this —
 // it reads POSTGRES_URL and nothing else, yet a full validation blocked a production rollout over
 // a defaulted KAFKA_BROKERS.
-type Section uint8
+type Section uint16
 
 // The configuration groups a binary can declare.
 const (
@@ -257,12 +281,13 @@ const (
 	SectionRedis
 	SectionGRPC
 	SectionSMPP
+	SectionBilling
 
 	// SectionAll is what a caller declaring nothing gets. It must include every section, or
 	// Validate() — which runs validate(SectionAll) — would quietly stop being a full check. The
 	// cost of a section a binary does not use is nil: its fields carry valid defaults.
 	SectionAll = SectionOTel | SectionPostgres | SectionKafka | SectionClickHouse | SectionHTTP |
-		SectionRedis | SectionGRPC | SectionSMPP
+		SectionRedis | SectionGRPC | SectionSMPP | SectionBilling
 )
 
 // Load reads the configuration for serviceName from the environment and validates the sections it
@@ -332,6 +357,9 @@ func (c Config) validate(sections Section) error {
 	}
 	if sections&SectionSMPP != 0 {
 		problems = append(problems, c.smppProblems()...)
+	}
+	if sections&SectionBilling != 0 {
+		problems = append(problems, c.billingProblems()...)
 	}
 
 	if len(problems) == 0 {
@@ -599,6 +627,28 @@ func (c Config) smppProblems() []string {
 	if c.SMPP.MaxConns < 1 {
 		problems = append(problems, fmt.Sprintf(
 			"SMPP_MAX_CONNS %d must be positive", c.SMPP.MaxConns))
+	}
+	return problems
+}
+
+// billingProblems checks the billing client dial target (step-145). A service that declared SectionBilling
+// will call billing-svc, so the address must be a scheme-less host:port and must not stay the localhost
+// development default in production (the same discipline as SMPP_SESSION_MANAGER_ADDR).
+func (c Config) billingProblems() []string {
+	var problems []string
+	if strings.TrimSpace(c.Billing.Addr) == "" {
+		problems = append(problems, "BILLING_ADDR is empty: the credit stage cannot reach billing-svc")
+	}
+	if strings.Contains(c.Billing.Addr, "://") {
+		problems = append(problems, fmt.Sprintf("BILLING_ADDR %q must be host:port without a scheme", c.Billing.Addr))
+	}
+	if c.Environment.IsProduction() && c.Billing.Addr == defaultBillingAddr {
+		problems = append(problems, "BILLING_ADDR is the localhost development default: set it explicitly in production")
+	}
+	if c.Billing.ReserveTimeout <= 0 {
+		problems = append(problems, fmt.Sprintf(
+			"BILLING_RESERVE_TIMEOUT %s must be positive: a non-positive deadline would fail every reserve",
+			c.Billing.ReserveTimeout))
 	}
 	return problems
 }

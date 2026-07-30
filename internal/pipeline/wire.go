@@ -58,6 +58,7 @@ type routedWire struct {
 	HasUDH             bool       `json:"has_udh,omitempty"`
 	SubmittedAt        time.Time  `json:"submitted_at"`
 	Billable           bool       `json:"billable"`
+	OwnerType          string     `json:"owner_type,omitempty"`
 }
 
 // EncodeInbound builds the mt.inbound record for env, keyed by account so an account's submissions
@@ -140,6 +141,7 @@ func EncodeRouted(env RoutedMT) (kafka.Record, error) {
 		HasUDH:             env.HasUDH,
 		SubmittedAt:        env.SubmittedAt,
 		Billable:           env.Billable,
+		OwnerType:          env.OwnerType,
 	})
 	if err != nil {
 		return kafka.Record{}, fmt.Errorf("pipeline: encode mt.routed: %w", err)
@@ -197,6 +199,7 @@ func DecodeRouted(rec kafka.Record) (RoutedMT, error) {
 		HasUDH:             w.HasUDH,
 		SubmittedAt:        w.SubmittedAt,
 		Billable:           w.Billable,
+		OwnerType:          w.OwnerType,
 	}, nil
 }
 
