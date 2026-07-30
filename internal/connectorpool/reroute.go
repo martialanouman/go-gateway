@@ -142,6 +142,11 @@ func (s *Service) deadLetter(ctx context.Context, r pipeline.RoutedMT) error {
 // metric and a span event — so a dead-lettered message is never silently lost (§1.11, step-129). CDR →
 // produce (acked) → the caller commits (return nil): a crash redelivers, never loses.
 func (s *Service) deadLetterWith(ctx context.Context, r pipeline.RoutedMT, reason errs.Code) error {
+	// A dead-lettered message is terminally undelivered (fallback exhausted, retries exhausted, expired), so
+	// release its reservation (step-146). Fail-open, gated on Billable. A later dead-letter replay that
+	// succeeds would capture against an already-released reservation (idempotent → credits_charged=0, a free
+	// delivery); the replay tool's re-reserve semantics are a documented follow-up (step-129).
+	s.deps.Billing.Release(ctx, r)
 	if err := s.deps.CDR.Insert(ctx, failedRow(r, reason)); err != nil {
 		return fmt.Errorf("connectorpool: write failed cdr: %w", err)
 	}

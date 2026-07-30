@@ -115,6 +115,24 @@ type noopDeadLetter struct{}
 
 func (noopDeadLetter) Inc(string) {}
 
+// BillingSettler closes the MT billing loop (step-146): Capture confirms the reservation of a sent message
+// (returning billed + credits_charged for the CDR), Release refunds it when a message terminally fails or is
+// cancelled. It gates on the reservation flag pinned on mt.routed (billing disabled → ZERO billing call) and
+// FAILS OPEN — neither method returns an error, so a billing fault can never leak into processOne's transient
+// contract and redeliver a sent message (a duplicate SMS). *settle.Settler satisfies it; New defaults a nil
+// one to a no-op so a pool with no billing wired never bills. Declared consumer-side (convention §2).
+type BillingSettler interface {
+	Capture(ctx context.Context, r pipeline.RoutedMT) (billed bool, creditsCharged *int32)
+	Release(ctx context.Context, r pipeline.RoutedMT)
+}
+
+// noopSettler is the New default when no billing is wired: it settles nothing (billing opt-in). Tests that
+// do not exercise billing rely on it.
+type noopSettler struct{}
+
+func (noopSettler) Capture(context.Context, pipeline.RoutedMT) (bool, *int32) { return false, nil }
+func (noopSettler) Release(context.Context, pipeline.RoutedMT)                {}
+
 // ConfigSource loads a connector's live pool config (bind_pool_size + reconnect policy) from the control
 // plane, so a rebind / resize / policy change takes effect on the next re-dial (step-128b). A nil
 // ConfigSource keeps the static BindConfig.BindPoolSize + Deps.Reconnect (no hot reload).
@@ -172,6 +190,9 @@ type Deps struct {
 	Throttle ThrottleMetric
 	// DeadLetter counts messages parked on mt.dead-letter by reason (step-129). New defaults nil to no-op.
 	DeadLetter DeadLetterMetric
+	// Billing captures/releases the MT reservation on the send outcome (step-146). New defaults a nil one
+	// to a no-op that settles nothing (billing opt-in), so a pool with no billing wired never bills.
+	Billing BillingSettler
 	// RetryWindow is how long a connector-health failure (NOT a throttle) is redelivered before the
 	// message is dead-lettered as retries_exhausted (step-129). Zero disables the window (redeliver
 	// forever, the pre-step-129 behaviour) — the drainer/reroute still bound most cases.
@@ -274,6 +295,9 @@ func New(deps Deps) *Service {
 	}
 	if deps.DeadLetter == nil {
 		deps.DeadLetter = noopDeadLetter{}
+	}
+	if deps.Billing == nil {
+		deps.Billing = noopSettler{}
 	}
 	s := &Service{deps: deps, podID: deps.PodID}
 	// Seed the live config with the static env values; reloadConfig overwrites from the control plane
@@ -750,6 +774,9 @@ func (s *Service) processOne(ctx context.Context, b *bind, bindIndex int, rec ka
 		// ReplacingMergeTree (rank 60, collapsing with the Canceller's row) and closes the window where
 		// the Canceller crashed after flagging but before writing the row — otherwise the message would
 		// be neither sent nor recorded, leaving the CDR stuck on accepted.
+		// A cancelled message is never sent, so release its reservation (step-146). Fail-open, gated on
+		// Billable — a billing-disabled or unreserved message makes no call.
+		s.deps.Billing.Release(ctx, routed)
 		if err := s.deps.CDR.Insert(ctx, cancelledRow(routed)); err != nil {
 			return fmt.Errorf("connectorpool: write cancelled cdr: %w", err)
 		}
@@ -822,7 +849,18 @@ func (s *Service) processOne(ctx context.Context, b *bind, bindIndex int, rec ka
 		return fmt.Errorf("connectorpool: submit_sm rejected transiently (status 0x%08x): %w", resp.Status, errTransientReject)
 	}
 
-	if err := s.deps.CDR.Insert(ctx, cdrRow(routed, resp)); err != nil {
+	// Settle the reservation on the terminal outcome (step-146): capture a sent message, release a
+	// permanently-failed one. Both FAIL OPEN — neither returns an error — so a billing fault can never turn
+	// this committed outcome into a redelivery that re-submits the message (a duplicate SMS). A
+	// billing-disabled message makes no call. Capture fills billed/credits_charged on the CDR; the failed
+	// path leaves them false/nil (the reserve refund happens durably in billing-svc, not on this row).
+	row := cdrRow(routed, resp)
+	if resp.Status == smpp.StatusOK {
+		row.Billed, row.CreditsCharged = s.deps.Billing.Capture(ctx, routed)
+	} else {
+		s.deps.Billing.Release(ctx, routed)
+	}
+	if err := s.deps.CDR.Insert(ctx, row); err != nil {
 		return fmt.Errorf("connectorpool: write cdr: %w", err)
 	}
 	s.recordDLRMapping(ctx, routed, resp)
