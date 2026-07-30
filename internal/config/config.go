@@ -202,6 +202,12 @@ type Billing struct {
 	// redeploy. Reserve is idempotent by message_id, so a deadline that fires after the server committed heals
 	// on redelivery without double-charging.
 	ReserveTimeout time.Duration `env:"RESERVE_TIMEOUT" envDefault:"200ms"`
+
+	// SettleTimeout bounds a single capture/release RPC in the connector pool (step-146). Like
+	// ReserveTimeout it is short so a slow billing-svc degrades to a fast fail-open rather than stalling the
+	// send pipeline; capture/release do a synchronous durable write, so it must stay above that commit
+	// latency, and is a knob ops can widen without a redeploy. Capture/release are idempotent by message_id.
+	SettleTimeout time.Duration `env:"SETTLE_TIMEOUT" envDefault:"200ms"`
 }
 
 // SMPP configures smpp-server-svc: its client-facing SMPP listener and the session-manager it calls
@@ -649,6 +655,11 @@ func (c Config) billingProblems() []string {
 		problems = append(problems, fmt.Sprintf(
 			"BILLING_RESERVE_TIMEOUT %s must be positive: a non-positive deadline would fail every reserve",
 			c.Billing.ReserveTimeout))
+	}
+	if c.Billing.SettleTimeout <= 0 {
+		problems = append(problems, fmt.Sprintf(
+			"BILLING_SETTLE_TIMEOUT %s must be positive: a non-positive deadline would fail every capture/release",
+			c.Billing.SettleTimeout))
 	}
 	return problems
 }

@@ -26,7 +26,7 @@ var knownVars = []string{
 	"SMPP_PORT", "SMPP_SESSION_MANAGER_ADDR", "SMPP_POD_ID", "SMPP_IDLE_TIMEOUT",
 	"SMPP_BIND_MAX_FAILURES", "SMPP_BIND_FAILURE_WINDOW", "SMPP_BIND_BACKOFF_BASE", "SMPP_BIND_BACKOFF_MAX",
 	"SMPP_MAX_CONNS",
-	"BILLING_ADDR", "BILLING_RESERVE_TIMEOUT",
+	"BILLING_ADDR", "BILLING_RESERVE_TIMEOUT", "BILLING_SETTLE_TIMEOUT",
 }
 
 // setEnv installs a clean environment holding exactly kv. Each variable goes through t.Setenv
@@ -130,6 +130,7 @@ func TestLoadFromEnvironment(t *testing.T) {
 		"SMPP_MAX_CONNS":              "9000",
 		"BILLING_ADDR":                "billing:7001",
 		"BILLING_RESERVE_TIMEOUT":     "350ms",
+		"BILLING_SETTLE_TIMEOUT":      "150ms",
 	})
 
 	cfg, err := config.Load("rest-api-svc")
@@ -155,6 +156,9 @@ func TestLoadFromEnvironment(t *testing.T) {
 	}
 	if cfg.Billing.ReserveTimeout != 350*time.Millisecond {
 		t.Errorf("Billing.ReserveTimeout = %s, want 350ms", cfg.Billing.ReserveTimeout)
+	}
+	if cfg.Billing.SettleTimeout != 150*time.Millisecond {
+		t.Errorf("Billing.SettleTimeout = %s, want 150ms", cfg.Billing.SettleTimeout)
 	}
 	if cfg.OpsPort != 9191 {
 		t.Errorf("OpsPort = %d, want 9191", cfg.OpsPort)

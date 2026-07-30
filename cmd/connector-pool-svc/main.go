@@ -23,13 +23,17 @@ import (
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
 	goredis "github.com/redis/go-redis/v9"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 
+	"github.com/martialanouman/go-gateway/internal/billing/pb"
 	"github.com/martialanouman/go-gateway/internal/cancel"
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/connector/breaker"
 	"github.com/martialanouman/go-gateway/internal/connector/reconnect"
 	"github.com/martialanouman/go-gateway/internal/connector/status"
 	"github.com/martialanouman/go-gateway/internal/connectorpool"
+	"github.com/martialanouman/go-gateway/internal/connectorpool/settle"
 	"github.com/martialanouman/go-gateway/internal/dlrmap"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/pipeline/ratelimit"
@@ -90,7 +94,7 @@ func run() error {
 	defer stop()
 
 	cfg, err := config.Load(serviceName,
-		config.SectionOTel, config.SectionKafka, config.SectionClickHouse, config.SectionRedis, config.SectionPostgres)
+		config.SectionOTel, config.SectionKafka, config.SectionClickHouse, config.SectionRedis, config.SectionPostgres, config.SectionBilling)
 	if err != nil {
 		return err
 	}
@@ -207,6 +211,30 @@ func run() error {
 	}
 	rerouteLimiter := ratelimit.NewEnforcer(rateSnap, ratelimit.NewLimiter(rdb))
 
+	// Billing settle (step-146): capture the reserved credit on a sent message, release it on a terminal
+	// failure, via billing-svc. Reached lazily (grpc.NewClient opens no connection until the first RPC) and
+	// FAILS OPEN — a billing fault never redelivers a sent message — so a down billing-svc neither blocks
+	// startup nor duplicates SMS; a message with no reservation (billing disabled) makes zero calls.
+	// billing_capture_failed_total / billing_release_failed_total count the fail-open events so an alert can
+	// fire (no labels — one connector per pod, never a message id or MSISDN).
+	captureFailedTotal := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "billing_capture_failed_total",
+		Help: "MT credit captures that failed and were left for reconciliation (fail-open).",
+	})
+	releaseFailedTotal := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "billing_release_failed_total",
+		Help: "MT credit releases that failed and were left for reconciliation (fail-open).",
+	})
+	billingConn, err := grpc.NewClient(cfg.Billing.Addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return fmt.Errorf("dial billing at %q: %w", cfg.Billing.Addr, err)
+	}
+	defer func() { _ = billingConn.Close() }()
+	settler := settle.NewSettler(pb.NewBillingClient(billingConn),
+		settle.WithTimeout(cfg.Billing.SettleTimeout),
+		settle.WithMetric(settleMetric{captureFailed: captureFailedTotal, releaseFailed: releaseFailedTotal}),
+		settle.WithLogger(logger))
+
 	tracer := observability.Tracer(nil, serviceName)
 	svc := connectorpool.New(connectorpool.Deps{
 		Consumer:       consumer,
@@ -246,6 +274,7 @@ func run() error {
 		MaxSendRate:   bindEnv.MaxSendRate,
 		Throttle:      throttleMetric{rate: sendRateGauge, throttled: throttledTotal},
 		DeadLetter:    deadLetterMetric{counter: deadLetterTotal},
+		Billing:       settler,
 		RetryWindow:   bindEnv.RetryWindow,
 		MaxMessageAge: bindEnv.MaxMessageAge,
 		Tracer:        tracer,
@@ -275,7 +304,7 @@ func run() error {
 		}
 		return 0
 	})
-	ops.Registry().MustRegister(sendRateGauge, throttledTotal, deadLetterTotal, linkUp)
+	ops.Registry().MustRegister(sendRateGauge, throttledTotal, deadLetterTotal, linkUp, captureFailedTotal, releaseFailedTotal)
 
 	// Bounded reroute drainer (step-126): consumes mt.reroute-park (AtStart — parked messages are durable
 	// and must all be drained) and replays each to mt.routed at the target connector's ceiling. Its own
@@ -342,6 +371,12 @@ func (m throttleMetric) IncThrottled()        { m.throttled.Inc() }
 type deadLetterMetric struct{ counter *prometheus.CounterVec }
 
 func (m deadLetterMetric) Inc(reason string) { m.counter.WithLabelValues(reason).Inc() }
+
+// settleMetric adapts the fail-open capture/release counters to settle.Metric (bounded, no labels).
+type settleMetric struct{ captureFailed, releaseFailed prometheus.Counter }
+
+func (m settleMetric) CaptureFailed() { m.captureFailed.Inc() }
+func (m settleMetric) ReleaseFailed() { m.releaseFailed.Inc() }
 
 // breakerStateReader reads a connector's breaker aggregate (breaker:state:{id}) so a reroute can skip a
 // candidate that is itself open (step-125). A missing key or unparsable value reads "not open" (the
