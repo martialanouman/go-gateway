@@ -9,6 +9,7 @@ import (
 	"context"
 
 	uuid "github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const adjustBalance = `-- name: AdjustBalance :one
@@ -112,6 +113,28 @@ func (q *Queries) GetBalance(ctx context.Context, arg GetBalanceParams) (int32, 
 	return credits, err
 }
 
+const getBalanceForUpdate = `-- name: GetBalanceForUpdate :one
+SELECT credits FROM control_plane.balances
+WHERE owner_type = $1 AND owner_id = $2 AND direction = $3
+FOR UPDATE
+`
+
+type GetBalanceForUpdateParams struct {
+	OwnerType string
+	OwnerID   uuid.UUID
+	Direction string
+}
+
+// Read one owner balance and LOCK its row (§6.9, step-148 admin transfer / change-scope). The lock
+// serialises this admin tx against a concurrent durable mirror write to the same balance, so a transfer's
+// overdraw check and a change-scope zero-check see a stable value. A missing row is a legitimate 0.
+func (q *Queries) GetBalanceForUpdate(ctx context.Context, arg GetBalanceForUpdateParams) (int32, error) {
+	row := q.db.QueryRow(ctx, getBalanceForUpdate, arg.OwnerType, arg.OwnerID, arg.Direction)
+	var credits int32
+	err := row.Scan(&credits)
+	return credits, err
+}
+
 const getBillingCustomer = `-- name: GetBillingCustomer :one
 SELECT billing_mode, overdraft_enabled, overdraft_limit, credit_limit, credit_limit_is_hard,
        mo_billing_floor, external_billing_provider_id
@@ -171,13 +194,14 @@ func (q *Queries) GetReserveEntry(ctx context.Context, messageID *uuid.UUID) (Ge
 	return i, err
 }
 
-const insertLedgerEntry = `-- name: InsertLedgerEntry :exec
+const insertLedgerEntry = `-- name: InsertLedgerEntry :one
 INSERT INTO control_plane.billing_ledger
   (owner_type, owner_id, direction, customer_id, account_id, message_id, entry_type, credits,
    balance_after, reference)
 VALUES
   ($1, $2, $3, $4, $5, $6, $7, $8,
    $9, $10)
+RETURNING id, created_at
 `
 
 type InsertLedgerEntryParams struct {
@@ -193,10 +217,16 @@ type InsertLedgerEntryParams struct {
 	Reference    *string
 }
 
-// Append one ledger row. The ledger is APPEND-ONLY (§6.9): a row is never updated once written, so the
-// history is immutable and auditable. balance_after is supplied by the caller's atomic path.
-func (q *Queries) InsertLedgerEntry(ctx context.Context, arg InsertLedgerEntryParams) error {
-	_, err := q.db.Exec(ctx, insertLedgerEntry,
+type InsertLedgerEntryRow struct {
+	ID        uuid.UUID
+	CreatedAt pgtype.Timestamptz
+}
+
+// Append one ledger row and return its generated id and created_at. The ledger is APPEND-ONLY (§6.9): a row
+// is never updated once written, so the history is immutable and auditable. balance_after is supplied by the
+// caller's atomic path. The returned id/created_at let an admin top-up/transfer echo the created entries.
+func (q *Queries) InsertLedgerEntry(ctx context.Context, arg InsertLedgerEntryParams) (InsertLedgerEntryRow, error) {
+	row := q.db.QueryRow(ctx, insertLedgerEntry,
 		arg.OwnerType,
 		arg.OwnerID,
 		arg.Direction,
@@ -208,7 +238,9 @@ func (q *Queries) InsertLedgerEntry(ctx context.Context, arg InsertLedgerEntryPa
 		arg.BalanceAfter,
 		arg.Reference,
 	)
-	return err
+	var i InsertLedgerEntryRow
+	err := row.Scan(&i.ID, &i.CreatedAt)
+	return i, err
 }
 
 const ledgerEntryExists = `-- name: LedgerEntryExists :one
@@ -365,4 +397,39 @@ func (q *Queries) ListExternalBillingConfigs(ctx context.Context) ([]ListExterna
 		return nil, err
 	}
 	return items, nil
+}
+
+const lockCustomerScope = `-- name: LockCustomerScope :one
+SELECT balance_scope FROM control_plane.customers WHERE id = $1 FOR UPDATE
+`
+
+// Read a customer's current balance_scope and LOCK the customer row, so two concurrent change-scope admin
+// txns on the same customer serialise (step-148). not_found if the customer does not exist.
+func (q *Queries) LockCustomerScope(ctx context.Context, id uuid.UUID) (string, error) {
+	row := q.db.QueryRow(ctx, lockCustomerScope, id)
+	var balance_scope string
+	err := row.Scan(&balance_scope)
+	return balance_scope, err
+}
+
+const updateBalanceScope = `-- name: UpdateBalanceScope :execrows
+UPDATE control_plane.customers
+SET balance_scope = $1, updated_at = now()
+WHERE id = $2
+`
+
+type UpdateBalanceScopeParams struct {
+	BalanceScope string
+	ID           uuid.UUID
+}
+
+// Flip a customer's balance_scope (step-148). Returns rows affected: 0 = no such customer. The same-table
+// CHECK (step-142c) still rejects 'smpp_account' when a hard credit limit or overdraft is set — that raises
+// a constraint violation the caller maps to a 409, not a 500.
+func (q *Queries) UpdateBalanceScope(ctx context.Context, arg UpdateBalanceScopeParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateBalanceScope, arg.BalanceScope, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

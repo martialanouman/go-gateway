@@ -2,11 +2,13 @@ package postgres_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/google/uuid"
 
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
+	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 	"github.com/martialanouman/go-gateway/internal/storage/postgres"
 	"github.com/martialanouman/go-gateway/internal/testutil/pgtest"
 )
@@ -148,6 +150,115 @@ func TestBillingRepoListExternalBillingConfigs(t *testing.T) {
 	}
 	if _, ok := byID[plain]; ok {
 		t.Error("a customer with no provider must be absent (pure internal billing)")
+	}
+}
+
+// TestBillingRepoTransfer proves the admin transfer (step-148): it moves MT credit between two accounts of a
+// customer as two zero-sum EntryTransfer rows, refuses to overdraw the source, and is idempotent by key.
+func TestBillingRepoTransfer(t *testing.T) {
+	pool := pgtest.Pool(t)
+	ctx := context.Background()
+	repo := postgres.NewBillingRepo(pool)
+
+	var customerID, acct1, acct2 uuid.UUID
+	if err := pool.QueryRow(ctx, `INSERT INTO control_plane.customers (name, balance_scope) VALUES ('xfer', 'smpp_account') RETURNING id`).Scan(&customerID); err != nil {
+		t.Fatalf("seed customer: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `INSERT INTO control_plane.smpp_accounts (customer_id, name) VALUES ($1,'a1') RETURNING id`, customerID).Scan(&acct1); err != nil {
+		t.Fatalf("seed acct1: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `INSERT INTO control_plane.smpp_accounts (customer_id, name) VALUES ($1,'a2') RETURNING id`, customerID).Scan(&acct2); err != nil {
+		t.Fatalf("seed acct2: %v", err)
+	}
+	// Fund acct1 with 100 (topup).
+	if _, _, err := repo.RecordDurable(ctx, cp.LedgerEntry{
+		OwnerType: cp.OwnerTypeSMPPAccount, OwnerID: acct1, Direction: cp.BillingDirectionMT,
+		CustomerID: customerID, AccountID: &acct1, EntryType: cp.EntryTopup, Credits: 100,
+	}); err != nil {
+		t.Fatalf("fund acct1: %v", err)
+	}
+
+	// The handler passes MessageID on both legs; the repo must strip it before the ledger insert, else the
+	// two legs collide on the partial unique index (message_id, entry_type, created_at) with created_at
+	// constant in the tx. Passing it here proves the repo neutralises it.
+	sharedMsg := uuid.New()
+	mkPair := func(amount int) (cp.LedgerEntry, cp.LedgerEntry) {
+		debit := cp.LedgerEntry{OwnerType: cp.OwnerTypeSMPPAccount, OwnerID: acct1, Direction: cp.BillingDirectionMT, CustomerID: customerID, AccountID: &acct1, MessageID: &sharedMsg, EntryType: cp.EntryTransfer, Credits: -amount}
+		credit := cp.LedgerEntry{OwnerType: cp.OwnerTypeSMPPAccount, OwnerID: acct2, Direction: cp.BillingDirectionMT, CustomerID: customerID, AccountID: &acct2, MessageID: &sharedMsg, EntryType: cp.EntryTransfer, Credits: amount}
+		return debit, credit
+	}
+
+	// Overdraw is refused.
+	bigD, bigC := mkPair(500)
+	if _, _, err := repo.Transfer(ctx, bigD, bigC, uuid.New()); !errors.Is(err, errs.ErrInsufficientCredit) {
+		t.Errorf("Transfer(overdraw) must fail with insufficient_credit, got %v", err)
+	}
+
+	// A valid transfer moves 30, returning two mirrored ledger rows.
+	idem := uuid.New()
+	d, c := mkPair(30)
+	rows, applied, err := repo.Transfer(ctx, d, c, idem)
+	if err != nil || !applied {
+		t.Fatalf("Transfer = (%v, %v), want (true, nil)", applied, err)
+	}
+	if len(rows) != 2 || rows[0].Credits != -30 || rows[1].Credits != 30 {
+		t.Errorf("transfer rows = %+v, want a -30/+30 pair", rows)
+	}
+	// Both legs actually landed in the ledger (the B1 unique-index collision would leave 0/1).
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM control_plane.billing_ledger WHERE customer_id=$1 AND entry_type='transfer'`, customerID).Scan(&n); err != nil {
+		t.Fatalf("count transfer entries: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("transfer ledger entries = %d, want 2 (both legs committed)", n)
+	}
+	if b, _, _ := repo.Balance(ctx, cp.OwnerTypeSMPPAccount, acct1, cp.BillingDirectionMT); b != 70 {
+		t.Errorf("acct1 = %d, want 70", b)
+	}
+	if b, _, _ := repo.Balance(ctx, cp.OwnerTypeSMPPAccount, acct2, cp.BillingDirectionMT); b != 30 {
+		t.Errorf("acct2 = %d, want 30", b)
+	}
+	// A replay with the same key is a no-op (no double-move).
+	d2, c2 := mkPair(30)
+	if _, applied, err := repo.Transfer(ctx, d2, c2, idem); err != nil || applied {
+		t.Fatalf("replay Transfer applied=%v err=%v, want (false, nil)", applied, err)
+	}
+	if b, _, _ := repo.Balance(ctx, cp.OwnerTypeSMPPAccount, acct1, cp.BillingDirectionMT); b != 70 {
+		t.Errorf("acct1 after replay = %d, want 70 (idempotent)", b)
+	}
+}
+
+// TestBillingRepoChangeBalanceScope proves the guarded scope flip (step-148): it flips when all balances are
+// zero and refuses (conflict) when any is non-zero.
+func TestBillingRepoChangeBalanceScope(t *testing.T) {
+	pool := pgtest.Pool(t)
+	ctx := context.Background()
+	repo := postgres.NewBillingRepo(pool)
+
+	var customerID uuid.UUID
+	if err := pool.QueryRow(ctx, `INSERT INTO control_plane.customers (name) VALUES ('scope-flip') RETURNING id`).Scan(&customerID); err != nil {
+		t.Fatalf("seed customer: %v", err)
+	}
+	owner := cp.BalanceOwner{OwnerType: cp.OwnerTypeCustomer, OwnerID: customerID}
+
+	// All balances zero → flip succeeds.
+	if err := repo.ChangeBalanceScope(ctx, customerID, []cp.BalanceOwner{owner}, cp.OwnerTypeSMPPAccount); err != nil {
+		t.Fatalf("ChangeBalanceScope(zero balances) = %v, want nil", err)
+	}
+	var scope string
+	if err := pool.QueryRow(ctx, `SELECT balance_scope FROM control_plane.customers WHERE id=$1`, customerID).Scan(&scope); err != nil || scope != "smpp_account" {
+		t.Fatalf("balance_scope = %q (err %v), want smpp_account", scope, err)
+	}
+
+	// Fund the owner, then a flip back must be refused (409) because the balance is non-zero.
+	if _, _, err := repo.RecordDurable(ctx, cp.LedgerEntry{
+		OwnerType: cp.OwnerTypeCustomer, OwnerID: customerID, Direction: cp.BillingDirectionMT,
+		CustomerID: customerID, EntryType: cp.EntryTopup, Credits: 50,
+	}); err != nil {
+		t.Fatalf("fund owner: %v", err)
+	}
+	if err := repo.ChangeBalanceScope(ctx, customerID, []cp.BalanceOwner{owner}, string(cp.BalanceScopeCustomer)); !errors.Is(err, errs.ErrConflict) {
+		t.Errorf("ChangeBalanceScope(non-zero balance) = %v, want conflict", err)
 	}
 }
 

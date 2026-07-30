@@ -1049,3 +1049,94 @@ items:
           method: POST
           url: '{{baseUrl}}/admin/routing-scripts/{{routingScriptId}}/publish'
         docs: Publish (activate) a draft script (scope admin:write).
+  - info:
+      name: Billing
+      type: folder
+    items:
+      - info:
+          name: get-customer-billing
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/customers/{{customerId}}/billing'
+        docs: Get a customer's billing config (scope admin:read).
+      - info:
+          name: update-customer-billing
+          type: http
+        http:
+          method: PATCH
+          url: '{{baseUrl}}/admin/customers/{{customerId}}/billing'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "billing_mode": "prepaid",
+                "overdraft_enabled": false,
+                "credit_limit_is_hard": false
+              }
+        docs: Update a customer's billing config (scope admin:write).
+      - info:
+          name: get-customer-balances
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/customers/{{customerId}}/balances'
+        docs: Get MT and MO balances per owner/direction (scope admin:read).
+      - info:
+          name: topup-balance
+          type: http
+        http:
+          method: POST
+          url: '{{baseUrl}}/admin/customers/{{customerId}}/billing/topup'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "credits": 100,
+                "direction": "mt",
+                "idempotency_key": "00000000-0000-0000-0000-000000000000",
+                "reference": "manual topup"
+              }
+        docs: Credit a balance, idempotent by key (scope admin:write).
+      - info:
+          name: transfer-balance
+          type: http
+        http:
+          method: POST
+          url: '{{baseUrl}}/admin/customers/{{customerId}}/billing/transfer'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "credits": 50,
+                "direction": "mt",
+                "from_owner_id": "{{accountId}}",
+                "to_owner_id": "{{accountId}}",
+                "idempotency_key": "00000000-0000-0000-0000-000000000000"
+              }
+        docs: Net-zero transfer between the customer's own balances (scope admin:write).
+      - info:
+          name: change-balance-scope
+          type: http
+        http:
+          method: POST
+          url: '{{baseUrl}}/admin/customers/{{customerId}}/billing/scope'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "balance_scope": "smpp_account"
+              }
+        docs: Change balance_scope (409 unless all balances are zero) (scope admin:write).

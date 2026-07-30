@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	goredis "github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
@@ -139,6 +140,8 @@ func run() error {
 		RoutingScripts:   postgres.NewRoutingScriptRepo(pool),
 		Imports:          importRunner,
 		Disconnector:     adminapi.NewGRPCDisconnector(registrypb.NewSessionRegistryClient(registryConn)),
+		Billing:          postgres.NewBillingRepo(pool),
+		BalanceCache:     redisBalanceCache{rdb: rdb},
 		Verifier:         verifier,
 		Logger:           logger,
 	})
@@ -204,4 +207,15 @@ func runHTTP(ctx context.Context, srv *http.Server, timeout time.Duration, logge
 		}
 		return nil
 	}
+}
+
+// redisBalanceCache adapts the Redis client to adminapi.BalanceCacheInvalidator: it deletes the balance-cache
+// keys an admin money op just changed durably, so the next reserve rehydrates from Postgres (step-148).
+type redisBalanceCache struct{ rdb *goredis.Client }
+
+func (c redisBalanceCache) Del(ctx context.Context, keys ...string) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	return c.rdb.Del(ctx, keys...).Err()
 }

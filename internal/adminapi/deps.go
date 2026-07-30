@@ -153,6 +153,27 @@ type Deps struct {
 	RoutingScripts   RoutingScriptAdminStore
 	Imports          ImportRunner
 	Disconnector     Disconnector
+	Billing          BillingStore
+	BalanceCache     BalanceCacheInvalidator
 	Verifier         auth.TokenVerifier
 	Logger           *slog.Logger
+}
+
+// BillingStore is the persistence the admin billing handlers need (step-148): the reserve-floor config view,
+// balance reads, the durable top-up write, the atomic transfer, and the guarded balance-scope flip. All
+// writes are durable (Postgres ledger); the Redis balance cache is invalidated separately (BalanceCacheInvalidator).
+// *postgres.BillingRepo satisfies it; declared consumer-side.
+type BillingStore interface {
+	Balances(ctx context.Context, owners []cp.BalanceOwner) ([]cp.BalanceRow, error)
+	Topup(ctx context.Context, entry cp.LedgerEntry) (row cp.LedgerRow, applied bool, err error)
+	Transfer(ctx context.Context, debit, credit cp.LedgerEntry, idemKey uuid.UUID) (rows []cp.LedgerRow, applied bool, err error)
+	ChangeBalanceScope(ctx context.Context, customerID uuid.UUID, currentOwners []cp.BalanceOwner, newScope string) error
+}
+
+// BalanceCacheInvalidator deletes the Redis balance-cache keys of the owners an admin money op just changed
+// durably, so the next reserve rehydrates the fresh Postgres balance instead of serving a stale cached one
+// (step-148). Best-effort: a delete failure is logged, not fatal (the cache TTL still self-heals). A go-redis
+// adapter satisfies it; New defaults a nil one to a no-op. Declared consumer-side.
+type BalanceCacheInvalidator interface {
+	Del(ctx context.Context, keys ...string) error
 }

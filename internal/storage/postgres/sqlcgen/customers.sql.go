@@ -252,26 +252,28 @@ UPDATE control_plane.customers SET
     credit_limit           = COALESCE($8, credit_limit),
     credit_limit_is_hard   = COALESCE($9, credit_limit_is_hard),
     mo_billing_floor       = COALESCE($10, mo_billing_floor),
-    content_storage        = COALESCE($11, content_storage),
-    content_retention_days = COALESCE($12, content_retention_days)
-WHERE id = $13
+    external_billing_provider_id = COALESCE($11, external_billing_provider_id),
+    content_storage        = COALESCE($12, content_storage),
+    content_retention_days = COALESCE($13, content_retention_days)
+WHERE id = $14
 RETURNING id, name, status, group_id, rate_plan_id, billing_enabled, billing_mode, overdraft_enabled, overdraft_limit, balance_scope, mo_billing_floor, content_storage, content_retention_days, content_key_id, created_at, updated_at, credit_limit, credit_limit_is_hard, external_billing_provider_id
 `
 
 type UpdateCustomerParams struct {
-	Name                 *string
-	Status               *string
-	RatePlanID           *uuid.UUID
-	BillingEnabled       *bool
-	BillingMode          *string
-	OverdraftEnabled     *bool
-	OverdraftLimit       *int32
-	CreditLimit          *int32
-	CreditLimitIsHard    *bool
-	MoBillingFloor       *int32
-	ContentStorage       *string
-	ContentRetentionDays *int32
-	ID                   uuid.UUID
+	Name                      *string
+	Status                    *string
+	RatePlanID                *uuid.UUID
+	BillingEnabled            *bool
+	BillingMode               *string
+	OverdraftEnabled          *bool
+	OverdraftLimit            *int32
+	CreditLimit               *int32
+	CreditLimitIsHard         *bool
+	MoBillingFloor            *int32
+	ExternalBillingProviderID *uuid.UUID
+	ContentStorage            *string
+	ContentRetentionDays      *int32
+	ID                        uuid.UUID
 }
 
 // Partial update: a NULL argument leaves its column unchanged (COALESCE). group_id is not here —
@@ -288,6 +290,7 @@ func (q *Queries) UpdateCustomer(ctx context.Context, arg UpdateCustomerParams) 
 		arg.CreditLimit,
 		arg.CreditLimitIsHard,
 		arg.MoBillingFloor,
+		arg.ExternalBillingProviderID,
 		arg.ContentStorage,
 		arg.ContentRetentionDays,
 		arg.ID,

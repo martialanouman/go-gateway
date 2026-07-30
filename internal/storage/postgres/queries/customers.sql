@@ -50,6 +50,7 @@ UPDATE control_plane.customers SET
     credit_limit           = COALESCE(sqlc.narg('credit_limit'), credit_limit),
     credit_limit_is_hard   = COALESCE(sqlc.narg('credit_limit_is_hard'), credit_limit_is_hard),
     mo_billing_floor       = COALESCE(sqlc.narg('mo_billing_floor'), mo_billing_floor),
+    external_billing_provider_id = COALESCE(sqlc.narg('external_billing_provider_id'), external_billing_provider_id),
     content_storage        = COALESCE(sqlc.narg('content_storage'), content_storage),
     content_retention_days = COALESCE(sqlc.narg('content_retention_days'), content_retention_days)
 WHERE id = @id
