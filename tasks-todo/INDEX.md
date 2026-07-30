@@ -112,7 +112,7 @@ Légende : `[x]` = fait (dans `tasks-done/`) · `[ ]` = à faire (dans `tasks-to
 - [x] step-145 — Réserve MT dans le router (étape 8) ; désactivée = zéro appel réseau
 - [x] step-146 — Capture/libère dans connector-pool ; idempotent sous double livraison
 - [x] step-147 — Adaptateur de facturation externe (§6.10) derrière une interface
-- [ ] step-148 — Admin billing : config client, soldes, top-up/transfert, change-balance-scope
+- [x] step-148 — Admin billing : config client, soldes, top-up/transfert, change-balance-scope
 - [ ] step-149 — Admin billing : grand livre, rate-plans, providers externes
 
 ## M10 — Contenu, chiffrement & RGPD
