@@ -31,7 +31,7 @@ type billingHarness struct {
 // empty provider (the default) fails closed to strict prepaid, so tests that never call this are unchanged.
 func (h *billingHarness) setConfig(c cp.BillingCustomer) {
 	c.CustomerID = h.owner.CustomerID
-	h.cfg.Store(billing.BuildConfigSnapshot([]cp.BillingCustomer{c}))
+	h.cfg.Store(billing.BuildConfigSnapshot([]cp.BillingCustomer{c}, nil))
 }
 
 func newBillingHarness(t *testing.T, initialBalance int) *billingHarness {

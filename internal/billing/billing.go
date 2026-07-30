@@ -123,6 +123,9 @@ func (strictPrepaid) FloorFor(uuid.UUID) (hasFloor bool, floor int) { return tru
 // MOFloor: the default MO meter is unbounded (no floor) until real config is wired.
 func (strictPrepaid) MOFloor(uuid.UUID) (floor int, hasFloor bool) { return 0, false }
 
+// ExternalFor: no external billing provider by default (pure internal billing).
+func (strictPrepaid) ExternalFor(uuid.UUID) (ExternalConfig, bool) { return ExternalConfig{}, false }
+
 // Option tunes an Accountant.
 type Option func(*Accountant)
 

@@ -20,18 +20,29 @@ type BalanceReader interface {
 	Balance(ctx context.Context, ownerType string, ownerID uuid.UUID, direction string) (int, bool, error)
 }
 
-// Server implements pb.BillingServer over the Accountant (step-142/143). It maps the flat wire messages to
-// domain calls and the flat error code model onto gRPC status. The message body never reaches billing
+// Core is the billing surface the gRPC server drives: reserve/capture/release plus the MO meter. Both the raw
+// *Accountant and the *ExternalBiller decorator (§6.10, step-147) satisfy it, so the server is oblivious to
+// whether an external provider is in play. Declared consumer-side (convention §2).
+type Core interface {
+	Reserve(ctx context.Context, owner Owner, messageID uuid.UUID, credits int) (balanceAfter int, err error)
+	Capture(ctx context.Context, owner Owner, messageID uuid.UUID) (creditsCharged int, err error)
+	Release(ctx context.Context, owner Owner, messageID uuid.UUID) error
+	RecordMO(ctx context.Context, owner Owner, messageID uuid.UUID, credits int) (MOResult, error)
+}
+
+// Server implements pb.BillingServer over the billing Core (step-142/143/147). It maps the flat wire messages
+// to domain calls and the flat error code model onto gRPC status. The message body never reaches billing
 // (invariant a): it sees only owner identifiers, a message_id and integer credits.
 type Server struct {
 	pb.UnimplementedBillingServer
-	acc      *Accountant
+	core     Core
 	balances BalanceReader
 }
 
-// NewServer builds the Billing gRPC server over the accountant and a durable balance reader.
-func NewServer(acc *Accountant, balances BalanceReader) *Server {
-	return &Server{acc: acc, balances: balances}
+// NewServer builds the Billing gRPC server over the billing core (the Accountant, or the ExternalBiller
+// decorator wrapping it) and a durable balance reader.
+func NewServer(core Core, balances BalanceReader) *Server {
+	return &Server{core: core, balances: balances}
 }
 
 // Reserve holds credits for a message before the SMSC send. Insufficient credit is a normal, non-error
@@ -44,7 +55,7 @@ func (s *Server) Reserve(ctx context.Context, req *pb.ReserveRequest) (*pb.Reser
 	if req.GetCredits() <= 0 {
 		return nil, status.Error(codes.InvalidArgument, string(errs.ErrValidation))
 	}
-	bal, err := s.acc.Reserve(ctx, owner, messageID, int(req.GetCredits()))
+	bal, err := s.core.Reserve(ctx, owner, messageID, int(req.GetCredits()))
 	if errors.Is(err, errs.ErrInsufficientCredit) {
 		return &pb.ReserveResponse{Reserved: false, BalanceAfter: i32(bal), Code: string(errs.ErrInsufficientCredit)}, nil
 	}
@@ -63,7 +74,7 @@ func (s *Server) Capture(ctx context.Context, req *pb.CaptureRequest) (*pb.Captu
 	if err != nil {
 		return nil, err
 	}
-	charged, err := s.acc.Capture(ctx, owner, messageID)
+	charged, err := s.core.Capture(ctx, owner, messageID)
 	if err != nil {
 		return nil, toStatus(err)
 	}
@@ -80,7 +91,7 @@ func (s *Server) Release(ctx context.Context, req *pb.ReleaseRequest) (*pb.Relea
 	if err != nil {
 		return nil, err
 	}
-	if err := s.acc.Release(ctx, owner, messageID); err != nil {
+	if err := s.core.Release(ctx, owner, messageID); err != nil {
 		return nil, toStatus(err)
 	}
 	bal, err := s.mtBalance(ctx, owner)
@@ -122,7 +133,7 @@ func (s *Server) RecordMO(ctx context.Context, req *pb.RecordMORequest) (*pb.Rec
 	if req.GetCredits() <= 0 {
 		return nil, status.Error(codes.InvalidArgument, string(errs.ErrValidation))
 	}
-	r, err := s.acc.RecordMO(ctx, owner, messageID, int(req.GetCredits()))
+	r, err := s.core.RecordMO(ctx, owner, messageID, int(req.GetCredits()))
 	if err != nil {
 		return nil, toStatus(err)
 	}
@@ -209,6 +220,11 @@ func grpcCodeFor(c errs.Code) codes.Code {
 		return codes.NotFound
 	case errs.ErrInsufficientCredit:
 		return codes.FailedPrecondition
+	case errs.ErrExternalBillingUnavailable:
+		// A provider outage under fail_closed is transient: gRPC Unavailable tells the router to retry
+		// (the reserver returns any gRPC error raw → the pipeline treats it as a retryable fault), so a
+		// billed message is held, never sent unconfirmed nor permanently rejected.
+		return codes.Unavailable
 	default:
 		return codes.Internal
 	}

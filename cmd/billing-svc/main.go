@@ -19,6 +19,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/grpc"
 
 	"github.com/martialanouman/go-gateway/internal/billing"
@@ -91,8 +93,28 @@ func run() error {
 		return fmt.Errorf("initial billing config load: %w", err)
 	}
 
+	// External billing provider (§6.10, step-147): a pluggable provider decorates the accountant with
+	// external authorization. A real HTTP provider is deferred, so a local stub (allow-all, no network) is
+	// wired — the mode/timeout/policy still ride the config snapshot, so external-billing config is exercised
+	// end to end. Metrics are labelled by provider (bounded): fail-open passes (a dead provider silently
+	// authorizing) and reconciliation discrepancies both drive alerts.
+	externalFailOpenTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "billing_external_authz_fail_open_total",
+		Help: "External billing authorizations that failed open (proceeded unconfirmed), by provider.",
+	}, []string{"provider"})
+	externalDiscrepancyTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "billing_external_discrepancy_total",
+		Help: "External billing reconciliation discrepancies, by provider.",
+	}, []string{"provider"})
+	provider := billing.NewStubProvider()
+	biller := billing.NewExternalBiller(acc, configProvider, provider,
+		billing.WithExternalMetric(extFailOpenMetric{c: externalFailOpenTotal}), billing.WithExternalLogger(logger))
+	reconciler := billing.NewReconciler(repo, provider,
+		billing.WithDiscrepancyMetric(extDiscrepancyMetric{c: externalDiscrepancyTotal}),
+		billing.WithTolerance(reconcileTolerance), billing.WithReconcileLogger(logger))
+
 	grpcServer := grpc.NewServer()
-	pb.RegisterBillingServer(grpcServer, billing.NewServer(acc, repo))
+	pb.RegisterBillingServer(grpcServer, billing.NewServer(biller, repo))
 
 	// Both Redis and Postgres are vital: a balance can be neither served nor rehydrated without them, so a
 	// pod that loses either must leave the load balancer (plan §1.5).
@@ -102,6 +124,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("init ops server: %w", err)
 	}
+	ops.Registry().MustRegister(externalFailOpenTotal, externalDiscrepancyTotal)
 
 	logger.InfoContext(ctx, "starting", "config", cfg)
 
@@ -112,6 +135,9 @@ func run() error {
 	})
 	g.Add("config refresh", func(c context.Context) error {
 		return runConfigRefresh(c, repo, configProvider, logger)
+	})
+	g.Add("external reconcile", func(c context.Context) error {
+		return runReconcile(c, reconciler, logger)
 	})
 	if err := g.Run(ctx, logger); err != nil {
 		return err
@@ -147,6 +173,49 @@ func runConfigRefresh(ctx context.Context, lister billing.CustomerLister, p *bil
 			}
 		}
 	}
+}
+
+// reconcileInterval is how often billing-svc reconciles local settled consumption against external providers
+// (§6.10). Reconciliation is non-urgent and report-only, so a slow cadence keeps its per-customer reads well
+// off the hot path.
+const reconcileInterval = 5 * time.Minute
+
+// reconcileTolerance is the credit difference below which a local/external mismatch is ignored, not alerted.
+// ConsumedCredits excludes in-flight holds while a provider's Usage may include them, so a busy customer
+// almost always differs by the in-flight amount at tick time; a zero tolerance would alert chronically. This
+// is a conservative starting point — real per-deployment tuning (or a relative threshold) is a follow-up.
+const reconcileTolerance = 100
+
+// runReconcile periodically runs one external-billing reconciliation pass until ctx is cancelled. A pass
+// error is logged, not fatal: the next tick retries. Being a supervised ticker that threads ctx into the
+// pass, it drains cleanly on shutdown (the in-flight pass's reads honour the cancelled context).
+func runReconcile(ctx context.Context, r *billing.Reconciler, logger *slog.Logger) error {
+	ticker := time.NewTicker(reconcileInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			if err := r.ReconcileOnce(ctx); err != nil {
+				logger.WarnContext(ctx, "billing: external reconciliation pass failed — retrying next tick", "err", err)
+			}
+		}
+	}
+}
+
+// extFailOpenMetric adapts the fail-open counter to billing.ExternalMetric (bounded provider label).
+type extFailOpenMetric struct{ c *prometheus.CounterVec }
+
+func (m extFailOpenMetric) AuthzFailOpen(providerID uuid.UUID) {
+	m.c.WithLabelValues(providerID.String()).Inc()
+}
+
+// extDiscrepancyMetric adapts the discrepancy counter to billing.DiscrepancyMetric.
+type extDiscrepancyMetric struct{ c *prometheus.CounterVec }
+
+func (m extDiscrepancyMetric) Discrepancy(providerID uuid.UUID) {
+	m.c.WithLabelValues(providerID.String()).Inc()
 }
 
 // runGRPC serves the Billing API until ctx is cancelled, then drains within timeout. GracefulStop lets

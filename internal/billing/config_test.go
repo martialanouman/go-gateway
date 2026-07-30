@@ -2,6 +2,7 @@ package billing_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -33,7 +34,7 @@ func TestConfigSnapshotFloorFor(t *testing.T) {
 		{CustomerID: postpaidHardNoLimit, BillingMode: cp.BillingPostpaid, CreditLimit: nil, CreditLimitIsHard: true},
 		// postpaid soft limit → no reserve floor (the soft limit is advisory, enforced by alerting elsewhere).
 		{CustomerID: postpaidSoft, BillingMode: cp.BillingPostpaid, CreditLimit: intptr(1000), CreditLimitIsHard: false},
-	})
+	}, nil)
 
 	cases := []struct {
 		name       string
@@ -65,5 +66,57 @@ func TestConfigSnapshotNil(t *testing.T) {
 	var snap *billing.ConfigSnapshot
 	if has, floor := snap.FloorFor(uuid.New()); !has || floor != 0 {
 		t.Errorf("nil snapshot FloorFor = (%v, %d), want (true, 0)", has, floor)
+	}
+}
+
+// TestConfigSnapshotExternalFor covers the external-billing overlay (§6.10): a customer joined to an active
+// provider carries its compiled config (ms → durations); a customer with no provider, and a nil snapshot,
+// report no external provider (pure internal billing).
+func TestConfigSnapshotExternalFor(t *testing.T) {
+	ext := uuid.New()
+	plain := uuid.New()
+	provider := uuid.New()
+	timeoutMs := 120
+
+	snap := billing.BuildConfigSnapshot(
+		[]cp.BillingCustomer{{CustomerID: ext, BillingMode: cp.BillingPrepaid}, {CustomerID: plain, BillingMode: cp.BillingPrepaid}},
+		[]cp.CustomerExternalBilling{{
+			CustomerID: ext, ProviderID: provider, Mode: cp.ExternalModeConsumeSync,
+			SyncTimeoutMs: &timeoutMs, FailurePolicy: cp.FailClosed, CacheTTLMs: 1000,
+		}},
+	)
+
+	cfg, ok := snap.ExternalFor(ext)
+	if !ok {
+		t.Fatal("ExternalFor(ext) ok=false, want an active provider")
+	}
+	if cfg.ProviderID != provider || cfg.Mode != cp.ExternalModeConsumeSync ||
+		cfg.SyncTimeout != 120*time.Millisecond || cfg.FailurePolicy != cp.FailClosed || cfg.CacheTTL != time.Second {
+		t.Errorf("ExternalFor(ext) = %+v, want provider/sync/120ms/fail_closed/1s", cfg)
+	}
+	if _, ok := snap.ExternalFor(plain); ok {
+		t.Error("ExternalFor(plain) ok=true, want false (no provider = pure internal)")
+	}
+
+	var nilSnap *billing.ConfigSnapshot
+	if _, ok := nilSnap.ExternalFor(ext); ok {
+		t.Error("ExternalFor on a nil snapshot ok=true, want false")
+	}
+}
+
+// TestConfigSnapshotExternalOnlyCustomerStaysFailClosed guards the M1 money-safety hole: an externals row with
+// no matching billing customer (a read-skew window) must NOT insert a bare, unfloored entry — that would read
+// as an unbounded overdraft. The customer stays absent, so FloorFor fails closed to strict prepaid.
+func TestConfigSnapshotExternalOnlyCustomerStaysFailClosed(t *testing.T) {
+	orphan := uuid.New()
+	snap := billing.BuildConfigSnapshot(
+		nil, // no billing customers
+		[]cp.CustomerExternalBilling{{CustomerID: orphan, ProviderID: uuid.New(), Mode: cp.ExternalModeBalanceCheck}},
+	)
+	if has, floor := snap.FloorFor(orphan); !has || floor != 0 {
+		t.Errorf("FloorFor(externals-only orphan) = (%v, %d), want (true, 0) strict prepaid — never unbounded", has, floor)
+	}
+	if _, ok := snap.ExternalFor(orphan); ok {
+		t.Error("ExternalFor(externals-only orphan) ok=true, want false (no billing config = no external overlay)")
 	}
 }

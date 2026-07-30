@@ -88,6 +88,116 @@ func TestBillingRepoListBillingScopes(t *testing.T) {
 	}
 }
 
+// TestBillingRepoListExternalBillingConfigs proves the §6.10 customers→providers join: a customer referencing
+// an ACTIVE provider appears with its mode/timeout/policy; one referencing a DISABLED provider is absent
+// (kill switch); one with no provider is absent (pure internal). Keyed by the seeded customers (shared DB).
+func TestBillingRepoListExternalBillingConfigs(t *testing.T) {
+	pool := pgtest.Pool(t)
+	ctx := context.Background()
+	repo := postgres.NewBillingRepo(pool)
+
+	var activeProvider, disabledProvider uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO control_plane.external_billing_providers (name, base_url, mode, sync_call_timeout_ms, failure_policy)
+		 VALUES ('active-prov', 'https://ext.example', 'consume_delegate_sync', 120, 'fail_closed') RETURNING id`).
+		Scan(&activeProvider); err != nil {
+		t.Fatalf("seed active provider: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO control_plane.external_billing_providers (name, base_url, mode, status)
+		 VALUES ('disabled-prov', 'https://ext.example', 'balance_check', 'disabled') RETURNING id`).
+		Scan(&disabledProvider); err != nil {
+		t.Fatalf("seed disabled provider: %v", err)
+	}
+
+	var withActive, withDisabled, plain uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO control_plane.customers (name, billing_enabled, external_billing_provider_id)
+		 VALUES ('ext-active', true, $1) RETURNING id`, activeProvider).Scan(&withActive); err != nil {
+		t.Fatalf("seed customer(active): %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO control_plane.customers (name, billing_enabled, external_billing_provider_id)
+		 VALUES ('ext-disabled', true, $1) RETURNING id`, disabledProvider).Scan(&withDisabled); err != nil {
+		t.Fatalf("seed customer(disabled): %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO control_plane.customers (name, billing_enabled) VALUES ('ext-none', true) RETURNING id`).
+		Scan(&plain); err != nil {
+		t.Fatalf("seed customer(none): %v", err)
+	}
+
+	configs, err := repo.ListExternalBillingConfigs(ctx)
+	if err != nil {
+		t.Fatalf("ListExternalBillingConfigs: %v", err)
+	}
+	byID := make(map[uuid.UUID]cp.CustomerExternalBilling, len(configs))
+	for _, c := range configs {
+		byID[c.CustomerID] = c
+	}
+	got, ok := byID[withActive]
+	if !ok {
+		t.Fatal("customer with an active provider must appear")
+	}
+	if got.ProviderID != activeProvider || got.Mode != cp.ExternalModeConsumeSync ||
+		got.SyncTimeoutMs == nil || *got.SyncTimeoutMs != 120 || got.FailurePolicy != cp.FailClosed {
+		t.Errorf("config = %+v, want active provider sync/120/fail_closed", got)
+	}
+	if _, ok := byID[withDisabled]; ok {
+		t.Error("a customer whose provider is disabled must be absent (kill switch)")
+	}
+	if _, ok := byID[plain]; ok {
+		t.Error("a customer with no provider must be absent (pure internal billing)")
+	}
+}
+
+// TestBillingRepoConsumedCredits proves the §6.10 reconciliation read: a captured message counts its reserve
+// debit as settled consumption, a released message counts nothing, and an in-flight (reserved-only) message
+// counts nothing. Uses a fresh customer so the shared DB does not perturb the total.
+func TestBillingRepoConsumedCredits(t *testing.T) {
+	pool := pgtest.Pool(t)
+	ctx := context.Background()
+	repo := postgres.NewBillingRepo(pool)
+
+	var customerID uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO control_plane.customers (name) VALUES ('consumed-test') RETURNING id`).Scan(&customerID); err != nil {
+		t.Fatalf("seed customer: %v", err)
+	}
+
+	captured, released, inflight := uuid.New(), uuid.New(), uuid.New()
+	reserve := func(msg uuid.UUID, credits int) {
+		if _, _, err := repo.RecordDurable(ctx, cp.LedgerEntry{
+			OwnerType: cp.OwnerTypeCustomer, OwnerID: customerID, Direction: cp.BillingDirectionMT,
+			CustomerID: customerID, MessageID: &msg, EntryType: cp.EntryReserve, Credits: -credits,
+		}); err != nil {
+			t.Fatalf("reserve %s: %v", msg, err)
+		}
+	}
+	terminal := func(msg uuid.UUID, et cp.EntryType, credits int) {
+		if _, _, err := repo.RecordDurable(ctx, cp.LedgerEntry{
+			OwnerType: cp.OwnerTypeCustomer, OwnerID: customerID, Direction: cp.BillingDirectionMT,
+			CustomerID: customerID, MessageID: &msg, EntryType: et, Credits: credits,
+		}); err != nil {
+			t.Fatalf("%s %s: %v", et, msg, err)
+		}
+	}
+
+	reserve(captured, 3)
+	terminal(captured, cp.EntryCapture, 0) // captured → counts 3
+	reserve(released, 5)
+	terminal(released, cp.EntryRelease, 5) // released → counts 0
+	reserve(inflight, 7)                   // reserved, not yet captured → counts 0
+
+	consumed, err := repo.ConsumedCredits(ctx, customerID)
+	if err != nil {
+		t.Fatalf("ConsumedCredits: %v", err)
+	}
+	if consumed != 3 {
+		t.Errorf("ConsumedCredits = %d, want 3 (only the captured message's reserve debit)", consumed)
+	}
+}
+
 // TestBillingRepoRecordAndIdempotency proves the durable write path: RecordDurable appends the ledger AND
 // reconciles the balance in one transaction, the ledger is append-only (every entry accumulates, none is
 // updated), and LedgerEntryExists is the cross-partition idempotency guard the capture path reads.
