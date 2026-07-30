@@ -8,10 +8,10 @@ Permettre à un fournisseur de facturation externe de décider/consommer le cré
 trois modes, localisé derrière une interface — l'intégration réelle en prod reste optionnelle.
 
 ## Périmètre (ce que fait CETTE PR)
-- `internal/billing/` : interface `ExternalProvider` + modes `balance_check`,
-  `consume_delegate_async`, `consume_delegate_sync` (§6.10).
-- Sélection du mode selon `external_billing_providers.mode` et `billing_customers.external_billing_provider_id`
-  (`db/schema_passerelle_sms.sql` §3/§23).
+- `internal/billing/` : interface `ExternalProvider` + les quatre modes `balance_check`,
+  `consume_delegate_async`, `consume_delegate_sync`, `both` (§6.10).
+- Sélection du mode selon `external_billing_providers.mode` et `customers.external_billing_provider_id`
+  (consolidé sur `customers` en step-142d/ADR-0010 ; `db/schema_passerelle_sms.sql` §3/§4).
 - Implémentation stub locale (aucune dépendance réseau réelle) + point de câblage dans `billing-svc`.
 
 ## Points d'implémentation clés

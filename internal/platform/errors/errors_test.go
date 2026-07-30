@@ -54,6 +54,7 @@ func TestCatalogueMatchesSpec(t *testing.T) {
 		{errs.ErrRateLimited, "rate_limited", 429, 0x58, true},
 		{errs.ErrQueueFull, "queue_full", 503, 0x14, true},
 		{errs.ErrInsufficientCredit, "insufficient_credit", 402, 0x00000400, false},
+		{errs.ErrExternalBillingUnavailable, "external_billing_unavailable", 503, 0x08, true},
 		{errs.ErrMessageNotFound, "message_not_found", 404, 0x0C, false},
 		{errs.ErrNotFound, "not_found", 404, 0, false},
 		{errs.ErrCancelFailed, "cancel_failed", 409, 0x11, false},

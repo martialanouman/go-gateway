@@ -2,6 +2,7 @@ package billing_test
 
 import (
 	"context"
+	"errors"
 	"net"
 	"testing"
 
@@ -14,15 +15,80 @@ import (
 
 	"github.com/martialanouman/go-gateway/internal/billing"
 	"github.com/martialanouman/go-gateway/internal/billing/pb"
+	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 )
+
+// newExternalBillerGRPCClient serves the gRPC Server over an ExternalBiller wrapping the harness accountant,
+// with the harness customer configured for balance_check against the given stub provider — so a test drives
+// the real Server → ExternalBiller → provider → accountant path end to end (the main.go wiring shape).
+func newExternalBillerGRPCClient(t *testing.T, h *billingHarness, provider *billing.StubProvider, policy cp.BillingFailurePolicy) pb.BillingClient {
+	t.Helper()
+	h.cfg.Store(billing.BuildConfigSnapshot(
+		[]cp.BillingCustomer{{CustomerID: h.owner.CustomerID, BillingMode: cp.BillingPrepaid}},
+		[]cp.CustomerExternalBilling{{
+			CustomerID: h.owner.CustomerID, ProviderID: uuid.New(),
+			Mode: cp.ExternalModeBalanceCheck, FailurePolicy: policy,
+		}},
+	))
+	biller := billing.NewExternalBiller(h.acc, h.cfg, provider)
+	return serveBillingCore(t, biller, h.repo)
+}
+
+// TestBillingGRPCExternalDenyIsInsufficientCredit proves the decorator is wired into the server: an external
+// balance_check denial surfaces as a normal Reserved=false + insufficient_credit response (not a gRPC error),
+// and the internal balance is untouched (the external gate ran before the internal reserve).
+func TestBillingGRPCExternalDenyIsInsufficientCredit(t *testing.T) {
+	h := newBillingHarness(t, 100)
+	provider := billing.NewStubProvider()
+	provider.SetAllowed(false)
+	client := newExternalBillerGRPCClient(t, h, provider, cp.FailClosed)
+
+	rr, err := client.Reserve(context.Background(),
+		&pb.ReserveRequest{MessageId: uuid.NewString(), Owner: pbCustomerOwner(h), Credits: 3})
+	if err != nil {
+		t.Fatalf("Reserve(external deny) returned a gRPC error, want a normal response: %v", err)
+	}
+	if rr.GetReserved() || rr.GetCode() != "insufficient_credit" {
+		t.Errorf("Reserve resp = %+v, want reserved=false code=insufficient_credit", rr)
+	}
+	if got := h.balance(t); got != 100 {
+		t.Errorf("balance = %d, want 100 (an external denial must not reach the internal reserve)", got)
+	}
+}
+
+// TestBillingGRPCExternalUnavailableIsGRPCError proves the fail_closed path: a provider fault surfaces as a
+// gRPC Unavailable status (external_billing_unavailable), which the router retries — a billed message is held,
+// never sent unconfirmed.
+func TestBillingGRPCExternalUnavailableIsGRPCError(t *testing.T) {
+	h := newBillingHarness(t, 100)
+	provider := billing.NewStubProvider()
+	provider.SetError(errors.New("provider down"))
+	client := newExternalBillerGRPCClient(t, h, provider, cp.FailClosed)
+
+	_, err := client.Reserve(context.Background(),
+		&pb.ReserveRequest{MessageId: uuid.NewString(), Owner: pbCustomerOwner(h), Credits: 3})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("Reserve(provider fault, fail_closed) code = %v, want Unavailable", status.Code(err))
+	}
+	if status.Convert(err).Message() != "external_billing_unavailable" {
+		t.Errorf("status message = %q, want external_billing_unavailable", status.Convert(err).Message())
+	}
+}
 
 // newBillingGRPCClient wires the real Billing Server (over the harness's Redis+Postgres accountant) to an
 // in-memory bufconn transport, so the test exercises the actual gRPC codec, status machinery and handler
 // mapping — not a direct method call.
 func newBillingGRPCClient(t *testing.T, h *billingHarness) pb.BillingClient {
 	t.Helper()
+	return serveBillingCore(t, h.acc, h.repo)
+}
+
+// serveBillingCore serves a Billing Server over the given core (the raw accountant, or the ExternalBiller
+// decorator) on an in-memory bufconn transport, so a test exercises the real gRPC codec and handler mapping.
+func serveBillingCore(t *testing.T, core billing.Core, balances billing.BalanceReader) pb.BillingClient {
+	t.Helper()
 	srv := grpc.NewServer()
-	pb.RegisterBillingServer(srv, billing.NewServer(h.acc, h.repo))
+	pb.RegisterBillingServer(srv, billing.NewServer(core, balances))
 
 	lis := bufconn.Listen(1 << 20)
 	go func() { _ = srv.Serve(lis) }()

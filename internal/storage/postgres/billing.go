@@ -116,6 +116,38 @@ func (r *BillingRepo) ListBillingScopes(ctx context.Context) ([]cp.CustomerBilli
 	return out, nil
 }
 
+// ConsumedCredits returns a customer's locally settled MT consumption (§6.10 reconciliation): the sum of
+// captured reserve debits, as a positive total. In-flight holds and released reservations are excluded.
+func (r *BillingRepo) ConsumedCredits(ctx context.Context, customerID uuid.UUID) (int64, error) {
+	consumed, err := r.q.ConsumedCredits(ctx, customerID)
+	if err != nil {
+		return 0, translate("consumed credits", err)
+	}
+	return consumed, nil
+}
+
+// ListExternalBillingConfigs returns the ACTIVE external-provider join for every billing-enabled customer
+// that references one (§6.10), for billing-svc to compile the reserve-hot-path snapshot. The inner join +
+// status filter mean a disabled or dangling provider yields no row (external layer off).
+func (r *BillingRepo) ListExternalBillingConfigs(ctx context.Context) ([]cp.CustomerExternalBilling, error) {
+	rows, err := r.q.ListExternalBillingConfigs(ctx)
+	if err != nil {
+		return nil, translate("list external billing configs", err)
+	}
+	out := make([]cp.CustomerExternalBilling, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, cp.CustomerExternalBilling{
+			CustomerID:    row.CustomerID,
+			ProviderID:    row.ProviderID,
+			Mode:          cp.ExternalBillingMode(row.Mode),
+			SyncTimeoutMs: intptr(row.SyncCallTimeoutMs),
+			FailurePolicy: cp.BillingFailurePolicy(row.FailurePolicy),
+			CacheTTLMs:    int(row.CacheTtlMs),
+		})
+	}
+	return out, nil
+}
+
 // LedgerEntryExists reports whether a ledger entry of entryType already exists for messageID. It is the
 // authoritative cross-partition idempotency guard (§6.9): the capture path reads it before committing so
 // a redelivered message_id never double-charges, since the same-day unique index cannot span partitions.

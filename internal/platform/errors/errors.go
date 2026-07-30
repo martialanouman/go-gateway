@@ -52,16 +52,21 @@ const (
 	ErrRateLimited           Code = "rate_limited"
 	ErrQueueFull             Code = "queue_full"
 	ErrInsufficientCredit    Code = "insufficient_credit"
-	ErrMessageNotFound       Code = "message_not_found"
-	ErrNotFound              Code = "not_found"
-	ErrCancelFailed          Code = "cancel_failed"
-	ErrOperationNotSupported Code = "operation_not_supported"
-	ErrValidation            Code = "validation_error"
-	ErrIdempotencyConflict   Code = "idempotency_conflict"
-	ErrForbiddenScope        Code = "forbidden_scope"
-	ErrConflict              Code = "conflict"
-	ErrInternal              Code = "internal_error"
-	ErrServiceUnavailable    Code = "service_unavailable"
+	// ErrExternalBillingUnavailable is returned when an external billing provider (§6.10) cannot be reached
+	// or times out and the provider's failure_policy is fail_closed: the reserve is refused because unconfirmed
+	// credit must not pass. It is distinct from insufficient_credit (a genuine denial — top up) — here the
+	// remedy is to retry once the provider recovers, so it is Retryable and surfaces as 503 / gRPC Unavailable.
+	ErrExternalBillingUnavailable Code = "external_billing_unavailable"
+	ErrMessageNotFound            Code = "message_not_found"
+	ErrNotFound                   Code = "not_found"
+	ErrCancelFailed               Code = "cancel_failed"
+	ErrOperationNotSupported      Code = "operation_not_supported"
+	ErrValidation                 Code = "validation_error"
+	ErrIdempotencyConflict        Code = "idempotency_conflict"
+	ErrForbiddenScope             Code = "forbidden_scope"
+	ErrConflict                   Code = "conflict"
+	ErrInternal                   Code = "internal_error"
+	ErrServiceUnavailable         Code = "service_unavailable"
 	// ErrSubmitFailed is the outbound outcome recorded in cdr.error_code when the SMSC rejects a
 	// submit_sm with ESME_RSUBMITFAIL. It is an outcome code, not a REST request error, so it has no
 	// HTTP surface.
@@ -139,21 +144,22 @@ var catalogue = map[Code]Mapping{
 	// path should keep it in both cases unless an operator decides otherwise: answering
 	// ESME_RINVSYSID tells an attacker which system_ids exist. The client-facing code is the
 	// same either way, which is the point of the contract.
-	ErrUnauthenticated:       {HTTPStatus: 401, SMPPStatus: StatusInvalidPasswd},
-	ErrAccountSuspended:      {HTTPStatus: 403, SMPPStatus: StatusBindFail},
-	ErrChannelDisabled:       {HTTPStatus: 403, SMPPStatus: StatusBindFail},
-	ErrMaxSessionsExceeded:   {SMPPStatus: StatusBindFail, Retryable: true},
-	ErrInvalidDestination:    {HTTPStatus: 422, SMPPStatus: StatusInvalidDstAddr},
-	ErrInvalidSource:         {HTTPStatus: 422, SMPPStatus: StatusInvalidSrcAddr},
-	ErrSenderIDNotAuthorized: {HTTPStatus: 403, SMPPStatus: StatusInvalidSrcAddr},
-	ErrRecipientOptedOut:     {HTTPStatus: 403, SMPPStatus: StatusSubmitFail},
-	ErrContentBlocked:        {HTTPStatus: 403, SMPPStatus: StatusSubmitFail},
-	ErrNoRoute:               {HTTPStatus: 422, SMPPStatus: StatusInvalidDstAddr},
-	ErrPayloadTooLarge:       {HTTPStatus: 413, SMPPStatus: StatusInvalidMsgLen},
-	ErrRateLimited:           {HTTPStatus: 429, SMPPStatus: StatusThrottled, Retryable: true},
-	ErrQueueFull:             {HTTPStatus: 503, SMPPStatus: StatusMsgQueueFull, Retryable: true},
-	ErrInsufficientCredit:    {HTTPStatus: 402, SMPPStatus: StatusInsufficientCredit},
-	ErrMessageNotFound:       {HTTPStatus: 404, SMPPStatus: StatusInvalidMsgID},
+	ErrUnauthenticated:            {HTTPStatus: 401, SMPPStatus: StatusInvalidPasswd},
+	ErrAccountSuspended:           {HTTPStatus: 403, SMPPStatus: StatusBindFail},
+	ErrChannelDisabled:            {HTTPStatus: 403, SMPPStatus: StatusBindFail},
+	ErrMaxSessionsExceeded:        {SMPPStatus: StatusBindFail, Retryable: true},
+	ErrInvalidDestination:         {HTTPStatus: 422, SMPPStatus: StatusInvalidDstAddr},
+	ErrInvalidSource:              {HTTPStatus: 422, SMPPStatus: StatusInvalidSrcAddr},
+	ErrSenderIDNotAuthorized:      {HTTPStatus: 403, SMPPStatus: StatusInvalidSrcAddr},
+	ErrRecipientOptedOut:          {HTTPStatus: 403, SMPPStatus: StatusSubmitFail},
+	ErrContentBlocked:             {HTTPStatus: 403, SMPPStatus: StatusSubmitFail},
+	ErrNoRoute:                    {HTTPStatus: 422, SMPPStatus: StatusInvalidDstAddr},
+	ErrPayloadTooLarge:            {HTTPStatus: 413, SMPPStatus: StatusInvalidMsgLen},
+	ErrRateLimited:                {HTTPStatus: 429, SMPPStatus: StatusThrottled, Retryable: true},
+	ErrQueueFull:                  {HTTPStatus: 503, SMPPStatus: StatusMsgQueueFull, Retryable: true},
+	ErrInsufficientCredit:         {HTTPStatus: 402, SMPPStatus: StatusInsufficientCredit},
+	ErrExternalBillingUnavailable: {HTTPStatus: 503, SMPPStatus: StatusSysErr, Retryable: true},
+	ErrMessageNotFound:            {HTTPStatus: 404, SMPPStatus: StatusInvalidMsgID},
 	// not_found is the generic Admin-API 404: an addressed control-plane resource (customer,
 	// account, connector, route, sender ID, credential) does not exist. It is distinct from
 	// message_not_found, which is a query_sm/GET-message concern and carries ESME_RINVMSGID; a

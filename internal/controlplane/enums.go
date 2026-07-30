@@ -103,6 +103,54 @@ func (s BalanceScope) Valid() bool {
 	}
 }
 
+// ExternalBillingMode is how an external billing provider participates in a customer's MT billing
+// (control_plane.external_billing_providers.mode, §6.10). balance_check: the external system authorizes,
+// the gateway still keeps its ledger for reconciliation. consume_delegate_sync: a synchronous authorize
+// call on the hot path, bounded by sync_call_timeout_ms and failure_policy. consume_delegate_async: the
+// gateway reserves locally and reconciles externally off the critical path. both: balance_check on the hot
+// path plus async reconciliation.
+type ExternalBillingMode string
+
+// The external-billing dispatch modes.
+const (
+	ExternalModeBalanceCheck ExternalBillingMode = "balance_check"
+	ExternalModeConsumeAsync ExternalBillingMode = "consume_delegate_async"
+	ExternalModeConsumeSync  ExternalBillingMode = "consume_delegate_sync"
+	ExternalModeBoth         ExternalBillingMode = "both"
+)
+
+// Valid reports whether m is a published external-billing mode.
+func (m ExternalBillingMode) Valid() bool {
+	switch m {
+	case ExternalModeBalanceCheck, ExternalModeConsumeAsync, ExternalModeConsumeSync, ExternalModeBoth:
+		return true
+	default:
+		return false
+	}
+}
+
+// SyncAuthorize reports whether the mode makes a synchronous external authorize call on the reserve hot
+// path (balance_check, consume_delegate_sync, both) versus a local reserve reconciled later (async).
+func (m ExternalBillingMode) SyncAuthorize() bool {
+	return m == ExternalModeBalanceCheck || m == ExternalModeConsumeSync || m == ExternalModeBoth
+}
+
+// BillingFailurePolicy decides what a synchronous external authorize call does on a fault/timeout
+// (control_plane.external_billing_providers.failure_policy, §6.10). fail_open proceeds with the internal
+// reserve (availability over revenue risk); fail_closed refuses (never let unconfirmed credit through).
+type BillingFailurePolicy string
+
+// The external-authorize failure policies.
+const (
+	FailOpen   BillingFailurePolicy = "fail_open"
+	FailClosed BillingFailurePolicy = "fail_closed"
+)
+
+// Valid reports whether p is a published failure policy.
+func (p BillingFailurePolicy) Valid() bool {
+	return p == FailOpen || p == FailClosed
+}
+
 // ContentStorage is a customer's body-storage policy (control_plane.customers.content_storage).
 type ContentStorage string
 

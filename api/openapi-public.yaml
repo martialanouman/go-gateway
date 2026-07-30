@@ -348,7 +348,7 @@ components:
         code:
           type: string
           description: Stable machine-readable error code.
-          examples: [sender_id_not_authorized, recipient_opted_out, insufficient_credit, rate_limited, validation_error]
+          examples: [sender_id_not_authorized, recipient_opted_out, insufficient_credit, external_billing_unavailable, rate_limited, validation_error]
         message:
           type: string
           description: Human-readable explanation for this occurrence.

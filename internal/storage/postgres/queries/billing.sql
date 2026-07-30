@@ -33,6 +33,32 @@ SELECT id AS customer_id, balance_scope
 FROM control_plane.customers
 WHERE billing_enabled;
 
+-- name: ListExternalBillingConfigs :many
+-- The ACTIVE external billing provider (§6.10) of every billing-enabled customer that references one — the
+-- customers→providers join, read together with ListBillingCustomers so billing-svc compiles a consistent
+-- snapshot. A customer with no provider, or whose provider is disabled, is absent (external layer off). The
+-- inner join guarantees no dangling reference; status='active' is the operator kill switch.
+SELECT c.id AS customer_id, p.id AS provider_id, p.mode, p.sync_call_timeout_ms,
+       p.failure_policy, p.cache_ttl_ms
+FROM control_plane.customers c
+JOIN control_plane.external_billing_providers p ON c.external_billing_provider_id = p.id
+WHERE c.billing_enabled AND p.status = 'active';
+
+-- name: ConsumedCredits :one
+-- The customer's LOCALLY SETTLED MT consumption (§6.10 reconciliation): the sum of reserve debits for
+-- messages that were captured (not released). Reserve debits are negative, so negate to a positive consumed
+-- total; a message reserved-then-released nets nothing and is excluded by the capture EXISTS. In-flight holds
+-- (reserved, not yet captured) are legitimate skew and are excluded. Compared off the critical path against
+-- the external provider's reported usage; a difference is reported, never auto-corrected.
+SELECT COALESCE(-SUM(l.credits), 0)::bigint AS consumed
+FROM control_plane.billing_ledger l
+WHERE l.customer_id = @customer_id AND l.direction = 'mt' AND l.entry_type = 'reserve'
+  AND EXISTS (
+    SELECT 1 FROM control_plane.billing_ledger c
+    WHERE c.message_id = l.message_id AND c.entry_type = 'capture'
+      AND c.customer_id = l.customer_id AND c.direction = 'mt'
+  );
+
 -- name: LedgerEntryExists :one
 -- The AUTHORITATIVE cross-partition idempotency guard (§6.9): whether a ledger entry of entry_type
 -- already exists for message_id. Read before a capture so a redelivery of the same message_id never

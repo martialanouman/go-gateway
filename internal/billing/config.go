@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync/atomic"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -19,6 +20,10 @@ type ConfigSource interface {
 	FloorFor(customerID uuid.UUID) (hasFloor bool, floor int)
 	// MOFloor returns the MO meter floor; hasFloor=false means the meter is unbounded (no floor).
 	MOFloor(customerID uuid.UUID) (floor int, hasFloor bool)
+	// ExternalFor returns the customer's external-billing config (§6.10) and whether an ACTIVE provider is
+	// configured. ok=false means pure internal billing — the ExternalBiller decorator delegates straight
+	// through with no external call. Read lock-free on the reserve hot path.
+	ExternalFor(customerID uuid.UUID) (cfg ExternalConfig, ok bool)
 }
 
 // floorConfig is the precompiled reserve floor for one customer.
@@ -64,19 +69,54 @@ type ConfigSnapshot struct {
 	byCustomer map[uuid.UUID]customerConfig
 }
 
-// customerConfig is a customer's precompiled billing floors: the MT reserve floor and the MO meter floor.
+// customerConfig is a customer's precompiled billing floors and optional external-billing config: the MT
+// reserve floor, the MO meter floor, and (for §6.10) the active external provider's compiled config.
 type customerConfig struct {
 	mt      floorConfig
-	moFloor *int // mo_billing_floor: how negative the MO meter may run before accrual stops; nil = no floor
+	moFloor *int            // mo_billing_floor: how negative the MO meter may run before accrual stops; nil = no floor
+	ext     *ExternalConfig // §6.10 active external provider config; nil = pure internal billing
 }
 
-// BuildConfigSnapshot precompiles the MT reserve floor and MO meter floor for each customer's config.
-func BuildConfigSnapshot(customers []cp.BillingCustomer) *ConfigSnapshot {
+// BuildConfigSnapshot precompiles the MT reserve floor and MO meter floor for each customer's config, then
+// overlays the external-billing config (§6.10) for customers whose ACTIVE provider was joined in `externals`.
+// The customers→providers join is resolved together, so a customer can never point at a provider absent from
+// the same snapshot.
+func BuildConfigSnapshot(customers []cp.BillingCustomer, externals []cp.CustomerExternalBilling) *ConfigSnapshot {
 	byCustomer := make(map[uuid.UUID]customerConfig, len(customers))
 	for _, c := range customers {
 		byCustomer[c.CustomerID] = customerConfig{mt: floorForCustomer(c), moFloor: c.MoBillingFloor}
 	}
+	for _, e := range externals {
+		cc, ok := byCustomer[e.CustomerID]
+		if !ok {
+			// The customer is not in the billing-config set (e.g. billing_enabled flipped on between the two
+			// non-transactional reads). Do NOT insert a bare entry: a zero customerConfig has hasFloor=false,
+			// which FloorFor would read as an UNBOUNDED overdraft — the exact inverse of the fail-closed rule
+			// that an unknown customer is strict prepaid. Skip it; the next refresh brings a consistent pair.
+			continue
+		}
+		ec := compileExternal(e)
+		cc.ext = &ec
+		byCustomer[e.CustomerID] = cc
+	}
 	return &ConfigSnapshot{byCustomer: byCustomer}
+}
+
+// compileExternal turns a raw customer→provider join row into the hot-path ExternalConfig, converting the
+// millisecond columns to durations. A nil sync_call_timeout_ms compiles to 0, and the decorator then applies
+// its own default authorize deadline (defaultAuthorizeTimeout) so the call is never unbounded.
+func compileExternal(e cp.CustomerExternalBilling) ExternalConfig {
+	var syncTimeout time.Duration
+	if e.SyncTimeoutMs != nil {
+		syncTimeout = time.Duration(*e.SyncTimeoutMs) * time.Millisecond
+	}
+	return ExternalConfig{
+		ProviderID:    e.ProviderID,
+		Mode:          e.Mode,
+		SyncTimeout:   syncTimeout,
+		FailurePolicy: e.FailurePolicy,
+		CacheTTL:      time.Duration(e.CacheTTLMs) * time.Millisecond,
+	}
 }
 
 // FloorFor returns the MT reserve floor for a customer. An unknown customer, or a nil snapshot (never built
@@ -104,6 +144,19 @@ func (s *ConfigSnapshot) MOFloor(customerID uuid.UUID) (floor int, hasFloor bool
 	return 0, false
 }
 
+// ExternalFor returns the customer's external-billing config (§6.10), ok=false when none is configured (pure
+// internal billing) or the snapshot is nil. A stale/unknown customer fails to "no external provider", so the
+// internal reserve alone governs — a control-plane blip never silently drops external authorization onto the
+// fail-open path.
+func (s *ConfigSnapshot) ExternalFor(customerID uuid.UUID) (ExternalConfig, bool) {
+	if s != nil {
+		if c, ok := s.byCustomer[customerID]; ok && c.ext != nil {
+			return *c.ext, true
+		}
+	}
+	return ExternalConfig{}, false
+}
+
 // ConfigProvider holds the current ConfigSnapshot behind an atomic pointer. config-sync
 // rebuilds and Stores a new snapshot whole; hot-path readers call FloorFor lock-free. The zero value is
 // usable and fails closed (its snapshot is nil → strict prepaid) until the first Store.
@@ -127,10 +180,18 @@ func (p *ConfigProvider) MOFloor(customerID uuid.UUID) (floor int, hasFloor bool
 	return p.snap.Load().MOFloor(customerID)
 }
 
-// CustomerLister loads every customer's billing configuration. *postgres.BillingRepo satisfies it;
-// declared consumer-side (convention §2).
+// ExternalFor reads the current snapshot's external-billing config for a customer (none when no snapshot yet).
+func (p *ConfigProvider) ExternalFor(customerID uuid.UUID) (ExternalConfig, bool) {
+	return p.snap.Load().ExternalFor(customerID)
+}
+
+// CustomerLister loads every customer's billing configuration and the customers→active-provider join for
+// external billing (§6.10). *postgres.BillingRepo satisfies it; declared consumer-side (convention §2).
 type CustomerLister interface {
 	ListBillingCustomers(ctx context.Context) ([]cp.BillingCustomer, error)
+	// ListExternalBillingConfigs returns the ACTIVE external-provider join for every billing-enabled
+	// customer that has one. Read together with the customers so the snapshot's join is internally consistent.
+	ListExternalBillingConfigs(ctx context.Context) ([]cp.CustomerExternalBilling, error)
 }
 
 // LoadConfigSnapshot builds a fresh snapshot from the durable billing configuration — config-sync
@@ -143,5 +204,9 @@ func LoadConfigSnapshot(ctx context.Context, lister CustomerLister) (*ConfigSnap
 	if err != nil {
 		return nil, fmt.Errorf("billing: load config snapshot: %w", err)
 	}
-	return BuildConfigSnapshot(customers), nil
+	externals, err := lister.ListExternalBillingConfigs(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("billing: load external billing configs: %w", err)
+	}
+	return BuildConfigSnapshot(customers, externals), nil
 }

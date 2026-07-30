@@ -54,6 +54,19 @@ type BillingCustomer struct {
 	ExternalBillingProviderID *uuid.UUID
 }
 
+// CustomerExternalBilling is a billing-enabled customer joined to its ACTIVE external billing provider
+// (§6.10). billing-svc compiles these into the config snapshot so the reserve hot path knows the mode and
+// budget without a DB read. A customer with no provider, or one whose provider is disabled, is simply absent
+// (external layer off — pure internal billing). SyncTimeoutMs is nil when the provider set none.
+type CustomerExternalBilling struct {
+	CustomerID    uuid.UUID
+	ProviderID    uuid.UUID
+	Mode          ExternalBillingMode
+	SyncTimeoutMs *int
+	FailurePolicy BillingFailurePolicy
+	CacheTTLMs    int
+}
+
 // CustomerBillingScope is the router-facing view of a billing-enabled customer: its identity and the
 // BalanceScope that decides the reserve owner (customer vs smpp_account). The router compiles these into
 // an immutable snapshot so the credit stage can gate on membership (present = billing enabled) and resolve

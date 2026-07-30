@@ -67,6 +67,29 @@ func (q *Queries) ClaimIdempotency(ctx context.Context, arg ClaimIdempotencyPara
 	return result.RowsAffected(), nil
 }
 
+const consumedCredits = `-- name: ConsumedCredits :one
+SELECT COALESCE(-SUM(l.credits), 0)::bigint AS consumed
+FROM control_plane.billing_ledger l
+WHERE l.customer_id = $1 AND l.direction = 'mt' AND l.entry_type = 'reserve'
+  AND EXISTS (
+    SELECT 1 FROM control_plane.billing_ledger c
+    WHERE c.message_id = l.message_id AND c.entry_type = 'capture'
+      AND c.customer_id = l.customer_id AND c.direction = 'mt'
+  )
+`
+
+// The customer's LOCALLY SETTLED MT consumption (§6.10 reconciliation): the sum of reserve debits for
+// messages that were captured (not released). Reserve debits are negative, so negate to a positive consumed
+// total; a message reserved-then-released nets nothing and is excluded by the capture EXISTS. In-flight holds
+// (reserved, not yet captured) are legitimate skew and are excluded. Compared off the critical path against
+// the external provider's reported usage; a difference is reported, never auto-corrected.
+func (q *Queries) ConsumedCredits(ctx context.Context, customerID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, consumedCredits, customerID)
+	var consumed int64
+	err := row.Scan(&consumed)
+	return consumed, err
+}
+
 const getBalance = `-- name: GetBalance :one
 SELECT credits
 FROM control_plane.balances
@@ -286,6 +309,54 @@ func (q *Queries) ListBillingScopes(ctx context.Context) ([]ListBillingScopesRow
 	for rows.Next() {
 		var i ListBillingScopesRow
 		if err := rows.Scan(&i.CustomerID, &i.BalanceScope); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listExternalBillingConfigs = `-- name: ListExternalBillingConfigs :many
+SELECT c.id AS customer_id, p.id AS provider_id, p.mode, p.sync_call_timeout_ms,
+       p.failure_policy, p.cache_ttl_ms
+FROM control_plane.customers c
+JOIN control_plane.external_billing_providers p ON c.external_billing_provider_id = p.id
+WHERE c.billing_enabled AND p.status = 'active'
+`
+
+type ListExternalBillingConfigsRow struct {
+	CustomerID        uuid.UUID
+	ProviderID        uuid.UUID
+	Mode              string
+	SyncCallTimeoutMs *int32
+	FailurePolicy     string
+	CacheTtlMs        int32
+}
+
+// The ACTIVE external billing provider (§6.10) of every billing-enabled customer that references one — the
+// customers→providers join, read together with ListBillingCustomers so billing-svc compiles a consistent
+// snapshot. A customer with no provider, or whose provider is disabled, is absent (external layer off). The
+// inner join guarantees no dangling reference; status='active' is the operator kill switch.
+func (q *Queries) ListExternalBillingConfigs(ctx context.Context) ([]ListExternalBillingConfigsRow, error) {
+	rows, err := q.db.Query(ctx, listExternalBillingConfigs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListExternalBillingConfigsRow{}
+	for rows.Next() {
+		var i ListExternalBillingConfigsRow
+		if err := rows.Scan(
+			&i.CustomerID,
+			&i.ProviderID,
+			&i.Mode,
+			&i.SyncCallTimeoutMs,
+			&i.FailurePolicy,
+			&i.CacheTtlMs,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
