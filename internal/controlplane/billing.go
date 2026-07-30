@@ -54,6 +54,16 @@ type BillingCustomer struct {
 	ExternalBillingProviderID *uuid.UUID
 }
 
+// CustomerBillingScope is the router-facing view of a billing-enabled customer: its identity and the
+// BalanceScope that decides the reserve owner (customer vs smpp_account). The router compiles these into
+// an immutable snapshot so the credit stage can gate on membership (present = billing enabled) and resolve
+// the reserve Owner WITHOUT a per-message billing round-trip (§6.9, step-145). It is deliberately narrower
+// than BillingCustomer: the router needs only who to bill and against which balance, not the floors.
+type CustomerBillingScope struct {
+	CustomerID uuid.UUID
+	Scope      BalanceScope
+}
+
 // LedgerEntry is one append-only row of the billing ledger (control_plane.billing_ledger, §6.9/§6.14).
 // Credits is the SIGNED delta this entry applies to the balance; the durable balance is the running sum
 // of every entry's Credits (§6.14), computed atomically when the entry is recorded (the caller does NOT

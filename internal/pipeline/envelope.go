@@ -78,12 +78,20 @@ type RoutedMT struct {
 	// as a single record that nonetheless carries a UDH (SegmentCount 1, HasUDH true).
 	HasUDH      bool
 	SubmittedAt time.Time
-	// Billable is whether this MT counts against the customer's balance (M9). Client traffic is always
-	// billable — router-svc sets it true; only a system message produced straight to mt.routed by
-	// mo-dlr-router-svc (a STOP auto-reply, §6.20) sets it false. It is deliberately absent from
-	// InboundMT and every client-facing surface, so a client cannot submit a "free" message: the
-	// security boundary is who may produce to mt.routed, not a validated flag.
+	// Billable means a credit RESERVATION EXISTS for this message: the credit stage reserved against the
+	// customer's balance, so connector-pool must capture (or release) it after the send (step-145/146). It
+	// is false when there is nothing to settle — billing disabled for the customer, or a system message
+	// produced straight to mt.routed by mo-dlr-router-svc (a STOP auto-reply, §6.20). connector-pool keys
+	// the zero-billing-call skip off this flag, so it MUST mean "reservation exists", not merely "client
+	// traffic". It is deliberately absent from InboundMT and every client-facing surface, so a client
+	// cannot forge a settlement: the security boundary is who may produce to mt.routed, not a submitted flag.
 	Billable bool
+	// OwnerType is the balance owner the reservation was made against (customer | smpp_account), resolved
+	// once by the credit stage from the customer's balance_scope and pinned here so connector-pool captures
+	// the IDENTICAL balance key — a mid-flight scope change can never make reserve and capture disagree
+	// (step-145). Empty when Billable is false (no reservation). owner_id is not carried: it is a
+	// deterministic projection of OwnerType over the CustomerID/AccountID already on the record.
+	OwnerType string
 }
 
 // MOInbound is a mobile-originated message a SMSC delivered to one of our inbound numbers, carried on

@@ -260,3 +260,38 @@ func (q *Queries) ListBillingCustomers(ctx context.Context) ([]ListBillingCustom
 	}
 	return items, nil
 }
+
+const listBillingScopes = `-- name: ListBillingScopes :many
+SELECT id AS customer_id, balance_scope
+FROM control_plane.customers
+WHERE billing_enabled
+`
+
+type ListBillingScopesRow struct {
+	CustomerID   uuid.UUID
+	BalanceScope string
+}
+
+// The identity and balance scope of every billing-enabled customer, for router-svc to compile the
+// credit-stage gate + owner-resolution snapshot (step-145). Presence in the result IS the billing-enabled
+// flag: a customer absent from it (billing disabled, or not yet created) is not billed and makes NO billing
+// round-trip. balance_scope NULL defaults to 'customer' at read time (the schema default).
+func (q *Queries) ListBillingScopes(ctx context.Context) ([]ListBillingScopesRow, error) {
+	rows, err := q.db.Query(ctx, listBillingScopes)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListBillingScopesRow{}
+	for rows.Next() {
+		var i ListBillingScopesRow
+		if err := rows.Scan(&i.CustomerID, &i.BalanceScope); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

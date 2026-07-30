@@ -51,6 +51,43 @@ func TestBillingRepoBalanceAndConfig(t *testing.T) {
 	}
 }
 
+// TestBillingRepoListBillingScopes proves the router-facing gate/owner snapshot source: only billing-enabled
+// customers appear, each carries its balance_scope, and a billing-disabled customer is absent (so the router
+// makes no billing call for it). The DB is shared across tests, so the assertions are keyed by the two
+// customers this test seeds rather than the total count.
+func TestBillingRepoListBillingScopes(t *testing.T) {
+	pool := pgtest.Pool(t)
+	ctx := context.Background()
+	repo := postgres.NewBillingRepo(pool)
+
+	var enabledAccount, disabled uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO control_plane.customers (name, billing_enabled, balance_scope)
+		 VALUES ('scope-enabled-account', true, 'smpp_account') RETURNING id`).Scan(&enabledAccount); err != nil {
+		t.Fatalf("seed enabled customer: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO control_plane.customers (name, billing_enabled) VALUES ('scope-disabled', false) RETURNING id`).
+		Scan(&disabled); err != nil {
+		t.Fatalf("seed disabled customer: %v", err)
+	}
+
+	scopes, err := repo.ListBillingScopes(ctx)
+	if err != nil {
+		t.Fatalf("ListBillingScopes: %v", err)
+	}
+	byID := make(map[uuid.UUID]cp.BalanceScope, len(scopes))
+	for _, s := range scopes {
+		byID[s.CustomerID] = s.Scope
+	}
+	if got, ok := byID[enabledAccount]; !ok || got != cp.BalanceScopeSMPPAccount {
+		t.Errorf("enabled account-scope customer = (%q, present=%v), want smpp_account present", got, ok)
+	}
+	if _, ok := byID[disabled]; ok {
+		t.Error("billing-disabled customer must be absent from ListBillingScopes (no billing call is made for it)")
+	}
+}
+
 // TestBillingRepoRecordAndIdempotency proves the durable write path: RecordDurable appends the ledger AND
 // reconciles the balance in one transaction, the ledger is append-only (every entry accumulates, none is
 // updated), and LedgerEntryExists is the cross-partition idempotency guard the capture path reads.

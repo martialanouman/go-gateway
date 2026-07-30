@@ -26,6 +26,7 @@ var knownVars = []string{
 	"SMPP_PORT", "SMPP_SESSION_MANAGER_ADDR", "SMPP_POD_ID", "SMPP_IDLE_TIMEOUT",
 	"SMPP_BIND_MAX_FAILURES", "SMPP_BIND_FAILURE_WINDOW", "SMPP_BIND_BACKOFF_BASE", "SMPP_BIND_BACKOFF_MAX",
 	"SMPP_MAX_CONNS",
+	"BILLING_ADDR", "BILLING_RESERVE_TIMEOUT",
 }
 
 // setEnv installs a clean environment holding exactly kv. Each variable goes through t.Setenv
@@ -127,6 +128,8 @@ func TestLoadFromEnvironment(t *testing.T) {
 		"SMPP_BIND_BACKOFF_BASE":      "2s",
 		"SMPP_BIND_BACKOFF_MAX":       "1m",
 		"SMPP_MAX_CONNS":              "9000",
+		"BILLING_ADDR":                "billing:7001",
+		"BILLING_RESERVE_TIMEOUT":     "350ms",
 	})
 
 	cfg, err := config.Load("rest-api-svc")
@@ -146,6 +149,12 @@ func TestLoadFromEnvironment(t *testing.T) {
 
 	if cfg.Environment != config.EnvProduction {
 		t.Errorf("Environment = %q, want production", cfg.Environment)
+	}
+	if cfg.Billing.Addr != "billing:7001" {
+		t.Errorf("Billing.Addr = %q, want billing:7001", cfg.Billing.Addr)
+	}
+	if cfg.Billing.ReserveTimeout != 350*time.Millisecond {
+		t.Errorf("Billing.ReserveTimeout = %s, want 350ms", cfg.Billing.ReserveTimeout)
 	}
 	if cfg.OpsPort != 9191 {
 		t.Errorf("OpsPort = %d, want 9191", cfg.OpsPort)
@@ -438,6 +447,7 @@ func TestDisabledOTelSkipsExporterValidation(t *testing.T) {
 		"CLICKHOUSE_ADDR":             "ch1:9000",
 		"REDIS_URL":                   "redis://cache:6379",
 		"SMPP_SESSION_MANAGER_ADDR":   "sessionmgr:7000",
+		"BILLING_ADDR":                "billing:7001",
 	})
 
 	cfg, err := config.Load("router-svc")
