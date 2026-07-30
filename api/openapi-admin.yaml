@@ -1181,16 +1181,24 @@ paths:
       tags: [Billing]
       summary: Get a customer's billing config
       operationId: get-customer-billing
+      security: [ { OperatorBearer: [ admin:read ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/BillingCustomer' } } } }
         '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
     patch:
       tags: [Billing]
       summary: Update a customer's billing config
       operationId: update-customer-billing
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/BillingCustomerUpdate' } } } }
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/BillingCustomer' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '422': { $ref: '#/components/responses/ValidationError' }
   /admin/customers/{id}/balances:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
@@ -1198,18 +1206,27 @@ paths:
       tags: [Billing]
       summary: Get MT and MO balances (per owner, per direction)
       operationId: get-customer-balances
+      security: [ { OperatorBearer: [ admin:read ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Balance' } } } } }
         '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
   /admin/customers/{id}/billing/topup:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
     post:
       tags: [Billing]
       summary: Top up a balance (credits, direction, optional account)
       operationId: topup-balance
-      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { credits: { type: integer, minimum: 1 }, direction: { $ref: '#/components/schemas/Direction' }, account_id: { type: [string, "null"], format: uuid }, reference: { type: [string, "null"] } }, required: [credits, direction] } } } }
+      requestBody: { required: true, content: { application/json: { schema: { type: object, additionalProperties: false, properties: { credits: { type: integer, minimum: 1, maximum: 1000000000 }, direction: { type: string, enum: [mt] }, account_id: { type: [string, "null"], format: uuid }, reference: { type: [string, "null"] }, idempotency_key: { type: string, format: uuid } }, required: [credits, direction, idempotency_key] } } } }
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/LedgerEntry' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '422': { $ref: '#/components/responses/ValidationError' }
   /admin/customers/{id}/billing/transfer:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
@@ -1217,9 +1234,14 @@ paths:
       tags: [Billing]
       summary: Net-zero transfer between the customer's own balances
       operationId: transfer-balance
-      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { credits: { type: integer, minimum: 1 }, direction: { $ref: '#/components/schemas/Direction' }, from_owner_id: { type: string, format: uuid }, to_owner_id: { type: string, format: uuid } }, required: [credits, direction, from_owner_id, to_owner_id] } } } }
+      requestBody: { required: true, content: { application/json: { schema: { type: object, additionalProperties: false, properties: { credits: { type: integer, minimum: 1, maximum: 1000000000 }, direction: { type: string, enum: [mt] }, from_owner_id: { type: string, format: uuid }, to_owner_id: { type: string, format: uuid }, idempotency_key: { type: string, format: uuid } }, required: [credits, direction, from_owner_id, to_owner_id, idempotency_key] } } } }
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/LedgerEntry' } } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '422': { $ref: '#/components/responses/ValidationError' }
   /admin/customers/{id}/billing/scope:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
@@ -1227,10 +1249,15 @@ paths:
       tags: [Billing]
       summary: Change balance_scope (409 unless ALL balances are zero)
       operationId: change-balance-scope
-      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { balance_scope: { $ref: '#/components/schemas/BalanceScope' } }, required: [balance_scope] } } } }
+      requestBody: { required: true, content: { application/json: { schema: { type: object, additionalProperties: false, properties: { balance_scope: { $ref: '#/components/schemas/BalanceScope' } }, required: [balance_scope] } } } }
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Customer' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
   /admin/customers/{id}/billing/ledger:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
     get:
@@ -2441,7 +2468,7 @@ components:
         customer_id: { type: string, format: uuid }
         account_id: { type: [string, "null"], format: uuid }
         message_id: { type: [string, "null"], format: uuid }
-        entry_type: { type: string, enum: [reserve, capture, release, refund, topup, adjustment] }
+        entry_type: { type: string, enum: [reserve, capture, release, refund, topup, adjustment, mo_charge, transfer] }
         credits: { type: integer, description: Signed. }
         balance_after: { type: integer }
         reference: { type: [string, "null"] }

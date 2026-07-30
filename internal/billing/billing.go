@@ -213,12 +213,21 @@ func (a *Accountant) EnsureNonClustered(ctx context.Context) error {
 	return nil
 }
 
+// BalanceCacheKey is the Redis key of the balance cache for an owner and direction (mt/mo). It is exported
+// so a durable writer outside billing-svc (the Admin top-up/transfer/scope-flip paths, step-148) can DELETE
+// the key after committing to Postgres — forcing the next reserve to rehydrate the fresh durable balance
+// instead of serving a stale cached one for up to the cache TTL. The two internal helpers below delegate to
+// it so the format lives in exactly one place.
+func BalanceCacheKey(direction, ownerType string, ownerID uuid.UUID) string {
+	return "billing:balance:" + direction + ":" + ownerType + ":" + ownerID.String()
+}
+
 func balanceKey(o Owner) string {
-	return "billing:balance:" + directionMT + ":" + o.Type + ":" + o.ID.String()
+	return BalanceCacheKey(directionMT, o.Type, o.ID)
 }
 
 func moBalanceKey(o Owner) string {
-	return "billing:balance:" + directionMO + ":" + o.Type + ":" + o.ID.String()
+	return BalanceCacheKey(directionMO, o.Type, o.ID)
 }
 
 func reservationKey(messageID uuid.UUID) string {

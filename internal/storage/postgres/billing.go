@@ -3,12 +3,14 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
+	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 	"github.com/martialanouman/go-gateway/internal/storage/postgres/sqlcgen"
 )
 
@@ -148,6 +150,186 @@ func (r *BillingRepo) ListExternalBillingConfigs(ctx context.Context) ([]cp.Cust
 	return out, nil
 }
 
+// Balances reads the MT and MO durable balance of each owner (step-148 get-customer-balances). A missing
+// balance row reads as 0. It returns one BalanceRow per (owner, direction), in owner order then MT before MO.
+func (r *BillingRepo) Balances(ctx context.Context, owners []cp.BalanceOwner) ([]cp.BalanceRow, error) {
+	rows := make([]cp.BalanceRow, 0, len(owners)*2)
+	for _, o := range owners {
+		for _, dir := range []string{cp.BillingDirectionMT, cp.BillingDirectionMO} {
+			credits, _, err := r.Balance(ctx, o.OwnerType, o.OwnerID, dir)
+			if err != nil {
+				return nil, err
+			}
+			rows = append(rows, cp.BalanceRow{OwnerType: o.OwnerType, OwnerID: o.OwnerID, Direction: dir, Credits: credits})
+		}
+	}
+	return rows, nil
+}
+
+// Transfer moves MT credit between two owners of the same customer atomically and idempotently (§6.9,
+// step-148): debit and credit are two EntryTransfer ledger rows summing to zero, applied in one tx after a
+// FOR UPDATE lock + overdraw guard on the source. debit.Credits must be negative and credit.Credits its
+// positive mirror; both carry the same MT direction, the shared idemKey as MessageID and a shared reference.
+// applied=false means idemKey was already used (a retry) — no double-move. The source may not be overdrawn:
+// its resulting balance must stay >= 0 (a transfer never consumes overdraft headroom).
+func (r *BillingRepo) Transfer(ctx context.Context, debit, credit cp.LedgerEntry, idemKey uuid.UUID) (rows []cp.LedgerRow, applied bool, err error) {
+	amount := -debit.Credits
+	if amount <= 0 || credit.Credits != amount || debit.Direction != credit.Direction {
+		return nil, false, fmt.Errorf("transfer: debit/credit must be a positive same-direction mirrored pair: %w", errs.ErrValidation)
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, false, translate("begin transfer tx", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	qtx := r.q.WithTx(tx)
+
+	// Claim once for the pair: a retry with the same key finds it claimed and skips both writes.
+	claimed, cerr := qtx.ClaimIdempotency(ctx, sqlcgen.ClaimIdempotencyParams{MessageID: idemKey, EntryType: string(cp.EntryTransfer)})
+	if cerr != nil {
+		return nil, false, translate("claim transfer idempotency", cerr)
+	}
+	if claimed == 0 {
+		if err := tx.Commit(ctx); err != nil {
+			return nil, false, translate("commit transfer tx", err)
+		}
+		return nil, false, nil
+	}
+
+	// Lock the source balance and refuse to overdraw it.
+	srcBal, serr := qtx.GetBalanceForUpdate(ctx, sqlcgen.GetBalanceForUpdateParams{
+		OwnerType: debit.OwnerType, OwnerID: debit.OwnerID, Direction: debit.Direction,
+	})
+	if serr != nil && !errors.Is(serr, pgx.ErrNoRows) {
+		return nil, false, translate("lock source balance", serr)
+	}
+	if int(srcBal) < amount {
+		return nil, false, fmt.Errorf("transfer: source balance %d < %d: %w", srcBal, amount, errs.ErrInsufficientCredit)
+	}
+
+	// The two legs must NOT carry message_id on the ledger: they share the transfer's idem key, and the
+	// partial unique index (message_id, entry_type, created_at) — created_at being constant within the tx —
+	// would reject the second leg. Idempotency is the billing_idempotency claim above; the shared idem key
+	// travels as the correlation reference so the pair stays linkable.
+	ref := idemKey.String()
+	for _, e := range []cp.LedgerEntry{debit, credit} {
+		e.MessageID = nil
+		e.Reference = &ref
+		row, aerr := applyEntry(ctx, qtx, e)
+		if aerr != nil {
+			return nil, false, aerr
+		}
+		rows = append(rows, row)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, false, translate("commit transfer tx", err)
+	}
+	return rows, true, nil
+}
+
+// ChangeBalanceScope flips a customer's balance_scope, refusing (conflict) if any balance of its CURRENT
+// scope owners is non-zero — otherwise the credit would be stranded under an owner nothing reads again
+// (§6.9, step-148). It locks the customer row and every current-owner balance row in one tx so the zero-check
+// and the flip are atomic against a concurrent durable mirror write. currentOwners are the customer's owners
+// under the current scope (the customer itself, or all its accounts). The same-table CHECK (142c) still
+// rejects 'smpp_account' with a hard limit/overdraft — surfaced as a validation error, not a 500.
+func (r *BillingRepo) ChangeBalanceScope(ctx context.Context, customerID uuid.UUID, currentOwners []cp.BalanceOwner, newScope string) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return translate("begin change-scope tx", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	qtx := r.q.WithTx(tx)
+
+	if _, err := qtx.LockCustomerScope(ctx, customerID); err != nil {
+		return translate("lock customer", err)
+	}
+	for _, o := range currentOwners {
+		for _, dir := range []string{cp.BillingDirectionMT, cp.BillingDirectionMO} {
+			bal, berr := qtx.GetBalanceForUpdate(ctx, sqlcgen.GetBalanceForUpdateParams{
+				OwnerType: o.OwnerType, OwnerID: o.OwnerID, Direction: dir,
+			})
+			if berr != nil && !errors.Is(berr, pgx.ErrNoRows) {
+				return translate("lock balance", berr)
+			}
+			if bal != 0 {
+				return fmt.Errorf("change-scope: %s %s balance is %d, not zero: %w", o.OwnerType, dir, bal, errs.ErrConflict)
+			}
+		}
+	}
+	n, err := qtx.UpdateBalanceScope(ctx, sqlcgen.UpdateBalanceScopeParams{ID: customerID, BalanceScope: newScope})
+	if err != nil {
+		return translate("update balance scope", err)
+	}
+	if n == 0 {
+		return translate("update balance scope", pgx.ErrNoRows)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return translate("commit change-scope tx", err)
+	}
+	return nil
+}
+
+// applyEntry adjusts the owner's balance by the entry's signed delta and appends the ledger row, on the
+// given tx queries, returning the stored row (id, balance_after, created_at). It is the shared apply half of
+// RecordDurable, reused by Topup and Transfer.
+//
+//nolint:gosec // credit counts are bounded well within int32 (integer credits, not monetary amounts)
+func applyEntry(ctx context.Context, qtx *sqlcgen.Queries, e cp.LedgerEntry) (cp.LedgerRow, error) {
+	balance, err := qtx.AdjustBalance(ctx, sqlcgen.AdjustBalanceParams{
+		OwnerType: e.OwnerType, OwnerID: e.OwnerID, Direction: e.Direction, Delta: int32(e.Credits),
+	})
+	if err != nil {
+		return cp.LedgerRow{}, translate("adjust balance", err)
+	}
+	row, err := qtx.InsertLedgerEntry(ctx, sqlcgen.InsertLedgerEntryParams{
+		OwnerType: e.OwnerType, OwnerID: e.OwnerID, Direction: e.Direction, CustomerID: e.CustomerID,
+		AccountID: e.AccountID, MessageID: e.MessageID, EntryType: string(e.EntryType), Credits: int32(e.Credits),
+		BalanceAfter: balance, Reference: e.Reference,
+	})
+	if err != nil {
+		return cp.LedgerRow{}, translate("insert ledger entry", err)
+	}
+	return cp.LedgerRow{
+		ID: row.ID, OwnerType: e.OwnerType, OwnerID: e.OwnerID, Direction: e.Direction, CustomerID: e.CustomerID,
+		AccountID: e.AccountID, MessageID: e.MessageID, EntryType: e.EntryType, Credits: e.Credits,
+		BalanceAfter: int(balance), Reference: e.Reference, CreatedAt: tsVal(row.CreatedAt),
+	}, nil
+}
+
+// Topup credits an owner's balance and appends a durable ledger entry, idempotently by the entry's MessageID
+// (an admin-supplied key, §6.9 step-148). It returns the stored ledger row; applied=false means the key was
+// already used (a retry) — no double-credit — and the returned row is empty.
+func (r *BillingRepo) Topup(ctx context.Context, entry cp.LedgerEntry) (row cp.LedgerRow, applied bool, err error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return cp.LedgerRow{}, false, translate("begin topup tx", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	qtx := r.q.WithTx(tx)
+
+	if entry.MessageID != nil {
+		claimed, cerr := qtx.ClaimIdempotency(ctx, sqlcgen.ClaimIdempotencyParams{MessageID: *entry.MessageID, EntryType: string(entry.EntryType)})
+		if cerr != nil {
+			return cp.LedgerRow{}, false, translate("claim topup idempotency", cerr)
+		}
+		if claimed == 0 {
+			if err := tx.Commit(ctx); err != nil {
+				return cp.LedgerRow{}, false, translate("commit topup tx", err)
+			}
+			return cp.LedgerRow{}, false, nil
+		}
+	}
+	row, err = applyEntry(ctx, qtx, entry)
+	if err != nil {
+		return cp.LedgerRow{}, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return cp.LedgerRow{}, false, translate("commit topup tx", err)
+	}
+	return row, true, nil
+}
+
 // LedgerEntryExists reports whether a ledger entry of entryType already exists for messageID. It is the
 // authoritative cross-partition idempotency guard (§6.9): the capture path reads it before committing so
 // a redelivered message_id never double-charges, since the same-day unique index cannot span partitions.
@@ -236,7 +418,7 @@ func (r *BillingRepo) RecordDurable(ctx context.Context, entry cp.LedgerEntry) (
 		return 0, false, translate("adjust balance", err)
 	}
 	//nolint:gosec // see above: balance is an integer credit count
-	if err := qtx.InsertLedgerEntry(ctx, sqlcgen.InsertLedgerEntryParams{
+	if _, err := qtx.InsertLedgerEntry(ctx, sqlcgen.InsertLedgerEntryParams{
 		OwnerType:    entry.OwnerType,
 		OwnerID:      entry.OwnerID,
 		Direction:    entry.Direction,

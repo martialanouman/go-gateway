@@ -1,6 +1,10 @@
 package controlplane
 
-import "github.com/google/uuid"
+import (
+	"time"
+
+	"github.com/google/uuid"
+)
 
 // EntryType is a billing_ledger.entry_type — the kind of a ledger movement (§6.9). reserve/capture/
 // release track the MT send lifecycle (hold → commit → refund); mo_charge is a single MO meter debit;
@@ -19,12 +23,16 @@ const (
 	// EntryMOCharge is a single MO meter debit (mobile-originated return path, §6.9): credits < 0 on the
 	// MO balance. Message-scoped and idempotent, unlike the manual topup/adjustment types.
 	EntryMOCharge EntryType = "mo_charge"
+	// EntryTransfer is one leg of an admin MT balance transfer between two owners of the same customer
+	// (§6.9, step-148): a transfer writes two EntryTransfer rows (debit source / credit destination) summing
+	// to zero, sharing one correlation reference. Idempotent by an admin-supplied key.
+	EntryTransfer EntryType = "transfer"
 )
 
 // Valid reports whether e is a known entry type.
 func (e EntryType) Valid() bool {
 	switch e {
-	case EntryReserve, EntryCapture, EntryRelease, EntryRefund, EntryTopup, EntryAdjustment, EntryMOCharge:
+	case EntryReserve, EntryCapture, EntryRelease, EntryRefund, EntryTopup, EntryAdjustment, EntryMOCharge, EntryTransfer:
 		return true
 	}
 	return false
@@ -52,6 +60,39 @@ type BillingCustomer struct {
 	CreditLimitIsHard         bool
 	MoBillingFloor            *int // how negative the MO meter may run before accrual stops+alerts; nil = no floor
 	ExternalBillingProviderID *uuid.UUID
+}
+
+// BalanceOwner names one balance holder: the (owner_type, owner_id) key of the balances table. The Admin
+// billing surface (step-148) resolves a customer's owners from its BalanceScope (one customer owner, or one
+// per SMPP account) and passes them to the repo for balance reads and the change-scope zero-check.
+type BalanceOwner struct {
+	OwnerType string
+	OwnerID   uuid.UUID
+}
+
+// BalanceRow is one owner's balance in one direction, for the get-customer-balances projection (step-148).
+type BalanceRow struct {
+	OwnerType string
+	OwnerID   uuid.UUID
+	Direction string
+	Credits   int
+}
+
+// LedgerRow is a stored billing_ledger row echoed back to an admin top-up/transfer (step-148): the input
+// LedgerEntry plus the columns the database assigned (id, balance_after, created_at).
+type LedgerRow struct {
+	ID           uuid.UUID
+	OwnerType    string
+	OwnerID      uuid.UUID
+	Direction    string
+	CustomerID   uuid.UUID
+	AccountID    *uuid.UUID
+	MessageID    *uuid.UUID
+	EntryType    EntryType
+	Credits      int
+	BalanceAfter int
+	Reference    *string
+	CreatedAt    time.Time
 }
 
 // CustomerExternalBilling is a billing-enabled customer joined to its ACTIVE external billing provider

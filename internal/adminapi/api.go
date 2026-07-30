@@ -73,6 +73,7 @@ func New(deps Deps) (*chi.Mux, huma.API) {
 	registerAntispamRules(api, deps.AntispamRules)
 	registerExactRoutes(api, deps.ExactRoutes, deps.Imports, deps.Logger)
 	registerRoutingScripts(api, deps.RoutingScripts)
+	registerBilling(api, deps.Customers, deps.Billing, deps.Accounts, deps.BalanceCache, deps.Logger)
 
 	humaspec.Prune(api, codesMetaKey)
 

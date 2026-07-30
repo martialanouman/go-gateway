@@ -59,6 +59,27 @@ WHERE l.customer_id = @customer_id AND l.direction = 'mt' AND l.entry_type = 're
       AND c.customer_id = l.customer_id AND c.direction = 'mt'
   );
 
+-- name: GetBalanceForUpdate :one
+-- Read one owner balance and LOCK its row (§6.9, step-148 admin transfer / change-scope). The lock
+-- serialises this admin tx against a concurrent durable mirror write to the same balance, so a transfer's
+-- overdraw check and a change-scope zero-check see a stable value. A missing row is a legitimate 0.
+SELECT credits FROM control_plane.balances
+WHERE owner_type = @owner_type AND owner_id = @owner_id AND direction = @direction
+FOR UPDATE;
+
+-- name: LockCustomerScope :one
+-- Read a customer's current balance_scope and LOCK the customer row, so two concurrent change-scope admin
+-- txns on the same customer serialise (step-148). not_found if the customer does not exist.
+SELECT balance_scope FROM control_plane.customers WHERE id = @id FOR UPDATE;
+
+-- name: UpdateBalanceScope :execrows
+-- Flip a customer's balance_scope (step-148). Returns rows affected: 0 = no such customer. The same-table
+-- CHECK (step-142c) still rejects 'smpp_account' when a hard credit limit or overdraft is set — that raises
+-- a CHECK violation the caller's translate() maps to validation_error (422), not a 500.
+UPDATE control_plane.customers
+SET balance_scope = @balance_scope, updated_at = now()
+WHERE id = @id;
+
 -- name: LedgerEntryExists :one
 -- The AUTHORITATIVE cross-partition idempotency guard (§6.9): whether a ledger entry of entry_type
 -- already exists for message_id. Read before a capture so a redelivery of the same message_id never
@@ -79,15 +100,17 @@ INSERT INTO control_plane.billing_idempotency (message_id, entry_type)
 VALUES (@message_id, @entry_type)
 ON CONFLICT (message_id, entry_type) DO NOTHING;
 
--- name: InsertLedgerEntry :exec
--- Append one ledger row. The ledger is APPEND-ONLY (§6.9): a row is never updated once written, so the
--- history is immutable and auditable. balance_after is supplied by the caller's atomic path.
+-- name: InsertLedgerEntry :one
+-- Append one ledger row and return its generated id and created_at. The ledger is APPEND-ONLY (§6.9): a row
+-- is never updated once written, so the history is immutable and auditable. balance_after is supplied by the
+-- caller's atomic path. The returned id/created_at let an admin top-up/transfer echo the created entries.
 INSERT INTO control_plane.billing_ledger
   (owner_type, owner_id, direction, customer_id, account_id, message_id, entry_type, credits,
    balance_after, reference)
 VALUES
   (@owner_type, @owner_id, @direction, @customer_id, @account_id, @message_id, @entry_type, @credits,
-   @balance_after, @reference);
+   @balance_after, @reference)
+RETURNING id, created_at;
 
 -- name: AdjustBalance :one
 -- Apply a SIGNED delta to the durable owner balance for a direction (credits += delta), creating the row

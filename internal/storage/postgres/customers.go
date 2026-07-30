@@ -79,19 +79,20 @@ func (r *CustomerRepo) List(ctx context.Context, f cp.CustomerFilter) (cp.Page[c
 // Update applies a partial change and returns the updated customer, or ErrNotFound.
 func (r *CustomerRepo) Update(ctx context.Context, id uuid.UUID, p cp.CustomerPatch) (cp.Customer, error) {
 	row, err := r.q.UpdateCustomer(ctx, sqlcgen.UpdateCustomerParams{
-		ID:                   id,
-		Name:                 p.Name,
-		Status:               strPtr(p.Status),
-		RatePlanID:           p.RatePlanID,
-		BillingEnabled:       p.BillingEnabled,
-		BillingMode:          strPtr(p.BillingMode),
-		OverdraftEnabled:     p.OverdraftEnabled,
-		OverdraftLimit:       i32ptr(p.OverdraftLimit),
-		CreditLimit:          i32ptr(p.CreditLimit),
-		CreditLimitIsHard:    p.CreditLimitIsHard,
-		MoBillingFloor:       i32ptr(p.MoBillingFloor),
-		ContentStorage:       strPtr(p.ContentStorage),
-		ContentRetentionDays: i32ptr(p.ContentRetentionDays),
+		ID:                        id,
+		Name:                      p.Name,
+		Status:                    strPtr(p.Status),
+		RatePlanID:                p.RatePlanID,
+		BillingEnabled:            p.BillingEnabled,
+		BillingMode:               strPtr(p.BillingMode),
+		OverdraftEnabled:          p.OverdraftEnabled,
+		OverdraftLimit:            i32ptr(p.OverdraftLimit),
+		CreditLimit:               i32ptr(p.CreditLimit),
+		CreditLimitIsHard:         p.CreditLimitIsHard,
+		MoBillingFloor:            i32ptr(p.MoBillingFloor),
+		ExternalBillingProviderID: p.ExternalBillingProviderID,
+		ContentStorage:            strPtr(p.ContentStorage),
+		ContentRetentionDays:      i32ptr(p.ContentRetentionDays),
 	})
 	if err != nil {
 		return cp.Customer{}, translate("update customer", err)
