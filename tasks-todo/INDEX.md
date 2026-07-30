@@ -110,7 +110,7 @@ Légende : `[x]` = fait (dans `tasks-done/`) · `[ ]` = à faire (dans `tasks-to
 - [x] step-143 — Compteur MO séparé : plancher, arrêt + alerte, jamais bloquant pour le MT
 - [x] step-144 — Câbler billing-svc (gRPC :7001) + port ops
 - [x] step-145 — Réserve MT dans le router (étape 8) ; désactivée = zéro appel réseau
-- [ ] step-146 — Capture/libère dans connector-pool ; idempotent sous double livraison
+- [x] step-146 — Capture/libère dans connector-pool ; idempotent sous double livraison
 - [ ] step-147 — Adaptateur de facturation externe (§6.10) derrière une interface
 - [ ] step-148 — Admin billing : config client, soldes, top-up/transfert, change-balance-scope
 - [ ] step-149 — Admin billing : grand livre, rate-plans, providers externes
