@@ -25,6 +25,7 @@ type fakeContentKeyStore struct {
 	lastKeyRef  string
 	createErr   error
 	rotateErr   error
+	byID        map[uuid.UUID]cp.ContentKey
 }
 
 func (s *fakeContentKeyStore) GetActive(_ context.Context, customerID uuid.UUID) (cp.ContentKey, error) {
@@ -32,6 +33,17 @@ func (s *fakeContentKeyStore) GetActive(_ context.Context, customerID uuid.UUID)
 		return cp.ContentKey{}, errs.ErrNotFound
 	}
 	return *s.active, nil
+}
+
+func (s *fakeContentKeyStore) GetByID(_ context.Context, id uuid.UUID) (cp.ContentKey, error) {
+	if s.byID == nil {
+		return cp.ContentKey{}, errs.ErrNotFound
+	}
+	k, ok := s.byID[id]
+	if !ok {
+		return cp.ContentKey{}, errs.ErrNotFound
+	}
+	return k, nil
 }
 
 func (s *fakeContentKeyStore) CreateIfAbsent(_ context.Context, customerID uuid.UUID, wrapped []byte, keyRef string) (cp.ContentKey, bool, error) {
@@ -172,6 +184,52 @@ func TestGetContentEncryptionKeyReusesExisting(t *testing.T) {
 	}
 	if !bytes.Equal(resp.GetDek(), dek) || resp.GetKeyId() != existing.ID.String() {
 		t.Error("did not return the existing key's DEK/id")
+	}
+}
+
+// TestGetContentKeyUnwrapsSpecificKey: the decrypt path unwraps a specific (possibly retired) key by id.
+func TestGetContentKeyUnwrapsSpecificKey(t *testing.T) {
+	kms := content.NewDevKMS()
+	dek, _ := content.GenerateDataKey()
+	wrapped, _ := kms.WrapDataKey(context.Background(), dek)
+	keyID := uuid.New()
+	store := &fakeContentKeyStore{byID: map[uuid.UUID]cp.ContentKey{
+		keyID: {ID: keyID, WrappedKey: wrapped, Status: cp.ContentKeyRetired}, // a retired key still decrypts old CDRs
+	}}
+	srv := billing.NewContentKeyServer(kms, store)
+
+	resp, err := srv.GetContentKey(context.Background(), &pb.GetContentKeyRequest{KeyId: keyID.String()})
+	if err != nil {
+		t.Fatalf("GetContentKey: %v", err)
+	}
+	if resp.GetDestroyed() || !bytes.Equal(resp.GetDek(), dek) {
+		t.Errorf("resp = {destroyed:%v dek==orig:%v}, want the retired key's DEK", resp.GetDestroyed(), bytes.Equal(resp.GetDek(), dek))
+	}
+}
+
+// TestGetContentKeyDestroyedReturnsNoKey: a crypto-shredded key reports destroyed and returns no DEK.
+func TestGetContentKeyDestroyedReturnsNoKey(t *testing.T) {
+	keyID := uuid.New()
+	store := &fakeContentKeyStore{byID: map[uuid.UUID]cp.ContentKey{
+		keyID: {ID: keyID, WrappedKey: []byte("irrelevant"), Status: cp.ContentKeyDestroyed},
+	}}
+	srv := billing.NewContentKeyServer(content.NewDevKMS(), store)
+
+	resp, err := srv.GetContentKey(context.Background(), &pb.GetContentKeyRequest{KeyId: keyID.String()})
+	if err != nil {
+		t.Fatalf("GetContentKey: %v", err)
+	}
+	if !resp.GetDestroyed() || len(resp.GetDek()) != 0 {
+		t.Errorf("resp = {destroyed:%v dek_len:%d}, want destroyed + empty dek", resp.GetDestroyed(), len(resp.GetDek()))
+	}
+}
+
+// TestGetContentKeyUnknownIsNotFound: an unknown key id is NotFound.
+func TestGetContentKeyUnknownIsNotFound(t *testing.T) {
+	srv := billing.NewContentKeyServer(content.NewDevKMS(), &fakeContentKeyStore{})
+	_, err := srv.GetContentKey(context.Background(), &pb.GetContentKeyRequest{KeyId: uuid.NewString()})
+	if status.Code(err) != codes.NotFound {
+		t.Errorf("code = %v, want NotFound", status.Code(err))
 	}
 }
 

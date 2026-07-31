@@ -20,6 +20,7 @@ import (
 // no plaintext key material passes through it.
 type ContentKeyStore interface {
 	GetActive(ctx context.Context, customerID uuid.UUID) (cp.ContentKey, error)
+	GetByID(ctx context.Context, id uuid.UUID) (cp.ContentKey, error)
 	CreateIfAbsent(ctx context.Context, customerID uuid.UUID, wrapped []byte, keyRef string) (cp.ContentKey, bool, error)
 	Rotate(ctx context.Context, customerID uuid.UUID, wrapped []byte, keyRef string) (cp.ContentKey, error)
 }
@@ -73,6 +74,28 @@ func (s *ContentKeyServer) GetContentEncryptionKey(ctx context.Context, req *pb.
 		return nil, toStatus(err)
 	}
 	return &pb.ContentEncryptionKeyResponse{KeyId: key.ID.String(), Dek: dek}, nil
+}
+
+// GetContentKey unwraps a specific content key by id for the guarded decrypt path (get-message-content). A
+// destroyed (crypto-shredded) key returns destroyed=true and no key material — its content is permanently
+// unreadable. An unknown id is NotFound. The plaintext DEK is never logged.
+func (s *ContentKeyServer) GetContentKey(ctx context.Context, req *pb.GetContentKeyRequest) (*pb.GetContentKeyResponse, error) {
+	keyID, err := uuid.Parse(req.GetKeyId())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, string(errs.ErrValidation))
+	}
+	key, err := s.store.GetByID(ctx, keyID)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	if key.Status == cp.ContentKeyDestroyed {
+		return &pb.GetContentKeyResponse{Destroyed: true}, nil
+	}
+	dek, err := s.kms.UnwrapDataKey(ctx, key.WrappedKey)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	return &pb.GetContentKeyResponse{Dek: dek}, nil
 }
 
 // getOrCreateActive returns the customer's active content key, creating one (fresh DEK sealed by the KMS) if

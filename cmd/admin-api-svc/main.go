@@ -29,6 +29,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/platform/async"
 	"github.com/martialanouman/go-gateway/internal/platform/supervisor"
 	registrypb "github.com/martialanouman/go-gateway/internal/session/pb"
+	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
 	"github.com/martialanouman/go-gateway/internal/storage/postgres"
 	redisstore "github.com/martialanouman/go-gateway/internal/storage/redis"
 )
@@ -52,7 +53,7 @@ func run() error {
 	// force-disconnect the affected live binds via session-manager's SessionRegistry (step-032), and the
 	// address of that service is the same env var every session-manager client already uses.
 	cfg, err := config.Load(serviceName,
-		config.SectionOTel, config.SectionPostgres, config.SectionHTTP, config.SectionSMPP, config.SectionRedis, config.SectionBilling)
+		config.SectionOTel, config.SectionPostgres, config.SectionHTTP, config.SectionSMPP, config.SectionRedis, config.SectionBilling, config.SectionClickHouse)
 	if err != nil {
 		return err
 	}
@@ -84,6 +85,15 @@ func run() error {
 		return fmt.Errorf("open postgres pool: %w", err)
 	}
 	defer pool.Close()
+
+	// ClickHouse backs the audited content read (get-message-content, step-163): the operator reads a decrypted
+	// body, which requires the CDR row (ciphertext + key id). It is not a readiness dependency — content read
+	// is a rare admin operation, not the control-plane happy path.
+	chConn, err := clickhouse.NewConn(cfg.ClickHouse)
+	if err != nil {
+		return fmt.Errorf("connect clickhouse: %w", err)
+	}
+	defer func() { _ = chConn.Close() }()
 
 	// The bulk-import runner runs exact-route MNP imports in the background (step-103), bounded and
 	// drained on shutdown. Its jobs use the pool, so its drain must complete before pool.Close: this
@@ -155,6 +165,9 @@ func run() error {
 		RatePlans:        postgres.NewRatePlanRepo(pool),
 		BillingProviders: postgres.NewExternalBillingProviderRepo(pool),
 		ContentKeys:      adminapi.NewGRPCContentKeyRotator(billingpb.NewContentKeysClient(billingConn)),
+		ContentKeyReader: adminapi.NewGRPCContentKeyReader(billingpb.NewContentKeysClient(billingConn)),
+		Messages:         clickhouse.NewCDRReader(chConn),
+		ContentAudit:     postgres.NewContentAccessAuditRepo(pool),
 		Verifier:         verifier,
 		Logger:           logger,
 	})

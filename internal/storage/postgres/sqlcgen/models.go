@@ -65,6 +65,15 @@ type ControlPlaneBillingLedgerDefault struct {
 	CreatedAt    pgtype.Timestamptz
 }
 
+type ControlPlaneContentAccessAudit struct {
+	ID         uuid.UUID
+	Operator   string
+	MessageID  uuid.UUID
+	CustomerID *uuid.UUID
+	Outcome    string
+	AccessedAt pgtype.Timestamptz
+}
+
 type ControlPlaneContentKey struct {
 	ID          uuid.UUID
 	CustomerID  uuid.UUID

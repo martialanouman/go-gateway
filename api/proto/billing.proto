@@ -159,6 +159,12 @@ service ContentKeys {
   // the ONLY RPC that returns plaintext key material: it exists solely for the guarded encrypt path, rides
   // the intra-mesh mTLS, and the DEK must never be logged nor written to a CDR. Callers cache it briefly.
   rpc GetContentEncryptionKey(GetContentEncryptionKeyRequest) returns (ContentEncryptionKeyResponse);
+  // GetContentKey unwraps a SPECIFIC content key by id — the guarded DECRYPT path (get-message-content,
+  // step-163). A CDR body may be sealed under a retired key (an old row after rotation), so the reader asks by
+  // the row's key id, not by the active key. A destroyed (crypto-shredded) key returns destroyed=true and no
+  // data key — the content is permanently unreadable. Like GetContentEncryptionKey the plaintext DEK is
+  // sensitive: never logged, never persisted.
+  rpc GetContentKey(GetContentKeyRequest) returns (GetContentKeyResponse);
 }
 
 // GetOrCreateContentKeyRequest names the customer whose active key to fetch or create.
@@ -191,4 +197,17 @@ message GetContentEncryptionKeyRequest {
 message ContentEncryptionKeyResponse {
   string key_id = 1;
   bytes dek = 2;
+}
+
+// GetContentKeyRequest names a specific content key by id (the id a CDR row was sealed under).
+message GetContentKeyRequest {
+  string key_id = 1;
+}
+
+// GetContentKeyResponse carries the unwrapped data key, OR reports the key destroyed. dek is the plaintext
+// 32-byte data key (empty when destroyed); destroyed=true means the key was crypto-shredded and the content it
+// sealed is permanently unreadable. The dek is SENSITIVE: never logged, never persisted.
+message GetContentKeyResponse {
+  bytes dek = 1;
+  bool destroyed = 2;
 }
