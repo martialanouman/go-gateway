@@ -277,7 +277,7 @@ func submitViaREST(t *testing.T, acc, cust uuid.UUID) (kafka.Record, clickhouse.
 	t.Helper()
 	producer := &fakeProducer{}
 	cdr := &fakeCDR{}
-	accepted := ingest.NewAcceptedWriter(cdr, 1, 16, nil)
+	accepted := ingest.NewAcceptedWriter(cdr, nil, 1, 16, nil)
 	runAccepted(t, accepted)
 
 	mux, _ := restapi.New(restapi.Deps{
@@ -319,7 +319,7 @@ func submitViaSMPP(t *testing.T, acc, cust uuid.UUID) (kafka.Record, clickhouse.
 	t.Helper()
 	producer := &fakeProducer{}
 	cdr := &fakeCDR{}
-	accepted := ingest.NewAcceptedWriter(cdr, 1, 16, nil)
+	accepted := ingest.NewAcceptedWriter(cdr, nil, 1, 16, nil)
 	runAccepted(t, accepted)
 
 	l := New(nil, nil, ingest.NewIngestor(producer, accepted, nil), Options{}, discardLog())

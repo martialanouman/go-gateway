@@ -29,6 +29,14 @@ func (s ContentKeyStatus) Valid() bool {
 	}
 }
 
+// CustomerContentPolicy is a customer's raw content-storage setting, loaded in bulk for the data-plane policy
+// snapshot (content.PolicySnapshot). ContentStorage is the stored value (possibly `inherit`); the snapshot
+// resolves it to the effective policy.
+type CustomerContentPolicy struct {
+	CustomerID     uuid.UUID
+	ContentStorage ContentStorage
+}
+
 // ContentKey is a per-customer data key (DEK) sealed by the KMS (control_plane.content_keys, §6.14). WrappedKey
 // is the KMS-sealed DEK; the plaintext DEK is never stored here. KMSKeyRef records which master key (KEK)
 // sealed it, so the wrapped key can be unwrapped by the right provider. RetiredAt/DestroyedAt are set when the

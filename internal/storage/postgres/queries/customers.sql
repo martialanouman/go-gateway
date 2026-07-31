@@ -64,3 +64,7 @@ UPDATE control_plane.customers SET status = 'suspended' WHERE id = @id RETURNING
 
 -- name: SuspendCustomerAccounts :exec
 UPDATE control_plane.smpp_accounts SET status = 'suspended' WHERE customer_id = @customer_id;
+
+-- name: ListContentStorage :many
+-- Every customer's content_storage, for the data-plane content-policy snapshot (loaded once at boot).
+SELECT id, content_storage FROM control_plane.customers;

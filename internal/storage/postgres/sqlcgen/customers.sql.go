@@ -137,6 +137,36 @@ func (q *Queries) GetCustomer(ctx context.Context, id uuid.UUID) (ControlPlaneCu
 	return i, err
 }
 
+const listContentStorage = `-- name: ListContentStorage :many
+SELECT id, content_storage FROM control_plane.customers
+`
+
+type ListContentStorageRow struct {
+	ID             uuid.UUID
+	ContentStorage string
+}
+
+// Every customer's content_storage, for the data-plane content-policy snapshot (loaded once at boot).
+func (q *Queries) ListContentStorage(ctx context.Context) ([]ListContentStorageRow, error) {
+	rows, err := q.db.Query(ctx, listContentStorage)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListContentStorageRow{}
+	for rows.Next() {
+		var i ListContentStorageRow
+		if err := rows.Scan(&i.ID, &i.ContentStorage); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listCustomers = `-- name: ListCustomers :many
 SELECT id, name, status, group_id, rate_plan_id, billing_enabled, billing_mode, overdraft_enabled, overdraft_limit, balance_scope, mo_billing_floor, content_storage, content_retention_days, content_key_id, created_at, updated_at, credit_limit, credit_limit_is_hard, external_billing_provider_id FROM control_plane.customers
 WHERE ($1::uuid IS NULL OR group_id = $1)

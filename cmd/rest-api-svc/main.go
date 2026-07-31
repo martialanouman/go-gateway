@@ -17,7 +17,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+
+	billingpb "github.com/martialanouman/go-gateway/internal/billing/pb"
 	"github.com/martialanouman/go-gateway/internal/config"
+	"github.com/martialanouman/go-gateway/internal/content"
 	"github.com/martialanouman/go-gateway/internal/idempotency"
 	"github.com/martialanouman/go-gateway/internal/ingest"
 	"github.com/martialanouman/go-gateway/internal/observability"
@@ -54,7 +60,7 @@ func run() error {
 	// (plan §1.4); the shared default is 8081.
 	cfg, err := config.Load(serviceName,
 		config.SectionOTel, config.SectionPostgres, config.SectionKafka, config.SectionClickHouse,
-		config.SectionRedis, config.SectionHTTP)
+		config.SectionRedis, config.SectionHTTP, config.SectionBilling)
 	if err != nil {
 		return err
 	}
@@ -100,7 +106,28 @@ func run() error {
 	}
 	defer func() { _ = rdb.Close() }()
 
-	accepted := ingest.NewAcceptedWriter(clickhouse.NewCDRWriter(chConn), acceptedWorkers, acceptedQueueSize, logger)
+	// Content storage (§6.14, M10, step-162): the accepted-row writer seals the body into the CDR per the
+	// customer's content_storage policy. The policy is a boot snapshot (rare changes; lock-free per message);
+	// the data key comes from billing-svc (the sole KMS holder) through a TTL cache so a body is encrypted
+	// without the body ever reaching billing-svc. The billing dial is lazy — billing-svc down at boot does not
+	// block startup; a down billing-svc at runtime degrades an encrypted customer's CDR to no-content (counted).
+	contentPolicy, err := content.LoadPolicySnapshot(ctx, postgres.NewCustomerRepo(pool))
+	if err != nil {
+		return fmt.Errorf("load content-storage policy: %w", err)
+	}
+	billingConn, err := grpc.NewClient(cfg.Billing.Addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return fmt.Errorf("dial billing at %q: %w", cfg.Billing.Addr, err)
+	}
+	defer func() { _ = billingConn.Close() }()
+	dekCache := content.NewDataKeyCache(content.NewGRPCDataKeyFetcher(billingpb.NewContentKeysClient(billingConn)))
+	contentDropped := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "ingest_content_dropped_total",
+		Help: "Message bodies dropped from the CDR because the content data key was unavailable.",
+	})
+	sealer := ingest.NewContentSealer(contentPolicy, dekCache, contentDropped, logger)
+
+	accepted := ingest.NewAcceptedWriter(clickhouse.NewCDRWriter(chConn), sealer, acceptedWorkers, acceptedQueueSize, logger)
 	ingestor := ingest.NewIngestor(producer, accepted, logger)
 	tracer := observability.Tracer(nil, serviceName)
 
@@ -133,6 +160,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("init ops server: %w", err)
 	}
+	ops.Registry().MustRegister(contentDropped)
 
 	logger.InfoContext(ctx, "starting", "config", cfg)
 

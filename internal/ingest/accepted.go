@@ -5,7 +5,9 @@ import (
 	"log/slog"
 	"time"
 
+	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	"github.com/martialanouman/go-gateway/internal/platform/e164"
+	"github.com/martialanouman/go-gateway/internal/platform/msg"
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
 )
 
@@ -32,9 +34,19 @@ const (
 // orphan goroutine (guide §5).
 type AcceptedWriter struct {
 	cdr     CDRWriter
-	ch      chan clickhouse.CDRRow
+	sealer  *ContentSealer
+	ch      chan acceptedItem
 	workers int
 	logger  *slog.Logger
+}
+
+// acceptedItem is one queued accepted row plus the plaintext body it may need sealed into the CDR. body is
+// empty unless the customer's effective content policy stores it (resolved once at Enqueue, off the async
+// worker), so off-policy messages — the default — carry no body through the queue.
+type acceptedItem struct {
+	row    clickhouse.CDRRow
+	body   msg.Body
+	policy cp.ContentStorage
 }
 
 // CDRWriter writes a batch of CDR rows. *clickhouse.CDRWriter satisfies it. The accepted-row pool
@@ -44,8 +56,9 @@ type CDRWriter interface {
 }
 
 // NewAcceptedWriter builds a pool with the given worker count and queue depth. Both are clamped to
-// at least 1.
-func NewAcceptedWriter(cdr CDRWriter, workers, queue int, logger *slog.Logger) *AcceptedWriter {
+// at least 1. sealer may be nil: content storage is then disabled and no body is ever carried or written
+// (the pre-M10 behaviour).
+func NewAcceptedWriter(cdr CDRWriter, sealer *ContentSealer, workers, queue int, logger *slog.Logger) *AcceptedWriter {
 	if workers < 1 {
 		workers = 1
 	}
@@ -57,7 +70,8 @@ func NewAcceptedWriter(cdr CDRWriter, workers, queue int, logger *slog.Logger) *
 	}
 	return &AcceptedWriter{
 		cdr:     cdr,
-		ch:      make(chan clickhouse.CDRRow, queue),
+		sealer:  sealer,
+		ch:      make(chan acceptedItem, queue),
 		workers: workers,
 		logger:  logger,
 	}
@@ -66,9 +80,18 @@ func NewAcceptedWriter(cdr CDRWriter, workers, queue int, logger *slog.Logger) *
 // Enqueue schedules an accepted-row write. It never blocks the request: if the queue is saturated
 // the row is dropped with a warning — the message is already durable in Kafka and will get an
 // enroute row, so the only cost is a brief window where get-message could 404 under overload.
-func (w *AcceptedWriter) Enqueue(row clickhouse.CDRRow) {
+//
+// The content policy is resolved here, on the request path (a lock-free map read), so that only messages
+// whose customer actually stores content carry the plaintext body through the queue to the async sealer.
+func (w *AcceptedWriter) Enqueue(row clickhouse.CDRRow, body msg.Body) {
+	item := acceptedItem{row: row, policy: cp.ContentOff}
+	if w.sealer != nil {
+		if policy := w.sealer.Policy(row.CustomerID); policy != cp.ContentOff {
+			item.policy, item.body = policy, body
+		}
+	}
 	select {
-	case w.ch <- row:
+	case w.ch <- item:
 	default:
 		w.logger.Warn("accepted-row queue saturated, dropping projection",
 			"message_id", row.MessageID)
@@ -92,7 +115,7 @@ func (w *AcceptedWriter) Run(ctx context.Context) error {
 }
 
 func (w *AcceptedWriter) work(ctx context.Context) {
-	buf := make([]clickhouse.CDRRow, 0, acceptedBatchSize)
+	buf := make([]acceptedItem, 0, acceptedBatchSize)
 	ticker := time.NewTicker(acceptedFlushInterval)
 	defer ticker.Stop()
 
@@ -107,8 +130,8 @@ func (w *AcceptedWriter) work(ctx context.Context) {
 
 	for {
 		select {
-		case row := <-w.ch:
-			buf = append(buf, row)
+		case item := <-w.ch:
+			buf = append(buf, item)
 			if len(buf) >= acceptedBatchSize {
 				flush()
 			}
@@ -119,8 +142,8 @@ func (w *AcceptedWriter) work(ctx context.Context) {
 			// channel is empty; a concurrent receive by another worker is safe.
 			for {
 				select {
-				case row := <-w.ch:
-					buf = append(buf, row)
+				case item := <-w.ch:
+					buf = append(buf, item)
 					if len(buf) >= acceptedBatchSize {
 						flush()
 					}
@@ -140,14 +163,27 @@ func (w *AcceptedWriter) work(ctx context.Context) {
 // form (the router is the single rejection authority). A failed batch is logged and dropped — the
 // connector's enroute row supersedes an accepted projection, so get-message shows enroute a moment
 // later, never a persistent 404.
-func (w *AcceptedWriter) writeBatch(rows []clickhouse.CDRRow) {
-	for i := range rows {
-		if norm, err := e164.Normalize(rows[i].DestAddr); err == nil {
-			rows[i].DestAddr = norm
-		}
-	}
+func (w *AcceptedWriter) writeBatch(items []acceptedItem) {
+	// Known limit: this single deadline bounds both the (serial) per-row DEK fetches and the final
+	// InsertBatch. In steady state the DEK cache is warm so sealing is negligible; under a cold-cache burst
+	// with a slow billing-svc, serial fetches could eat the budget and expire the write, dropping the whole
+	// batch's projection (never a message — the connector's enroute row supersedes it). A separate seal budget
+	// is a follow-up if this bites at the 8k/s target.
 	ctx, cancel := context.WithTimeout(context.Background(), acceptedWriteTimeout)
 	defer cancel()
+
+	rows := make([]clickhouse.CDRRow, len(items))
+	for i := range items {
+		row := items[i].row
+		if norm, err := e164.Normalize(row.DestAddr); err == nil {
+			row.DestAddr = norm
+		}
+		// Seal the body into the content column per policy, off the request path. Never fails the row.
+		if w.sealer != nil && items[i].policy != cp.ContentOff {
+			w.sealer.seal(ctx, &row, items[i].body, items[i].policy)
+		}
+		rows[i] = row
+	}
 	if err := w.cdr.InsertBatch(ctx, rows); err != nil {
 		w.logger.Error("accepted-row batch write failed", "rows", len(rows), "err", err)
 	}
