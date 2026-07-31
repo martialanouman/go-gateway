@@ -116,7 +116,7 @@ Légende : `[x]` = fait (dans `tasks-done/`) · `[ ]` = à faire (dans `tasks-to
 - [x] step-149 — Admin billing : grand livre, rate-plans, providers externes
 
 ## M10 — Contenu, chiffrement & RGPD
-- [ ] step-160 — Interface KMS + implémentation locale de dev (enveloppe)
+- [x] step-160 — Interface KMS + implémentation locale de dev (enveloppe)
 - [ ] step-161 — content_keys : cycle de vie de clé par client (hébergé par billing-svc)
 - [ ] step-162 — Chiffrement du contenu à l'écriture CDR + politique content_storage
 - [ ] step-163 — Lecture de contenu gardée et auditée (get-message-content)
