@@ -3,6 +3,7 @@ package content
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/google/uuid"
 
@@ -31,13 +32,10 @@ type PolicyLister interface {
 // boot (the sender-ID snapshot pattern). The data plane resolves a message's storage policy per message with
 // a plain map read. A customer absent from the snapshot resolves to OFF.
 //
-// STALENESS — asymmetric risk. Because the snapshot only refreshes on restart, a policy change takes effect
-// only at the next data-plane restart. In the ENABLING direction (off→stored_*) this is safe: the gateway
-// merely stores too little until then. In the DISABLING direction (stored_*→off, e.g. a consent withdrawal or
-// a GDPR request) it is UNSAFE: the data plane keeps storing bodies until restart, so the operator must
-// restart (or roll) the ingest pods to make an opt-out effective. Hot reload — with opt-out as its first case
-// — is the real fix and is a pre-prod prerequisite (tracked). content_storage changes are otherwise rare, so
-// a boot snapshot is the right first cut.
+// A snapshot is IMMUTABLE. To honour a policy change without a restart — critically an opt-out (stored_*→off,
+// a consent withdrawal or GDPR request), which must take effect promptly — hold it in a PolicyHolder and swap
+// a freshly loaded snapshot on each config-change invalidation (router-svc's snapshot watcher does this). A
+// bare snapshot without the holder only reflects the state at load time.
 type PolicySnapshot struct {
 	byCustomer map[uuid.UUID]cp.ContentStorage
 }
@@ -62,4 +60,26 @@ func (s *PolicySnapshot) For(customerID uuid.UUID) cp.ContentStorage {
 		return cs
 	}
 	return cp.ContentOff
+}
+
+// PolicyHolder keeps the current PolicySnapshot behind an atomic pointer so the data plane can HOT-RELOAD the
+// content-storage policy on a config change without a restart. This is what makes an opt-out (stored_*→off, a
+// consent withdrawal or GDPR request) take effect promptly rather than only at the next restart — the unsafe
+// staleness direction the plain snapshot could not honour. Store swaps the whole snapshot atomically; For is
+// lock-free on the hot path. Before any Store every customer resolves to off. *PolicyHolder satisfies the
+// per-message policy resolver the content sealer reads.
+type PolicyHolder struct {
+	snap atomic.Pointer[PolicySnapshot]
+}
+
+// Store atomically swaps in a freshly loaded snapshot.
+func (h *PolicyHolder) Store(s *PolicySnapshot) { h.snap.Store(s) }
+
+// For resolves a customer's effective policy against the current snapshot (off until one is stored).
+func (h *PolicyHolder) For(customerID uuid.UUID) cp.ContentStorage {
+	s := h.snap.Load()
+	if s == nil {
+		return cp.ContentOff
+	}
+	return s.For(customerID)
 }
