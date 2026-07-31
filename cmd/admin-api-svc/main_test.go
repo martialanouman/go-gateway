@@ -17,6 +17,7 @@ func TestRunRequiresAdminTokensInProduction(t *testing.T) {
 	// is required now that the Admin API calls session-manager to force-disconnect on revoke/suspend (step-032).
 	t.Setenv("POSTGRES_URL", "postgres://u:p@db.internal:5432/gw")
 	t.Setenv("SMPP_SESSION_MANAGER_ADDR", "session-manager.internal:7000")
+	t.Setenv("BILLING_ADDR", "billing.internal:7001")
 	t.Setenv("REDIS_URL", "redis://redis.internal:6379")
 	// HTTP_ADMIN_TOKENS deliberately unset.
 

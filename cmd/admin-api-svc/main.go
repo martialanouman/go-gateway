@@ -22,6 +22,7 @@ import (
 
 	"github.com/martialanouman/go-gateway/internal/adminapi"
 	"github.com/martialanouman/go-gateway/internal/auth"
+	billingpb "github.com/martialanouman/go-gateway/internal/billing/pb"
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/connector/status"
 	"github.com/martialanouman/go-gateway/internal/observability"
@@ -51,7 +52,7 @@ func run() error {
 	// force-disconnect the affected live binds via session-manager's SessionRegistry (step-032), and the
 	// address of that service is the same env var every session-manager client already uses.
 	cfg, err := config.Load(serviceName,
-		config.SectionOTel, config.SectionPostgres, config.SectionHTTP, config.SectionSMPP, config.SectionRedis)
+		config.SectionOTel, config.SectionPostgres, config.SectionHTTP, config.SectionSMPP, config.SectionRedis, config.SectionBilling)
 	if err != nil {
 		return err
 	}
@@ -122,6 +123,15 @@ func run() error {
 	}
 	defer func() { _ = registryConn.Close() }()
 
+	// The ContentKeys client delegates content-key rotation to billing-svc, the sole holder of the KMS
+	// (step-161). Like the registry client it is lazy: no connection opens until the first rotate, so a
+	// billing-svc that is briefly down does not block admin startup. This is the first admin→billing gRPC link.
+	billingConn, err := grpc.NewClient(cfg.Billing.Addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return fmt.Errorf("dial billing at %q: %w", cfg.Billing.Addr, err)
+	}
+	defer func() { _ = billingConn.Close() }()
+
 	router, _ := adminapi.New(adminapi.Deps{
 		Customers:        postgres.NewCustomerRepo(pool),
 		Accounts:         postgres.NewAccountRepo(pool),
@@ -144,6 +154,7 @@ func run() error {
 		BalanceCache:     redisBalanceCache{rdb: rdb},
 		RatePlans:        postgres.NewRatePlanRepo(pool),
 		BillingProviders: postgres.NewExternalBillingProviderRepo(pool),
+		ContentKeys:      adminapi.NewGRPCContentKeyRotator(billingpb.NewContentKeysClient(billingConn)),
 		Verifier:         verifier,
 		Logger:           logger,
 	})

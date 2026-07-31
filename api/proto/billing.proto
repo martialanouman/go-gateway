@@ -139,3 +139,39 @@ message RecordMOResponse {
   int32 balance_after = 1;
   bool floored = 2;
 }
+
+// ContentKeys manages the per-customer content-encryption keys (control_plane.content_keys, §6.14, M10).
+// It is hosted by billing-svc because billing-svc is the sole holder of the KMS (envelope encryption:
+// a per-customer AES-256 data key seals the body, the KMS seals the data key). It is DELIBERATELY separate
+// from the Billing service and NOT gated by the billing opt-in: a customer with billing disabled still
+// stores content and therefore still needs a content key. Responses carry key METADATA only — never the
+// plaintext data key nor the wrapped bytes; the data plane obtains usable key material through a separate
+// guarded path (later M10 steps).
+service ContentKeys {
+  // GetOrCreateContentKey returns the customer's active content key, creating one (a fresh data key sealed
+  // by the KMS) if none exists yet. Idempotent: concurrent callers converge on a single active key.
+  rpc GetOrCreateContentKey(GetOrCreateContentKeyRequest) returns (ContentKeyResponse);
+  // RotateContentKey makes a new active key and retires the previous one. The retired key is kept so CDRs
+  // written under it stay decryptable — rotation never destroys key material (crypto-shred is separate).
+  rpc RotateContentKey(RotateContentKeyRequest) returns (ContentKeyResponse);
+}
+
+// GetOrCreateContentKeyRequest names the customer whose active key to fetch or create.
+message GetOrCreateContentKeyRequest {
+  string customer_id = 1;
+}
+
+// RotateContentKeyRequest names the customer whose key to rotate.
+message RotateContentKeyRequest {
+  string customer_id = 1;
+}
+
+// ContentKeyResponse is the metadata of a content key. It never carries the plaintext or wrapped data key.
+// status is one of active|retired|destroyed; created_at is RFC3339.
+message ContentKeyResponse {
+  string key_id = 1;
+  string customer_id = 2;
+  string kms_key_ref = 3;
+  string status = 4;
+  string created_at = 5;
+}

@@ -157,6 +157,7 @@ type Deps struct {
 	BalanceCache     BalanceCacheInvalidator
 	RatePlans        RatePlanStore
 	BillingProviders BillingProviderStore
+	ContentKeys      ContentKeyRotator
 	Verifier         auth.TokenVerifier
 	Logger           *slog.Logger
 }
