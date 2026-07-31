@@ -118,7 +118,7 @@ Légende : `[x]` = fait (dans `tasks-done/`) · `[ ]` = à faire (dans `tasks-to
 ## M10 — Contenu, chiffrement & RGPD
 - [x] step-160 — Interface KMS + implémentation locale de dev (enveloppe)
 - [x] step-161 — content_keys : cycle de vie de clé par client (hébergé par billing-svc)
-- [ ] step-162 — Chiffrement du contenu à l'écriture CDR + politique content_storage
+- [x] step-162 — Chiffrement du contenu à l'écriture CDR + politique content_storage
 - [ ] step-163 — Lecture de contenu gardée et auditée (get-message-content)
 - [ ] step-164 — Crypto-shred : destruction de clé + erase-customer-content
 - [ ] step-165 — Rétention & tiering par drop de partition (§6.14)
