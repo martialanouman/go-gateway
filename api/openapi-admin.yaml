@@ -1430,8 +1430,13 @@ paths:
       tags: [Content & RGPD]
       summary: Rotate the customer's content encryption key
       operationId: rotate-content-key
+      security: [ { OperatorBearer: [admin:write] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ContentKey' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /admin/gdpr/erase:
     post:
       tags: [Content & RGPD]
@@ -1610,6 +1615,9 @@ components:
       content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
     ValidationError:
       description: Semantic validation failed; see errors[].
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    ServiceUnavailable:
+      description: A dependency (e.g. billing-svc) is unreachable or timed out; retry once it recovers.
       content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
 
   schemas:

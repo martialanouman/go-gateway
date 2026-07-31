@@ -75,6 +75,7 @@ func New(deps Deps) (*chi.Mux, huma.API) {
 	registerRoutingScripts(api, deps.RoutingScripts)
 	registerBilling(api, deps.Customers, deps.Billing, deps.Accounts, deps.BalanceCache, deps.Logger)
 	registerBillingAdmin(api, deps.Customers, deps.Billing, deps.RatePlans, deps.BillingProviders)
+	registerContentKeys(api, deps.ContentKeys)
 
 	humaspec.Prune(api, codesMetaKey)
 

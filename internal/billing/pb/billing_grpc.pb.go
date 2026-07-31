@@ -318,3 +318,167 @@ var Billing_ServiceDesc = grpc.ServiceDesc{
 	Streams:  []grpc.StreamDesc{},
 	Metadata: "billing.proto",
 }
+
+const (
+	ContentKeys_GetOrCreateContentKey_FullMethodName = "/billing.ContentKeys/GetOrCreateContentKey"
+	ContentKeys_RotateContentKey_FullMethodName      = "/billing.ContentKeys/RotateContentKey"
+)
+
+// ContentKeysClient is the client API for ContentKeys service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+//
+// ContentKeys manages the per-customer content-encryption keys (control_plane.content_keys, §6.14, M10).
+// It is hosted by billing-svc because billing-svc is the sole holder of the KMS (envelope encryption:
+// a per-customer AES-256 data key seals the body, the KMS seals the data key). It is DELIBERATELY separate
+// from the Billing service and NOT gated by the billing opt-in: a customer with billing disabled still
+// stores content and therefore still needs a content key. Responses carry key METADATA only — never the
+// plaintext data key nor the wrapped bytes; the data plane obtains usable key material through a separate
+// guarded path (later M10 steps).
+type ContentKeysClient interface {
+	// GetOrCreateContentKey returns the customer's active content key, creating one (a fresh data key sealed
+	// by the KMS) if none exists yet. Idempotent: concurrent callers converge on a single active key.
+	GetOrCreateContentKey(ctx context.Context, in *GetOrCreateContentKeyRequest, opts ...grpc.CallOption) (*ContentKeyResponse, error)
+	// RotateContentKey makes a new active key and retires the previous one. The retired key is kept so CDRs
+	// written under it stay decryptable — rotation never destroys key material (crypto-shred is separate).
+	RotateContentKey(ctx context.Context, in *RotateContentKeyRequest, opts ...grpc.CallOption) (*ContentKeyResponse, error)
+}
+
+type contentKeysClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewContentKeysClient(cc grpc.ClientConnInterface) ContentKeysClient {
+	return &contentKeysClient{cc}
+}
+
+func (c *contentKeysClient) GetOrCreateContentKey(ctx context.Context, in *GetOrCreateContentKeyRequest, opts ...grpc.CallOption) (*ContentKeyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ContentKeyResponse)
+	err := c.cc.Invoke(ctx, ContentKeys_GetOrCreateContentKey_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *contentKeysClient) RotateContentKey(ctx context.Context, in *RotateContentKeyRequest, opts ...grpc.CallOption) (*ContentKeyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ContentKeyResponse)
+	err := c.cc.Invoke(ctx, ContentKeys_RotateContentKey_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// ContentKeysServer is the server API for ContentKeys service.
+// All implementations must embed UnimplementedContentKeysServer
+// for forward compatibility.
+//
+// ContentKeys manages the per-customer content-encryption keys (control_plane.content_keys, §6.14, M10).
+// It is hosted by billing-svc because billing-svc is the sole holder of the KMS (envelope encryption:
+// a per-customer AES-256 data key seals the body, the KMS seals the data key). It is DELIBERATELY separate
+// from the Billing service and NOT gated by the billing opt-in: a customer with billing disabled still
+// stores content and therefore still needs a content key. Responses carry key METADATA only — never the
+// plaintext data key nor the wrapped bytes; the data plane obtains usable key material through a separate
+// guarded path (later M10 steps).
+type ContentKeysServer interface {
+	// GetOrCreateContentKey returns the customer's active content key, creating one (a fresh data key sealed
+	// by the KMS) if none exists yet. Idempotent: concurrent callers converge on a single active key.
+	GetOrCreateContentKey(context.Context, *GetOrCreateContentKeyRequest) (*ContentKeyResponse, error)
+	// RotateContentKey makes a new active key and retires the previous one. The retired key is kept so CDRs
+	// written under it stay decryptable — rotation never destroys key material (crypto-shred is separate).
+	RotateContentKey(context.Context, *RotateContentKeyRequest) (*ContentKeyResponse, error)
+	mustEmbedUnimplementedContentKeysServer()
+}
+
+// UnimplementedContentKeysServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedContentKeysServer struct{}
+
+func (UnimplementedContentKeysServer) GetOrCreateContentKey(context.Context, *GetOrCreateContentKeyRequest) (*ContentKeyResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetOrCreateContentKey not implemented")
+}
+func (UnimplementedContentKeysServer) RotateContentKey(context.Context, *RotateContentKeyRequest) (*ContentKeyResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RotateContentKey not implemented")
+}
+func (UnimplementedContentKeysServer) mustEmbedUnimplementedContentKeysServer() {}
+func (UnimplementedContentKeysServer) testEmbeddedByValue()                     {}
+
+// UnsafeContentKeysServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to ContentKeysServer will
+// result in compilation errors.
+type UnsafeContentKeysServer interface {
+	mustEmbedUnimplementedContentKeysServer()
+}
+
+func RegisterContentKeysServer(s grpc.ServiceRegistrar, srv ContentKeysServer) {
+	// If the following call panics, it indicates UnimplementedContentKeysServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&ContentKeys_ServiceDesc, srv)
+}
+
+func _ContentKeys_GetOrCreateContentKey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetOrCreateContentKeyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContentKeysServer).GetOrCreateContentKey(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContentKeys_GetOrCreateContentKey_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContentKeysServer).GetOrCreateContentKey(ctx, req.(*GetOrCreateContentKeyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContentKeys_RotateContentKey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RotateContentKeyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContentKeysServer).RotateContentKey(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContentKeys_RotateContentKey_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContentKeysServer).RotateContentKey(ctx, req.(*RotateContentKeyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// ContentKeys_ServiceDesc is the grpc.ServiceDesc for ContentKeys service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var ContentKeys_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "billing.ContentKeys",
+	HandlerType: (*ContentKeysServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "GetOrCreateContentKey",
+			Handler:    _ContentKeys_GetOrCreateContentKey_Handler,
+		},
+		{
+			MethodName: "RotateContentKey",
+			Handler:    _ContentKeys_RotateContentKey_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "billing.proto",
+}

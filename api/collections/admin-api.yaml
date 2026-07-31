@@ -1263,3 +1263,14 @@ items:
           method: POST
           url: '{{baseUrl}}/admin/billing-providers/{{providerId}}/test-connection'
         docs: Probe a provider's connectivity (stub until the HTTP probe ships) (scope admin:write).
+  - info:
+      name: Content & RGPD
+      type: folder
+    items:
+      - info:
+          name: rotate-content-key
+          type: http
+        http:
+          method: POST
+          url: '{{baseUrl}}/admin/customers/{{customerId}}/content/rotate-key'
+        docs: Rotate a customer's content encryption key, delegated to billing-svc (scope admin:write).
