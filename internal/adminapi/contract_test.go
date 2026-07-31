@@ -119,6 +119,17 @@ var m1Operations = []opRef{
 	{"topup-balance", "post", "/admin/customers/{id}/billing/topup"},
 	{"transfer-balance", "post", "/admin/customers/{id}/billing/transfer"},
 	{"change-balance-scope", "post", "/admin/customers/{id}/billing/scope"},
+
+	{"get-billing-ledger", "get", "/admin/customers/{id}/billing/ledger"},
+	{"list-rate-plans", "get", "/admin/rate-plans"},
+	{"create-rate-plan", "post", "/admin/rate-plans"},
+	{"update-rate-plan", "patch", "/admin/rate-plans/{id}"},
+	{"delete-rate-plan", "delete", "/admin/rate-plans/{id}"},
+	{"list-billing-providers", "get", "/admin/billing-providers"},
+	{"create-billing-provider", "post", "/admin/billing-providers"},
+	{"update-billing-provider", "patch", "/admin/billing-providers/{id}"},
+	{"delete-billing-provider", "delete", "/admin/billing-providers/{id}"},
+	{"test-billing-provider", "post", "/admin/billing-providers/{id}/test-connection"},
 }
 
 // loadContract reads api/openapi-admin.yaml (the source of truth) into a generic tree.

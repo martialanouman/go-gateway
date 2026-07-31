@@ -95,6 +95,25 @@ type LedgerRow struct {
 	CreatedAt    time.Time
 }
 
+// LedgerKey is the keyset cursor position for the paginated billing-ledger read (step-149): the (created_at,
+// id) of the last row returned. The composite avoids dropping rows that share a created_at (the id, a UUIDv7,
+// breaks the tie deterministically).
+type LedgerKey struct {
+	CreatedAt time.Time
+	ID        uuid.UUID
+}
+
+// LedgerFilter selects and paginates a customer's billing ledger (step-149 get-billing-ledger). Direction and
+// AccountID are optional filters; After is the keyset position (zero value = first page); Limit is clamped by
+// the handler.
+type LedgerFilter struct {
+	CustomerID uuid.UUID
+	Direction  *string
+	AccountID  *uuid.UUID
+	After      LedgerKey
+	Limit      int
+}
+
 // CustomerExternalBilling is a billing-enabled customer joined to its ACTIVE external billing provider
 // (§6.10). billing-svc compiles these into the config snapshot so the reserve hot path knows the mode and
 // budget without a DB read. A customer with no provider, or one whose provider is disabled, is simply absent

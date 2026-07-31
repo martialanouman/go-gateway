@@ -46,6 +46,9 @@ type fakeBillingStore struct {
 	balances    []cp.BalanceRow
 	topupCalls  int
 	replay      bool
+	ledgerRows  []cp.LedgerRow
+	ledgerMore  bool
+	ledgerFn    func(cp.LedgerFilter) ([]cp.LedgerRow, bool, error)
 }
 
 func (s *fakeBillingStore) Balances(context.Context, []cp.BalanceOwner) ([]cp.BalanceRow, error) {
@@ -65,6 +68,13 @@ func (s *fakeBillingStore) Topup(_ context.Context, e cp.LedgerEntry) (cp.Ledger
 func (s *fakeBillingStore) Transfer(context.Context, cp.LedgerEntry, cp.LedgerEntry, uuid.UUID) ([]cp.LedgerRow, bool, error) {
 	return s.transferRow, true, nil
 }
+func (s *fakeBillingStore) Ledger(_ context.Context, f cp.LedgerFilter) ([]cp.LedgerRow, bool, error) {
+	if s.ledgerFn != nil {
+		return s.ledgerFn(f)
+	}
+	return s.ledgerRows, s.ledgerMore, nil
+}
+
 func (s *fakeBillingStore) ChangeBalanceScope(context.Context, uuid.UUID, []cp.BalanceOwner, string) error {
 	return s.scopeErr
 }

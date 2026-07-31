@@ -155,6 +155,8 @@ type Deps struct {
 	Disconnector     Disconnector
 	Billing          BillingStore
 	BalanceCache     BalanceCacheInvalidator
+	RatePlans        RatePlanStore
+	BillingProviders BillingProviderStore
 	Verifier         auth.TokenVerifier
 	Logger           *slog.Logger
 }
@@ -168,6 +170,27 @@ type BillingStore interface {
 	Topup(ctx context.Context, entry cp.LedgerEntry) (row cp.LedgerRow, applied bool, err error)
 	Transfer(ctx context.Context, debit, credit cp.LedgerEntry, idemKey uuid.UUID) (rows []cp.LedgerRow, applied bool, err error)
 	ChangeBalanceScope(ctx context.Context, customerID uuid.UUID, currentOwners []cp.BalanceOwner, newScope string) error
+	// Ledger returns one keyset page of a customer's ledger plus whether a further page exists (step-149).
+	Ledger(ctx context.Context, f cp.LedgerFilter) (rows []cp.LedgerRow, hasMore bool, err error)
+}
+
+// RatePlanStore is the persistence the admin rate-plan handlers need (§3.1, step-149). *postgres.RatePlanRepo
+// satisfies it; declared consumer-side.
+type RatePlanStore interface {
+	List(ctx context.Context) ([]cp.RatePlan, error)
+	Create(ctx context.Context, in cp.NewRatePlan) (cp.RatePlan, error)
+	Update(ctx context.Context, id uuid.UUID, p cp.RatePlanPatch) (cp.RatePlan, error)
+	Delete(ctx context.Context, id uuid.UUID) error
+}
+
+// BillingProviderStore is the persistence the admin external-provider handlers need (§6.10, step-149).
+// *postgres.ExternalBillingProviderRepo satisfies it; declared consumer-side.
+type BillingProviderStore interface {
+	List(ctx context.Context) ([]cp.ExternalBillingProvider, error)
+	Get(ctx context.Context, id uuid.UUID) (cp.ExternalBillingProvider, error)
+	Create(ctx context.Context, in cp.NewExternalBillingProvider) (cp.ExternalBillingProvider, error)
+	Update(ctx context.Context, id uuid.UUID, p cp.ExternalBillingProviderPatch) (cp.ExternalBillingProvider, error)
+	Delete(ctx context.Context, id uuid.UUID) error
 }
 
 // BalanceCacheInvalidator deletes the Redis balance-cache keys of the owners an admin money op just changed

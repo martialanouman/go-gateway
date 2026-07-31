@@ -399,6 +399,73 @@ func (q *Queries) ListExternalBillingConfigs(ctx context.Context) ([]ListExterna
 	return items, nil
 }
 
+const listLedger = `-- name: ListLedger :many
+SELECT id, owner_type, owner_id, direction, customer_id, account_id, message_id, entry_type, credits,
+       balance_after, reference, created_at
+FROM control_plane.billing_ledger
+WHERE customer_id = $1
+  AND ($2::text IS NULL OR direction = $2)
+  AND ($3::uuid IS NULL OR account_id = $3)
+  AND ($4::timestamptz IS NULL
+       OR created_at < $4
+       OR (created_at = $4 AND id < $5))
+ORDER BY created_at DESC, id DESC
+LIMIT $6
+`
+
+type ListLedgerParams struct {
+	CustomerID   uuid.UUID
+	Direction    *string
+	AccountID    *uuid.UUID
+	AfterCreated pgtype.Timestamptz
+	AfterID      *uuid.UUID
+	Lim          int32
+}
+
+// One keyset page of a customer's billing ledger, newest first (step-149 get-billing-ledger). Optional
+// direction/account_id filters. The keyset is (created_at, id) DESC so rows sharing a created_at are not
+// dropped (id is a time-ordered UUIDv7). A NULL after_created is the first page. Never selects a message body
+// (the ledger has none). @lim is fetched as page+1 so the caller can detect a further page.
+func (q *Queries) ListLedger(ctx context.Context, arg ListLedgerParams) ([]ControlPlaneBillingLedger, error) {
+	rows, err := q.db.Query(ctx, listLedger,
+		arg.CustomerID,
+		arg.Direction,
+		arg.AccountID,
+		arg.AfterCreated,
+		arg.AfterID,
+		arg.Lim,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ControlPlaneBillingLedger{}
+	for rows.Next() {
+		var i ControlPlaneBillingLedger
+		if err := rows.Scan(
+			&i.ID,
+			&i.OwnerType,
+			&i.OwnerID,
+			&i.Direction,
+			&i.CustomerID,
+			&i.AccountID,
+			&i.MessageID,
+			&i.EntryType,
+			&i.Credits,
+			&i.BalanceAfter,
+			&i.Reference,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockCustomerScope = `-- name: LockCustomerScope :one
 SELECT balance_scope FROM control_plane.customers WHERE id = $1 FOR UPDATE
 `
@@ -425,7 +492,7 @@ type UpdateBalanceScopeParams struct {
 
 // Flip a customer's balance_scope (step-148). Returns rows affected: 0 = no such customer. The same-table
 // CHECK (step-142c) still rejects 'smpp_account' when a hard credit limit or overdraft is set — that raises
-// a constraint violation the caller maps to a 409, not a 500.
+// a CHECK violation the caller's translate() maps to validation_error (422), not a 500.
 func (q *Queries) UpdateBalanceScope(ctx context.Context, arg UpdateBalanceScopeParams) (int64, error) {
 	result, err := q.db.Exec(ctx, updateBalanceScope, arg.BalanceScope, arg.ID)
 	if err != nil {
