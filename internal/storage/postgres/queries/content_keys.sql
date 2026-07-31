@@ -31,3 +31,15 @@ SELECT id FROM control_plane.customers WHERE id = $1 FOR UPDATE;
 -- name: SetCustomerContentKey :execrows
 -- Point the customer at its current active content key (control_plane.customers.content_key_id).
 UPDATE control_plane.customers SET content_key_id = $2 WHERE id = $1;
+
+-- name: DestroyContentKeysByCustomer :execrows
+-- Crypto-shred every non-destroyed key of a customer: mark it destroyed and ERASE the wrapped key so the
+-- data key can never be recovered — even by the KMS. The content_ciphertext in the CDR stays in place but
+-- becomes permanently undecryptable, no CDR rewrite. Idempotent: an already-destroyed key is skipped.
+UPDATE control_plane.content_keys
+SET status = 'destroyed', destroyed_at = now(), wrapped_key = ''::bytea
+WHERE customer_id = $1 AND status != 'destroyed';
+
+-- name: ClearCustomerContentKey :exec
+-- Drop the customer's pointer to its (now destroyed) active key; the next send get-or-creates a fresh one.
+UPDATE control_plane.customers SET content_key_id = NULL WHERE id = $1;

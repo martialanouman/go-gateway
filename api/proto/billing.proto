@@ -165,6 +165,10 @@ service ContentKeys {
   // data key — the content is permanently unreadable. Like GetContentEncryptionKey the plaintext DEK is
   // sensitive: never logged, never persisted.
   rpc GetContentKey(GetContentKeyRequest) returns (GetContentKeyResponse);
+  // DestroyContentKeys crypto-shreds ALL of a customer's content keys (erase-customer-content, step-164): each
+  // key is marked destroyed and its wrapped data key erased, so every body it sealed becomes permanently
+  // unreadable WITHOUT rewriting the CDR. Idempotent. Returns how many keys were destroyed.
+  rpc DestroyContentKeys(DestroyContentKeysRequest) returns (DestroyContentKeysResponse);
 }
 
 // GetOrCreateContentKeyRequest names the customer whose active key to fetch or create.
@@ -210,4 +214,14 @@ message GetContentKeyRequest {
 message GetContentKeyResponse {
   bytes dek = 1;
   bool destroyed = 2;
+}
+
+// DestroyContentKeysRequest names the customer whose content keys to crypto-shred.
+message DestroyContentKeysRequest {
+  string customer_id = 1;
+}
+
+// DestroyContentKeysResponse reports how many keys were destroyed (0 when already shredded — idempotent).
+message DestroyContentKeysResponse {
+  int32 destroyed_count = 1;
 }

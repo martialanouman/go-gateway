@@ -133,6 +133,7 @@ var m1Operations = []opRef{
 
 	{"rotate-content-key", "post", "/admin/customers/{id}/content/rotate-key"},
 	{"get-message-content", "get", "/admin/messages/{id}/content"},
+	{"erase-customer-content", "post", "/admin/customers/{id}/content/erase"},
 }
 
 // loadContract reads api/openapi-admin.yaml (the source of truth) into a generic tree.

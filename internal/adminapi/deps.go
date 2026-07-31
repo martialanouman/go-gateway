@@ -159,6 +159,7 @@ type Deps struct {
 	BillingProviders BillingProviderStore
 	ContentKeys      ContentKeyRotator
 	ContentKeyReader ContentKeyReader
+	ContentKeyEraser ContentKeyEraser
 	Messages         MessageContentReader
 	ContentAudit     ContentAuditor
 	Verifier         auth.TokenVerifier

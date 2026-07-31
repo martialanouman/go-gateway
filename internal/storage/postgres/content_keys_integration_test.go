@@ -184,6 +184,118 @@ func TestContentKeyCreateIfAbsentConcurrent(t *testing.T) {
 	}
 }
 
+// TestContentKeyDestroyByCustomerCryptoShreds: destroying a customer's keys marks every key destroyed, erases
+// the wrapped key (unrecoverable), and clears the active pointer — without touching the keys' identities (the
+// rows stay, so old CDR key_ids still resolve to a destroyed key). Idempotent.
+func TestContentKeyDestroyByCustomerCryptoShreds(t *testing.T) {
+	pool := pgtest.Pool(t)
+	ctx := context.Background()
+	repo := postgres.NewContentKeyRepo(pool)
+
+	var customerID uuid.UUID
+	if err := pool.QueryRow(ctx, `INSERT INTO control_plane.customers (name) VALUES ('ck-shred') RETURNING id`).Scan(&customerID); err != nil {
+		t.Fatalf("seed customer: %v", err)
+	}
+	// One active + one retired (after a rotation).
+	if _, _, err := repo.CreateIfAbsent(ctx, customerID, []byte("wrapped-1"), "kek/1"); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := repo.Rotate(ctx, customerID, []byte("wrapped-2"), "kek/1"); err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+
+	n, err := repo.DestroyByCustomer(ctx, customerID)
+	if err != nil {
+		t.Fatalf("destroy: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("destroyed %d keys, want 2 (active + retired)", n)
+	}
+
+	// Every key is destroyed with its wrapped key erased; the rows are still present (no CDR/key rewrite of ids).
+	rows, err := repo.ListByCustomer(ctx, customerID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("keys after shred = %d, want 2 (rows retained)", len(rows))
+	}
+	for _, k := range rows {
+		if k.Status != cp.ContentKeyDestroyed || k.DestroyedAt == nil || len(k.WrappedKey) != 0 {
+			t.Errorf("key %s = {status:%q destroyed_at:%v wrapped_len:%d}, want destroyed + erased", k.ID, k.Status, k.DestroyedAt, len(k.WrappedKey))
+		}
+	}
+	// The customer no longer points at an active key.
+	var ptr *uuid.UUID
+	if err := pool.QueryRow(ctx, `SELECT content_key_id FROM control_plane.customers WHERE id = $1`, customerID).Scan(&ptr); err != nil {
+		t.Fatalf("read content_key_id: %v", err)
+	}
+	if ptr != nil {
+		t.Errorf("content_key_id = %v, want NULL after shred", ptr)
+	}
+
+	// Idempotent: a second destroy shreds nothing.
+	if n2, err := repo.DestroyByCustomer(ctx, customerID); err != nil || n2 != 0 {
+		t.Errorf("second destroy = (%d, %v), want (0, nil)", n2, err)
+	}
+}
+
+// TestContentKeyDestroyVsCreateConcurrent: a crypto-shred racing a create/rotate must never leave an active,
+// non-destroyed key behind — the customer-row lock serializes them. After the dust settles there is at most
+// one non-destroyed key (a create that won the lock after the destroy), never a survivor of the shred.
+func TestContentKeyDestroyVsCreateConcurrent(t *testing.T) {
+	pool := pgtest.Pool(t)
+	ctx := context.Background()
+	repo := postgres.NewContentKeyRepo(pool)
+
+	var customerID uuid.UUID
+	if err := pool.QueryRow(ctx, `INSERT INTO control_plane.customers (name) VALUES ('ck-destroy-race') RETURNING id`).Scan(&customerID); err != nil {
+		t.Fatalf("seed customer: %v", err)
+	}
+	if _, _, err := repo.CreateIfAbsent(ctx, customerID, []byte("w0"), "kek/1"); err != nil {
+		t.Fatalf("seed key: %v", err)
+	}
+
+	const n = 12
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer wg.Done()
+			if i%2 == 0 {
+				_, _ = repo.DestroyByCustomer(ctx, customerID)
+			} else {
+				_, _, _ = repo.CreateIfAbsent(ctx, customerID, []byte("w"), "kek/1")
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	// Whatever the interleaving, a shred must never be bypassed: there is at most one non-destroyed key, and
+	// if one exists it is the active one (a create that ran strictly after the last destroy).
+	var nonDestroyed, active int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM control_plane.content_keys WHERE customer_id=$1 AND status != 'destroyed'`, customerID).Scan(&nonDestroyed); err != nil {
+		t.Fatalf("count non-destroyed: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM control_plane.content_keys WHERE customer_id=$1 AND status = 'active'`, customerID).Scan(&active); err != nil {
+		t.Fatalf("count active: %v", err)
+	}
+	if nonDestroyed > 1 || nonDestroyed != active {
+		t.Errorf("non-destroyed=%d active=%d, want at most one and all non-destroyed are active (no shred survivor)", nonDestroyed, active)
+	}
+	// A final destroy makes everything unreadable.
+	if _, err := repo.DestroyByCustomer(ctx, customerID); err != nil {
+		t.Fatalf("final destroy: %v", err)
+	}
+	var remaining int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM control_plane.content_keys WHERE customer_id=$1 AND status != 'destroyed'`, customerID).Scan(&remaining); err != nil {
+		t.Fatalf("count after final destroy: %v", err)
+	}
+	if remaining != 0 {
+		t.Errorf("after final destroy, %d keys survive, want 0", remaining)
+	}
+}
+
 // TestContentKeyGetActiveNotFound: a customer with no key yet yields ErrNotFound, a legitimate "none" the
 // caller turns into a create.
 func TestContentKeyGetActiveNotFound(t *testing.T) {

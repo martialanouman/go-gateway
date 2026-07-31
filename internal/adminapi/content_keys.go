@@ -2,7 +2,10 @@ package adminapi
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/google/uuid"
@@ -30,16 +33,53 @@ type ContentKeyRotator interface {
 
 type contentKeyHandlers struct {
 	rotator ContentKeyRotator
+	eraser  ContentKeyEraser
+	logger  *slog.Logger
 }
 
-func registerContentKeys(api huma.API, rotator ContentKeyRotator) {
-	h := &contentKeyHandlers{rotator: rotator}
+func registerContentKeys(api huma.API, rotator ContentKeyRotator, eraser ContentKeyEraser, logger *slog.Logger) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	h := &contentKeyHandlers{rotator: rotator, eraser: eraser, logger: logger}
 	register(api, huma.Operation{
 		OperationID: "rotate-content-key", Method: http.MethodPost, Path: "/admin/customers/{id}/content/rotate-key",
 		Summary: "Rotate a customer's content encryption key", Tags: []string{"Content & RGPD"},
 		Security: scopeSecurity(auth.ScopeAdminWrite),
 		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusServiceUnavailable},
 	}, h.rotate)
+	register(api, huma.Operation{
+		OperationID: "erase-customer-content", Method: http.MethodPost, Path: "/admin/customers/{id}/content/erase",
+		DefaultStatus: http.StatusAccepted, Summary: "Content-only crypto-shred (scope content:erase)", Tags: []string{"Content & RGPD"},
+		Security: scopeSecurity(auth.ScopeContentErase),
+		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusServiceUnavailable},
+	}, h.eraseContent)
+}
+
+type eraseContentOutput struct{ Body asyncJobDTO }
+
+// eraseContent crypto-shreds a customer's content keys (erase-customer-content, §14). The shred is a fast
+// key-metadata update, so it runs synchronously and the 202 carries an already-completed job. It never
+// rewrites the CDR: the ciphertext stays, its keys become unrecoverable. Audit: WHAT and WHEN are durable in
+// content_keys.destroyed_at; WHO is logged here (operator). A durable operator-attestation for erasures — the
+// stronger compliance record — lands with the RGPD attestation of step-166 (gdpr_erase_jobs).
+func (h *contentKeyHandlers) eraseContent(ctx context.Context, in *customerIDPathInput) (*eraseContentOutput, error) {
+	customerID, err := uuid.Parse(in.ID)
+	if err != nil {
+		return nil, notFound("customer")
+	}
+	destroyed, err := h.eraser.Erase(ctx, customerID)
+	if err != nil {
+		return nil, humaerr.FromError(err)
+	}
+	h.logger.InfoContext(ctx, "content crypto-shred",
+		"operator", operatorSubject(ctx), "customer_id", customerID, "keys_destroyed", destroyed)
+
+	now := time.Now().UTC()
+	detail := fmt.Sprintf("crypto-shred complete: %d content key(s) destroyed", destroyed)
+	return &eraseContentOutput{Body: asyncJobDTO{
+		JobID: uuid.NewString(), Status: "completed", Progress: ptr(1.0), CreatedAt: now, FinishedAt: &now, Detail: &detail,
+	}}, nil
 }
 
 // contentKeyDTO conforms to api/openapi-admin.yaml ContentKey. wrapped_key is deliberately absent: the

@@ -23,6 +23,7 @@ type ContentKeyStore interface {
 	GetByID(ctx context.Context, id uuid.UUID) (cp.ContentKey, error)
 	CreateIfAbsent(ctx context.Context, customerID uuid.UUID, wrapped []byte, keyRef string) (cp.ContentKey, bool, error)
 	Rotate(ctx context.Context, customerID uuid.UUID, wrapped []byte, keyRef string) (cp.ContentKey, error)
+	DestroyByCustomer(ctx context.Context, customerID uuid.UUID) (int, error)
 }
 
 // ContentKeyServer serves the ContentKeys gRPC API from billing-svc, the sole holder of the KMS. It generates
@@ -96,6 +97,20 @@ func (s *ContentKeyServer) GetContentKey(ctx context.Context, req *pb.GetContent
 		return nil, toStatus(err)
 	}
 	return &pb.GetContentKeyResponse{Dek: dek}, nil
+}
+
+// DestroyContentKeys crypto-shreds every content key of a customer (erase-customer-content). It is a pure
+// store operation — no KMS, no unwrap: destroying is erasing the wrapped key, not reading it. Idempotent.
+func (s *ContentKeyServer) DestroyContentKeys(ctx context.Context, req *pb.DestroyContentKeysRequest) (*pb.DestroyContentKeysResponse, error) {
+	customerID, err := uuid.Parse(req.GetCustomerId())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, string(errs.ErrValidation))
+	}
+	n, err := s.store.DestroyByCustomer(ctx, customerID)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	return &pb.DestroyContentKeysResponse{DestroyedCount: int32(n)}, nil //nolint:gosec // key count, bounded
 }
 
 // getOrCreateActive returns the customer's active content key, creating one (fresh DEK sealed by the KMS) if

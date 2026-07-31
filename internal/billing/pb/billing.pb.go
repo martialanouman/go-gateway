@@ -1176,6 +1176,96 @@ func (x *GetContentKeyResponse) GetDestroyed() bool {
 	return false
 }
 
+// DestroyContentKeysRequest names the customer whose content keys to crypto-shred.
+type DestroyContentKeysRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	CustomerId    string                 `protobuf:"bytes,1,opt,name=customer_id,json=customerId,proto3" json:"customer_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DestroyContentKeysRequest) Reset() {
+	*x = DestroyContentKeysRequest{}
+	mi := &file_billing_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DestroyContentKeysRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DestroyContentKeysRequest) ProtoMessage() {}
+
+func (x *DestroyContentKeysRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_billing_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DestroyContentKeysRequest.ProtoReflect.Descriptor instead.
+func (*DestroyContentKeysRequest) Descriptor() ([]byte, []int) {
+	return file_billing_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *DestroyContentKeysRequest) GetCustomerId() string {
+	if x != nil {
+		return x.CustomerId
+	}
+	return ""
+}
+
+// DestroyContentKeysResponse reports how many keys were destroyed (0 when already shredded — idempotent).
+type DestroyContentKeysResponse struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	DestroyedCount int32                  `protobuf:"varint,1,opt,name=destroyed_count,json=destroyedCount,proto3" json:"destroyed_count,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *DestroyContentKeysResponse) Reset() {
+	*x = DestroyContentKeysResponse{}
+	mi := &file_billing_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DestroyContentKeysResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DestroyContentKeysResponse) ProtoMessage() {}
+
+func (x *DestroyContentKeysResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_billing_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DestroyContentKeysResponse.ProtoReflect.Descriptor instead.
+func (*DestroyContentKeysResponse) Descriptor() ([]byte, []int) {
+	return file_billing_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *DestroyContentKeysResponse) GetDestroyedCount() int32 {
+	if x != nil {
+		return x.DestroyedCount
+	}
+	return 0
+}
+
 var File_billing_proto protoreflect.FileDescriptor
 
 const file_billing_proto_rawDesc = "" +
@@ -1252,7 +1342,12 @@ const file_billing_proto_rawDesc = "" +
 	"\x06key_id\x18\x01 \x01(\tR\x05keyId\"G\n" +
 	"\x15GetContentKeyResponse\x12\x10\n" +
 	"\x03dek\x18\x01 \x01(\fR\x03dek\x12\x1c\n" +
-	"\tdestroyed\x18\x02 \x01(\bR\tdestroyed*J\n" +
+	"\tdestroyed\x18\x02 \x01(\bR\tdestroyed\"<\n" +
+	"\x19DestroyContentKeysRequest\x12\x1f\n" +
+	"\vcustomer_id\x18\x01 \x01(\tR\n" +
+	"customerId\"E\n" +
+	"\x1aDestroyContentKeysResponse\x12'\n" +
+	"\x0fdestroyed_count\x18\x01 \x01(\x05R\x0edestroyedCount*J\n" +
 	"\tDirection\x12\x19\n" +
 	"\x15DIRECTION_UNSPECIFIED\x10\x00\x12\x10\n" +
 	"\fDIRECTION_MT\x10\x01\x12\x10\n" +
@@ -1266,12 +1361,13 @@ const file_billing_proto_rawDesc = "" +
 	"\aCapture\x12\x17.billing.CaptureRequest\x1a\x18.billing.CaptureResponse\x12<\n" +
 	"\aRelease\x12\x17.billing.ReleaseRequest\x1a\x18.billing.ReleaseResponse\x12H\n" +
 	"\vGetBalances\x12\x1b.billing.GetBalancesRequest\x1a\x1c.billing.GetBalancesResponse\x12?\n" +
-	"\bRecordMO\x12\x18.billing.RecordMORequest\x1a\x19.billing.RecordMOResponse2\xf8\x02\n" +
+	"\bRecordMO\x12\x18.billing.RecordMORequest\x1a\x19.billing.RecordMOResponse2\xd7\x03\n" +
 	"\vContentKeys\x12[\n" +
 	"\x15GetOrCreateContentKey\x12%.billing.GetOrCreateContentKeyRequest\x1a\x1b.billing.ContentKeyResponse\x12Q\n" +
 	"\x10RotateContentKey\x12 .billing.RotateContentKeyRequest\x1a\x1b.billing.ContentKeyResponse\x12i\n" +
 	"\x17GetContentEncryptionKey\x12'.billing.GetContentEncryptionKeyRequest\x1a%.billing.ContentEncryptionKeyResponse\x12N\n" +
-	"\rGetContentKey\x12\x1d.billing.GetContentKeyRequest\x1a\x1e.billing.GetContentKeyResponseB=Z;github.com/martialanouman/go-gateway/internal/billing/pb;pbb\x06proto3"
+	"\rGetContentKey\x12\x1d.billing.GetContentKeyRequest\x1a\x1e.billing.GetContentKeyResponse\x12]\n" +
+	"\x12DestroyContentKeys\x12\".billing.DestroyContentKeysRequest\x1a#.billing.DestroyContentKeysResponseB=Z;github.com/martialanouman/go-gateway/internal/billing/pb;pbb\x06proto3"
 
 var (
 	file_billing_proto_rawDescOnce sync.Once
@@ -1286,7 +1382,7 @@ func file_billing_proto_rawDescGZIP() []byte {
 }
 
 var file_billing_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_billing_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
+var file_billing_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
 var file_billing_proto_goTypes = []any{
 	(Direction)(0),                         // 0: billing.Direction
 	(OwnerType)(0),                         // 1: billing.OwnerType
@@ -1309,6 +1405,8 @@ var file_billing_proto_goTypes = []any{
 	(*ContentEncryptionKeyResponse)(nil),   // 18: billing.ContentEncryptionKeyResponse
 	(*GetContentKeyRequest)(nil),           // 19: billing.GetContentKeyRequest
 	(*GetContentKeyResponse)(nil),          // 20: billing.GetContentKeyResponse
+	(*DestroyContentKeysRequest)(nil),      // 21: billing.DestroyContentKeysRequest
+	(*DestroyContentKeysResponse)(nil),     // 22: billing.DestroyContentKeysResponse
 }
 var file_billing_proto_depIdxs = []int32{
 	1,  // 0: billing.Owner.owner_type:type_name -> billing.OwnerType
@@ -1328,17 +1426,19 @@ var file_billing_proto_depIdxs = []int32{
 	15, // 14: billing.ContentKeys.RotateContentKey:input_type -> billing.RotateContentKeyRequest
 	17, // 15: billing.ContentKeys.GetContentEncryptionKey:input_type -> billing.GetContentEncryptionKeyRequest
 	19, // 16: billing.ContentKeys.GetContentKey:input_type -> billing.GetContentKeyRequest
-	4,  // 17: billing.Billing.Reserve:output_type -> billing.ReserveResponse
-	6,  // 18: billing.Billing.Capture:output_type -> billing.CaptureResponse
-	8,  // 19: billing.Billing.Release:output_type -> billing.ReleaseResponse
-	11, // 20: billing.Billing.GetBalances:output_type -> billing.GetBalancesResponse
-	13, // 21: billing.Billing.RecordMO:output_type -> billing.RecordMOResponse
-	16, // 22: billing.ContentKeys.GetOrCreateContentKey:output_type -> billing.ContentKeyResponse
-	16, // 23: billing.ContentKeys.RotateContentKey:output_type -> billing.ContentKeyResponse
-	18, // 24: billing.ContentKeys.GetContentEncryptionKey:output_type -> billing.ContentEncryptionKeyResponse
-	20, // 25: billing.ContentKeys.GetContentKey:output_type -> billing.GetContentKeyResponse
-	17, // [17:26] is the sub-list for method output_type
-	8,  // [8:17] is the sub-list for method input_type
+	21, // 17: billing.ContentKeys.DestroyContentKeys:input_type -> billing.DestroyContentKeysRequest
+	4,  // 18: billing.Billing.Reserve:output_type -> billing.ReserveResponse
+	6,  // 19: billing.Billing.Capture:output_type -> billing.CaptureResponse
+	8,  // 20: billing.Billing.Release:output_type -> billing.ReleaseResponse
+	11, // 21: billing.Billing.GetBalances:output_type -> billing.GetBalancesResponse
+	13, // 22: billing.Billing.RecordMO:output_type -> billing.RecordMOResponse
+	16, // 23: billing.ContentKeys.GetOrCreateContentKey:output_type -> billing.ContentKeyResponse
+	16, // 24: billing.ContentKeys.RotateContentKey:output_type -> billing.ContentKeyResponse
+	18, // 25: billing.ContentKeys.GetContentEncryptionKey:output_type -> billing.ContentEncryptionKeyResponse
+	20, // 26: billing.ContentKeys.GetContentKey:output_type -> billing.GetContentKeyResponse
+	22, // 27: billing.ContentKeys.DestroyContentKeys:output_type -> billing.DestroyContentKeysResponse
+	18, // [18:28] is the sub-list for method output_type
+	8,  // [8:18] is the sub-list for method input_type
 	8,  // [8:8] is the sub-list for extension type_name
 	8,  // [8:8] is the sub-list for extension extendee
 	0,  // [0:8] is the sub-list for field type_name
@@ -1355,7 +1455,7 @@ func file_billing_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_billing_proto_rawDesc), len(file_billing_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   19,
+			NumMessages:   21,
 			NumExtensions: 0,
 			NumServices:   2,
 		},
