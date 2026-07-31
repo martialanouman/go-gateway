@@ -65,3 +65,30 @@ func TestLoadPolicySnapshotPropagatesError(t *testing.T) {
 		t.Fatal("LoadPolicySnapshot = nil, want the lister error")
 	}
 }
+
+func TestPolicyHolderStoreSwapsAndDefaultsOff(t *testing.T) {
+	cust := uuid.New()
+	var h content.PolicyHolder
+
+	// Before any Store, everyone resolves to off.
+	if got := h.For(cust); got != cp.ContentOff {
+		t.Fatalf("empty holder For = %q, want off", got)
+	}
+
+	enc, _ := content.LoadPolicySnapshot(context.Background(), fakePolicyLister{rows: []cp.CustomerContentPolicy{
+		{CustomerID: cust, ContentStorage: cp.ContentStoredEncrypted},
+	}})
+	h.Store(enc)
+	if got := h.For(cust); got != cp.ContentStoredEncrypted {
+		t.Fatalf("after Store(encrypted) For = %q, want stored_encrypted", got)
+	}
+
+	// An opt-out swap must take effect immediately (the hot-reload guarantee).
+	off, _ := content.LoadPolicySnapshot(context.Background(), fakePolicyLister{rows: []cp.CustomerContentPolicy{
+		{CustomerID: cust, ContentStorage: cp.ContentOff},
+	}})
+	h.Store(off)
+	if got := h.For(cust); got != cp.ContentOff {
+		t.Errorf("after opt-out swap For = %q, want off", got)
+	}
+}

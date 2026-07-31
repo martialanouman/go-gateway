@@ -235,12 +235,16 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("load content-storage policy: %w", err)
 	}
+	// Held behind an atomic pointer and swapped on every config invalidation below, so a content_storage
+	// change — critically an opt-out (stored_*→off) — takes effect without a restart (step-102).
+	var contentPolicyHolder content.PolicyHolder
+	contentPolicyHolder.Store(contentPolicy)
 	dekCache := content.NewDataKeyCache(content.NewGRPCDataKeyFetcher(pb.NewContentKeysClient(billingConn)))
 	contentDropped := prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "accepted_content_dropped_total",
 		Help: "Message bodies dropped from the accepted CDR row because the content data key was unavailable.",
 	})
-	sealer := ingest.NewContentSealer(contentPolicy, dekCache, contentDropped, logger)
+	sealer := ingest.NewContentSealer(&contentPolicyHolder, dekCache, contentDropped, logger)
 	acceptedConsumer, err := kafka.NewConsumerFromLatest(cfg.Kafka, serviceName+"-accepted-cdr", kafka.TopicMTInbound)
 	if err != nil {
 		return fmt.Errorf("kafka accepted-cdr consumer: %w", err)
@@ -340,6 +344,15 @@ func run() error {
 				return berr
 			}
 			creditHolder.Store(bsnap)
+
+			// Rebuild the content-storage policy so a content_storage change takes effect without a restart —
+			// most importantly an opt-out (stored_*→off, a consent withdrawal / GDPR request), which must stop
+			// the data plane sealing bodies promptly rather than only at the next restart (step-102).
+			csnap, berr := content.LoadPolicySnapshot(ctx, postgres.NewCustomerRepo(pool))
+			if berr != nil {
+				return berr
+			}
+			contentPolicyHolder.Store(csnap)
 			return nil
 		},
 		config.WithLogger(logger),
