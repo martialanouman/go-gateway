@@ -113,7 +113,7 @@ Légende : `[x]` = fait (dans `tasks-done/`) · `[ ]` = à faire (dans `tasks-to
 - [x] step-146 — Capture/libère dans connector-pool ; idempotent sous double livraison
 - [x] step-147 — Adaptateur de facturation externe (§6.10) derrière une interface
 - [x] step-148 — Admin billing : config client, soldes, top-up/transfert, change-balance-scope
-- [ ] step-149 — Admin billing : grand livre, rate-plans, providers externes
+- [x] step-149 — Admin billing : grand livre, rate-plans, providers externes
 
 ## M10 — Contenu, chiffrement & RGPD
 - [ ] step-160 — Interface KMS + implémentation locale de dev (enveloppe)
