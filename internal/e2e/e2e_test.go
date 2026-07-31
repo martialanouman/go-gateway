@@ -110,10 +110,9 @@ func buildStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg config
 	cdrWriter := clickhouse.NewCDRWriter(chConn)
 	cdrReader := clickhouse.NewCDRReader(chConn)
 
-	accepted := ingest.NewAcceptedWriter(cdrWriter, nil, 2, 64, nil)
 	mux, _ := restapi.New(restapi.Deps{
 		Principals: postgres.NewAPIKeyRepo(pool),
-		Ingestor:   ingest.NewIngestor(producer, accepted, nil),
+		Ingestor:   ingest.NewIngestor(producer, nil),
 		CDRReader:  cdrReader,
 		Tracer:     observability.Tracer(rec.Provider(), "rest-api"),
 		Version:    "e2e",
@@ -124,6 +123,13 @@ func buildStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg config
 	if err != nil {
 		t.Fatalf("router consumer: %v", err)
 	}
+	// The accepted CDR row is now projected durably off mt.inbound by a dedicated consumer group (step-101),
+	// independent of routing.
+	acceptedConsumer, err := kafka.NewConsumer(kafkaCfg, "e2e-accepted", kafka.TopicMTInbound)
+	if err != nil {
+		t.Fatalf("accepted consumer: %v", err)
+	}
+	acceptedProjector := ingest.NewAcceptedConsumer(acceptedConsumer, cdrWriter, nil, nil)
 	resolver, err := routing.LoadSnapshot(context.Background(), postgres.NewRouteRepo(pool))
 	if err != nil {
 		t.Fatalf("load route snapshot: %v", err)
@@ -176,7 +182,7 @@ func buildStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg config
 		wg.Add(1)
 		go func() { defer wg.Done(); _ = fn(ctx) }()
 	}
-	start(accepted.Run)
+	start(acceptedProjector.Run)
 	start(rtr.Run)
 	start(conn.Run)
 

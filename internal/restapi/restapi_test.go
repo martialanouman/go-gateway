@@ -124,16 +124,10 @@ func buildHarness(t *testing.T, principals restapi.PrincipalStore, reader restap
 	rec := otelrec.New(t)
 	producer := &fakeProducer{}
 	cdrWrite := &fakeCDRWriter{}
-	accepted := ingest.NewAcceptedWriter(cdrWrite, nil, 2, 16, nil)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { _ = accepted.Run(ctx); close(done) }()
-	t.Cleanup(func() { cancel(); <-done })
 
 	mux, _ := restapi.New(restapi.Deps{
 		Principals:  principals,
-		Ingestor:    ingest.NewIngestor(producer, accepted, nil),
+		Ingestor:    ingest.NewIngestor(producer, nil),
 		CDRReader:   reader,
 		Idempotency: idem,
 		Tracer:      observability.Tracer(rec.Provider(), "rest-api"),
@@ -142,6 +136,29 @@ func buildHarness(t *testing.T, principals restapi.PrincipalStore, reader restap
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return &harness{server: srv, producer: producer, cdrWrite: cdrWrite}
+}
+
+// replayBatch is a one-shot BatchConsumer that feeds a fixed set of records to the handler once — it lets a
+// test drive the AcceptedConsumer over the records the submit produced, mirroring how router-svc projects the
+// accepted row off mt.inbound.
+type replayBatch struct{ recs []kafka.Record }
+
+func (r replayBatch) RunBatch(ctx context.Context, handle kafka.BatchHandler) error {
+	handle(ctx, r.recs)
+	return nil
+}
+
+// projectAccepted runs the produced mt.inbound records through an AcceptedConsumer into cdrWrite, the way the
+// durable accepted-row projection does in production (step-101).
+func (h *harness) projectAccepted(t *testing.T) {
+	t.Helper()
+	h.producer.mu.Lock()
+	recs := append([]kafka.Record(nil), h.producer.records...)
+	h.producer.mu.Unlock()
+	ac := ingest.NewAcceptedConsumer(replayBatch{recs: recs}, h.cdrWrite, nil, nil)
+	if err := ac.Run(context.Background()); err != nil {
+		t.Fatalf("project accepted: %v", err)
+	}
 }
 
 func (h *harness) do(t *testing.T, method, path, auth string, body any) *http.Response {
@@ -238,8 +255,12 @@ func TestSubmitAcceptedAndDurable(t *testing.T) {
 		t.Error("message id in the 202 must match the envelope")
 	}
 
-	// The accepted CDR row is written off the request path (eventually).
-	waitFor(t, func() bool { return h.cdrWrite.count() == 1 }, "accepted CDR row")
+	// The accepted CDR row is projected durably off mt.inbound (step-101). Drive that projection over the
+	// record this submit produced.
+	h.projectAccepted(t)
+	if h.cdrWrite.count() != 1 {
+		t.Fatalf("accepted CDR rows = %d, want 1", h.cdrWrite.count())
+	}
 	if h.cdrWrite.rows[0].Status != clickhouse.StatusAccepted {
 		t.Errorf("accepted row status: got %q", h.cdrWrite.rows[0].Status)
 	}
@@ -309,16 +330,4 @@ func decode(t *testing.T, resp *http.Response, v any) {
 	if err := json.NewDecoder(resp.Body).Decode(v); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-}
-
-func waitFor(t *testing.T, cond func() bool, what string) {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for %s", what)
 }

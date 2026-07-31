@@ -28,11 +28,9 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
-	billingpb "github.com/martialanouman/go-gateway/internal/billing/pb"
 	"github.com/martialanouman/go-gateway/internal/bindthrottle"
 	"github.com/martialanouman/go-gateway/internal/cancel"
 	"github.com/martialanouman/go-gateway/internal/config"
-	"github.com/martialanouman/go-gateway/internal/content"
 	"github.com/martialanouman/go-gateway/internal/ingest"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/pipeline/ratelimit"
@@ -48,13 +46,6 @@ import (
 
 // serviceName identifies this binary in logs, traces and metrics.
 const serviceName = "smpp-server-svc"
-
-// Accepted-row worker pool sizing, mirroring rest-api-svc: the pool absorbs bursts off the
-// connection's path and is ample for M3.
-const (
-	acceptedWorkers   = 4
-	acceptedQueueSize = 1024
-)
 
 func main() {
 	if err := run(); err != nil {
@@ -106,28 +97,7 @@ func run() error {
 	}
 	defer producer.Close()
 
-	// Content storage (§6.14, M10, step-162): seal the body into the CDR per the customer's content_storage
-	// policy at the accepted-row write. Policy is a boot snapshot (lock-free per message); the data key comes
-	// from billing-svc (sole KMS holder) via a TTL cache, so the body is encrypted without ever reaching
-	// billing-svc. The billing dial is lazy; a down billing-svc degrades an encrypted CDR to no-content (counted).
-	contentPolicy, err := content.LoadPolicySnapshot(ctx, postgres.NewCustomerRepo(pool))
-	if err != nil {
-		return fmt.Errorf("load content-storage policy: %w", err)
-	}
-	billingConn, err := grpc.NewClient(cfg.Billing.Addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		return fmt.Errorf("dial billing at %q: %w", cfg.Billing.Addr, err)
-	}
-	defer func() { _ = billingConn.Close() }()
-	dekCache := content.NewDataKeyCache(content.NewGRPCDataKeyFetcher(billingpb.NewContentKeysClient(billingConn)))
-	contentDropped := prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "ingest_content_dropped_total",
-		Help: "Message bodies dropped from the CDR because the content data key was unavailable.",
-	})
-	sealer := ingest.NewContentSealer(contentPolicy, dekCache, contentDropped, logger)
-
-	accepted := ingest.NewAcceptedWriter(clickhouse.NewCDRWriter(chConn), sealer, acceptedWorkers, acceptedQueueSize, logger)
-	ingestor := ingest.NewIngestor(producer, accepted, logger)
+	ingestor := ingest.NewIngestor(producer, logger)
 
 	// The SessionRegistry client is a pod-to-pod internal call, so transport security is terminated at
 	// the mesh, not here (insecure credentials). NewClient is lazy: it opens no connection until the
@@ -231,19 +201,15 @@ func run() error {
 	// The throttle's block counter is this service's first business metric; register it on the ops
 	// registry so it surfaces on /metrics. The counter carries no high-cardinality label (never a
 	// system_id or an IP), per the ops registry's cardinality rule.
-	ops.Registry().MustRegister(throttleBlocked, queryThrottled, contentDropped)
+	ops.Registry().MustRegister(throttleBlocked, queryThrottled)
 
 	logger.InfoContext(ctx, "starting", "config", cfg)
 
-	// Ordered shutdown matters here (as in rest-api-svc): the SMPP listener must stop and fully drain
-	// its connections BEFORE the accepted-row writer, or a submit_sm that earns its submit_sm_resp
-	// during the drain would Enqueue after the writer's workers have exited — silently dropping the
-	// accepted CDR row and re-opening the get-message 404 window (§1.10). supervisor.Ordered drains in
-	// reverse registration order, so registering ops → writer → listener yields the listener → writer →
-	// ops drain.
+	// The SMPP listener drains before the ops server (supervisor.Ordered drains in reverse registration
+	// order). The accepted CDR row is no longer written here — it is projected durably off mt.inbound by
+	// router-svc (step-101) — so there is no off-path writer to drain.
 	var g supervisor.Ordered
 	g.Add("ops server", func(c context.Context) error { return ops.Run(c, cfg.ShutdownTimeout) })
-	g.Add("accepted writer", accepted.Run)
 	g.Add("smpp listener", listener.Run)
 	// The disconnect subscriber force-closes this pod's sessions when a revocation or suspension is
 	// fanned out by session-manager (step-032). It is fail-open (a Redis blip degrades disconnects, not

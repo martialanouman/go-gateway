@@ -3,188 +3,101 @@ package ingest
 import (
 	"context"
 	"log/slog"
-	"time"
 
-	cp "github.com/martialanouman/go-gateway/internal/controlplane"
+	"github.com/martialanouman/go-gateway/internal/pipeline"
 	"github.com/martialanouman/go-gateway/internal/platform/e164"
-	"github.com/martialanouman/go-gateway/internal/platform/msg"
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
+	"github.com/martialanouman/go-gateway/internal/storage/kafka"
 )
 
-const (
-	// acceptedWriteTimeout bounds a single accepted-row batch flush, including during the shutdown
-	// drain, so a stalled ClickHouse cannot hold the service from terminating.
-	acceptedWriteTimeout = 5 * time.Second
-	// acceptedBatchSize flushes a worker's buffer once it reaches this many rows: one ClickHouse
-	// round-trip amortizes the prepare+send cost across the batch instead of paying it per row.
-	acceptedBatchSize = 128
-	// acceptedFlushInterval bounds how long a partial batch waits before flushing. It is short so a
-	// just-accepted message lands almost immediately at low traffic (keeping the get-message 404 window
-	// tight); under load the batch fills to acceptedBatchSize and flushes on size well before this.
-	acceptedFlushInterval = 25 * time.Millisecond
-)
-
-// AcceptedWriter writes the accepted CDR row off the request path (§1.10): a submission earns its
-// acknowledgement from the durable Kafka write and never blocks on ClickHouse, so the accepted row
-// is a best-effort read-model projection written by this bounded pool. If a write is ever dropped
-// under saturation, the connector's enroute row still supersedes it — get-message shows enroute a
-// moment later, never a 404.
-//
-// The pool is bounded and supervised: workers stop on ctx and are joined by Run, so there is no
-// orphan goroutine (guide §5).
-type AcceptedWriter struct {
-	cdr     CDRWriter
-	sealer  *ContentSealer
-	ch      chan acceptedItem
-	workers int
-	logger  *slog.Logger
-}
-
-// acceptedItem is one queued accepted row plus the plaintext body it may need sealed into the CDR. body is
-// empty unless the customer's effective content policy stores it (resolved once at Enqueue, off the async
-// worker), so off-policy messages — the default — carry no body through the queue.
-type acceptedItem struct {
-	row    clickhouse.CDRRow
-	body   msg.Body
-	policy cp.ContentStorage
-}
-
-// CDRWriter writes a batch of CDR rows. *clickhouse.CDRWriter satisfies it. The accepted-row pool
-// only ever writes in batches, off the request path.
+// CDRWriter writes a batch of CDR rows. *clickhouse.CDRWriter satisfies it.
 type CDRWriter interface {
 	InsertBatch(ctx context.Context, rows []clickhouse.CDRRow) error
 }
 
-// NewAcceptedWriter builds a pool with the given worker count and queue depth. Both are clamped to
-// at least 1. sealer may be nil: content storage is then disabled and no body is ever carried or written
-// (the pre-M10 behaviour).
-func NewAcceptedWriter(cdr CDRWriter, sealer *ContentSealer, workers, queue int, logger *slog.Logger) *AcceptedWriter {
-	if workers < 1 {
-		workers = 1
-	}
-	if queue < 1 {
-		queue = 1
-	}
+// BatchConsumer runs a batch handler over a Kafka topic, committing at-least-once. *kafka.Consumer satisfies
+// it. Declared consumer-side.
+type BatchConsumer interface {
+	RunBatch(ctx context.Context, handle kafka.BatchHandler) error
+}
+
+// AcceptedConsumer projects the accepted CDR row from the durable mt.inbound topic (§1.10, step-101/162). The
+// accepted row was previously written best-effort off the request path and dropped under saturation — a lost
+// CDR. Here it is DERIVED from mt.inbound (the record that already earned the submission its acknowledgement)
+// by a dedicated consumer group, committing the offset only after a successful ClickHouse write, so no
+// accepted row is ever lost: a ClickHouse fault leaves the offset uncommitted and the batch is reprocessed.
+//
+// It runs on its OWN consumer group, independent of routing, so a slow ClickHouse only lengthens the
+// get-message 404 window (the enroute row supersedes accepted) and never blocks the MT routing path.
+//
+// The body is sealed into the row per the customer's content policy (step-162). Sealing NEVER fails the
+// record: an unavailable data key drops the body (counted) but still writes the row and commits — content is
+// non-blocking; only the durable row write gates the commit (invariant a holds: the body reaches only the
+// content column, never a log).
+type AcceptedConsumer struct {
+	consumer BatchConsumer
+	cdr      CDRWriter
+	sealer   *ContentSealer
+	logger   *slog.Logger
+}
+
+// NewAcceptedConsumer wires the consumer. sealer may be nil: content storage is then disabled (no body is
+// ever written), the row is still projected durably.
+func NewAcceptedConsumer(consumer BatchConsumer, cdr CDRWriter, sealer *ContentSealer, logger *slog.Logger) *AcceptedConsumer {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &AcceptedWriter{
-		cdr:     cdr,
-		sealer:  sealer,
-		ch:      make(chan acceptedItem, queue),
-		workers: workers,
-		logger:  logger,
-	}
+	return &AcceptedConsumer{consumer: consumer, cdr: cdr, sealer: sealer, logger: logger}
 }
 
-// Enqueue schedules an accepted-row write. It never blocks the request: if the queue is saturated
-// the row is dropped with a warning — the message is already durable in Kafka and will get an
-// enroute row, so the only cost is a brief window where get-message could 404 under overload.
-//
-// The content policy is resolved here, on the request path (a lock-free map read), so that only messages
-// whose customer actually stores content carry the plaintext body through the queue to the async sealer.
-func (w *AcceptedWriter) Enqueue(row clickhouse.CDRRow, body msg.Body) {
-	item := acceptedItem{row: row, policy: cp.ContentOff}
-	if w.sealer != nil {
-		if policy := w.sealer.Policy(row.CustomerID); policy != cp.ContentOff {
-			item.policy, item.body = policy, body
+// Run consumes mt.inbound and writes accepted rows until ctx is cancelled. It is one supervised goroutine.
+func (c *AcceptedConsumer) Run(ctx context.Context) error {
+	return c.consumer.RunBatch(ctx, c.handleBatch)
+}
+
+// handleBatch builds an accepted row per record and writes the whole poll batch to ClickHouse in one
+// InsertBatch. It is all-or-nothing per poll batch: on a ClickHouse fault every record's offset stays
+// uncommitted so the batch reprocesses (redelivery is safe — the CDR is a ReplacingMergeTree keyed by its
+// versioned rows at a fixed version, so a re-inserted accepted row dedups, and each row is self-coherent —
+// ciphertext and content_key_id together — so the surviving tie decrypts. The only narrow edge is a DEK
+// rotation between the first insert and a reprocess: the two ties then carry different key ids, and a read
+// before the background merge could pair a ciphertext with the wrong key id — an undecryptable body, never a
+// lost or wrong message). A record that cannot be decoded is a corrupt record,
+// not a transient fault: it is logged and skipped (never written, but committable) so it cannot poison-pill
+// the stream — though if the batch's write also fails, it reprocesses with the rest until ClickHouse recovers.
+func (c *AcceptedConsumer) handleBatch(ctx context.Context, recs []kafka.Record) []error {
+	results := make([]error, len(recs))
+	rows := make([]clickhouse.CDRRow, 0, len(recs))
+	for _, rec := range recs {
+		env, err := pipeline.DecodeInbound(rec)
+		if err != nil {
+			// A corrupt record can never become valid; skip it rather than stall the stream forever.
+			c.logger.ErrorContext(ctx, "decode mt.inbound for accepted CDR: skipping corrupt record", "err", err)
+			continue
 		}
-	}
-	select {
-	case w.ch <- item:
-	default:
-		w.logger.Warn("accepted-row queue saturated, dropping projection",
-			"message_id", row.MessageID)
-	}
-}
-
-// Run starts the workers and blocks until ctx is cancelled, then drains what is buffered and
-// returns. It is meant to run as one supervised goroutine.
-func (w *AcceptedWriter) Run(ctx context.Context) error {
-	done := make(chan struct{})
-	for i := 0; i < w.workers; i++ {
-		go func() {
-			defer func() { done <- struct{}{} }()
-			w.work(ctx)
-		}()
-	}
-	for i := 0; i < w.workers; i++ {
-		<-done
-	}
-	return nil
-}
-
-func (w *AcceptedWriter) work(ctx context.Context) {
-	buf := make([]acceptedItem, 0, acceptedBatchSize)
-	ticker := time.NewTicker(acceptedFlushInterval)
-	defer ticker.Stop()
-
-	// flush writes the buffer on a detached, bounded context (see writeBatch): the requests are gone.
-	flush := func() { //nolint:contextcheck // detached on purpose: the request context is gone
-		if len(buf) == 0 {
-			return
-		}
-		w.writeBatch(buf)
-		buf = buf[:0]
-	}
-
-	for {
-		select {
-		case item := <-w.ch:
-			buf = append(buf, item)
-			if len(buf) >= acceptedBatchSize {
-				flush()
-			}
-		case <-ticker.C:
-			flush()
-		case <-ctx.Done():
-			// Drain what is buffered, then flush the remainder and exit. Each worker drains until the
-			// channel is empty; a concurrent receive by another worker is safe.
-			for {
-				select {
-				case item := <-w.ch:
-					buf = append(buf, item)
-					if len(buf) >= acceptedBatchSize {
-						flush()
-					}
-				default:
-					flush()
-					return
-				}
-			}
-		}
-	}
-}
-
-// writeBatch normalizes each row's destination — the heavy phone parse the request path deliberately
-// deferred here — then flushes the batch on a bounded, detached context: the requests that produced
-// the rows have long returned, so the write must not depend on their (cancelled) contexts, but it
-// must still be bounded. Normalization is best-effort: a number that fails to parse keeps its raw
-// form (the router is the single rejection authority). A failed batch is logged and dropped — the
-// connector's enroute row supersedes an accepted projection, so get-message shows enroute a moment
-// later, never a persistent 404.
-func (w *AcceptedWriter) writeBatch(items []acceptedItem) {
-	// Known limit: this single deadline bounds both the (serial) per-row DEK fetches and the final
-	// InsertBatch. In steady state the DEK cache is warm so sealing is negligible; under a cold-cache burst
-	// with a slow billing-svc, serial fetches could eat the budget and expire the write, dropping the whole
-	// batch's projection (never a message — the connector's enroute row supersedes it). A separate seal budget
-	// is a follow-up if this bites at the 8k/s target.
-	ctx, cancel := context.WithTimeout(context.Background(), acceptedWriteTimeout)
-	defer cancel()
-
-	rows := make([]clickhouse.CDRRow, len(items))
-	for i := range items {
-		row := items[i].row
-		if norm, err := e164.Normalize(row.DestAddr); err == nil {
+		row := AcceptedRow(env)
+		// The heavy phone parse the request path deferred: normalize to the canonical form the router stores,
+		// so a message spells its destination the same across all its lifecycle rows. Best-effort — a number
+		// that fails to parse keeps its raw form (the router is the single rejection authority).
+		if norm, nerr := e164.Normalize(row.DestAddr); nerr == nil {
 			row.DestAddr = norm
 		}
-		// Seal the body into the content column per policy, off the request path. Never fails the row.
-		if w.sealer != nil && items[i].policy != cp.ContentOff {
-			w.sealer.seal(ctx, &row, items[i].body, items[i].policy)
+		if c.sealer != nil {
+			c.sealer.Seal(ctx, &row, env.Body, env.CustomerID)
 		}
-		rows[i] = row
+		rows = append(rows, row)
 	}
-	if err := w.cdr.InsertBatch(ctx, rows); err != nil {
-		w.logger.Error("accepted-row batch write failed", "rows", len(rows), "err", err)
+	if len(rows) == 0 {
+		return results // nothing decodable in this batch; all offsets committable
 	}
+	if err := c.cdr.InsertBatch(ctx, rows); err != nil {
+		if ctx.Err() != nil {
+			return results // graceful shutdown mid-batch: let the supervisor stop cleanly
+		}
+		c.logger.ErrorContext(ctx, "accepted-row batch write failed; will reprocess", "rows", len(rows), "err", err)
+		for i := range results {
+			results[i] = err // fail the whole poll batch → nothing commits → reprocess
+		}
+	}
+	return results
 }

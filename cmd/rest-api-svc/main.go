@@ -1,7 +1,6 @@
 // Command rest-api-svc serves the public REST API (plan §1.4, business port 8080; ops 9090). It
 // follows the canonical lifecycle of cmd/router-svc, adding a Postgres pool (API-key lookup), a
-// Kafka producer (mt.inbound), a ClickHouse connection (CDR read/write) and the accepted-row worker
-// pool, plus a client-facing HTTP listener — each a supervised component.
+// Kafka producer (mt.inbound), a ClickHouse connection (CDR reads for get-message) and a client-facing HTTP listener — each a supervised component.
 package main
 
 import (
@@ -17,13 +16,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-
-	billingpb "github.com/martialanouman/go-gateway/internal/billing/pb"
 	"github.com/martialanouman/go-gateway/internal/config"
-	"github.com/martialanouman/go-gateway/internal/content"
 	"github.com/martialanouman/go-gateway/internal/idempotency"
 	"github.com/martialanouman/go-gateway/internal/ingest"
 	"github.com/martialanouman/go-gateway/internal/observability"
@@ -40,11 +33,6 @@ const serviceName = "rest-api-svc"
 
 // Accepted-row worker pool sizing. The pool absorbs bursts off the request path; these are ample for
 // M2 and become configurable when throughput tuning matters.
-const (
-	acceptedWorkers   = 4
-	acceptedQueueSize = 1024
-)
-
 func main() {
 	if err := run(); err != nil {
 		log.Fatalf("%s: %v", serviceName, err)
@@ -106,29 +94,7 @@ func run() error {
 	}
 	defer func() { _ = rdb.Close() }()
 
-	// Content storage (§6.14, M10, step-162): the accepted-row writer seals the body into the CDR per the
-	// customer's content_storage policy. The policy is a boot snapshot (rare changes; lock-free per message);
-	// the data key comes from billing-svc (the sole KMS holder) through a TTL cache so a body is encrypted
-	// without the body ever reaching billing-svc. The billing dial is lazy — billing-svc down at boot does not
-	// block startup; a down billing-svc at runtime degrades an encrypted customer's CDR to no-content (counted).
-	contentPolicy, err := content.LoadPolicySnapshot(ctx, postgres.NewCustomerRepo(pool))
-	if err != nil {
-		return fmt.Errorf("load content-storage policy: %w", err)
-	}
-	billingConn, err := grpc.NewClient(cfg.Billing.Addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		return fmt.Errorf("dial billing at %q: %w", cfg.Billing.Addr, err)
-	}
-	defer func() { _ = billingConn.Close() }()
-	dekCache := content.NewDataKeyCache(content.NewGRPCDataKeyFetcher(billingpb.NewContentKeysClient(billingConn)))
-	contentDropped := prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "ingest_content_dropped_total",
-		Help: "Message bodies dropped from the CDR because the content data key was unavailable.",
-	})
-	sealer := ingest.NewContentSealer(contentPolicy, dekCache, contentDropped, logger)
-
-	accepted := ingest.NewAcceptedWriter(clickhouse.NewCDRWriter(chConn), sealer, acceptedWorkers, acceptedQueueSize, logger)
-	ingestor := ingest.NewIngestor(producer, accepted, logger)
+	ingestor := ingest.NewIngestor(producer, logger)
 	tracer := observability.Tracer(nil, serviceName)
 
 	handler, _ := restapi.New(restapi.Deps{
@@ -160,18 +126,14 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("init ops server: %w", err)
 	}
-	ops.Registry().MustRegister(contentDropped)
 
 	logger.InfoContext(ctx, "starting", "config", cfg)
 
-	// Ordered shutdown matters here: the HTTP listener must stop and fully drain BEFORE the
-	// accepted-row writer, or a request that earns its 202 during the drain would call Accepted.Enqueue
-	// after the writer's workers have already exited — silently dropping the accepted CDR row and
-	// re-opening the 404 window get-message is meant to close. supervisor.Ordered drains in reverse
-	// registration order, so registering ops → writer → http yields the http → writer → ops drain.
+	// The HTTP listener drains before the ops server (supervisor.Ordered drains in reverse registration
+	// order). The accepted CDR row is no longer written here — it is projected durably off mt.inbound by
+	// router-svc (step-101) — so there is no off-path writer to drain.
 	var g supervisor.Ordered
 	g.Add("ops server", func(c context.Context) error { return ops.Run(c, cfg.ShutdownTimeout) })
-	g.Add("accepted writer", accepted.Run)
 	g.Add("rest http server", func(c context.Context) error { return runHTTP(c, srv, cfg.ShutdownTimeout, logger) })
 	if err := g.Run(ctx, logger); err != nil {
 		return err

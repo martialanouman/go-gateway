@@ -46,17 +46,13 @@ func NewContentSealer(policy ContentPolicyResolver, keys DataKeyProvider, droppe
 	return &ContentSealer{policy: policy, keys: keys, dropped: dropped, logger: logger}
 }
 
-// Policy resolves the effective content-storage policy for a customer. It is read on the request path (a
-// lock-free map lookup) to decide whether the accepted row must carry the body to the async sealer at all.
-func (s *ContentSealer) Policy(customerID uuid.UUID) cp.ContentStorage {
-	return s.policy.For(customerID)
-}
-
-// seal mutates the row's content columns for policy, using body. off → nothing; stored_plaintext → the clear
-// body in content_ciphertext (no key id); stored_encrypted → SealBody under the customer's DEK plus its key
-// id. A DEK-fetch or seal failure drops the content (counter++) and leaves the row otherwise intact.
-func (s *ContentSealer) seal(ctx context.Context, row *clickhouse.CDRRow, body msg.Body, policy cp.ContentStorage) {
-	switch policy {
+// Seal fills the row's content columns from body per the customer's effective content-storage policy. off →
+// nothing; stored_plaintext → the clear body in content_ciphertext (no key id); stored_encrypted → SealBody
+// under the customer's DEK plus its key id. A DEK-fetch or seal failure drops the content (counter++) and
+// leaves the row otherwise intact — it NEVER returns an error, so an at-least-once consumer is never stalled
+// behind an unavailable data key (billing is non-blocking; only the durable row write gates the commit).
+func (s *ContentSealer) Seal(ctx context.Context, row *clickhouse.CDRRow, body msg.Body, customerID uuid.UUID) {
+	switch s.policy.For(customerID) {
 	case cp.ContentStoredPlaintext:
 		plaintext := string(body.Reveal())
 		row.ContentCiphertext = &plaintext
