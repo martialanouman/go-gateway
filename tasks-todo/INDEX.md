@@ -121,7 +121,7 @@ Légende : `[x]` = fait (dans `tasks-done/`) · `[ ]` = à faire (dans `tasks-to
 - [x] step-162 — Chiffrement du contenu à l'écriture CDR + politique content_storage
 - [x] step-163 — Lecture de contenu gardée et auditée (get-message-content)
 - [x] step-164 — Crypto-shred : destruction de clé + erase-customer-content
-- [ ] step-165 — Rétention & tiering par drop de partition (§6.14)
+- [x] step-165 — Rétention & tiering par drop de partition (§6.14)
 - [ ] step-166 — Effacement RGPD (client + MSISDN) + attestation asynchrone
 
 ## M11 — Observabilité complète & temps réel
