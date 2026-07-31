@@ -60,8 +60,10 @@ func (i *Ingestor) Accept(ctx context.Context, env pipeline.InboundMT) error {
 		return fmt.Errorf("produce mt.inbound: %w", errs.ErrServiceUnavailable)
 	}
 
-	// Acknowledgement earned. The accepted CDR row is written asynchronously, never blocking the caller.
-	i.accepted.Enqueue(AcceptedRow(env))
+	// Acknowledgement earned. The accepted CDR row is written asynchronously, never blocking the caller. The
+	// body is handed to the async writer, which seals it into the content column per policy (invariant a: it
+	// never reaches a log or span, only the dedicated column when the customer stores content).
+	i.accepted.Enqueue(AcceptedRow(env), env.Body)
 	return nil
 }
 

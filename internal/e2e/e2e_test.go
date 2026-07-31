@@ -110,7 +110,7 @@ func buildStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg config
 	cdrWriter := clickhouse.NewCDRWriter(chConn)
 	cdrReader := clickhouse.NewCDRReader(chConn)
 
-	accepted := ingest.NewAcceptedWriter(cdrWriter, 2, 64, nil)
+	accepted := ingest.NewAcceptedWriter(cdrWriter, nil, 2, 64, nil)
 	mux, _ := restapi.New(restapi.Deps{
 		Principals: postgres.NewAPIKeyRepo(pool),
 		Ingestor:   ingest.NewIngestor(producer, accepted, nil),

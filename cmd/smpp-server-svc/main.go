@@ -28,9 +28,11 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
+	billingpb "github.com/martialanouman/go-gateway/internal/billing/pb"
 	"github.com/martialanouman/go-gateway/internal/bindthrottle"
 	"github.com/martialanouman/go-gateway/internal/cancel"
 	"github.com/martialanouman/go-gateway/internal/config"
+	"github.com/martialanouman/go-gateway/internal/content"
 	"github.com/martialanouman/go-gateway/internal/ingest"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/pipeline/ratelimit"
@@ -68,7 +70,7 @@ func run() error {
 	// session-manager (max_sessions). No HTTP business surface of its own — the SMPP listener is it.
 	cfg, err := config.Load(serviceName,
 		config.SectionOTel, config.SectionPostgres, config.SectionKafka, config.SectionClickHouse,
-		config.SectionRedis, config.SectionSMPP)
+		config.SectionRedis, config.SectionSMPP, config.SectionBilling)
 	if err != nil {
 		return err
 	}
@@ -104,7 +106,27 @@ func run() error {
 	}
 	defer producer.Close()
 
-	accepted := ingest.NewAcceptedWriter(clickhouse.NewCDRWriter(chConn), acceptedWorkers, acceptedQueueSize, logger)
+	// Content storage (§6.14, M10, step-162): seal the body into the CDR per the customer's content_storage
+	// policy at the accepted-row write. Policy is a boot snapshot (lock-free per message); the data key comes
+	// from billing-svc (sole KMS holder) via a TTL cache, so the body is encrypted without ever reaching
+	// billing-svc. The billing dial is lazy; a down billing-svc degrades an encrypted CDR to no-content (counted).
+	contentPolicy, err := content.LoadPolicySnapshot(ctx, postgres.NewCustomerRepo(pool))
+	if err != nil {
+		return fmt.Errorf("load content-storage policy: %w", err)
+	}
+	billingConn, err := grpc.NewClient(cfg.Billing.Addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return fmt.Errorf("dial billing at %q: %w", cfg.Billing.Addr, err)
+	}
+	defer func() { _ = billingConn.Close() }()
+	dekCache := content.NewDataKeyCache(content.NewGRPCDataKeyFetcher(billingpb.NewContentKeysClient(billingConn)))
+	contentDropped := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "ingest_content_dropped_total",
+		Help: "Message bodies dropped from the CDR because the content data key was unavailable.",
+	})
+	sealer := ingest.NewContentSealer(contentPolicy, dekCache, contentDropped, logger)
+
+	accepted := ingest.NewAcceptedWriter(clickhouse.NewCDRWriter(chConn), sealer, acceptedWorkers, acceptedQueueSize, logger)
 	ingestor := ingest.NewIngestor(producer, accepted, logger)
 
 	// The SessionRegistry client is a pod-to-pod internal call, so transport security is terminated at
@@ -209,7 +231,7 @@ func run() error {
 	// The throttle's block counter is this service's first business metric; register it on the ops
 	// registry so it surfaces on /metrics. The counter carries no high-cardinality label (never a
 	// system_id or an IP), per the ops registry's cardinality rule.
-	ops.Registry().MustRegister(throttleBlocked, queryThrottled)
+	ops.Registry().MustRegister(throttleBlocked, queryThrottled, contentDropped)
 
 	logger.InfoContext(ctx, "starting", "config", cfg)
 

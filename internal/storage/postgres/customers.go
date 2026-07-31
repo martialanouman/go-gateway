@@ -161,3 +161,17 @@ func customerFromRow(row sqlcgen.ControlPlaneCustomer) cp.Customer {
 		UpdatedAt:                 tsVal(row.UpdatedAt),
 	}
 }
+
+// ListContentStorage returns every customer's content_storage for the data-plane content-policy snapshot
+// (content.PolicySnapshot). It is a bulk boot-time read, not a per-message query.
+func (r *CustomerRepo) ListContentStorage(ctx context.Context) ([]cp.CustomerContentPolicy, error) {
+	rows, err := r.q.ListContentStorage(ctx)
+	if err != nil {
+		return nil, translate("list content storage", err)
+	}
+	out := make([]cp.CustomerContentPolicy, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, cp.CustomerContentPolicy{CustomerID: row.ID, ContentStorage: cp.ContentStorage(row.ContentStorage)})
+	}
+	return out, nil
+}

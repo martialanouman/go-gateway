@@ -124,7 +124,7 @@ func buildHarness(t *testing.T, principals restapi.PrincipalStore, reader restap
 	rec := otelrec.New(t)
 	producer := &fakeProducer{}
 	cdrWrite := &fakeCDRWriter{}
-	accepted := ingest.NewAcceptedWriter(cdrWrite, 2, 16, nil)
+	accepted := ingest.NewAcceptedWriter(cdrWrite, nil, 2, 16, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
