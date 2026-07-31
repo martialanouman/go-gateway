@@ -154,6 +154,11 @@ service ContentKeys {
   // RotateContentKey makes a new active key and retires the previous one. The retired key is kept so CDRs
   // written under it stay decryptable — rotation never destroys key material (crypto-shred is separate).
   rpc RotateContentKey(RotateContentKeyRequest) returns (ContentKeyResponse);
+  // GetContentEncryptionKey returns the customer's active key id AND its UNWRAPPED (plaintext) data key, so
+  // the data plane can encrypt a body at CDR write without the body ever reaching billing-svc (§14). This is
+  // the ONLY RPC that returns plaintext key material: it exists solely for the guarded encrypt path, rides
+  // the intra-mesh mTLS, and the DEK must never be logged nor written to a CDR. Callers cache it briefly.
+  rpc GetContentEncryptionKey(GetContentEncryptionKeyRequest) returns (ContentEncryptionKeyResponse);
 }
 
 // GetOrCreateContentKeyRequest names the customer whose active key to fetch or create.
@@ -174,4 +179,16 @@ message ContentKeyResponse {
   string kms_key_ref = 3;
   string status = 4;
   string created_at = 5;
+}
+
+// GetContentEncryptionKeyRequest names the customer whose active data key to fetch (creating one if absent).
+message GetContentEncryptionKeyRequest {
+  string customer_id = 1;
+}
+
+// ContentEncryptionKeyResponse carries the active key id and its plaintext 32-byte data key. The dek is
+// SENSITIVE: it must never be logged nor persisted (only the body ciphertext it produces is stored).
+message ContentEncryptionKeyResponse {
+  string key_id = 1;
+  bytes dek = 2;
 }

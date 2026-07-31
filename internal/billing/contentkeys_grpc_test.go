@@ -1,6 +1,7 @@
 package billing_test
 
 import (
+	"bytes"
 	"context"
 	"strings"
 	"testing"
@@ -121,6 +122,56 @@ func TestRotateWrapsAndRotates(t *testing.T) {
 	}
 	if _, err := kms.UnwrapDataKey(context.Background(), store.lastWrapped); err != nil {
 		t.Errorf("rotated wrapped key does not unwrap: %v", err)
+	}
+}
+
+// TestGetContentEncryptionKeyUnwrapsDEK: the guarded encrypt path returns the active key id plus its
+// plaintext 32-byte DEK (the wrapped bytes unwrapped by the KMS), creating the key when absent.
+func TestGetContentEncryptionKeyUnwrapsDEK(t *testing.T) {
+	store := &fakeContentKeyStore{}
+	kms := content.NewDevKMS()
+	srv := billing.NewContentKeyServer(kms, store)
+	cust := uuid.New()
+
+	resp, err := srv.GetContentEncryptionKey(context.Background(), &pb.GetContentEncryptionKeyRequest{CustomerId: cust.String()})
+	if err != nil {
+		t.Fatalf("GetContentEncryptionKey: %v", err)
+	}
+	if len(resp.GetDek()) != 32 {
+		t.Fatalf("dek length = %d, want 32", len(resp.GetDek()))
+	}
+	if resp.GetKeyId() == "" {
+		t.Fatal("key_id empty")
+	}
+	// The returned DEK must be exactly what the stored wrapped bytes unwrap to.
+	wantDEK, err := kms.UnwrapDataKey(context.Background(), store.lastWrapped)
+	if err != nil {
+		t.Fatalf("unwrap stored: %v", err)
+	}
+	if !bytes.Equal(resp.GetDek(), wantDEK) {
+		t.Error("returned DEK differs from the stored wrapped key's plaintext")
+	}
+}
+
+// TestGetContentEncryptionKeyReusesExisting: an existing active key is unwrapped, not recreated.
+func TestGetContentEncryptionKeyReusesExisting(t *testing.T) {
+	kms := content.NewDevKMS()
+	cust := uuid.New()
+	dek, _ := content.GenerateDataKey()
+	wrapped, _ := kms.WrapDataKey(context.Background(), dek)
+	existing := cp.ContentKey{ID: uuid.New(), CustomerID: cust, WrappedKey: wrapped, KMSKeyRef: kms.KeyRef(), Status: cp.ContentKeyActive}
+	store := &fakeContentKeyStore{active: &existing}
+	srv := billing.NewContentKeyServer(kms, store)
+
+	resp, err := srv.GetContentEncryptionKey(context.Background(), &pb.GetContentEncryptionKeyRequest{CustomerId: cust.String()})
+	if err != nil {
+		t.Fatalf("GetContentEncryptionKey: %v", err)
+	}
+	if store.createCalls != 0 {
+		t.Errorf("createCalls = %d, want 0", store.createCalls)
+	}
+	if !bytes.Equal(resp.GetDek(), dek) || resp.GetKeyId() != existing.ID.String() {
+		t.Error("did not return the existing key's DEK/id")
 	}
 }
 
