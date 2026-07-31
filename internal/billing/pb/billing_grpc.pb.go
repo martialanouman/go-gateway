@@ -324,6 +324,7 @@ const (
 	ContentKeys_RotateContentKey_FullMethodName        = "/billing.ContentKeys/RotateContentKey"
 	ContentKeys_GetContentEncryptionKey_FullMethodName = "/billing.ContentKeys/GetContentEncryptionKey"
 	ContentKeys_GetContentKey_FullMethodName           = "/billing.ContentKeys/GetContentKey"
+	ContentKeys_DestroyContentKeys_FullMethodName      = "/billing.ContentKeys/DestroyContentKeys"
 )
 
 // ContentKeysClient is the client API for ContentKeys service.
@@ -355,6 +356,10 @@ type ContentKeysClient interface {
 	// data key — the content is permanently unreadable. Like GetContentEncryptionKey the plaintext DEK is
 	// sensitive: never logged, never persisted.
 	GetContentKey(ctx context.Context, in *GetContentKeyRequest, opts ...grpc.CallOption) (*GetContentKeyResponse, error)
+	// DestroyContentKeys crypto-shreds ALL of a customer's content keys (erase-customer-content, step-164): each
+	// key is marked destroyed and its wrapped data key erased, so every body it sealed becomes permanently
+	// unreadable WITHOUT rewriting the CDR. Idempotent. Returns how many keys were destroyed.
+	DestroyContentKeys(ctx context.Context, in *DestroyContentKeysRequest, opts ...grpc.CallOption) (*DestroyContentKeysResponse, error)
 }
 
 type contentKeysClient struct {
@@ -405,6 +410,16 @@ func (c *contentKeysClient) GetContentKey(ctx context.Context, in *GetContentKey
 	return out, nil
 }
 
+func (c *contentKeysClient) DestroyContentKeys(ctx context.Context, in *DestroyContentKeysRequest, opts ...grpc.CallOption) (*DestroyContentKeysResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DestroyContentKeysResponse)
+	err := c.cc.Invoke(ctx, ContentKeys_DestroyContentKeys_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ContentKeysServer is the server API for ContentKeys service.
 // All implementations must embed UnimplementedContentKeysServer
 // for forward compatibility.
@@ -434,6 +449,10 @@ type ContentKeysServer interface {
 	// data key — the content is permanently unreadable. Like GetContentEncryptionKey the plaintext DEK is
 	// sensitive: never logged, never persisted.
 	GetContentKey(context.Context, *GetContentKeyRequest) (*GetContentKeyResponse, error)
+	// DestroyContentKeys crypto-shreds ALL of a customer's content keys (erase-customer-content, step-164): each
+	// key is marked destroyed and its wrapped data key erased, so every body it sealed becomes permanently
+	// unreadable WITHOUT rewriting the CDR. Idempotent. Returns how many keys were destroyed.
+	DestroyContentKeys(context.Context, *DestroyContentKeysRequest) (*DestroyContentKeysResponse, error)
 	mustEmbedUnimplementedContentKeysServer()
 }
 
@@ -455,6 +474,9 @@ func (UnimplementedContentKeysServer) GetContentEncryptionKey(context.Context, *
 }
 func (UnimplementedContentKeysServer) GetContentKey(context.Context, *GetContentKeyRequest) (*GetContentKeyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetContentKey not implemented")
+}
+func (UnimplementedContentKeysServer) DestroyContentKeys(context.Context, *DestroyContentKeysRequest) (*DestroyContentKeysResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DestroyContentKeys not implemented")
 }
 func (UnimplementedContentKeysServer) mustEmbedUnimplementedContentKeysServer() {}
 func (UnimplementedContentKeysServer) testEmbeddedByValue()                     {}
@@ -549,6 +571,24 @@ func _ContentKeys_GetContentKey_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ContentKeys_DestroyContentKeys_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DestroyContentKeysRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContentKeysServer).DestroyContentKeys(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContentKeys_DestroyContentKeys_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContentKeysServer).DestroyContentKeys(ctx, req.(*DestroyContentKeysRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ContentKeys_ServiceDesc is the grpc.ServiceDesc for ContentKeys service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -571,6 +611,10 @@ var ContentKeys_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetContentKey",
 			Handler:    _ContentKeys_GetContentKey_Handler,
+		},
+		{
+			MethodName: "DestroyContentKeys",
+			Handler:    _ContentKeys_DestroyContentKeys_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

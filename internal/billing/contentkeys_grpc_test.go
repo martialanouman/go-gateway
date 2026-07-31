@@ -18,14 +18,17 @@ import (
 )
 
 type fakeContentKeyStore struct {
-	active      *cp.ContentKey
-	createCalls int
-	rotateCalls int
-	lastWrapped []byte
-	lastKeyRef  string
-	createErr   error
-	rotateErr   error
-	byID        map[uuid.UUID]cp.ContentKey
+	active       *cp.ContentKey
+	createCalls  int
+	rotateCalls  int
+	lastWrapped  []byte
+	lastKeyRef   string
+	createErr    error
+	rotateErr    error
+	byID         map[uuid.UUID]cp.ContentKey
+	destroyCount int
+	destroyErr   error
+	destroyCalls int
 }
 
 func (s *fakeContentKeyStore) GetActive(_ context.Context, customerID uuid.UUID) (cp.ContentKey, error) {
@@ -55,6 +58,11 @@ func (s *fakeContentKeyStore) CreateIfAbsent(_ context.Context, customerID uuid.
 	key := cp.ContentKey{ID: uuid.New(), CustomerID: customerID, WrappedKey: wrapped, KMSKeyRef: keyRef, Status: cp.ContentKeyActive}
 	s.active = &key
 	return key, true, nil
+}
+
+func (s *fakeContentKeyStore) DestroyByCustomer(_ context.Context, _ uuid.UUID) (int, error) {
+	s.destroyCalls++
+	return s.destroyCount, s.destroyErr
 }
 
 func (s *fakeContentKeyStore) Rotate(_ context.Context, customerID uuid.UUID, wrapped []byte, keyRef string) (cp.ContentKey, error) {
@@ -221,6 +229,33 @@ func TestGetContentKeyDestroyedReturnsNoKey(t *testing.T) {
 	}
 	if !resp.GetDestroyed() || len(resp.GetDek()) != 0 {
 		t.Errorf("resp = {destroyed:%v dek_len:%d}, want destroyed + empty dek", resp.GetDestroyed(), len(resp.GetDek()))
+	}
+}
+
+// TestDestroyContentKeysShreds: the crypto-shred RPC delegates to the store and returns the destroyed count.
+func TestDestroyContentKeysShreds(t *testing.T) {
+	store := &fakeContentKeyStore{destroyCount: 3}
+	srv := billing.NewContentKeyServer(content.NewDevKMS(), store)
+
+	resp, err := srv.DestroyContentKeys(context.Background(), &pb.DestroyContentKeysRequest{CustomerId: uuid.NewString()})
+	if err != nil {
+		t.Fatalf("DestroyContentKeys: %v", err)
+	}
+	if store.destroyCalls != 1 || resp.GetDestroyedCount() != 3 {
+		t.Errorf("calls=%d count=%d, want 1/3", store.destroyCalls, resp.GetDestroyedCount())
+	}
+}
+
+// TestDestroyContentKeysInvalidID: a non-UUID customer id is InvalidArgument, no store call.
+func TestDestroyContentKeysInvalidID(t *testing.T) {
+	store := &fakeContentKeyStore{}
+	srv := billing.NewContentKeyServer(content.NewDevKMS(), store)
+	_, err := srv.DestroyContentKeys(context.Background(), &pb.DestroyContentKeysRequest{CustomerId: "nope"})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Errorf("code = %v, want InvalidArgument", status.Code(err))
+	}
+	if store.destroyCalls != 0 {
+		t.Errorf("store touched on invalid id")
 	}
 }
 

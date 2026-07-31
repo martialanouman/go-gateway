@@ -1424,7 +1424,9 @@ paths:
       security: [ { OperatorBearer: [content:erase] } ]
       responses:
         '202': { description: Accepted., content: { application/json: { schema: { $ref: '#/components/schemas/AsyncJob' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /admin/customers/{id}/content/rotate-key:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
     post:

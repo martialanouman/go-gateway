@@ -11,6 +11,33 @@ import (
 	uuid "github.com/google/uuid"
 )
 
+const clearCustomerContentKey = `-- name: ClearCustomerContentKey :exec
+UPDATE control_plane.customers SET content_key_id = NULL WHERE id = $1
+`
+
+// Drop the customer's pointer to its (now destroyed) active key; the next send get-or-creates a fresh one.
+func (q *Queries) ClearCustomerContentKey(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, clearCustomerContentKey, id)
+	return err
+}
+
+const destroyContentKeysByCustomer = `-- name: DestroyContentKeysByCustomer :execrows
+UPDATE control_plane.content_keys
+SET status = 'destroyed', destroyed_at = now(), wrapped_key = ''::bytea
+WHERE customer_id = $1 AND status != 'destroyed'
+`
+
+// Crypto-shred every non-destroyed key of a customer: mark it destroyed and ERASE the wrapped key so the
+// data key can never be recovered — even by the KMS. The content_ciphertext in the CDR stays in place but
+// becomes permanently undecryptable, no CDR rewrite. Idempotent: an already-destroyed key is skipped.
+func (q *Queries) DestroyContentKeysByCustomer(ctx context.Context, customerID uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, destroyContentKeysByCustomer, customerID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getActiveContentKey = `-- name: GetActiveContentKey :one
 SELECT id, customer_id, wrapped_key, kms_key_ref, status, created_at, retired_at, destroyed_at FROM control_plane.content_keys
 WHERE customer_id = $1 AND status = 'active'

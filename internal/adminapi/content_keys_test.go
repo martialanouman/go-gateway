@@ -10,8 +10,21 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/martialanouman/go-gateway/internal/adminapi"
+	"github.com/martialanouman/go-gateway/internal/auth"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 )
+
+// newContentEraseAPI builds the Admin API with a verifier granting the operator token the content:erase scope.
+func newContentEraseAPI(t *testing.T, deps adminapi.Deps) http.Handler {
+	t.Helper()
+	v, err := auth.NewStaticVerifier([]string{operatorToken + ":content:erase"})
+	if err != nil {
+		t.Fatalf("verifier: %v", err)
+	}
+	deps.Verifier = v
+	mux, _ := adminapi.New(deps)
+	return mux
+}
 
 type fakeContentKeyRotator struct {
 	view   adminapi.ContentKeyView
@@ -67,6 +80,64 @@ func TestRotateContentKeyUnknownCustomerIs404(t *testing.T) {
 	api.ServeHTTP(w, authed(t, http.MethodPost, "/v1/admin/customers/"+uuid.NewString()+"/content/rotate-key", ""))
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404; body=%s", w.Code, w.Body.String())
+	}
+}
+
+type fakeContentKeyEraser struct {
+	count  int
+	err    error
+	gotID  uuid.UUID
+	called bool
+}
+
+func (e *fakeContentKeyEraser) Erase(_ context.Context, customerID uuid.UUID) (int, error) {
+	e.called = true
+	e.gotID = customerID
+	return e.count, e.err
+}
+
+// TestEraseCustomerContentCryptoShreds: erase-customer-content delegates the shred and returns a 202 with a
+// completed async job reporting the destroyed-key count.
+func TestEraseCustomerContentCryptoShreds(t *testing.T) {
+	cust := uuid.New()
+	eraser := &fakeContentKeyEraser{count: 2}
+	api := newContentEraseAPI(t, adminapi.Deps{ContentKeyEraser: eraser})
+
+	w := httptest.NewRecorder()
+	api.ServeHTTP(w, authed(t, http.MethodPost, "/v1/admin/customers/"+cust.String()+"/content/erase", ""))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", w.Code, w.Body.String())
+	}
+	if !eraser.called || eraser.gotID != cust {
+		t.Fatalf("eraser got id %s, want %s (called=%v)", eraser.gotID, cust, eraser.called)
+	}
+	var job map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &job); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if job["status"] != "completed" || job["finished_at"] == nil {
+		t.Errorf("job = %v, want a completed job", job)
+	}
+}
+
+// TestEraseCustomerContentServiceDownIs503: billing-svc unreachable is a retryable 503.
+func TestEraseCustomerContentServiceDownIs503(t *testing.T) {
+	eraser := &fakeContentKeyEraser{err: errs.ErrServiceUnavailable}
+	api := newContentEraseAPI(t, adminapi.Deps{ContentKeyEraser: eraser})
+	w := httptest.NewRecorder()
+	api.ServeHTTP(w, authed(t, http.MethodPost, "/v1/admin/customers/"+uuid.NewString()+"/content/erase", ""))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestEraseCustomerContentRequiresContentEraseScope: a token without content:erase is refused (403).
+func TestEraseCustomerContentRequiresContentEraseScope(t *testing.T) {
+	api := newTestAPIWith(t, adminapi.Deps{ContentKeyEraser: &fakeContentKeyEraser{}}) // admin:read|admin:write, not content:erase
+	w := httptest.NewRecorder()
+	api.ServeHTTP(w, authed(t, http.MethodPost, "/v1/admin/customers/"+uuid.NewString()+"/content/erase", ""))
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (missing content:erase); body=%s", w.Code, w.Body.String())
 	}
 }
 

@@ -166,6 +166,7 @@ func run() error {
 		BillingProviders: postgres.NewExternalBillingProviderRepo(pool),
 		ContentKeys:      adminapi.NewGRPCContentKeyRotator(billingpb.NewContentKeysClient(billingConn)),
 		ContentKeyReader: adminapi.NewGRPCContentKeyReader(billingpb.NewContentKeysClient(billingConn)),
+		ContentKeyEraser: adminapi.NewGRPCContentKeyEraser(billingpb.NewContentKeysClient(billingConn)),
 		Messages:         clickhouse.NewCDRReader(chConn),
 		ContentAudit:     postgres.NewContentAccessAuditRepo(pool),
 		Verifier:         verifier,

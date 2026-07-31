@@ -117,6 +117,39 @@ func (r *ContentKeyRepo) Rotate(ctx context.Context, customerID uuid.UUID, wrapp
 	return key, nil
 }
 
+// DestroyByCustomer crypto-shreds all of a customer's content keys: it marks every non-destroyed key
+// destroyed and erases its wrapped key (so the data key is unrecoverable, even by the KMS), and clears the
+// customer's active-key pointer — all in one transaction. The CDR's content_ciphertext is left untouched but
+// becomes permanently undecryptable (no CDR rewrite). It returns how many keys were destroyed and is
+// idempotent: a second call destroys nothing and returns 0.
+func (r *ContentKeyRepo) DestroyByCustomer(ctx context.Context, customerID uuid.UUID) (int, error) {
+	var destroyed int64
+	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		qtx := r.q.WithTx(tx)
+		// Take the customer-row lock FIRST, exactly as CreateIfAbsent/Rotate do, so the shred serializes
+		// against a concurrent create/rotate. Without it a create committing mid-shred could leave a freshly
+		// inserted active key un-destroyed (its uncommitted INSERT is invisible to the destroy's UPDATE) — a
+		// key surviving an erasure. With the lock, either the create finishes first (and is then destroyed) or
+		// the destroy wins (and the next create makes a fresh key — the intended post-shred semantics).
+		if _, lerr := qtx.LockCustomerForContentKey(ctx, customerID); lerr != nil {
+			return translate("lock customer", lerr)
+		}
+		n, derr := qtx.DestroyContentKeysByCustomer(ctx, customerID)
+		if derr != nil {
+			return translate("destroy content keys", derr)
+		}
+		if cerr := qtx.ClearCustomerContentKey(ctx, customerID); cerr != nil {
+			return translate("clear customer content key", cerr)
+		}
+		destroyed = n
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return int(destroyed), nil
+}
+
 // insertActiveKey inserts a new active key and points the customer at it. Shared by CreateIfAbsent and Rotate;
 // must run inside a transaction that already holds the customer-row lock.
 func insertActiveKey(ctx context.Context, qtx *sqlcgen.Queries, customerID uuid.UUID, wrapped []byte, keyRef string) (cp.ContentKey, error) {

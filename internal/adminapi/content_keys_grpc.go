@@ -69,6 +69,31 @@ func (r *GRPCContentKeyReader) Fetch(ctx context.Context, keyID uuid.UUID) (dek 
 	return resp.GetDek(), resp.GetDestroyed(), nil
 }
 
+// ContentKeyEraser crypto-shreds all of a customer's content keys (erase-customer-content, step-164) via
+// billing-svc. Returns how many keys were destroyed. Declared consumer-side; *GRPCContentKeyEraser satisfies it.
+type ContentKeyEraser interface {
+	Erase(ctx context.Context, customerID uuid.UUID) (destroyedCount int, err error)
+}
+
+// GRPCContentKeyEraser adapts the ContentKeys gRPC client to the ContentKeyEraser the erase handler uses.
+type GRPCContentKeyEraser struct {
+	client pb.ContentKeysClient
+}
+
+// NewGRPCContentKeyEraser returns a ContentKeyEraser backed by the ContentKeys client.
+func NewGRPCContentKeyEraser(client pb.ContentKeysClient) *GRPCContentKeyEraser {
+	return &GRPCContentKeyEraser{client: client}
+}
+
+// Erase crypto-shreds the customer's content keys and reports the count.
+func (e *GRPCContentKeyEraser) Erase(ctx context.Context, customerID uuid.UUID) (int, error) {
+	resp, err := e.client.DestroyContentKeys(ctx, &pb.DestroyContentKeysRequest{CustomerId: customerID.String()})
+	if err != nil {
+		return 0, mapContentKeyErr(err)
+	}
+	return int(resp.GetDestroyedCount()), nil
+}
+
 // mapContentKeyErr translates a billing-svc gRPC status into the platform error the Admin error model turns
 // into an HTTP status: an unknown customer is 404; a bad request 422; a conflict 409; billing-svc unreachable
 // or slow is a transient 503 (retry once it recovers); anything else a 500.

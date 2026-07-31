@@ -1281,3 +1281,10 @@ items:
           method: GET
           url: '{{baseUrl}}/admin/messages/{{messageId}}/content'
         docs: Decrypt and return a message body — guarded by content:read, every access audited (scope content:read).
+      - info:
+          name: erase-customer-content
+          type: http
+        http:
+          method: POST
+          url: '{{baseUrl}}/admin/customers/{{customerId}}/content/erase'
+        docs: Content-only crypto-shred — destroys the customer's content keys, no CDR rewrite (scope content:erase).
