@@ -42,6 +42,23 @@ func NewConn(cfg config.ClickHouse) (*Conn, error) {
 // Ping reports whether ClickHouse is reachable.
 func (c *Conn) Ping(ctx context.Context) error { return c.conn.Ping(ctx) }
 
+// Exec runs a statement returning no rows. It is the maintenance escape hatch — partition drops, TTL
+// materialisation, archive writes (see Retainer) — for SQL that is DDL and therefore cannot be expressed
+// through the typed read/write paths. Data-plane code uses CDRWriter/CDRReader instead.
+func (c *Conn) Exec(ctx context.Context, query string, args ...any) error {
+	return c.conn.Exec(ctx, query, args...)
+}
+
+// Query runs a query returning rows, for the same maintenance surface as Exec.
+func (c *Conn) Query(ctx context.Context, query string, args ...any) (driver.Rows, error) {
+	return c.conn.Query(ctx, query, args...)
+}
+
+// QueryRow runs a query returning at most one row, for the same maintenance surface as Exec.
+func (c *Conn) QueryRow(ctx context.Context, query string, args ...any) driver.Row {
+	return c.conn.QueryRow(ctx, query, args...)
+}
+
 // ReadyCheck adapts the connection to a readiness probe. ClickHouse is vital for get-message (it
 // reads the CDR) and for writing the enroute/failed rows; it is NOT on the 202-acceptance path,
 // which depends only on the durable Kafka write (§1.10).
