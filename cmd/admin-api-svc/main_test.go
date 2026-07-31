@@ -18,6 +18,7 @@ func TestRunRequiresAdminTokensInProduction(t *testing.T) {
 	t.Setenv("POSTGRES_URL", "postgres://u:p@db.internal:5432/gw")
 	t.Setenv("SMPP_SESSION_MANAGER_ADDR", "session-manager.internal:7000")
 	t.Setenv("BILLING_ADDR", "billing.internal:7001")
+	t.Setenv("CLICKHOUSE_ADDR", "clickhouse.internal:9000")
 	t.Setenv("REDIS_URL", "redis://redis.internal:6379")
 	// HTTP_ADMIN_TOKENS deliberately unset.
 

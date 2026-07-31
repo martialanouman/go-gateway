@@ -183,6 +183,20 @@ ALTER TABLE control_plane.customers
   ADD CONSTRAINT customers_content_key_fk
   FOREIGN KEY (content_key_id) REFERENCES control_plane.content_keys(id);
 
+-- content_access_audit records every content:read access to a decrypted message body (§14): who, which
+-- message, when, and the outcome. The audit stores only the FACT of access, never the plaintext (invariant a).
+CREATE TABLE control_plane.content_access_audit (
+  id          uuid PRIMARY KEY DEFAULT uuidv7(),
+  operator    text NOT NULL,                     -- the operator principal (token subject) that read the content
+  message_id  uuid NOT NULL,
+  customer_id uuid,                               -- the message's customer, when the CDR row was found
+  outcome     text NOT NULL
+                CHECK (outcome IN ('granted','unreadable','not_found')),  -- granted=decrypted; unreadable=key destroyed/decrypt failed
+  accessed_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX content_access_audit_message_idx ON control_plane.content_access_audit(message_id);
+CREATE INDEX content_access_audit_accessed_idx ON control_plane.content_access_audit(accessed_at);
+
 -- -----------------------------------------------------------------------------------------------------
 -- 6. SMPP accounts (§6.18) — one technical account of a customer (per app/env/brand)
 -- -----------------------------------------------------------------------------------------------------

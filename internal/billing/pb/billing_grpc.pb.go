@@ -323,6 +323,7 @@ const (
 	ContentKeys_GetOrCreateContentKey_FullMethodName   = "/billing.ContentKeys/GetOrCreateContentKey"
 	ContentKeys_RotateContentKey_FullMethodName        = "/billing.ContentKeys/RotateContentKey"
 	ContentKeys_GetContentEncryptionKey_FullMethodName = "/billing.ContentKeys/GetContentEncryptionKey"
+	ContentKeys_GetContentKey_FullMethodName           = "/billing.ContentKeys/GetContentKey"
 )
 
 // ContentKeysClient is the client API for ContentKeys service.
@@ -348,6 +349,12 @@ type ContentKeysClient interface {
 	// the ONLY RPC that returns plaintext key material: it exists solely for the guarded encrypt path, rides
 	// the intra-mesh mTLS, and the DEK must never be logged nor written to a CDR. Callers cache it briefly.
 	GetContentEncryptionKey(ctx context.Context, in *GetContentEncryptionKeyRequest, opts ...grpc.CallOption) (*ContentEncryptionKeyResponse, error)
+	// GetContentKey unwraps a SPECIFIC content key by id — the guarded DECRYPT path (get-message-content,
+	// step-163). A CDR body may be sealed under a retired key (an old row after rotation), so the reader asks by
+	// the row's key id, not by the active key. A destroyed (crypto-shredded) key returns destroyed=true and no
+	// data key — the content is permanently unreadable. Like GetContentEncryptionKey the plaintext DEK is
+	// sensitive: never logged, never persisted.
+	GetContentKey(ctx context.Context, in *GetContentKeyRequest, opts ...grpc.CallOption) (*GetContentKeyResponse, error)
 }
 
 type contentKeysClient struct {
@@ -388,6 +395,16 @@ func (c *contentKeysClient) GetContentEncryptionKey(ctx context.Context, in *Get
 	return out, nil
 }
 
+func (c *contentKeysClient) GetContentKey(ctx context.Context, in *GetContentKeyRequest, opts ...grpc.CallOption) (*GetContentKeyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetContentKeyResponse)
+	err := c.cc.Invoke(ctx, ContentKeys_GetContentKey_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ContentKeysServer is the server API for ContentKeys service.
 // All implementations must embed UnimplementedContentKeysServer
 // for forward compatibility.
@@ -411,6 +428,12 @@ type ContentKeysServer interface {
 	// the ONLY RPC that returns plaintext key material: it exists solely for the guarded encrypt path, rides
 	// the intra-mesh mTLS, and the DEK must never be logged nor written to a CDR. Callers cache it briefly.
 	GetContentEncryptionKey(context.Context, *GetContentEncryptionKeyRequest) (*ContentEncryptionKeyResponse, error)
+	// GetContentKey unwraps a SPECIFIC content key by id — the guarded DECRYPT path (get-message-content,
+	// step-163). A CDR body may be sealed under a retired key (an old row after rotation), so the reader asks by
+	// the row's key id, not by the active key. A destroyed (crypto-shredded) key returns destroyed=true and no
+	// data key — the content is permanently unreadable. Like GetContentEncryptionKey the plaintext DEK is
+	// sensitive: never logged, never persisted.
+	GetContentKey(context.Context, *GetContentKeyRequest) (*GetContentKeyResponse, error)
 	mustEmbedUnimplementedContentKeysServer()
 }
 
@@ -429,6 +452,9 @@ func (UnimplementedContentKeysServer) RotateContentKey(context.Context, *RotateC
 }
 func (UnimplementedContentKeysServer) GetContentEncryptionKey(context.Context, *GetContentEncryptionKeyRequest) (*ContentEncryptionKeyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetContentEncryptionKey not implemented")
+}
+func (UnimplementedContentKeysServer) GetContentKey(context.Context, *GetContentKeyRequest) (*GetContentKeyResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetContentKey not implemented")
 }
 func (UnimplementedContentKeysServer) mustEmbedUnimplementedContentKeysServer() {}
 func (UnimplementedContentKeysServer) testEmbeddedByValue()                     {}
@@ -505,6 +531,24 @@ func _ContentKeys_GetContentEncryptionKey_Handler(srv interface{}, ctx context.C
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ContentKeys_GetContentKey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetContentKeyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContentKeysServer).GetContentKey(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContentKeys_GetContentKey_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContentKeysServer).GetContentKey(ctx, req.(*GetContentKeyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ContentKeys_ServiceDesc is the grpc.ServiceDesc for ContentKeys service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -523,6 +567,10 @@ var ContentKeys_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetContentEncryptionKey",
 			Handler:    _ContentKeys_GetContentEncryptionKey_Handler,
+		},
+		{
+			MethodName: "GetContentKey",
+			Handler:    _ContentKeys_GetContentKey_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

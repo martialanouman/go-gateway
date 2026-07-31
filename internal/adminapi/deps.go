@@ -158,6 +158,9 @@ type Deps struct {
 	RatePlans        RatePlanStore
 	BillingProviders BillingProviderStore
 	ContentKeys      ContentKeyRotator
+	ContentKeyReader ContentKeyReader
+	Messages         MessageContentReader
+	ContentAudit     ContentAuditor
 	Verifier         auth.TokenVerifier
 	Logger           *slog.Logger
 }

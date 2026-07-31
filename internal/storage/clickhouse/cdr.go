@@ -293,6 +293,19 @@ func cdrAggregate(innerWhereTail string) string {
 	)`
 }
 
+// cdrAggregateByMessage is cdrAggregate keyed by message_id ALONE (no customer/account prefix) — the
+// cross-tenant lookup the audited admin content read uses. A message_id is globally unique, so the aggregation
+// still collapses to the one message's row.
+func cdrAggregateByMessage() string {
+	return `SELECT ` + cdrAggOuterCols + ` FROM (
+		SELECT ` + cdrAggMessageCols + ` FROM (
+			SELECT ` + cdrAggInnerCols + ` FROM cdr
+			WHERE message_id = ?
+			GROUP BY customer_id, account_id, direction, submitted_at, message_id, segment_seq
+		) GROUP BY submitted_at, message_id
+	)`
+}
+
 // Current returns the aggregated lifecycle snapshot of a message, scoped to the caller's account. The
 // scope is not just an optimization: get-message must 404 a message that is not in the caller's
 // account (api/openapi-public.yaml), and filtering on (customer_id, account_id) — the sorting-key
@@ -302,6 +315,24 @@ func (r *CDRReader) Current(ctx context.Context, customerID, accountID, messageI
 	query := cdrAggregate(` AND message_id = ?`) + ` LIMIT 1`
 
 	out, err := scanCDRRow(r.conn.QueryRow(ctx, query, customerID, accountID, messageID).Scan)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return CDRRow{}, false, nil
+		}
+		return CDRRow{}, false, fmt.Errorf("clickhouse: read cdr for %s: %w", messageID, err)
+	}
+	return out, true, nil
+}
+
+// ByMessageID reads the aggregated current CDR row for a message by its id ALONE — the cross-tenant lookup the
+// audited admin content read needs (an operator gives only the message id, not its owning customer/account).
+// It is a rare, non-hot-path admin operation, so scanning on message_id (not the sort-key prefix) is fine. It
+// returns the message-level row carrying the content columns (customer_id, content_ciphertext, content_key_id,
+// encoding).
+func (r *CDRReader) ByMessageID(ctx context.Context, messageID uuid.UUID) (CDRRow, bool, error) {
+	query := cdrAggregateByMessage() + ` LIMIT 1`
+
+	out, err := scanCDRRow(r.conn.QueryRow(ctx, query, messageID).Scan)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return CDRRow{}, false, nil

@@ -628,3 +628,68 @@ func TestCDRAggregatesSegmentsToMessageStatus(t *testing.T) {
 		}
 	})
 }
+
+// TestCDRByMessageIDReturnsContent validates the audited content read's core assumption (step-163): the body
+// lives only on the message-level accepted row (segment_seq 0); the per-segment enroute rows carry NULL
+// content. ByMessageID (no customer/account filter) must still return the accepted row's content_ciphertext
+// and content_key_id — the any(...) aggregation skips the segments' NULLs.
+func TestCDRByMessageIDReturnsContent(t *testing.T) {
+	cfg := chtest.Config(t)
+	conn, err := clickhouse.NewConn(cfg)
+	if err != nil {
+		t.Fatalf("new conn: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	writer := clickhouse.NewCDRWriter(conn)
+	reader := clickhouse.NewCDRReader(conn)
+	ctx := context.Background()
+
+	messageID, accountID, customerID, keyID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	submittedAt := time.Now().UTC().Truncate(time.Millisecond)
+	envelope := "\x01sealed-envelope-bytes"
+
+	// The message-level accepted row carries the sealed content.
+	accepted := clickhouse.CDRRow{
+		MessageID: messageID, AccountID: accountID, CustomerID: customerID, Direction: clickhouse.DirectionMT,
+		SourceAddr: "GATEWAY", DestAddr: "22507000000", SubmittedAt: submittedAt,
+		Status: clickhouse.StatusAccepted, SegmentCount: 2, Encoding: clickhouse.EncodingGSM7,
+		ContentCiphertext: &envelope, ContentKeyID: &keyID,
+	}
+	if err := writer.Insert(ctx, accepted); err != nil {
+		t.Fatalf("insert accepted: %v", err)
+	}
+	// Two per-segment enroute rows with NO content.
+	for seq := 1; seq <= 2; seq++ {
+		seg := accepted
+		seg.Status = clickhouse.StatusEnroute
+		seg.SegmentSeq = uint16(seq)
+		seg.ContentCiphertext = nil
+		seg.ContentKeyID = nil
+		if err := writer.Insert(ctx, seg); err != nil {
+			t.Fatalf("insert segment %d: %v", seq, err)
+		}
+	}
+
+	got, found, err := reader.ByMessageID(ctx, messageID)
+	if err != nil {
+		t.Fatalf("ByMessageID: %v", err)
+	}
+	if !found {
+		t.Fatal("message not found by id")
+	}
+	if got.CustomerID != customerID {
+		t.Errorf("customer_id = %s, want %s", got.CustomerID, customerID)
+	}
+	if got.ContentCiphertext == nil || *got.ContentCiphertext != envelope {
+		t.Errorf("content_ciphertext = %v, want the accepted row's envelope (segments' NULLs must not win)", got.ContentCiphertext)
+	}
+	if got.ContentKeyID == nil || *got.ContentKeyID != keyID {
+		t.Errorf("content_key_id = %v, want %s", got.ContentKeyID, keyID)
+	}
+
+	// An unknown message id is a clean not-found.
+	if _, found, err := reader.ByMessageID(ctx, uuid.New()); err != nil || found {
+		t.Errorf("unknown message: found=%v err=%v, want (false, nil)", found, err)
+	}
+}

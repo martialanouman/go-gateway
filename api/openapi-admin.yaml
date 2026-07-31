@@ -1412,6 +1412,7 @@ paths:
       security: [ { OperatorBearer: [content:read] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/MessageContent' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
   /admin/customers/{id}/content/erase:
