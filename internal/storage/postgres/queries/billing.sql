@@ -80,6 +80,23 @@ UPDATE control_plane.customers
 SET balance_scope = @balance_scope, updated_at = now()
 WHERE id = @id;
 
+-- name: ListLedger :many
+-- One keyset page of a customer's billing ledger, newest first (step-149 get-billing-ledger). Optional
+-- direction/account_id filters. The keyset is (created_at, id) DESC so rows sharing a created_at are not
+-- dropped (id is a time-ordered UUIDv7). A NULL after_created is the first page. Never selects a message body
+-- (the ledger has none). @lim is fetched as page+1 so the caller can detect a further page.
+SELECT id, owner_type, owner_id, direction, customer_id, account_id, message_id, entry_type, credits,
+       balance_after, reference, created_at
+FROM control_plane.billing_ledger
+WHERE customer_id = @customer_id
+  AND (sqlc.narg('direction')::text IS NULL OR direction = sqlc.narg('direction'))
+  AND (sqlc.narg('account_id')::uuid IS NULL OR account_id = sqlc.narg('account_id'))
+  AND (sqlc.narg('after_created')::timestamptz IS NULL
+       OR created_at < sqlc.narg('after_created')
+       OR (created_at = sqlc.narg('after_created') AND id < sqlc.narg('after_id')))
+ORDER BY created_at DESC, id DESC
+LIMIT @lim;
+
 -- name: LedgerEntryExists :one
 -- The AUTHORITATIVE cross-partition idempotency guard (§6.9): whether a ledger entry of entry_type
 -- already exists for message_id. Read before a capture so a redelivery of the same message_id never

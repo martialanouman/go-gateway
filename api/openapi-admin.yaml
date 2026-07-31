@@ -1271,6 +1271,10 @@ paths:
         - { $ref: '#/components/parameters/Limit' }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/LedgerPage' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
 
   /admin/rate-plans:
     get:
@@ -1279,6 +1283,8 @@ paths:
       operationId: list-rate-plans
       responses:
         '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/RatePlan' } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
     post:
       tags: [Rate Plans]
       summary: Create a rate plan
@@ -1286,6 +1292,8 @@ paths:
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/RatePlanCreate' } } } }
       responses:
         '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/RatePlan' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '422': { $ref: '#/components/responses/ValidationError' }
   /admin/rate-plans/{id}:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
@@ -1296,13 +1304,19 @@ paths:
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/RatePlanUpdate' } } } }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/RatePlan' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
     delete:
       tags: [Rate Plans]
       summary: Delete a rate plan
       operationId: delete-rate-plan
       responses:
         '204': { description: Deleted. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
 
   /admin/billing-providers:
@@ -1312,6 +1326,8 @@ paths:
       operationId: list-billing-providers
       responses:
         '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/ExternalBillingProvider' } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
     post:
       tags: [Billing Providers]
       summary: Create an external billing provider
@@ -1319,6 +1335,9 @@ paths:
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ExternalBillingProviderCreate' } } } }
       responses:
         '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/ExternalBillingProvider' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
   /admin/billing-providers/{id}:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
     patch:
@@ -1328,13 +1347,19 @@ paths:
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ExternalBillingProviderUpdate' } } } }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ExternalBillingProvider' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
     delete:
       tags: [Billing Providers]
       summary: Delete an external billing provider
       operationId: delete-billing-provider
       responses:
         '204': { description: Deleted. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /admin/billing-providers/{id}/test-connection:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
     post:
@@ -1343,6 +1368,9 @@ paths:
       operationId: test-billing-provider
       responses:
         '200': { description: OK, content: { application/json: { schema: { type: object, properties: { ok: { type: boolean }, latency_ms: { type: [integer, "null"] }, detail: { type: [string, "null"] } }, required: [ok] } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   # ============================ CONTENT & RGPD (§6.14/§6.23) ============================
   /admin/platform/content-policy:
@@ -2487,7 +2515,7 @@ components:
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
-        credits_per_segment_mt_json: { type: object, additionalProperties: true, description: Integer credits per MT segment, by MCC-MNC/country + sender type. }
+        credits_per_segment_mt_json: { type: object, additionalProperties: true, description: "Integer credits per MT segment, by MCC-MNC/country + sender type." }
         credits_per_segment_mo_json: { type: object, additionalProperties: true }
         billing_mode: { type: string, enum: [prepaid, postpaid, either] }
         charge_on: { type: string, enum: [submission, delivery] }

@@ -142,6 +142,8 @@ func run() error {
 		Disconnector:     adminapi.NewGRPCDisconnector(registrypb.NewSessionRegistryClient(registryConn)),
 		Billing:          postgres.NewBillingRepo(pool),
 		BalanceCache:     redisBalanceCache{rdb: rdb},
+		RatePlans:        postgres.NewRatePlanRepo(pool),
+		BillingProviders: postgres.NewExternalBillingProviderRepo(pool),
 		Verifier:         verifier,
 		Logger:           logger,
 	})

@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
@@ -148,6 +149,41 @@ func (r *BillingRepo) ListExternalBillingConfigs(ctx context.Context) ([]cp.Cust
 		})
 	}
 	return out, nil
+}
+
+// Ledger returns one keyset page of a customer's billing ledger, newest first (step-149 get-billing-ledger),
+// plus whether a further page exists. It fetches Limit+1 rows to decide hasMore without a second round-trip.
+// The ledger carries no message body (invariant a).
+func (r *BillingRepo) Ledger(ctx context.Context, f cp.LedgerFilter) (rows []cp.LedgerRow, hasMore bool, err error) {
+	var afterCreated pgtype.Timestamptz
+	var afterID *uuid.UUID
+	if !f.After.CreatedAt.IsZero() {
+		afterCreated = pgtype.Timestamptz{Time: f.After.CreatedAt, Valid: true}
+		id := f.After.ID
+		afterID = &id
+	}
+	//nolint:gosec // Limit is clamped to 500 by the handler, so +1 cannot overflow int32.
+	dbrows, err := r.q.ListLedger(ctx, sqlcgen.ListLedgerParams{
+		CustomerID: f.CustomerID, Direction: f.Direction, AccountID: f.AccountID,
+		AfterCreated: afterCreated, AfterID: afterID, Lim: int32(f.Limit) + 1,
+	})
+	if err != nil {
+		return nil, false, translate("list ledger", err)
+	}
+	hasMore = len(dbrows) > f.Limit
+	if hasMore {
+		dbrows = dbrows[:f.Limit]
+	}
+	rows = make([]cp.LedgerRow, 0, len(dbrows))
+	for _, row := range dbrows {
+		rows = append(rows, cp.LedgerRow{
+			ID: row.ID, OwnerType: row.OwnerType, OwnerID: row.OwnerID, Direction: row.Direction,
+			CustomerID: row.CustomerID, AccountID: row.AccountID, MessageID: row.MessageID,
+			EntryType: cp.EntryType(row.EntryType), Credits: int(row.Credits), BalanceAfter: int(row.BalanceAfter),
+			Reference: row.Reference, CreatedAt: tsVal(row.CreatedAt),
+		})
+	}
+	return rows, hasMore, nil
 }
 
 // Balances reads the MT and MO durable balance of each owner (step-148 get-customer-balances). A missing

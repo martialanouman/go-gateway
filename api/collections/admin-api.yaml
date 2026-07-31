@@ -1140,3 +1140,126 @@ items:
                 "balance_scope": "smpp_account"
               }
         docs: Change balance_scope (409 unless all balances are zero) (scope admin:write).
+      - info:
+          name: get-billing-ledger
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/customers/{{customerId}}/billing/ledger?direction=mt&limit=50'
+        docs: Read the billing ledger, keyset-paginated newest-first (scope admin:read).
+  - info:
+      name: Rate Plans
+      type: folder
+    items:
+      - info:
+          name: list-rate-plans
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/rate-plans'
+        docs: List rate plans (scope admin:read).
+      - info:
+          name: create-rate-plan
+          type: http
+        http:
+          method: POST
+          url: '{{baseUrl}}/admin/rate-plans'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "name": "standard",
+                "credits_per_segment_mt_json": { "default": 1 },
+                "credits_per_segment_mo_json": { "default": 0 },
+                "billing_mode": "either",
+                "charge_on": "submission"
+              }
+        docs: Create a rate plan (scope admin:write).
+      - info:
+          name: update-rate-plan
+          type: http
+        http:
+          method: PATCH
+          url: '{{baseUrl}}/admin/rate-plans/{{ratePlanId}}'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "status": "disabled"
+              }
+        docs: Update a rate plan (scope admin:write).
+      - info:
+          name: delete-rate-plan
+          type: http
+        http:
+          method: DELETE
+          url: '{{baseUrl}}/admin/rate-plans/{{ratePlanId}}'
+        docs: Delete a rate plan (409 if still assigned to a customer) (scope admin:write).
+  - info:
+      name: Billing Providers
+      type: folder
+    items:
+      - info:
+          name: list-billing-providers
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/billing-providers'
+        docs: List external billing providers, auth config masked (scope admin:read).
+      - info:
+          name: create-billing-provider
+          type: http
+        http:
+          method: POST
+          url: '{{baseUrl}}/admin/billing-providers'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "name": "acme-billing",
+                "base_url": "https://billing.acme.example",
+                "auth_config_json": { "api_key": "REDACTED" },
+                "mode": "balance_check",
+                "cache_ttl_ms": 1000,
+                "failure_policy": "fail_open"
+              }
+        docs: Create an external billing provider (scope admin:write).
+      - info:
+          name: update-billing-provider
+          type: http
+        http:
+          method: PATCH
+          url: '{{baseUrl}}/admin/billing-providers/{{providerId}}'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "status": "disabled"
+              }
+        docs: Update an external billing provider (scope admin:write).
+      - info:
+          name: delete-billing-provider
+          type: http
+        http:
+          method: DELETE
+          url: '{{baseUrl}}/admin/billing-providers/{{providerId}}'
+        docs: Delete an external billing provider (scope admin:write).
+      - info:
+          name: test-billing-provider
+          type: http
+        http:
+          method: POST
+          url: '{{baseUrl}}/admin/billing-providers/{{providerId}}/test-connection'
+        docs: Probe a provider's connectivity (stub until the HTTP probe ships) (scope admin:write).
