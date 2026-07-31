@@ -193,6 +193,51 @@ func TestRouterFansOutOneRecordPerSegment(t *testing.T) {
 	}
 }
 
+// fakeSealer records that the router asked it to seal a rejected row, and stamps the body into the content
+// column the way a real ContentSealer would for a stored_plaintext customer.
+type fakeSealer struct {
+	called  bool
+	gotCust uuid.UUID
+}
+
+func (f *fakeSealer) Seal(_ context.Context, row *clickhouse.CDRRow, body msg.Body, customerID uuid.UUID) {
+	f.called = true
+	f.gotCust = customerID
+	plaintext := string(body.Reveal())
+	row.ContentCiphertext = &plaintext
+}
+
+// TestRouterSealsContentOnRejectedRow: a rejected message's body is sealed into the CDR row per policy (step
+// follow-up), keyed by the customer id — rejects store content the same way accepted rows do.
+func TestRouterSealsContentOnRejectedRow(t *testing.T) {
+	in := inbound("not-a-number") // fails E.164 → rejected
+	inRec, err := pipeline.EncodeInbound(in)
+	if err != nil {
+		t.Fatalf("encode inbound: %v", err)
+	}
+	cdr := &fakeCDR{}
+	sealer := &fakeSealer{}
+	rec := otelrec.New(t)
+	tracer := observability.Tracer(rec.Provider(), "router")
+	r := router.New(router.Deps{
+		Consumer: &fakeConsumer{records: []kafka.Record{inRec}},
+		Producer: &fakeProducer{},
+		Pipeline: pipeline.New(tracer, stubResolver{conn: uuid.New()}, allowAllSenderIDs{}, allowAllOptOut{}, allowAllAntispam{}, nil, nil),
+		CDR:      cdr,
+		Sealer:   sealer,
+		Tracer:   tracer,
+	})
+	if err := r.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !sealer.called || sealer.gotCust != in.CustomerID {
+		t.Fatalf("sealer called=%v cust=%s, want called for %s", sealer.called, sealer.gotCust, in.CustomerID)
+	}
+	if len(cdr.rows) != 1 || cdr.rows[0].ContentCiphertext == nil || *cdr.rows[0].ContentCiphertext != "hello" {
+		t.Errorf("rejected row content not sealed: %+v", cdr.rows)
+	}
+}
+
 func TestRouterWritesRejectedCDROnPipelineRejection(t *testing.T) {
 	in := inbound("not-a-number") // fails E.164 normalization
 	inRec, err := pipeline.EncodeInbound(in)
