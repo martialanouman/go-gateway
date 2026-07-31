@@ -24,6 +24,8 @@ import (
 	"github.com/martialanouman/go-gateway/internal/billing/pb"
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/connector/breaker"
+	"github.com/martialanouman/go-gateway/internal/content"
+	"github.com/martialanouman/go-gateway/internal/ingest"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	"github.com/martialanouman/go-gateway/internal/pipeline/antispam"
@@ -221,6 +223,31 @@ func run() error {
 	defer func() { _ = billingConn.Close() }()
 	reserver := credit.NewReserver(&creditHolder, pb.NewBillingClient(billingConn), credit.WithTimeout(cfg.Billing.ReserveTimeout))
 
+	// Accepted CDR projection (step-101): the accepted row is projected durably off mt.inbound by a DEDICATED
+	// consumer group, separate from routing, committing at-least-once after the ClickHouse write so no accepted
+	// row is ever lost (a ClickHouse fault reprocesses the batch; a slow ClickHouse only lengthens the
+	// get-message 404 window, never the routing path). It also seals the body into the CDR per content_storage
+	// (step-162): the DEK comes from billing-svc via a TTL cache, so the body never reaches billing-svc; an
+	// unavailable DEK degrades to no-content (counted), never a stall. A fresh group starts at the LATEST
+	// offset — replaying the whole retained topic would re-insert every historical accepted row and storm
+	// billing for DEKs — so the deploy pins the start offset (runbook).
+	contentPolicy, err := content.LoadPolicySnapshot(ctx, postgres.NewCustomerRepo(pool))
+	if err != nil {
+		return fmt.Errorf("load content-storage policy: %w", err)
+	}
+	dekCache := content.NewDataKeyCache(content.NewGRPCDataKeyFetcher(pb.NewContentKeysClient(billingConn)))
+	contentDropped := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "accepted_content_dropped_total",
+		Help: "Message bodies dropped from the accepted CDR row because the content data key was unavailable.",
+	})
+	sealer := ingest.NewContentSealer(contentPolicy, dekCache, contentDropped, logger)
+	acceptedConsumer, err := kafka.NewConsumerFromLatest(cfg.Kafka, serviceName+"-accepted-cdr", kafka.TopicMTInbound)
+	if err != nil {
+		return fmt.Errorf("kafka accepted-cdr consumer: %w", err)
+	}
+	defer acceptedConsumer.Close()
+	acceptedProjector := ingest.NewAcceptedConsumer(acceptedConsumer, clickhouse.NewCDRWriter(chConn), sealer, logger)
+
 	tracer := observability.Tracer(nil, serviceName)
 	pl := pipeline.New(tracer, resolver, senderIDs, optOut, spam, rateLimiter, reserver)
 	rtr := router.New(router.Deps{
@@ -242,7 +269,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("init ops server: %w", err)
 	}
-	ops.Registry().MustRegister(failOpenTotal, scriptFailures)
+	ops.Registry().MustRegister(failOpenTotal, scriptFailures, contentDropped)
 
 	// bloom_last_reload / bloom_capacity_bits: labelled by filter (exact | optout), no unbounded labels.
 	// The timestamp lets an alert fire on a stale filter; the capacity tracks growth after a reload.
@@ -325,6 +352,15 @@ func run() error {
 	var g supervisor.Group
 	g.Add("ops server", func(c context.Context) error { return ops.Run(c, cfg.ShutdownTimeout) })
 	g.Add("router", rtr.Run)
+	// The accepted-CDR projector is SELF-RESTARTING rather than a plain g.Add: it writes ClickHouse on every
+	// message, so a transient ClickHouse fault surfaces as a RunBatch error (uncommitted offset → reprocess).
+	// If that error propagated to the unordered supervisor it would tear down the whole process — routing
+	// included — over a store the routing happy path never touches (see the readiness rationale above). Instead
+	// we absorb it: on a fault we back off and resume the consumer (reprocessing from the last commit, so no
+	// accepted row is lost), and only ctx cancellation stops it. ClickHouse thus stays non-vital for routing.
+	g.Add("accepted cdr", func(c context.Context) error {
+		return runResilient(c, "accepted-cdr projector", acceptedProjector.Run, logger)
+	})
 	g.Add("snapshot watcher", snapshotWatcher.Run)
 	if err := g.Run(ctx, logger); err != nil {
 		return err
@@ -464,6 +500,30 @@ func loadWithRetry[T any](ctx context.Context, logger *slog.Logger, what string,
 		}
 		if backoff *= 2; backoff > maxBackoff {
 			backoff = maxBackoff
+		}
+	}
+}
+
+// acceptedProjectorBackoff is the pause between restarts of the accepted-CDR projector after a transient
+// fault (a ClickHouse blip), long enough to let the store recover without a tight crash loop, short enough
+// to keep the get-message 404 window from lengthening unduly.
+const acceptedProjectorBackoff = 2 * time.Second
+
+// runResilient runs a supervised loop that survives transient faults: it restarts run after a bounded backoff
+// on any non-nil error, and returns only when ctx is cancelled (a clean stop). It lets one component tolerate
+// a dependency blip without failing the whole process — used for the accepted-CDR projector so a ClickHouse
+// fault reprocesses (at-least-once) instead of crashing router-svc's routing path.
+func runResilient(ctx context.Context, name string, run func(context.Context) error, logger *slog.Logger) error {
+	for {
+		err := run(ctx)
+		if err == nil || ctx.Err() != nil {
+			return nil
+		}
+		logger.ErrorContext(ctx, "component faulted; restarting after backoff", "component", name, "err", err)
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(acceptedProjectorBackoff):
 		}
 	}
 }

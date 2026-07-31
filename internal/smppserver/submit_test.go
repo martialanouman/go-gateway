@@ -234,8 +234,8 @@ func TestOnSubmitNilIngestorRejects(t *testing.T) {
 func TestRESTAndSMPPProduceEquivalentEnvelope(t *testing.T) {
 	acc, cust := uuid.New(), uuid.New()
 
-	restRec, restRow := submitViaREST(t, acc, cust)
-	smppRec, smppRow := submitViaSMPP(t, acc, cust)
+	restRec := submitViaREST(t, acc, cust)
+	smppRec := submitViaSMPP(t, acc, cust)
 
 	restEnv, err := pipeline.DecodeInbound(restRec)
 	if err != nil {
@@ -245,6 +245,8 @@ func TestRESTAndSMPPProduceEquivalentEnvelope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode SMPP record: %v", err)
 	}
+	restRow := ingest.AcceptedRow(restEnv)
+	smppRow := ingest.AcceptedRow(smppEnv)
 
 	normalizeEnv(&restEnv)
 	normalizeEnv(&smppEnv)
@@ -273,19 +275,16 @@ func normalizeEnv(e *pipeline.InboundMT) {
 
 // submitViaREST drives the real REST submit handler and returns the produced mt.inbound record and the
 // accepted CDR row it projected.
-func submitViaREST(t *testing.T, acc, cust uuid.UUID) (kafka.Record, clickhouse.CDRRow) {
+func submitViaREST(t *testing.T, acc, cust uuid.UUID) kafka.Record {
 	t.Helper()
 	producer := &fakeProducer{}
-	cdr := &fakeCDR{}
-	accepted := ingest.NewAcceptedWriter(cdr, nil, 1, 16, nil)
-	runAccepted(t, accepted)
 
 	mux, _ := restapi.New(restapi.Deps{
 		Principals: fakePrincipals{principal: cp.APIKeyPrincipal{
 			AccountID: acc, CustomerID: cust,
 			AccountStatus: cp.AccountActive, CustomerStatus: cp.CustomerActive, RESTEnabled: true,
 		}, found: true},
-		Ingestor:  ingest.NewIngestor(producer, accepted, nil),
+		Ingestor:  ingest.NewIngestor(producer, nil),
 		CDRReader: fakeReader{},
 		Tracer:    noop.NewTracerProvider().Tracer(""),
 		Version:   "test",
@@ -311,32 +310,21 @@ func submitViaREST(t *testing.T, acc, cust uuid.UUID) (kafka.Record, clickhouse.
 	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("REST submit status = %d, want 202", resp.StatusCode)
 	}
-	return producer.first(t), waitRow(t, cdr)
+	return producer.first(t)
 }
 
 // submitViaSMPP drives the submit_sm handler directly with an equivalent request and returns the same.
-func submitViaSMPP(t *testing.T, acc, cust uuid.UUID) (kafka.Record, clickhouse.CDRRow) {
+func submitViaSMPP(t *testing.T, acc, cust uuid.UUID) kafka.Record {
 	t.Helper()
 	producer := &fakeProducer{}
-	cdr := &fakeCDR{}
-	accepted := ingest.NewAcceptedWriter(cdr, nil, 1, 16, nil)
-	runAccepted(t, accepted)
 
-	l := New(nil, nil, ingest.NewIngestor(producer, accepted, nil), Options{}, discardLog())
+	l := New(nil, nil, ingest.NewIngestor(producer, nil), Options{}, discardLog())
 	res := l.onSubmit(context.Background(), &connState{accountID: acc, customerID: cust})(
 		context.Background(), submitReq())
 	if res.Status != smpp.StatusOK {
 		t.Fatalf("SMPP submit status = %#x, want ESME_ROK", res.Status)
 	}
-	return producer.first(t), waitRow(t, cdr)
-}
-
-func runAccepted(t *testing.T, a *ingest.AcceptedWriter) {
-	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { _ = a.Run(ctx); close(done) }()
-	t.Cleanup(func() { cancel(); <-done })
+	return producer.first(t)
 }
 
 // --- fakes shared by the parity test ---
@@ -363,36 +351,7 @@ func (f *fakeProducer) first(t *testing.T) kafka.Record {
 	return f.records[0]
 }
 
-type fakeCDR struct {
-	mu   sync.Mutex
-	rows []clickhouse.CDRRow
-}
-
-func (f *fakeCDR) InsertBatch(_ context.Context, rows []clickhouse.CDRRow) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.rows = append(f.rows, rows...)
-	return nil
-}
-
 // waitRow polls until the async accepted writer has flushed exactly one row, then returns it.
-func waitRow(t *testing.T, f *fakeCDR) clickhouse.CDRRow {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		f.mu.Lock()
-		n := len(f.rows)
-		if n == 1 {
-			row := f.rows[0]
-			f.mu.Unlock()
-			return row
-		}
-		f.mu.Unlock()
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatalf("accepted CDR row never landed")
-	return clickhouse.CDRRow{}
-}
 
 type fakePrincipals struct {
 	principal cp.APIKeyPrincipal

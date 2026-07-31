@@ -1,8 +1,9 @@
 // Package ingest is the one MT ingestion path shared by every submission surface. A REST submit and
 // an SMPP submit_sm both build a pipeline.InboundMT and hand it to Ingestor.Accept, which encodes it,
-// writes it durably to mt.inbound (the durability boundary that earns the acknowledgement), and then
-// projects the accepted CDR row off the caller's path. Both protocols reaching the pipeline through
-// this single helper is what makes REST/SMPP parity a property of the code, not a coincidence.
+// writes it durably to mt.inbound (the durability boundary that earns the acknowledgement). The accepted
+// CDR row is projected off that durable topic by AcceptedConsumer, not written on the caller's path. Both
+// protocols reaching the pipeline through this single helper is what makes REST/SMPP parity a property of
+// the code, not a coincidence.
 //
 // It never logs or spans a message body: the plaintext stays inside pipeline.InboundMT.Body until the
 // audited WIRE codec reveals it into the durable Kafka value (invariant a).
@@ -25,21 +26,21 @@ type Producer interface {
 	Produce(ctx context.Context, rec kafka.Record) error
 }
 
-// Ingestor performs the shared ingestion sequence for one submission. It holds the durable producer
-// and the off-path accepted-row writer; the per-protocol surfaces build the envelope and map the
-// result to their own response.
+// Ingestor performs the shared ingestion sequence for one submission: it encodes the envelope and produces
+// it durably to mt.inbound (the boundary that earns the acknowledgement). The accepted CDR row is NOT written
+// here — it is projected off the durable mt.inbound topic by AcceptedConsumer (step-101), so it can never be
+// lost on the request path.
 type Ingestor struct {
 	producer Producer
-	accepted *AcceptedWriter
 	logger   *slog.Logger
 }
 
-// NewIngestor wires an Ingestor over a producer and the accepted-row writer.
-func NewIngestor(producer Producer, accepted *AcceptedWriter, logger *slog.Logger) *Ingestor {
+// NewIngestor wires an Ingestor over the durable producer.
+func NewIngestor(producer Producer, logger *slog.Logger) *Ingestor {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Ingestor{producer: producer, accepted: accepted, logger: logger}
+	return &Ingestor{producer: producer, logger: logger}
 }
 
 // Accept encodes env, produces it to mt.inbound (the durability boundary — §6.7/§7.3), and only then
@@ -60,18 +61,15 @@ func (i *Ingestor) Accept(ctx context.Context, env pipeline.InboundMT) error {
 		return fmt.Errorf("produce mt.inbound: %w", errs.ErrServiceUnavailable)
 	}
 
-	// Acknowledgement earned. The accepted CDR row is written asynchronously, never blocking the caller. The
-	// body is handed to the async writer, which seals it into the content column per policy (invariant a: it
-	// never reaches a log or span, only the dedicated column when the customer stores content).
-	i.accepted.Enqueue(AcceptedRow(env), env.Body)
+	// Acknowledgement earned. The accepted CDR row is not written here: AcceptedConsumer projects it durably
+	// off mt.inbound (step-101), so a saturation on the read-model write can never lose the row.
 	return nil
 }
 
-// AcceptedRow builds the pre-dispatch accepted CDR row from the inbound envelope. The destination is
-// left as submitted here: the AcceptedWriter normalizes it off the request path (the phone parse is
-// too heavy to run inline at the ingest rate), to the same canonical form the router stores, so a
-// message spells its destination the same across all its lifecycle rows. The body is never included
-// (invariant a).
+// AcceptedRow builds the pre-dispatch accepted CDR row from the inbound envelope. The destination is left as
+// submitted here: AcceptedConsumer normalizes it (the phone parse is too heavy to run inline at the ingest
+// rate) to the same canonical form the router stores, so a message spells its destination the same across all
+// its lifecycle rows. The body is not set here; AcceptedConsumer seals it into the content column per policy.
 func AcceptedRow(env pipeline.InboundMT) clickhouse.CDRRow {
 	return clickhouse.CDRRow{
 		MessageID:    env.MessageID,
