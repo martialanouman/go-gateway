@@ -1,0 +1,21 @@
+-- Body retention decoupled from CDR retention (§6.14, §1.10, step-165). The CDR row is kept for the full
+-- retention window (the table TTL, 90 days) because it is the billing and traffic record. The message BODY
+-- is personal data and must not live that long. A COLUMN-level TTL expires the content columns on their own
+-- schedule: when it fires, ClickHouse replaces the values with the column default (NULL) and drops them from
+-- disk, leaving every other column of the row intact — the body expires before the metadata, with no
+-- DELETE, no mutation and no rewrite of the CDR.
+--
+-- content_key_id expires with the ciphertext it addresses, because once the body is gone the key reference
+-- is noise. 30 days is the platform default. A per-customer content_retention_days shorter than it would
+-- need the retention days materialised on the row (a TTL expression can only read the row's own columns) —
+-- a noted follow-up.
+--
+-- materialize_ttl_after_modify = 0 is deliberate: with the default (1) this ALTER schedules a MATERIALIZE
+-- TTL mutation that REWRITES every existing part — a full rewrite of the retained CDR (tens of TB at target
+-- volume) kicked off in the background while the deploy reports success. New and merged parts pick the TTL
+-- up naturally; applying it to existing parts is an operator action, partition by partition, off-peak:
+--   ALTER TABLE cdr MATERIALIZE TTL IN PARTITION 'YYYY-MM-DD'
+--
+-- Both actions share ONE ALTER, and no statement separator appears anywhere in this file except at the end
+-- (one statement per ClickHouse migration file).
+ALTER TABLE cdr MODIFY COLUMN content_ciphertext Nullable(String) TTL toDate(submitted_at) + INTERVAL 30 DAY, MODIFY COLUMN content_key_id Nullable(UUID) TTL toDate(submitted_at) + INTERVAL 30 DAY SETTINGS materialize_ttl_after_modify = 0;

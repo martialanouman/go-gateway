@@ -145,6 +145,21 @@ type ClickHouse struct {
 
 	// Timeout bounds readiness probes and dial/query operations.
 	Timeout time.Duration `env:"TIMEOUT" envDefault:"5s"`
+
+	// CDRRetention is how long a CDR partition is kept before it is archived and dropped (§6.14,
+	// step-165). It matches the table's own TTL by default; the message body expires far earlier, on the
+	// per-column TTL, so this governs the metadata's lifetime, not the content's.
+	CDRRetention time.Duration `env:"CDR_RETENTION" envDefault:"2160h"` // 90 days
+
+	// RetentionInterval is how often the retention pass runs. 0 disables the pass entirely, leaving purge
+	// to an external scheduler (the partition-drop is the same either way).
+	RetentionInterval time.Duration `env:"RETENTION_INTERVAL" envDefault:"24h"`
+
+	// ArchivePrefix enables cold-storage tiering: an expired partition is archived as
+	// "<prefix>-<YYYY-MM-DD>.parquet" before it is dropped, and never dropped if archiving failed. Empty
+	// (the default) drops without archiving — the real cold bucket is an infrastructure decision, so
+	// tiering is opt-in rather than silently filling the ClickHouse server's own disk.
+	ArchivePrefix string `env:"ARCHIVE_PREFIX"`
 }
 
 // HTTP configures a service's client-facing REST listener. Only the HTTP services declare

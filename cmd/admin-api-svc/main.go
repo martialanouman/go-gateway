@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	goredis "github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -94,6 +95,33 @@ func run() error {
 		return fmt.Errorf("connect clickhouse: %w", err)
 	}
 	defer func() { _ = chConn.Close() }()
+
+	// CDR retention (§6.14, step-165): expired daily partitions are archived (when a destination is
+	// configured) and then DROPPED — a metadata operation, never a delete-by-predicate, which would rewrite
+	// parts continuously at the 8000 msg/s target. It lives here because this service already holds the
+	// ClickHouse connection and is the control-plane surface. Running it on several replicas is tolerable
+	// (a re-drop is a no-op, and archives never share a destination object) but archives a partition twice,
+	// so a deploy that scales this service out should schedule retention on a single runner instead.
+	// cdr_retention_partitions_total: bounded label (four fixed outcomes) — a pass that has been failing for
+	// weeks must be an alert, not a log line, because its consequence is a disk filling up.
+	retentionOutcomes := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "cdr_retention_partitions_total",
+		Help: "CDR partitions processed by the retention pass, by outcome.",
+	}, []string{"outcome"})
+	retainerOpts := []clickhouse.RetainerOption{
+		clickhouse.WithRetainerLogger(logger),
+		clickhouse.WithRetentionMetric(retentionMetric{c: retentionOutcomes}),
+	}
+	if prefix := cfg.ClickHouse.ArchivePrefix; prefix != "" {
+		// The prefix is interpolated into the archive statement, so a malformed one is a boot failure, never
+		// a surprise at the first purge.
+		if !clickhouse.ValidArchivePrefix(prefix) {
+			return fmt.Errorf("CLICKHOUSE_ARCHIVE_PREFIX %q is not a plain name ([A-Za-z0-9._/-], max 128)", prefix)
+		}
+		retainerOpts = append(retainerOpts, clickhouse.WithArchiver(
+			clickhouse.NewPartitionArchiver(chConn, clickhouse.FileDestination(prefix))))
+	}
+	retainer := clickhouse.NewRetainer(chConn, cfg.ClickHouse.CDRRetention, retainerOpts...)
 
 	// The bulk-import runner runs exact-route MNP imports in the background (step-103), bounded and
 	// drained on shutdown. Its jobs use the pool, so its drain must complete before pool.Close: this
@@ -191,6 +219,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("init ops server: %w", err)
 	}
+	ops.Registry().MustRegister(retentionOutcomes)
 
 	logger.InfoContext(ctx, "starting", "config", cfg)
 
@@ -200,6 +229,9 @@ func run() error {
 	var g supervisor.Group
 	g.Add("ops server", func(c context.Context) error { return ops.Run(c, cfg.ShutdownTimeout) })
 	g.Add("admin http server", func(c context.Context) error { return runHTTP(c, srv, cfg.ShutdownTimeout, logger) })
+	g.Add("cdr retention", func(c context.Context) error {
+		return retainer.Run(c, cfg.ClickHouse.RetentionInterval)
+	})
 	if err := g.Run(ctx, logger); err != nil {
 		return err
 	}
@@ -235,6 +267,11 @@ func runHTTP(ctx context.Context, srv *http.Server, timeout time.Duration, logge
 		return nil
 	}
 }
+
+// retentionMetric adapts a Prometheus counter to clickhouse.RetentionMetric.
+type retentionMetric struct{ c *prometheus.CounterVec }
+
+func (m retentionMetric) Observe(outcome string) { m.c.WithLabelValues(outcome).Inc() }
 
 // redisBalanceCache adapts the Redis client to adminapi.BalanceCacheInvalidator: it deletes the balance-cache
 // keys an admin money op just changed durably, so the next reserve rehydrates from Postgres (step-148).
