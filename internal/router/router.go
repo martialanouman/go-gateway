@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/martialanouman/go-gateway/internal/pipeline"
@@ -34,6 +35,15 @@ type CDRWriter interface {
 	Insert(ctx context.Context, row clickhouse.CDRRow) error
 }
 
+// ContentSealer seals the message body into a CDR row per the customer's content_storage policy, so a
+// rejected message stores its content the same way an accepted one does (a rejection is still the customer's
+// message; rejects are also what operators most want to inspect). It never fails: an unavailable data key
+// degrades to no content. A nil sealer disables content storage. *ingest.ContentSealer satisfies it; declared
+// consumer-side. The body reaches only the content column, never a log (invariant a).
+type ContentSealer interface {
+	Seal(ctx context.Context, row *clickhouse.CDRRow, body msg.Body, customerID uuid.UUID)
+}
+
 // Deps are the router's collaborators. The tracer comes in through Deps (never the global) so the
 // in-process E2E can wire several services with distinct tracers.
 type Deps struct {
@@ -41,6 +51,7 @@ type Deps struct {
 	Producer Producer
 	Pipeline *pipeline.Pipeline
 	CDR      CDRWriter
+	Sealer   ContentSealer
 	Tracer   trace.Tracer
 	Logger   *slog.Logger
 }
@@ -87,7 +98,13 @@ func (r *Router) handle(ctx context.Context, rec kafka.Record) error {
 			// No platform code means an unexpected internal fault: treat as transient and retry.
 			return fmt.Errorf("router: pipeline: %w", perr)
 		}
-		if err := r.deps.CDR.Insert(ctx, rejectedRow(in, code)); err != nil {
+		row := rejectedRow(in, code)
+		// Seal the body into the rejected row per the customer's content policy (same as an accepted row).
+		// Fail-open: an unavailable data key stores no content, never fails the rejection.
+		if r.deps.Sealer != nil {
+			r.deps.Sealer.Seal(ctx, &row, in.Body, in.CustomerID)
+		}
+		if err := r.deps.CDR.Insert(ctx, row); err != nil {
 			return fmt.Errorf("router: write rejected cdr: %w", err)
 		}
 		r.deps.Logger.InfoContext(ctx, "message rejected in pipeline",
@@ -123,7 +140,8 @@ func (r *Router) handle(ctx context.Context, rec kafka.Record) error {
 
 // rejectedRow builds the CDR row for a message rejected before dispatch. It carries the immutable
 // submitted_at from ingestion and the addresses as they stood at rejection (the destination may be
-// un-normalised when E.164 itself failed). The body is never included (invariant a).
+// un-normalised when E.164 itself failed). The body is not set here; the caller seals it into the content
+// column per the customer's content policy (invariant a: the body reaches only that column, never a log).
 func rejectedRow(in pipeline.InboundMT, code errs.Code) clickhouse.CDRRow {
 	errorCode := string(code)
 	return clickhouse.CDRRow{

@@ -259,6 +259,7 @@ func run() error {
 		Producer: producer,
 		Pipeline: pl,
 		CDR:      clickhouse.NewCDRWriter(chConn),
+		Sealer:   sealer,
 		Tracer:   tracer,
 		Logger:   logger,
 	})
