@@ -56,6 +56,10 @@ type Sender struct {
 	sleep       func(ctx context.Context, d time.Duration) error
 	jitter      func() float64
 	maxAttempts int // 0 = honour the per-webhook policy; >0 caps it (see WithMaxAttempts).
+	// retry, when set, switches Send from in-band retries to deferred ones (step-192). Nil keeps the
+	// original inline loop, so an un-migrated call site behaves exactly as before.
+	retry       RetrySink
+	maxRetryAge time.Duration
 }
 
 // Option overrides a Sender default (the clock, the backoff sleep, the jitter source) for tests.
@@ -98,12 +102,13 @@ func NewSender(client *http.Client, deadLetter DeadLetterSink, logger *slog.Logg
 		deadLetter = noopSink{}
 	}
 	s := &Sender{
-		client:     client,
-		deadLetter: deadLetter,
-		logger:     logger,
-		now:        time.Now,
-		sleep:      sleepCtx,
-		jitter:     rand.Float64,
+		client:      client,
+		deadLetter:  deadLetter,
+		logger:      logger,
+		now:         time.Now,
+		sleep:       sleepCtx,
+		jitter:      rand.Float64,
+		maxRetryAge: defaultMaxRetryAge,
 	}
 	for _, o := range opts {
 		o(s)
@@ -118,6 +123,11 @@ func NewSender(client *http.Client, deadLetter DeadLetterSink, logger *slog.Logg
 // logged. The caller is responsible for having resolved an active webhook — Send does not consult
 // wh.Status (whether a disabled webhook suppresses delivery is the resolver's decision, step-048).
 func (s *Sender) Send(ctx context.Context, wh cp.Webhook, ev Event) error {
+	// With a retry sink wired, the hot path spends exactly one attempt and defers a transient failure
+	// (step-192) rather than sleeping through a backoff on the caller's serial consumer goroutine.
+	if s.retry != nil {
+		return s.deliverOnce(ctx, wh, ev, 0, s.now())
+	}
 	policy := parseRetryPolicy(wh.RetryPolicyJSON)
 	maxAttempts := policy.MaxAttempts
 	if s.maxAttempts > 0 && s.maxAttempts < maxAttempts {
