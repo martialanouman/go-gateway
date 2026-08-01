@@ -2,13 +2,7 @@ package restapi
 
 import (
 	"context"
-	"encoding/base64"
-	"errors"
-	"strconv"
-	"strings"
 	"time"
-
-	"github.com/google/uuid"
 
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 	"github.com/martialanouman/go-gateway/internal/platform/errors/humaerr"
@@ -69,7 +63,7 @@ func (s *server) listMessages(ctx context.Context, in *listMessagesInput) (*list
 		filter.ToDate = &to
 	}
 	if in.Cursor != "" {
-		key, err := decodeCursor(in.Cursor)
+		key, err := clickhouse.DecodeCDRCursor(in.Cursor)
 		if err != nil {
 			return nil, humaerr.FromError(errs.ErrValidation)
 		}
@@ -94,43 +88,9 @@ func (s *server) listMessages(ctx context.Context, in *listMessagesInput) (*list
 	}
 	if hasMore {
 		last := rows[len(rows)-1]
-		cursor := encodeCursor(clickhouse.CDRKey{SubmittedAt: last.SubmittedAt, MessageID: last.MessageID})
+		cursor := clickhouse.EncodeCDRCursor(clickhouse.CDRKey{SubmittedAt: last.SubmittedAt, MessageID: last.MessageID})
 		page.NextCursor = &cursor
 	}
 
 	return &listMessagesOutput{Body: page}, nil
-}
-
-// cursorSep separates the two keyset fields inside the pre-base64 cursor payload. A message_id is a
-// UUID (no separator char) and the timestamp is decimal, so '|' is unambiguous.
-const cursorSep = "|"
-
-// encodeCursor renders a keyset position as an opaque base64url token. The timestamp is encoded at
-// millisecond precision to match the CDR's DateTime64(3) column, so decoding round-trips to exactly
-// the stored value and pagination neither skips nor repeats a row.
-func encodeCursor(k clickhouse.CDRKey) string {
-	payload := strconv.FormatInt(k.SubmittedAt.UnixMilli(), 10) + cursorSep + k.MessageID.String()
-	return base64.RawURLEncoding.EncodeToString([]byte(payload))
-}
-
-// decodeCursor parses a token produced by encodeCursor. Any malformed input is an error, which the
-// handler maps to 422: a cursor is opaque, so a client should only ever echo one back verbatim.
-func decodeCursor(s string) (clickhouse.CDRKey, error) {
-	raw, err := base64.RawURLEncoding.DecodeString(s)
-	if err != nil {
-		return clickhouse.CDRKey{}, err
-	}
-	ts, id, ok := strings.Cut(string(raw), cursorSep)
-	if !ok {
-		return clickhouse.CDRKey{}, errors.New("cursor: missing separator")
-	}
-	ms, err := strconv.ParseInt(ts, 10, 64)
-	if err != nil {
-		return clickhouse.CDRKey{}, err
-	}
-	messageID, err := uuid.Parse(id)
-	if err != nil {
-		return clickhouse.CDRKey{}, err
-	}
-	return clickhouse.CDRKey{SubmittedAt: time.UnixMilli(ms).UTC(), MessageID: messageID}, nil
 }
