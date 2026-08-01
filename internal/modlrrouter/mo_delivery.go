@@ -8,6 +8,7 @@ import (
 	"go.opentelemetry.io/otel/trace/noop"
 
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
+	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
 	"github.com/martialanouman/go-gateway/internal/webhook"
@@ -53,6 +54,7 @@ func (r *MODeliveryRouter) handler() kafka.Handler {
 
 		mo, err := pipeline.DecodeMORouted(rec)
 		if err != nil {
+			observability.RecordSpanError(span, err)
 			r.logger.ErrorContext(ctx, "modlrrouter: undecodable mo.routed record, skipping", "err", err)
 			return nil
 		}
@@ -61,11 +63,13 @@ func (r *MODeliveryRouter) handler() kafka.Handler {
 		if err != nil {
 			// Encoding the PDU from our own envelope failing is a deterministic bug: retrying is futile,
 			// but the resolved MO must not be lost — park it verbatim. Ids only, never the body.
+			observability.RecordSpanError(span, err)
 			r.logger.ErrorContext(ctx, "modlrrouter: encode mo deliver_sm, dead-lettering", "message_id", mo.MessageID, "err", err)
 			return r.deliverer.DeadLetterRaw(ctx, deadLetter, string(cp.WebhookEventMO), "encode_error")
 		}
 		evID, payload, err := moWebhookBody(mo)
 		if err != nil {
+			observability.RecordSpanError(span, err)
 			r.logger.ErrorContext(ctx, "modlrrouter: build mo webhook payload, dead-lettering", "message_id", mo.MessageID, "err", err)
 			return r.deliverer.DeadLetterRaw(ctx, deadLetter, string(cp.WebhookEventMO), "encode_error")
 		}

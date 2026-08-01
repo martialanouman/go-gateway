@@ -4,12 +4,12 @@ import (
 	"context"
 
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/google/uuid"
 
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
+	"github.com/martialanouman/go-gateway/internal/observability"
 	pipeenc "github.com/martialanouman/go-gateway/internal/pipeline/encoding"
 	"github.com/martialanouman/go-gateway/internal/platform/e164"
 	"github.com/martialanouman/go-gateway/internal/platform/encoding"
@@ -313,14 +313,13 @@ func requestedEncoding(in InboundMT) string {
 	return in.Encoding
 }
 
-// stage runs one pipeline step under its own span. The span records a rejection's code (never a
-// body — stage errors carry only platform Codes and identifiers).
+// stage runs one pipeline step under its own span. A failure is recorded through the shared barrier, so the
+// span carries the flat rejection code and never an arbitrary error's text (invariant a).
 func (p *Pipeline) stage(ctx context.Context, name string, fn func(context.Context) error) error {
 	ctx, span := p.tracer.Start(ctx, name)
 	defer span.End()
 	if err := fn(ctx); err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
+		observability.RecordSpanError(span, err)
 		return err
 	}
 	return nil

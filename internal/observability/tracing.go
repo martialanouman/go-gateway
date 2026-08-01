@@ -81,11 +81,14 @@ func InitTracing(ctx context.Context, cfg config.Config) (ShutdownFunc, error) {
 	}
 
 	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(exporter),
+		// ErrorBiased sits in front of the batcher so a span the ratio rejected still ships when it
+		// FAILED (§6.11): head sampling decides before an outcome exists, so a bare ratio drops exactly
+		// the traces an operator needs. The two halves only work together — see ErrorBiasedSampler.
+		sdktrace.WithSpanProcessor(ErrorBiased(sdktrace.NewBatchSpanProcessor(exporter))),
 		sdktrace.WithResource(res),
 		// ParentBased keeps a trace whole: once an upstream service has decided to sample a
 		// trace, every downstream span of it is kept, so a sampled trace is never full of holes.
-		sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.TraceIDRatioBased(cfg.OTel.SampleRatio))),
+		sdktrace.WithSampler(ErrorBiasedSampler(cfg.OTel.SampleRatio)),
 	)
 	otel.SetTracerProvider(tp)
 

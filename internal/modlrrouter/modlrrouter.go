@@ -13,9 +13,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/martialanouman/go-gateway/internal/dlrmap"
+	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 	"github.com/martialanouman/go-gateway/internal/smpp"
@@ -80,14 +82,21 @@ func (s *Service) Run(ctx context.Context) error {
 }
 
 func (s *Service) handler() kafka.Handler {
-	return func(ctx context.Context, rec kafka.Record) error {
-		ctx, span := s.deps.Tracer.Start(ctx, "modlrrouter.dlr")
+	return func(ctx context.Context, rec kafka.Record) (err error) {
+		// dlr.correlate, not modlrrouter.dlr: a span is named for the DOMAIN step it represents, not for
+		// the binary that happens to run it, so a reader can follow a message across services without
+		// knowing the deployment (§12).
+		ctx, span := s.deps.Tracer.Start(ctx, "dlr.correlate")
 		defer span.End()
+		// A Redis or ClickHouse fault leaves the record uncommitted; it is the signal an operator hunts
+		// for, and it was producing a perfectly green span.
+		defer func() { observability.RecordSpanError(span, err) }()
 
 		dlr, err := pipeline.DecodeDLR(rec)
 		if err != nil {
 			// A record we cannot decode is permanently bad: returning an error would redeliver it
 			// forever and wedge the partition. Log and commit — it is not thrown away silently.
+			observability.RecordSpanError(span, err)
 			s.deps.Logger.ErrorContext(ctx, "modlrrouter: undecodable dlr.events record, skipping", "err", err)
 			return nil
 		}
@@ -108,6 +117,12 @@ func (s *Service) handler() kafka.Handler {
 		if !found {
 			// No mapping: an expired or unknown smsc_msg_id. Count and log — never dropped silently —
 			// then commit (there is nothing to correlate; redelivery would not help).
+			//
+			// An ATTRIBUTE, not an error status: a Redis failover or a mass TTL expiry makes every receipt
+			// miss at once, and an error status would export all of them outside the ratio — flooding the
+			// trace pipeline exactly when the system is already degraded. The Unmapped counter carries the
+			// alert; the attribute lets a sampled trace explain itself.
+			span.SetAttributes(attribute.String("dlr.mapping", "miss"))
 			s.deps.Unmapped.Inc()
 			s.deps.Logger.WarnContext(ctx, "modlrrouter: dlr without mapping, counted",
 				"connector_id", dlr.ConnectorID, "smsc_message_id", dlr.SMSCMessageID, "state", dlr.State)

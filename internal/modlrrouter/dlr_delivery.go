@@ -9,6 +9,7 @@ import (
 	"go.opentelemetry.io/otel/trace/noop"
 
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
+	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
 	"github.com/martialanouman/go-gateway/internal/webhook"
@@ -68,6 +69,7 @@ func (r *DLRDeliveryRouter) handler() kafka.Handler {
 
 		dlr, err := pipeline.DecodeDLR(rec)
 		if err != nil {
+			observability.RecordSpanError(span, err)
 			r.logger.ErrorContext(ctx, "modlrrouter: undecodable dlr.events record, skipping", "err", err)
 			return nil
 		}
@@ -88,11 +90,13 @@ func (r *DLRDeliveryRouter) handler() kafka.Handler {
 		deadLetter := kafka.Record{Topic: kafka.TopicDLRDeadLetter, Key: rec.Key, Value: rec.Value}
 		pdu, err := dlrDeliverSM(m, dlr)
 		if err != nil {
+			observability.RecordSpanError(span, err)
 			r.logger.ErrorContext(ctx, "modlrrouter: encode dlr deliver_sm, dead-lettering", "message_id", m.MessageID, "err", err)
 			return r.deliverer.DeadLetterRaw(ctx, deadLetter, string(cp.WebhookEventDLR), "encode_error")
 		}
 		evID, payload, err := dlrWebhookBody(m, dlr)
 		if err != nil {
+			observability.RecordSpanError(span, err)
 			r.logger.ErrorContext(ctx, "modlrrouter: build dlr webhook payload, dead-lettering", "message_id", m.MessageID, "err", err)
 			return r.deliverer.DeadLetterRaw(ctx, deadLetter, string(cp.WebhookEventDLR), "encode_error")
 		}

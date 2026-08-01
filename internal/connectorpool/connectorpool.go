@@ -23,6 +23,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/connector/breaker"
 	"github.com/martialanouman/go-gateway/internal/connector/reconnect"
 	"github.com/martialanouman/go-gateway/internal/connector/status"
+	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	"github.com/martialanouman/go-gateway/internal/platform/encoding"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
@@ -729,6 +730,9 @@ func retryKey(rec kafka.Record) string { return fmt.Sprintf("%d:%d", rec.Partiti
 func (s *Service) processOne(ctx context.Context, b *bind, bindIndex int, rec kafka.Record) (err error) {
 	ctx, span := s.deps.Tracer.Start(ctx, "connector.submit")
 	defer span.End()
+	// A transient fault leaves the record uncommitted for redelivery; marking the span failed is what makes
+	// it survive head sampling (step-181) and what get-message-trace looks for.
+	defer func() { observability.RecordSpanError(span, err) }()
 
 	// A committed outcome (nil return) means this offset advances and will not be redelivered, so any
 	// retry-window entry for it is dead weight — clear it. healthRetry keeps its entry only by returning a
@@ -757,6 +761,10 @@ func (s *Service) processOne(ctx context.Context, b *bind, bindIndex int, rec ka
 	// throttle backpressure or churned across reconnects — is dead-lettered as delivery_expired rather
 	// than submitted, so nothing lingers on the data plane forever. Checked before any submit work.
 	if s.expired(routed) {
+		// Terminal outcomes commit the offset, so processOne returns nil and the deferred recorder above
+		// sees nothing. They are marked here instead — the step asks for error/REJECT/timeout, and a
+		// permanent reject is exactly what an operator goes looking for.
+		observability.RecordSpanError(span, errs.ErrDeliveryExpired)
 		return s.deadLetterWith(ctx, routed, errs.ErrDeliveryExpired)
 	}
 
@@ -788,6 +796,7 @@ func (s *Service) processOne(ctx context.Context, b *bind, bindIndex int, rec ka
 	// fallback chain (step-125): no point pacing and submitting to a connector we know is down — advance
 	// the chain now. Uses the LOCAL breaker (this pod's view), so the hot path never reads Redis.
 	if len(routed.FallbackChain) > 0 && s.breakers != nil && s.breakers[bindIndex].State() == breaker.Open {
+		observability.RecordSpanError(span, errs.ErrServiceUnavailable)
 		return s.reroute(ctx, routed, errs.ErrServiceUnavailable)
 	}
 
@@ -807,6 +816,7 @@ func (s *Service) processOne(ctx context.Context, b *bind, bindIndex int, rec ka
 		// one, do not commit so the message is reprocessed after a restart (at-least-once).
 		s.feedBreaker(bindIndex, 0, true)
 		if len(routed.FallbackChain) > 0 {
+			observability.RecordSpanError(span, errs.ErrServiceUnavailable)
 			return s.reroute(ctx, routed, errs.ErrServiceUnavailable)
 		}
 		return s.healthRetry(ctx, rec, routed, fmt.Errorf("connectorpool: submit_sm: %w", err))
@@ -830,6 +840,7 @@ func (s *Service) processOne(ctx context.Context, b *bind, bindIndex int, rec ka
 	// redeliver (below) and a permanent per-message reject stays a terminal CDR — only failover-class
 	// statuses reroute, and only when a chain exists.
 	if resp.Status != smpp.StatusOK && len(routed.FallbackChain) > 0 && classifyReroute(resp.Status) == failover {
+		observability.RecordSpanError(span, errs.CodeFromSMPPStatus(resp.Status))
 		return s.reroute(ctx, routed, errs.CodeFromSMPPStatus(resp.Status))
 	}
 
@@ -858,6 +869,9 @@ func (s *Service) processOne(ctx context.Context, b *bind, bindIndex int, rec ka
 	if resp.Status == smpp.StatusOK {
 		row.Billed, row.CreditsCharged = s.deps.Billing.Capture(ctx, routed)
 	} else {
+		// A permanent SMSC rejection: a failed CDR is written and the offset commits, so this is the only
+		// place the span learns the message was refused.
+		observability.RecordSpanError(span, errs.CodeFromSMPPStatus(resp.Status))
 		s.deps.Billing.Release(ctx, routed)
 	}
 	if err := s.deps.CDR.Insert(ctx, row); err != nil {

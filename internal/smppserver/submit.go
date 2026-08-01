@@ -3,6 +3,7 @@ package smppserver
 import (
 	"context"
 
+	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	"github.com/martialanouman/go-gateway/internal/platform/encoding"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
@@ -20,13 +21,21 @@ import (
 // The body never leaves req.Body except inside the audited WIRE codec: it is carried as a masking
 // msg.Body straight into the envelope and never logged or spanned here (invariant a).
 func (l *Listener) onSubmit(_ context.Context, st *connState) session.SubmitHandler {
-	return func(sctx context.Context, req session.SubmitRequest) session.SubmitResult {
+	return func(sctx context.Context, req session.SubmitRequest) (res session.SubmitResult) {
 		if l.ingestor == nil {
 			return session.SubmitResult{Status: errs.StatusSubmitFail}
 		}
 
 		sctx, span := l.opts.Tracer.Start(sctx, "smpp.submit")
 		defer span.End()
+		// The SMPP ingress root span. The outcome is a command_status, not an error, so it is translated
+		// back to the flat code; 0 is ESME_ROK. Unmarked, the ratio drops this span and every pipeline
+		// span below it loses its parent (step-181).
+		defer func() {
+			if res.Status != 0 {
+				observability.RecordSpanError(span, errs.CodeFromSMPPStatus(res.Status))
+			}
+		}()
 
 		messageID := uuidx.New()
 		traceID := uuidx.New()

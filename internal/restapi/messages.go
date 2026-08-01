@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/martialanouman/go-gateway/internal/idempotency"
+	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 	"github.com/martialanouman/go-gateway/internal/platform/errors/humaerr"
@@ -65,7 +66,7 @@ type submitOutput struct {
 // submit accepts a single message: it authenticates (via the middleware), mints the ids, opens the
 // root span, publishes to mt.inbound (the durability boundary), and only then returns 202. The
 // accepted CDR row is written off the request path by the worker pool (§1.10).
-func (s *server) submit(ctx context.Context, in *submitInput) (*submitOutput, error) {
+func (s *server) submit(ctx context.Context, in *submitInput) (out *submitOutput, err error) {
 	principal, ok := principalFromContext(ctx)
 	if !ok {
 		return nil, humaerr.FromError(errs.ErrUnauthenticated)
@@ -73,6 +74,9 @@ func (s *server) submit(ctx context.Context, in *submitInput) (*submitOutput, er
 
 	ctx, span := s.deps.Tracer.Start(ctx, "rest.submit")
 	defer span.End()
+	// The ingress root span: unmarked, error-biased sampling drops it and every stage span below it is
+	// left orphaned (step-181).
+	defer func() { observability.RecordSpanError(span, err) }()
 
 	now := s.now()
 	messageID := uuidx.New()

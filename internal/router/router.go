@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 	"github.com/martialanouman/go-gateway/internal/platform/msg"
@@ -80,9 +81,13 @@ func (r *Router) Run(ctx context.Context) error {
 // leaves it uncommitted for reprocessing (at-least-once). A pipeline rejection is a terminal
 // outcome — the CDR row is written and the offset committed; only an infrastructure fault (produce
 // or CDR write failure) returns an error.
-func (r *Router) handle(ctx context.Context, rec kafka.Record) error {
+func (r *Router) handle(ctx context.Context, rec kafka.Record) (err error) {
 	ctx, span := r.deps.Tracer.Start(ctx, "router.process")
 	defer span.End()
+	// The service root span must carry the failure too, not only the stage that produced it: with
+	// error-biased sampling an unmarked parent is dropped by the ratio, leaving the stage span orphaned
+	// with a parent_span_id resolving to nothing — and get-message-trace (step-185) reads that chain.
+	defer func() { observability.RecordSpanError(span, err) }()
 
 	in, err := pipeline.DecodeInbound(rec)
 	if err != nil {

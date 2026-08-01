@@ -12,6 +12,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
+	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	"github.com/martialanouman/go-gateway/internal/platform/e164"
 	"github.com/martialanouman/go-gateway/internal/platform/encoding"
@@ -153,9 +154,10 @@ type StopInput struct {
 // keyword matches (the common case) or after applying one. An error means a transient failure (the
 // suppression write or the auto-reply publish) — the caller reprocesses the MO, and every effect is
 // idempotent (suppression write, deterministic auto-reply id).
-func (d *StopDetector) Detect(ctx context.Context, in StopInput) error {
+func (d *StopDetector) Detect(ctx context.Context, in StopInput) (err error) {
 	ctx, span := d.deps.Tracer.Start(ctx, "mo.opt_out")
 	defer span.End()
+	defer func() { observability.RecordSpanError(span, err) }()
 
 	kw, ok := d.deps.Keywords.Match(in.Country, string(in.Body))
 	if !ok {

@@ -5,6 +5,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/martialanouman/go-gateway/internal/observability"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 	"github.com/martialanouman/go-gateway/internal/smpp"
 	"github.com/martialanouman/go-gateway/internal/smpp/session"
@@ -47,7 +48,7 @@ func (l *Listener) onQuery(_ context.Context, st *connState) session.QueryHandle
 // already-cancelled) one is ESME_ROK. A nil Canceller rejects with ESME_RCANCELFAIL. The message body
 // is never involved, so nothing can leak (invariant a).
 func (l *Listener) onCancel(_ context.Context, st *connState) session.CancelHandler {
-	return func(sctx context.Context, req session.CancelRequest) session.CancelResult {
+	return func(sctx context.Context, req session.CancelRequest) (res session.CancelResult) {
 		if !st.cancelSMEnabled {
 			return session.CancelResult{Status: errs.StatusInvalidCmdID}
 		}
@@ -57,6 +58,11 @@ func (l *Listener) onCancel(_ context.Context, st *connState) session.CancelHand
 
 		sctx, span := l.opts.Tracer.Start(sctx, "smpp.cancel")
 		defer span.End()
+		defer func() {
+			if res.Status != 0 {
+				observability.RecordSpanError(span, errs.CodeFromSMPPStatus(res.Status))
+			}
+		}()
 
 		id, err := uuid.Parse(req.MessageID)
 		if err != nil {
