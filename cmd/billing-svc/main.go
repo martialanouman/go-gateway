@@ -29,6 +29,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/metricstream"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/platform/supervisor"
+	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
 	"github.com/martialanouman/go-gateway/internal/storage/postgres"
 	redisstore "github.com/martialanouman/go-gateway/internal/storage/redis"
@@ -52,7 +53,8 @@ func run() error {
 	defer stop()
 
 	// Billing needs Redis (the balance cache), Postgres (the durable ledger) and gRPC; Kafka only for the best-effort realtime alert feed (deliberately out of readiness), no HTTP.
-	cfg, err := config.Load(serviceName, config.SectionOTel, config.SectionRedis, config.SectionPostgres, config.SectionGRPC, config.SectionKafka)
+	cfg, err := config.Load(serviceName, config.SectionOTel, config.SectionRedis, config.SectionPostgres,
+		config.SectionGRPC, config.SectionKafka, config.SectionClickHouse)
 	if err != nil {
 		return err
 	}
@@ -115,6 +117,35 @@ func run() error {
 		billing.WithDiscrepancyMetric(extDiscrepancyMetric{c: externalDiscrepancyTotal}),
 		billing.WithTolerance(reconcileTolerance), billing.WithReconcileLogger(logger))
 
+	// The reaper (step-190) is the net under the connector pool's fail-open settle: a billing fault there is
+	// swallowed (propagating it would redeliver the record and re-send the SMS), so an outage leaves reserve
+	// debits standing with nothing to close them. It sweeps them from the ledger and settles each against the
+	// CDR outcome. ClickHouse is read-only here and NOT a readiness dependency: the reaper is a periodic
+	// background job, so a ClickHouse outage must not take billing-svc out of the load balancer — the
+	// reservations simply wait for a later pass.
+	chConn, err := clickhouse.NewConn(cfg.ClickHouse)
+	if err != nil {
+		return fmt.Errorf("connect clickhouse: %w", err)
+	}
+	defer func() { _ = chConn.Close() }()
+
+	// reaper_reaped_total{action}: bounded label (capture|release). reaper_unresolvable_total counts
+	// reservations left INTACT because their outcome could not be established — never released on a guess,
+	// since refunding a really-sent message is a free delivery. A rising unresolvable count is an audit gap
+	// and MUST alert; reaped is the ordinary rate of self-healing.
+	reaperReapedTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "reaper_reaped_total",
+		Help: "Orphaned MT reservations reconciled by the reaper, by settlement action.",
+	}, []string{"action"})
+	reaperUnresolvableTotal := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "reaper_unresolvable_total",
+		Help: "Orphaned MT reservations left intact because their outcome could not be established (MUST alert).",
+	})
+	reaper := billing.NewReaper(repo, clickhouse.NewCDRReader(chConn), acc,
+		billing.WithMinAge(cfg.Billing.ReaperMinAge),
+		billing.WithReaperMetric(reaperMetric{reaped: reaperReapedTotal, unresolvable: reaperUnresolvableTotal}),
+		billing.WithReaperLogger(logger))
+
 	grpcServer := grpc.NewServer()
 	// Realtime billing alerts (step-184). Best-effort: a separate Kafka client that drops rather than blocks,
 	// so an alert can never delay or fail a billing call.
@@ -139,7 +170,8 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("init ops server: %w", err)
 	}
-	ops.Registry().MustRegister(externalFailOpenTotal, externalDiscrepancyTotal, streamDropped)
+	ops.Registry().MustRegister(externalFailOpenTotal, externalDiscrepancyTotal, streamDropped,
+		reaperReapedTotal, reaperUnresolvableTotal)
 
 	logger.InfoContext(ctx, "starting", "config", cfg)
 
@@ -153,6 +185,9 @@ func run() error {
 	})
 	g.Add("external reconcile", func(c context.Context) error {
 		return runReconcile(c, reconciler, logger)
+	})
+	g.Add("reservation reaper", func(c context.Context) error {
+		return runReap(c, reaper, cfg.Billing.ReaperInterval, logger)
 	})
 	if err := g.Run(ctx, logger); err != nil {
 		return err
@@ -225,6 +260,34 @@ type extFailOpenMetric struct{ c *prometheus.CounterVec }
 func (m extFailOpenMetric) AuthzFailOpen(providerID uuid.UUID) {
 	m.c.WithLabelValues(providerID.String()).Inc()
 }
+
+// runReap periodically runs one reaper pass until ctx is cancelled. A pass error is logged, not fatal: the
+// next tick retries, and a reservation left open one more cycle costs nothing (the money is already
+// recorded — only its settlement is late). Being a supervised ticker threading ctx into the pass, it
+// drains cleanly on shutdown.
+func runReap(ctx context.Context, r *billing.Reaper, every time.Duration, logger *slog.Logger) error {
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			if err := r.ReapOnce(ctx); err != nil {
+				logger.WarnContext(ctx, "billing: reaper pass failed — retrying next tick", "err", err)
+			}
+		}
+	}
+}
+
+// reaperMetric adapts the reaper counters to billing.ReaperMetric.
+type reaperMetric struct {
+	reaped       *prometheus.CounterVec
+	unresolvable prometheus.Counter
+}
+
+func (m reaperMetric) Reaped(action string) { m.reaped.WithLabelValues(action).Inc() }
+func (m reaperMetric) Unresolvable()        { m.unresolvable.Inc() }
 
 // extDiscrepancyMetric adapts the discrepancy counter to billing.DiscrepancyMetric.
 type extDiscrepancyMetric struct{ c *prometheus.CounterVec }
