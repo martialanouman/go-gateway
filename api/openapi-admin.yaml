@@ -1480,21 +1480,36 @@ paths:
     get:
       tags: [Messages]
       summary: Search CDR (by traceId, account, customer, group, status, ...)
+      description: >-
+        Every predicate combines with AND — an extra filter can only narrow a result set. The date
+        window is REQUIRED and capped at 31 days: it is what lets the CDR's daily partitions be
+        pruned, so an unbounded search cannot be expressed. MSISDNs are masked in the response unless
+        the caller holds msisdn:reveal. No message body is ever returned.
       operationId: search-messages
       parameters:
         - { name: traceId, in: query, schema: { type: string, format: uuid } }
         - { name: accountId, in: query, schema: { type: string, format: uuid } }
         - { name: customerId, in: query, schema: { type: string, format: uuid } }
-        - { name: groupId, in: query, schema: { type: string, format: uuid } }
+        - name: groupId
+          in: query
+          description: Customers CURRENTLY in this group; membership is resolved at read time.
+          schema: { type: string, format: uuid }
         - { name: status, in: query, schema: { $ref: '#/components/schemas/CdrStatus' } }
         - { name: direction, in: query, schema: { $ref: '#/components/schemas/Direction' } }
-        - { name: msisdn, in: query, schema: { type: string } }
-        - { name: from_date, in: query, schema: { type: string, format: date-time } }
-        - { name: to_date, in: query, schema: { type: string, format: date-time } }
+        - name: msisdn
+          in: query
+          description: Exact E.164 match on either address. Never a prefix — that would allow enumeration.
+          schema: { type: string }
+        - { name: from_date, in: query, required: true, schema: { type: string, format: date-time } }
+        - { name: to_date, in: query, required: true, schema: { type: string, format: date-time } }
         - { $ref: '#/components/parameters/Cursor' }
         - { $ref: '#/components/parameters/Limit' }
+      security: [ { OperatorBearer: [ admin:read ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/MessageSummaryPage' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
   /admin/messages/export:
     post:
       tags: [Messages]
@@ -1699,7 +1714,10 @@ components:
     RewriteScope: { type: string, enum: [platform, customer, smpp_account, connector] }
     SuppressionScope: { type: string, enum: [inbound_number, smpp_account, customer, platform] }
     SuppressionSource: { type: string, enum: [mo_stop, admin, import, carrier, regulator] }
-    CdrStatus: { type: string, enum: [enroute, delivered, failed, expired, rejected, rerouted] }
+    # The eight the cdr table's own enum writes. accepted (the pre-dispatch row, §1.10) and cancelled
+    # (M3) were missing: search-messages returns them on every freshly accepted message, so a narrower
+    # enum here made the contract under-declare what the API already serves.
+    CdrStatus: { type: string, enum: [accepted, enroute, delivered, failed, expired, rejected, rerouted, cancelled] }
 
     # ---- customer groups ----
     CustomerGroup:

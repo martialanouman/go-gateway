@@ -1296,6 +1296,13 @@ items:
           url: '{{baseUrl}}/admin/stream/billing-alerts'
         docs: WebSocket — MO floor-reached alerts (scope admin:read).
       - info:
+          name: search-messages
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/messages/search?from_date={{fromDate}}&to_date={{toDate}}'
+        docs: Search the CDR. from_date/to_date are REQUIRED and capped at 31 days; MSISDNs masked without msisdn:reveal (scope admin:read).
+      - info:
           name: get-message-trace
           type: http
         http:

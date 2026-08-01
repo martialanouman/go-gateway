@@ -139,6 +139,7 @@ var m1Operations = []opRef{
 	{"get-gdpr-erase-job", "get", "/admin/gdpr/erase/{jobId}"},
 
 	{"get-message-trace", "get", "/admin/messages/{id}/trace"},
+	{"search-messages", "get", "/admin/messages/search"},
 
 	{"stream-metrics", "get", "/admin/stream/metrics"},
 	{"stream-sessions", "get", "/admin/stream/sessions"},

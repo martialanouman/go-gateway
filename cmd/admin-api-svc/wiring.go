@@ -347,6 +347,7 @@ func newHTTPServer(
 		ContentKeyReader: adminapi.NewGRPCContentKeyReader(contentkeypb.NewContentKeysClient(clients.contentKey)),
 		ContentKeyEraser: adminapi.NewGRPCContentKeyEraser(contentkeypb.NewContentKeysClient(clients.contentKey)),
 		Messages:         clickhouse.NewCDRReader(st.ch),
+		MessageSearch:    clickhouse.NewCDRReader(st.ch),
 		ContentAudit:     postgres.NewContentAccessAuditRepo(st.pg),
 		GDPRJobs:         postgres.NewGDPREraseJobRepo(st.pg),
 		GDPRRunner:       runners.gdpr,
