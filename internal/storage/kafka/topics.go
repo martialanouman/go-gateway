@@ -34,6 +34,11 @@ const (
 	// permanent rejection (step-048). Distinct from mo/dlr.dead-letter: those park an event that had no
 	// delivery path at all, this parks one that reached the account's webhook but never got a 2xx.
 	TopicWebhookDeadLetter = "webhook.dead-letter"
+	// TopicWebhookRetry holds webhook events whose delivery failed transiently and will be attempted again
+	// later, off the delivery consumer's goroutine (step-192). It exists so a slow endpoint cannot stall a
+	// whole partition's return traffic: the hot path spends one attempt and defers here instead of sleeping
+	// in band. Distinct from webhook.dead-letter, which is terminal — a record here is still in flight.
+	TopicWebhookRetry = "webhook.retry"
 	// TopicMTReroutePark holds MT messages awaiting a fallback connector (M7).
 	TopicMTReroutePark = "mt.reroute-park"
 	// TopicMetricsStream feeds the real-time WebSocket metrics (M11).
