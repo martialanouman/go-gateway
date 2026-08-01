@@ -17,6 +17,8 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/testcontainers/testcontainers-go"
 	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
+
+	"github.com/martialanouman/go-gateway/internal/config"
 )
 
 // image must match docker-compose.yml so the test stack and the dev stack cannot drift. Keep the two
@@ -26,8 +28,23 @@ const image = "redis:7-alpine"
 var (
 	once      sync.Once
 	shared    *redis.Client
+	sharedURL string
 	sharedErr error
 )
+
+// connectTimeout bounds a boot connection made from Config. It is generous: the container is already
+// up by the time Config returns, and a tight timeout would only make a busy CI flaky.
+const connectTimeout = 10 * time.Second
+
+// Config returns a config.Redis pointing at the same shared Redis as Client. Use it when the code
+// under test opens its own client from configuration — a service's wiring, say — rather than
+// receiving one.
+func Config(t *testing.T) config.Redis {
+	t.Helper()
+
+	Client(t) // shares the skip/start discipline; leaves sharedURL set
+	return config.Redis{URL: sharedURL, Timeout: connectTimeout}
+}
 
 // Client returns a client bound to a shared Redis. It skips the test when Docker is not available or
 // under -short. The returned client is shared across the calling package's tests; do not Close it —
@@ -65,6 +82,7 @@ func start() (*redis.Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse url: %w", err)
 	}
+	sharedURL = url
 	client := redis.NewClient(opt)
 
 	// A short readiness ping so the first test does not race the container's port opening.

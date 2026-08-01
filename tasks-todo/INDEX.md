@@ -144,7 +144,7 @@ structurelles et à faire **avant** que M12 n'empile dessus.
 - [x] step-190 — Reaper de réservations orphelines (le filet manquant du fail-open de step-146)
 - [x] step-191 — PROXY protocol sur le listener SMPP (sinon throttle de bind global derrière un LB L4)
 - [x] step-192 — Topic `webhook.retry` différé (sortir les retries du chemin chaud)
-- [ ] step-193 — Câblage de router-svc / connector-pool-svc en constructeurs testables
+- [x] step-193 — Câblage de router-svc / connector-pool-svc en constructeurs testables
 - [ ] step-193b — Même patron pour mo-dlr-router-svc, admin-api-svc, smpp-server-svc
 - [ ] step-194 — Découper `connectorpool.go` (extraction du mapping SMPP/CDR)
 

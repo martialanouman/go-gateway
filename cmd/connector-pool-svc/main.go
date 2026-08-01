@@ -1,6 +1,7 @@
 // Command connector-pool-svc is the outbound SMSC leg (M2): a single SMPP bind that consumes
 // mt.routed, submits each message, and records the outcome in the CDR. It follows the canonical
-// service lifecycle, adding a Kafka consumer, a ClickHouse connection and the SMPP bind.
+// service lifecycle, adding a Kafka consumer, a ClickHouse connection and the SMPP bind. The service
+// graph itself is built by wiring.go.
 //
 // The bind endpoint is read from the environment here rather than from the connectors control plane:
 // the outbound password cannot be recovered from its stored hash, and M2 has no config-sync. This
@@ -9,11 +10,9 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"log/slog"
-	"math"
 	"os"
 	"os/signal"
 	"syscall"
@@ -21,29 +20,13 @@ import (
 
 	"github.com/caarlos0/env/v11"
 	"github.com/google/uuid"
-	"github.com/prometheus/client_golang/prometheus"
-	goredis "github.com/redis/go-redis/v9"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 
-	"github.com/martialanouman/go-gateway/internal/billing/pb"
-	"github.com/martialanouman/go-gateway/internal/cancel"
 	"github.com/martialanouman/go-gateway/internal/config"
-	"github.com/martialanouman/go-gateway/internal/connector/breaker"
-	"github.com/martialanouman/go-gateway/internal/connector/reconnect"
-	"github.com/martialanouman/go-gateway/internal/connector/status"
-	"github.com/martialanouman/go-gateway/internal/connectorpool"
-	"github.com/martialanouman/go-gateway/internal/connectorpool/settle"
-	"github.com/martialanouman/go-gateway/internal/dlrmap"
 	"github.com/martialanouman/go-gateway/internal/metricstream"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/observability/metrics"
-	"github.com/martialanouman/go-gateway/internal/pipeline/ratelimit"
 	"github.com/martialanouman/go-gateway/internal/platform/supervisor"
-	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
-	"github.com/martialanouman/go-gateway/internal/storage/postgres"
-	redisstore "github.com/martialanouman/go-gateway/internal/storage/redis"
 )
 
 const serviceName = "connector-pool-svc"
@@ -119,246 +102,21 @@ func run() error {
 	//nolint:contextcheck // Detaching is the point: see DrainTracing's comment.
 	defer observability.DrainTracing(shutdownTracing, cfg.ShutdownTimeout, logger)
 
-	chConn, err := clickhouse.NewConn(cfg.ClickHouse)
+	app, err := newPoolApp(ctx, cfg, bindEnv, logger)
 	if err != nil {
-		return fmt.Errorf("connect clickhouse: %w", err)
+		return err
 	}
-	defer func() { _ = chConn.Close() }()
-
-	// Postgres backs the rate-limit snapshot (each connector's throughput_limit_per_sec): the reroute
-	// parking gate and the drainer pace against the fallback connectors' ceilings (step-126).
-	pool, err := postgres.NewPool(ctx, cfg.Postgres)
-	if err != nil {
-		return fmt.Errorf("connect postgres: %w", err)
-	}
-	defer pool.Close()
-
-	// Per-connector consumer group (step-125, option B): every pool reads all of mt.routed and skips
-	// records for other connectors, so a rerouted message reaches the next connector's pool. FromLatest
-	// so a brand-new per-connector group does not replay the whole retained topic (mass re-send); a
-	// restart still resumes from its committed offset.
-	//
-	// MIGRATION HAZARD: renaming the group from "connector-pool-svc" to per-connector, with FromLatest,
-	// silently DROPS any mt.routed produced-but-not-yet-consumed at cutover (offset old-commit → head)
-	// — neither the old nor the new group reads it. Safe on a greenfield/zero-traffic cutover only; a
-	// cutover with live traffic MUST first drain mt.routed or seed the new group's offsets from the old
-	// group's committed offsets. See docs runbook before the first production deploy.
-	consumerGroup := serviceName + "-" + bindEnv.ID.String()
-	consumer, err := kafka.NewConsumerFromLatest(cfg.Kafka, consumerGroup, kafka.TopicMTRouted)
-	if err != nil {
-		return fmt.Errorf("kafka consumer: %w", err)
-	}
-	defer consumer.Close()
-
-	// The producer publishes the return path (mo.inbound, dlr.events) durably (acks=all): a deliver_sm
-	// from the SMSC is acknowledged only once its MO/DLR is on Kafka (step-043).
-	producer, err := kafka.NewProducer(cfg.Kafka)
-	if err != nil {
-		return fmt.Errorf("kafka producer: %w", err)
-	}
-	defer producer.Close()
-
-	// Redis backs the cancel-flag check before each submit_sm: a cancel_sm on smpp-server-svc flags a
-	// message here so it is not dispatched. NewClient pings eagerly, so Redis must be reachable at boot
-	// (a startup outage crash-loops the pod, as everywhere else). At RUNTIME it is deliberately NOT a
-	// readiness dependency and the flag check fails OPEN (connectorpool.handler): a Redis outage lets
-	// delivery continue rather than halting all outbound traffic — cancellation is best-effort.
-	rdb, err := redisstore.NewClient(ctx, cfg.Redis)
-	if err != nil {
-		return fmt.Errorf("connect redis: %w", err)
-	}
-	defer func() { _ = rdb.Close() }()
-
-	// Adaptive-throttle metrics (step-086): the current AIMD send rate (gauge) and the count of
-	// ESME_RTHROTTLED events (counter). No labels — a pod binds one connector, so these are per-pod
-	// (cardinality-bounded, never a message id or MSISDN). Registered with the ops registry below.
-	sendRateGauge := prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "connector_send_rate",
-		Help: "Current adaptive (AIMD) send rate for this connector, in submits per second.",
-	})
-	throttledTotal := prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "connector_throttled_total",
-		Help: "ESME_RTHROTTLED responses received from the SMSC for this connector.",
-	})
-	// connector_dead_letter_total{reason}: messages parked on mt.dead-letter, by gateway reason
-	// (fallback_exhausted, retries_exhausted, delivery_expired) — so a dead-lettered message is always
-	// counted, never silently lost (step-129). The reason label is a bounded gateway code, never a
-	// message id or MSISDN.
-	deadLetterTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "connector_dead_letter_total",
-		Help: "Messages parked on mt.dead-letter for this connector, labelled by reason.",
-	}, []string{"reason"})
-	if bindEnv.MaxSendRate > 0 {
-		sendRateGauge.Set(bindEnv.MaxSendRate) // start at the ceiling; the AIMD lowers it on throttle
-	} else {
-		sendRateGauge.Set(math.NaN()) // AIMD disabled: report no value rather than a misleading 0
-	}
-
-	// Circuit-breaker aggregate (step-121/122): each bind runs a local breaker fed by its submit
-	// outcomes; the pool's heartbeat publishes their state into breaker:state:{connector_id}, which the
-	// router reads (step-123) to fence an open connector. podID identifies this pod within the connector's
-	// quorum — the pod hostname, unique per replica.
-	podID, err := os.Hostname()
-	if err != nil || podID == "" {
-		podID = serviceName + "-" + uuid.NewString() // unique per replica so quorum fields never collide
-	}
-	breakerAgg := breaker.NewAggregator(rdb, redisstore.NewPubSubPublisher(rdb), podID)
-
-	// Reroute parking gate (step-126): the per-connector token bucket (shared with the router's
-	// rate-limit, so rerouted/drained/fresh traffic compete for one budget) decides whether a reroute
-	// can go straight to mt.routed or must be parked and drained at the fallback connector's ceiling.
-	rateSnap, err := ratelimit.LoadSnapshot(ctx, postgres.NewRateLimitRepo(pool), postgres.NewConnectorRepo(pool))
-	if err != nil {
-		return fmt.Errorf("load rate-limit snapshot: %w", err)
-	}
-	rerouteLimiter := ratelimit.NewEnforcer(rateSnap, ratelimit.NewLimiter(rdb))
-
-	// Billing settle (step-146): capture the reserved credit on a sent message, release it on a terminal
-	// failure, via billing-svc. Reached lazily (grpc.NewClient opens no connection until the first RPC) and
-	// FAILS OPEN — a billing fault never redelivers a sent message — so a down billing-svc neither blocks
-	// startup nor duplicates SMS; a message with no reservation (billing disabled) makes zero calls.
-	// billing_capture_failed_total / billing_release_failed_total count the fail-open events so an alert can
-	// fire (no labels — one connector per pod, never a message id or MSISDN).
-	captureFailedTotal := prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "billing_capture_failed_total",
-		Help: "MT credit captures that failed and were left for reconciliation (fail-open).",
-	})
-	releaseFailedTotal := prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "billing_release_failed_total",
-		Help: "MT credit releases that failed and were left for reconciliation (fail-open).",
-	})
-	billingConn, err := grpc.NewClient(cfg.Billing.Addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		return fmt.Errorf("dial billing at %q: %w", cfg.Billing.Addr, err)
-	}
-	defer func() { _ = billingConn.Close() }()
-	settler := settle.NewSettler(pb.NewBillingClient(billingConn),
-		settle.WithTimeout(cfg.Billing.SettleTimeout),
-		settle.WithMetric(settleMetric{captureFailed: captureFailedTotal, releaseFailed: releaseFailedTotal}),
-		settle.WithLogger(logger))
-
-	tracer := observability.Tracer(nil, serviceName)
-	// The realtime dashboard feed (§1.6, step-182): a separate best-effort Kafka client, so a burst of
-	// snapshots can never fill the durable producer's buffer and stall a send.
-	streamProducer, err := kafka.NewStreamProducer(cfg.Kafka)
-	if err != nil {
-		return fmt.Errorf("kafka stream producer: %w", err)
-	}
-	defer streamProducer.Close()
-
-	// The ONLY signal that the dashboard feed is degraded: nothing else fails when Kafka refuses a snapshot.
-	streamDropped := prometheus.NewCounterFunc(prometheus.CounterOpts{
-		Name: "metrics_stream_dropped_total",
-		Help: "Realtime snapshots that never reached metrics.stream (full buffer, unreachable broker).",
-	}, func() float64 { return float64(streamProducer.Dropped()) })
-	emitter, err := metricstream.New(serviceName, streamProducer)
-	if err != nil {
-		return fmt.Errorf("metric stream emitter: %w", err)
-	}
-	catalog := metrics.NewCatalog()
-
-	svc := connectorpool.New(connectorpool.Deps{
-		Consumer:       consumer,
-		Stream:         emitter,
-		BreakerGauge:   catalog,
-		Metrics:        catalog,
-		CDR:            clickhouse.NewCDRWriter(chConn),
-		CancelFlags:    cancel.NewRedisFlags(rdb),
-		DLRMap:         dlrmap.NewRedisMap(rdb),
-		Producer:       producer,
-		Breaker:        breakerAgg,
-		BreakerState:   breakerStateReader{rdb: rdb},
-		RerouteLimiter: rerouteLimiter,
-		Reconnect: reconnect.Config{
-			Enabled:      bindEnv.AutoReconnect,
-			InitialDelay: bindEnv.ReconnectInitialDelay,
-			Multiplier:   bindEnv.ReconnectMultiplier,
-			MaxDelay:     bindEnv.ReconnectMaxDelay,
-			JitterPct:    bindEnv.ReconnectJitterPct,
-			MaxAttempts:  bindEnv.ReconnectMaxAttempts,
-		},
-		// Hot reconfigure (step-128b): re-read bind_pool_size + reconnect policy from the control plane on
-		// each re-dial, publish per-bind status, and poll the reconfigure generation the Admin API bumps.
-		ConfigSource:  connectorConfigSource{repo: postgres.NewConnectorRepo(pool)},
-		StatusControl: status.NewReader(rdb),
-		PodID:         podID,
-		ConnectorID:   bindEnv.ID,
-		Bind: connectorpool.BindConfig{
-			Addr:                 bindEnv.Addr,
-			SystemID:             bindEnv.SystemID,
-			Password:             bindEnv.Password,
-			SystemType:           bindEnv.SystemType,
-			DialTimeout:          bindEnv.DialTimeout,
-			ResponseTimeout:      bindEnv.ResponseTimeout,
-			EnquireLinkInterval:  bindEnv.EnquireLinkInterval,
-			EnquireLinkMaxMissed: bindEnv.EnquireLinkMaxMissed,
-			WindowSize:           bindEnv.WindowSize,
-			BindPoolSize:         bindEnv.BindPoolSize,
-		},
-		MaxSendRate:   bindEnv.MaxSendRate,
-		Throttle:      throttleMetric{rate: sendRateGauge, throttled: throttledTotal},
-		DeadLetter:    deadLetterMetric{counter: deadLetterTotal},
-		Billing:       settler,
-		RetryWindow:   bindEnv.RetryWindow,
-		MaxMessageAge: bindEnv.MaxMessageAge,
-		Tracer:        tracer,
-		Logger:        logger,
-	})
-
-	// Vital dependencies (plan §1.5): Kafka (no work without it), ClickHouse (the outcome is recorded
-	// there) and the SMSC bind itself — the pool cannot deliver a single message without a live bind,
-	// and an idle-time bind drop would otherwise leave the pod Ready with nothing behind it.
-	ops, err := observability.NewOpsServer(cfg, logger,
-		consumer.ReadyCheck("kafka", cfg.Kafka.Timeout),
-		producer.ReadyCheck("kafka-producer", cfg.Kafka.Timeout),
-		chConn.ReadyCheck("clickhouse", cfg.ClickHouse.Timeout),
-		observability.ReadinessCheck{Name: "smsc-bind", Probe: svc.BindReady},
-	)
-	if err != nil {
-		return fmt.Errorf("init ops server: %w", err)
-	}
-	// connector_link_up: the runtime SMSC link_status (1 = up, 0 = down), reported live and kept strictly
-	// distinct from the breaker_state (application health). No labels — one connector per pod.
-	linkUp := prometheus.NewGaugeFunc(prometheus.GaugeOpts{
-		Name: "connector_link_up",
-		Help: "SMSC link status: 1 when the bind is established, 0 when down (distinct from breaker_state).",
-	}, func() float64 {
-		if svc.LinkStatus() == "up" {
-			return 1
-		}
-		return 0
-	})
-	ops.Registry().MustRegister(sendRateGauge, throttledTotal, deadLetterTotal, linkUp, captureFailedTotal, releaseFailedTotal)
-	// Only the catalogue metrics this service actually feeds (step-180): registering Collectors() wholesale
-	// would expose always-zero series, which read as "measured, and nothing happened".
-	ops.Registry().MustRegister(catalog.ConnectorBreakerState, catalog.QueueDepth,
-		catalog.SubmitsTotal, catalog.SubmitRejectedTotal, streamDropped)
-
-	// Bounded reroute drainer (step-126): consumes mt.reroute-park (AtStart — parked messages are durable
-	// and must all be drained) and replays each to mt.routed at the target connector's ceiling. Its own
-	// per-connector group; it skips-and-commits records for other connectors.
-	drainConsumer, err := kafka.NewConsumer(cfg.Kafka, serviceName+"-drain-"+bindEnv.ID.String(), kafka.TopicMTReroutePark)
-	if err != nil {
-		return fmt.Errorf("kafka drain consumer: %w", err)
-	}
-	defer drainConsumer.Close()
-	drainer := connectorpool.NewDrainer(connectorpool.DrainerDeps{
-		Consumer:    drainConsumer,
-		Producer:    producer,
-		Limiter:     rerouteLimiter,
-		ConnectorID: bindEnv.ID,
-		Logger:      logger,
-	})
+	defer app.close()
 
 	logger.InfoContext(ctx, "starting", "config", cfg, "connector_addr", bindEnv.Addr)
 
 	// Ops and the connector pool tear down together; the unordered supervisor fits (guide de codage §5).
 	var g supervisor.Group
-	g.Add("ops server", func(c context.Context) error { return ops.Run(c, cfg.ShutdownTimeout) })
-	g.Add("connector pool", svc.Run)
-	g.Add("reroute-park drainer", drainer.Run)
+	g.Add("ops server", func(c context.Context) error { return app.ops.Run(c, cfg.ShutdownTimeout) })
+	g.Add("connector pool", app.pool.Run)
+	g.Add("reroute-park drainer", app.drainer.Run)
 	g.Add("metric stream", func(c context.Context) error {
-		emitter.Run(c, metricStreamInterval)
+		app.emitter.Run(c, metricStreamInterval)
 		return nil
 	})
 	// Queue depth is a LEVEL polled on a slow tick because it costs a broker round-trip, and
@@ -366,7 +124,7 @@ func run() error {
 	// the pool's own heartbeat, which runs inside the dial cycle — polling it from here would race the
 	// re-dial that reassigns the breakers.
 	g.Add("queue depth", func(c context.Context) error {
-		pollQueueDepth(c, consumer, emitter, catalog, logger)
+		pollQueueDepth(c, app.consumer, app.emitter, app.catalog, logger)
 		return nil
 	})
 	if err := g.Run(ctx, logger); err != nil {
@@ -375,64 +133,6 @@ func run() error {
 
 	logger.Info("stopped")
 	return nil
-}
-
-// connectorConfigSource re-reads a connector's live bind_pool_size + reconnect policy from Postgres so an
-// Admin resize / policy change takes effect on the next re-dial (step-128b). The bind endpoint
-// (addr/password) still comes from env — the outbound password cannot be recovered from its hash.
-type connectorConfigSource struct{ repo *postgres.ConnectorRepo }
-
-func (c connectorConfigSource) Load(ctx context.Context, connectorID uuid.UUID) (int, reconnect.Config, error) {
-	conn, err := c.repo.Get(ctx, connectorID)
-	if err != nil {
-		return 0, reconnect.Config{}, err
-	}
-	rc := reconnect.Config{
-		Enabled:      conn.AutoReconnectEnabled,
-		InitialDelay: time.Duration(conn.ReconnectInitialDelayMs) * time.Millisecond,
-		Multiplier:   conn.ReconnectMultiplier,
-		MaxDelay:     time.Duration(conn.ReconnectMaxDelayMs) * time.Millisecond,
-		JitterPct:    conn.ReconnectJitterPct,
-		MaxAttempts:  conn.ReconnectMaxAttempts,
-	}
-	return conn.BindPoolSize, rc, nil
-}
-
-// throttleMetric adapts the Prometheus gauge/counter to connectorpool.ThrottleMetric.
-type throttleMetric struct {
-	rate      prometheus.Gauge
-	throttled prometheus.Counter
-}
-
-func (m throttleMetric) SetRate(rate float64) { m.rate.Set(rate) }
-func (m throttleMetric) IncThrottled()        { m.throttled.Inc() }
-
-// deadLetterMetric adapts the Prometheus counter vector to connectorpool.DeadLetterMetric.
-type deadLetterMetric struct{ counter *prometheus.CounterVec }
-
-func (m deadLetterMetric) Inc(reason string) { m.counter.WithLabelValues(reason).Inc() }
-
-// settleMetric adapts the fail-open capture/release counters to settle.Metric (bounded, no labels).
-type settleMetric struct{ captureFailed, releaseFailed prometheus.Counter }
-
-func (m settleMetric) CaptureFailed() { m.captureFailed.Inc() }
-func (m settleMetric) ReleaseFailed() { m.releaseFailed.Inc() }
-
-// breakerStateReader reads a connector's breaker aggregate (breaker:state:{id}) so a reroute can skip a
-// candidate that is itself open (step-125). A missing key or unparsable value reads "not open" (the
-// breaker's own default is closed); it is consulted only on a reroute, never on the hot path.
-type breakerStateReader struct{ rdb *goredis.Client }
-
-func (b breakerStateReader) IsOpen(ctx context.Context, connectorID uuid.UUID) (bool, error) {
-	token, err := b.rdb.Get(ctx, "breaker:state:{"+connectorID.String()+"}").Result()
-	if err != nil {
-		if errors.Is(err, goredis.Nil) {
-			return false, nil // no aggregate yet → treat as available
-		}
-		return false, err
-	}
-	st, ok := breaker.ParseState(token)
-	return ok && st == breaker.Open, nil
 }
 
 // metricStreamInterval is how often a snapshot reaches metrics.stream, well inside the < 5 s dashboard
