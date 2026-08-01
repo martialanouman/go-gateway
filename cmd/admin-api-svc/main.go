@@ -13,30 +13,15 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"syscall"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
-	goredis "github.com/redis/go-redis/v9"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-
-	"github.com/martialanouman/go-gateway/internal/adminapi"
-	"github.com/martialanouman/go-gateway/internal/auth"
 	"github.com/martialanouman/go-gateway/internal/config"
-	"github.com/martialanouman/go-gateway/internal/connector/status"
-	contentkeypb "github.com/martialanouman/go-gateway/internal/contentkeys/pb"
 	"github.com/martialanouman/go-gateway/internal/metricstream"
 	"github.com/martialanouman/go-gateway/internal/observability"
-	"github.com/martialanouman/go-gateway/internal/platform/async"
 	"github.com/martialanouman/go-gateway/internal/platform/supervisor"
 	"github.com/martialanouman/go-gateway/internal/realtime"
-	registrypb "github.com/martialanouman/go-gateway/internal/session/pb"
-	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
-	"github.com/martialanouman/go-gateway/internal/storage/postgres"
-	redisstore "github.com/martialanouman/go-gateway/internal/storage/redis"
 )
 
 // serviceName identifies this binary in logs, traces and metrics.
@@ -62,14 +47,8 @@ func run() error {
 	if err != nil {
 		return err
 	}
-
-	// Operator tokens are specific to this service (not the pipeline binaries that share the HTTP
-	// section), so the "at least one in production" policy is enforced here, at the point of use,
-	// rather than in the shared config validator. Without it a production Admin API would boot,
-	// pass readiness, and answer every request with 401 — a silent, fully non-functional service.
-	if cfg.Environment.IsProduction() && len(cfg.HTTP.AdminTokens) == 0 {
-		return fmt.Errorf("HTTP_ADMIN_TOKENS must be set in production: " +
-			"the Admin API would otherwise reject every operator request")
+	if err := validateAdminConfig(cfg); err != nil {
+		return err
 	}
 
 	logger, err := observability.NewLogger(os.Stdout, cfg)
@@ -85,171 +64,11 @@ func run() error {
 	//nolint:contextcheck // Detaching is the point: see DrainTracing's comment.
 	defer observability.DrainTracing(shutdownTracing, cfg.ShutdownTimeout, logger)
 
-	pool, err := postgres.NewPool(ctx, cfg.Postgres)
+	app, err := newAdminApp(ctx, cfg, logger)
 	if err != nil {
-		return fmt.Errorf("open postgres pool: %w", err)
+		return err
 	}
-	defer pool.Close()
-
-	// ClickHouse backs the audited content read (get-message-content, step-163): the operator reads a decrypted
-	// body, which requires the CDR row (ciphertext + key id). It is not a readiness dependency — content read
-	// is a rare admin operation, not the control-plane happy path.
-	chConn, err := clickhouse.NewConn(cfg.ClickHouse)
-	if err != nil {
-		return fmt.Errorf("connect clickhouse: %w", err)
-	}
-	defer func() { _ = chConn.Close() }()
-
-	// CDR retention (§6.14, step-165): expired daily partitions are archived (when a destination is
-	// configured) and then DROPPED — a metadata operation, never a delete-by-predicate, which would rewrite
-	// parts continuously at the 8000 msg/s target. It lives here because this service already holds the
-	// ClickHouse connection and is the control-plane surface. Running it on several replicas is tolerable
-	// (a re-drop is a no-op, and archives never share a destination object) but archives a partition twice,
-	// so a deploy that scales this service out should schedule retention on a single runner instead.
-	// cdr_retention_partitions_total: bounded label (four fixed outcomes) — a pass that has been failing for
-	// weeks must be an alert, not a log line, because its consequence is a disk filling up.
-	retentionOutcomes := prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "cdr_retention_partitions_total",
-		Help: "CDR partitions processed by the retention pass, by outcome.",
-	}, []string{"outcome"})
-	retainerOpts := []clickhouse.RetainerOption{
-		clickhouse.WithRetainerLogger(logger),
-		clickhouse.WithRetentionMetric(retentionMetric{c: retentionOutcomes}),
-	}
-	if prefix := cfg.ClickHouse.ArchivePrefix; prefix != "" {
-		// The prefix is interpolated into the archive statement, so a malformed one is a boot failure, never
-		// a surprise at the first purge.
-		if !clickhouse.ValidArchivePrefix(prefix) {
-			return fmt.Errorf("CLICKHOUSE_ARCHIVE_PREFIX %q is not a plain name ([A-Za-z0-9._/-], max 128)", prefix)
-		}
-		retainerOpts = append(retainerOpts, clickhouse.WithArchiver(
-			clickhouse.NewPartitionArchiver(chConn, clickhouse.FileDestination(prefix))))
-	}
-	retainer := clickhouse.NewRetainer(chConn, cfg.ClickHouse.CDRRetention, retainerOpts...)
-
-	// The bulk-import runner runs exact-route MNP imports in the background (step-103), bounded and
-	// drained on shutdown. Its jobs use the pool, so its drain must complete before pool.Close: this
-	// defer is registered after pool's, and defers run LIFO, so it runs first. The drain uses a
-	// cancel-detached deadline so a SIGTERM does not cut it short.
-	importRunner := async.New(4, logger)
-	// RGPD erasures get their OWN runner: a legally-mandated erasure must never be refused because bulk MNP
-	// imports filled the shared pool (and a long erasure must not starve them either).
-	gdprRunner := async.New(2, logger)
-	defer func() {
-		dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cfg.ShutdownTimeout)
-		defer cancel()
-		if derr := importRunner.Close(dctx); derr != nil {
-			logger.Error("import runner drain incomplete", "err", derr)
-		}
-		if derr := gdprRunner.Close(dctx); derr != nil {
-			logger.Error("gdpr runner drain incomplete", "err", derr)
-		}
-	}()
-
-	// Redis carries the config-change announcement (step-105): the Admin API publishes a coarse event
-	// after each mutation. A publish failure is best-effort (logged, not fatal), so — unlike Postgres —
-	// Redis is not a hard readiness dependency here.
-	rdb, err := redisstore.NewClient(ctx, cfg.Redis)
-	if err != nil {
-		return fmt.Errorf("open redis client: %w", err)
-	}
-	defer func() { _ = rdb.Close() }()
-
-	verifier, err := auth.NewStaticVerifier(cfg.HTTP.AdminTokens)
-	if err != nil {
-		return fmt.Errorf("build operator token verifier: %w", err)
-	}
-
-	// The SessionRegistry client fans a force-disconnect out to the smpp-server pods when a credential
-	// is revoked/disabled or an account/customer suspended (step-032). Transport security terminates at
-	// the mesh (insecure). NewClient is lazy: it opens no connection until the first Disconnect, so a
-	// session-manager that is briefly down does not block startup — and a Disconnect during that window
-	// fails best-effort without failing the control-plane mutation.
-	registryConn, err := grpc.NewClient(cfg.SMPP.SessionManagerAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		return fmt.Errorf("dial session manager at %q: %w", cfg.SMPP.SessionManagerAddr, err)
-	}
-	defer func() { _ = registryConn.Close() }()
-
-	// The ContentKeys client delegates content-key rotation, the guarded read and the crypto-shred to
-	// content-key-svc, the sole holder of the KMS (step-167). Like the registry client it is lazy: no
-	// connection opens until the first call, so a key service that is briefly down does not block startup.
-	contentKeyConn, err := grpc.NewClient(cfg.ContentKey.Addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		return fmt.Errorf("dial content key service at %q: %w", cfg.ContentKey.Addr, err)
-	}
-	defer func() { _ = contentKeyConn.Close() }()
-
-	// The realtime fan-out (step-183). Groupless and from end-of-log: every replica must see every record
-	// to serve its own clients, and a live feed has nothing to resume — committed offsets would replay the
-	// retained backlog into dashboards that only want what is happening now.
-	hub := realtime.NewHub(realtime.Config{})
-	streamQuit := make(chan struct{})
-	streamReader, err := kafka.NewTailReader(cfg.Kafka, kafka.TopicMetricsStream)
-	if err != nil {
-		return fmt.Errorf("metrics stream reader: %w", err)
-	}
-	defer streamReader.Close()
-
-	router, _ := adminapi.New(adminapi.Deps{
-		StreamHub:        hub,
-		Trace:            clickhouse.NewCDRReader(chConn),
-		Quit:             streamQuit,
-		Customers:        postgres.NewCustomerRepo(pool),
-		Accounts:         postgres.NewAccountRepo(pool),
-		Credentials:      postgres.NewCredentialRepo(pool),
-		Connectors:       postgres.NewConnectorRepo(pool),
-		ConnectorControl: status.NewReader(rdb),
-		Routes:           postgres.NewRouteRepo(pool),
-		SenderIDs:        postgres.NewSenderIDRepo(pool),
-		InboundNumbers:   postgres.NewInboundNumberRepo(pool),
-		InboundKeywords:  postgres.NewInboundKeywordRepo(pool),
-		UnroutedMO:       postgres.NewUnroutedMORepo(pool),
-		Suppressions:     postgres.NewSuppressionRepo(pool),
-		OptOutKeywords:   postgres.NewOptOutKeywordRepo(pool),
-		AntispamRules:    postgres.NewAntispamRuleRepo(pool),
-		ExactRoutes:      postgres.NewExactRouteRepo(pool),
-		RoutingScripts:   postgres.NewRoutingScriptRepo(pool),
-		Imports:          importRunner,
-		Disconnector:     adminapi.NewGRPCDisconnector(registrypb.NewSessionRegistryClient(registryConn)),
-		Billing:          postgres.NewBillingRepo(pool),
-		BalanceCache:     redisBalanceCache{rdb: rdb},
-		RatePlans:        postgres.NewRatePlanRepo(pool),
-		BillingProviders: postgres.NewExternalBillingProviderRepo(pool),
-		ContentKeys:      adminapi.NewGRPCContentKeyRotator(contentkeypb.NewContentKeysClient(contentKeyConn)),
-		ContentKeyReader: adminapi.NewGRPCContentKeyReader(contentkeypb.NewContentKeysClient(contentKeyConn)),
-		ContentKeyEraser: adminapi.NewGRPCContentKeyEraser(contentkeypb.NewContentKeysClient(contentKeyConn)),
-		Messages:         clickhouse.NewCDRReader(chConn),
-		ContentAudit:     postgres.NewContentAccessAuditRepo(pool),
-		GDPRJobs:         postgres.NewGDPREraseJobRepo(pool),
-		GDPRRunner:       gdprRunner,
-		CDREraser:        clickhouse.NewCDREraser(chConn),
-		Verifier:         verifier,
-		Logger:           logger,
-	})
-
-	// A single seam announces every control-plane mutation on config:changed; config-sync coalesces
-	// those into a data-plane invalidation (step-105). A publish failure never fails the request.
-	handler := adminapi.PublishConfigChanges(router, redisstore.NewPubSubPublisher(rdb), config.ChannelConfigChanged, logger)
-
-	srv := &http.Server{
-		Addr:              ":" + strconv.Itoa(cfg.HTTP.Port),
-		Handler:           handler,
-		ReadHeaderTimeout: cfg.HTTP.ReadHeaderTimeout,
-	}
-	// Hijacked connections leave net/http's active set, so Shutdown neither waits for nor closes a
-	// WebSocket. This hook is the only thing that ends them.
-	srv.RegisterOnShutdown(func() { close(streamQuit) })
-
-	// Postgres is vital: without it the Admin API can neither read nor write the control plane, so a
-	// pod that cannot reach it must leave the load balancer (plan §1.5). The ping probes the pool,
-	// not a TCP address.
-	pgCheck := postgres.PingCheck("postgres", pool, cfg.Postgres.Timeout)
-	ops, err := observability.NewOpsServer(cfg, logger, pgCheck)
-	if err != nil {
-		return fmt.Errorf("init ops server: %w", err)
-	}
-	ops.Registry().MustRegister(retentionOutcomes)
+	defer app.close()
 
 	logger.InfoContext(ctx, "starting", "config", cfg)
 
@@ -257,17 +76,17 @@ func run() error {
 	// service down predictably rather than leaving a half-dead pod (guide de codage §5). Neither has a
 	// teardown-ordering constraint, so the unordered supervisor fits.
 	var g supervisor.Group
-	g.Add("ops server", func(c context.Context) error { return ops.Run(c, cfg.ShutdownTimeout) })
-	g.Add("admin http server", func(c context.Context) error { return runHTTP(c, srv, cfg.ShutdownTimeout, logger) })
+	g.Add("ops server", func(c context.Context) error { return app.ops.Run(c, cfg.ShutdownTimeout) })
+	g.Add("admin http server", func(c context.Context) error { return runHTTP(c, app.http, cfg.ShutdownTimeout, logger) })
 	g.Add("cdr retention", func(c context.Context) error {
-		return retainer.Run(c, cfg.ClickHouse.RetentionInterval)
+		return app.retainer.Run(c, cfg.ClickHouse.RetentionInterval)
 	})
 	// Self-restarting, never fatal: the dashboard feed is best-effort, and a Kafka hiccup must not tear down
 	// the control plane — customers, credentials, billing, GDPR — along with it.
 	g.Add("metrics stream", func(c context.Context) error {
 		return runResilient(c, "metrics stream", func(rc context.Context) error {
-			return streamReader.Run(rc, func(_ context.Context, rec kafka.Record) error {
-				publishRecord(hub, rec.Value)
+			return app.stream.Run(rc, func(_ context.Context, rec kafka.Record) error {
+				publishRecord(app.hub, rec.Value)
 				return nil
 			})
 		}, logger)
@@ -306,22 +125,6 @@ func runHTTP(ctx context.Context, srv *http.Server, timeout time.Duration, logge
 		}
 		return nil
 	}
-}
-
-// retentionMetric adapts a Prometheus counter to clickhouse.RetentionMetric.
-type retentionMetric struct{ c *prometheus.CounterVec }
-
-func (m retentionMetric) Observe(outcome string) { m.c.WithLabelValues(outcome).Inc() }
-
-// redisBalanceCache adapts the Redis client to adminapi.BalanceCacheInvalidator: it deletes the balance-cache
-// keys an admin money op just changed durably, so the next reserve rehydrates from Postgres (step-148).
-type redisBalanceCache struct{ rdb *goredis.Client }
-
-func (c redisBalanceCache) Del(ctx context.Context, keys ...string) error {
-	if len(keys) == 0 {
-		return nil
-	}
-	return c.rdb.Del(ctx, keys...).Err()
 }
 
 // streamBackoff paces a restart of the metrics feed after a Kafka fault.
