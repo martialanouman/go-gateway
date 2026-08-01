@@ -300,32 +300,25 @@ func holdAndWatch(ctx context.Context, conns []net.Conn, d time.Duration) (int, 
 // rather than answered: this tool measures whether a bind survives, it does not impersonate a full
 // ESME, so a peer that expects an enquire_link response will eventually drop the session and be
 // counted as such.
-// maxUndecodable bounds how many PDUs we cannot decode we will skip in a row. A peer flooding
-// undecodable frames would otherwise spin this loop until the deadline, burning a core per session:
-// the tool would end up measuring its own saturation instead of the peer.
-const maxUndecodable = 64
-
 func watch(ctx context.Context, nc net.Conn, deadline time.Time) bool {
-	// Without this, cancelling only takes effect once the read deadline expires — a Ctrl-C during a
-	// long hold would appear to hang.
+	// The deadline is armed ONCE, and before the AfterFunc is registered. Both halves matter.
+	//
+	// It is absolute and persists across reads, so re-arming it inside the loop buys nothing — and
+	// costs everything: AfterFunc fires only once, so any SetReadDeadline running after it silently
+	// erases the cancellation and nothing ever re-arms. Testing ctx.Err() before that Set does not
+	// help either; cancellation landing in the gap between the test and the Set is still lost, and
+	// the read then blocks for the entire hold window. Never setting the deadline again after the
+	// AfterFunc is registered makes that whole class of race unrepresentable.
+	if err := nc.SetReadDeadline(deadline); err != nil {
+		return false
+	}
 	stop := context.AfterFunc(ctx, func() { _ = nc.SetReadDeadline(time.Now()) })
 	defer stop()
 
-	skipped := 0
 	for {
-		// Checked FIRST, and on every pass. AfterFunc fires once: if it lands between two iterations —
-		// or before the first, which is what an already-cancelled context does — the SetReadDeadline
-		// below overwrites the cancellation deadline and nothing ever re-arms it. The read then blocks
-		// for the whole hold window, and a cancelled Run hangs until it elapses.
-		if ctx.Err() != nil {
-			return true // we walked away; the peer did not drop us
-		}
-		if err := nc.SetReadDeadline(deadline); err != nil {
-			return false
-		}
 		if _, err := smpp.ReadPDU(nc); err != nil {
 			if ctx.Err() != nil {
-				return true
+				return true // we walked away; the peer did not drop us
 			}
 			var ne net.Error
 			if errors.As(err, &ne) && ne.Timeout() {
@@ -333,22 +326,18 @@ func watch(ctx context.Context, nc net.Conn, deadline time.Time) bool {
 			}
 			// A PDU this codec does not model is not a teardown. data_sm, alert_notification and
 			// vendor PDUs are ordinary SMSC traffic; counting them as drops would report a healthy
-			// peer as dropping 100% of its sessions — and close them ourselves to prove it.
+			// peer as dropping 100% of its sessions — and close them ourselves to prove it. That is
+			// why there is no cap on how many we skip: a cap is just the same lie at a higher
+			// threshold, and an SMSC delivering over data_sm would trip it in a second.
 			// Rewinding is safe: ReadPDU consumes the whole PDU (its length prefix drives a ReadFull)
 			// before decoding, so these two errors leave the stream aligned on the next one.
 			// ErrLengthMismatch and ErrPDUTooLarge are deliberately NOT tolerated: they are raised
 			// before the body is consumed, so the stream is desynchronised and rewinding is unsafe.
 			if errors.Is(err, smpp.ErrUnknownCommand) || errors.Is(err, smpp.ErrMalformedBody) {
-				skipped++
-				if skipped > maxUndecodable {
-					return false
-				}
-
 				continue
 			}
 
 			return false
 		}
-		skipped = 0
 	}
 }

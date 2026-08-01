@@ -18,6 +18,8 @@ cd "$(dirname "$0")/.."
 
 K6="${K6:-k6}"
 SCRIPT="test/load/k6/messages.js"
+# Doit rester identique au sélecteur de seuil du script k6 : c'est ce couplage que la garde vérifie.
+CHECK_METRIC="checks{check:status is 202}"
 ADDR="${LOAD_STUB_ADDR:-127.0.0.1:8099}"
 # Doit dépasser le budget encodé dans le script (p99 < 250 ms), avec de la marge.
 SLOW_DELAY="${LOAD_SLOW_DELAY:-300ms}"
@@ -60,9 +62,10 @@ fi
 # que rien ne le signale.
 STUB_BIN="$(mktemp -t load-stub.XXXXXX)"
 NEG_LOG=""
+POS_LOG=""
 # Le trap est posé AVANT le build : un `go build` qui échoue sous `set -e` sortirait sinon en laissant
 # le fichier temporaire derrière lui à chaque tentative.
-trap 'cleanup || true; rm -f "$STUB_BIN" "$NEG_LOG"' EXIT
+trap 'cleanup || true; rm -f "$STUB_BIN" "$NEG_LOG" "$POS_LOG"' EXIT
 go build -o "$STUB_BIN" ./cmd/load-stub
 
 STUB_PID=""
@@ -97,40 +100,6 @@ start_stub() {
   return 1
 }
 
-# Les deux runs capturent le code de sortie de k6 lui-même. Surtout pas de pipe vers tail ici :
-# le code de sortie serait celui de tail, et un seuil violé passerait pour un succès.
-echo "==> run POSITIF — stub sans délai, le budget doit être tenu"
-start_stub 0
-set +e
-BASE_URL="http://$ADDR" "$K6" run --quiet "$SCRIPT"
-positive=$?
-set -e
-cleanup
-
-if [[ $positive -ne 0 ]]; then
-  echo "load-smoke: ÉCHEC — le run positif aurait dû passer (exit $positive)" >&2
-  exit 1
-fi
-
-echo
-echo "==> run NÉGATIF — stub ralenti à $SLOW_DELAY, le seuil de latence doit tomber"
-start_stub "$SLOW_DELAY"
-NEG_LOG="$(mktemp -t load-smoke-negative.XXXXXX)"
-set +e
-BASE_URL="http://$ADDR" "$K6" run --quiet "$SCRIPT" 2>&1 | tee "$NEG_LOG"
-negative=${PIPESTATUS[0]}   # surtout pas $? : ce serait le code de tee, jamais celui de k6
-set -e
-cleanup
-
-# Un exit non nul ne suffit PAS comme preuve. k6 sort 99 dès qu'un seuil QUELCONQUE tombe : contre un
-# serveur absent, http_req_failed tombe à 100 % et p(99) reste vert — le run échoue sans avoir jamais
-# mesuré la latence. Conclure « OK » là-dessus, c'est le faux vert que ce script existe pour empêcher.
-# On exige donc que ce soit BIEN le budget de latence qui casse, et que le trafic ait été servi.
-if [[ $negative -ne 99 ]]; then
-  echo "load-smoke: ÉCHEC — k6 a rendu $negative, or seul 99 signale un seuil franchi." >&2
-  echo "            (105 interruption · 107 exception du script · 108/109 erreur interne)" >&2
-  exit 1
-fi
 # k6 rend son bloc THRESHOLDS par métrique — le nom sur une ligne, puis UN marqueur PAR SEUIL :
 #     http_req_failed
 #     ✓ 'rate<0.01' rate=0.00%
@@ -153,8 +122,77 @@ crossed() {
       if (want == "" || index($0, want) > 0) { found = 1 }
     }
     END { exit found ? 0 : 1 }
-  ' "$NEG_LOG"
+  ' "${NEG_LOG:?crossed appelée avant le run négatif}"
 }
+
+# sampled <métrique> — vrai si le seuil de cette métrique a mesuré quelque chose, dans POS_LOG.
+#
+# k6 affiche un seuil SANS AUCUN échantillon comme respecté : « ✓ 'rate>0.99' rate=0.00% ». Un seuil
+# devenu inopérant — sélecteur qui ne correspond plus à rien — est donc rendu VERT, des deux côtés du
+# couple positif/négatif. Sans cette garde, le harnais qui existe pour détecter les seuils morts en
+# laisserait passer un. On exige un taux non nul, c'est-à-dire des données.
+sampled() {
+  awk -v m="$1" '
+    { line = $0; gsub(/^[ \t]+|[ \t]+$/, "", line) }
+    line == m         { inblock = 1; next }
+    inblock && line == "" { inblock = 0 }
+    inblock && match($0, /rate=[0-9]+\.[0-9]+%/) {
+      rate = substr($0, RSTART + 5, RLENGTH - 6) + 0
+      if (rate > 0) { found = 1 }
+    }
+    END { exit found ? 0 : 1 }
+  ' "${POS_LOG:?sampled appelée avant le run positif}"
+}
+
+# Les deux runs capturent le code de sortie de k6 lui-même. Surtout pas de pipe vers tail ici :
+# le code de sortie serait celui de tail, et un seuil violé passerait pour un succès.
+echo "==> run POSITIF — stub sans délai, le budget doit être tenu"
+start_stub 0
+POS_LOG="$(mktemp -t load-smoke-positive.XXXXXX)"
+set +e
+BASE_URL="http://$ADDR" "$K6" run --quiet "$SCRIPT" 2>&1 | tee "$POS_LOG"
+positive=${PIPESTATUS[0]}
+set -e
+
+# Le diagnostic AVANT le nettoyage : si le port ne se libère pas, cleanup sort sous `set -e` et
+# l'opérateur lit « port occupé » à la place de la vraie cause.
+if [[ $positive -ne 0 ]]; then
+  echo "load-smoke: ÉCHEC — le run positif aurait dû passer (exit $positive)" >&2
+  exit 1
+fi
+
+# Un seuil SANS ÉCHANTILLON est rendu vert par k6 (« ✓ 'rate>0.99' rate=0.00% »). Un sélecteur de
+# check dévié — renommage, montée de version de k6, `check()` qui cesse d'être appelé — passe donc
+# vert des deux côtés, et le harnais qui existe pour détecter les seuils morts en laisse passer un.
+# On exige que le seuil sur les 202 ait réellement observé du trafic.
+if ! sampled "$CHECK_METRIC"; then
+  echo "load-smoke: ÉCHEC — le seuil « $CHECK_METRIC » n'a mesuré aucun échantillon." >&2
+  echo "            k6 rend un seuil sans données comme VERT : celui-ci ne prouve donc rien." >&2
+  echo "            Le sélecteur de check du script k6 ne correspond probablement plus." >&2
+  grep -B1 -E "✓|✗" "$POS_LOG" >&2 || true
+  exit 1
+fi
+cleanup
+
+echo
+echo "==> run NÉGATIF — stub ralenti à $SLOW_DELAY, le seuil de latence doit tomber"
+start_stub "$SLOW_DELAY"
+NEG_LOG="$(mktemp -t load-smoke-negative.XXXXXX)"
+set +e
+BASE_URL="http://$ADDR" "$K6" run --quiet "$SCRIPT" 2>&1 | tee "$NEG_LOG"
+negative=${PIPESTATUS[0]}   # surtout pas $? : ce serait le code de tee, jamais celui de k6
+set -e
+cleanup
+
+# Un exit non nul ne suffit PAS comme preuve. k6 sort 99 dès qu'un seuil QUELCONQUE tombe : contre un
+# serveur absent, http_req_failed tombe à 100 % et p(99) reste vert — le run échoue sans avoir jamais
+# mesuré la latence. Conclure « OK » là-dessus, c'est le faux vert que ce script existe pour empêcher.
+# On exige donc que ce soit BIEN le budget de latence qui casse, et que le trafic ait été servi.
+if [[ $negative -ne 99 ]]; then
+  echo "load-smoke: ÉCHEC — k6 a rendu $negative, or seul 99 signale un seuil franchi." >&2
+  echo "            (105 interruption · 107 exception du script · 108/109 erreur interne)" >&2
+  exit 1
+fi
 
 if ! crossed "http_req_duration" "p(99)"; then
   echo "load-smoke: ÉCHEC — le run négatif a échoué SANS que le budget de latence tombe." >&2
@@ -162,7 +200,7 @@ if ! crossed "http_req_duration" "p(99)"; then
   grep -B1 -E "✓|✗" "$NEG_LOG" >&2 || true
   exit 1
 fi
-if crossed "http_req_failed"; then
+if crossed "http_req_failed" "rate"; then
   echo "load-smoke: ÉCHEC — des requêtes ont échoué : le stub ne servait pas le trafic." >&2
   echo "            Un run où rien n'aboutit ne prouve rien du budget de latence. Seuils du run :" >&2
   grep -B1 -E "✓|✗" "$NEG_LOG" >&2 || true

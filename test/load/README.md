@@ -58,8 +58,14 @@ Variables du script k6 : `PROFILE`, `BASE_URL`, `API_KEY`, `SENDER_ID`.
 k6 sort en **code 99** quand un seuil tombe : c'est ce code qui porte le critère « le run échoue si
 p99 dépasse le budget ».
 
-Le troisième seuil n'est pas décoratif : sans lui, un run où tout répondrait 401 en sub-milliseconde
-passerait le budget de latence en beauté.
+Le troisième seuil couvre ce que les deux autres laissent passer : une réponse **2xx qui n'est pas
+202**. Un 401 est déjà attrapé par `http_req_failed`, qui compte tout ce qui sort de 2xx–3xx ; un 200,
+lui, y est compté comme un succès et tiendrait le budget de latence sans que rien ne signale que la
+passerelle n'a rien accepté.
+
+`make load-smoke` vérifie en plus que ce seuil a **mesuré quelque chose** : k6 affiche un seuil sans
+aucun échantillon comme respecté (`✓ 'rate>0.99' rate=0.00%`), si bien qu'un sélecteur de check devenu
+obsolète passerait vert des deux côtés du couple.
 
 **Le budget bout-en-bout p99 < 2 s n'est pas encodé ici**, et ce n'est pas un oubli : k6 mesure
 soumission → réponse HTTP, il ne voit jamais la patte SMSC. Le mesurer exige de corréler les

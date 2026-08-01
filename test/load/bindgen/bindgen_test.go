@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -314,16 +315,27 @@ func TestRunReportsNoDropWhenSessionsSurvive(t *testing.T) {
 // A peer sending PDUs this codec does not model — data_sm, alert_notification, vendor commands —
 // is behaving normally. Treating an undecodable PDU as a teardown would report a perfectly healthy
 // SMSC as dropping every session, and close those sessions to prove the point.
+// The count matters as much as the behaviour: an earlier version capped consecutive undecodable
+// PDUs at 64 and counted the session as dropped past that, which reported a healthy SMSC delivering
+// over data_sm as dropping every session. This test asserts the peer really did send far more than
+// any such cap, so a reintroduced one cannot pass unnoticed.
 func TestRunDoesNotCountUnmodelledPDUsAsDrops(t *testing.T) {
 	t.Parallel()
 
-	const dataSM = uint32(0x00000103) // valid SMPP, absent from this repo's codec
-	addr := startChattyPeer(t, dataSM)
+	const (
+		dataSM   = uint32(0x00000103) // valid SMPP, absent from this repo's codec
+		wantSent = 150                // comfortably past any plausible cap
+	)
+	addr, sent := startChattyPeer(t, dataSM)
 
 	rep, err := bindgen.Run(t.Context(), bindgen.Config{
 		Addr: addr, Binds: 3, SystemID: "esme", Password: "pw",
-		Hold: 300 * time.Millisecond,
+		Hold: 600 * time.Millisecond,
 	})
+	if n := sent.Load(); n < wantSent {
+		t.Fatalf("the peer only sent %d undecodable PDUs, want at least %d: "+
+			"this run would not have exercised a cap", n, wantSent)
+	}
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -336,13 +348,17 @@ func TestRunDoesNotCountUnmodelledPDUsAsDrops(t *testing.T) {
 }
 
 // startChattyPeer binds, then keeps sending a PDU with the given command_id until the client leaves.
-func startChattyPeer(t *testing.T, commandID uint32) string {
+// It returns the listen address and a counter of the frames it managed to send, so a test can assert
+// it produced enough traffic to be meaningful.
+func startChattyPeer(t *testing.T, commandID uint32) (string, *atomic.Int64) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
 	t.Cleanup(func() { _ = ln.Close() })
+
+	var sent atomic.Int64
 
 	// A well-formed 16-byte header carrying a command_id the codec does not model.
 	frame := make([]byte, 16)
@@ -373,13 +389,14 @@ func startChattyPeer(t *testing.T, commandID uint32) string {
 					if _, err := nc.Write(frame); err != nil {
 						return // client gone; this is the goroutine's stop condition
 					}
-					time.Sleep(20 * time.Millisecond)
+					sent.Add(1)
+					time.Sleep(time.Millisecond)
 				}
 			}()
 		}
 	}()
 
-	return ln.Addr().String()
+	return ln.Addr().String(), &sent
 }
 
 // waitFor polls cond until it holds or the test times out.
