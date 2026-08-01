@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -377,6 +378,37 @@ func (r *BillingRepo) LedgerEntryExists(ctx context.Context, messageID uuid.UUID
 		return false, translate("ledger entry exists", err)
 	}
 	return exists, nil
+}
+
+// OrphanedReservations lists reservations the settle loop never closed — a `reserve` claim with neither a
+// capture nor a release, older than the cutoff (step-190). connector-pool settles fail-open, so a billing
+// outage leaves the reserve debit standing and the customer charged for a message that may never have been
+// sent; these rows are what the reaper reconciles.
+//
+// olderThan keeps the sweep off the nominal path: it must sit well beyond a message's normal time to a
+// terminal outcome, or the reaper races the connector pool and settles messages still legitimately in
+// flight. limit bounds one pass — the sweep is periodic, so an unbounded read would be the one query able
+// to stall the billing service.
+func (r *BillingRepo) OrphanedReservations(ctx context.Context, olderThan time.Time, limit int) ([]cp.OrphanedReservation, error) {
+	rows, err := r.q.ListOrphanedReservations(ctx, sqlcgen.ListOrphanedReservationsParams{
+		OlderThan: tsFrom(olderThan), RowLimit: int32(limit),
+	})
+	if err != nil {
+		return nil, translate("list orphaned reservations", err)
+	}
+	out := make([]cp.OrphanedReservation, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, cp.OrphanedReservation{
+			MessageID:  row.MessageID,
+			OwnerType:  row.OwnerType,
+			OwnerID:    row.OwnerID,
+			CustomerID: row.CustomerID,
+			AccountID:  row.AccountID,
+			Credits:    int(row.Credits),
+			ReservedAt: tsVal(row.ReservedAt),
+		})
+	}
+	return out, nil
 }
 
 // ReserveEntry reads the reserve ledger entry for messageID: its signed credits (negative — the reserve
