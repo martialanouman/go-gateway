@@ -2,6 +2,7 @@ package clickhouse_test
 
 import (
 	"context"
+	"strconv"
 	"testing"
 	"time"
 
@@ -27,6 +28,13 @@ func searchRow(customerID, accountID uuid.UUID, at time.Time, dest string) click
 		SegmentCount: 1,
 		Encoding:     clickhouse.EncodingGSM7,
 	}
+}
+
+// searchMSISDN builds a number unique to its caller. The ClickHouse container is shared across this
+// package's tests and at least one of them (the RGPD erasure) counts rows BY NUMBER across every
+// customer, so two tests reusing a tidy literal such as 22507000001 corrupt each other's counts.
+func searchMSISDN() string {
+	return "22509" + strconv.FormatUint(uint64(uuid.New().ID()), 10)
 }
 
 func searchReader(t *testing.T) (*clickhouse.CDRWriter, *clickhouse.CDRReader) {
@@ -59,9 +67,9 @@ func TestSearchIsScopedToItsWindowAndCustomers(t *testing.T) {
 	accountID := uuid.New()
 	now := time.Now().UTC().Truncate(time.Millisecond)
 
-	inWindow := searchRow(mine, accountID, now.Add(-time.Hour), "22507000001")
-	tooOld := searchRow(mine, accountID, now.Add(-48*time.Hour), "22507000002")
-	otherCustomer := searchRow(other, accountID, now.Add(-time.Hour), "22507000003")
+	inWindow := searchRow(mine, accountID, now.Add(-time.Hour), searchMSISDN())
+	tooOld := searchRow(mine, accountID, now.Add(-48*time.Hour), searchMSISDN())
+	otherCustomer := searchRow(other, accountID, now.Add(-time.Hour), searchMSISDN())
 	if err := writer.InsertBatch(ctx, []clickhouse.CDRRow{inWindow, tooOld, otherCustomer}); err != nil {
 		t.Fatalf("InsertBatch: %v", err)
 	}
@@ -87,13 +95,13 @@ func TestSearchMatchesAnMSISDNOnEitherSide(t *testing.T) {
 
 	customerID, accountID := uuid.New(), uuid.New()
 	now := time.Now().UTC().Truncate(time.Millisecond)
-	const subscriber = "22507111222"
+	subscriber := searchMSISDN()
 
 	asDest := searchRow(customerID, accountID, now.Add(-time.Hour), subscriber)
-	asSource := searchRow(customerID, accountID, now.Add(-2*time.Hour), "22507999999")
+	asSource := searchRow(customerID, accountID, now.Add(-2*time.Hour), searchMSISDN())
 	asSource.Direction = clickhouse.DirectionMO
 	asSource.SourceAddr = subscriber
-	unrelated := searchRow(customerID, accountID, now.Add(-time.Hour), "22507333444")
+	unrelated := searchRow(customerID, accountID, now.Add(-time.Hour), searchMSISDN())
 	if err := writer.InsertBatch(ctx, []clickhouse.CDRRow{asDest, asSource, unrelated}); err != nil {
 		t.Fatalf("InsertBatch: %v", err)
 	}
@@ -130,8 +138,8 @@ func TestSearchFindsAMessageByTraceID(t *testing.T) {
 	customerID, accountID := uuid.New(), uuid.New()
 	now := time.Now().UTC().Truncate(time.Millisecond)
 
-	wanted := searchRow(customerID, accountID, now.Add(-time.Hour), "22507000001")
-	other := searchRow(customerID, accountID, now.Add(-time.Hour), "22507000002")
+	wanted := searchRow(customerID, accountID, now.Add(-time.Hour), searchMSISDN())
+	other := searchRow(customerID, accountID, now.Add(-time.Hour), searchMSISDN())
 	if err := writer.InsertBatch(ctx, []clickhouse.CDRRow{wanted, other}); err != nil {
 		t.Fatalf("InsertBatch: %v", err)
 	}
@@ -161,9 +169,9 @@ func TestSearchKeysetPagesThroughTiedTimestamps(t *testing.T) {
 	customerID, accountID := uuid.New(), uuid.New()
 	at := time.Now().UTC().Truncate(time.Millisecond)
 	seeded := []clickhouse.CDRRow{
-		searchRow(customerID, accountID, at, "22507000001"),
-		searchRow(customerID, accountID, at, "22507000002"),
-		searchRow(customerID, accountID, at, "22507000003"),
+		searchRow(customerID, accountID, at, searchMSISDN()),
+		searchRow(customerID, accountID, at, searchMSISDN()),
+		searchRow(customerID, accountID, at, searchMSISDN()),
 	}
 	if err := writer.InsertBatch(ctx, seeded); err != nil {
 		t.Fatalf("InsertBatch: %v", err)
