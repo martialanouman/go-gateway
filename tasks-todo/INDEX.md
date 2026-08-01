@@ -101,6 +101,9 @@ Légende : `[x]` = fait (dans `tasks-done/`) · `[ ]` = à faire (dans `tasks-to
 - [x] step-130 — Dé-`Skip` des tests de résilience + scénarios d'injection de pannes
 
 ## M9 — Facturation opt-in
+> ⚠️ **Jalon coché avec une dette :** step-146 a livré le règlement MT en fail-open en s'appuyant sur un
+> « reaper » qui n'a jamais été implémenté. Le rattrapage est **step-190** (section Audit pré-production).
+> Les steps ci-dessous restent faites ; c'est leur filet de sécurité qui manquait.
 - [x] step-140 — Poser le contrat gRPC billing + l'outillage protoc
 - [x] step-141 — Repos Postgres billing : balances, config, grand livre partitionné
 - [x] step-142 — Réserve/capture/libère MT en Lua atomique, idempotent par message_id
@@ -135,6 +138,18 @@ Légende : `[x]` = fait (dans `tasks-done/`) · `[ ]` = à faire (dans `tasks-to
 - [ ] step-186 — search-messages avec masquage MSISDN par rôle
 - [ ] step-187 — Export de messages asynchrone (row-cap, MSISDN masqué)
 
+## Audit pré-production — correctifs issus de la revue du 2026-08-01
+Trois de ces dettes étaient décrites **en commentaire dans le code** mais n'existaient dans aucune step :
+un commentaire n'est pas un backlog. Les steps 190-192 corrigent des risques de production, 193-194 sont
+structurelles et à faire **avant** que M12 n'empile dessus.
+- [ ] step-190 — Reaper de réservations orphelines (**BLOQUE step-208 : le fail-open de step-146 n'a
+      aujourd'hui aucun filet**)
+- [ ] step-191 — PROXY protocol sur le listener SMPP (sinon throttle de bind global derrière un LB L4)
+- [ ] step-192 — Topic `webhook.retry` différé (sortir les retries du chemin chaud)
+- [ ] step-193 — Câblage de router-svc / connector-pool-svc en constructeurs testables
+- [ ] step-193b — Même patron pour mo-dlr-router-svc, admin-api-svc, smpp-server-svc
+- [ ] step-194 — Découper `connectorpool.go` (extraction du mapping SMPP/CDR)
+
 ## M12 — Durcissement, charge & mise en production
 - [ ] step-200 — Harnais de charge k6/vegeta + générateur de binds SMPP (NFR)
 - [ ] step-201 — Tuning de débit : partitions Kafka, batch ClickHouse, pool pgx
@@ -144,4 +159,4 @@ Légende : `[x]` = fait (dans `tasks-done/`) · `[ ]` = à faire (dans `tasks-to
 - [ ] step-205 — TLS / SMPP-TLS / mTLS sur les transports
 - [ ] step-206 — Auth opérateur réelle (OIDC/mTLS) remplaçant le stub M1
 - [ ] step-207 — Manifests deploy/ Kubernetes (Deployments, Services, HPA, PDB, probes)
-- [ ] step-208 — Dérouler la checklist de mise en production (go-live)
+- [ ] step-208 — Dérouler la checklist de mise en production (go-live) — **bloquée par step-190**
