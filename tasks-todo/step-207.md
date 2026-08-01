@@ -21,6 +21,14 @@ Fournir les manifests Kubernetes sous `deploy/` pour tous les services : Deploym
 - PDB cohérent avec le drain SMPP (step-203) : ne pas évincer tous les binds d'un connecteur d'un coup.
 - Secrets/certs (step-205) et config OIDC (step-206) injectés via Secrets/ConfigMaps, jamais en clair.
 - Ce sont des artefacts de déploiement : pas de code Go, mais versionnés et revus.
+- **Arbitrage reporté depuis step-181 — échantillonnage des traces.** L'échantillonnage 100 % sur erreur est
+  aujourd'hui **in-process** (`observability.ErrorBiasedSampler` + `ErrorBiased`). Il tient la promesse de
+  `TRACES_SAMPLER_ARG` sans aucun collecteur, mais il exporte un span en erreur **sans ses ancêtres** quand
+  la trace n'était pas échantillonnée — un span orphelin, pas une trace partielle. Si un collecteur OTel est
+  déployé ici, trancher : l'**échantillonnage de queue** côté collecteur donne des traces complètes et un
+  coût nul dans la passerelle. Coût actuel mesuré : **nul au ratio 1.0** (528 o/op avec ou sans), +384 o et
+  +120 ns par span seulement si l'exploitant baisse le ratio. Décision utilisateur du 2026-08-01 : garder
+  l'in-process et revoir ici ; les deux peuvent coexister (à ratio 1.0 le code in-process est inerte).
 
 ## Tests (écrits dans la même PR)
 - Validation statique des manifests (kubeconform/`kubectl --dry-run=client` ou lint YAML en CI).

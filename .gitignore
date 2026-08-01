@@ -1,14 +1,18 @@
 # Release artifacts (GoReleaser output).
 /dist/
 
-# Compiled service binaries built ad-hoc at the repo root (`go build ./cmd/<svc>`). The tracked
-# build path is GoReleaser's /dist; these root binaries are never checked in.
-/rest-api-svc
-/router-svc
-/connector-pool-svc
-/admin-api-svc
+# Compiled binaries built ad-hoc at the repo root (`go build ./cmd/<name>`). The tracked build path
+# is GoReleaser's /dist; these root binaries are never checked in.
+#
+# A pattern rather than a list of names: the list drifted to 6 entries for 13 commands, so every
+# service added after it was written — content-key-svc among them — was one `git add -A` away from
+# being committed. /*-svc covers every service by construction, including the next one; only the
+# tools that do not follow the naming convention are named. Root-anchored, so cmd/ is untouched.
+/*-svc
 /migrate
 /fake-smsc
+/mt-replay
+/config-sync
 
 # Contracts package: the .d.ts are generated at publish time from the YAML, never checked in —
 # a committed copy would be one more thing that can drift from its source.
