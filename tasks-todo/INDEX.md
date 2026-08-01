@@ -149,7 +149,7 @@ structurelles et à faire **avant** que M12 n'empile dessus.
 - [x] step-194 — Découper `connectorpool.go` (extraction du mapping SMPP/CDR)
 
 ## M12 — Durcissement, charge & mise en production
-- [ ] step-200 — Harnais de charge k6/vegeta + générateur de binds SMPP (NFR)
+- [x] step-200 — Harnais de charge k6/vegeta + générateur de binds SMPP (NFR)
 - [ ] step-201 — Tuning de débit : partitions Kafka, batch ClickHouse, pool pgx
 - [ ] step-202 — Chaos : perte Redis (chaque politique de panne) + flapping connecteur
 - [ ] step-203 — Chaos : drain gracieux + PDB + binds préservés ; failover Postgres
