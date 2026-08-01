@@ -17,14 +17,14 @@ type DataKey struct {
 	DEK   []byte
 }
 
-// DataKeyFetcher fetches a customer's active DEK from the authority (billing-svc). It is the slow, remote
+// DataKeyFetcher fetches a customer's active DEK from the authority (content-key-svc). It is the slow, remote
 // source the cache sits in front of. Declared consumer-side.
 type DataKeyFetcher interface {
 	Fetch(ctx context.Context, customerID uuid.UUID) (DataKey, error)
 }
 
 // DataKeyCache fronts a DataKeyFetcher with a per-customer, TTL-bounded, LRU-capped cache. The data plane
-// encrypts bodies at up to thousands per second; without this it would call billing-svc once per message.
+// encrypts bodies at up to thousands per second; without this it would call the key service once per message.
 //
 // It collapses concurrent misses for the same customer with singleflight (one fetch feeds the whole burst),
 // bounds memory with an LRU cap, and NEVER caches an error — a failed fetch is returned to the caller and the

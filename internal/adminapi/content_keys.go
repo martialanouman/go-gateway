@@ -25,7 +25,7 @@ type ContentKeyView struct {
 }
 
 // ContentKeyRotator rotates a customer's content key. The Admin API does not touch the KMS or the database
-// directly: content keys are hosted by billing-svc (the sole KMS holder), so this delegates over gRPC
+// directly: content keys are hosted by content-key-svc (the sole KMS holder), so this delegates over gRPC
 // (GRPCContentKeyRotator). Declared consumer-side.
 type ContentKeyRotator interface {
 	Rotate(ctx context.Context, customerID uuid.UUID) (ContentKeyView, error)
@@ -83,7 +83,7 @@ func (h *contentKeyHandlers) eraseContent(ctx context.Context, in *customerIDPat
 }
 
 // contentKeyDTO conforms to api/openapi-admin.yaml ContentKey. wrapped_key is deliberately absent: the
-// wrapped DEK never leaves billing-svc.
+// wrapped DEK never leaves content-key-svc.
 type contentKeyDTO struct {
 	ID          string  `json:"id" format:"uuid"`
 	CustomerID  string  `json:"customer_id" format:"uuid"`

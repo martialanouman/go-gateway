@@ -1,4 +1,4 @@
-package billing
+package contentkeys
 
 import (
 	"context"
@@ -9,10 +9,11 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/martialanouman/go-gateway/internal/billing/pb"
 	"github.com/martialanouman/go-gateway/internal/content"
+	"github.com/martialanouman/go-gateway/internal/contentkeys/pb"
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
+	"github.com/martialanouman/go-gateway/internal/platform/errors/grpcerr"
 )
 
 // ContentKeyStore is the durable content-key surface the server drives (control_plane.content_keys, §6.14).
@@ -26,7 +27,7 @@ type ContentKeyStore interface {
 	DestroyByCustomer(ctx context.Context, customerID uuid.UUID) (int, error)
 }
 
-// ContentKeyServer serves the ContentKeys gRPC API from billing-svc, the sole holder of the KMS. It generates
+// ContentKeyServer serves the ContentKeys gRPC API from content-key-svc, the sole holder of the KMS. It generates
 // a data key (DEK) and seals it with the KMS *before* any database write (so a failed commit strands no
 // state), then persists only the wrapped DEK. It never returns plaintext or wrapped key material — responses
 // carry metadata only, upholding invariant (a): no key ever crosses a wire or a log in a usable form here.
@@ -52,13 +53,13 @@ func (s *ContentKeyServer) GetOrCreateContentKey(ctx context.Context, req *pb.Ge
 	}
 	key, err := s.getOrCreateActive(ctx, customerID)
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, grpcerr.Status(err)
 	}
 	return contentKeyResponse(key), nil
 }
 
 // GetContentEncryptionKey returns the active key id and its UNWRAPPED data key so the data plane can encrypt a
-// body without the body reaching billing-svc. It is the only path that unseals the DEK: it get-or-creates the
+// body without the body reaching the key service. It is the only path that unseals the DEK: it get-or-creates the
 // active key, then KMS-unwraps its sealed bytes. The plaintext DEK is returned but never logged or persisted.
 func (s *ContentKeyServer) GetContentEncryptionKey(ctx context.Context, req *pb.GetContentEncryptionKeyRequest) (*pb.ContentEncryptionKeyResponse, error) {
 	customerID, err := uuid.Parse(req.GetCustomerId())
@@ -67,12 +68,12 @@ func (s *ContentKeyServer) GetContentEncryptionKey(ctx context.Context, req *pb.
 	}
 	key, err := s.getOrCreateActive(ctx, customerID)
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, grpcerr.Status(err)
 	}
 	dek, err := s.kms.UnwrapDataKey(ctx, key.WrappedKey)
 	if err != nil {
 		// An unwrap failure is a KMS/key integrity fault, not a client error — opaque Internal, no key material.
-		return nil, toStatus(err)
+		return nil, grpcerr.Status(err)
 	}
 	return &pb.ContentEncryptionKeyResponse{KeyId: key.ID.String(), Dek: dek}, nil
 }
@@ -87,14 +88,14 @@ func (s *ContentKeyServer) GetContentKey(ctx context.Context, req *pb.GetContent
 	}
 	key, err := s.store.GetByID(ctx, keyID)
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, grpcerr.Status(err)
 	}
 	if key.Status == cp.ContentKeyDestroyed {
 		return &pb.GetContentKeyResponse{Destroyed: true}, nil
 	}
 	dek, err := s.kms.UnwrapDataKey(ctx, key.WrappedKey)
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, grpcerr.Status(err)
 	}
 	return &pb.GetContentKeyResponse{Dek: dek}, nil
 }
@@ -108,7 +109,7 @@ func (s *ContentKeyServer) DestroyContentKeys(ctx context.Context, req *pb.Destr
 	}
 	n, err := s.store.DestroyByCustomer(ctx, customerID)
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, grpcerr.Status(err)
 	}
 	return &pb.DestroyContentKeysResponse{DestroyedCount: int32(n)}, nil //nolint:gosec // key count, bounded
 }
@@ -142,11 +143,11 @@ func (s *ContentKeyServer) RotateContentKey(ctx context.Context, req *pb.RotateC
 	}
 	wrapped, keyRef, err := s.newWrappedDataKey(ctx)
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, grpcerr.Status(err)
 	}
 	key, err := s.store.Rotate(ctx, customerID, wrapped, keyRef)
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, grpcerr.Status(err)
 	}
 	return contentKeyResponse(key), nil
 }

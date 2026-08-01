@@ -58,6 +58,13 @@ builds:
     goos: [linux]
     goarch: [amd64, arm64]
     ldflags: *ldflags
+  - id: content-key-svc
+    main: ./cmd/content-key-svc
+    binary: content-key-svc
+    env: [CGO_ENABLED=0]
+    goos: [linux]
+    goarch: [amd64, arm64]
+    ldflags: *ldflags
   - id: mo-dlr-router-svc
     main: ./cmd/mo-dlr-router-svc
     binary: mo-dlr-router-svc

@@ -23,9 +23,9 @@ import (
 
 	"github.com/martialanouman/go-gateway/internal/adminapi"
 	"github.com/martialanouman/go-gateway/internal/auth"
-	billingpb "github.com/martialanouman/go-gateway/internal/billing/pb"
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/connector/status"
+	contentkeypb "github.com/martialanouman/go-gateway/internal/contentkeys/pb"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/platform/async"
 	"github.com/martialanouman/go-gateway/internal/platform/supervisor"
@@ -54,7 +54,7 @@ func run() error {
 	// force-disconnect the affected live binds via session-manager's SessionRegistry (step-032), and the
 	// address of that service is the same env var every session-manager client already uses.
 	cfg, err := config.Load(serviceName,
-		config.SectionOTel, config.SectionPostgres, config.SectionHTTP, config.SectionSMPP, config.SectionRedis, config.SectionBilling, config.SectionClickHouse)
+		config.SectionOTel, config.SectionPostgres, config.SectionHTTP, config.SectionSMPP, config.SectionRedis, config.SectionClickHouse, config.SectionContentKey)
 	if err != nil {
 		return err
 	}
@@ -167,14 +167,14 @@ func run() error {
 	}
 	defer func() { _ = registryConn.Close() }()
 
-	// The ContentKeys client delegates content-key rotation to billing-svc, the sole holder of the KMS
-	// (step-161). Like the registry client it is lazy: no connection opens until the first rotate, so a
-	// billing-svc that is briefly down does not block admin startup. This is the first admin→billing gRPC link.
-	billingConn, err := grpc.NewClient(cfg.Billing.Addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	// The ContentKeys client delegates content-key rotation, the guarded read and the crypto-shred to
+	// content-key-svc, the sole holder of the KMS (step-167). Like the registry client it is lazy: no
+	// connection opens until the first call, so a key service that is briefly down does not block startup.
+	contentKeyConn, err := grpc.NewClient(cfg.ContentKey.Addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		return fmt.Errorf("dial billing at %q: %w", cfg.Billing.Addr, err)
+		return fmt.Errorf("dial content key service at %q: %w", cfg.ContentKey.Addr, err)
 	}
-	defer func() { _ = billingConn.Close() }()
+	defer func() { _ = contentKeyConn.Close() }()
 
 	router, _ := adminapi.New(adminapi.Deps{
 		Customers:        postgres.NewCustomerRepo(pool),
@@ -198,9 +198,9 @@ func run() error {
 		BalanceCache:     redisBalanceCache{rdb: rdb},
 		RatePlans:        postgres.NewRatePlanRepo(pool),
 		BillingProviders: postgres.NewExternalBillingProviderRepo(pool),
-		ContentKeys:      adminapi.NewGRPCContentKeyRotator(billingpb.NewContentKeysClient(billingConn)),
-		ContentKeyReader: adminapi.NewGRPCContentKeyReader(billingpb.NewContentKeysClient(billingConn)),
-		ContentKeyEraser: adminapi.NewGRPCContentKeyEraser(billingpb.NewContentKeysClient(billingConn)),
+		ContentKeys:      adminapi.NewGRPCContentKeyRotator(contentkeypb.NewContentKeysClient(contentKeyConn)),
+		ContentKeyReader: adminapi.NewGRPCContentKeyReader(contentkeypb.NewContentKeysClient(contentKeyConn)),
+		ContentKeyEraser: adminapi.NewGRPCContentKeyEraser(contentkeypb.NewContentKeysClient(contentKeyConn)),
 		Messages:         clickhouse.NewCDRReader(chConn),
 		ContentAudit:     postgres.NewContentAccessAuditRepo(pool),
 		GDPRJobs:         postgres.NewGDPREraseJobRepo(pool),

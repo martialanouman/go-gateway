@@ -1,4 +1,4 @@
-package billing_test
+package contentkeys_test
 
 import (
 	"bytes"
@@ -10,9 +10,9 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/martialanouman/go-gateway/internal/billing"
-	"github.com/martialanouman/go-gateway/internal/billing/pb"
 	"github.com/martialanouman/go-gateway/internal/content"
+	"github.com/martialanouman/go-gateway/internal/contentkeys"
+	"github.com/martialanouman/go-gateway/internal/contentkeys/pb"
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 )
@@ -81,7 +81,7 @@ func (s *fakeContentKeyStore) Rotate(_ context.Context, customerID uuid.UUID, wr
 func TestGetOrCreateCreatesWhenAbsent(t *testing.T) {
 	store := &fakeContentKeyStore{}
 	kms := content.NewDevKMS()
-	srv := billing.NewContentKeyServer(kms, store)
+	srv := contentkeys.NewContentKeyServer(kms, store)
 	cust := uuid.New()
 
 	resp, err := srv.GetOrCreateContentKey(context.Background(), &pb.GetOrCreateContentKeyRequest{CustomerId: cust.String()})
@@ -109,7 +109,7 @@ func TestGetOrCreateReturnsExisting(t *testing.T) {
 	cust := uuid.New()
 	existing := cp.ContentKey{ID: uuid.New(), CustomerID: cust, KMSKeyRef: "kek/1", Status: cp.ContentKeyActive}
 	store := &fakeContentKeyStore{active: &existing}
-	srv := billing.NewContentKeyServer(content.NewDevKMS(), store)
+	srv := contentkeys.NewContentKeyServer(content.NewDevKMS(), store)
 
 	resp, err := srv.GetOrCreateContentKey(context.Background(), &pb.GetOrCreateContentKeyRequest{CustomerId: cust.String()})
 	if err != nil {
@@ -127,7 +127,7 @@ func TestGetOrCreateReturnsExisting(t *testing.T) {
 func TestRotateWrapsAndRotates(t *testing.T) {
 	store := &fakeContentKeyStore{}
 	kms := content.NewDevKMS()
-	srv := billing.NewContentKeyServer(kms, store)
+	srv := contentkeys.NewContentKeyServer(kms, store)
 	cust := uuid.New()
 
 	resp, err := srv.RotateContentKey(context.Background(), &pb.RotateContentKeyRequest{CustomerId: cust.String()})
@@ -150,7 +150,7 @@ func TestRotateWrapsAndRotates(t *testing.T) {
 func TestGetContentEncryptionKeyUnwrapsDEK(t *testing.T) {
 	store := &fakeContentKeyStore{}
 	kms := content.NewDevKMS()
-	srv := billing.NewContentKeyServer(kms, store)
+	srv := contentkeys.NewContentKeyServer(kms, store)
 	cust := uuid.New()
 
 	resp, err := srv.GetContentEncryptionKey(context.Background(), &pb.GetContentEncryptionKeyRequest{CustomerId: cust.String()})
@@ -181,7 +181,7 @@ func TestGetContentEncryptionKeyReusesExisting(t *testing.T) {
 	wrapped, _ := kms.WrapDataKey(context.Background(), dek)
 	existing := cp.ContentKey{ID: uuid.New(), CustomerID: cust, WrappedKey: wrapped, KMSKeyRef: kms.KeyRef(), Status: cp.ContentKeyActive}
 	store := &fakeContentKeyStore{active: &existing}
-	srv := billing.NewContentKeyServer(kms, store)
+	srv := contentkeys.NewContentKeyServer(kms, store)
 
 	resp, err := srv.GetContentEncryptionKey(context.Background(), &pb.GetContentEncryptionKeyRequest{CustomerId: cust.String()})
 	if err != nil {
@@ -204,7 +204,7 @@ func TestGetContentKeyUnwrapsSpecificKey(t *testing.T) {
 	store := &fakeContentKeyStore{byID: map[uuid.UUID]cp.ContentKey{
 		keyID: {ID: keyID, WrappedKey: wrapped, Status: cp.ContentKeyRetired}, // a retired key still decrypts old CDRs
 	}}
-	srv := billing.NewContentKeyServer(kms, store)
+	srv := contentkeys.NewContentKeyServer(kms, store)
 
 	resp, err := srv.GetContentKey(context.Background(), &pb.GetContentKeyRequest{KeyId: keyID.String()})
 	if err != nil {
@@ -221,7 +221,7 @@ func TestGetContentKeyDestroyedReturnsNoKey(t *testing.T) {
 	store := &fakeContentKeyStore{byID: map[uuid.UUID]cp.ContentKey{
 		keyID: {ID: keyID, WrappedKey: []byte("irrelevant"), Status: cp.ContentKeyDestroyed},
 	}}
-	srv := billing.NewContentKeyServer(content.NewDevKMS(), store)
+	srv := contentkeys.NewContentKeyServer(content.NewDevKMS(), store)
 
 	resp, err := srv.GetContentKey(context.Background(), &pb.GetContentKeyRequest{KeyId: keyID.String()})
 	if err != nil {
@@ -235,7 +235,7 @@ func TestGetContentKeyDestroyedReturnsNoKey(t *testing.T) {
 // TestDestroyContentKeysShreds: the crypto-shred RPC delegates to the store and returns the destroyed count.
 func TestDestroyContentKeysShreds(t *testing.T) {
 	store := &fakeContentKeyStore{destroyCount: 3}
-	srv := billing.NewContentKeyServer(content.NewDevKMS(), store)
+	srv := contentkeys.NewContentKeyServer(content.NewDevKMS(), store)
 
 	resp, err := srv.DestroyContentKeys(context.Background(), &pb.DestroyContentKeysRequest{CustomerId: uuid.NewString()})
 	if err != nil {
@@ -249,7 +249,7 @@ func TestDestroyContentKeysShreds(t *testing.T) {
 // TestDestroyContentKeysInvalidID: a non-UUID customer id is InvalidArgument, no store call.
 func TestDestroyContentKeysInvalidID(t *testing.T) {
 	store := &fakeContentKeyStore{}
-	srv := billing.NewContentKeyServer(content.NewDevKMS(), store)
+	srv := contentkeys.NewContentKeyServer(content.NewDevKMS(), store)
 	_, err := srv.DestroyContentKeys(context.Background(), &pb.DestroyContentKeysRequest{CustomerId: "nope"})
 	if status.Code(err) != codes.InvalidArgument {
 		t.Errorf("code = %v, want InvalidArgument", status.Code(err))
@@ -261,7 +261,7 @@ func TestDestroyContentKeysInvalidID(t *testing.T) {
 
 // TestGetContentKeyUnknownIsNotFound: an unknown key id is NotFound.
 func TestGetContentKeyUnknownIsNotFound(t *testing.T) {
-	srv := billing.NewContentKeyServer(content.NewDevKMS(), &fakeContentKeyStore{})
+	srv := contentkeys.NewContentKeyServer(content.NewDevKMS(), &fakeContentKeyStore{})
 	_, err := srv.GetContentKey(context.Background(), &pb.GetContentKeyRequest{KeyId: uuid.NewString()})
 	if status.Code(err) != codes.NotFound {
 		t.Errorf("code = %v, want NotFound", status.Code(err))
@@ -271,7 +271,7 @@ func TestGetContentKeyUnknownIsNotFound(t *testing.T) {
 // TestContentKeyInvalidCustomerID: a non-UUID customer id is InvalidArgument, no crypto or store call.
 func TestContentKeyInvalidCustomerID(t *testing.T) {
 	store := &fakeContentKeyStore{}
-	srv := billing.NewContentKeyServer(content.NewDevKMS(), store)
+	srv := contentkeys.NewContentKeyServer(content.NewDevKMS(), store)
 
 	_, err := srv.GetOrCreateContentKey(context.Background(), &pb.GetOrCreateContentKeyRequest{CustomerId: "not-a-uuid"})
 	if status.Code(err) != codes.InvalidArgument {
@@ -285,7 +285,7 @@ func TestContentKeyInvalidCustomerID(t *testing.T) {
 // TestContentKeyStoreErrorPropagates: an unknown customer (store ErrNotFound on create) surfaces as NotFound.
 func TestContentKeyStoreErrorPropagates(t *testing.T) {
 	store := &fakeContentKeyStore{createErr: errs.ErrNotFound}
-	srv := billing.NewContentKeyServer(content.NewDevKMS(), store)
+	srv := contentkeys.NewContentKeyServer(content.NewDevKMS(), store)
 
 	_, err := srv.GetOrCreateContentKey(context.Background(), &pb.GetOrCreateContentKeyRequest{CustomerId: uuid.NewString()})
 	if status.Code(err) != codes.NotFound {

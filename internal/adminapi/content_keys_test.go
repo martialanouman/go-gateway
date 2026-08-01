@@ -43,7 +43,7 @@ func (r *fakeContentKeyRotator) Rotate(_ context.Context, customerID uuid.UUID) 
 }
 
 // TestRotateContentKeyReturnsMetadata: a rotate returns 200 with the new key's metadata (id, status), never
-// any key material, and forwards the customer id to billing-svc.
+// any key material, and forwards the customer id to content-key-svc.
 func TestRotateContentKeyReturnsMetadata(t *testing.T) {
 	cust := uuid.New()
 	keyID := uuid.New()
@@ -68,11 +68,11 @@ func TestRotateContentKeyReturnsMetadata(t *testing.T) {
 		t.Errorf("body = %v, want the rotated key metadata", got)
 	}
 	if _, leaked := got["wrapped_key"]; leaked {
-		t.Error("response exposes wrapped_key — key material must never leave billing-svc")
+		t.Error("response exposes wrapped_key — key material must never leave content-key-svc")
 	}
 }
 
-// TestRotateContentKeyUnknownCustomerIs404: billing-svc reporting the customer absent surfaces as 404.
+// TestRotateContentKeyUnknownCustomerIs404: content-key-svc reporting the customer absent surfaces as 404.
 func TestRotateContentKeyUnknownCustomerIs404(t *testing.T) {
 	rotator := &fakeContentKeyRotator{err: errs.ErrNotFound}
 	api := newTestAPIWith(t, adminapi.Deps{ContentKeys: rotator})
@@ -120,7 +120,7 @@ func TestEraseCustomerContentCryptoShreds(t *testing.T) {
 	}
 }
 
-// TestEraseCustomerContentServiceDownIs503: billing-svc unreachable is a retryable 503.
+// TestEraseCustomerContentServiceDownIs503: content-key-svc unreachable is a retryable 503.
 func TestEraseCustomerContentServiceDownIs503(t *testing.T) {
 	eraser := &fakeContentKeyEraser{err: errs.ErrServiceUnavailable}
 	api := newContentEraseAPI(t, adminapi.Deps{ContentKeyEraser: eraser})
@@ -141,7 +141,7 @@ func TestEraseCustomerContentRequiresContentEraseScope(t *testing.T) {
 	}
 }
 
-// TestRotateContentKeyServiceDownIs503: billing-svc unreachable is a retryable 503.
+// TestRotateContentKeyServiceDownIs503: content-key-svc unreachable is a retryable 503.
 func TestRotateContentKeyServiceDownIs503(t *testing.T) {
 	rotator := &fakeContentKeyRotator{err: errs.ErrServiceUnavailable}
 	api := newTestAPIWith(t, adminapi.Deps{ContentKeys: rotator})

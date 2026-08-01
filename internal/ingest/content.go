@@ -28,7 +28,7 @@ type DataKeyProvider interface {
 // policy, at the async accepted-row write. It is the ONE place a body is written to the CDR (§6.14) — into the
 // dedicated content_ciphertext column and nowhere else, so invariant (a) still holds (nothing logs the body).
 //
-// It never fails a row: when an encrypted customer's data key cannot be fetched (billing-svc down) it stores
+// It never fails a row: when an encrypted customer's data key cannot be fetched (content-key-svc down) it stores
 // the CDR WITHOUT content and counts the drop, so a blip costs the body of one CDR, not the CDR itself and
 // never the message (which is already durable in Kafka).
 type ContentSealer struct {

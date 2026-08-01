@@ -71,6 +71,7 @@ type Config struct {
 	GRPC       GRPC       `envPrefix:"GRPC_"`
 	SMPP       SMPP       `envPrefix:"SMPP_"`
 	Billing    Billing    `envPrefix:"BILLING_"`
+	ContentKey ContentKey `envPrefix:"CONTENT_KEY_"`
 }
 
 // OTel configures tracing export. The variable names follow the OpenTelemetry specification so
@@ -110,6 +111,10 @@ const (
 	// defaultBillingAddr is the throwaway localhost target for billing-svc (:7001). Like the other loopback
 	// defaults, Validate refuses it on the production tier.
 	defaultBillingAddr = "localhost:7001"
+
+	// defaultContentKeyAddr is the throwaway localhost target for content-key-svc (:7002). Like the other
+	// loopback defaults, Validate refuses it on the production tier.
+	defaultContentKeyAddr = "localhost:7002"
 )
 
 // Postgres is the control-plane database (plan §1). It is also the target of the migration
@@ -225,6 +230,15 @@ type Billing struct {
 	SettleTimeout time.Duration `env:"SETTLE_TIMEOUT" envDefault:"200ms"`
 }
 
+// ContentKey configures a service's CLIENT connection to content-key-svc (the gRPC server on :7002,
+// step-167). admin-api-svc declares it to rotate, read and shred content keys; router-svc declares it to
+// fetch the data key that seals a body at CDR write. It is a client dial target, not a listen port.
+type ContentKey struct {
+	// Addr is the host:port of the content-key gRPC service. It is dialled lazily, so a key service that
+	// is briefly down does not block a caller's startup.
+	Addr string `env:"ADDR" envDefault:"localhost:7002"`
+}
+
 // SMPP configures smpp-server-svc: its client-facing SMPP listener and the session-manager it calls
 // to enforce max_sessions. Only smpp-server-svc declares SectionSMPP.
 type SMPP struct {
@@ -303,12 +317,13 @@ const (
 	SectionGRPC
 	SectionSMPP
 	SectionBilling
+	SectionContentKey
 
 	// SectionAll is what a caller declaring nothing gets. It must include every section, or
 	// Validate() — which runs validate(SectionAll) — would quietly stop being a full check. The
 	// cost of a section a binary does not use is nil: its fields carry valid defaults.
 	SectionAll = SectionOTel | SectionPostgres | SectionKafka | SectionClickHouse | SectionHTTP |
-		SectionRedis | SectionGRPC | SectionSMPP | SectionBilling
+		SectionRedis | SectionGRPC | SectionSMPP | SectionBilling | SectionContentKey
 )
 
 // Load reads the configuration for serviceName from the environment and validates the sections it
@@ -381,6 +396,9 @@ func (c Config) validate(sections Section) error {
 	}
 	if sections&SectionBilling != 0 {
 		problems = append(problems, c.billingProblems()...)
+	}
+	if sections&SectionContentKey != 0 {
+		problems = append(problems, c.contentKeyProblems()...)
 	}
 
 	if len(problems) == 0 {
@@ -655,6 +673,21 @@ func (c Config) smppProblems() []string {
 // billingProblems checks the billing client dial target (step-145). A service that declared SectionBilling
 // will call billing-svc, so the address must be a scheme-less host:port and must not stay the localhost
 // development default in production (the same discipline as SMPP_SESSION_MANAGER_ADDR).
+// contentKeyProblems validates the client dial target of content-key-svc.
+func (c Config) contentKeyProblems() []string {
+	var problems []string
+	if strings.TrimSpace(c.ContentKey.Addr) == "" {
+		problems = append(problems, "CONTENT_KEY_ADDR is empty: content encryption cannot reach content-key-svc")
+	}
+	if strings.Contains(c.ContentKey.Addr, "://") {
+		problems = append(problems, fmt.Sprintf("CONTENT_KEY_ADDR %q must be host:port without a scheme", c.ContentKey.Addr))
+	}
+	if c.Environment.IsProduction() && c.ContentKey.Addr == defaultContentKeyAddr {
+		problems = append(problems, "CONTENT_KEY_ADDR is the localhost development default: set it explicitly in production")
+	}
+	return problems
+}
+
 func (c Config) billingProblems() []string {
 	var problems []string
 	if strings.TrimSpace(c.Billing.Addr) == "" {
@@ -720,6 +753,7 @@ func (c Config) LogValue() slog.Value {
 		// The Redis URL can embed a password, so it is reduced to a boolean, as the Postgres URL is.
 		slog.Bool("redis_url_set", strings.TrimSpace(c.Redis.URL) != ""),
 		slog.Int("grpc_port", c.GRPC.Port),
+		slog.String("content_key_addr", c.ContentKey.Addr),
 		slog.Int("smpp_port", c.SMPP.Port),
 		slog.String("smpp_session_manager_addr", c.SMPP.SessionManagerAddr),
 		slog.String("smpp_pod_id", c.SMPP.PodID),
