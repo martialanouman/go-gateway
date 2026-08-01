@@ -17,23 +17,27 @@ interdite, même si le travail semble évident.
 
 ## Règle transverse — passer par `using-agent-skills`
 
-À l'entrée de **chaque** phase, invoque `using-agent-skills` puis le skill qu'il désigne. Ce n'est pas
-un rituel : `using-agent-skills` est le routeur qui sait quel skill encode le savoir-faire de la phase,
-et ces skills portent des vérifications qu'on oublie systématiquement de refaire de tête (les axes de
-revue, la forme d'un test qui prouve quelque chose, la discipline de scope). Sauter l'appel, c'est
-refaire la phase de mémoire — c'est exactement là que les erreurs passent.
+`using-agent-skills` est le routeur qui sait quel skill encode le savoir-faire d'une phase. Trois de
+ces skills portent les portes elles-mêmes : **leur invocation est obligatoire**, parce qu'ils contiennent
+les vérifications qu'on ne refait jamais correctement de tête.
 
-| Phase | Ce que tu demandes à `using-agent-skills` | Skill attendu |
+| Phase | Skill | |
 |---|---|---|
-| 1 · Contexte | charger le bon contexte avant d'écrire | `context-engineering`, + `find-docs`/`ctx7` si bibliothèque |
-| 2 · Arbitrages | trancher des décisions non triviales sous doute | `doubt-driven-development` |
-| 3 · Design | consigner des décisions et leur raison | `documentation-and-adrs` |
-| 4 · Plan | découper en unités vérifiables | `planning-and-task-breakdown` |
-| 5 · TDD | rouge d'abord, tranches fines | `test-driven-development`, `incremental-implementation` |
-| 6 · Mutation | prouver que les assertions mordent | `test-driven-development` |
-| 7 · Revue | revue multi-axes avant merge | `code-review-and-quality` (+ `security-and-hardening` si surface exposée) |
-| 8 · DoD | portes qualité du dépôt | `ci-cd-and-automation` |
-| 9 · Livraison | commits atomiques, PR propre | `git-workflow-and-versioning` |
+| 2 · Arbitrages | `doubt-driven-development` | **obligatoire** — porte 1 |
+| 5 · TDD · 6 · Mutation | `test-driven-development` | **obligatoire** — portes 2 et 3 |
+| 7 · Revue | `code-review-and-quality` | **obligatoire** — porte 4 |
+| 1 · Contexte | `context-engineering` · `find-docs`/`ctx7` si bibliothèque | selon la step |
+| 3 · Design | `documentation-and-adrs` | selon la step |
+| 4 · Plan | `planning-and-task-breakdown` | selon la step |
+| 5 · TDD | `incremental-implementation` | selon la step |
+| 7 · Revue | `security-and-hardening` | si la step expose une surface |
+| 8 · DoD | `ci-cd-and-automation` | selon la step |
+| 9 · Livraison | `git-workflow-and-versioning` | selon la step |
+
+Les optionnels s'invoquent quand la step le justifie, pas par principe : ils coûtent du contexte et
+proposent parfois des conventions **concurrentes** à celles du dépôt (un `tasks/plan.md` à côté de
+`tasks-todo/`, un `docs/decisions/` à côté de `docs/adr/`). Quand c'est le cas, **le dépôt gagne** — et
+le dire tout de suite évite de laisser deux conventions coexister.
 
 Le projet est en Go : `golang-how-to` s'active en plus dès qu'on touche au code et charge les skills Go
 pertinents (concurrence, erreurs, tests, base de données…). Laisse-le faire, il voit mieux que toi
@@ -104,9 +108,16 @@ sans trace est un choix que personne ne pourra contester en revue.
 chacune avec **la raison**, pas seulement le choix. Puis :
 
 ```bash
+git checkout main && git pull            # depuis main, sauf dépendance déclarée
 git checkout -b <type>/step-NNN-<slug>
 git commit -m "docs(tasks): arrêter le design de step-NNN (…)"
 ```
+
+**Brancher depuis `main`.** Partir de la branche courante paraît sans conséquence et ne se voit qu'en
+phase 9, quand la PR se révèle porter plusieurs sujets et qu'il est trop tard pour les séparer sans
+réécrire l'historique. Si la step dépend réellement d'une branche non mergée, c'est une décision : la
+consigner en `DN` et l'annoncer en tête du corps de PR, pour que le relecteur sache avant d'ouvrir le
+diff pourquoi il y trouve autre chose.
 
 **Aucune ligne de code avant que ce commit existe.** C'est la porte : elle force à savoir ce qu'on
 construit et pourquoi, elle laisse une trace lisible en revue, et elle empêche l'inversion la plus
@@ -198,6 +209,21 @@ casse.
 Tenir le **tableau des mutations** au fil de l'eau (mutation appliquée → test qui tombe) : c'est ce qui
 part dans le corps de PR en phase 9.
 
+### Répéter, avant de conclure au vert
+
+```bash
+go test -race -count=10 ./<paquets touchés>/...    # 25 si le code est concurrent
+```
+
+Un passage unique ne dit rien d'un défaut qui dépend de l'ordonnancement. Une course qui bloque un run
+sur dix passe en `-count=1`, traverse la revue, et n'apparaît qu'en production ou chez le prochain qui
+lance la suite deux fois. Sur ce dépôt, une course a survécu à **deux tours de revue complets** et à
+toutes les vérifications manuelles avant d'être vue au premier `-count=10`.
+
+La répétition porte sur les paquets touchés, pas sur tout le module : c'est ce qui la rend assez rapide
+pour être systématique. Et un test qui devient flaky sous répétition est une information, pas un
+inconvénient — ne jamais le « stabiliser » en relâchant son seuil sans avoir compris ce qui varie.
+
 ## Phase 7 — Revue par sub-agents en lecture seule · **PORTE 4**
 
 `using-agent-skills` → `code-review-and-quality`.
@@ -229,10 +255,44 @@ Agent(subagent_type: "Plan",
                et une classification bloquant | à corriger | note.")
 ```
 
-**Boucler tant qu'il reste un bloquant** : tu corriges, tu relances une revue sur le nouveau diff. Une
-correction se re-relit — c'est du code neuf qui n'a jamais été relu, écrit vite, sous la pression d'un
-constat. Le tour qui trouve des bloquants *dans les correctifs du tour précédent* est la règle, pas
-l'exception : ne jamais s'arrêter au premier tour propre en apparence.
+### Un correctif est du code : il repasse par les portes 2 et 3
+
+C'est **la** règle de cette phase, et celle qu'on saute le plus volontiers, parce qu'un constat de revue
+donne l'impression que la réponse est évidente et urgente. Pour chaque constat bloquant :
+
+1. **écrire le test qui le reproduit**, et le voir échouer — le constat du relecteur n'est pas une preuve,
+   c'est une hypothèse tant qu'un rouge ne l'a pas confirmée chez toi ;
+2. corriger ;
+3. **muter la correction** et voir le nouveau test tomber.
+
+Sur ce dépôt, l'écart entre les deux façons de faire est mesuré : les correctifs passés par un rouge ont
+tenu ; ceux écrits directement — une garde qui ne pouvait pas matcher, un plafond qui accusait un pair
+sain, une vérification qui avait perdu ce qu'elle vérifiait — ont tous été retrouvés cassés au tour
+suivant. **La moitié des bloquants d'un run venaient des correctifs des tours précédents.**
+
+Un constat qu'on ne parvient pas à reproduire par un test mérite d'être discuté avant d'être corrigé :
+soit il n'est pas réel, soit le test qui manque est plus important que la correction.
+
+### Boucler, et savoir s'arrêter
+
+**Tant qu'il reste un bloquant**, tu corriges et tu relances une revue sur le nouveau diff. Mais lis ce
+que le tour trouve, pas seulement combien :
+
+- **des bloquants dans le code d'origine** → la revue fait son travail, continue ;
+- **des bloquants dans les correctifs du tour précédent** → le signal ne dit pas « ajoute un tour », il
+  dit *tu corriges trop vite*. La réponse est la règle ci-dessus, pas un relecteur de plus.
+
+Deux sorties, et une seule est automatique :
+
+- le **même** bloquant survit à trois tours → ce n'est plus un défaut mais un désaccord de conception :
+  il remonte à l'utilisateur et se tranche en phase 2 ;
+- des bloquants **nouveaux** à chaque tour, sans convergence → la question n'est plus « en reste-t-il ? »
+  (la réponse sera toujours peut-être) mais « le coût d'un tour de plus dépasse-t-il le risque
+  résiduel ? ». **Cet arbitrage est celui de l'utilisateur, pas le tien** : présente-lui le compte par
+  tour, ce que chacun a trouvé, ce qui reste non relu, et une recommandation. Ne t'arrête jamais en
+  silence, et n'enchaîne pas non plus indéfiniment de ta propre initiative.
+
+Ce qui est gelé sans avoir été relu se consigne dans la fiche, nommément, avant de passer en DoD.
 
 Deux formes que prennent presque toujours ces bloquants de second tour :
 
