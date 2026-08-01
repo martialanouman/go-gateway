@@ -32,6 +32,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/cancel"
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/ingest"
+	"github.com/martialanouman/go-gateway/internal/metricstream"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/pipeline/ratelimit"
 	"github.com/martialanouman/go-gateway/internal/platform/supervisor"
@@ -158,6 +159,19 @@ func run() error {
 		}
 	}
 
+	// Realtime session events (step-184). Best-effort: a separate Kafka client that drops rather than
+	// blocks, so a bind is never delayed by a dashboard.
+	streamProducer, err := kafka.NewStreamProducer(cfg.Kafka)
+	if err != nil {
+		return fmt.Errorf("kafka stream producer: %w", err)
+	}
+	defer streamProducer.Close()
+	streamDropped := prometheus.NewCounterFunc(prometheus.CounterOpts{
+		Name: "metrics_stream_dropped_total",
+		Help: "Realtime records that never reached metrics.stream (full buffer, unreachable broker).",
+	}, func() float64 { return float64(streamProducer.Dropped()) })
+	sessionEvents := metricstream.NewEventPublisher(serviceName, streamProducer)
+
 	listener := smppserver.New(
 		postgres.NewBindRepo(pool),
 		registrypb.NewSessionRegistryClient(registryConn),
@@ -166,6 +180,7 @@ func run() error {
 			Addr:            fmt.Sprintf(":%d", cfg.SMPP.Port),
 			PodID:           podID(cfg, logger),
 			SystemID:        serviceName,
+			SessionEvents:   sessionEvents,
 			IdleTimeout:     cfg.SMPP.IdleTimeout,
 			Tracer:          observability.Tracer(nil, serviceName),
 			Throttle:        throttle,
@@ -201,7 +216,7 @@ func run() error {
 	// The throttle's block counter is this service's first business metric; register it on the ops
 	// registry so it surfaces on /metrics. The counter carries no high-cardinality label (never a
 	// system_id or an IP), per the ops registry's cardinality rule.
-	ops.Registry().MustRegister(throttleBlocked, queryThrottled)
+	ops.Registry().MustRegister(throttleBlocked, queryThrottled, streamDropped)
 
 	logger.InfoContext(ctx, "starting", "config", cfg)
 

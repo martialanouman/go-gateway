@@ -36,12 +36,62 @@ type Sample struct {
 	Value  float64 `json:"value"`
 }
 
+// Feed names which realtime stream a record belongs to. metrics.stream carries all three (§1.6 declares it
+// as the realtime topic; adding topics is a spec change).
+//
+// DEPLOY ORDER: admin-api-svc first. A consumer predating this field branches on V alone, so it would push a
+// SessionEvent onto the metrics feed — the compatibility is one-way.
+type Feed string
+
+// The feeds, matching the hub's stream names.
+const (
+	FeedMetrics       Feed = "metrics"
+	FeedSessions      Feed = "sessions"
+	FeedBillingAlerts Feed = "billing-alerts"
+)
+
+// SessionEvent reports an SMPP bind state change. Identifiers only — never a password or a body.
+type SessionEvent struct {
+	V         int       `json:"v"`
+	Feed      Feed      `json:"feed"`
+	Service   string    `json:"service"`
+	Instance  string    `json:"instance"`
+	EmittedAt time.Time `json:"emitted_at"`
+	AccountID string    `json:"account_id"`
+	SystemID  string    `json:"system_id"`
+	// State is bound | unbound.
+	State string `json:"state"`
+	// Sessions is the account's live bind count after the change. Absent on unbound: the registry's
+	// UnbindResponse does not carry the remaining count, and publishing 0 would read as "no binds left".
+	Sessions *int `json:"sessions,omitempty"`
+}
+
+// BillingAlert reports a threshold an operator must see.
+type BillingAlert struct {
+	V          int       `json:"v"`
+	Feed       Feed      `json:"feed"`
+	Service    string    `json:"service"`
+	Instance   string    `json:"instance"`
+	EmittedAt  time.Time `json:"emitted_at"`
+	CustomerID string    `json:"customer_id"`
+	// OwnerType/OwnerID name the balance the alert is about. The MO meter is owner-scoped, so under
+	// balance_scope=smpp_account two accounts of one customer alert separately and must stay distinguishable.
+	OwnerType string `json:"owner_type"`
+	OwnerID   string `json:"owner_id"`
+	// Alert is mo_floor_reached. Low-balance and breaker-open alerts are not emitted yet: neither has a
+	// configured threshold to fire on.
+	Alert   string `json:"alert"`
+	Balance int64  `json:"balance"`
+}
+
 // Snapshot is one record on metrics.stream: everything a service measured during one interval.
 //
 // Counters carry the DELTA over the interval, gauges their current level. A consumer therefore needs no state
 // to render a rate, and a reconnecting browser is never shown a total accumulated since boot.
 type Snapshot struct {
-	V       int    `json:"v"`
+	V int `json:"v"`
+	// Feed is empty on records produced before step-184; a reader treats empty as FeedMetrics.
+	Feed    Feed   `json:"feed,omitempty"`
 	Service string `json:"service"`
 	// Instance identifies the REPLICA that produced this snapshot (the pod name by default). Without it a
 	// consumer cannot aggregate: every replica of a service publishes the same kinds under the same service

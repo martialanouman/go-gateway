@@ -14,9 +14,10 @@ const (
 	StreamBillingAlerts Stream = "billing-alerts"
 )
 
-// DefaultBufferSize is how many frames a subscriber may fall behind before it is cut. Every producing
-// replica emits once a second, so this is well under a second of slack; deepening it would only serve stale
-// figures a client believes are live. Tune per deployment via Config.
+// DefaultBufferSize is how many frames a subscriber may fall behind before it is cut. The topic carries
+// periodic snapshots (one per second per producing replica) plus discrete session and billing events, which
+// producers rate-cap for this reason. Deepening it would only serve stale figures a client believes are live.
+// Tune per deployment via Config.
 const DefaultBufferSize = 64
 
 // Config tunes a Hub. The zero value is the default.

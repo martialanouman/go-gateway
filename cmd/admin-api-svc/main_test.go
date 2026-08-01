@@ -4,6 +4,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/martialanouman/go-gateway/internal/metricstream"
+	"github.com/martialanouman/go-gateway/internal/realtime"
 )
 
 // TestRunRequiresAdminTokensInProduction pins the operator-token policy: a production Admin API with
@@ -56,3 +59,82 @@ func TestRunExitsWhenPostgresIsUnreachable(t *testing.T) {
 		t.Fatal("run() never returned: an unreachable vital dependency did not fail the boot")
 	}
 }
+
+// TestPublishRecordRoutesByFeed covers the one place the three feeds are told apart. A misrouted frame is
+// invisible to a dashboard — it renders whatever it is handed — so only a test catches it.
+func TestPublishRecordRoutesByFeed(t *testing.T) {
+	tests := []struct {
+		name   string
+		record string
+		want   realtime.Stream // "" means: published nowhere
+	}{
+		{"metrics snapshot", `{"v":1,"feed":"metrics","samples":[]}`, realtime.StreamMetrics},
+		{"session event", `{"v":1,"feed":"sessions","state":"bound"}`, realtime.StreamSessions},
+		{"billing alert", `{"v":1,"feed":"billing-alerts","alert":"mo_floor_reached"}`, realtime.StreamBillingAlerts},
+		// A snapshot produced before step-184 added the discriminator.
+		{"no feed", `{"v":1,"samples":[]}`, realtime.StreamMetrics},
+		{"unknown feed", `{"v":1,"feed":"invented"}`, ""},
+		{"future version", `{"v":2,"feed":"metrics"}`, ""},
+		{"not json", `{`, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			hub := realtime.NewHub(realtime.Config{})
+			subs := map[realtime.Stream]*realtime.Subscription{
+				realtime.StreamMetrics:       hub.Subscribe(realtime.StreamMetrics),
+				realtime.StreamSessions:      hub.Subscribe(realtime.StreamSessions),
+				realtime.StreamBillingAlerts: hub.Subscribe(realtime.StreamBillingAlerts),
+			}
+			for _, sub := range subs {
+				defer sub.Close()
+			}
+
+			publishRecord(hub, []byte(tc.record))
+
+			for stream, sub := range subs {
+				select {
+				case frame := <-sub.Frames():
+					if stream != tc.want {
+						t.Errorf("frame landed on %s: %q", stream, frame)
+					}
+				default:
+					if stream == tc.want {
+						t.Errorf("nothing landed on %s", stream)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestEventPublisherOutputRoutesCorrectly joins the two halves: what a producer actually serializes must be
+// what the consumer routes. Hand-written JSON in the table above cannot catch a field-name drift.
+func TestEventPublisherOutputRoutesCorrectly(t *testing.T) {
+	captured := make(chan []byte, 4)
+	p := metricstream.NewEventPublisher("smpp-server-svc", sinkFunc(func(_, value []byte) {
+		captured <- value
+	}))
+	active := 2
+	p.SessionChanged("acct-1", "ACME01", "bound", &active)
+	p.Alerted("cust-1", "customer", "cust-1", "mo_floor_reached", 0)
+
+	hub := realtime.NewHub(realtime.Config{})
+	sessions := hub.Subscribe(realtime.StreamSessions)
+	defer sessions.Close()
+	alerts := hub.Subscribe(realtime.StreamBillingAlerts)
+	defer alerts.Close()
+
+	for range 2 {
+		publishRecord(hub, <-captured)
+	}
+	if len(sessions.Frames()) != 1 {
+		t.Errorf("sessions received %d frames, want 1", len(sessions.Frames()))
+	}
+	if len(alerts.Frames()) != 1 {
+		t.Errorf("billing-alerts received %d frames, want 1", len(alerts.Frames()))
+	}
+}
+
+type sinkFunc func(key, value []byte)
+
+func (f sinkFunc) TryPublish(key, value []byte) { f(key, value) }

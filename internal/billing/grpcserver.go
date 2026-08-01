@@ -38,12 +38,27 @@ type Server struct {
 	pb.UnimplementedBillingServer
 	core     Core
 	balances BalanceReader
+	alerts   Alerter
 }
+
+// Alerter publishes billing alerts to the realtime feed (step-184). Declared consumer-side; a nil one is a
+// no-op, so a deployment without the stream needs no branch here.
+type Alerter interface {
+	Alerted(customerID, ownerType, ownerID, alert string, balance int64)
+}
+
+// noopAlerter stands in when no publisher is wired.
+type noopAlerter struct{}
+
+func (noopAlerter) Alerted(string, string, string, string, int64) {}
 
 // NewServer builds the Billing gRPC server over the billing core (the Accountant, or the ExternalBiller
 // decorator wrapping it) and a durable balance reader.
-func NewServer(core Core, balances BalanceReader) *Server {
-	return &Server{core: core, balances: balances}
+func NewServer(core Core, balances BalanceReader, alerts Alerter) *Server {
+	if alerts == nil {
+		alerts = noopAlerter{}
+	}
+	return &Server{core: core, balances: balances, alerts: alerts}
 }
 
 // Reserve holds credits for a message before the SMSC send. Insufficient credit is a normal, non-error
@@ -137,6 +152,12 @@ func (s *Server) RecordMO(ctx context.Context, req *pb.RecordMORequest) (*pb.Rec
 	r, err := s.core.RecordMO(ctx, owner, messageID, int(req.GetCredits()))
 	if err != nil {
 		return nil, grpcerr.Status(err)
+	}
+	if r.FloorReached {
+		// CustomerID, not owner.ID: the MO meter is owner-scoped, so under balance_scope=smpp_account
+		// owner.ID is an account and a dashboard would resolve no customer.
+		s.alerts.Alerted(owner.CustomerID.String(), owner.Type, owner.ID.String(),
+			"mo_floor_reached", int64(r.Balance))
 	}
 	return &pb.RecordMOResponse{BalanceAfter: i32(r.Balance), Floored: r.FloorReached || r.Suppressed}, nil
 }

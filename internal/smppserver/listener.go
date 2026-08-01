@@ -80,6 +80,7 @@ func (l *Listener) Run(ctx context.Context) error {
 type connState struct {
 	accountID       uuid.UUID
 	customerID      uuid.UUID
+	systemID        string
 	bindID          string
 	mode            session.BindMode
 	maxSessions     int32
@@ -144,6 +145,12 @@ func (l *Listener) serve(ctx context.Context, nc net.Conn) {
 	if st.bound {
 		l.deregisterSession(st.bindID)
 		l.releaseToken(ctx, st)
+		if l.opts.SessionEvents != nil {
+			// No count: UnbindResponse does not carry the account's remaining binds. Note that a pod that
+			// is killed emits nothing at all, so a dashboard built on this feed alone shows ghost binds
+			// until the registry TTL lapses.
+			l.opts.SessionEvents.SessionChanged(st.accountID.String(), st.systemID, "unbound", nil)
+		}
 	}
 }
 
@@ -193,6 +200,7 @@ func (l *Listener) onBind(ctx context.Context, st *connState, clientIP string, o
 
 		st.accountID = cred.AccountID
 		st.customerID = cred.CustomerID
+		st.systemID = req.SystemID
 		st.maxSessions = cred.MaxSessions
 		st.querySMEnabled = cred.QuerySMEnabled
 		st.cancelSMEnabled = cred.CancelSMEnabled
@@ -212,6 +220,10 @@ func (l *Listener) onBind(ctx context.Context, st *connState, clientIP string, o
 
 		l.logger.InfoContext(bctx, "smpp bind accepted",
 			"account_id", cred.AccountID, "mode", req.Mode, "active_sessions", resp.GetActiveSessions())
+		if l.opts.SessionEvents != nil {
+			active := int(resp.GetActiveSessions())
+			l.opts.SessionEvents.SessionChanged(cred.AccountID.String(), req.SystemID, "bound", &active)
+		}
 		return session.BindResult{Status: smpp.StatusOK}
 	}
 }

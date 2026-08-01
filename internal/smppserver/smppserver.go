@@ -88,6 +88,12 @@ const defaultRefreshInterval = session.DefaultSessionTTL / 2
 // descriptors a flood of tarpitted binds can hold. Operators size it to their file-descriptor ulimit.
 const defaultMaxConns = 16384
 
+// SessionEventPublisher reports bind state changes. Declared consumer-side; best-effort, so it returns
+// nothing and a nil one is a no-op.
+type SessionEventPublisher interface {
+	SessionChanged(accountID, systemID, state string, sessions *int)
+}
+
 // Options configures a Listener. Addr, PodID and SystemID are required in production wiring; the
 // timeouts fall back to sane defaults.
 type Options struct {
@@ -107,6 +113,8 @@ type Options struct {
 	RefreshInterval time.Duration
 	// Tracer opens the submit_sm ingestion span. Nil uses a no-op tracer, so tests need not wire one.
 	Tracer trace.Tracer
+	// SessionEvents publishes bind state changes to the realtime feed (step-184). Nil disables it.
+	SessionEvents SessionEventPublisher
 	// Now supplies the submit_sm accept timestamp and the instant a rotation grace window is judged
 	// against at bind; nil defaults to time.Now. Injectable for tests.
 	Now func() time.Time

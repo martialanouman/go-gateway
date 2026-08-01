@@ -45,8 +45,24 @@ func registerStreams(api huma.API, hub StreamHub, quit Quit, logger *slog.Logger
 		Method:      http.MethodGet,
 		Path:        "/admin/stream/metrics",
 		Summary:     "WebSocket — live metrics stream",
-		Description: "Upgrade to a WebSocket. Emits one metricstream Snapshot per frame (`{v, service, instance, emitted_at, samples[]}`); branch on `v`. `101 Switching Protocols` on upgrade.",
+		Description: "Upgrade to a WebSocket. Emits one metricstream Snapshot per frame (`{v, feed, service, instance, emitted_at, samples[]}`); branch on `v`. `101 Switching Protocols` on upgrade.",
 	}, h.serve(realtime.StreamMetrics))
+
+	registerUpgrade(api, huma.Operation{
+		OperationID: "stream-sessions",
+		Method:      http.MethodGet,
+		Path:        "/admin/stream/sessions",
+		Summary:     "WebSocket — live session events",
+		Description: "Upgrade to a WebSocket. Emits one metricstream SessionEvent per frame (`{v, feed, account_id, system_id, state, sessions}`). `101 Switching Protocols` on upgrade.",
+	}, h.serve(realtime.StreamSessions))
+
+	registerUpgrade(api, huma.Operation{
+		OperationID: "stream-billing-alerts",
+		Method:      http.MethodGet,
+		Path:        "/admin/stream/billing-alerts",
+		Summary:     "WebSocket — MO floor-reached alerts",
+		Description: "Upgrade to a WebSocket. Emits one metricstream BillingAlert per frame (`{v, feed, customer_id, owner_type, owner_id, alert, balance}`). Only `mo_floor_reached` is emitted today; low-balance and breaker-open alerts have no configured threshold yet. `101 Switching Protocols` on upgrade.",
+	}, h.serve(realtime.StreamBillingAlerts))
 }
 
 // registerUpgrade registers a WebSocket operation.
