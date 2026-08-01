@@ -1,6 +1,6 @@
 {
   "name": "@martialanouman/gateway-api-contracts",
-  "version": "2.8.0",
+  "version": "3.0.0",
   "description": "OpenAPI contracts of the SMS Gateway (admin + public) and their generated TypeScript types. Published from go-gateway, consumed by the Admin Dashboard.",
   "license": "UNLICENSED",
   "files": [

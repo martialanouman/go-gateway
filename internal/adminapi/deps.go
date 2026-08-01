@@ -145,6 +145,9 @@ type Deps struct {
 	// Trace reads a message lifecycle for get-message-trace (step-185).
 	Trace TraceStore
 
+	// MessageSearch reads the CDR for search-messages (step-186).
+	MessageSearch SearchStore
+
 	Customers        CustomerStore
 	Accounts         AccountStore
 	Credentials      CredentialStore

@@ -32,7 +32,7 @@ type messageSummaryDTO struct {
 	OriginalSourceAddr *string    `json:"original_source_addr,omitempty" nullable:"true"`
 	ConnectorID        *string    `json:"connector_id,omitempty" format:"uuid" nullable:"true"`
 	RouteID            *string    `json:"route_id,omitempty" format:"uuid" nullable:"true"`
-	Status             string     `json:"status" enum:"enroute,delivered,failed,expired,rejected,rerouted"`
+	Status             string     `json:"status" enum:"accepted,enroute,delivered,failed,expired,rejected,rerouted,cancelled"`
 	ErrorCode          *string    `json:"error_code,omitempty" nullable:"true"`
 	SegmentCount       int        `json:"segment_count"`
 	Encoding           *string    `json:"encoding,omitempty" enum:"gsm7,ucs2,binary" nullable:"true"`
