@@ -17,6 +17,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/martialanouman/go-gateway/internal/config"
+	"github.com/martialanouman/go-gateway/internal/observability/metrics"
 )
 
 // readinessTimeout bounds a whole /readyz evaluation. A probe that hangs must not hang the
@@ -63,7 +64,7 @@ func PingCheck(name string, timeout time.Duration, ping func(context.Context) er
 // It is internal only: never exposed publicly, absent from the OpenAPI contracts.
 type OpsServer struct {
 	srv      *http.Server
-	registry *prometheus.Registry
+	registry *metrics.Registry
 	checks   []ReadinessCheck
 	log      *slog.Logger
 
@@ -96,8 +97,10 @@ func NewOpsServer(cfg config.Config, log *slog.Logger, checks ...ReadinessCheck)
 	}
 
 	// A dedicated registry rather than the global default: metrics are then owned by the server
-	// that exposes them, and two servers in one test binary cannot collide.
-	registry := prometheus.NewRegistry()
+	// that exposes them, and two servers in one test binary cannot collide. It is wrapped in the
+	// cardinality guard (step-180) so an unbounded label is refused at registration, in every service,
+	// rather than caught by a test that only covers the packages someone remembered to check.
+	registry := metrics.Guard(prometheus.NewRegistry())
 	registry.MustRegister(
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
@@ -123,10 +126,11 @@ func NewOpsServer(cfg config.Config, log *slog.Logger, checks ...ReadinessCheck)
 	return o, nil
 }
 
-// Registry returns the Prometheus registry backing /metrics. Services register their collectors
-// on it at startup. Labels must stay bounded: never an MSISDN, a message_id or a body
-// (guide de codage §12).
-func (o *OpsServer) Registry() *prometheus.Registry { return o.registry }
+// Registry returns the guarded Prometheus registry backing /metrics. Services register their collectors
+// on it at startup. Labels must stay bounded: never an MSISDN, a message_id or a body (guide de codage
+// §12) — the registry ENFORCES it, so MustRegister panics at boot on an offending collector rather than
+// letting it inflate a production TSDB.
+func (o *OpsServer) Registry() *metrics.Registry { return o.registry }
 
 // Addr returns the address the server listens on. Before Run it is the configured address; once
 // Run has bound its listener it is the address actually assigned, which is what a caller using
