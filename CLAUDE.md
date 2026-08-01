@@ -2,6 +2,24 @@
 
 Manuel de travail pour Claude Code sur ce dépôt. Lis-le en entier avant d'écrire du code. Il est court volontairement : les détails vivent dans les guides et contrats référencés en bas.
 
+## Avant d'ouvrir un fichier
+
+**Une step de `tasks-todo/` s'ouvre par le skill `impl-step`**, invoqué *avant* la première lecture de
+code — pas une fois le travail commencé. « attaque step-200 », « implémente step-201 », « enchaîne sur
+la suivante », « reprends step-203 » : même signal, même réflexe.
+
+Le skill porte le déroulé complet. Ce qui reste vrai même sans l'avoir sous les yeux :
+
+1. **aucune ligne de code avant que le design soit commité** — décisions `DN` avec leur raison, dans la
+   fiche, sous `## Design arrêté` ;
+2. **aucune implémentation avant un rouge lu**, échouant pour la bonne raison (« symbole inexistant » le
+   prouve ; « connexion refusée » ne prouve rien) ;
+3. **aucun « vert » avant une mutation vue tomber** — une assertion jamais vue échouer n'en est pas une ;
+4. **aucun passage en DoD tant qu'un constat de revue est classé bloquant**.
+
+Un point que la fiche laisse ouvert se tranche dans cet ordre : **la spec d'abord, le modèle Fable
+ensuite, l'arbitrage humain en dernier si Fable ne tranche pas** — jamais un choix silencieux.
+
 ## Ce qu'on construit
 
 Une **passerelle SMS** en Go : elle reçoit des SMS (SMPP entrant + REST), les route vers des SMSC opérateurs (SMPP sortant), et gère la voie retour (MO/DLR). Double protocole sur **un pipeline unique**. Cible : agrégateur national, 8 000 SMS/s soutenu, 15 000 en pic. Ce n'est **pas** une plateforme de campagnes (pas de listes, modèles ni envoi programmé côté client).
@@ -48,12 +66,8 @@ Tout le code métier vit sous `internal/`. Interfaces définies côté consommat
 - **Secrets** (mots de passe bind, clés API) stockés en hash, révélés une seule fois à la création/rotation. Comparaison en temps constant.
 - **Modèle d'erreur plat** `{ code, message, errors[] }` en `application/json` (surcharge `huma.NewError`). `code` = contrat partagé avec les `command_status` SMPP et `cdr.error_code`. Réf : guide d'ingénierie §11.
 - **Les contrats sont la source de vérité** : implémente pour conformer `openapi-*.yaml` et `schema_passerelle_sms.sql`, jamais l'inverse.
-- **Toute step de `tasks-todo/` passe par le skill `step`** (`.claude/skills/step/`). Il fige la procédure :
-  contexte → arbitrages → design commité → plan → TDD → mutation → DoD → PR, avec trois portes
-  bloquantes (pas de code avant le commit de design, pas d'implémentation avant un rouge lu, pas de
-  « vert » avant une mutation vue tomber). Arbitrage d'un point laissé ouvert : **la spec d'abord, le
-  modèle Fable ensuite, l'arbitrage humain en dernier** — jamais un choix silencieux.
-- **Versions & API des bibliothèques : TOUJOURS via Context7 (`ctx7`).** Avant d'ajouter, de mettre à jour ou d'utiliser l'API d'une bibliothèque (celles de la §1.2 du plan d'exécution : chi, huma, pgx, franz-go, go-redis, goja…), appelle le skill `ctx7` pour récupérer la **doc à jour** et la **version correcte** à installer. Ne devine JAMAIS un numéro de version ni une signature d'API depuis la mémoire — les API changent entre versions majeures (pgx v4→v5, huma v1→v2…).
+- **Toute step de `tasks-todo/` passe par `impl-step`**, ses quatre portes et son échelle d'arbitrage. Voir « Avant d'ouvrir un fichier » en tête.
+- **Versions & API des bibliothèques : TOUJOURS via Context7 (`ctx7`), jamais de mémoire.** Avant d'ajouter, de mettre à jour ou d'utiliser l'API d'une bibliothèque (chi, huma, pgx, franz-go, go-redis, goja… — §1.2 du plan d'exécution), récupère la **doc à jour** et la **version correcte**. Les API changent entre majeures (pgx v4→v5, huma v1→v2) et un usage périmé compile parfois.
 
 ## Les 4 invariants (tests bloquants, verts à vie)
 
