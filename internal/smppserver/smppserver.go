@@ -142,6 +142,16 @@ type Options struct {
 	// submit's produce from the read goroutine so enquire_link stays responsive and a bind's throughput
 	// leaves the produce-latency floor. Zero uses the session default.
 	InboundWindow int
+	// TrustedProxyCIDRs are the ranges whose PROXY protocol header is believed — the load balancers in
+	// front of this listener. Empty (the default) disables the protocol entirely and keeps the transport
+	// peer address, which is right for a direct or L7-terminated deployment.
+	//
+	// Set it behind an L4/TCP balancer, or every bind arrives from the balancer's address and the per-IP
+	// anti-brute-force counter collapses onto one key — a global throttle where one abusive client locks
+	// out all the others (see remoteIP). Enabling it also CLOSES the port to anything outside these
+	// ranges: a peer that is not a trusted balancer is dropped rather than served raw, because sharing
+	// one port between PROXY and non-PROXY traffic is what lets a client forge its source address.
+	TrustedProxyCIDRs []string
 }
 
 // QueryLimiter reports whether an account may issue another query_sm now, consuming one from its

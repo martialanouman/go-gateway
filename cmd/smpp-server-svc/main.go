@@ -190,6 +190,9 @@ func run() error {
 			QueryLimiter:    queryLimiter,
 			QueryThrottled:  queryThrottled,
 			InboundWindow:   cfg.SMPP.InboundWindow,
+			// Empty behind an L7-terminated or direct deployment; the balancer's ranges behind an L4 one,
+			// without which the per-IP bind throttle degenerates into a global one (step-191).
+			TrustedProxyCIDRs: cfg.SMPP.TrustedProxyCIDRs,
 		},
 		logger,
 	)
