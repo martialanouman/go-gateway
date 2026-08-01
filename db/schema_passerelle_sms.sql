@@ -213,6 +213,27 @@ CREATE TABLE control_plane.gdpr_erase_jobs (
 );
 CREATE INDEX gdpr_erase_jobs_created_idx ON control_plane.gdpr_erase_jobs(created_at);
 
+-- message_export_jobs tracks an asynchronous CDR export (§15, step-187): who asked, over which window and
+-- filters, and — once done — where the artefact landed and how many rows it holds. The row records the
+-- REQUEST and the OUTCOME, never a message: no body (invariant a). `masked` is the durable proof of which
+-- artefact was produced, since an unmasked export requires msisdn:reveal.
+CREATE TABLE control_plane.message_export_jobs (
+  id            uuid PRIMARY KEY DEFAULT uuidv7(),
+  status        text NOT NULL DEFAULT 'queued'
+                  CHECK (status IN ('queued','running','completed','failed')),
+  format        text NOT NULL CHECK (format IN ('csv','jsonl')),
+  masked        boolean NOT NULL DEFAULT true,
+  filters       jsonb NOT NULL,
+  row_count     integer,
+  artefact_uri  text,                   -- file:// today; an object URI once the infrastructure provides one
+  error         text,                   -- why a failed job failed; a status with no reason is not actionable
+  operator      text NOT NULL,
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  expires_at    timestamptz NOT NULL,
+  finished_at   timestamptz
+);
+CREATE INDEX message_export_jobs_created_idx ON control_plane.message_export_jobs(created_at);
+
 -- -----------------------------------------------------------------------------------------------------
 -- 6. SMPP accounts (§6.18) — one technical account of a customer (per app/env/brand)
 -- -----------------------------------------------------------------------------------------------------

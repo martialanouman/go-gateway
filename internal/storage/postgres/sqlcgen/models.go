@@ -191,6 +191,21 @@ type ControlPlaneInboundNumber struct {
 	UpdatedAt   pgtype.Timestamptz
 }
 
+type ControlPlaneMessageExportJob struct {
+	ID          uuid.UUID
+	Status      string
+	Format      string
+	Masked      bool
+	Filters     []byte
+	RowCount    *int32
+	ArtefactUri *string
+	Error       *string
+	Operator    string
+	CreatedAt   pgtype.Timestamptz
+	ExpiresAt   pgtype.Timestamptz
+	FinishedAt  pgtype.Timestamptz
+}
+
 type ControlPlaneOptOutKeyword struct {
 	ID                uuid.UUID
 	CountryCode       *string
