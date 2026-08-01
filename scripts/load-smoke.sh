@@ -37,14 +37,32 @@ EOF
   exit 2
 fi
 
+# `nc` décide trois fois si le port est pris. Non vérifié, son absence se lit « port libre » (le
+# `|| return 0` de cleanup) et fait accuser le stub de ne pas écouter alors qu'il écoute très bien.
+if ! command -v nc >/dev/null 2>&1; then
+  echo "load-smoke: nc est introuvable — il sonde le port entre les deux runs." >&2
+  echo "            macOS : livré avec le système · Debian/Ubuntu : apt install netcat-openbsd" >&2
+  exit 2
+fi
+
 HOST="${ADDR%:*}"
 PORT="${ADDR##*:}"
+# Une adresse sans hôte (":8099", le défaut du stub) donnerait un HOST vide : nc échouerait toujours
+# et BASE_URL serait invalide. On la ramène sur la boucle locale plutôt que d'échouer 10 s plus tard.
+if [[ -z "$HOST" ]]; then
+  HOST="127.0.0.1"
+  ADDR="$HOST:$PORT"
+fi
 
 # Le stub est COMPILÉ puis lancé directement, jamais via `go run` : `go run` exécute le binaire dans
 # un processus enfant, si bien que tuer son PID laisse le serveur vivant et le port occupé. Le run
 # suivant taperait alors l'ancien stub — celui qui n'est pas ralenti — et passerait le seuil sans
 # que rien ne le signale.
 STUB_BIN="$(mktemp -t load-stub.XXXXXX)"
+NEG_LOG=""
+# Le trap est posé AVANT le build : un `go build` qui échoue sous `set -e` sortirait sinon en laissant
+# le fichier temporaire derrière lui à chaque tentative.
+trap 'cleanup || true; rm -f "$STUB_BIN" "$NEG_LOG"' EXIT
 go build -o "$STUB_BIN" ./cmd/load-stub
 
 STUB_PID=""
@@ -62,7 +80,6 @@ cleanup() {
   echo "load-smoke: $ADDR est toujours occupé après l'arrêt du stub" >&2
   return 1
 }
-trap 'cleanup || true; rm -f "$STUB_BIN"' EXIT
 
 # start_stub <délai> — démarre le stub et attend qu'il accepte réellement une connexion.
 start_stub() {
@@ -96,19 +113,37 @@ if [[ $positive -ne 0 ]]; then
 fi
 
 echo
-echo "==> run NÉGATIF — stub ralenti à $SLOW_DELAY, le seuil doit tomber"
+echo "==> run NÉGATIF — stub ralenti à $SLOW_DELAY, le seuil de latence doit tomber"
 start_stub "$SLOW_DELAY"
+NEG_LOG="$(mktemp -t load-smoke-negative.XXXXXX)"
 set +e
-BASE_URL="http://$ADDR" "$K6" run --quiet "$SCRIPT"
-negative=$?
+BASE_URL="http://$ADDR" "$K6" run --quiet "$SCRIPT" 2>&1 | tee "$NEG_LOG"
+negative=${PIPESTATUS[0]}   # surtout pas $? : ce serait le code de tee, jamais celui de k6
 set -e
 cleanup
 
-if [[ $negative -eq 0 ]]; then
-  echo "load-smoke: ÉCHEC — le run négatif est passé alors que le stub dépasse le budget." >&2
-  echo "            Les seuils ne sont pas câblés : le harnais ne mesure rien." >&2
+# Un exit non nul ne suffit PAS comme preuve. k6 sort 99 dès qu'un seuil QUELCONQUE tombe : contre un
+# serveur absent, http_req_failed tombe à 100 % et p(99) reste vert — le run échoue sans avoir jamais
+# mesuré la latence. Conclure « OK » là-dessus, c'est le faux vert que ce script existe pour empêcher.
+# On exige donc que ce soit BIEN le budget de latence qui casse, et que le trafic ait été servi.
+if [[ $negative -ne 99 ]]; then
+  echo "load-smoke: ÉCHEC — k6 a rendu $negative, or seul 99 signale un seuil franchi." >&2
+  echo "            (105 interruption · 107 exception du script · 108/109 erreur interne)" >&2
   exit 1
 fi
+if ! grep -qE "✗ .*p\(99\)" "$NEG_LOG"; then
+  echo "load-smoke: ÉCHEC — le run négatif a échoué SANS que le budget de latence tombe." >&2
+  echo "            Le seuil d'ingestion n'a donc pas été mis à l'épreuve. Extrait :" >&2
+  grep -E "✓|✗" "$NEG_LOG" >&2 || true
+  exit 1
+fi
+if grep -qE "✗ .*http_req_failed" "$NEG_LOG"; then
+  echo "load-smoke: ÉCHEC — des requêtes ont échoué : le stub ne servait pas le trafic." >&2
+  echo "            Un run où rien n'aboutit ne prouve rien du budget de latence." >&2
+  exit 1
+fi
+rm -f "$NEG_LOG"
 
 echo
-echo "load-smoke: OK — le harnais passe à vide (exit 0) et tombe sous contrainte (exit $negative)."
+echo "load-smoke: OK — le harnais passe à vide (exit 0) et son budget de latence tombe sous contrainte"
+echo "            (exit 99 sur p(99), trafic servi)."

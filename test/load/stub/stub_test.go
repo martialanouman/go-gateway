@@ -192,23 +192,46 @@ func TestInvalidBodyIs422(t *testing.T) {
 	}
 }
 
-// The repo invariant: the body of a message never reaches a serialization. A rejected
-// submission is the likeliest leak — the handler holds the text and is writing an error.
-func TestErrorResponseNeverEchoesText(t *testing.T) {
+// The repo invariant: the body of a message never reaches a serialization.
+//
+// Both paths that actually hold the decoded text must be covered. An earlier version of this test
+// sent an unknown field alongside the secret, which made the decoder reject the body *before*
+// validate() ever ran — so the one function that holds req.Text was never exercised, and a
+// `Message: "rejected: " + req.Text` would have gone unnoticed.
+func TestResponseNeverEchoesText(t *testing.T) {
 	t.Parallel()
 
 	const secret = "TOP-SECRET-OTP-98765"
-	h := stub.NewHandler(stub.Config{})
-	resp := post(t, h, "Bearer "+testKey,
-		`{"to":"nope","from":"ACME","text":"`+secret+`","surprise":1}`)
 
-	defer func() { _ = resp.Body.Close() }()
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("read body: %v", err)
+	cases := map[string]struct {
+		body string
+		want int
+	}{
+		// Decodes cleanly, so validate() runs holding the text, and rejects on `to`.
+		"rejected by validation": {`{"to":"nope","from":"ACME","text":"` + secret + `"}`, http.StatusUnprocessableEntity},
+		// The accepted path builds a response object while holding the text too.
+		"accepted": {`{"to":"+2250700000000","from":"ACME","text":"` + secret + `"}`, http.StatusAccepted},
 	}
-	if strings.Contains(string(raw), secret) {
-		t.Fatalf("error response leaked the message body: %s", raw)
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			h := stub.NewHandler(stub.Config{})
+			resp := post(t, h, "Bearer "+testKey, tc.body)
+			defer func() { _ = resp.Body.Close() }()
+
+			if resp.StatusCode != tc.want {
+				t.Fatalf("status: got %d want %d — the intended code path was not reached", resp.StatusCode, tc.want)
+			}
+			raw, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("read body: %v", err)
+			}
+			if strings.Contains(string(raw), secret) {
+				t.Fatalf("response leaked the message body: %s", raw)
+			}
+		})
 	}
 }
 
@@ -324,7 +347,24 @@ func TestListenServesOnAnEphemeralPortAndShutsDown(t *testing.T) {
 		t.Fatalf("shutdown: %v", err)
 	}
 
-	if _, err := http.DefaultClient.Do(req); err == nil {
+	// A FRESH request: reusing the one above would fail on its drained body
+	// ("ContentLength=N with Body length 0") before ever touching the network, and the assertion
+	// would hold even against a Shutdown that closes nothing.
+	after, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		"http://"+srv.Addr()+"/v1/messages", strings.NewReader(validBody()))
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	after.Header.Set("Authorization", "Bearer "+testKey)
+	after.Header.Set("Content-Type", "application/json")
+
+	resp2, err := http.DefaultClient.Do(after)
+	if err == nil {
+		_ = resp2.Body.Close()
 		t.Fatal("server still answers after Shutdown")
+	}
+	// The listener must be gone, not merely slow: anything else means we proved the wrong thing.
+	if !strings.Contains(err.Error(), "connection refused") {
+		t.Fatalf("want a refused connection after Shutdown, got: %v", err)
 	}
 }
