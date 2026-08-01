@@ -131,14 +131,32 @@ if [[ $negative -ne 99 ]]; then
   echo "            (105 interruption · 107 exception du script · 108/109 erreur interne)" >&2
   exit 1
 fi
-# k6 rend son bloc THRESHOLDS sur DEUX lignes — le nom de la métrique, puis le marqueur :
+# k6 rend son bloc THRESHOLDS par métrique — le nom sur une ligne, puis UN marqueur PAR SEUIL :
 #     http_req_failed
-#     ✗ 'rate<0.01' rate=100.00%
-# Un motif « ✗ …http_req_failed » ne matche donc jamais et la garde échouerait ouverte, ce qui est
-# le pire des deux sens : elle laisserait passer précisément ce qu'elle surveille.
-crossed() { grep -A1 -E "^[[:space:]]*$1\$" "$NEG_LOG" | grep -q '✗'; }
+#     ✓ 'rate<0.01' rate=0.00%
+#     ✗ 'rate>0.5'  rate=0.00%
+# D'où deux exigences. Lire tout le bloc jusqu'à la ligne vide, et non la seule ligne suivante : sinon
+# l'ajout d'un second seuil rendrait la garde aveugle sans rien signaler. Et pouvoir exiger QUELLE
+# statistique est tombée : « http_req_duration a franchi un seuil » ne dit pas que c'est p(99), or
+# c'est p(99) que ce harnais existe pour certifier.
+#
+# La comparaison est littérale (awk index/==, pas de regex) : un nom de métrique comme
+# `checks{check:status is 202}` ferait sortir grep en erreur, donc répondre « non » — un échec ouvert.
+#
+#   crossed <métrique> [statistique attendue]
+crossed() {
+  awk -v m="$1" -v want="${2:-}" '
+    { line = $0; gsub(/^[ \t]+|[ \t]+$/, "", line) }
+    line == m           { inblock = 1; next }
+    inblock && line == ""   { inblock = 0 }
+    inblock && index($0, "✗") {
+      if (want == "" || index($0, want) > 0) { found = 1 }
+    }
+    END { exit found ? 0 : 1 }
+  ' "$NEG_LOG"
+}
 
-if ! crossed "http_req_duration"; then
+if ! crossed "http_req_duration" "p(99)"; then
   echo "load-smoke: ÉCHEC — le run négatif a échoué SANS que le budget de latence tombe." >&2
   echo "            Le seuil d'ingestion n'a donc pas été mis à l'épreuve. Seuils du run :" >&2
   grep -B1 -E "✓|✗" "$NEG_LOG" >&2 || true

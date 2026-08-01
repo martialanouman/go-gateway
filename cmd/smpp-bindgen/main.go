@@ -6,8 +6,12 @@
 // drop?". All the logic lives in the importable test/load/bindgen package so it can be tested from
 // the outside (step-200 D4); this file only parses flags and prints the report.
 //
-// It exits non-zero as soon as one session failed to bind, so a run can be asserted on in a script.
-// Interrupting it (SIGTERM / Ctrl-C) cuts the hold window short and unbinds cleanly.
+// It exits non-zero as soon as one session failed to bind, OR was dropped by the peer during the hold
+// window — failing to keep what it accepted is the peer's failure too, and it is half the question
+// this tool asks. Either way a run can be asserted on in a script.
+//
+// Interrupting it (SIGTERM / Ctrl-C) cuts the hold window short and unbinds cleanly. Interrupting it
+// during the dial phase is reported as failed binds, since that is what a cancelled dial produces.
 //
 // Usage:
 //
