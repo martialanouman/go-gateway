@@ -5,7 +5,8 @@
 // reserve used (step-145). Every billing fault FAILS OPEN: the error is logged and counted, never returned —
 // a propagated error would redeliver the record and re-submit the SMS (a duplicate), and the reserve debit
 // already made the money correct, so a missed settlement is an audit gap the reaper reconciles, not a
-// billing error. The message body never enters this package (invariant a).
+// billing error. That reaper is billing.Reaper (step-190), a supervised sweep in billing-svc: it finds
+// reservations left open here and settles each against the message's recorded CDR outcome. The message body never enters this package (invariant a).
 package settle
 
 import (
@@ -98,7 +99,7 @@ func NewSettler(client BillingClient, opts ...Option) *Settler {
 // reservation (billing disabled) makes ZERO billing call and returns (false, nil). On success it returns
 // (billed, &creditsCharged), where billed is creditsCharged > 0 — a capture that yielded to a winning release
 // returns credits_charged=0, hence billed=false and &0. A billing fault FAILS OPEN: the reserve debit already
-// charged the customer, so a missed capture is an audit gap the reaper reconciles; it is logged and counted,
+// charged the customer, so a missed capture is an audit gap billing.Reaper reconciles; it is logged and counted,
 // NEVER returned as an error (a propagated error would redeliver → duplicate SMS). credits_charged=nil means
 // "no settlement recorded" (disabled or fail-open) — distinct from &0 ("settled at zero"), so the CDR stays
 // reconcilable.
@@ -114,7 +115,7 @@ func (s *Settler) Capture(ctx context.Context, r pipeline.RoutedMT) (billed bool
 	})
 	if err != nil {
 		s.metric.CaptureFailed()
-		s.logger.WarnContext(ctx, "billing capture failed (fail-open); reconcile via reaper",
+		s.logger.WarnContext(ctx, "billing capture failed (fail-open); billing.Reaper will reconcile",
 			"message_id", r.MessageID, "err", err)
 		return false, nil
 	}
@@ -127,7 +128,7 @@ func (s *Settler) Capture(ctx context.Context, r pipeline.RoutedMT) (billed bool
 
 // Release refunds the reservation for a message that terminally failed or was cancelled (never delivered).
 // It gates on Billable (zero call when no reservation). A billing fault FAILS OPEN: failing to release leaves
-// the customer over-charged until the reaper reconciles; it is logged and counted, NEVER returned (a
+// the customer over-charged until billing.Reaper reconciles; it is logged and counted, NEVER returned (a
 // propagated error would redeliver and re-submit a known-bad message, burning SMSC TPS — and a "permanent"
 // reject is not guaranteed deterministic on retry).
 func (s *Settler) Release(ctx context.Context, r pipeline.RoutedMT) {
@@ -141,7 +142,7 @@ func (s *Settler) Release(ctx context.Context, r pipeline.RoutedMT) {
 		Owner:     ownerFromType(r.OwnerType, r.CustomerID, r.AccountID),
 	}); err != nil {
 		s.metric.ReleaseFailed()
-		s.logger.WarnContext(ctx, "billing release failed (fail-open); reconcile via reaper",
+		s.logger.WarnContext(ctx, "billing release failed (fail-open); billing.Reaper will reconcile",
 			"message_id", r.MessageID, "err", err)
 	}
 }
