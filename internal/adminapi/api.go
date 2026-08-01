@@ -78,6 +78,7 @@ func New(deps Deps) (*chi.Mux, huma.API) {
 	registerContentKeys(api, deps.ContentKeys, deps.ContentKeyEraser, deps.Logger)
 	registerMessages(api, deps.Messages, deps.ContentKeyReader, deps.ContentAudit, deps.Logger)
 	registerGDPR(api, deps.GDPRJobs, deps.CDREraser, deps.UnroutedMO, deps.ContentKeyEraser, deps.GDPRRunner, deps.Logger)
+	registerStreams(api, deps.StreamHub, deps.Quit, deps.Logger)
 
 	humaspec.Prune(api, codesMetaKey)
 

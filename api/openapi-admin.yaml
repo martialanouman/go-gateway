@@ -1536,8 +1536,11 @@ paths:
     get:
       tags: [Realtime]
       summary: WebSocket — live metrics stream
-      description: Upgrade to a WebSocket. Emits MetricsSummary frames. `101 Switching Protocols` on upgrade.
+      description: >-
+        Upgrade to a WebSocket. Emits one metricstream Snapshot per frame
+        (`{v, service, instance, emitted_at, samples[]}`); branch on `v`. `101 Switching Protocols` on upgrade.
       operationId: stream-metrics
+      security: [ { OperatorBearer: [ admin:read ] } ]
       responses:
         '101': { description: Switching Protocols (WebSocket). }
         '401': { $ref: '#/components/responses/Unauthorized' }

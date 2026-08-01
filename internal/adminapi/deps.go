@@ -138,6 +138,11 @@ type Disconnector interface {
 // New tolerates a nil store (the contract test builds the API without any), but a running server
 // wires them all.
 type Deps struct {
+	// StreamHub fans out the realtime feeds (step-183). Nil refuses the stream endpoints at request time.
+	StreamHub StreamHub
+	// Quit closes live WebSocket handlers on shutdown; see the Quit type.
+	Quit Quit
+
 	Customers        CustomerStore
 	Accounts         AccountStore
 	Credentials      CredentialStore

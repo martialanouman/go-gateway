@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -26,11 +27,14 @@ import (
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/connector/status"
 	contentkeypb "github.com/martialanouman/go-gateway/internal/contentkeys/pb"
+	"github.com/martialanouman/go-gateway/internal/metricstream"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/platform/async"
 	"github.com/martialanouman/go-gateway/internal/platform/supervisor"
+	"github.com/martialanouman/go-gateway/internal/realtime"
 	registrypb "github.com/martialanouman/go-gateway/internal/session/pb"
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
+	"github.com/martialanouman/go-gateway/internal/storage/kafka"
 	"github.com/martialanouman/go-gateway/internal/storage/postgres"
 	redisstore "github.com/martialanouman/go-gateway/internal/storage/redis"
 )
@@ -54,7 +58,7 @@ func run() error {
 	// force-disconnect the affected live binds via session-manager's SessionRegistry (step-032), and the
 	// address of that service is the same env var every session-manager client already uses.
 	cfg, err := config.Load(serviceName,
-		config.SectionOTel, config.SectionPostgres, config.SectionHTTP, config.SectionSMPP, config.SectionRedis, config.SectionClickHouse, config.SectionContentKey)
+		config.SectionOTel, config.SectionPostgres, config.SectionHTTP, config.SectionSMPP, config.SectionRedis, config.SectionClickHouse, config.SectionContentKey, config.SectionKafka)
 	if err != nil {
 		return err
 	}
@@ -176,7 +180,20 @@ func run() error {
 	}
 	defer func() { _ = contentKeyConn.Close() }()
 
+	// The realtime fan-out (step-183). Groupless and from end-of-log: every replica must see every record
+	// to serve its own clients, and a live feed has nothing to resume — committed offsets would replay the
+	// retained backlog into dashboards that only want what is happening now.
+	hub := realtime.NewHub(realtime.Config{})
+	streamQuit := make(chan struct{})
+	streamReader, err := kafka.NewTailReader(cfg.Kafka, kafka.TopicMetricsStream)
+	if err != nil {
+		return fmt.Errorf("metrics stream reader: %w", err)
+	}
+	defer streamReader.Close()
+
 	router, _ := adminapi.New(adminapi.Deps{
+		StreamHub:        hub,
+		Quit:             streamQuit,
 		Customers:        postgres.NewCustomerRepo(pool),
 		Accounts:         postgres.NewAccountRepo(pool),
 		Credentials:      postgres.NewCredentialRepo(pool),
@@ -219,6 +236,9 @@ func run() error {
 		Handler:           handler,
 		ReadHeaderTimeout: cfg.HTTP.ReadHeaderTimeout,
 	}
+	// Hijacked connections leave net/http's active set, so Shutdown neither waits for nor closes a
+	// WebSocket. This hook is the only thing that ends them.
+	srv.RegisterOnShutdown(func() { close(streamQuit) })
 
 	// Postgres is vital: without it the Admin API can neither read nor write the control plane, so a
 	// pod that cannot reach it must leave the load balancer (plan §1.5). The ping probes the pool,
@@ -240,6 +260,16 @@ func run() error {
 	g.Add("admin http server", func(c context.Context) error { return runHTTP(c, srv, cfg.ShutdownTimeout, logger) })
 	g.Add("cdr retention", func(c context.Context) error {
 		return retainer.Run(c, cfg.ClickHouse.RetentionInterval)
+	})
+	// Self-restarting, never fatal: the dashboard feed is best-effort, and a Kafka hiccup must not tear down
+	// the control plane — customers, credentials, billing, GDPR — along with it.
+	g.Add("metrics stream", func(c context.Context) error {
+		return runResilient(c, "metrics stream", func(rc context.Context) error {
+			return streamReader.Run(rc, func(_ context.Context, rec kafka.Record) error {
+				publishSnapshot(hub, rec.Value)
+				return nil
+			})
+		}, logger)
 	})
 	if err := g.Run(ctx, logger); err != nil {
 		return err
@@ -291,4 +321,34 @@ func (c redisBalanceCache) Del(ctx context.Context, keys ...string) error {
 		return nil
 	}
 	return c.rdb.Del(ctx, keys...).Err()
+}
+
+// streamBackoff paces a restart of the metrics feed after a Kafka fault.
+const streamBackoff = 5 * time.Second
+
+// runResilient restarts a non-vital component until ctx is cancelled, so its faults never reach the
+// supervisor and take the whole service down.
+func runResilient(ctx context.Context, name string, run func(context.Context) error, logger *slog.Logger) error {
+	for {
+		err := run(ctx)
+		if err == nil || ctx.Err() != nil {
+			return nil
+		}
+		logger.ErrorContext(ctx, "component faulted; restarting after backoff", "component", name, "err", err)
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(streamBackoff):
+		}
+	}
+}
+
+// publishSnapshot forwards a record only if it is a snapshot this build understands. The hub is a blind byte
+// pipe, so this is the one place a malformed or future-versioned frame can be kept off every dashboard.
+func publishSnapshot(hub *realtime.Hub, value []byte) {
+	var snap metricstream.Snapshot
+	if err := json.Unmarshal(value, &snap); err != nil || snap.V != metricstream.SchemaVersion {
+		return
+	}
+	hub.Publish(realtime.StreamMetrics, value)
 }

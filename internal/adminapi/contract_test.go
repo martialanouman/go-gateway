@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"slices"
 	"sort"
 	"testing"
 
@@ -136,6 +137,8 @@ var m1Operations = []opRef{
 	{"erase-customer-content", "post", "/admin/customers/{id}/content/erase"},
 	{"gdpr-erase", "post", "/admin/gdpr/erase"},
 	{"get-gdpr-erase-job", "get", "/admin/gdpr/erase/{jobId}"},
+
+	{"stream-metrics", "get", "/admin/stream/metrics"},
 }
 
 // loadContract reads api/openapi-admin.yaml (the source of truth) into a generic tree.
@@ -206,6 +209,15 @@ func TestGeneratedSpecMatchesTheContractForEveryM1Operation(t *testing.T) {
 
 			cCodes := responseCodes(cOp)
 			gCodes := responseCodes(gOp)
+			// A protocol upgrade has no output schema, so Huma generates no responses at all. The criterion
+			// is the CONTRACT declaring 101 — a normal operation cannot claim that by accident, whereas a
+			// list of ids could be pointed at one. TestUpgradeOperationsDeclareTheirContract checks these.
+			if declaresUpgrade(cCodes) {
+				if len(gCodes) != 0 {
+					t.Errorf("upgrade operation now generates %v; the exemption can go", gCodes)
+				}
+				return
+			}
 			if !reflect.DeepEqual(cCodes, gCodes) {
 				t.Errorf("response codes differ:\n contract:  %v\n generated: %v", cCodes, gCodes)
 			}
@@ -697,4 +709,38 @@ func deepStringMap(v any) any {
 	default:
 		return v
 	}
+}
+
+// TestUpgradeOperationsDeclareTheirContract is what keeps the exemption above honest: a WebSocket operation
+// escapes the schema comparison, so its contract entry and its authorization are asserted directly.
+func TestUpgradeOperationsDeclareTheirContract(t *testing.T) {
+	contract := loadContract(t)
+	generated := loadGenerated(t)
+
+	for _, op := range m1Operations {
+		cOp := operationNode(contract, op.path, op.method)
+		if cOp == nil || !declaresUpgrade(responseCodes(cOp)) {
+			continue
+		}
+		t.Run(op.id, func(t *testing.T) {
+			if got := responseCodes(cOp); !reflect.DeepEqual(got, []string{"101", "401"}) {
+				t.Errorf("contract responses = %v, want [101 401]", got)
+			}
+			gOp := operationNode(generated, op.path, op.method)
+			if gOp == nil {
+				t.Fatal("not registered, so neither routed nor scope-checked")
+			}
+			// The exemption removes the only other check on these operations, so the authorization the
+			// contract promises and the one the service enforces are compared exactly. An empty scope list
+			// would accept any valid operator token.
+			if !reflect.DeepEqual(cOp["security"], gOp["security"]) {
+				t.Errorf("security differs:\n contract:  %v\n generated: %v", cOp["security"], gOp["security"])
+			}
+		})
+	}
+}
+
+// declaresUpgrade reports whether a contract operation answers with a protocol switch.
+func declaresUpgrade(codes []string) bool {
+	return slices.Contains(codes, "101")
 }

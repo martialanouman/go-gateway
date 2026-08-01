@@ -129,7 +129,7 @@ Légende : `[x]` = fait (dans `tasks-done/`) · `[ ]` = à faire (dans `tasks-to
 - [x] step-180 — Catalogue de métriques à labels BORNÉS + test de garde de cardinalité
 - [x] step-181 — Spans complets par étape (pipeline.* / connector.*), 100 % sur erreur
 - [x] step-182 — Émettre les mises à jour temps réel vers metrics.stream
-- [ ] step-183 — Gateway WS/SSE (coder/websocket) + stream-metrics
+- [x] step-183 — Gateway WS/SSE (coder/websocket) + stream-metrics
 - [ ] step-184 — Flux stream-sessions + stream-billing-alerts
 - [ ] step-185 — get-message-trace : trace complète d'un message, sans aucun corps
 - [ ] step-186 — search-messages avec masquage MSISDN par rôle

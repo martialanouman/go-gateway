@@ -21,6 +21,7 @@ func TestRunRequiresAdminTokensInProduction(t *testing.T) {
 	t.Setenv("CLICKHOUSE_ADDR", "clickhouse.internal:9000")
 	t.Setenv("CONTENT_KEY_ADDR", "content-key.internal:7002")
 	t.Setenv("REDIS_URL", "redis://redis.internal:6379")
+	t.Setenv("KAFKA_BROKERS", "kafka.internal:9092")
 	// HTTP_ADMIN_TOKENS deliberately unset.
 
 	err := run()
