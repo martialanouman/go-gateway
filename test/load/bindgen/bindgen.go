@@ -318,6 +318,14 @@ func watch(ctx context.Context, nc net.Conn, deadline time.Time) bool {
 			if errors.As(err, &ne) && ne.Timeout() {
 				return true
 			}
+			// A PDU this codec does not model is not a teardown. data_sm, alert_notification and
+			// vendor PDUs are ordinary SMSC traffic; counting them as drops would report a healthy
+			// peer as dropping 100% of its sessions — and close them ourselves to prove it.
+			// Rewinding is safe: ReadPDU consumes the whole PDU (its length prefix drives a ReadFull)
+			// before decoding, so these two errors leave the stream aligned on the next one.
+			if errors.Is(err, smpp.ErrUnknownCommand) || errors.Is(err, smpp.ErrMalformedBody) {
+				continue
+			}
 
 			return false
 		}

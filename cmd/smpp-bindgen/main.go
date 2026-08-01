@@ -71,14 +71,22 @@ func run() error {
 	if rep.Failed > 0 {
 		return fmt.Errorf("%d of %d binds failed", rep.Failed, rep.Requested)
 	}
+	// A dropped session is a failure of the peer to HOLD what it accepted — the very question this
+	// tool exists to answer. Reporting it as a clean run would say "the peer takes N binds" about a
+	// peer that took them and let them go.
+	if rep.Dropped > 0 {
+		return fmt.Errorf("%d of %d bound sessions were dropped by the peer during the hold",
+			rep.Dropped, rep.Bound)
+	}
+
 	return nil
 }
 
 // report prints the outcome of a run: the counts first, since they are the answer, then a bounded
 // sample of the causes.
 func report(rep bindgen.Report) {
-	log.Printf("requested %d | bound %d | failed %d | elapsed %s",
-		rep.Requested, rep.Bound, rep.Failed, rep.Elapsed.Round(time.Millisecond))
+	log.Printf("requested %d | bound %d | failed %d | dropped %d | elapsed %s",
+		rep.Requested, rep.Bound, rep.Failed, rep.Dropped, rep.Elapsed.Round(time.Millisecond))
 
 	for i, err := range rep.Errors {
 		if i == maxReportedErrors {

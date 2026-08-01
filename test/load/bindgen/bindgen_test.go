@@ -2,6 +2,7 @@ package bindgen_test
 
 import (
 	"context"
+	"encoding/binary"
 	"net"
 	"testing"
 	"time"
@@ -308,6 +309,77 @@ func TestRunReportsNoDropWhenSessionsSurvive(t *testing.T) {
 	if rep.Bound != 5 || rep.Dropped != 0 {
 		t.Fatalf("Bound=%d Dropped=%d, want 5 and 0", rep.Bound, rep.Dropped)
 	}
+}
+
+// A peer sending PDUs this codec does not model — data_sm, alert_notification, vendor commands —
+// is behaving normally. Treating an undecodable PDU as a teardown would report a perfectly healthy
+// SMSC as dropping every session, and close those sessions to prove the point.
+func TestRunDoesNotCountUnmodelledPDUsAsDrops(t *testing.T) {
+	t.Parallel()
+
+	const dataSM = uint32(0x00000103) // valid SMPP, absent from this repo's codec
+	addr := startChattyPeer(t, dataSM)
+
+	rep, err := bindgen.Run(t.Context(), bindgen.Config{
+		Addr: addr, Binds: 3, SystemID: "esme", Password: "pw",
+		Hold: 300 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if rep.Bound != 3 {
+		t.Fatalf("Bound: got %d want 3", rep.Bound)
+	}
+	if rep.Dropped != 0 {
+		t.Fatalf("Dropped: got %d want 0 — the peer only sent traffic we cannot decode", rep.Dropped)
+	}
+}
+
+// startChattyPeer binds, then keeps sending a PDU with the given command_id until the client leaves.
+func startChattyPeer(t *testing.T, commandID uint32) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	// A well-formed 16-byte header carrying a command_id the codec does not model.
+	frame := make([]byte, 16)
+	binary.BigEndian.PutUint32(frame[0:], 16)
+	binary.BigEndian.PutUint32(frame[4:], commandID)
+
+	go func() {
+		for {
+			nc, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer func() { _ = nc.Close() }()
+				pdu, err := smpp.ReadPDU(nc)
+				if err != nil {
+					return
+				}
+				if _, ok := pdu.Body.(*smpp.BindTransceiver); !ok {
+					return
+				}
+				if err := smpp.WritePDU(nc, smpp.PDU{Sequence: pdu.Sequence, Body: &smpp.BindTransceiverResp{
+					BindRespFields: smpp.BindRespFields{SystemID: "chatty-peer"},
+				}}); err != nil {
+					return
+				}
+				for {
+					if _, err := nc.Write(frame); err != nil {
+						return // client gone; this is the goroutine's stop condition
+					}
+					time.Sleep(20 * time.Millisecond)
+				}
+			}()
+		}
+	}()
+
+	return ln.Addr().String()
 }
 
 // waitFor polls cond until it holds or the test times out.

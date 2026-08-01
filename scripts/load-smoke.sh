@@ -131,15 +131,23 @@ if [[ $negative -ne 99 ]]; then
   echo "            (105 interruption · 107 exception du script · 108/109 erreur interne)" >&2
   exit 1
 fi
-if ! grep -qE "✗ .*p\(99\)" "$NEG_LOG"; then
+# k6 rend son bloc THRESHOLDS sur DEUX lignes — le nom de la métrique, puis le marqueur :
+#     http_req_failed
+#     ✗ 'rate<0.01' rate=100.00%
+# Un motif « ✗ …http_req_failed » ne matche donc jamais et la garde échouerait ouverte, ce qui est
+# le pire des deux sens : elle laisserait passer précisément ce qu'elle surveille.
+crossed() { grep -A1 -E "^[[:space:]]*$1\$" "$NEG_LOG" | grep -q '✗'; }
+
+if ! crossed "http_req_duration"; then
   echo "load-smoke: ÉCHEC — le run négatif a échoué SANS que le budget de latence tombe." >&2
-  echo "            Le seuil d'ingestion n'a donc pas été mis à l'épreuve. Extrait :" >&2
-  grep -E "✓|✗" "$NEG_LOG" >&2 || true
+  echo "            Le seuil d'ingestion n'a donc pas été mis à l'épreuve. Seuils du run :" >&2
+  grep -B1 -E "✓|✗" "$NEG_LOG" >&2 || true
   exit 1
 fi
-if grep -qE "✗ .*http_req_failed" "$NEG_LOG"; then
+if crossed "http_req_failed"; then
   echo "load-smoke: ÉCHEC — des requêtes ont échoué : le stub ne servait pas le trafic." >&2
-  echo "            Un run où rien n'aboutit ne prouve rien du budget de latence." >&2
+  echo "            Un run où rien n'aboutit ne prouve rien du budget de latence. Seuils du run :" >&2
+  grep -B1 -E "✓|✗" "$NEG_LOG" >&2 || true
   exit 1
 fi
 rm -f "$NEG_LOG"
