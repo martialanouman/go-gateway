@@ -335,6 +335,20 @@ func cdrAggregateByMessage() string {
 	)`
 }
 
+// MessageStatus returns the CURRENT lifecycle status of a message by id alone — what the billing reaper
+// needs to decide whether an orphaned reservation must be captured or released (step-190). It reuses the
+// same cross-tenant aggregation as ByMessageID, so the status is resolved on the highest `version`
+// (argMax): a naive read of this ReplacingMergeTree would return the initial `accepted` of a message long
+// since delivered. found=false means no CDR row exists for the message — the reaper treats that as
+// "outcome unknown" and leaves the money untouched rather than guessing.
+func (r *CDRReader) MessageStatus(ctx context.Context, messageID uuid.UUID) (string, bool, error) {
+	row, found, err := r.ByMessageID(ctx, messageID)
+	if err != nil || !found {
+		return "", false, err
+	}
+	return string(row.Status), true, nil
+}
+
 // Current returns the aggregated lifecycle snapshot of a message, scoped to the caller's account. The
 // scope is not just an optimization: get-message must 404 a message that is not in the caller's
 // account (api/openapi-public.yaml), and filtering on (customer_id, account_id) — the sorting-key
