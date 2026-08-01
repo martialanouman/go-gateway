@@ -94,6 +94,7 @@ func TestValidateLabelNames(t *testing.T) {
 // TestForbiddenLabelsBeatTheAllowlist is what makes the guard hard to defeat: the denylist is consulted FIRST,
 // so adding "msisdn" to the allowlist — the obvious way to silence a failing build — does not work.
 func TestForbiddenLabelsBeatTheAllowlist(t *testing.T) {
+	// Mutates package state, so this test must never run in parallel with another in this package.
 	allowed["msisdn"] = struct{}{} // simulate someone "fixing" the guard by widening the allowlist
 	t.Cleanup(func() { delete(allowed, "msisdn") })
 

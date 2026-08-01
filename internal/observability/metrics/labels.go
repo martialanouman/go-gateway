@@ -7,9 +7,14 @@
 // scraped, cached and dashboarded (invariant a forbids the body anywhere; a destination number is barely
 // better).
 //
-// The guard is therefore not a lint: [Guard] wraps the Prometheus registry so an offending metric FAILS TO
-// REGISTER. Services register at startup with MustRegister, so a bad label crashes the process on boot
-// instead of quietly inflating a production TSDB.
+// The guard is therefore not a lint. [Guard] wraps the Prometheus registry and checks twice:
+//
+//   - at REGISTRATION, against the labels a collector declares. Services register at startup with
+//     MustRegister, so a bad label crashes the process on boot instead of quietly inflating a production
+//     TSDB. A collector that declares nothing at all is refused too — it would be a hole straight through.
+//   - at GATHER, against what is actually about to be served. A hand-written collector can declare one label
+//     and emit another, and Prometheus does not notice (it identifies a Desc by name and constant labels
+//     only). The offending family is dropped rather than published.
 package metrics
 
 import (
@@ -38,6 +43,7 @@ var allowed = map[string]struct{}{
 	"code":       {}, // the flat error code (§11.3)
 	"result":     {}, // hit | miss
 	"cause":      {}, // promhttp's own handler-error metric: gathering | encoding
+	"version":    {}, // go_info's build version: one value per binary
 	"event_type": {}, // DLR / MO event kinds
 	"direction":  {}, // mt | mo
 	// Where: named pieces of the deployment, declared in config or in code.

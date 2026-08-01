@@ -25,6 +25,12 @@ var breakerStates = []string{BreakerStateClosed, BreakerStateOpen, BreakerStateH
 //
 // Emission belongs to the services (step-182). Construct with [NewCatalog], register [Catalog.Collectors] on
 // the ops registry, and hand the fields to the components that observe.
+//
+// The registry guard bounds label NAMES; bounding their VALUES is the emitter's job, and step-182 owes it for
+// every label below. The rule: a label value comes from a constant or from a mapping that buckets the
+// unknown — never from an error string, a config field or anything a submission influences. One
+// WithLabelValues(runtime, err.Error()) is a cardinality incident with a perfectly legal label name.
+// routing.script.Reason is the shape to copy: four constants and "runtime_error" for everything else.
 type Catalog struct {
 	// IngestDuration measures acceptance: the submission arriving until the durable Kafka ACK — the moment
 	// the gateway owns the message and may answer the client. It is the latency an ESME actually feels, and
@@ -37,6 +43,9 @@ type Catalog struct {
 
 	// QueueDepth is the lag of a Kafka topic, sampled by whoever consumes it. Rising depth with flat
 	// ingestion is the signature of a slow connector.
+	//
+	// step-182 must give each topic ONE owner: several services consuming the same topic and all reporting
+	// their own lag would double-count without any of them being wrong.
 	QueueDepth *prometheus.GaugeVec
 
 	// ConnectorBreakerState is a one-hot enum gauge: one series per (connector, state), exactly one at 1.
@@ -81,7 +90,7 @@ func NewCatalog() *Catalog {
 
 		MessageE2EDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name: "message_e2e_duration_seconds",
-			Help: "Time from submission to the final SMSC outcome, by connector and outcome.",
+			Help: "Time from submission to the final SMSC outcome, by connector and status.",
 			// 10 ms … ~5 min: a healthy send is sub-second, but a queue draining after an incident is
 			// measured in minutes and must stay visible instead of piling into +Inf.
 			Buckets:                         prometheus.ExponentialBuckets(0.01, 2, 16),
@@ -91,7 +100,7 @@ func NewCatalog() *Catalog {
 		}, []string{"connector_id", "status"}),
 
 		QueueDepth: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "queue_depth",
+			Name: "queue_depth_records",
 			Help: "Consumer lag of a Kafka topic, in records.",
 		}, []string{"queue"}),
 
@@ -103,9 +112,10 @@ func NewCatalog() *Catalog {
 		BalanceCacheAge: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name: "billing_balance_cache_age_seconds",
 			Help: "Age of the balance cache entry read by a credit reserve.",
-			// 1 s … ~17 min, so the 10-minute TTL sits inside the range and an entry outliving it is
-			// visible rather than lost in +Inf.
-			Buckets:                         prometheus.ExponentialBuckets(1, 2, 11),
+			// 100 ms … ~27 min: a healthy read is sub-second, so starting at 1 s would pile every normal
+			// case into the first bucket, and the range still covers the 10-minute TTL — an entry
+			// outliving it stays visible instead of vanishing into +Inf.
+			Buckets:                         prometheus.ExponentialBuckets(0.1, 2, 15),
 			NativeHistogramBucketFactor:     nativeBucketFactor,
 			NativeHistogramMaxBucketNumber:  nativeMaxBucketNumber,
 			NativeHistogramMinResetDuration: nativeMinResetDuration,
@@ -137,11 +147,19 @@ func (c *Catalog) Collectors() []prometheus.Collector {
 // bounded whatever a caller passes, and the anomaly is visible — the states of a connector no longer sum to
 // 1 — instead of silently mislabelling it.
 func (c *Catalog) SetConnectorBreakerState(connectorID, state string) {
+	// Clear first, set last. A scrape landing mid-update must never see two states at 1 — a connector shown
+	// as open AND closed is worse than no metric at all. The transient "all zero" it can see instead is
+	// unambiguous, and it lasts one gauge write.
+	var current prometheus.Gauge
 	for _, known := range breakerStates {
-		value := 0.0
+		gauge := c.ConnectorBreakerState.WithLabelValues(connectorID, known)
 		if known == state {
-			value = 1
+			current = gauge
+			continue
 		}
-		c.ConnectorBreakerState.WithLabelValues(connectorID, known).Set(value)
+		gauge.Set(0)
+	}
+	if current != nil {
+		current.Set(1)
 	}
 }

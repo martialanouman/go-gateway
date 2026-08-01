@@ -100,6 +100,10 @@ func NewOpsServer(cfg config.Config, log *slog.Logger, checks ...ReadinessCheck)
 	// that exposes them, and two servers in one test binary cannot collide. It is wrapped in the
 	// cardinality guard (step-180) so an unbounded label is refused at registration, in every service,
 	// rather than caught by a test that only covers the packages someone remembered to check.
+	// The guard checks twice: at registration, against what a collector declares, and again at gather time,
+	// against what is actually about to be served — a hand-written collector can declare one label and emit
+	// another, and Prometheus itself does not catch that (it identifies a Desc by name and constant labels
+	// only). An offending family is dropped rather than served.
 	registry := metrics.Guard(prometheus.NewRegistry())
 	registry.MustRegister(
 		collectors.NewGoCollector(),

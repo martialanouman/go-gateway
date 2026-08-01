@@ -126,7 +126,7 @@ Légende : `[x]` = fait (dans `tasks-done/`) · `[ ]` = à faire (dans `tasks-to
 - [x] step-167 — Extraire la garde des clés de contenu dans un service dédié (content-key-svc)
 
 ## M11 — Observabilité complète & temps réel
-- [ ] step-180 — Catalogue de métriques à labels BORNÉS + test de garde de cardinalité
+- [x] step-180 — Catalogue de métriques à labels BORNÉS + test de garde de cardinalité
 - [ ] step-181 — Spans complets par étape (pipeline.* / connector.*), 100 % sur erreur
 - [ ] step-182 — Émettre les mises à jour temps réel vers metrics.stream
 - [ ] step-183 — Gateway WS/SSE (coder/websocket) + stream-metrics

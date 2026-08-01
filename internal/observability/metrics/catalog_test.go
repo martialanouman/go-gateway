@@ -45,7 +45,7 @@ func TestCatalogRegistersAndExposesEveryMetric(t *testing.T) {
 	for _, name := range []string{
 		"ingest_duration_seconds",
 		"message_e2e_duration_seconds",
-		"queue_depth",
+		"queue_depth_records",
 		"connector_breaker_state",
 		"billing_balance_cache_age_seconds",
 		"routing_script_failures_total",

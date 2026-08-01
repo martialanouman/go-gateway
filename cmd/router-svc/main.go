@@ -285,6 +285,9 @@ func run() error {
 	// Only the catalogue metric this service already feeds. The rest of the catalogue is registered by
 	// whoever starts emitting it (step-182): an always-absent series is better than an always-zero one,
 	// which reads as "measured, and nothing happened".
+	//
+	// step-182: do NOT simply add MustRegister(catalog.Collectors()...) here — Collectors() includes this
+	// one, and the duplicate panics at boot. Register the newly fed metrics, or replace this line.
 	ops.Registry().MustRegister(catalog.RoutingScriptFailures)
 
 	// bloom_last_reload / bloom_capacity_bits: labelled by filter (exact | optout), no unbounded labels.

@@ -85,6 +85,106 @@ func TestMustRegisterPanicsOnAnUnboundedLabel(t *testing.T) {
 		prometheus.CounterOpts{Name: "leaky_total", Help: "h"}, []string{"msisdn"}))
 }
 
+// uncheckedCollector describes nothing and only reveals its metrics when scraped. It is the guard's blind
+// spot: registration cannot see a label that does not exist yet, so this one publishes an MSISDN and a body
+// as const labels the moment Prometheus collects it.
+type uncheckedCollector struct{}
+
+func (uncheckedCollector) Describe(chan<- *prometheus.Desc) {}
+
+func (uncheckedCollector) Collect(ch chan<- prometheus.Metric) {
+	ch <- prometheus.MustNewConstMetric(
+		prometheus.NewDesc("leak_total", "h",
+			nil, prometheus.Labels{"msisdn": "33612345678", "body": "SECRET"}),
+		prometheus.CounterValue, 1)
+}
+
+// TestGuardRefusesAnUncheckedCollector closes that blind spot. Verified beforehand that every collector this
+// repository registers — its own vectors, the Go and process collectors, promhttp's handler counter —
+// describes at least one Desc, so refusing unchecked collectors turns nothing legitimate away.
+func TestGuardRefusesAnUncheckedCollector(t *testing.T) {
+	reg := metrics.Guard(prometheus.NewRegistry())
+
+	if err := reg.Register(uncheckedCollector{}); err == nil {
+		t.Fatal("an unchecked collector was accepted: it can publish any label at scrape time")
+	}
+}
+
+// lyingCollector declares a bounded label and emits a different one. Registration validates what a collector
+// DECLARES, so it passes the guard — only the registry can catch the mismatch, and only if it is pedantic.
+type lyingCollector struct{}
+
+func (lyingCollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- prometheus.NewDesc("liar_total", "h", []string{"status"}, nil)
+}
+
+func (lyingCollector) Collect(ch chan<- prometheus.Metric) {
+	ch <- prometheus.MustNewConstMetric(
+		prometheus.NewDesc("liar_total", "h", []string{"msisdn"}, nil),
+		prometheus.CounterValue, 1, "33600000000")
+}
+
+// TestGatherDropsACollectorThatLiesAboutItsLabels is the second half of the guard.
+//
+// A pedantic registry does NOT catch this: Prometheus identifies a Desc by its name and constant labels, so
+// "liar_total with status" and "liar_total with msisdn" share an id and the mismatch goes unnoticed. Only
+// checking the exposition itself catches it — and the family must be DROPPED, not merely reported, or the
+// MSISDN is served alongside the error.
+func TestGatherDropsACollectorThatLiesAboutItsLabels(t *testing.T) {
+	reg := metrics.Guard(prometheus.NewRegistry())
+	if err := reg.Register(lyingCollector{}); err != nil {
+		t.Fatalf("Register: %v — the lie is only visible when gathering", err)
+	}
+	// A healthy metric alongside it: dropping the offender must not blind everything else.
+	ok := prometheus.NewCounter(prometheus.CounterOpts{Name: "probe_total", Help: "h"})
+	reg.MustRegister(ok)
+	ok.Inc()
+
+	families, err := reg.Gather()
+	if err == nil {
+		t.Fatal("Gather reported no error on an undeclared msisdn label")
+	}
+	for _, f := range families {
+		if f.GetName() == "liar_total" {
+			t.Errorf("the offending family was served anyway: %v", f)
+		}
+	}
+	var kept bool
+	for _, f := range families {
+		if f.GetName() == "probe_total" {
+			kept = true
+		}
+	}
+	if !kept {
+		t.Error("the healthy metric was dropped too; only the offender should be")
+	}
+}
+
+// TestGatherRefusesAConstLabelLeak: constant labels are skipped at registration (they are fixed at
+// construction, so they cannot explode), but nothing stops one from holding an MSISDN. The exposition check
+// covers them.
+func TestGatherRefusesAConstLabelLeak(t *testing.T) {
+	reg := metrics.Guard(prometheus.NewRegistry())
+	leak := prometheus.NewCounter(prometheus.CounterOpts{
+		Name:        "leak_total",
+		Help:        "h",
+		ConstLabels: prometheus.Labels{"msisdn": "33612345678"},
+	})
+	if err := reg.Register(leak); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	families, err := reg.Gather()
+	if err == nil {
+		t.Fatal("a constant msisdn label was served")
+	}
+	for _, f := range families {
+		if f.GetName() == "leak_total" {
+			t.Error("the leaking family reached the exposition")
+		}
+	}
+}
+
 // TestGuardStillReportsPrometheusOwnErrors: the guard must not swallow duplicate registration, the error the
 // registry itself raises.
 func TestGuardStillReportsPrometheusOwnErrors(t *testing.T) {
@@ -107,6 +207,11 @@ func TestGuardAcceptsTheRuntimeCollectors(t *testing.T) {
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
+	// And they must SCRAPE cleanly, not merely register: the gather-time check sees constant labels that
+	// registration skips — go_info{version} is one, and it blanked /metrics until the vocabulary knew it.
+	if _, err := reg.Gather(); err != nil {
+		t.Fatalf("the runtime collectors do not survive a scrape: %v", err)
+	}
 }
 
 // TestGuardAcceptsThePromhttpHandlerMetric: promhttp.HandlerFor registers its own error counter on whatever
