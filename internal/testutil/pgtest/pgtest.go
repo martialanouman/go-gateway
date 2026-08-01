@@ -22,6 +22,7 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
+	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/storage/postgres"
 )
 
@@ -33,8 +34,23 @@ const image = "postgres:18-alpine"
 var (
 	once      sync.Once
 	shared    *pgxpool.Pool
+	sharedURL string
 	sharedErr error
 )
+
+// connectTimeout bounds a boot connection made from Config. It is generous: the container is already
+// up by the time Config returns, and a tight timeout would only make a busy CI flaky.
+const connectTimeout = 10 * time.Second
+
+// Config returns a config.Postgres pointing at the same shared, migrated PostgreSQL 18 as Pool. Use
+// it when the code under test opens its own pool from configuration — a service's wiring, say —
+// rather than receiving one.
+func Config(t *testing.T) config.Postgres {
+	t.Helper()
+
+	Pool(t) // shares the skip/start discipline; leaves sharedURL set
+	return config.Postgres{URL: sharedURL, MaxConns: 4, Timeout: connectTimeout}
+}
 
 // Pool returns a pool bound to a shared, migrated PostgreSQL 18. It skips the test when Docker is
 // not available or under -short. The returned pool is shared across the calling package's tests;
@@ -76,6 +92,7 @@ func start() (*pgxpool.Pool, error) {
 	if err := applyMigrations(url); err != nil {
 		return nil, err
 	}
+	sharedURL = url
 
 	pool, err := pgxpool.New(ctx, url)
 	if err != nil {
