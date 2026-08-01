@@ -1275,6 +1275,13 @@ items:
           url: '{{baseUrl}}/admin/customers/{{customerId}}/content/rotate-key'
         docs: Rotate a customer's content encryption key, delegated to billing-svc (scope admin:write).
       - info:
+          name: stream-metrics
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/stream/metrics'
+        docs: WebSocket — live metrics stream. Upgrade required; a plain GET returns 426/401 (scope admin:read).
+      - info:
           name: get-message-content
           type: http
         http:

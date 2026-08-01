@@ -100,7 +100,8 @@ func (c *Consumer) Run(ctx context.Context, handle Handler) error {
 		// record — at the 8000 msg/s target a per-record commit RTT would dominate the consume loop. The
 		// at-least-once guarantee is unchanged: only handled records are committed, and anything past the
 		// first failure stays uncommitted for redelivery.
-		if len(handled) > 0 {
+		// A groupless tail reader has nothing to commit to.
+		if len(handled) > 0 && c.group != "" {
 			if err := c.cl.CommitRecords(ctx, handled...); err != nil {
 				if ctx.Err() != nil {
 					return nil
@@ -160,7 +161,7 @@ func (c *Consumer) RunBatch(ctx context.Context, handle BatchHandler) error {
 		// within a partition, so a global prefix would be wrong: a failure in one partition must not hold
 		// back a fully-handled sibling partition, and a success AFTER a failure in the SAME partition must
 		// never be committed (it would skip the gap). krs is in per-partition offset order.
-		if commit := committablePrefix(krs, results); len(commit) > 0 {
+		if commit := committablePrefix(krs, results); len(commit) > 0 && c.group != "" {
 			if err := c.cl.CommitRecords(ctx, commit...); err != nil {
 				if ctx.Err() != nil {
 					return nil
@@ -302,4 +303,22 @@ func (c *Consumer) Lag(ctx context.Context) (map[string]int64, error) {
 		out[topic] = total
 	}
 	return out, nil
+}
+
+// NewTailReader consumes a topic from the END of the log with NO consumer group.
+//
+// For a live feed there is nothing to resume: a group would commit offsets, so a restart would replay the
+// retained backlog into clients that only want what is happening now — and a per-instance group name would
+// instead accumulate abandoned groups on the broker. Groupless also means every replica sees every record,
+// which is what a fan-out needs.
+func NewTailReader(cfg config.Kafka, topics ...string) (*Consumer, error) {
+	cl, err := kgo.NewClient(
+		kgo.SeedBrokers(cfg.Brokers...),
+		kgo.ConsumeTopics(topics...),
+		kgo.ConsumeResetOffset(kgo.NewOffset().AtEnd()),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("kafka: new tail reader: %w", err)
+	}
+	return &Consumer{cl: cl}, nil
 }
