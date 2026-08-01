@@ -151,3 +151,37 @@ FROM control_plane.billing_ledger
 WHERE message_id = @message_id AND entry_type = 'reserve'
 ORDER BY created_at DESC
 LIMIT 1;
+
+-- name: ListOrphanedReservations :many
+-- The reaper's detection query (step-190): reservations whose money was never closed. A message is
+-- orphaned when it holds a `reserve` claim but NEITHER a `capture` NOR a `release` — the settle loop in
+-- connector-pool fails open, so a billing outage leaves the reserve debit standing with nothing to
+-- reconcile it.
+--
+-- Detection reads control_plane.billing_idempotency, NOT the ledger's own idempotency index: that index
+-- must include the partition key (created_at) and therefore cannot span day partitions, so a reservation
+-- settled across midnight would look unsettled to it. billing_idempotency is unpartitioned and
+-- authoritative, and its created_at index keeps this sweep cheap.
+--
+-- The LATERAL recovers the owner and amount from the ledger, which billing_idempotency does not carry.
+-- It is a CROSS JOIN on purpose: a claim whose ledger partition has already been detached to object
+-- storage (§6.14.2) drops out of the result, because a reservation whose ledger row is archived can no
+-- longer be settled and must not be reported as actionable.
+SELECT i.message_id, r.owner_type, r.owner_id, r.customer_id, r.account_id, r.credits,
+       i.created_at AS reserved_at
+FROM control_plane.billing_idempotency i
+CROSS JOIN LATERAL (
+  SELECT owner_type, owner_id, customer_id, account_id, credits
+  FROM control_plane.billing_ledger
+  WHERE message_id = i.message_id AND entry_type = 'reserve'
+  ORDER BY created_at DESC
+  LIMIT 1
+) r
+WHERE i.entry_type = 'reserve'
+  AND i.created_at < @older_than
+  AND NOT EXISTS (
+    SELECT 1 FROM control_plane.billing_idempotency s
+    WHERE s.message_id = i.message_id AND s.entry_type IN ('capture', 'release')
+  )
+ORDER BY i.created_at
+LIMIT @row_limit;

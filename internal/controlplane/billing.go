@@ -95,6 +95,21 @@ type LedgerRow struct {
 	CreatedAt    time.Time
 }
 
+// OrphanedReservation is a reservation the settle loop never closed (step-190): a message holding a
+// `reserve` claim with neither a capture nor a release. Because connector-pool settles fail-open, a
+// billing outage leaves the reserve debit standing — the customer stays charged for a message that may
+// never have been sent. It carries the owner the reaper must settle against (the identical key the
+// reserve used) plus the signed reserve delta and the moment the money got stuck.
+type OrphanedReservation struct {
+	MessageID  uuid.UUID
+	OwnerType  string
+	OwnerID    uuid.UUID
+	CustomerID uuid.UUID
+	AccountID  *uuid.UUID
+	Credits    int // signed reserve delta (negative)
+	ReservedAt time.Time
+}
+
 // LedgerKey is the keyset cursor position for the paginated billing-ledger read (step-149): the (created_at,
 // id) of the last row returned. The composite avoids dropping rows that share a created_at (the id, a UUIDv7,
 // breaks the tie deterministically).
