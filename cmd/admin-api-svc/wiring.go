@@ -348,6 +348,8 @@ func newHTTPServer(
 		ContentKeyEraser: adminapi.NewGRPCContentKeyEraser(contentkeypb.NewContentKeysClient(clients.contentKey)),
 		Messages:         clickhouse.NewCDRReader(st.ch),
 		MessageSearch:    clickhouse.NewCDRReader(st.ch),
+		ExportJobs:       postgres.NewMessageExportJobRepo(st.pg),
+		ExportSink:       exportSink(cfg),
 		ContentAudit:     postgres.NewContentAccessAuditRepo(st.pg),
 		GDPRJobs:         postgres.NewGDPREraseJobRepo(st.pg),
 		GDPRRunner:       runners.gdpr,
@@ -369,6 +371,16 @@ func newHTTPServer(
 	// WebSocket. This hook is the only thing that ends them.
 	srv.RegisterOnShutdown(func() { close(feed.quit) })
 	return srv
+}
+
+// exportSink is the destination asynchronous exports write to, or nil when the deployment configures
+// none — create-message-export then answers 503 instead of queueing a job that could never produce a
+// file. The local directory is the file tier; an object tier plugs into the same seam.
+func exportSink(cfg config.Config) adminapi.ExportSink {
+	if cfg.HTTP.ExportDir == "" {
+		return nil
+	}
+	return adminapi.NewFileExportSink(cfg.HTTP.ExportDir)
 }
 
 // validateAdminConfig enforces the policies specific to this service, at the point of use rather than

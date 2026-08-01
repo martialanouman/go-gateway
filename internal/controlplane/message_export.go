@@ -13,6 +13,7 @@ import (
 // and a columnar encoder is a dependency nothing asks for yet.
 type ExportFormat string
 
+// The formats an export can produce.
 const (
 	ExportFormatCSV   ExportFormat = "csv"
 	ExportFormatJSONL ExportFormat = "jsonl"
@@ -26,6 +27,8 @@ func (f ExportFormat) Valid() bool {
 // ExportJobStatus is the lifecycle of an export job.
 type ExportJobStatus string
 
+// The states an export job moves through. A job that produced no artefact ends failed, carrying the
+// reason: a status with no explanation leaves an operator unable to act.
 const (
 	ExportJobQueued    ExportJobStatus = "queued"
 	ExportJobRunning   ExportJobStatus = "running"

@@ -140,6 +140,8 @@ var m1Operations = []opRef{
 
 	{"get-message-trace", "get", "/admin/messages/{id}/trace"},
 	{"search-messages", "get", "/admin/messages/search"},
+	{"create-message-export", "post", "/admin/messages/export"},
+	{"get-message-export", "get", "/admin/messages/export/{jobId}"},
 
 	{"stream-metrics", "get", "/admin/stream/metrics"},
 	{"stream-sessions", "get", "/admin/stream/sessions"},

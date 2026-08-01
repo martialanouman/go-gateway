@@ -1513,19 +1513,34 @@ paths:
   /admin/messages/export:
     post:
       tags: [Messages]
-      summary: Create an async CDR export job (audited, row-capped, role-based MSISDN mask)
+      summary: Create an async CDR export job (row-capped, role-based MSISDN mask)
+      description: >-
+        Queues an export and returns immediately: the artefact is produced in the background. The
+        filters are those of search-messages, with the same mandatory 31-day window, and the export
+        is capped at 100000 rows — beyond it the job FAILS rather than truncating silently, because
+        a truncated export reads as an exhaustive one. Unmasking (mask_msisdn=false) requires
+        msisdn:reveal. No message body is ever exported.
       operationId: create-message-export
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/MessageExportRequest' } } } }
+      security: [ { OperatorBearer: [ cdr:export_bulk ] } ]
       responses:
         '202': { description: Accepted., content: { application/json: { schema: { $ref: '#/components/schemas/ExportJob' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '503': { description: Export storage is not configured in this deployment., content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
   /admin/messages/export/{jobId}:
     parameters: [ { name: jobId, in: path, required: true, schema: { type: string, format: uuid } } ]
     get:
       tags: [Messages]
       summary: Export job status + download URL when ready
+      description: Requires cdr:export_bulk like the creation — the status carries the artefact's location.
       operationId: get-message-export
+      security: [ { OperatorBearer: [ cdr:export_bulk ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ExportJob' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
 
   # ============================ METRICS & REALTIME ============================
@@ -2730,13 +2745,36 @@ components:
       type: object
       additionalProperties: false
       properties:
-        filters:
-          type: object
-          additionalProperties: true
-          description: Same predicates as search-messages (accountId, customerId, status, date range...).
-        format: { type: string, enum: [csv, parquet, jsonl], default: csv }
-        mask_msisdn: { type: boolean, default: true, description: Role-based MSISDN masking (§5.3). }
+        filters: { $ref: '#/components/schemas/MessageExportFilters' }
+        # parquet is deliberately absent: the export is masked per role — a gateway-side rule — so the
+        # file is written by the gateway rather than by ClickHouse, and a columnar encoder is a
+        # dependency nothing needs yet.
+        format: { type: string, enum: [csv, jsonl], default: csv }
+        mask_msisdn:
+          type: boolean
+          default: true
+          description: >-
+            Role-based MSISDN masking (§5.3). Setting it to false requires msisdn:reveal; without that
+            scope the request is REFUSED rather than silently masked, so an operator never mistakes a
+            masked artefact for an unmasked one.
       required: [filters]
+    MessageExportFilters:
+      type: object
+      additionalProperties: false
+      description: >-
+        The search-messages predicates, combined with AND. Unknown members are refused rather than
+        ignored: an ignored filter would widen an export instead of narrowing it.
+      properties:
+        traceId: { type: string, format: uuid }
+        accountId: { type: string, format: uuid }
+        customerId: { type: string, format: uuid }
+        groupId: { type: string, format: uuid }
+        status: { $ref: '#/components/schemas/CdrStatus' }
+        direction: { $ref: '#/components/schemas/Direction' }
+        msisdn: { type: string, description: Exact E.164 match on either address. }
+        from_date: { type: string, format: date-time }
+        to_date: { type: string, format: date-time }
+      required: [from_date, to_date]
     ExportJob:
       type: object
       properties:
@@ -2745,6 +2783,7 @@ components:
         row_count: { type: [integer, "null"] }
         download_url: { type: [string, "null"], format: uri, description: Present when completed; expires. }
         expires_at: { type: [string, "null"], format: date-time }
+        error: { type: [string, "null"], description: Why a failed job failed; null otherwise. }
         created_at: { type: string, format: date-time }
       required: [job_id, status, created_at]
 

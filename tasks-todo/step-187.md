@@ -1,6 +1,6 @@
 # step-187 — Export de messages asynchrone (row-cap, MSISDN masqué)
 
-> **Jalon :** M11 (§15 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
+> **Jalon :** M11 (§15 `docs/plan-execution-passerelle.md`) · **Statut :** LIVRÉ
 > **Dépend de :** step-186 · **Bloque :** —
 
 ## But
@@ -24,9 +24,10 @@ le rôle, aucun corps), via `create-message-export` / `get-message-export`.
 - Row-cap respecté ; MSISDN masqué ; aucun corps dans le fichier.
 
 ## Definition of Done
-- [ ] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts
-- [ ] critères couverts par tests · godoc sur l'exporté · **invariant (a)** respecté (fichier sans corps)
-- [ ] export async + row-cap + masquage testés ; collection synchronisée
+- [x] gofmt/goimports · golangci-lint (0 issue) · `go test -race ./...` · govulncheck verts
+- [x] critères couverts par tests · godoc sur l'exporté · **invariant (a)** respecté
+      (`TestExportNeverCarriesABody` lit l'artefact produit)
+- [x] export async + row-cap + masquage testés (13 tests, 4 mutations vérifiées) ; collection synchronisée
 
 ## Hors périmètre
 Fin de M11. Durcissement/charge/prod → M12.

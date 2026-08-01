@@ -79,53 +79,18 @@ type searchHandler struct {
 // input is then normalised (an MSISDN to E.164, a cursor to a keyset position) so a malformed value
 // is a named 422 rather than a query that quietly matches nothing.
 func (h *searchHandler) search(ctx context.Context, in *searchMessagesInput) (*searchMessagesOutput, error) {
-	if !in.ToDate.After(in.FromDate) {
-		return nil, humaerr.FailValidation("invalid window",
-			humaerr.FieldError{Field: "to_date", Message: "must be after from_date"})
-	}
-	if in.ToDate.Sub(in.FromDate) > searchMaxWindow {
-		return nil, humaerr.FailValidation("window too wide",
-			humaerr.FieldError{Field: "from_date", Message: "the window must not exceed 31 days"})
-	}
-
-	filter := clickhouse.CDRSearchFilter{FromDate: in.FromDate, ToDate: in.ToDate}
-
-	if in.MSISDN != "" {
-		// Normalised, then compared for equality: the CDR stores E.164, so a spaced or +-prefixed input
-		// would otherwise match nothing at all and read as "this subscriber has no traffic".
-		normalised, err := e164.Normalize(in.MSISDN)
-		if err != nil {
-			return nil, humaerr.FailValidation("invalid msisdn",
-				humaerr.FieldError{Field: "msisdn", Message: "must be an E.164 number"})
-		}
-		filter.MSISDN = &normalised
-	}
-	if in.Cursor != "" {
-		key, err := clickhouse.DecodeCDRCursor(in.Cursor)
-		if err != nil {
-			return nil, humaerr.FailValidation("invalid cursor",
-				humaerr.FieldError{Field: "cursor", Message: "malformed page cursor"})
-		}
-		filter.After = &key
-	}
-	if in.TraceID != "" {
-		id := uuid.MustParse(in.TraceID) // huma rejects a malformed uuid before the handler runs
-		filter.TraceID = &id
-	}
-	if in.AccountID != "" {
-		id := uuid.MustParse(in.AccountID)
-		filter.AccountID = &id
-	}
-	if in.Status != "" {
-		st := clickhouse.Status(in.Status)
-		filter.Status = &st
-	}
-	if in.Direction != "" {
-		dir := clickhouse.Direction(in.Direction)
-		filter.Direction = &dir
-	}
-
-	tenants, empty, err := h.tenantIDs(ctx, in)
+	filter, empty, err := buildCDRSearchFilter(ctx, searchPredicates{
+		TraceID:    in.TraceID,
+		AccountID:  in.AccountID,
+		CustomerID: in.CustomerID,
+		GroupID:    in.GroupID,
+		Status:     in.Status,
+		Direction:  in.Direction,
+		MSISDN:     in.MSISDN,
+		FromDate:   in.FromDate,
+		ToDate:     in.ToDate,
+		Cursor:     in.Cursor,
+	}, h.customers)
 	if err != nil {
 		return nil, err
 	}
@@ -134,7 +99,6 @@ func (h *searchHandler) search(ctx context.Context, in *searchMessagesInput) (*s
 		// empty page without querying is both correct and the cheapest possible read.
 		return &searchMessagesOutput{Body: messageSummaryPageDTO{Data: []messageSummaryDTO{}}}, nil
 	}
-	filter.CustomerIDs = tenants
 
 	// One extra row tells us whether a further page exists, without a second query.
 	rows, err := h.store.Search(ctx, filter, in.Limit+1)
@@ -147,16 +111,90 @@ func (h *searchHandler) search(ctx context.Context, in *searchMessagesInput) (*s
 	}
 
 	reveal := mayRevealMSISDN(ctx)
-	page := messageSummaryPageDTO{PageMeta: PageMeta{HasMore: hasMore}, Data: make([]messageSummaryDTO, 0, len(rows))}
-	for _, row := range rows {
-		page.Data = append(page.Data, toMessageSummaryDTO(row, reveal))
-	}
+	page := messageSummaryPageDTO{PageMeta: PageMeta{HasMore: hasMore}, Data: exportRowsProjection(rows, reveal)}
 	if hasMore && len(rows) > 0 {
 		last := rows[len(rows)-1]
 		page.NextCursor = ptr(clickhouse.EncodeCDRCursor(
 			clickhouse.CDRKey{SubmittedAt: last.SubmittedAt, MessageID: last.MessageID}))
 	}
 	return &searchMessagesOutput{Body: page}, nil
+}
+
+// searchPredicates are the filters BOTH search-messages and create-message-export accept. They are
+// one type on purpose: the two endpoints must agree on what a window, a group or an MSISDN means, and
+// a second copy of the rules would drift the day one of them gains a filter.
+type searchPredicates struct {
+	TraceID, AccountID, CustomerID, GroupID string
+	Status, Direction, MSISDN               string
+	FromDate, ToDate                        time.Time
+	// Cursor is search-only: an export streams every page itself.
+	Cursor string
+}
+
+// buildCDRSearchFilter validates the predicates and turns them into a store filter. empty reports
+// that they intersect to nothing, which is an empty result rather than an error — the request is
+// well-formed, it just cannot match anything.
+//
+// The window is validated first because it is the one bound that makes the read affordable at all;
+// the rest is then normalised (an MSISDN to E.164, a cursor to a keyset position) so a malformed
+// value is a named 422 rather than a query that quietly matches nothing.
+func buildCDRSearchFilter(ctx context.Context, p searchPredicates, customers CustomerStore) (clickhouse.CDRSearchFilter, bool, error) {
+	var zero clickhouse.CDRSearchFilter
+	if !p.ToDate.After(p.FromDate) {
+		return zero, false, humaerr.FailValidation("invalid window",
+			humaerr.FieldError{Field: "to_date", Message: "must be after from_date"})
+	}
+	if p.ToDate.Sub(p.FromDate) > searchMaxWindow {
+		return zero, false, humaerr.FailValidation("window too wide",
+			humaerr.FieldError{Field: "from_date", Message: "the window must not exceed 31 days"})
+	}
+
+	filter := clickhouse.CDRSearchFilter{FromDate: p.FromDate, ToDate: p.ToDate}
+
+	if p.MSISDN != "" {
+		// Normalised, then compared for equality: the CDR stores E.164, so a spaced or +-prefixed input
+		// would otherwise match nothing at all and read as "this subscriber has no traffic".
+		normalised, err := e164.Normalize(p.MSISDN)
+		if err != nil {
+			return zero, false, humaerr.FailValidation("invalid msisdn",
+				humaerr.FieldError{Field: "msisdn", Message: "must be an E.164 number"})
+		}
+		filter.MSISDN = &normalised
+	}
+	if p.Cursor != "" {
+		key, err := clickhouse.DecodeCDRCursor(p.Cursor)
+		if err != nil {
+			return zero, false, humaerr.FailValidation("invalid cursor",
+				humaerr.FieldError{Field: "cursor", Message: "malformed page cursor"})
+		}
+		filter.After = &key
+	}
+	if p.TraceID != "" {
+		id := uuid.MustParse(p.TraceID) // huma rejects a malformed uuid before the handler runs
+		filter.TraceID = &id
+	}
+	if p.AccountID != "" {
+		id := uuid.MustParse(p.AccountID)
+		filter.AccountID = &id
+	}
+	if p.Status != "" {
+		st := clickhouse.Status(p.Status)
+		filter.Status = &st
+	}
+	if p.Direction != "" {
+		dir := clickhouse.Direction(p.Direction)
+		filter.Direction = &dir
+	}
+
+	tenants, empty, err := tenantIDs(ctx, p, customers)
+	if err != nil {
+		return zero, false, err
+	}
+	if empty {
+		return zero, true, nil
+	}
+	filter.CustomerIDs = tenants
+	return filter, false, nil
 }
 
 // tenantIDs resolves the customer scope of a search: the customer id, the group's current members, or
@@ -166,26 +204,26 @@ func (h *searchHandler) search(ctx context.Context, in *searchMessagesInput) (*s
 // The group is expanded HERE because the CDR carries no group_id: a customer's group is mutable, so a
 // column frozen at send time would answer a different question ("who was in the group then") from the
 // one an operator asks ("whose messages are these now").
-func (h *searchHandler) tenantIDs(ctx context.Context, in *searchMessagesInput) (ids []uuid.UUID, empty bool, err error) {
+func tenantIDs(ctx context.Context, p searchPredicates, customers CustomerStore) (ids []uuid.UUID, empty bool, err error) {
 	var customerID *uuid.UUID
-	if in.CustomerID != "" {
-		id := uuid.MustParse(in.CustomerID)
+	if p.CustomerID != "" {
+		id := uuid.MustParse(p.CustomerID)
 		customerID = &id
 	}
-	if in.GroupID == "" {
+	if p.GroupID == "" {
 		if customerID != nil {
 			return []uuid.UUID{*customerID}, false, nil
 		}
 		return nil, false, nil
 	}
 
-	if h.customers == nil {
+	if customers == nil {
 		return nil, false, humaerr.FailValidation("group unavailable",
 			humaerr.FieldError{Field: "groupId", Message: "customer groups cannot be resolved here"})
 	}
-	groupID := uuid.MustParse(in.GroupID)
+	groupID := uuid.MustParse(p.GroupID)
 	// One over the cap: enough to detect an oversized group without listing all of it.
-	page, err := h.customers.List(ctx, cp.CustomerFilter{GroupID: &groupID, Limit: searchMaxGroupCustomers + 1})
+	page, err := customers.List(ctx, cp.CustomerFilter{GroupID: &groupID, Limit: searchMaxGroupCustomers + 1})
 	if err != nil {
 		return nil, false, humaerr.FromError(err)
 	}

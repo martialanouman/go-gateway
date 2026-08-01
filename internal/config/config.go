@@ -184,6 +184,13 @@ type HTTP struct {
 	// "token:scope|scope" entries (internal/auth). They are secret-bearing and never logged. The
 	// real identity provider (OIDC/mTLS) replaces them at M12.
 	AdminTokens []string `env:"ADMIN_TOKENS" envSeparator:","`
+
+	// ExportDir is where asynchronous CDR exports write their artefacts (step-187). Empty — the
+	// default — means the deployment has no export storage, and create-message-export answers 503
+	// rather than queueing a job nothing can fulfil. Like the cold-archive prefix, the real object
+	// destination is an infrastructure decision, so the capability is opt-in rather than silently
+	// filling a pod's disk.
+	ExportDir string `env:"EXPORT_DIR"`
 }
 
 // Redis is the operational-state store (plan §1): sessions, throttling, Bloom filters, the balance

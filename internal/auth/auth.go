@@ -25,6 +25,10 @@ const (
 	// ScopeMSISDNReveal shows subscriber numbers unmasked. Separate from content:read on purpose: reading a
 	// body is a greater act than seeing a destination, so one must not imply the other.
 	ScopeMSISDNReveal Scope = "msisdn:reveal"
+	// ScopeCDRExportBulk creates and reads bulk CDR exports. Separate from admin:read because exporting a
+	// hundred thousand rows into a persistent artefact is not reading a page, and separate from
+	// admin:write because the right to export follows an investigation role, not a provisioning one.
+	ScopeCDRExportBulk Scope = "cdr:export_bulk"
 )
 
 // Principal is the authenticated operator behind a request.

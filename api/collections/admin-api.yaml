@@ -1310,6 +1310,21 @@ items:
           url: '{{baseUrl}}/admin/messages/{{messageId}}/trace'
         docs: Lifecycle timeline of a message. Never carries the body; MSISDNs masked without msisdn:reveal.
       - info:
+          name: create-message-export
+          type: http
+        http:
+          method: POST
+          url: '{{baseUrl}}/admin/messages/export'
+          body: '{"filters":{"from_date":"{{fromDate}}","to_date":"{{toDate}}"},"format":"csv","mask_msisdn":true}'
+        docs: Queue an async CDR export. Row-capped at 100000; mask_msisdn=false requires msisdn:reveal (scope cdr:export_bulk).
+      - info:
+          name: get-message-export
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/messages/export/{{jobId}}'
+        docs: Export job status; carries the artefact URI once completed (scope cdr:export_bulk).
+      - info:
           name: get-message-content
           type: http
         http:
