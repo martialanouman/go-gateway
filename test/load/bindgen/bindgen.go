@@ -72,6 +72,11 @@ type Report struct {
 	Bound int
 	// Failed is how many did not, for any reason: dial, write, read, timeout or rejection.
 	Failed int
+	// Dropped is how many sessions bound successfully and were then torn down by the peer during
+	// Config.Hold. It is a subset of Bound, not of Failed: the bind itself did succeed. A peer over
+	// its ceiling typically accepts every session and drops the surplus a moment later, which is
+	// indistinguishable from a healthy run unless someone watches. Always zero without a hold window.
+	Dropped int
 	// Errors holds one error per failed session, in no particular order.
 	Errors []error
 	// Elapsed is the wall-clock duration of the run, hold and teardown included.
@@ -128,7 +133,7 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 	if cfg.OnAllBound != nil {
 		cfg.OnAllBound()
 	}
-	hold(ctx, cfg.Hold)
+	rep.Dropped, conns = holdAndWatch(ctx, conns, cfg.Hold)
 
 	var teardown sync.WaitGroup
 	for _, nc := range conns {
@@ -245,5 +250,76 @@ func hold(ctx context.Context, d time.Duration) {
 	select {
 	case <-ctx.Done():
 	case <-timer.C:
+	}
+}
+
+// holdAndWatch keeps the sessions open for d and reports how many the peer tore down meanwhile,
+// returning those still up. Answering "how many does it drop?" requires actually watching: a peer
+// over its bind ceiling accepts every session and closes half of them a moment later, and a
+// handshake that returned tells nothing about what happens next.
+//
+// With no hold window there is nothing to observe, so every bound session is reported as held.
+func holdAndWatch(ctx context.Context, conns []net.Conn, d time.Duration) (int, []net.Conn) {
+	if d <= 0 {
+		return 0, conns
+	}
+	if len(conns) == 0 {
+		hold(ctx, d)
+		return 0, conns
+	}
+
+	deadline := time.Now().Add(d)
+	held := make([]bool, len(conns))
+
+	var wg sync.WaitGroup
+	for i, nc := range conns {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			held[i] = watch(ctx, nc, deadline)
+		}()
+	}
+	wg.Wait()
+
+	dropped := 0
+	live := conns[:0:0]
+	for i, nc := range conns {
+		if held[i] {
+			live = append(live, nc)
+			continue
+		}
+		dropped++
+		_ = nc.Close()
+	}
+
+	return dropped, live
+}
+
+// watch reads until the deadline. A read timeout means the session held for the whole window;
+// anything else — EOF, reset — means the peer tore it down. Traffic coming from the peer is drained
+// rather than answered: this tool measures whether a bind survives, it does not impersonate a full
+// ESME, so a peer that expects an enquire_link response will eventually drop the session and be
+// counted as such.
+func watch(ctx context.Context, nc net.Conn, deadline time.Time) bool {
+	// Without this, cancelling only takes effect once the read deadline expires — a Ctrl-C during a
+	// long hold would appear to hang.
+	stop := context.AfterFunc(ctx, func() { _ = nc.SetReadDeadline(time.Now()) })
+	defer stop()
+
+	for {
+		if err := nc.SetReadDeadline(deadline); err != nil {
+			return false
+		}
+		if _, err := smpp.ReadPDU(nc); err != nil {
+			if ctx.Err() != nil {
+				return true // we walked away; the peer did not drop us
+			}
+			var ne net.Error
+			if errors.As(err, &ne) && ne.Timeout() {
+				return true
+			}
+
+			return false
+		}
 	}
 }

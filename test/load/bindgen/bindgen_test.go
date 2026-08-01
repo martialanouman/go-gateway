@@ -232,6 +232,84 @@ func startSlowPeer(t *testing.T, delay time.Duration) string {
 	return ln.Addr().String()
 }
 
+// startDroppingPeer answers every bind with ESME_ROK, then closes the session after `alive`.
+// A real SMSC over its bind ceiling behaves exactly like this: it accepts, then drops.
+func startDroppingPeer(t *testing.T, alive time.Duration) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	go func() {
+		for {
+			nc, err := ln.Accept()
+			if err != nil {
+				return // listener closed with the test
+			}
+			go func() {
+				defer func() { _ = nc.Close() }()
+				pdu, err := smpp.ReadPDU(nc)
+				if err != nil {
+					return
+				}
+				if _, ok := pdu.Body.(*smpp.BindTransceiver); !ok {
+					return
+				}
+				if err := smpp.WritePDU(nc, smpp.PDU{Sequence: pdu.Sequence, Body: &smpp.BindTransceiverResp{
+					BindRespFields: smpp.BindRespFields{SystemID: "dropping-peer"},
+				}}); err != nil {
+					return
+				}
+				time.Sleep(alive) // the bind succeeded; the session dies right after
+			}()
+		}
+	}()
+
+	return ln.Addr().String()
+}
+
+// The package doc promises the tool answers "how many sessions does this peer drop?".
+// A session torn down during the hold used to be reported as a plain success: the handshake had
+// returned, nobody watched the connection afterwards, and unbind swallowed the EOF. The tool then
+// answered "none dropped" to the very question it exists to ask.
+func TestRunCountsSessionsDroppedDuringTheHold(t *testing.T) {
+	t.Parallel()
+
+	addr := startDroppingPeer(t, 50*time.Millisecond)
+	rep, err := bindgen.Run(t.Context(), bindgen.Config{
+		Addr: addr, Binds: 10, SystemID: "esme", Password: "pw",
+		Hold: 500 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if rep.Bound != 10 {
+		t.Fatalf("Bound: got %d want 10 — every bind was answered ESME_ROK", rep.Bound)
+	}
+	if rep.Dropped != 10 {
+		t.Fatalf("Dropped: got %d want 10 — the peer closed every session during the hold", rep.Dropped)
+	}
+}
+
+// The mirror case: a peer that keeps its sessions must not be reported as dropping any.
+func TestRunReportsNoDropWhenSessionsSurvive(t *testing.T) {
+	t.Parallel()
+
+	s := fakesmsc.Start(t, fakesmsc.Config{})
+	rep, err := bindgen.Run(t.Context(), bindgen.Config{
+		Addr: s.Addr(), Binds: 5, SystemID: "esme", Password: "pw",
+		Hold: 200 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if rep.Bound != 5 || rep.Dropped != 0 {
+		t.Fatalf("Bound=%d Dropped=%d, want 5 and 0", rep.Bound, rep.Dropped)
+	}
+}
+
 // waitFor polls cond until it holds or the test times out.
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()

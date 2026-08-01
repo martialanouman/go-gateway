@@ -114,10 +114,17 @@ function submission() {
 
 // msisdn spreads destinations across VUs and iterations so the run does not hammer a single number
 // — routing, rate limiting and opt-out all key on the destination.
+//
+// The spread stays inside +22507000xxxx, the placeholder block this repo already uses for fixtures
+// (`+2250700000000`). An earlier version varied seven digits, which produced live, assignable Orange
+// CI subscriber numbers: pointed at a real gateway — which README.md explicitly shows how to do —
+// a smoke run would have delivered 500 real SMS to 500 real people, and a sustained run 480 000.
+// Widen this block only against a stub.
 function msisdn() {
-  const n = (__VU * 1000000 + (__ITER % 1000000)) % 10000000;
+  // 977 is prime, so VUs congruent modulo a small number do not walk the same series.
+  const n = (__VU * 977 + __ITER) % 10000;
 
-  return `+225070${String(n).padStart(7, '0')}`;
+  return `+225070000${String(n).padStart(4, '0')}`; // n=0 gives the repo placeholder exactly
 }
 
 const params = {

@@ -25,11 +25,21 @@ stub local passe trivialement, donc un vert seul ne signifie rien.
 La tenue réelle à 8 000 req/s se mesure sur matériel réel, avec le pipeline complet : c'est
 **step-201**, pas ici.
 
+## Avant de pointer une vraie passerelle
+
+**Un run contre une passerelle réelle envoie de vrais SMS.** Le profil `smoke` en émet ~500, `sustained`
+~480 000. Les destinataires sont tirés dans le bloc `+22507000xxxx`, celui que le dépôt utilise pour
+ses fixtures — n'élargissez ce bloc que contre un stub.
+
+`BASE_URL` est une **origine nue** : le script ajoute `/v1/messages` lui-même. Recopier l'URL serveur
+du contrat (`…/v1`) produit `/v1/v1/messages`, donc 100 % de 404, et le run échoue en accusant la
+latence.
+
 ## Cibles
 
 ```bash
 make load-smoke                                        # fumigation : passe à vide, tombe sous contrainte
-make load BASE_URL=http://localhost:8080               # profil smoke contre une vraie passerelle
+make load BASE_URL=http://localhost:8080               # profil smoke — ENVOIE DE VRAIS SMS
 make load LOAD_PROFILE=sustained BASE_URL=http://…     # 8 000 req/s  — jamais en CI
 make load LOAD_PROFILE=peak      BASE_URL=http://…     # 15 000 req/s — jamais en CI
 make load-binds BINDS=200 ADDR=127.0.0.1:2775          # N binds SMPP concurrents
