@@ -335,6 +335,21 @@ func cdrAggregateByMessage() string {
 	)`
 }
 
+// cdrAggregateSearch is the third aggregation shape: the ADMIN cross-tenant search. Its inner WHERE is
+// anchored on the submitted_at window rather than on the (customer_id, account_id) sorting-key prefix,
+// because an operator searches across customers. That window is what makes the read affordable —
+// PARTITION BY toDate(submitted_at) prunes whole partitions — which is why the API makes it mandatory
+// rather than defaulting it.
+func cdrAggregateSearch(innerWhereTail string) string {
+	return `SELECT ` + cdrAggOuterCols + ` FROM (
+		SELECT ` + cdrAggMessageCols + ` FROM (
+			SELECT ` + cdrAggInnerCols + ` FROM cdr
+			WHERE submitted_at >= ? AND submitted_at < ?` + innerWhereTail + `
+			GROUP BY customer_id, account_id, direction, submitted_at, message_id, segment_seq
+		) GROUP BY submitted_at, message_id
+	)`
+}
+
 // MessageStatus returns the CURRENT lifecycle status of a message by id alone — what the billing reaper
 // needs to decide whether an orphaned reservation must be captured or released (step-190). It reuses the
 // same cross-tenant aggregation as ByMessageID, so the status is resolved on the highest `version`
@@ -498,6 +513,111 @@ func (r *CDRReader) List(ctx context.Context, customerID, accountID uuid.UUID, f
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("clickhouse: list cdr: %w", err)
+	}
+	return out, nil
+}
+
+// CDRSearchFilter narrows the ADMIN cross-tenant search (step-186). FromDate (inclusive) and ToDate
+// (exclusive) are MANDATORY — they are what keeps the scan bounded — and every other field is
+// optional (a nil pointer or an empty slice means "no constraint").
+//
+// Every predicate combines with AND: an extra filter can only narrow a result set, never widen it.
+type CDRSearchFilter struct {
+	FromDate, ToDate time.Time
+
+	// CustomerIDs is the resolved tenant set: one customer, or a whole group expanded by the caller
+	// (the CDR carries no group_id — a customer's group is mutable, so it is resolved at read time).
+	CustomerIDs []uuid.UUID
+
+	AccountID *uuid.UUID
+	TraceID   *uuid.UUID
+
+	// MSISDN matches a subscriber number on EITHER address, by strict equality on the normalised
+	// E.164 — never a prefix. An operator searching a number does not know whether it was the
+	// destination (MT) or the source (MO); and a prefix match would let a caller who is not allowed to
+	// SEE numbers enumerate them instead.
+	MSISDN *string
+
+	Status    *Status
+	Direction *Direction
+	After     *CDRKey
+}
+
+// Search returns a page of MESSAGES (aggregated across their segments) ACROSS tenants, newest first —
+// the operator-facing search behind admin search-messages.
+//
+// The window, tenant, trace, address and keyset predicates are on immutable per-message columns, so
+// they narrow the INNER scan before aggregation; the status filter is on the AGGREGATED status, so it
+// applies outside it. Callers request limit+1 to learn whether a further page exists without a second
+// query.
+func (r *CDRReader) Search(ctx context.Context, f CDRSearchFilter, limit int) ([]CDRRow, error) {
+	inner := ``
+	args := []any{f.FromDate, f.ToDate}
+
+	if len(f.CustomerIDs) > 0 {
+		// A []uuid.UUID binds as a ClickHouse array literal, which IN destructures: clickhouse-go's
+		// formatValue handles fmt.Stringer before reflect.Slice/Array, so each id renders as a quoted
+		// string rather than as its 16 raw bytes.
+		inner += ` AND customer_id IN ?`
+		args = append(args, f.CustomerIDs)
+	}
+	if f.AccountID != nil {
+		inner += ` AND account_id = ?`
+		args = append(args, *f.AccountID)
+	}
+	// trace_id and the two addresses are TABLE-QUALIFIED on purpose. At this level they are also the
+	// names of argMax(...) aliases, and ClickHouse resolves an alias before a column in WHERE — which
+	// it then rejects ("aggregate function is found in WHERE"). Qualifying binds them to the raw
+	// column, which is also what allows the predicate to prune early. The match is therefore against
+	// ANY version of the message's rows: a sender ID rewritten mid-flight (original_source_addr) is
+	// findable under either value, which is what an operator investigating a message wants.
+	if f.TraceID != nil {
+		inner += ` AND cdr.trace_id = ?`
+		args = append(args, *f.TraceID)
+	}
+	if f.MSISDN != nil {
+		inner += ` AND (cdr.source_addr = ? OR cdr.dest_addr = ?)`
+		args = append(args, *f.MSISDN, *f.MSISDN)
+	}
+	if f.Direction != nil {
+		inner += ` AND direction = ?`
+		args = append(args, string(*f.Direction))
+	}
+	if f.After != nil {
+		// The same integer-millisecond keyset as List: binding the raw DateTime64 lets the server infer
+		// a coarser precision, which silently drops a whole page once many messages share a submitted_at
+		// millisecond (routine at peak throughput). message_id is the deterministic tiebreaker.
+		inner += ` AND (toUnixTimestamp64Milli(submitted_at) < ? OR (toUnixTimestamp64Milli(submitted_at) = ? AND message_id < ?))`
+		ms := f.After.SubmittedAt.UnixMilli()
+		args = append(args, ms, ms, f.After.MessageID)
+	}
+
+	query := `SELECT ` + cdrColumns + ` FROM (` + cdrAggregateSearch(inner) + `)`
+	if f.Status != nil {
+		query += ` WHERE status = ?`
+		args = append(args, string(*f.Status))
+	}
+	query += `
+		ORDER BY submitted_at DESC, message_id DESC
+		LIMIT ?`
+	args = append(args, limit)
+
+	rows, err := r.conn.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("clickhouse: search cdr: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := make([]CDRRow, 0, limit)
+	for rows.Next() {
+		row, err := scanCDRRow(rows.Scan)
+		if err != nil {
+			return nil, fmt.Errorf("clickhouse: scan cdr row: %w", err)
+		}
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("clickhouse: search cdr: %w", err)
 	}
 	return out, nil
 }
