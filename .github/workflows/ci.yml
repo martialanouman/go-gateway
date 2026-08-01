@@ -66,6 +66,36 @@ jobs:
       - name: go test -race
         run: go test -race -timeout 10m ./...
 
+  # Exercises the load harness, NOT the gateway's throughput. It runs the k6 script twice against a
+  # local stub — idle (must pass) then slowed past the latency budget (must fail) — so a harness whose
+  # thresholds came unwired breaks the build instead of reporting a meaningless green.
+  # The sustained (8 000 req/s) and peak (15 000 req/s) profiles never run here: a GitHub runner
+  # cannot hold them, and failures there would be noise. They belong on real hardware, in step-201.
+  load-smoke:
+    name: Load harness (smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install k6
+        # k6 is a native binary, outside go.mod by plan §1.3 — go install cannot provide it.
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://github.com/grafana/k6/releases/download/v${K6_VERSION}/k6-v${K6_VERSION}-linux-amd64.tar.gz" \
+            -o /tmp/k6.tar.gz
+          echo "${K6_SHA256}  /tmp/k6.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/k6.tar.gz -C /tmp
+          sudo install "/tmp/k6-v${K6_VERSION}-linux-amd64/k6" /usr/local/bin/k6
+          k6 version
+        env:
+          K6_VERSION: 2.1.0
+          K6_SHA256: 295d961ebfca306f295f1133068dcd403a8171c87f387928f5f30b0fbcff858a
+      - name: Thresholds must pass idle and fail under load
+        run: make load-smoke
+
   vuln:
     name: Vulnerabilities
     runs-on: ubuntu-latest
