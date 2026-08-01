@@ -27,6 +27,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/content"
 	contentkeypb "github.com/martialanouman/go-gateway/internal/contentkeys/pb"
 	"github.com/martialanouman/go-gateway/internal/ingest"
+	"github.com/martialanouman/go-gateway/internal/metricstream"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/observability/metrics"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
@@ -261,6 +262,26 @@ func run() error {
 
 	tracer := observability.Tracer(nil, serviceName)
 	pl := pipeline.New(tracer, resolver, senderIDs, optOut, spam, rateLimiter, reserver)
+	// The realtime dashboard feed (§1.6, step-182). It is BEST-EFFORT throughout: a separate Kafka client
+	// (so a burst of snapshots can never fill the durable producer's buffer and stall a message being
+	// accepted), non-blocking publishes, and a nil emitter would simply disable it. Nothing here may fail a
+	// message — the CDR remains the authority for what happened.
+	streamProducer, err := kafka.NewStreamProducer(cfg.Kafka)
+	if err != nil {
+		return fmt.Errorf("kafka stream producer: %w", err)
+	}
+	defer streamProducer.Close()
+
+	// The ONLY signal that the dashboard feed is degraded: nothing else fails when Kafka refuses a snapshot.
+	streamDropped := prometheus.NewCounterFunc(prometheus.CounterOpts{
+		Name: "metrics_stream_dropped_total",
+		Help: "Realtime snapshots that never reached metrics.stream (full buffer, unreachable broker).",
+	}, func() float64 { return float64(streamProducer.Dropped()) })
+	emitter, err := metricstream.New(serviceName, streamProducer)
+	if err != nil {
+		return fmt.Errorf("metric stream emitter: %w", err)
+	}
+
 	rtr := router.New(router.Deps{
 		Consumer: consumer,
 		Producer: producer,
@@ -269,6 +290,8 @@ func run() error {
 		Sealer:   sealer,
 		Tracer:   tracer,
 		Logger:   logger,
+		Stream:   emitter,
+		Metrics:  catalog,
 	})
 
 	// Vital dependency (plan §1.5): Kafka alone. The router's core job — consume mt.inbound,
@@ -282,13 +305,11 @@ func run() error {
 		return fmt.Errorf("init ops server: %w", err)
 	}
 	ops.Registry().MustRegister(failOpenTotal, contentDropped)
-	// Only the catalogue metric this service already feeds. The rest of the catalogue is registered by
-	// whoever starts emitting it (step-182): an always-absent series is better than an always-zero one,
-	// which reads as "measured, and nothing happened".
-	//
-	// step-182: do NOT simply add MustRegister(catalog.Collectors()...) here — Collectors() includes this
-	// one, and the duplicate panics at boot. Register the newly fed metrics, or replace this line.
-	ops.Registry().MustRegister(catalog.RoutingScriptFailures)
+	// Only the catalogue metrics this service actually feeds. Registering Collectors() wholesale would both
+	// panic on the duplicate and expose always-zero series, which read as "measured, and nothing happened"
+	// rather than "not measured here".
+	ops.Registry().MustRegister(catalog.RoutingScriptFailures, catalog.QueueDepth,
+		catalog.MessagesTotal, catalog.RejectedTotal, catalog.PipelineDuration, streamDropped)
 
 	// bloom_last_reload / bloom_capacity_bits: labelled by filter (exact | optout), no unbounded labels.
 	// The timestamp lets an alert fire on a stale filter; the capacity tracks growth after a reload.
@@ -390,6 +411,17 @@ func run() error {
 		return runResilient(c, "accepted-cdr projector", acceptedProjector.Run, logger)
 	})
 	g.Add("snapshot watcher", snapshotWatcher.Run)
+	g.Add("metric stream", func(c context.Context) error {
+		emitter.Run(c, metricStreamInterval)
+		return nil
+	})
+	// Queue depth is polled, not counted: it is the broker's view of how far this group is behind. It runs on
+	// its own slower tick because it costs a broker round-trip, and router-svc is the ONE owner of
+	// mt.inbound's depth — two services reporting the same topic would double-count (step-180).
+	g.Add("queue depth", func(c context.Context) error {
+		pollQueueDepth(c, consumer, emitter, catalog, logger)
+		return nil
+	})
 	if err := g.Run(ctx, logger); err != nil {
 		return err
 	}
@@ -552,6 +584,40 @@ func runResilient(ctx context.Context, name string, run func(context.Context) er
 		case <-ctx.Done():
 			return nil
 		case <-time.After(acceptedProjectorBackoff):
+		}
+	}
+}
+
+// metricStreamInterval is how often a snapshot reaches metrics.stream. One second keeps the dashboard well
+// inside the < 5 s freshness criterion (§15) while bounding the topic to one record per service per second,
+// whatever the traffic.
+const metricStreamInterval = time.Second
+
+// queueDepthInterval is slower than the snapshot tick because each poll is a broker round-trip. At 5 s the
+// depth is still fresh enough to read a backlog forming, and the cost stays negligible.
+const queueDepthInterval = 5 * time.Second
+
+// pollQueueDepth publishes this consumer group's backlog until ctx is cancelled.
+//
+// Every failure mode is a skipped tick: a broker hiccup must not disturb routing, and a stale depth is
+// better than a service that reacts to its own dashboard.
+func pollQueueDepth(ctx context.Context, c *kafka.Consumer, e *metricstream.Emitter, cat *metrics.Catalog, logger *slog.Logger) {
+	ticker := time.NewTicker(queueDepthInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			lags, err := c.Lag(ctx)
+			if err != nil {
+				logger.DebugContext(ctx, "queue depth unavailable this tick", "err", err)
+				continue
+			}
+			for topic, lag := range lags {
+				e.Set("queue_depth_records", metricstream.Labels{"queue": topic}, float64(lag))
+				cat.QueueDepth.WithLabelValues(topic).Set(float64(lag))
+			}
 		}
 	}
 }

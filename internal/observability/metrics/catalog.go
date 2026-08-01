@@ -57,6 +57,24 @@ type Catalog struct {
 	// or a stuck refresher shows up here.
 	BalanceCacheAge prometheus.Histogram
 
+	// MessagesTotal counts messages leaving the MT pipeline, by outcome. It is the rate a dashboard shows
+	// and the denominator of every reject ratio.
+	MessagesTotal *prometheus.CounterVec
+
+	// RejectedTotal breaks the rejections down by flat error code (§11.3) — the same vocabulary the CDR,
+	// the HTTP status and the SMPP command_status use, so one reject can be followed across all four.
+	RejectedTotal *prometheus.CounterVec
+
+	// PipelineDuration is the time the MT pipeline itself takes, excluding queueing. It separates "we are
+	// slow" from "we are behind", which MessageE2EDuration alone cannot.
+	PipelineDuration prometheus.Histogram
+
+	// SubmitsTotal counts SMSC submissions by connector and outcome; SubmitRejectedTotal breaks the
+	// rejections down by code, mirroring the MessagesTotal/RejectedTotal pair so both legs of a message
+	// read the same way.
+	SubmitsTotal        *prometheus.CounterVec
+	SubmitRejectedTotal *prometheus.CounterVec
+
 	// RoutingScriptFailures counts routing scripts that fell back to declarative resolution, by runtime and
 	// reason — "timeout" being the wall-clock trip, the guard that actually protects the pod (§6.12). The
 	// catalogue adopts the metric router-svc already exposed rather than adding a second, near-duplicate
@@ -121,6 +139,37 @@ func NewCatalog() *Catalog {
 			NativeHistogramMinResetDuration: nativeMinResetDuration,
 		}),
 
+		MessagesTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "messages_total",
+			Help: "Messages leaving the MT pipeline, by outcome.",
+		}, []string{"status"}),
+
+		RejectedTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "rejected_total",
+			Help: "Messages rejected by the MT pipeline, by flat error code.",
+		}, []string{"code"}),
+
+		PipelineDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name: "pipeline_duration_seconds",
+			Help: "Time the MT pipeline spends on one message, excluding queueing.",
+			// 100 µs … ~3 s: the pipeline is in-memory apart from a few Redis round-trips, so the
+			// interesting resolution is well below a millisecond.
+			Buckets:                         prometheus.ExponentialBuckets(0.0001, 2, 15),
+			NativeHistogramBucketFactor:     nativeBucketFactor,
+			NativeHistogramMaxBucketNumber:  nativeMaxBucketNumber,
+			NativeHistogramMinResetDuration: nativeMinResetDuration,
+		}),
+
+		SubmitsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "submits_total",
+			Help: "SMSC submissions, by connector and outcome.",
+		}, []string{"connector_id", "status"}),
+
+		SubmitRejectedTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "submit_rejected_total",
+			Help: "SMSC submissions refused, by connector and flat error code.",
+		}, []string{"connector_id", "code"}),
+
 		RoutingScriptFailures: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "routing_script_failures_total",
 			Help: "Routing scripts that fell back to declarative resolution, by runtime and reason.",
@@ -137,6 +186,11 @@ func (c *Catalog) Collectors() []prometheus.Collector {
 		c.ConnectorBreakerState,
 		c.BalanceCacheAge,
 		c.RoutingScriptFailures,
+		c.MessagesTotal,
+		c.RejectedTotal,
+		c.PipelineDuration,
+		c.SubmitsTotal,
+		c.SubmitRejectedTotal,
 	}
 }
 
