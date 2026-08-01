@@ -266,7 +266,7 @@ func run() error {
 	g.Add("metrics stream", func(c context.Context) error {
 		return runResilient(c, "metrics stream", func(rc context.Context) error {
 			return streamReader.Run(rc, func(_ context.Context, rec kafka.Record) error {
-				publishSnapshot(hub, rec.Value)
+				publishRecord(hub, rec.Value)
 				return nil
 			})
 		}, logger)
@@ -343,12 +343,24 @@ func runResilient(ctx context.Context, name string, run func(context.Context) er
 	}
 }
 
-// publishSnapshot forwards a record only if it is a snapshot this build understands. The hub is a blind byte
-// pipe, so this is the one place a malformed or future-versioned frame can be kept off every dashboard.
-func publishSnapshot(hub *realtime.Hub, value []byte) {
-	var snap metricstream.Snapshot
-	if err := json.Unmarshal(value, &snap); err != nil || snap.V != metricstream.SchemaVersion {
+// publishRecord routes a metrics.stream record to its feed, dropping anything this build does not understand.
+// The hub is a blind byte pipe, so this is the one place a malformed or future-versioned frame is kept off
+// every dashboard.
+func publishRecord(hub *realtime.Hub, value []byte) {
+	var head struct {
+		V    int               `json:"v"`
+		Feed metricstream.Feed `json:"feed"`
+	}
+	if err := json.Unmarshal(value, &head); err != nil || head.V != metricstream.SchemaVersion {
 		return
 	}
-	hub.Publish(realtime.StreamMetrics, value)
+	switch head.Feed {
+	case metricstream.FeedSessions:
+		hub.Publish(realtime.StreamSessions, value)
+	case metricstream.FeedBillingAlerts:
+		hub.Publish(realtime.StreamBillingAlerts, value)
+	case metricstream.FeedMetrics, "":
+		// Empty means a snapshot produced before step-184 added the discriminator.
+		hub.Publish(realtime.StreamMetrics, value)
+	}
 }

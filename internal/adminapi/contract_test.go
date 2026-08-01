@@ -139,6 +139,8 @@ var m1Operations = []opRef{
 	{"get-gdpr-erase-job", "get", "/admin/gdpr/erase/{jobId}"},
 
 	{"stream-metrics", "get", "/admin/stream/metrics"},
+	{"stream-sessions", "get", "/admin/stream/sessions"},
+	{"stream-billing-alerts", "get", "/admin/stream/billing-alerts"},
 }
 
 // loadContract reads api/openapi-admin.yaml (the source of truth) into a generic tree.

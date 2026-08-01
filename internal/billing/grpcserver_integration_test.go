@@ -88,7 +88,7 @@ func newBillingGRPCClient(t *testing.T, h *billingHarness) pb.BillingClient {
 func serveBillingCore(t *testing.T, core billing.Core, balances billing.BalanceReader) pb.BillingClient {
 	t.Helper()
 	srv := grpc.NewServer()
-	pb.RegisterBillingServer(srv, billing.NewServer(core, balances))
+	pb.RegisterBillingServer(srv, billing.NewServer(core, balances, nil))
 
 	lis := bufconn.Listen(1 << 20)
 	go func() { _ = srv.Serve(lis) }()

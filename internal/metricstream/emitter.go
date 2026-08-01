@@ -296,6 +296,7 @@ func (e *Emitter) drain() (Snapshot, bool) {
 	sort.Sort(&samplesByKey{samples: samples, keys: keys})
 	return Snapshot{
 		V:                 SchemaVersion,
+		Feed:              FeedMetrics,
 		Service:           e.service,
 		Instance:          e.instance,
 		EmittedAt:         e.now().UTC(),

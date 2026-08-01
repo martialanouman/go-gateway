@@ -26,8 +26,10 @@ import (
 	"github.com/martialanouman/go-gateway/internal/billing"
 	"github.com/martialanouman/go-gateway/internal/billing/pb"
 	"github.com/martialanouman/go-gateway/internal/config"
+	"github.com/martialanouman/go-gateway/internal/metricstream"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/platform/supervisor"
+	"github.com/martialanouman/go-gateway/internal/storage/kafka"
 	"github.com/martialanouman/go-gateway/internal/storage/postgres"
 	redisstore "github.com/martialanouman/go-gateway/internal/storage/redis"
 )
@@ -49,8 +51,8 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
 
-	// Billing needs Redis (the balance cache), Postgres (the durable ledger) and gRPC; no Kafka or HTTP.
-	cfg, err := config.Load(serviceName, config.SectionOTel, config.SectionRedis, config.SectionPostgres, config.SectionGRPC)
+	// Billing needs Redis (the balance cache), Postgres (the durable ledger) and gRPC; Kafka only for the best-effort realtime alert feed (deliberately out of readiness), no HTTP.
+	cfg, err := config.Load(serviceName, config.SectionOTel, config.SectionRedis, config.SectionPostgres, config.SectionGRPC, config.SectionKafka)
 	if err != nil {
 		return err
 	}
@@ -114,7 +116,20 @@ func run() error {
 		billing.WithTolerance(reconcileTolerance), billing.WithReconcileLogger(logger))
 
 	grpcServer := grpc.NewServer()
-	pb.RegisterBillingServer(grpcServer, billing.NewServer(biller, repo))
+	// Realtime billing alerts (step-184). Best-effort: a separate Kafka client that drops rather than blocks,
+	// so an alert can never delay or fail a billing call.
+	streamProducer, err := kafka.NewStreamProducer(cfg.Kafka)
+	if err != nil {
+		return fmt.Errorf("kafka stream producer: %w", err)
+	}
+	defer streamProducer.Close()
+	streamDropped := prometheus.NewCounterFunc(prometheus.CounterOpts{
+		Name: "metrics_stream_dropped_total",
+		Help: "Realtime records that never reached metrics.stream (full buffer, unreachable broker).",
+	}, func() float64 { return float64(streamProducer.Dropped()) })
+	alerts := metricstream.NewEventPublisher(serviceName, streamProducer)
+
+	pb.RegisterBillingServer(grpcServer, billing.NewServer(biller, repo, alerts))
 
 	// Both Redis and Postgres are vital: a balance can be neither served nor rehydrated without them, so a
 	// pod that loses either must leave the load balancer (plan §1.5).
@@ -124,7 +139,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("init ops server: %w", err)
 	}
-	ops.Registry().MustRegister(externalFailOpenTotal, externalDiscrepancyTotal)
+	ops.Registry().MustRegister(externalFailOpenTotal, externalDiscrepancyTotal, streamDropped)
 
 	logger.InfoContext(ctx, "starting", "config", cfg)
 

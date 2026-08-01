@@ -1538,7 +1538,7 @@ paths:
       summary: WebSocket — live metrics stream
       description: >-
         Upgrade to a WebSocket. Emits one metricstream Snapshot per frame
-        (`{v, service, instance, emitted_at, samples[]}`); branch on `v`. `101 Switching Protocols` on upgrade.
+        (`{v, feed, service, instance, emitted_at, samples[]}`); branch on `v`. `101 Switching Protocols` on upgrade.
       operationId: stream-metrics
       security: [ { OperatorBearer: [ admin:read ] } ]
       responses:
@@ -1548,15 +1548,25 @@ paths:
     get:
       tags: [Realtime]
       summary: WebSocket — live session events
+      description: >-
+        Upgrade to a WebSocket. Emits one metricstream SessionEvent per frame
+        (`{v, feed, account_id, system_id, state, sessions}`). `101 Switching Protocols` on upgrade.
       operationId: stream-sessions
+      security: [ { OperatorBearer: [ admin:read ] } ]
       responses:
         '101': { description: Switching Protocols (WebSocket). }
         '401': { $ref: '#/components/responses/Unauthorized' }
   /admin/stream/billing-alerts:
     get:
       tags: [Realtime]
-      summary: WebSocket — MT low-balance / MT overdraft-attempt / MO floor-reached alerts
+      summary: WebSocket — MO floor-reached alerts
+      description: >-
+        Upgrade to a WebSocket. Emits one metricstream BillingAlert per frame
+        (`{v, feed, customer_id, owner_type, owner_id, alert, balance}`). Only `mo_floor_reached` is emitted
+        today; low-balance and breaker-open alerts have no configured threshold yet. `101 Switching
+        Protocols` on upgrade.
       operationId: stream-billing-alerts
+      security: [ { OperatorBearer: [ admin:read ] } ]
       responses:
         '101': { description: Switching Protocols (WebSocket). }
         '401': { $ref: '#/components/responses/Unauthorized' }

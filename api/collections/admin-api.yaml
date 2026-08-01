@@ -1282,6 +1282,20 @@ items:
           url: '{{baseUrl}}/admin/stream/metrics'
         docs: WebSocket — live metrics stream. Upgrade required; a plain GET returns 426/401 (scope admin:read).
       - info:
+          name: stream-sessions
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/stream/sessions'
+        docs: WebSocket — live SMPP bind events (scope admin:read).
+      - info:
+          name: stream-billing-alerts
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/stream/billing-alerts'
+        docs: WebSocket — MO floor-reached alerts (scope admin:read).
+      - info:
           name: get-message-content
           type: http
         http:
