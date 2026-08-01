@@ -177,6 +177,35 @@ func (w *CDRWriter) InsertBatch(ctx context.Context, rows []CDRRow) error {
 	if err := batch.Send(); err != nil {
 		return fmt.Errorf("clickhouse: send cdr batch: %w", err)
 	}
+	return w.appendEvents(ctx, rows)
+}
+
+// appendEvents mirrors each row into the append-only cdr_events table, which is what a lifecycle timeline
+// reads: cdr is ReplacingMergeTree(version) without `status` in its sorting key, so a merge collapses a
+// message's stages down to the highest version.
+//
+// Written after the CDR batch, deliberately: the CDR is the billing and reporting authority, and a failure
+// to record a dashboard timeline must not fail it.
+func (w *CDRWriter) appendEvents(ctx context.Context, rows []CDRRow) error {
+	batch, err := w.conn.PrepareBatch(ctx, "INSERT INTO cdr_events "+
+		"(message_id, at, segment_seq, status, version, error_code, connector_id, latency_ms)")
+	if err != nil {
+		return fmt.Errorf("clickhouse: prepare cdr_events batch: %w", err)
+	}
+	for _, row := range rows {
+		at := row.SubmittedAt
+		if row.DeliveredAt != nil {
+			at = *row.DeliveredAt
+		}
+		if err := batch.Append(row.MessageID, at, row.SegmentSeq, string(row.Status),
+			row.Status.Rank(), row.ErrorCode, row.ConnectorID, row.LatencyMs); err != nil {
+			_ = batch.Abort()
+			return fmt.Errorf("clickhouse: append cdr event: %w", err)
+		}
+	}
+	if err := batch.Send(); err != nil {
+		return fmt.Errorf("clickhouse: send cdr_events batch: %w", err)
+	}
 	return nil
 }
 
@@ -464,4 +493,68 @@ func boolToUint8(b bool) uint8 {
 		return 1
 	}
 	return 0
+}
+
+// maxTimelineMilestones caps a trace. A 255-segment message times its stages gives a few hundred rows; the
+// cap keeps a pathological message from returning an unbounded response.
+const maxTimelineMilestones = 2000
+
+// CDRMilestone is one lifecycle stage of a message, from one versioned CDR row.
+type CDRMilestone struct {
+	Version     uint64
+	Status      Status
+	At          time.Time
+	ErrorCode   *string
+	ConnectorID *uuid.UUID
+	SegmentSeq  uint16
+	LatencyMS   *uint32
+}
+
+// Timeline returns every versioned row of a message, oldest lifecycle rank first.
+//
+// This is NOT a FINAL/argMax read: the point is precisely the rows a normal read collapses away. `version`
+// is a lifecycle rank, so ordering by it yields accepted → enroute → delivered/failed regardless of the
+// order rows landed in. Nothing here selects the content column.
+func (r *CDRReader) Timeline(ctx context.Context, messageID uuid.UUID) ([]CDRMilestone, error) {
+	// GROUP BY (segment_seq, status): the data plane is at-least-once, so one stage can be written more
+	// than once, and two identical spans read as two events that never happened. argMax keeps the latest
+	// write of each. message_id leads the table's ORDER BY, so this is a primary-key prefix scan.
+	const query = `
+SELECT
+	segment_seq,
+	status,
+	max(version)                AS version,
+	min(at)                     AS started_at,
+	argMax(error_code, at)      AS error_code,
+	argMax(connector_id, at)    AS connector_id,
+	argMax(latency_ms, at)      AS latency_ms
+FROM cdr_events
+WHERE message_id = ?
+GROUP BY segment_seq, status
+ORDER BY version ASC, segment_seq ASC
+LIMIT ?`
+
+	rows, err := r.conn.Query(ctx, query, messageID, maxTimelineMilestones)
+	if err != nil {
+		return nil, fmt.Errorf("clickhouse: read cdr timeline for %s: %w", messageID, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []CDRMilestone
+	for rows.Next() {
+		var (
+			m      CDRMilestone
+			status string
+		)
+		if err := rows.Scan(&m.SegmentSeq, &status, &m.Version, &m.At,
+			&m.ErrorCode, &m.ConnectorID, &m.LatencyMS); err != nil {
+			return nil, fmt.Errorf("clickhouse: scan cdr timeline: %w", err)
+		}
+		m.Status = Status(status)
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("clickhouse: iterate cdr timeline: %w", err)
+	}
+	return out, nil
 }

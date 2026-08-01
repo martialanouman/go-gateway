@@ -164,6 +164,7 @@ type listSuppressionsInput struct {
 type listSuppressionsOutput struct{ Body suppressionPage }
 
 func (h *suppressionHandlers) list(ctx context.Context, in *listSuppressionsInput) (*listSuppressionsOutput, error) {
+	reveal := mayRevealMSISDN(ctx)
 	filter := cp.SuppressionFilter{Limit: in.Limit}
 	if in.Scope != "" {
 		s := cp.SuppressionScope(in.Scope)
@@ -201,7 +202,12 @@ func (h *suppressionHandlers) list(ctx context.Context, in *listSuppressionsInpu
 	out.Body.HasMore = page.HasMore
 	out.Body.Data = make([]suppressionDTO, 0, len(page.Items))
 	for _, s := range page.Items {
-		out.Body.Data = append(out.Body.Data, toSuppressionDTO(s))
+		dto := toSuppressionDTO(s)
+		// A bulk list of suppressed numbers is the widest subscriber-data read in the Admin API; masking the
+		// trace while leaving this in clear would be a door beside the wall. create/check echo a number the
+		// caller supplied, so they are left alone.
+		dto.MSISDN = maskMSISDN(dto.MSISDN, reveal)
+		out.Body.Data = append(out.Body.Data, dto)
 	}
 	return out, nil
 }

@@ -131,7 +131,7 @@ Légende : `[x]` = fait (dans `tasks-done/`) · `[ ]` = à faire (dans `tasks-to
 - [x] step-182 — Émettre les mises à jour temps réel vers metrics.stream
 - [x] step-183 — Gateway WS/SSE (coder/websocket) + stream-metrics
 - [x] step-184 — Flux stream-sessions + stream-billing-alerts
-- [ ] step-185 — get-message-trace : trace complète d'un message, sans aucun corps
+- [x] step-185 — get-message-trace : trace complète d'un message, sans aucun corps
 - [ ] step-186 — search-messages avec masquage MSISDN par rôle
 - [ ] step-187 — Export de messages asynchrone (row-cap, MSISDN masqué)
 

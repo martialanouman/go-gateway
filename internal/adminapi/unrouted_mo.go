@@ -46,17 +46,19 @@ type messageSummaryDTO struct {
 // toUnroutedSummaryDTO projects an unrouted MO onto a MessageSummary. An unrouted MO reached no
 // account, so its status is 'rejected' and the routing failure reason travels in error_code; the
 // remaining delivery fields are unset.
-func toUnroutedSummaryDTO(u cp.UnroutedMO) messageSummaryDTO {
+func toUnroutedSummaryDTO(u cp.UnroutedMO, reveal bool) messageSummaryDTO {
 	reason := string(u.Reason)
 	encoding := u.Encoding
+	// Unrouted MO: the subscriber is the source; the destination is the operator's inbound number.
+	source, dest := maskAddresses("mo", u.SourceAddr, u.DestAddr, reveal)
 	return messageSummaryDTO{
 		MessageID:    idString(u.ID),
 		TraceID:      idString(uuid.Nil),
 		AccountID:    idString(uuid.Nil),
 		CustomerID:   idString(uuid.Nil),
 		Direction:    "mo",
-		SourceAddr:   u.SourceAddr,
-		DestAddr:     u.DestAddr,
+		SourceAddr:   source,
+		DestAddr:     dest,
 		ConnectorID:  idPtr(u.ConnectorID),
 		Status:       "rejected",
 		ErrorCode:    &reason,
@@ -121,8 +123,9 @@ func (h *unroutedMOHandlers) list(ctx context.Context, in *listUnroutedMOInput) 
 		Data:     make([]messageSummaryDTO, 0, len(rows)),
 		PageMeta: PageMeta{HasMore: hasMore},
 	}
+	reveal := mayRevealMSISDN(ctx)
 	for _, r := range rows {
-		page.Data = append(page.Data, toUnroutedSummaryDTO(r))
+		page.Data = append(page.Data, toUnroutedSummaryDTO(r, reveal))
 	}
 	if hasMore {
 		last := rows[len(rows)-1]

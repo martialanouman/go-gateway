@@ -69,8 +69,17 @@ func TestListUnroutedMOMapsFields(t *testing.T) {
 	if row["error_code"] != "no_keyword_match" {
 		t.Errorf("error_code = %v, want no_keyword_match", row["error_code"])
 	}
-	if row["dest_addr"] != "36000" || row["source_addr"] != "22507000001" {
-		t.Errorf("addrs = %v / %v", row["dest_addr"], row["source_addr"])
+	// The subscriber side of an MO is the SOURCE; the destination is the operator's own inbound number and
+	// stays readable. Without msisdn:reveal a bulk list must not hand out numbers in clear — masking the
+	// trace while leaving this endpoint open would be a door beside the wall.
+	if row["dest_addr"] != "36000" {
+		t.Errorf("dest_addr = %v, want the inbound number unmasked", row["dest_addr"])
+	}
+	if row["source_addr"] == "22507000001" {
+		t.Error("the subscriber number was returned in clear without msisdn:reveal")
+	}
+	if row["source_addr"] != "2250*****01" {
+		t.Errorf("source_addr = %v, want a masked subscriber number", row["source_addr"])
 	}
 	nilUUID := uuid.Nil.String()
 	if row["account_id"] != nilUUID || row["customer_id"] != nilUUID {
