@@ -37,12 +37,17 @@ import (
 
 const serviceName = "mo-dlr-router-svc"
 
-// Bounds on inline webhook delivery so one failing account endpoint cannot stall the delivery
-// consumer's serial loop (head-of-line blocking) for more than a few seconds before the event
-// dead-letters. See the sender wiring in run() for the rationale and the deferred-retry follow-up.
+// Bounds on webhook delivery. The timeout keeps one failing endpoint from stalling the delivery
+// consumer's serial loop (head-of-line blocking): a single attempt runs there, and a transient failure is
+// deferred to webhook.retry rather than retried in band. See the sender wiring in run().
 const (
-	webhookHotPathTimeout     = 5 * time.Second
-	webhookHotPathMaxAttempts = 3
+	webhookHotPathTimeout = 5 * time.Second
+	// webhookMaxAttempts is the TOTAL attempt budget across the first try and every deferred retry — not
+	// a per-pass cap. It is larger than the 3 the old inline loop allowed precisely because attempts no
+	// longer block anything: spread over a growing backoff they span roughly an hour, so an endpoint down
+	// for a short outage is recovered instead of dead-lettered within seconds. The sender's maximum retry
+	// age is the other bound, and stops a slow-failing endpoint sooner.
+	webhookMaxAttempts = 8
 	// moReassemblyTTL bounds how long the segments of a concatenated MO are buffered while awaiting the
 	// rest (step-083). A group that does not complete within it evicts, so an orphaned half-message
 	// cannot accumulate. Handsets and SMSCs reassemble on a similar order of minutes.
@@ -194,18 +199,18 @@ func run() error {
 	// The webhook sender owns its retries and parks an exhausted event on webhook.dead-letter (step-047
 	// interface, wired here). The deliverer never parks a webhook event itself.
 	//
-	// Send runs INLINE on the delivery consumer goroutine, which processes records serially: an
-	// unresponsive endpoint would otherwise block the whole partition's return traffic (head-of-line).
-	// So we bound the hot path — a short per-request timeout and a small attempt cap — and let an
-	// exhausted event fall to the durable dead-letter rather than stall. The richer answer (a deferred
-	// webhook.retry topic drained by its own paced consumer, so transient failures retry off the hot
-	// path without dead-lettering) is a dedicated follow-up, out of scope for this delivery-decision PR.
+	// Send runs on the delivery consumer goroutine, which processes records serially, so it must never
+	// wait: an unresponsive endpoint would block the whole partition's return traffic (head-of-line).
+	// It therefore spends exactly ONE attempt — bounded by a short per-request timeout — and defers a
+	// transient failure to webhook.retry, drained below by its own paced consumer (step-192). Only a
+	// permanent rejection, an exhausted attempt budget or an over-age event reaches the dead-letter.
 	webhookClient := &http.Client{
 		Timeout:       webhookHotPathTimeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 	sender := webhook.NewSender(webhookClient, modlrrouter.NewWebhookDeadLetterSink(producer), logger,
-		webhook.WithMaxAttempts(webhookHotPathMaxAttempts))
+		webhook.WithRetrySink(modlrrouter.NewWebhookRetrySink(producer)),
+		webhook.WithMaxAttempts(webhookMaxAttempts))
 
 	// mo_dlr_undelivered_total{event_type, reason}: bounded labels (two event types, two reasons) — the
 	// count of events that reached neither a bind nor a webhook and were dead-lettered.
@@ -256,6 +261,18 @@ func run() error {
 		Logger:      logger,
 	})
 
+	// The retry drain (step-192): its OWN consumer group and goroutine, so a slow endpoint's backoff is
+	// served here and never on the delivery consumers above. It re-resolves each event's webhook from the
+	// control plane — the queued record deliberately carries no signing secret, and a rotated secret or an
+	// edited URL therefore takes effect on the next pass.
+	retryConsumer, err := kafka.NewConsumer(cfg.Kafka, serviceName+"-webhook-retry", kafka.TopicWebhookRetry)
+	if err != nil {
+		return fmt.Errorf("kafka webhook-retry consumer: %w", err)
+	}
+	defer retryConsumer.Close()
+	retryRunner := modlrrouter.NewWebhookRetryRunner(postgres.NewWebhookRepo(pool), sender,
+		modlrrouter.WithRetryRunnerLogger(logger))
+
 	// Vital dependencies (plan §1.5): Kafka (no work without it) and ClickHouse (the delivery outcome is
 	// recorded there). Redis is intentionally absent — see its comment above.
 	ops, err := observability.NewOpsServer(cfg, logger,
@@ -278,6 +295,7 @@ func run() error {
 	g.Add("mo router", moRouter.Run)
 	g.Add("mo delivery", moDelivery.Run)
 	g.Add("dlr delivery", dlrDelivery.Run)
+	g.Add("webhook retry", func(c context.Context) error { return retryConsumer.Run(c, retryRunner.Handle) })
 	if err := g.Run(ctx, logger); err != nil {
 		return err
 	}
