@@ -155,6 +155,17 @@ type ControlPlaneExternalBillingProvider struct {
 	UpdatedAt         pgtype.Timestamptz
 }
 
+type ControlPlaneGdprEraseJob struct {
+	ID          uuid.UUID
+	SubjectType string
+	SubjectID   string
+	Status      string
+	Attestation *string
+	Operator    string
+	CreatedAt   pgtype.Timestamptz
+	FinishedAt  pgtype.Timestamptz
+}
+
 type ControlPlaneInboundKeyword struct {
 	ID              uuid.UUID
 	InboundNumberID uuid.UUID

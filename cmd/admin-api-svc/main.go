@@ -128,11 +128,17 @@ func run() error {
 	// defer is registered after pool's, and defers run LIFO, so it runs first. The drain uses a
 	// cancel-detached deadline so a SIGTERM does not cut it short.
 	importRunner := async.New(4, logger)
+	// RGPD erasures get their OWN runner: a legally-mandated erasure must never be refused because bulk MNP
+	// imports filled the shared pool (and a long erasure must not starve them either).
+	gdprRunner := async.New(2, logger)
 	defer func() {
 		dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cfg.ShutdownTimeout)
 		defer cancel()
 		if derr := importRunner.Close(dctx); derr != nil {
 			logger.Error("import runner drain incomplete", "err", derr)
+		}
+		if derr := gdprRunner.Close(dctx); derr != nil {
+			logger.Error("gdpr runner drain incomplete", "err", derr)
 		}
 	}()
 
@@ -197,6 +203,9 @@ func run() error {
 		ContentKeyEraser: adminapi.NewGRPCContentKeyEraser(billingpb.NewContentKeysClient(billingConn)),
 		Messages:         clickhouse.NewCDRReader(chConn),
 		ContentAudit:     postgres.NewContentAccessAuditRepo(pool),
+		GDPRJobs:         postgres.NewGDPREraseJobRepo(pool),
+		GDPRRunner:       gdprRunner,
+		CDREraser:        clickhouse.NewCDREraser(chConn),
 		Verifier:         verifier,
 		Logger:           logger,
 	})

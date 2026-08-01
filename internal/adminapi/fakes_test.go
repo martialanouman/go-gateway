@@ -813,3 +813,6 @@ func (s *fakeUnroutedMOStore) List(_ context.Context, limit int, after *cp.Unrou
 	}
 	return append([]cp.UnroutedMO(nil), s.items[start:end]...), nil
 }
+
+// DeleteByMSISDN is the RGPD erasure hook (step-166); the listing tests do not exercise it.
+func (s *fakeUnroutedMOStore) DeleteByMSISDN(context.Context, string) (int, error) { return 0, nil }

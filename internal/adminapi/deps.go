@@ -119,6 +119,8 @@ type InboundKeywordStore interface {
 // after the cursor position (nil = the first page). *postgres.UnroutedMORepo satisfies it.
 type UnroutedMOStore interface {
 	List(ctx context.Context, limit int, after *cp.UnroutedMOKey) ([]cp.UnroutedMO, error)
+	// DeleteByMSISDN removes the records carrying a phone number, for an RGPD erasure (step-166).
+	DeleteByMSISDN(ctx context.Context, msisdn string) (int, error)
 }
 
 // Disconnector force-closes the live SMPP sessions whose authorization has ceased (a revoked or
@@ -162,8 +164,13 @@ type Deps struct {
 	ContentKeyEraser ContentKeyEraser
 	Messages         MessageContentReader
 	ContentAudit     ContentAuditor
-	Verifier         auth.TokenVerifier
-	Logger           *slog.Logger
+	GDPRJobs         GDPRJobStore
+	CDREraser        CDREraser
+	// GDPRRunner runs erasure jobs. It is SEPARATE from Imports on purpose: a legally-mandated erasure must
+	// not be refused because bulk MNP imports filled the shared pool.
+	GDPRRunner ImportRunner
+	Verifier   auth.TokenVerifier
+	Logger     *slog.Logger
 }
 
 // BillingStore is the persistence the admin billing handlers need (step-148): the reserve-floor config view,
