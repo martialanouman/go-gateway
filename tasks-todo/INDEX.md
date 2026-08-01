@@ -146,7 +146,7 @@ structurelles et à faire **avant** que M12 n'empile dessus.
 - [x] step-192 — Topic `webhook.retry` différé (sortir les retries du chemin chaud)
 - [x] step-193 — Câblage de router-svc / connector-pool-svc en constructeurs testables
 - [x] step-193b — Même patron pour mo-dlr-router-svc, admin-api-svc, smpp-server-svc
-- [ ] step-194 — Découper `connectorpool.go` (extraction du mapping SMPP/CDR)
+- [x] step-194 — Découper `connectorpool.go` (extraction du mapping SMPP/CDR)
 
 ## M12 — Durcissement, charge & mise en production
 - [ ] step-200 — Harnais de charge k6/vegeta + générateur de binds SMPP (NFR)
