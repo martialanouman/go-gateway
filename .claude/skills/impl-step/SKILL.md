@@ -60,6 +60,12 @@ Si une bibliothèque est en jeu — ajout, mise à jour, ou simple usage d'une A
 signature), pas seulement la doc. Une signature devinée de mémoire est la panne la plus chère du lot :
 elle compile parfois.
 
+**Pour un outil externe, relever la version réellement installée** (`<outil> version`) et la comparer à
+ce que la doc décrit. Une majeure sortie après ma date de connaissance change les codes de sortie, le
+format de sortie et parfois le nom des options — et rien ne le signale, le script tourne simplement en
+disant autre chose que ce qu'on croit. Si la version est postérieure à ce que je connais, la sonder avec
+un cas jetable coûte deux minutes et évite d'écrire une garde morte.
+
 Cette phase se parallélise bien : lancer plusieurs `Explore` (lecture seule) sur des axes disjoints
 — la fiche et son plan, le précédent dans le code, les contrats concernés — coûte moins cher qu'une
 lecture séquentielle et ne risque rien puisque personne n'écrit.
@@ -113,6 +119,11 @@ fréquente — écrire le code puis fabriquer la justification qui lui va.
 **Toujours un plan avant la moindre implémentation.** Découper en unités livrables, chacune avec son
 cycle rouge → vert → commit. Une unité = ce qu'un relecteur peut accepter ou refuser seul.
 
+Le plan vit dans la **fiche de la step et dans la todo list**. Les skills génériques proposent souvent
+d'écrire un `tasks/plan.md` : ne pas le faire ici. Ce dépôt a déjà `tasks-todo/step-NNN.md`, et deux
+conventions concurrentes pour la même chose finissent toujours par diverger — la convention du dépôt
+prime sur celle d'un skill générique, ici comme ailleurs.
+
 Le plan sert aussi à décider ce qui se parallélise. Marque pour chaque unité **les fichiers qu'elle
 touche** : deux unités qui partagent un fichier ne partent jamais en parallèle (voir phase 5).
 
@@ -146,6 +157,7 @@ Agent(subagent_type: "general-purpose",
       prompt: "Unité <N> de step-NNN : <objectif>.
                Design arrêté applicable : <DN concernées, recopiées>.
                Fichiers dont tu es le SEUL propriétaire : <liste>. N'édite rien d'autre.
+               Ne fais AUCUN git add / git commit / git checkout.
                Procédure imposée : écris le test, LANCE-LE, cite son message d'échec dans ton
                rapport, puis implémente le minimum, relance.
                Rends : le message du rouge, les fichiers touchés, le résultat final du test.")
@@ -153,6 +165,10 @@ Agent(subagent_type: "general-purpose",
 
 Exige le message du rouge dans le rapport : c'est la seule preuve que le sub-agent a bien fait du TDD
 et non écrit le code puis un test complaisant par-dessus. Un rapport sans rouge cité = unité à refaire.
+
+**Interdis-leur de committer**, explicitement, dans chaque mandat. Deux agents qui committent en même
+temps sur la même branche se disputent l'index git, et l'un des deux embarque le travail à moitié écrit
+de l'autre. C'est toi qui commites, après relecture, une unité par commit.
 
 Si une unité est en doute — code inconnu, invariant sensible, opération irréversible — c'est
 `doubt-driven-development` qu'il faut, pas plus de parallélisme.
@@ -165,7 +181,14 @@ tomber**. Une assertion jamais vue échouer n'est pas une assertion.
 ```bash
 cp fichier.go /tmp/f.bak    # muter, lancer, constater l'échec, restaurer
 cp /tmp/f.bak fichier.go
+git diff --stat fichier.go  # VÉRIFIER que la restauration a eu lieu
 ```
+
+**Vérifie la restauration séparément, jamais dans la même commande que la mutation.** Un test muté peut
+partir en deadlock ou dépasser le délai d'exécution ; la commande est alors interrompue et le `cp` de
+restauration qui la suivait n'est jamais exécuté. Le fichier reste muté sans que rien ne l'annonce, et
+la suite de la session travaille sur du code saboté. Un `git diff` explicite après chaque mutation coûte
+une seconde.
 
 Se méfier en particulier d'un test qui passe du premier coup : il passe peut-être pour une raison qui
 n'est pas celle qu'il annonce. Le mode d'échec récurrent sur ce dépôt est la fixture creuse — un test
@@ -207,7 +230,21 @@ Agent(subagent_type: "Plan",
 ```
 
 **Boucler tant qu'il reste un bloquant** : tu corriges, tu relances une revue sur le nouveau diff. Une
-correction se re-relit — c'est du code neuf qui n'a jamais été relu.
+correction se re-relit — c'est du code neuf qui n'a jamais été relu, écrit vite, sous la pression d'un
+constat. Le tour qui trouve des bloquants *dans les correctifs du tour précédent* est la règle, pas
+l'exception : ne jamais s'arrêter au premier tour propre en apparence.
+
+Deux formes que prennent presque toujours ces bloquants de second tour :
+
+- **La garde qui échoue ouverte.** Une vérification écrite contre un format de sortie qu'on n'a pas
+  observé (un `grep` sur un rapport d'outil, un code de sortie supposé) ne se plaint pas quand elle ne
+  correspond à rien : elle laisse passer en silence exactement ce qu'elle surveille. Avant d'écrire un
+  motif, **produire la sortie réelle et la lire** ; puis vérifier la garde sur le cas qu'elle doit
+  attraper, pas seulement sur le cas nominal.
+- **Le correctif qui s'arrête à la structure.** Ajouter le champ, la mesure ou le compteur sans câbler
+  ce qui l'expose — affichage, code de sortie, message d'erreur — ne change rien pour qui utilise
+  l'outil. Se demander à chaque correctif : *qu'est-ce qui aurait changé, à l'écran, pour la personne
+  qui a signalé le problème ?*
 
 Si le même bloquant survit à trois tours, arrête la boucle et remonte-le à l'utilisateur avec les
 positions en présence : à ce stade ce n'est plus un défaut, c'est un désaccord de conception, et il se
@@ -262,4 +299,10 @@ Corps de PR : les décisions **DN** avec leur raison, les ruptures assumées, le
   procédure attendue se recopient dans son prompt, sinon il réinvente — et il réinvente autrement que
   ses voisins lancés en même temps.
 - **Deux sub-agents sur un même fichier le cassent.** Le partage de fichier, pas la proximité
-  thématique, est le critère de séquentialité.
+  thématique, est le critère de séquentialité. Et deux sub-agents qui committent en même temps se
+  disputent l'index git : leur interdire de committer est plus simple que de démêler après coup.
+- **Une commande interrompue n'exécute pas sa fin.** Tout ce qui suit un `&&` derrière une commande
+  qui peut pendre — restauration d'un fichier muté, arrêt d'un service, nettoyage — n'est pas garanti.
+  Ce qui doit absolument avoir lieu se fait dans une commande séparée, et se vérifie.
+- **Un motif écrit contre une sortie non observée est une garde morte.** Produire la sortie réelle,
+  la lire, puis écrire le `grep` — et le tester sur le cas qu'il doit attraper.
