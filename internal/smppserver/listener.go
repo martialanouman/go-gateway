@@ -27,6 +27,13 @@ func (l *Listener) Run(ctx context.Context) error {
 		return fmt.Errorf("smppserver: listen on %q: %w", l.opts.Addr, err)
 	}
 
+	// Behind an L4 balancer the PROXY header is the only way to recover the ESME's real address, which the
+	// bind throttle keys on. A malformed range fails startup rather than silently degrading to a global
+	// throttle. No configured range leaves lis untouched.
+	if lis, err = wrapProxyProtocol(lis, l.opts.TrustedProxyCIDRs); err != nil {
+		return err
+	}
+
 	// Closing the listener when ctx ends unblocks Accept; the connections drain on the same ctx, which
 	// their sessions observe as an orderly close.
 	go func() {
@@ -130,7 +137,14 @@ func (l *Listener) serve(ctx context.Context, nc net.Conn) {
 		OnQuery:       l.onQuery(ctx, st),
 		OnCancel:      l.onCancel(ctx, st),
 	})
-	_ = sess.Serve(ctx)
+	// A session ends for ordinary reasons (peer unbind, EOF, idle drop, pod drain) as well as protocol or
+	// network faults. The error is not actionable here — the token is released either way, just below —
+	// but discarding it silently leaves an operator with no trace of WHY a bind dropped, which is the
+	// first question asked when a client reports flapping. Logged at debug: on a busy pod this fires once
+	// per disconnect.
+	if err := sess.Serve(ctx); err != nil {
+		l.logger.DebugContext(ctx, "smpp session ended", "bind_id", st.bindID, "client_ip", clientIP, "err", err)
+	}
 
 	// Stop the refresh loop (if any) before releasing, so a refresh cannot race the Unbind. Stop the
 	// grace cutoff too, so a session that ended before its grace deadline leaks no timer goroutine.
@@ -299,11 +313,11 @@ func sleep(ctx context.Context, d time.Duration) {
 // remoteIP extracts the connection's source IP (without the ephemeral port, which would make a
 // throttle key useless and unbounded). It falls back to the full remote address if it is not host:port.
 //
-// OPERATIONAL: this is the transport peer address. Behind an L4/TCP load balancer without PROXY
-// protocol it is the balancer's address, not the ESME's — collapsing every client onto one
-// bindfail:ip key, i.e. a global throttle (self-DoS). Deploy with L7 termination or PROXY protocol so
-// the peer is the real client, or neutralise the per-IP counter for that topology. See
-// tasks-done/step-026.md (deployment topology undecided as of this change).
+// DEPLOYMENT: this is the transport peer address, which behind an L4/TCP balancer is the balancer's, not
+// the ESME's — collapsing every client onto one bindfail:ip key, i.e. a global throttle (self-DoS). Set
+// Options.TrustedProxyCIDRs to the balancer's ranges so the PROXY header restores the real client address
+// (step-191); an L7-terminated or direct deployment needs nothing. Left unset behind an L4 balancer, the
+// per-IP counter is meaningless and must be neutralised instead.
 func remoteIP(nc net.Conn) string {
 	host, _, err := net.SplitHostPort(nc.RemoteAddr().String())
 	if err != nil {

@@ -277,6 +277,16 @@ type SMPP struct {
 	// aligned with the registry's session TTL so a silent peer's slot is not held past the drop.
 	IdleTimeout time.Duration `env:"IDLE_TIMEOUT" envDefault:"60s"`
 
+	// TrustedProxyCIDRs lists the load-balancer ranges whose PROXY protocol header is believed, e.g.
+	// "10.0.0.0/8,10.1.0.0/16". Empty (the default) disables the protocol and keeps the transport peer
+	// address — correct for a direct or L7-terminated deployment.
+	//
+	// It MUST be set behind an L4/TCP balancer: without it every bind appears to come from the balancer,
+	// so the per-IP bind throttle degenerates into a global one and a single abusive client locks out all
+	// the others (step-191). Setting it also closes the SMPP port to anything outside these ranges — the
+	// intended posture behind a balancer, and the reason it stays off by default.
+	TrustedProxyCIDRs []string `env:"TRUSTED_PROXY_CIDRS" envSeparator:","`
+
 	// BindMaxFailures is how many bind failures a system_id or a source IP may accumulate within
 	// BindFailureWindow before the next attempt is throttled — refused with a backoff, before argon2id
 	// runs, so a brute-force flood cannot make the server pay that CPU cost (step-026).
