@@ -26,9 +26,46 @@ p99 < 2 s, disjoncteur fermé).
 - Le générateur de binds établit N binds concurrents (test unitaire du générateur).
 
 ## Definition of Done
-- [ ] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts
-- [ ] critères couverts par tests · godoc sur l'exporté · aucun invariant (a/b/c/d) violé
-- [ ] NFR encodés en seuils ; k6/vegeta hors `go.mod`
+- [x] **gofmt/goimports** muets · **golangci-lint** 0 issue · **`go test -race ./...`** 69 paquets verts,
+      0 FAIL, 0 skip, lancé avec `DOCKER_HOST` sur le socket OrbStack (les paquets conteneurisés ont
+      réellement tourné : `internal/billing` 14,5 s, `internal/pipeline/ratelimit` 18,7 s) ·
+      **govulncheck** 0 vulnérabilité atteignable.
+- [x] **critères couverts par tests**, nommés ci-dessous · **godoc** sur tout l'exporté (`Config`,
+      `Report`, `Run`, `stub.Config`, `NewHandler`, `Listen`, `Server`) · **invariants** : (a) gardé par
+      `TestResponseNeverEchoesText` sur les deux chemins qui tiennent le corps ; (b), (c), (d) hors
+      périmètre, aucun code de production modifié (le diff ne touche pas `internal/`).
+- [x] **NFR encodés en seuils** : `test/load/k6/messages.js` porte `p(99)<250` (ingestion),
+      `http_req_failed<0.01` et un seuil sur le check 202 ; profils `sustained` 8 000/s et `peak`
+      15 000/s. **k6 hors `go.mod`** : aucune entrée ajoutée, `make load*` échoue en dur s'il manque.
+
+### Critères d'acceptation → tests qui les couvrent
+
+| Critère de la fiche | Ce qui le prouve |
+|---|---|
+| « Un run local court passe les seuils encodés — preuve que le harnais mesure bien » | `make load-smoke` (`scripts/load-smoke.sh`) : run positif exit 0, run négatif **exit 99 sur `p(99)`** contre un stub ralenti. Le run positif seul passerait trivialement — c'est le négatif qui prouve. Trois gardes empêchent de conclure à tort : exit ≠ 99, `p(99)` non franchi, trafic non servi. |
+| Le seuil ne doit pas être décoratif | `sampled()` exige que le seuil sur les 202 ait mesuré des échantillons — k6 rend un seuil sans données comme respecté. |
+| « Le générateur établit N binds concurrents (test unitaire) » | `TestRunHoldsEveryBindAtOnce` (50 sessions simultanées, comptées **côté pair**) et `TestRunBindsInParallel` (pair lent : le séquentiel coûterait 2 s, plafond 500 ms). |
+| Le pair lâche-t-il des binds ? | `TestRunCountsSessionsDroppedDuringTheHold`, `TestRunReportsNoDropWhenSessionsSurvive`, `TestRunDoesNotCountUnmodelledPDUsAsDrops`. |
+| Annulation honorée | `TestRunEndsTheHoldOnCancel`. |
+| Bornes SMPP (`system_id` ≤ 15, `password` ≤ 8) | `TestRunRejectsInvalidConfig`, `TestRunAcceptsMaximumLengthCredentials`. |
+| Le stub sert bien le contrat | `TestSubmitAcceptedReturns202`, `TestSubmitEchoesClientRef`, `TestMissingOrMalformedBearerIs401`, `TestUnknownFieldIs422`, `TestInvalidBodyIs422`. |
+| Le délai artificiel est réel (il porte le run négatif) | `TestArtificialDelayIsApplied`, `TestArtificialDelayAppliesToRejections`, `TestDelayStopsWithTheClient`. |
+| Arrêt propre | `TestListenServesOnAnEphemeralPortAndShutsDown`. |
+
+### Réserve consignée
+
+Quatre tours de revue en lecture seule, **10 bloquants** trouvés et corrigés, chacun avec sa mutation
+vue tomber. Les tours 2, 3 et 4 ont trouvé leurs bloquants **dans les correctifs du tour précédent** :
+les correctifs se sont montrés plus fragiles que le code d'origine. Les correctifs du tour 4
+(`watch()` et `scripts/load-smoke.sh`) n'ont pas été relus — arbitrage assumé de geler ici, ces deux
+points méritent une relecture à froid en step-201, où le harnais sera exercé sur matériel réel.
+
+Constats classés « à corriger » et non traités, à reprendre en step-201 : verrou explicite avant tout
+envoi réel (le bloc `+22507000xxxx` reste des numéros ordinaires) ; mot de passe de bind passé sur
+`argv`, donc visible dans `ps` ; `Report` ne porte pas le `command_status`, donc l'invariant (d) n'est
+pas assertable via le générateur ; `handshake`/`unbind` sans `ctx` (annulation bornée à 5 s) ; `Hold`
+sans test dédié ; stub et script k6 non rattachés mécaniquement au contrat OpenAPI ; chemin
+`Idempotency-Key` jamais exercé.
 
 ## Hors périmètre
 Tuning (partitions/batch/pool) → step-201. Chaos → step-202/203.
