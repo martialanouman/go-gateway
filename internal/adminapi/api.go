@@ -77,6 +77,7 @@ func New(deps Deps) (*chi.Mux, huma.API) {
 	registerBillingAdmin(api, deps.Customers, deps.Billing, deps.RatePlans, deps.BillingProviders)
 	registerContentKeys(api, deps.ContentKeys, deps.ContentKeyEraser, deps.Logger)
 	registerMessages(api, deps.Messages, deps.ContentKeyReader, deps.ContentAudit, deps.Logger)
+	registerGDPR(api, deps.GDPRJobs, deps.CDREraser, deps.UnroutedMO, deps.ContentKeyEraser, deps.GDPRRunner, deps.Logger)
 
 	humaspec.Prune(api, codesMetaKey)
 

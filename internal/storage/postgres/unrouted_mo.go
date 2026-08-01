@@ -79,3 +79,14 @@ func unroutedMOFromRow(row sqlcgen.ControlPlaneUnroutedMo) cp.UnroutedMO {
 		Reason:          cp.UnroutedReason(row.Reason),
 	}
 }
+
+// DeleteByMSISDN removes the unrouted-MO records carrying a phone number, for an RGPD erasure (step-166).
+// These rows hold the sender's number with no retention of their own, so an erasure that skipped them would
+// leave the subject's personal data behind. It returns how many rows were removed.
+func (r *UnroutedMORepo) DeleteByMSISDN(ctx context.Context, msisdn string) (int, error) {
+	n, err := r.q.DeleteUnroutedMOByMSISDN(ctx, msisdn)
+	if err != nil {
+		return 0, translate("delete unrouted mo by msisdn", err)
+	}
+	return int(n), nil
+}

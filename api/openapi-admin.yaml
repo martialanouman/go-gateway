@@ -1449,15 +1449,21 @@ paths:
       requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { subject_type: { type: string, enum: [customer, msisdn] }, id: { type: string, description: 'Customer UUID or MSISDN depending on subject_type.' } }, required: [subject_type, id] } } } }
       responses:
         '202': { description: Accepted., content: { application/json: { schema: { $ref: '#/components/schemas/GdprEraseJob' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /admin/gdpr/erase/{jobId}:
     parameters: [ { name: jobId, in: path, required: true, schema: { type: string, format: uuid } } ]
     get:
       tags: [Content & RGPD]
       summary: RGPD erase job status + attestation
       operationId: get-gdpr-erase-job
+      security: [ { OperatorBearer: [gdpr:erase] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/GdprEraseJob' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
 
   # ============================ MESSAGES: TRACE / SEARCH / EXPORT ============================

@@ -22,3 +22,8 @@ WHERE received_at < @after_received_at
    OR (received_at = @after_received_at AND id < @after_id)
 ORDER BY received_at DESC, id DESC
 LIMIT @lim;
+
+-- name: DeleteUnroutedMOByMSISDN :execrows
+-- RGPD erasure by phone number (step-166): remove the unrouted-MO records that carry the subject's number.
+-- Like the CDR erasure, this never touches the opt-out list.
+DELETE FROM control_plane.unrouted_mo WHERE source_addr = $1 OR dest_addr = $1;

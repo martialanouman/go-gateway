@@ -1288,3 +1288,27 @@ items:
           method: POST
           url: '{{baseUrl}}/admin/customers/{{customerId}}/content/erase'
         docs: Content-only crypto-shred — destroys the customer's content keys, no CDR rewrite (scope content:erase).
+      - info:
+          name: gdpr-erase
+          type: http
+        http:
+          method: POST
+          url: '{{baseUrl}}/admin/gdpr/erase'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "subject_type": "msisdn",
+                "id": "+2250700000000"
+              }
+        docs: Queue an irreversible RGPD erasure — by customer or by MSISDN across customers (scope gdpr:erase).
+      - info:
+          name: get-gdpr-erase-job
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/gdpr/erase/{{jobId}}'
+        docs: Read an RGPD erase job's status and attestation (scope gdpr:erase).

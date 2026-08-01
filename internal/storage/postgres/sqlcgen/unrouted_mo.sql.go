@@ -60,6 +60,20 @@ func (q *Queries) CreateUnroutedMO(ctx context.Context, arg CreateUnroutedMOPara
 	return i, err
 }
 
+const deleteUnroutedMOByMSISDN = `-- name: DeleteUnroutedMOByMSISDN :execrows
+DELETE FROM control_plane.unrouted_mo WHERE source_addr = $1 OR dest_addr = $1
+`
+
+// RGPD erasure by phone number (step-166): remove the unrouted-MO records that carry the subject's number.
+// Like the CDR erasure, this never touches the opt-out list.
+func (q *Queries) DeleteUnroutedMOByMSISDN(ctx context.Context, sourceAddr string) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteUnroutedMOByMSISDN, sourceAddr)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const listUnroutedMOAfter = `-- name: ListUnroutedMOAfter :many
 SELECT id, received_at, connector_id, inbound_number_id, source_addr, dest_addr, segment_count, encoding, reason FROM control_plane.unrouted_mo
 WHERE received_at < $1

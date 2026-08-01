@@ -197,6 +197,22 @@ CREATE TABLE control_plane.content_access_audit (
 CREATE INDEX content_access_audit_message_idx ON control_plane.content_access_audit(message_id);
 CREATE INDEX content_access_audit_accessed_idx ON control_plane.content_access_audit(accessed_at);
 
+-- gdpr_erase_jobs tracks an on-demand RGPD erasure (§6.23, §14): who asked, for whom, and — once done —
+-- the attestation, i.e. the PROOF of execution (scope, counters, completion time). The attestation never
+-- carries erased content, only what was erased and how much (invariant a).
+CREATE TABLE control_plane.gdpr_erase_jobs (
+  id           uuid PRIMARY KEY DEFAULT uuidv7(),
+  subject_type text NOT NULL CHECK (subject_type IN ('customer','msisdn')),
+  subject_id   text NOT NULL,          -- a customer UUID, or a normalised MSISDN
+  status       text NOT NULL DEFAULT 'queued'
+                 CHECK (status IN ('queued','running','completed','failed')),
+  attestation  text,                    -- proof of execution, set when the job ends
+  operator     text NOT NULL,           -- the operator principal that requested the erasure
+  created_at   timestamptz NOT NULL DEFAULT now(),
+  finished_at  timestamptz
+);
+CREATE INDEX gdpr_erase_jobs_created_idx ON control_plane.gdpr_erase_jobs(created_at);
+
 -- -----------------------------------------------------------------------------------------------------
 -- 6. SMPP accounts (§6.18) — one technical account of a customer (per app/env/brand)
 -- -----------------------------------------------------------------------------------------------------
