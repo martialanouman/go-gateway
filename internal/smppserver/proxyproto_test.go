@@ -39,14 +39,17 @@ func dialAndRead(t *testing.T, lis net.Listener, raw string) string {
 		t.Fatalf("dial: %v", err)
 	}
 	defer func() { _ = c.Close() }()
-	if raw != "" {
-		if _, err := c.Write([]byte(raw)); err != nil {
-			t.Fatalf("write header: %v", err)
-		}
-	}
-	// One payload byte so the server's Read returns once the header (if any) is consumed.
-	if _, err := c.Write([]byte("x")); err != nil {
-		t.Fatalf("write payload: %v", err)
+
+	// Header and payload go out in ONE write. Split across two, the server can read its byte and close
+	// while the second write is still in flight, and the peer answers RST — a flake that depends purely on
+	// scheduling (it passed locally and failed on CI). The payload byte is what makes the server's Read
+	// return once the header, if any, has been consumed.
+	//
+	// A write error is not fatal here: the server legitimately closes as soon as it has what it needs, so
+	// the assertion belongs on the address it observed. A write that truly failed shows up as the timeout
+	// below, with a clearer message.
+	if _, err := c.Write([]byte(raw + "x")); err != nil {
+		t.Logf("write (server may have already closed): %v", err)
 	}
 
 	select {
