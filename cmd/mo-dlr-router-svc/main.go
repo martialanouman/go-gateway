@@ -270,7 +270,22 @@ func run() error {
 		return fmt.Errorf("kafka webhook-retry consumer: %w", err)
 	}
 	defer retryConsumer.Close()
+	// webhook_retry_handled_total{outcome}: bounded label (retried|dropped|skipped). The age histogram is
+	// the operational signal that matters: an account whose endpoint is durably unreachable shows up as a
+	// rising retry age WELL BEFORE its events start landing in the dead-letter, which is the only other
+	// symptom and arrives hours later.
+	retryHandledTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "webhook_retry_handled_total",
+		Help: "Webhook events processed off the retry topic, by outcome.",
+	}, []string{"outcome"})
+	retryAgeSeconds := prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name: "webhook_retry_age_seconds",
+		Help: "Time an event has been in retry when re-attempted, counted from its first attempt.",
+		// Buckets spanning the retry lifetime: the first backoff through the 6h maximum age.
+		Buckets: []float64{30, 60, 300, 900, 1800, 3600, 10800, 21600},
+	})
 	retryRunner := modlrrouter.NewWebhookRetryRunner(postgres.NewWebhookRepo(pool), sender,
+		modlrrouter.WithRetryMetric(webhookRetryMetric{handled: retryHandledTotal, age: retryAgeSeconds}),
 		modlrrouter.WithRetryRunnerLogger(logger))
 
 	// Vital dependencies (plan §1.5): Kafka (no work without it) and ClickHouse (the delivery outcome is
@@ -284,7 +299,8 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("init ops server: %w", err)
 	}
-	ops.Registry().MustRegister(unmapped, unroutedTotal, undeliveredTotal, dlrMappingMiss)
+	ops.Registry().MustRegister(unmapped, unroutedTotal, undeliveredTotal, dlrMappingMiss,
+		retryHandledTotal, retryAgeSeconds)
 
 	logger.InfoContext(ctx, "starting", "config", cfg)
 
@@ -303,6 +319,15 @@ func run() error {
 	logger.Info("stopped")
 	return nil
 }
+
+// webhookRetryMetric adapts the drain counters to modlrrouter.RetryMetric.
+type webhookRetryMetric struct {
+	handled *prometheus.CounterVec
+	age     prometheus.Histogram
+}
+
+func (m webhookRetryMetric) Handled(outcome string) { m.handled.WithLabelValues(outcome).Inc() }
+func (m webhookRetryMetric) Age(d time.Duration)    { m.age.Observe(d.Seconds()) }
 
 // moVelocity adapts antispam.RedisState to modlrrouter.MOVelocityRecorder: it records an inbound MO
 // into its source's global velocity counter (step-066), the same key a "by source" MT velocity rule

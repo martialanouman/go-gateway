@@ -31,17 +31,37 @@ type RetrySender interface {
 	Retry(ctx context.Context, wh cp.Webhook, ev webhook.Event, attempt int, firstAt time.Time) error
 }
 
-// WebhookRetryRunner drains webhook.retry: it re-resolves each queued event's webhook, waits out a paced
-// backoff, and hands it back to the sender for one more attempt (step-192).
+// RetryMetric observes the drain. Handled is labelled by outcome (a bounded label — "retried", "dropped"
+// or "skipped", never an account or event id). Age is how long an event has been in retry, counted from
+// its first attempt: a rising age is the signal that an account's endpoint is durably unreachable, and it
+// shows up well before the dead-letter starts growing.
+type RetryMetric interface {
+	Handled(outcome string)
+	Age(d time.Duration)
+}
+
+type nopRetryMetric struct{}
+
+func (nopRetryMetric) Handled(string)    {}
+func (nopRetryMetric) Age(time.Duration) {}
+
+// WebhookRetryRunner drains webhook.retry: it re-resolves each queued event's webhook, waits until the
+// event is due, and hands it back to the sender for one more attempt (step-192).
 //
 // It runs on its OWN consumer group and goroutine, which is the whole point: the delivery consumer must
-// never wait on a slow endpoint. Consequence to know when operating it: because the runner paces before
-// each attempt, its throughput is bounded — this topic is a recovery path, not a delivery path, and a
-// large backlog drains slowly by design.
+// never wait on a slow endpoint.
+//
+// The wait is the time REMAINING until each event's stamped deadline, not a fresh backoff per record.
+// That is what keeps the drain's throughput usable: waiting the full backoff again on an event that had
+// already come due while queued would cap the whole drain near one event per backoff — orders of
+// magnitude below return-path volume — and let one dead account's queue starve every account behind it.
+// Records are still processed serially, so the drain remains a recovery path rather than a delivery one;
+// a backlog of events that are all genuinely due now drains at Kafka speed.
 type WebhookRetryRunner struct {
 	webhooks WebhookGetter
 	sender   RetrySender
 	pace     func(ctx context.Context, d time.Duration) error
+	metric   RetryMetric
 	logger   *slog.Logger
 }
 
@@ -57,6 +77,15 @@ func WithRetryPace(pace func(ctx context.Context, d time.Duration) error) RetryR
 	}
 }
 
+// WithRetryMetric wires the drain observability.
+func WithRetryMetric(m RetryMetric) RetryRunnerOption {
+	return func(r *WebhookRetryRunner) {
+		if m != nil {
+			r.metric = m
+		}
+	}
+}
+
 // WithRetryRunnerLogger sets the logger (defaults to slog.Default).
 func WithRetryRunnerLogger(l *slog.Logger) RetryRunnerOption {
 	return func(r *WebhookRetryRunner) {
@@ -68,7 +97,10 @@ func WithRetryRunnerLogger(l *slog.Logger) RetryRunnerOption {
 
 // NewWebhookRetryRunner builds the runner over the webhook store and the sender.
 func NewWebhookRetryRunner(webhooks WebhookGetter, sender RetrySender, opts ...RetryRunnerOption) *WebhookRetryRunner {
-	r := &WebhookRetryRunner{webhooks: webhooks, sender: sender, pace: sleepCtx, logger: slog.Default()}
+	r := &WebhookRetryRunner{
+		webhooks: webhooks, sender: sender, pace: sleepCtx,
+		metric: nopRetryMetric{}, logger: slog.Default(),
+	}
 	for _, o := range opts {
 		o(r)
 	}
@@ -82,19 +114,23 @@ func NewWebhookRetryRunner(webhooks WebhookGetter, sender RetrySender, opts ...R
 func (r *WebhookRetryRunner) Handle(ctx context.Context, rec kafka.Record) error {
 	var msg webhookRetry
 	if err := json.Unmarshal(rec.Value, &msg); err != nil {
+		r.metric.Handled("skipped")
 		r.logger.ErrorContext(ctx, "webhook retry: corrupt record skipped", "key", string(rec.Key), "err", err)
 		return nil
 	}
 	accountID, err := uuid.Parse(msg.AccountID)
 	if err != nil {
+		r.metric.Handled("skipped")
 		r.logger.ErrorContext(ctx, "webhook retry: unparseable account id, skipped",
 			"event_id", msg.EventID, "err", err)
 		return nil
 	}
 
-	// Wait BEFORE resolving and attempting: pacing is the runner's reason to exist, and doing it first
-	// also means a burst of deferrals cannot turn into a burst of control-plane reads.
-	if err := r.pace(ctx, paceFor(msg.Attempt)); err != nil {
+	// Wait only the time REMAINING until the event is due. Time already spent queued counts: an event that
+	// waited behind others arrives due and is attempted at once. Sleeping the full backoff again here is
+	// what would cap the drain near one event per backoff and let a dead account starve the accounts
+	// behind it. Pacing before resolving also keeps a burst of deferrals from bursting control-plane reads.
+	if err := r.pace(ctx, r.waitFor(msg)); err != nil {
 		return err // context ended: leave the offset uncommitted, the record is redelivered
 	}
 
@@ -104,12 +140,33 @@ func (r *WebhookRetryRunner) Handle(ctx context.Context, rec kafka.Record) error
 	}
 	if !found {
 		// The webhook was deleted or disabled while the event waited. There is nothing left to deliver to.
+		r.metric.Handled("dropped")
 		r.logger.InfoContext(ctx, "webhook retry: webhook no longer resolvable, event dropped",
 			"event_id", msg.EventID, "account_id", msg.AccountID, "event_type", msg.EventType)
 		return nil
 	}
 
-	return r.sender.Retry(ctx, wh, webhook.Event{ID: msg.EventID, Payload: msg.Payload}, msg.Attempt, msg.FirstAttemptAt)
+	if err := r.sender.Retry(ctx, wh, webhook.Event{ID: msg.EventID, Payload: msg.Payload}, msg.Attempt, msg.FirstAttemptAt); err != nil {
+		return err
+	}
+	r.metric.Handled("retried")
+	if !msg.FirstAttemptAt.IsZero() {
+		r.metric.Age(time.Since(msg.FirstAttemptAt))
+	}
+	return nil
+}
+
+// waitFor returns how long remains before msg is due. A record stamped with an absolute NotBefore waits
+// only the remainder — zero if it already came due while queued. A record without one (written before the
+// field existed) falls back to the full attempt backoff, so it is paced rather than hammered.
+func (r *WebhookRetryRunner) waitFor(msg webhookRetry) time.Duration {
+	if msg.NotBefore.IsZero() {
+		return paceFor(msg.Attempt)
+	}
+	if d := time.Until(msg.NotBefore); d > 0 {
+		return d
+	}
+	return 0
 }
 
 // paceFor returns how long to wait before re-attempting an event that has spent `attempt` attempts. It
