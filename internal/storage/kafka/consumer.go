@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kgo"
 
 	"github.com/martialanouman/go-gateway/internal/config"
@@ -257,4 +258,48 @@ func toRecord(kr *kgo.Record) Record {
 		r.Headers = append(r.Headers, Header{Key: h.Key, Value: h.Value})
 	}
 	return r
+}
+
+// Lag reports this consumer group's backlog per topic, in records.
+//
+// It reuses the consumer's own client rather than opening an admin connection: the group's lag is exactly
+// what THIS service is behind on, which is also why the service that consumes a topic is the only one that
+// should publish its depth — several services reporting the same topic would double-count without any of
+// them being wrong (step-180).
+//
+// A broker round-trip is involved, so call it on a slow tick, never per message. An error is returned rather
+// than swallowed; the caller decides, and for the metrics stream the answer is "skip this tick".
+func (c *Consumer) Lag(ctx context.Context) (map[string]int64, error) {
+	lags, err := kadm.NewClient(c.cl).Lag(ctx, c.group)
+	if err != nil {
+		return nil, fmt.Errorf("kafka: lag for group %s: %w", c.group, err)
+	}
+	described, ok := lags[c.group]
+	if !ok {
+		return nil, fmt.Errorf("kafka: lag for group %s: group not described", c.group)
+	}
+	// A described group can still carry a describe or fetch error, in which case its Lag map is empty. Left
+	// unchecked that returns "no lag" — the gauge would simply hold its last value and the failure would be
+	// invisible.
+	if err := described.Error(); err != nil {
+		return nil, fmt.Errorf("kafka: lag for group %s: %w", c.group, err)
+	}
+	out := make(map[string]int64, len(described.Lag))
+	for topic, partitions := range described.Lag {
+		var total int64
+		for _, p := range partitions {
+			// A partition whose lag could not be computed reports -1 WITH an error. Skipping it silently
+			// would publish a small total that looks perfectly legitimate — the worst failure mode for a
+			// backlog gauge, since it reads as "we are caught up". Refuse the whole topic instead.
+			if p.Err != nil {
+				return nil, fmt.Errorf("kafka: lag for group %s, topic %s partition %d: %w",
+					c.group, topic, p.Partition, p.Err)
+			}
+			if p.Lag > 0 {
+				total += p.Lag
+			}
+		}
+		out[topic] = total
+	}
+	return out, nil
 }

@@ -35,6 +35,9 @@ var topics = []string{
 	// so a test exercising fallback/park/replay or dead-lettering needs them pre-created — otherwise the
 	// first produce fails UNKNOWN_TOPIC_OR_PARTITION and the pool tears down.
 	kafka.TopicMTReroutePark, kafka.TopicMTDeadLetter,
+	// The realtime metrics feed (M11): the stream producer is best-effort and drops silently on an unknown
+	// topic, so a test that forgot this would pass while publishing nothing.
+	kafka.TopicMetricsStream,
 }
 
 const (

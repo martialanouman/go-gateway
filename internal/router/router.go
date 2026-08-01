@@ -9,11 +9,14 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/martialanouman/go-gateway/internal/metricstream"
 	"github.com/martialanouman/go-gateway/internal/observability"
+	"github.com/martialanouman/go-gateway/internal/observability/metrics"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 	"github.com/martialanouman/go-gateway/internal/platform/msg"
@@ -55,6 +58,21 @@ type Deps struct {
 	Sealer   ContentSealer
 	Tracer   trace.Tracer
 	Logger   *slog.Logger
+	// Stream feeds the realtime dashboard (metrics.stream, step-182). Optional and best-effort: a nil
+	// Stream disables emission entirely, and no failure of it may ever reach a message.
+	Stream StreamEmitter
+	// Metrics is the Prometheus side of the same figures. Both surfaces are fed from ONE call site with ONE
+	// set of names (step-180): a live dashboard and Grafana disagreeing on what a number is called makes it
+	// impossible to correlate a spike with its history. Optional; nil disables it.
+	Metrics *metrics.Catalog
+}
+
+// StreamEmitter records live figures for the realtime feed. It is declared here, consumer-side, and
+// implemented by internal/metricstream. Its methods return nothing on purpose — the routing path must not be
+// able to branch on a dashboard failure.
+type StreamEmitter interface {
+	Add(kind string, labels metricstream.Labels, delta float64)
+	Observe(kind string, labels metricstream.Labels, seconds float64)
 }
 
 // Router is the MT routing service.
@@ -96,7 +114,13 @@ func (r *Router) handle(ctx context.Context, rec kafka.Record) (err error) {
 		return fmt.Errorf("router: decode mt.inbound: %w", err)
 	}
 
+	started := time.Now()
 	routed, segments, perr := r.deps.Pipeline.Process(ctx, in)
+	elapsed := time.Since(started).Seconds()
+	r.stream(func(s StreamEmitter) { s.Observe("pipeline_duration_seconds", nil, elapsed) })
+	if r.deps.Metrics != nil {
+		r.deps.Metrics.PipelineDuration.Observe(elapsed)
+	}
 	if perr != nil {
 		code, ok := errs.CodeOf(perr)
 		if !ok {
@@ -114,6 +138,16 @@ func (r *Router) handle(ctx context.Context, rec kafka.Record) (err error) {
 		}
 		r.deps.Logger.InfoContext(ctx, "message rejected in pipeline",
 			"message_id", in.MessageID, "account_id", in.AccountID, "code", code)
+		// The label values are a platform Code and a constant — a closed vocabulary from the code, which is
+		// the rule the stream depends on (an emitter keyed by label values is a map that grows with them).
+		r.stream(func(s StreamEmitter) {
+			s.Add("messages_total", metricstream.Labels{"status": "rejected"}, 1)
+			s.Add("rejected_total", metricstream.Labels{"code": string(code)}, 1)
+		})
+		if r.deps.Metrics != nil {
+			r.deps.Metrics.MessagesTotal.WithLabelValues("rejected").Inc()
+			r.deps.Metrics.RejectedTotal.WithLabelValues(string(code)).Inc()
+		}
 		return nil
 	}
 
@@ -140,7 +174,22 @@ func (r *Router) handle(ctx context.Context, rec kafka.Record) (err error) {
 			return fmt.Errorf("router: publish mt.routed: %w", err)
 		}
 	}
+	r.stream(func(s StreamEmitter) {
+		s.Add("messages_total", metricstream.Labels{"status": "routed"}, 1)
+	})
+	if r.deps.Metrics != nil {
+		r.deps.Metrics.MessagesTotal.WithLabelValues("routed").Inc()
+	}
 	return nil
+}
+
+// stream runs fn against the emitter when one is configured. One nil check in one place, so no call site can
+// forget it and no emission can be mistaken for something the message path depends on.
+func (r *Router) stream(fn func(StreamEmitter)) {
+	if r.deps.Stream == nil {
+		return
+	}
+	fn(r.deps.Stream)
 }
 
 // rejectedRow builds the CDR row for a message rejected before dispatch. It carries the immutable

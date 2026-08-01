@@ -23,7 +23,9 @@ import (
 	"github.com/martialanouman/go-gateway/internal/connector/breaker"
 	"github.com/martialanouman/go-gateway/internal/connector/reconnect"
 	"github.com/martialanouman/go-gateway/internal/connector/status"
+	"github.com/martialanouman/go-gateway/internal/metricstream"
 	"github.com/martialanouman/go-gateway/internal/observability"
+	"github.com/martialanouman/go-gateway/internal/observability/metrics"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	"github.com/martialanouman/go-gateway/internal/platform/encoding"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
@@ -172,6 +174,22 @@ type noopProducer struct{}
 
 func (noopProducer) Produce(context.Context, kafka.Record) error { return nil }
 
+// StreamEmitter records live figures for the realtime feed (internal/metricstream implements it). Its
+// methods return nothing: the send path must not be able to branch on a dashboard failure.
+type StreamEmitter interface {
+	Add(kind string, labels metricstream.Labels, delta float64)
+	Set(kind string, labels metricstream.Labels, value float64)
+	// SetOneHot publishes an enum atomically; separate Set calls could be snapshotted mid-update and show
+	// a connector both open and closed.
+	SetOneHot(kind string, base metricstream.Labels, dimension string, values []string, current string)
+}
+
+// BreakerGauge is the Prometheus side of the breaker state, declared consumer-side
+// (internal/observability/metrics.Catalog implements it).
+type BreakerGauge interface {
+	SetConnectorBreakerState(connectorID, state string)
+}
+
 // Deps are the connector pool's collaborators.
 type Deps struct {
 	Consumer    Consumer
@@ -194,6 +212,14 @@ type Deps struct {
 	// Billing captures/releases the MT reservation on the send outcome (step-146). New defaults a nil one
 	// to a no-op that settles nothing (billing opt-in), so a pool with no billing wired never bills.
 	Billing BillingSettler
+	// Stream feeds the realtime dashboard (metrics.stream, step-182). Optional and best-effort: a nil
+	// Stream disables emission, and nothing here may ever fail or delay a send.
+	Stream StreamEmitter
+	// BreakerGauge mirrors the breaker state onto Prometheus. Optional; nil disables it.
+	BreakerGauge BreakerGauge
+	// Metrics is the Prometheus side of the stream figures, fed from the same call sites with the same
+	// names (step-180). Optional; nil disables it.
+	Metrics *metrics.Catalog
 	// RetryWindow is how long a connector-health failure (NOT a throttle) is redelivered before the
 	// message is dead-lettered as retries_exhausted (step-129). Zero disables the window (redeliver
 	// forever, the pre-step-129 behaviour) — the drainer/reroute still bound most cases.
@@ -647,11 +673,33 @@ func (s *Service) runBreakerHeartbeat(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			worst := breaker.Closed
 			for i, b := range s.breakers {
-				if _, err := s.deps.Breaker.Report(ctx, connectorID, i, b.State()); err != nil && ctx.Err() == nil {
+				st := b.State()
+				if severity(st) > severity(worst) {
+					worst = st
+				}
+				if _, err := s.deps.Breaker.Report(ctx, connectorID, i, st); err != nil && ctx.Err() == nil {
 					s.deps.Logger.WarnContext(ctx, "connector: breaker state report failed", "bind_index", i, "err", err)
 				}
 			}
+			// Published from HERE, not from a supervisor goroutine: s.breakers is reassigned by every dial
+			// cycle, and only the heartbeats are joined before that happens (see runOnce). A poller outside
+			// the cycle reads the slice header while it is being rewritten — a data race, reproduced under
+			// -race, not merely a stale value.
+			//
+			// One series per CONNECTOR, not per bind: a bind pool has several breakers under one connector id,
+			// so reporting each in turn would leave whichever was polled last, an arbitrary answer. The WORST
+			// bind state is reported instead — one bind open means the connector is degraded, which is what an
+			// operator needs to see — and the per-bind detail lives in the bind status hash (step-128).
+			state := worst.String()
+			if s.deps.BreakerGauge != nil {
+				s.deps.BreakerGauge.SetConnectorBreakerState(connectorID, state)
+			}
+			s.stream(func(e StreamEmitter) {
+				e.SetOneHot("connector_breaker_state", metricstream.Labels{"connector_id": connectorID},
+					"state", breakerStates, state)
+			})
 		}
 	}
 }
@@ -874,6 +922,31 @@ func (s *Service) processOne(ctx context.Context, b *bind, bindIndex int, rec ka
 		observability.RecordSpanError(span, errs.CodeFromSMPPStatus(resp.Status))
 		s.deps.Billing.Release(ctx, routed)
 	}
+	// Both label values are closed vocabularies from the code — a connector id from the control plane and a
+	// platform Code — which is what keeps the emitter's series count bounded.
+	// status is a closed two-value vocabulary and the code goes in the label meant for it — mixing an error
+	// code into `status` would give one label name two meanings across the two legs of a message.
+	connectorID := s.deps.ConnectorID.String()
+	status := "ok"
+	if resp.Status != smpp.StatusOK {
+		status = "rejected"
+	}
+	s.stream(func(e StreamEmitter) {
+		e.Add("submits_total", metricstream.Labels{"connector_id": connectorID, "status": status}, 1)
+		if status == "rejected" {
+			e.Add("submit_rejected_total", metricstream.Labels{
+				"connector_id": connectorID,
+				"code":         string(errs.CodeFromSMPPStatus(resp.Status)),
+			}, 1)
+		}
+	})
+	if s.deps.Metrics != nil {
+		s.deps.Metrics.SubmitsTotal.WithLabelValues(connectorID, status).Inc()
+		if status == "rejected" {
+			s.deps.Metrics.SubmitRejectedTotal.
+				WithLabelValues(connectorID, string(errs.CodeFromSMPPStatus(resp.Status))).Inc()
+		}
+	}
 	if err := s.deps.CDR.Insert(ctx, row); err != nil {
 		return fmt.Errorf("connectorpool: write cdr: %w", err)
 	}
@@ -1059,4 +1132,34 @@ func segmentSeq(n int) uint16 {
 		return 1
 	}
 	return uint16(n) //nolint:gosec // segment sequence is a small positive integer
+}
+
+// stream runs fn against the emitter when one is configured. One nil check in one place, so no call site can
+// forget it and no emission can be mistaken for something the send path depends on.
+func (s *Service) stream(fn func(StreamEmitter)) {
+	if s.deps.Stream == nil {
+		return
+	}
+	fn(s.deps.Stream)
+}
+
+// breakerStates is the enum published as a one-hot gauge. It mirrors internal/observability/metrics, so the
+// realtime feed and Prometheus name the same states — a dashboard and Grafana must not disagree on what
+// "half_open" is called.
+var breakerStates = []string{
+	metrics.BreakerStateClosed,
+	metrics.BreakerStateOpen,
+	metrics.BreakerStateHalfOpen,
+}
+
+// severity orders breaker states from healthy to degraded, so the worst of a bind pool can be picked.
+func severity(s breaker.State) int {
+	switch s {
+	case breaker.Open:
+		return 2
+	case breaker.HalfOpen:
+		return 1
+	default:
+		return 0
+	}
 }
