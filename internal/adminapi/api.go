@@ -79,6 +79,7 @@ func New(deps Deps) (*chi.Mux, huma.API) {
 	registerMessages(api, deps.Messages, deps.ContentKeyReader, deps.ContentAudit, deps.Logger)
 	registerGDPR(api, deps.GDPRJobs, deps.CDREraser, deps.UnroutedMO, deps.ContentKeyEraser, deps.GDPRRunner, deps.Logger)
 	registerStreams(api, deps.StreamHub, deps.Quit, deps.Logger)
+	registerMessageTrace(api, deps.Trace)
 
 	humaspec.Prune(api, codesMetaKey)
 
@@ -100,6 +101,7 @@ func operatorSecurityScheme() *huma.SecurityScheme {
 					string(auth.ScopeAdminWrite):   "Modify control-plane configuration.",
 					string(auth.ScopeContentRead):  "Read message content under audit.",
 					string(auth.ScopeContentErase): "Erase stored message content.",
+					string(auth.ScopeMSISDNReveal): "See subscriber numbers unmasked (search, trace and export mask them otherwise).",
 					string(auth.ScopeGDPRErase):    "Erase a customer's data (GDPR).",
 				},
 			},

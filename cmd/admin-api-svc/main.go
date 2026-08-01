@@ -193,6 +193,7 @@ func run() error {
 
 	router, _ := adminapi.New(adminapi.Deps{
 		StreamHub:        hub,
+		Trace:            clickhouse.NewCDRReader(chConn),
 		Quit:             streamQuit,
 		Customers:        postgres.NewCustomerRepo(pool),
 		Accounts:         postgres.NewAccountRepo(pool),

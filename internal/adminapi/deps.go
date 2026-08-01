@@ -142,6 +142,8 @@ type Deps struct {
 	StreamHub StreamHub
 	// Quit closes live WebSocket handlers on shutdown; see the Quit type.
 	Quit Quit
+	// Trace reads a message lifecycle for get-message-trace (step-185).
+	Trace TraceStore
 
 	Customers        CustomerStore
 	Accounts         AccountStore

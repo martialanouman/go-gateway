@@ -1296,6 +1296,13 @@ items:
           url: '{{baseUrl}}/admin/stream/billing-alerts'
         docs: WebSocket — MO floor-reached alerts (scope admin:read).
       - info:
+          name: get-message-trace
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/messages/{{messageId}}/trace'
+        docs: Lifecycle timeline of a message. Never carries the body; MSISDNs masked without msisdn:reveal.
+      - info:
           name: get-message-content
           type: http
         http:

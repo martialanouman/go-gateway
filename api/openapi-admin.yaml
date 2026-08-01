@@ -1589,6 +1589,7 @@ components:
             content:read: Decrypt and read message bodies.
             content:erase: Crypto-shred customer content.
             gdpr:erase: Execute RGPD erasure.
+            msisdn:reveal: See subscriber numbers unmasked (search, trace and export mask them otherwise).
 
   parameters:
     Id:
@@ -2657,7 +2658,9 @@ components:
     # ---- messages: trace / search / export ----
     MessageTrace:
       type: object
-      description: OpenTelemetry span timeline. NEVER carries the body — at most a truncated content_hash.
+      description: >-
+        Lifecycle timeline of a message, one entry per recorded stage, built from the durable CDR event log.
+        Span-level detail lives in the tracing backend — pivot on trace_id. NEVER carries the body.
       properties:
         message_id: { type: string, format: uuid }
         trace_id: { type: string, format: uuid }
@@ -2666,7 +2669,7 @@ components:
           items:
             type: object
             properties:
-              name: { type: string, examples: ['pipeline.senderid_auth', 'connector.submit_sm'] }
+              name: { type: string, examples: ['cdr.accepted', 'cdr.enroute', 'cdr.delivered'] }
               start: { type: string, format: date-time }
               end: { type: [string, "null"], format: date-time }
               duration_ms: { type: [number, "null"] }

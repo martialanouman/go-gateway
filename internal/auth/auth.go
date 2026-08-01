@@ -22,6 +22,9 @@ const (
 	ScopeContentRead  Scope = "content:read"
 	ScopeContentErase Scope = "content:erase"
 	ScopeGDPRErase    Scope = "gdpr:erase"
+	// ScopeMSISDNReveal shows subscriber numbers unmasked. Separate from content:read on purpose: reading a
+	// body is a greater act than seeing a destination, so one must not imply the other.
+	ScopeMSISDNReveal Scope = "msisdn:reveal"
 )
 
 // Principal is the authenticated operator behind a request.

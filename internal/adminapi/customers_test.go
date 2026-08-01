@@ -25,7 +25,14 @@ func newTestAPI(t *testing.T, customers adminapi.CustomerStore) http.Handler {
 // newTestAPIWith builds the Admin API from deps, filling in the operator-token verifier.
 func newTestAPIWith(t *testing.T, deps adminapi.Deps) http.Handler {
 	t.Helper()
-	verifier, err := auth.NewStaticVerifier([]string{operatorToken + ":admin:read|admin:write"})
+	return newTestAPIWithScopes(t, deps, "admin:read|admin:write")
+}
+
+// newTestAPIWithScopes builds the API granting operatorToken exactly the given scopes, for the endpoints
+// whose behaviour depends on which ones the caller holds.
+func newTestAPIWithScopes(t *testing.T, deps adminapi.Deps, scopes string) http.Handler {
+	t.Helper()
+	verifier, err := auth.NewStaticVerifier([]string{operatorToken + ":" + scopes})
 	if err != nil {
 		t.Fatalf("verifier: %v", err)
 	}
