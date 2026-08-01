@@ -47,6 +47,10 @@ func (r *Recorder) Names() []string {
 	return out
 }
 
+// Ended returns the recorded spans, in end order, for assertions the named helpers do not cover —
+// status codes and descriptions, in particular.
+func (r *Recorder) Ended() []sdktrace.ReadOnlySpan { return r.sr.Ended() }
+
 // Recorded reports whether a span with the given name has ended.
 func (r *Recorder) Recorded(name string) bool {
 	for _, s := range r.sr.Ended() {
@@ -57,9 +61,10 @@ func (r *Recorder) Recorded(name string) bool {
 	return false
 }
 
-// Leaks returns the names of ended spans in which secret appears anywhere — the span name, an
-// attribute value, or an event — which would be a body leak (invariant a). It is empty when nothing
-// leaked. AssertNoBody wraps it; it is exported so the detection itself can be unit-tested.
+// Leaks returns the names of ended spans in which secret appears anywhere — the span name, the status
+// description, an attribute key or value, or an event's name, attribute keys or values — which would be a
+// body leak (invariant a). It is empty when nothing leaked. AssertNoBody wraps it; it is exported so the
+// detection itself can be unit-tested.
 func (r *Recorder) Leaks(secret string) []string {
 	if secret == "" {
 		return nil
@@ -86,6 +91,12 @@ func spanContains(s sdktrace.ReadOnlySpan, secret string) bool {
 	if strings.Contains(s.Name(), secret) {
 		return true
 	}
+	// The status description is the easiest place for a body to escape: SetStatus(codes.Error,
+	// err.Error()) copies whatever text an error carries into an exported span. It was the one field this
+	// detector did not read, so the invariant-(a) assertion could not have caught that vector.
+	if strings.Contains(s.Status().Description, secret) {
+		return true
+	}
 	for _, a := range s.Attributes() {
 		if strings.Contains(string(a.Key), secret) || strings.Contains(a.Value.String(), secret) {
 			return true
@@ -96,7 +107,7 @@ func spanContains(s sdktrace.ReadOnlySpan, secret string) bool {
 			return true
 		}
 		for _, a := range e.Attributes {
-			if strings.Contains(a.Value.String(), secret) {
+			if strings.Contains(string(a.Key), secret) || strings.Contains(a.Value.String(), secret) {
 				return true
 			}
 		}

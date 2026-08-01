@@ -11,6 +11,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
+	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	"github.com/martialanouman/go-gateway/internal/platform/msg"
 	"github.com/martialanouman/go-gateway/internal/smpp"
@@ -120,13 +121,16 @@ func (r *MORouter) reassemble(ctx context.Context, mo pipeline.MOInbound) (pipel
 }
 
 func (r *MORouter) handler() kafka.Handler {
-	return func(ctx context.Context, rec kafka.Record) error {
+	return func(ctx context.Context, rec kafka.Record) (err error) {
 		ctx, span := r.deps.Tracer.Start(ctx, "mo.route")
 		defer span.End()
+		defer func() { observability.RecordSpanError(span, err) }()
 
 		mo, err := pipeline.DecodeMO(rec)
 		if err != nil {
 			// An undecodable record is permanently bad: log and commit, never wedge the partition.
+			// The span still records it: the offset advancing is not the same as the work succeeding.
+			observability.RecordSpanError(span, err)
 			r.deps.Logger.ErrorContext(ctx, "modlrrouter: undecodable mo.inbound record, skipping", "err", err)
 			return nil
 		}
