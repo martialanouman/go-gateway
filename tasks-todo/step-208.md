@@ -15,6 +15,17 @@ chaque item et matérialiser la porte de go-live.
 ## Points d'implémentation clés
 - La checklist référence les livrables : NFR (step-200/201), chaos par politique (step-202/203),
   sécurité (step-204/205), auth opérateur réelle (step-206), manifests (step-207).
+- **Dette du harnais de charge, à solder ici au plus tard** — deux points relevés en revue de step-200
+  et laissés ouverts parce qu'ils ne coûtent rien tant que la patte sortante est un simulateur. Ils
+  redeviennent bloquants au **premier run contre un SMSC réel**, c'est-à-dire au plus tard ici :
+  1. **Aucun verrou d'envoi.** `make load BASE_URL=<passerelle réelle>` avec une clé valide envoie
+     ~500 messages en profil `smoke`, ~480 000 en `sustained`, vers des numéros `+22507000xxxx` — un
+     préfixe Orange CI actif ; il n'existe aucune plage réservée aux tests en `+225`. Restreindre le
+     tirage ne suffit pas : c'est l'envoi qui doit devenir délibéré (opt-in explicite refusé par défaut
+     hors boucle locale).
+  2. **Le mot de passe de bind transite par `argv`** (`smpp-bindgen -password …`) : visible dans `ps`
+     pour tout utilisateur de la machine pendant tout le run, et dans l'historique du shell. Le lire
+     dans l'environnement, flag conservé en repli documenté comme non sûr.
 - Vérifier une dernière fois les **4 invariants** (a/b/c/d) verts sur l'ensemble avant go-live.
 - Item explicite : **auth opérateur réelle active** (le stub M1 n'est plus câblé).
 - Artefact documentaire (pas de code) : ne PAS inventer d'items — reprendre §15 du guide.
@@ -27,6 +38,7 @@ chaque item et matérialiser la porte de go-live.
 - [ ] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck · gosec verts
 - [ ] les 4 invariants (a/b/c/d) re-vérifiés verts · checklist §15 entièrement cochée avec preuves
 - [ ] auth opérateur réelle active · NFR et politiques de panne consignés
+- [ ] dette du harnais soldée : verrou d'envoi en place, aucun secret de bind sur `argv`
 
 ## Hors périmètre
 DR inter-région (RPO/RTO) — non-objectif (§16). Fin de M12 et du plan.
