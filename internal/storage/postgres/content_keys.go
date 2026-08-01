@@ -14,7 +14,7 @@ import (
 
 // ContentKeyRepo is the durable store for per-customer content keys (control_plane.content_keys, §6.14). It
 // persists only the KMS-wrapped DEK and its metadata — it holds no plaintext key and does no crypto; the
-// caller (billing-svc, which owns the KMS) generates and wraps the DEK before it reaches here. The
+// caller (content-key-svc, which owns the KMS) generates and wraps the DEK before it reaches here. The
 // content_keys_one_active_idx partial unique index is the source of truth for "at most one active key per
 // customer"; this repo serializes concurrent creates/rotations on the customer row so that invariant holds
 // without a lost update.

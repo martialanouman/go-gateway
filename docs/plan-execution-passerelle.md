@@ -469,7 +469,7 @@ Dès que ce flux passe un test bout-en-bout, l'architecture est prouvée. Les ja
 ## 14. M10 — Contenu, chiffrement & RGPD
 
 **Objectif :** stockage de contenu configurable et chiffré, effacement RGPD, rétention.
-**Dépend de :** M5 (CDR + policy), M9 (`content_keys` hébergé par `billing-svc`).
+**Dépend de :** M5 (CDR + policy), M9 (soldes/ledger). Les `content_keys` étaient initialement prévues chez `billing-svc` ; elles vivent dans un service dédié `content-key-svc` (seul détenteur de la KMS) — voir ADR-0011.
 
 **Livrables**
 

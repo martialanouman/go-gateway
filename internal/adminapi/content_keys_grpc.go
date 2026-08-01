@@ -8,13 +8,12 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/martialanouman/go-gateway/internal/billing/pb"
+	"github.com/martialanouman/go-gateway/internal/contentkeys/pb"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 )
 
-// GRPCContentKeyRotator adapts the ContentKeys gRPC client (billing-svc, the KMS holder) to the
-// ContentKeyRotator the Admin handler uses. It is the first admin→billing gRPC dependency: content keys are
-// hosted by billing-svc, so the Admin API delegates the rotation rather than touching the KMS itself.
+// GRPCContentKeyRotator adapts the ContentKeys gRPC client (content-key-svc, the sole KMS holder) to the
+// ContentKeyRotator the Admin handler uses: the Admin API delegates the rotation rather than holding a KMS.
 type GRPCContentKeyRotator struct {
 	client pb.ContentKeysClient
 }
@@ -24,7 +23,7 @@ func NewGRPCContentKeyRotator(client pb.ContentKeysClient) *GRPCContentKeyRotato
 	return &GRPCContentKeyRotator{client: client}
 }
 
-// Rotate delegates to billing-svc and maps its gRPC status back onto the shared error model.
+// Rotate delegates to content-key-svc and maps its gRPC status back onto the shared error model.
 func (r *GRPCContentKeyRotator) Rotate(ctx context.Context, customerID uuid.UUID) (ContentKeyView, error) {
 	resp, err := r.client.RotateContentKey(ctx, &pb.RotateContentKeyRequest{CustomerId: customerID.String()})
 	if err != nil {
@@ -70,7 +69,7 @@ func (r *GRPCContentKeyReader) Fetch(ctx context.Context, keyID uuid.UUID) (dek 
 }
 
 // ContentKeyEraser crypto-shreds all of a customer's content keys (erase-customer-content, step-164) via
-// billing-svc. Returns how many keys were destroyed. Declared consumer-side; *GRPCContentKeyEraser satisfies it.
+// content-key-svc. Returns how many keys were destroyed. Declared consumer-side; *GRPCContentKeyEraser satisfies it.
 type ContentKeyEraser interface {
 	Erase(ctx context.Context, customerID uuid.UUID) (destroyedCount int, err error)
 }
@@ -94,8 +93,8 @@ func (e *GRPCContentKeyEraser) Erase(ctx context.Context, customerID uuid.UUID) 
 	return int(resp.GetDestroyedCount()), nil
 }
 
-// mapContentKeyErr translates a billing-svc gRPC status into the platform error the Admin error model turns
-// into an HTTP status: an unknown customer is 404; a bad request 422; a conflict 409; billing-svc unreachable
+// mapContentKeyErr translates a content-key-svc gRPC status into the platform error the Admin error model turns
+// into an HTTP status: an unknown customer is 404; a bad request 422; a conflict 409; the key service unreachable
 // or slow is a transient 503 (retry once it recovers); anything else a 500.
 // It is shared by the rotate and the read paths, so its messages are operation-neutral.
 func mapContentKeyErr(err error) error {

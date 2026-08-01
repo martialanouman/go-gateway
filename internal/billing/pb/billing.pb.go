@@ -809,463 +809,6 @@ func (x *RecordMOResponse) GetFloored() bool {
 	return false
 }
 
-// GetOrCreateContentKeyRequest names the customer whose active key to fetch or create.
-type GetOrCreateContentKeyRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	CustomerId    string                 `protobuf:"bytes,1,opt,name=customer_id,json=customerId,proto3" json:"customer_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *GetOrCreateContentKeyRequest) Reset() {
-	*x = GetOrCreateContentKeyRequest{}
-	mi := &file_billing_proto_msgTypes[12]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *GetOrCreateContentKeyRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*GetOrCreateContentKeyRequest) ProtoMessage() {}
-
-func (x *GetOrCreateContentKeyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_billing_proto_msgTypes[12]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use GetOrCreateContentKeyRequest.ProtoReflect.Descriptor instead.
-func (*GetOrCreateContentKeyRequest) Descriptor() ([]byte, []int) {
-	return file_billing_proto_rawDescGZIP(), []int{12}
-}
-
-func (x *GetOrCreateContentKeyRequest) GetCustomerId() string {
-	if x != nil {
-		return x.CustomerId
-	}
-	return ""
-}
-
-// RotateContentKeyRequest names the customer whose key to rotate.
-type RotateContentKeyRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	CustomerId    string                 `protobuf:"bytes,1,opt,name=customer_id,json=customerId,proto3" json:"customer_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *RotateContentKeyRequest) Reset() {
-	*x = RotateContentKeyRequest{}
-	mi := &file_billing_proto_msgTypes[13]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *RotateContentKeyRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*RotateContentKeyRequest) ProtoMessage() {}
-
-func (x *RotateContentKeyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_billing_proto_msgTypes[13]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use RotateContentKeyRequest.ProtoReflect.Descriptor instead.
-func (*RotateContentKeyRequest) Descriptor() ([]byte, []int) {
-	return file_billing_proto_rawDescGZIP(), []int{13}
-}
-
-func (x *RotateContentKeyRequest) GetCustomerId() string {
-	if x != nil {
-		return x.CustomerId
-	}
-	return ""
-}
-
-// ContentKeyResponse is the metadata of a content key. It never carries the plaintext or wrapped data key.
-// status is one of active|retired|destroyed; created_at is RFC3339.
-type ContentKeyResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	KeyId         string                 `protobuf:"bytes,1,opt,name=key_id,json=keyId,proto3" json:"key_id,omitempty"`
-	CustomerId    string                 `protobuf:"bytes,2,opt,name=customer_id,json=customerId,proto3" json:"customer_id,omitempty"`
-	KmsKeyRef     string                 `protobuf:"bytes,3,opt,name=kms_key_ref,json=kmsKeyRef,proto3" json:"kms_key_ref,omitempty"`
-	Status        string                 `protobuf:"bytes,4,opt,name=status,proto3" json:"status,omitempty"`
-	CreatedAt     string                 `protobuf:"bytes,5,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *ContentKeyResponse) Reset() {
-	*x = ContentKeyResponse{}
-	mi := &file_billing_proto_msgTypes[14]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ContentKeyResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ContentKeyResponse) ProtoMessage() {}
-
-func (x *ContentKeyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_billing_proto_msgTypes[14]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ContentKeyResponse.ProtoReflect.Descriptor instead.
-func (*ContentKeyResponse) Descriptor() ([]byte, []int) {
-	return file_billing_proto_rawDescGZIP(), []int{14}
-}
-
-func (x *ContentKeyResponse) GetKeyId() string {
-	if x != nil {
-		return x.KeyId
-	}
-	return ""
-}
-
-func (x *ContentKeyResponse) GetCustomerId() string {
-	if x != nil {
-		return x.CustomerId
-	}
-	return ""
-}
-
-func (x *ContentKeyResponse) GetKmsKeyRef() string {
-	if x != nil {
-		return x.KmsKeyRef
-	}
-	return ""
-}
-
-func (x *ContentKeyResponse) GetStatus() string {
-	if x != nil {
-		return x.Status
-	}
-	return ""
-}
-
-func (x *ContentKeyResponse) GetCreatedAt() string {
-	if x != nil {
-		return x.CreatedAt
-	}
-	return ""
-}
-
-// GetContentEncryptionKeyRequest names the customer whose active data key to fetch (creating one if absent).
-type GetContentEncryptionKeyRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	CustomerId    string                 `protobuf:"bytes,1,opt,name=customer_id,json=customerId,proto3" json:"customer_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *GetContentEncryptionKeyRequest) Reset() {
-	*x = GetContentEncryptionKeyRequest{}
-	mi := &file_billing_proto_msgTypes[15]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *GetContentEncryptionKeyRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*GetContentEncryptionKeyRequest) ProtoMessage() {}
-
-func (x *GetContentEncryptionKeyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_billing_proto_msgTypes[15]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use GetContentEncryptionKeyRequest.ProtoReflect.Descriptor instead.
-func (*GetContentEncryptionKeyRequest) Descriptor() ([]byte, []int) {
-	return file_billing_proto_rawDescGZIP(), []int{15}
-}
-
-func (x *GetContentEncryptionKeyRequest) GetCustomerId() string {
-	if x != nil {
-		return x.CustomerId
-	}
-	return ""
-}
-
-// ContentEncryptionKeyResponse carries the active key id and its plaintext 32-byte data key. The dek is
-// SENSITIVE: it must never be logged nor persisted (only the body ciphertext it produces is stored).
-type ContentEncryptionKeyResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	KeyId         string                 `protobuf:"bytes,1,opt,name=key_id,json=keyId,proto3" json:"key_id,omitempty"`
-	Dek           []byte                 `protobuf:"bytes,2,opt,name=dek,proto3" json:"dek,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *ContentEncryptionKeyResponse) Reset() {
-	*x = ContentEncryptionKeyResponse{}
-	mi := &file_billing_proto_msgTypes[16]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ContentEncryptionKeyResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ContentEncryptionKeyResponse) ProtoMessage() {}
-
-func (x *ContentEncryptionKeyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_billing_proto_msgTypes[16]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ContentEncryptionKeyResponse.ProtoReflect.Descriptor instead.
-func (*ContentEncryptionKeyResponse) Descriptor() ([]byte, []int) {
-	return file_billing_proto_rawDescGZIP(), []int{16}
-}
-
-func (x *ContentEncryptionKeyResponse) GetKeyId() string {
-	if x != nil {
-		return x.KeyId
-	}
-	return ""
-}
-
-func (x *ContentEncryptionKeyResponse) GetDek() []byte {
-	if x != nil {
-		return x.Dek
-	}
-	return nil
-}
-
-// GetContentKeyRequest names a specific content key by id (the id a CDR row was sealed under).
-type GetContentKeyRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	KeyId         string                 `protobuf:"bytes,1,opt,name=key_id,json=keyId,proto3" json:"key_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *GetContentKeyRequest) Reset() {
-	*x = GetContentKeyRequest{}
-	mi := &file_billing_proto_msgTypes[17]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *GetContentKeyRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*GetContentKeyRequest) ProtoMessage() {}
-
-func (x *GetContentKeyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_billing_proto_msgTypes[17]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use GetContentKeyRequest.ProtoReflect.Descriptor instead.
-func (*GetContentKeyRequest) Descriptor() ([]byte, []int) {
-	return file_billing_proto_rawDescGZIP(), []int{17}
-}
-
-func (x *GetContentKeyRequest) GetKeyId() string {
-	if x != nil {
-		return x.KeyId
-	}
-	return ""
-}
-
-// GetContentKeyResponse carries the unwrapped data key, OR reports the key destroyed. dek is the plaintext
-// 32-byte data key (empty when destroyed); destroyed=true means the key was crypto-shredded and the content it
-// sealed is permanently unreadable. The dek is SENSITIVE: never logged, never persisted.
-type GetContentKeyResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Dek           []byte                 `protobuf:"bytes,1,opt,name=dek,proto3" json:"dek,omitempty"`
-	Destroyed     bool                   `protobuf:"varint,2,opt,name=destroyed,proto3" json:"destroyed,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *GetContentKeyResponse) Reset() {
-	*x = GetContentKeyResponse{}
-	mi := &file_billing_proto_msgTypes[18]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *GetContentKeyResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*GetContentKeyResponse) ProtoMessage() {}
-
-func (x *GetContentKeyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_billing_proto_msgTypes[18]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use GetContentKeyResponse.ProtoReflect.Descriptor instead.
-func (*GetContentKeyResponse) Descriptor() ([]byte, []int) {
-	return file_billing_proto_rawDescGZIP(), []int{18}
-}
-
-func (x *GetContentKeyResponse) GetDek() []byte {
-	if x != nil {
-		return x.Dek
-	}
-	return nil
-}
-
-func (x *GetContentKeyResponse) GetDestroyed() bool {
-	if x != nil {
-		return x.Destroyed
-	}
-	return false
-}
-
-// DestroyContentKeysRequest names the customer whose content keys to crypto-shred.
-type DestroyContentKeysRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	CustomerId    string                 `protobuf:"bytes,1,opt,name=customer_id,json=customerId,proto3" json:"customer_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *DestroyContentKeysRequest) Reset() {
-	*x = DestroyContentKeysRequest{}
-	mi := &file_billing_proto_msgTypes[19]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *DestroyContentKeysRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*DestroyContentKeysRequest) ProtoMessage() {}
-
-func (x *DestroyContentKeysRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_billing_proto_msgTypes[19]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use DestroyContentKeysRequest.ProtoReflect.Descriptor instead.
-func (*DestroyContentKeysRequest) Descriptor() ([]byte, []int) {
-	return file_billing_proto_rawDescGZIP(), []int{19}
-}
-
-func (x *DestroyContentKeysRequest) GetCustomerId() string {
-	if x != nil {
-		return x.CustomerId
-	}
-	return ""
-}
-
-// DestroyContentKeysResponse reports how many keys were destroyed (0 when already shredded — idempotent).
-type DestroyContentKeysResponse struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	DestroyedCount int32                  `protobuf:"varint,1,opt,name=destroyed_count,json=destroyedCount,proto3" json:"destroyed_count,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
-}
-
-func (x *DestroyContentKeysResponse) Reset() {
-	*x = DestroyContentKeysResponse{}
-	mi := &file_billing_proto_msgTypes[20]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *DestroyContentKeysResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*DestroyContentKeysResponse) ProtoMessage() {}
-
-func (x *DestroyContentKeysResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_billing_proto_msgTypes[20]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use DestroyContentKeysResponse.ProtoReflect.Descriptor instead.
-func (*DestroyContentKeysResponse) Descriptor() ([]byte, []int) {
-	return file_billing_proto_rawDescGZIP(), []int{20}
-}
-
-func (x *DestroyContentKeysResponse) GetDestroyedCount() int32 {
-	if x != nil {
-		return x.DestroyedCount
-	}
-	return 0
-}
-
 var File_billing_proto protoreflect.FileDescriptor
 
 const file_billing_proto_rawDesc = "" +
@@ -1317,37 +860,7 @@ const file_billing_proto_rawDesc = "" +
 	"\acredits\x18\x03 \x01(\x05R\acredits\"Q\n" +
 	"\x10RecordMOResponse\x12#\n" +
 	"\rbalance_after\x18\x01 \x01(\x05R\fbalanceAfter\x12\x18\n" +
-	"\afloored\x18\x02 \x01(\bR\afloored\"?\n" +
-	"\x1cGetOrCreateContentKeyRequest\x12\x1f\n" +
-	"\vcustomer_id\x18\x01 \x01(\tR\n" +
-	"customerId\":\n" +
-	"\x17RotateContentKeyRequest\x12\x1f\n" +
-	"\vcustomer_id\x18\x01 \x01(\tR\n" +
-	"customerId\"\xa3\x01\n" +
-	"\x12ContentKeyResponse\x12\x15\n" +
-	"\x06key_id\x18\x01 \x01(\tR\x05keyId\x12\x1f\n" +
-	"\vcustomer_id\x18\x02 \x01(\tR\n" +
-	"customerId\x12\x1e\n" +
-	"\vkms_key_ref\x18\x03 \x01(\tR\tkmsKeyRef\x12\x16\n" +
-	"\x06status\x18\x04 \x01(\tR\x06status\x12\x1d\n" +
-	"\n" +
-	"created_at\x18\x05 \x01(\tR\tcreatedAt\"A\n" +
-	"\x1eGetContentEncryptionKeyRequest\x12\x1f\n" +
-	"\vcustomer_id\x18\x01 \x01(\tR\n" +
-	"customerId\"G\n" +
-	"\x1cContentEncryptionKeyResponse\x12\x15\n" +
-	"\x06key_id\x18\x01 \x01(\tR\x05keyId\x12\x10\n" +
-	"\x03dek\x18\x02 \x01(\fR\x03dek\"-\n" +
-	"\x14GetContentKeyRequest\x12\x15\n" +
-	"\x06key_id\x18\x01 \x01(\tR\x05keyId\"G\n" +
-	"\x15GetContentKeyResponse\x12\x10\n" +
-	"\x03dek\x18\x01 \x01(\fR\x03dek\x12\x1c\n" +
-	"\tdestroyed\x18\x02 \x01(\bR\tdestroyed\"<\n" +
-	"\x19DestroyContentKeysRequest\x12\x1f\n" +
-	"\vcustomer_id\x18\x01 \x01(\tR\n" +
-	"customerId\"E\n" +
-	"\x1aDestroyContentKeysResponse\x12'\n" +
-	"\x0fdestroyed_count\x18\x01 \x01(\x05R\x0edestroyedCount*J\n" +
+	"\afloored\x18\x02 \x01(\bR\afloored*J\n" +
 	"\tDirection\x12\x19\n" +
 	"\x15DIRECTION_UNSPECIFIED\x10\x00\x12\x10\n" +
 	"\fDIRECTION_MT\x10\x01\x12\x10\n" +
@@ -1361,13 +874,7 @@ const file_billing_proto_rawDesc = "" +
 	"\aCapture\x12\x17.billing.CaptureRequest\x1a\x18.billing.CaptureResponse\x12<\n" +
 	"\aRelease\x12\x17.billing.ReleaseRequest\x1a\x18.billing.ReleaseResponse\x12H\n" +
 	"\vGetBalances\x12\x1b.billing.GetBalancesRequest\x1a\x1c.billing.GetBalancesResponse\x12?\n" +
-	"\bRecordMO\x12\x18.billing.RecordMORequest\x1a\x19.billing.RecordMOResponse2\xd7\x03\n" +
-	"\vContentKeys\x12[\n" +
-	"\x15GetOrCreateContentKey\x12%.billing.GetOrCreateContentKeyRequest\x1a\x1b.billing.ContentKeyResponse\x12Q\n" +
-	"\x10RotateContentKey\x12 .billing.RotateContentKeyRequest\x1a\x1b.billing.ContentKeyResponse\x12i\n" +
-	"\x17GetContentEncryptionKey\x12'.billing.GetContentEncryptionKeyRequest\x1a%.billing.ContentEncryptionKeyResponse\x12N\n" +
-	"\rGetContentKey\x12\x1d.billing.GetContentKeyRequest\x1a\x1e.billing.GetContentKeyResponse\x12]\n" +
-	"\x12DestroyContentKeys\x12\".billing.DestroyContentKeysRequest\x1a#.billing.DestroyContentKeysResponseB=Z;github.com/martialanouman/go-gateway/internal/billing/pb;pbb\x06proto3"
+	"\bRecordMO\x12\x18.billing.RecordMORequest\x1a\x19.billing.RecordMOResponseB=Z;github.com/martialanouman/go-gateway/internal/billing/pb;pbb\x06proto3"
 
 var (
 	file_billing_proto_rawDescOnce sync.Once
@@ -1382,31 +889,22 @@ func file_billing_proto_rawDescGZIP() []byte {
 }
 
 var file_billing_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_billing_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
+var file_billing_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_billing_proto_goTypes = []any{
-	(Direction)(0),                         // 0: billing.Direction
-	(OwnerType)(0),                         // 1: billing.OwnerType
-	(*Owner)(nil),                          // 2: billing.Owner
-	(*ReserveRequest)(nil),                 // 3: billing.ReserveRequest
-	(*ReserveResponse)(nil),                // 4: billing.ReserveResponse
-	(*CaptureRequest)(nil),                 // 5: billing.CaptureRequest
-	(*CaptureResponse)(nil),                // 6: billing.CaptureResponse
-	(*ReleaseRequest)(nil),                 // 7: billing.ReleaseRequest
-	(*ReleaseResponse)(nil),                // 8: billing.ReleaseResponse
-	(*GetBalancesRequest)(nil),             // 9: billing.GetBalancesRequest
-	(*Balance)(nil),                        // 10: billing.Balance
-	(*GetBalancesResponse)(nil),            // 11: billing.GetBalancesResponse
-	(*RecordMORequest)(nil),                // 12: billing.RecordMORequest
-	(*RecordMOResponse)(nil),               // 13: billing.RecordMOResponse
-	(*GetOrCreateContentKeyRequest)(nil),   // 14: billing.GetOrCreateContentKeyRequest
-	(*RotateContentKeyRequest)(nil),        // 15: billing.RotateContentKeyRequest
-	(*ContentKeyResponse)(nil),             // 16: billing.ContentKeyResponse
-	(*GetContentEncryptionKeyRequest)(nil), // 17: billing.GetContentEncryptionKeyRequest
-	(*ContentEncryptionKeyResponse)(nil),   // 18: billing.ContentEncryptionKeyResponse
-	(*GetContentKeyRequest)(nil),           // 19: billing.GetContentKeyRequest
-	(*GetContentKeyResponse)(nil),          // 20: billing.GetContentKeyResponse
-	(*DestroyContentKeysRequest)(nil),      // 21: billing.DestroyContentKeysRequest
-	(*DestroyContentKeysResponse)(nil),     // 22: billing.DestroyContentKeysResponse
+	(Direction)(0),              // 0: billing.Direction
+	(OwnerType)(0),              // 1: billing.OwnerType
+	(*Owner)(nil),               // 2: billing.Owner
+	(*ReserveRequest)(nil),      // 3: billing.ReserveRequest
+	(*ReserveResponse)(nil),     // 4: billing.ReserveResponse
+	(*CaptureRequest)(nil),      // 5: billing.CaptureRequest
+	(*CaptureResponse)(nil),     // 6: billing.CaptureResponse
+	(*ReleaseRequest)(nil),      // 7: billing.ReleaseRequest
+	(*ReleaseResponse)(nil),     // 8: billing.ReleaseResponse
+	(*GetBalancesRequest)(nil),  // 9: billing.GetBalancesRequest
+	(*Balance)(nil),             // 10: billing.Balance
+	(*GetBalancesResponse)(nil), // 11: billing.GetBalancesResponse
+	(*RecordMORequest)(nil),     // 12: billing.RecordMORequest
+	(*RecordMOResponse)(nil),    // 13: billing.RecordMOResponse
 }
 var file_billing_proto_depIdxs = []int32{
 	1,  // 0: billing.Owner.owner_type:type_name -> billing.OwnerType
@@ -1422,23 +920,13 @@ var file_billing_proto_depIdxs = []int32{
 	7,  // 10: billing.Billing.Release:input_type -> billing.ReleaseRequest
 	9,  // 11: billing.Billing.GetBalances:input_type -> billing.GetBalancesRequest
 	12, // 12: billing.Billing.RecordMO:input_type -> billing.RecordMORequest
-	14, // 13: billing.ContentKeys.GetOrCreateContentKey:input_type -> billing.GetOrCreateContentKeyRequest
-	15, // 14: billing.ContentKeys.RotateContentKey:input_type -> billing.RotateContentKeyRequest
-	17, // 15: billing.ContentKeys.GetContentEncryptionKey:input_type -> billing.GetContentEncryptionKeyRequest
-	19, // 16: billing.ContentKeys.GetContentKey:input_type -> billing.GetContentKeyRequest
-	21, // 17: billing.ContentKeys.DestroyContentKeys:input_type -> billing.DestroyContentKeysRequest
-	4,  // 18: billing.Billing.Reserve:output_type -> billing.ReserveResponse
-	6,  // 19: billing.Billing.Capture:output_type -> billing.CaptureResponse
-	8,  // 20: billing.Billing.Release:output_type -> billing.ReleaseResponse
-	11, // 21: billing.Billing.GetBalances:output_type -> billing.GetBalancesResponse
-	13, // 22: billing.Billing.RecordMO:output_type -> billing.RecordMOResponse
-	16, // 23: billing.ContentKeys.GetOrCreateContentKey:output_type -> billing.ContentKeyResponse
-	16, // 24: billing.ContentKeys.RotateContentKey:output_type -> billing.ContentKeyResponse
-	18, // 25: billing.ContentKeys.GetContentEncryptionKey:output_type -> billing.ContentEncryptionKeyResponse
-	20, // 26: billing.ContentKeys.GetContentKey:output_type -> billing.GetContentKeyResponse
-	22, // 27: billing.ContentKeys.DestroyContentKeys:output_type -> billing.DestroyContentKeysResponse
-	18, // [18:28] is the sub-list for method output_type
-	8,  // [8:18] is the sub-list for method input_type
+	4,  // 13: billing.Billing.Reserve:output_type -> billing.ReserveResponse
+	6,  // 14: billing.Billing.Capture:output_type -> billing.CaptureResponse
+	8,  // 15: billing.Billing.Release:output_type -> billing.ReleaseResponse
+	11, // 16: billing.Billing.GetBalances:output_type -> billing.GetBalancesResponse
+	13, // 17: billing.Billing.RecordMO:output_type -> billing.RecordMOResponse
+	13, // [13:18] is the sub-list for method output_type
+	8,  // [8:13] is the sub-list for method input_type
 	8,  // [8:8] is the sub-list for extension type_name
 	8,  // [8:8] is the sub-list for extension extendee
 	0,  // [0:8] is the sub-list for field type_name
@@ -1455,9 +943,9 @@ func file_billing_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_billing_proto_rawDesc), len(file_billing_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   21,
+			NumMessages:   12,
 			NumExtensions: 0,
-			NumServices:   2,
+			NumServices:   1,
 		},
 		GoTypes:           file_billing_proto_goTypes,
 		DependencyIndexes: file_billing_proto_depIdxs,

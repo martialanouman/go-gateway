@@ -6,10 +6,10 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/martialanouman/go-gateway/internal/billing/pb"
+	"github.com/martialanouman/go-gateway/internal/contentkeys/pb"
 )
 
-// GRPCDataKeyFetcher fetches a customer's active DEK from billing-svc (the sole KMS holder) via the guarded
+// GRPCDataKeyFetcher fetches a customer's active DEK from content-key-svc (the sole KMS holder) via the guarded
 // GetContentEncryptionKey RPC. It is the remote source behind DataKeyCache. The returned DEK is sensitive and
 // must never be logged.
 type GRPCDataKeyFetcher struct {
@@ -21,7 +21,7 @@ func NewGRPCDataKeyFetcher(client pb.ContentKeysClient) *GRPCDataKeyFetcher {
 	return &GRPCDataKeyFetcher{client: client}
 }
 
-// Fetch calls billing-svc for the customer's active key id and plaintext DEK.
+// Fetch calls content-key-svc for the customer's active key id and plaintext DEK.
 func (f *GRPCDataKeyFetcher) Fetch(ctx context.Context, customerID uuid.UUID) (DataKey, error) {
 	resp, err := f.client.GetContentEncryptionKey(ctx, &pb.GetContentEncryptionKeyRequest{CustomerId: customerID.String()})
 	if err != nil {

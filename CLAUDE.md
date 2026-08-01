@@ -22,7 +22,7 @@ make fake-smsc   # démarre le faux SMSC in-repo (pair de test — voir Tests)
 
 Trois plans : **contrôle** (config dans PostgreSQL, exposé par `admin-api-svc`, poussé au plan de données par `config-sync`), **données** (le traitement), **observabilité** (Prometheus/OTel/ClickHouse).
 
-Services (`cmd/`) : `smpp-server-svc` (binds utilisateurs), `rest-api-svc` (HTTP), `router-svc` (pipeline MT), `connector-pool-svc` (envoi SMSC), `mo-dlr-router-svc` (retour), `session-manager-svc` (registre Redis), `billing-svc` (opt-in), `admin-api-svc`, `config-sync`.
+Services (`cmd/`) : `smpp-server-svc` (binds utilisateurs), `rest-api-svc` (HTTP), `router-svc` (pipeline MT), `connector-pool-svc` (envoi SMSC), `mo-dlr-router-svc` (retour), `session-manager-svc` (registre Redis), `billing-svc` (opt-in), `content-key-svc` (garde des clés de contenu, seul détenteur de la KMS), `admin-api-svc`, `config-sync`.
 
 Magasins : **PostgreSQL 18** = plan de contrôle + autorité des soldes ; **Redis/Dragonfly** = état opérationnel (sessions, débit, Bloom, cache de solde) ; **Kafka** = plan de données durable (`mt.inbound` → `mt.routed` → …) ; **ClickHouse** = CDR/analytique.
 

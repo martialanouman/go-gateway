@@ -25,6 +25,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/connector/breaker"
 	"github.com/martialanouman/go-gateway/internal/content"
+	contentkeypb "github.com/martialanouman/go-gateway/internal/contentkeys/pb"
 	"github.com/martialanouman/go-gateway/internal/ingest"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
@@ -58,7 +59,7 @@ func run() error {
 
 	// Postgres for the startup route snapshot, Kafka for the data plane, ClickHouse for rejected
 	// CDR rows. No HTTP: the router has no client-facing listener.
-	cfg, err := config.Load(serviceName, config.SectionOTel, config.SectionPostgres, config.SectionKafka, config.SectionClickHouse, config.SectionRedis, config.SectionBilling)
+	cfg, err := config.Load(serviceName, config.SectionOTel, config.SectionPostgres, config.SectionKafka, config.SectionClickHouse, config.SectionRedis, config.SectionBilling, config.SectionContentKey)
 	if err != nil {
 		return err
 	}
@@ -203,7 +204,7 @@ func run() error {
 	// The credit stage (§6.9, step-145): a per-customer billing-scope snapshot gates the reserve, so a
 	// billing-disabled customer makes ZERO billing round-trip, and the billing gRPC client reserves credit
 	// for the rest. billing-svc is reached lazily (grpc.NewClient opens no connection until the first RPC),
-	// so a router that bills nobody never touches it and a down billing-svc does not block startup. The
+	// so a router that bills nobody never touches it and a down content-key-svc does not block startup. The
 	// scope snapshot is a boot dependency with the same retry discipline as the others, and — crucially — is
 	// rebuilt on every config invalidation below, so enabling billing for a customer takes effect without a
 	// restart.
@@ -227,7 +228,7 @@ func run() error {
 	// consumer group, separate from routing, committing at-least-once after the ClickHouse write so no accepted
 	// row is ever lost (a ClickHouse fault reprocesses the batch; a slow ClickHouse only lengthens the
 	// get-message 404 window, never the routing path). It also seals the body into the CDR per content_storage
-	// (step-162): the DEK comes from billing-svc via a TTL cache, so the body never reaches billing-svc; an
+	// (step-162): the DEK comes from content-key-svc via a TTL cache, so the body never reaches it; an
 	// unavailable DEK degrades to no-content (counted), never a stall. A fresh group starts at the LATEST
 	// offset — replaying the whole retained topic would re-insert every historical accepted row and storm
 	// billing for DEKs — so the deploy pins the start offset (runbook).
@@ -239,7 +240,14 @@ func run() error {
 	// change — critically an opt-out (stored_*→off) — takes effect without a restart (step-102).
 	var contentPolicyHolder content.PolicyHolder
 	contentPolicyHolder.Store(contentPolicy)
-	dekCache := content.NewDataKeyCache(content.NewGRPCDataKeyFetcher(pb.NewContentKeysClient(billingConn)))
+	// The data key comes from content-key-svc (the sole KMS holder), on its own connection: the body is
+	// sealed here and never reaches that service (step-162/167). Lazy dial, like the billing one.
+	contentKeyConn, err := grpc.NewClient(cfg.ContentKey.Addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return fmt.Errorf("dial content key service at %q: %w", cfg.ContentKey.Addr, err)
+	}
+	defer func() { _ = contentKeyConn.Close() }()
+	dekCache := content.NewDataKeyCache(content.NewGRPCDataKeyFetcher(contentkeypb.NewContentKeysClient(contentKeyConn)))
 	contentDropped := prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "accepted_content_dropped_total",
 		Help: "Message bodies dropped from the accepted CDR row because the content data key was unavailable.",

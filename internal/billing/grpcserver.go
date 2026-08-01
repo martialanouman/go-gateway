@@ -11,6 +11,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/billing/pb"
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
+	"github.com/martialanouman/go-gateway/internal/platform/errors/grpcerr"
 )
 
 // BalanceReader reads durable balances for GetBalances and for the balance_after fields of
@@ -60,7 +61,7 @@ func (s *Server) Reserve(ctx context.Context, req *pb.ReserveRequest) (*pb.Reser
 		return &pb.ReserveResponse{Reserved: false, BalanceAfter: i32(bal), Code: string(errs.ErrInsufficientCredit)}, nil
 	}
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, grpcerr.Status(err)
 	}
 	return &pb.ReserveResponse{Reserved: true, BalanceAfter: i32(bal)}, nil
 }
@@ -76,11 +77,11 @@ func (s *Server) Capture(ctx context.Context, req *pb.CaptureRequest) (*pb.Captu
 	}
 	charged, err := s.core.Capture(ctx, owner, messageID)
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, grpcerr.Status(err)
 	}
 	bal, err := s.mtBalance(ctx, owner)
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, grpcerr.Status(err)
 	}
 	return &pb.CaptureResponse{Captured: true, BalanceAfter: i32(bal), CreditsCharged: i32(charged)}, nil
 }
@@ -92,11 +93,11 @@ func (s *Server) Release(ctx context.Context, req *pb.ReleaseRequest) (*pb.Relea
 		return nil, err
 	}
 	if err := s.core.Release(ctx, owner, messageID); err != nil {
-		return nil, toStatus(err)
+		return nil, grpcerr.Status(err)
 	}
 	bal, err := s.mtBalance(ctx, owner)
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, grpcerr.Status(err)
 	}
 	return &pb.ReleaseResponse{Released: true, BalanceAfter: i32(bal)}, nil
 }
@@ -114,7 +115,7 @@ func (s *Server) GetBalances(ctx context.Context, req *pb.GetBalancesRequest) (*
 	}{{cp.BillingDirectionMT, pb.Direction_DIRECTION_MT}, {cp.BillingDirectionMO, pb.Direction_DIRECTION_MO}} {
 		credits, found, err := s.balances.Balance(ctx, owner.Type, owner.ID, d.dir)
 		if err != nil {
-			return nil, toStatus(err)
+			return nil, grpcerr.Status(err)
 		}
 		if found {
 			out = append(out, &pb.Balance{Direction: d.pb, Credits: i32(credits)})
@@ -135,7 +136,7 @@ func (s *Server) RecordMO(ctx context.Context, req *pb.RecordMORequest) (*pb.Rec
 	}
 	r, err := s.core.RecordMO(ctx, owner, messageID, int(req.GetCredits()))
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, grpcerr.Status(err)
 	}
 	return &pb.RecordMOResponse{BalanceAfter: i32(r.Balance), Floored: r.FloorReached || r.Suppressed}, nil
 }
@@ -194,39 +195,6 @@ func ownerTypeString(t pb.OwnerType) string {
 		return cp.OwnerTypeSMPPAccount
 	default:
 		return ""
-	}
-}
-
-// toStatus maps a domain error onto a gRPC status whose message is the flat wire code (§11.3) — the shared
-// contract clients branch on. An unrecognised error is Internal, never leaking its text.
-func toStatus(err error) error {
-	if err == nil {
-		return nil
-	}
-	code, ok := errs.CodeOf(err)
-	if !ok {
-		return status.Error(codes.Internal, string(errs.ErrInternal))
-	}
-	return status.Error(grpcCodeFor(code), string(code))
-}
-
-func grpcCodeFor(c errs.Code) codes.Code {
-	switch c {
-	case errs.ErrValidation:
-		return codes.InvalidArgument
-	case errs.ErrConflict:
-		return codes.Aborted
-	case errs.ErrNotFound:
-		return codes.NotFound
-	case errs.ErrInsufficientCredit:
-		return codes.FailedPrecondition
-	case errs.ErrExternalBillingUnavailable:
-		// A provider outage under fail_closed is transient: gRPC Unavailable tells the router to retry
-		// (the reserver returns any gRPC error raw → the pipeline treats it as a retryable fault), so a
-		// billed message is held, never sent unconfirmed nor permanently rejected.
-		return codes.Unavailable
-	default:
-		return codes.Internal
 	}
 }
 

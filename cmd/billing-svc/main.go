@@ -8,7 +8,6 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"log"
@@ -27,7 +26,6 @@ import (
 	"github.com/martialanouman/go-gateway/internal/billing"
 	"github.com/martialanouman/go-gateway/internal/billing/pb"
 	"github.com/martialanouman/go-gateway/internal/config"
-	"github.com/martialanouman/go-gateway/internal/content"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/platform/supervisor"
 	"github.com/martialanouman/go-gateway/internal/storage/postgres"
@@ -115,20 +113,8 @@ func run() error {
 		billing.WithDiscrepancyMetric(extDiscrepancyMetric{c: externalDiscrepancyTotal}),
 		billing.WithTolerance(reconcileTolerance), billing.WithReconcileLogger(logger))
 
-	// Content keys (§6.14, M10, step-161): billing-svc is the sole holder of the KMS, so it hosts the
-	// per-customer content-key lifecycle. This is independent of the billing opt-in — every customer that
-	// stores content needs a key. The real KMS provider is an infra decision (§14); until then a local KMS
-	// is built from CONTENT_KMS_MASTER_KEY, or an ephemeral dev key if unset (dev/test only — keys wrapped
-	// under an ephemeral master do not survive a restart).
-	kms, err := loadContentKMS(logger)
-	if err != nil {
-		return err
-	}
-	contentKeys := billing.NewContentKeyServer(kms, postgres.NewContentKeyRepo(pool))
-
 	grpcServer := grpc.NewServer()
 	pb.RegisterBillingServer(grpcServer, billing.NewServer(biller, repo))
-	pb.RegisterContentKeysServer(grpcServer, contentKeys)
 
 	// Both Redis and Postgres are vital: a balance can be neither served nor rehydrated without them, so a
 	// pod that loses either must leave the load balancer (plan §1.5).
@@ -271,30 +257,4 @@ func runGRPC(ctx context.Context, srv *grpc.Server, port int, timeout time.Durat
 			return nil
 		}
 	}
-}
-
-// contentKMSMasterKeyEnv holds a base64-std-encoded 32-byte AES-256 master key (KEK) for the local content
-// KMS. It is a dev/staging convenience until the real KMS provider (AWS/GCP/Vault) is wired (§14).
-const contentKMSMasterKeyEnv = "CONTENT_KMS_MASTER_KEY"
-
-// loadContentKMS builds the content KMS. With CONTENT_KMS_MASTER_KEY set (base64 of 32 bytes) it uses a
-// stable local master key, so wrapped content keys survive restarts; without it, it falls back to an
-// ephemeral in-memory dev key and warns — usable for tests and a single-process laptop, but any key wrapped
-// under it becomes unreadable after a restart. The real provider replaces this behind the content.KMS
-// interface with no call-site change.
-func loadContentKMS(logger *slog.Logger) (content.KMS, error) {
-	raw := os.Getenv(contentKMSMasterKeyEnv)
-	if raw == "" {
-		logger.Warn("no " + contentKMSMasterKeyEnv + " set: using an ephemeral dev content KMS master key (content keys will not survive a restart)")
-		return content.NewDevKMS(), nil
-	}
-	master, err := base64.StdEncoding.DecodeString(raw)
-	if err != nil {
-		return nil, fmt.Errorf("decode %s: %w", contentKMSMasterKeyEnv, err)
-	}
-	kms, err := content.NewLocalKMS(master, "local/v1")
-	if err != nil {
-		return nil, fmt.Errorf("build content KMS from %s: %w", contentKMSMasterKeyEnv, err)
-	}
-	return kms, nil
 }

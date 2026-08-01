@@ -27,6 +27,7 @@ var knownVars = []string{
 	"SMPP_BIND_MAX_FAILURES", "SMPP_BIND_FAILURE_WINDOW", "SMPP_BIND_BACKOFF_BASE", "SMPP_BIND_BACKOFF_MAX",
 	"SMPP_MAX_CONNS",
 	"BILLING_ADDR", "BILLING_RESERVE_TIMEOUT", "BILLING_SETTLE_TIMEOUT",
+	"CONTENT_KEY_ADDR",
 }
 
 // setEnv installs a clean environment holding exactly kv. Each variable goes through t.Setenv
@@ -129,6 +130,7 @@ func TestLoadFromEnvironment(t *testing.T) {
 		"SMPP_BIND_BACKOFF_MAX":       "1m",
 		"SMPP_MAX_CONNS":              "9000",
 		"BILLING_ADDR":                "billing:7001",
+		"CONTENT_KEY_ADDR":            "content-key:7002",
 		"BILLING_RESERVE_TIMEOUT":     "350ms",
 		"BILLING_SETTLE_TIMEOUT":      "150ms",
 	})
@@ -349,6 +351,15 @@ func TestProductionRejectsLocalhostDefaults(t *testing.T) {
 			"KAFKA_BROKERS":   "k1:9092",
 			"CLICKHOUSE_ADDR": "ch1:9000",
 		}, "REDIS_URL"},
+		// The key service is a client dial target like the others: shipping production with the loopback
+		// default would silently point content encryption at nothing (step-167).
+		{"content key defaulted", map[string]string{
+			"POSTGRES_URL":    "postgres://u:p@db:5432/gw",
+			"KAFKA_BROKERS":   "k1:9092",
+			"CLICKHOUSE_ADDR": "ch1:9000",
+			"REDIS_URL":       "redis://redis:6379",
+			"BILLING_ADDR":    "billing:7001",
+		}, "CONTENT_KEY_ADDR"},
 	}
 
 	for _, tc := range tests {
@@ -452,6 +463,7 @@ func TestDisabledOTelSkipsExporterValidation(t *testing.T) {
 		"REDIS_URL":                   "redis://cache:6379",
 		"SMPP_SESSION_MANAGER_ADDR":   "sessionmgr:7000",
 		"BILLING_ADDR":                "billing:7001",
+		"CONTENT_KEY_ADDR":            "content-key:7002",
 	})
 
 	cfg, err := config.Load("router-svc")

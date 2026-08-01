@@ -99,7 +99,15 @@ Registre faisant autorité (Redis) de tous les binds, dans les deux sens. Expose
 
 ### 3.7 `billing-svc` — moteur de crédit (déployé si activé)
 
-Possède `balances`, `billing_customers`, `billing_ledger`, `content_keys`. Expose l'API réserve/capture/libère (MT) et le compteur (MO), réconcilie le cache Redis avec le grand livre Postgres (l'autorité durable), et héberge l'adaptateur de facturation externe (§6.10). **Absent du chemin de requête quand la facturation est désactivée.**
+Possède `balances`, `billing_customers`, `billing_ledger`. Expose l'API réserve/capture/libère (MT) et le compteur (MO), réconcilie le cache Redis avec le grand livre Postgres (l'autorité durable), et héberge l'adaptateur de facturation externe (§6.10). **Absent du chemin de requête quand la facturation est désactivée.**
+
+### 3.7bis `content-key-svc` — garde des clés de contenu (gRPC :7002)
+
+Possède `content_keys` et détient la **KMS** : la clé maître (KEK) qui scelle la clé de données (DEK) de
+chaque client. C'est le **seul** process où vit la KEK, et sa surface est réduite à ce strict nécessaire
+(Postgres + gRPC — pas de Redis, pas de Kafka, pas de HTTP) pour que le dépositaire reste petit et
+auditable. Le corps d'un message ne l'atteint jamais : les appelants récupèrent la DEK (en cache TTL) et
+chiffrent chez eux. Historiquement hébergé par `billing-svc` — voir ADR-0011.
 
 ### 3.8 `admin-api-svc` — API du plan de contrôle
 

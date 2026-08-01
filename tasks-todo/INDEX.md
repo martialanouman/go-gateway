@@ -123,6 +123,7 @@ Légende : `[x]` = fait (dans `tasks-done/`) · `[ ]` = à faire (dans `tasks-to
 - [x] step-164 — Crypto-shred : destruction de clé + erase-customer-content
 - [x] step-165 — Rétention & tiering par drop de partition (§6.14)
 - [x] step-166 — Effacement RGPD (client + MSISDN) + attestation asynchrone
+- [x] step-167 — Extraire la garde des clés de contenu dans un service dédié (content-key-svc)
 
 ## M11 — Observabilité complète & temps réel
 - [ ] step-180 — Catalogue de métriques à labels BORNÉS + test de garde de cardinalité
