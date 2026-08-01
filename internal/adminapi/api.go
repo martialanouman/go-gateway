@@ -81,6 +81,7 @@ func New(deps Deps) (*chi.Mux, huma.API) {
 	registerStreams(api, deps.StreamHub, deps.Quit, deps.Logger)
 	registerMessageTrace(api, deps.Trace)
 	registerMessageSearch(api, deps.MessageSearch, deps.Customers)
+	registerMessageExport(api, deps.ExportJobs, deps.MessageSearch, deps.ExportSink, deps.Customers, deps.GDPRRunner, deps.Logger)
 
 	humaspec.Prune(api, codesMetaKey)
 
@@ -98,12 +99,13 @@ func operatorSecurityScheme() *huma.SecurityScheme {
 			ClientCredentials: &huma.OAuthFlow{
 				TokenURL: "https://admin.gateway.internal/oauth/token",
 				Scopes: map[string]string{
-					string(auth.ScopeAdminRead):    "Read control-plane configuration.",
-					string(auth.ScopeAdminWrite):   "Modify control-plane configuration.",
-					string(auth.ScopeContentRead):  "Read message content under audit.",
-					string(auth.ScopeContentErase): "Erase stored message content.",
-					string(auth.ScopeMSISDNReveal): "See subscriber numbers unmasked (search, trace and export mask them otherwise).",
-					string(auth.ScopeGDPRErase):    "Erase a customer's data (GDPR).",
+					string(auth.ScopeAdminRead):     "Read control-plane configuration.",
+					string(auth.ScopeAdminWrite):    "Modify control-plane configuration.",
+					string(auth.ScopeContentRead):   "Read message content under audit.",
+					string(auth.ScopeContentErase):  "Erase stored message content.",
+					string(auth.ScopeMSISDNReveal):  "See subscriber numbers unmasked (search, trace and export mask them otherwise).",
+					string(auth.ScopeGDPRErase):     "Erase a customer's data (GDPR).",
+					string(auth.ScopeCDRExportBulk): "Create and read bulk CDR exports.",
 				},
 			},
 		},

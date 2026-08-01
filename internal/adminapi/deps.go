@@ -145,8 +145,14 @@ type Deps struct {
 	// Trace reads a message lifecycle for get-message-trace (step-185).
 	Trace TraceStore
 
-	// MessageSearch reads the CDR for search-messages (step-186).
+	// MessageSearch reads the CDR for search-messages (step-186) and feeds the export worker.
 	MessageSearch SearchStore
+
+	// ExportJobs and ExportSink back the asynchronous export (step-187). A nil sink means the
+	// deployment has no export storage: create-message-export then answers 503 rather than queueing a
+	// job nothing can fulfil.
+	ExportJobs ExportJobStore
+	ExportSink ExportSink
 
 	Customers        CustomerStore
 	Accounts         AccountStore
