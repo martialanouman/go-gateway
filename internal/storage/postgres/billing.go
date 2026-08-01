@@ -380,6 +380,11 @@ func (r *BillingRepo) LedgerEntryExists(ctx context.Context, messageID uuid.UUID
 	return exists, nil
 }
 
+// maxOrphanBatch caps one reaper sweep whatever the caller asks for. It keeps the row cap inside int32 (the
+// column type sqlc generates) and makes an unbounded read impossible: this is the one query in billing-svc
+// that could otherwise scan an entire backlog in a single pass and stall the service.
+const maxOrphanBatch = 10_000
+
 // OrphanedReservations lists reservations the settle loop never closed — a `reserve` claim with neither a
 // capture nor a release, older than the cutoff (step-190). connector-pool settles fail-open, so a billing
 // outage leaves the reserve debit standing and the customer charged for a message that may never have been
@@ -390,6 +395,9 @@ func (r *BillingRepo) LedgerEntryExists(ctx context.Context, messageID uuid.UUID
 // flight. limit bounds one pass — the sweep is periodic, so an unbounded read would be the one query able
 // to stall the billing service.
 func (r *BillingRepo) OrphanedReservations(ctx context.Context, olderThan time.Time, limit int) ([]cp.OrphanedReservation, error) {
+	if limit <= 0 || limit > maxOrphanBatch {
+		limit = maxOrphanBatch
+	}
 	rows, err := r.q.ListOrphanedReservations(ctx, sqlcgen.ListOrphanedReservationsParams{
 		OlderThan: tsFrom(olderThan), RowLimit: int32(limit),
 	})

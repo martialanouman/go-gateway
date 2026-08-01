@@ -228,6 +228,17 @@ type Billing struct {
 	// send pipeline; capture/release do a synchronous durable write, so it must stay above that commit
 	// latency, and is a knob ops can widen without a redeploy. Capture/release are idempotent by message_id.
 	SettleTimeout time.Duration `env:"SETTLE_TIMEOUT" envDefault:"200ms"`
+
+	// ReaperMinAge is how long a reservation must sit unsettled before billing-svc's reaper reconciles it
+	// (step-190). The nominal settle lands milliseconds after the SMSC responds, so anything still open
+	// past this window is genuinely stuck rather than in flight. Too short is the dangerous direction: the
+	// reaper would race connector-pool and settle live messages. Ops widens it per deployment once the
+	// real time-to-terminal-outcome is measured under load (step-200/201).
+	ReaperMinAge time.Duration `env:"REAPER_MIN_AGE" envDefault:"15m"`
+
+	// ReaperInterval is how often the reaper sweeps. Reconciliation is not urgent — the money is already
+	// recorded, only its settlement is late — so a slow cadence keeps the sweep well off the hot path.
+	ReaperInterval time.Duration `env:"REAPER_INTERVAL" envDefault:"5m"`
 }
 
 // ContentKey configures a service's CLIENT connection to content-key-svc (the gRPC server on :7002,
