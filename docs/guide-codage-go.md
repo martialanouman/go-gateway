@@ -318,6 +318,10 @@ func (b Body) Reveal() []byte          { return b.b } // explicit, greppable, au
 
 **[MUST]** Métriques Prometheus : compteurs et histogrammes avec des labels **bornés** (compte, connecteur, route, statut). **Jamais** de label à cardinalité non bornée (MSISDN, `message_id`, corps). Le groupe client n'est pas un label — il se dérive du compte (§6.17).
 
+Cette règle est **appliquée, pas seulement écrite** : `OpsServer.Registry()` renvoie un registre gardé (`internal/observability/metrics`) qui contrôle deux fois — il **refuse l'enregistrement** d'un collecteur dont un label déclaré sort du vocabulaire borné, et il **écarte à la collecte** une famille dont un label réellement exposé en sort (un collecteur écrit à la main peut déclarer un label et en émettre un autre : Prometheus identifie un `Desc` par son nom et ses labels constants, il ne le voit pas). Les services enregistrent au démarrage avec `MustRegister` : un mauvais label fait donc échouer le boot, dans n'importe quel service, au lieu de gonfler un TSDB de production. Élargir la liste blanche ne suffit pas à contourner la garde — la liste noire (MSISDN, `message_id`, corps, adresses…) est consultée **avant**. Question à se poser avant d'ajouter un label : *qui choisit cette valeur ?* Si la réponse est « l'expéditeur », ce n'est pas un label.
+
+**[SHOULD]** Déclarer une métrique transverse dans le **catalogue** (`internal/observability/metrics.Catalog`) plutôt que dans un `main.go` : un nom choisi deux fois avec des labels différents est inrequêtable, et `customer_id` sur un histogramme se paie en `buckets × clients` (règle : `customer_id` sur compteurs et jauges, jamais sur un histogramme).
+
 **[SHOULD]** Exposer les métriques métier clés : latence d'ingestion, latence bout-en-bout, taux de rejet par cause, profondeur de file par topic, état de disjoncteur par connecteur, taux de timeout de script, fraîcheur du cache de solde.
 
 ---

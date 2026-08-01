@@ -28,6 +28,7 @@ import (
 	contentkeypb "github.com/martialanouman/go-gateway/internal/contentkeys/pb"
 	"github.com/martialanouman/go-gateway/internal/ingest"
 	"github.com/martialanouman/go-gateway/internal/observability"
+	"github.com/martialanouman/go-gateway/internal/observability/metrics"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	"github.com/martialanouman/go-gateway/internal/pipeline/antispam"
 	"github.com/martialanouman/go-gateway/internal/pipeline/credit"
@@ -193,12 +194,10 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("load routing scripts: %w", err)
 	}
-	// routing_script_failures_total: bounded labels (runtime, reason) — never a body or script text.
-	scriptFailures := prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "routing_script_failures_total",
-		Help: "Routing scripts that fell back to declarative resolution, by runtime and reason.",
-	}, []string{"runtime", "reason"})
-	scriptResolver := routing.NewScriptResolver(scriptSnap, logger, scriptMeter{c: scriptFailures})
+	// The metric catalogue (step-180) declares routing_script_failures_total and its bounded labels
+	// (runtime, reason) — never a body or script text.
+	catalog := metrics.NewCatalog()
+	scriptResolver := routing.NewScriptResolver(scriptSnap, logger, scriptMeter{c: catalog.RoutingScriptFailures})
 	resolver := routing.NewL0Resolver(exact.NewResolver(exactBloom, rdb), scriptResolver, snapshot)
 
 	// The credit stage (§6.9, step-145): a per-customer billing-scope snapshot gates the reserve, so a
@@ -282,7 +281,14 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("init ops server: %w", err)
 	}
-	ops.Registry().MustRegister(failOpenTotal, scriptFailures, contentDropped)
+	ops.Registry().MustRegister(failOpenTotal, contentDropped)
+	// Only the catalogue metric this service already feeds. The rest of the catalogue is registered by
+	// whoever starts emitting it (step-182): an always-absent series is better than an always-zero one,
+	// which reads as "measured, and nothing happened".
+	//
+	// step-182: do NOT simply add MustRegister(catalog.Collectors()...) here — Collectors() includes this
+	// one, and the duplicate panics at boot. Register the newly fed metrics, or replace this line.
+	ops.Registry().MustRegister(catalog.RoutingScriptFailures)
 
 	// bloom_last_reload / bloom_capacity_bits: labelled by filter (exact | optout), no unbounded labels.
 	// The timestamp lets an alert fire on a stale filter; the capacity tracks growth after a reload.

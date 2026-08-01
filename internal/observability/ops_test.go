@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/observability"
 )
@@ -316,6 +318,31 @@ func TestRegistryIsUsableByServices(t *testing.T) {
 	}
 	if ops.Registry() == nil {
 		t.Fatal("Registry() = nil; services have nowhere to register their metrics")
+	}
+	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "probe_total", Help: "h"},
+		[]string{"connector_id"})
+	if err := ops.Registry().Register(counter); err != nil {
+		t.Fatalf("a bounded collector was refused: %v", err)
+	}
+}
+
+// TestRegistryEnforcesTheCardinalityGuard is what keeps the guard wired in. NewOpsServer is the ONE line that
+// makes it effective across all eight services, and nothing else would notice its removal: every caller only
+// uses MustRegister, so swapping the guarded registry back for a plain prometheus.Registry compiles cleanly
+// and leaves every other test green — with the guard silently off in production.
+func TestRegistryEnforcesTheCardinalityGuard(t *testing.T) {
+	ops, err := observability.NewOpsServer(testConfig(t), discardLogger())
+	if err != nil {
+		t.Fatalf("NewOpsServer() error = %v", err)
+	}
+
+	leaky := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "leaky_total",
+		Help: "one series per destination number",
+	}, []string{"msisdn"})
+
+	if err := ops.Registry().Register(leaky); err == nil {
+		t.Fatal("the ops registry accepted an msisdn label: the cardinality guard is not wired in")
 	}
 }
 
