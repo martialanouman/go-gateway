@@ -98,6 +98,27 @@ generate: proto ## Run every code generator (sqlc, go:generate, buf)
 tidy: ## Tidy go.mod/go.sum
 	go mod tidy
 
+## ---------------------------------------------------------------------------- load (M12)
+
+# k6 is a native binary, deliberately outside go.mod (plan §1.3) — `make tools` cannot install it.
+# Both targets fail loudly when it is missing rather than skipping: a load harness believed green
+# because it never ran is worse than no harness (step-200 D7).
+LOAD_PROFILE ?= smoke
+
+.PHONY: load
+load: ## Run the REST load profile against BASE_URL: make load LOAD_PROFILE=smoke|sustained|peak BASE_URL=http://host:port
+	@command -v k6 >/dev/null 2>&1 || { echo "k6 is not installed — see scripts/load-smoke.sh for install hints"; exit 2; }
+	@if [ -z "$(BASE_URL)" ]; then echo "usage: make load BASE_URL=http://host:port [LOAD_PROFILE=smoke|sustained|peak]"; exit 2; fi
+	PROFILE=$(LOAD_PROFILE) BASE_URL=$(BASE_URL) k6 run test/load/k6/messages.js
+
+.PHONY: load-smoke
+load-smoke: ## Prove the k6 thresholds are wired: the same script must pass idle AND fail against a slowed stub
+	scripts/load-smoke.sh
+
+.PHONY: load-binds
+load-binds: ## Open N concurrent SMPP binds against a peer: make load-binds BINDS=50 ADDR=127.0.0.1:2775
+	go run ./cmd/smpp-bindgen -binds $(or $(BINDS),50) -addr $(or $(ADDR),127.0.0.1:2775) -hold $(or $(HOLD),5s)
+
 ## ---------------------------------------------------------------------------- quality gates
 
 .PHONY: test

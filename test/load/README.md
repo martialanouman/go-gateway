@@ -1,0 +1,68 @@
+# Harnais de charge (M12)
+
+Deux instruments : un script **k6** qui martèle l'API REST, et un **générateur de binds SMPP** en Go
+pour l'ingress. Ils encodent les NFR de §1.2 de la spec — soutenu 8 000 SMS/s, pic 15 000, ingestion
+p99 < 250 ms.
+
+## Prérequis
+
+`k6` est un binaire natif, **hors `go.mod`** (plan §1.3) : `make tools` ne l'installe pas.
+
+```bash
+brew install k6          # macOS — sinon https://grafana.com/docs/k6/latest/set-up/install-k6/
+```
+
+Les cibles échouent en dur s'il manque, elles ne se skippent pas : un harnais qu'on croit vert parce
+qu'il ne s'est pas exécuté est pire que pas de harnais.
+
+## Ce que ce harnais prouve — et ce qu'il ne prouve pas
+
+`make load-smoke` vérifie que **l'instrument fonctionne**, pas que le système tient la charge. Il
+lance le même script deux fois : contre un stub instantané (doit passer) puis contre le même stub
+ralenti à 300 ms (doit échouer). Le second run est la vraie assertion — un run de charge contre un
+stub local passe trivialement, donc un vert seul ne signifie rien.
+
+La tenue réelle à 8 000 req/s se mesure sur matériel réel, avec le pipeline complet : c'est
+**step-201**, pas ici.
+
+## Cibles
+
+```bash
+make load-smoke                                        # fumigation : passe à vide, tombe sous contrainte
+make load BASE_URL=http://localhost:8080               # profil smoke contre une vraie passerelle
+make load LOAD_PROFILE=sustained BASE_URL=http://…     # 8 000 req/s  — jamais en CI
+make load LOAD_PROFILE=peak      BASE_URL=http://…     # 15 000 req/s — jamais en CI
+make load-binds BINDS=200 ADDR=127.0.0.1:2775          # N binds SMPP concurrents
+```
+
+Variables du script k6 : `PROFILE`, `BASE_URL`, `API_KEY`, `SENDER_ID`.
+
+## Les seuils
+
+| Seuil | Valeur | Où |
+|---|---|---|
+| Ingestion p99 | < 250 ms | `thresholds.http_req_duration` |
+| Taux d'erreur HTTP | < 1 % | `thresholds.http_req_failed` |
+| Réponses 202 | > 99 % | `thresholds` sur le check nommé |
+
+k6 sort en **code 99** quand un seuil tombe : c'est ce code qui porte le critère « le run échoue si
+p99 dépasse le budget ».
+
+Le troisième seuil n'est pas décoratif : sans lui, un run où tout répondrait 401 en sub-milliseconde
+passerait le budget de latence en beauté.
+
+**Le budget bout-en-bout p99 < 2 s n'est pas encodé ici**, et ce n'est pas un oubli : k6 mesure
+soumission → réponse HTTP, il ne voit jamais la patte SMSC. Le mesurer exige de corréler les
+horodatages de sortie (fake SMSC ou CDR ClickHouse) — c'est un prérequis de step-201. N'ajoutez pas
+un seuil k6 pour ça, il mesurerait l'ingestion sous un autre nom.
+
+## Contenu
+
+| Chemin | Rôle |
+|---|---|
+| `k6/messages.js` | script REST, profils et seuils |
+| `stub/` | stub du contrat `/v1/messages` à délai réglable — la cible du run négatif |
+| `bindgen/` | ouverture de N binds SMPP concurrents (logique testable) |
+| `../../cmd/smpp-bindgen` | ligne de commande du générateur |
+| `../../cmd/load-stub` | ligne de commande du stub |
+| `../../scripts/load-smoke.sh` | orchestration du couple positif/négatif |
