@@ -39,6 +39,13 @@ type webhookRetry struct {
 	// FirstAttemptAt is when the event was FIRST tried, carried unchanged across passes: the maximum-age
 	// bound is measured from it, and resetting it per pass would let a doomed event cycle forever.
 	FirstAttemptAt time.Time `json:"first_attempt_at"`
+	// NotBefore is the ABSOLUTE instant this event becomes due, stamped here at defer time rather than
+	// left as a duration for the consumer to re-apply. That distinction sets the drain's throughput: with
+	// a duration, an event that already waited its backoff sitting in the queue would sleep the whole
+	// backoff AGAIN, capping the drain near one event per backoff and letting one dead account's queue
+	// starve every account behind it. With an instant, a queued event arrives already due and is attempted
+	// at once.
+	NotBefore time.Time `json:"not_before"`
 	// Reason is why the last attempt failed. Diagnostic only, never the payload.
 	Reason string `json:"reason"`
 }
@@ -54,6 +61,7 @@ func (s *WebhookRetrySink) Defer(ctx context.Context, wh cp.Webhook, ev webhook.
 		Payload:        ev.Payload,
 		Attempt:        attempt,
 		FirstAttemptAt: firstAt,
+		NotBefore:      time.Now().Add(paceFor(attempt)),
 		Reason:         reason,
 	})
 	if err != nil {
