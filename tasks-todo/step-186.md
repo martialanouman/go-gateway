@@ -1,6 +1,6 @@
 # step-186 — search-messages avec masquage MSISDN par rôle
 
-> **Jalon :** M11 (§15 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
+> **Jalon :** M11 (§15 `docs/plan-execution-passerelle.md`) · **Statut :** LIVRÉ
 > **Dépend de :** step-185 · **Bloque :** step-187
 
 ## But
@@ -25,9 +25,11 @@ Offrir aux opérateurs la recherche de messages (par plage de dates, client, con
 - Aucun corps dans les résultats.
 
 ## Definition of Done
-- [ ] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts
-- [ ] critères couverts par tests · godoc sur l'exporté · **invariant (a)** respecté
-- [ ] masquage MSISDN par rôle testé ; collection synchronisée
+- [x] gofmt/goimports · golangci-lint (0 issue) · `go test -race ./...` · govulncheck verts
+- [x] critères couverts par tests · godoc sur l'exporté · **invariant (a)** respecté
+      (`TestSearchNeverSerialisesContent` sur le JSON sérialisé)
+- [x] masquage MSISDN par rôle testé (`TestSearchMasksMSISDNWithoutTheRevealScope` /
+      `TestSearchRevealsMSISDNWithTheScope`) ; collection synchronisée
 
 ## Hors périmètre
 Export asynchrone → step-187.
