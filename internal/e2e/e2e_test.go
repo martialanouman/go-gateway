@@ -24,6 +24,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/credential"
 	"github.com/martialanouman/go-gateway/internal/ingest"
 	"github.com/martialanouman/go-gateway/internal/observability"
+	"github.com/martialanouman/go-gateway/internal/outcome"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	"github.com/martialanouman/go-gateway/internal/pipeline/antispam"
 	"github.com/martialanouman/go-gateway/internal/pipeline/optout"
@@ -165,8 +166,12 @@ func buildStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg config
 	if err != nil {
 		t.Fatalf("connector consumer: %v", err)
 	}
+	// The enroute row is no longer written by the pool: it publishes the outcome on mt.outcome and a
+	// dedicated group projects it (step-201c). The pool therefore NEEDS a producer — without one its
+	// outcomes are dropped on the floor and no message ever leaves "accepted".
 	conn := connectorpool.New(connectorpool.Deps{
 		Consumer: connConsumer,
+		Producer: producer,
 		CDR:      cdrWriter,
 		Bind: connectorpool.BindConfig{
 			Addr: smsc.Addr(), SystemID: "gateway", Password: "pw",
@@ -176,6 +181,12 @@ func buildStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg config
 		Tracer: observability.Tracer(rec.Provider(), "connector"),
 	})
 
+	outcomeConsumer, err := kafka.NewConsumer(kafkaCfg, "e2e-outcome", kafka.TopicMTOutcome)
+	if err != nil {
+		t.Fatalf("outcome consumer: %v", err)
+	}
+	outcomeProjector := outcome.NewProjector(outcomeConsumer, cdrWriter, nil)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
 	start := func(fn func(context.Context) error) {
@@ -183,6 +194,7 @@ func buildStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg config
 		go func() { defer wg.Done(); _ = fn(ctx) }()
 	}
 	start(acceptedProjector.Run)
+	start(outcomeProjector.Run)
 	start(rtr.Run)
 	start(conn.Run)
 
@@ -193,6 +205,7 @@ func buildStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg config
 		producer.Close()
 		routerConsumer.Close()
 		connConsumer.Close()
+		outcomeConsumer.Close()
 		_ = chConn.Close()
 	})
 

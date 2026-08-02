@@ -93,6 +93,7 @@ func TestNewRouterAppBuildsTheWholeGraph(t *testing.T) {
 		"ops":      app.ops,
 		"router":   app.router,
 		"accepted": app.accepted,
+		"outcome":  app.outcome,
 		"watcher":  app.watcher,
 		"emitter":  app.emitter,
 		"consumer": app.consumer,

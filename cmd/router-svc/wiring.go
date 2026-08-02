@@ -23,6 +23,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/metricstream"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/observability/metrics"
+	"github.com/martialanouman/go-gateway/internal/outcome"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	"github.com/martialanouman/go-gateway/internal/pipeline/antispam"
 	"github.com/martialanouman/go-gateway/internal/pipeline/credit"
@@ -49,6 +50,7 @@ type routerApp struct {
 	ops      *observability.OpsServer
 	router   *router.Router
 	accepted *ingest.AcceptedConsumer
+	outcome  *outcome.Projector
 	watcher  *config.Watcher
 	emitter  *metricstream.Emitter
 	consumer *kafka.Consumer
@@ -70,9 +72,9 @@ func (a *routerApp) close() {
 	}
 }
 
-// newRouterApp builds the whole router graph: stores, boot snapshots, MT pipeline, accepted-CDR
-// projector, realtime feed, ops server and hot-reload watcher — in that order, which is the order in
-// which a degraded dependency must surface.
+// newRouterApp builds the whole router graph: stores, boot snapshots, MT pipeline, the two CDR
+// projectors (accepted, outcome), realtime feed, ops server and hot-reload watcher — in that order,
+// which is the order in which a degraded dependency must surface.
 //
 // On failure it releases whatever it had already opened, so a caller that gets an error holds
 // nothing.
@@ -123,6 +125,13 @@ func newRouterApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 	}
 	a.onClose(proj.close)
 	a.accepted = proj.consumer
+
+	outc, err := newOutcomeProjector(cfg, st.ch, logger)
+	if err != nil {
+		return nil, err
+	}
+	a.onClose(outc.close)
+	a.outcome = outc.projector
 
 	stream, err := newMetricStream(cfg)
 	if err != nil {
@@ -450,6 +459,46 @@ func newAcceptedProjector(ctx context.Context, cfg config.Config, pool *pgxpool.
 	}
 	p.consumer = ingest.NewAcceptedConsumer(p.kafka, clickhouse.NewCDRWriter(ch), p.sealer, logger)
 	return p, nil
+}
+
+// outcomeProjector is the durable enroute/failed CDR projection (step-201c, D1): connector-pool-svc
+// publishes each send outcome on mt.outcome and commits, and this consumer batches them into ClickHouse.
+//
+// It runs HERE, in router-svc, and not in the pool that produces it, for three reasons. It is the same
+// projection the service already hosts for the accepted row — same shape, same store, same runbook — so
+// the whole MT CDR projection is one thing to reason about and to scale. A pool pod is bound to ONE
+// connector (its mt.routed group carries the connector id), whereas mt.outcome is fleet-wide: hosting it
+// there would either give every connector's pool its own group — each writing every other connector's
+// rows — or one group shared across pods of different connectors, making a connector's CDR depend on how
+// many pods some other connector happens to run. And re-entering ClickHouse into the pool's process is
+// what this step exists to undo: the pool's readiness already gates on ClickHouse, so a saturated store
+// would drain the very pods that must keep submitting.
+//
+// Its own consumer group, separate from the accepted one, so neither projection can stall the other.
+type outcomeProjector struct {
+	projector *outcome.Projector
+	kafka     *kafka.Consumer
+}
+
+func (p *outcomeProjector) close() {
+	if p.kafka != nil {
+		p.kafka.Close()
+	}
+}
+
+// newOutcomeProjector wires the projection. Like the accepted one, a fresh group starts at the LATEST
+// offset: replaying the whole retained topic would re-insert every historical outcome row — harmless
+// under the ReplacingMergeTree, but a write storm for no gain — so the deploy pins the start offset
+// (runbook).
+func newOutcomeProjector(cfg config.Config, ch *clickhouse.Conn, logger *slog.Logger) (*outcomeProjector, error) {
+	consumer, err := kafka.NewConsumerFromLatest(cfg.Kafka, serviceName+"-outcome-cdr", kafka.TopicMTOutcome)
+	if err != nil {
+		return nil, fmt.Errorf("kafka outcome-cdr consumer: %w", err)
+	}
+	return &outcomeProjector{
+		projector: outcome.NewProjector(consumer, clickhouse.NewCDRWriter(ch), logger),
+		kafka:     consumer,
+	}, nil
 }
 
 // metricStream is the realtime dashboard feed (§1.6, step-182). It is BEST-EFFORT throughout: a

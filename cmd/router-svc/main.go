@@ -79,6 +79,13 @@ func run() error {
 	g.Add("accepted cdr", func(c context.Context) error {
 		return runResilient(c, "accepted-cdr projector", app.accepted.Run, logger)
 	})
+	// The outcome-CDR projector (step-201c) is self-restarting for the same reason, and one more: it is now
+	// the ONLY writer of the enroute/failed row, so tearing it down on a ClickHouse blip would stop the
+	// lifecycle advancing for the whole fleet. Reprocessing from the last commit is safe — the row is
+	// idempotent — where crashing the router is not.
+	g.Add("outcome cdr", func(c context.Context) error {
+		return runResilient(c, "outcome-cdr projector", app.outcome.Run, logger)
+	})
 	g.Add("snapshot watcher", app.watcher.Run)
 	g.Add("metric stream", func(c context.Context) error {
 		app.emitter.Run(c, metricStreamInterval)
@@ -99,15 +106,15 @@ func run() error {
 	return nil
 }
 
-// acceptedProjectorBackoff is the pause between restarts of the accepted-CDR projector after a transient
-// fault (a ClickHouse blip), long enough to let the store recover without a tight crash loop, short enough
-// to keep the get-message 404 window from lengthening unduly.
-const acceptedProjectorBackoff = 2 * time.Second
+// projectorBackoff is the pause between restarts of a CDR projector after a transient fault (a ClickHouse
+// blip), long enough to let the store recover without a tight crash loop, short enough to keep the
+// get-message 404 window — and the outcome projector's status lag — from lengthening unduly.
+const projectorBackoff = 2 * time.Second
 
 // runResilient runs a supervised loop that survives transient faults: it restarts run after a bounded backoff
 // on any non-nil error, and returns only when ctx is cancelled (a clean stop). It lets one component tolerate
-// a dependency blip without failing the whole process — used for the accepted-CDR projector so a ClickHouse
-// fault reprocesses (at-least-once) instead of crashing router-svc's routing path.
+// a dependency blip without failing the whole process — used for both CDR projectors so a ClickHouse fault
+// reprocesses (at-least-once) instead of crashing router-svc's routing path.
 func runResilient(ctx context.Context, name string, run func(context.Context) error, logger *slog.Logger) error {
 	for {
 		err := run(ctx)
@@ -118,7 +125,7 @@ func runResilient(ctx context.Context, name string, run func(context.Context) er
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-time.After(acceptedProjectorBackoff):
+		case <-time.After(projectorBackoff):
 		}
 	}
 }
