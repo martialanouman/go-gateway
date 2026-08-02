@@ -32,6 +32,16 @@ func NewConn(cfg config.ClickHouse) (*Conn, error) {
 			Password: cfg.Password,
 		},
 		DialTimeout: cfg.Timeout,
+		// Pool sizing (step-201, D5). It matters for admin-api-svc, where search-messages queries and
+		// CDR exports contend, far more than for the CDR writer, which is one insert loop. Both are
+		// refused as non-positive by config validation, because the library silently substitutes its
+		// own defaults for a value <= 0 (clickhouse_options.go:412-417).
+		//
+		// Deliberately absent: Settings passthrough. It is the back door to async_insert, and
+		// async_insert with wait_for_async_insert=0 acknowledges an insert before it is durable —
+		// the Kafka offset would then be committed for a CDR that quietly never lands (D6/D8).
+		MaxOpenConns: cfg.MaxOpenConns,
+		MaxIdleConns: cfg.MaxIdleConns,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("clickhouse: open: %w", err)

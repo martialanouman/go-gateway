@@ -31,6 +31,11 @@ func NewPool(ctx context.Context, cfg config.Postgres) (*pgxpool.Pool, error) {
 	}
 
 	pc.MaxConns = cfg.MaxConns
+	// MinConns is what the pool keeps warm: pgxpool opens max(MinConns, MinIdleConns) connections in
+	// the background as soon as the pool is built (pgxpool/pool.go:333-337) and tops them back up on
+	// each health-check tick, so a peak is not answered by a burst of dials and authentications. Left
+	// unset it is 0 (pgxpool/pool.go:20), which is the behaviour before step-201.
+	pc.MinConns = cfg.MinConns
 	pc.ConnConfig.ConnectTimeout = cfg.Timeout
 	pc.MaxConnLifetime = poolMaxConnLifetime
 	pc.MaxConnIdleTime = poolMaxConnIdleTime

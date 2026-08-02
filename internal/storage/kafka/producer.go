@@ -23,13 +23,14 @@ type Producer struct {
 // NewProducer connects a Producer to the configured brokers. It does not block on reachability;
 // use ReadyCheck for that.
 func NewProducer(cfg config.Kafka) (*Producer, error) {
-	cl, err := kgo.NewClient(
+	opts := append([]kgo.Opt{
 		kgo.SeedBrokers(cfg.Brokers...),
 		// AllISRAcks is franz-go's default and the precondition for idempotent producing; naming it
 		// makes the durability contract explicit and guards against a future edit weakening it.
 		kgo.RequiredAcks(kgo.AllISRAcks()),
-		kgo.ProducerBatchMaxBytes(16<<20),
-	)
+		kgo.ProducerBatchMaxBytes(16 << 20),
+	}, dialOpts(cfg)...)
+	cl, err := kgo.NewClient(opts...)
 	if err != nil {
 		return nil, fmt.Errorf("kafka: new producer: %w", err)
 	}

@@ -52,14 +52,15 @@ func newConsumer(cfg config.Kafka, group string, reset kgo.Offset, topics ...str
 	if len(topics) == 0 {
 		return nil, fmt.Errorf("kafka: consumer needs at least one topic")
 	}
-	cl, err := kgo.NewClient(
+	opts := append([]kgo.Opt{
 		kgo.SeedBrokers(cfg.Brokers...),
 		kgo.ConsumerGroup(group),
 		kgo.ConsumeTopics(topics...),
 		// Commit only after work is done; never let franz-go advance offsets on a timer.
 		kgo.DisableAutoCommit(),
 		kgo.ConsumeResetOffset(reset),
-	)
+	}, consumerOpts(cfg)...)
+	cl, err := kgo.NewClient(opts...)
 	if err != nil {
 		return nil, fmt.Errorf("kafka: new consumer: %w", err)
 	}
@@ -311,12 +312,18 @@ func (c *Consumer) Lag(ctx context.Context) (map[string]int64, error) {
 // retained backlog into clients that only want what is happening now — and a per-instance group name would
 // instead accumulate abandoned groups on the broker. Groupless also means every replica sees every record,
 // which is what a fan-out needs.
+//
+// It takes the same fetch levers as a group consumer, so raising KAFKA_FETCH_MIN_BYTES or
+// KAFKA_FETCH_MAX_WAIT in a service that also tails a topic delays its live frames by that much. The
+// process-wide prefix leaves no room to separate the two; the levers are meant for the CDR path, and a
+// service running both should be tuned with that in mind.
 func NewTailReader(cfg config.Kafka, topics ...string) (*Consumer, error) {
-	cl, err := kgo.NewClient(
+	opts := append([]kgo.Opt{
 		kgo.SeedBrokers(cfg.Brokers...),
 		kgo.ConsumeTopics(topics...),
 		kgo.ConsumeResetOffset(kgo.NewOffset().AtEnd()),
-	)
+	}, consumerOpts(cfg)...)
+	cl, err := kgo.NewClient(opts...)
 	if err != nil {
 		return nil, fmt.Errorf("kafka: new tail reader: %w", err)
 	}
