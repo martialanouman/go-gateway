@@ -882,7 +882,13 @@ func (s *Service) processOne(ctx context.Context, b *bind, bindIndex int, rec ka
 	// throttle, billing settle, CDR write) is our own bookkeeping, and folding a stalled ClickHouse
 	// writer into a delivery-latency budget would make the gateway look slow for someone else's fault.
 	// One nanotime read per submit, no allocation; it is only OBSERVED on a terminal outcome below.
-	e2e := time.Since(ageBase(routed))
+	// Clamped at zero: the accept stamp was written by another pod and survived a JSON round trip, so
+	// it carries no monotonic reading and time.Since falls back to the wall clock. A pod whose clock
+	// trails the ingest pod's by more than the send took yields a negative duration — which Prometheus
+	// accepts into the lowest bucket, so the p99 would read "under 10 ms" and the budget would pass
+	// trivially. Clamping keeps that skew from flattering the figure; it still inflates _sum on the
+	// other side, which is the honest direction.
+	e2e := max(time.Since(ageBase(routed)), 0)
 
 	// Feed the outcome to this bind's circuit breaker (step-121): a system error / bind failure is a
 	// health failure, a throttle/queue-full is transient (ignored), a success clears it.
@@ -958,8 +964,13 @@ func (s *Service) processOne(ctx context.Context, b *bind, bindIndex int, rec ka
 		s.deps.Metrics.SubmitsTotal.WithLabelValues(connectorID, status).Inc()
 		// Same site, same labels, same values as submits_total, so _count and the counter stay
 		// comparable and one status vocabulary covers both legs. Only terminal outcomes reach here: a
-		// throttle redelivers above and a dead-letter returns earlier, which is exactly the
-		// backpressure/dead-letter carve-out the NFR states (§1.2).
+		// throttle redelivers above and a dead-letter returns earlier.
+		//
+		// That covers the dead-letter half of the NFR's carve-out (§1.2) and NOT the backpressure half:
+		// a throttled attempt is not observed, but the message it belonged to is — on the redelivery
+		// that finally succeeds, and the clock still runs from ageBase, so it carries the whole wait.
+		// Same for the AIMD pacing above. Reading a throttling episode out of this histogram means
+		// reading submit_rejected_total{code="rate_limited"} beside it.
 		s.deps.Metrics.MessageE2EDuration.WithLabelValues(connectorID, status).Observe(e2e.Seconds())
 		if status == "rejected" {
 			s.deps.Metrics.SubmitRejectedTotal.

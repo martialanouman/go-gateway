@@ -273,6 +273,17 @@ set +e
 IDEMPOTENCY=on BASE_URL="http://$ADDR" "$K6" run --quiet "$SCRIPT" 2>&1 | tee "$IDEM_LOG"
 idem_on=${PIPESTATUS[0]}
 set -e
+
+# Le stub est sondé AVANT d'être arrêté : un stub mort en cours de run produirait des erreurs de
+# connexion, donc un taux de 202 effondré et un exit 99 — indistinguables du refus de l'en-tête par
+# les deux gardes ci-dessous. Le run précédent ne prouve que le démarrage, pas la survie.
+if ! nc -z "$HOST" "$PORT" 2>/dev/null; then
+  cleanup
+  echo "load-smoke: ÉCHEC — le stub forbid ne répondait plus après le run négatif." >&2
+  echo "            Son exit 99 vient donc peut-être d'un stub mort et non du refus de l'en-tête :" >&2
+  echo "            l'observateur n'est pas prouvé branché." >&2
+  exit 1
+fi
 cleanup
 
 if [[ $idem_on -ne 99 ]]; then

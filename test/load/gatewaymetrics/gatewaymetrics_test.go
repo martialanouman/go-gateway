@@ -2,6 +2,8 @@ package gatewaymetrics_test
 
 import (
 	"context"
+	"errors"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -378,5 +380,92 @@ func TestParseSaysSoWhenTheMetricIsAbsent(t *testing.T) {
 	}
 	if _, _, err := snap.Total().CheckBudget(0.99, 2*time.Second); err == nil {
 		t.Fatal("a missing metric read as a decidable budget; want an error")
+	}
+}
+
+// TestSubRefusesReadingsItCannotSubtract walks the degenerate cases past the first guard. The counter
+// reset test only ever reaches the Count check, so everything below it — a sum that went backwards, a
+// differing bucket count, a moved edge, a cumulative that receded — was written and never run. The
+// bucket-count case is the one that matters most: without its guard the loop indexes the shorter slice
+// and panics, and it is reached by the ordinary first-baseline-on-a-fresh-pod sequence.
+func TestSubRefusesReadingsItCannotSubtract(t *testing.T) {
+	full := gatewaymetrics.Histogram{
+		Count: 10, Sum: 5,
+		Buckets: []gatewaymetrics.Bucket{
+			{UpperBound: 1, Cumulative: 6},
+			{UpperBound: math.Inf(1), Cumulative: 10},
+		},
+	}
+
+	tests := []struct {
+		name          string
+		before, after gatewaymetrics.Histogram
+		wantErr       error
+	}{
+		{
+			name:   "sum went backwards",
+			before: full,
+			after: gatewaymetrics.Histogram{Count: 12, Sum: 1, Buckets: []gatewaymetrics.Bucket{
+				{UpperBound: 1, Cumulative: 8}, {UpperBound: math.Inf(1), Cumulative: 12}}},
+			wantErr: gatewaymetrics.ErrCounterReset,
+		},
+		{
+			name:   "a reading that lost a bucket",
+			before: full,
+			after: gatewaymetrics.Histogram{Count: 12, Sum: 6, Buckets: []gatewaymetrics.Bucket{
+				{UpperBound: math.Inf(1), Cumulative: 12}}},
+			wantErr: gatewaymetrics.ErrBucketMismatch,
+		},
+		{
+			name:   "a bucket edge moved between the readings",
+			before: full,
+			after: gatewaymetrics.Histogram{Count: 12, Sum: 6, Buckets: []gatewaymetrics.Bucket{
+				{UpperBound: 2, Cumulative: 8}, {UpperBound: math.Inf(1), Cumulative: 12}}},
+			wantErr: gatewaymetrics.ErrBucketMismatch,
+		},
+		{
+			name:   "a cumulative count receded",
+			before: full,
+			after: gatewaymetrics.Histogram{Count: 12, Sum: 6, Buckets: []gatewaymetrics.Bucket{
+				{UpperBound: 1, Cumulative: 2}, {UpperBound: math.Inf(1), Cumulative: 12}}},
+			wantErr: gatewaymetrics.ErrCounterReset,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := gatewaymetrics.Sub(tc.before, tc.after)
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("Sub() error = %v, want %v (got %+v)", err, tc.wantErr, got)
+			}
+		})
+	}
+}
+
+// A baseline taken before the gateway sent anything is the ordinary first use, not a degenerate one:
+// a fresh pod exposes no series at all, so the reading has no buckets. It must subtract as the zero it
+// is, not be refused as a shape change.
+func TestSubTreatsAnEmptyBaselineAsZero(t *testing.T) {
+	after := gatewaymetrics.Histogram{
+		Count: 10, Sum: 5,
+		Buckets: []gatewaymetrics.Bucket{
+			{UpperBound: 1, Cumulative: 6},
+			{UpperBound: math.Inf(1), Cumulative: 10},
+		},
+	}
+
+	got, err := gatewaymetrics.Sub(gatewaymetrics.Histogram{}, after)
+	if err != nil {
+		t.Fatalf("Sub(empty, populated) = %v, want the whole reading", err)
+	}
+	if got.Count != after.Count || got.Sum != after.Sum {
+		t.Errorf("Count/Sum = %d/%g, want %d/%g", got.Count, got.Sum, after.Count, after.Sum)
+	}
+	if len(got.Buckets) != len(after.Buckets) {
+		t.Fatalf("buckets = %d, want %d", len(got.Buckets), len(after.Buckets))
+	}
+	for i, b := range got.Buckets {
+		if b.Cumulative != after.Buckets[i].Cumulative {
+			t.Errorf("bucket %d cumulative = %d, want %d", i, b.Cumulative, after.Buckets[i].Cumulative)
+		}
 	}
 }

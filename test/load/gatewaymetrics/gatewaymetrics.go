@@ -44,6 +44,7 @@ package gatewaymetrics
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -51,6 +52,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -99,6 +101,39 @@ type Bucket struct {
 
 // Unbounded reports whether this is the overflow (+Inf) bucket, whose observations have no upper edge.
 func (b Bucket) Unbounded() bool { return math.IsInf(b.UpperBound, 1) }
+
+// bucketJSON carries UpperBound as a string so a Histogram survives a round trip through a file.
+//
+// encoding/json rejects +Inf outright — and every Histogram ends at +Inf, so the obvious struct tags
+// would make a recorded baseline impossible rather than merely lossy. Prometheus already spells that
+// edge "+Inf" in its own exposition, so the same spelling is used here.
+type bucketJSON struct {
+	UpperBound string `json:"upper_bound"`
+	Cumulative uint64 `json:"cumulative"`
+}
+
+// MarshalJSON renders the bucket with its upper edge as a string, "+Inf" included.
+func (b Bucket) MarshalJSON() ([]byte, error) {
+	bound := "+Inf"
+	if !b.Unbounded() {
+		bound = strconv.FormatFloat(b.UpperBound, 'g', -1, 64)
+	}
+	return json.Marshal(bucketJSON{UpperBound: bound, Cumulative: b.Cumulative})
+}
+
+// UnmarshalJSON reads back what MarshalJSON wrote, "+Inf" included.
+func (b *Bucket) UnmarshalJSON(data []byte) error {
+	var raw bucketJSON
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	bound, err := strconv.ParseFloat(raw.UpperBound, 64)
+	if err != nil {
+		return fmt.Errorf("gatewaymetrics: bucket upper bound %q: %w", raw.UpperBound, err)
+	}
+	b.UpperBound, b.Cumulative = bound, raw.Cumulative
+	return nil
+}
 
 // Histogram is one message_e2e_duration_seconds series, or an aggregate of several.
 //
@@ -208,6 +243,16 @@ func Sub(before, after Histogram) (Histogram, error) {
 	}
 	if after.Sum < before.Sum {
 		return Histogram{}, fmt.Errorf("%w: sum went from %v to %v", ErrCounterReset, before.Sum, after.Sum)
+	}
+	// A baseline with no buckets is the zero it looks like, not a shape change. It is the ordinary
+	// first use rather than a degenerate one: a gateway that has sent nothing exposes no series at
+	// all, so the reading taken before the very first run is empty. Refusing it here would fail the
+	// documented sequence on its first command, blaming a redeployment that never happened.
+	if len(before.Buckets) == 0 && before.Count == 0 {
+		before.Buckets = make([]Bucket, len(after.Buckets))
+		for i, b := range after.Buckets {
+			before.Buckets[i] = Bucket{UpperBound: b.UpperBound}
+		}
 	}
 	if len(before.Buckets) != len(after.Buckets) {
 		return Histogram{}, fmt.Errorf("%w: %d buckets then %d",

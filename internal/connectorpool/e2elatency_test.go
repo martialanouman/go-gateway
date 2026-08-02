@@ -300,3 +300,33 @@ func (s slowSettler) Capture(context.Context, pipeline.RoutedMT) (bool, *int32) 
 }
 
 func (s slowSettler) Release(context.Context, pipeline.RoutedMT) { time.Sleep(s.delay) }
+
+// TestE2ELatencyClampsAClockThatRanBackwards guards the direction that lies in our favour. The accept
+// stamp is written by another pod and survives a JSON round trip, so it carries no monotonic reading
+// and time.Since falls back to the wall clock. A connector-pool pod whose clock trails the ingest
+// pod's yields a negative duration, which Prometheus files into the lowest bucket — so the p99 would
+// read "under 10 ms" and any budget would pass trivially, on the one pod whose measurements can least
+// be trusted.
+func TestE2ELatencyClampsAClockThatRanBackwards(t *testing.T) {
+	const skew = time.Hour // the accept stamp sits an hour in this pod's future
+
+	reg, err := runMetered(t, func(smpp.SubmitSM) fakesmsc.Resp { return fakesmsc.OK() }, 0,
+		meteredRouted(-skew))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	samples := gatherE2E(t, reg)
+	if len(samples) != 1 || samples[0].count != 1 {
+		t.Fatalf("samples = %+v, want exactly one observation — the fixture never reached the observation site", samples)
+	}
+	sum := samples[0].sum
+	if sum < 0 {
+		t.Errorf("observed latency = %vs, want it clamped at or above zero: a negative sample lands in the "+
+			"lowest bucket and makes a skewed pod report a p99 it never achieved", sum)
+	}
+	// An hour of skew must not become an hour of latency either: clamping is to zero, not to |value|.
+	if sum > skew.Seconds()/2 {
+		t.Errorf("observed latency = %vs, want it near zero rather than the %v of skew", sum, skew)
+	}
+}

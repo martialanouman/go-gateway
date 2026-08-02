@@ -382,6 +382,27 @@ sans test en ont reçu un.
   plus seuillé de la même façon · `binds > 1` mort dans la garde de dispersion · le diagnostic
   « sessions stopped being served » s'affiche aussi quand la cause est une erreur d'écriture.
 
+### Constats de revue PR2 gelés, nommément
+
+- **Le drainer de `mt.reroute-park` n'estampille pas `ReplayedAt`** (`drainer.go`), là où le `Replayer`
+  manuel le fait. Un drain automatique après incident rejoue donc des messages avec leur `SubmittedAt`
+  d'origine : à 10 min de parking, ils sortent au-delà de la dernière borne finie (327,68 s) et
+  atterrissent dans le bucket `+Inf`, ce qui fait rendre `Fail` au vérificateur. Le godoc de `ageBase`
+  dit couvrir « a drain of parked messages » — vrai du rejeu manuel, faux du drain automatique.
+- **`CONNECTOR_MAX_MESSAGE_AGE` vaut `0` par défaut**, donc la SLA max-age — le seul filtre qui écarte
+  un `SubmittedAt` nul ou un message resté des heures en backlog — n'est pas active en configuration
+  par défaut. Un `SubmittedAt` nul donnerait ~6,4e10 s, empoisonnant `_sum` pour la vie du pod.
+- **`newOpsServer` n'est appelé par aucun test.** Le test d'exposition appelle `poolCatalogueCollectors`
+  directement : supprimer l'enregistrement dans `wiring.go` laisserait la suite verte et `/metrics` sans
+  aucune métrique du catalogue. La moitié haute de la garde reste ouverte.
+- **`slowCDR` dans `TestE2ELatencyExcludes…` est inerte** : l'écriture CDR est en aval du site
+  d'observation, donc aucune mutation du site ne peut la replier dans la mesure. Seul `slowSettler`
+  discrimine. Le chiffre « 1,2 s » cité dans le message d'échec ne peut pas être produit par ce test.
+- **`RUN_SEED` du script k6 est un seed par VU, pas par run** (k6 exécute l'init une fois par VU). Sans
+  conséquence sur l'unicité — `iterationInTest` la porte — mais le nom et le commentaire disent l'inverse.
+  Sous `k6 run --seed`, les 6 caractères deviennent déterministes et deux runs de la même milliseconde
+  produiraient les mêmes clés.
+
 ### Dettes mises au jour par PR2, non traitées ici
 
 - **`ingest_duration_seconds` a exactement le même défaut de buckets** que `message_e2e_duration_seconds`

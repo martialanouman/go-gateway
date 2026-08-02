@@ -114,11 +114,16 @@ var e2eLatencyBudgets = []float64{0.4, 2}
 // The range is the backlog requirement: a healthy send is sub-second, but a queue draining after an
 // incident is measured in minutes and must stay visible instead of piling into +Inf.
 //
-// The two extra edges are what make the budgets ANSWERABLE. A classic histogram resolves a quantile
-// only to the bucket it falls in, and the spine's edges around 2 s are 1.28 and 2.56 — so without an
-// edge at 2 s, every reading of p99, fast or slow, lands in one bucket that spans the budget, and no
-// verdict can be drawn from it (test/load/gatewaymetrics pins this). Two extra series per
-// (connector, status) is a trivial price for a budget that can be checked at all.
+// The two extra edges are what make the budgets answerable IN THE ZONE WHERE THE VERDICT MATTERS. A
+// classic histogram resolves a quantile only to the bucket it falls in, and the spine's edges around
+// 2 s are 1.28 and 2.56. A comfortably fast p99 — say 80 ms, in (0.064, 0.128] — was always decidable;
+// what was not is a p99 anywhere in (1.28, 2.56], i.e. exactly the range where a run is close enough
+// to the budget for the answer to be worth having. Same for 400 ms and its (0.32, 0.64] straddle.
+// Two extra series per (connector, status) is a trivial price for that.
+//
+// This buys the TEXT exposition, which is what test/load/gatewaymetrics reads. A Prometheus that
+// negotiates protobuf keeps the native histogram configured below (1.1 bucket factor, ~10 % at any
+// magnitude) and discards these classic buckets entirely.
 func e2eBuckets() []float64 {
 	b := append(prometheus.ExponentialBuckets(0.01, 2, 16), e2eLatencyBudgets...)
 	sort.Float64s(b)
@@ -142,7 +147,8 @@ func NewCatalog() *Catalog {
 		MessageE2EDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name: "message_e2e_duration_seconds",
 			Help: "Time from submission (or from replay) to the SMSC's terminal submit_sm_resp, by connector" +
-				" and status (ok|rejected). Excludes deliberate backpressure and dead-lettering.",
+				" and status (ok|rejected). A message never sent is not observed; one that WAS throttled" +
+				" and later got through carries the wait it spent being throttled.",
 			Buckets:                         e2eBuckets(),
 			NativeHistogramBucketFactor:     nativeBucketFactor,
 			NativeHistogramMaxBucketNumber:  nativeMaxBucketNumber,
