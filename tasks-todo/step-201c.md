@@ -137,6 +137,73 @@ client ne peut aujourd'hui supposer un statut synchrone. Un SLO ferme contraindr
 du consommateur au-delà de ce que M12 prévoit, pour une garantie qu'aucune autre partie du système ne
 tient. *(Arbitré avec l'utilisateur.)*
 
+### D8 — `Deps.Producer` devient obligatoire : `New` panique sur nil
+Le défaut no-op disparaît, **y compris sa variante sélective**. Un `discardProducer` explicite est câblé
+dans les tests qui n'assertent rien sur la voie retour, et un test de câblage exerce `wiring.go`
+jusqu'à `New`.
+
+**Raison — le no-op sélectif échoue au mauvais moment.** J'avais d'abord gardé le défaut en lui faisant
+refuser le seul topic d'issue, pour qu'un pool mal câblé « échoue bruyamment à son premier envoi ».
+C'est faux : le produce arrive **après** le `submit_sm`. Concrètement, un pool sans producteur envoie
+réellement le SMS, le no-op refuse, l'offset ne commite pas, le record est redélivré — et **le même SMS
+repart, en boucle, jusqu'à intervention humaine**. Le correctif ne rendait pas l'erreur visible : il la
+convertissait en incident de duplication permanent, visible par les abonnés.
+
+**Le critère est donc temporel** : une erreur de câblage doit devenir visible **avant** que le processus
+puisse accomplir un effet externe irréversible. Seul un échec au démarrage le satisfait.
+
+**Pourquoi un `panic` et pas une erreur retournée.** Un `Producer` nil est une erreur de programmation,
+pas une condition d'exploitation : aucun opérateur ne peut la provoquer par configuration, aucun
+appelant ne peut la traiter utilement. Changer la signature de `New` pour une erreur que 30 sites ne
+feraient que propager serait du bruit. Le dépôt a le précédent exact — `Deps.CDR` n'a pas de défaut et
+panique si nil — plus deux précédents de panique sur erreur de câblage (garde de cardinalité des
+métriques, stub HTTP sur mode inconnu).
+
+**« Ça casse 13 tests » n'est pas un argument de conception** : c'est un coût mécanique, opposé à un
+mode de défaillance permanent. Et l'explicitation est un gain — chaque test dira désormais qu'il jette
+les issues, au lieu que le constructeur le décide pour lui.
+
+**La règle générale, à écrire dans le godoc de `Deps`** : *un défaut no-op est légitime si et seulement
+si le service qui en résulte est un mode d'exploitation voulu et cohérent.* Les cinq autres la passent —
+`Billing` nil est la facturation opt-out, une règle d'or du projet ; `Throttle`/`DeadLetter` nil sont de
+l'observation en moins. `Producer` la passait **avant** `D1` (un `deliver_sm` non publié était le
+comportement M2 assumé) et ne la passe plus : un pool qui envoie des SMS sans en garder trace n'est le
+mode voulu de personne.
+
+### D9 — Le groupe de projection démarre au début du topic, pas à la fin
+`NewConsumer` (AtStart), pas `NewConsumerFromLatest`.
+
+**Raison.** `NewConsumerFromLatest` est documenté pour un group id **par instance**, où un groupe neuf
+ne doit pas rejouer un topic accumulé depuis des mois. Ni l'un ni l'autre ne s'applique : ce groupe est
+fixe et couvre toute la flotte, et `mt.outcome` est un topic **neuf** — au déploiement qui l'introduit
+il n'y a rien à rejouer, donc l'argument de la tempête d'écritures est sans objet.
+
+Les coûts d'erreur sont très asymétriques. Au début : une rafale de réécritures que le
+`ReplacingMergeTree` collapse. À la fin : les issues produites avant que le consommateur rejoigne — et
+**rien n'ordonne** le déploiement de `connector-pool-svc` et de `router-svc`. Ces messages restent
+`accepted` à vie, et `billing.Reaper` règle contre l'issue CDR enregistrée, donc leur réservation est
+retenue pour de bon. Sans log, sans métrique, sans erreur. Le commentaire d'origine s'appuyait sur un
+runbook qui **n'existe pas** dans le dépôt.
+
+Même raisonnement sur `OffsetOutOfRange` : un projecteur arrêté plus longtemps que la rétention sauterait
+sinon droit à la fin.
+
+### D10 — `FETCH_MAX_PARTITION_BYTES` au-dessus de `FETCH_MAX_BYTES` est refusé
+**Raison.** franz-go **rabaisse silencieusement** un plafond de partition supérieur au plafond de
+réponse (`kgo/config.go:235-237`). Le silence est le problème : ce réglage est la borne de duplication
+d'ADR-0012, donc une valeur qui ne prend pas effet est une borne à laquelle un opérateur croit sans
+l'avoir — exactement le défaut que l'ADR corrige.
+
+### D11 — Le run de référence embarque la projection
+La pile de `reference_test.go` câble le producteur du pool et démarre le projecteur, et `mt.outcome`
+entre dans les topics dont le lag est suivi.
+
+**Raison.** Le run est le gate de la DoD. Sans producteur, le chemin post-envoi du pool ne fait rien :
+il publierait comme débit de la step celui d'une passerelle qui n'enregistre pas ce qu'elle envoie,
+pendant que la production paie un produce synchrone acké par message. Et le lag de projection est
+précisément le backlog que `D1` introduit — la clause « lag plat » de `D2` doit le voir, sans quoi un
+`mt.routed` plat masquerait un `mt.outcome` qui monte.
+
 ### D5 — La divergence commentaire/code d'`appendEvents` est tranchée dans le sens du commentaire
 `internal/storage/clickhouse/cdr.go:186-188` dit qu'un échec de la timeline « must not fail » le CDR —
 mais `cdr.go:180` **propage l'erreur**. Le code suivra le commentaire : un échec `cdr_events` est logué
