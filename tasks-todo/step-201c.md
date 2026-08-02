@@ -87,6 +87,30 @@ migration n'interdit que le collapse *inter-stages*, pas le dédoublonnage intra
 **Raison.** Sans ça, `D1` n'est idempotent que sur `cdr`. La timeline est exposée par un endpoint livré
 (get-message-trace) : des étapes en double y seraient visibles par le client.
 
+> **Sans objet — vérifié sur le code (2026-08-02). La première des deux issues est DÉJÀ en place.**
+>
+> - **`at` est déjà déterministe** : `appendEvents` pose `at = row.SubmittedAt`, ou `*row.DeliveredAt`
+>   quand il est non nil (`cdr.go:196-199`). Les deux sont portés par l'événement ; jamais `now()`.
+>   Sur le chemin `enroute` que `D1` déplace, `DeliveredAt` est nil, donc `at` vaut le `SubmittedAt`
+>   immuable.
+> - **La lecture dédoublonne déjà, et délibérément** : `Timeline` fait `GROUP BY segment_seq, status`
+>   avec `max(version)` / `min(at)` / `argMax(...)` (`cdr.go:656-669`), sous un commentaire qui nomme
+>   exactement ce cas — « the data plane is at-least-once, so one stage can be written more than once,
+>   and two identical spans read as two events that never happened ».
+> - **Un test le prouve déjà** : `TestTimelineDeduplicatesRedeliveredStages`
+>   (`timeline_integration_test.go:85`) écrit **trois fois** la même ligne et exige une seule milestone.
+>
+> `D3` — et l'alerte qui l'a produite — **surestimaient le problème** : le moteur append-only est bien
+> réel, mais il n'a jamais été le chemin par lequel un doublon atteint le client.
+>
+> **Ce qui reste vrai, et qui est une note de stockage, pas de correction** : une redélivrance écrit
+> bien une ligne de plus dans `cdr_events`, sans collapse. C'est borné par le TTL de 90 jours et sans
+> effet sur ce qui est lu. À surveiller si une campagne produit des redélivrances massives — pas à
+> corriger ici.
+>
+> **Conséquence sur le plan** : `D3` ne demandait aucun code, donc **PR1 n'est plus un prérequis
+> bloquant de PR2**. PR1 se réduit à `D5`, et garde son intérêt propre.
+
 ### D4 — Le statut `enroute` devient asynchrone : best-effort, alerté au-delà de 30 s
 L'OpenAPI publique documente le statut comme « **dernière projection, pas état temps réel** ». Une
 métrique expose le lag du groupe de projection, alertée à 30 s. **Aucun chiffre n'est promis au client.**
@@ -132,13 +156,14 @@ merge** : c'est un engagement vis-à-vis des opérateurs et des abonnés, pas un
 
 | PR | Unités | Fichiers | Dépend de |
 |---|---|---|---|
-| **1 — le socle idempotent** | U1 `cdr_events` idempotent (`D3`) · U2 `appendEvents` fail-open (`D5`) | `internal/storage/clickhouse/cdr.go`, `migrations/clickhouse/` | — |
+| **1 — le socle** | ~~U1 `cdr_events` idempotent~~ **sans objet, déjà en place** (`D3`) · U2 `appendEvents` fail-open (`D5`) | `internal/storage/clickhouse/cdr.go` | — |
 | **2 — la projection** | U3 topic + encodage de l'issue · U4 le pool produit au lieu d'écrire · U5 le consommateur de projection batché | `internal/storage/kafka/topics.go`, `internal/pipeline/wire.go`, `internal/connectorpool/`, nouveau paquet de projection, `cmd/` | PR1 |
 | **3 — les garanties et la preuve** | U6 métrique de lag + alerte + doc OpenAPI (`D4`) · U7 cap d'in-flight (`D2`) · U8 ADR §6.7 (`D7`) · U9 run de référence relancé | catalogue de métriques, `api/openapi-public.yaml`, `docs/adr/`, `test/load/README.md` | PR2 |
 
-**PR1 en premier, et pas par confort** : la projection de PR2 est at-least-once, donc elle **duplique la
-timeline** tant que `D3` n'est pas livrée. Livrer PR2 d'abord introduirait sciemment un défaut visible
-sur un endpoint livré.
+**PR1 devait précéder PR2** parce que la projection at-least-once était censée dupliquer la timeline.
+**Vérification faite, elle ne la duplique pas** : la lecture dédoublonne déjà (cf. l'encadré de `D3`).
+PR1 se réduit donc à `D5` et n'est plus bloquante — elle reste livrée en premier parce qu'elle est
+petite, autonome, et qu'elle retire une propagation d'erreur que PR2 rendrait de toute façon caduque.
 
 **U4 et U5 ne sont pas parallélisables** : U5 consomme ce que U4 produit, et le contrat entre les deux
 est justement ce qu'un relecteur doit pouvoir refuser d'un bloc.
