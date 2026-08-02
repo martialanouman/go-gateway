@@ -63,9 +63,10 @@ fi
 STUB_BIN="$(mktemp -t load-stub.XXXXXX)"
 NEG_LOG=""
 POS_LOG=""
+IDEM_LOG=""
 # Le trap est posé AVANT le build : un `go build` qui échoue sous `set -e` sortirait sinon en laissant
 # le fichier temporaire derrière lui à chaque tentative.
-trap 'cleanup || true; rm -f "$STUB_BIN" "$NEG_LOG" "$POS_LOG"' EXIT
+trap 'cleanup || true; rm -f "$STUB_BIN" "$NEG_LOG" "$POS_LOG" "$IDEM_LOG"' EXIT
 go build -o "$STUB_BIN" ./cmd/load-stub
 
 STUB_PID=""
@@ -84,13 +85,14 @@ cleanup() {
   return 1
 }
 
-# start_stub <délai> — démarre le stub et attend qu'il accepte réellement une connexion.
+# start_stub <délai> [mode d'idempotence] — démarre le stub et attend qu'il accepte réellement une
+# connexion. Le mode par défaut, `ignore`, laisse le stub exactement dans son comportement step-200.
 start_stub() {
   if nc -z "$HOST" "$PORT" 2>/dev/null; then
     echo "load-smoke: $ADDR est déjà occupé — un run mesurerait le mauvais serveur" >&2
     return 1
   fi
-  "$STUB_BIN" -addr "$ADDR" -delay "$1" &
+  "$STUB_BIN" -addr "$ADDR" -delay "$1" -idempotency "${2:-ignore}" &
   STUB_PID=$!
   for _ in {1..50}; do
     if nc -z "$HOST" "$PORT" 2>/dev/null; then return 0; fi
@@ -112,9 +114,10 @@ start_stub() {
 # La comparaison est littérale (awk index/==, pas de regex) : un nom de métrique comme
 # `checks{check:status is 202}` ferait sortir grep en erreur, donc répondre « non » — un échec ouvert.
 #
-#   crossed <métrique> [statistique attendue]
+#   crossed <journal> <métrique> [statistique attendue]
 crossed() {
-  awk -v m="$1" -v want="${2:-}" '
+  local log="${1:?crossed appelée sans journal}"
+  awk -v m="$2" -v want="${3:-}" '
     { line = $0; gsub(/^[ \t]+|[ \t]+$/, "", line) }
     line == m           { inblock = 1; next }
     inblock && line == ""   { inblock = 0 }
@@ -122,17 +125,18 @@ crossed() {
       if (want == "" || index($0, want) > 0) { found = 1 }
     }
     END { exit found ? 0 : 1 }
-  ' "${NEG_LOG:?crossed appelée avant le run négatif}"
+  ' "$log"
 }
 
-# sampled <métrique> — vrai si le seuil de cette métrique a mesuré quelque chose, dans POS_LOG.
+# sampled <journal> <métrique> — vrai si le seuil de cette métrique a mesuré quelque chose.
 #
 # k6 affiche un seuil SANS AUCUN échantillon comme respecté : « ✓ 'rate>0.99' rate=0.00% ». Un seuil
 # devenu inopérant — sélecteur qui ne correspond plus à rien — est donc rendu VERT, des deux côtés du
 # couple positif/négatif. Sans cette garde, le harnais qui existe pour détecter les seuils morts en
 # laisserait passer un. On exige un taux non nul, c'est-à-dire des données.
 sampled() {
-  awk -v m="$1" '
+  local log="${1:?sampled appelée sans journal}"
+  awk -v m="$2" '
     { line = $0; gsub(/^[ \t]+|[ \t]+$/, "", line) }
     line == m         { inblock = 1; next }
     inblock && line == "" { inblock = 0 }
@@ -141,7 +145,7 @@ sampled() {
       if (rate > 0) { found = 1 }
     }
     END { exit found ? 0 : 1 }
-  ' "${POS_LOG:?sampled appelée avant le run positif}"
+  ' "$log"
 }
 
 # Les deux runs capturent le code de sortie de k6 lui-même. Surtout pas de pipe vers tail ici :
@@ -165,7 +169,7 @@ fi
 # check dévié — renommage, montée de version de k6, `check()` qui cesse d'être appelé — passe donc
 # vert des deux côtés, et le harnais qui existe pour détecter les seuils morts en laisse passer un.
 # On exige que le seuil sur les 202 ait réellement observé du trafic.
-if ! sampled "$CHECK_METRIC"; then
+if ! sampled "$POS_LOG" "$CHECK_METRIC"; then
   echo "load-smoke: ÉCHEC — le seuil « $CHECK_METRIC » n'a mesuré aucun échantillon." >&2
   echo "            k6 rend un seuil sans données comme VERT : celui-ci ne prouve donc rien." >&2
   echo "            Le sélecteur de check du script k6 ne correspond probablement plus." >&2
@@ -194,13 +198,13 @@ if [[ $negative -ne 99 ]]; then
   exit 1
 fi
 
-if ! crossed "http_req_duration" "p(99)"; then
+if ! crossed "$NEG_LOG" "http_req_duration" "p(99)"; then
   echo "load-smoke: ÉCHEC — le run négatif a échoué SANS que le budget de latence tombe." >&2
   echo "            Le seuil d'ingestion n'a donc pas été mis à l'épreuve. Seuils du run :" >&2
   grep -B1 -E "✓|✗" "$NEG_LOG" >&2 || true
   exit 1
 fi
-if crossed "http_req_failed" "rate"; then
+if crossed "$NEG_LOG" "http_req_failed" "rate"; then
   echo "load-smoke: ÉCHEC — des requêtes ont échoué : le stub ne servait pas le trafic." >&2
   echo "            Un run où rien n'aboutit ne prouve rien du budget de latence. Seuils du run :" >&2
   grep -B1 -E "✓|✗" "$NEG_LOG" >&2 || true
@@ -208,6 +212,89 @@ if crossed "http_req_failed" "rate"; then
 fi
 rm -f "$NEG_LOG"
 
+# ---------------------------------------------------------------------------- option Idempotency-Key
+#
+# Le dépôt n'a ni node_modules ni jest, et la CI n'installe que Go et le binaire k6 : on ne teste donc
+# pas le JavaScript de l'option `IDEMPOTENCY`, on OBSERVE ses effets sur le stub, qui reçoit chaque
+# requête (step-201 D11). Trois runs, dont un négatif — sans lui, les deux positifs passeraient
+# trivialement contre un stub qui ignore tout, et débrancher l'observateur ne ferait aucun bruit.
+IDEM_LOG="$(mktemp -t load-smoke-idempotency.XXXXXX)"
+
+echo
+echo "==> run IDEMPOTENCY=on contre un stub require-unique — chaque clé doit être unique et non vide"
+start_stub 0 require-unique
+set +e
+IDEMPOTENCY=on BASE_URL="http://$ADDR" "$K6" run --quiet "$SCRIPT" 2>&1 | tee "$IDEM_LOG"
+idem_unique=${PIPESTATUS[0]}
+set -e
+
+if [[ $idem_unique -ne 0 ]]; then
+  echo "load-smoke: ÉCHEC — IDEMPOTENCY=on a été rejeté par le stub require-unique (exit $idem_unique)." >&2
+  echo "            Le stub refuse en 422 une clé absente, vide, de plus de 128 caractères ou déjà vue." >&2
+  echo "            Une clé constante mesurerait le cache d'idempotence au lieu du chemin idempotent." >&2
+  grep -B1 -E "✓|✗" "$IDEM_LOG" >&2 || true
+  exit 1
+fi
+# Exit 0 sans trafic ne prouve rien : on exige que les ~500 acceptations aient bien été observées.
+if ! sampled "$IDEM_LOG" "$CHECK_METRIC"; then
+  echo "load-smoke: ÉCHEC — le run IDEMPOTENCY=on n'a mesuré aucune acceptation." >&2
+  echo "            Un run sans échantillon sort 0 sans avoir soumis une seule clé." >&2
+  exit 1
+fi
+cleanup
+
+# Les deux runs suivants partagent UN SEUL stub `forbid`, délibérément : le premier prouve que ce
+# processus sert le trafic (501 × 202), si bien que le rejet du second ne peut venir que de l'en-tête.
+# Deux stubs distincts laisseraient « le second stub n'a jamais démarré » comme explication concurrente
+# d'un exit 99, et ce script existe pour supprimer exactement ce genre de faux verdict.
+echo
+echo "==> run IDEMPOTENCY absent contre un stub forbid — aucun en-tête ne doit être émis"
+start_stub 0 forbid
+set +e
+BASE_URL="http://$ADDR" "$K6" run --quiet "$SCRIPT" 2>&1 | tee "$IDEM_LOG"
+idem_off=${PIPESTATUS[0]}
+set -e
+
+if [[ $idem_off -ne 0 ]]; then
+  echo "load-smoke: ÉCHEC — le script émet l'en-tête alors qu'IDEMPOTENCY n'est pas demandé (exit $idem_off)." >&2
+  echo "            Le stub forbid refuse la PRÉSENCE de l'en-tête, y compris présent et vide — cas" >&2
+  echo "            que la passerelle réelle traiterait silencieusement comme « pas d'idempotence »." >&2
+  grep -B1 -E "✓|✗" "$IDEM_LOG" >&2 || true
+  exit 1
+fi
+if ! sampled "$IDEM_LOG" "$CHECK_METRIC"; then
+  echo "load-smoke: ÉCHEC — le run IDEMPOTENCY absent n'a mesuré aucune acceptation." >&2
+  exit 1
+fi
+
+echo
+echo "==> run NÉGATIF IDEMPOTENCY=on contre le MÊME stub forbid — l'en-tête doit être détecté"
+set +e
+IDEMPOTENCY=on BASE_URL="http://$ADDR" "$K6" run --quiet "$SCRIPT" 2>&1 | tee "$IDEM_LOG"
+idem_on=${PIPESTATUS[0]}
+set -e
+cleanup
+
+if [[ $idem_on -ne 99 ]]; then
+  echo "load-smoke: ÉCHEC — k6 a rendu $idem_on, or seul 99 signale un seuil franchi." >&2
+  echo "            IDEMPOTENCY=on n'a donc pas émis d'en-tête que le stub ait pu refuser :" >&2
+  echo "            l'observateur est débranché et les deux runs positifs ne prouvent rien." >&2
+  grep -B1 -E "✓|✗" "$IDEM_LOG" >&2 || true
+  exit 1
+fi
+# Le seuil qui doit tomber est celui des 202 — c'est le rejet de l'en-tête. Le run précédent, sur ce
+# même processus, vient d'obtenir 100 % de 202 : un exit 99 accompagné d'un taux de 202 effondré ne
+# peut donc pas s'expliquer par un stub absent ou muet.
+if ! crossed "$IDEM_LOG" "$CHECK_METRIC" "rate"; then
+  echo "load-smoke: ÉCHEC — le run a échoué SANS que le taux de 202 tombe." >&2
+  echo "            L'échec ne vient donc pas du refus de l'en-tête. Seuils du run :" >&2
+  grep -B1 -E "✓|✗" "$IDEM_LOG" >&2 || true
+  exit 1
+fi
+rm -f "$IDEM_LOG"
+IDEM_LOG=""
+
 echo
 echo "load-smoke: OK — le harnais passe à vide (exit 0) et son budget de latence tombe sous contrainte"
-echo "            (exit 99 sur p(99), trafic servi)."
+echo "            (exit 99 sur p(99), trafic servi) ; l'option IDEMPOTENCY émet une clé unique par"
+echo "            itération quand elle est demandée, et rien du tout sinon."

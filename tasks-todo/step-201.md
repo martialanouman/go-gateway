@@ -163,7 +163,9 @@ est mesurable, et cocher la case certifierait un budget jamais mesuré.
 **Raison — pourquoi le recorder et pas le CDR.** La spec définit le span comme « soumission → tentative
 de remise SMSC ». Le CDR `enroute_at` inclut le lag de projection ClickHouse : « < 2 s » ne certifierait
 plus le même intervalle, et le seuil bougerait avec un levier de PR3 (`D6`) sans que la passerelle ait
-changé. `/metrics` ne peut pas servir ici : un compteur agrégé ne se corrèle à aucun `message_id`.
+changé. *(La phrase qui suivait — « `/metrics` ne peut pas servir ici : un compteur agrégé ne se
+corrèle à aucun `message_id` » — est retirée : vraie mais sans objet, puisque l'amendement ci-dessous
+supprime le besoin de corrélation.)*
 
 > **Amendé (2026-08-02) — la corrélation n'est pas nécessaire, et le recorder ne la permet pas.**
 >
@@ -341,7 +343,12 @@ configurable, purge d'API) serait ajuster le système au test.
 `maxmemory` du Redis cible — sous pression, une éviction expulserait aussi sessions, token-buckets et
 cache de solde, et le run mesurerait une tempête d'éviction ; en `noeviction`, ce seraient des échecs de
 réservation. Plus le balai, possible grâce au préfixe de `D10` :
-`redis-cli --scan --pattern 'idem:<accountID>:k6-*' | xargs -L 500 redis-cli UNLINK`.
+`redis-cli --scan --pattern 'idem:{<accountID>}:k6-*' | xargs -L 500 redis-cli UNLINK`.
+
+> **Corrigé (2026-08-02).** Ce pattern était écrit sans les accolades. Elles font **partie de la clé** —
+> `key()` produit `"idem:{" + accountID + "}:" + idemKey` (`internal/idempotency/idempotency.go:122`),
+> un hash tag Redis Cluster qui garde les entrées d'un compte sur un même slot. Sans elles le `--scan`
+> ne matche **rien**, et se lit comme « il n'y a rien à balayer ».
 
 ### D13 — Dépendance à une branche non mergée
 Le design et les prérequis de cette step vivent sur `docs/step-201-prereqs` (commit `4f7d764` +
@@ -374,6 +381,24 @@ sans test en ont reçu un.
   antérieur dans deux phrases secondaires · un test devenu tautologique depuis que `Unanswered` n'est
   plus seuillé de la même façon · `binds > 1` mort dans la garde de dispersion · le diagnostic
   « sessions stopped being served » s'affiche aussi quand la cause est une erreur d'écriture.
+
+### Dettes mises au jour par PR2, non traitées ici
+
+- **`ingest_duration_seconds` a exactement le même défaut de buckets** que `message_e2e_duration_seconds`
+  avant PR2 : ses seuils NFR (p50 < 50 ms, p99 < 250 ms, §1.2) tombent tous deux **entre** deux bornes
+  (0,032/0,064 et 0,128/0,256), donc aucun des deux n'est décidable depuis son exposition. Correctif de
+  deux lignes, même patron que celui appliqué ici. → à faire avant que quiconque publie un verdict sur
+  le budget d'ingestion.
+- **`router-svc` enregistre lui aussi un sous-ensemble du catalogue** (`cmd/router-svc/wiring.go:143`).
+  Le patron « liste nommée + test d'exposition » n'a été appliqué qu'à `connector-pool-svc` : la même
+  classe de trou peut exister là et n'a pas été auditée.
+- **Le p99 est par `submit_sm`, pas par message.** Un message de N segments produit N observations ;
+  la vraie latence par message est celle du dernier segment, et compter les précédents biaise la
+  distribution du bon côté (optimiste). Dédupliquer demanderait un état inter-records par `message_id`,
+  non borné et concurrent entre shards.
+- **Un message rerouté est attribué au connecteur qui a fini par répondre**, avec le span complet
+  incluant le saut échoué. C'est la bonne lecture de « bout en bout », mais un tableau de bord par
+  connecteur montrera le second portant une latence causée par le premier.
 
 ### Limite connue, consignée sans être résolue
 Les consumers d'un même processus partagent le préfixe `KAFKA_` : dans `router-svc`, monter
