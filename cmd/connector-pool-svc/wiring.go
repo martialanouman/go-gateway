@@ -437,11 +437,27 @@ func newOpsServer(
 	})
 	ops.Registry().MustRegister(throttle.sendRate, throttle.throttledTotal, throttle.deadLetterTotal, linkUp,
 		billing.captureFailed, billing.releaseFailed)
-	// Only the catalogue metrics this service actually feeds (step-180): registering Collectors() wholesale
-	// would expose always-zero series, which read as "measured, and nothing happened".
-	ops.Registry().MustRegister(catalog.ConnectorBreakerState, catalog.QueueDepth,
-		catalog.SubmitsTotal, catalog.SubmitRejectedTotal, stream.dropped)
+	ops.Registry().MustRegister(poolCatalogueCollectors(catalog)...)
+	ops.Registry().MustRegister(stream.dropped)
 	return ops, nil
+}
+
+// poolCatalogueCollectors is the subset of the catalogue this service actually feeds (step-180).
+// Registering Collectors() wholesale would expose always-zero series, which read as "measured, and
+// nothing happened".
+//
+// The converse mistake is worse and is what this list is a named function for: a metric OBSERVED by
+// connector-pool and missing here is scraped by nobody, so a dashboard shows a healthy silence while
+// the code diligently records into a collector no registry owns. Feeding a catalogue metric from this
+// service means adding it here, and TestOpsExposesTheMetricsThisServiceFeeds is what enforces it.
+func poolCatalogueCollectors(catalog *metrics.Catalog) []prometheus.Collector {
+	return []prometheus.Collector{
+		catalog.ConnectorBreakerState,
+		catalog.QueueDepth,
+		catalog.SubmitsTotal,
+		catalog.SubmitRejectedTotal,
+		catalog.MessageE2EDuration,
+	}
 }
 
 // reroutePark is the bounded reroute drainer (step-126): it consumes mt.reroute-park (AtStart —

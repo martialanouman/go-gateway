@@ -35,7 +35,7 @@ func scrape(t *testing.T, prime func(*metrics.Catalog)) string {
 func TestCatalogRegistersAndExposesEveryMetric(t *testing.T) {
 	body := scrape(t, func(c *metrics.Catalog) {
 		c.IngestDuration.WithLabelValues("rest").Observe(0.01)
-		c.MessageE2EDuration.WithLabelValues("00000000-0000-0000-0000-000000000001", "delivered").Observe(1.5)
+		c.MessageE2EDuration.WithLabelValues("00000000-0000-0000-0000-000000000001", "ok").Observe(1.5)
 		c.QueueDepth.WithLabelValues("mt.inbound").Set(12)
 		c.SetConnectorBreakerState("00000000-0000-0000-0000-000000000001", metrics.BreakerStateOpen)
 		c.BalanceCacheAge.Observe(30)
@@ -101,7 +101,7 @@ func TestSetConnectorBreakerStateClaimsNothingOnAnUnknownState(t *testing.T) {
 func TestCatalogHistogramsCarryNoCustomerLabel(t *testing.T) {
 	body := scrape(t, func(c *metrics.Catalog) {
 		c.IngestDuration.WithLabelValues("rest").Observe(0.01)
-		c.MessageE2EDuration.WithLabelValues("00000000-0000-0000-0000-000000000001", "delivered").Observe(1)
+		c.MessageE2EDuration.WithLabelValues("00000000-0000-0000-0000-000000000001", "ok").Observe(1)
 		c.BalanceCacheAge.Observe(1)
 	})
 	for _, line := range strings.Split(body, "\n") {
