@@ -128,6 +128,21 @@ merge** : c'est un engagement vis-à-vis des opérateurs et des abonnés, pas un
 
 ---
 
+## Plan — trois PRs
+
+| PR | Unités | Fichiers | Dépend de |
+|---|---|---|---|
+| **1 — le socle idempotent** | U1 `cdr_events` idempotent (`D3`) · U2 `appendEvents` fail-open (`D5`) | `internal/storage/clickhouse/cdr.go`, `migrations/clickhouse/` | — |
+| **2 — la projection** | U3 topic + encodage de l'issue · U4 le pool produit au lieu d'écrire · U5 le consommateur de projection batché | `internal/storage/kafka/topics.go`, `internal/pipeline/wire.go`, `internal/connectorpool/`, nouveau paquet de projection, `cmd/` | PR1 |
+| **3 — les garanties et la preuve** | U6 métrique de lag + alerte + doc OpenAPI (`D4`) · U7 cap d'in-flight (`D2`) · U8 ADR §6.7 (`D7`) · U9 run de référence relancé | catalogue de métriques, `api/openapi-public.yaml`, `docs/adr/`, `test/load/README.md` | PR2 |
+
+**PR1 en premier, et pas par confort** : la projection de PR2 est at-least-once, donc elle **duplique la
+timeline** tant que `D3` n'est pas livrée. Livrer PR2 d'abord introduirait sciemment un défaut visible
+sur un endpoint livré.
+
+**U4 et U5 ne sont pas parallélisables** : U5 consomme ce que U4 produit, et le contrat entre les deux
+est justement ce qu'un relecteur doit pouvoir refuser d'un bloc.
+
 ## Périmètre
 - Publier l'issue du message sur Kafka au lieu d'écrire ClickHouse, au site post-submit uniquement.
 - Un consommateur de projection dédié, batché par poll, at-least-once.
