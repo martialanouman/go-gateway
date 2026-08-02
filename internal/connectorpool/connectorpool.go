@@ -168,10 +168,10 @@ type BreakerAggregator interface {
 // since step-201c — every send outcome on mt.outcome. *kafka.Producer satisfies it, and its ProduceSync
 // is the acked-before-commit boundary the CDR's durability now rests on.
 //
-// New still defaults a nil Producer to a no-op for the M2 behaviour (a deliver_sm acknowledged without
-// publishing), which now costs more than it did: a pool wired without a producer drops its CDR outcomes
-// as silently as it already dropped its reroutes. Production wiring always sets it; tests that assert an
-// outcome must wire one or they assert nothing.
+// It is REQUIRED: New panics on a nil Producer (step-201c D8). It used to default to a no-op, which was
+// harmless while that only swallowed a deliver_sm or a reroute; it stopped being harmless when the
+// outcome became the only record that a message left for the SMSC. A test that asserts nothing about
+// the return path wires a discarding fake, explicitly.
 type Producer interface {
 	Produce(ctx context.Context, rec kafka.Record) error
 }

@@ -28,6 +28,11 @@ type Handler func(ctx context.Context, rec Record) error
 type Consumer struct {
 	cl    *kgo.Client
 	group string
+
+	// fromEnd records where a fresh group starts, so a caller can assert it. The choice is a
+	// durability property — a group that starts at the end skips whatever was produced before it first
+	// joined — and one that no test could observe was one no test could guard (step-201c D9).
+	fromEnd bool
 }
 
 // NewConsumer joins the given consumer group and subscribes to topics. A group with no committed
@@ -64,7 +69,7 @@ func newConsumer(cfg config.Kafka, group string, reset kgo.Offset, topics ...str
 	if err != nil {
 		return nil, fmt.Errorf("kafka: new consumer: %w", err)
 	}
-	return &Consumer{cl: cl, group: group}, nil
+	return &Consumer{cl: cl, group: group, fromEnd: reset.EpochOffset().Offset == kgo.NewOffset().AtEnd().EpochOffset().Offset}, nil
 }
 
 // Run polls and processes records until ctx is cancelled, committing each record's offset only
@@ -230,6 +235,11 @@ func (c *Consumer) Ping(ctx context.Context) error { return c.cl.Ping(ctx) }
 func (c *Consumer) ReadyCheck(name string, timeout time.Duration) observability.ReadinessCheck {
 	return observability.PingCheck(name, timeout, c.cl.Ping)
 }
+
+// StartsFromEnd reports whether a group with no committed offset begins at the end of the topic,
+// skipping whatever was produced before it first joined. It exists so a wiring choice that is a
+// durability property can be asserted instead of merely commented.
+func (c *Consumer) StartsFromEnd() bool { return c.fromEnd }
 
 // Close leaves the group and releases the client. Because offsets are committed synchronously as
 // records are handled, there is nothing to flush.

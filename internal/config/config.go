@@ -189,18 +189,17 @@ type Kafka struct {
 	// A connector pool sends a message to the SMSC, publishes the outcome, and commits its offset. A
 	// crash between the send and the commit re-delivers everything the poll had already sent — so the
 	// number of subscribers who can receive the same SMS twice is the number of records one poll holds
-	// per partition, and nothing else. franz-go's default is 1MiB (kgo/config.go:676), roughly 1000
-	// records at ~1KiB each: a bound nobody chose.
+	// per partition, and nothing else.
 	//
-	// 256KiB is ~250 messages per partition per crash — under half a second of traffic per partition at
-	// the 8000 msg/s target over 12 partitions. The cost is ~2.6 polls/s per partition instead of 0.7,
-	// which is nothing now that the pool's post-send path is a Kafka produce rather than four ClickHouse
-	// round-trips, and the projection batches in a consumer this cap does not constrain.
+	// The bound is in bytes, and those bytes are COMPRESSED: this caps stored batches, and franz-go
+	// compresses with snappy by default (kgo/config.go:659) with nothing in this repository overriding
+	// it. Measured on 500 realistic mt.routed records — distinct ids and MSISDNs, a 130-character GSM-7
+	// body — 621 bytes raw became 221 compressed, a 2.81x ratio. 56KiB is therefore ~250 records, which
+	// is the figure ADR-0012 commits to. franz-go's own default of 1MiB (kgo/config.go:678) is ~4750.
 	//
-	// The bound is in BYTES; the message count is a conversion at ~1KiB per record. Heavier records
-	// (UCS-2 bodies, long fallback chains) mean FEWER records for the same bytes, never more, so the
-	// figure in ADR-0012 is a ceiling.
-	FetchMaxPartitionBytes int32 `env:"FETCH_MAX_PARTITION_BYTES" envDefault:"262144"` // 256 << 10
+	// The record count is an estimate for typical traffic, neither a ceiling nor a floor: bodies that
+	// compress better raise it, UCS-2 and binary lower it. Re-measure before restating the figure.
+	FetchMaxPartitionBytes int32 `env:"FETCH_MAX_PARTITION_BYTES" envDefault:"57344"` // 56 << 10
 
 	// TopicPartitions is the partition count the provisioner creates a topic with (step-201, D7). It is
 	// the ceiling on how many pods of one consumer group can work a topic in parallel: past it, the
@@ -1054,6 +1053,7 @@ func (c Config) LogValue() slog.Value {
 		slog.Int64("kafka_fetch_min_bytes", int64(c.Kafka.FetchMinBytes)),
 		slog.Duration("kafka_fetch_max_wait", c.Kafka.FetchMaxWait),
 		slog.Int64("kafka_fetch_max_bytes", int64(c.Kafka.FetchMaxBytes)),
+		slog.Int64("kafka_fetch_max_partition_bytes", int64(c.Kafka.FetchMaxPartitionBytes)),
 		slog.Int64("kafka_topic_partitions", int64(c.Kafka.TopicPartitions)),
 		slog.String("kafka_topic_partitions_overrides", c.Kafka.TopicPartitionsOverrides),
 		slog.Int64("kafka_topic_replication_factor", int64(c.Kafka.TopicReplicationFactor)),

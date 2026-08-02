@@ -321,6 +321,7 @@ func buildRefStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg con
 	if err != nil {
 		t.Fatalf("kafka outcome consumer: %v", err)
 	}
+	t.Cleanup(outcomeConsumer.Close)
 	outcomeProjector := outcome.NewProjector(outcomeConsumer, cdrWriter, nil)
 
 	ctx := context.Background()
@@ -495,7 +496,7 @@ func (l *lagTrace) breakdown(from, to time.Time) string {
 		return "no reading inside the window"
 	}
 	out := ""
-	for _, topic := range []string{kafka.TopicMTInbound, kafka.TopicMTRouted} {
+	for _, topic := range []string{kafka.TopicMTInbound, kafka.TopicMTRouted, kafka.TopicMTOutcome} {
 		if out != "" {
 			out += " · "
 		}
@@ -519,7 +520,7 @@ func (l *lagTrace) between(from, to time.Time) []steady.LagSample {
 
 // pollLag samples the pipeline's total backlog until ctx is cancelled.
 //
-// The two consumer groups are summed rather than reported apart: what D2 asks is whether the PIPELINE is
+// The three consumer groups are summed rather than reported apart: what D2 asks is whether the PIPELINE is
 // keeping up, and a backlog moving from mt.inbound to mt.routed is not the queue draining, it is the
 // same messages one hop further along. The sum is flat only when the whole path is.
 //

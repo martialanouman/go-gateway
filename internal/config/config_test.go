@@ -262,6 +262,12 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		{"kafka fetch min bytes zero", map[string]string{"KAFKA_FETCH_MIN_BYTES": "0"}, "KAFKA_FETCH_MIN_BYTES"},
 		{"kafka fetch min bytes negative", map[string]string{"KAFKA_FETCH_MIN_BYTES": "-1"}, "KAFKA_FETCH_MIN_BYTES"},
 		{"kafka fetch max bytes zero", map[string]string{"KAFKA_FETCH_MAX_BYTES": "0"}, "KAFKA_FETCH_MAX_BYTES"},
+		{"kafka fetch max partition bytes zero", map[string]string{"KAFKA_FETCH_MAX_PARTITION_BYTES": "0"}, "KAFKA_FETCH_MAX_PARTITION_BYTES"},
+		{
+			"kafka fetch max partition bytes above the response cap",
+			map[string]string{"KAFKA_FETCH_MAX_PARTITION_BYTES": "8388609", "KAFKA_FETCH_MAX_BYTES": "8388608"},
+			"KAFKA_FETCH_MAX_PARTITION_BYTES",
+		},
 		{"kafka fetch min bytes above max", map[string]string{
 			"KAFKA_FETCH_MIN_BYTES": "2097152",
 			"KAFKA_FETCH_MAX_BYTES": "1048576",
@@ -626,6 +632,7 @@ func TestConfigLogValueReportsCapacityLevers(t *testing.T) {
 		"KAFKA_FETCH_MIN_BYTES":            "65536",
 		"KAFKA_FETCH_MAX_WAIT":             "250ms",
 		"KAFKA_FETCH_MAX_BYTES":            "16777216",
+		"KAFKA_FETCH_MAX_PARTITION_BYTES":  "131072",
 		"KAFKA_TOPIC_PARTITIONS":           "24",
 		"KAFKA_TOPIC_PARTITIONS_OVERRIDES": "mt.inbound=48",
 		"KAFKA_TOPIC_REPLICATION_FACTOR":   "2",
@@ -646,6 +653,7 @@ func TestConfigLogValueReportsCapacityLevers(t *testing.T) {
 		`"kafka_fetch_min_bytes":65536`,
 		`"kafka_fetch_max_wait":250000000`, // slog renders a Duration as nanoseconds
 		`"kafka_fetch_max_bytes":16777216`,
+		`"kafka_fetch_max_partition_bytes":131072`,
 		`"kafka_topic_partitions":24`,
 		`"kafka_topic_partitions_overrides":"mt.inbound=48"`,
 		`"kafka_topic_replication_factor":2`,
@@ -1009,5 +1017,28 @@ func TestEnvironmentValid(t *testing.T) {
 	}
 	if config.EnvStaging.IsProduction() {
 		t.Error("EnvStaging.IsProduction() = true")
+	}
+}
+
+// The duplication bound of ADR-0012 is a ratified commitment to operators: "at most ~250 subscribers
+// per partition can receive the same SMS twice, per pod crash". The default is what makes it true, so
+// a change to it is a change to that commitment and must not pass unnoticed.
+//
+// The value is NOT the ~1KiB-per-record arithmetic it looks like: max.partition.fetch.bytes bounds
+// STORED bytes, and franz-go compresses with snappy by default. Measured on realistic mt.routed
+// records — 621 bytes raw, 221 compressed, 2.81x — 56KiB is ~250 records. At 256KiB it was ~1187,
+// which is how the first version of this lever promised a bound it did not hold.
+func TestFetchMaxPartitionBytesHoldsTheRatifiedBound(t *testing.T) {
+	setEnv(t, nil)
+	cfg, err := config.Load("svc")
+	if err != nil {
+		t.Fatalf("Load() = %v, want nil", err)
+	}
+
+	const want = 56 << 10
+	if cfg.Kafka.FetchMaxPartitionBytes != want {
+		t.Errorf("FetchMaxPartitionBytes = %d, want %d: the ADR-0012 bound is ~250 messages per "+
+			"partition per crash at the measured 221 compressed bytes per record",
+			cfg.Kafka.FetchMaxPartitionBytes, want)
 	}
 }

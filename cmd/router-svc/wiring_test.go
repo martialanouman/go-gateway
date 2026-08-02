@@ -89,6 +89,19 @@ func TestNewRouterAppBuildsTheWholeGraph(t *testing.T) {
 	}
 	defer app.close()
 
+	// The outcome projection must begin at the START of its topic. This is a durability property, not
+	// a preference: nothing orders the rollout of connector-pool-svc and router-svc, so outcomes can
+	// already be on mt.outcome when this group first joins. A group starting at the end skips them for
+	// ever — those messages read "accepted" until they are purged, and billing.Reaper, which settles
+	// orphan reservations against the recorded CDR outcome, holds their credit for good (step-201c D9).
+	if app.outcome == nil {
+		t.Fatal("the outcome projection was not wired")
+	}
+	if app.outcome.kafka.StartsFromEnd() {
+		t.Error("the outcome projection starts at the end of mt.outcome: every outcome produced before " +
+			"this group first joined is skipped for ever, and its reservation held for good")
+	}
+
 	for name, component := range map[string]any{
 		"ops":      app.ops,
 		"router":   app.router,

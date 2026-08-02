@@ -65,9 +65,18 @@ la spec n'a jamais écrite.
 
 3. **Elle est bornée, par la bonne grandeur.** Le rayon n'est pas la taille d'une écriture mais le
    **nombre de `submit_sm` effectués depuis le dernier commit d'offset**. `FetchMaxPartitionBytes` est
-   exposé en `KAFKA_FETCH_MAX_PARTITION_BYTES` et posé à **256 KiB**, soit **~250 SMS dupliqués au
-   maximum par partition et par crash de pod** — moins d'une demi-seconde de trafic par partition à la
-   cible NFR de 8 000 msg/s sur 12 partitions.
+   exposé en `KAFKA_FETCH_MAX_PARTITION_BYTES` et posé à **56 KiB**, soit **~250 SMS dupliqués par
+   partition et par crash de pod** — moins d'une demi-seconde de trafic par partition à la cible NFR de
+   8 000 msg/s sur 12 partitions.
+
+   **Ces octets sont COMPRESSÉS**, et le chiffre en dépend : `max.partition.fetch.bytes` borne des
+   batches stockés, franz-go compresse en snappy par défaut, et rien ici ne le surcharge. Mesuré sur
+   500 records `mt.routed` réalistes — 621 o bruts, **221 o compressés**, ratio 2,81× — d'où les 56 KiB.
+   Le défaut franz-go de 1 MiB portait ~4 750 records, pas ~1 000.
+
+   Le nombre de messages est une **estimation pour un trafic typique**, ni majorant ni minorant : des
+   corps qui compressent mieux l'augmentent, de l'UCS-2 ou du binaire le réduisent. Le re-mesurer avant
+   de republier le chiffre fait partie de l'engagement.
 
 4. **Le CDR ne peut pas être sacrifié pour l'éviter.** Le fail-open sur l'écriture CDR — le réflexe
    cohérent avec `settle` — est **interdit** : `billing.Reaper` règle chaque réservation orpheline

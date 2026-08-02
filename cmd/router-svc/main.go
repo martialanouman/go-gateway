@@ -84,7 +84,7 @@ func run() error {
 	// lifecycle advancing for the whole fleet. Reprocessing from the last commit is safe — the row is
 	// idempotent — where crashing the router is not.
 	g.Add("outcome cdr", func(c context.Context) error {
-		return runResilient(c, "outcome-cdr projector", app.outcome.Run, logger)
+		return runResilient(c, "outcome-cdr projector", app.outcome.projector.Run, logger)
 	})
 	g.Add("snapshot watcher", app.watcher.Run)
 	g.Add("metric stream", func(c context.Context) error {

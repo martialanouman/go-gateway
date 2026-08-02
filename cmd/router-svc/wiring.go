@@ -50,7 +50,9 @@ type routerApp struct {
 	ops      *observability.OpsServer
 	router   *router.Router
 	accepted *ingest.AcceptedConsumer
-	outcome  *outcome.Projector
+	// Kept as the wrapper, not just the projector: it owns the consumer whose start offset is a
+	// durability property a test must be able to assert (step-201c D9).
+	outcome  *outcomeProjector
 	watcher  *config.Watcher
 	emitter  *metricstream.Emitter
 	consumer *kafka.Consumer
@@ -131,7 +133,7 @@ func newRouterApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 		return nil, err
 	}
 	a.onClose(outc.close)
-	a.outcome = outc.projector
+	a.outcome = outc
 
 	stream, err := newMetricStream(cfg)
 	if err != nil {
