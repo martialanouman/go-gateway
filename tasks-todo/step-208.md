@@ -1,7 +1,7 @@
 # step-208 — Dérouler la checklist de mise en production (go-live)
 
 > **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
-> **Dépend de :** step-201, step-203, step-204, step-206, step-207 · **Bloque :** —
+> **Dépend de :** step-201b, step-203, step-204, step-206, step-207 · **Bloque :** —
 
 ## But
 Clore M12 : dérouler la checklist de mise en production (guide d'ingénierie §15), consigner l'état de
@@ -13,8 +13,12 @@ chaque item et matérialiser la porte de go-live.
 - Récapitulatif des NFR tenus (débit, latence) et des politiques de panne vérifiées.
 
 ## Points d'implémentation clés
-- La checklist référence les livrables : NFR (step-200/201), chaos par politique (step-202/203),
+- La checklist référence les livrables : NFR (step-200/201/**201b**), chaos par politique (step-202/203),
   sécurité (step-204/205), auth opérateur réelle (step-206), manifests (step-207).
+- **Le verdict NFR vient de step-201b, pas de step-201.** step-201 a livré les leviers, les instruments
+  de mesure et un run de référence à la borne basse du modèle par-worker (§2.5) ; le débit soutenu
+  8 000 SMS/s **traversant** ne peut se prononcer que sur un environnement représentatif. Ne pas cocher
+  l'item NFR sur la foi du run local de step-201 : il mesurait une machine de développement.
 - **Dette du harnais de charge, à solder ici au plus tard** — deux points relevés en revue de step-200
   et laissés ouverts parce qu'ils ne coûtent rien tant que la patte sortante est un simulateur. Ils
   redeviennent bloquants au **premier run contre un SMSC réel**, c'est-à-dire au plus tard ici :
