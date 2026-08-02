@@ -94,9 +94,12 @@ func runMetered(t *testing.T, resp func(smpp.SubmitSM) fakesmsc.Resp, maxAge tim
 	reg.MustRegister(cat.Collectors()...)
 
 	svc := connectorpool.New(connectorpool.Deps{
-		Consumer:      &fakeConsumer{records: recs},
-		CDR:           &fakeCDR{},
-		Metrics:       cat,
+		Consumer: &fakeConsumer{records: recs},
+		CDR:      &fakeCDR{},
+		Metrics:  cat,
+		// The outcome producer is part of the send path since step-201c: without one the pool refuses
+		// to drop the outcome of a message it really sent, so a latency test that submits must wire it.
+		Producer:      newRecordingProducer(),
 		ConnectorID:   meteredConnector,
 		MaxMessageAge: maxAge,
 		Bind: connectorpool.BindConfig{
@@ -260,9 +263,13 @@ func TestE2ELatencyExcludesTheBookkeepingAfterTheResponse(t *testing.T) {
 	reg.MustRegister(cat.Collectors()...)
 
 	svc := connectorpool.New(connectorpool.Deps{
-		Consumer:    &fakeConsumer{records: []kafka.Record{rec}},
-		CDR:         slowCDR{delay: 600 * time.Millisecond},
-		Billing:     slowSettler{delay: 600 * time.Millisecond},
+		Consumer: &fakeConsumer{records: []kafka.Record{rec}},
+		CDR:      slowCDR{delay: 600 * time.Millisecond},
+		Billing:  slowSettler{delay: 600 * time.Millisecond},
+		// The outcome produce is the bookkeeping step-201c ADDED after the response, and it is a real
+		// network round-trip in production. Stalling it is what keeps this test meaningful now that the
+		// send path no longer writes ClickHouse: slowCDR alone would be inert here.
+		Producer:    slowProducer{delay: 600 * time.Millisecond},
 		Metrics:     cat,
 		ConnectorID: meteredConnector,
 		Bind: connectorpool.BindConfig{
@@ -328,5 +335,17 @@ func TestE2ELatencyClampsAClockThatRanBackwards(t *testing.T) {
 	// An hour of skew must not become an hour of latency either: clamping is to zero, not to |value|.
 	if sum > skew.Seconds()/2 {
 		t.Errorf("observed latency = %vs, want it near zero rather than the %v of skew", sum, skew)
+	}
+}
+
+// slowProducer stalls the outcome publish, the bookkeeping step-201c moved after the response.
+type slowProducer struct{ delay time.Duration }
+
+func (p slowProducer) Produce(ctx context.Context, _ kafka.Record) error {
+	select {
+	case <-time.After(p.delay):
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }

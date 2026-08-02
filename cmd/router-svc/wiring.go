@@ -486,12 +486,25 @@ func (p *outcomeProjector) close() {
 	}
 }
 
-// newOutcomeProjector wires the projection. Like the accepted one, a fresh group starts at the LATEST
-// offset: replaying the whole retained topic would re-insert every historical outcome row — harmless
-// under the ReplacingMergeTree, but a write storm for no gain — so the deploy pins the start offset
-// (runbook).
+// newOutcomeProjector wires the projection. Unlike the accepted one, a fresh group starts AT THE
+// START, and the difference is not cosmetic.
+//
+// NewConsumerFromLatest exists for a group id that is per-instance, where a fresh group must not
+// replay a topic that has been accumulating for months. Neither applies here: this group id is fixed
+// and fleet-wide, and mt.outcome is a NEW topic — on the deploy that introduces it there is no history
+// to replay, so the write-storm argument has no object.
+//
+// The error costs are wildly asymmetric. Starting at the start, on a topic that already holds
+// outcomes, costs a burst of rewrites that the ReplacingMergeTree collapses. Starting at the end costs
+// the outcomes produced before this consumer first joined — and connector-pool-svc may well have been
+// rolled out first, since nothing orders the two. Those messages stay "accepted" for ever, and
+// billing.Reaper settles orphan reservations against the recorded CDR outcome, so their reservations
+// are held for good. Silently: no log, no metric, no error.
+//
+// The same applies on OffsetOutOfRange — a projector stopped longer than the topic's retention would
+// otherwise skip straight to the end.
 func newOutcomeProjector(cfg config.Config, ch *clickhouse.Conn, logger *slog.Logger) (*outcomeProjector, error) {
-	consumer, err := kafka.NewConsumerFromLatest(cfg.Kafka, serviceName+"-outcome-cdr", kafka.TopicMTOutcome)
+	consumer, err := kafka.NewConsumer(cfg.Kafka, serviceName+"-outcome-cdr", kafka.TopicMTOutcome)
 	if err != nil {
 		return nil, fmt.Errorf("kafka outcome-cdr consumer: %w", err)
 	}

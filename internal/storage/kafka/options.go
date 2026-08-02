@@ -55,5 +55,10 @@ func consumerOpts(cfg config.Kafka) []kgo.Opt {
 	if cfg.FetchMaxBytes > 0 {
 		opts = append(opts, kgo.FetchMaxBytes(cfg.FetchMaxBytes))
 	}
+	// The duplication bound of ADR-0012: one poll's records per partition is exactly what a crash
+	// between a send and its offset commit can re-submit to the SMSC.
+	if cfg.FetchMaxPartitionBytes > 0 {
+		opts = append(opts, kgo.FetchMaxPartitionBytes(cfg.FetchMaxPartitionBytes))
+	}
 	return opts
 }

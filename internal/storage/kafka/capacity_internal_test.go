@@ -19,6 +19,10 @@ func levers() config.Kafka {
 		FetchMinBytes: 64 << 10,                // default 1
 		FetchMaxWait:  250 * time.Millisecond,  // default 5s
 		FetchMaxBytes: 8 << 20,                 // default 50MiB
+
+		// The duplication bound of ADR-0012: one poll's worth of already-sent messages is what a crash
+		// can re-submit, and this is the only knob that caps it.
+		FetchMaxPartitionBytes: 256 << 10, // default 1MiB
 	}
 }
 
@@ -38,6 +42,7 @@ func assertFetchLevers(t *testing.T, cl *kgo.Client) {
 	assertOpt(t, cl, kgo.FetchMinBytes, "FetchMinBytes", cfg.FetchMinBytes)
 	assertOpt(t, cl, kgo.FetchMaxWait, "FetchMaxWait", cfg.FetchMaxWait)
 	assertOpt(t, cl, kgo.FetchMaxBytes, "FetchMaxBytes", cfg.FetchMaxBytes)
+	assertOpt(t, cl, kgo.FetchMaxPartitionBytes, "FetchMaxPartitionBytes", cfg.FetchMaxPartitionBytes)
 }
 
 // TestConsumerAppliesTheFetchLevers is the step-201 D5/D8 contract: the fetch trio is what sizes a

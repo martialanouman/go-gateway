@@ -183,6 +183,25 @@ type Kafka struct {
 	// is not exposed, so the ceiling here is that default.
 	FetchMaxBytes int32 `env:"FETCH_MAX_BYTES" envDefault:"52428800"` // 50 << 20
 
+	// FetchMaxPartitionBytes caps a fetch response FOR ONE PARTITION. It is the duplication bound of
+	// ADR-0012, and the only knob that sets it.
+	//
+	// A connector pool sends a message to the SMSC, publishes the outcome, and commits its offset. A
+	// crash between the send and the commit re-delivers everything the poll had already sent — so the
+	// number of subscribers who can receive the same SMS twice is the number of records one poll holds
+	// per partition, and nothing else. franz-go's default is 1MiB (kgo/config.go:676), roughly 1000
+	// records at ~1KiB each: a bound nobody chose.
+	//
+	// 256KiB is ~250 messages per partition per crash — under half a second of traffic per partition at
+	// the 8000 msg/s target over 12 partitions. The cost is ~2.6 polls/s per partition instead of 0.7,
+	// which is nothing now that the pool's post-send path is a Kafka produce rather than four ClickHouse
+	// round-trips, and the projection batches in a consumer this cap does not constrain.
+	//
+	// The bound is in BYTES; the message count is a conversion at ~1KiB per record. Heavier records
+	// (UCS-2 bodies, long fallback chains) mean FEWER records for the same bytes, never more, so the
+	// figure in ADR-0012 is a ceiling.
+	FetchMaxPartitionBytes int32 `env:"FETCH_MAX_PARTITION_BYTES" envDefault:"262144"` // 256 << 10
+
 	// TopicPartitions is the partition count the provisioner creates a topic with (step-201, D7). It is
 	// the ceiling on how many pods of one consumer group can work a topic in parallel: past it, the
 	// extra pods idle. 12 divides by 1, 2, 3, 4 and 6, so a group can be sized without leaving
@@ -728,6 +747,19 @@ func (c Config) kafkaCapacityProblems() []string {
 		problems = append(problems, fmt.Sprintf(
 			"KAFKA_FETCH_MIN_BYTES %d exceeds KAFKA_FETCH_MAX_BYTES %d: every fetch would wait out "+
 				"KAFKA_FETCH_MAX_WAIT", c.Kafka.FetchMinBytes, c.Kafka.FetchMaxBytes))
+	}
+	if c.Kafka.FetchMaxPartitionBytes < 1 {
+		problems = append(problems, fmt.Sprintf(
+			"KAFKA_FETCH_MAX_PARTITION_BYTES %d must be positive", c.Kafka.FetchMaxPartitionBytes))
+	}
+	// franz-go clamps a partition cap above the response cap down to it silently (kgo/config.go:235-237).
+	// Silence is the problem: this knob is the duplication bound of ADR-0012, so a value that does not
+	// take effect is a bound an operator believes in and does not have.
+	if c.Kafka.FetchMaxPartitionBytes > c.Kafka.FetchMaxBytes {
+		problems = append(problems, fmt.Sprintf(
+			"KAFKA_FETCH_MAX_PARTITION_BYTES %d exceeds KAFKA_FETCH_MAX_BYTES %d: franz-go would clamp it "+
+				"down in silence, leaving the ADR-0012 duplication bound unenforced",
+			c.Kafka.FetchMaxPartitionBytes, c.Kafka.FetchMaxBytes))
 	}
 	// franz-go stores the wait as whole milliseconds and compares those to its floor. Truncating first is
 	// the same test as comparing the duration to 10ms — floor(d/1ms) < 10 exactly when d < 10ms — but the
