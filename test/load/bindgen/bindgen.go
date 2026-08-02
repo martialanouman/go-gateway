@@ -107,14 +107,29 @@ type Report struct {
 	// Unanswered is how many were still in flight when the window closed: the peer never answered them,
 	// or did not answer in time. Some are normal at the end of any windowed run.
 	Unanswered int
-	// SubmitErrors is how many submissions failed before the peer could see them: a write error, a
-	// write deadline, a session torn down mid-run.
+	// SubmitErrors is how many submissions failed before the peer could see them, for a reason that is
+	// the peer's or the network's: a session torn down mid-window, a socket that went away. Writes the
+	// closing window interrupted are NOT here, they are in SubmitCutShort.
 	SubmitErrors int
 	// SubmitErr is the first of those causes, kept for diagnosis. The rest are counted only: a
 	// saturating injector against a dead peer produces one identical error per submission.
 	SubmitErr error
-	// Submitting is how long the injection window stayed open — the denominator of the submitted rate.
-	// It is not Elapsed, which also covers binding and teardown.
+	// SubmitCutShort is how many sessions were still inside a write when the injection window closed
+	// under them — the window ended, or the run was cancelled, while the peer was too slow to take the
+	// PDU. It is at most one per session, and it is the normal end of a saturating run rather than a
+	// failure: an injector pushing until the last instant of its window is by definition writing when
+	// that instant arrives.
+	//
+	// It is reported separately precisely so it does not read as a fault. The write fails with the
+	// same i/o timeout a broken peer produces, and counting the two together puts errors next to the
+	// figures of a run that did exactly what it was asked to.
+	SubmitCutShort int
+	// Submitting is how long the injection window stayed open — from the moment the writers were
+	// released to the moment the last of them stopped emitting. It is the denominator of the submitted
+	// rate, and the interval a caller's own readings of the peer have to fall inside to mean anything.
+	//
+	// It is neither Elapsed, which also covers binding and teardown, nor Config.Hold, which the writers
+	// stop short of whenever the run is bounded by Count, cancelled, or ended by the peer.
 	Submitting time.Duration
 }
 
@@ -179,11 +194,9 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 		inj.start(ctx, conns, time.Now().Add(cfg.Hold))
 	}
 
-	submitStart := time.Now()
 	rep.Dropped, conns = holdAndWatch(ctx, conns, cfg.Hold, onPDU)
 	if inj != nil {
 		inj.stop()
-		rep.Submitting = time.Since(submitStart)
 		inj.fill(&rep)
 	}
 

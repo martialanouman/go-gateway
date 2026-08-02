@@ -6,8 +6,10 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -395,6 +397,262 @@ func TestNewClient_RejectsAnUnusableEndpoint(t *testing.T) {
 		if _, err := smscmetrics.NewClient(endpoint); err == nil {
 			t.Errorf("NewClient(%q) = nil error, want an error", endpoint)
 		}
+	}
+}
+
+func TestClient_ScrapeStampsTheReadingBeforeTheRequest(t *testing.T) {
+	t.Parallel()
+
+	// The peer gathers its registry when the handler runs, so the counters in the body are
+	// no older than the instant the handler was entered. Stamping the reading after the body
+	// is read puts At *later* than that instant; when the first scrape of a pair is the slow
+	// one (TCP connect, cold registry) the measured window is then shorter than the truth and
+	// the derived rate is overstated. The stamp must never be later than the peer's Gather.
+	body := fixture(t)
+	var (
+		mu     sync.Mutex
+		served time.Time
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		served = time.Now()
+		mu.Unlock()
+		time.Sleep(200 * time.Millisecond) // a slow Gather, or a slow body
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+
+	c, err := smscmetrics.NewClient(srv.URL)
+	if err != nil {
+		t.Fatalf("NewClient() = %v, want no error", err)
+	}
+	snap, err := c.Scrape(context.Background())
+	if err != nil {
+		t.Fatalf("Scrape() = %v, want no error", err)
+	}
+
+	mu.Lock()
+	gather := served
+	mu.Unlock()
+	if snap.At.After(gather) {
+		t.Errorf("At = %v, want at or before %v (the instant the peer gathered); stamping after the body read shortens the window and overstates the rate",
+			snap.At, gather)
+	}
+}
+
+func TestClient_RedactsCredentialsInURLAndErrors(t *testing.T) {
+	t.Parallel()
+
+	const secret = "S3cr3tScrapePassword"
+
+	withCredentials := func(rawURL string) string {
+		u, err := url.Parse(rawURL)
+		if err != nil {
+			t.Fatalf("parse %q: %v", rawURL, err)
+		}
+		u.User = url.UserPassword("scrape", secret)
+		return u.String()
+	}
+
+	t.Run("URL accessor", func(t *testing.T) {
+		t.Parallel()
+
+		c, err := smscmetrics.NewClient(withCredentials("http://sim.internal:9000"))
+		if err != nil {
+			t.Fatalf("NewClient() = %v, want no error", err)
+		}
+		if got := c.URL(); strings.Contains(got, secret) {
+			t.Errorf("URL() = %q, want the password masked", got)
+		}
+		if got := c.URL(); !strings.Contains(got, "sim.internal:9000/metrics") {
+			t.Errorf("URL() = %q, want it to still name the endpoint scraped", got)
+		}
+	})
+
+	t.Run("non-OK status", func(t *testing.T) {
+		t.Parallel()
+
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusUnauthorized)
+		}))
+		t.Cleanup(srv.Close)
+
+		c, err := smscmetrics.NewClient(withCredentials(srv.URL))
+		if err != nil {
+			t.Fatalf("NewClient() = %v, want no error", err)
+		}
+		_, err = c.Scrape(context.Background())
+		if err == nil {
+			t.Fatalf("Scrape() against a 401 = nil, want an error")
+		}
+		if strings.Contains(err.Error(), secret) {
+			t.Errorf("Scrape() error = %q, want the password masked", err)
+		}
+	})
+
+	t.Run("transport failure", func(t *testing.T) {
+		t.Parallel()
+
+		srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+		endpoint := withCredentials(srv.URL)
+		srv.Close() // nothing is listening any more: c.http.Do fails
+
+		c, err := smscmetrics.NewClient(endpoint)
+		if err != nil {
+			t.Fatalf("NewClient() = %v, want no error", err)
+		}
+		_, err = c.Scrape(context.Background())
+		if err == nil {
+			t.Fatalf("Scrape() against a closed listener = nil, want an error")
+		}
+		if strings.Contains(err.Error(), secret) {
+			t.Errorf("Scrape() error = %q, want the password masked", err)
+		}
+	})
+
+	t.Run("rejected endpoint", func(t *testing.T) {
+		t.Parallel()
+
+		for name, endpoint := range map[string]string{
+			"bad scheme": "ftp://scrape:" + secret + "@sim.internal:9000/metrics",
+			"no host":    "http://scrape:" + secret + "@/metrics",
+			"unparsable": "http://scrape:" + secret + "@sim.internal:9000/met rics\x7f",
+		} {
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				_, err := smscmetrics.NewClient(endpoint)
+				if err == nil {
+					t.Fatalf("NewClient(%q) = nil error, want an error", name)
+				}
+				if strings.Contains(err.Error(), secret) {
+					t.Errorf("NewClient() error = %q, want the password masked", err)
+				}
+			})
+		}
+	})
+}
+
+func TestParse_ReadsAnUntypedHistogramSumAndCount(t *testing.T) {
+	t.Parallel()
+
+	// Served without # TYPE the histogram is not a histogram to the parser: it arrives as
+	// untyped _sum/_count/_bucket series. The mean must still come out, and the _bucket
+	// series must not be mistaken for either.
+	body := `smsc_served_latency_seconds_bucket{virtual_smsc="carrier-a",scenario="healthy",le="0.016"} 3
+smsc_served_latency_seconds_bucket{virtual_smsc="carrier-a",scenario="healthy",le="+Inf"} 3
+smsc_served_latency_seconds_sum{virtual_smsc="carrier-a",scenario="healthy"} 0.036
+smsc_served_latency_seconds_count{virtual_smsc="carrier-a",scenario="healthy"} 3
+smsc_served_latency_seconds_sum{virtual_smsc="carrier-a",scenario="slow-carrier"} 2.5
+smsc_served_latency_seconds_count{virtual_smsc="carrier-a",scenario="slow-carrier"} 1
+smsc_submit_sm_received_total{virtual_smsc="carrier-a"} 100
+`
+	snap, err := smscmetrics.Parse(strings.NewReader(body), time.Unix(0, 0))
+	if err != nil {
+		t.Fatalf("Parse() = %v, want no error", err)
+	}
+	a := snap.SMSCs["carrier-a"]
+	if !closeTo(a.LatencySum, 2.536) {
+		t.Errorf("LatencySum = %v, want %v", a.LatencySum, 2.536)
+	}
+	if !closeTo(a.LatencyCount, 4) {
+		t.Errorf("LatencyCount = %v, want %v", a.LatencyCount, 4.0)
+	}
+}
+
+func TestRate_VanishedOutcomeSeriesIsACounterReset(t *testing.T) {
+	t.Parallel()
+
+	// The virtual SMSC is still there; one of its outcome series is not. A registry that
+	// dropped a series it had already published is a discontinuity, and treating the missing
+	// key as a zero would silently rewrite that outcome's delta to -total, i.e. to nothing.
+	t0 := time.Unix(1_700_000_000, 0)
+	before := snapshotOf(t0, 1000, map[string]float64{"success": 900, "timeout": 100}, 40, 0.5, 1000)
+	after := snapshotOf(t0.Add(time.Second), 2000, map[string]float64{"success": 1900}, 40, 1.0, 2000)
+
+	_, err := smscmetrics.Rate(before, after)
+	if !errors.Is(err, smscmetrics.ErrCounterReset) {
+		t.Fatalf("Rate() with a vanished outcome series = %v, want ErrCounterReset", err)
+	}
+	if !strings.Contains(err.Error(), "timeout") {
+		t.Errorf("Rate() error = %q, want it to name the vanished outcome", err)
+	}
+}
+
+func TestRate_RefusesANonFiniteReading(t *testing.T) {
+	t.Parallel()
+
+	// NaN and +Inf are both legal in the Prometheus text format and expfmt decodes them as
+	// they are. Neither can yield a rate: a NaN silently poisons every downstream comparison,
+	// and a +Inf prints as an infinite ceiling while the tool exits 0.
+	t0 := time.Unix(1_700_000_000, 0)
+	inf := math.Inf(1)
+	nan := math.NaN()
+
+	cases := map[string]smscmetrics.Snapshot{
+		"NaN _sum":          snapshotOf(t0.Add(time.Second), 2000, map[string]float64{"success": 2000}, 40, nan, 2000),
+		"NaN received":      snapshotOf(t0.Add(time.Second), nan, map[string]float64{"success": 2000}, 40, 1.0, 2000),
+		"+Inf received":     snapshotOf(t0.Add(time.Second), inf, map[string]float64{"success": 2000}, 40, 1.0, 2000),
+		"+Inf outcome":      snapshotOf(t0.Add(time.Second), 2000, map[string]float64{"success": inf}, 40, 1.0, 2000),
+		"+Inf _count":       snapshotOf(t0.Add(time.Second), 2000, map[string]float64{"success": 2000}, 40, 1.0, inf),
+		"+Inf _sum":         snapshotOf(t0.Add(time.Second), 2000, map[string]float64{"success": 2000}, 40, inf, 2000),
+		"+Inf both sides":   snapshotOf(t0.Add(time.Second), inf, map[string]float64{"success": 2000}, 40, 1.0, 2000),
+		"-Inf is backwards": snapshotOf(t0.Add(time.Second), math.Inf(-1), map[string]float64{"success": 2000}, 40, 1.0, 2000),
+	}
+	for name, after := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			before := snapshotOf(t0, 1000, map[string]float64{"success": 1000}, 40, 0.5, 1000)
+			if name == "+Inf both sides" {
+				before = snapshotOf(t0, inf, map[string]float64{"success": 1000}, 40, 0.5, 1000)
+			}
+			tp, err := smscmetrics.Rate(before, after)
+			if !errors.Is(err, smscmetrics.ErrCounterReset) {
+				t.Fatalf("Rate() = (%+v, %v), want ErrCounterReset", tp, err)
+			}
+		})
+	}
+}
+
+func TestRate_PropagatesADeltaErrorFromEveryCounter(t *testing.T) {
+	t.Parallel()
+
+	// Four counters are differenced per virtual SMSC. Each one's rejection has to reach the
+	// caller: a dropped error check on any of them turns a discontinuity into a zero delta.
+	t0 := time.Unix(1_700_000_000, 0)
+	cases := map[string]smscmetrics.Snapshot{
+		"received goes backwards": snapshotOf(t0.Add(time.Second), 900, map[string]float64{"success": 2000}, 40, 1.0, 2000),
+		"outcome goes backwards":  snapshotOf(t0.Add(time.Second), 2000, map[string]float64{"success": 900}, 40, 1.0, 2000),
+		"_count goes backwards":   snapshotOf(t0.Add(time.Second), 2000, map[string]float64{"success": 2000}, 40, 1.0, 900),
+		"_sum goes backwards":     snapshotOf(t0.Add(time.Second), 2000, map[string]float64{"success": 2000}, 40, 0.4, 2000),
+	}
+	for name, after := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			before := snapshotOf(t0, 1000, map[string]float64{"success": 1000}, 40, 0.5, 1000)
+			tp, err := smscmetrics.Rate(before, after)
+			if !errors.Is(err, smscmetrics.ErrCounterReset) {
+				t.Fatalf("Rate() = (%+v, %v), want ErrCounterReset", tp, err)
+			}
+		})
+	}
+}
+
+func TestRate_MeanServedLatencyStaysInRange(t *testing.T) {
+	t.Parallel()
+
+	// A float-to-int conversion out of the target's range is implementation-dependent in Go,
+	// so the mean is clamped rather than left to the architecture. Absurd input, but a
+	// nonsense duration read as a negative one is worse than a saturated one.
+	t0 := time.Unix(1_700_000_000, 0)
+	before := snapshotOf(t0, 1000, map[string]float64{"success": 1000}, 40, 0, 1000)
+	after := snapshotOf(t0.Add(time.Second), 2000, map[string]float64{"success": 2000}, 40, 1e12, 1001)
+
+	tp, err := smscmetrics.Rate(before, after)
+	if err != nil {
+		t.Fatalf("Rate() = %v, want no error", err)
+	}
+	if want := time.Duration(math.MaxInt64); tp.MeanServedLatency != want {
+		t.Errorf("MeanServedLatency = %v, want %v", tp.MeanServedLatency, want)
 	}
 }
 

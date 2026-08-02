@@ -13,13 +13,18 @@
 // (step-201b). Start the peer yourself — the config below is the HealthyConfig of
 // internal/testutil/smscsim, the profile the reference run will use:
 //
+// The bind password below is a throwaway for a local simulator, and /tmp/smsc-ceiling.yml is
+// world-readable. Against anything that is not a disposable container on your own machine, put the
+// file somewhere only you can read and take the credential from your own secret store — this template
+// gets copied, and the copy is where a real password ends up.
+//
 //	cat > /tmp/smsc-ceiling.yml <<'YAML'
 //	observability:
 //	  http_port: 9000
 //	virtual_smscs:
 //	  - name: carrier
 //	    port: 2775
-//	    bind_credentials: { system_id: "loadgen", password: "pw" }
+//	    bind_credentials: { system_id: "loadgen", password: "pw" }   # fixture only — never a real one
 //	    addr_ton: 1
 //	    addr_npi: 1
 //	    address_range: ".*"
@@ -42,9 +47,17 @@
 // peer sustained anywhere in the sweep, and the rate at the bind count the reference run will use. The
 // second is the one a reference run has to stay under.
 //
+// The first is printed as a CEILING only if some tier actually saturated the peer. Otherwise it comes
+// out as a LOWER BOUND, because that is what it is: the sweep never found the limit, it ran out of
+// tiers. Extend -binds until a tier sheds or the curve bends. A window under the 60s floor is branded
+// a SMOKE RUN on the same lines, so a figure cannot be lifted out of a run that was only checking the
+// instrument works.
+//
 // It exits non-zero when any tier failed to produce a trustworthy measurement, when no tier counted, or
 // when the reference tier is not among the counted ones. A tier the peer SHED on is not a failure: it
-// is what a ceiling looks like, and it is reported as disqualified.
+// is what a ceiling looks like, and it is reported as disqualified. A sweep that never saturated the
+// peer is not a failure either — the reference figure it produces is still valid and still
+// conservative — which is why the wording of the line, not the exit code, is what carries the caveat.
 //
 // Usage:
 //
@@ -126,13 +139,13 @@ func run() error {
 	log.Printf("sweeping %v binds against %s, reading %s", live.Binds, base.Addr, scraper.URL())
 	log.Printf("per tier: %s warmup + %s measured + %s settle (%s each, %s cooldown between tiers)",
 		live.Warmup, live.Measure, live.Settle, live.Hold(), live.Cooldown)
-	if live.Measure < 60*time.Second {
-		log.Printf("WARNING: the measurement window is %s — under the 60s floor, this is a smoke run, not a figure to record",
-			live.Measure)
+	if live.Measure < ceiling.MinRecordableMeasure {
+		log.Printf("WARNING: the measurement window is %s — under the %s floor, this is a smoke run, not a figure to record",
+			live.Measure, ceiling.MinRecordableMeasure)
 	}
 
 	res, sweepErr := sweeper.Run(ctx)
-	report(res, live)
+	report(res)
 	return sweepErr
 }
 
@@ -155,31 +168,68 @@ func parseBinds(s string) ([]int, error) {
 
 // report prints the curve and the two figures. It runs even when the sweep failed: the tiers that did
 // measure are still the useful half of a broken run.
-func report(res ceiling.Result, cfg ceiling.Config) {
-	log.Printf("--- curve (%d tiers, %s measured each) ---", len(res.Tiers), cfg.Measure)
+func report(res ceiling.Result) {
+	for _, line := range reportLines(res) {
+		log.Print(line)
+	}
+}
+
+// reportLines builds the closing report, one line at a time so what it claims can be tested.
+//
+// What it must never do is state a ceiling the sweep did not find. A sweep whose every tier scaled
+// with the binds it was given measured the largest load it was ASKED to produce, not the largest the
+// peer can take, and the two are not the same figure — one of them is a constraint, the other is a
+// lower bound that happens to be where somebody stopped typing.
+func reportLines(res ceiling.Result) []string {
+	lines := []string{
+		fmt.Sprintf("--- curve (%d tiers, %s measured each) ---", len(res.Tiers), res.Measure),
+	}
 	for _, t := range res.Tiers {
-		log.Print(tierLine(t))
+		lines = append(lines, tierLine(t))
+	}
+
+	if !res.Recordable() {
+		lines = append(lines, fmt.Sprintf(
+			"SMOKE RUN: %s measured per tier, under the %s floor — these figures show the instrument runs, they are not figures to record",
+			res.Measure, ceiling.MinRecordableMeasure))
 	}
 
 	if res.CeilingBinds == 0 {
-		log.Print("no tier counted: this sweep produced no ceiling")
-		return
+		return append(lines, "no tier counted: this sweep produced no ceiling")
 	}
-	log.Printf("CEILING: %.0f submit_sm/s at %d binds", res.Ceiling, res.CeilingBinds)
+
+	atLeast := ""
+	if res.Saturated {
+		lines = append(lines, fmt.Sprintf("CEILING: %.0f submit_sm/s at %d binds — %s",
+			res.Ceiling, res.CeilingBinds, res.SaturationReason))
+	} else {
+		atLeast = "at least "
+		lines = append(lines, fmt.Sprintf(
+			"LOWER BOUND: the peer absorbed at least %.0f submit_sm/s at %d binds and was NOT saturated — "+
+				"no tier shed and the curve never bent, so its real ceiling is above every tier run here. "+
+				"Extend -binds until it does.",
+			res.Ceiling, res.CeilingBinds))
+	}
+
 	if res.ReferenceCeiling == 0 {
-		log.Printf("REFERENCE (%d binds): not measured — that tier did not count", res.ReferenceBinds)
-		return
+		return append(lines, fmt.Sprintf("REFERENCE (%d binds): not measured — that tier did not count",
+			res.ReferenceBinds))
 	}
-	log.Printf("REFERENCE (%d binds): %.0f submit_sm/s — the reference run must stay under this",
-		res.ReferenceBinds, res.ReferenceCeiling)
+	return append(lines, fmt.Sprintf("REFERENCE (%d binds): %s%.0f submit_sm/s — the reference run must stay under this",
+		res.ReferenceBinds, atLeast, res.ReferenceCeiling))
 }
 
 // tierLine renders one tier: the peer's figures first, since they are the measurement, then the
 // injector's own counters, which only say whether it pushed.
+//
+// The latency is labelled configured because that is what it is: the simulator observes the latency
+// its scenario DECIDED, not a duration it measured, so the column reads the same 5 ms whether the peer
+// is idle or drowning. It is here to confirm which profile ran, never to show saturation.
 func tierLine(t ceiling.Tier) string {
 	tp := t.Throughput
-	line := fmt.Sprintf("%3d binds | %8.0f submit_sm/s | %7.0f absorbed | mean served %6s | peer binds %3.0f | %s",
-		t.Binds, tp.SubmitPerSecond, tp.Submitted, tp.MeanServedLatency.Round(time.Microsecond),
+	line := fmt.Sprintf(
+		"%3d binds | %8.0f submit_sm/s | %7.0f accepted | %7.0f served | latency %6s (configured) | peer binds %3.0f | %s",
+		t.Binds, tp.SubmitPerSecond, tp.Submitted, tp.Served, tp.MeanServedLatency.Round(time.Microsecond),
 		tp.ActiveBinds, t.Status)
 	if t.Reason != "" {
 		line += ": " + t.Reason

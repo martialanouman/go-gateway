@@ -6,6 +6,13 @@
 // injector believes it sent. An injector that queues, retries or lies about its own send rate
 // cannot inflate this number, which is exactly the property needed to call a tier a ceiling.
 //
+// One distinction the peer's own HELP strings make, and this package preserves: received_total
+// counts submit_sm PDUs *accepted*, while outcome_total counts them *served*. Accepted is not
+// throughput. A peer that reads PDUs into a queue and silently drops the overflow — without
+// emitting a non-success outcome — inflates the former while the latter stalls. Callers that
+// need a sustained rate must compare Throughput.Served against Throughput.Submitted; Qualified()
+// alone does not catch that case, because nothing was ever reported as shed.
+//
 // Usage is two scrapes and a subtraction:
 //
 //	c, _ := smscmetrics.NewClient("http://127.0.0.1:9000")
@@ -26,6 +33,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"sort"
@@ -44,9 +52,10 @@ const MinWindow = 100 * time.Millisecond
 
 // Errors returned by Rate. Both mean "this tier cannot be scored", never "the rate was zero".
 var (
-	// ErrCounterReset reports a counter that went backwards or a series that disappeared
-	// between the two readings — the simulator restarted, or its registry was reset. The
-	// window spans a discontinuity, so no delta over it is meaningful.
+	// ErrCounterReset reports a counter that went backwards, a series that disappeared
+	// between the two readings, or a reading that is not a finite number — the simulator
+	// restarted, or its registry was reset. The window spans a discontinuity, so no delta
+	// over it is meaningful.
 	ErrCounterReset = errors.New("smscmetrics: counter reset between readings")
 
 	// ErrWindowTooShort reports readings closer together than MinWindow (or out of order).
@@ -85,9 +94,15 @@ type SMSC struct {
 	ActiveBinds map[string]float64
 
 	// LatencySum and LatencyCount are the smsc_served_latency_seconds histogram's _sum and
-	// _count, summed over the scenario label. Buckets are not kept: the mean over a window
-	// is enough to tell "the peer is saturating" from "the injector is not pushing", and
-	// the weighted mean across scenarios is exactly what sum/count gives.
+	// _count, summed over the scenario label. Buckets are not kept, because there is no
+	// distribution to look at: the simulator observes the latency its scenario *decided*
+	// (ObserveServedLatency receives decision.LatencyMS), not a duration it measured. The
+	// sum/count mean therefore reports the configured value and does NOT detect saturation
+	// — it read 5 ms flat from 10 to 320 binds while throughput varied by 25x. Saturation
+	// is visible in smsc_submit_sm_outcome_total and in the throughput curve bending.
+	//
+	// LatencyCount is still worth keeping: it says how many submit_sm the peer actually
+	// served, which is a count, not a timing.
 	LatencySum   float64
 	LatencyCount float64
 }
@@ -96,7 +111,9 @@ type SMSC struct {
 // timestamp is the only clock Rate uses: elapsed time comes from the readings themselves,
 // never from an interval the caller thinks it slept.
 type Snapshot struct {
-	// At is when the reading was taken.
+	// At is when the reading was taken. Scrape sets it before the request goes out, i.e. at
+	// or before the peer's own gather, so a window computed from two of them is never
+	// shorter than the real one. See Scrape for why the bias points that way.
 	At time.Time
 
 	// SMSCs is the per-virtual-SMSC breakdown, keyed by the virtual_smsc label.
@@ -182,7 +199,9 @@ type Throughput struct {
 	// Window is after.At minus before.At — the elapsed time the rate is divided by.
 	Window time.Duration
 
-	// Submitted is the number of submit_sm the peer took in during the window.
+	// Submitted is the number of submit_sm the peer *accepted* during the window — read off
+	// its receive counter, not its outcome counter. Accepted is not served: compare against
+	// Served before treating this as a sustained rate. See the package doc.
 	Submitted float64
 
 	// SubmitPerSecond is Submitted divided by Window: the absorbed rate.
@@ -195,7 +214,13 @@ type Throughput struct {
 	// NonSuccess is the total of every Outcomes entry other than "success".
 	NonSuccess float64
 
-	// Served is the number of submit_sm the latency histogram observed during the window.
+	// Served is the number of submit_sm the latency histogram observed during the window —
+	// what the peer actually served, as opposed to what it accepted (Submitted).
+	//
+	// A gap between the two is the one signal of silent loss: a peer whose intake queue
+	// overflows keeps accepting while it stops serving, and reports no non-success outcome
+	// for what it drops, so Qualified() stays true. Callers scoring a tier should refuse it
+	// when Served falls materially below Submitted.
 	Served float64
 
 	// MeanServedLatency is the mean service time over the window (latency sum delta over
@@ -209,8 +234,9 @@ type Throughput struct {
 	// bending, nowhere else.
 	MeanServedLatency time.Duration
 
-	// ActiveBinds is the bind gauge total from the later reading — how many binds were
-	// actually up while the rate was measured.
+	// ActiveBinds is the bind gauge total from the later reading. It is a point sample taken
+	// at the end of the window, not an average over it: a bind that dropped and came back
+	// mid-window leaves no trace here.
 	ActiveBinds float64
 }
 
@@ -221,9 +247,10 @@ func (t Throughput) Qualified() bool { return t.NonSuccess == 0 }
 // Rate derives the absorbed submit_sm throughput between two readings.
 //
 // It returns ErrWindowTooShort when the readings are closer than MinWindow or out of order, and
-// ErrCounterReset when any counter went backwards or a virtual SMSC vanished — a negative delta
-// is a discontinuity, not a zero. A virtual SMSC that appears only in the later reading is
-// counted from zero: its series was created mid-window, so its full value did accrue in it.
+// ErrCounterReset when any counter went backwards, read NaN or ±Inf, or a virtual SMSC vanished
+// — a negative delta is a discontinuity, not a zero. A virtual SMSC that appears only in the
+// later reading is counted from zero: its series was created mid-window, so its full value did
+// accrue in it.
 //
 // Outcomes other than success do not fail the call. They land in NonSuccess and flip Qualified,
 // because "the peer shed traffic at this tier" is a result worth reading, not an error.
@@ -283,21 +310,40 @@ func Rate(before, after Snapshot) (Throughput, error) {
 
 	tp.SubmitPerSecond = tp.Submitted / window.Seconds()
 	if tp.Served > 0 {
-		tp.MeanServedLatency = time.Duration(float64(time.Second) * latencySum / tp.Served)
+		tp.MeanServedLatency = meanDuration(latencySum, tp.Served)
 	}
 	return tp, nil
 }
 
-// delta subtracts two cumulative readings, rejecting anything that is not a forward move. The
-// condition is written !(d >= 0) rather than d < 0 so a NaN — which compares false to
-// everything — is caught too instead of silently becoming a NaN rate.
+// delta subtracts two cumulative readings, rejecting anything that is not a finite forward move.
+//
+// Non-finite is checked first and on its own: NaN and ±Inf are both legal in the Prometheus text
+// format and expfmt decodes them unchanged, so they do reach here. A NaN compares false to
+// everything, but a +Inf satisfies d >= 0 and would sail through into SubmitPerSecond, printing
+// an infinite ceiling out of a tool that exits 0.
 func delta(after, before float64, virtualSMSC, metric string) (float64, error) {
 	d := after - before
-	if !(d >= 0) {
+	switch {
+	case math.IsNaN(d) || math.IsInf(d, 0):
+		return 0, fmt.Errorf("%w: %s{%s=%q} read %v then %v, which is not a finite counter",
+			ErrCounterReset, metric, labelVirtualSMSC, virtualSMSC, before, after)
+	case d < 0:
 		return 0, fmt.Errorf("%w: %s{%s=%q} went from %v to %v",
 			ErrCounterReset, metric, labelVirtualSMSC, virtualSMSC, before, after)
 	}
 	return d, nil
+}
+
+// meanDuration converts a mean expressed in seconds into a Duration, saturating instead of
+// overflowing: a float-to-int conversion out of the target type's range is
+// implementation-dependent in Go, and a nonsense duration read as a negative one is worse than
+// one pinned at the maximum. Only reachable on absurd input, both arguments being finite here.
+func meanDuration(sumSeconds, count float64) time.Duration {
+	ns := float64(time.Second) * sumSeconds / count
+	if ns >= float64(math.MaxInt64) {
+		return time.Duration(math.MaxInt64)
+	}
+	return time.Duration(ns)
 }
 
 // Parse reads a Prometheus text exposition and stamps the resulting snapshot with at.
@@ -388,8 +434,11 @@ func sampleValue(m *dto.Metric) float64 {
 
 // Client scrapes one simulator's metrics endpoint. It is safe for concurrent use.
 type Client struct {
-	url  string
-	http *http.Client
+	// url is the URL actually requested, userinfo included. It never leaves the client:
+	// everything logged or wrapped in an error uses redacted instead.
+	url      string
+	redacted string
+	http     *http.Client
 }
 
 // Option configures a Client.
@@ -409,50 +458,72 @@ func WithHTTPClient(c *http.Client) Option {
 // ("http://127.0.0.1:9000") or the full metrics URL. A bare origin gets "/metrics" appended:
 // the harness README already records how easily a recopied base URL turns into a 404 that then
 // gets blamed on the system under test.
+//
+// An endpoint may carry credentials ("https://scrape:secret@sim.internal:9000"). They are used
+// for the request and never repeated back: no error returned here, nor any produced later by
+// this client, echoes the raw endpoint.
 func NewClient(endpoint string, opts ...Option) (*Client, error) {
 	u, err := url.Parse(endpoint)
 	if err != nil {
-		return nil, fmt.Errorf("smscmetrics: parse endpoint %q: %w", endpoint, err)
+		// url.Error prints the raw URL it failed on, credentials included, so only the
+		// reason is reported. The endpoint itself cannot be shown: it is precisely the
+		// string that could not be parsed, hence could not be redacted either.
+		var uerr *url.Error
+		if errors.As(err, &uerr) {
+			err = uerr.Err
+		}
+		return nil, fmt.Errorf("smscmetrics: parse endpoint: %w", err)
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return nil, fmt.Errorf("smscmetrics: endpoint %q needs an http or https scheme", endpoint)
+		return nil, fmt.Errorf("smscmetrics: endpoint %q needs an http or https scheme", u.Redacted())
 	}
 	if u.Host == "" {
-		return nil, fmt.Errorf("smscmetrics: endpoint %q has no host", endpoint)
+		return nil, fmt.Errorf("smscmetrics: endpoint %q has no host", u.Redacted())
 	}
 	if p := strings.TrimSuffix(u.Path, "/"); p == "" {
 		u.Path = "/metrics"
 	}
 
-	c := &Client{url: u.String(), http: &http.Client{}}
+	c := &Client{url: u.String(), redacted: u.Redacted(), http: &http.Client{}}
 	for _, opt := range opts {
 		opt(c)
 	}
 	return c, nil
 }
 
-// URL reports the metrics URL the client scrapes, after any "/metrics" was appended.
-func (c *Client) URL() string { return c.url }
+// URL reports the metrics URL the client scrapes, after any "/metrics" was appended, with any
+// password masked. It is a diagnostic accessor — callers log it — so it returns the redacted
+// form rather than url.URL.String, which does not mask userinfo.
+func (c *Client) URL() string { return c.redacted }
 
-// Scrape takes one reading, stamping it with the instant the response was read. The context
-// governs the whole exchange, connection included.
+// Scrape takes one reading, stamping it with the instant just before the request goes out —
+// not the instant the body finished arriving.
+//
+// The stamp is deliberately early, and the asymmetry matters. The peer's counters are gathered
+// somewhere between the request leaving and the body being read, so an early stamp can only put
+// At before the counters it labels. Applied to both readings of a pair, that makes the measured
+// window no shorter than the real one, so the derived rate is understated rather than
+// overstated. Stamping late does the opposite whenever the first scrape is the slower of the two
+// — the usual case, with a TCP connection to open and a cold registry to encode against a
+// keep-alive second scrape — and this number is a ceiling a reference run has to stay under.
+//
+// The context governs the whole exchange, connection included.
 func (c *Client) Scrape(ctx context.Context) (Snapshot, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url, nil)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("smscmetrics: build request: %w", err)
 	}
+	at := time.Now()
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return Snapshot{}, fmt.Errorf("smscmetrics: scrape %s: %w", c.url, err)
+		return Snapshot{}, fmt.Errorf("smscmetrics: scrape %s: %w", c.redacted, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return Snapshot{}, fmt.Errorf("smscmetrics: scrape %s: status %d, want 200", c.url, resp.StatusCode)
+		return Snapshot{}, fmt.Errorf("smscmetrics: scrape %s: status %d, want 200", c.redacted, resp.StatusCode)
 	}
-	// Stamped after the body is in hand: the counters are at least as fresh as this instant,
-	// and the window between two readings is then never shorter than the truth.
-	snap, err := Parse(resp.Body, time.Now())
+	snap, err := Parse(resp.Body, at)
 	if err != nil {
 		return Snapshot{}, err
 	}

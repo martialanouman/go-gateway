@@ -82,6 +82,13 @@ type injector struct {
 	done     chan struct{}
 	wg       sync.WaitGroup
 	stopOnce sync.Once
+
+	// The injection window, owned here rather than timed by the caller: it opens when the writers are
+	// released and closes when the last one stops emitting, which is neither of the instants a caller
+	// on the outside can observe. Every writer stamps stoppedAt, hence the mutex.
+	windowMu  sync.Mutex
+	startedAt time.Time
+	stoppedAt time.Time
 }
 
 // session is the per-connection injection state: the in-flight window and the counters.
@@ -99,6 +106,7 @@ type session struct {
 	seq       uint32 // writer-only: next sequence number
 	submitted int
 	errors    int
+	cutShort  int
 	firstErr  error
 
 	accepted int
@@ -127,16 +135,48 @@ func newInjector(cfg SubmitConfig, n int) *injector {
 // start opens fire on every session at once and returns immediately. Emission stops at deadline, on
 // context cancellation, or when stop is called — whichever comes first.
 func (inj *injector) start(ctx context.Context, conns []net.Conn, deadline time.Time) {
+	inj.windowMu.Lock()
+	inj.startedAt = time.Now()
+	inj.windowMu.Unlock()
+
 	for i, nc := range conns {
 		inj.wg.Add(1)
 		go func() {
 			defer inj.wg.Done()
+			defer inj.writerLeft()
 			inj.pump(ctx, inj.sessions[i], nc, deadline)
 		}()
 	}
 }
 
-// stop ends emission and waits for every writer to leave. It is safe to call more than once.
+// writerLeft closes the injection window a little further: the last writer to leave is the one that
+// ends it.
+func (inj *injector) writerLeft() {
+	inj.windowMu.Lock()
+	defer inj.windowMu.Unlock()
+	if now := time.Now(); now.After(inj.stoppedAt) {
+		inj.stoppedAt = now
+	}
+}
+
+// submitting is how long the injection window stayed open — the interval the submitted counters are a
+// rate over. It is zero until at least one writer has both started and left.
+func (inj *injector) submitting() time.Duration {
+	inj.windowMu.Lock()
+	defer inj.windowMu.Unlock()
+	if inj.startedAt.IsZero() || inj.stoppedAt.IsZero() {
+		return 0
+	}
+	return inj.stoppedAt.Sub(inj.startedAt)
+}
+
+// stop signals the writers to end emission and waits for them all to leave.
+//
+// It is safe to call more than once, but it is NOT a way to cut an injection short from anywhere: a
+// writer blocked inside WritePDU — a peer that stopped reading, kernel buffers full — never looks at
+// the signal, and only its write deadline or the run's cancellation gets it out. Called mid-window it
+// would therefore block until one of those fires. Run calls it once the hold window is over, i.e.
+// past the writers' own deadline, so by then there is nobody left to wait for.
 func (inj *injector) stop() {
 	inj.stopOnce.Do(func() { close(inj.done) })
 	inj.wg.Wait()
@@ -176,6 +216,15 @@ func (inj *injector) pump(ctx context.Context, s *session, nc net.Conn, deadline
 		case <-timer.C:
 			return
 		}
+		// A select picks uniformly among the cases that are ready, and at the instant the window closes
+		// a session still holding a free slot has two: the slot and the timer. Taking the slot there
+		// means writing on a connection whose write deadline has just expired, i.e. reporting an i/o
+		// timeout on a run that went perfectly — one session in two, against any peer fast enough to
+		// keep the window unsaturated. The deadline is the authority, so it is re-read here rather than
+		// left to a coin flip.
+		if !time.Now().Before(deadline) {
+			return
+		}
 
 		s.seq++
 		s.mu.Lock()
@@ -186,11 +235,33 @@ func (inj *injector) pump(ctx context.Context, s *session, nc net.Conn, deadline
 			s.mu.Lock()
 			delete(s.inFlight, s.seq)
 			s.mu.Unlock()
-			s.fail(err)
+			if windowClosed(ctx, deadline) {
+				s.cutShort++
+			} else {
+				s.fail(err)
+			}
 			return
 		}
 		s.submitted++
 	}
+}
+
+// windowClosed reports whether the injection window had ended by the time control came back from a
+// write — the question that tells a failure of the peer's apart from the ordinary end of a saturating
+// run. Both produce the same i/o timeout on the wire, so the cause is read from state the pump owns
+// rather than guessed from the error's text: the two conditions below are exactly the two that expire
+// the write deadline, the absolute one armed at start and the one the cancellation hook forces.
+//
+// inj.done is deliberately not consulted. Closing it cannot interrupt a write — that is the whole
+// point of stop's precondition — so a write that failed while it happened to be closed failed for its
+// own reason, and belongs in the errors.
+//
+// A peer that resets the connection in the last instants of the window is filed as cut short rather
+// than as an error. The ambiguity is real and cannot be settled from this side; it is not a blind
+// spot, because that same teardown is what the watcher reads on the other half of the connection and
+// it comes back as Report.Dropped.
+func windowClosed(ctx context.Context, deadline time.Time) bool {
+	return ctx.Err() != nil || !time.Now().Before(deadline)
 }
 
 // fail records a write failure. Only the count and the first cause are kept: a saturating injector
@@ -234,11 +305,13 @@ func (inj *injector) onPDU(i int, pdu smpp.PDU) {
 // fill folds the per-session counters into the report. It must run after both stop and the watchers
 // have returned — that join is what makes the unsynchronised counters safe to read.
 func (inj *injector) fill(rep *Report) {
+	rep.Submitting = inj.submitting()
 	for _, s := range inj.sessions {
 		rep.Submitted += s.submitted
 		rep.Accepted += s.accepted
 		rep.Rejected += s.rejected
 		rep.SubmitErrors += s.errors
+		rep.SubmitCutShort += s.cutShort
 		rep.Unanswered += len(s.inFlight)
 		if rep.SubmitErr == nil {
 			rep.SubmitErr = s.firstErr

@@ -14,8 +14,12 @@
 //
 // It exits non-zero as soon as one session failed to bind, OR was dropped by the peer during the hold
 // window — failing to keep what it accepted is the peer's failure too, and it is half the question
-// this tool asks — OR the injector was asked to submit and put nothing on the wire. Either way a run
-// can be asserted on in a script.
+// this tool asks — OR the injector was asked to submit and put nothing on the wire, OR a submission
+// failed on the wire. Any of them can be asserted on in a script.
+//
+// What it does NOT fail on is a writer the closing window caught mid-write: an injector pushing until
+// the last instant of its window is writing when that instant arrives, so every full-length run ends
+// with a few, and they are reported as "cut short" rather than as errors.
 //
 // Interrupting it (SIGTERM / Ctrl-C) cuts the hold window short and unbinds cleanly. Interrupting it
 // during the dial phase is reported as failed binds, since that is what a cancelled dial produces.
@@ -99,24 +103,34 @@ func run() error {
 		return err
 	}
 	report(rep)
+	return verdict(rep, submit)
+}
 
-	if rep.Failed > 0 {
+// verdict turns a finished run into the process's exit status: nil when the run answered the question
+// it was asked, an error when it did not. It is kept apart from run so the rule can be asserted on
+// without a peer and without flag parsing — the exit code is what a script reads, not the log lines.
+func verdict(rep bindgen.Report, submit bool) error {
+	switch {
+	case rep.Failed > 0:
 		return fmt.Errorf("%d of %d binds failed", rep.Failed, rep.Requested)
-	}
 	// A dropped session is a failure of the peer to HOLD what it accepted — the very question this
 	// tool exists to answer. Reporting it as a clean run would say "the peer takes N binds" about a
 	// peer that took them and let them go.
-	if rep.Dropped > 0 {
+	case rep.Dropped > 0:
 		return fmt.Errorf("%d of %d bound sessions were dropped by the peer during the hold",
 			rep.Dropped, rep.Bound)
-	}
 	// An injector that pushed nothing produces a peer-side reading of zero, which reads exactly like a
 	// peer with no throughput at all. Fail loudly rather than let that be measured.
-	if submit && rep.Submitted == 0 {
+	case submit && rep.Submitted == 0:
 		return fmt.Errorf("the injector put no submit_sm on the wire (%d errors, first: %v)",
 			rep.SubmitErrors, rep.SubmitErr)
+	// A submission the peer never got is a hole in the traffic the run was supposed to produce, and
+	// the peer-side figure is then a rate over a load nobody can state. Report.SubmitCutShort is
+	// deliberately NOT here: a writer torn out of a blocked write by the end of its own window is how
+	// every full-length saturating run ends, and failing on it would fail on the tool's normal mode.
+	case rep.SubmitErrors > 0:
+		return fmt.Errorf("%d submissions failed on the wire (first: %v)", rep.SubmitErrors, rep.SubmitErr)
 	}
-
 	return nil
 }
 
@@ -127,8 +141,9 @@ func report(rep bindgen.Report) {
 		rep.Requested, rep.Bound, rep.Failed, rep.Dropped, rep.Elapsed.Round(time.Millisecond))
 
 	if rep.Submitting > 0 {
-		log.Printf("submitted %d | accepted %d | rejected %d | unanswered %d | errors %d | over %s (~%.0f/s written)",
-			rep.Submitted, rep.Accepted, rep.Rejected, rep.Unanswered, rep.SubmitErrors,
+		log.Printf("submitted %d | accepted %d | rejected %d | unanswered %d | cut short %d | errors %d | "+
+			"over %s (~%.0f/s written)",
+			rep.Submitted, rep.Accepted, rep.Rejected, rep.Unanswered, rep.SubmitCutShort, rep.SubmitErrors,
 			rep.Submitting.Round(time.Millisecond), float64(rep.Submitted)/rep.Submitting.Seconds())
 		if rep.SubmitErr != nil {
 			log.Printf("  first submit error: %v", rep.SubmitErr)

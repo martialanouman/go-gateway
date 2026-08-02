@@ -6,20 +6,41 @@
 // can be placed BELOW that figure. A reference run at the peer's ceiling measures the peer, not the
 // gateway — and every capacity lever tuned against it would be tuned against an artefact.
 //
-// Two figures come out, not one: the curve of ceiling-versus-binds (Result.Tiers), and the ceiling at
-// the bind count the reference run will use (Result.ReferenceCeiling). The curve says where the peer
-// stops scaling; the reference figure is the one a reference run has to stay under.
+// Two figures come out, not one: the curve of rate-versus-binds (Result.Tiers), and the rate at the
+// bind count the reference run will use (Result.ReferenceCeiling).
 //
-// Three properties are what make the number trustworthy, and each is enforced rather than assumed:
+// # A ceiling only when the sweep found one
+//
+// The highest rate over the counted tiers is a CEILING only when some tier actually reached the peer's
+// limit — Result.Saturated. A sweep whose every tier scaled with the binds it was handed measured the
+// largest load it was ASKED to produce, and calling that a ceiling points a capacity plan at a
+// constraint nobody has evidence for. Absent saturation, Result.Ceiling is a lower bound and says so.
+//
+// Two signals, and only two, say the peer reached its limit: an outcome other than success in the
+// window, and the curve failing to scale with the binds (minScalingFraction). The served-latency
+// histogram is NOT one of them — the simulator observes the latency its scenario decided rather than a
+// duration it measured, so it reads its configured value however hard the peer is pushed.
+//
+// # What makes the number trustworthy
+//
+// Each of these is enforced rather than assumed:
 //
 //   - The rate is read from the peer (smscmetrics), never from the injector's own counters. An
 //     injector that queues or retries cannot inflate it. The injector's report is kept only to answer
-//     "did it push at all?".
+//     "did it push, and was it still being answered?".
+//   - Both readings are taken from INSIDE the injection window, anchored on absolute instants counted
+//     from the start signal, and the second one is refused if it came back too near the end of that
+//     window. A reading taken after the injection stopped divides by a window whose tail carried no
+//     load, and understates the rate with every counter still looking healthy.
 //   - A tier whose window carried any non-success outcome is DISQUALIFIED: the peer was shedding, so
 //     what it absorbed is not a rate it sustained. It stays in the curve, marked, and out of the
 //     ceiling.
-//   - A tier whose peer-side bind gauge disagrees with the bind count asked for is REFUSED. A sweep
-//     that believes it has 40 binds while 12 were turned away measures something nobody named.
+//   - A tier the peer accepted materially more of than it served is DISQUALIFIED too. The rate is
+//     derived from smsc_submit_sm_received_total, which counts PDUs taken off the wire — acceptance,
+//     not throughput. A peer dropping its queue overflow silently moves that counter and no outcome.
+//   - A tier whose peer-side bind gauge disagrees with the bind count asked for is REFUSED, and so is
+//     one whose injector ends with a large unanswered tail: sessions that stopped being served neither
+//     fail nor drop, and the tier would be filed under a bind count nobody actually ran on.
 //
 // The sweep drives the peer through two seams — a Load that runs one tier and a Scraper that takes one
 // reading — so the logic is testable without a simulator. It never launches the peer: the address and
@@ -43,9 +64,8 @@ var defaultBinds = []int{10, 20, 40, 80}
 
 // Defaults applied when Config leaves a duration at zero.
 const (
-	// defaultMeasure is the length of one tier's measurement window. Sixty seconds is the floor D3
-	// sets: shorter and the figure is a burst the peer's buffers absorbed, not a rate it held.
-	defaultMeasure = 60 * time.Second
+	// defaultMeasure is the length of one tier's measurement window.
+	defaultMeasure = MinRecordableMeasure
 
 	// defaultWarmup is the head of the injection window left out of the measurement — the time the
 	// sessions need to fill their in-flight windows and the previous tier's sockets to be reaped.
@@ -64,6 +84,47 @@ const (
 	// bind_pool_size is bounded to 1..32 by the control-plane schema. It only picks a default
 	// Reference — the largest tier a lone pool could actually reproduce.
 	maxReferenceBinds = 32
+)
+
+// MinRecordableMeasure is the shortest per-tier measurement window whose figures are worth recording,
+// and the floor D3 sets. Below it what is measured is partly the peer's buffers draining rather than a
+// rate it held, so a shorter sweep proves the instrument runs and nothing else. See Result.Recordable.
+const MinRecordableMeasure = 60 * time.Second
+
+// minScalingFraction is the share of the extra throughput a tier's extra binds should have bought,
+// under which the curve is read as having bent. A peer scaling perfectly buys the whole proportional
+// increase (fraction 1); a peer at its limit buys none of it (fraction 0). Half sits between the two
+// with room on both sides: the sweep of 02/08 returned 0.93 across every doubling from 10 to 320
+// binds, so a peer merely losing per-bind efficiency does not trip it.
+//
+// This is the second of the two saturation signals, and the only one available against a peer that
+// never refuses anything — it just stops going faster.
+const minScalingFraction = 0.5
+
+// Bars a tier has to clear beyond the peer's own outcome counter.
+const (
+	// maxUnservedFraction is how much of what the peer ACCEPTED during the window may still be
+	// unserved by the end of it. The two are different counters: smsc_submit_sm_received_total counts
+	// PDUs taken off the wire, the served histogram counts the ones the peer answered for. A peer
+	// reading its queue and dropping the overflow without an outcome label moves the first and not the
+	// second, and its absorbed rate would then be an acceptance rate — a figure nobody can reproduce.
+	//
+	// It is a fraction rather than a count because what legitimately sits between the two is the
+	// change in the peer's own backlog over the window, and in steady state that is a handful of PDUs
+	// either way. Two percent is well above that and well below any real drop.
+	maxUnservedFraction = 0.02
+
+	// maxUnansweredPerBind bounds the injector's in-flight tail at the close of a tier. A session that
+	// stopped being served produces no error at all — the connection stays open, so nothing lands in
+	// Failed or Dropped, and the peer's bind gauge still counts it — but it holds its whole in-flight
+	// window (32 submit_sm by default) unanswered forever. A healthy session against a peer answering
+	// in milliseconds ends the window with well under one outstanding, so four per bind is slack for a
+	// slower link and still far under what even a few frozen sessions leave behind.
+	//
+	// The bar is deliberately one that a genuinely high-latency peer could trip: a tier wrongly
+	// refused is loud and costs a re-run, a tier wrongly counted is a number somebody tunes a system
+	// against. Against a remote peer with a real round-trip this needs raising, not removing.
+	maxUnansweredPerBind = 4
 )
 
 // Load runs one tier of the sweep: it opens the binds, injects submit_sm for the whole hold window,
@@ -144,14 +205,42 @@ type Result struct {
 	// included and marked as such.
 	Tiers []Tier
 	// Ceiling is the highest absorbed rate over the counted tiers, in submit_sm per second.
+	//
+	// It is only a CEILING when Saturated is true. Otherwise it is a lower bound: the sweep proved the
+	// peer takes at least this much and never found where it stops, so its limit is somewhere above
+	// every tier that ran. Read the two apart before quoting the number — a lower bound quoted as a
+	// ceiling points a capacity plan at a constraint that does not exist.
 	Ceiling float64
 	// CeilingBinds is the bind count that produced Ceiling.
 	CeilingBinds int
+	// Saturated reports whether any tier actually reached the peer's limit: the peer shed traffic, or
+	// the curve stopped scaling with the binds thrown at it. False means the sweep was never big
+	// enough to find the limit, which is a result about the sweep and not about the peer.
+	Saturated bool
+	// SaturationReason names the tier and the signal that showed the limit, in one line fit for a
+	// report. Empty when Saturated is false.
+	SaturationReason string
 	// ReferenceBinds is the bind count the reference run will use (Config.Reference).
 	ReferenceBinds int
 	// ReferenceCeiling is the absorbed rate at ReferenceBinds — the figure a reference run must stay
 	// under. Zero when that tier did not count, which is an error rather than a result.
 	ReferenceCeiling float64
+	// Measure is the window each tier was scored over. It travels with the figures so a smoke run can
+	// be told from a measurement by whoever reads the Result, not only by whoever typed the flags.
+	Measure time.Duration
+}
+
+// Recordable reports whether the tiers were measured long enough (MinRecordableMeasure) for their
+// figures to be worth writing down.
+func (r Result) Recordable() bool { return r.Measure >= MinRecordableMeasure }
+
+// markSaturation records the first evidence that the peer reached its limit. The first is kept rather
+// than the last: it is the lowest tier at which the sweep can say the peer stopped scaling.
+func (r *Result) markSaturation(reason string) {
+	if !r.Saturated {
+		r.Saturated = true
+		r.SaturationReason = reason
+	}
 }
 
 // Tier returns the tier measured at the given bind count, and whether it was attempted.
@@ -178,7 +267,9 @@ type Config struct {
 	// Measure is the measurement window itself. It must be at least smscmetrics.MinWindow, and D3
 	// requires at least 60 seconds for a figure worth recording.
 	Measure time.Duration
-	// Settle is the margin between the second reading and the end of the injection window.
+	// Settle is the margin between the second reading and the end of the injection window. Half of it
+	// is the bar the second reading has to come back inside: spend more than that and the tier is
+	// refused rather than counted over a window the injection may already have left.
 	Settle time.Duration
 	// Cooldown is the pause between two tiers.
 	Cooldown time.Duration
@@ -294,8 +385,10 @@ func (c Config) normalise() (Config, error) {
 // counted tier came out of the sweep, or the reference tier is not among the counted ones — a sweep
 // that lost the figure it exists to produce must never read as a success.
 func (s *Sweeper) Run(ctx context.Context) (Result, error) {
-	res := Result{ReferenceBinds: s.cfg.Reference}
+	res := Result{ReferenceBinds: s.cfg.Reference, Measure: s.cfg.Measure}
 	var errs []error
+	// The last tier that produced a usable rate, which is what the next one's scaling is judged against.
+	var prev *Tier
 
 	for i, binds := range s.cfg.Binds {
 		if i > 0 {
@@ -313,6 +406,16 @@ func (s *Sweeper) Run(ctx context.Context) (Result, error) {
 
 		switch tier.Status {
 		case TierCounted:
+			if prev != nil {
+				if scaling, bent := bent(*prev, tier); bent {
+					res.markSaturation(fmt.Sprintf(
+						"the curve bent at %d binds: %.0f/s against %.0f/s at %d binds, %.0f%% of what the extra binds should have bought",
+						binds, tier.Throughput.SubmitPerSecond, prev.Throughput.SubmitPerSecond, prev.Binds, 100*scaling))
+				}
+			}
+			counted := tier
+			prev = &counted
+
 			if tier.Throughput.SubmitPerSecond > res.Ceiling {
 				res.Ceiling = tier.Throughput.SubmitPerSecond
 				res.CeilingBinds = binds
@@ -323,7 +426,9 @@ func (s *Sweeper) Run(ctx context.Context) (Result, error) {
 		case TierFailed:
 			errs = append(errs, fmt.Errorf("ceiling: the %d-bind tier failed: %s: %w", binds, tier.Reason, tier.Err))
 		case TierDisqualified:
-			// A finding, not a fault: the peer shed at this tier, which is what a ceiling looks like.
+			// A finding, not a fault: the peer shed at this tier, which is what a ceiling looks like —
+			// and it is the plainest evidence the sweep can get that the limit was reached.
+			res.markSaturation(fmt.Sprintf("the peer shed traffic at %d binds: %s", binds, tier.Reason))
 		}
 
 		if ctx.Err() != nil {
@@ -346,6 +451,10 @@ func (s *Sweeper) Run(ctx context.Context) (Result, error) {
 // errNotStarted reports an injection that ended before it signalled its start — there was never a
 // window to measure inside.
 var errNotStarted = errors.New("ceiling: the injection ended before it began")
+
+// errLateReading reports a second reading that came back too close to the end of the injection window
+// to be sure the load was still running while the peer served it.
+var errLateReading = errors.New("ceiling: the second reading was taken too late")
 
 // runTier drives one tier: it starts the injection, takes its two readings from inside the injection
 // window, then stops the injection and judges what came back.
@@ -386,6 +495,8 @@ func (s *Sweeper) runTier(ctx context.Context, binds int) Tier {
 			cause = measErr
 		}
 		return tier.fail("the injection never opened its window", cause)
+	case errors.Is(measErr, errLateReading):
+		return tier.fail("the measurement ran past the end of the injection", measErr)
 	case measErr != nil:
 		return tier.fail("a reading failed", measErr)
 	// A cancellation here is the one this tier issued itself, three lines above.
@@ -397,9 +508,20 @@ func (s *Sweeper) runTier(ctx context.Context, binds int) Tier {
 	case rep.Dropped > 0:
 		return tier.fail(fmt.Sprintf("the peer dropped %d of the %d bound sessions mid-window",
 			rep.Dropped, rep.Bound), nil)
+	case rep.Unanswered > maxUnansweredPerBind*binds:
+		// Sessions that stopped being served, which no aggregate above can show: they neither fail nor
+		// drop, and the peer's gauge still counts their connections. The rate would then be filed under
+		// a bind count nobody actually ran on.
+		return tier.fail(fmt.Sprintf(
+			"%d submit_sm were left unanswered, over the %d a healthy %d-bind tier ends with: sessions stopped being served",
+			rep.Unanswered, maxUnansweredPerBind*binds, binds), nil)
 	case rep.Submitted == 0:
-		return tier.fail(fmt.Sprintf("the injector put no submit_sm on the wire (%d errors)",
-			rep.SubmitErrors), rep.SubmitErr)
+		// Both counters, because a writer blocked on its very first write and then cut off by
+		// the closing window lands in SubmitCutShort with no error at all: reporting only
+		// SubmitErrors would say "(0 errors)" with a nil cause on the one tier that most needs
+		// diagnosing.
+		return tier.fail(fmt.Sprintf("the injector put no submit_sm on the wire (%d errors, %d cut short)",
+			rep.SubmitErrors, rep.SubmitCutShort), rep.SubmitErr)
 	}
 
 	tp, err := smscmetrics.Rate(before, after)
@@ -421,6 +543,13 @@ func (s *Sweeper) runTier(ctx context.Context, binds int) Tier {
 		tier.Reason = fmt.Sprintf("the peer shed %.0f of the %.0f submit_sm it took (%s)",
 			tp.NonSuccess, tp.Submitted, outcomes(tp))
 		return tier
+	case tp.Served > 0 && tp.Submitted-tp.Served > maxUnservedFraction*tp.Submitted:
+		// Accepted is not served. A peer draining its receive queue and dropping the overflow silently
+		// moves the received counter and no outcome at all, so the guard above sees a clean tier.
+		tier.Status = TierDisqualified
+		tier.Reason = fmt.Sprintf("the peer served only %.0f of the %.0f submit_sm it accepted (%.1f%% never came out)",
+			tp.Served, tp.Submitted, 100*(tp.Submitted-tp.Served)/tp.Submitted)
+		return tier
 	}
 
 	tier.Status = TierCounted
@@ -428,6 +557,13 @@ func (s *Sweeper) runTier(ctx context.Context, binds int) Tier {
 }
 
 // measure waits for the injection to begin, then takes the two readings inside its window.
+//
+// Both instants are absolute, counted from the start signal. Sleeping a duration AFTER each reading
+// instead would add the scrapes' own latency to a tier whose end the injector already fixed, at
+// start+Hold, before any of this ran: the injection would stop while the second reading was still in
+// flight, and the rate would be divided by a window whose tail carried no load. Nothing about that is
+// visible afterwards — every counter moved, every bind was up — which is why it is prevented here and
+// then checked rather than assumed.
 func (s *Sweeper) measure(ctx context.Context, started, done <-chan struct{}) (before, after smscmetrics.Snapshot, err error) {
 	select {
 	case <-started:
@@ -436,20 +572,38 @@ func (s *Sweeper) measure(ctx context.Context, started, done <-chan struct{}) (b
 	case <-ctx.Done():
 		return before, after, ctx.Err()
 	}
+	start := time.Now()
 
-	if err := wait(ctx, s.cfg.Warmup); err != nil {
+	if err := waitUntil(ctx, start.Add(s.cfg.Warmup)); err != nil {
 		return before, after, fmt.Errorf("ceiling: warmup: %w", err)
 	}
 	if before, err = s.scrape(ctx); err != nil {
 		return before, after, err
 	}
-	if err := wait(ctx, s.cfg.Measure); err != nil {
+	if err := waitUntil(ctx, start.Add(s.cfg.Warmup+s.cfg.Measure)); err != nil {
 		return before, after, fmt.Errorf("ceiling: measurement window: %w", err)
 	}
 	if after, err = s.scrape(ctx); err != nil {
 		return before, after, err
 	}
+
+	// The reading is timed on this side rather than by after.At: what must fall inside the injection is
+	// the instant the peer served the request, and the only bound on it this process can vouch for is
+	// when the call came back. Snapshot.At is a convention of the metrics reader — it has already
+	// moved once — so a guard resting on it would be a guard resting on somebody else's comment.
+	if took := time.Since(start); took > s.readingDeadline() {
+		return before, after, fmt.Errorf(
+			"%w: it came back %v after the injection began, past the %v bar (hold %v, settle %v)",
+			errLateReading, took.Round(time.Millisecond), s.readingDeadline(), s.cfg.Hold(), s.cfg.Settle)
+	}
 	return before, after, nil
+}
+
+// readingDeadline is how long after the start signal the second reading may still come back. Half of
+// Settle is spent rather than all of it so a tier is refused while there is slack left, not at the
+// instant the guarantee is already broken.
+func (s *Sweeper) readingDeadline() time.Duration {
+	return s.cfg.Warmup + s.cfg.Measure + s.cfg.Settle/2
 }
 
 // scrape takes one reading, narrowed to the configured virtual SMSC.
@@ -490,6 +644,24 @@ func firstCause(rep bindgen.Report) string {
 	return rep.Errors[0].Error()
 }
 
+// bent reports whether the curve stopped scaling between two consecutive counted tiers, and returns
+// the share of the proportional throughput increase the extra binds actually bought — 1 for a peer
+// still scaling perfectly, 0 for one that went no faster at all, negative for one that went slower.
+//
+// It compares growth against growth rather than rate against rate on purpose: a peer whose absorbed
+// rate still rises with every tier is not necessarily still scaling, and a sweep that only looked for
+// the rate turning back down would need the peer to actually collapse before it noticed anything.
+func bent(prev, cur Tier) (scaling float64, ok bool) {
+	prevRate := prev.Throughput.SubmitPerSecond
+	if prevRate <= 0 || prev.Binds <= 0 || cur.Binds <= prev.Binds {
+		return 0, false
+	}
+	bindGrowth := float64(cur.Binds)/float64(prev.Binds) - 1
+	rateGrowth := cur.Throughput.SubmitPerSecond/prevRate - 1
+	scaling = rateGrowth / bindGrowth
+	return scaling, scaling < minScalingFraction
+}
+
 // outcomes renders a window's per-outcome breakdown, sorted, for a disqualification line.
 func outcomes(tp smscmetrics.Throughput) string {
 	names := make([]string, 0, len(tp.Outcomes))
@@ -506,6 +678,13 @@ func outcomes(tp smscmetrics.Throughput) string {
 		out += fmt.Sprintf("%s=%.0f", name, tp.Outcomes[name])
 	}
 	return out
+}
+
+// waitUntil sleeps until the given instant, cut short by cancellation. An instant already past returns
+// at once — a reading that cost more than the window it was supposed to fit in is not made good by
+// waiting, it is caught by the deadline.
+func waitUntil(ctx context.Context, t time.Time) error {
+	return wait(ctx, time.Until(t))
 }
 
 // wait sleeps for d, cut short by cancellation.
