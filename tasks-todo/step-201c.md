@@ -64,15 +64,30 @@ qui rend le fail-open de `settle` acceptable. Il n'y a par ailleurs aucun reaper
 chemin chaud, et n'a pas de bonne réponse quand Redis tombe) · **réduire les allers-retours sans
 batcher** (au mieux ×2 quand il en manque ×4).
 
-### D2 — Le rayon de duplication est borné explicitement, et par la bonne grandeur
+### D2 — Le rayon de duplication est borné à ~250 SMS par partition et par crash
 Plafonner « la taille du batch CDR » ne bornerait rien : sous `D1` le pool n'écrit plus de CDR. La
-duplication est bornée par le **nombre de `submit_sm` effectués depuis le dernier commit d'offset**.
-C'est cette grandeur qui reçoit un cap, avec le chiffre et sa conséquence écrits noir sur blanc :
-« au plus N SMS dupliqués par partition et par crash ».
+duplication est bornée par le **nombre de `submit_sm` effectués depuis le dernier commit d'offset**,
+c'est-à-dire par la taille d'un poll. Le levier est `FetchMaxPartitionBytes`, **jamais réglé
+aujourd'hui** — donc au défaut franz-go de 1 MiB (`kgo/config.go:676`), soit ~1 000 records par
+partition à ~0,7–1 Ko le record.
+
+**Le cap est posé à 256 KiB**, exposé en `KAFKA_FETCH_MAX_PARTITION_BYTES` : environ **250 SMS
+dupliqués par partition et par crash de pod**. À la cible NFR (8 000 msg/s sur 12 partitions, soit
+~667 msg/s par partition), c'est **moins d'une demi-seconde de trafic** par partition.
 
 **Raison.** La fenêtre résiduelle de `D1` — crash entre le `submit_sm` et l'ack du produce — n'est pas
 nulle. Un `submit_sm` n'est transactionnel avec aucun store : aucune conception ne l'élimine, seule sa
 **borne** est un choix. La laisser implicite, c'est étendre une garantie que la spec n'a jamais chiffrée.
+
+Le coût de la borne est négligeable : ~2,6 polls/s par partition au lieu de 0,7. Sous `D1` le pool
+n'est plus limité par ClickHouse mais par le SMSC, et le batching de projection vit dans un autre
+consommateur, où la taille de poll n'est pas contrainte par ce cap. Diviser le rayon par 4 ne coûte
+donc rien d'observable. *(Arbitré avec l'utilisateur.)*
+
+**Honnêteté du chiffre** : le cap est une borne en **octets**, le « ~250 » une conversion à ~1 Ko le
+record. Un trafic majoritairement UCS-2 ou portant de longues `fallback_chain` donnera moins de records
+pour les mêmes octets — jamais plus. La borne en SMS est donc un **majorant**, ce qui est le bon sens
+pour un rayon de duplication.
 
 ### D3 — `cdr_events` doit devenir idempotent, sinon la projection duplique la timeline
 `cdr` est un `ReplacingMergeTree(version)` : un rejeu y collapse. **`cdr_events` est un `MergeTree`
@@ -150,6 +165,13 @@ le combiné.
 L'ADR nomme la fenêtre résiduelle de `D1`, la borne de `D2`, et assume l'engagement. **À ratifier avant
 merge** : c'est un engagement vis-à-vis des opérateurs et des abonnés, pas une décision de code.
 
+> **Rédigé (2026-08-02) : `docs/adr/0012-duplication-submit-sm-bornee.md`, statut `Proposed`.**
+> Il passe `Accepted` après revue, selon la convention de `docs/adr/0000-index.md`. L'index était en
+> retard de trois entrées (0010, 0011 manquaient) — rattrapé au passage.
+>
+> Le texte de §6.7 et du guide §10 n'est **pas encore amendé** : ils renverront à l'ADR une fois celui-ci
+> accepté, pour ne pas modifier la spec sur la foi d'une décision `Proposed`.
+
 ---
 
 ## Plan — trois PRs
@@ -202,9 +224,10 @@ est justement ce qu'un relecteur doit pouvoir refuser d'un bloc.
 - [ ] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts
 - [ ] aucun SMS re-soumis sur un échec de projection, **testé**
 - [ ] projection idempotente sur `cdr` **et** `cdr_events`
-- [ ] cap d'in-flight documenté avec son chiffre et sa conséquence (`D2`)
+- [x] cap d'in-flight **tranché** : `KAFKA_FETCH_MAX_PARTITION_BYTES` à 256 KiB ≈ 250 SMS par partition
+      et par crash (`D2`) — reste à exposer et câbler en PR3
+- [x] ADR-0012 rédigé (`D7`) — statut `Proposed`, à ratifier avant merge
 - [ ] statut documenté comme projection dans l'OpenAPI · métrique de lag exposée et alertée (`D4`)
-- [ ] ADR §6.7 rédigé et **ratifié** (`D7`)
 - [ ] run de référence relancé, sortie ≈ acceptation et lag plat, nouveau chiffre consigné
 
 ## Hors périmètre
