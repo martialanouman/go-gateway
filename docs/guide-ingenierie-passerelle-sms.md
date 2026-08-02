@@ -277,7 +277,7 @@ Asymétrique. **Effacer un client** : crypto-shred de sa clé + purge de ses lig
 
 ## 10. Fiabilité et sémantique de livraison (§6.7)
 
-Toute écriture d'ingestion vers Kafka est la limite de durabilité ; l'accusé n'a lieu qu'après validation dans `mt.inbound`. **Aucune perte après accusé** (remise au SMSC au moins une fois). L'exactement-une-fois n'est pas garanti de bout en bout (SMPP est au moins une fois) — des clés d'idempotence sont disponibles côté client, et la facturation est idempotente par `message_id`. Files dead-letter pour les messages ayant épuisé leurs retries (y compris `fallback_chain` épuisé), remontées pour retraitement.
+Toute écriture d'ingestion vers Kafka est la limite de durabilité ; l'accusé n'a lieu qu'après validation dans `mt.inbound`. **Aucune perte après accusé** (remise au SMSC au moins une fois). L'exactement-une-fois n'est pas garanti de bout en bout (SMPP est au moins une fois) — des clés d'idempotence sont disponibles côté client, et la facturation est idempotente par `message_id`. **Un abonné peut donc recevoir deux fois le même SMS** : la cause résiduelle est un crash entre le `submit_sm` parti et l'accusé du produce qui enregistre son issue, bornée à **~250 messages par partition et par crash** (ADR-0012). Files dead-letter pour les messages ayant épuisé leurs retries (y compris `fallback_chain` épuisé), remontées pour retraitement.
 
 Matrice cible des NFR (§1.2) : disponibilité 99,95 %/région ; ingestion p50 < 50 ms / p99 < 250 ms ; bout-en-bout p50 < 400 ms / p99 < 2 s en charge nominale ; débit soutenu 5 000–10 000 SMS/s, pic 15 000 ; surcoût de réservation de crédit < 5 ms p99 (nul si désactivé).
 

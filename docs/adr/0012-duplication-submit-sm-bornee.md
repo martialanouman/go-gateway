@@ -1,6 +1,6 @@
 # ADR-0012 : La duplication d'un `submit_sm` est assumée et **bornée**, pas seulement tolérée
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-08-02
 **Deciders:** Équipe plateforme
 **Réf spec:** §1.2 (durabilité) ; §6.7 (sémantique de livraison) ; step-201 (mesure) ; step-201c (mise en œuvre)
