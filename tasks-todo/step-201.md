@@ -89,12 +89,18 @@ dimensionne sur « routage + anti-spam + encodage », au milieu du pipeline. Acc
 « soutenu » exclut.
 
 Conséquence arithmétique : 8 000 SMS/s × 1,3 segment (§2.1) ≈ **10 400 `submit_sm/s`** à absorber en
-sortie. Le simulateur sérialise le service sur la goroutine de lecture de chaque bind (`serveLatency`
-appelé avant toute réponse) → ~200/s par bind au profil `HealthyConfig` (5 ms) → **≥ 52 binds**. À
-porter sur une machine de 14 cœurs qui tient déjà 9 services, 4 magasins (dont Redpanda bridé à
-`--smp=1`), le simulateur et l'injecteur. La spec §2.5 dimensionne la cible à 8–16 vCPU de workers
+sortie. À porter sur une machine de 14 cœurs qui tient déjà 9 services, 4 magasins (dont Redpanda bridé
+à `--smp=1`), le simulateur et l'injecteur. La spec §2.5 dimensionne la cible à 8–16 vCPU de workers
 *dédiés* plus un Kafka répliqué 3 : le matériel manque d'un ordre de grandeur. Un « 8 000/s tenu »
 mesuré là ne validerait rien, et un échec ne condamnerait rien.
+
+> **Amendé après la mesure de `D3`.** Ce paragraphe estimait ~200 `submit_sm/s` par bind, donc
+> « ≥ 52 binds », et faisait du pair un facteur limitant plausible. La mesure dit autre chose :
+> **136–171/s par bind** (le modèle était optimiste de 15 à 30 %), donc **≥ 80 binds** — et surtout, le
+> pair **n'a jamais saturé**, jusqu'à 43 498 `submit_sm/s` à 320 binds sans une seule issue non-`success`.
+> Le plafond du pair n'est donc **pas** le facteur limitant, et le tuning ne visera pas une contrainte
+> artificielle. Ce qui manque reste le CPU de la passerelle elle-même : `D1` tient, mais pour cette
+> seule raison.
 
 step-201b dépend de step-207 parce que les manifests Kubernetes sont précisément ce qui rend un
 environnement représentatif instanciable.
@@ -122,8 +128,14 @@ actuel strictement inchangé), démarrant sur la barrière `OnAllBound` déjà p
 
 Le débit n'est **pas** compté côté injecteur : il se lit sur `GET :9000/metrics` du simulateur, par deux
 scrapes espacés de `smsc_submit_sm_received_total`. `smsc_submit_sm_outcome_total` disqualifie tout
-palier portant des erreurs ; `smsc_served_latency_seconds` distingue « le pair sature » de « l'injecteur
-ne pousse pas ».
+palier portant des erreurs.
+
+> **Corrigé après mesure.** Ce paragraphe disait aussi que `smsc_served_latency_seconds` distinguerait
+> « le pair sature » de « l'injecteur ne pousse pas ». **C'est faux** : le simulateur observe la latence
+> que son scénario a *décidée*, pas une durée mesurée (`ObserveServedLatency` reçoit
+> `decision.LatencyMS`). L'histogramme a lu 5 ms à plat de 10 à 320 binds. Les seuls signaux de
+> saturation sont `smsc_submit_sm_outcome_total` et l'inflexion de la courbe. Le godoc de
+> `smscmetrics` portait la même affirmation fausse — corrigé aussi.
 
 Deux chiffres consignés, pas un : la **courbe plafond-vs-binds**, et le plafond **au nombre de binds du
 run de référence** — c'est sous ce dernier que `D2` doit se situer.

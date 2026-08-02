@@ -199,7 +199,14 @@ type Throughput struct {
 	Served float64
 
 	// MeanServedLatency is the mean service time over the window (latency sum delta over
-	// Served), zero when Served is zero. It separates a saturated peer from an idle one.
+	// Served), zero when Served is zero.
+	//
+	// It does NOT detect saturation, and must not be read as if it did: the simulator
+	// observes the latency its scenario *decided*, not a duration it measured
+	// (ObserveServedLatency receives decision.LatencyMS). It reads the configured value
+	// unchanged however hard the peer is pushed — measured flat at 5 ms from 10 to 320
+	// binds. Saturation shows up in Outcomes/NonSuccess and in the throughput curve
+	// bending, nowhere else.
 	MeanServedLatency time.Duration
 
 	// ActiveBinds is the bind gauge total from the later reading — how many binds were

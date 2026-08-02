@@ -119,6 +119,15 @@ load-smoke: ## Prove the k6 thresholds are wired: the same script must pass idle
 load-binds: ## Open N concurrent SMPP binds against a peer: make load-binds BINDS=50 ADDR=127.0.0.1:2775
 	go run ./cmd/smpp-bindgen -binds $(or $(BINDS),50) -addr $(or $(ADDR),127.0.0.1:2775) -hold $(or $(HOLD),5s)
 
+# The peer is NOT started here (step-201 D3): the tool takes an address and a metrics URL, so the same
+# command works against a remote simulator for the full-scale campaign. Start it first — the docker run
+# and the YAML are in the doc comment of cmd/smsc-ceiling.
+.PHONY: smsc-ceiling
+smsc-ceiling: ## Measure the test peer's submit_sm ceiling (sweeps binds, reads the peer's /metrics): make smsc-ceiling [BINDS=10,20,40,80] [MEASURE=60s]
+	go run ./cmd/smsc-ceiling \
+		-addr $(or $(ADDR),127.0.0.1:2775) -metrics $(or $(METRICS),http://127.0.0.1:9000) \
+		$(if $(BINDS),-binds $(BINDS)) $(if $(REFERENCE),-reference $(REFERENCE)) $(if $(MEASURE),-measure $(MEASURE))
+
 ## ---------------------------------------------------------------------------- quality gates
 
 .PHONY: test
