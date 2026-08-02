@@ -170,6 +170,30 @@ l'observation en moins. `Producer` la passait **avant** `D1` (un `deliver_sm` no
 comportement M2 assumé) et ne la passe plus : un pool qui envoie des SMS sans en garder trace n'est le
 mode voulu de personne.
 
+### D12 — Le cap est 56 KiB, parce que la borne porte sur des octets COMPRESSÉS
+`KAFKA_FETCH_MAX_PARTITION_BYTES` passe de 256 KiB à **56 KiB**. La promesse d'ADR-0012 — ~250 messages
+par partition et par crash — est tenue par le code au lieu d'être seulement écrite.
+
+**Raison — `D2` reposait sur une conversion fausse.** `max.partition.fetch.bytes` borne les batches
+**stockés, donc compressés**. franz-go compresse en **snappy par défaut** (`kgo/config.go:659`) et le
+producteur du dépôt ne le surcharge pas. Mesuré sur 500 records `mt.routed` réalistes (UUID distincts,
+MSISDN distincts, corps GSM-7 de 130 caractères) : **621 o/record brut, 221 o/record compressé, ratio
+2,81×**. Donc 256 KiB portaient **~1 187 messages**, pas 250 — un facteur 4,7 d'erreur sur un chiffre
+**déjà ratifié**.
+
+Corollaire : le défaut franz-go de 1 MiB ne portait pas ~1 000 records mais **~4 750**. Le levier divise
+donc bien le rayon par ~4 comme annoncé ; c'est la valeur absolue qui était fausse, aux deux bouts.
+
+**56 KiB ≈ 250 records** aux 221 o/record mesurés, soit ~2,7 polls/s par partition à la cible NFR —
+exactement le coût annoncé lors de l'arbitrage de `D2`, et négligeable puisque le pool n'est plus limité
+par ClickHouse. *(Arbitré avec l'utilisateur : tenir la promesse ratifiée plutôt que réécrire
+l'engagement.)*
+
+**Ce que le chiffre vaut, honnêtement.** Il dépend du taux de compression, donc du trafic : des corps
+plus répétitifs compressent mieux et le rayon monte, de l'UCS-2 ou du binaire compressent mal et il
+baisse. Ce n'est ni un majorant ni un minorant — c'est une estimation pour un trafic typique, et l'ADR
+doit le dire au lieu de prétendre le contraire.
+
 ### D9 — Le groupe de projection démarre au début du topic, pas à la fin
 `NewConsumer` (AtStart), pas `NewConsumerFromLatest`.
 
