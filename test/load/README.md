@@ -102,12 +102,12 @@ par session (défaut `bindgen`).
 
 | Binds | `submit_sm/s` absorbés | par bind | Latence servie (configurée †) | Issues non-`success` | Palier |
 |---:|---:|---:|---:|---:|---|
-| 10 | 1 710 | 171 | 5 ms | 0 | qualifié |
-| 20 | **3 329** | 166 | 5 ms | 0 | qualifié |
-| 40 | 6 435 | 161 | 5 ms | 0 | qualifié |
-| 80 | 12 430 | 155 | 5 ms | 0 | qualifié |
-| 160 ‡ | 23 296 | 146 | 5 ms | 0 | qualifié |
-| 320 ‡ | 43 498 | 136 | 5 ms | 0 | qualifié |
+| 10 | 1 664 | 166 | 5 ms | 0 | qualifié |
+| 20 | **3 291** | 165 | 5 ms | 0 | qualifié |
+| 40 | 6 870 | 172 | 5 ms | 0 | qualifié |
+| 80 | 13 176 | 165 | 5 ms | 0 | qualifié |
+| 160 ‡ | 23 629 | 148 | 5 ms | 0 | qualifié |
+| 320 ‡ | **34 872** | 109 | 5 ms | 0 | qualifié — **courbe pliée** |
 
 ‡ hors du balayage de `D3`, ajoutés parce que la courbe ne pliait toujours pas à 80.
 
@@ -115,47 +115,56 @@ par session (défaut `bindgen`).
 La colonne affiche la valeur configurée quoi qu'il arrive, elle ne peut pas signaler une saturation.
 Détail au « piège consigné » plus bas — la sortie de l'outil porte désormais la même réserve.
 
-**Plafond au nombre de binds du run de référence — 3 329 `submit_sm/s` à 20 binds.** C'est le chiffre
+**Plafond au nombre de binds du run de référence — 3 291 `submit_sm/s` à 20 binds.** C'est le chiffre
 sous lequel le run de référence de `D2` doit se situer. 20 binds parce que `bind_pool_size` est borné à
 1..32 par le schéma du plan de contrôle : c'est le plus grand palier du balayage qu'un pod de
 `connector-pool-svc` puisse reproduire seul. Le run de référence vise ≥ 1 000 msg/s traversants, soit
 ≈ 1 300 `submit_sm/s` à 1,3 segment — **moins de la moitié** de ce que le pair tient à ce niveau.
 
-**Cette marge est mesurée hors contexte, et il faut la revérifier.** Les 3 329/s ont été relevés avec
+**Cette marge est mesurée hors contexte, et il faut la revérifier.** Les 3 291/s ont été relevés avec
 l'injecteur **seul** face au simulateur. Le run de référence fera tourner sur les **mêmes 14 cœurs** la
 passerelle (9 services), 4 magasins dont Redpanda, k6 **et** le simulateur : si la contention ramène le
 pair à 1 500/s dans ce contexte, la marge annoncée disparaît. Le chiffre à opposer au run de référence
 est celui d'un balayage relancé **pendant** que la pile complète tourne — pas celui-ci.
 
-**Plafond du balayage — 12 430 `submit_sm/s` à 80 binds**, et c'est une **borne inférieure, pas un
-plafond**. Aucun palier n'a plié : à 320 binds le pair absorbait encore 43 498/s sans une seule issue
-non-`success`. Le pair n'a jamais été saturé, donc son vrai plafond n'est pas connu — il est seulement
-**au-dessus** de tout ce qui est mesuré ici.
+**Plafond du pair — 34 872 `submit_sm/s` à 320 binds.** C'est un vrai plafond, pas une borne
+inférieure : la courbe **plie** à ce palier — 34 872/s contre 23 629/s à 160 binds, soit **48 %** de ce
+que le doublement des binds aurait dû acheter. Le balayage de `D3` (10→80) ne suffit pas à l'atteindre,
+et l'outil y imprime honnêtement `LOWER BOUND` : il faut pousser jusqu'à 160/320 pour voir la limite.
+
+*Réserve, à lire avec le chiffre* : 48 % passe tout juste sous le seuil de 50 % (`minScalingFraction`).
+Un run un peu plus favorable repasserait au-dessus et le pair ne serait pas déclaré saturé. Ce que la
+mesure établit solidement n'est pas la valeur exacte du plafond mais son **ordre de grandeur** — et que
+le débit par bind, plat jusqu'à 80 binds, s'effondre au-delà.
 
 **Ce que les chiffres désignent.** Le débit est **linéaire en nombre de binds**, avec une érosion lente
-du débit par bind (171 → 136/s de 10 à 320 binds, ~20 %). Le goulot est **vraisemblablement par bind**,
+du débit par bind, plate jusqu'à 80 binds (166 → 165/s) puis en chute (148 à 160, 109 à 320). Le goulot est **vraisemblablement par bind**,
 pas partagé : le simulateur sérialise le service sur la goroutine de lecture de chaque bind
-(`serveLatency` appelé avant toute réponse), ce qui plafonne un bind à 1/5 ms = 200/s en théorie. Les
-136–171/s observés
-correspondent à 5,8–7,3 ms réels par `submit_sm` : les 5 ms d'attente plus le codec, l'`Append` du
+(`serveLatency` appelé avant toute réponse), ce qui plafonne un bind à 1/5 ms = 200/s en théorie. Les débits par bind observés correspondent à 5,8–7,3 ms réels par `submit_sm` : les 5 ms d'attente plus le codec, l'`Append` du
 recorder et les compteurs — l'injecteur et le simulateur se disputant les mêmes 14 cœurs. Le
 `sync.RWMutex` du recorder était le suspect n° 1 pour une contention **inter-binds** : il n'est pas la
 limite à ces débits, sinon le débit par bind s'effondrerait avec le nombre de binds au lieu de perdre
 20 % sur un facteur 32.
 
-**Réserve sur cette lecture** : « érosion du débit par bind » est une moyenne, et la mesure ne l'isole
-pas d'une autre cause. Une fraction de binds *figés* — des sessions qui cessent d'être servies sans
-qu'aucune erreur ne remonte — produirait exactement la même érosion, en concentrant le débit sur les
-binds restants. Le balayage refuse désormais un palier dont la queue de `submit_sm` sans réponse
-dépasse ce qu'une session saine laisse (`maxUnansweredPerBind`), ce qui écarte l'hypothèse pour les
-runs à venir ; les chiffres ci-dessus, eux, sont antérieurs à cette garde. Conclure « le goulot est par
-bind » demande soit de relancer sous la garde, soit un débit **par session** que l'instrument ne relève
-pas encore.
+**Ce qui écarte l'autre lecture.** « Érosion du débit par bind » est une moyenne, et une fraction de
+binds *figés* — des sessions qui cessent d'être servies sans qu'aucune erreur ne remonte — produirait
+exactement la même érosion en concentrant le débit sur les binds restants. Le balayage refuse désormais
+un palier dont la session la plus lente est passée sous une fraction de la plus rapide
+(`maxSubmitSpread`), et **les chiffres ci-dessus sont issus d'un run passé par cette garde** : aucun
+palier n'a été refusé, donc les sessions ont toutes travaillé. L'hypothèse des binds figés est écartée
+par la mesure, pas par raisonnement.
+
+La garde porte sur la **dispersion** des soumissions entre sessions, pas sur la queue de `submit_sm`
+sans réponse. Une version antérieure seuillait cette queue et refusait *tous* les paliers d'un run
+sain : un injecteur fenêtré termine chaque run avec sa fenêtre entière en vol sur chaque session —
+mesuré à exactement `binds × 32` — parce qu'un jeton n'est libéré que par une réponse et aussitôt
+repris. Une session figée est à la même valeur qu'une session saine ; seule la dispersion les sépare.
 
 **Conséquence pour `D1`.** Les 10 400 `submit_sm/s` que la cible NFR implique en sortie (8 000 SMS/s ×
-1,3 segment) sont déjà dépassés à 80 binds sur une machine de développement. Le simulateur ne sera pas
-la contrainte artificielle de step-201b — à condition de lui donner assez de binds : il en faut
-**≥ 80**, pas les ~52 que le modèle 200/s par bind laissait espérer.
+1,3 segment) sont déjà dépassés à 80 binds sur une machine de développement, et le pair tient plus du
+triple avant de plier. Le simulateur ne sera pas la contrainte artificielle de step-201b — à condition
+de lui donner assez de binds : il en faut **≥ 80**, pas les ~52 que le modèle 200/s par bind laissait
+espérer. La marge entre la cible et le plafond mesuré est d'un facteur ~3, sur une machine partagée.
 
 **Piège consigné.** `smsc_served_latency_seconds` affiche exactement 5 ms à tous les paliers, y compris
 à 320 binds. Ce n'est pas un pair au repos : le simulateur observe la latence **configurée**, pas une

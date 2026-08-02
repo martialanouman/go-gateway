@@ -105,8 +105,20 @@ type Report struct {
 	// is the expected answer from a peer being pushed past its ceiling.
 	Rejected int
 	// Unanswered is how many were still in flight when the window closed: the peer never answered them,
-	// or did not answer in time. Some are normal at the end of any windowed run.
+	// or did not answer in time.
+	//
+	// It is NOT a health signal, and must not be thresholded as one. A windowed injector ends every
+	// run with close to its whole window outstanding on every session — measured at exactly
+	// binds*Window against a healthy simulator — because a slot is only freed by a response and is
+	// re-consumed immediately. A stalled session sits at the same figure. Use SubmittedMin against
+	// SubmittedMax to tell the two apart.
 	Unanswered int
+	// SubmittedMin and SubmittedMax are the smallest and largest per-session Submitted counts. They
+	// are the spread across binds, and the only figure in this report that exposes a session the peer
+	// stopped serving: it gets through a fraction of what its siblings do while every aggregate here
+	// stays plausible. Both are zero when no session ran.
+	SubmittedMin int
+	SubmittedMax int
 	// SubmitErrors is how many submissions failed before the peer could see them, for a reason that is
 	// the peer's or the network's: a session torn down mid-window, a socket that went away. Writes the
 	// closing window interrupted are NOT here, they are in SubmitCutShort.

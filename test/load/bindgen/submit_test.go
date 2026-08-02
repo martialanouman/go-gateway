@@ -1010,3 +1010,44 @@ func startDeafPeer(t *testing.T, walkOut time.Duration) string {
 	}()
 	return ln.Addr().String()
 }
+
+// TestReportSpreadsTheQuietestSessionApart is the signal a sweep needs to tell a stalled bind from a
+// healthy one. Unanswered cannot do it: a windowed injector ends every run with its whole window in
+// flight on every session, healthy or not, so the tail is binds*Window either way. What separates
+// them is how much each session got through — a session the peer stopped serving submits a fraction
+// of what its siblings do, and only a per-session figure exposes that.
+func TestReportSpreadsTheQuietestSessionApart(t *testing.T) {
+	t.Parallel()
+
+	p := startPacingPeer(t, time.Millisecond)
+	rep, err := bindgen.Run(context.Background(), bindgen.Config{
+		Addr: p.addr, Binds: 4, SystemID: "loadgen", Password: "pw",
+		Hold:   400 * time.Millisecond,
+		Submit: &bindgen.SubmitConfig{Window: 8},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if rep.Bound != 4 {
+		t.Fatalf("Bound = %d, want 4 — the fixture never reached the condition", rep.Bound)
+	}
+	if rep.Submitted == 0 {
+		t.Fatalf("Submitted = 0, the injector pushed nothing")
+	}
+	if rep.SubmittedMin <= 0 || rep.SubmittedMax <= 0 {
+		t.Errorf("SubmittedMin/Max = %d/%d, want both above zero", rep.SubmittedMin, rep.SubmittedMax)
+	}
+	if rep.SubmittedMin > rep.SubmittedMax {
+		t.Errorf("SubmittedMin = %d > SubmittedMax = %d", rep.SubmittedMin, rep.SubmittedMax)
+	}
+	if rep.SubmittedMax > rep.Submitted {
+		t.Errorf("SubmittedMax = %d > Submitted = %d, a single session cannot exceed the total",
+			rep.SubmittedMax, rep.Submitted)
+	}
+	// Every session faced the same peer, so the spread must be narrow. A guard that fires here would
+	// be useless in the field.
+	if rep.SubmittedMin*2 < rep.SubmittedMax {
+		t.Errorf("SubmittedMin = %d, SubmittedMax = %d: sessions facing an identical peer diverged by more than 2x",
+			rep.SubmittedMin, rep.SubmittedMax)
+	}
+}

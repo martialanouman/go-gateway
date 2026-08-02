@@ -39,8 +39,10 @@
 //     derived from smsc_submit_sm_received_total, which counts PDUs taken off the wire — acceptance,
 //     not throughput. A peer dropping its queue overflow silently moves that counter and no outcome.
 //   - A tier whose peer-side bind gauge disagrees with the bind count asked for is REFUSED, and so is
-//     one whose injector ends with a large unanswered tail: sessions that stopped being served neither
-//     fail nor drop, and the tier would be filed under a bind count nobody actually ran on.
+//     one whose sessions got wildly unequal amounts through (maxSubmitSpread): a session that stopped
+//     being served neither fails nor drops, and the tier would be filed under a bind count nobody
+//     actually ran on. The spread is the signal, not the unanswered tail — a windowed injector ends
+//     every honest run with its whole window outstanding on every session.
 //
 // The sweep drives the peer through two seams — a Load that runs one tier and a Scraper that takes one
 // reading — so the logic is testable without a simulator. It never launches the peer: the address and
@@ -105,26 +107,36 @@ const minScalingFraction = 0.5
 const (
 	// maxUnservedFraction is how much of what the peer ACCEPTED during the window may still be
 	// unserved by the end of it. The two are different counters: smsc_submit_sm_received_total counts
-	// PDUs taken off the wire, the served histogram counts the ones the peer answered for. A peer
-	// reading its queue and dropping the overflow without an outcome label moves the first and not the
-	// second, and its absorbed rate would then be an acceptance rate — a figure nobody can reproduce.
+	// PDUs taken off the wire, the served histogram counts the ones the peer answered for. A peer that
+	// answers submit_sm_resp OK and then drops the message moves the first and not the second, and its
+	// absorbed rate would then be an acceptance rate — a figure nobody can reproduce.
+	//
+	// It has to be a peer that still ANSWERS. One that swallows PDUs without responding holds the
+	// injector's window slots instead, so the injector stalls after binds*Window losses — long before
+	// this fraction of a 60s window is reached — and maxSubmitSpread is what catches that shape.
 	//
 	// It is a fraction rather than a count because what legitimately sits between the two is the
 	// change in the peer's own backlog over the window, and in steady state that is a handful of PDUs
 	// either way. Two percent is well above that and well below any real drop.
 	maxUnservedFraction = 0.02
 
-	// maxUnansweredPerBind bounds the injector's in-flight tail at the close of a tier. A session that
-	// stopped being served produces no error at all — the connection stays open, so nothing lands in
-	// Failed or Dropped, and the peer's bind gauge still counts it — but it holds its whole in-flight
-	// window (32 submit_sm by default) unanswered forever. A healthy session against a peer answering
-	// in milliseconds ends the window with well under one outstanding, so four per bind is slack for a
-	// slower link and still far under what even a few frozen sessions leave behind.
+	// maxSubmitSpread bounds how far the quietest session may fall behind the busiest before the tier
+	// is refused. A session the peer stopped serving produces no error at all — the connection stays
+	// open, so nothing lands in Failed or Dropped, and the peer's bind gauge still counts it — but it
+	// gets through a fraction of what its siblings do, and the rate is then filed under a bind count
+	// nobody actually ran on.
 	//
-	// The bar is deliberately one that a genuinely high-latency peer could trip: a tier wrongly
-	// refused is loud and costs a re-run, a tier wrongly counted is a number somebody tunes a system
-	// against. Against a remote peer with a real round-trip this needs raising, not removing.
-	maxUnansweredPerBind = 4
+	// The spread is the only figure that shows this. The in-flight tail cannot: a windowed injector
+	// ends EVERY run with close to its whole window outstanding on every session, healthy or frozen —
+	// measured at exactly binds*32 against the simulator — because a slot is only freed by a response
+	// and is re-consumed at once. A threshold on Unanswered refuses every honest tier instead, which
+	// is what an earlier version of this guard did.
+	//
+	// Four is slack: sessions facing one peer measured inside a factor of two of each other, and a
+	// genuinely stalled session sits near zero. The bar is deliberately one a very uneven link could
+	// trip — a tier wrongly refused is loud and costs a re-run, a tier wrongly counted is a number
+	// somebody tunes a system against.
+	maxSubmitSpread = 4
 )
 
 // Load runs one tier of the sweep: it opens the binds, injects submit_sm for the whole hold window,
@@ -228,6 +240,11 @@ type Result struct {
 	// Measure is the window each tier was scored over. It travels with the figures so a smoke run can
 	// be told from a measurement by whoever reads the Result, not only by whoever typed the flags.
 	Measure time.Duration
+
+	// saturatedAt and saturationFromBend carry what is needed to withdraw a bend a later tier
+	// disproves. Unexported: how the mark can be taken back is this type's business, not a caller's.
+	saturatedAt        int
+	saturationFromBend bool
 }
 
 // Recordable reports whether the tiers were measured long enough (MinRecordableMeasure) for their
@@ -236,10 +253,32 @@ func (r Result) Recordable() bool { return r.Measure >= MinRecordableMeasure }
 
 // markSaturation records the first evidence that the peer reached its limit. The first is kept rather
 // than the last: it is the lowest tier at which the sweep can say the peer stopped scaling.
-func (r *Result) markSaturation(reason string) {
+//
+// fromBend says whether the evidence is an inferred bend in the curve rather than shedding the peer
+// itself reported. Only a bend can later be withdrawn — see unmarkSaturationIfDisproved.
+func (r *Result) markSaturation(binds int, fromBend bool, reason string) {
 	if !r.Saturated {
 		r.Saturated = true
 		r.SaturationReason = reason
+		r.saturatedAt = binds
+		r.saturationFromBend = fromBend
+	}
+}
+
+// unmarkSaturationIfDisproved withdraws a bend the tiers above went on to disprove. A single dip — one
+// tier losing CPU to something else on a shared host — bends the curve without the peer having any
+// limit; if a later tier then absorbs more, the dip was noise. Leaving the mark would print a CEILING
+// over a sweep that was still scaling, which is the very claim the flag exists to prevent.
+//
+// Shedding is never withdrawn: a peer that threw PDUs away showed a real limit, whatever the tiers
+// above do. Only a bend is provisional, because only a bend is inferred from a rate rather than
+// reported by the peer.
+func (r *Result) unmarkSaturationIfDisproved(binds int, rate float64) {
+	if r.Saturated && r.saturationFromBend && binds > r.saturatedAt && rate > r.Ceiling {
+		r.Saturated = false
+		r.SaturationReason = ""
+		r.saturationFromBend = false
+		r.saturatedAt = 0
 	}
 }
 
@@ -406,9 +445,12 @@ func (s *Sweeper) Run(ctx context.Context) (Result, error) {
 
 		switch tier.Status {
 		case TierCounted:
+			// Withdraw before marking, and before the ceiling moves: a tier that outruns the peak is
+			// what disproves an earlier bend, and it must be judged against the peak as it stood.
+			res.unmarkSaturationIfDisproved(binds, tier.Throughput.SubmitPerSecond)
 			if prev != nil {
-				if scaling, bent := bent(*prev, tier); bent {
-					res.markSaturation(fmt.Sprintf(
+				if scaling, isBent := bent(*prev, tier); isBent {
+					res.markSaturation(binds, true, fmt.Sprintf(
 						"the curve bent at %d binds: %.0f/s against %.0f/s at %d binds, %.0f%% of what the extra binds should have bought",
 						binds, tier.Throughput.SubmitPerSecond, prev.Throughput.SubmitPerSecond, prev.Binds, 100*scaling))
 				}
@@ -428,7 +470,7 @@ func (s *Sweeper) Run(ctx context.Context) (Result, error) {
 		case TierDisqualified:
 			// A finding, not a fault: the peer shed at this tier, which is what a ceiling looks like —
 			// and it is the plainest evidence the sweep can get that the limit was reached.
-			res.markSaturation(fmt.Sprintf("the peer shed traffic at %d binds: %s", binds, tier.Reason))
+			res.markSaturation(binds, false, fmt.Sprintf("the peer shed traffic at %d binds: %s", binds, tier.Reason))
 		}
 
 		if ctx.Err() != nil {
@@ -508,13 +550,13 @@ func (s *Sweeper) runTier(ctx context.Context, binds int) Tier {
 	case rep.Dropped > 0:
 		return tier.fail(fmt.Sprintf("the peer dropped %d of the %d bound sessions mid-window",
 			rep.Dropped, rep.Bound), nil)
-	case rep.Unanswered > maxUnansweredPerBind*binds:
+	case binds > 1 && rep.SubmittedMin*maxSubmitSpread < rep.SubmittedMax:
 		// Sessions that stopped being served, which no aggregate above can show: they neither fail nor
 		// drop, and the peer's gauge still counts their connections. The rate would then be filed under
 		// a bind count nobody actually ran on.
 		return tier.fail(fmt.Sprintf(
-			"%d submit_sm were left unanswered, over the %d a healthy %d-bind tier ends with: sessions stopped being served",
-			rep.Unanswered, maxUnansweredPerBind*binds, binds), nil)
+			"the quietest session submitted %d against the busiest %d, over the %dx spread a healthy %d-bind tier stays within: sessions stopped being served",
+			rep.SubmittedMin, rep.SubmittedMax, maxSubmitSpread, binds), nil)
 	case rep.Submitted == 0:
 		// Both counters, because a writer blocked on its very first write and then cut off by
 		// the closing window lands in SubmitCutShort with no error at all: reporting only

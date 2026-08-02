@@ -105,10 +105,19 @@ func absorbed(binds int, n float64) tierScript {
 		latSum:    before.latSum + n*0.005,
 		latCount:  before.latCount + n,
 	}
+	// A healthy windowed run ends with its WHOLE window outstanding on every session — measured at
+	// exactly binds*32 against the real simulator — because a slot is only freed by a response and is
+	// re-consumed at once. Anything less here would make the fixture describe a run that cannot happen.
+	submitted := int(n) + 10
+	per := submitted / binds
 	return tierScript{
 		before: before,
 		after:  after,
-		report: bindgen.Report{Requested: binds, Bound: binds, Submitted: int(n) + 10, Accepted: int(n)},
+		report: bindgen.Report{
+			Requested: binds, Bound: binds, Submitted: submitted, Accepted: int(n),
+			Unanswered:   binds * 32,
+			SubmittedMin: per, SubmittedMax: per,
+		},
 	}
 }
 
@@ -565,8 +574,9 @@ func TestSweepCountsATierWhoseServedTailLagsSlightly(t *testing.T) {
 // full count. Nothing in Failed, Dropped or the gauge moves — only the injector's in-flight tail does.
 func TestSweepFailsWhenSessionsStoppedBeingServed(t *testing.T) {
 	frozen := absorbed(20, 9_000)
-	// Five of the twenty sessions went silent holding a full 32-deep in-flight window each.
-	frozen.report.Unanswered = 5 * 32
+	// Five of the twenty sessions went silent early: they got a handful of submissions through while
+	// the fifteen still being served kept going. The totals stay plausible; only the spread shows it.
+	frozen.report.SubmittedMin = 12
 
 	p := newPeer(map[int]tierScript{
 		10: absorbed(10, 12_000),
@@ -591,8 +601,8 @@ func TestSweepFailsWhenSessionsStoppedBeingServed(t *testing.T) {
 	if tier.Status != ceiling.TierFailed {
 		t.Errorf("tier 20 status = %v, want %v", tier.Status, ceiling.TierFailed)
 	}
-	if !strings.Contains(tier.Reason, "160") {
-		t.Errorf("tier 20 Reason = %q, want it to name the unanswered count", tier.Reason)
+	if !strings.Contains(tier.Reason, "12") {
+		t.Errorf("tier 20 Reason = %q, want it to name the quietest session's count", tier.Reason)
 	}
 }
 
@@ -1147,4 +1157,44 @@ func equalInts(got, want []int) bool {
 		}
 	}
 	return true
+}
+
+// TestSweepUnmarksASaturationTheCurveWentOnToDisprove guards the way the CEILING/LOWER BOUND
+// distinction can be defeated from the other side. A single transient dip — a background process
+// stealing CPU for one tier, on the shared host the README warns about — bends the curve and marks the
+// sweep saturated. If the tiers above then go on scaling, that dip was noise, not a limit: keeping the
+// mark would print CEILING over a sweep that was still doubling, which is the exact claim the
+// saturation flag exists to prevent.
+func TestSweepUnmarksASaturationTheCurveWentOnToDisprove(t *testing.T) {
+	p := newPeer(map[int]tierScript{
+		10: absorbed(10, 12_000),
+		20: absorbed(20, 15_000), // the dip: +25% for twice the binds, scaling 0.25 — the curve "bends"
+		40: absorbed(40, 48_000),
+		80: absorbed(80, 96_000), // ... and then it doubles, twice
+	})
+
+	res, err := run(t, p, fastConfig([]int{10, 20, 40, 80}, 20))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// Fixture guard: the dip must really have bent the curve, or this test proves nothing.
+	dip := tierByBinds(t, res, 20)
+	prev := tierByBinds(t, res, 10)
+	if dip.Throughput.SubmitPerSecond >= 2*prev.Throughput.SubmitPerSecond {
+		t.Fatalf("fixture: 20-bind tier at %.0f/s against %.0f/s did not bend the curve",
+			dip.Throughput.SubmitPerSecond, prev.Throughput.SubmitPerSecond)
+	}
+	top := tierByBinds(t, res, 80)
+	if top.Throughput.SubmitPerSecond <= dip.Throughput.SubmitPerSecond {
+		t.Fatalf("fixture: the curve did not recover past the dip (%.0f/s at 80 against %.0f/s at 20)",
+			top.Throughput.SubmitPerSecond, dip.Throughput.SubmitPerSecond)
+	}
+
+	if res.Saturated {
+		t.Errorf("Saturated = true (%q), want false: tiers above the dip went on scaling, so the peer was never shown to have a limit",
+			res.SaturationReason)
+	}
+	if res.CeilingBinds != 80 {
+		t.Errorf("CeilingBinds = %d, want 80", res.CeilingBinds)
+	}
 }

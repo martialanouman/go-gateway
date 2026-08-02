@@ -306,7 +306,13 @@ func (inj *injector) onPDU(i int, pdu smpp.PDU) {
 // have returned — that join is what makes the unsynchronised counters safe to read.
 func (inj *injector) fill(rep *Report) {
 	rep.Submitting = inj.submitting()
-	for _, s := range inj.sessions {
+	for i, s := range inj.sessions {
+		if i == 0 || s.submitted < rep.SubmittedMin {
+			rep.SubmittedMin = s.submitted
+		}
+		if s.submitted > rep.SubmittedMax {
+			rep.SubmittedMax = s.submitted
+		}
 		rep.Submitted += s.submitted
 		rep.Accepted += s.accepted
 		rep.Rejected += s.rejected
