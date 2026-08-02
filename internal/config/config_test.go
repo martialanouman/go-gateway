@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"log/slog"
 	"os"
+	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -18,15 +20,21 @@ var knownVars = []string{
 	"ENVIRONMENT", "LOG_LEVEL", "OPS_PORT", "SHUTDOWN_TIMEOUT", "SERVICE_NAME",
 	"OTEL_SDK_DISABLED", "OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_INSECURE",
 	"OTEL_TRACES_SAMPLER_ARG",
-	"POSTGRES_URL", "POSTGRES_MAX_CONNS", "POSTGRES_TIMEOUT",
+	"POSTGRES_URL", "POSTGRES_MAX_CONNS", "POSTGRES_MIN_CONNS", "POSTGRES_TIMEOUT",
 	"KAFKA_BROKERS", "KAFKA_TIMEOUT",
+	"KAFKA_FETCH_MIN_BYTES", "KAFKA_FETCH_MAX_WAIT", "KAFKA_FETCH_MAX_BYTES",
+	"KAFKA_TOPIC_PARTITIONS", "KAFKA_TOPIC_PARTITIONS_OVERRIDES", "KAFKA_TOPIC_REPLICATION_FACTOR",
 	"CLICKHOUSE_ADDR", "CLICKHOUSE_DATABASE", "CLICKHOUSE_USERNAME", "CLICKHOUSE_PASSWORD", "CLICKHOUSE_TIMEOUT",
-	"HTTP_PORT", "HTTP_READ_HEADER_TIMEOUT", "HTTP_ADMIN_TOKENS",
+	"CLICKHOUSE_MAX_OPEN_CONNS", "CLICKHOUSE_MAX_IDLE_CONNS",
+	"CLICKHOUSE_CDR_RETENTION", "CLICKHOUSE_RETENTION_INTERVAL", "CLICKHOUSE_ARCHIVE_PREFIX",
+	"HTTP_PORT", "HTTP_READ_HEADER_TIMEOUT", "HTTP_ADMIN_TOKENS", "HTTP_EXPORT_DIR",
 	"REDIS_URL", "REDIS_TIMEOUT", "GRPC_PORT",
 	"SMPP_PORT", "SMPP_SESSION_MANAGER_ADDR", "SMPP_POD_ID", "SMPP_IDLE_TIMEOUT",
+	"SMPP_POD_ADDR_TEMPLATE", "SMPP_TRUSTED_PROXY_CIDRS",
 	"SMPP_BIND_MAX_FAILURES", "SMPP_BIND_FAILURE_WINDOW", "SMPP_BIND_BACKOFF_BASE", "SMPP_BIND_BACKOFF_MAX",
-	"SMPP_MAX_CONNS",
+	"SMPP_MAX_CONNS", "SMPP_QUERY_SM_RATE_PER_SEC", "SMPP_QUERY_SM_BURST", "SMPP_INBOUND_WINDOW",
 	"BILLING_ADDR", "BILLING_RESERVE_TIMEOUT", "BILLING_SETTLE_TIMEOUT",
+	"BILLING_REAPER_MIN_AGE", "BILLING_REAPER_INTERVAL",
 	"CONTENT_KEY_ADDR",
 }
 
@@ -248,6 +256,59 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		{"kafka brokers blank", map[string]string{"KAFKA_BROKERS": " "}, "KAFKA_BROKERS"},
 		{"kafka brokers blank entry", map[string]string{"KAFKA_BROKERS": "k1:9092, "}, "KAFKA_BROKERS"},
 		{"kafka timeout zero", map[string]string{"KAFKA_TIMEOUT": "0s"}, "KAFKA_TIMEOUT"},
+		// Capacity levers (step-201, D5). Every one of these would either be silently swallowed by the
+		// library's own "unset" handling or refused by the client itself, at the first boot in production.
+		{"kafka fetch min bytes zero", map[string]string{"KAFKA_FETCH_MIN_BYTES": "0"}, "KAFKA_FETCH_MIN_BYTES"},
+		{"kafka fetch min bytes negative", map[string]string{"KAFKA_FETCH_MIN_BYTES": "-1"}, "KAFKA_FETCH_MIN_BYTES"},
+		{"kafka fetch max bytes zero", map[string]string{"KAFKA_FETCH_MAX_BYTES": "0"}, "KAFKA_FETCH_MAX_BYTES"},
+		{"kafka fetch min bytes above max", map[string]string{
+			"KAFKA_FETCH_MIN_BYTES": "2097152",
+			"KAFKA_FETCH_MAX_BYTES": "1048576",
+		}, "KAFKA_FETCH_MIN_BYTES"},
+		{"kafka fetch max wait zero", map[string]string{"KAFKA_FETCH_MAX_WAIT": "0s"}, "KAFKA_FETCH_MAX_WAIT"},
+		{"kafka fetch max wait negative", map[string]string{"KAFKA_FETCH_MAX_WAIT": "-1s"}, "KAFKA_FETCH_MAX_WAIT"},
+		{"kafka topic partitions zero", map[string]string{"KAFKA_TOPIC_PARTITIONS": "0"}, "KAFKA_TOPIC_PARTITIONS"},
+		{"kafka topic partitions negative", map[string]string{"KAFKA_TOPIC_PARTITIONS": "-1"}, "KAFKA_TOPIC_PARTITIONS"},
+		{"kafka replication factor zero", map[string]string{"KAFKA_TOPIC_REPLICATION_FACTOR": "0"}, "KAFKA_TOPIC_REPLICATION_FACTOR"},
+		{"kafka replication factor broker default sentinel", map[string]string{
+			"KAFKA_TOPIC_REPLICATION_FACTOR": "-1",
+		}, "KAFKA_TOPIC_REPLICATION_FACTOR"},
+		{"overrides malformed entry", map[string]string{
+			"KAFKA_TOPIC_PARTITIONS_OVERRIDES": "mt.inbound",
+		}, "KAFKA_TOPIC_PARTITIONS_OVERRIDES"},
+		{"overrides non-integer count", map[string]string{
+			"KAFKA_TOPIC_PARTITIONS_OVERRIDES": "mt.inbound=many",
+		}, "KAFKA_TOPIC_PARTITIONS_OVERRIDES"},
+		{"overrides zero count", map[string]string{
+			"KAFKA_TOPIC_PARTITIONS_OVERRIDES": "mt.inbound=0",
+		}, "KAFKA_TOPIC_PARTITIONS_OVERRIDES"},
+		{"overrides negative count", map[string]string{
+			"KAFKA_TOPIC_PARTITIONS_OVERRIDES": "mt.inbound=-4",
+		}, "KAFKA_TOPIC_PARTITIONS_OVERRIDES"},
+		{"overrides empty topic", map[string]string{
+			"KAFKA_TOPIC_PARTITIONS_OVERRIDES": "=12",
+		}, "KAFKA_TOPIC_PARTITIONS_OVERRIDES"},
+		{"overrides empty entry", map[string]string{
+			"KAFKA_TOPIC_PARTITIONS_OVERRIDES": "mt.inbound=12,,mt.routed=24",
+		}, "KAFKA_TOPIC_PARTITIONS_OVERRIDES"},
+		{"overrides duplicate topic", map[string]string{
+			"KAFKA_TOPIC_PARTITIONS_OVERRIDES": "mt.inbound=12,mt.inbound=24",
+		}, "KAFKA_TOPIC_PARTITIONS_OVERRIDES"},
+		{"overrides count out of int32 range", map[string]string{
+			"KAFKA_TOPIC_PARTITIONS_OVERRIDES": "mt.inbound=2147483648",
+		}, "KAFKA_TOPIC_PARTITIONS_OVERRIDES"},
+		{"clickhouse max open conns zero", map[string]string{"CLICKHOUSE_MAX_OPEN_CONNS": "0"}, "CLICKHOUSE_MAX_OPEN_CONNS"},
+		{"clickhouse max open conns negative", map[string]string{"CLICKHOUSE_MAX_OPEN_CONNS": "-1"}, "CLICKHOUSE_MAX_OPEN_CONNS"},
+		{"clickhouse max idle conns zero", map[string]string{"CLICKHOUSE_MAX_IDLE_CONNS": "0"}, "CLICKHOUSE_MAX_IDLE_CONNS"},
+		{"clickhouse idle above open", map[string]string{
+			"CLICKHOUSE_MAX_OPEN_CONNS": "4",
+			"CLICKHOUSE_MAX_IDLE_CONNS": "8",
+		}, "CLICKHOUSE_MAX_IDLE_CONNS"},
+		{"postgres min conns negative", map[string]string{"POSTGRES_MIN_CONNS": "-1"}, "POSTGRES_MIN_CONNS"},
+		{"postgres min conns above max", map[string]string{
+			"POSTGRES_MAX_CONNS": "4",
+			"POSTGRES_MIN_CONNS": "8",
+		}, "POSTGRES_MIN_CONNS"},
 		{"http port zero", map[string]string{"HTTP_PORT": "0"}, "HTTP_PORT"},
 		{"http port too high", map[string]string{"HTTP_PORT": "70000"}, "HTTP_PORT"},
 		{"http read header timeout zero", map[string]string{"HTTP_READ_HEADER_TIMEOUT": "0s"}, "HTTP_READ_HEADER_TIMEOUT"},
@@ -556,6 +617,47 @@ func TestConfigLogValueHidesPostgresPassword(t *testing.T) {
 	}
 }
 
+// TestConfigLogValueReportsCapacityLevers: a capacity campaign has to be able to tell, from a pod's
+// own boot log, which levers that pod actually got — a knob set in the wrong manifest is otherwise
+// indistinguishable from a knob that did nothing. None of them is secret-bearing.
+func TestConfigLogValueReportsCapacityLevers(t *testing.T) {
+	setEnv(t, map[string]string{
+		"KAFKA_FETCH_MIN_BYTES":            "65536",
+		"KAFKA_FETCH_MAX_WAIT":             "250ms",
+		"KAFKA_FETCH_MAX_BYTES":            "16777216",
+		"KAFKA_TOPIC_PARTITIONS":           "24",
+		"KAFKA_TOPIC_PARTITIONS_OVERRIDES": "mt.inbound=48",
+		"KAFKA_TOPIC_REPLICATION_FACTOR":   "2",
+		"CLICKHOUSE_MAX_OPEN_CONNS":        "40",
+		"CLICKHOUSE_MAX_IDLE_CONNS":        "20",
+		"POSTGRES_MIN_CONNS":               "8",
+	})
+
+	cfg, err := config.Load("router-svc")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	var buf bytes.Buffer
+	slog.New(slog.NewJSONHandler(&buf, nil)).Info("starting", "config", cfg)
+
+	for _, want := range []string{
+		`"kafka_fetch_min_bytes":65536`,
+		`"kafka_fetch_max_wait":250000000`, // slog renders a Duration as nanoseconds
+		`"kafka_fetch_max_bytes":16777216`,
+		`"kafka_topic_partitions":24`,
+		`"kafka_topic_partitions_overrides":"mt.inbound=48"`,
+		`"kafka_topic_replication_factor":2`,
+		`"clickhouse_max_open_conns":40`,
+		`"clickhouse_max_idle_conns":20`,
+		`"postgres_min_conns":8`,
+	} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("boot log omits %s:\n%s", want, buf.String())
+		}
+	}
+}
+
 func TestParseLogLevel(t *testing.T) {
 	tests := []struct {
 		in      string
@@ -589,6 +691,294 @@ func TestParseLogLevel(t *testing.T) {
 				t.Errorf("ParseLogLevel(%q) = %v, want %v", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestKnownVarsIsExhaustive keeps the hermetic-environment list honest. setEnv can only clear what
+// knownVars names, so a variable added to Config but forgotten here lets the developer's own shell
+// decide a test's result — a fixture that silently stops testing what it claims. Extra entries are
+// allowed: SERVICE_NAME is listed on purpose, precisely because a test proves Config ignores it.
+func TestKnownVarsIsExhaustive(t *testing.T) {
+	known := make(map[string]bool, len(knownVars))
+	for _, v := range knownVars {
+		known[v] = true
+	}
+
+	var missing []string
+	var walk func(t reflect.Type, prefix string)
+	walk = func(rt reflect.Type, prefix string) {
+		for i := range rt.NumField() {
+			f := rt.Field(i)
+			if f.Type.Kind() == reflect.Struct && f.Type.PkgPath() == rt.PkgPath() {
+				walk(f.Type, prefix+f.Tag.Get("envPrefix"))
+				continue
+			}
+			name := f.Tag.Get("env")
+			if name == "" || name == "-" {
+				continue
+			}
+			if !known[prefix+name] {
+				missing = append(missing, prefix+name)
+			}
+		}
+	}
+	walk(reflect.TypeOf(config.Config{}), "")
+
+	if len(missing) > 0 {
+		t.Errorf("knownVars is missing %v; setEnv cannot clear what it does not name", missing)
+	}
+}
+
+// TestCapacityLeverDefaults pins the neutrality of the capacity levers (step-201, D5): every default
+// is the behaviour the gateway already had, so exposing the knobs changes nothing until an operator
+// turns one. POSTGRES_MIN_CONNS is the single deliberate exception.
+func TestCapacityLeverDefaults(t *testing.T) {
+	setEnv(t, nil)
+
+	cfg, err := config.Load("router-svc")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	// franz-go defaults, read in kgo/config.go:673-675 (v1.21.5).
+	if cfg.Kafka.FetchMinBytes != 1 {
+		t.Errorf("Kafka.FetchMinBytes = %d, want 1 (franz-go default)", cfg.Kafka.FetchMinBytes)
+	}
+	if cfg.Kafka.FetchMaxWait != 5*time.Second {
+		t.Errorf("Kafka.FetchMaxWait = %s, want 5s (franz-go default)", cfg.Kafka.FetchMaxWait)
+	}
+	if cfg.Kafka.FetchMaxBytes != 50<<20 {
+		t.Errorf("Kafka.FetchMaxBytes = %d, want %d (franz-go default 50MiB)", cfg.Kafka.FetchMaxBytes, 50<<20)
+	}
+	if cfg.Kafka.TopicPartitions != 12 {
+		t.Errorf("Kafka.TopicPartitions = %d, want 12", cfg.Kafka.TopicPartitions)
+	}
+	if cfg.Kafka.TopicPartitionsOverrides != "" {
+		t.Errorf("Kafka.TopicPartitionsOverrides = %q, want empty", cfg.Kafka.TopicPartitionsOverrides)
+	}
+	if cfg.Kafka.TopicReplicationFactor != 3 {
+		t.Errorf("Kafka.TopicReplicationFactor = %d, want 3 (spec §2.5)", cfg.Kafka.TopicReplicationFactor)
+	}
+	// clickhouse-go defaults, read in clickhouse_options.go:412-417 (v2.47.0).
+	if cfg.ClickHouse.MaxOpenConns != 10 {
+		t.Errorf("ClickHouse.MaxOpenConns = %d, want 10 (lib default MaxIdleConns+5)", cfg.ClickHouse.MaxOpenConns)
+	}
+	if cfg.ClickHouse.MaxIdleConns != 5 {
+		t.Errorf("ClickHouse.MaxIdleConns = %d, want 5 (lib default)", cfg.ClickHouse.MaxIdleConns)
+	}
+	// The one lever that deliberately changes behaviour: pgxpool defaults MinConns to 0
+	// (pgxpool/pool.go:20), so nothing is pre-warmed and a peak pays a burst of dials.
+	if cfg.Postgres.MinConns != 2 {
+		t.Errorf("Postgres.MinConns = %d, want 2", cfg.Postgres.MinConns)
+	}
+}
+
+func TestCapacityLeversFromEnvironment(t *testing.T) {
+	setEnv(t, map[string]string{
+		"KAFKA_FETCH_MIN_BYTES":            "65536",
+		"KAFKA_FETCH_MAX_WAIT":             "250ms",
+		"KAFKA_FETCH_MAX_BYTES":            "16777216",
+		"KAFKA_TOPIC_PARTITIONS":           "24",
+		"KAFKA_TOPIC_PARTITIONS_OVERRIDES": "mt.inbound=48,mt.routed=48",
+		"KAFKA_TOPIC_REPLICATION_FACTOR":   "2",
+		"CLICKHOUSE_MAX_OPEN_CONNS":        "40",
+		"CLICKHOUSE_MAX_IDLE_CONNS":        "20",
+		"POSTGRES_MIN_CONNS":               "8",
+	})
+
+	cfg, err := config.Load("router-svc")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if cfg.Kafka.FetchMinBytes != 65536 {
+		t.Errorf("Kafka.FetchMinBytes = %d, want 65536", cfg.Kafka.FetchMinBytes)
+	}
+	if cfg.Kafka.FetchMaxWait != 250*time.Millisecond {
+		t.Errorf("Kafka.FetchMaxWait = %s, want 250ms", cfg.Kafka.FetchMaxWait)
+	}
+	if cfg.Kafka.FetchMaxBytes != 16<<20 {
+		t.Errorf("Kafka.FetchMaxBytes = %d, want %d", cfg.Kafka.FetchMaxBytes, 16<<20)
+	}
+	if cfg.Kafka.TopicPartitions != 24 {
+		t.Errorf("Kafka.TopicPartitions = %d, want 24", cfg.Kafka.TopicPartitions)
+	}
+	if cfg.Kafka.TopicReplicationFactor != 2 {
+		t.Errorf("Kafka.TopicReplicationFactor = %d, want 2", cfg.Kafka.TopicReplicationFactor)
+	}
+	if cfg.ClickHouse.MaxOpenConns != 40 {
+		t.Errorf("ClickHouse.MaxOpenConns = %d, want 40", cfg.ClickHouse.MaxOpenConns)
+	}
+	if cfg.ClickHouse.MaxIdleConns != 20 {
+		t.Errorf("ClickHouse.MaxIdleConns = %d, want 20", cfg.ClickHouse.MaxIdleConns)
+	}
+	if cfg.Postgres.MinConns != 8 {
+		t.Errorf("Postgres.MinConns = %d, want 8", cfg.Postgres.MinConns)
+	}
+
+	overrides, err := cfg.Kafka.PartitionOverrides()
+	if err != nil {
+		t.Fatalf("PartitionOverrides() error = %v", err)
+	}
+	want := map[string]int32{"mt.inbound": 48, "mt.routed": 48}
+	if len(overrides) != len(want) {
+		t.Fatalf("PartitionOverrides() = %v, want %v", overrides, want)
+	}
+	for topic, n := range want {
+		if overrides[topic] != n {
+			t.Errorf("PartitionOverrides()[%q] = %d, want %d", topic, overrides[topic], n)
+		}
+	}
+}
+
+// TestKafkaFetchMaxWaitFloor mirrors franz-go's own floor: FetchMaxWait is stored as int32
+// milliseconds (kgo/config.go:1497) and a client whose maxWait is under 10ms refuses to start
+// (kgo/config.go:373). The truncation is the subtle half — 10ms900µs is 10ms to franz-go, and 999µs
+// is 0 — so the check must be on the truncated millisecond value, not on the duration.
+func TestKafkaFetchMaxWaitFloor(t *testing.T) {
+	tests := []struct {
+		value      string
+		wantAccept bool
+	}{
+		{"10ms", true},
+		{"10ms900us", true}, // truncates to 10ms: franz-go accepts it, so we must too
+		{"9ms", false},
+		{"9ms999us", false}, // truncates to 9ms
+		{"999us", false},    // truncates to 0
+		{"5s", true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.value, func(t *testing.T) {
+			setEnv(t, map[string]string{"KAFKA_FETCH_MAX_WAIT": tc.value})
+
+			_, err := config.Load("router-svc")
+			if tc.wantAccept {
+				if err != nil {
+					t.Fatalf("Load() with KAFKA_FETCH_MAX_WAIT=%s error = %v, want accepted", tc.value, err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("Load() accepted KAFKA_FETCH_MAX_WAIT=%s; franz-go would refuse the client", tc.value)
+			}
+			if !strings.Contains(err.Error(), "KAFKA_FETCH_MAX_WAIT") {
+				t.Errorf("error %q should name KAFKA_FETCH_MAX_WAIT", err)
+			}
+		})
+	}
+}
+
+// TestKafkaFetchMaxBytesCeiling pins the other franz-go refusal: BrokerMaxReadBytes defaults to 100MiB
+// (kgo/config.go:646) and the client refuses to start when max fetch bytes exceeds it
+// (kgo/config.go:331). We do not expose BrokerMaxReadBytes, so that default is the ceiling — and the
+// boundary itself must be accepted, or the knob would be narrower than the library allows.
+func TestKafkaFetchMaxBytesCeiling(t *testing.T) {
+	const brokerMaxReadBytes = 100 << 20
+
+	setEnv(t, map[string]string{"KAFKA_FETCH_MAX_BYTES": strconv.Itoa(brokerMaxReadBytes)})
+	if _, err := config.Load("router-svc"); err != nil {
+		t.Fatalf("Load() with KAFKA_FETCH_MAX_BYTES=%d error = %v, want accepted at the ceiling",
+			brokerMaxReadBytes, err)
+	}
+
+	setEnv(t, map[string]string{"KAFKA_FETCH_MAX_BYTES": strconv.Itoa(brokerMaxReadBytes + 1)})
+	_, err := config.Load("router-svc")
+	if err == nil {
+		t.Fatalf("Load() accepted KAFKA_FETCH_MAX_BYTES=%d; franz-go would refuse the client at boot",
+			brokerMaxReadBytes+1)
+	}
+	if !strings.Contains(err.Error(), "KAFKA_FETCH_MAX_BYTES") {
+		t.Errorf("error %q should name KAFKA_FETCH_MAX_BYTES", err)
+	}
+}
+
+// TestPartitionOverridesReportsEveryBadEntry: the whole point of the list form is that one typo must
+// not cost an operator a restart per entry, and must never fall back to the default width in silence.
+func TestPartitionOverridesReportsEveryBadEntry(t *testing.T) {
+	setEnv(t, map[string]string{
+		"KAFKA_TOPIC_PARTITIONS_OVERRIDES": "mt.inbound,mt.routed=many,dlr.events=0",
+	})
+
+	_, err := config.Load("router-svc")
+	if err == nil {
+		t.Fatal("Load() accepted three malformed overrides")
+	}
+	for _, want := range []string{"mt.inbound", "mt.routed", "dlr.events"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q omits the bad entry %q; all problems should be reported at once", err, want)
+		}
+	}
+}
+
+// TestPartitionOverridesTolerateSpacing: a manifest wraps a long list, so surrounding blanks are part
+// of the accepted form. Anything else is refused, not trimmed into a guess.
+func TestPartitionOverridesTolerateSpacing(t *testing.T) {
+	setEnv(t, map[string]string{
+		"KAFKA_TOPIC_PARTITIONS_OVERRIDES": " mt.inbound = 48 ,  mt.routed=24 ",
+	})
+
+	cfg, err := config.Load("router-svc")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	got, err := cfg.Kafka.PartitionOverrides()
+	if err != nil {
+		t.Fatalf("PartitionOverrides() error = %v", err)
+	}
+	if got["mt.inbound"] != 48 || got["mt.routed"] != 24 || len(got) != 2 {
+		t.Errorf("PartitionOverrides() = %v, want map[mt.inbound:48 mt.routed:24]", got)
+	}
+}
+
+// TestPartitionOverridesEmptyIsNotAnError: no overrides is the default posture — every topic takes
+// KAFKA_TOPIC_PARTITIONS.
+func TestPartitionOverridesEmptyIsNotAnError(t *testing.T) {
+	setEnv(t, nil)
+
+	cfg, err := config.Load("router-svc")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	got, err := cfg.Kafka.PartitionOverrides()
+	if err != nil {
+		t.Fatalf("PartitionOverrides() error = %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("PartitionOverrides() = %v, want an empty map", got)
+	}
+}
+
+// TestProductionRejectsSingleReplicaTopics is the same shape of guard as the loopback defaults: a
+// value that is right on a one-broker laptop and a durability hole in production. With
+// RequiredAcks(AllISRAcks), replication 1 makes a durable ACK — the thing a REST 202 and a
+// submit_sm_resp rest on — a single broker's disk. The spec sizes the cluster for replication 3 (§2.5).
+func TestProductionRejectsSingleReplicaTopics(t *testing.T) {
+	setEnv(t, map[string]string{
+		"ENVIRONMENT":                    "production",
+		"OTEL_EXPORTER_OTLP_INSECURE":    "false",
+		"POSTGRES_URL":                   "postgres://u:p@db:5432/gw",
+		"KAFKA_BROKERS":                  "k1:9092",
+		"CLICKHOUSE_ADDR":                "ch1:9000",
+		"REDIS_URL":                      "redis://cache:6379",
+		"SMPP_SESSION_MANAGER_ADDR":      "sessionmgr:7000",
+		"BILLING_ADDR":                   "billing:7001",
+		"CONTENT_KEY_ADDR":               "content-key:7002",
+		"KAFKA_TOPIC_REPLICATION_FACTOR": "1",
+	})
+
+	_, err := config.Load("router-svc")
+	if err == nil {
+		t.Fatal("Load() accepted replication factor 1 in production")
+	}
+	if !strings.Contains(err.Error(), "KAFKA_TOPIC_REPLICATION_FACTOR") {
+		t.Errorf("error %q should name KAFKA_TOPIC_REPLICATION_FACTOR", err)
+	}
+
+	// The same value is exactly right on a single-broker laptop or CI cluster.
+	setEnv(t, map[string]string{"KAFKA_TOPIC_REPLICATION_FACTOR": "1"})
+	if _, err := config.Load("router-svc"); err != nil {
+		t.Fatalf("Load() error = %v; replication 1 must stay legal outside production", err)
 	}
 }
 

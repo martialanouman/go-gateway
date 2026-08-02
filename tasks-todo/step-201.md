@@ -214,7 +214,18 @@ modules, pas de mémoire.
 | `KAFKA_TOPIC_REPLICATION_FACTOR` | `3` | Défaut de prod raisonné (spec §2.5) ; le local passe `1` explicitement. |
 | `CLICKHOUSE_MAX_OPEN_CONNS` | `10` | Défaut lib (`MaxIdleConns+5`). Pas pour le writer CDR (une boucle) mais pour `admin-api-svc` : search-messages + export concurrents. |
 | `CLICKHOUSE_MAX_IDLE_CONNS` | `5` | Défaut lib. |
-| `POSTGRES_MIN_CONNS` | `2` | **Seule exception au « défaut = actuel ».** `MinConns` n'est jamais fixé aujourd'hui → 0 → aucune connexion pré-chauffée, donc rafale d'établissements au pic. C'est le « revisit » que `pool.go:14-16` réclame nommément. |
+| `POSTGRES_MIN_CONNS` | `2` | **Seule exception au « défaut = actuel ».** `MinConns` n'est jamais fixé aujourd'hui → 0 → aucune connexion pré-chauffée, donc rafale d'établissements au pic. |
+
+> **Corrigé (2026-08-02).** La raison de `POSTGRES_MIN_CONNS` invoquait « le *revisit* que `pool.go:14-16`
+> réclame nommément ». Ce commentaire ne parle pas de `MinConns` : il couvre `poolMaxConnLifetime`,
+> `poolMaxConnIdleTime` et `poolHealthCheck` — les trois constantes que `D9` garde justement en dur. La
+> justification de `MinConns` tient seule, sans cet appui.
+
+> **Ajout ratifié (2026-08-02) — garde de production sur le facteur de réplication.** `D5` ne le
+> demandait pas. Un `KAFKA_TOPIC_REPLICATION_FACTOR < 2` est désormais refusé **sur le palier de
+> production uniquement** : c'est exactement la forme des gardes anti-loopback existantes — une valeur
+> juste sur un poste à un seul broker, et un trou de durabilité en production. Le défaut étant 3, elle
+> ne mord que si quelqu'un recopie l'environnement local.
 
 **Correctif, pas levier :** `KAFKA_TIMEOUT` est **déjà un bouton mort** — la variable est lue, validée,
 et n'atteint aucun client. La câbler sur `kgo.DialTimeout`.
