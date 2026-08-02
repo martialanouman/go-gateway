@@ -95,9 +95,13 @@ const MinRecordableMeasure = 60 * time.Second
 
 // minScalingFraction is the share of the extra throughput a tier's extra binds should have bought,
 // under which the curve is read as having bent. A peer scaling perfectly buys the whole proportional
-// increase (fraction 1); a peer at its limit buys none of it (fraction 0). Half sits between the two
-// with room on both sides: the sweep of 02/08 returned 0.93 across every doubling from 10 to 320
-// binds, so a peer merely losing per-bind efficiency does not trip it.
+// increase (fraction 1); a peer at its limit buys none of it (fraction 0). Half sits between the two.
+//
+// What the sweep of 02/08 actually returned, doubling by doubling: 0.98, 1.09, 0.92, 0.79, 0.48. So the
+// bar sits below the four tiers that scaled and above the one that did not — but the margin on the
+// deciding tier is 1.6%, smaller than the ~4% spread between neighbouring tiers of that same run. This
+// threshold separates the cases it was checked against; it does not make the verdict robust, and a
+// saturation verdict resting on it should be confirmed by a second sweep rather than published alone.
 //
 // This is the second of the two saturation signals, and the only one available against a peer that
 // never refuses anything — it just stops going faster.
@@ -136,7 +140,25 @@ const (
 	// genuinely stalled session sits near zero. The bar is deliberately one a very uneven link could
 	// trip — a tier wrongly refused is loud and costs a re-run, a tier wrongly counted is a number
 	// somebody tunes a system against.
+	//
+	// What it does NOT catch, by construction: a stall that hits every session equally (each one is
+	// then as quiet as the next, so there is no spread), and a stall late enough in the window that the
+	// session still got a comparable share through. maxUnansweredFraction covers the first; nothing
+	// covers the second, which is why the recorded figures carry that reserve rather than claiming it
+	// away.
 	maxSubmitSpread = 4
+
+	// maxUnansweredFraction is how much of what the injector sent may still be outstanding when the
+	// window closes. It is the only guard that sees a peer which ACCEPTS submit_sm and never answers
+	// any: its receive counter moves, so the rate looks real and scales perfectly with the binds; it
+	// reports no outcome, so the tier stays qualified; it stalls every session identically, so the
+	// spread is 1; and its served histogram never moves, which disables the served-versus-accepted
+	// guard instead of tripping it. Such a peer produces a publishable figure having answered nothing.
+	//
+	// A quarter is two orders of magnitude of slack. A healthy tier leaves its in-flight window and
+	// nothing more: measured at 0.27%–0.41% of what was sent, from 20 to 320 binds over 60s windows.
+	// A peer that answers nothing leaves 100%.
+	maxUnansweredFraction = 0.25
 )
 
 // Load runs one tier of the sweep: it opens the binds, injects submit_sm for the whole hold window,
@@ -251,13 +273,19 @@ type Result struct {
 // figures to be worth writing down.
 func (r Result) Recordable() bool { return r.Measure >= MinRecordableMeasure }
 
-// markSaturation records the first evidence that the peer reached its limit. The first is kept rather
+// markSaturation records evidence that the peer reached its limit. The first evidence is kept rather
 // than the last: it is the lowest tier at which the sweep can say the peer stopped scaling.
 //
 // fromBend says whether the evidence is an inferred bend in the curve rather than shedding the peer
 // itself reported. Only a bend can later be withdrawn — see unmarkSaturationIfDisproved.
+//
+// "First" means first of its kind: shedding SUPERSEDES a bend recorded earlier, because the peer
+// reported it rather than leaving it to be inferred, and because it is the reason the reader has to
+// see. Without that, the withdrawal below would take the shed away with the bend and the tool would
+// report "no tier shed" over a curve holding a tier disqualified for exactly that.
 func (r *Result) markSaturation(binds int, fromBend bool, reason string) {
-	if !r.Saturated {
+	supersedes := !fromBend && r.Saturated && r.saturationFromBend
+	if !r.Saturated || supersedes {
 		r.Saturated = true
 		r.SaturationReason = reason
 		r.saturatedAt = binds
@@ -550,6 +578,11 @@ func (s *Sweeper) runTier(ctx context.Context, binds int) Tier {
 	case rep.Dropped > 0:
 		return tier.fail(fmt.Sprintf("the peer dropped %d of the %d bound sessions mid-window",
 			rep.Dropped, rep.Bound), nil)
+	case rep.Submitted > 0 && float64(rep.Unanswered) > maxUnansweredFraction*float64(rep.Submitted):
+		// A peer that took the PDUs and answered none of them. Every other guard is blind to it.
+		return tier.fail(fmt.Sprintf(
+			"%d of the %d submit_sm sent were still unanswered, %.0f%% of them: the peer accepted without answering",
+			rep.Unanswered, rep.Submitted, 100*float64(rep.Unanswered)/float64(rep.Submitted)), nil)
 	case binds > 1 && rep.SubmittedMin*maxSubmitSpread < rep.SubmittedMax:
 		// Sessions that stopped being served, which no aggregate above can show: they neither fail nor
 		// drop, and the peer's gauge still counts their connections. The rate would then be filed under

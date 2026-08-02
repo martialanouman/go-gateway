@@ -316,6 +316,33 @@ Le design et les prérequis de cette step vivent sur `docs/step-201-prereqs` (co
 celui-ci), **absente de `main`**. Les branches de code de PR1/PR2/PR3 partent de là, pas de `main`.
 À annoncer en tête de chaque corps de PR.
 
+### Ce que PR1 gèle sans le résoudre (arbitré avec l'utilisateur après 3 tours de revue)
+
+Quatre tours de revue sur PR1. Le motif, stable et instructif : **l'instrument d'origine n'a reçu aucun
+constat sur les trois derniers tours** ; tous les défauts étaient dans les *gardes numériques* et les
+*affirmations* ajoutées en réponse aux revues précédentes (tour 2 : 8 constats sur 9 dans les correctifs
+du tour 1 ; tour 3 : 11 sur 12 dans ceux des tours 1–2). Le tour 4 a été cadré : deux bloquants plus
+les trois constats les plus graves, puis arrêt.
+
+Corrigés au tour 4 : un rejet du pair précédé d'un pli de courbe était effaçable (l'outil imprimait
+« no tier shed » sur un balayage contenant un palier disqualifié pour rejet) · un pair qui **accepte
+sans jamais répondre** produisait un chiffre publiable avec code de sortie 0 — invisible pour toutes
+les autres gardes, désormais couvert par `maxUnansweredFraction` · le README affirmait avoir écarté
+l'hypothèse des binds figés, ce que la garde ne permet pas · `SubmittedMin/Max` est imprimé par palier,
+pour que le prochain run confronte le seuil au lieu de le supposer · deux propriétés annoncées en godoc
+sans test en ont reçu un.
+
+**Gelé, nommément :**
+- La **chute du débit par bind au-delà de 80 binds** n'est pas attribuée. `maxSubmitSpread` ne détecte
+  qu'un gel détruisant > 85 % du travail d'une session ; un gel à mi-fenêtre passe. Trancher demande un
+  débit **par session sur la durée**, que l'instrument ne relève pas. → suivi step-201b.
+- Le **verdict de saturation à 320 binds tient à 1,6 %**, moins que le bruit inter-paliers du même run
+  (~4 %). Le plafond est un ordre de grandeur, pas une valeur. → second balayage en step-201b.
+- Constats de revue non traités, sans effet sur un chiffre : chiffres du README hérités d'un tableau
+  antérieur dans deux phrases secondaires · un test devenu tautologique depuis que `Unanswered` n'est
+  plus seuillé de la même façon · `binds > 1` mort dans la garde de dispersion · le diagnostic
+  « sessions stopped being served » s'affiche aussi quand la cause est une erreur d'écriture.
+
 ### Limite connue, consignée sans être résolue
 Les consumers d'un même processus partagent le préfixe `KAFKA_` : dans `router-svc`, monter
 `KAFKA_FETCH_MIN_BYTES` pour la projection CDR affecte aussi le consumer du pipeline. Si le run de

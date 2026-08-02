@@ -235,7 +235,11 @@ func tierLine(t ceiling.Tier) string {
 		line += ": " + t.Reason
 	}
 	rep := t.Report
-	line += fmt.Sprintf(" [injector: bound %d/%d, submitted %d, accepted %d, rejected %d, unanswered %d, errors %d]",
-		rep.Bound, rep.Requested, rep.Submitted, rep.Accepted, rep.Rejected, rep.Unanswered, rep.SubmitErrors)
+	// per-session min/max is printed because a tier is refused on it: without it in the output, the
+	// next run cannot check the threshold that judged it, and a badly scaled bar stays invisible until
+	// it refuses everything. That is how an earlier version of this guard shipped.
+	line += fmt.Sprintf(" [injector: bound %d/%d, submitted %d (per session %d..%d), accepted %d, rejected %d, unanswered %d, errors %d]",
+		rep.Bound, rep.Requested, rep.Submitted, rep.SubmittedMin, rep.SubmittedMax,
+		rep.Accepted, rep.Rejected, rep.Unanswered, rep.SubmitErrors)
 	return line
 }

@@ -1051,3 +1051,69 @@ func TestReportSpreadsTheQuietestSessionApart(t *testing.T) {
 			rep.SubmittedMin, rep.SubmittedMax)
 	}
 }
+
+// TestReportSeparatesMinFromMaxAcrossUnevenSessions pins what a uniform peer cannot: that the two
+// figures really are the smallest and the largest, and not the same number twice. Every session facing
+// an identical peer submits roughly the same amount, so swapping the comparison — or reporting the
+// total on both — survives a test written against one. The sweep refuses tiers on the gap between
+// them, so the gap has to be measured against a peer that actually produces one.
+func TestReportSeparatesMinFromMaxAcrossUnevenSessions(t *testing.T) {
+	t.Parallel()
+
+	// Half the sessions are served ten times slower than the other half.
+	p := startUnevenPeer(t, time.Millisecond, 10*time.Millisecond)
+	rep, err := bindgen.Run(context.Background(), bindgen.Config{
+		Addr: p.addr, Binds: 4, SystemID: "loadgen", Password: "pw",
+		Hold:   700 * time.Millisecond,
+		Submit: &bindgen.SubmitConfig{Window: 4},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if rep.Bound != 4 {
+		t.Fatalf("Bound = %d, want 4 — the fixture never reached the condition", rep.Bound)
+	}
+	// Fixture guard: the peer must really have produced an uneven run, or this proves nothing.
+	if rep.SubmittedMin*2 > rep.SubmittedMax {
+		t.Fatalf("min %d, max %d: either the slow sessions were not slow enough (fixture), or the two figures are not the smallest and the largest (code)",
+			rep.SubmittedMin, rep.SubmittedMax)
+	}
+	if rep.SubmittedMin >= rep.SubmittedMax {
+		t.Errorf("SubmittedMin = %d, SubmittedMax = %d: the two are not ordered",
+			rep.SubmittedMin, rep.SubmittedMax)
+	}
+	if rep.SubmittedMin+rep.SubmittedMax > rep.Submitted {
+		t.Errorf("SubmittedMin+SubmittedMax = %d > Submitted = %d: neither can be the total",
+			rep.SubmittedMin+rep.SubmittedMax, rep.Submitted)
+	}
+}
+
+// startUnevenPeer answers on every connection, but paces the odd-numbered ones far slower than the
+// even ones — the shape a peer that stopped serving a subset of its binds produces.
+func startUnevenPeer(t *testing.T, fast, slow time.Duration) *pacingPeer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	p := &pacingPeer{addr: ln.Addr().String()}
+	var n int
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			pace := fast
+			if n%2 == 1 {
+				pace = slow
+			}
+			n++
+			t.Cleanup(func() { _ = c.Close() })
+			go p.serve(c, pace)
+		}
+	}()
+	return p
+}

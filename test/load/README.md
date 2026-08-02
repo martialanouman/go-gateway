@@ -132,27 +132,49 @@ inférieure : la courbe **plie** à ce palier — 34 872/s contre 23 629/s à 16
 que le doublement des binds aurait dû acheter. Le balayage de `D3` (10→80) ne suffit pas à l'atteindre,
 et l'outil y imprime honnêtement `LOWER BOUND` : il faut pousser jusqu'à 160/320 pour voir la limite.
 
-*Réserve, à lire avec le chiffre* : 48 % passe tout juste sous le seuil de 50 % (`minScalingFraction`).
-Un run un peu plus favorable repasserait au-dessus et le pair ne serait pas déclaré saturé. Ce que la
-mesure établit solidement n'est pas la valeur exacte du plafond mais son **ordre de grandeur** — et que
-le débit par bind, plat jusqu'à 80 binds, s'effondre au-delà.
+*Réserve, chiffrée* : pour ne pas plier il aurait fallu 35 443/s à 320 binds ; il en manque **1,6 %**.
+Or le tableau ci-dessus montre une dispersion inter-paliers de ~4 % (172/bind à 40 binds contre 165–166
+chez ses voisins, sur une courbe censée décroître). **La marge qui décide du verdict est plus petite que
+le bruit visible dans le même run.** Ce que la mesure établit solidement n'est donc pas la valeur exacte
+du plafond, ni même la certitude qu'il ait été atteint, mais son **ordre de grandeur** — et que le débit
+par bind, plat jusqu'à 80 binds, s'effondre au-delà. Un second balayage est nécessaire pour confirmer le
+verdict de saturation.
 
 **Ce que les chiffres désignent.** Le débit est **linéaire en nombre de binds**, avec une érosion lente
 du débit par bind, plate jusqu'à 80 binds (166 → 165/s) puis en chute (148 à 160, 109 à 320). Le goulot est **vraisemblablement par bind**,
 pas partagé : le simulateur sérialise le service sur la goroutine de lecture de chaque bind
-(`serveLatency` appelé avant toute réponse), ce qui plafonne un bind à 1/5 ms = 200/s en théorie. Les débits par bind observés correspondent à 5,8–7,3 ms réels par `submit_sm` : les 5 ms d'attente plus le codec, l'`Append` du
+(`serveLatency` appelé avant toute réponse), ce qui plafonne un bind à 1/5 ms = 200/s en théorie. Les débits par bind observés correspondent à 5,8–9,2 ms réels par `submit_sm` : les 5 ms d'attente plus le codec, l'`Append` du
 recorder et les compteurs — l'injecteur et le simulateur se disputant les mêmes 14 cœurs. Le
 `sync.RWMutex` du recorder était le suspect n° 1 pour une contention **inter-binds** : il n'est pas la
 limite à ces débits, sinon le débit par bind s'effondrerait avec le nombre de binds au lieu de perdre
-20 % sur un facteur 32.
+34 % sur un facteur 32.
 
-**Ce qui écarte l'autre lecture.** « Érosion du débit par bind » est une moyenne, et une fraction de
-binds *figés* — des sessions qui cessent d'être servies sans qu'aucune erreur ne remonte — produirait
-exactement la même érosion en concentrant le débit sur les binds restants. Le balayage refuse désormais
-un palier dont la session la plus lente est passée sous une fraction de la plus rapide
-(`maxSubmitSpread`), et **les chiffres ci-dessus sont issus d'un run passé par cette garde** : aucun
-palier n'a été refusé, donc les sessions ont toutes travaillé. L'hypothèse des binds figés est écartée
-par la mesure, pas par raisonnement.
+**L'autre lecture n'est pas écartée, et il faut le dire.** « Érosion du débit par bind » est une
+moyenne, et une fraction de binds *figés* — des sessions qui cessent d'être servies sans qu'aucune
+erreur ne remonte — produirait exactement la même érosion en concentrant le débit sur les binds
+restants. Le balayage refuse un palier dont la session la plus lente passe sous le quart de la plus
+rapide (`maxSubmitSpread`), et aucun palier ne l'a été.
+
+**Mais cette garde ne couvre qu'un gel précoce.** Une session gelée à l'instant *t* d'une fenêtre
+d'injection de 75 s garde un ratio `t/75` : le seuil de 4 ne se déclenche donc que pour `t < 19 s`,
+c'est-à-dire un gel qui détruit plus de 85 % du travail de la session. Un gel à mi-parcours laisse un
+écart de 1,9× et passe. Or la configuration qui reproduirait précisément l'érosion observée — environ
+deux tiers des sessions gelées à mi-fenêtre — tombe dans cet angle mort.
+
+Ce que la mesure établit donc : le débit par bind **est** plat jusqu'à 80 binds puis chute, et aucun
+gel *précoce* n'a eu lieu. Ce qu'elle n'établit pas : que la chute au-delà de 80 binds vienne du
+service par bind plutôt que de sessions figées tardivement. Trancher demande un débit **par session sur
+la durée**, que l'instrument ne relève pas — il n'en donne que le total (`per session min..max` dans la
+ligne de palier). Consigné comme suivi de step-201b.
+
+La garde porte sur la **dispersion** des soumissions entre sessions, pas sur la queue de `submit_sm`
+sans réponse. Une version antérieure seuillait cette queue et refusait *tous* les paliers d'un run
+sain : un injecteur fenêtré termine chaque run avec sa fenêtre entière en vol sur chaque session —
+mesuré à exactement `binds × 32` — parce qu'un jeton n'est libéré que par une réponse et aussitôt
+repris. Une session figée est à la même valeur qu'une session saine ; seule la dispersion les sépare.
+Le rapport de la queue au total (`maxUnansweredFraction`, 0,27–0,41 % en run sain) reste utilisé, mais
+pour un autre cas : un pair qui **accepte sans jamais répondre**, invisible pour toutes les autres
+gardes.
 
 La garde porte sur la **dispersion** des soumissions entre sessions, pas sur la queue de `submit_sm`
 sans réponse. Une version antérieure seuillait cette queue et refusait *tous* les paliers d'un run

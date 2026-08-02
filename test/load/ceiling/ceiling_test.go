@@ -1198,3 +1198,90 @@ func TestSweepUnmarksASaturationTheCurveWentOnToDisprove(t *testing.T) {
 		t.Errorf("CeilingBinds = %d, want 80", res.CeilingBinds)
 	}
 }
+
+// TestSweepKeepsAShedTierEvenWhenALaterTierOutrunsABend guards the asymmetry the two saturation
+// signals are supposed to have. A bend is inferred from a rate and a later tier can disprove it; a
+// tier the peer SHED on is evidence the peer itself reported, and no later tier withdraws it.
+//
+// The dangerous ordering is bend-then-shed: markSaturation keeps the first evidence, so the shed
+// leaves saturationFromBend set, and the withdrawal then takes the shed away with the bend. The tool
+// prints "no tier shed" over a sweep that has a disqualified tier in its own curve.
+func TestSweepKeepsAShedTierEvenWhenALaterTierOutrunsABend(t *testing.T) {
+	shed := absorbed(40, 12_000)
+	shed.after.success = shed.before.success + 11_000
+	shed.after.throttled = 1_000
+
+	p := newPeer(map[int]tierScript{
+		10: absorbed(10, 12_000),
+		20: absorbed(20, 12_600), // the dip: scaling 0.05, the curve "bends"
+		40: shed,                 // the peer itself sheds — evidence it reported
+		80: absorbed(80, 54_000), // ... and a later tier outruns the bend
+	})
+
+	res, err := run(t, p, fastConfig([]int{10, 20, 40, 80}, 20))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// Fixture guards: the bend and the shed must both really have happened, in that order.
+	if tierByBinds(t, res, 40).Status != ceiling.TierDisqualified {
+		t.Fatalf("fixture: tier 40 status = %v, want %v — the peer must have shed",
+			tierByBinds(t, res, 40).Status, ceiling.TierDisqualified)
+	}
+	top := tierByBinds(t, res, 80)
+	dip := tierByBinds(t, res, 20)
+	if top.Throughput.SubmitPerSecond <= dip.Throughput.SubmitPerSecond {
+		t.Fatalf("fixture: tier 80 (%.0f/s) must outrun the dip (%.0f/s) to attempt the withdrawal",
+			top.Throughput.SubmitPerSecond, dip.Throughput.SubmitPerSecond)
+	}
+
+	if !res.Saturated {
+		t.Errorf("Saturated = false, want true: the peer shed at 40 binds, which no later tier can undo")
+	}
+	if !strings.Contains(res.SaturationReason, "shed") {
+		t.Errorf("SaturationReason = %q, want it to name the shedding the peer reported", res.SaturationReason)
+	}
+}
+
+// TestSweepFailsAgainstAPeerThatNeverAnswers covers the shape every other guard misses. A peer that
+// accepts submit_sm and never responds moves its receive counter, so the rate looks real and scales
+// perfectly with the binds; it reports no outcome, so Qualified() is true; and it stalls every session
+// identically after one window, so the spread is 1. Its served histogram never moves either, which
+// disables the served-versus-accepted guard rather than tripping it.
+//
+// What gives it away is that essentially everything the injector sent is still outstanding: a healthy
+// tier leaves its window (a few hundred PDUs against hundreds of thousands sent), this one leaves all
+// of it.
+func TestSweepFailsAgainstAPeerThatNeverAnswers(t *testing.T) {
+	const binds, window = 20, 32
+	deaf := absorbed(binds, binds*window) // it "absorbed" exactly one window per session, then stalled
+	deaf.report.Submitted = binds * window
+	deaf.report.Accepted = 0
+	deaf.report.Unanswered = binds * window
+	deaf.report.SubmittedMin = window
+	deaf.report.SubmittedMax = window
+	// A peer that never answers never serves: its latency histogram stays put.
+	deaf.after.latSum = deaf.before.latSum
+	deaf.after.latCount = deaf.before.latCount
+
+	p := newPeer(map[int]tierScript{binds: deaf})
+	res, err := run(t, p, fastConfig([]int{binds}, binds))
+	if err == nil {
+		t.Fatal("Run: got nil error, want a failure — a peer that answered nothing produced a publishable figure")
+	}
+
+	tier := tierByBinds(t, res, binds)
+	// Fixture guards: every other guard must really be blind here, or this test proves nothing.
+	if tier.Report.Failed != 0 || tier.Report.Dropped != 0 {
+		t.Fatalf("fixture: Failed = %d, Dropped = %d, both must be 0", tier.Report.Failed, tier.Report.Dropped)
+	}
+	if tier.Report.SubmittedMin*4 < tier.Report.SubmittedMax {
+		t.Fatalf("fixture: spread %d/%d already trips the spread guard",
+			tier.Report.SubmittedMin, tier.Report.SubmittedMax)
+	}
+	if tier.Status != ceiling.TierFailed {
+		t.Errorf("tier status = %v, want %v", tier.Status, ceiling.TierFailed)
+	}
+	if !strings.Contains(tier.Reason, "unanswered") {
+		t.Errorf("tier Reason = %q, want it to name the unanswered submissions", tier.Reason)
+	}
+}
