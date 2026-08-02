@@ -1,8 +1,13 @@
 // Package bindgen opens N concurrent SMPP sessions against a peer and reports what happened.
 //
-// It is a load tool, not production code: it answers "does this peer accept N simultaneous binds,
-// and how many does it drop?", nothing more. It submits nothing and reads no MO/DLR — once a session
-// is bound it is held idle until the hold window ends, then unbound.
+// It is a load tool, not production code. By default it answers "does this peer accept N simultaneous
+// binds, and how many does it drop?", nothing more: it submits nothing and reads no MO/DLR — once a
+// session is bound it is held idle until the hold window ends, then unbound.
+//
+// With a Config.Submit it becomes a submit_sm injector as well (step-201): every bound session pushes
+// traffic for the whole hold window, windowed rather than turn-by-turn, so the peer is asked for its
+// throughput ceiling rather than its round-trip latency. See SubmitConfig. The mode is opt-in and the
+// idle behaviour above is what a nil Submit still gets.
 //
 // The dial-and-bind exchange is deliberately duplicated here rather than borrowed from
 // internal/connectorpool: the production client is unexported and stays that way, and a load harness
@@ -62,6 +67,10 @@ type Config struct {
 	// are all still open, just before the hold window. It runs on Run's own goroutine, so a slow
 	// callback delays the run.
 	OnAllBound func()
+	// Submit, when non-nil, turns the hold window into a submit_sm injection window: every bound
+	// session pushes traffic for the whole of Config.Hold instead of staying idle. Nil — the default —
+	// leaves the generator a pure bind probe that submits nothing. It requires a positive Hold.
+	Submit *SubmitConfig
 }
 
 // Report is the outcome of a run.
@@ -81,6 +90,32 @@ type Report struct {
 	Errors []error
 	// Elapsed is the wall-clock duration of the run, hold and teardown included.
 	Elapsed time.Duration
+
+	// The fields below are the submit_sm injector's, and stay zero without a Config.Submit.
+	//
+	// They are a diagnostic, not the measurement: they answer "did the injector push, and did the peer
+	// answer?". The throughput figure a run exists to produce is read from the peer's own
+	// instrumentation, which counts what it really processed rather than what we managed to write.
+
+	// Submitted is how many submit_sm reached the wire, across every session.
+	Submitted int
+	// Accepted is how many of them were answered with a submit_sm_resp carrying ESME_ROK.
+	Accepted int
+	// Rejected is how many were answered with a non-zero command_status — throttling, above all, which
+	// is the expected answer from a peer being pushed past its ceiling.
+	Rejected int
+	// Unanswered is how many were still in flight when the window closed: the peer never answered them,
+	// or did not answer in time. Some are normal at the end of any windowed run.
+	Unanswered int
+	// SubmitErrors is how many submissions failed before the peer could see them: a write error, a
+	// write deadline, a session torn down mid-run.
+	SubmitErrors int
+	// SubmitErr is the first of those causes, kept for diagnosis. The rest are counted only: a
+	// saturating injector against a dead peer produces one identical error per submission.
+	SubmitErr error
+	// Submitting is how long the injection window stayed open — the denominator of the submitted rate.
+	// It is not Elapsed, which also covers binding and teardown.
+	Submitting time.Duration
 }
 
 // Run opens Config.Binds SMPP transceiver sessions against the peer at the same time, holds them for
@@ -133,7 +168,24 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 	if cfg.OnAllBound != nil {
 		cfg.OnAllBound()
 	}
-	rep.Dropped, conns = holdAndWatch(ctx, conns, cfg.Hold)
+
+	// The injector opens fire on the barrier that is already there: every session is bound, so the
+	// peer takes the whole load at once rather than a ramp that would never reach its ceiling.
+	var inj *injector
+	var onPDU func(int, smpp.PDU)
+	if cfg.Submit != nil {
+		inj = newInjector(*cfg.Submit, len(conns))
+		onPDU = inj.onPDU
+		inj.start(ctx, conns, time.Now().Add(cfg.Hold))
+	}
+
+	submitStart := time.Now()
+	rep.Dropped, conns = holdAndWatch(ctx, conns, cfg.Hold, onPDU)
+	if inj != nil {
+		inj.stop()
+		rep.Submitting = time.Since(submitStart)
+		inj.fill(&rep)
+	}
 
 	var teardown sync.WaitGroup
 	for _, nc := range conns {
@@ -162,6 +214,32 @@ func (c Config) validate() error {
 		return fmt.Errorf("bindgen: SystemID is %d characters, SMPP allows %d", len(c.SystemID), maxSystemIDLen)
 	case len(c.Password) > maxPasswordLen:
 		return fmt.Errorf("bindgen: Password is %d characters, SMPP allows %d", len(c.Password), maxPasswordLen)
+	}
+	if c.Submit == nil {
+		return nil
+	}
+	// The injection window IS the hold window. Accepting a submit run without one would bind, submit
+	// nothing and report a clean zero — the exact shape of a bug the tool is supposed to expose.
+	if c.Hold <= 0 {
+		return errors.New("bindgen: Submit needs a positive Hold: the hold window is the injection window")
+	}
+	return c.Submit.validate()
+}
+
+// validate rejects a SubmitConfig whose submissions the codec would refuse on every single write.
+func (s SubmitConfig) validate() error {
+	switch {
+	case s.Window < 0:
+		return fmt.Errorf("bindgen: Submit.Window must not be negative, got %d", s.Window)
+	case s.Count < 0:
+		return fmt.Errorf("bindgen: Submit.Count must not be negative, got %d", s.Count)
+	case len(s.SourceAddr) > maxAddrLen:
+		return fmt.Errorf("bindgen: Submit.SourceAddr is %d characters, SMPP allows %d", len(s.SourceAddr), maxAddrLen)
+	case len(s.DestAddr) > maxAddrLen:
+		return fmt.Errorf("bindgen: Submit.DestAddr is %d characters, SMPP allows %d", len(s.DestAddr), maxAddrLen)
+	case len(s.ShortMessage) > maxShortMessageLen:
+		return fmt.Errorf("bindgen: Submit.ShortMessage is %d octets, SMPP allows %d",
+			len(s.ShortMessage), maxShortMessageLen)
 	}
 	return nil
 }
@@ -259,7 +337,9 @@ func hold(ctx context.Context, d time.Duration) {
 // handshake that returned tells nothing about what happens next.
 //
 // With no hold window there is nothing to observe, so every bound session is reported as held.
-func holdAndWatch(ctx context.Context, conns []net.Conn, d time.Duration) (int, []net.Conn) {
+// onPDU, when non-nil, is called with every PDU read from session i — the seam the submit_sm injector
+// uses to match its responses. It runs on that session's watcher goroutine, so it must not block.
+func holdAndWatch(ctx context.Context, conns []net.Conn, d time.Duration, onPDU func(int, smpp.PDU)) (int, []net.Conn) {
 	if d <= 0 {
 		return 0, conns
 	}
@@ -276,7 +356,11 @@ func holdAndWatch(ctx context.Context, conns []net.Conn, d time.Duration) (int, 
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			held[i] = watch(ctx, nc, deadline)
+			var seen func(smpp.PDU)
+			if onPDU != nil {
+				seen = func(pdu smpp.PDU) { onPDU(i, pdu) }
+			}
+			held[i] = watch(ctx, nc, deadline, seen)
 		}()
 	}
 	wg.Wait()
@@ -300,7 +384,7 @@ func holdAndWatch(ctx context.Context, conns []net.Conn, d time.Duration) (int, 
 // rather than answered: this tool measures whether a bind survives, it does not impersonate a full
 // ESME, so a peer that expects an enquire_link response will eventually drop the session and be
 // counted as such.
-func watch(ctx context.Context, nc net.Conn, deadline time.Time) bool {
+func watch(ctx context.Context, nc net.Conn, deadline time.Time, onPDU func(smpp.PDU)) bool {
 	// The deadline is armed ONCE, and before the AfterFunc is registered. Both halves matter.
 	//
 	// It is absolute and persists across reads, so re-arming it inside the loop buys nothing — and
@@ -316,7 +400,8 @@ func watch(ctx context.Context, nc net.Conn, deadline time.Time) bool {
 	defer stop()
 
 	for {
-		if _, err := smpp.ReadPDU(nc); err != nil {
+		pdu, err := smpp.ReadPDU(nc)
+		if err != nil {
 			if ctx.Err() != nil {
 				return true // we walked away; the peer did not drop us
 			}
@@ -338,6 +423,9 @@ func watch(ctx context.Context, nc net.Conn, deadline time.Time) bool {
 			}
 
 			return false
+		}
+		if onPDU != nil {
+			onPDU(pdu)
 		}
 	}
 }

@@ -1,14 +1,21 @@
 // Command smpp-bindgen opens N concurrent SMPP sessions against a peer and reports what happened
 // (step-200): the bind half of the load harness, next to the k6 script that covers the REST half.
 //
-// It is a development tool, not a deployable service: no config file, no ops port, no storage. It
-// submits nothing — it answers "does this peer accept N simultaneous binds, and how many does it
-// drop?". All the logic lives in the importable test/load/bindgen package so it can be tested from
+// It is a development tool, not a deployable service: no config file, no ops port, no storage. By
+// default it submits nothing — it answers "does this peer accept N simultaneous binds, and how many
+// does it drop?". With -submit it also becomes a submit_sm injector (step-201) and pushes traffic on
+// every bound session for the whole hold window, which is how the peer's throughput ceiling is
+// reached. All the logic lives in the importable test/load/bindgen package so it can be tested from
 // the outside (step-200 D4); this file only parses flags and prints the report.
+//
+// The throughput figure a -submit run exists to produce is NOT the one printed here: it is read from
+// the peer's own /metrics, which counts what it really processed. The submitted/accepted counts below
+// are a diagnostic — they answer "did the injector actually push?".
 //
 // It exits non-zero as soon as one session failed to bind, OR was dropped by the peer during the hold
 // window — failing to keep what it accepted is the peer's failure too, and it is half the question
-// this tool asks. Either way a run can be asserted on in a script.
+// this tool asks — OR the injector was asked to submit and put nothing on the wire. Either way a run
+// can be asserted on in a script.
 //
 // Interrupting it (SIGTERM / Ctrl-C) cuts the hold window short and unbinds cleanly. Interrupting it
 // during the dial phase is reported as failed binds, since that is what a cancelled dial produces.
@@ -18,6 +25,8 @@
 //	smpp-bindgen -addr 127.0.0.1:2775 -binds 200
 //	smpp-bindgen -binds 500 -hold 30s              hold the bound sessions open for 30s
 //	smpp-bindgen -system-id esme1 -password s3cret
+//	smpp-bindgen -binds 20 -hold 60s -submit       inject submit_sm on all 20 binds for 60s
+//	smpp-bindgen -binds 20 -hold 60s -submit -submit-window 64
 package main
 
 import (
@@ -44,7 +53,12 @@ func main() {
 }
 
 func run() error {
-	var cfg bindgen.Config
+	var (
+		cfg        bindgen.Config
+		sub        bindgen.SubmitConfig
+		submit     bool
+		submitText string
+	)
 	flag.StringVar(&cfg.Addr, "addr", "127.0.0.1:2775", "SMPP peer address (host:port)")
 	flag.IntVar(&cfg.Binds, "binds", 1, "number of sessions to open simultaneously")
 	flag.StringVar(&cfg.SystemID, "system-id", "loadgen", "bind system_id, at most 15 characters")
@@ -53,14 +67,28 @@ func run() error {
 	flag.DurationVar(&cfg.Hold, "hold", 0, "how long to hold the bound sessions open once every bind has settled")
 	flag.DurationVar(&cfg.DialTimeout, "dial-timeout", 0, "per-session TCP connect timeout (0 = package default)")
 	flag.DurationVar(&cfg.RespTimeout, "resp-timeout", 0, "per-session bind_transceiver_resp timeout (0 = package default)")
+	flag.BoolVar(&submit, "submit", false, "inject submit_sm on every bound session for the whole hold window (needs -hold)")
+	flag.IntVar(&sub.Window, "submit-window", 0, "submit_sm in flight at once per session (0 = package default)")
+	flag.IntVar(&sub.Count, "submit-count", 0, "submit_sm to send per session (0 = until the hold window closes)")
+	flag.StringVar(&sub.SourceAddr, "submit-src", "", "submit_sm source_addr, at most 20 characters")
+	flag.StringVar(&sub.DestAddr, "submit-dst", "", "submit_sm destination_addr, at most 20 characters (empty = package default)")
+	flag.StringVar(&submitText, "submit-text", "", "submit_sm body, at most 254 octets (empty = package default filler)")
 	flag.Parse()
+
+	if submit {
+		sub.ShortMessage = []byte(submitText)
+		cfg.Submit = &sub
+	}
 
 	ctx, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stopSignals()
 
 	hold := cfg.Hold
 	cfg.OnAllBound = func() {
-		if hold > 0 {
+		switch {
+		case submit:
+			log.Printf("every bind settled, injecting submit_sm for %s (interrupt to stop early)", hold)
+		case hold > 0:
 			log.Printf("every bind settled, holding for %s (interrupt to stop early)", hold)
 		}
 	}
@@ -82,6 +110,12 @@ func run() error {
 		return fmt.Errorf("%d of %d bound sessions were dropped by the peer during the hold",
 			rep.Dropped, rep.Bound)
 	}
+	// An injector that pushed nothing produces a peer-side reading of zero, which reads exactly like a
+	// peer with no throughput at all. Fail loudly rather than let that be measured.
+	if submit && rep.Submitted == 0 {
+		return fmt.Errorf("the injector put no submit_sm on the wire (%d errors, first: %v)",
+			rep.SubmitErrors, rep.SubmitErr)
+	}
 
 	return nil
 }
@@ -91,6 +125,15 @@ func run() error {
 func report(rep bindgen.Report) {
 	log.Printf("requested %d | bound %d | failed %d | dropped %d | elapsed %s",
 		rep.Requested, rep.Bound, rep.Failed, rep.Dropped, rep.Elapsed.Round(time.Millisecond))
+
+	if rep.Submitting > 0 {
+		log.Printf("submitted %d | accepted %d | rejected %d | unanswered %d | errors %d | over %s (~%.0f/s written)",
+			rep.Submitted, rep.Accepted, rep.Rejected, rep.Unanswered, rep.SubmitErrors,
+			rep.Submitting.Round(time.Millisecond), float64(rep.Submitted)/rep.Submitting.Seconds())
+		if rep.SubmitErr != nil {
+			log.Printf("  first submit error: %v", rep.SubmitErr)
+		}
+	}
 
 	for i, err := range rep.Errors {
 		if i == maxReportedErrors {
