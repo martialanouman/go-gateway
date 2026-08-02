@@ -19,6 +19,7 @@ func TestLinkStatusUpThenDown(t *testing.T) {
 	smsc := fakesmsc.Start(t, fakesmsc.Config{})
 	rrec := otelrec.New(t)
 	svc := connectorpool.New(connectorpool.Deps{
+		Producer: discardProducer{},
 		Consumer: blockingConsumer{},
 		CDR:      &fakeCDR{},
 		Bind:     poolBind(smsc.Addr(), 1),
@@ -50,6 +51,7 @@ func TestReconnectStopsOnBadPassword(t *testing.T) {
 	smsc := fakesmsc.Start(t, fakesmsc.Config{RejectBind: errs.StatusInvalidPasswd})
 	rrec := otelrec.New(t)
 	svc := connectorpool.New(connectorpool.Deps{
+		Producer: discardProducer{},
 		Consumer: blockingConsumer{},
 		CDR:      &fakeCDR{},
 		Bind:     poolBind(smsc.Addr(), 1),
@@ -80,6 +82,7 @@ func TestReconnectDisabledDoesNotRetry(t *testing.T) {
 	smsc := fakesmsc.Start(t, fakesmsc.Config{RejectBind: errs.StatusSysErr})
 	rrec := otelrec.New(t)
 	svc := connectorpool.New(connectorpool.Deps{
+		Producer: discardProducer{},
 		Consumer: blockingConsumer{},
 		CDR:      &fakeCDR{},
 		Bind:     poolBind(smsc.Addr(), 1),

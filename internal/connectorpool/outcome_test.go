@@ -8,9 +8,11 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
+
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/martialanouman/go-gateway/internal/connectorpool"
 	"github.com/martialanouman/go-gateway/internal/observability"
@@ -377,52 +379,30 @@ func TestConnectorStillWritesCancelledRowDirectly(t *testing.T) {
 	}
 }
 
-// A pool wired without a producer must not silently drop the outcome of a message it really sent. The
-// no-op default was harmless while it only swallowed reroutes — those republish work the pool can
-// afford to lose. It stopped being harmless when the outcome became the ONLY record of a send: a
-// dropped one leaves the message "accepted" for ever and, because billing.Reaper settles against the
-// recorded CDR outcome, holds the customer's reservation for good. No log, no metric, no error.
+// A pool wired without a producer must refuse to START, not fail on its first send.
 //
-// Deleting the Producer line from cmd/connector-pool-svc/wiring.go compiles and leaves the whole suite
-// green, so the guard cannot live in a wiring test alone.
-func TestConnectorRefusesToDropAnOutcomeWithoutAProducer(t *testing.T) {
-	var submits atomic.Int64
-	smsc := fakesmsc.Start(t, fakesmsc.Config{OnSubmit: func(smpp.SubmitSM) fakesmsc.Resp {
-		submits.Add(1)
-		return fakesmsc.OK()
-	}})
+// The earlier fix here kept the no-op default and made it reject the outcome topic, so a miswired pool
+// would "fail loudly on its first send". That is the wrong moment: the publish happens AFTER the
+// submit_sm. Such a pool really sends the SMS, the publish is refused, the offset does not commit, the
+// record is redelivered — and the same SMS goes out again, in a loop, until someone intervenes. The
+// wiring mistake was not made visible; it was turned into a permanent duplicate-delivery incident.
+//
+// A wiring error has to surface before the process can do anything irreversible (step-201c D8).
+func TestNewPanicsWithoutAProducer(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("New() did not panic: a pool that sends SMS without recording them would start")
+		}
+		if msg, _ := r.(string); !strings.Contains(msg, "Producer") {
+			t.Errorf("panic = %v, want it to name the missing Producer", r)
+		}
+	}()
 
-	// One routed() call, reused: it mints a fresh ConnectorID on every call, so building the record and
-	// the pool from two calls would leave the record filtered out before it ever reaches a submit.
-	r := routed()
-	rec, err := pipeline.EncodeRouted(r)
-	if err != nil {
-		t.Fatalf("encode routed: %v", err)
-	}
-
-	svc := connectorpool.New(connectorpool.Deps{
-		Consumer:    &fakeConsumer{records: []kafka.Record{rec}},
+	// No Producer, deliberately: that absence is the subject of this test.
+	connectorpool.New(connectorpool.Deps{
+		Consumer:    &fakeConsumer{},
 		CDR:         &fakeCDR{},
-		ConnectorID: r.ConnectorID,
-		// Producer deliberately absent: this is the wiring mistake under test.
-		Bind: connectorpool.BindConfig{
-			Addr: smsc.Addr(), SystemID: "esme", Password: "pw",
-			DialTimeout: 3 * time.Second, ResponseTimeout: 3 * time.Second,
-			EnquireLinkInterval: time.Minute, EnquireLinkMaxMissed: 3, WindowSize: 10,
-		},
-		Tracer: observability.Tracer(otelrec.New(t).Provider(), "connector-pool"),
+		ConnectorID: uuid.New(),
 	})
-
-	runErr := svc.Run(context.Background())
-	// Fixture guard: the message must really have left for the SMSC, or this proves nothing about what
-	// happens to its outcome.
-	if got := submits.Load(); got != 1 {
-		t.Fatalf("fixture: the peer saw %d submit_sm, want 1 — the record never reached the send path", got)
-	}
-	if runErr == nil {
-		t.Fatal("Run = nil: the outcome was dropped in silence, and the message reads accepted for ever")
-	}
-	if !strings.Contains(runErr.Error(), "producer") {
-		t.Errorf("Run error = %q, want it to name the missing producer", runErr)
-	}
 }

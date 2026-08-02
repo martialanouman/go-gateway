@@ -176,27 +176,6 @@ type Producer interface {
 	Produce(ctx context.Context, rec kafka.Record) error
 }
 
-// errNoProducer reports a pool asked to publish a send outcome with no producer wired.
-var errNoProducer = errors.New("connectorpool: no producer wired, cannot publish the send outcome")
-
-// noopProducer is the New default when no producer is wired. It drops what the pool can afford to
-// lose — a deliver_sm acknowledged without publishing (the pre-M4 behaviour the MT-only tests rely
-// on), a reroute that will not be republished — and REFUSES what it cannot.
-//
-// Since step-201c the send outcome is the only record that a message left for the SMSC. Dropping one
-// leaves the message reading "accepted" for ever, and billing.Reaper settles orphan reservations
-// against the message's recorded CDR outcome, so it also holds the customer's credit for good — with
-// no log, no metric and no error to connect it back here. A pool wired without a producer must fail
-// loudly on its first send rather than run for hours losing every outcome it produces.
-type noopProducer struct{}
-
-func (noopProducer) Produce(_ context.Context, rec kafka.Record) error {
-	if rec.Topic == kafka.TopicMTOutcome {
-		return errNoProducer
-	}
-	return nil
-}
-
 // StreamEmitter records live figures for the realtime feed (internal/metricstream implements it). Its
 // methods return nothing: the send path must not be able to branch on a dashboard failure.
 type StreamEmitter interface {
@@ -337,8 +316,18 @@ func New(deps Deps) *Service {
 	if deps.DLRMap == nil {
 		deps.DLRMap = noopDLRMap{}
 	}
+	// Required, not defaulted: since step-201c the outcome publish is the only record that a message
+	// left for the SMSC, and billing.Reaper settles orphan reservations against that record. A no-op
+	// here would let a pool send SMS it never accounts for — and refusing the publish instead would be
+	// worse, because the publish happens after the submit_sm: the send would be redelivered and the
+	// same SMS would go out in a loop (D8).
+	//
+	// The rule this follows: a no-op default is legitimate only when the resulting service is a mode
+	// someone would deliberately run. Billing nil is billing opt-out, a documented mode; Throttle or
+	// DeadLetter nil is one metric less. A pool that sends without recording is nobody's mode.
 	if deps.Producer == nil {
-		deps.Producer = noopProducer{}
+		panic("connectorpool: Deps.Producer is required — mt.outcome carries the CDR's durability and " +
+			"the billing reaper settles against it (step-201c D8)")
 	}
 	if deps.Throttle == nil {
 		deps.Throttle = noopThrottle{}

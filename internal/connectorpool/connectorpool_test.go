@@ -578,6 +578,7 @@ func TestConnectorAIMDDropsThenRecovers(t *testing.T) {
 	metric := &recordingThrottle{}
 	rrec := otelrec.New(t)
 	svc := connectorpool.New(connectorpool.Deps{
+		Producer: discardProducer{},
 		Consumer: &continuingConsumer{records: recs},
 		CDR:      &fakeCDR{},
 		Bind: connectorpool.BindConfig{
@@ -818,6 +819,7 @@ func TestBreakerOpensAndIsReported(t *testing.T) {
 	agg := &fakeAgg{}
 	rrec := otelrec.New(t)
 	svc := connectorpool.New(connectorpool.Deps{
+		Producer:         discardProducer{},
 		Consumer:         &feedThenBlock{records: recs},
 		CDR:              &fakeCDR{},
 		Bind:             poolBind(smsc.Addr(), 1),
@@ -851,6 +853,7 @@ func TestBreakerHealthyReportsClosed(t *testing.T) {
 	agg := &fakeAgg{}
 	rrec := otelrec.New(t)
 	svc := connectorpool.New(connectorpool.Deps{
+		Producer:         discardProducer{},
 		Consumer:         &feedThenBlock{records: []kafka.Record{rec}},
 		CDR:              &fakeCDR{},
 		Bind:             poolBind(smsc.Addr(), 1),
@@ -874,3 +877,10 @@ func TestBreakerHealthyReportsClosed(t *testing.T) {
 	cancel()
 	<-done
 }
+
+// discardProducer drops every record. It is what a test wires when it asserts nothing about the return
+// path — explicitly, so the choice reads in the test rather than being made by the constructor
+// (step-201c D8). The package-internal tests have their own copy, in deliver_test.go.
+type discardProducer struct{}
+
+func (discardProducer) Produce(context.Context, kafka.Record) error { return nil }

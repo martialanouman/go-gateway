@@ -48,6 +48,7 @@ func TestBindPoolResizesOnReconfigure(t *testing.T) {
 	ctrl := &fakeStatusControl{}
 	rrec := otelrec.New(t)
 	svc := connectorpool.New(connectorpool.Deps{
+		Producer:        discardProducer{},
 		Consumer:        blockingConsumer{},
 		CDR:             &fakeCDR{},
 		Bind:            poolBind(smsc.Addr(), 1),
@@ -92,6 +93,7 @@ func TestParkedNotExitedWhenReconnectDisabled(t *testing.T) {
 	ctrl := &fakeStatusControl{}
 	rrec := otelrec.New(t)
 	svc := connectorpool.New(connectorpool.Deps{
+		Producer:        discardProducer{},
 		Consumer:        blockingConsumer{},
 		CDR:             &fakeCDR{},
 		Bind:            poolBind(smsc.Addr(), 1),
