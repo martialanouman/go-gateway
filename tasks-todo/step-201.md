@@ -165,6 +165,38 @@ de remise SMSC ». Le CDR `enroute_at` inclut le lag de projection ClickHouse : 
 plus le même intervalle, et le seuil bougerait avec un levier de PR3 (`D6`) sans que la passerelle ait
 changé. `/metrics` ne peut pas servir ici : un compteur agrégé ne se corrèle à aucun `message_id`.
 
+> **Amendé (2026-08-02) — la corrélation n'est pas nécessaire, et le recorder ne la permet pas.**
+>
+> Trois faits vérifiés dans le code invalident la lettre de cette décision :
+>
+> 1. **`recorder.RecordedPDU` du simulateur ne porte AUCUN horodatage** — `Index`, `MessageID`,
+>    adresses, `ShortMessage`, `PerBindClock` (un compteur logique, pas du temps). Corréler sur les PDU
+>    du recorder ne donne donc pas d'instant de sortie. Il faudrait modifier le simulateur, qui est un
+>    dépôt séparé.
+> 2. **Le `message_id` de la passerelle ne traverse pas jusqu'au `submit_sm`** : `buildSubmit`
+>    (`internal/connectorpool/mapping.go:25-59`) ne pose que les adresses, l'encodage et le corps ; le
+>    seul TLV jamais posé est `message_payload`. Rien à corréler.
+> 3. **La voie CDR est pire qu'imprécise, elle est fausse** : `cdrRow` pose `SubmittedAt` et jamais
+>    `DeliveredAt`, et `appendEvents` (`internal/storage/clickhouse/cdr.go:194-197`) retombe donc sur
+>    `SubmittedAt`. `cdr_events.at` de la ligne `enroute` **est** l'heure d'acceptation : le span y vaut
+>    identiquement 0, avec un p99 rassurant et faux.
+>
+> **Ce qui remplace.** Les deux bouts du span sont dans le même processus — `env.SubmittedAt` est
+> immuable et propagé jusqu'au `connectorpool`, et la tentative de remise a lieu là. Aucune corrélation
+> n'est nécessaire : la passerelle peut mesurer le span elle-même.
+>
+> Et l'instrument existe déjà, mort : **`message_e2e_duration_seconds`** est déclarée dans
+> `internal/observability/metrics/catalog.go:109`, enregistrée, exposée — et **observée nulle part
+> hors de ses propres tests**. Son `Help` dit « Time from submission to the final SMSC outcome ». Une
+> métrique déclarée et jamais alimentée est la pire des gardes mortes : un tableau de bord l'affiche
+> comme « aucun problème ».
+>
+> Le vérificateur devient donc : **câbler cette métrique** au site de soumission, puis la lire sur le
+> `/metrics` de la passerelle — même patron que `smscmetrics` pour le simulateur. Strictement meilleur
+> sur tous les axes : pas de corrélation, pas de modification d'un dépôt tiers, pas de polling ni
+> d'erreur systématique ajoutée à chaque échantillon, et une valeur **en production** et pas seulement
+> pour le harnais. Le span mesuré reste celui de la spec.
+
 ### D5 — Les leviers exposés, et ceux qu'on écarte
 Défaut de chaque variable = **comportement actuel effectif**, sauf `POSTGRES_MIN_CONNS`. La PR est neutre
 par défaut ; les boutons existent pour la campagne. Défauts des bibliothèques vérifiés dans la source des
