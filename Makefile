@@ -158,6 +158,17 @@ smsc-ceiling: ## Measure the test peer's submit_sm ceiling (sweeps binds, reads 
 		-addr $(or $(ADDR),127.0.0.1:2775) -metrics $(or $(METRICS),http://127.0.0.1:9000) \
 		$(if $(BINDS),-binds $(BINDS)) $(if $(REFERENCE),-reference $(REFERENCE)) $(if $(MEASURE),-measure $(MEASURE))
 
+# The local reference run (step-201 D2). It stands the whole MT path up in ONE process against real
+# Postgres/Kafka/ClickHouse (testcontainers) and the in-repo fake SMSC, holds a target rate for a full
+# minute and scores the steady state. It lives behind the `loadref` build tag so `make test` never
+# compiles it, let alone runs its two minutes.
+.PHONY: load-reference
+load-reference: ## Run the D2 steady-state reference run: make load-reference [RATE=1200] [BIND_POOL=4] [CH_MAX_OPEN=10] [MEASURE=60s]
+	REF_RATE=$(RATE) REF_WORKERS=$(WORKERS) REF_MEASURE=$(MEASURE) REF_WARMUP=$(WARMUP) \
+	REF_SETTLE=$(SETTLE) REF_BIND_POOL=$(BIND_POOL) REF_WINDOW=$(SMPP_WINDOW) \
+	REF_CH_MAX_OPEN=$(CH_MAX_OPEN) REF_CH_MAX_IDLE=$(CH_MAX_IDLE) \
+		go test -tags=loadref -count=1 -timeout 30m -v -run $(or $(RUN),TestReferenceRun) ./internal/e2e/
+
 ## ---------------------------------------------------------------------------- quality gates
 
 .PHONY: test

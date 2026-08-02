@@ -1,7 +1,7 @@
 # step-201 — Tuning de débit : partitions Kafka, batch ClickHouse, pool pgx
 
 > **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
-> **Dépend de :** step-200 · **Bloque :** step-201b
+> **Dépend de :** step-200 · **Bloque :** step-201b, step-201c
 
 ## But
 Régler les leviers de capacité — partitions Kafka, taille de batch ClickHouse, dimensionnement du pool
@@ -57,7 +57,9 @@ local documenté.
 - [ ] critères couverts par tests · godoc sur l'exporté · aucun invariant (a/b/c/d) violé
 - [ ] plafond du pair de test mesuré et consigné (`D3`)
 - [ ] latence bout-en-bout p99 **mesurée par corrélation `message_id`** (`D4`), pas déduite de l'ingestion
-- [ ] run de référence local à l'état stationnaire ≥ 1 000 msg/s traversants (`D2`), disjoncteur fermé
+- [x] run de référence local exécuté, critère `D2` **NON TENU** et goulot nommé : le connector pool sort
+      192–330 `submit_sm/s` pour 1 200 acceptés, à cause de 4 allers-retours ClickHouse par message
+      (`D8` amendée) → **step-201c**. Ingestion, erreurs et disjoncteur tenus.
 - [ ] verdict NFR pleine échelle **explicitement non rendu ici**, reporté sur `step-201b` (`D1`)
 
 ## Hors périmètre
@@ -119,6 +121,35 @@ DoD n'aurait plus de porte, seulement un rapport.
 
 L'égalité entrée/sortie et le lag plat sont ce qui distingue un débit d'une file qui se remplit. Sans
 eux, le critère retomberait sur l'acceptation — exactement l'erreur que `D1` écarte.
+
+> **Résultat du run (2026-08-02) : le critère n'est PAS tenu, et c'est le livrable.**
+>
+> | | mesuré | seuil |
+> |---|---:|---:|
+> | acceptation | 1 200/s | ≥ 1 000 ✅ |
+> | **sortie** | **192–330/s** | ≥ 1 000 ❌ |
+> | pente du lag | **+900 à +1 000 rec/s** | plate ❌ |
+> | p99 ingestion | 9–47 ms | < 250 ms ✅ |
+> | erreurs · disjoncteur | 0 · fermé | ✅ |
+>
+> **Un run scoré sur la seule acceptation aurait publié « 1 200 msg/s soutenus ».** Ce sont les clauses
+> d'équilibre et de lag qui l'ont attrapé — la raison d'être de `D2`. Le point d'équilibre est **sous
+> 400 msg/s** ; il n'a pas été encadré, donc le chiffre honnête est « ≪ 1 000 », pas une valeur.
+>
+> Le goulot est identifié et documenté sous `D8` : quatre allers-retours ClickHouse par message sur le
+> chemin de consommation du `connectorpool`. Le pair n'y est pour rien — le faux SMSC calibre à
+> 218 000–255 000/s.
+>
+> **Deux écarts avec la lettre de `D2`, assumés** : l'injecteur est en Go et en processus, pas k6 (la
+> pile est sur des ports éphémères de testcontainers, et garder tous les échantillons donne un p99
+> exact au lieu d'un intervalle de bucket) ; et le plafond du pair opposé au run est celui du **faux
+> SMSC**, calibré dans le harnais — celui de `D3` mesurait le **simulateur**, un autre pair.
+>
+> Trouvaille annexe : `ingest_duration_seconds` est elle aussi **déclarée et observée nulle part**, le
+> même défaut que `message_e2e_duration_seconds` avant PR2. Le p99 d'ingestion vient donc de
+> l'injecteur. Et `chtest` laisse le pool ClickHouse à zéro, que le driver lit comme « non réglé » :
+> **toute la suite d'intégration du dépôt a toujours tourné sur les défauts de la bibliothèque**,
+> jamais sur les leviers.
 
 ### D3 — Plafond du pair : injecteur `submit_sm` dans `bindgen`, mesuré sur le `/metrics` du simulateur
 Mode optionnel du package existant `test/load/bindgen` (`Config.Submit *SubmitConfig`, `nil` = comportement
@@ -290,6 +321,26 @@ quelques batches/seconde.
 **Critère de réouverture, à consigner :** si la campagne montre du « too many parts » côté ClickHouse, la
 réponse sera `async_insert` **serveur** avec `wait_for_async_insert=1` (batching côté serveur, durable),
 jamais un buffer client.
+
+> **`D8` était factuellement fausse sur le `connectorpool`, et c'est ce que le run de référence a
+> trouvé (2026-08-02).**
+>
+> « `poll Kafka = PrepareBatch/Send = commit` » et « les deux `Send()` sont invisibles à quelques
+> batches/seconde » décrivent le **projecteur `accepted`**. Le `connectorpool`, lui, **n'a jamais été
+> dans ce régime** : il appelle `CDR.Insert` **par message** au retour du `submit_sm_resp`
+> (`connectorpool.go:980`), et `InsertBatch` touche deux tables — `cdr` puis `cdr_events` — soit
+> **quatre allers-retours ClickHouse par message**, synchrones, sur le chemin de consommation, avant
+> le commit d'offset.
+>
+> Mesuré : le pool plafonne à **192–330 `submit_sm/s`** quand l'ingestion en accepte 1 200. Un
+> micro-banc isole la cause — 154 insert/s à 1 writer, 548 à 4, puis **effondrement** à 278 et 301
+> avec des `i/o timeout`. Aucun levier de `D5` ne le déplace : ×4 sur le pool de binds achète ×1,39,
+> ×6 sur le pool ClickHouse achète ×1,11. Un goulot insensible à la concurrence n'est pas une
+> sérialisation par shard.
+>
+> Le critère de réouverture de `D8` est donc **atteint**, sur un chemin que `D8` croyait déjà batché.
+> Le correctif reste celui que `D8` prescrit — jamais un buffer client : faire écrire le pool **par
+> batch de poll**, comme le projecteur, ou `async_insert` serveur avec `wait_for_async_insert=1`.
 
 ### D9 — pgxpool
 `POSTGRES_MIN_CONNS` exposé (défaut 2). `MaxConnLifetime` / `MaxConnIdleTime` / `HealthCheckPeriod`

@@ -270,6 +270,137 @@ utilisables sont `smsc_submit_sm_outcome_total` (les issues non-`success`, qui d
 et l'inflexion de la courbe. **Les deux sont implémentés** : l'outil marque `Saturated` dès que l'un des
 deux se déclenche, et sans marqueur il imprime `LOWER BOUND` au lieu de `CEILING`.
 
+## Run de référence local (step-201, `D2`)
+
+`make load-reference` monte **toute la voie MT dans un seul processus** — `rest-api`, `router`,
+`connector-pool` — contre un Postgres, un Kafka et un ClickHouse réels (testcontainers) et le faux SMSC
+embarqué, tient un débit cible pendant une minute pleine, puis **note l'état stationnaire**.
+
+```bash
+make load-reference                                   # 1 200 msg/s visés, fenêtre de 60 s
+make load-reference RATE=400 BIND_POOL=8 MEASURE=90s  # une autre configuration de leviers
+```
+
+Le run vit derrière l'étiquette de compilation `loadref` : sans elle le fichier n'est **pas compilé**,
+donc `make test` n'en paie rien — pas même un test skippé, qui devrait quand même démarrer les
+conteneurs pour décider de se skipper.
+
+### Le critère, et pourquoi il est une conjonction
+
+Tout en même temps, sur une fenêtre d'au moins 60 s : débit d'acceptation ≥ **1 000 msg/s** · débit de
+**sortie** égal à l'acceptation à la marge de segmentation près · **lag consumer plat** · p99 d'ingestion
+< 250 ms · **0 erreur** sur les deux pattes · disjoncteur fermé · sous le plafond du pair.
+
+L'égalité entrée/sortie et le lag plat sont ce qui sépare un **débit** d'une **file qui se remplit**. Le
+run ci-dessous le montre en grandeur nature : l'acceptation seule passait, et elle passait large.
+
+Chaque entrée dont l'absence ressemble à de la santé est **refusée**, jamais sautée : fenêtre nulle
+(aucune division, aucun débit infini), moins de 6 relevés de lag (deux points ne distinguent pas plat de
+croissant), p99 sur zéro échantillon (qui se lirait comme le run le plus rapide jamais mesuré), plafond
+du pair inconnu (`D2` place le run **sous** un chiffre ; ne pas en avoir signifie que le critère a été
+sauté, pas tenu). `test/load/steady` est unitaire et sans infrastructure : les seuils se relisent sans
+démarrer un conteneur.
+
+### Mesure du 02/08/2026 — le critère **n'est pas tenu**
+
+Conditions : une machine de 14 cœurs (arm64, OrbStack 12 Go), **tout dans un processus**, Postgres 18 /
+Redpanda / ClickHouse 24.8 en conteneurs, faux SMSC embarqué, injecteur Go dans le même processus.
+30 s de chauffe, **60 s mesurés**, 10 s de marge.
+
+| Levier | Chauffe | Accepté | **Sorti** | Pente du lag | p99 ingestion | Erreurs |
+|---|---:|---:|---:|---:|---:|---:|
+| **défauts livrés** (`bind_pool=4`, CH 10/5) | 20 s | 1 200/s | **192/s** | +1 001 rec/s | 45 ms | 0 |
+| `bind_pool=4`, CH 10/5 | 30 s | 1 200/s | **214/s** | +975 rec/s | 44 ms | 0 |
+| `bind_pool=16`, CH 10/5 | 30 s | 1 200/s | **297/s** | +902 rec/s | 11 ms | 0 |
+| `bind_pool=16`, CH 64/32 | 30 s | 1 200/s | **330/s** | +901 rec/s | 9 ms | 0 |
+| `bind_pool=8`, CH 10/5, cible 400/s | 45 s | 400/s | **195/s** | +219 rec/s | 47 ms | 0 |
+
+**L'ingestion tient sans effort ; la traversée non.** L'acceptation atteint la cible à 1 200/s avec un
+p99 de 9 à 47 ms — très en deçà des 250 ms — et **zéro erreur**. La sortie plafonne entre **195 et
+330 `submit_sm/s`**, soit moins d'un tiers du seuil de 1 000. Un run qui n'aurait regardé que
+l'acceptation aurait publié « 1 200 msg/s tenus » : c'est exactement l'erreur que `D1` écarte et que
+`D2` est construit pour rendre impossible.
+
+Le pair n'y est pour rien : le faux SMSC calibré au même endroit absorbe **218 000 à 255 000
+`submit_sm/s`** — trois ordres de grandeur au-dessus. *(Ce n'est pas le chiffre `D3` de 3 291/s : celui-là
+mesure le **simulateur**, un autre pair, avec 5 ms de latence scriptée. Reporter l'un sur l'autre placerait
+le run sous un plafond qui n'est pas le sien.)*
+
+### Le goulot, nommé et isolé
+
+Le relevé de lag **par topic** situe l'étape lente sans laisser deviner. Sur le run
+`bind_pool=16`, CH 64/32 — celui où la sortie est la plus haute :
+
+```
+mt.inbound  14 412 -> 27 224     (+213 rec/s)  → le routeur tient ~990 msg/s
+mt.routed   15 037 -> 52 904     (+631 rec/s)  → le pool de connecteurs sort ~330/s
+```
+
+Le routeur suit ; **c'est la patte connecteur qui plafonne**. Deux leviers l'ont à peine bougée :
+quadrupler `bind_pool_size` (4 → 16) a acheté **1,39×**, élargir le pool ClickHouse (10 → 64
+connexions) **1,11×**. Un goulot qui ne cède pas à la concurrence n'est pas une sérialisation par shard.
+
+`TestCDRWriteCeiling` isole l'écriture CDR du pipeline et tranche
+(`make load-reference RUN=TestCDRWriteCeiling`) :
+
+| Écrivains concurrents | `Insert` mono-ligne / s | Requêtes ClickHouse / s |
+|---:|---:|---:|
+| 1 | 154 | 307 |
+| 4 | **548** | 1 096 |
+| 16 | 278 | 557 |
+| 64 | 301 | 602 — **avec des `i/o timeout`** |
+
+**Le débit s'effondre au-delà de 4 écrivains.** Les chiffres encadrent exactement la sortie observée du
+pool (195–330/s), et les `i/o timeout` à 64 sont la signature de la contre-pression ClickHouse.
+
+**La cause.** `connectorpool` écrit **une ligne à la fois** sur le `submit_sm_resp`
+(`CDR.Insert` → `InsertBatch([]CDRRow{row})`), et `InsertBatch` frappe **deux tables** — `cdr` puis
+`cdr_events` — soit un `PrepareBatch` + `Send` chacune : **quatre allers-retours ClickHouse par
+message**, sur le chemin de consommation, avant le commit d'offset.
+
+**Ce que cela dit de `D8`.** `D8` pose « le batch reste `poll Kafka = PrepareBatch/Send = commit` » et
+juge les deux `Send()` par poll « invisibles à quelques batches/seconde ». C'est vrai du **projecteur
+`accepted`**, qui écrit un batch par poll. Ce n'est **pas** vrai du pool de connecteurs, qui n'a jamais
+été dans ce régime : il écrit par message. Le critère de réouverture que `D8` s'était fixé — de la
+pression de parts côté ClickHouse — est **atteint**, et il l'est sur un chemin que `D8` croyait déjà
+batché. C'est la première chose à trancher avant `step-201b` : la réponse n'est pas un buffer client
+(`D8` l'exclut avec raison), c'est de faire écrire le pool **par batch de poll**, comme le projecteur,
+ou l'`async_insert` serveur avec `wait_for_async_insert=1`.
+
+### Réserves, nommément
+
+- **Un seul hôte, un seul processus, une seule mesure par configuration.** Les quatre lignes du tableau
+  sont des runs uniques : l'écart entre 297/s et 330/s est du même ordre que la dispersion visible dans
+  le micro-banc CDR (154 → 548 → 278 → 301). Ce que la mesure établit solidement est **l'ordre de
+  grandeur** de la sortie et **le fait qu'aucun levier de `D5` ne la déplace**, pas la valeur exacte.
+- **Le débit soutenable maximal n'a pas été encadré.** Le run à 400/s visés sortait encore 195/s avec
+  une file qui montait : le point d'équilibre est **sous 400 msg/s** et n'a pas été cherché par
+  dichotomie. Le chiffre à retenir est « ≪ 1 000 », pas une valeur.
+- **La latence bout-en-bout n'est pas un verdict ici.** L'histogramme de la passerelle lit un p99 dans
+  `(40,96 s ; 81,92 s]` — c'est la file mesurée, pas la passerelle au repos, et il n'a de sens qu'une
+  fois l'état stationnaire tenu. Il est imprimé en contexte, jamais comme clause.
+- **La p99 d'ingestion vient de l'injecteur, pas d'une exposition.** `ingest_duration_seconds` est
+  déclarée au catalogue et **observée nulle part** — même défaut mort que
+  `message_e2e_duration_seconds` avant l'unité 5 — et ses bornes encadrent le budget des 250 ms
+  (0,128 / 0,256), donc aucune exposition ne le déciderait aujourd'hui même alimentée. L'injecteur
+  garde ses échantillons et calcule un percentile **exact**, sans bucket ni interpolation.
+- **`QueueDepth` n'est pas alimentée sur ce chemin.** La jauge du catalogue est publiée par
+  `pollQueueDepth` dans les `main` de `router-svc` et `connector-pool-svc` ; le harnais ne monte pas de
+  `main`, il interroge donc `kafka.Consumer.Lag` directement — la même source que la jauge.
+- **`chtest` laisse le pool ClickHouse à zéro**, ce que le driver relit silencieusement comme « non
+  défini » et remplace par ses 5/10 (`clickhouse_options.go:412-417`). Tous les tests d'intégration du
+  dépôt tournent donc sur les défauts de la bibliothèque, jamais sur les leviers exposés à l'unité 6 :
+  le harnais les surcharge lui-même (`REF_CH_MAX_OPEN` / `REF_CH_MAX_IDLE`).
+
+### Écart assumé avec la lettre de `D2`
+
+`D2` parle du « débit d'acceptation **k6** ». Le run injecte **en Go, dans le même processus**. Raison :
+la pile est montée par testcontainers sur des ports éphémères, et faire porter la mesure par un binaire
+externe ajouterait un ordonnancement fragile (k6 n'est pas dans `go.mod`, la CI ne l'installe pas
+partout) pour zéro gain — l'injecteur Go pose la même requête sur le même contrat, et **garde ses
+échantillons**, ce qui donne un p99 exact au lieu d'un bucket. Le script k6 reste l'outil pour viser une
+passerelle **déployée** ; c'est lui que `step-201b` utilisera. À corriger dans la fiche.
+
 ## Contenu
 
 | Chemin | Rôle |
