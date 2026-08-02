@@ -1,0 +1,74 @@
+# HELP smsc_active_binds Currently bound SMPP sessions, per virtual SMSC and bind type.
+# TYPE smsc_active_binds gauge
+smsc_active_binds{bind_type="transceiver",virtual_smsc="carrier-a"} 38
+smsc_active_binds{bind_type="transceiver",virtual_smsc="carrier-b"} 4
+smsc_active_binds{bind_type="transmitter",virtual_smsc="carrier-a"} 2
+# HELP smsc_active_scenario Active scenario profile per virtual SMSC (1 on the current profile, 0 otherwise).
+# TYPE smsc_active_scenario gauge
+smsc_active_scenario{scenario="dead-carrier",virtual_smsc="carrier-a"} 0
+smsc_active_scenario{scenario="healthy",virtual_smsc="carrier-a"} 1
+# HELP smsc_served_latency_seconds Served submit_sm latency in seconds, per virtual SMSC and scenario.
+# TYPE smsc_served_latency_seconds histogram
+smsc_served_latency_seconds_bucket{scenario="healthy",virtual_smsc="carrier-a",le="0.001"} 0
+smsc_served_latency_seconds_bucket{scenario="healthy",virtual_smsc="carrier-a",le="0.002"} 0
+smsc_served_latency_seconds_bucket{scenario="healthy",virtual_smsc="carrier-a",le="0.004"} 0
+smsc_served_latency_seconds_bucket{scenario="healthy",virtual_smsc="carrier-a",le="0.008"} 0
+smsc_served_latency_seconds_bucket{scenario="healthy",virtual_smsc="carrier-a",le="0.016"} 3
+smsc_served_latency_seconds_bucket{scenario="healthy",virtual_smsc="carrier-a",le="0.032"} 3
+smsc_served_latency_seconds_bucket{scenario="healthy",virtual_smsc="carrier-a",le="0.064"} 3
+smsc_served_latency_seconds_bucket{scenario="healthy",virtual_smsc="carrier-a",le="0.128"} 3
+smsc_served_latency_seconds_bucket{scenario="healthy",virtual_smsc="carrier-a",le="0.256"} 3
+smsc_served_latency_seconds_bucket{scenario="healthy",virtual_smsc="carrier-a",le="0.512"} 3
+smsc_served_latency_seconds_bucket{scenario="healthy",virtual_smsc="carrier-a",le="1.024"} 3
+smsc_served_latency_seconds_bucket{scenario="healthy",virtual_smsc="carrier-a",le="2.048"} 3
+smsc_served_latency_seconds_bucket{scenario="healthy",virtual_smsc="carrier-a",le="4.096"} 3
+smsc_served_latency_seconds_bucket{scenario="healthy",virtual_smsc="carrier-a",le="8.192"} 3
+smsc_served_latency_seconds_bucket{scenario="healthy",virtual_smsc="carrier-a",le="16.384"} 3
+smsc_served_latency_seconds_bucket{scenario="healthy",virtual_smsc="carrier-a",le="+Inf"} 3
+smsc_served_latency_seconds_sum{scenario="healthy",virtual_smsc="carrier-a"} 0.036000000000000004
+smsc_served_latency_seconds_count{scenario="healthy",virtual_smsc="carrier-a"} 3
+smsc_served_latency_seconds_bucket{scenario="healthy",virtual_smsc="carrier-b",le="0.001"} 0
+smsc_served_latency_seconds_bucket{scenario="healthy",virtual_smsc="carrier-b",le="0.002"} 0
+smsc_served_latency_seconds_bucket{scenario="healthy",virtual_smsc="carrier-b",le="0.004"} 1
+smsc_served_latency_seconds_bucket{scenario="healthy",virtual_smsc="carrier-b",le="0.008"} 1
+smsc_served_latency_seconds_bucket{scenario="healthy",virtual_smsc="carrier-b",le="0.016"} 1
+smsc_served_latency_seconds_bucket{scenario="healthy",virtual_smsc="carrier-b",le="0.032"} 1
+smsc_served_latency_seconds_bucket{scenario="healthy",virtual_smsc="carrier-b",le="0.064"} 1
+smsc_served_latency_seconds_bucket{scenario="healthy",virtual_smsc="carrier-b",le="0.128"} 1
+smsc_served_latency_seconds_bucket{scenario="healthy",virtual_smsc="carrier-b",le="0.256"} 1
+smsc_served_latency_seconds_bucket{scenario="healthy",virtual_smsc="carrier-b",le="0.512"} 1
+smsc_served_latency_seconds_bucket{scenario="healthy",virtual_smsc="carrier-b",le="1.024"} 1
+smsc_served_latency_seconds_bucket{scenario="healthy",virtual_smsc="carrier-b",le="2.048"} 1
+smsc_served_latency_seconds_bucket{scenario="healthy",virtual_smsc="carrier-b",le="4.096"} 1
+smsc_served_latency_seconds_bucket{scenario="healthy",virtual_smsc="carrier-b",le="8.192"} 1
+smsc_served_latency_seconds_bucket{scenario="healthy",virtual_smsc="carrier-b",le="16.384"} 1
+smsc_served_latency_seconds_bucket{scenario="healthy",virtual_smsc="carrier-b",le="+Inf"} 1
+smsc_served_latency_seconds_sum{scenario="healthy",virtual_smsc="carrier-b"} 0.004
+smsc_served_latency_seconds_count{scenario="healthy",virtual_smsc="carrier-b"} 1
+smsc_served_latency_seconds_bucket{scenario="slow-carrier",virtual_smsc="carrier-a",le="0.001"} 0
+smsc_served_latency_seconds_bucket{scenario="slow-carrier",virtual_smsc="carrier-a",le="0.002"} 0
+smsc_served_latency_seconds_bucket{scenario="slow-carrier",virtual_smsc="carrier-a",le="0.004"} 0
+smsc_served_latency_seconds_bucket{scenario="slow-carrier",virtual_smsc="carrier-a",le="0.008"} 0
+smsc_served_latency_seconds_bucket{scenario="slow-carrier",virtual_smsc="carrier-a",le="0.016"} 0
+smsc_served_latency_seconds_bucket{scenario="slow-carrier",virtual_smsc="carrier-a",le="0.032"} 0
+smsc_served_latency_seconds_bucket{scenario="slow-carrier",virtual_smsc="carrier-a",le="0.064"} 0
+smsc_served_latency_seconds_bucket{scenario="slow-carrier",virtual_smsc="carrier-a",le="0.128"} 0
+smsc_served_latency_seconds_bucket{scenario="slow-carrier",virtual_smsc="carrier-a",le="0.256"} 0
+smsc_served_latency_seconds_bucket{scenario="slow-carrier",virtual_smsc="carrier-a",le="0.512"} 0
+smsc_served_latency_seconds_bucket{scenario="slow-carrier",virtual_smsc="carrier-a",le="1.024"} 0
+smsc_served_latency_seconds_bucket{scenario="slow-carrier",virtual_smsc="carrier-a",le="2.048"} 0
+smsc_served_latency_seconds_bucket{scenario="slow-carrier",virtual_smsc="carrier-a",le="4.096"} 1
+smsc_served_latency_seconds_bucket{scenario="slow-carrier",virtual_smsc="carrier-a",le="8.192"} 1
+smsc_served_latency_seconds_bucket{scenario="slow-carrier",virtual_smsc="carrier-a",le="16.384"} 1
+smsc_served_latency_seconds_bucket{scenario="slow-carrier",virtual_smsc="carrier-a",le="+Inf"} 1
+smsc_served_latency_seconds_sum{scenario="slow-carrier",virtual_smsc="carrier-a"} 2.5
+smsc_served_latency_seconds_count{scenario="slow-carrier",virtual_smsc="carrier-a"} 1
+# HELP smsc_submit_sm_outcome_total submit_sm outcomes served, per virtual SMSC and outcome type.
+# TYPE smsc_submit_sm_outcome_total counter
+smsc_submit_sm_outcome_total{outcome="error",virtual_smsc="carrier-a"} 120
+smsc_submit_sm_outcome_total{outcome="success",virtual_smsc="carrier-a"} 119880
+smsc_submit_sm_outcome_total{outcome="success",virtual_smsc="carrier-b"} 500
+# HELP smsc_submit_sm_received_total submit_sm PDUs accepted, per virtual SMSC.
+# TYPE smsc_submit_sm_received_total counter
+smsc_submit_sm_received_total{virtual_smsc="carrier-a"} 120000
+smsc_submit_sm_received_total{virtual_smsc="carrier-b"} 500

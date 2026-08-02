@@ -27,9 +27,10 @@ chaque item et matérialiser la porte de go-live.
      préfixe Orange CI actif ; il n'existe aucune plage réservée aux tests en `+225`. Restreindre le
      tirage ne suffit pas : c'est l'envoi qui doit devenir délibéré (opt-in explicite refusé par défaut
      hors boucle locale).
-  2. **Le mot de passe de bind transite par `argv`** (`smpp-bindgen -password …`) : visible dans `ps`
+  2. **Le mot de passe de bind transite par `argv`** — désormais **deux** occurrences :
+     `smpp-bindgen -password …` et `smsc-ceiling -password …` (ajouté en step-201). Visible dans `ps`
      pour tout utilisateur de la machine pendant tout le run, et dans l'historique du shell. Le lire
-     dans l'environnement, flag conservé en repli documenté comme non sûr.
+     dans l'environnement, flag conservé en repli documenté comme non sûr — **les deux binaires**.
 - Vérifier une dernière fois les **4 invariants** (a/b/c/d) verts sur l'ensemble avant go-live.
 - Item explicite : **auth opérateur réelle active** (le stub M1 n'est plus câblé).
 - Artefact documentaire (pas de code) : ne PAS inventer d'items — reprendre §15 du guide.

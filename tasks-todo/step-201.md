@@ -89,12 +89,18 @@ dimensionne sur « routage + anti-spam + encodage », au milieu du pipeline. Acc
 « soutenu » exclut.
 
 Conséquence arithmétique : 8 000 SMS/s × 1,3 segment (§2.1) ≈ **10 400 `submit_sm/s`** à absorber en
-sortie. Le simulateur sérialise le service sur la goroutine de lecture de chaque bind (`serveLatency`
-appelé avant toute réponse) → ~200/s par bind au profil `HealthyConfig` (5 ms) → **≥ 52 binds**. À
-porter sur une machine de 14 cœurs qui tient déjà 9 services, 4 magasins (dont Redpanda bridé à
-`--smp=1`), le simulateur et l'injecteur. La spec §2.5 dimensionne la cible à 8–16 vCPU de workers
+sortie. À porter sur une machine de 14 cœurs qui tient déjà 9 services, 4 magasins (dont Redpanda bridé
+à `--smp=1`), le simulateur et l'injecteur. La spec §2.5 dimensionne la cible à 8–16 vCPU de workers
 *dédiés* plus un Kafka répliqué 3 : le matériel manque d'un ordre de grandeur. Un « 8 000/s tenu »
 mesuré là ne validerait rien, et un échec ne condamnerait rien.
+
+> **Amendé après la mesure de `D3`.** Ce paragraphe estimait ~200 `submit_sm/s` par bind, donc
+> « ≥ 52 binds », et faisait du pair un facteur limitant plausible. La mesure dit autre chose :
+> **136–171/s par bind** (le modèle était optimiste de 15 à 30 %), donc **≥ 80 binds** — et surtout, le
+> pair **n'a jamais saturé**, jusqu'à 43 498 `submit_sm/s` à 320 binds sans une seule issue non-`success`.
+> Le plafond du pair n'est donc **pas** le facteur limitant, et le tuning ne visera pas une contrainte
+> artificielle. Ce qui manque reste le CPU de la passerelle elle-même : `D1` tient, mais pour cette
+> seule raison.
 
 step-201b dépend de step-207 parce que les manifests Kubernetes sont précisément ce qui rend un
 environnement représentatif instanciable.
@@ -122,8 +128,14 @@ actuel strictement inchangé), démarrant sur la barrière `OnAllBound` déjà p
 
 Le débit n'est **pas** compté côté injecteur : il se lit sur `GET :9000/metrics` du simulateur, par deux
 scrapes espacés de `smsc_submit_sm_received_total`. `smsc_submit_sm_outcome_total` disqualifie tout
-palier portant des erreurs ; `smsc_served_latency_seconds` distingue « le pair sature » de « l'injecteur
-ne pousse pas ».
+palier portant des erreurs.
+
+> **Corrigé après mesure.** Ce paragraphe disait aussi que `smsc_served_latency_seconds` distinguerait
+> « le pair sature » de « l'injecteur ne pousse pas ». **C'est faux** : le simulateur observe la latence
+> que son scénario a *décidée*, pas une durée mesurée (`ObserveServedLatency` reçoit
+> `decision.LatencyMS`). L'histogramme a lu 5 ms à plat de 10 à 320 binds. Les seuls signaux de
+> saturation sont `smsc_submit_sm_outcome_total` et l'inflexion de la courbe. Le godoc de
+> `smscmetrics` portait la même affirmation fausse — corrigé aussi.
 
 Deux chiffres consignés, pas un : la **courbe plafond-vs-binds**, et le plafond **au nombre de binds du
 run de référence** — c'est sous ce dernier que `D2` doit se situer.
@@ -303,6 +315,33 @@ réservation. Plus le balai, possible grâce au préfixe de `D10` :
 Le design et les prérequis de cette step vivent sur `docs/step-201-prereqs` (commit `4f7d764` +
 celui-ci), **absente de `main`**. Les branches de code de PR1/PR2/PR3 partent de là, pas de `main`.
 À annoncer en tête de chaque corps de PR.
+
+### Ce que PR1 gèle sans le résoudre (arbitré avec l'utilisateur après 3 tours de revue)
+
+Quatre tours de revue sur PR1. Le motif, stable et instructif : **l'instrument d'origine n'a reçu aucun
+constat sur les trois derniers tours** ; tous les défauts étaient dans les *gardes numériques* et les
+*affirmations* ajoutées en réponse aux revues précédentes (tour 2 : 8 constats sur 9 dans les correctifs
+du tour 1 ; tour 3 : 11 sur 12 dans ceux des tours 1–2). Le tour 4 a été cadré : deux bloquants plus
+les trois constats les plus graves, puis arrêt.
+
+Corrigés au tour 4 : un rejet du pair précédé d'un pli de courbe était effaçable (l'outil imprimait
+« no tier shed » sur un balayage contenant un palier disqualifié pour rejet) · un pair qui **accepte
+sans jamais répondre** produisait un chiffre publiable avec code de sortie 0 — invisible pour toutes
+les autres gardes, désormais couvert par `maxUnansweredFraction` · le README affirmait avoir écarté
+l'hypothèse des binds figés, ce que la garde ne permet pas · `SubmittedMin/Max` est imprimé par palier,
+pour que le prochain run confronte le seuil au lieu de le supposer · deux propriétés annoncées en godoc
+sans test en ont reçu un.
+
+**Gelé, nommément :**
+- La **chute du débit par bind au-delà de 80 binds** n'est pas attribuée. `maxSubmitSpread` ne détecte
+  qu'un gel détruisant > 85 % du travail d'une session ; un gel à mi-fenêtre passe. Trancher demande un
+  débit **par session sur la durée**, que l'instrument ne relève pas. → suivi step-201b.
+- Le **verdict de saturation à 320 binds tient à 1,6 %**, moins que le bruit inter-paliers du même run
+  (~4 %). Le plafond est un ordre de grandeur, pas une valeur. → second balayage en step-201b.
+- Constats de revue non traités, sans effet sur un chiffre : chiffres du README hérités d'un tableau
+  antérieur dans deux phrases secondaires · un test devenu tautologique depuis que `Unanswered` n'est
+  plus seuillé de la même façon · `binds > 1` mort dans la garde de dispersion · le diagnostic
+  « sessions stopped being served » s'affiche aussi quand la cause est une erreur d'écriture.
 
 ### Limite connue, consignée sans être résolue
 Les consumers d'un même processus partagent le préfixe `KAFKA_` : dans `router-svc`, monter
