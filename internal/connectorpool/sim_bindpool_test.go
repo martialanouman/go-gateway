@@ -68,6 +68,6 @@ func TestSimBindPoolThroughput(t *testing.T) {
 		if remaining <= 0 {
 			remaining = time.Millisecond
 		}
-		pool.waitCDRStatus(t, id, clickhouse.StatusEnroute, remaining)
+		pool.waitOutcome(t, id, clickhouse.StatusEnroute, remaining)
 	}
 }

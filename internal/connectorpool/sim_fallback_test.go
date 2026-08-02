@@ -74,7 +74,7 @@ func TestSimBreakerFallbackParkReplay(t *testing.T) {
 	waitAtLeast(t, "parked records", func() int64 { return parked.Load() }, 1, 25*time.Second)
 	// (c) every message eventually reached B and was delivered — nothing lost through park and replay.
 	for _, id := range ids {
-		poolB.waitCDRStatus(t, id, clickhouse.StatusEnroute, 40*time.Second)
+		poolB.waitOutcome(t, id, clickhouse.StatusEnroute, 40*time.Second)
 	}
 }
 

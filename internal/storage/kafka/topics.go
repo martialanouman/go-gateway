@@ -14,6 +14,14 @@ const (
 	// TopicMTRouted carries routed messages, one per logical message. Partition key = the logical
 	// message id, so every UDH segment of a message lands on the same partition, in order (§7.3).
 	TopicMTRouted = "mt.routed"
+	// TopicMTOutcome carries the terminal outcome of one submitted MT segment — enroute or failed — for
+	// the CDR projection to write (step-201c, D1). The connector pool used to write that row to
+	// ClickHouse itself, on the consumption path, before committing the offset; batching it there would
+	// have made a write failure redeliver a whole poll and RE-SUBMIT messages already on the wire, so the
+	// batching moved here, behind a topic, where redelivery only rewrites a row. Partition key = the
+	// logical message id, the same key mt.routed uses, so a message's segments and successive outcomes
+	// stay on one partition in submit order. It carries NO body: the outcome row stores no content.
+	TopicMTOutcome = "mt.outcome"
 	// TopicMOInbound carries mobile-originated messages from the SMSC (M4).
 	TopicMOInbound = "mo.inbound"
 	// TopicMORouted carries mobile-originated messages after account resolution (M4): the delivery

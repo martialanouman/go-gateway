@@ -67,27 +67,34 @@ func submitDataCoding(r pipeline.RoutedMT) uint8 {
 	return dataCoding(r.Encoding)
 }
 
-// cdrRow builds the enroute (or failed) CDR row from the submit_sm_resp.
-func cdrRow(r pipeline.RoutedMT, resp smpp.PDU) clickhouse.CDRRow {
-	connectorID := r.ConnectorID
+// submitOutcome builds the enroute (or failed) outcome event from the submit_sm_resp — the projection
+// the connector used to write to ClickHouse itself, now published on mt.outcome for a dedicated
+// consumer to turn into the CDR row (step-201c, D1).
+//
+// The segment coordinates are CLAMPED here, not left to the projection: segment_seq joins the CDR
+// sorting key and its 0 is reserved for the pre-dispatch message-level row, so a connector outcome that
+// reached the projection unclamped would land on the wrong row instead of superseding its own. Clamping
+// at the only place that knows a connector row is always a dispatched segment leaves the consumer a
+// straight field copy. Encoding travels as the resolved pipeline string; the projection maps it with
+// clickhouse.EncodingOf, the total projection every CDR producer already shares. No body: the outcome
+// row stores no content.
+func submitOutcome(r pipeline.RoutedMT, resp smpp.PDU) pipeline.OutcomeMT {
 	status, errorCode := outcome(resp.Status)
-	return clickhouse.CDRRow{
+	return pipeline.OutcomeMT{
 		MessageID:    r.MessageID,
 		TraceID:      r.TraceID,
 		AccountID:    r.AccountID,
 		CustomerID:   r.CustomerID,
-		Direction:    clickhouse.DirectionMT,
-		SourceAddr:   r.From,
-		DestAddr:     r.To,
-		ConnectorID:  &connectorID,
+		ConnectorID:  r.ConnectorID,
 		RouteID:      r.RouteID,
+		From:         r.From,
+		To:           r.To,
+		Encoding:     r.Encoding,
+		SegmentSeq:   int(segmentSeq(r.SegmentSeq)),
+		SegmentCount: int(segmentCount(r.SegmentCount)),
 		SubmittedAt:  r.SubmittedAt,
-		Status:       status,
+		Status:       string(status),
 		ErrorCode:    errorCode,
-		SegmentCount: segmentCount(r.SegmentCount),
-		SegmentSeq:   segmentSeq(r.SegmentSeq),
-		Encoding:     clickhouse.EncodingOf(r.Encoding),
-		Billed:       false,
 	}
 }
 

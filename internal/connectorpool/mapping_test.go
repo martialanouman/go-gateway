@@ -199,7 +199,7 @@ func TestConnectorDropsOverlongValidityPeriod(t *testing.T) {
 	var seen string
 	r := routed()
 	r.ValidityPeriod = &overlong
-	cdr := runOnce(t, func(sm smpp.SubmitSM) fakesmsc.Resp {
+	sink := runOnce(t, func(sm smpp.SubmitSM) fakesmsc.Resp {
 		seen = sm.ValidityPeriod
 		return fakesmsc.OK()
 	}, r)
@@ -207,7 +207,7 @@ func TestConnectorDropsOverlongValidityPeriod(t *testing.T) {
 	if seen != "" {
 		t.Errorf("over-length validity_period should be dropped, wire carried %q", seen)
 	}
-	if len(cdr.rows) != 1 || cdr.rows[0].Status != clickhouse.StatusEnroute {
-		t.Errorf("submit should still succeed (enroute), got %+v", cdr.rows)
+	if got := sink.outcome(t); got.Status != string(clickhouse.StatusEnroute) {
+		t.Errorf("submit should still succeed (enroute), got %q", got.Status)
 	}
 }

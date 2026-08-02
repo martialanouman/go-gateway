@@ -32,6 +32,7 @@ func Topics() []string {
 	topics := []string{
 		kafka.TopicMTInbound,
 		kafka.TopicMTRouted,
+		kafka.TopicMTOutcome,
 		kafka.TopicMTReroutePark,
 		kafka.TopicMTDeadLetter,
 		kafka.TopicMOInbound,
