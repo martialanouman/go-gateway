@@ -93,6 +93,15 @@ builds:
     goos: [linux]
     goarch: [amd64, arm64]
     ldflags: *ldflags
+  # Operator tool like migrate: topics are infrastructure schema, provisioned by a deliberate act
+  # (step-201 D7). step-207's Job has no binary to run without this build.
+  - id: kafka-provision
+    main: ./cmd/kafka-provision
+    binary: kafka-provision
+    env: [CGO_ENABLED=0]
+    goos: [linux]
+    goarch: [amd64, arm64]
+    ldflags: *ldflags
 
 # One archive per service, not one bundle: each cmd/ is deployed independently (its own
 # pod/container), so an operator pulls only the service they run. Without a per-build `ids` filter
@@ -137,6 +146,10 @@ archives:
     name_template: *archive_name
   - id: mt-replay
     ids: [mt-replay]
+    formats: ["tar.gz"]
+    name_template: *archive_name
+  - id: kafka-provision
+    ids: [kafka-provision]
     formats: ["tar.gz"]
     name_template: *archive_name
 

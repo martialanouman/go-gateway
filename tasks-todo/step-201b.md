@@ -1,7 +1,7 @@
 # step-201b — Campagne NFR pleine échelle sur environnement représentatif
 
 > **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
-> **Dépend de :** step-201, step-207 · **Bloque :** step-208
+> **Dépend de :** step-201, **step-201c**, step-207 · **Bloque :** step-208
 
 ## But
 Rendre le **verdict NFR** que step-201 ne pouvait pas rendre : débit soutenu **8 000 SMS/s**, pic
@@ -17,6 +17,11 @@ condamnerait rien.
 
 step-201 a donc livré les **instruments** et prouvé l'état stationnaire à la borne basse du modèle
 par-worker (§2.5). Ici, seule **l'échelle** change : les instruments sont réutilisés tels quels.
+
+## Prérequis logiciel : step-201c
+Le run de référence de step-201 a mesuré un plafond de sortie de **192–330 `submit_sm/s`** dû à quatre
+allers-retours ClickHouse par message dans le `connector-pool-svc`. Mesurer à pleine échelle avant de
+l'avoir levé mesurerait ce goulot, pas la passerelle.
 
 ## Prérequis matériel (à provisionner — ce n'est pas du code)
 - Environnement représentatif : workers dédiés, Kafka **répliqué 3**, ClickHouse et Postgres séparés

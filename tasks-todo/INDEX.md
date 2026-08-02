@@ -151,7 +151,8 @@ structurelles et à faire **avant** que M12 n'empile dessus.
 ## M12 — Durcissement, charge & mise en production
 - [x] step-200 — Harnais de charge k6/vegeta + générateur de binds SMPP (NFR)
 - [ ] step-201 — Tuning de débit : partitions Kafka, batch ClickHouse, pool pgx (+ instruments de mesure)
-- [ ] step-201b — Campagne NFR pleine échelle sur environnement représentatif (dépend aussi de step-207)
+- [ ] step-201c — Écritures CDR par batch dans le connector pool (goulot du débit traversant)
+- [ ] step-201b — Campagne NFR pleine échelle sur environnement représentatif (dépend aussi de step-201c, step-207)
 - [ ] step-202 — Chaos : perte Redis (chaque politique de panne) + flapping connecteur
 - [ ] step-203 — Chaos : drain gracieux + PDB + binds préservés ; failover Postgres
 - [ ] step-204 — Sécurité : gosec, govulncheck, secrets, piste d'audit

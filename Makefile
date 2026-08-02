@@ -58,6 +58,21 @@ migrate: ## Apply the pending Postgres migrations (make migrate CMD=down to reve
 migrate-clickhouse: ## Apply the pending ClickHouse CDR migrations (CMD=down to reverse them)
 	go run ./cmd/migrate -store clickhouse $(or $(CMD),up)
 
+# Topics are infrastructure schema, so they are provisioned like one — a deliberate operator act, never
+# at a service's boot (step-201 D7). Without this, KAFKA_TOPIC_PARTITIONS changes nothing and every
+# topic sits at whatever the broker auto-created: one partition, hence an inter-pod parallelism of one.
+#
+# RF defaults to 1 because the local docker-compose broker is a single Redpanda node and cannot satisfy
+# the production default of 3 (spec §2.5). Against a real cluster, export
+# KAFKA_TOPIC_REPLICATION_FACTOR — an exported value wins over this default.
+#
+# Widening a topic re-maps key -> partition on the live data plane: run it outside peak hours.
+.PHONY: kafka-topics
+kafka-topics: ## Create the Kafka topics and widen them to KAFKA_TOPIC_PARTITIONS: make kafka-topics [PARTITIONS=12] [RF=1] [DRY_RUN=1]
+	KAFKA_TOPIC_REPLICATION_FACTOR=$(or $(RF),$(KAFKA_TOPIC_REPLICATION_FACTOR),1) \
+	$(if $(PARTITIONS),KAFKA_TOPIC_PARTITIONS=$(PARTITIONS)) \
+	go run ./cmd/kafka-provision $(if $(DRY_RUN),-dry-run)
+
 ## ---------------------------------------------------------------------------- build & run
 
 .PHONY: build
@@ -142,6 +157,17 @@ smsc-ceiling: ## Measure the test peer's submit_sm ceiling (sweeps binds, reads 
 	go run ./cmd/smsc-ceiling \
 		-addr $(or $(ADDR),127.0.0.1:2775) -metrics $(or $(METRICS),http://127.0.0.1:9000) \
 		$(if $(BINDS),-binds $(BINDS)) $(if $(REFERENCE),-reference $(REFERENCE)) $(if $(MEASURE),-measure $(MEASURE))
+
+# The local reference run (step-201 D2). It stands the whole MT path up in ONE process against real
+# Postgres/Kafka/ClickHouse (testcontainers) and the in-repo fake SMSC, holds a target rate for a full
+# minute and scores the steady state. It lives behind the `loadref` build tag so `make test` never
+# compiles it, let alone runs its two minutes.
+.PHONY: load-reference
+load-reference: ## Run the D2 steady-state reference run: make load-reference [RATE=1200] [BIND_POOL=4] [CH_MAX_OPEN=10] [MEASURE=60s]
+	REF_RATE=$(RATE) REF_WORKERS=$(WORKERS) REF_MEASURE=$(MEASURE) REF_WARMUP=$(WARMUP) \
+	REF_SETTLE=$(SETTLE) REF_BIND_POOL=$(BIND_POOL) REF_WINDOW=$(SMPP_WINDOW) \
+	REF_CH_MAX_OPEN=$(CH_MAX_OPEN) REF_CH_MAX_IDLE=$(CH_MAX_IDLE) \
+		go test -tags=loadref -count=1 -timeout 30m -v -run $(or $(RUN),TestReferenceRun) ./internal/e2e/
 
 ## ---------------------------------------------------------------------------- quality gates
 
