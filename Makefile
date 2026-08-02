@@ -58,6 +58,21 @@ migrate: ## Apply the pending Postgres migrations (make migrate CMD=down to reve
 migrate-clickhouse: ## Apply the pending ClickHouse CDR migrations (CMD=down to reverse them)
 	go run ./cmd/migrate -store clickhouse $(or $(CMD),up)
 
+# Topics are infrastructure schema, so they are provisioned like one — a deliberate operator act, never
+# at a service's boot (step-201 D7). Without this, KAFKA_TOPIC_PARTITIONS changes nothing and every
+# topic sits at whatever the broker auto-created: one partition, hence an inter-pod parallelism of one.
+#
+# RF defaults to 1 because the local docker-compose broker is a single Redpanda node and cannot satisfy
+# the production default of 3 (spec §2.5). Against a real cluster, export
+# KAFKA_TOPIC_REPLICATION_FACTOR — an exported value wins over this default.
+#
+# Widening a topic re-maps key -> partition on the live data plane: run it outside peak hours.
+.PHONY: kafka-topics
+kafka-topics: ## Create the Kafka topics and widen them to KAFKA_TOPIC_PARTITIONS: make kafka-topics [PARTITIONS=12] [RF=1] [DRY_RUN=1]
+	KAFKA_TOPIC_REPLICATION_FACTOR=$(or $(RF),$(KAFKA_TOPIC_REPLICATION_FACTOR),1) \
+	$(if $(PARTITIONS),KAFKA_TOPIC_PARTITIONS=$(PARTITIONS)) \
+	go run ./cmd/kafka-provision $(if $(DRY_RUN),-dry-run)
+
 ## ---------------------------------------------------------------------------- build & run
 
 .PHONY: build
