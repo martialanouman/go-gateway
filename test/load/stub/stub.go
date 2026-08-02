@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -48,6 +49,60 @@ type Config struct {
 	// default) answers as fast as the runtime allows. Raising it past the load script's latency
 	// budget is how a run is made to fail on purpose.
 	Delay time.Duration
+
+	// Idempotency selects how the stub scrutinises the Idempotency-Key header. The zero value is
+	// IdempotencyIgnore, which is the step-200 behaviour. Build the value with
+	// ParseIdempotencyMode; NewHandler panics on anything else.
+	Idempotency IdempotencyMode
+}
+
+// IdempotencyMode selects the stub's scrutiny of the Idempotency-Key header.
+//
+// The repo has no JavaScript test infrastructure, so the k6 script's `IDEMPOTENCY` option is not
+// tested as JavaScript — it is observed here, on the only component that receives every request the
+// script emits (step-201 D11).
+type IdempotencyMode string
+
+const (
+	// IdempotencyIgnore neither requires nor refuses the header, exactly as before the option
+	// existed. It is the zero value, so every existing caller keeps its behaviour.
+	IdempotencyIgnore IdempotencyMode = ""
+
+	// IdempotencyRequireUnique demands a header the real gateway would honour, and a different one
+	// on every request: absent, empty, longer than the contract's 128 characters, or already seen
+	// are all 422. It is the target of the positive run — a script whose key is constant, or whose
+	// header is present and empty, cannot pass it.
+	IdempotencyRequireUnique IdempotencyMode = "require-unique"
+
+	// IdempotencyForbid rejects the mere presence of the header, whatever its value. It is the
+	// target of both remaining runs: with the option off the run must pass, with it on the run must
+	// fail. That second run is the one that makes an unplugged observer audible.
+	IdempotencyForbid IdempotencyMode = "forbid"
+)
+
+// idempotencyHeader is the contract's header name (api/openapi-public.yaml, parameter IdempotencyKey).
+const idempotencyHeader = "Idempotency-Key"
+
+// maxIdempotencyKeyLen is the contract's maxLength for the header. The contract sets no minimum and
+// no pattern, so length and uniqueness are all the stub may judge.
+const maxIdempotencyKeyLen = 128
+
+// ParseIdempotencyMode turns a command-line spelling into a mode. "ignore" and the empty string both
+// mean IdempotencyIgnore; any other unrecognised spelling is an error rather than a silent fallback,
+// because a mode that quietly degrades to "ignore" would make the harness green while observing
+// nothing.
+func ParseIdempotencyMode(s string) (IdempotencyMode, error) {
+	switch s {
+	case "", "ignore":
+		return IdempotencyIgnore, nil
+	case string(IdempotencyRequireUnique):
+		return IdempotencyRequireUnique, nil
+	case string(IdempotencyForbid):
+		return IdempotencyForbid, nil
+	default:
+		return IdempotencyIgnore, fmt.Errorf("stub: unknown idempotency mode %q; want ignore, %s or %s",
+			s, IdempotencyRequireUnique, IdempotencyForbid)
+	}
 }
 
 // e164 mirrors the `to` pattern of SubmitMessageRequest in api/openapi-public.yaml.
@@ -114,17 +169,54 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 // NewHandler returns the stub's HTTP handler, for use with httptest or a server of the caller's own.
-// Config.Addr is ignored.
+// Config.Addr is ignored. Each handler owns its own set of seen idempotency keys, so two handlers
+// never make each other's keys look repeated.
+//
+// It panics on an unrecognised Config.Idempotency: a mode that silently fell back to
+// IdempotencyIgnore would leave the harness green while checking nothing.
 func NewHandler(cfg Config) http.Handler {
+	switch cfg.Idempotency {
+	case IdempotencyIgnore, IdempotencyRequireUnique, IdempotencyForbid:
+	default:
+		panic(fmt.Sprintf("stub: unknown idempotency mode %q; build it with ParseIdempotencyMode", cfg.Idempotency))
+	}
+
+	keys := &keySet{seen: make(map[string]struct{})}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/messages", func(w http.ResponseWriter, r *http.Request) {
 		if !sleep(r.Context(), cfg.Delay) {
 			return // client gone: there is no one left to answer
 		}
-		submit(w, r)
+		submit(w, r, cfg.Idempotency, keys)
 	})
 
 	return mux
+}
+
+// keySet records the idempotency keys already served. The load client is concurrent, so the
+// check-and-insert has to be one atomic step: two racing requests carrying the same key must not
+// both be told it was fresh.
+//
+// It grows for the whole life of the handler — one entry per request under require-unique. A smoke
+// run costs ~500 entries; a `peak` profile would cost ~900 000, which is the same order as the Redis
+// footprint the real path leaves and is fine for a short-lived development tool.
+type keySet struct {
+	mu   sync.Mutex
+	seen map[string]struct{}
+}
+
+// claim records k and reports whether it had never been seen before.
+func (s *keySet) claim(k string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, dup := s.seen[k]; dup {
+		return false
+	}
+	s.seen[k] = struct{}{}
+
+	return true
 }
 
 // sleep waits d, reporting false if the client disconnected first. A load client that gives up must
@@ -180,11 +272,23 @@ type errorBody struct {
 	Errors  []fieldError `json:"errors,omitempty"`
 }
 
-func submit(w http.ResponseWriter, r *http.Request) {
+func submit(w http.ResponseWriter, r *http.Request, mode IdempotencyMode, keys *keySet) {
 	if !authenticated(r) {
 		writeJSON(w, http.StatusUnauthorized, errorBody{
 			Code:    string(errs.ErrUnauthenticated),
 			Message: "missing or malformed bearer API key",
+		})
+
+		return
+	}
+
+	// Before the body, as the real surface validates its parameters before its payload — and so that
+	// a run against this mode fails on the header alone, never on an unrelated body problem.
+	if problem, bad := checkIdempotency(r, mode, keys); bad {
+		writeJSON(w, http.StatusUnprocessableEntity, errorBody{
+			Code:    string(errs.ErrValidation),
+			Message: "Idempotency-Key does not satisfy the configured mode",
+			Errors:  []fieldError{problem},
 		})
 
 		return
@@ -234,6 +338,45 @@ func authenticated(r *http.Request) bool {
 	}
 
 	return strings.HasPrefix(strings.TrimSpace(h[len(scheme):]), APIKeyPrefix)
+}
+
+// checkIdempotency judges the Idempotency-Key header against mode, reporting the problem and true
+// when the request must be rejected.
+//
+// Presence is read from Header.Values, not Header.Get: the two cases Get conflates — absent, and
+// present with an empty value — are precisely the two this observer exists to separate. The real
+// gateway treats an empty value as "no idempotency" without saying so, so a script emitting one
+// would exercise the non-idempotent path while looking instrumented.
+func checkIdempotency(r *http.Request, mode IdempotencyMode, keys *keySet) (fieldError, bool) {
+	if mode == IdempotencyIgnore {
+		return fieldError{}, false
+	}
+
+	present := len(r.Header.Values(idempotencyHeader)) > 0
+	key := r.Header.Get(idempotencyHeader) // net/http has already trimmed surrounding whitespace
+
+	if mode == IdempotencyForbid {
+		if !present {
+			return fieldError{}, false
+		}
+
+		return fieldError{Field: idempotencyHeader, Message: "must not be sent in this mode"}, true
+	}
+
+	switch {
+	case !present:
+		return fieldError{Field: idempotencyHeader, Message: "required in this mode"}, true
+	case key == "":
+		// Worse than absent: the gateway would answer 202 off the non-idempotent path.
+		return fieldError{Field: idempotencyHeader, Message: "must not be empty"}, true
+	case utf8.RuneCountInString(key) > maxIdempotencyKeyLen:
+		return fieldError{Field: idempotencyHeader, Message: "must be at most 128 characters"}, true
+	case !keys.claim(key):
+		// A constant key would measure the idempotency cache instead of the idempotent path.
+		return fieldError{Field: idempotencyHeader, Message: "must be unique across the run"}, true
+	}
+
+	return fieldError{}, false
 }
 
 // decodeError turns a decode failure into a field problem. Only the unknown-field case names a

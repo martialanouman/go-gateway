@@ -163,7 +163,41 @@ est mesurable, et cocher la case certifierait un budget jamais mesuré.
 **Raison — pourquoi le recorder et pas le CDR.** La spec définit le span comme « soumission → tentative
 de remise SMSC ». Le CDR `enroute_at` inclut le lag de projection ClickHouse : « < 2 s » ne certifierait
 plus le même intervalle, et le seuil bougerait avec un levier de PR3 (`D6`) sans que la passerelle ait
-changé. `/metrics` ne peut pas servir ici : un compteur agrégé ne se corrèle à aucun `message_id`.
+changé. *(La phrase qui suivait — « `/metrics` ne peut pas servir ici : un compteur agrégé ne se
+corrèle à aucun `message_id` » — est retirée : vraie mais sans objet, puisque l'amendement ci-dessous
+supprime le besoin de corrélation.)*
+
+> **Amendé (2026-08-02) — la corrélation n'est pas nécessaire, et le recorder ne la permet pas.**
+>
+> Trois faits vérifiés dans le code invalident la lettre de cette décision :
+>
+> 1. **`recorder.RecordedPDU` du simulateur ne porte AUCUN horodatage** — `Index`, `MessageID`,
+>    adresses, `ShortMessage`, `PerBindClock` (un compteur logique, pas du temps). Corréler sur les PDU
+>    du recorder ne donne donc pas d'instant de sortie. Il faudrait modifier le simulateur, qui est un
+>    dépôt séparé.
+> 2. **Le `message_id` de la passerelle ne traverse pas jusqu'au `submit_sm`** : `buildSubmit`
+>    (`internal/connectorpool/mapping.go:25-59`) ne pose que les adresses, l'encodage et le corps ; le
+>    seul TLV jamais posé est `message_payload`. Rien à corréler.
+> 3. **La voie CDR est pire qu'imprécise, elle est fausse** : `cdrRow` pose `SubmittedAt` et jamais
+>    `DeliveredAt`, et `appendEvents` (`internal/storage/clickhouse/cdr.go:194-197`) retombe donc sur
+>    `SubmittedAt`. `cdr_events.at` de la ligne `enroute` **est** l'heure d'acceptation : le span y vaut
+>    identiquement 0, avec un p99 rassurant et faux.
+>
+> **Ce qui remplace.** Les deux bouts du span sont dans le même processus — `env.SubmittedAt` est
+> immuable et propagé jusqu'au `connectorpool`, et la tentative de remise a lieu là. Aucune corrélation
+> n'est nécessaire : la passerelle peut mesurer le span elle-même.
+>
+> Et l'instrument existe déjà, mort : **`message_e2e_duration_seconds`** est déclarée dans
+> `internal/observability/metrics/catalog.go:109`, enregistrée, exposée — et **observée nulle part
+> hors de ses propres tests**. Son `Help` dit « Time from submission to the final SMSC outcome ». Une
+> métrique déclarée et jamais alimentée est la pire des gardes mortes : un tableau de bord l'affiche
+> comme « aucun problème ».
+>
+> Le vérificateur devient donc : **câbler cette métrique** au site de soumission, puis la lire sur le
+> `/metrics` de la passerelle — même patron que `smscmetrics` pour le simulateur. Strictement meilleur
+> sur tous les axes : pas de corrélation, pas de modification d'un dépôt tiers, pas de polling ni
+> d'erreur systématique ajoutée à chaque échantillon, et une valeur **en production** et pas seulement
+> pour le harnais. Le span mesuré reste celui de la spec.
 
 ### D5 — Les leviers exposés, et ceux qu'on écarte
 Défaut de chaque variable = **comportement actuel effectif**, sauf `POSTGRES_MIN_CONNS`. La PR est neutre
@@ -309,7 +343,12 @@ configurable, purge d'API) serait ajuster le système au test.
 `maxmemory` du Redis cible — sous pression, une éviction expulserait aussi sessions, token-buckets et
 cache de solde, et le run mesurerait une tempête d'éviction ; en `noeviction`, ce seraient des échecs de
 réservation. Plus le balai, possible grâce au préfixe de `D10` :
-`redis-cli --scan --pattern 'idem:<accountID>:k6-*' | xargs -L 500 redis-cli UNLINK`.
+`redis-cli --scan --pattern 'idem:{<accountID>}:k6-*' | xargs -L 500 redis-cli UNLINK`.
+
+> **Corrigé (2026-08-02).** Ce pattern était écrit sans les accolades. Elles font **partie de la clé** —
+> `key()` produit `"idem:{" + accountID + "}:" + idemKey` (`internal/idempotency/idempotency.go:122`),
+> un hash tag Redis Cluster qui garde les entrées d'un compte sur un même slot. Sans elles le `--scan`
+> ne matche **rien**, et se lit comme « il n'y a rien à balayer ».
 
 ### D13 — Dépendance à une branche non mergée
 Le design et les prérequis de cette step vivent sur `docs/step-201-prereqs` (commit `4f7d764` +
@@ -342,6 +381,45 @@ sans test en ont reçu un.
   antérieur dans deux phrases secondaires · un test devenu tautologique depuis que `Unanswered` n'est
   plus seuillé de la même façon · `binds > 1` mort dans la garde de dispersion · le diagnostic
   « sessions stopped being served » s'affiche aussi quand la cause est une erreur d'écriture.
+
+### Constats de revue PR2 gelés, nommément
+
+- **Le drainer de `mt.reroute-park` n'estampille pas `ReplayedAt`** (`drainer.go`), là où le `Replayer`
+  manuel le fait. Un drain automatique après incident rejoue donc des messages avec leur `SubmittedAt`
+  d'origine : à 10 min de parking, ils sortent au-delà de la dernière borne finie (327,68 s) et
+  atterrissent dans le bucket `+Inf`, ce qui fait rendre `Fail` au vérificateur. Le godoc de `ageBase`
+  dit couvrir « a drain of parked messages » — vrai du rejeu manuel, faux du drain automatique.
+- **`CONNECTOR_MAX_MESSAGE_AGE` vaut `0` par défaut**, donc la SLA max-age — le seul filtre qui écarte
+  un `SubmittedAt` nul ou un message resté des heures en backlog — n'est pas active en configuration
+  par défaut. Un `SubmittedAt` nul donnerait ~6,4e10 s, empoisonnant `_sum` pour la vie du pod.
+- **`newOpsServer` n'est appelé par aucun test.** Le test d'exposition appelle `poolCatalogueCollectors`
+  directement : supprimer l'enregistrement dans `wiring.go` laisserait la suite verte et `/metrics` sans
+  aucune métrique du catalogue. La moitié haute de la garde reste ouverte.
+- **`slowCDR` dans `TestE2ELatencyExcludes…` est inerte** : l'écriture CDR est en aval du site
+  d'observation, donc aucune mutation du site ne peut la replier dans la mesure. Seul `slowSettler`
+  discrimine. Le chiffre « 1,2 s » cité dans le message d'échec ne peut pas être produit par ce test.
+- **`RUN_SEED` du script k6 est un seed par VU, pas par run** (k6 exécute l'init une fois par VU). Sans
+  conséquence sur l'unicité — `iterationInTest` la porte — mais le nom et le commentaire disent l'inverse.
+  Sous `k6 run --seed`, les 6 caractères deviennent déterministes et deux runs de la même milliseconde
+  produiraient les mêmes clés.
+
+### Dettes mises au jour par PR2, non traitées ici
+
+- **`ingest_duration_seconds` a exactement le même défaut de buckets** que `message_e2e_duration_seconds`
+  avant PR2 : ses seuils NFR (p50 < 50 ms, p99 < 250 ms, §1.2) tombent tous deux **entre** deux bornes
+  (0,032/0,064 et 0,128/0,256), donc aucun des deux n'est décidable depuis son exposition. Correctif de
+  deux lignes, même patron que celui appliqué ici. → à faire avant que quiconque publie un verdict sur
+  le budget d'ingestion.
+- **`router-svc` enregistre lui aussi un sous-ensemble du catalogue** (`cmd/router-svc/wiring.go:143`).
+  Le patron « liste nommée + test d'exposition » n'a été appliqué qu'à `connector-pool-svc` : la même
+  classe de trou peut exister là et n'a pas été auditée.
+- **Le p99 est par `submit_sm`, pas par message.** Un message de N segments produit N observations ;
+  la vraie latence par message est celle du dernier segment, et compter les précédents biaise la
+  distribution du bon côté (optimiste). Dédupliquer demanderait un état inter-records par `message_id`,
+  non borné et concurrent entre shards.
+- **Un message rerouté est attribué au connecteur qui a fini par répondre**, avec le span complet
+  incluant le saut échoué. C'est la bonne lecture de « bout en bout », mais un tableau de bord par
+  connecteur montrera le second portant une latence causée par le premier.
 
 ### Limite connue, consignée sans être résolue
 Les consumers d'un même processus partagent le préfixe `KAFKA_` : dans `router-svc`, monter

@@ -18,9 +18,10 @@ qu'il ne s'est pas exécuté est pire que pas de harnais.
 ## Ce que ce harnais prouve — et ce qu'il ne prouve pas
 
 `make load-smoke` vérifie que **l'instrument fonctionne**, pas que le système tient la charge. Il
-lance le même script deux fois : contre un stub instantané (doit passer) puis contre le même stub
-ralenti à 300 ms (doit échouer). Le second run est la vraie assertion — un run de charge contre un
-stub local passe trivialement, donc un vert seul ne signifie rien.
+lance le même script contre un stub instantané (doit passer) puis contre le même stub ralenti à 300 ms
+(doit échouer). Le second run est la vraie assertion — un run de charge contre un stub local passe
+trivialement, donc un vert seul ne signifie rien. Trois runs de plus font subir le même traitement à
+l'option `IDEMPOTENCY` (voir plus bas).
 
 La tenue réelle à 8 000 req/s se mesure sur matériel réel, avec le pipeline complet : c'est
 **step-201**, pas ici.
@@ -42,10 +43,81 @@ make load-smoke                                        # fumigation : passe à v
 make load BASE_URL=http://localhost:8080               # profil smoke — ENVOIE DE VRAIS SMS
 make load LOAD_PROFILE=sustained BASE_URL=http://…     # 8 000 req/s  — jamais en CI
 make load LOAD_PROFILE=peak      BASE_URL=http://…     # 15 000 req/s — jamais en CI
+make load BASE_URL=http://… IDEMPOTENCY=on             # même profil, chemin Idempotency-Key
 make load-binds BINDS=200 ADDR=127.0.0.1:2775          # N binds SMPP concurrents
 ```
 
-Variables du script k6 : `PROFILE`, `BASE_URL`, `API_KEY`, `SENDER_ID`.
+Variables du script k6 : `PROFILE`, `BASE_URL`, `API_KEY`, `SENDER_ID`, `IDEMPOTENCY`.
+
+## L'option `IDEMPOTENCY` (step-201, `D10`–`D12`)
+
+`IDEMPOTENCY=on|off`, **défaut `off`** ; toute autre valeur lève à l'init, comme `PROFILE`.
+
+Elle choisit **quel chemin serveur** est mesuré, pas l'intensité. `internal/restapi/messages.go` bascule
+sur `submitIdempotent` dès que l'en-tête `Idempotency-Key` est présent, ce qui ajoute **deux allers-retours
+Redis** autour de la publication Kafka (`Reserve` avant, `Finalize` après). Régler les leviers de capacité
+sans cet en-tête optimise un chemin que les clients qui retentent n'empruntent pas : les NFR seraient
+déclarés tenus sur le cas favorable.
+
+```bash
+make load BASE_URL=http://localhost:8080 IDEMPOTENCY=on
+```
+
+Clé émise : `` k6-<seed du run>-<exec.scenario.iterationInTest> ``, ~25 caractères contre les 128 du
+contrat. `iterationInTest` est unique **par construction** sur tout le run — un pliage arithmétique de
+`(__VU, __ITER)` peut collisionner, lui. Le **seed par run** (horodatage ms en base 36 + 6 caractères
+aléatoires) existe parce que la passerelle mémorise une clé **24 h** : sans lui, deux runs du même jour
+rejoueraient les mêmes clés et le second mesurerait le cache d'idempotence — exactement le défaut que
+l'option existe pour éviter, à l'échelle du run entier.
+
+Quand l'option est `off`, l'en-tête est **absent**, jamais présent et vide : la passerelle traite `""`
+comme « pas d'idempotence », **silencieusement**, et un harnais qui en émettrait un passerait vert en
+mesurant le chemin non idempotent.
+
+### Ce que cela coûte au Redis de la cible — lisez avant de viser autre chose qu'un stub
+
+Un run `peak` crée **~900 000 clés** `idem:{<accountID>}:k6-*`, soit **~100–150 Mo**, chacune à **24 h de
+TTL**. Elles ne s'effacent donc pas à la fin du run : deux runs `peak` dans la même journée cumulent,
+trois aussi.
+
+**Ce n'est pas de la pollution, c'est du réalisme** : en production, des clients qui retentent rempliront
+`idem:{accountID}:*` au même rythme, et cette empreinte fait partie du chemin que l'option existe pour
+mesurer. La purger entre les runs fausserait la mesure ; rendre le TTL configurable côté serveur pour le
+confort du harnais reviendrait à régler le système sur son test.
+
+**Dimensionnez donc le `maxmemory` du Redis cible pour l'absorber, cumul compris.** Sous pression, une
+politique d'éviction n'expulserait pas que ces clés : elle prendrait aussi les **sessions**, les
+**token-buckets** et le **cache de solde**, et le run mesurerait une tempête d'éviction au lieu du chemin
+idempotent. En `noeviction`, ce seraient des échecs de réservation.
+
+Le préfixe `k6-` n'est pas décoratif — il rend les clés du harnais balayables, ce qui permet le balai
+(hors mesure) :
+
+```bash
+redis-cli --scan --pattern 'idem:{<accountID>}:k6-*' | xargs -L 500 redis-cli UNLINK
+```
+
+> Les accolades font partie de la clé : `internal/idempotency` écrit `idem:{<accountID>}:<clé>`, le hash
+> tag gardant les entrées d'un compte sur un seul slot. Un motif sans accolades ne balaie rien.
+
+### Comment l'option est vérifiée
+
+Le dépôt n'a ni `node_modules` ni jest, et la CI n'installe que Go et le binaire k6 : on ne teste pas le
+JavaScript, on **observe ses effets** sur le stub, qui reçoit chaque requête. Le stub gagne
+`-idempotency=ignore|require-unique|forbid` (défaut `ignore`, comportement step-200 strictement intact) —
+`require-unique` refuse en 422 un en-tête absent, vide, de plus de 128 caractères ou déjà vu ; `forbid`
+refuse sa seule présence. `make load-smoke` en tire trois runs :
+
+| Run | Attendu | Ce qu'il prouve |
+|---|---|---|
+| `IDEMPOTENCY=on` contre `require-unique` | exit 0 | ~500 clés, toutes non vides, ≤ 128 et distinctes |
+| `IDEMPOTENCY` absent contre `forbid` | exit 0 | aucun en-tête émis |
+| `IDEMPOTENCY=on` contre le **même** stub `forbid` | exit 99 | l'en-tête est bien émis |
+
+Le troisième est la vraie assertion : sans lui, les deux premiers passeraient trivialement contre un stub
+qui ignore tout, et débrancher l'observateur ne ferait aucun bruit. Les deux derniers partagent **un seul
+processus** de stub délibérément — le run vert prouve que ce processus sert le trafic, si bien que le
+rejet du suivant ne peut venir que de l'en-tête, et non d'un stub qui n'aurait jamais démarré.
 
 ## Les seuils
 
@@ -203,7 +275,7 @@ deux se déclenche, et sans marqueur il imprime `LOWER BOUND` au lieu de `CEILIN
 | Chemin | Rôle |
 |---|---|
 | `k6/messages.js` | script REST, profils et seuils |
-| `stub/` | stub du contrat `/v1/messages` à délai réglable — la cible du run négatif |
+| `stub/` | stub du contrat `/v1/messages` à délai réglable et scrutin `Idempotency-Key` — la cible des runs négatifs |
 | `bindgen/` | ouverture de N binds SMPP concurrents + injecteur `submit_sm` (logique testable) |
 | `smscmetrics/` | lecture du `/metrics` du simulateur → débit absorbé |
 | `ceiling/` | balayage du nombre de binds → plafond du pair (logique testable, sans simulateur) |

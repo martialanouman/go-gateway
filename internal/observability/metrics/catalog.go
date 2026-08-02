@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"sort"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -37,8 +38,20 @@ type Catalog struct {
 	// it excludes everything downstream on purpose.
 	IngestDuration *prometheus.HistogramVec
 
-	// MessageE2EDuration measures acceptance until the final outcome from the SMSC. It spans the queue, so
-	// it is the backlog indicator; its buckets reach minutes for that reason.
+	// MessageE2EDuration measures acceptance until the SMSC's terminal answer to a submit_sm — the span
+	// the NFR budgets (spec §1.2: p50 < 400 ms, p99 < 2 s). It spans the queue, so it is also the backlog
+	// indicator; its buckets reach minutes for that reason.
+	//
+	// Observed by connector-pool, once per SEGMENT and only on a terminal outcome, with the same labels
+	// and the same values as SubmitsTotal — so _count and that counter are directly comparable, and a
+	// multipart message contributes one sample per submit_sm rather than one per message.
+	//
+	// What it deliberately leaves out is the whole reason a p99 read off it means anything. The NFR
+	// excludes deliberate backpressure and dead-lettering (§6.7), so a throttled submit (redelivered) and
+	// a message parked on the max-age SLA (never sent) are not observed. A replayed message is timed from
+	// its replay, not from its immutable accept time hours earlier, which would otherwise land every
+	// drained message past the top bucket. The clock stops on the submit_sm_resp: the billing settle and
+	// the CDR write that follow are our bookkeeping, not delivery latency.
 	MessageE2EDuration *prometheus.HistogramVec
 
 	// QueueDepth is the lag of a Kafka topic, sampled by whoever consumes it. Rising depth with flat
@@ -92,6 +105,31 @@ const (
 	nativeMinResetDuration = time.Hour
 )
 
+// e2eLatencyBudgets are the end-to-end latency thresholds the spec states (§1.2): p50 < 400 ms and
+// p99 < 2 s, submission to SMSC delivery attempt. They are spec figures, not tuning.
+var e2eLatencyBudgets = []float64{0.4, 2}
+
+// e2eBuckets is the exponential spine 10 ms … ~5 min, with the two spec thresholds spliced in.
+//
+// The range is the backlog requirement: a healthy send is sub-second, but a queue draining after an
+// incident is measured in minutes and must stay visible instead of piling into +Inf.
+//
+// The two extra edges are what make the budgets answerable IN THE ZONE WHERE THE VERDICT MATTERS. A
+// classic histogram resolves a quantile only to the bucket it falls in, and the spine's edges around
+// 2 s are 1.28 and 2.56. A comfortably fast p99 — say 80 ms, in (0.064, 0.128] — was always decidable;
+// what was not is a p99 anywhere in (1.28, 2.56], i.e. exactly the range where a run is close enough
+// to the budget for the answer to be worth having. Same for 400 ms and its (0.32, 0.64] straddle.
+// Two extra series per (connector, status) is a trivial price for that.
+//
+// This buys the TEXT exposition, which is what test/load/gatewaymetrics reads. A Prometheus that
+// negotiates protobuf keeps the native histogram configured below (1.1 bucket factor, ~10 % at any
+// magnitude) and discards these classic buckets entirely.
+func e2eBuckets() []float64 {
+	b := append(prometheus.ExponentialBuckets(0.01, 2, 16), e2eLatencyBudgets...)
+	sort.Float64s(b)
+	return b
+}
+
 // NewCatalog builds the catalogue. It registers nothing: the caller decides which registry owns it.
 func NewCatalog() *Catalog {
 	return &Catalog{
@@ -108,10 +146,10 @@ func NewCatalog() *Catalog {
 
 		MessageE2EDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name: "message_e2e_duration_seconds",
-			Help: "Time from submission to the final SMSC outcome, by connector and status.",
-			// 10 ms … ~5 min: a healthy send is sub-second, but a queue draining after an incident is
-			// measured in minutes and must stay visible instead of piling into +Inf.
-			Buckets:                         prometheus.ExponentialBuckets(0.01, 2, 16),
+			Help: "Time from submission (or from replay) to the SMSC's terminal submit_sm_resp, by connector" +
+				" and status (ok|rejected). A message never sent is not observed; one that WAS throttled" +
+				" and later got through carries the wait it spent being throttled.",
+			Buckets:                         e2eBuckets(),
 			NativeHistogramBucketFactor:     nativeBucketFactor,
 			NativeHistogramMaxBucketNumber:  nativeMaxBucketNumber,
 			NativeHistogramMinResetDuration: nativeMinResetDuration,

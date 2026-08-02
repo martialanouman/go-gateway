@@ -104,12 +104,16 @@ tidy: ## Tidy go.mod/go.sum
 # Both targets fail loudly when it is missing rather than skipping: a load harness believed green
 # because it never ran is worse than no harness (step-200 D7).
 LOAD_PROFILE ?= smoke
+# IDEMPOTENCY=on makes the run emit an Idempotency-Key, which switches the gateway to submitIdempotent
+# and its two extra Redis round-trips (step-201 D10). Empty means off. It is forwarded explicitly so
+# that `make load IDEMPOTENCY=on` works, and not only the exported form.
+IDEMPOTENCY ?=
 
 .PHONY: load
-load: ## Run the REST load profile against BASE_URL: make load LOAD_PROFILE=smoke|sustained|peak BASE_URL=http://host:port
+load: ## Run the REST load profile against BASE_URL: make load LOAD_PROFILE=smoke|sustained|peak BASE_URL=http://host:port [IDEMPOTENCY=on]
 	@command -v k6 >/dev/null 2>&1 || { echo "k6 is not installed — see scripts/load-smoke.sh for install hints"; exit 2; }
-	@if [ -z "$(BASE_URL)" ]; then echo "usage: make load BASE_URL=http://host:port [LOAD_PROFILE=smoke|sustained|peak]"; exit 2; fi
-	PROFILE=$(LOAD_PROFILE) BASE_URL=$(BASE_URL) k6 run test/load/k6/messages.js
+	@if [ -z "$(BASE_URL)" ]; then echo "usage: make load BASE_URL=http://host:port [LOAD_PROFILE=smoke|sustained|peak] [IDEMPOTENCY=on]"; exit 2; fi
+	PROFILE=$(LOAD_PROFILE) BASE_URL=$(BASE_URL) IDEMPOTENCY=$(IDEMPOTENCY) k6 run test/load/k6/messages.js
 
 .PHONY: load-smoke
 load-smoke: ## Prove the k6 thresholds are wired: the same script must pass idle AND fail against a slowed stub
@@ -118,6 +122,17 @@ load-smoke: ## Prove the k6 thresholds are wired: the same script must pass idle
 .PHONY: load-binds
 load-binds: ## Open N concurrent SMPP binds against a peer: make load-binds BINDS=50 ADDR=127.0.0.1:2775
 	go run ./cmd/smpp-bindgen -binds $(or $(BINDS),50) -addr $(or $(ADDR),127.0.0.1:2775) -hold $(or $(HOLD),5s)
+
+# The end-to-end budget (spec §1.2: submission -> SMSC delivery attempt, p99 < 2s) is read off the
+# gateway's own message_e2e_duration_seconds. Record a baseline, run the load, then check what the run
+# added — without the baseline the figure folds in every observation since the process started.
+.PHONY: e2e-baseline e2e-check
+e2e-baseline: ## Record the pre-run reading: make e2e-baseline [METRICS=http://host:9100] [BASELINE=/tmp/e2e.json]
+	go run ./cmd/e2e-budget -metrics $(or $(METRICS),http://127.0.0.1:9100) -baseline $(or $(BASELINE),/tmp/e2e-baseline.json)
+
+e2e-check: ## Score the run against the baseline: make e2e-check [BUDGET=2s] [QUANTILE=0.99]
+	go run ./cmd/e2e-budget -metrics $(or $(METRICS),http://127.0.0.1:9100) -baseline $(or $(BASELINE),/tmp/e2e-baseline.json) \
+		-check -budget $(or $(BUDGET),2s) -quantile $(or $(QUANTILE),0.99)
 
 # The peer is NOT started here (step-201 D3): the tool takes an address and a metrics URL, so the same
 # command works against a remote simulator for the full-scale campaign. Start it first — the docker run

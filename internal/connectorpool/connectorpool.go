@@ -729,19 +729,28 @@ func shardIndex(key []byte, n int) int {
 	return int(h.Sum32() % uint32(n)) //nolint:gosec // n is 1..32, the modulo result fits an int
 }
 
-// expired reports whether a routed message has outlived the gateway's max-age SLA and must be
-// dead-lettered instead of submitted (step-129). The age base is max(SubmittedAt, ReplayedAt): a
-// replayed message uses its replay time, so an operator replay after a long outage is not instantly
-// re-expired on the immutable SubmittedAt. A zero MaxMessageAge disables the check.
-func (s *Service) expired(r pipeline.RoutedMT) bool {
-	if s.deps.MaxMessageAge <= 0 {
-		return false
-	}
+// ageBase is the instant a message's age is counted from: its immutable accept time, or its replay time
+// when an operator re-injected it off the dead-letter topic (step-129).
+//
+// Both the max-age SLA and the end-to-end latency histogram read it, and they must agree: a message the
+// SLA considers seconds old cannot be hours old to the metric. It is also what keeps a drain of parked
+// messages from burying the p99 — SubmittedAt on a replay can be arbitrarily far in the past, well past
+// the histogram's own ceiling.
+func ageBase(r pipeline.RoutedMT) time.Time {
 	base := r.SubmittedAt
 	if r.ReplayedAt != nil && r.ReplayedAt.After(base) {
 		base = *r.ReplayedAt
 	}
-	return time.Since(base) > s.deps.MaxMessageAge
+	return base
+}
+
+// expired reports whether a routed message has outlived the gateway's max-age SLA and must be
+// dead-lettered instead of submitted (step-129). A zero MaxMessageAge disables the check.
+func (s *Service) expired(r pipeline.RoutedMT) bool {
+	if s.deps.MaxMessageAge <= 0 {
+		return false
+	}
+	return time.Since(ageBase(r)) > s.deps.MaxMessageAge
 }
 
 // healthRetry handles a connector-health failure for a message with NO viable fallback chain (a dead
@@ -868,6 +877,19 @@ func (s *Service) processOne(ctx context.Context, b *bind, bindIndex int, rec ka
 		return s.healthRetry(ctx, rec, routed, fmt.Errorf("connectorpool: submit_sm: %w", err))
 	}
 
+	// The end-to-end span (spec §1.2, "submission → SMSC delivery attempt") closes HERE, on the
+	// submit_sm_resp — the last instant that belongs to the delivery. Everything below it (breaker,
+	// throttle, billing settle, CDR write) is our own bookkeeping, and folding a stalled ClickHouse
+	// writer into a delivery-latency budget would make the gateway look slow for someone else's fault.
+	// One nanotime read per submit, no allocation; it is only OBSERVED on a terminal outcome below.
+	// Clamped at zero: the accept stamp was written by another pod and survived a JSON round trip, so
+	// it carries no monotonic reading and time.Since falls back to the wall clock. A pod whose clock
+	// trails the ingest pod's by more than the send took yields a negative duration — which Prometheus
+	// accepts into the lowest bucket, so the p99 would read "under 10 ms" and the budget would pass
+	// trivially. Clamping keeps that skew from flattering the figure; it still inflates _sum on the
+	// other side, which is the honest direction.
+	e2e := max(time.Since(ageBase(routed)), 0)
+
 	// Feed the outcome to this bind's circuit breaker (step-121): a system error / bind failure is a
 	// health failure, a throttle/queue-full is transient (ignored), a success clears it.
 	s.feedBreaker(bindIndex, resp.Status, false)
@@ -940,6 +962,16 @@ func (s *Service) processOne(ctx context.Context, b *bind, bindIndex int, rec ka
 	})
 	if s.deps.Metrics != nil {
 		s.deps.Metrics.SubmitsTotal.WithLabelValues(connectorID, status).Inc()
+		// Same site, same labels, same values as submits_total, so _count and the counter stay
+		// comparable and one status vocabulary covers both legs. Only terminal outcomes reach here: a
+		// throttle redelivers above and a dead-letter returns earlier.
+		//
+		// That covers the dead-letter half of the NFR's carve-out (§1.2) and NOT the backpressure half:
+		// a throttled attempt is not observed, but the message it belonged to is — on the redelivery
+		// that finally succeeds, and the clock still runs from ageBase, so it carries the whole wait.
+		// Same for the AIMD pacing above. Reading a throttling episode out of this histogram means
+		// reading submit_rejected_total{code="rate_limited"} beside it.
+		s.deps.Metrics.MessageE2EDuration.WithLabelValues(connectorID, status).Observe(e2e.Seconds())
 		if status == "rejected" {
 			s.deps.Metrics.SubmitRejectedTotal.
 				WithLabelValues(connectorID, string(errs.CodeFromSMPPStatus(resp.Status))).Inc()
