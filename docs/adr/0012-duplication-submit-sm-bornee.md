@@ -138,7 +138,7 @@ Le seuil de 30 s porte sur une **durée**, la mesure disponible est un **nombre 
 fait la division. Expression de référence, à poser telle quelle :
 
 ```promql
-queue_depth_records{queue="mt.outcome"} / rate(cdr_outcome_projected_total[5m]) > 30
+max(queue_depth_records{queue="mt.outcome"}) / sum(rate(cdr_outcome_projected_total[5m])) > 30
 # for: 2m
 ```
 
@@ -153,7 +153,28 @@ projecteur lui-même se figerait à sa dernière valeur saine dès qu'il s'arrê
 exactement dans le cas qu'on surveille. Topic vide et projecteur oisif donnent `0/0 = NaN`, qui ne
 déclenche rien.
 
-Le `for: 2m` couvre deux ticks de poll (5 s) plus le lissage du `rate`, pour ne pas alerter sur une
+**Les deux côtés sont agrégés, et ce n'est pas décoratif.** Un opérateur binaire entre deux vecteurs
+apparie sur l'**ensemble complet des labels** : le numérateur porte `queue`, le dénominateur non, donc
+sans agrégation l'expression n'apparie **rien** et ne peut jamais alerter. `max` à gauche parce que
+`queue_depth_records` est une jauge de **groupe**, identique sur chaque réplique (« take the latest per
+instance and then the MAX, never the sum ») ; `sum` à droite parce que le compteur est **par pod**. Un
+`ignoring(queue)` aurait apparié pod à pod et multiplié le quotient par le nombre de répliques.
+
+Deux règles compagnes, parce que le quotient seul ne couvre pas tout :
+
+```promql
+absent(queue_depth_records{queue="mt.outcome"})   # la série a disparu : pod mort, ou groupe jamais joint
+
+min_over_time(queue_depth_records{queue="mt.outcome"}[10m]) > 0
+  and deriv(queue_depth_records{queue="mt.outcome"}[10m]) > 0   # le backlog ne cesse de croître
+```
+
+La première couvre le cas où **les deux** séries s'éteignent ensemble : l'expression rend alors un vecteur
+vide et l'alerte se *résout* au lieu de partir. La seconde ne lit que le numérateur, donc elle est
+insensible au fait que le dénominateur peut recompter un rejeu quand un commit d'offset échoue (une boucle
+de rebalance affiche un débit vivant sans qu'aucun offset n'avance).
+
+Le `for: 2m` laisse au `rate[5m]` le temps de refléter un changement de régime, pour ne pas alerter sur une
 rafale de trafic absorbée en quelques secondes.
 
 **Cette alerte n'est pas encore déployée, et sa règle ne vit pas dans ce dépôt.** Les règles Alertmanager

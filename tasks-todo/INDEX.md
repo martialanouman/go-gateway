@@ -160,3 +160,4 @@ structurelles et à faire **avant** que M12 n'empile dessus.
 - [ ] step-206 — Auth opérateur réelle (OIDC/mTLS) remplaçant le stub M1
 - [ ] step-207 — Manifests deploy/ Kubernetes (Deployments, Services, HPA, PDB, probes)
 - [ ] step-208 — Dérouler la checklist de mise en production (go-live)
+- [ ] step-209 — `cancelled` ne doit plus enterrer un message réellement livré (course élargie par step-201c)

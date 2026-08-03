@@ -371,10 +371,10 @@ Déploiement Kubernetes : services conteneurisés, tout état de session externa
 **Lag de projection du statut** (ADR-0012). Le statut d'un message est la dernière projection, pas un état temps réel : `enroute` est écrit par un consommateur dédié depuis `mt.outcome`. Le retard se surveille en convertissant un backlog en records vers la durée qu'il représente :
 
 ```promql
-queue_depth_records{queue="mt.outcome"} / rate(cdr_outcome_projected_total[5m]) > 30   # for: 2m
+max(queue_depth_records{queue="mt.outcome"}) / sum(rate(cdr_outcome_projected_total[5m])) > 30   # for: 2m
 ```
 
-Le numérateur vient du broker par une boucle indépendante du projecteur, le dénominateur du projecteur lui-même — donc un projecteur **mort** donne `rate → 0` et fait partir l'alerte, là où une jauge d'âge qu'il poserait lui-même se figerait à sa dernière valeur saine. Détail et alternatives écartées : ADR-0012, « Surveiller le lag de statut ».
+Le numérateur vient du broker par une boucle indépendante du projecteur, le dénominateur du projecteur lui-même — donc un projecteur **mort** donne `rate → 0` et fait partir l'alerte, là où une jauge d'âge qu'il poserait lui-même se figerait à sa dernière valeur saine. **Les deux côtés doivent être agrégés** (`max` sur une jauge de groupe, `sum` sur un compteur par pod) : sans cela l'expression apparie deux jeux de labels différents et ne rend jamais rien. Deux règles compagnes (`absent()`, et la croissance monotone du backlog seul) complètent le quotient. Détail et alternatives écartées : ADR-0012, « Surveiller le lag de statut ».
 
 **Stream temps réel** : gateway WebSocket/SSE alimentée par un topic de métriques Kafka, pour le tableau de bord (`/admin/stream/metrics`, `/sessions`, `/billing-alerts`).
 

@@ -164,6 +164,56 @@ func TestOpsExposesTheOutcomeProjectionDrainRate(t *testing.T) {
 	}
 }
 
+// TestLagAlertOperandsHaveTheLabelSetsTheExpressionAssumes freezes the two facts the alert expression
+// rests on, because the expression itself is evaluated by no test in this repo (step-201c, D14/D17).
+//
+// The alert is:
+//
+//	max(queue_depth_records{queue="mt.outcome"}) / sum(rate(cdr_outcome_projected_total[5m])) > 30
+//
+// Both sides are aggregated, and the first version of this expression was not — it divided the two
+// operands directly. A PromQL binary operator matches on the FULL label set, so a left side carrying
+// `queue` and a right side carrying nothing produce ZERO matched pairs: an empty vector, no alert, ever.
+// `max` and `sum` differ for a second reason: the gauge is group-scoped (every replica publishes the same
+// value) while the counter is per-pod, so pairwise matching would have multiplied the quotient by the
+// replica count.
+//
+// This test cannot catch a badly written expression. It catches the drift that would silently invalidate
+// the one we wrote: a label appearing on the counter, or the gauge's `queue` label being renamed.
+func TestLagAlertOperandsHaveTheLabelSetsTheExpressionAssumes(t *testing.T) {
+	cfg := testConfig()
+	cfg.Postgres = pgtest.Config(t)
+	cfg.Redis = redistest.Config(t)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	app, err := newRouterApp(ctx, cfg, silentLogger())
+	if err != nil {
+		t.Fatalf("newRouterApp: %v", err)
+	}
+	defer app.close()
+
+	// A gauge vector exposes nothing until it has a child; feed it the value publishQueueDepth would.
+	app.catalog.QueueDepth.WithLabelValues("mt.outcome").Set(0)
+
+	rec := httptest.NewRecorder()
+	promhttp.HandlerFor(app.ops.Registry(), promhttp.HandlerOpts{}).
+		ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+
+	if !strings.Contains(body, `queue_depth_records{queue="mt.outcome"}`) {
+		t.Error(`the alert's numerator is not exposed as queue_depth_records{queue="mt.outcome"}: ` +
+			"the expression selects a series that does not exist")
+	}
+	// No braces: the counter must carry NO label of its own. One added here would survive sum() but would
+	// break any future expression that matched pairwise, and would silently change what sum() aggregates.
+	if !strings.Contains(body, "\ncdr_outcome_projected_total ") {
+		t.Error("cdr_outcome_projected_total now carries labels: the alert's denominator is no longer the " +
+			"bare per-pod counter the aggregation was written against")
+	}
+}
+
 // testConfig is a valid router configuration whose external dependencies all point at a closed port.
 func testConfig() config.Config {
 	closed := "127.0.0.1:1"

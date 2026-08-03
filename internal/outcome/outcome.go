@@ -79,6 +79,15 @@ func (p *Projector) Run(ctx context.Context) error {
 // It is called only where the batch is committable, never before the write: a projector looping on a
 // ClickHouse fault must show a drain rate of ZERO. One that kept ticking would hold the alert's quotient
 // down while the backlog climbs — silent in exactly the saturation the alert exists to catch.
+//
+// KNOWN LIMIT (step-201c, D19): committable is not committed. The commit happens afterwards, in RunBatch.
+// If CommitRecords fails — a member evicted because an InsertBatch outran the rebalance timeout, say —
+// the same records are re-polled, rewritten and RECOUNTED, so the drain rate looks alive while no offset
+// advances. It delays the alert rather than silencing it: the numerator keeps climbing as long as
+// production continues, so the quotient still crosses the threshold. Counting at the commit would need a
+// hook inside kafka.Consumer, a type every consumer in the repo shares, to bound the delay of an alert
+// that is not even deployed yet. The alert carries a companion expression over the numerator alone, which
+// is immune to this (ADR-0012).
 func (p *Projector) countDrained(recs []kafka.Record) {
 	if p.projected != nil {
 		p.projected.Add(float64(len(recs)))

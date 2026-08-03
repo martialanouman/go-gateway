@@ -292,8 +292,10 @@ elle s'applique **par consommateur**.
 L'expression est commise **verbatim** dans ADR-0012 et au §13 du guide :
 
 ```promql
-queue_depth_records{queue="mt.outcome"} / rate(cdr_outcome_projected_total[5m]) > 30   # for: 2m
+max(queue_depth_records{queue="mt.outcome"}) / sum(rate(cdr_outcome_projected_total[5m])) > 30   # for: 2m
 ```
+
+*(forme corrigée par `D17` : écrite sans agrégation, elle n'appariait rien et n'aurait jamais alerté.)*
 
 Le fichier de règles, lui, **ne revient à aucune step de ce dépôt** — et c'est délibéré, pas un report :
 step-207, la seule qui livre `deploy/`, met explicitement « règles Alertmanager (infra) » **hors

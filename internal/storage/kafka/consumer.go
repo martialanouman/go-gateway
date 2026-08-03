@@ -296,16 +296,30 @@ func (c *Consumer) Lag(ctx context.Context) (map[string]int64, error) {
 	if err := described.Error(); err != nil {
 		return nil, fmt.Errorf("kafka: lag for group %s: %w", c.group, err)
 	}
-	out := make(map[string]int64, len(described.Lag))
-	for topic, partitions := range described.Lag {
+	return sumLag(c.group, described.Lag)
+}
+
+// sumLag totals a described group's lag per topic, refusing any topic it cannot total honestly.
+//
+// Both refusals serve one rule: a backlog gauge may hold a stale value, but it may never publish a small
+// number that reads as "we are caught up".
+//
+//   - A partition whose lag could not be computed reports -1 WITH an error. Skipping it silently would
+//     publish a plausible-looking partial total.
+//   - A topic with NO partitions at all sums to a perfect 0, which is the same lie with no error to catch
+//     it. kadm seeds its map from the topics in the members' Join and leaves the partitions empty when the
+//     topic is missing from endOffsets — a shard error, or a topic that does not exist (step-201c, D20).
+func sumLag(group string, lag kadm.GroupLag) (map[string]int64, error) {
+	out := make(map[string]int64, len(lag))
+	for topic, partitions := range lag {
+		if len(partitions) == 0 {
+			return nil, fmt.Errorf("kafka: lag for group %s, topic %s: no partitions described", group, topic)
+		}
 		var total int64
 		for _, p := range partitions {
-			// A partition whose lag could not be computed reports -1 WITH an error. Skipping it silently
-			// would publish a small total that looks perfectly legitimate — the worst failure mode for a
-			// backlog gauge, since it reads as "we are caught up". Refuse the whole topic instead.
 			if p.Err != nil {
 				return nil, fmt.Errorf("kafka: lag for group %s, topic %s partition %d: %w",
-					c.group, topic, p.Partition, p.Err)
+					group, topic, p.Partition, p.Err)
 			}
 			if p.Lag > 0 {
 				total += p.Lag
