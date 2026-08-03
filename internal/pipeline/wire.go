@@ -203,6 +203,54 @@ func DecodeRouted(rec kafka.Record) (RoutedMT, error) {
 	}, nil
 }
 
+// outcomeWire is the JSON body of an mt.outcome record. There is deliberately no body field: the CDR
+// outcome row stores no content (invariant a) — see OutcomeMT.
+type outcomeWire struct {
+	MessageID      uuid.UUID  `json:"message_id"`
+	TraceID        uuid.UUID  `json:"trace_id"`
+	AccountID      uuid.UUID  `json:"account_id"`
+	CustomerID     uuid.UUID  `json:"customer_id"`
+	ConnectorID    uuid.UUID  `json:"connector_id"`
+	RouteID        *uuid.UUID `json:"route_id,omitempty"`
+	From           string     `json:"from"`
+	To             string     `json:"to"`
+	Encoding       string     `json:"encoding"`
+	SegmentSeq     int        `json:"segment_seq"`
+	SegmentCount   int        `json:"segment_count"`
+	SubmittedAt    time.Time  `json:"submitted_at"`
+	Status         string     `json:"status"`
+	ErrorCode      *string    `json:"error_code,omitempty"`
+	Billed         bool       `json:"billed"`
+	CreditsCharged *int32     `json:"credits_charged,omitempty"`
+}
+
+// EncodeOutcome builds the mt.outcome record for env, keyed by the logical message id — the same key
+// mt.routed uses — so every segment of a message, and every successive outcome of one segment, lands on
+// one partition in submit order (§7.3). The wire form is field-identical to the domain type, so a field
+// added to one must be added to the other or this stops compiling.
+func EncodeOutcome(env OutcomeMT) (kafka.Record, error) {
+	value, err := json.Marshal(outcomeWire(env))
+	if err != nil {
+		return kafka.Record{}, fmt.Errorf("pipeline: encode mt.outcome: %w", err)
+	}
+	key := env.MessageID
+	return kafka.Record{
+		Topic:   kafka.TopicMTOutcome,
+		Key:     key[:],
+		Value:   value,
+		Headers: idHeaders(env.MessageID, env.TraceID, env.AccountID, env.CustomerID),
+	}, nil
+}
+
+// DecodeOutcome parses an mt.outcome record.
+func DecodeOutcome(rec kafka.Record) (OutcomeMT, error) {
+	var w outcomeWire
+	if err := json.Unmarshal(rec.Value, &w); err != nil {
+		return OutcomeMT{}, fmt.Errorf("pipeline: decode mt.outcome: %w", err)
+	}
+	return OutcomeMT(w), nil
+}
+
 // maxFallbackChain caps how many connectors are read from the (untrusted) fallback_chain header, so a
 // malformed record can never make the pool loop or allocate without bound.
 const maxFallbackChain = 32

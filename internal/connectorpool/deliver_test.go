@@ -1,11 +1,14 @@
 package connectorpool
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/martialanouman/go-gateway/internal/smpp"
+
+	"github.com/martialanouman/go-gateway/internal/storage/kafka"
 )
 
 // TestParseReceiptTextDropsBodyPreview is the invariant-(a) guard: the "text:" field of a receipt
@@ -71,7 +74,9 @@ func TestParseReceiptFallsBackToText(t *testing.T) {
 // TestBuildMOUsesMessagePayloadWhenShortMessageEmpty: a large MO arrives in the message_payload TLV;
 // buildMO must read the body from there when short_message is empty.
 func TestBuildMOUsesMessagePayloadWhenShortMessageEmpty(t *testing.T) {
-	svc := New(Deps{})
+	// A producer is required since step-201c (D8), even here: buildMO is pure, but New refuses to build
+	// a pool that could send without recording.
+	svc := New(Deps{Producer: discardProducer{}})
 	ds := &smpp.DeliverSM{}
 	ds.SourceAddr, ds.DestinationAddr = "22507000001", "36000"
 	ds.TLVs.Set(smpp.TagMessagePayload, []byte("long body from payload"))
@@ -81,3 +86,9 @@ func TestBuildMOUsesMessagePayloadWhenShortMessageEmpty(t *testing.T) {
 		t.Errorf("body = %q, want the message_payload content", mo.Body.Reveal())
 	}
 }
+
+// discardProducer drops every record. It is what a test wires when it asserts nothing about the return
+// path — explicitly, so the choice reads in the test rather than being made by the constructor.
+type discardProducer struct{}
+
+func (discardProducer) Produce(context.Context, kafka.Record) error { return nil }

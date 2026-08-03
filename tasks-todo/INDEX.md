@@ -150,8 +150,9 @@ structurelles et à faire **avant** que M12 n'empile dessus.
 
 ## M12 — Durcissement, charge & mise en production
 - [x] step-200 — Harnais de charge k6/vegeta + générateur de binds SMPP (NFR)
-- [ ] step-201 — Tuning de débit : partitions Kafka, batch ClickHouse, pool pgx (+ instruments de mesure)
-- [ ] step-201c — Écritures CDR par batch dans le connector pool (goulot du débit traversant)
+- [x] step-201 — Tuning de débit : partitions Kafka, batch ClickHouse, pool pgx (+ instruments de mesure)
+- [x] step-201c — Le CDR sortant devient une projection (goulot du connector pool : 192 → 892 submit_sm/s)
+- [ ] step-201d — Le routeur est le goulot suivant du débit traversant (mesuré après step-201c)
 - [ ] step-201b — Campagne NFR pleine échelle sur environnement représentatif (dépend aussi de step-201c, step-207)
 - [ ] step-202 — Chaos : perte Redis (chaque politique de panne) + flapping connecteur
 - [ ] step-203 — Chaos : drain gracieux + PDB + binds préservés ; failover Postgres
@@ -160,3 +161,4 @@ structurelles et à faire **avant** que M12 n'empile dessus.
 - [ ] step-206 — Auth opérateur réelle (OIDC/mTLS) remplaçant le stub M1
 - [ ] step-207 — Manifests deploy/ Kubernetes (Deployments, Services, HPA, PDB, probes)
 - [ ] step-208 — Dérouler la checklist de mise en production (go-live)
+- [ ] step-209 — `cancelled` ne doit plus enterrer un message réellement livré (course élargie par step-201c)

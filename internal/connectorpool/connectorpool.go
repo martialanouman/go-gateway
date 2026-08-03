@@ -1,6 +1,9 @@
 // Package connectorpool is the outbound SMSC leg: a pool of parallel SMPP binds to one connector. It
-// consumes mt.routed, submits each message with submit_sm, and records the outcome in the CDR (enroute
-// on ESME_ROK, failed otherwise). It shards a poll batch across bind_pool_size binds by
+// consumes mt.routed, submits each message with submit_sm, and PUBLISHES the outcome on mt.outcome
+// (enroute on ESME_ROK, failed otherwise) for the CDR projection to write — it no longer writes that row
+// itself, because four synchronous ClickHouse round trips per message on the consumption path capped the
+// pool at a fraction of its SMSC throughput, and batching them in place would have made a write failure
+// re-submit messages already on the wire (step-201c, D1). It shards a poll batch across bind_pool_size binds by
 // hash(message_id) % bind_pool_size, so every segment of a message lands on one bind in order (§7.3);
 // each bind is processed by its own worker so the binds submit concurrently (step-124). No fallback and
 // no reroute yet — those are later milestones.
@@ -55,7 +58,10 @@ type Consumer interface {
 	RunBatch(ctx context.Context, handle kafka.BatchHandler) error
 }
 
-// CDRWriter records the send outcome. *clickhouse.CDRWriter satisfies it.
+// CDRWriter writes a CDR row directly. Since step-201c it is used ONLY for the outcomes that precede the
+// irreversible effect — a message cancelled before dispatch, a reroute, a dead-letter — whose write
+// failure can redeliver without duplicating an SMS. The post-submit outcome goes to mt.outcome instead
+// (D1/D6). *clickhouse.CDRWriter satisfies it.
 type CDRWriter interface {
 	Insert(ctx context.Context, row clickhouse.CDRRow) error
 }
@@ -158,19 +164,17 @@ type BreakerAggregator interface {
 	Report(ctx context.Context, connectorID string, bindIndex int, s breaker.State) (breaker.State, error)
 }
 
-// Producer publishes the return path (mo.inbound, dlr.events) durably. *kafka.Producer satisfies it.
-// New defaults a nil Producer to a no-op, so a bind with no producer wired acknowledges deliver_sm as
-// before (the M2 behaviour) rather than panicking.
+// Producer publishes the return path (mo.inbound, dlr.events), the reroute/dead-letter records, and —
+// since step-201c — every send outcome on mt.outcome. *kafka.Producer satisfies it, and its ProduceSync
+// is the acked-before-commit boundary the CDR's durability now rests on.
+//
+// It is REQUIRED: New panics on a nil Producer (step-201c D8). It used to default to a no-op, which was
+// harmless while that only swallowed a deliver_sm or a reroute; it stopped being harmless when the
+// outcome became the only record that a message left for the SMSC. A test that asserts nothing about
+// the return path wires a discarding fake, explicitly.
 type Producer interface {
 	Produce(ctx context.Context, rec kafka.Record) error
 }
-
-// noopProducer is the New default when no producer is wired: it drops the record. With it, a
-// deliver_sm is acknowledged without publishing (the pre-M4 behaviour), which the MT-only tests rely
-// on.
-type noopProducer struct{}
-
-func (noopProducer) Produce(context.Context, kafka.Record) error { return nil }
 
 // StreamEmitter records live figures for the realtime feed (internal/metricstream implements it). Its
 // methods return nothing: the send path must not be able to branch on a dashboard failure.
@@ -312,8 +316,18 @@ func New(deps Deps) *Service {
 	if deps.DLRMap == nil {
 		deps.DLRMap = noopDLRMap{}
 	}
+	// Required, not defaulted: since step-201c the outcome publish is the only record that a message
+	// left for the SMSC, and billing.Reaper settles orphan reservations against that record. A no-op
+	// here would let a pool send SMS it never accounts for — and refusing the publish instead would be
+	// worse, because the publish happens after the submit_sm: the send would be redelivered and the
+	// same SMS would go out in a loop (D8).
+	//
+	// The rule this follows: a no-op default is legitimate only when the resulting service is a mode
+	// someone would deliberately run. Billing nil is billing opt-out, a documented mode; Throttle or
+	// DeadLetter nil is one metric less. A pool that sends without recording is nobody's mode.
 	if deps.Producer == nil {
-		deps.Producer = noopProducer{}
+		panic("connectorpool: Deps.Producer is required — mt.outcome carries the CDR's durability and " +
+			"the billing reaper settles against it (step-201c D8)")
 	}
 	if deps.Throttle == nil {
 		deps.Throttle = noopThrottle{}
@@ -779,9 +793,10 @@ func (s *Service) healthRetry(ctx context.Context, rec kafka.Record, r pipeline.
 func retryKey(rec kafka.Record) string { return fmt.Sprintf("%d:%d", rec.Partition, rec.Offset) }
 
 // processOne submits a single routed segment on the given bind and records its outcome. It returns a
-// non-nil error only on a transient fault (bad decode, dead bind, transient SMSC rejection) so the
-// record is left uncommitted for redelivery; a terminal SMSC failure is written to the CDR and returns
-// nil. It is the per-record body the batch handler runs, one shard at a time.
+// non-nil error only on a transient fault (bad decode, dead bind, transient SMSC rejection, or a failed
+// outcome publish) so the record is left uncommitted for redelivery; a terminal SMSC failure is
+// published on mt.outcome and returns nil. It is the per-record body the batch handler runs, one shard
+// at a time.
 func (s *Service) processOne(ctx context.Context, b *bind, bindIndex int, rec kafka.Record) (err error) {
 	ctx, span := s.deps.Tracer.Start(ctx, "connector.submit")
 	defer span.End()
@@ -928,14 +943,21 @@ func (s *Service) processOne(ctx context.Context, b *bind, bindIndex int, rec ka
 		return fmt.Errorf("connectorpool: submit_sm rejected transiently (status 0x%08x): %w", resp.Status, errTransientReject)
 	}
 
+	// The SMS is on the SMSC's wire from here on, so remember smsc_msg_id -> message_id BEFORE any
+	// bookkeeping that can fail: the SMSC will send its receipt whether or not our settle and our publish
+	// succeed, and a receipt that arrives with no mapping is orphaned. It sat after the (fail-closed) CDR
+	// write until step-201c, which meant a storage fault also cost us the receipt of a message that really
+	// was delivered.
+	s.recordDLRMapping(ctx, routed, resp)
+
 	// Settle the reservation on the terminal outcome (step-146): capture a sent message, release a
 	// permanently-failed one. Both FAIL OPEN — neither returns an error — so a billing fault can never turn
 	// this committed outcome into a redelivery that re-submits the message (a duplicate SMS). A
-	// billing-disabled message makes no call. Capture fills billed/credits_charged on the CDR; the failed
-	// path leaves them false/nil (the reserve refund happens durably in billing-svc, not on this row).
-	row := cdrRow(routed, resp)
+	// billing-disabled message makes no call. Capture fills billed/credits_charged on the outcome; the
+	// failed path leaves them false/nil (the reserve refund happens durably in billing-svc, not here).
+	event := submitOutcome(routed, resp)
 	if resp.Status == smpp.StatusOK {
-		row.Billed, row.CreditsCharged = s.deps.Billing.Capture(ctx, routed)
+		event.Billed, event.CreditsCharged = s.deps.Billing.Capture(ctx, routed)
 	} else {
 		// A permanent SMSC rejection: a failed CDR is written and the offset commits, so this is the only
 		// place the span learns the message was refused.
@@ -977,15 +999,30 @@ func (s *Service) processOne(ctx context.Context, b *bind, bindIndex int, rec ka
 				WithLabelValues(connectorID, string(errs.CodeFromSMPPStatus(resp.Status))).Inc()
 		}
 	}
-	if err := s.deps.CDR.Insert(ctx, row); err != nil {
-		return fmt.Errorf("connectorpool: write cdr: %w", err)
+	// Publish the outcome instead of writing the CDR here (step-201c, D1). The row is now a PROJECTION:
+	// a dedicated consumer batches mt.outcome into ClickHouse, which is what moves the batching to where a
+	// redelivery only rewrites a row instead of re-submitting an SMS.
+	//
+	// The produce is fail-closed and acked before the offset commits — the guarantee the synchronous CDR
+	// write used to provide, on a failure domain DECORRELATED from ClickHouse saturation (a Kafka the pool
+	// cannot produce to is a Kafka it is not consuming mt.routed from either, so there is nothing in flight
+	// to duplicate). It is not fail-open: without a recorded outcome the billing reaper (step-190) settles
+	// nothing, and a customer's reservation would be held for good. The residual window — a crash between
+	// the submit_sm and this ack — is the bounded duplicate ADR-0012 assumes.
+	outRec, err := pipeline.EncodeOutcome(event)
+	if err != nil {
+		return fmt.Errorf("connectorpool: encode mt.outcome: %w", err)
 	}
-	s.recordDLRMapping(ctx, routed, resp)
+	if err := s.deps.Producer.Produce(ctx, outRec); err != nil {
+		return fmt.Errorf("connectorpool: publish mt.outcome: %w", err)
+	}
 	return nil
 }
 
 // recordDLRMapping remembers smsc_msg_id -> message_id after a successful submit, so a later
-// deliver_sm (delivery receipt) can be correlated back to this message (step-044). It is best-effort:
+// deliver_sm (delivery receipt) can be correlated back to this message (step-044). It is called as soon
+// as the outcome is terminal, BEFORE the settle and the outcome publish, because the SMSC will send its
+// receipt regardless of how our own bookkeeping fares. It is best-effort:
 // the message is already enroute, so a mapping-write failure — or a non-ROK response, or a response
 // carrying no smsc_msg_id — must never fail the record. A write error is logged and counted only by
 // the log; the consequence (a later receipt arriving uncorrelated) is handled in step-044. The log

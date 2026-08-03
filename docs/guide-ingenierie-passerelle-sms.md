@@ -277,7 +277,7 @@ Asymétrique. **Effacer un client** : crypto-shred de sa clé + purge de ses lig
 
 ## 10. Fiabilité et sémantique de livraison (§6.7)
 
-Toute écriture d'ingestion vers Kafka est la limite de durabilité ; l'accusé n'a lieu qu'après validation dans `mt.inbound`. **Aucune perte après accusé** (remise au SMSC au moins une fois). L'exactement-une-fois n'est pas garanti de bout en bout (SMPP est au moins une fois) — des clés d'idempotence sont disponibles côté client, et la facturation est idempotente par `message_id`. Files dead-letter pour les messages ayant épuisé leurs retries (y compris `fallback_chain` épuisé), remontées pour retraitement.
+Toute écriture d'ingestion vers Kafka est la limite de durabilité ; l'accusé n'a lieu qu'après validation dans `mt.inbound`. **Aucune perte après accusé** (remise au SMSC au moins une fois). L'exactement-une-fois n'est pas garanti de bout en bout (SMPP est au moins une fois) — des clés d'idempotence sont disponibles côté client, et la facturation est idempotente par `message_id`. **Un abonné peut donc recevoir deux fois le même SMS** : la cause résiduelle est un crash entre le `submit_sm` parti et l'accusé du produce qui enregistre son issue, bornée à **~250 messages par partition et par crash** (ADR-0012 ; 56 KiB compressés, le nombre variant avec le taux de compression). Files dead-letter pour les messages ayant épuisé leurs retries (y compris `fallback_chain` épuisé), remontées pour retraitement.
 
 Matrice cible des NFR (§1.2) : disponibilité 99,95 %/région ; ingestion p50 < 50 ms / p99 < 250 ms ; bout-en-bout p50 < 400 ms / p99 < 2 s en charge nominale ; débit soutenu 5 000–10 000 SMS/s, pic 15 000 ; surcoût de réservation de crédit < 5 ms p99 (nul si désactivé).
 
@@ -366,7 +366,15 @@ Déploiement Kubernetes : services conteneurisés, tout état de session externa
 
 **Métriques** : Prometheus par pod → remote-write → TSDB long terme (Thanos/Mimir), scrape 10–15 s, fraîcheur < 5 s. Cardinalité (compte × connecteur × route) — dizaines de milliers de séries. Le groupe client n'est **pas** un label Prometheus : dérivable du compte, la ventilation somme les séries par compte (§6.17).
 
-**Alerting infrastructure** : Alertmanager, **indépendant** de la disponibilité du tableau de bord.
+**Alerting infrastructure** : Alertmanager, **indépendant** de la disponibilité du tableau de bord. Les règles vivent côté infrastructure, pas dans ce dépôt ; les expressions qui font foi sont écrites ici et dans les ADR, et la checklist §15 vérifie au go-live qu'elles ont bien été posées.
+
+**Lag de projection du statut** (ADR-0012). Le statut d'un message est la dernière projection, pas un état temps réel : `enroute` est écrit par un consommateur dédié depuis `mt.outcome`. Le retard se surveille en convertissant un backlog en records vers la durée qu'il représente :
+
+```promql
+max(queue_depth_records{queue="mt.outcome"}) / sum(rate(cdr_outcome_projected_total[5m])) > 30   # for: 2m
+```
+
+Le numérateur vient du broker par une boucle indépendante du projecteur, le dénominateur du projecteur lui-même — donc un projecteur **mort** donne `rate → 0` et fait partir l'alerte, là où une jauge d'âge qu'il poserait lui-même se figerait à sa dernière valeur saine. **Les deux côtés doivent être agrégés** (`max` sur une jauge de groupe, `sum` sur un compteur par pod) : sans cela l'expression apparie deux jeux de labels différents et ne rend jamais rien. Deux règles compagnes (`absent()`, et la croissance monotone du backlog seul) complètent le quotient. Détail et alternatives écartées : ADR-0012, « Surveiller le lag de statut ».
 
 **Stream temps réel** : gateway WebSocket/SSE alimentée par un topic de métriques Kafka, pour le tableau de bord (`/admin/stream/metrics`, `/sessions`, `/billing-alerts`).
 
@@ -404,7 +412,7 @@ CDR (ClickHouse) et grand livre (Postgres) partitionnés par jour ; audit mensue
 
 ## 15. Checklist de mise en production
 
-Avant d'exposer un connecteur ou un client en production, vérifier : identifiants stockés en hash uniquement ; TLS actif sur REST et SMPP-TLS où requis ; `throughput_limit_per_sec` renseigné et `rate_limits` cohérents ; auto-reconnexion activée sur tout connecteur s'appuyant sur le disjoncteur ; sender IDs approuvés ; politique de contenu et clé de chiffrement provisionnées ; webhooks signés HMAC et testés ; partitions Kafka dimensionnées pour `bind_pool_size` ; partition du jour créée dans `billing_ledger` ; alerting Alertmanager indépendant du dashboard ; échantillonnage de trace 100 % sur les échecs ; test de bascule `fallback_chain` ; test de rotation d'identifiant avec grâce ; vérification que le corps n'apparaît dans aucun log ni span (test d'invariant).
+Avant d'exposer un connecteur ou un client en production, vérifier : identifiants stockés en hash uniquement ; TLS actif sur REST et SMPP-TLS où requis ; `throughput_limit_per_sec` renseigné et `rate_limits` cohérents ; auto-reconnexion activée sur tout connecteur s'appuyant sur le disjoncteur ; sender IDs approuvés ; politique de contenu et clé de chiffrement provisionnées ; webhooks signés HMAC et testés ; partitions Kafka dimensionnées pour `bind_pool_size` ; partition du jour créée dans `billing_ledger` ; alerting Alertmanager indépendant du dashboard ; **règle de lag de projection du statut posée** (§13, expression d'ADR-0012 : sans elle, un projecteur arrêté laisse les messages en `accepted` sans que rien ne le signale) ; échantillonnage de trace 100 % sur les échecs ; test de bascule `fallback_chain` ; test de rotation d'identifiant avec grâce ; vérification que le corps n'apparaît dans aucun log ni span (test d'invariant).
 
 ---
 

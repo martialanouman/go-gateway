@@ -31,6 +31,7 @@ type bindPool struct {
 func startBindPool(t *testing.T, bindAddr, systemID, password string, rc reconnect.Config) *bindPool {
 	t.Helper()
 	svc := connectorpool.New(connectorpool.Deps{
+		Producer:    discardProducer{},
 		Consumer:    blockingConsumer{},
 		CDR:         &fakeCDR{},
 		ConnectorID: uuid.New(),

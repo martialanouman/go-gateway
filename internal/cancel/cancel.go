@@ -73,6 +73,20 @@ func NewCanceller(reader CDRReader, writer CDRWriter, flags FlagMarker, logger *
 // same window as the get-message 404. The message is still queued in Kafka and will dispatch; the ESME
 // must retry the cancel once the message is observable. The connector, not this projection, is the
 // authority on "already dispatched".
+//
+// That same limitation has a MIRROR side, and step-201c widened it. The enroute row is no longer written
+// synchronously by the connector: it is projected off mt.outcome (step-201c, D1). So a message already on
+// the wire keeps reading "accepted" for as long as that projection lags — tens of ms in steady state, but
+// bounded only by the lag alert (30 s) under ClickHouse saturation. Throughout that window a cancel_sm is
+// ACCEPTED for a message that will be delivered, and rank 60 then buries the enroute and delivered rows
+// that follow: get-message reports cancelled for ever on a delivered, billed message.
+//
+// The window pre-dates step-201c (it was the few ms between the connector's cancel check and its
+// synchronous write); what changed is its size, so this is a widened exposure and not a new one. It is
+// deliberately NOT fixed here (step-201c, D18): the fix requires deciding what cancelled MEANS once the
+// connector dispatched anyway, which is a spec decision. Note that lowering the rank is not the fix it
+// looks like — 45 still outranks delivered (40). Money is unaffected: charges follow the reserve/capture
+// ledger, which is idempotent by message_id and never reads this status.
 func (c *Canceller) Cancel(ctx context.Context, customerID, accountID, messageID uuid.UUID) error {
 	row, found, err := c.reader.Current(ctx, customerID, accountID, messageID)
 	if err != nil {

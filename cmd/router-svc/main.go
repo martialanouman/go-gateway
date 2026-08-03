@@ -20,7 +20,6 @@ import (
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/observability/metrics"
 	"github.com/martialanouman/go-gateway/internal/platform/supervisor"
-	"github.com/martialanouman/go-gateway/internal/storage/kafka"
 )
 
 // serviceName identifies this binary in logs, traces and metrics, and is the consumer group id.
@@ -79,16 +78,26 @@ func run() error {
 	g.Add("accepted cdr", func(c context.Context) error {
 		return runResilient(c, "accepted-cdr projector", app.accepted.Run, logger)
 	})
+	// The outcome-CDR projector (step-201c) is self-restarting for the same reason, and one more: it is now
+	// the ONLY writer of the enroute/failed row, so tearing it down on a ClickHouse blip would stop the
+	// lifecycle advancing for the whole fleet. Reprocessing from the last commit is safe — the row is
+	// idempotent — where crashing the router is not.
+	g.Add("outcome cdr", func(c context.Context) error {
+		return runResilient(c, "outcome-cdr projector", app.outcome.projector.Run, logger)
+	})
 	g.Add("snapshot watcher", app.watcher.Run)
 	g.Add("metric stream", func(c context.Context) error {
 		app.emitter.Run(c, metricStreamInterval)
 		return nil
 	})
-	// Queue depth is polled, not counted: it is the broker's view of how far this group is behind. It runs on
-	// its own slower tick because it costs a broker round-trip, and router-svc is the ONE owner of
-	// mt.inbound's depth — two services reporting the same topic would double-count (step-180).
+	// Queue depth is polled, not counted: it is the broker's view of how far each group is behind. It runs on
+	// its own slower tick because it costs a broker round-trip, and router-svc is the ONE owner of both these
+	// topics' depth — two services reporting the same topic would double-count (step-180).
+	//
+	// mt.outcome joined mt.inbound here in step-201c: the outcome projection is what now decides how long a
+	// message reads "accepted" before it reads "enroute", so its backlog is the status lag itself (D13).
 	g.Add("queue depth", func(c context.Context) error {
-		pollQueueDepth(c, app.consumer, app.emitter, app.catalog, logger)
+		pollQueueDepth(c, []lagReader{app.consumer, app.outcome.kafka}, app.emitter, app.catalog, logger)
 		return nil
 	})
 	if err := g.Run(ctx, logger); err != nil {
@@ -99,15 +108,15 @@ func run() error {
 	return nil
 }
 
-// acceptedProjectorBackoff is the pause between restarts of the accepted-CDR projector after a transient
-// fault (a ClickHouse blip), long enough to let the store recover without a tight crash loop, short enough
-// to keep the get-message 404 window from lengthening unduly.
-const acceptedProjectorBackoff = 2 * time.Second
+// projectorBackoff is the pause between restarts of a CDR projector after a transient fault (a ClickHouse
+// blip), long enough to let the store recover without a tight crash loop, short enough to keep the
+// get-message 404 window — and the outcome projector's status lag — from lengthening unduly.
+const projectorBackoff = 2 * time.Second
 
 // runResilient runs a supervised loop that survives transient faults: it restarts run after a bounded backoff
 // on any non-nil error, and returns only when ctx is cancelled (a clean stop). It lets one component tolerate
-// a dependency blip without failing the whole process — used for the accepted-CDR projector so a ClickHouse
-// fault reprocesses (at-least-once) instead of crashing router-svc's routing path.
+// a dependency blip without failing the whole process — used for both CDR projectors so a ClickHouse fault
+// reprocesses (at-least-once) instead of crashing router-svc's routing path.
 func runResilient(ctx context.Context, name string, run func(context.Context) error, logger *slog.Logger) error {
 	for {
 		err := run(ctx)
@@ -118,7 +127,7 @@ func runResilient(ctx context.Context, name string, run func(context.Context) er
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-time.After(acceptedProjectorBackoff):
+		case <-time.After(projectorBackoff):
 		}
 	}
 }
@@ -132,11 +141,17 @@ const metricStreamInterval = time.Second
 // depth is still fresh enough to read a backlog forming, and the cost stays negligible.
 const queueDepthInterval = 5 * time.Second
 
-// pollQueueDepth publishes this consumer group's backlog until ctx is cancelled.
+// lagReader is a consumer group whose backlog can be read from the broker. *kafka.Consumer satisfies it;
+// declared here, consumer-side, so the polling loop is testable without a broker.
+type lagReader interface {
+	Lag(ctx context.Context) (map[string]int64, error)
+}
+
+// pollQueueDepth publishes the backlog of every group this service consumes, until ctx is cancelled.
 //
 // Every failure mode is a skipped tick: a broker hiccup must not disturb routing, and a stale depth is
 // better than a service that reacts to its own dashboard.
-func pollQueueDepth(ctx context.Context, c *kafka.Consumer, e *metricstream.Emitter, cat *metrics.Catalog, logger *slog.Logger) {
+func pollQueueDepth(ctx context.Context, readers []lagReader, e *metricstream.Emitter, cat *metrics.Catalog, logger *slog.Logger) {
 	ticker := time.NewTicker(queueDepthInterval)
 	defer ticker.Stop()
 	for {
@@ -144,15 +159,27 @@ func pollQueueDepth(ctx context.Context, c *kafka.Consumer, e *metricstream.Emit
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			lags, err := c.Lag(ctx)
-			if err != nil {
-				logger.DebugContext(ctx, "queue depth unavailable this tick", "err", err)
-				continue
-			}
-			for topic, lag := range lags {
-				e.Set("queue_depth_records", metricstream.Labels{"queue": topic}, float64(lag))
-				cat.QueueDepth.WithLabelValues(topic).Set(float64(lag))
-			}
+			publishQueueDepth(ctx, readers, e, cat, logger)
+		}
+	}
+}
+
+// publishQueueDepth reads one tick's worth of backlog from each group and publishes it.
+//
+// The skipped tick is PER READER (step-201c, D16): a fault reading one group's lag leaves the others'
+// depth untouched. Sharing the skip would let an mt.inbound outage erase mt.outcome's depth from the same
+// scrape — and mt.outcome's depth is the numerator of the status-lag alert, which would then fall silent
+// because of an unrelated neighbour.
+func publishQueueDepth(ctx context.Context, readers []lagReader, e *metricstream.Emitter, cat *metrics.Catalog, logger *slog.Logger) {
+	for _, r := range readers {
+		lags, err := r.Lag(ctx)
+		if err != nil {
+			logger.DebugContext(ctx, "queue depth unavailable this tick", "err", err)
+			continue
+		}
+		for topic, lag := range lags {
+			e.Set("queue_depth_records", metricstream.Labels{"queue": topic}, float64(lag))
+			cat.QueueDepth.WithLabelValues(topic).Set(float64(lag))
 		}
 	}
 }

@@ -13,6 +13,9 @@ Les décisions structurantes de la passerelle, une par fichier, au format ADR st
 | [0007](0007-opt-out-scope-canal.md) | Opt-out scopé au canal avec union à l'application | Accepted |
 | [0008](0008-contenu-chiffre-cle-client.md) | Stockage de contenu chiffré par clé client, jamais loggé | Accepted |
 | [0009](0009-annulation-reservee-smpp.md) | Annulation d'un message réservée au canal SMPP (pas de surface REST) | Accepted |
+| [0010](0010-config-billing-sur-customers.md) | Configuration de facturation consolidée sur `customers` | Accepted |
+| [0011](0011-content-key-svc-dedie.md) | La garde des clés de contenu vit dans un service dédié | Accepted |
+| [0012](0012-duplication-submit-sm-bornee.md) | Duplication d'un `submit_sm` assumée et **bornée** (~250 par partition et par crash) | Accepted |
 
 ## Convention
 

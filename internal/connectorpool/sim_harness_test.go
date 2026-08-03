@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	goredis "github.com/redis/go-redis/v9"
+	"github.com/twmb/franz-go/pkg/kgo"
 
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/connector/breaker"
@@ -33,7 +34,7 @@ import (
 type simPool struct {
 	svc      *connectorpool.Service
 	producer *kafka.Producer
-	cdr      *clickhouse.CDRReader
+	outcomes *outcomeTail
 	connID   uuid.UUID
 	group    string // the pool's consumer group, for waitGroupStable
 }
@@ -140,7 +141,61 @@ func startSimPool(t *testing.T, cfg simPoolConfig) *simPool {
 		_ = chConn.Close()
 	})
 
-	return &simPool{svc: svc, producer: producer, cdr: clickhouse.NewCDRReader(chConn), connID: connID, group: group}
+	return &simPool{svc: svc, producer: producer, outcomes: startOutcomeTail(t), connID: connID, group: group}
+}
+
+// outcomeTail tails mt.outcome from the START of the topic in the background and remembers the last
+// outcome published per message id. Reading the topic (rather than the CDR table) is what a send-path
+// assertion looks like since step-201c: the pool publishes the outcome and a separate projection writes
+// the row, so the pool's end of the contract is the record. Consuming without a group and from the start
+// removes the rebalance race a group-based tail would have with the injection that follows.
+type outcomeTail struct {
+	mu   sync.Mutex
+	seen map[uuid.UUID]pipeline.OutcomeMT
+}
+
+func startOutcomeTail(t *testing.T) *outcomeTail {
+	t.Helper()
+	cl, err := kgo.NewClient(
+		kgo.SeedBrokers(kafkatest.Brokers(t)...),
+		kgo.ConsumeTopics(kafka.TopicMTOutcome),
+		kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()),
+	)
+	if err != nil {
+		t.Fatalf("outcome tail client: %v", err)
+	}
+	tail := &outcomeTail{seen: map[uuid.UUID]pipeline.OutcomeMT{}}
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for ctx.Err() == nil {
+			cl.PollFetches(ctx).EachRecord(func(r *kgo.Record) {
+				out, derr := pipeline.DecodeOutcome(kafka.Record{Value: r.Value})
+				if derr != nil {
+					return // another test's malformed record must not stop the tail
+				}
+				tail.mu.Lock()
+				tail.seen[out.MessageID] = out
+				tail.mu.Unlock()
+			})
+		}
+	}()
+	t.Cleanup(func() {
+		cancel()
+		wg.Wait()
+		cl.Close()
+	})
+	return tail
+}
+
+// get returns the outcome published for id, if any.
+func (tl *outcomeTail) get(id uuid.UUID) (pipeline.OutcomeMT, bool) {
+	tl.mu.Lock()
+	defer tl.mu.Unlock()
+	out, ok := tl.seen[id]
+	return out, ok
 }
 
 // injectRouted produces one mt.routed record addressed to this pool's connector, carrying the given
@@ -179,26 +234,25 @@ type routedIdent struct {
 	accountID  uuid.UUID
 }
 
-// waitCDRStatus polls the CDR until the message reaches want, or fails at the deadline with the last
-// status seen. A missing row (not yet written) is retried, not a failure.
-func (p *simPool) waitCDRStatus(t *testing.T, id routedIdent, want clickhouse.Status, within time.Duration) {
+// waitOutcome polls the mt.outcome tail until the message's published outcome reaches want, or fails at
+// the deadline with the last status seen. It also pins WHICH connector published it: a fallback scenario
+// that asserted only the status would pass if the degraded connector had somehow sent the message itself.
+func (p *simPool) waitOutcome(t *testing.T, id routedIdent, want clickhouse.Status, within time.Duration) {
 	t.Helper()
-	ctx := context.Background()
 	deadline := time.Now().Add(within)
-	var last clickhouse.Status = "(no row yet)"
-	var lastErr error
+	last := "(nothing published yet)"
 	for time.Now().Before(deadline) {
-		row, ok, err := p.cdr.Current(ctx, id.customerID, id.accountID, id.messageID)
-		switch {
-		case err != nil:
-			lastErr = err
-		case ok:
-			last = row.Status
-			if row.Status == want {
+		if out, ok := p.outcomes.get(id.messageID); ok {
+			last = out.Status
+			if out.Status == string(want) {
+				if out.ConnectorID != p.connID {
+					t.Fatalf("message %s was recorded %q by connector %s, want this pool's connector %s",
+						id.messageID, want, out.ConnectorID, p.connID)
+				}
 				return
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	t.Fatalf("message %s never reached CDR status %q (last: %q, last read error: %v)", id.messageID, want, last, lastErr)
+	t.Fatalf("message %s never reached published outcome %q (last: %q)", id.messageID, want, last)
 }

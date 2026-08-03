@@ -375,6 +375,21 @@ components:
         Lifecycle of a message. `accepted` = durably queued; `enroute` = handed to SMSC; terminal states
         are delivered/failed/expired/rejected/cancelled. `rerouted` is transient (fallback chain).
 
+        This is the LATEST PROJECTION of the lifecycle, not a real-time reading. The main transitions are
+        projected asynchronously — `accepted` from the ingestion stream, `enroute`/`failed` from the
+        connector's outcome, the delivery states from the carrier receipt — so a message can read one state
+        behind for a short while, most visibly just after submission, while it is already on its way to the
+        SMSC but still reads `accepted`. No freshness figure is promised.
+
+        One consequence worth knowing: `cancelled` is decided against this projection. A cancellation
+        accepted while an already-dispatched message still reads `accepted` is recorded, and `cancelled`
+        then outranks the states that follow — so a message that was in fact delivered can keep reading
+        `cancelled`. Billing is unaffected: charges follow the reserve/capture ledger, not this status.
+
+        Do not poll this endpoint to detect delivery. Delivery receipts are pushed to the account's
+        configured webhook, or delivered over SMPP `deliver_sm` when the account holds a bind (see the
+        `webhooks` section); they are opt-out per message via `registered_delivery`.
+
         A long message is split into several segments, each dispatched independently; this status is
         AGGREGATED across them: `delivered` only once EVERY segment is delivered, `failed` if any segment
         hard-fails, `expired` if a segment expires and none hard-failed, otherwise the least-advanced

@@ -367,6 +367,48 @@ batché. C'est la première chose à trancher avant `step-201b` : la réponse n'
 (`D8` l'exclut avec raison), c'est de faire écrire le pool **par batch de poll**, comme le projecteur,
 ou l'`async_insert` serveur avec `wait_for_async_insert=1`.
 
+### Mesure du 03/08/2026 (après step-201c) — le goulot a **changé de place**
+
+Mêmes conditions que ci-dessus, mêmes défauts livrés (`make load-reference` sans variable), avec la
+projection du CDR sortant en place (`step-201c` `D1`) : le pool publie l'issue sur `mt.outcome` et un
+consommateur dédié écrit la ligne CDR.
+
+| Levier | Chauffe | Accepté | **Sorti** | Pente du lag | p99 ingestion | Erreurs |
+|---|---:|---:|---:|---:|---:|---:|
+| **défauts livrés**, avant step-201c | 20 s | 1 200/s | **192/s** | +1 001 rec/s | 45 ms | 0 |
+| **défauts livrés**, après step-201c | 20 s | 1 200/s | **892/s** | +291 rec/s | 11 ms | 0 |
+
+**La patte sortante est libérée : ×4,6 sur la sortie, et la pente du lag divisée par 3,4.** Le critère
+d'état stationnaire reste néanmoins **refusé**, sur deux clauses :
+
+```
+[FAIL] input/output balance  53 491 submit_sm out for 72 002 accepted (892/s out vs 1200/s in),
+                             25,71 % d'écart, tolérance 2 %
+[FAIL] kafka lag             +291,5 rec/s sur 20 relevés (3 513 -> 22 448), veut au plus +12,0
+```
+
+Le relevé par topic dit **où** le backlog s'accumule désormais, et ce n'est plus le même endroit :
+
+```
+mt.inbound  3 486 -> 22 403     → le ROUTEUR est le nouveau goulot
+mt.routed       7 ->     12     → plat : le pool de connecteurs suit
+mt.outcome     20 ->     33     → plat : la projection de CDR suit
+```
+
+`mt.routed` montait de **+631 rec/s** avant la step ; il est maintenant plat à une douzaine de records.
+Le pool a cessé d'être le facteur limitant, et la projection introduite par `D1` ne crée pas de backlog
+à son tour — son retard reste sous les 35 records, soit largement sous le seuil de `D4`. Le sujet de
+`step-201c` — « le `connector-pool-svc` sort 192–330 `submit_sm/s` » — est donc **clos**.
+
+Ce qui reste est un goulot **différent, non mesuré jusqu'ici** : le routeur consomme `mt.inbound` moins
+vite que l'ingestion ne l'alimente. La latence bout-en-bout le confirme (p99 entre 10,2 et 20,5 s,
+moyenne 11,2 s) : c'est de l'attente en file, pas du temps de traitement — l'ingestion, elle, répond en
+11 ms au p99. Ce goulot appartient à `step-201b`, qui porte le verdict NFR ; le nommer était hors du
+périmètre de cette step, le mesurer ne l'était pas.
+
+Le pair reste hors de cause : calibré dans le run même, le faux SMSC a répondu à **236 274
+`submit_sm/s`** sur 4 binds, soit 265 fois la sortie observée.
+
 ### Réserves, nommément
 
 - **Un seul hôte, un seul processus, une seule mesure par configuration.** Les quatre lignes du tableau

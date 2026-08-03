@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
@@ -139,10 +140,40 @@ const cdrColumns = `message_id, trace_id, account_id, customer_id, direction, so
 // CDRWriter appends CDR rows.
 type CDRWriter struct {
 	conn driver.Conn
+
+	// logger and onTimelineError report a cdr_events write that failed. Both are optional: a nil
+	// logger falls back to slog.Default(), and a nil hook means the failure is only logged. The hook
+	// exists so a caller can count these — a failure that is merely logged is one nobody alerts on.
+	logger          *slog.Logger
+	onTimelineError func(error)
+}
+
+// CDRWriterOption configures a CDRWriter.
+type CDRWriterOption func(*CDRWriter)
+
+// WithCDRLogger replaces the logger used to report a failed timeline write.
+func WithCDRLogger(l *slog.Logger) CDRWriterOption {
+	return func(w *CDRWriter) {
+		if l != nil {
+			w.logger = l
+		}
+	}
+}
+
+// WithTimelineErrorHook registers a callback fired whenever a cdr_events write fails. It is the seam a
+// caller uses to increment a metric; the CDR write itself is unaffected either way.
+func WithTimelineErrorHook(f func(error)) CDRWriterOption {
+	return func(w *CDRWriter) { w.onTimelineError = f }
 }
 
 // NewCDRWriter builds a writer over conn.
-func NewCDRWriter(c *Conn) *CDRWriter { return &CDRWriter{conn: c.conn} }
+func NewCDRWriter(c *Conn, opts ...CDRWriterOption) *CDRWriter {
+	w := &CDRWriter{conn: c.conn}
+	for _, opt := range opts {
+		opt(w)
+	}
+	return w
+}
 
 // Insert writes one CDR row, deriving the version from the status rank. The synchronous single-row
 // path is what the router and connector use, where the row must be durable before the Kafka offset
@@ -177,7 +208,26 @@ func (w *CDRWriter) InsertBatch(ctx context.Context, rows []CDRRow) error {
 	if err := batch.Send(); err != nil {
 		return fmt.Errorf("clickhouse: send cdr batch: %w", err)
 	}
-	return w.appendEvents(ctx, rows)
+	// The timeline is reported, never propagated: see appendEvents.
+	if err := w.appendEvents(ctx, rows); err != nil {
+		w.reportTimelineError(ctx, err, len(rows))
+	}
+	return nil
+}
+
+// reportTimelineError surfaces a timeline write that failed without failing the CDR. Silence would
+// trade one dead guard for another: a timeline that stopped being written looks exactly like one
+// nobody queries.
+func (w *CDRWriter) reportTimelineError(ctx context.Context, err error, rows int) {
+	if w.onTimelineError != nil {
+		w.onTimelineError(err)
+	}
+	logger := w.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger.WarnContext(ctx, "clickhouse: cdr timeline write failed; the cdr rows are durable",
+		"error", err, "rows", rows)
 }
 
 // appendEvents mirrors each row into the append-only cdr_events table, which is what a lifecycle timeline

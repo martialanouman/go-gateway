@@ -95,18 +95,19 @@ func (f *fakeDLRMap) Put(_ context.Context, smscMsgID string, r pipeline.RoutedM
 
 // runWithDLRMap drives one record through the connector with a DLR map wired, returning the CDR sink
 // and Run's error.
-func runWithDLRMap(t *testing.T, dlr connectorpool.DLRMap, resp func(smpp.SubmitSM) fakesmsc.Resp, r pipeline.RoutedMT) (*fakeCDR, error) {
+func runWithDLRMap(t *testing.T, dlr connectorpool.DLRMap, resp func(smpp.SubmitSM) fakesmsc.Resp, r pipeline.RoutedMT) (*poolSink, error) {
 	t.Helper()
 	smsc := fakesmsc.Start(t, fakesmsc.Config{OnSubmit: resp})
 	rec, err := pipeline.EncodeRouted(r)
 	if err != nil {
 		t.Fatalf("encode routed: %v", err)
 	}
-	cdr := &fakeCDR{}
+	sink := newPoolSink()
 	rrec := otelrec.New(t)
 	svc := connectorpool.New(connectorpool.Deps{
 		Consumer: &fakeConsumer{records: []kafka.Record{rec}},
-		CDR:      cdr,
+		CDR:      sink.cdr,
+		Producer: sink.out,
 		DLRMap:   dlr,
 		Bind: connectorpool.BindConfig{
 			Addr: smsc.Addr(), SystemID: "esme", Password: "pw",
@@ -115,7 +116,7 @@ func runWithDLRMap(t *testing.T, dlr connectorpool.DLRMap, resp func(smpp.Submit
 		},
 		Tracer: observability.Tracer(rrec.Provider(), "connector-pool"),
 	})
-	return cdr, svc.Run(context.Background())
+	return sink, svc.Run(context.Background())
 }
 
 // TestConnectorRecordsDLRMappingOnEnroute: a successful submit records smsc_msg_id -> message_id, with
@@ -147,12 +148,12 @@ func TestConnectorRecordsDLRMappingOnEnroute(t *testing.T) {
 // enroute, so no mapping is recorded.
 func TestConnectorSkipsDLRMappingOnFailedSubmit(t *testing.T) {
 	dlr := &fakeDLRMap{}
-	cdr, err := runWithDLRMap(t, dlr, func(smpp.SubmitSM) fakesmsc.Resp { return fakesmsc.SubmitFailed() }, routed())
+	sink, err := runWithDLRMap(t, dlr, func(smpp.SubmitSM) fakesmsc.Resp { return fakesmsc.SubmitFailed() }, routed())
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if len(cdr.rows) != 1 || cdr.rows[0].Status != clickhouse.StatusFailed {
-		t.Fatalf("expected one failed CDR row, got %+v", cdr.rows)
+	if got := sink.outcome(t); got.Status != string(clickhouse.StatusFailed) {
+		t.Fatalf("outcome status = %q, want failed", got.Status)
 	}
 	if len(dlr.puts) != 0 {
 		t.Errorf("a failed submit must record no DLR mapping, got %+v", dlr.puts)
@@ -163,12 +164,12 @@ func TestConnectorSkipsDLRMappingOnFailedSubmit(t *testing.T) {
 // record — the message is already enroute, so Run commits and the enroute row still stands.
 func TestConnectorDLRMappingWriteIsBestEffort(t *testing.T) {
 	dlr := &fakeDLRMap{err: errors.New("redis down")}
-	cdr, err := runWithDLRMap(t, dlr, func(smpp.SubmitSM) fakesmsc.Resp { return fakesmsc.OK() }, routed())
+	sink, err := runWithDLRMap(t, dlr, func(smpp.SubmitSM) fakesmsc.Resp { return fakesmsc.OK() }, routed())
 	if err != nil {
 		t.Fatalf("Run must commit despite a DLR-map write failure: %v", err)
 	}
-	if len(cdr.rows) != 1 || cdr.rows[0].Status != clickhouse.StatusEnroute {
-		t.Errorf("expected one enroute row, got %+v", cdr.rows)
+	if got := sink.outcome(t); got.Status != string(clickhouse.StatusEnroute) {
+		t.Errorf("outcome status = %q, want enroute", got.Status)
 	}
 }
 
@@ -182,19 +183,20 @@ func routed() pipeline.RoutedMT {
 
 // runService drives the connector through one mt.routed record and returns the CDR sink and Run's
 // error, so a test can assert either a committed outcome (nil) or a redelivery (non-nil).
-func runService(t *testing.T, resp func(smpp.SubmitSM) fakesmsc.Resp, r pipeline.RoutedMT) (*fakeCDR, error) {
+func runService(t *testing.T, resp func(smpp.SubmitSM) fakesmsc.Resp, r pipeline.RoutedMT) (*poolSink, error) {
 	t.Helper()
 	smsc := fakesmsc.Start(t, fakesmsc.Config{OnSubmit: resp})
 	rec, err := pipeline.EncodeRouted(r)
 	if err != nil {
 		t.Fatalf("encode routed: %v", err)
 	}
-	cdr := &fakeCDR{}
+	sink := newPoolSink()
 	rrec := otelrec.New(t)
 
 	svc := connectorpool.New(connectorpool.Deps{
 		Consumer: &fakeConsumer{records: []kafka.Record{rec}},
-		CDR:      cdr,
+		CDR:      sink.cdr,
+		Producer: sink.out,
 		Bind: connectorpool.BindConfig{
 			Addr: smsc.Addr(), SystemID: "esme", Password: "pw",
 			DialTimeout: 3 * time.Second, ResponseTimeout: 3 * time.Second,
@@ -203,23 +205,23 @@ func runService(t *testing.T, resp func(smpp.SubmitSM) fakesmsc.Resp, r pipeline
 		Tracer: observability.Tracer(rrec.Provider(), "connector-pool"),
 	})
 
-	return cdr, svc.Run(context.Background())
+	return sink, svc.Run(context.Background())
 }
 
 // runOnce drives one record and fails the test if Run returns an error (i.e. the message was
 // redelivered rather than committed).
-func runOnce(t *testing.T, resp func(smpp.SubmitSM) fakesmsc.Resp, r pipeline.RoutedMT) *fakeCDR {
+func runOnce(t *testing.T, resp func(smpp.SubmitSM) fakesmsc.Resp, r pipeline.RoutedMT) *poolSink {
 	t.Helper()
-	cdr, err := runService(t, resp, r)
+	sink, err := runService(t, resp, r)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	return cdr
+	return sink
 }
 
 // runWithFlags drives one record through the connector with a cancel-flag store wired, returning the
 // CDR sink, whether the SMSC saw a submit, and Run's error.
-func runWithFlags(t *testing.T, flags connectorpool.CancelFlags, r pipeline.RoutedMT) (*fakeCDR, *bool, error) {
+func runWithFlags(t *testing.T, flags connectorpool.CancelFlags, r pipeline.RoutedMT) (*poolSink, *bool, error) {
 	t.Helper()
 	submitted := false
 	smsc := fakesmsc.Start(t, fakesmsc.Config{OnSubmit: func(smpp.SubmitSM) fakesmsc.Resp {
@@ -230,11 +232,12 @@ func runWithFlags(t *testing.T, flags connectorpool.CancelFlags, r pipeline.Rout
 	if err != nil {
 		t.Fatalf("encode routed: %v", err)
 	}
-	cdr := &fakeCDR{}
+	sink := newPoolSink()
 	rrec := otelrec.New(t)
 	svc := connectorpool.New(connectorpool.Deps{
 		Consumer:    &fakeConsumer{records: []kafka.Record{rec}},
-		CDR:         cdr,
+		CDR:         sink.cdr,
+		Producer:    sink.out,
 		CancelFlags: flags,
 		Bind: connectorpool.BindConfig{
 			Addr: smsc.Addr(), SystemID: "esme", Password: "pw",
@@ -243,37 +246,37 @@ func runWithFlags(t *testing.T, flags connectorpool.CancelFlags, r pipeline.Rout
 		},
 		Tracer: observability.Tracer(rrec.Provider(), "connector-pool"),
 	})
-	return cdr, &submitted, svc.Run(context.Background())
+	return sink, &submitted, svc.Run(context.Background())
 }
 
 // TestConnectorSkipsCancelledMessage pins that a message flagged cancelled before dispatch is NOT
 // submitted to the SMSC, that the connector writes the cancelled CDR row itself (so a Canceller crash
 // after flagging cannot leave the message unrecorded), and that the offset is committed (Run nil).
 func TestConnectorSkipsCancelledMessage(t *testing.T) {
-	cdr, submitted, err := runWithFlags(t, &fakeFlags{cancelled: true}, routed())
+	sink, submitted, err := runWithFlags(t, &fakeFlags{cancelled: true}, routed())
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if *submitted {
 		t.Error("a cancelled message must not be submitted to the SMSC")
 	}
-	if len(cdr.rows) != 1 || cdr.rows[0].Status != clickhouse.StatusCancelled {
-		t.Errorf("connector must write a cancelled CDR row when honouring the flag, got %+v", cdr.rows)
+	if rows := sink.rows(); len(rows) != 1 || rows[0].Status != clickhouse.StatusCancelled {
+		t.Errorf("connector must write a cancelled CDR row when honouring the flag, got %+v", rows)
 	}
 }
 
 // TestConnectorSubmitsWhenNotCancelled pins that an un-flagged message is submitted normally and its
 // enroute row written.
 func TestConnectorSubmitsWhenNotCancelled(t *testing.T) {
-	cdr, submitted, err := runWithFlags(t, &fakeFlags{cancelled: false}, routed())
+	sink, submitted, err := runWithFlags(t, &fakeFlags{cancelled: false}, routed())
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if !*submitted {
 		t.Error("a non-cancelled message must be submitted")
 	}
-	if len(cdr.rows) != 1 || cdr.rows[0].Status != clickhouse.StatusEnroute {
-		t.Errorf("expected one enroute row, got %+v", cdr.rows)
+	if got := sink.outcome(t); got.Status != string(clickhouse.StatusEnroute) {
+		t.Errorf("outcome status = %q, want enroute", got.Status)
 	}
 }
 
@@ -281,71 +284,35 @@ func TestConnectorSubmitsWhenNotCancelled(t *testing.T) {
 // reading the cancel flag must NOT halt delivery — cancellation is best-effort, so the connector logs
 // and dispatches the message normally rather than stalling all outbound traffic on a Redis outage.
 func TestConnectorDispatchesWhenCancelFlagUnavailable(t *testing.T) {
-	cdr, submitted, err := runWithFlags(t, &fakeFlags{err: errors.New("redis down")}, routed())
+	sink, submitted, err := runWithFlags(t, &fakeFlags{err: errors.New("redis down")}, routed())
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if !*submitted {
 		t.Error("fail-open: a message must still be submitted when the cancel flag cannot be read")
 	}
-	if len(cdr.rows) != 1 || cdr.rows[0].Status != clickhouse.StatusEnroute {
-		t.Errorf("expected one enroute row, got %+v", cdr.rows)
+	if got := sink.outcome(t); got.Status != string(clickhouse.StatusEnroute) {
+		t.Errorf("outcome status = %q, want enroute", got.Status)
 	}
 }
 
-func TestConnectorWritesEnrouteOnOK(t *testing.T) {
-	r := routed()
-	cdr := runOnce(t, func(smpp.SubmitSM) fakesmsc.Resp { return fakesmsc.OK() }, r)
-
-	if len(cdr.rows) != 1 {
-		t.Fatalf("expected 1 CDR row, got %d", len(cdr.rows))
-	}
-	row := cdr.rows[0]
-	if row.Status != clickhouse.StatusEnroute {
-		t.Errorf("status: got %q want enroute", row.Status)
-	}
-	if row.MessageID != r.MessageID {
-		t.Error("message id not carried")
-	}
-	if row.ConnectorID == nil || *row.ConnectorID != r.ConnectorID {
-		t.Errorf("connector id not carried: %v", row.ConnectorID)
-	}
-	if !row.SubmittedAt.Equal(r.SubmittedAt) {
-		t.Error("submitted_at must be the immutable ingestion time")
-	}
-	if row.ErrorCode != nil {
-		t.Errorf("enroute row must have no error code, got %v", *row.ErrorCode)
-	}
-}
+// The enroute / failed outcome of a submit is no longer a CDR row written here but an event published on
+// mt.outcome (step-201c, D1); what TestConnectorWritesEnrouteOnOK and
+// TestConnectorWritesFailedOnPermanentRejection pinned is asserted — field for field, plus the absence of
+// the ClickHouse write — by TestConnectorPublishesEnrouteOutcome and TestConnectorPublishesFailedOutcome
+// in outcome_test.go.
 
 // TestConnectorRedeliversOnTransientRejection pins that a retryable SMSC status (throttled) is
 // backpressure, not a terminal failure: the handler returns an error so the record is redelivered,
 // and NO failed CDR row is written (which would lose the message).
 func TestConnectorRedeliversOnTransientRejection(t *testing.T) {
-	cdr, err := runService(t, func(smpp.SubmitSM) fakesmsc.Resp { return fakesmsc.Throttled() }, routed())
+	sink, err := runService(t, func(smpp.SubmitSM) fakesmsc.Resp { return fakesmsc.Throttled() }, routed())
 
 	if err == nil {
 		t.Fatal("throttled submit must return an error (no commit → redelivery), got nil")
 	}
-	if len(cdr.rows) != 0 {
-		t.Errorf("throttled submit must not write a CDR row, got %d", len(cdr.rows))
-	}
-}
-
-// TestConnectorWritesFailedOnPermanentRejection pins that a non-retryable SMSC status (submit_fail)
-// is terminal: a failed CDR is written with the contract error_code and the record is committed.
-func TestConnectorWritesFailedOnPermanentRejection(t *testing.T) {
-	cdr := runOnce(t, func(smpp.SubmitSM) fakesmsc.Resp { return fakesmsc.SubmitFailed() }, routed())
-
-	if len(cdr.rows) != 1 {
-		t.Fatalf("expected 1 CDR row, got %d", len(cdr.rows))
-	}
-	row := cdr.rows[0]
-	if row.Status != clickhouse.StatusFailed {
-		t.Errorf("status: got %q want failed", row.Status)
-	}
-	if row.ErrorCode == nil || *row.ErrorCode != "submit_failed" {
-		t.Errorf("error_code: got %v want submit_failed", row.ErrorCode)
+	if rows, outs := sink.rows(), sink.outcomes(t); len(rows) != 0 || len(outs) != 0 {
+		t.Errorf("throttled submit recorded %d rows and %d outcomes, want none of either", len(rows), len(outs))
 	}
 }
 
@@ -359,11 +326,12 @@ func TestConnectorToleratesZeroEnquireConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode routed: %v", err)
 	}
-	cdr := &fakeCDR{}
+	sink := newPoolSink()
 	rrec := otelrec.New(t)
 	svc := connectorpool.New(connectorpool.Deps{
 		Consumer: &fakeConsumer{records: []kafka.Record{rec}},
-		CDR:      cdr,
+		CDR:      sink.cdr,
+		Producer: sink.out,
 		Bind: connectorpool.BindConfig{
 			Addr: smsc.Addr(), SystemID: "esme", Password: "pw",
 			DialTimeout: 3 * time.Second, ResponseTimeout: 3 * time.Second,
@@ -375,9 +343,7 @@ func TestConnectorToleratesZeroEnquireConfig(t *testing.T) {
 	if err := svc.Run(context.Background()); err != nil {
 		t.Fatalf("Run with zero enquire config: %v", err)
 	}
-	if len(cdr.rows) != 1 {
-		t.Fatalf("expected 1 CDR row, got %d", len(cdr.rows))
-	}
+	sink.outcome(t) // the message was submitted and its outcome recorded
 }
 
 // utf16BE is the test's independent UTF-16BE reference (mirrors the connector's transcoding).
@@ -612,6 +578,7 @@ func TestConnectorAIMDDropsThenRecovers(t *testing.T) {
 	metric := &recordingThrottle{}
 	rrec := otelrec.New(t)
 	svc := connectorpool.New(connectorpool.Deps{
+		Producer: discardProducer{},
 		Consumer: &continuingConsumer{records: recs},
 		CDR:      &fakeCDR{},
 		Bind: connectorpool.BindConfig{
@@ -668,6 +635,7 @@ func runPool(t *testing.T, smsc *fakesmsc.Server, poolSize int, recs []kafka.Rec
 	svc := connectorpool.New(connectorpool.Deps{
 		Consumer: &batchConsumer{records: recs},
 		CDR:      &fakeCDR{},
+		Producer: &outcomeProducer{},
 		Bind:     poolBind(smsc.Addr(), poolSize),
 		Tracer:   observability.Tracer(rrec.Provider(), "connector-pool"),
 	})
@@ -851,6 +819,7 @@ func TestBreakerOpensAndIsReported(t *testing.T) {
 	agg := &fakeAgg{}
 	rrec := otelrec.New(t)
 	svc := connectorpool.New(connectorpool.Deps{
+		Producer:         discardProducer{},
 		Consumer:         &feedThenBlock{records: recs},
 		CDR:              &fakeCDR{},
 		Bind:             poolBind(smsc.Addr(), 1),
@@ -884,6 +853,7 @@ func TestBreakerHealthyReportsClosed(t *testing.T) {
 	agg := &fakeAgg{}
 	rrec := otelrec.New(t)
 	svc := connectorpool.New(connectorpool.Deps{
+		Producer:         discardProducer{},
 		Consumer:         &feedThenBlock{records: []kafka.Record{rec}},
 		CDR:              &fakeCDR{},
 		Bind:             poolBind(smsc.Addr(), 1),
@@ -907,3 +877,10 @@ func TestBreakerHealthyReportsClosed(t *testing.T) {
 	cancel()
 	<-done
 }
+
+// discardProducer drops every record. It is what a test wires when it asserts nothing about the return
+// path — explicitly, so the choice reads in the test rather than being made by the constructor
+// (step-201c D8). The package-internal tests have their own copy, in deliver_test.go.
+type discardProducer struct{}
+
+func (discardProducer) Produce(context.Context, kafka.Record) error { return nil }

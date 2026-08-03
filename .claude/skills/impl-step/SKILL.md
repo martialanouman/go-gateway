@@ -9,6 +9,11 @@ Une step = une PR petite et verte (plan §0.1). Neuf phases ordonnées, **une to
 qui rend une phase sautée visible. Quatre sont des **PORTES** : tant qu'elle n'est pas franchie, la
 suite est interdite.
 
+**Les portes valent pour tout code, y compris un correctif de revue.** Un correctif n'est pas une
+réparation mécanique : il tranche entre des options, donc il repasse par l'arbitrage (ph. 2) et par le
+design commité (ph. 3) avant son TDD. Sauter ces deux-là est le raccourci le plus coûteux du dépôt —
+détail et mesure en phase 7.
+
 ## Skills à invoquer
 
 Obligatoires, ils portent les portes : `doubt-driven-development` (ph. 2) · `test-driven-development`
@@ -41,6 +46,10 @@ Paralléliser avec des `Explore` sur axes disjoints (lecture seule, aucun risque
 
 Lister **tous** les points ouverts. Aucun ne se tranche en silence.
 
+Vaut aussi pour les **correctifs de revue** (ph. 7) : un correctif tranche entre des options, donc il
+repasse par ici. Écarter une option parce qu'« elle casse des tests » est un arbitrage, pas une
+évidence.
+
 1. **La spec** (specs, plan, guides, ADR, contrats) — chercher avant de délibérer.
 2. **Fable** si la spec ne tranche pas :
    `Agent(subagent_type: "general-purpose", model: "fable", prompt: "<décision> · <options et conséquences> · <ce que dit la spec> · <contraintes> Tranche et justifie. Si tu ne peux pas, dis-le et dis pourquoi.")`
@@ -63,6 +72,7 @@ Dépendance à une branche non mergée → la consigner en `DN` et l'annoncer en
 elle ne se découvre qu'en phase 9, quand la PR porte plusieurs sujets.
 
 **Aucune ligne de code avant ce commit.** Sans lui, la justification s'écrit après le code, pour lui.
+**Y compris pour un correctif de revue** — c'est là que la règle se perd le plus souvent.
 
 ## Phase 4 — Plan et todos
 
@@ -143,10 +153,29 @@ Agent(subagent_type: "Plan",
 
 Ils constatent, **je corrige** : un relecteur qui répare son constat ne le rapporte plus.
 
-### Un correctif est du code
+### Un correctif est du code — il repasse par TOUTES les phases
 
-Pour chaque bloquant : **écrire le test qui le reproduit et le voir échouer** → corriger → **muter et
-voir tomber**. Un correctif écrit directement sous la pression du constat casse au tour suivant.
+Pas seulement par le TDD. Pour chaque bloquant, dans cet ordre :
+
+1. **Phase 2 — arbitrer.** Lister les options, chercher ce que la spec tranche, escalader à Fable puis
+   à l'utilisateur si elle est muette. **Écarter une option parce qu'« elle casse des tests » est un
+   arbitrage, pas une évidence** : c'est un coût, opposable à un mode de défaillance.
+2. **Phase 3 — commiter le design.** La décision va dans la fiche en `### DN — …` **avec sa raison**,
+   commitée **avant** la première ligne du correctif.
+3. **Phases 5-6 — TDD.** Écrire le test qui reproduit le défaut et **le voir échouer** → corriger →
+   **muter et voir tomber**.
+
+**Le TDD seul ne voit pas un mauvais choix.** Un correctif mal conçu passe son test, tombe sous
+mutation, et reste faux : le défaut est dans la décision, pas dans l'exécution. Cas réel (step-201c) —
+un défaut no-op rendu « bruyant » pour qu'un câblage manquant échoue au premier envoi ; sauf que
+l'envoi précédait la publication, donc le correctif faisait re-soumettre le même SMS en boucle. Tout
+était vert. C'est la phase 2 qui l'a renversé, pas un test.
+
+**Pourquoi cette section existe.** Mesuré sur une step à quatre tours : **8 constats sur 9 au tour 2,
+puis 11 sur 12 au tour 3, venaient des correctifs des tours précédents** — jamais du code d'origine.
+Les correctifs ne sont pas plus difficiles que le code initial : ils échappaient aux portes que le code
+initial franchit. Le volume n'excuse pas le raccourci — c'est quand il y a beaucoup de correctifs que
+chacun échappe au regard.
 
 Un constat qu'on ne parvient pas à reproduire se discute avant d'être corrigé : soit il n'est pas réel,
 soit le test qui manque compte plus que la correction.

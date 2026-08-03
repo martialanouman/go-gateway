@@ -246,13 +246,29 @@ func TestReplayedMessageNotReExpired(t *testing.T) {
 	prod, cdr, dl := deadLetterDeps(t, &fakeConsumer{records: []kafka.Record{rec}},
 		func(smpp.SubmitSM) fakesmsc.Resp { return fakesmsc.OK() }, 0, time.Hour)
 
-	if got := len(prod.records()); got != 0 {
-		t.Fatalf("produced %d records, want 0 (a replayed message must not be re-dead-lettered)", got)
+	// The pool shares one producer across the dead-letter and outcome paths, so the assertion is on the
+	// TOPIC: nothing may be parked, and the one record published must be the enroute outcome of a normal
+	// submit (step-201c, D1).
+	recs := prod.records()
+	for _, r := range recs {
+		if r.Topic == kafka.TopicMTDeadLetter {
+			t.Fatalf("a replayed message must not be re-dead-lettered, got %+v", r)
+		}
 	}
 	if dl.count("delivery_expired") != 0 {
 		t.Errorf("delivery_expired metric = %d, want 0", dl.count("delivery_expired"))
 	}
-	if len(cdr.rows) != 1 || cdr.rows[0].Status != clickhouse.StatusEnroute {
-		t.Fatalf("cdr rows = %+v, want one enroute (submitted normally)", cdr.rows)
+	if len(recs) != 1 || recs[0].Topic != kafka.TopicMTOutcome {
+		t.Fatalf("produced %+v, want one mt.outcome record (submitted normally)", recs)
+	}
+	out, err := pipeline.DecodeOutcome(recs[0])
+	if err != nil {
+		t.Fatalf("decode mt.outcome: %v", err)
+	}
+	if out.Status != string(clickhouse.StatusEnroute) {
+		t.Fatalf("outcome status = %q, want enroute (submitted normally)", out.Status)
+	}
+	if len(cdr.rows) != 0 {
+		t.Fatalf("cdr rows = %+v, want none: the send path no longer writes ClickHouse", cdr.rows)
 	}
 }

@@ -28,6 +28,11 @@ type Handler func(ctx context.Context, rec Record) error
 type Consumer struct {
 	cl    *kgo.Client
 	group string
+
+	// fromEnd records where a fresh group starts, so a caller can assert it. The choice is a
+	// durability property — a group that starts at the end skips whatever was produced before it first
+	// joined — and one that no test could observe was one no test could guard (step-201c D9).
+	fromEnd bool
 }
 
 // NewConsumer joins the given consumer group and subscribes to topics. A group with no committed
@@ -64,7 +69,7 @@ func newConsumer(cfg config.Kafka, group string, reset kgo.Offset, topics ...str
 	if err != nil {
 		return nil, fmt.Errorf("kafka: new consumer: %w", err)
 	}
-	return &Consumer{cl: cl, group: group}, nil
+	return &Consumer{cl: cl, group: group, fromEnd: reset.EpochOffset().Offset == kgo.NewOffset().AtEnd().EpochOffset().Offset}, nil
 }
 
 // Run polls and processes records until ctx is cancelled, committing each record's offset only
@@ -231,6 +236,11 @@ func (c *Consumer) ReadyCheck(name string, timeout time.Duration) observability.
 	return observability.PingCheck(name, timeout, c.cl.Ping)
 }
 
+// StartsFromEnd reports whether a group with no committed offset begins at the end of the topic,
+// skipping whatever was produced before it first joined. It exists so a wiring choice that is a
+// durability property can be asserted instead of merely commented.
+func (c *Consumer) StartsFromEnd() bool { return c.fromEnd }
+
 // Close leaves the group and releases the client. Because offsets are committed synchronously as
 // records are handled, there is nothing to flush.
 func (c *Consumer) Close() { c.cl.Close() }
@@ -286,16 +296,30 @@ func (c *Consumer) Lag(ctx context.Context) (map[string]int64, error) {
 	if err := described.Error(); err != nil {
 		return nil, fmt.Errorf("kafka: lag for group %s: %w", c.group, err)
 	}
-	out := make(map[string]int64, len(described.Lag))
-	for topic, partitions := range described.Lag {
+	return sumLag(c.group, described.Lag)
+}
+
+// sumLag totals a described group's lag per topic, refusing any topic it cannot total honestly.
+//
+// Both refusals serve one rule: a backlog gauge may hold a stale value, but it may never publish a small
+// number that reads as "we are caught up".
+//
+//   - A partition whose lag could not be computed reports -1 WITH an error. Skipping it silently would
+//     publish a plausible-looking partial total.
+//   - A topic with NO partitions at all sums to a perfect 0, which is the same lie with no error to catch
+//     it. kadm seeds its map from the topics in the members' Join and leaves the partitions empty when the
+//     topic is missing from endOffsets — a shard error, or a topic that does not exist (step-201c, D20).
+func sumLag(group string, lag kadm.GroupLag) (map[string]int64, error) {
+	out := make(map[string]int64, len(lag))
+	for topic, partitions := range lag {
+		if len(partitions) == 0 {
+			return nil, fmt.Errorf("kafka: lag for group %s, topic %s: no partitions described", group, topic)
+		}
 		var total int64
 		for _, p := range partitions {
-			// A partition whose lag could not be computed reports -1 WITH an error. Skipping it silently
-			// would publish a small total that looks perfectly legitimate — the worst failure mode for a
-			// backlog gauge, since it reads as "we are caught up". Refuse the whole topic instead.
 			if p.Err != nil {
 				return nil, fmt.Errorf("kafka: lag for group %s, topic %s partition %d: %w",
-					c.group, topic, p.Partition, p.Err)
+					group, topic, p.Partition, p.Err)
 			}
 			if p.Lag > 0 {
 				total += p.Lag

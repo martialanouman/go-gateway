@@ -36,6 +36,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/ingest"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/observability/metrics"
+	"github.com/martialanouman/go-gateway/internal/outcome"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	"github.com/martialanouman/go-gateway/internal/pipeline/antispam"
 	"github.com/martialanouman/go-gateway/internal/pipeline/optout"
@@ -313,6 +314,16 @@ func buildRefStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg con
 
 	acceptedProjector := ingest.NewAcceptedConsumer(acceptedConsumer, cdrWriter, nil, nil)
 
+	// The outcome projection is part of the path under measurement: it is the only writer of the
+	// enroute row since step-201c, so a reference run without it measures a pipeline that never
+	// records what it sent.
+	outcomeConsumer, err := kafka.NewConsumer(kafkaCfg, "refrun-outcome-cdr", kafka.TopicMTOutcome)
+	if err != nil {
+		t.Fatalf("kafka outcome consumer: %v", err)
+	}
+	t.Cleanup(outcomeConsumer.Close)
+	outcomeProjector := outcome.NewProjector(outcomeConsumer, cdrWriter, nil, nil)
+
 	ctx := context.Background()
 	resolver, err := routing.LoadSnapshot(ctx, postgres.NewRouteRepo(pool))
 	if err != nil {
@@ -353,8 +364,13 @@ func buildRefStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg con
 	})
 
 	conn := connectorpool.New(connectorpool.Deps{
-		Consumer:    connConsumer,
-		CDR:         cdrWriter,
+		Consumer: connConsumer,
+		CDR:      cdrWriter,
+		// The send outcome goes to mt.outcome and a projector writes the CDR (step-201c D1). Without
+		// this producer the pool's whole post-send path is a no-op, and the run would publish as its
+		// reference figure the throughput of a pool that records nothing — while production pays for a
+		// synchronous acked produce per message.
+		Producer:    producer,
 		ConnectorID: connectorID,
 		Bind: connectorpool.BindConfig{
 			Addr: smsc.Addr(), SystemID: "gateway", Password: "pw",
@@ -379,6 +395,7 @@ func buildRefStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg con
 		go func() { defer wg.Done(); _ = fn(runCtx) }()
 	}
 	start(acceptedProjector.Run)
+	start(outcomeProjector.Run)
 	start(rtr.Run)
 	start(conn.Run)
 
@@ -402,6 +419,10 @@ func buildRefStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg con
 		consumers: map[string]*kafka.Consumer{
 			kafka.TopicMTInbound: routerConsumer,
 			kafka.TopicMTRouted:  connConsumer,
+			// The projection lag is the backlog step-201c introduces: it is the only writer of the
+			// enroute row, so a flat mt.routed with a climbing mt.outcome is a pipeline that sends
+			// without recording. D2's steady-state clause has to see it.
+			kafka.TopicMTOutcome: outcomeConsumer,
 		},
 	}
 }
@@ -475,7 +496,7 @@ func (l *lagTrace) breakdown(from, to time.Time) string {
 		return "no reading inside the window"
 	}
 	out := ""
-	for _, topic := range []string{kafka.TopicMTInbound, kafka.TopicMTRouted} {
+	for _, topic := range []string{kafka.TopicMTInbound, kafka.TopicMTRouted, kafka.TopicMTOutcome} {
 		if out != "" {
 			out += " · "
 		}
@@ -499,7 +520,7 @@ func (l *lagTrace) between(from, to time.Time) []steady.LagSample {
 
 // pollLag samples the pipeline's total backlog until ctx is cancelled.
 //
-// The two consumer groups are summed rather than reported apart: what D2 asks is whether the PIPELINE is
+// The three consumer groups are summed rather than reported apart: what D2 asks is whether the PIPELINE is
 // keeping up, and a backlog moving from mt.inbound to mt.routed is not the queue draining, it is the
 // same messages one hop further along. The sum is flat only when the whole path is.
 //

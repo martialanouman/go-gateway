@@ -31,7 +31,7 @@ func TestSimSmokeEnroute(t *testing.T) {
 	}
 
 	id := pool.injectRouted(t, nil) // no fallback chain — a plain successful submit
-	pool.waitCDRStatus(t, id, clickhouse.StatusEnroute, 20*time.Second)
+	pool.waitOutcome(t, id, clickhouse.StatusEnroute, 20*time.Second)
 
 	// The submit reached the simulator: its recorded-PDU counter advanced past the pre-injection baseline.
 	sim.WaitRecordedPDUs(t, smscName, before.RecordedPDUs+1, 10*time.Second)

@@ -94,6 +94,50 @@ type RoutedMT struct {
 	OwnerType string
 }
 
+// OutcomeMT is the terminal outcome of ONE submitted segment, carried on mt.outcome for the CDR
+// projection to turn into a row (step-201c, D1). It is the exact projection the connector pool used to
+// write to ClickHouse itself at the submit site: identifiers, addressing, segment coordinates, the
+// immutable accept time, the resolved lifecycle status with its gateway error code, and the billing
+// settlement. Everything a CDR outcome row holds — and nothing else.
+//
+// It carries NO body, by construction and not by omission: the enroute/failed row stores no content
+// (only the accepted row does, sealed by the ingest projection from mt.inbound), so there is no
+// audited egress here at all (invariant a).
+//
+// Status is the CDR lifecycle status as a plain string (enroute | failed today), not an SMPP
+// command_status: the connector owns the SMPP vocabulary and resolves it once, so the projection maps
+// a status onto a row without re-deriving it — and a status it does not know is a corrupt record, not
+// a silent rank-0 row. ErrorCode is a gateway code from the shared platform/errors contract, nil when
+// the send succeeded. Billed/CreditsCharged are the settlement the connector captured; they are
+// carried rather than recomputed because only the connector saw the reservation.
+//
+// DELIVERY GUARANTEE: at-least-once. The projection is idempotent — `cdr` is a
+// ReplacingMergeTree keyed by the row's identity and versioned by the status rank, so a replayed
+// outcome collapses onto the same row.
+type OutcomeMT struct {
+	MessageID    uuid.UUID
+	TraceID      uuid.UUID
+	AccountID    uuid.UUID
+	CustomerID   uuid.UUID
+	ConnectorID  uuid.UUID
+	RouteID      *uuid.UUID
+	From         string
+	To           string
+	Encoding     string // resolved: gsm7|ucs2|binary
+	SegmentSeq   int
+	SegmentCount int
+	SubmittedAt  time.Time
+	// Status is the CDR lifecycle status this outcome records: enroute for an accepted submit_sm, failed
+	// for a permanent SMSC rejection.
+	Status string
+	// ErrorCode is the gateway error code for a failed outcome, nil for enroute.
+	ErrorCode *string
+	// Billed and CreditsCharged are the capture result for a sent billable message (step-146); false/nil
+	// when nothing was captured (billing disabled, no reservation, or a fail-open capture).
+	Billed         bool
+	CreditsCharged *int32
+}
+
 // MOInbound is a mobile-originated message a SMSC delivered to one of our inbound numbers, carried on
 // mo.inbound before routing to an account (step-045). It has no message id yet — that is minted when
 // the return-path router accepts it. From is the subscriber's address as the SMSC sent it (normalised
