@@ -278,6 +278,16 @@ Résidu connu : `Lag` refuse un total partiel quand une partition est en erreur,
 fige le numérateur le temps de quelques ticks. C'est déjà la doctrine de `pollQueueDepth`
 (`main.go:144-145`) — une profondeur périmée vaut mieux qu'un total mensonger. *(Arbitré par Fable.)*
 
+### D16 — Un consommateur en panne saute **son** tick, pas celui des autres
+`pollQueueDepth` passe d'un consommateur à deux (`mt.inbound` et `mt.outcome`). Une erreur de `Lag` sur
+l'un ne doit pas empêcher l'autre de publier sa profondeur.
+
+**Raison.** La boucle actuelle fait `continue` sur erreur — « every failure mode is a skipped tick »
+(`main.go:144-145`), ce qui est juste pour un consommateur unique. Étendue naïvement à deux, la même
+ligne ferait qu'un incident sur `mt.inbound` rendrait invisible le lag de `mt.outcome` : on installerait
+une alerte et on la ferait taire par la panne d'un voisin. La doctrine du tick sauté est conservée, mais
+elle s'applique **par consommateur**.
+
 ### D14 — Cette step rend le lag **alertable**, elle ne pose pas l'alerte
 L'expression est commise **verbatim** dans ADR-0012 et au §13 du guide :
 
