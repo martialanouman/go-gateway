@@ -1,7 +1,8 @@
 # step-201c — Le CDR sortant devient une projection (le goulot du débit traversant)
 
-> **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
-> **Dépend de :** step-201 · **Bloque :** step-201b
+> **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** FAIT (03/08/2026)
+> **Dépend de :** step-201 · **Bloque :** step-201b · **Ouvre :** step-201d (goulot routeur), step-209
+> (course `cancelled`)
 
 ## But
 Lever le goulot que le run de référence de step-201 a mesuré : le `connector-pool-svc` sort **192–330
@@ -458,6 +459,24 @@ Tous les consommateurs héritent du changement : un topic en creux de métadonn�
 publier un total peut-être juste. C'est le choix déjà fait pour les erreurs de partition, étendu.
 *(Arbitré par Fable.)*
 
+### D21 — Le critère de sortie porte sur LE goulot de la step, pas sur l'état stationnaire global
+Le run relancé (03/08/2026) donne **892 `submit_sm/s`** contre 192 avant, avec `mt.routed` plat (7 → 12)
+et `mt.outcome` plat (20 → 33). Le goulot que la step existe pour lever — « le `connector-pool-svc` sort
+192–330 `submit_sm/s` » — est levé et mesuré. Mais le critère d'état stationnaire de `D2` reste refusé :
+`mt.inbound` monte de +291 rec/s, parce que **le routeur** est désormais le facteur limitant (p99
+bout-en-bout 10–20 s, soit de l'attente en file, quand l'ingestion répond en 11 ms).
+
+La DoD de cette step demandait « sortie ≈ acceptation et lag plat » — un critère **global**, qui ne peut
+être tenu qu'une fois *tous* les goulots levés. Elle est reformulée pour porter sur ce que la step
+livre : le goulot nommé est levé, la preuve est chiffrée, le goulot suivant est nommé et instruit.
+
+**Raison.** Un critère global attaché à une step ciblée n'a que deux issues : élargir la step à un sujet
+qu'elle n'a pas analysé, ou déclarer un échec là où la mesure montre un ×4,6. C'est le précédent exact du
+dépôt : step-201 a mesuré et **nommé** un goulot sans le corriger, et step-201c l'a corrigé. Le goulot
+routeur suit le même chemin — **step-201d**, ouverte ici, plutôt que dilué dans le verdict NFR de
+step-201b, qui mesure sur environnement représentatif et ne corrige pas de goulot applicatif.
+*(Arbitré avec l'utilisateur.)*
+
 ### D5 — La divergence commentaire/code d'`appendEvents` est tranchée dans le sens du commentaire
 `internal/storage/clickhouse/cdr.go:186-188` dit qu'un échec de la timeline « must not fail » le CDR —
 mais `cdr.go:180` **propage l'erreur**. Le code suivra le commentaire : un échec `cdr_events` est logué
@@ -555,11 +574,19 @@ est justement ce qu'un relecteur doit pouvoir refuser d'un bloc.
       ≈ 250 SMS par partition et par crash (`D2` puis `D12` — 256 KiB reposait sur une conversion en
       octets non compressés)
 - [x] ADR-0012 rédigé (`D7`) — statut `Accepted`, §6.7 et guide §10 amendés
-- [ ] statut documenté comme projection dans l'OpenAPI (`D4`)
-- [ ] lag **alertable** : `queue_depth_records{queue="mt.outcome"}` alimentée et
-      `cdr_outcome_projected_total` posée (`D13`) · expression PromQL commise, fichier de règles porté
-      par step-207 (`D14`)
-- [ ] run de référence relancé, sortie ≈ acceptation et lag plat, nouveau chiffre consigné
+- [x] statut documenté comme projection dans l'OpenAPI (`D4`, `D18`) — description de `MessageStatus`,
+      contrat bumpé en 4.0.2, `TestLagAlertOperandsHaveTheLabelSetsTheExpressionAssumes` pour les séries
+- [x] lag **alertable** : `queue_depth_records{queue="mt.outcome"}` alimentée
+      (`TestQueueDepthCoversTheOutcomeProjection`, `TestQueueDepthOfOneGroupSurvivesAnotherGroupsFault`) et
+      `cdr_outcome_projected_total` posée et exposée (`TestProjectorCountsTheRecordsItDrained`,
+      `TestProjectorCountsNothingWhenTheWriteFails`, `TestOpsExposesTheOutcomeProjectionDrainRate`) ·
+      expression PromQL commise et agrégée (`D13`, `D17`), règle portée par la checklist §15 (`D14`)
+- [x] `Lag` ne publie plus « 0 » pour un topic sans partitions (`D20`,
+      `TestSumLagRefusesATopicWithNoPartitions`)
+- [x] run de référence relancé et consigné (`test/load/README.md`, mesure du 03/08/2026) : **892
+      `submit_sm/s` contre 192**, `mt.routed` et `mt.outcome` plats — **le goulot de la step est levé**
+      (`D21`). Le critère d'état stationnaire global reste refusé : le routeur est le goulot suivant,
+      nommé et instruit en **step-201d**
 
 ## Hors périmètre
 Verdict NFR pleine échelle → step-201b (que cette step débloque). Les trois autres sites d'écriture CDR
