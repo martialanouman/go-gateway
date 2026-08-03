@@ -120,8 +120,8 @@ plus tard en défense en profondeur si la borne s'avère insuffisante.
 - **Plus difficile :** le statut `enroute` devient **asynchrone**. C'est une latence, pas un mensonge —
   le treillis de statuts est monotone, on montre un état antérieur *vrai* — et le contrat ne change pas
   de classe : la ligne `accepted` est **déjà** une projection asynchrone, `delivered`/`failed` arrivent
-  par DLR. L'OpenAPI publique le documente comme « dernière projection, pas état temps réel », avec une
-  métrique de lag alertée à 30 s. Aucune fraîcheur n'est promise au client.
+  par DLR. L'OpenAPI publique le documente comme « dernière projection, pas état temps réel », et le lag
+  est rendu **alertable** au seuil de 30 s (voir ci-dessous). Aucune fraîcheur n'est promise au client.
 - **Ce qui reste vrai et n'est pas résolu :** un `submit_sm` n'est transactionnel avec aucun store.
   **Aucune conception ne supprime la fenêtre**, seule sa borne est un choix. Cet ADR borne, il ne
   garantit pas l'unicité.
@@ -129,5 +129,35 @@ plus tard en défense en profondeur si la borne s'avère insuffisante.
   la question « combien d'abonnés peuvent recevoir deux fois le même SMS ? ». C'est un engagement
   vis-à-vis des opérateurs et des abonnés, et c'est ce qui justifie que cette décision soit un ADR
   ratifié et non un commentaire de code.
-- **Traçabilité :** `tasks-todo/step-201c.md` (`D1`, `D2`, `D4`), `tasks-done/step-201.md` (la mesure
+- **Traçabilité :** `tasks-todo/step-201c.md` (`D1`, `D2`, `D4`, `D13`, `D14`), `tasks-done/step-201.md` (la mesure
   qui a révélé le goulot), §6.7 de la spec technique et §10 du guide d'ingénierie renvoient à cet ADR.
+
+## Surveiller le lag de statut
+
+Le seuil de 30 s porte sur une **durée**, la mesure disponible est un **nombre de records** : l'alerte
+fait la division. Expression de référence, à poser telle quelle :
+
+```promql
+queue_depth_records{queue="mt.outcome"} / rate(cdr_outcome_projected_total[5m]) > 30
+# for: 2m
+```
+
+« Le backlog représente plus de 30 secondes de travail au débit de projection courant. » Les deux séries
+sont exposées par `router-svc` sur son port ops.
+
+Pourquoi cette forme, et pas une jauge d'âge en secondes : le numérateur est lu **du broker** par une
+boucle indépendante du projecteur (`pollQueueDepth`), et le dénominateur appartient au projecteur. Les
+trois états se lisent correctement — sain (quotient bas), saturé (le backlog monte, le quotient monte),
+**mort** (`rate → 0`, quotient `+Inf`, l'alerte part). Une jauge `..._lag_seconds` posée par le
+projecteur lui-même se figerait à sa dernière valeur saine dès qu'il s'arrête : elle mentirait
+exactement dans le cas qu'on surveille. Topic vide et projecteur oisif donnent `0/0 = NaN`, qui ne
+déclenche rien.
+
+Le `for: 2m` couvre deux ticks de poll (5 s) plus le lissage du `rate`, pour ne pas alerter sur une
+rafale de trafic absorbée en quelques secondes.
+
+**Cette alerte n'est pas encore déployée, et sa règle ne vit pas dans ce dépôt.** Les règles Alertmanager
+sont de l'infrastructure (guide §13 ; step-207 les met explicitement hors périmètre) : step-201c livre les
+deux séries, câblées et testées — le lag est **alertable** — et la checklist de mise en production
+(guide §15, déroulée par step-208) porte l'item qui vérifie que la règle existe avant le go-live. Dans
+l'intervalle, le seuil n'est surveillé que depuis un tableau de bord.

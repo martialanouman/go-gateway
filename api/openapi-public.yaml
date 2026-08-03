@@ -375,6 +375,14 @@ components:
         Lifecycle of a message. `accepted` = durably queued; `enroute` = handed to SMSC; terminal states
         are delivered/failed/expired/rejected/cancelled. `rerouted` is transient (fallback chain).
 
+        This is the LATEST PROJECTION of the lifecycle, not a real-time reading. Every transition is
+        projected asynchronously: `accepted` from the ingestion stream, `enroute`/`failed` from the
+        connector's outcome, the delivery states from the carrier receipt. A message can therefore read one
+        state behind for a short while — most visibly just after submission, while it is already on its way
+        to the SMSC but still reads `accepted`. The lifecycle is monotonic, so a status you read is always
+        one the message REALLY passed through, never a wrong one; only its freshness lags, and no freshness
+        figure is promised. Do not poll this endpoint to detect delivery: subscribe to DLR webhooks.
+
         A long message is split into several segments, each dispatched independently; this status is
         AGGREGATED across them: `delivered` only once EVERY segment is delivered, `failed` if any segment
         hard-fails, `expired` if a segment expires and none hard-failed, otherwise the least-advanced
