@@ -228,6 +228,73 @@ pendant que la production paie un produce synchrone acké par message. Et le lag
 précisément le backlog que `D1` introduit — la clause « lag plat » de `D2` doit le voir, sans quoi un
 `mt.routed` plat masquerait un `mt.outcome` qui monte.
 
+### D13 — Le lag de projection s'expose en records **plus** un débit, jamais en secondes
+`D4` promet un seuil de **30 s** ; la seule mesure disponible est un **nombre de records**. Deux séries,
+et l'alerte fait la division :
+
+- `queue_depth_records{queue="mt.outcome"}` — la jauge existante (`catalog.go:158`), alimentée en
+  branchant le consommateur du projecteur sur `pollQueueDepth`. `router-svc` devient le **propriétaire
+  unique** de `mt.outcome`, comme l'exige le godoc de `QueueDepth` (`catalog.go:60-62`) ;
+- `cdr_outcome_projected_total` — un compteur posé par le projecteur, un par record projeté.
+
+**Raison — la métrique doit rester vraie quand le composant qu'elle surveille est mort.** Le mode de
+défaillance que `D4` veut attraper est un projecteur arrêté ou saturé par ClickHouse. Une jauge d'âge
+(`cdr_projection_lag_seconds = now - timestamp du record`) serait posée **par le composant dont on
+surveille la mort** : plus de batch traité, plus de mise à jour, la jauge se fige à sa dernière valeur
+saine — elle ment exactement quand elle doit crier. Ici le **numérateur** vient d'une boucle indépendante
+qui interroge le broker (`pollQueueDepth`, `Consumer.Lag` via `kadm`), et le **dénominateur** appartient
+au projecteur : s'il meurt, `rate → 0` et le quotient part à `+Inf`. Les trois états — sain, saturé, mort
+— donnent chacun la bonne réponse, et le topic vide donne `0/0 = NaN`, qui ne déclenche rien.
+
+Accessoirement, c'est aussi le choix le moins invasif : `kafka.Record` n'expose pas le timestamp Kafka
+(`kafka.go:11`, `toRecord` ne le copie pas), et l'élargir toucherait un type que **tous** les
+consommateurs du dépôt utilisent. `pipeline.OutcomeMT.SubmittedAt` ne peut pas y suppléer : c'est
+l'heure d'acceptation, donc `now - SubmittedAt` mesurerait tout le pipeline, pas le retard de projection.
+
+**Ce qui est sacrifié, nommément.** Ce n'est pas un âge horloge-murale : « 30 s » devient « le backlog
+représente 30 s de travail au débit des 5 dernières minutes » — un temps de drainage estimé, pas l'âge du
+plus vieux record. C'est cohérent avec `D4`, qui refuse justement de promettre un chiffre au client. Un
+SLO client-facing exigerait le vrai âge, donc le `Timestamp` sur `kafka.Record` : hors périmètre.
+Résidu connu : `Lag` refuse un total partiel quand une partition est en erreur, donc un incident broker
+fige le numérateur le temps de quelques ticks. C'est déjà la doctrine de `pollQueueDepth`
+(`main.go:144-145`) — une profondeur périmée vaut mieux qu'un total mensonger. *(Arbitré par Fable.)*
+
+### D14 — Cette step rend le lag **alertable**, elle ne pose pas l'alerte
+L'expression est commise **verbatim** dans ADR-0012 et au §13 du guide :
+
+```promql
+queue_depth_records{queue="mt.outcome"} / rate(cdr_outcome_projected_total[5m]) > 30   # for: 2m
+```
+
+Le fichier de règles, lui, devient un **critère d'acceptation nommé de step-207**, la step qui possède
+`deploy/`. Et `D4` se relit honnêtement : cette step livre « alertable à 30 s » — les deux séries
+câblées et testées, l'expression arrêtée ; « alertée » est tenu par step-207.
+
+**Raison — un YAML que rien ne charge est de la prose au format YAML.** Le dépôt n'a aujourd'hui aucun
+fichier de règles, aucun `prometheus.yml`, aucun `deploy/`, et le compose ne démarre ni Prometheus ni
+Alertmanager. Poser `deploy/prometheus/rules/` ici livrerait un artefact que rien n'évalue et que rien ne
+teste — la « garde morte » que le skill nomme — tout en ouvrant le répertoire d'une autre step, que
+step-207 restructurera de toute façon pour son HPA (`step-207.md:13`, « HPA : CPU **et** lag de
+consommation Kafka »). Le constat honnête est qu'**aucune option ne fait sonner un pager aujourd'hui** :
+ce que cette step peut livrer de réel, ce sont les métriques câblées — testables ici — et l'obligation
+transférée là où elle sera exécutable.
+
+**Pourquoi l'expression doit être commise maintenant, et pas laissée à step-207.** `D13` déplace toute la
+sémantique du seuil dans le PromQL : l'alerte n'est plus un `métrique > 30`. Sans l'expression écrite,
+step-207 écrirait plausiblement `queue_depth_records > N` — le débit supposé que `D13` refuse — ou
+attendrait une série `_seconds` qui n'existe pas.
+
+**Ce qui est sacrifié, nommément.** Entre cette PR et step-207, les 30 s ne sont surveillées que par un
+humain devant un tableau de bord. Pas de pager. Le repli, si ce trou est jugé inacceptable, est de poser
+la règle ici **avec `promtool check rules` en CI** — ce qui tire l'outillage Prometheus dans le périmètre
+courant. Nommé pour que le sacrifice soit un choix, pas un oubli. *(Arbitré par Fable.)*
+
+### D15 — step-201c est livrée en **une** PR, pas trois
+Le plan en trois PRs est caduc : les correctifs de revue de PR2 ont commité `U7` (le cap, `D12`) et `U8`
+(ADR-0012, `D7`) au milieu de PR2. Une PR3 séparée ne serait donc ni autonome ni relisible seule, et
+reconstruire PR1/PR2 a posteriori donnerait des PRs qui ne compilent pas indépendamment. Les commits
+restent un-par-unité. *(Arbitré avec l'utilisateur.)*
+
 ### D5 — La divergence commentaire/code d'`appendEvents` est tranchée dans le sens du commentaire
 `internal/storage/clickhouse/cdr.go:186-188` dit qu'un échec de la timeline « must not fail » le CDR —
 mais `cdr.go:180` **propage l'erreur**. Le code suivra le commentaire : un échec `cdr_events` est logué
@@ -265,13 +332,13 @@ merge** : c'est un engagement vis-à-vis des opérateurs et des abonnés, pas un
 
 ---
 
-## Plan — trois PRs
+## Plan — trois lots, **une** PR (`D15`)
 
-| PR | Unités | Fichiers | Dépend de |
+| Lot | Unités | Fichiers | État |
 |---|---|---|---|
-| **1 — le socle** | ~~U1 `cdr_events` idempotent~~ **sans objet, déjà en place** (`D3`) · U2 `appendEvents` fail-open (`D5`) | `internal/storage/clickhouse/cdr.go` | — |
-| **2 — la projection** | U3 topic + encodage de l'issue · U4 le pool produit au lieu d'écrire · U5 le consommateur de projection batché | `internal/storage/kafka/topics.go`, `internal/pipeline/wire.go`, `internal/connectorpool/`, nouveau paquet de projection, `cmd/` | PR1 |
-| **3 — les garanties et la preuve** | U6 métrique de lag + alerte + doc OpenAPI (`D4`) · U7 cap d'in-flight (`D2`) · U8 ADR §6.7 (`D7`) · U9 run de référence relancé | catalogue de métriques, `api/openapi-public.yaml`, `docs/adr/`, `test/load/README.md` | PR2 |
+| **1 — le socle** | ~~U1 `cdr_events` idempotent~~ **sans objet, déjà en place** (`D3`) · U2 `appendEvents` fail-open (`D5`) | `internal/storage/clickhouse/cdr.go` | ✅ livré |
+| **2 — la projection** | U3 topic + encodage de l'issue · U4 le pool produit au lieu d'écrire · U5 le consommateur de projection batché | `internal/storage/kafka/topics.go`, `internal/pipeline/wire.go`, `internal/connectorpool/`, `internal/outcome/`, `cmd/` | ✅ livré |
+| **3 — les garanties et la preuve** | U6 lag alertable + doc OpenAPI (`D4`, `D13`, `D14`) · ~~U7 cap d'in-flight~~ **livré en lot 2** (`D12`) · ~~U8 ADR §6.7~~ **livré en lot 2** (`D7`) · U9 run de référence relancé | `internal/observability/metrics/`, `internal/outcome/`, `cmd/router-svc/`, `api/openapi-public.yaml`, `docs/adr/`, `docs/guide-ingenierie-passerelle-sms.md`, `tasks-todo/step-207.md`, `test/load/README.md` | en cours |
 
 **PR1 devait précéder PR2** parce que la projection at-least-once était censée dupliquer la timeline.
 **Vérification faite, elle ne la duplique pas** : la lecture dédoublonne déjà (cf. l'encadré de `D3`).
@@ -300,6 +367,11 @@ est justement ce qu'un relecteur doit pouvoir refuser d'un bloc.
   résultat. À couvrir puisque cette step y touche.
 - **`chtest` laisse le pool ClickHouse à zéro**, que le driver lit comme « non réglé » : toute la suite
   d'intégration tourne sur les défauts de la bibliothèque, jamais sur les leviers de step-201 `D5`.
+- **Le plafond du simulateur est consigné à deux chiffres contradictoires** : `test/load/README.md:182`
+  dit **34 872 `submit_sm/s`, courbe pliée**, tandis que `tasks-done/step-201.md:102`,
+  `internal/e2e/reference_test.go:87` et `cmd/smsc-ceiling/main_test.go:31` portent **43 498, « n'a jamais
+  saturé »**. Sans effet sur le run de référence — il se place sous le plafond du *faux* SMSC calibré en
+  processus (218 000–255 000/s) — mais à ne pas propager en republiant un chiffre dans ce README.
 - **`ingest_duration_seconds` est déclarée et observée nulle part** — le défaut exact de
   `message_e2e_duration_seconds` avant step-201 PR2 — et ses bornes encadrent mal ses seuils NFR
   (p50 < 50 ms entre 0,032 et 0,064 ; p99 < 250 ms entre 0,128 et 0,256).
@@ -317,8 +389,11 @@ est justement ce qu'un relecteur doit pouvoir refuser d'un bloc.
 - [ ] projection idempotente sur `cdr` **et** `cdr_events`
 - [x] cap d'in-flight **tranché** : `KAFKA_FETCH_MAX_PARTITION_BYTES` à 256 KiB ≈ 250 SMS par partition
       et par crash (`D2`) — reste à exposer et câbler en PR3
-- [x] ADR-0012 rédigé (`D7`) — statut `Proposed`, à ratifier avant merge
-- [ ] statut documenté comme projection dans l'OpenAPI · métrique de lag exposée et alertée (`D4`)
+- [x] ADR-0012 rédigé (`D7`) — statut `Accepted`, §6.7 et guide §10 amendés
+- [ ] statut documenté comme projection dans l'OpenAPI (`D4`)
+- [ ] lag **alertable** : `queue_depth_records{queue="mt.outcome"}` alimentée et
+      `cdr_outcome_projected_total` posée (`D13`) · expression PromQL commise, fichier de règles porté
+      par step-207 (`D14`)
 - [ ] run de référence relancé, sortie ≈ acceptation et lag plat, nouveau chiffre consigné
 
 ## Hors périmètre
