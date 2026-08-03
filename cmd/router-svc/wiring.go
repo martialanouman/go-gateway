@@ -154,7 +154,7 @@ func newRouterApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 		Metrics:  a.catalog,
 	})
 
-	ops, blooms, err := newOpsServer(cfg, logger, st.consumer, a.catalog, stack, proj, stream, boot)
+	ops, blooms, err := newOpsServer(cfg, logger, st.consumer, a.catalog, stack, proj, outc, stream, boot)
 	if err != nil {
 		return nil, err
 	}
@@ -480,6 +480,12 @@ func newAcceptedProjector(ctx context.Context, cfg config.Config, pool *pgxpool.
 type outcomeProjector struct {
 	projector *outcome.Projector
 	kafka     *kafka.Consumer
+
+	// projected is the drain rate of this projection, and the DENOMINATOR of the status-lag alert
+	// (step-201c, D13): queue_depth_records{queue="mt.outcome"} over rate(cdr_outcome_projected_total)
+	// reads the backlog as the seconds of work it represents. Declared here rather than in the catalogue,
+	// which holds the CROSS-SERVICE metrics; this one is router-svc's alone, like accepted_content_dropped_total.
+	projected prometheus.Counter
 }
 
 func (p *outcomeProjector) close() {
@@ -510,9 +516,15 @@ func newOutcomeProjector(cfg config.Config, ch *clickhouse.Conn, logger *slog.Lo
 	if err != nil {
 		return nil, fmt.Errorf("kafka outcome-cdr consumer: %w", err)
 	}
+	projected := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "cdr_outcome_projected_total",
+		Help: "mt.outcome records this projection drained: rows written plus corrupt records deliberately " +
+			"skipped, counted only once their poll batch was committable.",
+	})
 	return &outcomeProjector{
-		projector: outcome.NewProjector(consumer, clickhouse.NewCDRWriter(ch), logger),
+		projector: outcome.NewProjector(consumer, clickhouse.NewCDRWriter(ch), projected, logger),
 		kafka:     consumer,
+		projected: projected,
 	}, nil
 }
 
@@ -587,6 +599,7 @@ func newOpsServer(
 	catalog *metrics.Catalog,
 	stack *pipelineStack,
 	proj *acceptedProjector,
+	outc *outcomeProjector,
 	stream *metricStream,
 	boot *bootSnapshots,
 ) (*observability.OpsServer, bloomGauges, error) {
@@ -596,7 +609,7 @@ func newOpsServer(
 	if err != nil {
 		return nil, bloomGauges{}, fmt.Errorf("init ops server: %w", err)
 	}
-	ops.Registry().MustRegister(stack.failOpenTotal, proj.dropped)
+	ops.Registry().MustRegister(stack.failOpenTotal, proj.dropped, outc.projected)
 	// Only the catalogue metrics this service actually feeds. Registering Collectors() wholesale would both
 	// panic on the duplicate and expose always-zero series, which read as "measured, and nothing happened"
 	// rather than "not measured here".

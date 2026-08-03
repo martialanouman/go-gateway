@@ -11,6 +11,8 @@ import (
 	"context"
 	"log/slog"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
@@ -42,21 +44,45 @@ type BatchConsumer interface {
 type Projector struct {
 	consumer BatchConsumer
 	cdr      CDRWriter
-	logger   *slog.Logger
+
+	// projected counts the records this projection drained. It is the DENOMINATOR of the status-lag alert
+	// (step-201c, D13): read against queue_depth_records{queue="mt.outcome"}, it turns a backlog in records
+	// into the seconds of work it represents. See [Projector.handleBatch] for why it counts what it counts,
+	// and when. Nil disables the observation.
+	projected prometheus.Counter
+
+	logger *slog.Logger
 }
 
-// NewProjector wires the projection. A nil logger falls back to slog.Default().
-func NewProjector(consumer BatchConsumer, cdr CDRWriter, logger *slog.Logger) *Projector {
+// NewProjector wires the projection. projected counts the records drained (nil to observe nothing); a nil
+// logger falls back to slog.Default().
+func NewProjector(consumer BatchConsumer, cdr CDRWriter, projected prometheus.Counter, logger *slog.Logger) *Projector {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Projector{consumer: consumer, cdr: cdr, logger: logger}
+	return &Projector{consumer: consumer, cdr: cdr, projected: projected, logger: logger}
 }
 
 // Run consumes mt.outcome and writes outcome rows until ctx is cancelled. It is one supervised
 // goroutine.
 func (p *Projector) Run(ctx context.Context) error {
 	return p.consumer.RunBatch(ctx, p.handleBatch)
+}
+
+// countDrained records that this poll batch's offsets advanced, all len(recs) of them.
+//
+// It counts the WHOLE batch, not the rows written: the alert's numerator is a lag in offsets, and a
+// skipped corrupt record advances the offset just as a written one does. Counting only rows would sink
+// the measured drain rate under a flood of corrupt records and fire the alert while the stream drains
+// normally.
+//
+// It is called only where the batch is committable, never before the write: a projector looping on a
+// ClickHouse fault must show a drain rate of ZERO. One that kept ticking would hold the alert's quotient
+// down while the backlog climbs — silent in exactly the saturation the alert exists to catch.
+func (p *Projector) countDrained(recs []kafka.Record) {
+	if p.projected != nil {
+		p.projected.Add(float64(len(recs)))
+	}
 }
 
 // handleBatch builds a row per record and writes the whole poll batch to ClickHouse in one InsertBatch.
@@ -87,6 +113,7 @@ func (p *Projector) handleBatch(ctx context.Context, recs []kafka.Record) []erro
 		rows = append(rows, row(env, status))
 	}
 	if len(rows) == 0 {
+		p.countDrained(recs)
 		return results // nothing writable in this batch; all offsets committable
 	}
 	if err := p.cdr.InsertBatch(ctx, rows); err != nil {
@@ -97,7 +124,9 @@ func (p *Projector) handleBatch(ctx context.Context, recs []kafka.Record) []erro
 		for i := range results {
 			results[i] = err // fail the whole poll batch → nothing commits → reprocess
 		}
+		return results
 	}
+	p.countDrained(recs)
 	return results
 }
 

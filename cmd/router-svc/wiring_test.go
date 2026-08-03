@@ -5,11 +5,15 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/testutil/pgtest"
@@ -122,6 +126,41 @@ func TestNewRouterAppBuildsTheWholeGraph(t *testing.T) {
 	if c, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(cfg.OpsPort)), time.Second); err == nil {
 		_ = c.Close()
 		t.Errorf("ops port %d is listening after wiring alone", cfg.OpsPort)
+	}
+}
+
+// TestOpsExposesTheOutcomeProjectionDrainRate asserts against the REAL graph that the projection's drain
+// rate reaches a scraper, because a counter that no registry owns is the failure this metric cannot
+// afford.
+//
+// It is the denominator of the status-lag alert (step-201c, D13): queue_depth_records{queue="mt.outcome"}
+// over rate(cdr_outcome_projected_total). Declared but unregistered, it increments diligently in memory,
+// is scraped by nobody, and the alert expression divides by a series that does not exist — no result, no
+// alert, and a lag that climbs behind a dashboard showing nothing at all. Counting is not the deliverable;
+// being scraped is.
+func TestOpsExposesTheOutcomeProjectionDrainRate(t *testing.T) {
+	cfg := testConfig()
+	cfg.Postgres = pgtest.Config(t)
+	cfg.Redis = redistest.Config(t)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	app, err := newRouterApp(ctx, cfg, silentLogger())
+	if err != nil {
+		t.Fatalf("newRouterApp: %v", err)
+	}
+	defer app.close()
+
+	rec := httptest.NewRecorder()
+	promhttp.HandlerFor(app.ops.Registry(), promhttp.HandlerOpts{}).
+		ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/metrics = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if !strings.Contains(rec.Body.String(), "cdr_outcome_projected_total") {
+		t.Error("cdr_outcome_projected_total is fed by the outcome projection but not exposed on /metrics: " +
+			"the status-lag alert would divide by a series that does not exist")
 	}
 }
 

@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/martialanouman/go-gateway/internal/outcome"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
@@ -100,7 +102,7 @@ func TestProjectorWritesTheRowTheConnectorUsedToWrite(t *testing.T) {
 	cdr := &fakeCDR{}
 	cons := &capturingConsumer{recs: []kafka.Record{outcomeRec(t, event)}}
 
-	if err := outcome.NewProjector(cons, cdr, nil).Run(context.Background()); err != nil {
+	if err := outcome.NewProjector(cons, cdr, nil, nil).Run(context.Background()); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
@@ -143,7 +145,7 @@ func TestProjectorCarriesTheFailedOutcome(t *testing.T) {
 
 	cdr := &fakeCDR{}
 	cons := &capturingConsumer{recs: []kafka.Record{outcomeRec(t, event)}}
-	if err := outcome.NewProjector(cons, cdr, nil).Run(context.Background()); err != nil {
+	if err := outcome.NewProjector(cons, cdr, nil, nil).Run(context.Background()); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
@@ -174,7 +176,7 @@ func TestProjectorWritesThePollBatchInOneInsert(t *testing.T) {
 		outcomeRec(t, enrouteEvent()), outcomeRec(t, enrouteEvent()), outcomeRec(t, enrouteEvent()),
 	}}
 
-	if err := outcome.NewProjector(cons, cdr, nil).Run(context.Background()); err != nil {
+	if err := outcome.NewProjector(cons, cdr, nil, nil).Run(context.Background()); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if len(cdr.batches) != 1 {
@@ -198,7 +200,7 @@ func TestProjectorSkipsCorruptRecord(t *testing.T) {
 		{Value: []byte("not json")}, outcomeRec(t, enrouteEvent()),
 	}}
 
-	if err := outcome.NewProjector(cons, cdr, nil).Run(context.Background()); err != nil {
+	if err := outcome.NewProjector(cons, cdr, nil, nil).Run(context.Background()); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if len(cdr.rows()) != 1 {
@@ -220,7 +222,7 @@ func TestProjectorSkipsAnUnknownStatus(t *testing.T) {
 	cdr := &fakeCDR{}
 	cons := &capturingConsumer{recs: []kafka.Record{outcomeRec(t, bogus), outcomeRec(t, enrouteEvent())}}
 
-	if err := outcome.NewProjector(cons, cdr, nil).Run(context.Background()); err != nil {
+	if err := outcome.NewProjector(cons, cdr, nil, nil).Run(context.Background()); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	rows := cdr.rows()
@@ -246,7 +248,7 @@ func TestProjectorCopiesSegmentCoordinatesVerbatim(t *testing.T) {
 
 	cdr := &fakeCDR{}
 	cons := &capturingConsumer{recs: []kafka.Record{outcomeRec(t, event)}}
-	if err := outcome.NewProjector(cons, cdr, nil).Run(context.Background()); err != nil {
+	if err := outcome.NewProjector(cons, cdr, nil, nil).Run(context.Background()); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	rows := cdr.rows()
@@ -268,7 +270,7 @@ func TestProjectorFailsTheWholeBatchOnAWriteFailure(t *testing.T) {
 		outcomeRec(t, enrouteEvent()), {Value: []byte("not json")}, outcomeRec(t, enrouteEvent()),
 	}}
 
-	p := outcome.NewProjector(cons, errCDR{err: errors.New("clickhouse down")}, nil)
+	p := outcome.NewProjector(cons, errCDR{err: errors.New("clickhouse down")}, nil, nil)
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -279,13 +281,62 @@ func TestProjectorFailsTheWholeBatchOnAWriteFailure(t *testing.T) {
 	}
 }
 
+// TestProjectorCountsTheRecordsItDrained counts the whole poll batch, not just the rows it wrote: the
+// counter is the DENOMINATOR of the projection-lag alert (D13), whose numerator is a lag in OFFSETS.
+// A corrupt record that is skipped still advances the offset, so leaving it out would sink the measured
+// drain rate under a flood of corrupt records and fire the alert while the backlog is draining normally.
+func TestProjectorCountsTheRecordsItDrained(t *testing.T) {
+	projected := prometheus.NewCounter(prometheus.CounterOpts{Name: "cdr_outcome_projected_total"})
+	cons := &capturingConsumer{recs: []kafka.Record{
+		outcomeRec(t, enrouteEvent()), {Value: []byte("not json")}, outcomeRec(t, enrouteEvent()),
+	}}
+
+	if err := outcome.NewProjector(cons, &fakeCDR{}, projected, nil).Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if n := testutil.ToFloat64(projected); n != 3 {
+		t.Errorf("projected counter = %v, want 3 (two rows written plus one corrupt record skipped, all "+
+			"three offsets advanced)", n)
+	}
+}
+
+// TestProjectorCountsNothingWhenTheWriteFails is the assertion the whole lag alert rests on (D13).
+//
+// The alert reads `queue_depth_records / rate(cdr_outcome_projected_total)` as "how many seconds of work
+// is the backlog worth". Incrementing before the write — or on a failed one — would let a projector
+// looping on a ClickHouse fault report a perfectly healthy drain rate forever, holding the quotient down
+// while the backlog climbs. The alert would stay silent in exactly the saturation it exists to catch.
+func TestProjectorCountsNothingWhenTheWriteFails(t *testing.T) {
+	projected := prometheus.NewCounter(prometheus.CounterOpts{Name: "cdr_outcome_projected_total"})
+	cons := &capturingConsumer{recs: []kafka.Record{outcomeRec(t, enrouteEvent()), outcomeRec(t, enrouteEvent())}}
+
+	p := outcome.NewProjector(cons, errCDR{err: errors.New("clickhouse down")}, projected, nil)
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if n := testutil.ToFloat64(projected); n != 0 {
+		t.Errorf("projected counter = %v, want 0: nothing was projected, and a drain rate that keeps "+
+			"ticking through a ClickHouse fault would silence the lag alert", n)
+	}
+}
+
+// TestProjectorTolueratesANilCounter keeps the counter optional, like every other injected metric in the
+// repo: a test (or a future caller) that observes nothing must not panic the projection.
+func TestProjectorToleratesANilCounter(t *testing.T) {
+	cons := &capturingConsumer{recs: []kafka.Record{outcomeRec(t, enrouteEvent())}}
+
+	if err := outcome.NewProjector(cons, &fakeCDR{}, nil, nil).Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+}
+
 // TestProjectorCommitsABatchWithNothingToWrite: a poll carrying only undecodable records writes nothing
 // at all — no empty InsertBatch — and commits, so the stream moves past them.
 func TestProjectorCommitsABatchWithNothingToWrite(t *testing.T) {
 	cdr := &fakeCDR{}
 	cons := &capturingConsumer{recs: []kafka.Record{{Value: []byte("{")}, {Value: []byte("nope")}}}
 
-	if err := outcome.NewProjector(cons, cdr, nil).Run(context.Background()); err != nil {
+	if err := outcome.NewProjector(cons, cdr, nil, nil).Run(context.Background()); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if len(cdr.batches) != 0 {
@@ -306,7 +357,7 @@ func TestProjectorTreatsACancelledContextAsAGracefulStop(t *testing.T) {
 	defer cancel()
 	cons := &capturingConsumer{recs: []kafka.Record{outcomeRec(t, enrouteEvent())}}
 
-	if err := outcome.NewProjector(cons, cancellingCDR{cancel: cancel}, nil).Run(ctx); err != nil {
+	if err := outcome.NewProjector(cons, cancellingCDR{cancel: cancel}, nil, nil).Run(ctx); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	for i, r := range cons.results {

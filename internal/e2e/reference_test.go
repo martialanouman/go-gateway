@@ -322,7 +322,7 @@ func buildRefStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg con
 		t.Fatalf("kafka outcome consumer: %v", err)
 	}
 	t.Cleanup(outcomeConsumer.Close)
-	outcomeProjector := outcome.NewProjector(outcomeConsumer, cdrWriter, nil)
+	outcomeProjector := outcome.NewProjector(outcomeConsumer, cdrWriter, nil, nil)
 
 	ctx := context.Background()
 	resolver, err := routing.LoadSnapshot(ctx, postgres.NewRouteRepo(pool))

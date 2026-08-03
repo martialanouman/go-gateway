@@ -185,7 +185,7 @@ func buildStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg config
 	if err != nil {
 		t.Fatalf("outcome consumer: %v", err)
 	}
-	outcomeProjector := outcome.NewProjector(outcomeConsumer, cdrWriter, nil)
+	outcomeProjector := outcome.NewProjector(outcomeConsumer, cdrWriter, nil, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup

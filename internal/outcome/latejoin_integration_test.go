@@ -58,7 +58,7 @@ func TestProjectorReadsOutcomesProducedBeforeItJoined(t *testing.T) {
 	defer cancel()
 
 	done := make(chan error, 1)
-	go func() { done <- outcome.NewProjector(consumer, sink, slog.New(slog.DiscardHandler)).Run(ctx) }()
+	go func() { done <- outcome.NewProjector(consumer, sink, nil, slog.New(slog.DiscardHandler)).Run(ctx) }()
 
 	// The broker is shared across runs and AtStart replays the whole topic, so the sink also holds
 	// outcomes from earlier runs: look for THIS message rather than expecting a count.
