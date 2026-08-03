@@ -331,6 +331,131 @@ Le plan en trois PRs est caduc : les correctifs de revue de PR2 ont commité `U7
 reconstruire PR1/PR2 a posteriori donnerait des PRs qui ne compilent pas indépendamment. Les commits
 restent un-par-unité. *(Arbitré avec l'utilisateur.)*
 
+### D17 — L'expression d'alerte agrège des DEUX côtés, sinon elle n'apparie rien
+L'expression commise par `D14` était **inopérante** :
+
+```promql
+queue_depth_records{queue="mt.outcome"} / rate(cdr_outcome_projected_total[5m]) > 30   # FAUX
+```
+
+Un opérateur binaire entre deux vecteurs instantanés apparie sur l'**ensemble complet des labels**. À
+gauche `{job, instance, queue}`, à droite `{job, instance}` : aucune paire, **vecteur vide**, `> 30` ne
+s'applique à rien. L'alerte n'aurait jamais pu partir — pas même dans le cas « projecteur mort » qui
+justifie toute la forme de `D13`. La règle aurait passé `promtool check rules`, aurait été cochée au
+go-live, et n'aurait jamais alerté : pire que pas de règle du tout.
+
+La forme retenue agrège totalement les deux côtés, ce qui supprime tous les labels et rend l'appariement
+trivialement possible :
+
+```promql
+max(queue_depth_records{queue="mt.outcome"}) / sum(rate(cdr_outcome_projected_total[5m])) > 30
+```
+
+**`max` à gauche, `sum` à droite, et ce n'est pas symétrique.** `queue_depth_records` est une jauge de
+**groupe** : chaque réplique publie la même valeur, et `metricstream.go:105-107` l'énonce déjà — « take
+the latest per instance and then the MAX, never the sum ». Le compteur, lui, est **par pod** : chaque
+réplique ne draine qu'une part. Un simple `ignoring(queue)` aurait apparié pod à pod et donné un quotient
+**multiplié par le nombre de répliques** — l'alerte serait partie à 30/N secondes de retard réel, et
+aurait dérivé à chaque scale de l'HPA que step-207 prévoit.
+
+**Règle compagnon, parce que l'agrégation ne couvre pas la disparition :**
+
+```promql
+absent(queue_depth_records{queue="mt.outcome"})
+```
+
+Le raisonnement de `D13` couvre « projecteur mort, numérateur vivant » (`rate → 0` ⇒ `+Inf`). Il ne
+couvre pas « série absente » : pod entièrement disparu, ou groupe qui n'a jamais rejoint. Les deux séries
+s'éteignent alors ensemble, l'expression rend un vecteur vide et l'alerte **se résout** au lieu de
+partir.
+
+**Ce qui reste non vérifié, et pourquoi.** Le dépôt ne déploie pas l'alerte (`D14`) et n'embarque ni
+`promtool` ni bibliothèque PromQL ; cette expression n'est donc **évaluée par aucun test**. C'est
+précisément ainsi que la version fausse est passée. Deux garde-fous à défaut d'un troisième : la forme
+agrégée est robuste **par construction** (aucun label à apparier, donc insensible à l'ajout d'un label
+d'un côté), et un test fige les faits de labels dont elle dépend. La validation réelle — la règle posée,
+et vue partir sur une donnée réelle — appartient à l'item de la checklist §15.
+
+### D18 — La garantie « jamais un état faux » est retirée du contrat : elle est fausse, et cette step l'aggrave
+`cancel.go:86-92` n'autorise l'annulation que si le statut **lu** vaut `accepted`, puis écrit une ligne
+`cancelled` de rang **60** — au-dessus de `delivered` (40) et de `failed` (50), donc définitif. Avec un
+statut désormais projeté, un message déjà parti sur le fil peut encore se lire `accepted` : l'annulation
+est acceptée, le SMS est livré, et le CDR affiche `cancelled` **pour toujours** sur un message livré et
+facturé.
+
+La course **pré-existe** et était assumée — `cancel.go:65-68` le dit déjà : « if the flag lands after the
+connector's cancel check, the CDR still records cancelled (rank 60) though the message left ». La phrase
+que j'avais ajoutée au contrat était donc fausse **avant même** cette step. Ce que la step change, c'est
+l'ordre de grandeur : de quelques millisecondes (écriture synchrone) à la latence de projection —
+mesurée à ~30 ms sur le run de référence, mais non bornée sous saturation.
+
+**Ce que fait cette step :** retirer la garantie du contrat et nommer l'exception ; compléter le godoc de
+`Cancel`, qui documente la fenêtre côté « accepted absent » mais pas côté « enroute retardé » ; ouvrir
+une fiche de suivi.
+
+**Ce qu'elle ne fait pas, et pourquoi.** Corriger la course demande de trancher ce que `cancelled`
+*signifie* quand le connecteur a dispatché quand même — une décision de spec, pas un correctif de revue.
+Et la correction « minimale » évidente est **démontrablement fausse** : poser `cancelled` à 45 le laisse
+au-dessus de `delivered` (40), donc ne corrige pas le scénario central ; le descendre sous 40 change le
+sens de `cancelled` dans le cas « course sans DLR ». Le rang étant la version du `ReplacingMergeTree`, le
+changer rejugerait aussi toutes les lignes historiques. Direction du vrai correctif, pour la fiche à
+venir : le connecteur est l'autorité sur « déjà dispatché » — c'est lui qui doit publier l'issue
+corrective, ou la projection refuser d'écraser un `cancelled` par un `enroute` postérieur.
+
+**Le dommage résiduel est un dommage d'affichage, pas d'argent** : la facturation suit le grand livre
+réserve/capture, idempotent par `message_id`, pas le statut CDR. Un litige s'arbitre sur le grand livre.
+*(Arbitré par Fable.)*
+
+### D19 — Le compteur peut compter un rejeu : c'est documenté, et l'alerte devient une PAIRE
+`countDrained` compte quand le batch est **committable**, mais le commit a lieu après, dans `RunBatch`.
+Si `CommitRecords` échoue — typiquement un membre éjecté parce qu'un `InsertBatch` a dépassé le
+`RebalanceTimeout` — les mêmes records sont re-pollés, réécrits et **recomptés**. Le débit affiché reste
+vivant alors qu'aucun offset n'avance.
+
+**Ce n'est pas un silence, c'est un retard**, et c'est ce qui le rend acceptable : le numérateur continue
+de monter tant que la production continue, donc le quotient finit par franchir 30 — en dizaines de
+secondes à quelques minutes, pas jamais. La condition déclenchante est par ailleurs bruyante : erreur
+retournée par `RunBatch`, relance du superviseur toutes les 2 s, logs d'erreur. Ce n'est pas une panne que
+seule la métrique révélerait.
+
+Compter au commit réel exigerait un hook dans `kafka.Consumer.RunBatch`, **type transverse à tous les
+consommateurs du dépôt**, pour borner le retard d'une alerte qui n'est pas encore posée. Disproportionné.
+
+**Ce que ça coûte en documentation, et qui vaut mieux que le hook :** l'alerte doit être une **paire** —
+le quotient à 30 s, **plus** une expression sur le numérateur seul, insensible au recomptage puisque
+`Lag` compare l'offset committé à la fin du log :
+
+```promql
+min_over_time(queue_depth_records{queue="mt.outcome"}[10m]) > 0
+  and deriv(queue_depth_records{queue="mt.outcome"}[10m]) > 0
+```
+
+« Le backlog n'a pas cessé de croître depuis dix minutes » attrape la boucle de rebalance que le quotient
+ne voit que tard. *(Arbitré par Fable.)*
+
+### D20 — `Lag` refuse un topic sans aucune partition, comme il refuse déjà un total partiel
+`Consumer.Lag` a une garde délibérée : si une partition porte une erreur, il refuse de retourner un
+total, parce qu'un total partiel « se lit comme *on est à jour* — le pire mode de défaillance pour une
+jauge de backlog ». Mais si la carte de partitions d'un topic est **vide**, la garde ne se déclenche pas
+et le code publie `0`.
+
+Le cas est atteignable : `kadm` amorce la map depuis les topics de `Join` des membres et la laisse vide
+si le topic n'apparaît pas dans `endOffsets` — sur une shard error de `ListEndOffsets`, ou quand le topic
+n'existe pas. Concrètement : un déploiement qui introduit `mt.outcome` avec l'auto-création désactivée, ou
+une ACL manquante. La jauge publie alors `0`, sans erreur ni log.
+
+**Raison — c'est un trou dans le livrable, pas une dette voisine.** Cette jauge est le **numérateur** de
+l'alerte que la step promet, et le scénario qui la met à zéro est exactement celui d'un topic neuf pour un
+groupe neuf : la seule configuration où le chemin se déclenche, et c'est celle que la step introduit. Le
+filet livré serait silencieusement désactivé par la panne qu'il doit détecter. Aucun design n'est à
+inventer : la doctrine est déjà écrite trois lignes plus haut, on l'applique au cas frère. Le faux positif
+éventuel — un creux transitoire de métadonnées — dégrade en tick sauté, comportement déjà conçu pour les
+erreurs.
+
+Tous les consommateurs héritent du changement : un topic en creux de métadonnées saute un tick au lieu de
+publier un total peut-être juste. C'est le choix déjà fait pour les erreurs de partition, étendu.
+*(Arbitré par Fable.)*
+
 ### D5 — La divergence commentaire/code d'`appendEvents` est tranchée dans le sens du commentaire
 `internal/storage/clickhouse/cdr.go:186-188` dit qu'un échec de la timeline « must not fail » le CDR —
 mais `cdr.go:180` **propage l'erreur**. Le code suivra le commentaire : un échec `cdr_events` est logué
@@ -359,12 +484,13 @@ le combiné.
 L'ADR nomme la fenêtre résiduelle de `D1`, la borne de `D2`, et assume l'engagement. **À ratifier avant
 merge** : c'est un engagement vis-à-vis des opérateurs et des abonnés, pas une décision de code.
 
-> **Rédigé (2026-08-02) : `docs/adr/0012-duplication-submit-sm-bornee.md`, statut `Proposed`.**
-> Il passe `Accepted` après revue, selon la convention de `docs/adr/0000-index.md`. L'index était en
-> retard de trois entrées (0010, 0011 manquaient) — rattrapé au passage.
+> **Rédigé et RATIFIÉ : `docs/adr/0012-duplication-submit-sm-bornee.md`, statut `Accepted`.**
+> L'index `docs/adr/0000-index.md` était en retard de trois entrées (0010, 0011 manquaient) — rattrapé
+> au passage.
 >
-> Le texte de §6.7 et du guide §10 n'est **pas encore amendé** : ils renverront à l'ADR une fois celui-ci
-> accepté, pour ne pas modifier la spec sur la foi d'une décision `Proposed`.
+> §6.7 de la spec et §10 du guide sont **amendés** et renvoient à l'ADR (commit `1b0fb00`), ce qui n'a
+> été fait qu'une fois l'ADR passé `Accepted` : la spec ne se modifie pas sur la foi d'une décision
+> `Proposed`.
 
 ---
 
@@ -423,8 +549,9 @@ est justement ce qu'un relecteur doit pouvoir refuser d'un bloc.
 - [ ] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts
 - [ ] aucun SMS re-soumis sur un échec de projection, **testé**
 - [ ] projection idempotente sur `cdr` **et** `cdr_events`
-- [x] cap d'in-flight **tranché** : `KAFKA_FETCH_MAX_PARTITION_BYTES` à 256 KiB ≈ 250 SMS par partition
-      et par crash (`D2`) — reste à exposer et câbler en PR3
+- [x] cap d'in-flight **tranché, exposé et câblé** : `KAFKA_FETCH_MAX_PARTITION_BYTES` à **56 KiB**
+      ≈ 250 SMS par partition et par crash (`D2` puis `D12` — 256 KiB reposait sur une conversion en
+      octets non compressés)
 - [x] ADR-0012 rédigé (`D7`) — statut `Accepted`, §6.7 et guide §10 amendés
 - [ ] statut documenté comme projection dans l'OpenAPI (`D4`)
 - [ ] lag **alertable** : `queue_depth_records{queue="mt.outcome"}` alimentée et
