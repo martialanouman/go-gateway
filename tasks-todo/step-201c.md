@@ -295,9 +295,16 @@ L'expression est commise **verbatim** dans ADR-0012 et au §13 du guide :
 queue_depth_records{queue="mt.outcome"} / rate(cdr_outcome_projected_total[5m]) > 30   # for: 2m
 ```
 
-Le fichier de règles, lui, devient un **critère d'acceptation nommé de step-207**, la step qui possède
-`deploy/`. Et `D4` se relit honnêtement : cette step livre « alertable à 30 s » — les deux séries
-câblées et testées, l'expression arrêtée ; « alertée » est tenu par step-207.
+Le fichier de règles, lui, **ne revient à aucune step de ce dépôt** — et c'est délibéré, pas un report :
+step-207, la seule qui livre `deploy/`, met explicitement « règles Alertmanager (infra) » **hors
+périmètre**, et le guide §13 les situe dans une infrastructure Alertmanager indépendante. Ce qui manquait
+n'était donc pas un fichier, mais une **porte** : un item est ajouté à la checklist de mise en production
+(guide §15), que step-208 déroule avant go-live avec preuve à l'appui. Et `D4` se relit honnêtement :
+cette step livre « alertable à 30 s » — les deux séries câblées et testées, l'expression arrêtée ;
+« alertée » se vérifie au go-live.
+
+*(Fable recommandait d'en faire un critère de step-207 ; sa fiche l'exclut nommément. La spec l'emporte
+sur l'arbitrage, et la checklist §15 est le véhicule que la spec offrait déjà.)*
 
 **Raison — un YAML que rien ne charge est de la prose au format YAML.** Le dépôt n'a aujourd'hui aucun
 fichier de règles, aucun `prometheus.yml`, aucun `deploy/`, et le compose ne démarre ni Prometheus ni
@@ -313,8 +320,8 @@ sémantique du seuil dans le PromQL : l'alerte n'est plus un `métrique > 30`. S
 step-207 écrirait plausiblement `queue_depth_records > N` — le débit supposé que `D13` refuse — ou
 attendrait une série `_seconds` qui n'existe pas.
 
-**Ce qui est sacrifié, nommément.** Entre cette PR et step-207, les 30 s ne sont surveillées que par un
-humain devant un tableau de bord. Pas de pager. Le repli, si ce trou est jugé inacceptable, est de poser
+**Ce qui est sacrifié, nommément.** Entre cette PR et le go-live, les 30 s ne sont surveillées que par
+un humain devant un tableau de bord. Pas de pager. Le repli, si ce trou est jugé inacceptable, est de poser
 la règle ici **avec `promtool check rules` en CI** — ce qui tire l'outillage Prometheus dans le périmètre
 courant. Nommé pour que le sacrifice soit un choix, pas un oubli. *(Arbitré par Fable.)*
 
