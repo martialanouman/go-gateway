@@ -246,6 +246,25 @@ qui interroge le broker (`pollQueueDepth`, `Consumer.Lag` via `kadm`), et le **d
 au projecteur : s'il meurt, `rate → 0` et le quotient part à `+Inf`. Les trois états — sain, saturé, mort
 — donnent chacun la bonne réponse, et le topic vide donne `0/0 = NaN`, qui ne déclenche rien.
 
+**Le compteur compte le progrès de l'offset, et il le compte APRÈS coup.** Deux précisions sans
+lesquelles le dénominateur ment, chacune sur le mode de défaillance que `D13` vise :
+
+- **jamais avant l'écriture.** Un projecteur qui boucle sur des échecs ClickHouse incrémenterait un
+  compteur « records traités » à chaque tour et afficherait un débit parfaitement sain, pendant que le
+  backlog monte. Le quotient resterait bas et l'alerte ne partirait jamais — précisément dans le scénario
+  de saturation. Le compteur ne bouge donc que quand le batch a réussi ;
+- **tout record dont l'offset avance**, écrit ou délibérément sauté comme corrompu. Le numérateur est un
+  lag d'offsets : un record corrompu sauté fait bien reculer le backlog. Ne pas le compter ferait tomber
+  le débit vers zéro sous un flot de corrompus, donc partir l'alerte, alors que la file se draine
+  normalement. `handleBatch` étant tout-ou-rien par batch, cela revient à ajouter `len(recs)` quand le
+  batch passe, et zéro sinon.
+
+Le compteur se déclare dans `cmd/router-svc/wiring.go`, pas dans le catalogue central : celui-ci est
+réservé aux métriques **cross-service** (« every cross-service metric declared once », `catalog.go:21`),
+et c'est déjà le patron des deux compteurs voisins du même fichier (`accepted_content_dropped_total`,
+`metrics_stream_dropped_total`). Il est injecté au constructeur en `prometheus.Counter`, comme
+`ingest.NewContentSealer` reçoit le sien (`content.go:42`).
+
 Accessoirement, c'est aussi le choix le moins invasif : `kafka.Record` n'expose pas le timestamp Kafka
 (`kafka.go:11`, `toRecord` ne le copie pas), et l'élargir toucherait un type que **tous** les
 consommateurs du dépôt utilisent. `pipeline.OutcomeMT.SubmittedAt` ne peut pas y suppléer : c'est
