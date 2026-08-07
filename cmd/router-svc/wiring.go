@@ -538,7 +538,7 @@ type metricStream struct {
 
 	// dropped is the ONLY signal that the feed is degraded: nothing else fails when Kafka refuses a
 	// snapshot.
-	dropped prometheus.Collector
+	dropped []prometheus.Collector
 }
 
 func (m *metricStream) close() {
@@ -559,14 +559,16 @@ func newMetricStream(cfg config.Config) (_ *metricStream, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("kafka stream producer: %w", err)
 	}
-	m.dropped = prometheus.NewCounterFunc(prometheus.CounterOpts{
-		Name: "metrics_stream_dropped_total",
-		Help: "Realtime snapshots that never reached metrics.stream (full buffer, unreachable broker).",
-	}, func() float64 { return float64(m.producer.Dropped()) })
-
 	m.emitter, err = metricstream.New(serviceName, m.producer)
 	if err != nil {
 		return nil, fmt.Errorf("metric stream emitter: %w", err)
+	}
+	// The emitter also reports its refusals in-band (dropped_since_start), but that path is self-concealing:
+	// a snapshot that fails to serialise can never carry the count saying so, and a stream nobody consumes
+	// reports nothing at all. Both ends on /metrics (step-210).
+	m.dropped = []prometheus.Collector{
+		metrics.StreamDropCollector("buffer", m.producer),
+		metrics.StreamDropCollector("refused", m.emitter),
 	}
 	return m, nil
 }
@@ -614,7 +616,8 @@ func newOpsServer(
 	// panic on the duplicate and expose always-zero series, which read as "measured, and nothing happened"
 	// rather than "not measured here".
 	ops.Registry().MustRegister(catalog.RoutingScriptFailures, catalog.QueueDepth,
-		catalog.MessagesTotal, catalog.RejectedTotal, catalog.PipelineDuration, stream.dropped)
+		catalog.MessagesTotal, catalog.RejectedTotal, catalog.PipelineDuration)
+	ops.Registry().MustRegister(stream.dropped...)
 
 	blooms := bloomGauges{
 		reload: prometheus.NewGaugeVec(prometheus.GaugeOpts{

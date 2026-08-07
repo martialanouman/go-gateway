@@ -162,3 +162,9 @@ structurelles et à faire **avant** que M12 n'empile dessus.
 - [ ] step-207 — Manifests deploy/ Kubernetes (Deployments, Services, HPA, PDB, probes)
 - [ ] step-208 — Dérouler la checklist de mise en production (go-live)
 - [ ] step-209 — `cancelled` ne doit plus enterrer un message réellement livré (course élargie par step-201c)
+
+## Audit post-M11 — dettes du flux temps réel (revue du 2026-08-07)
+Deux dettes laissées par step-184, de nature différente : un compteur construit que personne ne lit, et une
+promesse de contrat dont la source durable n'existe pas.
+- [x] step-210 — Les rejets du flux temps réel redeviennent visibles (le plafond tronquait en silence)
+- [ ] step-211 — `billing.events` durable : le BFF doit pouvoir détecter, pas seulement afficher

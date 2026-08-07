@@ -19,6 +19,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/ingest"
 	"github.com/martialanouman/go-gateway/internal/metricstream"
 	"github.com/martialanouman/go-gateway/internal/observability"
+	"github.com/martialanouman/go-gateway/internal/observability/metrics"
 	"github.com/martialanouman/go-gateway/internal/pipeline/ratelimit"
 	registrypb "github.com/martialanouman/go-gateway/internal/session/pb"
 	"github.com/martialanouman/go-gateway/internal/smppserver"
@@ -185,7 +186,7 @@ type listenerStack struct {
 	// stream carries realtime session events (step-184). Best-effort: a separate Kafka client that
 	// drops rather than blocks, so a bind is never delayed by a dashboard.
 	streamProducer *kafka.StreamProducer
-	streamDropped  prometheus.Collector
+	streamEvents   *metricstream.EventPublisher
 }
 
 func (l *listenerStack) close() {
@@ -248,11 +249,7 @@ func newListener(cfg config.Config, st *stores, logger *slog.Logger) (_ *listene
 	if err != nil {
 		return nil, fmt.Errorf("kafka stream producer: %w", err)
 	}
-	l.streamDropped = prometheus.NewCounterFunc(prometheus.CounterOpts{
-		Name: "metrics_stream_dropped_total",
-		Help: "Realtime records that never reached metrics.stream (full buffer, unreachable broker).",
-	}, func() float64 { return float64(l.streamProducer.Dropped()) })
-	sessionEvents := metricstream.NewEventPublisher(serviceName, l.streamProducer)
+	l.streamEvents = metricstream.NewEventPublisher(serviceName, l.streamProducer)
 
 	l.listener = smppserver.New(
 		postgres.NewBindRepo(st.pg),
@@ -262,7 +259,7 @@ func newListener(cfg config.Config, st *stores, logger *slog.Logger) (_ *listene
 			Addr:            fmt.Sprintf(":%d", cfg.SMPP.Port),
 			PodID:           podID(cfg, logger),
 			SystemID:        serviceName,
-			SessionEvents:   sessionEvents,
+			SessionEvents:   l.streamEvents,
 			IdleTimeout:     cfg.SMPP.IdleTimeout,
 			Tracer:          observability.Tracer(nil, serviceName),
 			Throttle:        throttle,
@@ -300,8 +297,23 @@ func newOpsServer(cfg config.Config, logger *slog.Logger, st *stores, stack *lis
 	// The throttle's block counter is this service's first business metric; register it on the ops
 	// registry so it surfaces on /metrics. The counter carries no high-cardinality label (never a
 	// system_id or an IP), per the ops registry's cardinality rule.
-	ops.Registry().MustRegister(stack.throttleBlocked, stack.queryThrottled, stack.streamDropped)
+	ops.Registry().MustRegister(stack.throttleBlocked, stack.queryThrottled)
+	ops.Registry().MustRegister(streamDropCollectors(stack.streamProducer, stack.streamEvents)...)
 	return ops, nil
+}
+
+// streamDropCollectors meters BOTH ends of this service's session feed: what the transport refused, and what
+// the publisher's rate cap refused before the transport ever saw it.
+//
+// Metering the transport alone is what let a pod drain truncate the session feed in silence — the feed read
+// exactly like a complete one at the only place an operator looks (step-210). It is a named function so the
+// wiring can be scraped in a test; observing a drop and exposing it are two independent wirings.
+func streamDropCollectors(transport metrics.DropCounter, events *metricstream.EventPublisher) []prometheus.Collector {
+	return []prometheus.Collector{
+		metrics.StreamDropCollector("buffer", transport),
+		metrics.StreamDropCollector("rate_cap", metrics.DropCounterFunc(events.DroppedRateCapped)),
+		metrics.StreamDropCollector("encode", metrics.DropCounterFunc(events.DroppedUnserializable)),
+	}
 }
 
 // podID resolves this pod's registry identity: the configured value, or the OS hostname as a fallback
