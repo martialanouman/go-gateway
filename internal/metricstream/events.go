@@ -17,7 +17,9 @@ type EventPublisher struct {
 	instance string
 	sink     Sink
 	now      func() time.Time
-	dropped  atomic.Int64
+
+	rateCapped     atomic.Int64
+	unserializable atomic.Int64
 
 	mu          sync.Mutex
 	windowStart time.Time
@@ -32,8 +34,13 @@ func NewEventPublisher(service string, sink Sink) *EventPublisher {
 	}
 }
 
-// Dropped counts records this publisher refused: over the session-event rate cap, or unserializable.
-func (p *EventPublisher) Dropped() int64 { return p.dropped.Load() }
+// DroppedRateCapped counts session events refused by the rate cap since start. Expected to move under load —
+// a flapping fleet, a pod drain — which is exactly why it is counted apart from a defect.
+func (p *EventPublisher) DroppedRateCapped() int64 { return p.rateCapped.Load() }
+
+// DroppedUnserializable counts records that could not be marshalled since start. Any value above zero is a
+// defect in the record type, not a traffic condition.
+func (p *EventPublisher) DroppedUnserializable() int64 { return p.unserializable.Load() }
 
 // SessionChanged publishes a bind state change.
 func (p *EventPublisher) SessionChanged(accountID, systemID, state string, sessions *int) {
@@ -75,7 +82,7 @@ func (p *EventPublisher) Alerted(customerID, ownerType, ownerID, alert string, b
 func (p *EventPublisher) publish(record any) {
 	value, err := json.Marshal(record)
 	if err != nil {
-		p.dropped.Add(1)
+		p.unserializable.Add(1)
 		return
 	}
 	p.sink.TryPublish([]byte(p.instance), value)
@@ -87,6 +94,9 @@ func (p *EventPublisher) publish(record any) {
 // counter only counts failures) — a flapping fleet or a pod drain would otherwise flood the shared topic,
 // push the metrics snapshots past their 5 s freshness bar, and cut the very subscribers watching the
 // incident. Excess is counted, not queued: a dashboard needs the rate, not every event.
+//
+// What is dropped here surfaces as metrics_stream_dropped_total{reason="rate_cap"} — a truncated feed must
+// never look like a complete one (step-210).
 const maxSessionEventsPerSecond = 50
 
 // allow is a token bucket over session events.
@@ -99,7 +109,7 @@ func (p *EventPublisher) allow() bool {
 		p.inWindow = 0
 	}
 	if p.inWindow >= maxSessionEventsPerSecond {
-		p.dropped.Add(1)
+		p.rateCapped.Add(1)
 		return false
 	}
 	p.inWindow++

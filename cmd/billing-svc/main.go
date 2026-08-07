@@ -28,6 +28,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/metricstream"
 	"github.com/martialanouman/go-gateway/internal/observability"
+	"github.com/martialanouman/go-gateway/internal/observability/metrics"
 	"github.com/martialanouman/go-gateway/internal/platform/supervisor"
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
@@ -154,11 +155,8 @@ func run() error {
 		return fmt.Errorf("kafka stream producer: %w", err)
 	}
 	defer streamProducer.Close()
-	streamDropped := prometheus.NewCounterFunc(prometheus.CounterOpts{
-		Name: "metrics_stream_dropped_total",
-		Help: "Realtime records that never reached metrics.stream (full buffer, unreachable broker).",
-	}, func() float64 { return float64(streamProducer.Dropped()) })
 	alerts := metricstream.NewEventPublisher(serviceName, streamProducer)
+	streamDropped := streamDropCollectors(streamProducer, alerts)
 
 	pb.RegisterBillingServer(grpcServer, billing.NewServer(biller, repo, alerts))
 
@@ -170,8 +168,9 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("init ops server: %w", err)
 	}
-	ops.Registry().MustRegister(externalFailOpenTotal, externalDiscrepancyTotal, streamDropped,
+	ops.Registry().MustRegister(externalFailOpenTotal, externalDiscrepancyTotal,
 		reaperReapedTotal, reaperUnresolvableTotal)
+	ops.Registry().MustRegister(streamDropped...)
 
 	logger.InfoContext(ctx, "starting", "config", cfg)
 
@@ -294,6 +293,20 @@ type extDiscrepancyMetric struct{ c *prometheus.CounterVec }
 
 func (m extDiscrepancyMetric) Discrepancy(providerID uuid.UUID) {
 	m.c.WithLabelValues(providerID.String()).Inc()
+}
+
+// streamDropCollectors meters both ends of this service's alert feed: what the transport refused, and what
+// the publisher could not serialise. Metering the transport alone is what let realtime records vanish in
+// silence (step-210), and a named function is what lets the wiring be scraped in a test.
+//
+// No rate_cap series here, deliberately: the publisher's cap guards session events only, and Alerted is
+// exempt because a floor alert fires once per owner per period. Exposing a counter that can only ever read
+// zero would tell an operator these alerts are throttled when nothing throttles them.
+func streamDropCollectors(transport metrics.DropCounter, alerts *metricstream.EventPublisher) []prometheus.Collector {
+	return []prometheus.Collector{
+		metrics.StreamDropCollector("buffer", transport),
+		metrics.StreamDropCollector("encode", metrics.DropCounterFunc(alerts.DroppedUnserializable)),
+	}
 }
 
 // runGRPC serves the Billing API until ctx is cancelled, then drains within timeout. GracefulStop lets

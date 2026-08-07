@@ -70,6 +70,63 @@ func TestNilPublisherIsSafe(t *testing.T) {
 	metricstream.NewEventPublisher("svc", nil).Alerted("c", "customer", "c", "mo_floor_reached", 0)
 }
 
+// TestRateCappedDropsAreCountedApart: the cap is expected to fire under load, an unserializable record is a
+// bug. One counter for both would bury the bug in the noise of the cap, so each reason gets its own — and the
+// exposition splits them by label (see metrics.StreamDropCollector).
+//
+// The assertion is exact and independent of where the one-second window falls: every call is either published
+// or counted, never both, never neither.
+func TestRateCappedDropsAreCountedApart(t *testing.T) {
+	const calls = 200 // comfortably past the 50/s cap even if the burst straddles a window boundary
+
+	sink := &fakeSink{}
+	p := metricstream.NewEventPublisher("smpp-server-svc", sink)
+
+	one := 1
+	for range calls {
+		p.SessionChanged("acct-1", "ACME01", "bound", &one)
+	}
+
+	sink.mu.Lock()
+	published := len(sink.values)
+	sink.mu.Unlock()
+
+	capped := p.DroppedRateCapped()
+	if published+int(capped) != calls {
+		t.Errorf("published %d + rate-capped %d = %d, want %d — a call was lost from both sides",
+			published, capped, published+int(capped), calls)
+	}
+	if capped == 0 {
+		t.Errorf("rate-capped = 0 after %d calls in one burst, want the cap to have fired", calls)
+	}
+	if got := p.DroppedUnserializable(); got != 0 {
+		t.Errorf("unserializable = %d, want 0 — a rate-cap drop must not land on the encode counter", got)
+	}
+}
+
+// TestAlertsAreNotRateCapped: the cap guards the session feed, where a pod drain can produce thousands of
+// records. A billing alert fires once per owner per period, and silencing one would hide the very transition
+// the operator is waiting for.
+func TestAlertsAreNotRateCapped(t *testing.T) {
+	const calls = 200
+
+	sink := &fakeSink{}
+	p := metricstream.NewEventPublisher("billing-svc", sink)
+	for range calls {
+		p.Alerted("cust-1", "customer", "cust-1", "mo_floor_reached", 0)
+	}
+
+	sink.mu.Lock()
+	published := len(sink.values)
+	sink.mu.Unlock()
+	if published != calls {
+		t.Errorf("published %d alerts, want all %d", published, calls)
+	}
+	if capped := p.DroppedRateCapped(); capped != 0 {
+		t.Errorf("rate-capped = %d, want alerts to be exempt", capped)
+	}
+}
+
 func decodeOne(t *testing.T, sink *fakeSink, into any) {
 	t.Helper()
 	sink.mu.Lock()
