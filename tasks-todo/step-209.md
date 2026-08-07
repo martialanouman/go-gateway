@@ -37,6 +37,57 @@ définitif et visible du client, et le contrat public le documente désormais co
   décision de spec (§6.22), pas un choix d'implémentation — elle passe par l'échelle spec → Fable →
   arbitrage humain, et probablement par un ADR.
 
+## Design arrêté (2026-08-07)
+
+Réf : [ADR-0013](../docs/adr/0013-annulation-jeton-vainqueur-unique.md), qui porte le détail et les
+options écartées.
+
+### DN1 — Le sens de `cancelled` est déjà tranché par la spec
+§6.22 : « annule un message **pas encore envoyé** au SMSC ; s'il a déjà été soumis,
+`ESME_RCANCELFAIL` ». `cancelled` signifie donc **jamais parti**.
+**Raison :** la spec tranche, on ne délibère pas. Corollaire qui gouverne tout le reste : écrire cette
+ligne sur un message dispatché est *faux*, pas mal classé — ce qui écarte les solutions qui se
+contentent de la reclasser (démotion de rang, statut provisoire, résolution à la lecture). La ligne ne
+doit pas être écrite.
+
+### DN2 — La clé `cancel:{id}` devient un jeton à vainqueur unique
+`SET … NX GET` en une commande, une clé. Connecteur avant `submit_sm` : revendique `"dispatched"`
+(TTL 5 min). Canceller : revendique `"cancel"` (TTL 72 h). L'ancienne valeur retournée tranche —
+`"dispatched"` côté Canceller ⇒ `ErrCancelFailed` et **aucune ligne écrite**.
+**Raison :** le connecteur est déjà l'autorité sur « déjà dispatché » (`cancel.go` le dit). Le jeton en
+tire les conséquences au lieu de faire confiance à une projection qu'on sait retardée.
+**Vérifié en source** (Context7, `/redis/go-redis` v9.21.0) : `SetArgs{Mode:"NX", TTL, Get:true}`
+produit `SET key value EX <ttl> NX GET` et renvoie l'ancienne valeur (`redis.Nil` si absente).
+
+### DN3 — Le `GET` est structurel
+Sans lui, le connecteur ne distingue pas un jeton `cancel` de **son propre** jeton posé avant un crash :
+après redélivrance Kafka il écrirait `cancelled` sur un message ni envoyé ni annulé.
+**Raison :** sans cette distinction, le correctif introduit le même bug à l'envers.
+
+### DN4 — Deux TTL qui se recouvrent
+`cancel` = 72 h (survit au `validity_period` max). `dispatched` = 5 min.
+**Raison :** le jeton ne couvre que la fenêtre où la projection ment. Au-delà, `mt.outcome` a écrit
+`enroute` (alerte de lag à 30 s ⇒ 10× de marge) et la lecture CDR refuse l'annulation avant Redis.
+Invariant à tenir, écrit dans le commentaire de la const : **le TTL dépasse le seuil de l'alerte de lag**.
+**Coût :** une clé par message dispatché (~2,4 M à 8 000/s, ~300 Mo). Le chemin chaud échange une
+lecture Redis contre une écriture — nombre d'allers-retours inchangé.
+
+### DN5 — Le jeton est pris là où `Exists` était lu
+`connectorpool.go`, avant le contrôle de reroute et l'attente AIMD.
+**Raison :** diff minimal, et le biais va dans le bon sens. Prendre tôt refuse quelques annulations
+légitimes (message rerouté, en attente de throttle) : un faux négatif coûte un `ESME_RCANCELFAIL` et
+n'écrit rien de faux ; le faux positif inverse est le bug. En cas de doute, refuser.
+
+### DN6 — Changement observable assumé
+Un `cancel_sm` dans la fenêtre répondait `ESME_ROK` en mentant ; il répond `ESME_RCANCELFAIL`, ce que
+§6.22 prescrit pour « déjà soumis ». Aucun code d'erreur nouveau.
+
+### DN7 — Fail-open conservé, trou résiduel documenté
+Erreur Redis côté connecteur ⇒ on envoie (l'annulation est best-effort ; on ne fige pas la livraison
+sortante sur une panne Redis). Résiduel : si le jeton du connecteur échoue et que Redis revient avant
+le `cancel_sm`, le Canceller gagne un jeton indu et la ligne fausse revient. Borné aux pannes Redis
+partielles, documenté, non poursuivi.
+
 ## Tests (écrits dans la même PR)
 - Une annulation acceptée sur un statut `accepted` périmé, suivie d'un `enroute` puis d'un `delivered`,
   ne laisse pas le message en `cancelled`.
