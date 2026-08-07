@@ -88,17 +88,44 @@ sortante sur une panne Redis). Résiduel : si le jeton du connecteur échoue et 
 le `cancel_sm`, le Canceller gagne un jeton indu et la ligne fausse revient. Borné aux pannes Redis
 partielles, documenté, non poursuivi.
 
+### DN8 — Un jeton inconnu n'est pas un jeton libre (constat de revue, bloquant)
+Les deux sites lisaient toute valeur non reconnue comme « libre ». Or l'ancien `Mark` écrivait `"1"`
+dans **cette même clé**, avec 72 h de TTL : pendant un déploiement progressif, un message annulé juste
+avant la bascule porte `cancel:{id} = "1"`. Le nouveau connecteur l'aurait envoyé quand même, et le
+Canceller aurait écrit la ligne — la régression exacte que la step corrige.
+**Décision :** seul `HolderNone` autorise à avancer. Côté Canceller, tout le reste refuse ; côté
+connecteur, tout sauf `HolderNone` et son propre `HolderDispatched` est honoré comme une annulation.
+**Raison :** application directe de DN5 (« en cas de doute, refuser »), donc pas de nouvel arbitrage.
+Le défaut inverse était un fail-open silencieux là où le design exige un fail-closed.
+
 ## Tests (écrits dans la même PR)
 - Une annulation acceptée sur un statut `accepted` périmé, suivie d'un `enroute` puis d'un `delivered`,
-  ne laisse pas le message en `cancelled`.
-- Le cas légitime reste intact : un message réellement annulé avant dispatch lit bien `cancelled`.
-- Aucune régression sur la résolution des lignes historiques si le rang bouge.
+  ne laisse pas le message en `cancelled` → `TestRaceScenarioLeavesADeliveredMessageDelivered`.
+- Le cas légitime reste intact : un message réellement annulé avant dispatch lit bien `cancelled` →
+  `TestConnectorSkipsCancelledMessage`, `TestConnectorReleasesOnCancel`,
+  `TestConnectorStillWritesCancelledRowDirectly`.
+- Aucune régression sur la résolution des lignes historiques : le rang ne bouge pas →
+  `TestCancelledStillOutranksEveryOtherState`.
+
+## Tableau des mutations
+
+| Mutation | Test tombé | Message |
+|---|---|---|
+| `Mode: "NX"` retiré de `Claim` | `TestClaimReportsTheHolder`, `…WinnersTTL` | `token = "cancel" … the loser overwrote the winner` · `TTL grew from 5m0s to 72h0m0s` |
+| Refus sur jeton perdu désactivé (Canceller) | `TestCancelLosesTheRaceToTheConnector` | `a lost race wrote 1 CDR row(s), want 0` |
+| Idem, vu de bout en bout | `TestRaceScenarioLeavesADeliveredMessageDelivered` | `final status = "cancelled", want delivered` |
+| `HolderDispatched` traité comme annulation (connecteur) | `TestConnectorSubmitsOnItsOwnToken` | `its own token must write no cancelled CDR row` |
+| DN8 annulé — jeton inconnu relu comme libre (connecteur) | `TestConnectorHonoursAnUnknownToken` | `the message was sent` |
+| DN8 annulé (Canceller) | `TestCancelRefusesAnUnknownHolder` | `an unknown holder wrote 1 row(s), want 0` |
 
 ## Definition of Done
-- [ ] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts
-- [ ] la course est fermée, **testée** par le scénario complet accepted → cancel → enroute → delivered
-- [ ] le sens de `cancelled` sous course est tranché et écrit (spec §6.22 ou ADR)
-- [ ] le contrat public est mis à jour si la limite documentée disparaît (bump `api/package.json`)
+- [x] gofmt/goimports · golangci-lint (0 issue) · `go test -race ./...` (RC=0, 79 paquets, **0 skip**) ·
+      govulncheck (0 vulnérabilité atteignant le code) verts
+- [x] la course est fermée, **testée** par le scénario complet accepted → cancel → enroute → delivered
+      (`TestRaceScenarioLeavesADeliveredMessageDelivered`, vu tomber sous mutation)
+- [x] le sens de `cancelled` sous course est tranché et écrit — §6.22 le disait déjà, ADR-0013 le fige
+- [x] le contrat public est mis à jour, la limite documentée disparaît, `api/package.json` 4.0.2 → 4.0.3
+      (`oasdiff` : aucune rupture)
 
 ## Hors périmètre
 Le lag de projection lui-même (step-201c). L'annulation REST — elle n'existe pas : `cancel_sm` est
