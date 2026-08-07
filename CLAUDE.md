@@ -4,21 +4,15 @@ Manuel de travail pour Claude Code sur ce dépôt. Lis-le en entier avant d'écr
 
 ## Avant d'ouvrir un fichier
 
-**Une step de `tasks-todo/` s'ouvre par le skill `impl-step`**, invoqué *avant* la première lecture de
-code — pas une fois le travail commencé. « attaque step-200 », « implémente step-201 », « enchaîne sur
-la suivante », « reprends step-203 » : même signal, même réflexe.
+Tout travail de code s'ouvre par le skill `using-agent-skills`, invoqué *avant* la première lecture
+de code — pas une fois le travail commencé.
 
-Le skill porte le déroulé complet. Ce qui reste vrai même sans l'avoir sous les yeux :
+Deux exigences non négociables :
 
-1. **aucune ligne de code avant que le design soit commité** — décisions `DN` avec leur raison, dans la
-   fiche, sous `## Design arrêté` ;
-2. **aucune implémentation avant un rouge lu**, échouant pour la bonne raison (« symbole inexistant » le
-   prouve ; « connexion refusée » ne prouve rien) ;
-3. **aucun « vert » avant une mutation vue tomber** — une assertion jamais vue échouer n'en est pas une ;
-4. **aucun passage en DoD tant qu'un constat de revue est classé bloquant**.
-
-Un point que la fiche laisse ouvert se tranche dans cet ordre : **la spec d'abord, le modèle Fable
-ensuite, l'arbitrage humain en dernier si Fable ne tranche pas** — jamais un choix silencieux.
+- **TDD** — un rouge lu, échouant pour la bonne raison (« symbole inexistant » le prouve ;
+  « connexion refusée » ne prouve rien), avant toute implémentation ; aucun « vert » avant d'avoir
+  vu une mutation tomber. Une assertion jamais vue échouer n'en est pas une.
+- **DoD** — aucune PR ne sort sans la Definition of Done ci-dessous, satisfaite en entier.
 
 ## Ce qu'on construit
 
@@ -66,7 +60,7 @@ Tout le code métier vit sous `internal/`. Interfaces définies côté consommat
 - **Secrets** (mots de passe bind, clés API) stockés en hash, révélés une seule fois à la création/rotation. Comparaison en temps constant.
 - **Modèle d'erreur plat** `{ code, message, errors[] }` en `application/json` (surcharge `huma.NewError`). `code` = contrat partagé avec les `command_status` SMPP et `cdr.error_code`. Réf : guide d'ingénierie §11.
 - **Les contrats sont la source de vérité** : implémente pour conformer `openapi-*.yaml` et `schema_passerelle_sms.sql`, jamais l'inverse.
-- **Toute step de `tasks-todo/` passe par `impl-step`**, ses quatre portes et son échelle d'arbitrage. Voir « Avant d'ouvrir un fichier » en tête.
+- **Fiches de travail** : une step vit dans `tasks-todo/step-NNN.md` et porte son design sous `## Design arrêté`. Elle passe en `tasks-done/` par un `git mv`, dernier commit de sa PR.
 - **Versions & API des bibliothèques : TOUJOURS via Context7 (`ctx7`), jamais de mémoire.** Avant d'ajouter, de mettre à jour ou d'utiliser l'API d'une bibliothèque (chi, huma, pgx, franz-go, go-redis, goja… — §1.2 du plan d'exécution), récupère la **doc à jour** et la **version correcte**. Les API changent entre majeures (pgx v4→v5, huma v1→v2) et un usage périmé compile parfois.
 
 ## Les 4 invariants (tests bloquants, verts à vie)
