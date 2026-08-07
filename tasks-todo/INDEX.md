@@ -166,5 +166,5 @@ structurelles et à faire **avant** que M12 n'empile dessus.
 ## Audit post-M11 — dettes du flux temps réel (revue du 2026-08-07)
 Deux dettes laissées par step-184, de nature différente : un compteur construit que personne ne lit, et une
 promesse de contrat dont la source durable n'existe pas.
-- [ ] step-210 — Les rejets du flux temps réel redeviennent visibles (le plafond tronquait en silence)
+- [x] step-210 — Les rejets du flux temps réel redeviennent visibles (le plafond tronquait en silence)
 - [ ] step-211 — `billing.events` durable : le BFF doit pouvoir détecter, pas seulement afficher
