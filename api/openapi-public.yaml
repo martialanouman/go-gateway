@@ -381,10 +381,10 @@ components:
         behind for a short while, most visibly just after submission, while it is already on its way to the
         SMSC but still reads `accepted`. No freshness figure is promised.
 
-        One consequence worth knowing: `cancelled` is decided against this projection. A cancellation
-        accepted while an already-dispatched message still reads `accepted` is recorded, and `cancelled`
-        then outranks the states that follow — so a message that was in fact delivered can keep reading
-        `cancelled`. Billing is unaffected: charges follow the reserve/capture ledger, not this status.
+        `cancelled` is not subject to that lag: it means the message never reached the SMSC, and a
+        cancellation racing a dispatch is arbitrated against the dispatch itself rather than against this
+        projection. A `cancel_sm` that loses is refused (`ESME_RCANCELFAIL`) instead of being recorded, so
+        a delivered message never reads `cancelled`.
 
         Do not poll this endpoint to detect delivery. Delivery receipts are pushed to the account's
         configured webhook, or delivered over SMPP `deliver_sm` when the account holds a bind (see the

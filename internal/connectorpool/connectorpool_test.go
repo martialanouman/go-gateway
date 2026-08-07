@@ -305,6 +305,25 @@ func TestConnectorSubmitsOnItsOwnToken(t *testing.T) {
 	}
 }
 
+// TestConnectorHonoursAnUnknownToken pins the mirror of the Canceller's rule: a token this build
+// cannot name is NOT its own, so the connector must treat it as a cancellation and refuse to send.
+//
+// The concrete case is a rolling deploy. This key was a plain flag in the previous build, value "1",
+// TTL 72h; a message cancelled just before the switch carries it. Reading it as "free" would put a
+// cancelled message on the wire — the very thing the cancel token exists to prevent.
+func TestConnectorHonoursAnUnknownToken(t *testing.T) {
+	sink, submitted, err := runWithFlags(t, &fakeFlags{holder: "1"}, routed())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if *submitted {
+		t.Error("a token the build cannot name must not be read as free — the message was sent")
+	}
+	if rows := sink.rows(); len(rows) != 1 || rows[0].Status != clickhouse.StatusCancelled {
+		t.Errorf("an unknown token must be honoured as a cancellation, got %+v", rows)
+	}
+}
+
 // TestConnectorDispatchesWhenCancelFlagUnavailable pins the fail-open behaviour: a Redis failure
 // reading the cancel flag must NOT halt delivery — cancellation is best-effort, so the connector logs
 // and dispatches the message normally rather than stalling all outbound traffic on a Redis outage.

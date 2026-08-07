@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/martialanouman/go-gateway/internal/cancel"
+	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
 	"github.com/martialanouman/go-gateway/internal/testutil/redistest"
 )
 
@@ -138,6 +139,77 @@ func TestClaimReportsTheHolder(t *testing.T) {
 			t.Errorf("dispatch after cancel = %q, want HolderCancel", got)
 		}
 	})
+}
+
+// TestRaceScenarioLeavesADeliveredMessageDelivered is the end-to-end statement of step-209, over the
+// real token and the real rank table: accepted → cancel → enroute → delivered must NOT end at
+// `cancelled`.
+//
+// It drives both actors in the order that used to produce the bug — the connector claims the token
+// and dispatches, THEN a cancel_sm arrives while the CDR projection still reads `accepted` — and then
+// resolves the final status the way ClickHouse does: the highest rank among the rows actually
+// written. The row the Canceller does not write is what makes the outcome right, so the assertion has
+// to span both the arbitration and the ranking.
+func TestRaceScenarioLeavesADeliveredMessageDelivered(t *testing.T) {
+	rdb := redistest.Client(t)
+	flags := cancel.NewRedisFlags(rdb)
+	ctx := context.Background()
+
+	row := rowWith(clickhouse.StatusAccepted) // the projection lags: it still says "queued"
+	writer := &fakeWriter{}
+	c := cancel.NewCanceller(fakeReader{row: row, found: true}, writer, flags, nil)
+
+	// 1. The connector claims the token and puts the message on the wire.
+	if _, err := flags.Claim(ctx, row.MessageID, cancel.HolderDispatched); err != nil {
+		t.Fatalf("connector claim: %v", err)
+	}
+
+	// 2. A cancel_sm lands inside the projection-lag window.
+	if err := c.Cancel(ctx, row.CustomerID, row.AccountID, row.MessageID); err == nil {
+		t.Error("the cancel must be refused: the message is already on the wire")
+	}
+
+	// 3. The outcome projection and the carrier receipt write what really happened.
+	written := append([]clickhouse.CDRRow{{Status: clickhouse.StatusAccepted}}, writer.rows...)
+	written = append(written,
+		clickhouse.CDRRow{Status: clickhouse.StatusEnroute},
+		clickhouse.CDRRow{Status: clickhouse.StatusDelivered},
+	)
+
+	// ReplacingMergeTree keeps the highest rank, whatever the insertion order.
+	final := written[0].Status
+	for _, r := range written {
+		if r.Status.Rank() > final.Rank() {
+			final = r.Status
+		}
+	}
+	if final != clickhouse.StatusDelivered {
+		t.Errorf("final status = %q, want delivered — a delivered message must never read %q",
+			final, final)
+	}
+}
+
+// TestCancelledStillOutranksEveryOtherState pins that step-209 changed no rank. The fix works by not
+// writing the wrong row, NOT by re-ordering the ladder — and that distinction is what leaves every
+// historical row judged exactly as it was before. A rank change would silently re-resolve them all,
+// since the rank IS the ReplacingMergeTree version.
+func TestCancelledStillOutranksEveryOtherState(t *testing.T) {
+	want := map[clickhouse.Status]uint64{
+		clickhouse.StatusAccepted:  10,
+		clickhouse.StatusRerouted:  15,
+		clickhouse.StatusEnroute:   20,
+		clickhouse.StatusRejected:  20,
+		clickhouse.StatusDelivered: 40,
+		clickhouse.StatusFailed:    50,
+		clickhouse.StatusExpired:   50,
+		clickhouse.StatusCancelled: 60,
+	}
+	for status, rank := range want {
+		if got := status.Rank(); got != rank {
+			t.Errorf("Rank(%q) = %d, want %d — moving a rank re-judges every historical row",
+				status, got, rank)
+		}
+	}
 }
 
 // TestClaimDoesNotExtendTheWinnersTTL pins that a losing claim leaves the winner's expiry alone. It

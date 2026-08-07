@@ -82,6 +82,18 @@ soit 10× de marge — et la lecture CDR du Canceller refuse l'annulation avant 
 deux gardes se composent ; l'invariant à tenir est que **le TTL du jeton dépasse le seuil de l'alerte
 de lag**, ce qui est écrit dans le commentaire de la constante.
 
+### 5. Un jeton inconnu n'est pas un jeton libre
+
+Seul `HolderNone` — l'absence de valeur — autorise un appelant à avancer. Le Canceller refuse sur toute
+autre valeur ; le connecteur honore comme une annulation tout ce qui n'est ni libre ni son propre
+`HolderDispatched`.
+
+Ce n'est pas de la défensive théorique. La clé était un simple drapeau dans le build précédent, de
+valeur `"1"` et de TTL 72 h : **pendant un déploiement progressif**, un message annulé juste avant la
+bascule la porte encore. La lire comme « libre » mettrait un message annulé sur le fil et ferait écrire
+la ligne fautive — la régression exacte que cet ADR ferme. Le défaut va donc vers le refus, comme le
+reste de la décision.
+
 ## Options Considered
 
 ### Option A : jeton à vainqueur unique sur `cancel:{message_id}` (retenue)

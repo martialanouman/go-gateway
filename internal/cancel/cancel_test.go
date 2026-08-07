@@ -188,6 +188,33 @@ func TestCancelLosesTheRaceToTheConnector(t *testing.T) {
 	}
 }
 
+// TestCancelRefusesAnUnknownHolder pins the direction of the unknown case: a token this build cannot
+// name is still a token we did NOT win, so the cancel is refused and no row is written.
+//
+// This is not hypothetical. The token key is the one the previous build used as a plain flag, whose
+// value was "1" and whose TTL is 72h. During a rolling deploy a message cancelled just before the
+// switch carries exactly that value, and reading it as "free" would let the cancel record a row for a
+// message the connector is about to send anyway.
+func TestCancelRefusesAnUnknownHolder(t *testing.T) {
+	for _, holder := range []cancel.Holder{"1", "something-a-future-build-writes"} {
+		t.Run(string(holder), func(t *testing.T) {
+			row := rowWith(clickhouse.StatusAccepted)
+			writer := &fakeWriter{}
+			c := cancel.NewCanceller(fakeReader{row: row, found: true}, writer,
+				&fakeFlags{holder: holder}, nil)
+
+			err := c.Cancel(context.Background(), row.CustomerID, row.AccountID, row.MessageID)
+
+			if !errors.Is(err, errs.ErrCancelFailed) {
+				t.Errorf("err = %v, want ErrCancelFailed — an unheld token is not a free one", err)
+			}
+			if len(writer.rows) != 0 {
+				t.Errorf("an unknown holder wrote %d row(s), want 0", len(writer.rows))
+			}
+		})
+	}
+}
+
 // TestCancelWinsTheRaceAgainstItself pins that a repeat cancel_sm whose CDR projection has not yet
 // caught up stays idempotent: the token already reads `cancel`, so it is our own earlier intent, not
 // a dispatch. It must succeed (ESME_ROK) and write nothing new.

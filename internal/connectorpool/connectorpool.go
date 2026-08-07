@@ -863,10 +863,14 @@ func (s *Service) processOne(ctx context.Context, b *bind, bindIndex int, rec ka
 	if err != nil {
 		s.deps.Logger.WarnContext(ctx, "connector: cancel-token claim failed, dispatching anyway",
 			"message_id", routed.MessageID, "err", err)
-	} else if holder == cancel.HolderCancel {
-		// A cancel_sm got there first. HolderDispatched is NOT this branch: that is our own token,
-		// re-read after a Kafka redelivery, and treating it as a cancellation would skip a message we
-		// have already sent.
+	} else if holder != cancel.HolderNone && holder != cancel.HolderDispatched {
+		// Anything that is not a free token and not OUR OWN is a cancellation: HolderCancel, or a
+		// holder this build cannot name — including the plain "1" the previous build wrote into this
+		// very key, which a rolling deploy can still surface. Reading either as free would put a
+		// cancelled message on the wire.
+		//
+		// HolderDispatched is deliberately excluded: that is our own token, re-read after a Kafka
+		// redelivery, and treating it as a cancellation would skip a message we have already sent.
 		//
 		// Honour the cancel: record the cancelled outcome and commit without submitting. Writing the
 		// row here (not only in the Canceller) is what makes the skip safe: it is idempotent under

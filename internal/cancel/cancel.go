@@ -111,12 +111,16 @@ func (c *Canceller) Cancel(ctx context.Context, customerID, accountID, messageID
 	case err != nil:
 		c.logger.ErrorContext(ctx, "cancel: claim token", "message_id", messageID, "err", err)
 		return errs.ErrInternal
-	case holder == HolderDispatched:
-		// The connector got there first: the message is on the wire. Refuse, and write NOTHING.
-		return errs.ErrCancelFailed
 	case holder == HolderCancel:
 		// Our own earlier intent, whose CDR row has not been projected back to us yet. Idempotent.
 		return nil
+	case holder != HolderNone:
+		// We did not win the token. HolderDispatched means the connector got there first and the
+		// message is on the wire; any OTHER value means a holder this build cannot name — including
+		// the plain "1" the previous build wrote into this very key, which a rolling deploy can still
+		// surface. Both are "not ours", so both refuse and write NOTHING. Only an explicitly free
+		// token may proceed: when in doubt, refuse (step-209, DN5).
+		return errs.ErrCancelFailed
 	}
 
 	if err := c.writer.Insert(ctx, cancelledRow(row)); err != nil {
