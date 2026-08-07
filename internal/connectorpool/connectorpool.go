@@ -22,6 +22,7 @@ import (
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/martialanouman/go-gateway/internal/cancel"
 	"github.com/martialanouman/go-gateway/internal/connector/breaker"
 	"github.com/martialanouman/go-gateway/internal/connector/reconnect"
 	"github.com/martialanouman/go-gateway/internal/connector/status"
@@ -66,19 +67,25 @@ type CDRWriter interface {
 	Insert(ctx context.Context, row clickhouse.CDRRow) error
 }
 
-// CancelFlags reports whether a message was cancelled (via cancel_sm) before it reached the SMSC.
-// *cancel.RedisFlags satisfies it. New defaults a nil CancelFlags to a no-op that reports nothing
-// cancelled, so the hot path never branches on nil and a missing wiring cannot silently disable the
-// check without the no-op being explicit.
+// CancelFlags arbitrates the single-winner cancel token a message shares with the cancel_sm front
+// door (ADR-0013). The connector claims it as cancel.HolderDispatched before submit_sm; the returned
+// holder is who actually owns it. *cancel.RedisFlags satisfies it.
+//
+// Claiming rather than merely reading is what closes step-209: it is the claim, not the lagging CDR
+// projection, that decides whether a cancel_sm still may cancel. New defaults a nil CancelFlags to a
+// no-op that always concedes the token, so the hot path never branches on nil and a missing wiring
+// cannot silently disable the check without the no-op being explicit.
 type CancelFlags interface {
-	Exists(ctx context.Context, messageID uuid.UUID) (bool, error)
+	Claim(ctx context.Context, messageID uuid.UUID, as cancel.Holder) (cancel.Holder, error)
 }
 
-// noopCancelFlags is the New default when no flag store is wired: it reports nothing cancelled, so the
-// connector dispatches normally. Tests that do not exercise cancellation rely on it.
+// noopCancelFlags is the New default when no token store is wired: it reports the token as free, so
+// the connector dispatches normally. Tests that do not exercise cancellation rely on it.
 type noopCancelFlags struct{}
 
-func (noopCancelFlags) Exists(context.Context, uuid.UUID) (bool, error) { return false, nil }
+func (noopCancelFlags) Claim(context.Context, uuid.UUID, cancel.Holder) (cancel.Holder, error) {
+	return cancel.HolderNone, nil
+}
 
 // DLRMap remembers smsc_msg_id -> message_id after a successful submit, so a later deliver_sm
 // (delivery receipt) can be correlated back to the message (step-044 reads it). *dlrmap.RedisMap
@@ -838,19 +845,33 @@ func (s *Service) processOne(ctx context.Context, b *bind, bindIndex int, rec ka
 		return s.deadLetterWith(ctx, routed, errs.ErrDeliveryExpired)
 	}
 
-	// A cancel_sm may have flagged this message before it reached the SMSC. Redis is best-effort
-	// here: cancellation is itself best-effort (an already-dispatched message cannot be recalled), so
-	// a flag-read failure fails OPEN — we log and dispatch rather than halt all outbound delivery on a
-	// Redis outage.
-	cancelled, err := s.deps.CancelFlags.Exists(ctx, routed.MessageID)
+	// Claim the cancel token before putting anything on the wire (ADR-0013). Claiming, not reading, is
+	// what makes this decisive: a cancel_sm arriving from here on loses the token and refuses, instead
+	// of reading a stale `accepted` off the CDR projection and recording a cancellation of a message
+	// already gone (step-209).
+	//
+	// Taking it HERE — before the reroute check and the AIMD wait — costs a few false negatives: a
+	// message that ends up rerouted, or that waits on the throttle, is no longer cancellable. That
+	// bias is deliberate. A false negative costs the ESME an ESME_RCANCELFAIL and writes nothing
+	// false; the opposite false positive is the bug this closes. When in doubt, refuse.
+	//
+	// Redis is best-effort here: cancellation is itself best-effort (an already-dispatched message
+	// cannot be recalled), so a claim failure fails OPEN — we log and dispatch rather than halt all
+	// outbound delivery on a Redis outage. Residual, accepted: the cancel_sm may then win a token it
+	// should not have and write the wrong row again, bounded to Redis outages.
+	holder, err := s.deps.CancelFlags.Claim(ctx, routed.MessageID, cancel.HolderDispatched)
 	if err != nil {
-		s.deps.Logger.WarnContext(ctx, "connector: cancel-flag check failed, dispatching anyway",
+		s.deps.Logger.WarnContext(ctx, "connector: cancel-token claim failed, dispatching anyway",
 			"message_id", routed.MessageID, "err", err)
-	} else if cancelled {
+	} else if holder == cancel.HolderCancel {
+		// A cancel_sm got there first. HolderDispatched is NOT this branch: that is our own token,
+		// re-read after a Kafka redelivery, and treating it as a cancellation would skip a message we
+		// have already sent.
+		//
 		// Honour the cancel: record the cancelled outcome and commit without submitting. Writing the
 		// row here (not only in the Canceller) is what makes the skip safe: it is idempotent under
 		// ReplacingMergeTree (rank 60, collapsing with the Canceller's row) and closes the window where
-		// the Canceller crashed after flagging but before writing the row — otherwise the message would
+		// the Canceller crashed after claiming but before writing the row — otherwise the message would
 		// be neither sent nor recorded, leaving the CDR stuck on accepted.
 		// A cancelled message is never sent, so release its reservation (step-146). Fail-open, gated on
 		// Billable — a billing-disabled or unreserved message makes no call.

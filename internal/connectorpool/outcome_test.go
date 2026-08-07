@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/martialanouman/go-gateway/internal/cancel"
 	"github.com/martialanouman/go-gateway/internal/connectorpool"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
@@ -360,7 +361,7 @@ func TestConnectorStillWritesCancelledRowDirectly(t *testing.T) {
 		Consumer:    &fakeConsumer{records: []kafka.Record{rec}},
 		CDR:         cdr,
 		Producer:    prod,
-		CancelFlags: &fakeFlags{cancelled: true},
+		CancelFlags: &fakeFlags{holder: cancel.HolderCancel},
 		Bind: connectorpool.BindConfig{
 			Addr: smsc.Addr(), SystemID: "esme", Password: "pw",
 			DialTimeout: 3 * time.Second, ResponseTimeout: 3 * time.Second,
