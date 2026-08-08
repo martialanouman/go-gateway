@@ -38,18 +38,20 @@ func (f *fakeWriter) Insert(_ context.Context, row clickhouse.CDRRow) error {
 	return nil
 }
 
-// fakeFlags records the marked ids, standing in for the Redis flag store.
+// fakeFlags records the claims, standing in for the Redis cancel-token store. holder is the token
+// already in place, if any; HolderNone means the token is free and the Canceller wins it.
 type fakeFlags struct {
-	marked []uuid.UUID
-	err    error
+	holder  cancel.Holder
+	claimed []uuid.UUID
+	err     error
 }
 
-func (f *fakeFlags) Mark(_ context.Context, id uuid.UUID) error {
+func (f *fakeFlags) Claim(_ context.Context, id uuid.UUID, _ cancel.Holder) (cancel.Holder, error) {
 	if f.err != nil {
-		return f.err
+		return cancel.HolderNone, f.err
 	}
-	f.marked = append(f.marked, id)
-	return nil
+	f.claimed = append(f.claimed, id)
+	return f.holder, nil
 }
 
 func rowWith(status clickhouse.Status) clickhouse.CDRRow {
@@ -81,8 +83,8 @@ func TestCancelAcceptedMessage(t *testing.T) {
 	if err := c.Cancel(context.Background(), row.CustomerID, row.AccountID, row.MessageID); err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}
-	if len(flags.marked) != 1 || flags.marked[0] != row.MessageID {
-		t.Errorf("cancel intent not flagged, marked = %v", flags.marked)
+	if len(flags.claimed) != 1 || flags.claimed[0] != row.MessageID {
+		t.Errorf("cancel intent not claimed, claimed = %v", flags.claimed)
 	}
 	if len(writer.rows) != 1 {
 		t.Fatalf("cancelled CDR row not written, rows = %+v", writer.rows)
@@ -120,8 +122,8 @@ func TestCancelDispatchedMessage(t *testing.T) {
 			if !errors.Is(err, errs.ErrCancelFailed) {
 				t.Errorf("err = %v, want ErrCancelFailed", err)
 			}
-			if len(flags.marked) != 0 {
-				t.Error("a dispatched message must not be flagged")
+			if len(flags.claimed) != 0 {
+				t.Error("a dispatched message must not be claimed")
 			}
 			if len(writer.rows) != 0 {
 				t.Error("a dispatched message must not write a cancelled CDR row")
@@ -152,8 +154,81 @@ func TestCancelAlreadyCancelledIsIdempotent(t *testing.T) {
 	if err := c.Cancel(context.Background(), row.CustomerID, row.AccountID, row.MessageID); err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}
-	if len(flags.marked) != 0 || len(writer.rows) != 0 {
-		t.Error("re-cancelling must not re-flag or re-write")
+	if len(flags.claimed) != 0 || len(writer.rows) != 0 {
+		t.Error("re-cancelling must not re-claim or re-write")
+	}
+}
+
+// TestCancelLosesTheRaceToTheConnector is the test step-209 exists for.
+//
+// The Canceller decides cancellability on the CDR projection, which lags: a message already on the
+// wire keeps reading `accepted` until mt.outcome is projected (tens of ms in steady state, bounded
+// only by the 30s lag alert under saturation). Throughout that window the status check above passes
+// for a message that WILL be delivered. The cancel token is the second guard, and it is the one that
+// holds: the connector claimed it before submit_sm, so the Canceller loses.
+//
+// Losing must mean ESME_RCANCELFAIL and, above all, NO CDR ROW. A cancelled row ranks 60, above
+// delivered (40) and failed (50), and ReplacingMergeTree keeps the max rank whatever the insertion
+// order — so one wrongly written row makes get-message report `cancelled` for ever on a delivered,
+// billed message. The row is the damage; the error code is only the symptom.
+func TestCancelLosesTheRaceToTheConnector(t *testing.T) {
+	row := rowWith(clickhouse.StatusAccepted) // the projection still says "queued"; it is stale
+	writer := &fakeWriter{}
+	flags := &fakeFlags{holder: cancel.HolderDispatched}
+	c := cancel.NewCanceller(fakeReader{row: row, found: true}, writer, flags, nil)
+
+	err := c.Cancel(context.Background(), row.CustomerID, row.AccountID, row.MessageID)
+
+	if !errors.Is(err, errs.ErrCancelFailed) {
+		t.Errorf("err = %v, want ErrCancelFailed (ESME_RCANCELFAIL) — the message is already gone", err)
+	}
+	if len(writer.rows) != 0 {
+		t.Errorf("a lost race wrote %d CDR row(s), want 0 — a cancelled row (rank 60) would bury "+
+			"the enroute and delivered rows that follow, for ever", len(writer.rows))
+	}
+}
+
+// TestCancelRefusesAnUnknownHolder pins the direction of the unknown case: a token this build cannot
+// name is still a token we did NOT win, so the cancel is refused and no row is written.
+//
+// This is not hypothetical. The token key is the one the previous build used as a plain flag, whose
+// value was "1" and whose TTL is 72h. During a rolling deploy a message cancelled just before the
+// switch carries exactly that value, and reading it as "free" would let the cancel record a row for a
+// message the connector is about to send anyway.
+func TestCancelRefusesAnUnknownHolder(t *testing.T) {
+	for _, holder := range []cancel.Holder{"1", "something-a-future-build-writes"} {
+		t.Run(string(holder), func(t *testing.T) {
+			row := rowWith(clickhouse.StatusAccepted)
+			writer := &fakeWriter{}
+			c := cancel.NewCanceller(fakeReader{row: row, found: true}, writer,
+				&fakeFlags{holder: holder}, nil)
+
+			err := c.Cancel(context.Background(), row.CustomerID, row.AccountID, row.MessageID)
+
+			if !errors.Is(err, errs.ErrCancelFailed) {
+				t.Errorf("err = %v, want ErrCancelFailed — an unheld token is not a free one", err)
+			}
+			if len(writer.rows) != 0 {
+				t.Errorf("an unknown holder wrote %d row(s), want 0", len(writer.rows))
+			}
+		})
+	}
+}
+
+// TestCancelWinsTheRaceAgainstItself pins that a repeat cancel_sm whose CDR projection has not yet
+// caught up stays idempotent: the token already reads `cancel`, so it is our own earlier intent, not
+// a dispatch. It must succeed (ESME_ROK) and write nothing new.
+func TestCancelWinsTheRaceAgainstItself(t *testing.T) {
+	row := rowWith(clickhouse.StatusAccepted) // the first cancel's row is not projected yet
+	writer := &fakeWriter{}
+	flags := &fakeFlags{holder: cancel.HolderCancel}
+	c := cancel.NewCanceller(fakeReader{row: row, found: true}, writer, flags, nil)
+
+	if err := c.Cancel(context.Background(), row.CustomerID, row.AccountID, row.MessageID); err != nil {
+		t.Fatalf("a repeat cancel must stay idempotent, got %v", err)
+	}
+	if len(writer.rows) != 0 {
+		t.Errorf("a repeat cancel wrote %d row(s), want 0", len(writer.rows))
 	}
 }
 

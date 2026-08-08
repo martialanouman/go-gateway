@@ -16,6 +16,7 @@ Les décisions structurantes de la passerelle, une par fichier, au format ADR st
 | [0010](0010-config-billing-sur-customers.md) | Configuration de facturation consolidée sur `customers` | Accepted |
 | [0011](0011-content-key-svc-dedie.md) | La garde des clés de contenu vit dans un service dédié | Accepted |
 | [0012](0012-duplication-submit-sm-bornee.md) | Duplication d'un `submit_sm` assumée et **bornée** (~250 par partition et par crash) | Accepted |
+| [0013](0013-annulation-jeton-vainqueur-unique.md) | `cancelled` signifie « jamais parti » ; arbitrage par jeton à vainqueur unique | Accepted |
 
 ## Convention
 

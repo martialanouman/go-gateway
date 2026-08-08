@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/martialanouman/go-gateway/internal/cancel"
 	"github.com/martialanouman/go-gateway/internal/connector/breaker"
 	"github.com/martialanouman/go-gateway/internal/connectorpool"
 	"github.com/martialanouman/go-gateway/internal/observability"
@@ -62,14 +63,15 @@ func (f *fakeCDR) Insert(_ context.Context, row clickhouse.CDRRow) error {
 	return nil
 }
 
-// fakeFlags stands in for the shared cancel-flag store.
+// fakeFlags stands in for the shared cancel-token store. holder is the token already in place:
+// HolderNone means the token was free and the connector has just claimed it.
 type fakeFlags struct {
-	cancelled bool
-	err       error
+	holder cancel.Holder
+	err    error
 }
 
-func (f *fakeFlags) Exists(_ context.Context, _ uuid.UUID) (bool, error) {
-	return f.cancelled, f.err
+func (f *fakeFlags) Claim(_ context.Context, _ uuid.UUID, _ cancel.Holder) (cancel.Holder, error) {
+	return f.holder, f.err
 }
 
 // dlrPut is one recorded DLRMap.Put call.
@@ -253,7 +255,7 @@ func runWithFlags(t *testing.T, flags connectorpool.CancelFlags, r pipeline.Rout
 // submitted to the SMSC, that the connector writes the cancelled CDR row itself (so a Canceller crash
 // after flagging cannot leave the message unrecorded), and that the offset is committed (Run nil).
 func TestConnectorSkipsCancelledMessage(t *testing.T) {
-	sink, submitted, err := runWithFlags(t, &fakeFlags{cancelled: true}, routed())
+	sink, submitted, err := runWithFlags(t, &fakeFlags{holder: cancel.HolderCancel}, routed())
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -268,7 +270,7 @@ func TestConnectorSkipsCancelledMessage(t *testing.T) {
 // TestConnectorSubmitsWhenNotCancelled pins that an un-flagged message is submitted normally and its
 // enroute row written.
 func TestConnectorSubmitsWhenNotCancelled(t *testing.T) {
-	sink, submitted, err := runWithFlags(t, &fakeFlags{cancelled: false}, routed())
+	sink, submitted, err := runWithFlags(t, &fakeFlags{holder: cancel.HolderNone}, routed())
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -277,6 +279,48 @@ func TestConnectorSubmitsWhenNotCancelled(t *testing.T) {
 	}
 	if got := sink.outcome(t); got.Status != string(clickhouse.StatusEnroute) {
 		t.Errorf("outcome status = %q, want enroute", got.Status)
+	}
+}
+
+// TestConnectorSubmitsOnItsOwnToken pins step-209's DN3: after a Kafka redelivery — the connector
+// claimed the token, then crashed or failed to commit before submitting — it re-reads a token it set
+// ITSELF. It must recognise it and dispatch.
+//
+// Reading its own token as a cancellation would be the same bug mirrored: the connector would skip a
+// message nobody cancelled and write a cancelled CDR row (rank 60) that buries everything after it.
+// This is exactly why Claim returns the holder rather than a bare "taken / not taken".
+func TestConnectorSubmitsOnItsOwnToken(t *testing.T) {
+	sink, submitted, err := runWithFlags(t, &fakeFlags{holder: cancel.HolderDispatched}, routed())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !*submitted {
+		t.Error("the connector must dispatch on its OWN token, not mistake it for a cancellation")
+	}
+	if rows := sink.rows(); len(rows) != 0 {
+		t.Errorf("its own token must write no cancelled CDR row, got %+v", rows)
+	}
+	if got := sink.outcome(t); got.Status != string(clickhouse.StatusEnroute) {
+		t.Errorf("outcome status = %q, want enroute", got.Status)
+	}
+}
+
+// TestConnectorHonoursAnUnknownToken pins the mirror of the Canceller's rule: a token this build
+// cannot name is NOT its own, so the connector must treat it as a cancellation and refuse to send.
+//
+// The concrete case is a rolling deploy. This key was a plain flag in the previous build, value "1",
+// TTL 72h; a message cancelled just before the switch carries it. Reading it as "free" would put a
+// cancelled message on the wire — the very thing the cancel token exists to prevent.
+func TestConnectorHonoursAnUnknownToken(t *testing.T) {
+	sink, submitted, err := runWithFlags(t, &fakeFlags{holder: "1"}, routed())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if *submitted {
+		t.Error("a token the build cannot name must not be read as free — the message was sent")
+	}
+	if rows := sink.rows(); len(rows) != 1 || rows[0].Status != clickhouse.StatusCancelled {
+		t.Errorf("an unknown token must be honoured as a cancellation, got %+v", rows)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"google.golang.org/grpc"
 
 	"github.com/martialanouman/go-gateway/internal/billing/pb"
+	"github.com/martialanouman/go-gateway/internal/cancel"
 	"github.com/martialanouman/go-gateway/internal/connectorpool"
 	"github.com/martialanouman/go-gateway/internal/connectorpool/settle"
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
@@ -149,7 +150,7 @@ func TestConnectorNoSettleOnTransientReject(t *testing.T) {
 // TestConnectorReleasesOnCancel: a message cancelled before dispatch releases its reservation (never sent).
 func TestConnectorReleasesOnCancel(t *testing.T) {
 	spy := &spySettler{}
-	sink, err := runWithBilling(t, func(smpp.SubmitSM) fakesmsc.Resp { return fakesmsc.OK() }, spy, &fakeFlags{cancelled: true}, billableRouted())
+	sink, err := runWithBilling(t, func(smpp.SubmitSM) fakesmsc.Resp { return fakesmsc.OK() }, spy, &fakeFlags{holder: cancel.HolderCancel}, billableRouted())
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
