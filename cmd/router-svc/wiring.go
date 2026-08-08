@@ -391,7 +391,15 @@ func newPipelineStack(
 	}
 	reserver := credit.NewReserver(p.creditHolder, pb.NewBillingClient(p.billingConn), credit.WithTimeout(cfg.Billing.ReserveTimeout))
 
-	p.pipeline = pipeline.New(tracer, resolver, boot.senderIDs, boot.optOut, spam, rateLimiter, reserver)
+	p.pipeline = pipeline.New(pipeline.Deps{
+		Tracer:      tracer,
+		Resolver:    resolver,
+		SenderIDs:   boot.senderIDs,
+		OptOut:      boot.optOut,
+		Antispam:    spam,
+		RateLimiter: rateLimiter,
+		Credit:      reserver,
+	})
 	return p, nil
 }
 

@@ -351,9 +351,15 @@ func buildRefStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg con
 	rtr := router.New(router.Deps{
 		Consumer: routerConsumer,
 		Producer: producer,
-		Pipeline: pipeline.New(tracer, refResolver{resolver}, authorizer, enforcer, spam, nil, nil),
-		CDR:      cdrWriter,
-		Tracer:   tracer,
+		Pipeline: pipeline.New(pipeline.Deps{
+			Tracer:    tracer,
+			Resolver:  refResolver{resolver},
+			SenderIDs: authorizer,
+			OptOut:    enforcer,
+			Antispam:  spam,
+		}),
+		CDR:    cdrWriter,
+		Tracer: tracer,
 	})
 
 	smsc := fakesmsc.Start(t, fakesmsc.Config{

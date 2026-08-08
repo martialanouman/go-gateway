@@ -87,7 +87,15 @@ func l0Pipeline(t *testing.T, ex routing.ExactResolver, opt *spyOptOut) (*pipeli
 	l0 := routing.NewL0Resolver(ex, nil, decl)
 	sender, antispam, rate := &spyAuthorizer{}, &spyAntispam{}, &spyRate{}
 	tracer := observability.Tracer(nil, "test")
-	return pipeline.New(tracer, l0, sender, opt, antispam, rate, nil), declConn, sender, antispam, rate
+	p := pipeline.New(pipeline.Deps{
+		Tracer:      tracer,
+		Resolver:    l0,
+		SenderIDs:   sender,
+		OptOut:      opt,
+		Antispam:    antispam,
+		RateLimiter: rate,
+	})
+	return p, declConn, sender, antispam, rate
 }
 
 // TestInvariantBExactMessageTraversesAllCompliance: a message resolved by the L0 exact short-cut still

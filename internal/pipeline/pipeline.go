@@ -103,26 +103,37 @@ type CreditReserver interface {
 	Reserve(ctx context.Context, accountID, customerID, messageID uuid.UUID, segments int) (reserved bool, ownerType string, err error)
 }
 
+// Deps are the pipeline's collaborators, one per stage that needs one. They are named rather than
+// positional on purpose: a nil RateLimiter or Credit turns its stage into a pass-through, and as
+// positional arguments those two nils were indistinguishable from padding — the reference load harness
+// ran for two steps against a pipeline silently amputated of its rate-limit, credit and Redis-backed
+// anti-spam stages, and measured it as if it were production (step-201d). Tracer is required; the
+// others are required unless their godoc says otherwise.
+type Deps struct {
+	Tracer    trace.Tracer
+	Resolver  Resolver
+	SenderIDs SenderIDAuthorizer
+	OptOut    OptOutChecker
+	Antispam  AntispamEvaluator
+	// RateLimiter is optional: nil leaves the rate-limit stage a pass-through (the pre-M6 behaviour).
+	RateLimiter RateLimiter
+	// Credit is optional: nil leaves the credit stage a pass-through (the pre-billing behaviour).
+	Credit CreditReserver
+}
+
 // Pipeline runs the ordered MT stages the router applies to every message (spec §6.1). The order is
 // frozen: a routing short-cut may skip route resolution, never a compliance stage. It implements
 // E.164 normalization, sender-ID authorization (M5), declarative route resolution, encoding
 // resolution, UDH segmentation, rate limiting (M6) and the opt-in credit reserve (M9, step-145).
 type Pipeline struct {
-	tracer      trace.Tracer
-	resolver    Resolver
-	senderIDs   SenderIDAuthorizer
-	optOut      OptOutChecker
-	antispam    AntispamEvaluator
-	rateLimiter RateLimiter
-	credit      CreditReserver
+	deps Deps
 }
 
 // New builds a Pipeline. Destinations are normalized to their canonical digits-only form; the
 // public contract carries a full country code (the "+" being optional), so no default region is
-// needed. See internal/platform/e164. A nil rateLimiter leaves the rate-limit stage a pass-through, and a
-// nil credit reserver leaves the credit stage a pass-through (the pre-billing behaviour).
-func New(tracer trace.Tracer, resolver Resolver, senderIDs SenderIDAuthorizer, optOut OptOutChecker, antispam AntispamEvaluator, rateLimiter RateLimiter, credit CreditReserver) *Pipeline {
-	return &Pipeline{tracer: tracer, resolver: resolver, senderIDs: senderIDs, optOut: optOut, antispam: antispam, rateLimiter: rateLimiter, credit: credit}
+// needed. See internal/platform/e164.
+func New(deps Deps) *Pipeline {
+	return &Pipeline{deps: deps}
 }
 
 // Process runs the pipeline on an inbound message and returns the routed template plus the segments
@@ -168,7 +179,7 @@ func (p *Pipeline) Process(ctx context.Context, in InboundMT) (RoutedMT, []pipee
 	// 2. Sender-ID authorization (§6.19). A frozen compliance stage: never short-circuited by an exact
 	// route (invariant b). The span carries only the rejection code, never the body (invariant a).
 	if err := p.stage(ctx, "pipeline.sender_id", func(ctx context.Context) error {
-		return p.senderIDs.Authorize(ctx, in.AccountID, in.CustomerID, in.From)
+		return p.deps.SenderIDs.Authorize(ctx, in.AccountID, in.CustomerID, in.From)
 	}); err != nil {
 		return RoutedMT{}, nil, err
 	}
@@ -177,7 +188,7 @@ func (p *Pipeline) Process(ctx context.Context, in InboundMT) (RoutedMT, []pipee
 	// route (invariant b). Blocks if the destination is suppressed in ANY applicable scope. The span
 	// carries only the rejection code, never the body (invariant a).
 	if err := p.stage(ctx, "pipeline.opt_out", func(ctx context.Context) error {
-		optedOut, err := p.optOut.IsOptedOut(ctx, in.AccountID, in.CustomerID, in.From, out.To)
+		optedOut, err := p.deps.OptOut.IsOptedOut(ctx, in.AccountID, in.CustomerID, in.From, out.To)
 		if err != nil {
 			return err
 		}
@@ -193,7 +204,7 @@ func (p *Pipeline) Process(ctx context.Context, in InboundMT) (RoutedMT, []pipee
 	// (invariant b). Content is read in memory only — the span carries the action, never the body
 	// (invariant a). block rejects; flag/throttle annotate the span without stopping the message.
 	if err := p.stage(ctx, "pipeline.anti_spam", func(ctx context.Context) error {
-		action, err := p.antispam.Evaluate(ctx, in.AccountID, in.CustomerID, in.From, out.To, in.Body.Reveal())
+		action, err := p.deps.Antispam.Evaluate(ctx, in.AccountID, in.CustomerID, in.From, out.To, in.Body.Reveal())
 		if err != nil {
 			return err
 		}
@@ -211,7 +222,7 @@ func (p *Pipeline) Process(ctx context.Context, in InboundMT) (RoutedMT, []pipee
 	// 5. Route resolution (declarative static only in M2). A short-cut here would skip only this
 	// stage, never the compliance stages above (spec §6.1).
 	if err := p.stage(ctx, "pipeline.route", func(ctx context.Context) error {
-		route, err := p.resolver.Resolve(ctx, RouteRequest{
+		route, err := p.deps.Resolver.Resolve(ctx, RouteRequest{
 			Dest: out.To, From: in.From, AccountID: in.AccountID, CustomerID: in.CustomerID,
 			Segments: out.SegmentCount, ReceivedAtMs: in.SubmittedAt.UnixMilli(),
 		})
@@ -267,10 +278,10 @@ func (p *Pipeline) Process(ctx context.Context, in InboundMT) (RoutedMT, []pipee
 	// credit reserve and SMSC send. A routing short-cut (M7) would skip route resolution, never this
 	// stage. The span carries no body (invariant a). A nil limiter is a pass-through (pre-M6).
 	if err := p.stage(ctx, "pipeline.rate_limit", func(ctx context.Context) error {
-		if p.rateLimiter == nil {
+		if p.deps.RateLimiter == nil {
 			return nil
 		}
-		return p.rateLimiter.Check(ctx, out.AccountID, out.ConnectorID, out.RouteID, out.SegmentCount)
+		return p.deps.RateLimiter.Check(ctx, out.AccountID, out.ConnectorID, out.RouteID, out.SegmentCount)
 	}); err != nil {
 		return RoutedMT{}, nil, err
 	}
@@ -283,10 +294,10 @@ func (p *Pipeline) Process(ctx context.Context, in InboundMT) (RoutedMT, []pipee
 	// and the resolved owner onto the routed message for connector-pool to capture (step-146). The span
 	// carries no body (invariant a). A nil reserver is a pass-through (pre-billing).
 	if err := p.stage(ctx, "pipeline.credit", func(ctx context.Context) error {
-		if p.credit == nil {
+		if p.deps.Credit == nil {
 			return nil
 		}
-		reserved, ownerType, err := p.credit.Reserve(ctx, out.AccountID, out.CustomerID, out.MessageID, out.SegmentCount)
+		reserved, ownerType, err := p.deps.Credit.Reserve(ctx, out.AccountID, out.CustomerID, out.MessageID, out.SegmentCount)
 		if err != nil {
 			return err
 		}
@@ -316,7 +327,7 @@ func requestedEncoding(in InboundMT) string {
 // stage runs one pipeline step under its own span. A failure is recorded through the shared barrier, so the
 // span carries the flat rejection code and never an arbitrary error's text (invariant a).
 func (p *Pipeline) stage(ctx context.Context, name string, fn func(context.Context) error) error {
-	ctx, span := p.tracer.Start(ctx, name)
+	ctx, span := p.deps.Tracer.Start(ctx, name)
 	defer span.End()
 	if err := fn(ctx); err != nil {
 		observability.RecordSpanError(span, err)

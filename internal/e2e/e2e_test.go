@@ -157,9 +157,15 @@ func buildStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg config
 	rtr := router.New(router.Deps{
 		Consumer: routerConsumer,
 		Producer: producer,
-		Pipeline: pipeline.New(routerTracer, declarativeResolver{resolver}, authorizer, enforcer, spam, nil, nil),
-		CDR:      cdrWriter,
-		Tracer:   routerTracer,
+		Pipeline: pipeline.New(pipeline.Deps{
+			Tracer:    routerTracer,
+			Resolver:  declarativeResolver{resolver},
+			SenderIDs: authorizer,
+			OptOut:    enforcer,
+			Antispam:  spam,
+		}),
+		CDR:    cdrWriter,
+		Tracer: routerTracer,
 	})
 
 	connConsumer, err := kafka.NewConsumer(kafkaCfg, "e2e-connector", kafka.TopicMTRouted)
