@@ -141,6 +141,33 @@ func TestClaimReportsTheHolder(t *testing.T) {
 	})
 }
 
+// TestClaimAsTheFreeHolderIsRefused pins that HolderNone cannot be claimed AS anything.
+//
+// The token arbitrates by value, and HolderNone is the value that means "free". Writing it would
+// leave a key that every later claimant reads as an unheld token: the connector would dispatch and
+// the Canceller would record a cancellation, both believing they had won — the arbitration silently
+// stops arbitrating, with no error and no failing test anywhere. Refusing at the door is the only
+// place that failure is visible.
+func TestClaimAsTheFreeHolderIsRefused(t *testing.T) {
+	rdb := redistest.Client(t)
+	flags := cancel.NewRedisFlags(rdb)
+	ctx := context.Background()
+	id := uuid.New()
+
+	if _, err := flags.Claim(ctx, id, cancel.HolderNone); err == nil {
+		t.Error("claiming as the free holder must be refused")
+	}
+
+	// And it must leave no trace: a written empty value would poison every later claim.
+	n, err := rdb.Exists(ctx, "cancel:{"+id.String()+"}").Result()
+	if err != nil {
+		t.Fatalf("Exists: %v", err)
+	}
+	if n != 0 {
+		t.Error("a refused claim must not write the key")
+	}
+}
+
 // TestRaceScenarioLeavesADeliveredMessageDelivered is the end-to-end statement of step-209, over the
 // real token and the real rank table: accepted → cancel → enroute → delivered must NOT end at
 // `cancelled`.

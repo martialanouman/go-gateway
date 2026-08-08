@@ -77,8 +77,16 @@ func key(id uuid.UUID) string { return "cancel:{" + id.String() + "}" }
 // the previous value either way, so two claimants racing on the same message cannot both win. A
 // losing claim writes nothing, which is what leaves the winner's expiry untouched.
 //
+// Claiming as HolderNone is refused. It is the value that MEANS "free", so writing it would leave a
+// key every later claimant reads as an unheld token — the connector dispatching and the Canceller
+// recording a cancellation, both believing they had won. The arbitration would stop arbitrating with
+// no error anywhere, so the misuse is rejected here, where it is still visible.
+//
 // The returned Holder is meaningless when err is non-nil; callers must branch on the error first.
 func (f *RedisFlags) Claim(ctx context.Context, id uuid.UUID, as Holder) (Holder, error) {
+	if as == HolderNone {
+		return HolderNone, fmt.Errorf("cancel: claim %s: refusing to claim as the free holder", id)
+	}
 	prev, err := f.rdb.SetArgs(ctx, key(id), string(as), redis.SetArgs{
 		Mode: "NX",
 		TTL:  as.ttl(),

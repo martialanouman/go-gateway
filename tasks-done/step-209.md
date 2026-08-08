@@ -98,6 +98,15 @@ connecteur, tout sauf `HolderNone` et son propre `HolderDispatched` est honoré 
 **Raison :** application directe de DN5 (« en cas de doute, refuser »), donc pas de nouvel arbitrage.
 Le défaut inverse était un fail-open silencieux là où le design exige un fail-closed.
 
+### DN9 — On ne revendique pas le jeton comme `HolderNone` (constat de revue)
+`Claim` acceptait `HolderNone` comme revendiquant. Elle écrivait alors une valeur **vide** avec 72 h de
+TTL, que tout revendiquant ultérieur relit comme « jeton libre » : le connecteur envoie, le Canceller
+écrit la ligne, les deux croient avoir gagné. L'arbitrage cesse d'arbitrer sans erreur ni test rouge.
+**Décision :** `Claim` refuse `HolderNone` et n'écrit rien.
+**Raison :** piège latent (aucun appelant ne le fait aujourd'hui) mais invisible à l'exécution, sur
+l'unique primitive dont dépend tout le correctif. Le refus à la porte est le seul endroit où cette
+mauvaise utilisation reste observable.
+
 ## Tests (écrits dans la même PR)
 - Une annulation acceptée sur un statut `accepted` périmé, suivie d'un `enroute` puis d'un `delivered`,
   ne laisse pas le message en `cancelled` → `TestRaceScenarioLeavesADeliveredMessageDelivered`.
@@ -117,12 +126,20 @@ Le défaut inverse était un fail-open silencieux là où le design exige un fai
 | `HolderDispatched` traité comme annulation (connecteur) | `TestConnectorSubmitsOnItsOwnToken` | `its own token must write no cancelled CDR row` |
 | DN8 annulé — jeton inconnu relu comme libre (connecteur) | `TestConnectorHonoursAnUnknownToken` | `the message was sent` |
 | DN8 annulé (Canceller) | `TestCancelRefusesAnUnknownHolder` | `an unknown holder wrote 1 row(s), want 0` |
+| Garde du revendiquant libre retirée (DN9) | `TestClaimAsTheFreeHolderIsRefused` | `claiming as the free holder must be refused` · `a refused claim must not write the key` |
 
 ## Definition of Done
 - [x] gofmt/goimports · golangci-lint (0 issue) · `go test -race ./...` (RC=0, 79 paquets, **0 skip**) ·
       govulncheck (0 vulnérabilité atteignant le code) verts
-- [x] la course est fermée, **testée** par le scénario complet accepted → cancel → enroute → delivered
-      (`TestRaceScenarioLeavesADeliveredMessageDelivered`, vu tomber sous mutation)
+- [x] la course est fermée et testée sur toute sa chaîne de décision —
+      `TestRaceScenarioLeavesADeliveredMessageDelivered` enchaîne accepted → cancel → enroute →
+      delivered sur le **vrai** jeton Redis, le **vrai** Canceller et la **vraie** table de rangs, et
+      il est vu tomber sous mutation (`final status = "cancelled", want delivered`).
+      **Ce qu'il ne couvre pas :** les lignes `enroute` et `delivered` y sont fabriquées, pas tirées du
+      projecteur `internal/outcome`. Ce n'est donc pas un bout-en-bout : il prouve que l'arbitrage
+      refuse d'écrire la ligne fautive et que les rangs résolvent bien, pas que le projecteur écrit ces
+      deux lignes-là — ce que couvrent ses propres tests. Un vrai bout-en-bout coûterait ClickHouse +
+      Kafka pour ce seul chaînon, arbitrage assumé.
 - [x] le sens de `cancelled` sous course est tranché et écrit — §6.22 le disait déjà, ADR-0013 le fige
 - [x] le contrat public est mis à jour, la limite documentée disparaît, `api/package.json` 4.0.2 → 4.0.3
       (`oasdiff` : aucune rupture)

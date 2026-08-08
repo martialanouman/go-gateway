@@ -1,8 +1,13 @@
 // Package cancel is the message-cancellation domain shared by the SMPP front door and the outbound
-// connector pool. A cancel_sm cancels a message that has NOT yet been dispatched to the SMSC: the
-// Canceller records the intent in a Redis flag the connector pool consults before submit_sm, and
-// writes a cancelled CDR row (rank 60, superseding accepted under ReplacingMergeTree). There is no
-// REST surface — cancellation is an SMPP-only operation (ADR-0009).
+// connector pool. A cancel_sm cancels a message that has NOT yet been dispatched to the SMSC.
+//
+// The two sides arbitrate on a single-winner Redis token rather than trusting the CDR projection,
+// which lags (ADR-0013): the connector claims it as HolderDispatched before submit_sm, the Canceller
+// as HolderCancel, and the first claim wins. Only a Canceller that WINS writes the cancelled CDR row
+// (rank 60, superseding accepted under ReplacingMergeTree); one that loses refuses and writes
+// nothing, because that row would otherwise bury the enroute and delivered rows that follow.
+//
+// There is no REST surface — cancellation is an SMPP-only operation (ADR-0009).
 //
 // The Canceller returns a platform error Code (never a leaked infrastructure error): the SMPP
 // boundary maps it once through errs.SMPPStatusForError. An unknown message is ErrMessageNotFound
@@ -58,8 +63,15 @@ func NewCanceller(reader CDRReader, writer CDRWriter, flags Claimer, logger *slo
 //
 //   - absent from the scope         → ErrMessageNotFound (ESME_RINVMSGID)
 //   - already cancelled             → no-op success (idempotent)
-//   - accepted (still queued)       → flags the intent, writes a cancelled CDR row
 //   - enroute or any terminal state → ErrCancelFailed (ESME_RCANCELFAIL)
+//   - accepted (may still be queued) → decided by the cancel token, below
+//
+// On accepted the status alone does not settle it, so Cancel claims the token and branches on who
+// holds it:
+//
+//   - token was free      → writes a cancelled CDR row, success (ESME_ROK)
+//   - held by HolderCancel → our own earlier intent: no-op success, nothing written
+//   - held by anyone else  → ErrCancelFailed (ESME_RCANCELFAIL), NOTHING written
 //
 // The status read above is a NECESSARY but not sufficient guard, because the projection it reads
 // lags. The enroute row is no longer written synchronously by the connector: it is projected off
