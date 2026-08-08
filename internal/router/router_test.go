@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,27 +22,48 @@ import (
 	"github.com/martialanouman/go-gateway/internal/testutil/otelrec"
 )
 
+// fakeConsumer feeds its records as one poll batch and mirrors the part of kafka.RunBatch these tests
+// depend on: a batch that reported any failure surfaces as an error, so the offset is not committed.
+//
+// Its records carry no partition, so they all land on partition 0 — one lane, processed sequentially.
+// That is deliberate: every assertion written before the fan-out keeps the exact meaning it had. The
+// concurrent lanes are exercised in lanes_test.go, where partitions are chosen explicitly.
 type fakeConsumer struct{ records []kafka.Record }
 
-func (f *fakeConsumer) Run(ctx context.Context, handle kafka.Handler) error {
-	for _, r := range f.records {
-		if err := handle(ctx, r); err != nil {
+func (f *fakeConsumer) RunBatch(ctx context.Context, handle kafka.BatchHandler) error {
+	for _, err := range handle(ctx, f.records) {
+		if err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-type fakeProducer struct{ produced []kafka.Record }
+// fakeProducer and fakeCDR are written from the router's consume path and read by the assertions once
+// Run has returned. The mutex guards the WRITE side only: since step-201d the router runs one goroutine
+// per partition, so two lanes can produce at the same instant, and an unguarded append would be a data
+// race the detector reports before any assertion gets to fail. The reads need no lock — Run returning
+// happens after the batch barrier.
+type fakeProducer struct {
+	mu       sync.Mutex
+	produced []kafka.Record
+}
 
 func (f *fakeProducer) Produce(_ context.Context, rec kafka.Record) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.produced = append(f.produced, rec)
 	return nil
 }
 
-type fakeCDR struct{ rows []clickhouse.CDRRow }
+type fakeCDR struct {
+	mu   sync.Mutex
+	rows []clickhouse.CDRRow
+}
 
 func (f *fakeCDR) Insert(_ context.Context, row clickhouse.CDRRow) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.rows = append(f.rows, row)
 	return nil
 }
