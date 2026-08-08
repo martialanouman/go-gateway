@@ -97,15 +97,14 @@ func (r *Router) Run(ctx context.Context) error {
 	return r.deps.Consumer.RunBatch(ctx, r.handleBatch)
 }
 
-// errLaneHalted marks a record left unprocessed because an earlier record in its lane failed. It is
-// never committed, so redelivery replays the lane in order behind the failure.
+// errLaneHalted marks a record left unprocessed because an earlier record in its lane failed.
+//
+// It keeps the [kafka.BatchHandler] contract — "fail a record and every LATER record that shares its
+// ordering group" — and makes the returned verdict self-describing. It is deliberately NOT what stops
+// those records from committing: [kafka.RunBatch] already refuses any record above its partition's first
+// failure, and the lane IS the partition. Marking anyway means neither side can silently drift from the
+// other.
 var errLaneHalted = errors.New("router: lane halted after an earlier failure")
-
-// lane identifies one unit of sequential work in a poll batch: a Kafka partition.
-type lane struct {
-	topic     string
-	partition int32
-}
 
 // handleBatch processes a poll batch with ONE goroutine per partition, so the per-message wait — a
 // synchronous acks=all produce, which step-201d measured at ~97% of the router's wall time per message —
@@ -121,12 +120,12 @@ type lane struct {
 //
 // It also makes the [kafka.BatchHandler] contract and the commit watermark the same thing rather than
 // two notions to keep in step: the ordering group the handler must halt IS the partition offsets are
-// compared within.
+// compared within, and grouping by [kafka.PartitionKey] is what says so in code rather than in a comment.
 func (r *Router) handleBatch(ctx context.Context, recs []kafka.Record) []error {
 	results := make([]error, len(recs))
-	lanes := make(map[lane][]int, 1) // lane -> record indices, in batch (offset) order
+	lanes := make(map[kafka.PartitionKey][]int) // lane -> record indices, in batch (offset) order
 	for i, rec := range recs {
-		k := lane{rec.Topic, rec.Partition}
+		k := rec.PartitionKey()
 		lanes[k] = append(lanes[k], i)
 	}
 
