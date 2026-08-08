@@ -203,31 +203,21 @@ plus bas ce jour : l'hôte n'était pas dans le même état. **Le goulot que la 
 sévérité ne l'était pas.** L'écart n'est donc plus de 25,7 % à 1 200 msg/s — à ce débit la passerelle
 passe désormais le critère — mais de 50 % à 2 400 et 70 % à 4 800.
 
-**Le correctif est nommé, et les deux candidats convergent.** La boucle attend, elle ne calcule pas ; la
-seule chose sérialisée est le `ProduceSync` par record dans la goroutine de consommation. `A` (fan-out
-`RunBatch` + shard par `rec.Key`) et `B` (barrière sur les records en vol) recouvrent tous deux ces
-attentes, et M2 chiffre le gain disponible à ×30. `A` est retenu : il shard par la clé, donc il préserve
-§1.6 exactement, et il recouvre en plus le coût CPU du pipeline. `C` (double `e164`) et `D` (partitions)
-restent hors sujet — respectivement 2,3 % du budget, et un levier d'exploitation.
+**Le correctif est nommé.** La boucle attend, elle ne calcule pas ; la seule chose sérialisée est le
+`ProduceSync` par record dans la goroutine de consommation. Recouvrir ces attentes est le geste, et M2
+chiffre le gain disponible à ×30. `C` (double `e164`) et `D` (partitions) restent hors sujet —
+respectivement 2,3 % du budget, et un levier d'exploitation. **La forme exacte du fan-out est arrêtée en
+`D11`, et ce n'est pas celle que ce paragraphe annonçait initialement.**
 
 **`REF_ACCOUNTS` est un prérequis dur de la porte de correctif, et il livre déjà 37 %.** À 2 400 visés,
 `K=1` sort 1 098/s avec `p0=86 805` et trois partitions vides ; `K=32` sort **1 507/s** réparti sur les
 quatre. Le routeur n'a pas changé d'une ligne : la répartition des clés amortit les allers-retours de
 poll. Sans ce levier, aucun fan-out n'aurait pu être mesuré.
 
-Candidats classés avant mesure, conservés pour mémoire — `A` retenu, les autres écartés :
+Candidats classés avant mesure, conservés pour mémoire — le fan-out retenu, sous la forme de `D11` :
 
-**A — fan-out de la consommation (`RunBatch` + shard par `rec.Key`).** Sharder par la clé **préserve
-§1.6 exactement** : `shardIndex(rec.Key, n)` est une fonction pure de la clé, et la clé *est*
-l'`AccountID`, donc tous les records d'un compte tombent dans un shard traité séquentiellement en ordre
-d'offset. Deux comptes qui collisionnent sont *plus* sérialisés que nécessaire, jamais réordonnés ;
-l'ordre inter-comptes n'a jamais été garanti par rien. Le contrat de `BatchHandler`
-(`consumer.go:131-140`) est satisfait par `errShardHalted` — halter tout le shard est un sur-ensemble
-strict de halter le groupe d'ordonnancement.
-**Le risque n'est pas l'ordre, c'est le rayon de duplication** : il passe de **1** (aujourd'hui `Run`
-commite le préfixe traité *avant* de retourner l'erreur) à ~250 records/partition. C'est dans l'enveloppe
-que l'ADR-0012 a acceptée, **mais l'ADR raisonnait sur le pool de connecteurs, pas sur le routeur** ⇒
-amendement d'ADR-0012 en PR2, pas une ligne glissée en silence.
+**A — fan-out de la consommation par `RunBatch`.** Retenu. La lane est arrêtée en `D11` : **la partition,
+pas la clé de compte.**
 
 **B — barrière sur les records en vol.** L'invariant « l'offset ne commite qu'après ACK de **tous** les
 segments » survit par construction : `RunBatch` commite après le retour du handler, donc une barrière
@@ -254,6 +244,59 @@ hors périmètre : cette fiche dit « à corriger **si la mesure passe par elle*
 n'y passe pas — le p99 d'ingestion vient des échantillons propres de l'injecteur. Elle appartient à
 step-201b, qui porte le verdict NFR.
 
+### D11 — La lane est la **partition**, pas la clé de compte (arrêté le 08/08/2026, PR2)
+
+`D9` annonçait « shard par `rec.Key` ». La conception de PR2 a trouvé mieux : **une lane possède toute
+une partition**, et cela obtient le parallélisme **sans toucher au rayon de duplication**.
+
+**Le mécanisme est structurel, pas convenu.** Si une lane possède toute la partition, un échec à
+l'offset `o` arrête cette lane, et **aucun record de cette partition au-dessus de `o` n'a jamais été
+traité, donc jamais publié**. `committablePrefix` (`consumer.go:195-219`) commite exactement le préfixe,
+et il n'y a rien de déjà publié à redélivrer. Mieux : le *groupe d'ordonnancement* qu'exige le contrat de
+`BatchHandler` et la clé sur laquelle `committablePrefix` raisonne deviennent **la même chose**, au lieu
+d'être deux notions qu'il faut garder cohérentes à la main.
+
+Sous shard par clé, à l'inverse, les autres lanes finissent leur travail **au-dessus de l'échec, dans la
+même partition** ; leurs succès ne sont jamais committables, sont rejoués, et republiés. Le rayon
+d'erreur serait passé de « ≤ N−1 segments d'un message » à « un poll par partition (~250 records) ».
+
+**Ce que la variante par partition coûte, nommément :** le parallélisme est plafonné par le nombre de
+partitions assignées au pod — 4 au banc, 12 en production au défaut. Plafond de flotte modélisé à partir
+du budget mesuré (838 µs/message ⇒ 1 193/s par lane, contre 1 194/s mesurés — le modèle se valide au
+demi-pourcent) : `12 × 1 193 = 14 300/s`, au-dessus des 8 000 soutenus de la cible NFR, **sous les 15 000
+de pic**. Le levier est `KAFKA_TOPIC_PARTITIONS` / `KAFKA_TOPIC_PARTITIONS_OVERRIDES`, qui existent déjà.
+Et le gain **retombe à une lane** si un HPA monte à autant de pods que de partitions — couplage à nommer
+pour step-207, pas un blocage ici.
+
+Le shard par clé reste la suite possible, avec son propre ADR, **si une courbe le réclame**. On ne paie
+pas son rayon avant d'avoir mesuré qu'on en a besoin.
+
+**Conséquences de périmètre :** pas de promotion de `shardIndex`, pas de section `config.Router`, pas de
+défaut de shards à arbitrer, pas de `REF_ROUTER_SHARDS`, pas de garde de clé nil. Le levier de balayage
+devient le nombre de partitions du harnais (`KAFKATEST_PARTITIONS`).
+
+### D12 — Il y a deux causes de duplication, pas une, et c'est vrai depuis toujours
+
+`docs/specification-technique-passerelle-sms.md:805` et `docs/guide-ingenierie-passerelle-sms.md:280`
+affirment que « la cause résiduelle est **unique** : un crash entre le `submit_sm` parti et l'accusé du
+produce ». C'est inexact, et **ça l'était déjà avant cette step** : `router.go:163-176` publie
+`mt.routed` **segment par segment** avant de commiter son offset, donc une interruption au milieu d'un
+fan-out republie les segments déjà publiés, et le pool les re-soumet. La cause amont existait ; elle
+était trop petite pour avoir été nommée — zéro en mono-segment, ≤ N−1 segments d'un message en multipart
+— et le **crash** du routeur, lui, rejoue déjà tout le lot de poll non commité, soit ~un poll de
+`mt.inbound` par partition.
+
+ADR-0012 ne prétend pas à cette unicité : il ne parle que du pool. Ce sont la spec et le guide qui ont
+sur-généralisé.
+
+→ **ADR-0014**, pas un amendement. `docs/adr/0000-index.md:23` : « On n'édite jamais le fond d'un ADR
+accepté : on en écrit un nouveau. » La DoD de PR2 ci-dessous est corrigée en conséquence. L'ADR dit :
+(a) il y a deux causes ; (b) le rayon amont du crash était déjà ~un poll par partition, non documenté ;
+(c) **la lane-par-partition ne l'élargit pas**, et c'est la raison du choix ; (d) l'unité diffère — un
+record `mt.inbound` dupliqué vaut 1..N segments là où un `mt.routed` en vaut un ; (e) le chiffre en
+messages est à re-mesurer, un record `mt.inbound` portant le corps entier là où `mt.routed` porte un
+segment.
+
 ## Périmètre — deux PRs (`D1`)
 
 **PR1, la porte de mesure — livrée.**
@@ -267,8 +310,9 @@ step-201b, qui porte le verdict NFR.
   étages débit / anti-spam Redis / crédit (`D4`) — le pipeline pèse 2,3 % du budget, les instrumenter
   aurait coûté sans départager.
 
-**PR2, la porte de correctif.** Le candidat `A` que `D9` a désigné — `RunBatch` + shard par `rec.Key` —
-l'amendement d'ADR-0012 qu'il entraîne, et le run de référence relancé à `ACCOUNTS=32` qui le prouve.
+**PR2, la porte de correctif.** Le fan-out `RunBatch` que `D9` a désigné, **avec une lane par partition**
+(`D11`, qui corrige la lane annoncée en `D9`), **ADR-0014** et les deux lignes de doc que `D12` corrige,
+et le run de référence relancé à `ACCOUNTS=32` qui le prouve.
 
 ## Points d'implémentation clés
 - **Ne pas supposer le coupable.** Les candidats plausibles sont nombreux et de natures différentes :
@@ -307,7 +351,8 @@ signal d'une régression, pas d'un test à ajuster.
 - [ ] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts
 - [ ] run de référence relancé et consigné
 - [ ] ordre du pipeline inchangé, invariants verts
-- [ ] si le correctif est A : ADR-0012 amendée pour couvrir le routeur (`D9`)
+- [ ] ADR-0014 écrite (`D12`) — **jamais** un amendement d'ADR-0012, la convention l'interdit
+- [ ] « la cause résiduelle est unique » corrigée dans la spec et le guide (`D12`)
 
 ## Hors périmètre
 Verdict NFR pleine échelle → step-201b. Le goulot du pool de connecteurs → step-201c (livré).
