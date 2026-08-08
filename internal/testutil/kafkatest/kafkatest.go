@@ -56,6 +56,10 @@ const (
 	// partition, so a curve of throughput against lane count cannot be drawn without moving this
 	// (step-201d D11). The default is unchanged, so no existing test sees a different broker.
 	envPartitions = "KAFKATEST_PARTITIONS"
+
+	// maxTopicPartitions bounds the override. It is not a broker limit — it is the point past which a
+	// value is a typo rather than an intent, on a single-node Redpanda started for one test run.
+	maxTopicPartitions = 1024
 )
 
 // topicPartitions is how wide the shared broker's topics are created. It is read once, with the
@@ -65,13 +69,15 @@ func topicPartitions() int32 {
 	if raw == "" {
 		return defaultTopicPartitions
 	}
-	n, err := strconv.Atoi(raw)
-	if err != nil || n < 1 {
+	// ParseInt with an explicit 32-bit width rather than Atoi: the value ends up in an int32 field, and
+	// Atoi would parse into a machine int and silently wrap on the conversion.
+	n, err := strconv.ParseInt(raw, 10, 32)
+	if err != nil || n < 1 || n > maxTopicPartitions {
 		// A malformed override is a typo in a sweep, and silently falling back would file the run under a
 		// partition count nobody ran.
-		panic(fmt.Sprintf("kafkatest: %s=%q must be a positive integer", envPartitions, raw))
+		panic(fmt.Sprintf("kafkatest: %s=%q must be an integer in 1..%d", envPartitions, raw, maxTopicPartitions))
 	}
-	return int32(n) //nolint:gosec // bounded by the check above; a partition count is small by construction
+	return int32(n)
 }
 
 var (
