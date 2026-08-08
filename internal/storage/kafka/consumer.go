@@ -167,7 +167,13 @@ func (c *Consumer) RunBatch(ctx context.Context, handle BatchHandler) error {
 		// within a partition, so a global prefix would be wrong: a failure in one partition must not hold
 		// back a fully-handled sibling partition, and a success AFTER a failure in the SAME partition must
 		// never be committed (it would skip the gap). krs is in per-partition offset order.
-		if commit := committablePrefix(krs, results); len(commit) > 0 && c.group != "" {
+		commit, err := committablePrefix(krs, results)
+		if err != nil {
+			// The handler broke its contract. Fail closed: commit nothing and restart, so the batch is
+			// redelivered and reprocessed rather than half-committed on a verdict we cannot read.
+			return fmt.Errorf("kafka: batch handle in group %s: %w", c.group, err)
+		}
+		if len(commit) > 0 && c.group != "" {
 			if err := c.cl.CommitRecords(ctx, commit...); err != nil {
 				if ctx.Err() != nil {
 					return nil
@@ -194,7 +200,14 @@ type partitionKey struct {
 
 // committablePrefix returns the records safe to commit: those handled successfully whose offset precedes
 // their partition's first failed offset. results is aligned with krs by index.
-func committablePrefix(krs []*kgo.Record, results []error) []*kgo.Record {
+//
+// A results slice that does not line up with krs is a handler bug, and it is reported rather than
+// indexed through: this runs inside a data-plane pod's consume loop, where an index-out-of-range takes
+// the process down mid-batch. [BatchHandler] states the requirement; this is what enforces it.
+func committablePrefix(krs []*kgo.Record, results []error) ([]*kgo.Record, error) {
+	if len(results) != len(krs) {
+		return nil, fmt.Errorf("batch handler returned %d results for %d records", len(results), len(krs))
+	}
 	firstFail := make(map[partitionKey]int64)
 	for i, kr := range krs {
 		if results[i] == nil {
@@ -215,7 +228,7 @@ func committablePrefix(krs []*kgo.Record, results []error) []*kgo.Record {
 		}
 		out = append(out, kr)
 	}
-	return out
+	return out, nil
 }
 
 // firstNonNil returns the first non-nil error in the slice, or nil.
