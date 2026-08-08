@@ -9,9 +9,15 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 
+	"github.com/martialanouman/go-gateway/internal/metricstream"
+	"github.com/martialanouman/go-gateway/internal/observability"
+	"github.com/martialanouman/go-gateway/internal/observability/metrics"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
+	"github.com/martialanouman/go-gateway/internal/router"
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
+	"github.com/martialanouman/go-gateway/internal/testutil/otelrec"
 )
 
 // This file covers the router's batch fan-out (step-201d PR2): the consume loop runs ONE goroutine per
@@ -119,6 +125,61 @@ func TestRouterLanesRaiseConcurrency(t *testing.T) {
 				t.Errorf("peak concurrent Produce = %d: %s", peak, tc.explain)
 			}
 		})
+	}
+}
+
+// discardSink satisfies metricstream.Sink without keeping anything: the emitter's own publishing is
+// tested in its package, and what matters here is that its hot-path methods survive concurrent lanes.
+type discardSink struct{}
+
+func (discardSink) TryPublish(_, _ []byte) {}
+
+// TestRouterCountersSurviveConcurrentLanes wires the REAL Prometheus catalog and the REAL realtime
+// emitter, which the other tests leave nil, and drives them from four lanes at once.
+//
+// The router touches both surfaces two or three times per message (pipeline duration, messages_total,
+// rejected_total). Prometheus counters are atomic and could not break; metricstream.Emitter is a
+// repository type holding its own map behind a mutex, and it CAN break — so this is a test that can
+// fail, and it fails under -race the moment that mutex goes away. The total also pins that no message is
+// double-counted when several lanes report at once.
+func TestRouterCountersSurviveConcurrentLanes(t *testing.T) {
+	const partitions, perPartition = 4, 10
+
+	emitter, err := metricstream.New("router-svc", discardSink{})
+	if err != nil {
+		t.Fatalf("metricstream.New: %v", err)
+	}
+	catalog := metrics.NewCatalog()
+
+	recs := make([]kafka.Record, 0, partitions*perPartition)
+	for p := range int32(partitions) {
+		for i := range perPartition {
+			recs = append(recs, onPartition(t, p, int64(i), inbound("+2250700000000")))
+		}
+	}
+
+	rec := otelrec.New(t)
+	tracer := observability.Tracer(rec.Provider(), "router")
+	cons := &oneBatchConsumer{records: recs}
+	r := router.New(router.Deps{
+		Consumer: cons,
+		Producer: &fakeProducer{},
+		Pipeline: pipeline.New(pipeline.Deps{
+			Tracer: tracer, Resolver: stubResolver{conn: uuid.New()}, SenderIDs: allowAllSenderIDs{},
+			OptOut: allowAllOptOut{}, Antispam: allowAllAntispam{},
+		}),
+		CDR:     &fakeCDR{},
+		Tracer:  tracer,
+		Stream:  emitter,
+		Metrics: catalog,
+	})
+
+	if err := r.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := testutil.ToFloat64(catalog.MessagesTotal.WithLabelValues("routed")); got != partitions*perPartition {
+		t.Errorf("messages_total{routed} = %v, want %d — every message must be counted exactly once, "+
+			"whichever lane reported it", got, partitions*perPartition)
 	}
 }
 
