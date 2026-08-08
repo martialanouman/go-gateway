@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -276,5 +277,70 @@ func TestInjectReportsATransportFailure(t *testing.T) {
 	}
 	if rep.FirstErr == nil || errors.Is(rep.FirstErr, context.Canceled) {
 		t.Errorf("FirstErr = %v, want the transport failure", rep.FirstErr)
+	}
+}
+
+// TestInjectSendsThePerSubmissionKey: Key must reach the wire, and its absence must keep the single
+// APIKey. It is the injector half of spreading the load across accounts — mt.inbound is keyed by
+// account, so one key means one partition and any parallelism result measured on it is void
+// (step-201d, D5).
+func TestInjectSendsThePerSubmissionKey(t *testing.T) {
+	seen := make(chan string, 4096)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case seen <- r.Header.Get("Authorization"):
+		default:
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg := injectCfg(srv.URL)
+	cfg.Duration = 200 * time.Millisecond
+	cfg.Key = func(seq uint64) string { return fmt.Sprintf("key-%d", seq%8) }
+	if _, err := steady.Inject(t.Context(), cfg, nil); err != nil {
+		t.Fatalf("Inject: %v", err)
+	}
+	close(seen)
+
+	keys := make(map[string]struct{})
+	for k := range seen {
+		keys[k] = struct{}{}
+	}
+	if len(keys) < 2 {
+		t.Errorf("the server saw %d distinct Authorization headers, want one per account; "+
+			"a single key puts the whole run on one partition", len(keys))
+	}
+	for k := range keys {
+		if !strings.HasPrefix(k, "Bearer key-") {
+			t.Errorf("Authorization = %q, want the key Key returned — the run would land on the wrong account", k)
+		}
+	}
+}
+
+// TestInjectWithoutKeyStillSendsTheSingleAPIKey pins the default, so adding Key cannot silently strip
+// the credential from every existing caller.
+func TestInjectWithoutKeyStillSendsTheSingleAPIKey(t *testing.T) {
+	seen := make(chan string, 4096)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case seen <- r.Header.Get("Authorization"):
+		default:
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg := injectCfg(srv.URL)
+	cfg.Duration = 200 * time.Millisecond
+	if _, err := steady.Inject(t.Context(), cfg, nil); err != nil {
+		t.Fatalf("Inject: %v", err)
+	}
+	close(seen)
+
+	for k := range seen {
+		if k != "Bearer "+cfg.APIKey {
+			t.Fatalf("Authorization = %q, want %q", k, "Bearer "+cfg.APIKey)
+		}
 	}
 }

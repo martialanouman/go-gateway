@@ -89,6 +89,11 @@ const (
 	envFetchMaxWait           = "REF_FETCH_MAX_WAIT"
 	envFetchMaxBytes          = "REF_FETCH_MAX_BYTES"
 	envFetchMaxPartitionBytes = "REF_FETCH_MAX_PARTITION_BYTES"
+
+	// envAccounts is how many SMPP accounts the run submits from. It DEFAULTS TO 1, which reproduces
+	// every measurement recorded before step-201d verbatim — the whole table in test/load/README.md
+	// depends on that. Raise it to spread the load across mt.inbound's partitions (D5).
+	envAccounts = "REF_ACCOUNTS"
 )
 
 // lagInterval paces the backlog poll. Each poll is a broker round-trip, so it is slow — but fast enough
@@ -130,11 +135,15 @@ func TestReferenceRun(t *testing.T) {
 	chCfg := chtest.Config(t)
 	chCfg.MaxOpenConns = int(envFloat(t, envCHMaxOpen, 10))
 	chCfg.MaxIdleConns = int(envFloat(t, envCHMaxIdle, 5))
+	accounts := int(envFloat(t, envAccounts, 1))
+	if accounts < 1 {
+		t.Fatalf("%s=%d: the run needs at least one account to submit from", envAccounts, accounts)
+	}
 
 	criteria := refCriteria()
 	criteria.PeerCeiling = calibratePeer(t)
 
-	s := buildRefStack(t, pool, brokers, chCfg)
+	s := buildRefStack(t, pool, brokers, chCfg, accounts)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -144,8 +153,12 @@ func TestReferenceRun(t *testing.T) {
 	lags := pollLag(ctx, t, s.consumers)
 
 	injectCfg := steady.InjectConfig{
-		URL:      s.rest.URL + "/v1/messages",
-		APIKey:   s.apiKey,
+		URL: s.rest.URL + "/v1/messages",
+		// APIKey stays the first account's, so a K=1 run is byte-for-byte the run every earlier line of
+		// test/load/README.md was measured on. Key is what spreads submissions across the accounts, and
+		// therefore across mt.inbound's partitions (D5).
+		APIKey:   s.apiKeys[0],
+		Key:      func(seq uint64) string { return s.apiKeys[seq%uint64(len(s.apiKeys))] },
 		Sender:   refSenderID,
 		Rate:     rate,
 		Workers:  workers,
@@ -288,15 +301,15 @@ const refSenderID = "LOADREF"
 type refStack struct {
 	rest      *httptest.Server
 	ops       *httptest.Server
-	apiKey    string
+	apiKeys   []string
 	registry  *prometheus.Registry
 	connector uuid.UUID
 	consumers map[string]*kafka.Consumer
 }
 
-func buildRefStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg config.ClickHouse) *refStack {
+func buildRefStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg config.ClickHouse, accounts int) *refStack {
 	t.Helper()
-	apiKey, connectorID := seedRefControlPlane(t, pool)
+	apiKeys, connectorID := seedRefControlPlane(t, pool, accounts)
 
 	kafkaCfg := refKafkaConfig(brokers)
 	kafkaCfg.FetchMinBytes = int32(envFloat(t, envFetchMinBytes, float64(kafkaCfg.FetchMinBytes)))
@@ -451,7 +464,7 @@ func buildRefStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg con
 	waitBound(t, smsc, int(envFloat(t, envBindPool, 4)))
 
 	return &refStack{
-		rest: restSrv, ops: ops, apiKey: apiKey, registry: registry, connector: connectorID,
+		rest: restSrv, ops: ops, apiKeys: apiKeys, registry: registry, connector: connectorID,
 		consumers: map[string]*kafka.Consumer{
 			kafka.TopicMTInbound: routerConsumer,
 			kafka.TopicMTRouted:  connConsumer,
@@ -795,14 +808,20 @@ func labelOf(m *dto.Metric, name string) string {
 	return ""
 }
 
-// seedRefControlPlane creates the customer, the REST account and its key, the sender ID, the connector
-// and a catch-all route. It returns the plaintext key and the connector id.
-func seedRefControlPlane(t *testing.T, pool *pgxpool.Pool) (string, uuid.UUID) {
+// seedRefControlPlane creates the customer, `accounts` REST accounts each with its own key, the sender
+// ID, the connector and a catch-all route. It returns the plaintext keys and the connector id.
+//
+// ONE customer, ONE sender ID, ONE route, whatever the account count. That is what keeps a K=1 run and a
+// K=32 run comparable: sender-ID authorisation stays two map hits, opt-out stays a Bloom miss with no
+// database confirmation, and route resolution stays the same catch-all. K changes which PARTITION a
+// submission lands on and nothing else — K customers or K sender IDs would change the work itself and
+// make the comparison dishonest (step-201d, D5).
+func seedRefControlPlane(t *testing.T, pool *pgxpool.Pool, accounts int) ([]string, uuid.UUID) {
 	t.Helper()
 	ctx := context.Background()
 
 	customers := postgres.NewCustomerRepo(pool)
-	accounts := postgres.NewAccountRepo(pool)
+	accountRepo := postgres.NewAccountRepo(pool)
 	credentials := postgres.NewCredentialRepo(pool)
 	connectors := postgres.NewConnectorRepo(pool)
 	routes := postgres.NewRouteRepo(pool)
@@ -812,10 +831,6 @@ func seedRefControlPlane(t *testing.T, pool *pgxpool.Pool) (string, uuid.UUID) {
 	if err != nil {
 		t.Fatalf("create customer: %v", err)
 	}
-	account, err := accounts.Create(ctx, cp.NewAccount{CustomerID: customer.ID, Name: "loadref-app"})
-	if err != nil {
-		t.Fatalf("create account: %v", err)
-	}
 	sid, err := senderIDs.Create(ctx, cp.NewSenderID{CustomerID: customer.ID, Address: refSenderID})
 	if err != nil {
 		t.Fatalf("create sender id: %v", err)
@@ -824,14 +839,24 @@ func seedRefControlPlane(t *testing.T, pool *pgxpool.Pool) (string, uuid.UUID) {
 	if _, err := senderIDs.Update(ctx, customer.ID, sid.ID, cp.SenderIDPatch{Status: &active}); err != nil {
 		t.Fatalf("activate sender id: %v", err)
 	}
-	key, hash, err := credential.GenerateAPIKey()
-	if err != nil {
-		t.Fatalf("generate api key: %v", err)
-	}
-	if _, err := credentials.Create(ctx, cp.NewCredential{
-		AccountID: account.ID, Type: cp.CredentialAPIKey, APIKeyHash: &hash,
-	}); err != nil {
-		t.Fatalf("create credential: %v", err)
+	keys := make([]string, 0, accounts)
+	for i := range accounts {
+		account, err := accountRepo.Create(ctx, cp.NewAccount{
+			CustomerID: customer.ID, Name: fmt.Sprintf("loadref-app-%02d", i),
+		})
+		if err != nil {
+			t.Fatalf("create account %d: %v", i, err)
+		}
+		key, hash, err := credential.GenerateAPIKey()
+		if err != nil {
+			t.Fatalf("generate api key %d: %v", i, err)
+		}
+		if _, err := credentials.Create(ctx, cp.NewCredential{
+			AccountID: account.ID, Type: cp.CredentialAPIKey, APIKeyHash: &hash,
+		}); err != nil {
+			t.Fatalf("create credential %d: %v", i, err)
+		}
+		keys = append(keys, key)
 	}
 	connector, err := connectors.Create(ctx, cp.NewConnector{
 		Name: "loadref-connector", Host: "127.0.0.1", Port: 2775,
@@ -845,7 +870,7 @@ func seedRefControlPlane(t *testing.T, pool *pgxpool.Pool) (string, uuid.UUID) {
 	}); err != nil {
 		t.Fatalf("create route: %v", err)
 	}
-	return key, connector.ID
+	return keys, connector.ID
 }
 
 // refResolver adapts the declarative snapshot resolver to the enriched pipeline interface, as the

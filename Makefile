@@ -163,12 +163,13 @@ smsc-ceiling: ## Measure the test peer's submit_sm ceiling (sweeps binds, reads 
 # minute and scores the steady state. It lives behind the `loadref` build tag so `make test` never
 # compiles it, let alone runs its two minutes.
 .PHONY: load-reference
-load-reference: ## Run the D2 steady-state reference run: make load-reference [RATE=1200] [BIND_POOL=4] [CH_MAX_OPEN=10] [MEASURE=60s]
+load-reference: ## Run the D2 steady-state reference run: make load-reference [RATE=1200] [ACCOUNTS=1] [BIND_POOL=4] [MEASURE=60s]
 	REF_RATE=$(RATE) REF_WORKERS=$(WORKERS) REF_MEASURE=$(MEASURE) REF_WARMUP=$(WARMUP) \
 	REF_SETTLE=$(SETTLE) REF_BIND_POOL=$(BIND_POOL) REF_WINDOW=$(SMPP_WINDOW) \
 	REF_CH_MAX_OPEN=$(CH_MAX_OPEN) REF_CH_MAX_IDLE=$(CH_MAX_IDLE) \
 	REF_FETCH_MIN_BYTES=$(FETCH_MIN_BYTES) REF_FETCH_MAX_WAIT=$(FETCH_MAX_WAIT) \
 	REF_FETCH_MAX_BYTES=$(FETCH_MAX_BYTES) REF_FETCH_MAX_PARTITION_BYTES=$(FETCH_MAX_PARTITION_BYTES) \
+	REF_ACCOUNTS=$(ACCOUNTS) \
 		go test -tags=loadref -count=1 -timeout 30m -v -run $(or $(RUN),TestReferenceRun) ./internal/e2e/
 
 ## ---------------------------------------------------------------------------- quality gates
