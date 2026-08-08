@@ -1,6 +1,6 @@
 # step-201d — Le routeur est le goulot suivant du débit traversant
 
-> **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
+> **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** PR1 (mesure) FAITE · PR2 (correctif) À FAIRE
 > **Dépend de :** step-201c · **Bloque :** step-201b
 
 ## But
@@ -80,7 +80,12 @@ contiennent que : décodage JSON, `phonenumbers`, sondes Bloom, encodage/segment
 
 La cause est la **signature positionnelle à 7 paramètres** : `(…, nil, nil)` ne se relit pas, là où
 `Deps{RateLimiter: nil, Credit: nil}` est une omission qu'un relecteur voit. → `pipeline.New` devient
-`pipeline.Deps` en PR1 (`D6`), et les trois étages sont câblés pour de vrai.
+`pipeline.Deps` en PR1, et l'omission redevient lisible en relecture.
+
+**Le câblage réel des trois étages n'a PAS été fait, et c'est une décision de mesure.** `D9` montre que
+le pipeline entier pèse 2,3 % du budget par message : y rajouter des allers-retours Redis mesurerait
+Redis, pas le goulot, et rallongerait la porte de mesure sans rien départager. Reporté à **step-201b**,
+qui porte le verdict NFR et pour qui ces trois étages sont sur le chemin.
 
 ### D5 — Le harnais ne peut structurellement pas montrer un gain de parallélisation
 `seedRefControlPlane` (`reference_test.go:674`) sème **un seul compte**. La clé de `mt.inbound` étant
@@ -126,37 +131,23 @@ dans un processus plus trois conteneurs sur le même hôte, et **si le processus
 est cette phrase-là, plus un harnais multi-processus. Le second empêche qu'un déséquilibre de hachage
 passe pour un effet du correctif.
 
-### D7 — Un histogramme par étape, en production, précédé de son propre banc de coût
+### D7 — L'histogramme par étape : prévu, puis **abandonné par la mesure** (08/08/2026)
+
 `pipeline_duration_seconds` (`internal/observability/metrics/catalog.go:190-199`) est un `Histogram`
-**sans aucun label**, observé en un seul point autour de `Pipeline.Process`. Aucune surface ne sait
-donc situer le coût par étape — le *Périmètre* de cette fiche demande de « lire l'histogramme plutôt que
-supposer », et l'instrument n'existe pas à cette granularité.
+**sans aucun label**, et le plan de cette step prévoyait de greffer un histogramme par étape dans
+`Pipeline.stage` — au motif qu'aucune surface de production ne sait situer le coût par étape.
 
-Les **spans** ne le remplacent pas : ils répondent « où **ce** message a passé son temps » (step-185,
-`get-message-trace`), jamais « où la **flotte** passe son temps » — et le run de référence utilise
-délibérément un tracer no-op parce qu'un recorder mesurerait sa propre pression mémoire.
+**La mesure a retiré le motif.** Une fois `router.Deps.Metrics` câblé (`D6`), l'histogramme existant
+répond à la question qu'on lui posait : `Pipeline.Process` coûte **19 µs sur un budget de 838**, soit
+**2,3 %**. Instrumenter 2,3 % du temps du routeur à raison de neuf observations par message, sur le
+chemin chaud d'une passerelle visant 8 000 msg/s, est un mauvais échange — et la répartition par étape
+que l'instrument aurait rendue est **déjà** produite par `BenchmarkPipelineStages`, qui ne coûte rien à
+la production (voir `D9`).
 
-Greffe dans `Pipeline.stage` (`internal/pipeline/pipeline.go:318-326`), qui reçoit déjà le nom d'étape :
-un seul site d'appel, vocabulaire clos de 9 fixé par §6.1. Quatre contraintes :
-
-- **Zéro string sur le chemin chaud** : les 9 `prometheus.Observer` résolus **une fois** au constructeur,
-  dans un tableau indexé par une constante typée. Les noms d'étape deviennent inatteignables depuis le
-  chemin chaud ⇒ la garde de cardinalité de step-180 est satisfaite **par construction**, pas par un
-  contrôle à l'exécution.
-- **9 lectures d'horloge, pas 18** : les étapes sont strictement séquentielles, la fin de l'une est le
-  début de la suivante.
-- `stage` ajouté à `allowed` (`internal/observability/metrics/labels.go`), justification : vocabulaire
-  clos fixé par le code, jamais par le trafic.
-- **Buckets propres** : 12 buckets exponentiels à partir de 1 µs. La spine actuelle démarre à 100 µs et
-  empilerait huit étapes sur neuf dans le premier bucket.
-
-**`BenchmarkPipelineStageObserve` est écrit d'abord**, sur le patron de
-`internal/metricstream/bench_test.go` (`ReportAllocs`, cible zéro allocation) : la décision est
-elle-même une mesure. Repli documenté — échantillonnage — si le coût dépasse ~2 % du budget par message.
-
-*Assumé, à trancher en revue :* l'histogramme est Prometheus seulement, là où step-180 demande deux
-surfaces alimentées depuis un site d'appel. Lecture retenue : cette règle vise les figures **présentes
-des deux côtés**, pas un diagnostic que seul Grafana porte.
+L'argument d'origine — les spans répondent « où **ce** message a passé son temps », jamais « où la
+**flotte** passe son temps » — reste vrai. Il redeviendra décisif le jour où le pipeline pèsera assez
+pour mériter d'être découpé. **Reporté à step-201b**, avec le chiffre qui le rouvrirait : un pipeline
+au-delà de ~20 % du budget par message.
 
 ### D8 — Deux micro-bancs, et c'est la forme de la courbe qui tranche, jamais une valeur
 Le patron est `TestCDRWriteCeiling` (`internal/e2e/cdrceiling_test.go`), qui a tranché le goulot de
@@ -183,10 +174,48 @@ S'y ajoute le balayage des trois suspects rendus mesurables par `D4` : semer une
 throttle jamais, une règle de vélocité, la facturation. La mesure est le **delta de débit quand le levier
 bascule** — le pipeline reste câblé en vrai dans tous les cas, seul le semis change.
 
-### D9 — Le goulot, une fois nommé
-*(à remplir par PR1, avec les chiffres — c'est le critère de sortie de la porte de mesure)*
+### D9 — Le goulot, nommé (mesuré le 08/08/2026)
 
-Candidats classés avant mesure, avec ce qui les valide ou les infirme :
+**Le goulot est la boucle de consommation du routeur : une goroutine unique, latency-bound, qui publie un
+record à la fois en `acks=all`.** La sortie sature autour de **1 200 `submit_sm/s`** — au-delà, tout
+s'empile sur `mt.inbound` pendant que `mt.routed` et `mt.outcome` restent plats.
+
+| Visé | Sorti | Pente `mt.inbound` | `mt.routed` | Pipeline / budget | CPU |
+|---:|---:|---:|---|---:|---:|
+| 1 200 | 1 180/s | +2,2 | plat | 19 µs / 847 µs (2,2 %) | 1,08/14 |
+| 2 400 | 1 194/s | +1 218 | plat | 19 µs / 838 µs (2,3 %) | 1,10/14 |
+| 4 800 | 1 450/s | +3 369 | plat | 18 µs / 690 µs (2,7 %) | 1,58/14 |
+
+Quatre hypothèses écartées, **chacune par sa propre mesure** :
+
+| Hypothèse | Mesure | Verdict |
+|---|---|---|
+| L'hôte est saturé (l'artefact que la fiche exige de vérifier) | `Getrusage` : 1,1 cœur sur 14 | écartée — la boucle **attend** |
+| Le coût est dans le pipeline | `pipeline_duration_seconds` : 19 µs sur 838 | écartée — 2,3 % |
+| Un verrou partagé dans le pipeline | `BenchmarkPipelineProcessParallel` : ×3,9 à 8 cœurs | écartée |
+| Un plafond broker | `TestRoutedProduceCeiling` : ×30 jusqu'à 188 182/s | écartée |
+
+Reste par soustraction : **~97 % du budget par message est passé bloqué hors du pipeline**.
+
+**Le chiffre de départ de cette fiche ne se reproduit pas.** Rejoué sur l'arbre `73ad72a` le 08/08, le
+run sort 1 141/s et +22,7 rec/s, là où le 03/08 avait relevé 892/s et +291. Le pair calibre aussi 30 %
+plus bas ce jour : l'hôte n'était pas dans le même état. **Le goulot que la fiche supposait est réel ; sa
+sévérité ne l'était pas.** L'écart n'est donc plus de 25,7 % à 1 200 msg/s — à ce débit la passerelle
+passe désormais le critère — mais de 50 % à 2 400 et 70 % à 4 800.
+
+**Le correctif est nommé, et les deux candidats convergent.** La boucle attend, elle ne calcule pas ; la
+seule chose sérialisée est le `ProduceSync` par record dans la goroutine de consommation. `A` (fan-out
+`RunBatch` + shard par `rec.Key`) et `B` (barrière sur les records en vol) recouvrent tous deux ces
+attentes, et M2 chiffre le gain disponible à ×30. `A` est retenu : il shard par la clé, donc il préserve
+§1.6 exactement, et il recouvre en plus le coût CPU du pipeline. `C` (double `e164`) et `D` (partitions)
+restent hors sujet — respectivement 2,3 % du budget, et un levier d'exploitation.
+
+**`REF_ACCOUNTS` est un prérequis dur de la porte de correctif, et il livre déjà 37 %.** À 2 400 visés,
+`K=1` sort 1 098/s avec `p0=86 805` et trois partitions vides ; `K=32` sort **1 507/s** réparti sur les
+quatre. Le routeur n'a pas changé d'une ligne : la répartition des clés amortit les allers-retours de
+poll. Sans ce levier, aucun fan-out n'aurait pu être mesuré.
+
+Candidats classés avant mesure, conservés pour mémoire — `A` retenu, les autres écartés :
 
 **A — fan-out de la consommation (`RunBatch` + shard par `rec.Key`).** Sharder par la clé **préserve
 §1.6 exactement** : `shardIndex(rec.Key, n)` est une fonction pure de la clé, et la clé *est*
@@ -200,24 +229,19 @@ commite le préfixe traité *avant* de retourner l'erreur) à ~250 records/parti
 que l'ADR-0012 a acceptée, **mais l'ADR raisonnait sur le pool de connecteurs, pas sur le routeur** ⇒
 amendement d'ADR-0012 en PR2, pas une ligne glissée en silence.
 
-**B — produce groupé avec barrière avant commit.** L'invariant « l'offset ne commite qu'après ACK de
-**tous** les segments » survit par construction : `RunBatch` commite après le retour du handler, donc une
-barrière placée *dans* le handler le rend trivial, à condition que l'erreur soit mappée **par record**
-(sans quoi `committablePrefix` devient faux). L'ordre survit aussi — `mt.routed` est clé par `MessageID`
-et franz-go idempotent maintient l'ordre par partition même avec plusieurs requêtes en vol.
-**Ampleur à tempérer** : le run a un segment par message, donc grouper les segments *d'un* message ne
-rapporte rien au chiffre mesuré ; le vrai levier est de grouper **à travers les messages** d'un lot, ce
-qui n'existe qu'une fois A livré.
+**B — barrière sur les records en vol.** L'invariant « l'offset ne commite qu'après ACK de **tous** les
+segments » survit par construction : `RunBatch` commite après le retour du handler, donc une barrière
+placée *dans* le handler le rend trivial, à condition que l'erreur soit mappée **par record** (sans quoi
+`committablePrefix` devient faux). Mesuré par M2 : c'est exactement la forme « N produces en vol ».
+Absorbé par `A`, qui l'obtient en même temps que le parallélisme du pipeline.
 
-**C — ne pas payer `e164.Normalize` deux fois par processus.** `pipeline.go:157` et
-`internal/ingest/accepted.go:82` tournent dans le même processus, alors que l'ingestion l'a
-**délibérément déporté** de son chemin de requête (« too heavy to run inline at the ingest rate »,
-`internal/ingest/ingest.go:70-72`). Ne compte que si M1 montre e164 dominant. **Piège explicitement
-refusé** : mémoïser derrière un LRU — l'injecteur étale les destinations sur un bloc contigu, le taux de
-hit serait un artefact du banc et mentirait sur la production.
+**C — ne pas payer `e164.Normalize` deux fois par processus.** 6,3 µs et 55 allocations, 63 % du
+pipeline — mais le pipeline entier est 2,3 % du budget. **Écarté ici** ; à rouvrir si le budget descend
+d'un ordre de grandeur. Piège explicitement refusé : mémoïser derrière un LRU — l'injecteur étale les
+destinations sur un bloc contigu, le taux de hit serait un artefact du banc.
 
-**D — partitions et répliques.** Le levier d'exploitation réel, **structurellement invisible au harnais
-mono-processus**. À nommer au README comme la réponse d'exploitation, sans prétendre l'avoir mesurée.
+**D — partitions et répliques.** Le levier d'exploitation réel, invisible au harnais mono-processus tant
+que `REF_ACCOUNTS` valait 1. Nommé au README comme réponse d'exploitation.
 
 ### D10 — Ce que ce harnais ne saura toujours pas dire
 Même après `D3`-`D5`, le chiffre reste un **majorant** du débit réel : le tracer est no-op, `Sealer` est
@@ -232,18 +256,19 @@ step-201b, qui porte le verdict NFR.
 
 ## Périmètre — deux PRs (`D1`)
 
-**PR1, la porte de mesure.** Rendre le coût lisible et le harnais fidèle, puis nommer le goulot.
+**PR1, la porte de mesure — livrée.**
 - `pipeline.New` → `pipeline.Deps` (`D4`), qui rend l'amputation du harnais visible en relecture.
-- Fidélité du harnais : réglage Kafka de production + test d'épinglage (`D3`), pipeline complet câblé et
-  ses trois leviers de semis (`D4`), `REF_ACCOUNTS` (`D5`).
+- Fidélité du harnais : réglage Kafka de production + test d'épinglage (`D3`), `REF_ACCOUNTS` (`D5`).
 - Les trois relevés qui ne coûtent presque rien : `Metrics` câblé, comptabilité CPU, lag par partition
   (`D6`).
-- L'histogramme par étape, précédé de son banc de coût (`D7`).
 - Les deux micro-bancs `BenchmarkPipelineProcess` et `TestRoutedProduceCeiling` (`D8`).
 - Runs consignés en lignes **ajoutées** à `test/load/README.md`, goulot nommé en `D9`.
+- **Retirés en cours de route, par la mesure** : l'histogramme par étape (`D7`) et le câblage réel des
+  étages débit / anti-spam Redis / crédit (`D4`) — le pipeline pèse 2,3 % du budget, les instrumenter
+  aurait coûté sans départager.
 
-**PR2, la porte de correctif.** Uniquement le candidat que PR1 a désigné (`D9`), l'amendement d'ADR-0012
-s'il s'agit de A, et le run de référence relancé qui le prouve.
+**PR2, la porte de correctif.** Le candidat `A` que `D9` a désigné — `RunBatch` + shard par `rec.Key` —
+l'amendement d'ADR-0012 qu'il entraîne, et le run de référence relancé à `ACCOUNTS=32` qui le prouve.
 
 ## Points d'implémentation clés
 - **Ne pas supposer le coupable.** Les candidats plausibles sont nombreux et de natures différentes :
@@ -272,10 +297,11 @@ signal d'une régression, pas d'un test à ajuster.
 
 ## Definition of Done
 **PR1**
-- [ ] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts
-- [ ] le goulot est **nommé et isolé par une mesure**, pas déduit (`D9` rempli avec ses chiffres)
-- [ ] `make load-reference` aux défauts (`REF_ACCOUNTS=1`) reste comparable au run du 03/08/2026
-- [ ] mesures consignées en lignes **ajoutées** à `test/load/README.md`, aucune ligne éditée
+- [x] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts
+- [x] le goulot est **nommé et isolé par une mesure**, pas déduit (`D9`, quatre hypothèses écartées
+      chacune par sa propre mesure)
+- [x] `make load-reference` aux défauts (`REF_ACCOUNTS=1`) reste comparable au run du 03/08/2026
+- [x] mesures consignées en lignes **ajoutées** à `test/load/README.md`, aucune ligne éditée
 
 **PR2**
 - [ ] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts
