@@ -168,3 +168,8 @@ Deux dettes laissées par step-184, de nature différente : un compteur construi
 promesse de contrat dont la source durable n'existe pas.
 - [x] step-210 — Les rejets du flux temps réel redeviennent visibles (le plafond tronquait en silence)
 - [ ] step-211 — `billing.events` durable : le BFF doit pouvoir détecter, pas seulement afficher
+
+## Suite de step-209 — la dernière porte de l'annulation (revue du 2026-08-08)
+Constat sorti de l'implémentation de step-209 : la course d'envoi est fermée, mais le rejeu manuel d'un
+dead-letter reste un chemin par lequel un message annulé peut repartir.
+- [ ] step-212 — Le rejeu d'un dead-letter ne doit pas remettre sur le fil un message annulé
