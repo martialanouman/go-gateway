@@ -1,6 +1,6 @@
 # step-201d — Le routeur est le goulot suivant du débit traversant
 
-> **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** PR1 (mesure) FAITE · PR2 (correctif) À FAIRE
+> **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** FAIT (PR1 mesure, PR2 correctif)
 > **Dépend de :** step-201c · **Bloque :** step-201b
 
 ## But
@@ -297,6 +297,32 @@ record `mt.inbound` dupliqué vaut 1..N segments là où un `mt.routed` en vaut 
 messages est à re-mesurer, un record `mt.inbound` portant le corps entier là où `mt.routed` porte un
 segment.
 
+
+### D13 — Le résultat, mesuré (08/08/2026, PR2)
+
+À 2 400 msg/s injectés, `ACCOUNTS=32`, la configuration même que PR1 avait mesurée en échec :
+
+| | avant | après |
+|---|---:|---:|
+| Sorti | 1 507/s | **2 400/s** |
+| Backlog `mt.inbound` | 66 866, **+915 rec/s** | **137 → 7** (il se vide) |
+| Écart d'équilibre | 37,21 % | **0,01 %** |
+| Verdict | FAILED | **PASSED, 8 clauses** |
+
+La courbe de lanes à 4 800 msg/s (`PARTITIONS` = nombre de lanes) : débit du routeur **1 692 → 2 990 →
+3 422 → 4 702/s**, monotone, **×2,8 de 1 à 8 lanes**, et `mt.inbound` passe de 247 927 records de retard à
+9 648.
+
+**Le goulot suivant est le pool de connecteurs**, et il est vérifié plutôt que déduit : à 8 lanes la file
+est entièrement sur `mt.routed` (33 164 → 147 244), et porter `BIND_POOL` de 4 à 16 la remet à plat
+(27 → 213) en renvoyant le retard en amont. Le levier suivant appartient donc au pool, pas au routeur.
+
+Réserve qui borne ce qu'on peut en conclure : à `BIND_POOL=16` le débit du *routeur* retombe de 4 702 à
+3 395/s — seize binds de plus s'ordonnancent sur les mêmes cœurs. Le processus ne brûle que 1,6 cœur sur
+14, donc ce n'est pas du CPU brut mais de la contention entre neuf composants et trois conteneurs sur une
+machine. **Les chiffres à 4 800 bornent des tendances ; seul le run à 2 400, qui passe, porte un
+verdict.**
+
 ## Périmètre — deux PRs (`D1`)
 
 **PR1, la porte de mesure — livrée.**
@@ -348,11 +374,14 @@ signal d'une régression, pas d'un test à ajuster.
 - [x] mesures consignées en lignes **ajoutées** à `test/load/README.md`, aucune ligne éditée
 
 **PR2**
-- [ ] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts
-- [ ] run de référence relancé et consigné
-- [ ] ordre du pipeline inchangé, invariants verts
-- [ ] ADR-0014 écrite (`D12`) — **jamais** un amendement d'ADR-0012, la convention l'interdit
-- [ ] « la cause résiduelle est unique » corrigée dans la spec et le guide (`D12`)
+- [x] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts
+- [x] run de référence relancé et consigné — à 2 400 msg/s le critère **PASSE** (8 clauses) là où il
+      échouait, sortie 1 507 → **2 400/s**, backlog 137 → 7
+- [x] ordre du pipeline inchangé, invariants verts, **aucun test d'invariant modifié**
+- [x] ADR-0014 écrite (`D12`) — **jamais** un amendement d'ADR-0012, la convention l'interdit
+- [x] « la cause résiduelle est unique » corrigée dans la spec et le guide (`D12`)
+- [x] le goulot suivant est **nommé et vérifié** : le pool de connecteurs sur `mt.routed`, confirmé par
+      contre-épreuve (`BIND_POOL` 4 → 16 remet `mt.routed` à plat)
 
 ## Hors périmètre
 Verdict NFR pleine échelle → step-201b. Le goulot du pool de connecteurs → step-201c (livré).

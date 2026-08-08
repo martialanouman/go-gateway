@@ -512,6 +512,68 @@ d'une, ce qui amortit les allers-retours de poll. La boucle reste sérialisée �
   point n'a pas été corrigé ici — la mesure a montré que ces trois étages ne sont pas sur le chemin
   critique — et revient à `step-201b`.
 
+### Mesure du 08/08/2026 (step-201d PR2) — le fan-out du routeur, et le goulot qui repart en aval
+
+Le routeur consomme désormais par lot avec **une goroutine par partition** (`step-201d` `D11`). Rien
+d'autre n'a changé sur le chemin chaud.
+
+#### Au débit de référence, le critère passe et la file se vide
+
+À 2 400 msg/s injectés, `ACCOUNTS=32`, 4 partitions — la même configuration que PR1 avait mesurée :
+
+| | avant (PR1) | **après (PR2)** |
+|---|---:|---:|
+| **Sorti** | 1 507/s | **2 400/s** |
+| Backlog `mt.inbound` | 16 554 → 66 866 (**+915 rec/s**) | **137 → 7** (la file se **vide**) |
+| Écart d'équilibre | 37,21 % | **0,01 %** (tolérance 2 %) |
+| Pipeline / budget | 18 µs / 664 µs (2,7 %) | 17 µs / 417 µs (4,2 %) |
+| CPU du processus | 1,18 cœur sur 14 | 1,40 cœur sur 14 |
+| Verdict | **FAILED** (2 clauses) | **PASSED** (8 clauses) |
+
+**+59 % de sortie, et le critère d'état stationnaire tient à un débit qui le mettait en échec avant.**
+
+#### La courbe de lanes, à un débit saturant
+
+`ACCOUNTS=32`, `RATE=4800`, balayage de `PARTITIONS` — donc du nombre de lanes, puisque la lane **est** la
+partition :
+
+| Lanes | Débit du **routeur** | Backlog `mt.inbound` | Backlog `mt.routed` | Sorti |
+|---:|---:|---|---|---:|
+| 1 | 1 692/s | 70 902 → **247 927** | plat (7 → 6) | 1 692/s |
+| 2 | 2 990/s | 41 292 → **144 018** | plat (46 → 10) | 2 990/s |
+| 4 | 3 422/s | 21 892 → 100 542 | 11 022 → **30 849** | 3 091/s |
+| 8 | **4 702/s** | 5 109 → **9 648** | 33 164 → **147 244** | 2 721/s |
+
+Le débit du routeur monte de façon monotone, **×2,8 de 1 à 8 lanes**, et à 8 lanes `mt.inbound` se vide
+presque : 9 648 records de retard pour 288 000 injectés. Le goulot que `D9` avait nommé est levé.
+
+#### Le goulot suivant est le pool de connecteurs, et c'est vérifié, pas déduit
+
+À partir de 4 lanes la file migre sur `mt.routed`, et à 8 lanes elle y est entièrement. La contre-épreuve
+tranche : mêmes 8 lanes, `BIND_POOL` porté de 4 à 16 —
+
+```
+BIND_POOL=4   mt.inbound  5 109 ->   9 648   ·  mt.routed 33 164 -> 147 244   (le pool ne suit pas)
+BIND_POOL=16  mt.inbound     56 ->  74 332   ·  mt.routed     27 ->     213   (le pool suit, la file remonte)
+```
+
+`mt.routed` redevient plat dès qu'on élargit le pool : le retard de 147 244 records lui appartenait bien.
+
+#### Réserves propres à cette mesure
+
+- **Les deux étages se disputent le même hôte.** À `BIND_POOL=16` le débit du *routeur* retombe de
+  4 702/s à 3 395/s : seize binds de plus s'ordonnancent sur les mêmes cœurs. Le processus ne brûle que
+  1,6 cœur sur 14, donc ce n'est pas du CPU brut — c'est de la contention entre neuf composants et trois
+  conteneurs sur une machine. **Les chiffres à 4 800 msg/s bornent des tendances, pas des capacités** ;
+  ceux à 2 400, où le critère passe, sont les seuls à porter un verdict.
+- **`PARTITIONS=1` handicape plus que le routeur** : `mt.routed` et `mt.outcome` sont eux aussi ramenés à
+  une partition. Le pool shardant par identifiant de message et non par partition, l'effet dominant reste
+  bien le routeur, mais la première ligne du tableau n'isole pas parfaitement.
+- **Un run par configuration**, comme partout ailleurs dans ce fichier. La sortie est le chiffre robuste ;
+  la pente du lag reste bruitée près de l'équilibre.
+- Le harnais reste un **majorant** : tracer no-op, `Sealer` nil, étages débit / anti-spam Redis / crédit
+  toujours en pass-through (`step-201d` `D4`), tout dans un processus.
+
 ### Réserves, nommément
 
 - **Un seul hôte, un seul processus, une seule mesure par configuration.** Les quatre lignes du tableau
