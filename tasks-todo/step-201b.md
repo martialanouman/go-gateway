@@ -1,7 +1,7 @@
 # step-201b — Campagne NFR pleine échelle sur environnement représentatif
 
 > **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
-> **Dépend de :** step-201, **step-201c**, step-207 · **Bloque :** step-208
+> **Dépend de :** step-201, **step-201c**, **step-201d**, **step-201e**, step-207 · **Bloque :** step-208
 
 ## But
 Rendre le **verdict NFR** que step-201 ne pouvait pas rendre : débit soutenu **8 000 SMS/s**, pic
@@ -16,7 +16,13 @@ développement ne porte ça : un « 8 000/s tenu » mesuré là ne validerait ri
 condamnerait rien.
 
 step-201 a donc livré les **instruments** et prouvé l'état stationnaire à la borne basse du modèle
-par-worker (§2.5). Ici, seule **l'échelle** change : les instruments sont réutilisés tels quels.
+par-worker (§2.5). Ici, seule **l'échelle** change.
+
+> **Correction (08/08/2026, après step-201d).** « Les instruments sont réutilisés tels quels » n'est plus
+> vrai. step-201d les a poussés jusqu'à leur limite : à 4 800 msg/s le harnais ne sait plus **attribuer**
+> un plafond — l'injecteur décroche de 17,3 %, les étages se disputent l'hôte, et la comptabilité CPU ne
+> voit que le processus Go quand le suspect probable est un conteneur. Ce qui manque est listé et
+> planifié en **step-201e**, qui bloque cette fiche.
 
 ## Prérequis logiciel : step-201c
 Le run de référence de step-201 a mesuré un plafond de sortie de **192–330 `submit_sm/s`** dû à quatre
