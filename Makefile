@@ -167,6 +167,8 @@ load-reference: ## Run the D2 steady-state reference run: make load-reference [R
 	REF_RATE=$(RATE) REF_WORKERS=$(WORKERS) REF_MEASURE=$(MEASURE) REF_WARMUP=$(WARMUP) \
 	REF_SETTLE=$(SETTLE) REF_BIND_POOL=$(BIND_POOL) REF_WINDOW=$(SMPP_WINDOW) \
 	REF_CH_MAX_OPEN=$(CH_MAX_OPEN) REF_CH_MAX_IDLE=$(CH_MAX_IDLE) \
+	REF_FETCH_MIN_BYTES=$(FETCH_MIN_BYTES) REF_FETCH_MAX_WAIT=$(FETCH_MAX_WAIT) \
+	REF_FETCH_MAX_BYTES=$(FETCH_MAX_BYTES) REF_FETCH_MAX_PARTITION_BYTES=$(FETCH_MAX_PARTITION_BYTES) \
 		go test -tags=loadref -count=1 -timeout 30m -v -run $(or $(RUN),TestReferenceRun) ./internal/e2e/
 
 ## ---------------------------------------------------------------------------- quality gates

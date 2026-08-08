@@ -77,6 +77,15 @@ const (
 	// exposed. Overriding them here is what turns the CDR write path into something this run can sweep.
 	envCHMaxOpen = "REF_CH_MAX_OPEN"
 	envCHMaxIdle = "REF_CH_MAX_IDLE"
+
+	// The Kafka fetch levers. The run's BASELINE is now the production default (refKafkaConfig, pinned by
+	// TestRefKafkaCarriesProductionDefaults) — before step-201d it was a struct literal, so every one of
+	// these sat at zero and franz-go supplied its own instead. These sweep the baseline; they do not
+	// establish it.
+	envFetchMinBytes          = "REF_FETCH_MIN_BYTES"
+	envFetchMaxWait           = "REF_FETCH_MAX_WAIT"
+	envFetchMaxBytes          = "REF_FETCH_MAX_BYTES"
+	envFetchMaxPartitionBytes = "REF_FETCH_MAX_PARTITION_BYTES"
 )
 
 // lagInterval paces the backlog poll. Each poll is a broker round-trip, so it is slow — but fast enough
@@ -275,7 +284,11 @@ func buildRefStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg con
 	t.Helper()
 	apiKey, connectorID := seedRefControlPlane(t, pool)
 
-	kafkaCfg := config.Kafka{Brokers: brokers, Timeout: 5 * time.Second}
+	kafkaCfg := refKafkaConfig(brokers)
+	kafkaCfg.FetchMinBytes = int32(envFloat(t, envFetchMinBytes, float64(kafkaCfg.FetchMinBytes)))
+	kafkaCfg.FetchMaxWait = envDuration(t, envFetchMaxWait, kafkaCfg.FetchMaxWait)
+	kafkaCfg.FetchMaxBytes = int32(envFloat(t, envFetchMaxBytes, float64(kafkaCfg.FetchMaxBytes)))
+	kafkaCfg.FetchMaxPartitionBytes = int32(envFloat(t, envFetchMaxPartitionBytes, float64(kafkaCfg.FetchMaxPartitionBytes)))
 
 	// A no-op tracer, deliberately. The walking-skeleton test records every span to assert on them; at
 	// a thousand messages a second for a minute that recorder would hold millions of spans and the run

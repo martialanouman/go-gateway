@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -1040,5 +1041,29 @@ func TestFetchMaxPartitionBytesHoldsTheRatifiedBound(t *testing.T) {
 		t.Errorf("FetchMaxPartitionBytes = %d, want %d: the ADR-0012 bound is ~250 messages per "+
 			"partition per crash at the measured 221 compressed bytes per record",
 			cfg.Kafka.FetchMaxPartitionBytes, want)
+	}
+}
+
+// TestDefaultsIgnoresTheEnvironment: Defaults() must report the configuration as DECLARED, whatever the
+// process environment says. Anything deriving a fixed baseline from it — the reference load run pins its
+// Kafka client on it (step-201d) — would otherwise silently inherit whatever a developer exported.
+func TestDefaultsIgnoresTheEnvironment(t *testing.T) {
+	setEnv(t, map[string]string{
+		"KAFKA_FETCH_MAX_PARTITION_BYTES": "999",
+		"KAFKA_BROKERS":                   "elsewhere:9092",
+		"POSTGRES_MAX_CONNS":              "99",
+	})
+
+	def := config.Defaults()
+
+	if def.Kafka.FetchMaxPartitionBytes != 56<<10 {
+		t.Errorf("Kafka.FetchMaxPartitionBytes = %d, want %d (declared default, not the environment's 999)",
+			def.Kafka.FetchMaxPartitionBytes, 56<<10)
+	}
+	if got, want := def.Kafka.Brokers, []string{"localhost:9092"}; !slices.Equal(got, want) {
+		t.Errorf("Kafka.Brokers = %v, want %v (declared default)", got, want)
+	}
+	if def.Postgres.MaxConns != 10 {
+		t.Errorf("Postgres.MaxConns = %d, want 10 (declared default)", def.Postgres.MaxConns)
 	}
 }

@@ -551,6 +551,30 @@ func Load(serviceName string, sections ...Section) (Config, error) {
 	return cfg, nil
 }
 
+// Defaults returns the configuration exactly as DECLARED — every envDefault, nothing read from the
+// process environment. It is what a service boots with when an operator sets nothing, and it never
+// varies with the shell that happens to be running.
+//
+// Use it as a baseline a test or a harness must not drift from. A test bench that instead writes its
+// own struct literal silently lands every unset field on the zero value, and a client library then
+// substitutes its OWN default: the reference load run measured Kafka at franz-go's 1MiB
+// FetchMaxPartitionBytes for two milestones because of exactly that, against the 56KiB ADR-0012
+// commits to (step-201d). Deriving from here makes such a gap a test failure rather than a footnote.
+//
+// It is deliberately NOT validated: it is a declaration, not a boot. Load is the only path that boots
+// a service.
+func Defaults() Config {
+	var cfg Config
+	// An explicit (empty) environment is what makes this independent of os.Environ: only envDefault
+	// tags feed the result.
+	if err := env.ParseWithOptions(&cfg, env.Options{Environment: map[string]string{}}); err != nil {
+		// Unreachable in practice: the same struct parses on every Load. A malformed envDefault tag is a
+		// programming error in this package, caught by its tests, not an operator's mistake.
+		panic(fmt.Sprintf("config: parse declared defaults: %v", err))
+	}
+	return cfg
+}
+
 // required folds the declared sections, defaulting to SectionAll when a caller declares none.
 func required(sections []Section) Section {
 	if len(sections) == 0 {
