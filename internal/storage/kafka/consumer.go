@@ -282,6 +282,23 @@ func toRecord(kr *kgo.Record) Record {
 // A broker round-trip is involved, so call it on a slow tick, never per message. An error is returned rather
 // than swallowed; the caller decides, and for the metrics stream the answer is "skip this tick".
 func (c *Consumer) Lag(ctx context.Context) (map[string]int64, error) {
+	byPartition, err := c.LagByPartition(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return sumLag(byPartition), nil
+}
+
+// LagByPartition reports the same backlog as [Consumer.Lag], kept split per partition.
+//
+// The split is what tells a flat total apart from a balanced one. A group whose keys all hash to one
+// partition is serialised no matter how many partitions the topic has or how many pods join the group,
+// and the totals look identical either way — so a measurement that concludes anything about parallelism
+// has to read this, not the sum (step-201d, D5/M4).
+//
+// Same cost and same refusals as Lag: one broker round-trip, and a partition whose lag cannot be computed
+// fails the whole call rather than being dropped from a plausible-looking total.
+func (c *Consumer) LagByPartition(ctx context.Context) (map[string]map[int32]int64, error) {
 	lags, err := kadm.NewClient(c.cl).Lag(ctx, c.group)
 	if err != nil {
 		return nil, fmt.Errorf("kafka: lag for group %s: %w", c.group, err)
@@ -296,10 +313,11 @@ func (c *Consumer) Lag(ctx context.Context) (map[string]int64, error) {
 	if err := described.Error(); err != nil {
 		return nil, fmt.Errorf("kafka: lag for group %s: %w", c.group, err)
 	}
-	return sumLag(c.group, described.Lag)
+	return splitLag(c.group, described.Lag)
 }
 
-// sumLag totals a described group's lag per topic, refusing any topic it cannot total honestly.
+// splitLag reduces a described group's lag to topic -> partition -> records, refusing any topic it cannot
+// report honestly.
 //
 // Both refusals serve one rule: a backlog gauge may hold a stale value, but it may never publish a small
 // number that reads as "we are caught up".
@@ -309,25 +327,41 @@ func (c *Consumer) Lag(ctx context.Context) (map[string]int64, error) {
 //   - A topic with NO partitions at all sums to a perfect 0, which is the same lie with no error to catch
 //     it. kadm seeds its map from the topics in the members' Join and leaves the partitions empty when the
 //     topic is missing from endOffsets — a shard error, or a topic that does not exist (step-201c, D20).
-func sumLag(group string, lag kadm.GroupLag) (map[string]int64, error) {
-	out := make(map[string]int64, len(lag))
+//
+// A negative lag is clamped to zero, not summed: kadm reports -1 for "unknown", and letting it through
+// would subtract from a sibling partition's real backlog.
+func splitLag(group string, lag kadm.GroupLag) (map[string]map[int32]int64, error) {
+	out := make(map[string]map[int32]int64, len(lag))
 	for topic, partitions := range lag {
 		if len(partitions) == 0 {
 			return nil, fmt.Errorf("kafka: lag for group %s, topic %s: no partitions described", group, topic)
 		}
-		var total int64
+		byPartition := make(map[int32]int64, len(partitions))
 		for _, p := range partitions {
 			if p.Err != nil {
 				return nil, fmt.Errorf("kafka: lag for group %s, topic %s partition %d: %w",
 					group, topic, p.Partition, p.Err)
 			}
-			if p.Lag > 0 {
-				total += p.Lag
-			}
+			byPartition[p.Partition] = max(p.Lag, 0)
+		}
+		out[topic] = byPartition
+	}
+	return out, nil
+}
+
+// sumLag totals splitLag's output per topic. It cannot fail: splitLag already refused everything that
+// would make a total dishonest, which is precisely why the two are separate — the refusals belong to the
+// reading, the arithmetic to the reporting.
+func sumLag(byPartition map[string]map[int32]int64) map[string]int64 {
+	out := make(map[string]int64, len(byPartition))
+	for topic, partitions := range byPartition {
+		var total int64
+		for _, lag := range partitions {
+			total += lag
 		}
 		out[topic] = total
 	}
-	return out, nil
+	return out
 }
 
 // NewTailReader consumes a topic from the END of the log with NO consumer group.
