@@ -54,6 +54,16 @@ type InjectConfig struct {
 	// Dest maps a submission's sequence number to its destination MSISDN. Nil uses a spread over the
 	// +2250700xxxxxx block the repository reserves for fixtures.
 	Dest func(seq uint64) string
+
+	// Key maps a submission's sequence number to the API key it is sent with, and therefore to the
+	// ACCOUNT it lands on. Nil sends every submission with APIKey.
+	//
+	// It exists because mt.inbound is keyed by account (§1.6, so an account's submissions keep their
+	// partition order). One account puts the entire run on ONE partition, whatever the topic's partition
+	// count, however many pods join the group and whatever in-process fan-out the router grows — and the
+	// per-topic totals read exactly as they would for a balanced run. Spreading the keys is what makes a
+	// parallelism result mean anything (step-201d, D5).
+	Key func(seq uint64) string
 }
 
 // Sample is one submission's outcome.
@@ -222,7 +232,7 @@ func workerRun(ctx context.Context, cfg InjectConfig, payloads *payloadSet, seq 
 		}
 
 		sentAt := time.Now()
-		err := submit(ctx, cfg, payloads.at(i))
+		err := submit(ctx, cfg, cfg.Key(i), payloads.at(i))
 		at := time.Now()
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			// The harness closing the window is not a failure of the gateway, and counting it as one
@@ -241,13 +251,13 @@ func workerRun(ctx context.Context, cfg InjectConfig, payloads *payloadSet, seq 
 
 // submit performs one submission. Anything other than 202 is an error, body included in the message so
 // a failing run names its own cause.
-func submit(ctx context.Context, cfg InjectConfig, payload []byte) error {
+func submit(ctx context.Context, cfg InjectConfig, apiKey string, payload []byte) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.URL, bytes.NewReader(payload))
 	if err != nil {
 		return fmt.Errorf("steady: build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
 
 	resp, err := cfg.Client.Do(req)
 	if err != nil {
@@ -332,6 +342,10 @@ func (c InjectConfig) withDefaults() InjectConfig {
 	}
 	if c.Dest == nil {
 		c.Dest = func(seq uint64) string { return fmt.Sprintf("+2250700%06d", seq%1000000) }
+	}
+	if c.Key == nil {
+		key := c.APIKey
+		c.Key = func(uint64) string { return key }
 	}
 	if c.Client == nil {
 		transport := http.DefaultTransport.(*http.Transport).Clone()

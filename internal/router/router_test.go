@@ -110,9 +110,12 @@ func newRouterWithReserver(t *testing.T, resolver pipeline.Resolver, reserver pi
 	return router.New(router.Deps{
 		Consumer: cons,
 		Producer: prod,
-		Pipeline: pipeline.New(tracer, resolver, allowAllSenderIDs{}, allowAllOptOut{}, allowAllAntispam{}, nil, reserver),
-		CDR:      cdr,
-		Tracer:   tracer,
+		Pipeline: pipeline.New(pipeline.Deps{
+			Tracer: tracer, Resolver: resolver, SenderIDs: allowAllSenderIDs{},
+			OptOut: allowAllOptOut{}, Antispam: allowAllAntispam{}, Credit: reserver,
+		}),
+		CDR:    cdr,
+		Tracer: tracer,
 	})
 }
 
@@ -222,10 +225,13 @@ func TestRouterSealsContentOnRejectedRow(t *testing.T) {
 	r := router.New(router.Deps{
 		Consumer: &fakeConsumer{records: []kafka.Record{inRec}},
 		Producer: &fakeProducer{},
-		Pipeline: pipeline.New(tracer, stubResolver{conn: uuid.New()}, allowAllSenderIDs{}, allowAllOptOut{}, allowAllAntispam{}, nil, nil),
-		CDR:      cdr,
-		Sealer:   sealer,
-		Tracer:   tracer,
+		Pipeline: pipeline.New(pipeline.Deps{
+			Tracer: tracer, Resolver: stubResolver{conn: uuid.New()}, SenderIDs: allowAllSenderIDs{},
+			OptOut: allowAllOptOut{}, Antispam: allowAllAntispam{},
+		}),
+		CDR:    cdr,
+		Sealer: sealer,
+		Tracer: tracer,
 	})
 	if err := r.Run(context.Background()); err != nil {
 		t.Fatalf("Run: %v", err)

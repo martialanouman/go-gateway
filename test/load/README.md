@@ -409,6 +409,109 @@ périmètre de cette step, le mesurer ne l'était pas.
 Le pair reste hors de cause : calibré dans le run même, le faux SMSC a répondu à **236 274
 `submit_sm/s`** sur 4 binds, soit 265 fois la sortie observée.
 
+### Mesure du 08/08/2026 (step-201d) — le goulot est nommé, et le chiffre du 03/08 ne se reproduit pas
+
+Le harnais a changé sur trois points **avant** toute mesure, tous consignés en `step-201d` `D3`-`D5` :
+
+1. sa configuration Kafka **dérive désormais des défauts de production** (`config.Defaults()`) au lieu
+   d'un littéral qui laissait les quatre leviers de fetch à zéro — `FetchMaxPartitionBytes` valait donc
+   1 MiB, le défaut franz-go, au lieu des 56 KiB de l'ADR-0012. Épinglé par
+   `TestRefKafkaCarriesProductionDefaults`, dans la suite ordinaire ;
+2. `pipeline_duration_seconds` est **enfin alimenté** (`router.Deps.Metrics` était nil) ;
+3. le backlog est relevé **par partition**, et la consommation CPU du processus est comptée.
+
+#### Le constat du 03/08 n'est pas reproductible
+
+| Arbre | Sortie | Pente `mt.inbound` | p99 e2e (moyenne) | Verdict |
+|---|---:|---:|---:|---|
+| code `73ad72a` (201c), mesuré le 03/08 | 892/s | +291 rec/s | 11,2 s | FAILED |
+| **code `73ad72a`, rejoué le 08/08** | **1 141/s** | **+22,7** | 646 ms | FAILED |
+| **HEAD (201d PR1), 08/08** | **1 180/s** | **+2,2** | 229 ms | **PASSED** |
+
+Le pair calibre 174 168/s ce jour contre 236 274/s le 03/08 : **l'hôte n'est pas dans le même état**, et
+la valeur de 892/s appartient à ces conditions-là. Ce qui est reproductible sur cet hôte, code du 03/08
+inclus, c'est un ordre de grandeur de **1 100–1 200 `submit_sm/s`**. Une contre-épreuve à
+`FETCH_MAX_PARTITION_BYTES=1048576` sort 1 176/s : **le réglage Kafka n'explique rien** (dans le bruit).
+
+#### Le point de saturation, encadré
+
+La réserve « le point d'équilibre n'a pas été encadré » est levée. Balayage du débit visé, défauts
+livrés, `ACCOUNTS=1` :
+
+| Visé | **Sorti** | Pente `mt.inbound` | `mt.routed` | Pipeline / budget | CPU du processus |
+|---:|---:|---:|---|---:|---:|
+| 1 200/s | **1 180/s** | +2,2 rec/s | plat (4→9) | 19 µs / 847 µs = 2,2 % | 1,08 cœur sur 14 |
+| 2 400/s | **1 194/s** | +1 218 rec/s | plat (7→8) | 19 µs / 838 µs = 2,3 % | 1,10 cœur sur 14 |
+| 4 800/s | **1 450/s** | +3 369 rec/s | plat (7→9) | 18 µs / 690 µs = 2,7 % | 1,58 cœur sur 14 |
+
+**La sortie sature autour de 1 200 `submit_sm/s`.** Au-delà, tout s'empile sur `mt.inbound` pendant que
+`mt.routed` et `mt.outcome` restent plats : le pool de connecteurs et la projection de CDR suivent, le
+routeur non. Le goulot est bien celui que `step-201d` avait supposé — la valeur, non.
+
+#### Ce que le goulot n'est pas
+
+Quatre hypothèses écartées par une mesure chacune, pas par raisonnement :
+
+| Hypothèse | Mesure | Verdict |
+|---|---|---|
+| L'hôte est saturé | `Getrusage` : **1,1 cœur sur 14 (8 %)** | écartée — la boucle **attend**, elle ne calcule pas |
+| Le coût est dans le pipeline | `pipeline_duration_seconds` : **19 µs** d'un budget de 838 | écartée — **2,3 %** |
+| Un verrou partagé dans le pipeline | `BenchmarkPipelineProcessParallel` 1→8 : 10,1 → **2,6 µs** (×3,9) | écartée — il parallélise |
+| Un plafond côté broker | `TestRoutedProduceCeiling` 1→256 en vol : 6 177 → **188 182/s** (×30) | écartée — aucun plafond |
+
+Reste, **par soustraction** : 838 µs de budget, 19 µs de pipeline, ~162 µs pour un `ProduceSync` acks=all
+mesuré à vide ⇒ **~97 % du temps par message est passé bloqué hors du pipeline**, dans une boucle de
+consommation à **une seule goroutine** qui publie **un record à la fois**.
+
+#### Répartition par étape du pipeline (`BenchmarkPipelineStages`, 3 répétitions, dispersion < 5 %)
+
+| Étape | ns/op | allocs | part du pipeline |
+|---|---:|---:|---:|
+| `e164` | **6 314** | 55 | **63 %** |
+| `segment` | 1 067 | 6 | 11 % |
+| `encoding` | 968 | 2 | 10 % |
+| `opt_out` | 784 | 14 | 8 % |
+| `anti_spam` | 110 | 4 | 1 % |
+| `route` | 107 | 3 | 1 % |
+| `sender_id` | 15 | 0 | ~0 % |
+
+`e164.Normalize` domine le pipeline **et le processus le paie deux fois par message** (routeur +
+projection CDR `accepted`), alors que l'ingestion l'a délibérément déporté de son chemin de requête. À
+2,3 % du budget total, ce n'est pas un sujet aujourd'hui ; ce le deviendrait si le budget descendait d'un
+ordre de grandeur.
+
+#### Le compte unique est un confondant, et il coûte 37 %
+
+`mt.inbound` est clé par compte, et le run n'en semait qu'un — donc **une seule partition**, ce que le
+relevé par partition rend enfin visible. `REF_ACCOUNTS` (défaut 1) le corrige. Mesuré à 2 400 visés :
+
+| | `ACCOUNTS=1` | `ACCOUNTS=32` |
+|---|---:|---:|
+| **Sorti** | 1 098/s | **1 507/s** (+37 %) |
+| Backlog par partition | `p0=86 805` · p1..p3 = 0 | `10 283 / 5 030 / 17 513 / 34 040` |
+| Pente du lag | +1 288 rec/s | +915 rec/s |
+| CPU | 1,06 cœur | 1,18 cœur |
+
+**Le routeur n'a pas changé d'une ligne.** Répartir les clés lui fait fetcher quatre partitions au lieu
+d'une, ce qui amortit les allers-retours de poll. La boucle reste sérialisée — mais elle devient enfin
+*parallélisable*, ce qu'aucun run à un seul compte n'aurait pu montrer.
+
+#### Réserves propres à cette mesure
+
+- **Un run par configuration**, comme les lignes précédentes. Les sorties sont serrées (1 141 / 1 176 /
+  1 180 / 1 194, soit 4,6 % d'amplitude) ; **la pente du lag, elle, est très bruitée** (+2,2 / +6,8 /
+  +22,7 sur des configurations voisines) parce qu'elle est ajustée sur une file quasi équilibrée. Lire
+  la sortie, pas la pente, quand le système n'est pas franchement saturé.
+- **La comparaison 03/08 vs 08/08 n'est pas contrôlée sur l'hôte.** Seule la ligne « code `73ad72a`
+  rejoué le 08/08 » l'est, et c'est elle qui porte la conclusion.
+- **Le ~97 % non expliqué est une soustraction, pas une observation directe.** Le `ProduceSync` en
+  situation n'a pas été chronométré : les 162 µs viennent d'un banc à vide, sur un broker au repos. La
+  décomposition fine appartient à la porte de correctif.
+- **Le harnais reste un majorant** : tracer no-op, `Sealer` nil, pas d'agrégat de disjoncteur Redis, et
+  les étages débit / anti-spam Redis / crédit toujours en pass-through (`step-201d` `D4`). Ce dernier
+  point n'a pas été corrigé ici — la mesure a montré que ces trois étages ne sont pas sur le chemin
+  critique — et revient à `step-201b`.
+
 ### Réserves, nommément
 
 - **Un seul hôte, un seul processus, une seule mesure par configuration.** Les quatre lignes du tableau

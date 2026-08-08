@@ -16,8 +16,11 @@ import (
 	"math"
 	"net/http/httptest"
 	"os"
+	"sort"
 	"strconv"
+	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -77,6 +80,20 @@ const (
 	// exposed. Overriding them here is what turns the CDR write path into something this run can sweep.
 	envCHMaxOpen = "REF_CH_MAX_OPEN"
 	envCHMaxIdle = "REF_CH_MAX_IDLE"
+
+	// The Kafka fetch levers. The run's BASELINE is now the production default (refKafkaConfig, pinned by
+	// TestRefKafkaCarriesProductionDefaults) — before step-201d it was a struct literal, so every one of
+	// these sat at zero and franz-go supplied its own instead. These sweep the baseline; they do not
+	// establish it.
+	envFetchMinBytes          = "REF_FETCH_MIN_BYTES"
+	envFetchMaxWait           = "REF_FETCH_MAX_WAIT"
+	envFetchMaxBytes          = "REF_FETCH_MAX_BYTES"
+	envFetchMaxPartitionBytes = "REF_FETCH_MAX_PARTITION_BYTES"
+
+	// envAccounts is how many SMPP accounts the run submits from. It DEFAULTS TO 1, which reproduces
+	// every measurement recorded before step-201d verbatim — the whole table in test/load/README.md
+	// depends on that. Raise it to spread the load across mt.inbound's partitions (D5).
+	envAccounts = "REF_ACCOUNTS"
 )
 
 // lagInterval paces the backlog poll. Each poll is a broker round-trip, so it is slow — but fast enough
@@ -118,11 +135,15 @@ func TestReferenceRun(t *testing.T) {
 	chCfg := chtest.Config(t)
 	chCfg.MaxOpenConns = int(envFloat(t, envCHMaxOpen, 10))
 	chCfg.MaxIdleConns = int(envFloat(t, envCHMaxIdle, 5))
+	accounts := int(envFloat(t, envAccounts, 1))
+	if accounts < 1 {
+		t.Fatalf("%s=%d: the run needs at least one account to submit from", envAccounts, accounts)
+	}
 
 	criteria := refCriteria()
 	criteria.PeerCeiling = calibratePeer(t)
 
-	s := buildRefStack(t, pool, brokers, chCfg)
+	s := buildRefStack(t, pool, brokers, chCfg, accounts)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -132,8 +153,12 @@ func TestReferenceRun(t *testing.T) {
 	lags := pollLag(ctx, t, s.consumers)
 
 	injectCfg := steady.InjectConfig{
-		URL:      s.rest.URL + "/v1/messages",
-		APIKey:   s.apiKey,
+		URL: s.rest.URL + "/v1/messages",
+		// APIKey stays the first account's, so a K=1 run is byte-for-byte the run every earlier line of
+		// test/load/README.md was measured on. Key is what spreads submissions across the accounts, and
+		// therefore across mt.inbound's partitions (D5).
+		APIKey:   s.apiKeys[0],
+		Key:      func(seq uint64) string { return s.apiKeys[seq%uint64(len(s.apiKeys))] },
 		Sender:   refSenderID,
 		Rate:     rate,
 		Workers:  workers,
@@ -169,7 +194,12 @@ func TestReferenceRun(t *testing.T) {
 	// Both readings are cumulative and both are taken under load, so their difference is the window's
 	// own output and the warmup's submissions stay out of it.
 	submittedBefore, rejectedBefore := s.submitCountersAt(t, from)
+	pipeSumBefore, pipeCountBefore := s.pipelineDurationAt(t, from)
+	cpuBefore := cpuSeconds(t)
+
 	submittedAfter, rejectedAfter := s.submitCountersAt(t, to)
+	pipeSumAfter, pipeCountAfter := s.pipelineDurationAt(t, to)
+	cpuAfter := cpuSeconds(t)
 
 	<-done
 	if injectErr != nil {
@@ -196,11 +226,17 @@ func TestReferenceRun(t *testing.T) {
 		"ingest latency in window: p50 %v · p99 %v · max %v\n"+
 		"end-to-end (gateway histogram): %s\n"+
 		"backlog by topic across the window: %s\n"+
+		"mt.inbound backlog by partition at window close: %s\n"+
+		"router pipeline: %s\n"+
+		"host: %s\n"+
 		"%s\n",
 		rate, workers, warmup, measure, settle,
 		rep.Sent, rep.Behind, 100*float64(rep.Behind)/math.Max(1, float64(rep.Sent)), rep.FirstErr,
 		win.P50.Round(time.Millisecond), win.P99.Round(time.Millisecond), win.Max.Round(time.Millisecond),
-		s.e2eQuantile(t), lags.breakdown(from, to), verdict)
+		s.e2eQuantile(t), lags.breakdown(from, to), lags.partitions(from, to),
+		pipelineShare(pipeSumAfter-pipeSumBefore, pipeCountAfter-pipeCountBefore, m.Submitted, measure),
+		cpuShare(cpuAfter-cpuBefore, measure),
+		verdict)
 
 	if !verdict.Pass() {
 		t.Fatalf("the reference run did not hold the D2 steady state — see the verdict above")
@@ -265,17 +301,21 @@ const refSenderID = "LOADREF"
 type refStack struct {
 	rest      *httptest.Server
 	ops       *httptest.Server
-	apiKey    string
+	apiKeys   []string
 	registry  *prometheus.Registry
 	connector uuid.UUID
 	consumers map[string]*kafka.Consumer
 }
 
-func buildRefStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg config.ClickHouse) *refStack {
+func buildRefStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg config.ClickHouse, accounts int) *refStack {
 	t.Helper()
-	apiKey, connectorID := seedRefControlPlane(t, pool)
+	apiKeys, connectorID := seedRefControlPlane(t, pool, accounts)
 
-	kafkaCfg := config.Kafka{Brokers: brokers, Timeout: 5 * time.Second}
+	kafkaCfg := refKafkaConfig(brokers)
+	kafkaCfg.FetchMinBytes = int32(envFloat(t, envFetchMinBytes, float64(kafkaCfg.FetchMinBytes)))
+	kafkaCfg.FetchMaxWait = envDuration(t, envFetchMaxWait, kafkaCfg.FetchMaxWait)
+	kafkaCfg.FetchMaxBytes = int32(envFloat(t, envFetchMaxBytes, float64(kafkaCfg.FetchMaxBytes)))
+	kafkaCfg.FetchMaxPartitionBytes = int32(envFloat(t, envFetchMaxPartitionBytes, float64(kafkaCfg.FetchMaxPartitionBytes)))
 
 	// A no-op tracer, deliberately. The walking-skeleton test records every span to assert on them; at
 	// a thousand messages a second for a minute that recorder would hold millions of spans and the run
@@ -351,9 +391,18 @@ func buildRefStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg con
 	rtr := router.New(router.Deps{
 		Consumer: routerConsumer,
 		Producer: producer,
-		Pipeline: pipeline.New(tracer, refResolver{resolver}, authorizer, enforcer, spam, nil, nil),
-		CDR:      cdrWriter,
-		Tracer:   tracer,
+		// Metrics was nil until step-201d, so pipeline_duration_seconds — the one instrument that can say
+		// how much of a message's wall time is the pipeline's — was fed by no run in this repository.
+		Metrics: catalog,
+		Pipeline: pipeline.New(pipeline.Deps{
+			Tracer:    tracer,
+			Resolver:  refResolver{resolver},
+			SenderIDs: authorizer,
+			OptOut:    enforcer,
+			Antispam:  spam,
+		}),
+		CDR:    cdrWriter,
+		Tracer: tracer,
 	})
 
 	smsc := fakesmsc.Start(t, fakesmsc.Config{
@@ -415,7 +464,7 @@ func buildRefStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg con
 	waitBound(t, smsc, int(envFloat(t, envBindPool, 4)))
 
 	return &refStack{
-		rest: restSrv, ops: ops, apiKey: apiKey, registry: registry, connector: connectorID,
+		rest: restSrv, ops: ops, apiKeys: apiKeys, registry: registry, connector: connectorID,
 		consumers: map[string]*kafka.Consumer{
 			kafka.TopicMTInbound: routerConsumer,
 			kafka.TopicMTRouted:  connConsumer,
@@ -465,16 +514,18 @@ func newConsumer(t *testing.T, cfg config.Kafka, group, topic string) *kafka.Con
 // breakdown is what NAMES the slow stage, and a verdict that cannot say where the queue is leaves the
 // next person to guess.
 type lagTrace struct {
-	mu       sync.Mutex
-	samples  []steady.LagSample
-	perTopic []map[string]int64
+	mu           sync.Mutex
+	samples      []steady.LagSample
+	perTopic     []map[string]int64
+	perPartition []map[string]map[int32]int64
 }
 
-func (l *lagTrace) add(s steady.LagSample, byTopic map[string]int64) {
+func (l *lagTrace) add(s steady.LagSample, byTopic map[string]int64, byPartition map[string]map[int32]int64) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.samples = append(l.samples, s)
 	l.perTopic = append(l.perTopic, byTopic)
+	l.perPartition = append(l.perPartition, byPartition)
 }
 
 // breakdown renders the first and last per-topic readings inside the window, which is what separates
@@ -503,6 +554,47 @@ func (l *lagTrace) breakdown(from, to time.Time) string {
 		out += fmt.Sprintf("%s %d -> %d", topic, first[topic], last[topic])
 	}
 	return out
+}
+
+// partitions renders the LAST reading inside the window split per partition, for mt.inbound only.
+//
+// It answers a question the totals structurally cannot: whether the backlog is spread across the topic's
+// partitions or piled on one. mt.inbound is keyed by account, so a run seeding a single account puts
+// every record on one partition — and then no amount of partitions, pods or in-process shards can move
+// the throughput, while the total reads exactly as it would for a balanced run (step-201d, D5/M4).
+//
+// A flat result after a parallelism fix means nothing until this line has been read.
+func (l *lagTrace) partitions(from, to time.Time) string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var last map[string]map[int32]int64
+	for i, s := range l.samples {
+		if s.At.Before(from) || !s.At.Before(to) {
+			continue
+		}
+		last = l.perPartition[i]
+	}
+	if last == nil {
+		return "no reading inside the window"
+	}
+	byPartition := last[kafka.TopicMTInbound]
+	ids := make([]int, 0, len(byPartition))
+	for p := range byPartition {
+		ids = append(ids, int(p))
+	}
+	sort.Ints(ids)
+	var b strings.Builder
+	var total, loaded int64
+	for _, p := range ids {
+		lag := byPartition[int32(p)]
+		total += lag
+		if lag > 0 {
+			loaded++
+		}
+		fmt.Fprintf(&b, "p%d=%d ", p, lag)
+	}
+	fmt.Fprintf(&b, "(%d of %d partitions carry a backlog, %d records)", loaded, len(ids), total)
+	return b.String()
 }
 
 // between returns the readings taken inside the measurement window.
@@ -549,26 +641,52 @@ func pollLag(ctx context.Context, t *testing.T, consumers map[string]*kafka.Cons
 				at := time.Now()
 				var total int64
 				byTopic := make(map[string]int64, len(consumers))
+				byPartition := make(map[string]map[int32]int64, len(consumers))
 				ok := true
 				for topic, c := range consumers {
-					lags, err := c.Lag(ctx)
+					split, err := c.LagByPartition(ctx)
 					if err != nil {
 						ok = false
 						break
 					}
-					byTopic[topic] = lags[topic]
-					total += lags[topic]
+					byPartition[topic] = split[topic]
+					var topicLag int64
+					for _, lag := range split[topic] {
+						topicLag += lag
+					}
+					byTopic[topic] = topicLag
+					total += topicLag
 				}
 				if !ok {
 					failures++
 					continue
 				}
-				trace.add(steady.LagSample{At: at, Records: total}, byTopic)
+				trace.add(steady.LagSample{At: at, Records: total}, byTopic, byPartition)
 			}
 		}
 	}()
 	t.Cleanup(wg.Wait)
 	return trace
+}
+
+// cpuSeconds reports the CPU time THIS process has burned since it started, user plus system.
+//
+// The run stands nine components in one process — rest-api, router, two CDR projections, the connector
+// pool, the fake SMSC and 64 injector workers — beside Postgres, Redpanda and ClickHouse in containers on
+// the same host. Whether the router is the gateway's bottleneck or the laptop is, is not a question the
+// throughput figure can answer, and every conclusion about parallelism depends on which it is
+// (step-201d, D6/M3).
+//
+// It counts the GO PROCESS ONLY. The datastores run outside it, so the figure is a floor on what the
+// host is doing, never a total.
+func cpuSeconds(t *testing.T) float64 {
+	t.Helper()
+	var ru syscall.Rusage
+	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &ru); err != nil {
+		t.Fatalf("getrusage: %v", err)
+	}
+	tv := func(v syscall.Timeval) float64 { return float64(v.Sec) + float64(v.Usec)/1e6 }
+	return tv(ru.Utime) + tv(ru.Stime)
 }
 
 // submitCounters reads submits_total and submit_rejected_total for this run's connector. at is the
@@ -583,6 +701,41 @@ func (s *refStack) submitCountersAt(t *testing.T, at time.Time) (submitted, reje
 		t.Fatalf("gather metrics: %v", err)
 	}
 	return uint64(sumCounter(families, "submits_total")), uint64(sumCounter(families, "submit_rejected_total"))
+}
+
+// pipelineDurationAt reads pipeline_duration_seconds' cumulative sum and count. Both are cumulative, so
+// the caller subtracts two readings and divides: that quotient is the MEAN time Pipeline.Process took per
+// message inside the window, exactly.
+//
+// It is the term that splits the run's cost in two. The consume loop is a single goroutine and its
+// backlog grows for the whole window, so it is never idle: the wall time it spends per message is 1/output
+// rate, and
+//
+//	1/rate = decode + Pipeline.Process + N x (encode + ProduceSync) + amortised commit
+//
+// A mean near 1/rate puts the whole cost INSIDE the pipeline; a mean far below it puts ~all of it outside,
+// which names the synchronous produce. The subtraction is the measurement (step-201d, D6/M0).
+//
+// Before step-201d the run left router.Deps.Metrics nil, so this histogram was fed by no run at all.
+func (s *refStack) pipelineDurationAt(t *testing.T, at time.Time) (sum float64, count uint64) {
+	t.Helper()
+	if wait := time.Until(at); wait > 0 {
+		time.Sleep(wait)
+	}
+	families, err := s.registry.Gather()
+	if err != nil {
+		t.Fatalf("gather metrics: %v", err)
+	}
+	for _, fam := range families {
+		if fam.GetName() != "pipeline_duration_seconds" {
+			continue
+		}
+		for _, m := range fam.GetMetric() {
+			sum += m.GetHistogram().GetSampleSum()
+			count += m.GetHistogram().GetSampleCount()
+		}
+	}
+	return sum, count
 }
 
 // breakerClosed reports whether the connector's breaker gauge reads closed. It is read from the gauge
@@ -655,14 +808,20 @@ func labelOf(m *dto.Metric, name string) string {
 	return ""
 }
 
-// seedRefControlPlane creates the customer, the REST account and its key, the sender ID, the connector
-// and a catch-all route. It returns the plaintext key and the connector id.
-func seedRefControlPlane(t *testing.T, pool *pgxpool.Pool) (string, uuid.UUID) {
+// seedRefControlPlane creates the customer, `accounts` REST accounts each with its own key, the sender
+// ID, the connector and a catch-all route. It returns the plaintext keys and the connector id.
+//
+// ONE customer, ONE sender ID, ONE route, whatever the account count. That is what keeps a K=1 run and a
+// K=32 run comparable: sender-ID authorisation stays two map hits, opt-out stays a Bloom miss with no
+// database confirmation, and route resolution stays the same catch-all. K changes which PARTITION a
+// submission lands on and nothing else — K customers or K sender IDs would change the work itself and
+// make the comparison dishonest (step-201d, D5).
+func seedRefControlPlane(t *testing.T, pool *pgxpool.Pool, accounts int) ([]string, uuid.UUID) {
 	t.Helper()
 	ctx := context.Background()
 
 	customers := postgres.NewCustomerRepo(pool)
-	accounts := postgres.NewAccountRepo(pool)
+	accountRepo := postgres.NewAccountRepo(pool)
 	credentials := postgres.NewCredentialRepo(pool)
 	connectors := postgres.NewConnectorRepo(pool)
 	routes := postgres.NewRouteRepo(pool)
@@ -672,10 +831,6 @@ func seedRefControlPlane(t *testing.T, pool *pgxpool.Pool) (string, uuid.UUID) {
 	if err != nil {
 		t.Fatalf("create customer: %v", err)
 	}
-	account, err := accounts.Create(ctx, cp.NewAccount{CustomerID: customer.ID, Name: "loadref-app"})
-	if err != nil {
-		t.Fatalf("create account: %v", err)
-	}
 	sid, err := senderIDs.Create(ctx, cp.NewSenderID{CustomerID: customer.ID, Address: refSenderID})
 	if err != nil {
 		t.Fatalf("create sender id: %v", err)
@@ -684,14 +839,24 @@ func seedRefControlPlane(t *testing.T, pool *pgxpool.Pool) (string, uuid.UUID) {
 	if _, err := senderIDs.Update(ctx, customer.ID, sid.ID, cp.SenderIDPatch{Status: &active}); err != nil {
 		t.Fatalf("activate sender id: %v", err)
 	}
-	key, hash, err := credential.GenerateAPIKey()
-	if err != nil {
-		t.Fatalf("generate api key: %v", err)
-	}
-	if _, err := credentials.Create(ctx, cp.NewCredential{
-		AccountID: account.ID, Type: cp.CredentialAPIKey, APIKeyHash: &hash,
-	}); err != nil {
-		t.Fatalf("create credential: %v", err)
+	keys := make([]string, 0, accounts)
+	for i := range accounts {
+		account, err := accountRepo.Create(ctx, cp.NewAccount{
+			CustomerID: customer.ID, Name: fmt.Sprintf("loadref-app-%02d", i),
+		})
+		if err != nil {
+			t.Fatalf("create account %d: %v", i, err)
+		}
+		key, hash, err := credential.GenerateAPIKey()
+		if err != nil {
+			t.Fatalf("generate api key %d: %v", i, err)
+		}
+		if _, err := credentials.Create(ctx, cp.NewCredential{
+			AccountID: account.ID, Type: cp.CredentialAPIKey, APIKeyHash: &hash,
+		}); err != nil {
+			t.Fatalf("create credential %d: %v", i, err)
+		}
+		keys = append(keys, key)
 	}
 	connector, err := connectors.Create(ctx, cp.NewConnector{
 		Name: "loadref-connector", Host: "127.0.0.1", Port: 2775,
@@ -705,7 +870,7 @@ func seedRefControlPlane(t *testing.T, pool *pgxpool.Pool) (string, uuid.UUID) {
 	}); err != nil {
 		t.Fatalf("create route: %v", err)
 	}
-	return key, connector.ID
+	return keys, connector.ID
 }
 
 // refResolver adapts the declarative snapshot resolver to the enriched pipeline interface, as the
