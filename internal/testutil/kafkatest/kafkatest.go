@@ -10,6 +10,8 @@ package kafkatest
 import (
 	"context"
 	"fmt"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -45,10 +47,32 @@ var topics = []string{
 }
 
 const (
-	topicPartitions   = 4
-	topicReplication  = 1
-	provisionDeadline = 30 * time.Second
+	defaultTopicPartitions = 4
+	topicReplication       = 1
+	provisionDeadline      = 30 * time.Second
+
+	// envPartitions overrides how wide the test topics are created. It exists because the number of
+	// partitions is the router's parallelism: since step-201d the consume loop runs one goroutine per
+	// partition, so a curve of throughput against lane count cannot be drawn without moving this
+	// (step-201d D11). The default is unchanged, so no existing test sees a different broker.
+	envPartitions = "KAFKATEST_PARTITIONS"
 )
+
+// topicPartitions is how wide the shared broker's topics are created. It is read once, with the
+// container, so every test in a run sees the same topology.
+func topicPartitions() int32 {
+	raw := os.Getenv(envPartitions)
+	if raw == "" {
+		return defaultTopicPartitions
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 {
+		// A malformed override is a typo in a sweep, and silently falling back would file the run under a
+		// partition count nobody ran.
+		panic(fmt.Sprintf("kafkatest: %s=%q must be a positive integer", envPartitions, raw))
+	}
+	return int32(n) //nolint:gosec // bounded by the check above; a partition count is small by construction
+}
 
 var (
 	once      sync.Once
@@ -104,7 +128,7 @@ func createTopics(ctx context.Context, seed string) error {
 	defer cl.Close()
 
 	adm := kadm.NewClient(cl)
-	resp, err := adm.CreateTopics(ctx, topicPartitions, topicReplication, nil, topics...)
+	resp, err := adm.CreateTopics(ctx, topicPartitions(), topicReplication, nil, topics...)
 	if err != nil {
 		return fmt.Errorf("create topics: %w", err)
 	}
