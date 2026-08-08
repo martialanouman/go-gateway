@@ -7,8 +7,10 @@ package router
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -24,9 +26,9 @@ import (
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
 )
 
-// Consumer reads mt.inbound. *kafka.Consumer satisfies it.
+// Consumer reads mt.inbound a poll batch at a time. *kafka.Consumer satisfies it.
 type Consumer interface {
-	Run(ctx context.Context, handle kafka.Handler) error
+	RunBatch(ctx context.Context, handle kafka.BatchHandler) error
 }
 
 // Producer publishes mt.routed. *kafka.Producer satisfies it.
@@ -92,7 +94,63 @@ func New(deps Deps) *Router {
 // Run consumes mt.inbound until ctx is cancelled. It returns whatever the consumer returns: nil on a
 // clean stop, an error on a transient fault (which restarts the service and reprocesses).
 func (r *Router) Run(ctx context.Context) error {
-	return r.deps.Consumer.Run(ctx, r.handle)
+	return r.deps.Consumer.RunBatch(ctx, r.handleBatch)
+}
+
+// errLaneHalted marks a record left unprocessed because an earlier record in its lane failed.
+//
+// It keeps the [kafka.BatchHandler] contract — "fail a record and every LATER record that shares its
+// ordering group" — and makes the returned verdict self-describing. It is deliberately NOT what stops
+// those records from committing: [kafka.RunBatch] already refuses any record above its partition's first
+// failure, and the lane IS the partition. Marking anyway means neither side can silently drift from the
+// other.
+var errLaneHalted = errors.New("router: lane halted after an earlier failure")
+
+// handleBatch processes a poll batch with ONE goroutine per partition, so the per-message wait — a
+// synchronous acks=all produce, which step-201d measured at ~97% of the router's wall time per message —
+// is overlapped across partitions instead of being paid end to end on a single goroutine.
+//
+// The lane is the partition, and that choice is the whole safety argument. A lane owns every record of
+// its partition, so when one fails, the goroutine that stops is the only one that could have touched the
+// records above it: nothing above the failure was ever produced. Those records are not committable
+// ([kafka.RunBatch] commits per partition up to its first failure), and a record that was published but
+// not committed is republished on redelivery — a duplicate SMS on a handset (ADR-0012). Sharding by
+// account key would have parallelised just as well and broken exactly that: the other lanes would keep
+// publishing above the failure. See step-201d D11.
+//
+// It also makes the [kafka.BatchHandler] contract and the commit watermark the same thing rather than
+// two notions to keep in step: the ordering group the handler must halt IS the partition offsets are
+// compared within, and grouping by [kafka.PartitionKey] is what says so in code rather than in a comment.
+func (r *Router) handleBatch(ctx context.Context, recs []kafka.Record) []error {
+	results := make([]error, len(recs))
+	lanes := make(map[kafka.PartitionKey][]int) // lane -> record indices, in batch (offset) order
+	for i, rec := range recs {
+		k := rec.PartitionKey()
+		lanes[k] = append(lanes[k], i)
+	}
+
+	var wg sync.WaitGroup
+	for _, idxs := range lanes {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for pos, i := range idxs {
+				if err := r.handle(ctx, recs[i]); err != nil {
+					results[i] = err
+					// Stop this lane: every later record of it stays unprocessed and uncommitted, so
+					// redelivery replays them in order behind the failure. Other lanes are unaffected.
+					for _, j := range idxs[pos+1:] {
+						results[j] = errLaneHalted
+					}
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	// Each index belongs to exactly one lane, so results needs no lock: no two goroutines ever write the
+	// same element, and wg.Wait publishes every write to the caller.
+	return results
 }
 
 // handle processes one mt.inbound record. Returning nil commits the offset; returning an error

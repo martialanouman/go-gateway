@@ -167,7 +167,13 @@ func (c *Consumer) RunBatch(ctx context.Context, handle BatchHandler) error {
 		// within a partition, so a global prefix would be wrong: a failure in one partition must not hold
 		// back a fully-handled sibling partition, and a success AFTER a failure in the SAME partition must
 		// never be committed (it would skip the gap). krs is in per-partition offset order.
-		if commit := committablePrefix(krs, results); len(commit) > 0 && c.group != "" {
+		commit, err := committablePrefix(krs, results)
+		if err != nil {
+			// The handler broke its contract. Fail closed: commit nothing and restart, so the batch is
+			// redelivered and reprocessed rather than half-committed on a verdict we cannot read.
+			return fmt.Errorf("kafka: batch handle in group %s: %w", c.group, err)
+		}
+		if len(commit) > 0 && c.group != "" {
 			if err := c.cl.CommitRecords(ctx, commit...); err != nil {
 				if ctx.Err() != nil {
 					return nil
@@ -186,21 +192,38 @@ func (c *Consumer) RunBatch(ctx context.Context, handle BatchHandler) error {
 	}
 }
 
-// partitionKey identifies a Kafka partition across topics (a consumer may subscribe to several).
-type partitionKey struct {
-	topic     string
-	partition int32
+// PartitionKey identifies a Kafka partition across topics (a consumer may subscribe to several).
+//
+// It is the unit offsets are compared within — see [committablePrefix] — and therefore the ordering group
+// a [BatchHandler] must halt as a whole. A handler that groups its work by anything else has to keep that
+// grouping aligned with this one by hand; grouping by PartitionKey makes the two the same thing, so they
+// cannot silently diverge (step-201d D11).
+type PartitionKey struct {
+	Topic     string
+	Partition int32
+}
+
+// PartitionKey returns the record's partition identity: its ordering group.
+func (r Record) PartitionKey() PartitionKey {
+	return PartitionKey{Topic: r.Topic, Partition: r.Partition}
 }
 
 // committablePrefix returns the records safe to commit: those handled successfully whose offset precedes
 // their partition's first failed offset. results is aligned with krs by index.
-func committablePrefix(krs []*kgo.Record, results []error) []*kgo.Record {
-	firstFail := make(map[partitionKey]int64)
+//
+// A results slice that does not line up with krs is a handler bug, and it is reported rather than
+// indexed through: this runs inside a data-plane pod's consume loop, where an index-out-of-range takes
+// the process down mid-batch. [BatchHandler] states the requirement; this is what enforces it.
+func committablePrefix(krs []*kgo.Record, results []error) ([]*kgo.Record, error) {
+	if len(results) != len(krs) {
+		return nil, fmt.Errorf("batch handler returned %d results for %d records", len(results), len(krs))
+	}
+	firstFail := make(map[PartitionKey]int64)
 	for i, kr := range krs {
 		if results[i] == nil {
 			continue
 		}
-		pk := partitionKey{kr.Topic, kr.Partition}
+		pk := PartitionKey{Topic: kr.Topic, Partition: kr.Partition}
 		if off, ok := firstFail[pk]; !ok || kr.Offset < off {
 			firstFail[pk] = kr.Offset
 		}
@@ -210,12 +233,12 @@ func committablePrefix(krs []*kgo.Record, results []error) []*kgo.Record {
 		if results[i] != nil {
 			continue
 		}
-		if off, ok := firstFail[partitionKey{kr.Topic, kr.Partition}]; ok && kr.Offset > off {
+		if off, ok := firstFail[PartitionKey{Topic: kr.Topic, Partition: kr.Partition}]; ok && kr.Offset > off {
 			continue // a later record in a partition with an earlier failure: leave it for redelivery
 		}
 		out = append(out, kr)
 	}
-	return out
+	return out, nil
 }
 
 // firstNonNil returns the first non-nil error in the slice, or nil.
