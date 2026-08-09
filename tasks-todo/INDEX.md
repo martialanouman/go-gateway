@@ -154,7 +154,8 @@ structurelles et à faire **avant** que M12 n'empile dessus.
 - [x] step-201c — Le CDR sortant devient une projection (goulot du connector pool : 192 → 892 submit_sm/s)
 - [x] step-201d — Le routeur est le goulot suivant du débit traversant (mesuré après step-201c)
 - [x] step-201e — Attribuer le plafond : c'était la co-résidence, ni le routeur ni le broker
-- [ ] step-201b — Campagne NFR pleine échelle sur environnement représentatif (dépend aussi de step-201c, step-201e, step-207)
+- [ ] step-201f — Isoler le pool de connecteurs : le dernier étage jamais mesuré seul (bloque step-201b)
+- [ ] step-201b — Campagne NFR pleine échelle sur environnement représentatif (dépend aussi de step-201c, step-201e, step-201f, step-207)
 - [ ] step-202 — Chaos : perte Redis (chaque politique de panne) + flapping connecteur
 - [ ] step-203 — Chaos : drain gracieux + PDB + binds préservés ; failover Postgres
 - [ ] step-204 — Sécurité : gosec, govulncheck, secrets, piste d'audit
