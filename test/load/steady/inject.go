@@ -78,6 +78,12 @@ type Sample struct {
 
 	// Err reports anything that was not a 202.
 	Err bool
+
+	// Late reports that this attempt started after its scheduled instant — the injector, not the
+	// gateway, was behind. It is kept per sample so a window can carry its own count: Report.Behind is
+	// a whole-run total, and warmup is where an injector catches up to its schedule, hence the latest
+	// part of any run. Scoring a run on the total would score the ramp-up.
+	Late bool
 }
 
 // Report is one injection's own view. It is the HTTP leg only: the output side comes from the
@@ -114,6 +120,10 @@ type WindowStats struct {
 	P50 time.Duration
 	// Max is the slowest attempt in the window.
 	Max time.Duration
+	// Behind is how many of the window's attempts started after their scheduled instant. Read against
+	// Samples it gives the share of the window the injector itself was responsible for — see
+	// [Sample.Late].
+	Behind uint64
 }
 
 // Between slices the report to the attempts whose response landed in [from, to). It is how warmup and
@@ -130,6 +140,9 @@ func (r Report) Between(from, to time.Time) WindowStats {
 			out.Errors++
 		} else {
 			out.Accepted++
+		}
+		if s.Late {
+			out.Behind++
 		}
 		latencies = append(latencies, s.Latency)
 		if s.Latency > out.Max {
@@ -225,21 +238,25 @@ func workerRun(ctx context.Context, cfg InjectConfig, payloads *payloadSet, seq 
 		if !due.Before(deadline) {
 			return out
 		}
-		if late, err := waitUntil(ctx, due); err != nil {
+		late, err := waitUntil(ctx, due)
+		if err != nil {
 			return out
-		} else if late {
+		}
+		if late {
 			out.behind++
 		}
 
 		sentAt := time.Now()
-		err := submit(ctx, cfg, cfg.Key(i), payloads.at(i))
+		err = submit(ctx, cfg, cfg.Key(i), payloads.at(i))
 		at := time.Now()
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			// The harness closing the window is not a failure of the gateway, and counting it as one
 			// would put an error on every run that ends cleanly.
 			return out
 		}
-		out.samples = append(out.samples, Sample{At: at, Latency: at.Sub(sentAt), Err: err != nil})
+		// Late is carried on the sample as well as in the running total: the total covers the whole
+		// run, warmup included, and only a per-sample flag lets Between window it.
+		out.samples = append(out.samples, Sample{At: at, Latency: at.Sub(sentAt), Err: err != nil, Late: late})
 		if err != nil && out.firstErr == nil {
 			out.firstErr = err
 		}

@@ -124,6 +124,78 @@ func TestBetweenWindowsTheSamples(t *testing.T) {
 	}
 }
 
+// TestBetweenWindowsTheLateCount: the injector's own lateness has to be windowed like everything else.
+//
+// Report.Behind is a whole-run total, warmup and settle included — and warmup is the phase where the
+// injector is catching up to its own schedule, so it is structurally the latest part of any run. A
+// verdict clause reading the run total would be scoring the ramp-up rather than the window it claims
+// to cover, and it would do so in the direction that fails good runs.
+//
+// The report is built by hand rather than injected: what is under test is the windowing, and a real
+// injection cannot be made to place a late attempt on either side of a boundary on purpose.
+func TestBetweenWindowsTheLateCount(t *testing.T) {
+	base := time.Now()
+	rep := steady.Report{Samples: []steady.Sample{
+		{At: base.Add(-time.Second), Late: true},     // before the window
+		{At: base.Add(time.Second), Late: true},      // inside, late
+		{At: base.Add(2 * time.Second)},              // inside, on schedule
+		{At: base.Add(30 * time.Second), Late: true}, // after the window
+	}}
+
+	win := rep.Between(base, base.Add(10*time.Second))
+	if win.Samples != 2 {
+		t.Fatalf("Samples = %d, want 2: the window itself is wrong, so the late count proves nothing", win.Samples)
+	}
+	if win.Behind != 1 {
+		t.Errorf("Behind = %d, want 1: the two late attempts outside the window must not be counted", win.Behind)
+	}
+
+	// The whole-run total keeps its meaning: it is what the run report prints, and it is not what a
+	// clause scores.
+	all := rep.Between(base.Add(-time.Hour), base.Add(time.Hour))
+	if all.Behind != 3 {
+		t.Errorf("a window covering the whole run must see every late attempt, got %d of 3", all.Behind)
+	}
+}
+
+// TestInjectMarksLateAttemptsOnTheirSample covers the wiring, which the windowing test above cannot:
+// it builds its report by hand, so it would still pass if workerRun never set Late at all.
+//
+// One worker against a server that takes 5ms, at a rate asking for one submission every 0.2ms: the
+// injector cannot keep up by construction, so attempts that find their slot already past are exactly
+// what this measures.
+func TestInjectMarksLateAttemptsOnTheirSample(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(5 * time.Millisecond)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg := injectCfg(srv.URL)
+	cfg.Rate = 5000
+	cfg.Workers = 1
+	cfg.Duration = 200 * time.Millisecond
+
+	rep, err := steady.Inject(t.Context(), cfg, nil)
+	if err != nil {
+		t.Fatalf("Inject: %v", err)
+	}
+	if rep.Behind == 0 {
+		t.Fatal("one worker at 5000/s against a 5ms server reported no lateness at all: " +
+			"the run total is broken, so the per-sample flag cannot be judged")
+	}
+
+	all := rep.Between(time.Time{}, time.Now().Add(time.Hour))
+	if all.Behind == 0 {
+		t.Errorf("the run was late %d times but no sample carries it: workerRun is not marking Late",
+			rep.Behind)
+	}
+	if all.Behind > all.Samples {
+		t.Errorf("Behind = %d of %d samples: a window cannot be late more often than it attempted",
+			all.Behind, all.Samples)
+	}
+}
+
 // TestBetweenP99IsTheWindowsOwn: the percentile must come from the windowed samples, not the whole run.
 func TestBetweenP99IsTheWindowsOwn(t *testing.T) {
 	// A server that is slow only for its first few answers, so the two windows differ sharply.
