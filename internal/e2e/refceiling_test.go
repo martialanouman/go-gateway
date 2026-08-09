@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 // minPrefillShare is the fraction of the mean below which a partition is treated as starved.
@@ -90,6 +91,187 @@ func laneShape(batches, records, lanesSum uint64, partitions int) string {
 		return out + " — the curve is drawn against the observed lanes, which fall short of the partition count"
 	}
 	return out
+}
+
+// produceBounds are the upper edges of the produce histogram, log2-spaced.
+//
+// They live here, beside the renderer and outside the build tag, because the decorator that fills the
+// buckets and the function that reads them have to agree on what a bucket means — two lists would
+// drift and nothing would say so.
+//
+// The range is chosen to bracket the answer rather than to confirm it. step-201d put the blocked time
+// near 819 µs BY SUBTRACTION; bounds that started there could only agree with it. From 16 µs the
+// measurement can say "the produce is cheap and the cost is elsewhere", and up to 2 s it can say "the
+// broker stalls", which are the two findings that would change what step-207 provisions.
+func produceBounds() []time.Duration {
+	out := make([]time.Duration, 0, 18)
+	for d := 16 * time.Microsecond; d <= 2*time.Second; d *= 2 {
+		out = append(out, d)
+	}
+	return out
+}
+
+// produceLatency renders what the synchronous acks=all produce cost, measured rather than subtracted.
+//
+// It is the answer to a question PR1 could only reach by arithmetic: the router's throughput per lane
+// falls 70% between 1 and 16 lanes, and the per-record cost has to be paid somewhere. The mean here is
+// what one Produce took; the budget is the window divided by what came out; the share is which of the
+// two dominates.
+//
+// It refuses to divide rather than print a plausible zero, and it names what it does NOT cover — the
+// decode, Pipeline.Process and the encode are outside this timer, so the share is a floor on the
+// per-message budget and never the whole of it.
+//
+// buckets are per-class counts (one increment per observation), not the cumulative form a Prometheus
+// exposition uses: the hot path pays one atomic add instead of one per bucket above the value.
+func produceLatency(count, sumNanos uint64, buckets []uint64, window time.Duration, produced uint64) string {
+	if count == 0 {
+		return "no produce observed in this window"
+	}
+	mean := time.Duration(sumNanos / count)
+	out := fmt.Sprintf("%d produces, mean %v, p99 %s", count, mean.Round(time.Microsecond), p99Interval(buckets))
+	if produced == 0 || window <= 0 {
+		return out + " (no output in the window: no budget to compare it against)"
+	}
+	budget := window / time.Duration(produced)
+	share := 100 * float64(mean) / float64(budget)
+	out = fmt.Sprintf("%s · budget %v/message · the produce alone is %.0f%% of it "+
+		"(decode, Pipeline.Process and encode are NOT counted here)",
+		out, budget.Round(time.Microsecond), share)
+	if share <= 100 {
+		return out
+	}
+	// Over 100% is not an arithmetic slip and must not read as one. The budget is the WHOLE router's
+	// output rate inverted, while the mean is what ONE produce took: a share above 100% is exactly what
+	// concurrent lanes buy, and its size says how many produces are in flight at once.
+	return fmt.Sprintf("%s — above 100%% because the produces overlap: ~%.1f of them are in flight at "+
+		"any instant, which is what the lanes bought", out, share/100)
+}
+
+// p99Interval renders the 99th percentile as the interval between two bucket edges.
+//
+// Never a single value: the edges are a factor of two apart, so interpolating inside one carries up to
+// 100% of error while reading exactly like a measurement (the lesson gatewaymetrics states at length).
+func p99Interval(buckets []uint64) string {
+	bounds := produceBounds()
+	var total uint64
+	for _, n := range buckets {
+		total += n
+	}
+	if total == 0 {
+		return "unknown"
+	}
+	target := uint64(float64(total) * 0.99)
+	var seen uint64
+	for i, n := range buckets {
+		seen += n
+		if seen < target {
+			continue
+		}
+		switch {
+		case i == 0:
+			return fmt.Sprintf("at most %v", bounds[0])
+		case i > len(bounds)-1:
+			return fmt.Sprintf("over %v", bounds[len(bounds)-1])
+		default:
+			return fmt.Sprintf("in (%v, %v]", bounds[i-1], bounds[i])
+		}
+	}
+	return "unknown"
+}
+
+// TestProduceLatencyRefusesToDivide: an empty histogram means the produce path was never exercised,
+// which is a finding. A mean of zero reads as "the produce is free", which is its opposite.
+func TestProduceLatencyRefusesToDivide(t *testing.T) {
+	got := produceLatency(0, 0, make([]uint64, len(produceBounds())+1), 10*time.Second, 50000)
+	if strings.Contains(got, "µs") || strings.Contains(got, "%") {
+		t.Errorf("an empty histogram must not be rendered as a latency or a share: %s", got)
+	}
+}
+
+// TestProduceLatencySplitsTheBudget pins the arithmetic the whole point of D3 rests on: what share of a
+// message's wall time is the synchronous acks=all produce.
+//
+// The two counts are deliberately DIFFERENT — 50 000 produces for 25 000 messages, the shape a
+// two-segment message gives — because they divide different things and a test where they are equal
+// cannot tell one from the other. The mean is per produce (41 s / 50 000 = 820 µs); the budget is per
+// message (10 s / 25 000 = 400 µs); the share is 205%, i.e. the produce alone costs twice what a
+// message may spend.
+func TestProduceLatencySplitsTheBudget(t *testing.T) {
+	buckets := make([]uint64, len(produceBounds())+1)
+	buckets[0] = 50000
+	got := produceLatency(50000, uint64(41*time.Second), buckets, 10*time.Second, 25000)
+
+	if !strings.Contains(got, "820µs") {
+		t.Errorf("41s over 50000 produces is a mean of 820µs per produce, got: %s", got)
+	}
+	if !strings.Contains(got, "400µs") {
+		t.Errorf("10s over 25000 messages is a 400µs budget per message, got: %s", got)
+	}
+	if !strings.Contains(got, "205") {
+		t.Errorf("820µs against a 400µs budget is 205%% of it, got: %s", got)
+	}
+	// A share over 100% is what concurrent lanes buy, not an arithmetic slip — the real 16-lane palier
+	// reads 1514%, and a reader who takes that for a bug stops reading there.
+	if !strings.Contains(got, "in flight") {
+		t.Errorf("a share above 100%% must say it means overlapping produces, got: %s", got)
+	}
+
+	// At or below 100% there is nothing to explain, and the sentence would be noise.
+	quiet := produceLatency(50000, uint64(5*time.Second), buckets, 10*time.Second, 50000)
+	if strings.Contains(quiet, "in flight") {
+		t.Errorf("a share under 100%% needs no overlap clause, got: %s", quiet)
+	}
+}
+
+// TestProduceLatencyNamesWhatItExcludes: the figure is a share of the per-message budget, not the whole
+// of it. Without the clause a reader takes it for the message's cost and stops looking.
+func TestProduceLatencyNamesWhatItExcludes(t *testing.T) {
+	buckets := make([]uint64, len(produceBounds())+1)
+	buckets[0] = 1000
+	got := produceLatency(1000, uint64(time.Second), buckets, 10*time.Second, 1000)
+	if !strings.Contains(got, "NOT counted") {
+		t.Errorf("the figure must say what it leaves out (decode, pipeline, encode), got: %s", got)
+	}
+}
+
+// TestProduceLatencyBoundsTheQuantile: on log-spaced buckets a quantile is an interval, never a value.
+// Interpolating inside a bucket whose edges are a factor of two apart carries up to 100% of error while
+// reading exactly like a measurement — the lesson gatewaymetrics already paid for.
+func TestProduceLatencyBoundsTheQuantile(t *testing.T) {
+	bounds := produceBounds()
+	buckets := make([]uint64, len(bounds)+1)
+	// 990 observations in [512µs, 1ms), 10 above it: the 99th percentile of 1000 falls in the first.
+	lower := indexOfBound(t, bounds, 512*time.Microsecond)
+	buckets[lower+1] = 990
+	buckets[lower+2] = 10
+
+	got := produceLatency(1000, uint64(990*512*time.Microsecond), buckets, 10*time.Second, 1000)
+
+	// Both edges of the bucket the 99th percentile falls in, read from the bounds themselves so the
+	// assertion survives a change of scale.
+	low, high := bounds[lower].String(), bounds[lower+1].String()
+	if !strings.Contains(got, low) || !strings.Contains(got, high) {
+		t.Errorf("the p99 must be rendered as the interval (%s, %s], got: %s", low, high, got)
+	}
+	// An interval, not a value: a single figure inside a bucket whose edges are a factor of two apart
+	// would be an interpolation reading like a measurement.
+	if !strings.Contains(got, "p99 in (") {
+		t.Errorf("the p99 must be an interval, got: %s", got)
+	}
+}
+
+// indexOfBound finds a bound by value, so the test above states the edge it means rather than an index
+// that would silently move the day the bounds change.
+func indexOfBound(t *testing.T, bounds []time.Duration, want time.Duration) int {
+	t.Helper()
+	for i, b := range bounds {
+		if b == want {
+			return i
+		}
+	}
+	t.Fatalf("no %v bound in %v", want, bounds)
+	return 0
 }
 
 // sortedPartitions keeps every refusal deterministic: with a map's iteration order, the partition named

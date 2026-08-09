@@ -66,7 +66,7 @@ func measureRouterCeiling(t *testing.T, brokers []string, partitions, records in
 	}
 	t.Cleanup(inner.Close)
 
-	prod := &countingProducer{inner: inner}
+	prod := newCountingProducer(inner)
 	counted := &countingConsumer{inner: cons}
 	cdr := &countingCDR{}
 	tracer := observability.Tracer(noop.NewTracerProvider(), "loadref-ceiling")
@@ -101,7 +101,8 @@ func measureRouterCeiling(t *testing.T, brokers []string, partitions, records in
 	// The clock opens here, not at Run: see the join argument in TestRouterConsumeCeiling's godoc.
 	first := lagOf(t, cons, topic)
 	brokerBefore, brokerErr := scrapeBroker(t)
-	start, base := time.Now(), prod.ok.Load()
+	start := time.Now()
+	base, baseNanos, baseBuckets := prod.snapshot()
 	baseBatches, baseRecords, baseLanes := counted.snapshot()
 
 	select {
@@ -112,7 +113,8 @@ func measureRouterCeiling(t *testing.T, brokers []string, partitions, records in
 	}
 
 	elapsed := time.Since(start)
-	done := prod.ok.Load() - base
+	produced, nanos, buckets := prod.snapshot()
+	done := produced - base
 	brokerAfter, afterErr := scrapeBroker(t)
 	// Read while the group is still alive: kadm seeds a group's lag from its members, so a reading taken
 	// after cancel() describes a group that has left.
@@ -134,6 +136,8 @@ func measureRouterCeiling(t *testing.T, brokers []string, partitions, records in
 		laneShape(batches-baseBatches, recs-baseRecords, lanes-baseLanes, partitions),
 		prefillRate)
 	t.Logf("             %2d partitions    %s", partitions, brokerReport(brokerBefore, brokerAfter, brokerErr, afterErr))
+	t.Logf("             %2d partitions    %s", partitions,
+		produceLatency(done, nanos-baseNanos, deltaBuckets(baseBuckets, buckets), elapsed, done))
 
 	if rate == 0 {
 		t.Fatalf("the router moved nothing at %d partitions", partitions)
@@ -392,18 +396,67 @@ func waitUntilConsuming(t *testing.T, prod *countingProducer, partitions int) {
 // what makes that free (step-201e: no hot-path change).
 //
 // It counts SUCCESSES only. At the close of the window cancel() fails whatever is in flight, and
-// counting those would put a tail of cancellations into the rate.
+// counting those would put a tail of cancellations into the rate — and, since step-201e D3, into the
+// latency histogram, where a tail of cancelled produces would read as a broker stalling.
+//
+// The histogram is buckets of atomic counters, never a slice of samples: a palier at 16 lanes produces
+// ~280 000 records in ten seconds from as many goroutines as there are partitions, and a shared slice
+// would need a mutex on the very path being measured. Buckets are per-class — one atomic add per
+// observation, not one per bucket above the value as a Prometheus histogram does.
 type countingProducer struct {
-	inner router.Producer
-	ok    atomic.Uint64
+	inner   router.Producer
+	ok      atomic.Uint64
+	nanos   atomic.Uint64
+	buckets []atomic.Uint64
+}
+
+func newCountingProducer(inner router.Producer) *countingProducer {
+	return &countingProducer{inner: inner, buckets: make([]atomic.Uint64, len(produceBounds())+1)}
 }
 
 func (p *countingProducer) Produce(ctx context.Context, rec kafka.Record) error {
+	started := time.Now()
 	if err := p.inner.Produce(ctx, rec); err != nil {
 		return err
 	}
+	took := time.Since(started)
 	p.ok.Add(1)
+	p.nanos.Add(uint64(took))
+	p.buckets[produceBucket(took)].Add(1)
 	return nil
+}
+
+// snapshot reads the three counters together, on the pattern of countingConsumer.snapshot: two reads
+// bracket the window and the call site subtracts.
+func (p *countingProducer) snapshot() (count, nanos uint64, buckets []uint64) {
+	buckets = make([]uint64, len(p.buckets))
+	for i := range p.buckets {
+		buckets[i] = p.buckets[i].Load()
+	}
+	return p.ok.Load(), p.nanos.Load(), buckets
+}
+
+// produceBucket is the index d falls in: bucket i holds (bounds[i-1], bounds[i]], and the last one
+// everything above the top edge. It must agree with p99Interval's reading of the same slice — which is
+// why both sides read produceBounds rather than each carrying its own scale.
+func produceBucket(d time.Duration) int {
+	bounds := produceBounds()
+	for i, b := range bounds {
+		if d <= b {
+			return i
+		}
+	}
+	return len(bounds)
+}
+
+// deltaBuckets subtracts the opening reading from the closing one, so a palier reports its own window
+// and not everything since the producer was built.
+func deltaBuckets(before, after []uint64) []uint64 {
+	out := make([]uint64, len(after))
+	for i := range after {
+		out[i] = after[i] - before[i]
+	}
+	return out
 }
 
 // countingConsumer records the SHAPE of each poll batch: how many records, and across how many

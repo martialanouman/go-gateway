@@ -50,6 +50,26 @@ const envPrefill = "REF_PREFILL"
 //	                                              suite of step-201d D11 becomes a real question with its
 //	                                              own ADR rather than a possible one.
 //
+// # The second question, added by step-201e D3: where the per-lane rendering goes
+//
+// PR1 measured 5 842 msg/s at one lane and 27 856 at sixteen — but that is 1 741/s PER LANE, a 70%
+// collapse. The fan-out still buys throughput; it buys less and less of it. Since a message's cost has
+// to be paid somewhere, the produce histogram below says whether it is paid in the synchronous acks=all
+// produce or outside it. The answer is what step-207 provisions on.
+//
+//	the mean produce climbs with the lane count,  -> the cost is IN the produce: the broker serialises
+//	and its share of the budget grows               what the lanes parallelise, and more partitions per
+//	                                                pod buy more than more pods.
+//	the mean stays flat while the rendering falls -> the cost is elsewhere — poll, decode, offset commit
+//	                                                — and D3 has cleared a suspect without naming a
+//	                                                replacement. Say exactly that; do not conclude.
+//	the mean climbs but stays a small share of    -> the produce got slower and it still is not what
+//	the budget                                       bounds the palier. Both facts are worth the line.
+//
+// The histogram lives in the harness, never in internal/router: step-201d D7 dropped a production-side
+// histogram because the pipeline is 2.3% of the budget, and nothing has changed. router.Producer being a
+// one-method interface declared consumer-side is what makes the decorator free.
+//
 // # What the curve is drawn against, and what would silently make it a lie
 //
 // Three facts are read BEFORE the rates, and the palier fails rather than prints if any breaks:
