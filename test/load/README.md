@@ -566,6 +566,10 @@ BIND_POOL=16  mt.inbound     56 ->  74 332   ·  mt.routed     27 ->     213   (
   1,6 cœur sur 14, donc ce n'est pas du CPU brut — c'est de la contention entre neuf composants et trois
   conteneurs sur une machine. **Les chiffres à 4 800 msg/s bornent des tendances, pas des capacités** ;
   ceux à 2 400, où le critère passe, sont les seuls à porter un verdict.
+  **→ Réserve levée par la mesure de step-201e ci-dessous** : la contention soupçonnée ici est
+  confirmée et chiffrée. Isolé, le routeur fait 19 747 msg/s à 8 lanes contre 4 702 ici. Les chiffres
+  de ce tableau restent ce qu'ils sont — une mesure de la *machine*, pas du routeur — mais on sait
+  désormais de quoi ils sont la mesure.
 - **`PARTITIONS=1` handicape plus que le routeur** : `mt.routed` et `mt.outcome` sont eux aussi ramenés à
   une partition. Le pool shardant par identifiant de message et non par partition, l'effet dominant reste
   bien le routeur, mais la première ligne du tableau n'isole pas parfaitement.
@@ -573,6 +577,86 @@ BIND_POOL=16  mt.inbound     56 ->  74 332   ·  mt.routed     27 ->     213   (
   la pente du lag reste bruitée près de l'équilibre.
 - Le harnais reste un **majorant** : tracer no-op, `Sealer` nil, étages débit / anti-spam Redis / crédit
   toujours en pass-through (`step-201d` `D4`), tout dans un processus.
+
+### Mesure du 08/08/2026 (step-201e) — le plafond est **attribué** : ce n'était pas le routeur
+
+`TestRouterConsumeCeiling` isole le routeur de tout ce qui partageait son hôte. Pas d'injecteur, pas de
+REST, pas de pool, pas de pair : un topic privé est **pré-rempli** avant que le chrono ne parte, et la
+seule chose qui tourne est `RunBatch → Pipeline.Process → Produce`.
+
+```
+make load-reference RUN=TestRouterConsumeCeiling PREFILL=600000
+```
+
+Conditions : 600 000 enregistrements pré-remplis par palier, fenêtre de 10 s, un compte par partition
+(placement **vérifié** sur les end-offsets, pas prédit), `mt.routed` inchangé à 4 partitions sur tout le
+balayage. Le débit est recoupé par deux sources indépendantes — le compteur du producteur et
+`lag_début − lag_fin` — et le lecteur du broker (`D2`) scrute les deux bouts de la fenêtre.
+
+| Lanes | **Routeur seul** | Recoupement backlog | Lanes réellement ouvertes | Plein-stack PR2 | Rapport |
+|---:|---:|---:|---|---:|---:|
+| 1 | **5 842/s** | 5 827/s (−0,3 %) | 1,0 sur 1 | 1 692/s | ×3,5 |
+| 2 | 6 981/s | 6 729/s (−3,6 %) | 2,0 sur 2 | 2 990/s | ×2,3 |
+| 4 | 13 158/s | 12 726/s (−3,3 %) | 4,0 sur 4 | 3 422/s | ×3,8 |
+| 8 | **19 747/s** | 19 521/s (−1,1 %) | 8,0 sur 8 | **4 702/s** | **×4,2** |
+| 16 | **27 856/s** | 27 385/s (−1,7 %) | 16,0 sur 16 | — | — |
+
+#### La réponse, et elle est franche
+
+La question posée d'avance était : *le routeur replafonne-t-il vers 4 700/s une fois seul ?* **Non.**
+Et c'est la branche la plus forte de la table de décision qui se réalise : **une seule lane isolée
+(5 842/s) bat déjà le 8-lanes plein-stack (4 702/s)**. À 8 lanes, à configuration égale, le routeur va
+**4,2 fois plus vite** sans rien d'autre sur la machine — et la courbe **ne plafonne toujours pas** à
+16 lanes.
+
+Le plafond de 4 800 msg/s de step-201d n'était donc ni le routeur, ni le broker : **c'est la
+co-résidence** de neuf composants et trois conteneurs sur un portable. `step-201d` `D11` (le shard par
+clé de compte) n'a pas de courbe qui le réclame : le fan-out par partition achète encore du débit
+là où on l'a poussé.
+
+#### Le broker est blanchi, et c'est mesuré et non déduit
+
+C'est ce que `D2` ajoute : la latence de service du broker, lue sur sa propre exposition
+(`/public_metrics`), aux deux bouts de chaque fenêtre.
+
+| Lanes | `produce` servis | Latence de service moyenne | CPU du **broker** |
+|---:|---:|---:|---:|
+| 1 | 58 429 | 39 µs | 0,29 cœur |
+| 2 | 69 405 | 78 µs | 0,40 cœur |
+| 4 | 124 018 | 94 µs | 0,55 cœur |
+| 8 | 129 827 | 108 µs | 0,64 cœur |
+| 16 | 108 339 | 131 µs | **0,56 cœur** |
+
+La latence monte de 39 à 131 µs pendant que le débit est multiplié par 4,8 : le broker se charge, mais
+il sert toujours en **131 microsecondes** et ne brûle que 0,56 cœur sur le shard qui lui est alloué.
+Deuxième borne, gratuite : le pré-remplissage lui fait absorber **520 000 enregistrements/s** avec
+batching. Le broker n'est le goulot d'aucun palier de ce tableau.
+
+`cpuSeconds` ne comptait que le processus Go et le disait ; ce chiffre-là est celui du conteneur qui
+manquait. `D4` (cgroups) devient sans objet ici — un seul conteneur tourne, et il publie son propre CPU.
+
+#### Réserves propres à cette mesure
+
+- **Un majorant du routeur, énoncé comme tel.** Les étages résolution / sender ID / opt-out / anti-spam
+  sont des bouchons, et `RateLimiter`/`Credit` sont nuls — comme dans le run de référence auquel la
+  courbe est comparée (`step-201d` `D4`). Le coût est **borné par une mesure déjà faite** et non
+  supposé : `Pipeline.Process` pèse 2,3 % du budget par message et ces quatre étages ~10 % du pipeline
+  (`step-201d` `D8`), soit **moins de 0,3 %** du budget. `e164` et la segmentation — 74 % du pipeline —
+  tournent pour de vrai.
+- **Le backlog est équilibré par construction ; le trafic réel ne l'est pas.** Un compte par partition,
+  choisi pour ça. La courbe mesure donc ce que les lanes achètent **quand elles sont toutes
+  alimentées** : la borne haute du fan-out, jamais la moyenne d'un trafic réel.
+- **Un run par configuration**, comme partout ailleurs dans ce fichier — et la dispersion est réelle.
+  Sur quatre runs : 1 lane entre 4 481 et 5 856/s, 2 lanes entre 6 981 et 9 639/s, 8 lanes entre 19 475
+  et 21 226/s, 16 lanes entre 27 856 et 30 728/s. Le palier à 2 lanes est le plus instable ; **le
+  constat ne repose sur aucun palier isolé** mais sur un rapport de 4 qui tient sur les quatre runs.
+- **Le coût du produce n'est pas encore observé, il est déduit.** La branche « la courbe plie puis
+  reste plate » de la table de décision ne se lit ici que par soustraction. `D3` (histogramme autour de
+  `Producer.Produce`, PR2) l'observe — et devra **relancer ce balayage** pour la lire.
+- **`offset_commit` n'est pas mesuré** : `/public_metrics` n'en publie aucune série curée (vérifié sur
+  la capture). Il vit dans l'exposition interne, non lue ici.
+- Un seul **shard** Redpanda sur cet hôte : l'agrégation par shard est exercée par la fixture, pas par
+  la mesure.
 
 ### Réserves, nommément
 
@@ -615,7 +699,11 @@ passerelle **déployée** ; c'est lui que `step-201b` utilisera. À corriger dan
 | `k6/messages.js` | script REST, profils et seuils |
 | `stub/` | stub du contrat `/v1/messages` à délai réglable et scrutin `Idempotency-Key` — la cible des runs négatifs |
 | `bindgen/` | ouverture de N binds SMPP concurrents + injecteur `submit_sm` (logique testable) |
+| `steady/` | évaluateur **pur** des clauses de l'état stationnaire (`Evaluate`) + injecteur HTTP paced |
+| `promscrape/` | la moitié HTTP commune aux trois lecteurs : URL, redaction, horodatage précoce, garde 200 |
 | `smscmetrics/` | lecture du `/metrics` du simulateur → débit absorbé |
+| `gatewaymetrics/` | lecture du `/metrics` de la passerelle → verdict trois-valué sur le budget e2e |
+| `redpandametrics/` | lecture du `/public_metrics` du broker → latence de service par API, CPU par shard |
 | `ceiling/` | balayage du nombre de binds → plafond du pair (logique testable, sans simulateur) |
 | `../../cmd/smpp-bindgen` | ligne de commande du générateur |
 | `../../cmd/smsc-ceiling` | ligne de commande du balayage de plafond |
