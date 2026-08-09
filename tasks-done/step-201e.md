@@ -290,12 +290,19 @@ intention.
 - Balayage consigné en lignes **ajoutées** à `test/load/README.md`, aucune éditée.
 
 ## Definition of Done
-- [ ] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts
-- [ ] le plafond de 4 800 msg/s est **attribué** — routeur, broker, runtime ou hôte — ou l'échec à
-      l'attribuer est consigné avec ce qui manque
-- [ ] la réserve « les chiffres à 4 800 bornent des tendances, pas des capacités » est levée dans
-      `test/load/README.md`, ou remplacée par une réserve plus étroite
-- [ ] aucun changement du chemin chaud de production
+- [x] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts (`make check`)
+- [x] le plafond de 4 800 msg/s est **attribué** — c'est la **co-résidence**. Isolé, le routeur fait
+      19 747 msg/s à 8 lanes contre 4 702 en plein-stack (×4,2), et le broker sert en 131 µs pour
+      0,56 cœur. Ni l'un ni l'autre n'était le goulot (PR1)
+- [x] la réserve « les chiffres à 4 800 bornent des tendances, pas des capacités » est levée dans
+      `test/load/README.md` (PR1), ainsi que celle de PR1 sur le coût du produce (PR2)
+- [x] aucun changement du chemin chaud de production
+
+**Au-delà de la DoD, PR2 a répondu à une question que la mesure a fait naître** : le rendement par lane
+chute de 70 %, et `D3` montre que **le débit du routeur est le produce synchrone divisé par le nombre
+de lanes**, à 5 % près. Le produce ralentit de 188 à 507 µs entre 1 et 16 lanes ; le broker, lui, sert
+quatre fois plus vite que ce que le client attend — la différence est l'accusé `acks=all` sous
+concurrence, pas du travail de broker.
 
 ## Hors périmètre
 Le verdict NFR pleine échelle et l'environnement représentatif → **step-201b**. Les hôtes séparés

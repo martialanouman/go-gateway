@@ -19,6 +19,7 @@ func d2() steady.Criteria {
 		MaxLagSlopeFraction:  0.01,
 		MinLagSamples:        6,
 		IngestP99Budget:      250 * time.Millisecond,
+		MaxBehindFraction:    0.05,
 		PeerCeiling:          43498,
 	}
 }
@@ -30,6 +31,7 @@ func healthy() steady.Measurement {
 		Window:        60 * time.Second,
 		Accepted:      66000,
 		Errors:        0,
+		Behind:        0,
 		Submitted:     66000,
 		IngestP99:     40 * time.Millisecond,
 		IngestSamples: 66000,
@@ -280,6 +282,70 @@ func TestRunAtThePeerCeilingFails(t *testing.T) {
 
 // TestUnknownPeerCeilingFails: D2 places the run UNDER a ceiling, so a run with no ceiling to compare
 // against has not met the criterion — it has skipped it.
+// TestBehindScheduleFails is the clause that stops a run from being read as the gateway's when the
+// number it produced belonged to the harness.
+//
+// The three figures below are not invented: they are the shares recorded in test/load/README.md for
+// step-201d PR2 — 1.7% at 2 400 msg/s, 6.4% and 17.3% at 4 800. The 4 800 runs are precisely those the
+// README had to caveat by hand, and the caveat is what this clause replaces.
+func TestBehindScheduleFails(t *testing.T) {
+	m := healthy()
+	m.Behind = uint64(0.173 * float64(m.Accepted)) // the 16-bind run at 4 800 msg/s
+
+	v := steady.Evaluate(m, d2())
+	if v.Pass() {
+		t.Fatalf("Pass() = true, want false on an injector 17.3%% behind its own schedule\n%s", v)
+	}
+	ch := check(t, v, steady.CheckBehind)
+	if ch.Pass {
+		t.Errorf("%s pass = true, want false (%s)", ch.Name, ch.Detail)
+	}
+	// The reader needs the measured share and the bar, not just a verdict: "the harness was late" and
+	// "the harness was late by this much against this budget" lead to different next steps.
+	if !strings.Contains(ch.Detail, "17.3") || !strings.Contains(ch.Detail, "5.0") {
+		t.Errorf("%s detail = %q, want both the measured share and the bar", ch.Name, ch.Detail)
+	}
+
+	// The 6.4% run fails too — it is over the bar, if less spectacularly.
+	m.Behind = uint64(0.064 * float64(m.Accepted))
+	if check(t, steady.Evaluate(m, d2()), steady.CheckBehind).Pass {
+		t.Error("6.4% behind schedule must fail a 5% bar")
+	}
+}
+
+// TestBehindWithinBudgetPasses: the bar has to let the good run through, or it is not a bar.
+func TestBehindWithinBudgetPasses(t *testing.T) {
+	m := healthy()
+	m.Behind = uint64(0.017 * float64(m.Accepted)) // the 2 400 msg/s run, the one that carried a verdict
+
+	v := steady.Evaluate(m, d2())
+	if !v.Pass() {
+		t.Fatalf("Pass() = false, want true at 1.7%% behind against a 5%% bar\n%s", v)
+	}
+	if ch := check(t, v, steady.CheckBehind); !ch.Pass {
+		t.Errorf("%s pass = false, want true (%s)", ch.Name, ch.Detail)
+	}
+}
+
+// TestUnmeasuredBehindFails: nothing attempted is not the same finding as nothing late, and only one of
+// them is a pass. Same shape as the peer ceiling above — the package's rule is that a missing
+// measurement fails while naming itself.
+func TestUnmeasuredBehindFails(t *testing.T) {
+	m := healthy()
+	m.Accepted, m.Errors, m.Behind = 0, 0, 0
+
+	ch := check(t, steady.Evaluate(m, d2()), steady.CheckBehind)
+	if ch.Pass {
+		t.Errorf("%s pass = true, want false when the window attempted nothing (%s)", ch.Name, ch.Detail)
+	}
+	if !strings.Contains(ch.Detail, "no submission") {
+		t.Errorf("%s detail = %q, want it to name what was missing", ch.Name, ch.Detail)
+	}
+	if strings.Contains(ch.Detail, "NaN") || strings.Contains(ch.Detail, "Inf") {
+		t.Errorf("%s detail = %q, want no artefact of dividing by zero attempts", ch.Name, ch.Detail)
+	}
+}
+
 func TestUnknownPeerCeilingFails(t *testing.T) {
 	c := d2()
 	c.PeerCeiling = 0

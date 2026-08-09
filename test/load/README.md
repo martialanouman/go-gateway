@@ -653,10 +653,72 @@ manquait. `D4` (cgroups) devient sans objet ici — un seul conteneur tourne, et
 - **Le coût du produce n'est pas encore observé, il est déduit.** La branche « la courbe plie puis
   reste plate » de la table de décision ne se lit ici que par soustraction. `D3` (histogramme autour de
   `Producer.Produce`, PR2) l'observe — et devra **relancer ce balayage** pour la lire.
+  **→ Réserve levée par la mesure de step-201e PR2 ci-dessous** : le produce est chronométré, et il
+  explique le débit à 5 % près.
 - **`offset_commit` n'est pas mesuré** : `/public_metrics` n'en publie aucune série curée (vérifié sur
   la capture). Il vit dans l'exposition interne, non lue ici.
 - Un seul **shard** Redpanda sur cet hôte : l'agrégation par shard est exercée par la fixture, pas par
   la mesure.
+
+### Mesure du 09/08/2026 (step-201e PR2) — le débit du routeur **est** le produce, divisé par les lanes
+
+`D3` chronomètre `Producer.Produce` dans le harnais, aux deux bouts de la fenêtre de chaque palier. La
+question était posée d'avance : *le coût par record est-il payé dans le produce, ou ailleurs ?*
+
+```
+make load-reference RUN=TestRouterConsumeCeiling PREFILL=600000
+```
+
+| Lanes | Débit | Produces | **Produce moyen** | p99 du produce | Latence de service du broker |
+|---:|---:|---:|---:|---|---:|
+| 1 | 4 810/s | 48 104 | **188 µs** | (256 µs, 512 µs] | 46 µs |
+| 2 | 8 161/s | 81 613 | 225 µs | (256 µs, 512 µs] | 63 µs |
+| 4 | 14 020/s | 140 204 | 264 µs | (256 µs, 512 µs] | 86 µs |
+| 8 | 20 741/s | 207 413 | 362 µs | (512 µs, 1,024 ms] | 103 µs |
+| 16 | 29 843/s | 298 437 | **507 µs** | (512 µs, 1,024 ms] | 125 µs |
+
+#### La réponse : le coût est dans le produce, et le modèle se vérifie
+
+C'est la première branche de la table de décision. **Le produce ralentit de 188 à 507 µs — ×2,7 —
+pendant que le débit fait ×6,2.** Chaque lane passe donc une part croissante de son temps bloquée dans
+son aller-retour `acks=all`, ce qui est exactement la forme d'un rendement par lane qui s'effondre.
+
+Le modèle « chaque lane est bloquée dans son produce » suffit à prédire le débit :
+
+| Lanes | `lanes ÷ produce moyen` | **Débit mesuré** | Écart |
+|---:|---:|---:|---:|
+| 1 | 5 319/s | 4 810/s | −10 % |
+| 8 | 22 099/s | 20 741/s | −6 % |
+| 16 | 31 558/s | 29 843/s | **−5 %** |
+
+Le débit du routeur **est** le produce synchrone divisé par le nombre de lanes, à 5-10 % près. Le reste
+— décodage, `Pipeline.Process`, encodage, commit d'offset — tient dans cet écart, ce qui recoupe les
+2,3 % de budget mesurés pour le pipeline en step-201d `D8`.
+
+#### Ce que le broker en dit, et ce qu'il n'explique pas
+
+Sa latence de service monte aussi (46 → 125 µs), mais elle reste **quatre fois inférieure** au produce
+vu du client. La différence n'est pas du travail de broker : c'est de l'attente. Le client attend
+l'accusé de la réplication `acks=all`, et cette attente croît avec le nombre de produces concurrents
+sur le même client Kafka et le même shard.
+
+**Conséquence pour step-207**, qui complète le couplage déjà consigné : ajouter des lanes achète du
+débit tant que le produce ne ralentit pas plus vite que les lanes n'augmentent. À 16 lanes on paie
+déjà ×2,7 de latence unitaire pour ×16 de parallélisme — la marge existe, elle n'est pas infinie.
+
+#### Réserves propres à cette mesure
+
+- **La part du budget dépasse 100 % à partir de 2 lanes, et c'est normal** : le budget est l'inverse du
+  débit de *tout* le routeur, la moyenne est celle d'*un* produce. Une part de 1 514 % à 16 lanes
+  signifie ~15 produces en vol à chaque instant. La ligne le dit désormais explicitement, parce que le
+  chiffre brut se lisait comme une erreur d'arithmétique.
+- **La p99 est un intervalle**, jamais une valeur : sur des bornes log2 une interpolation porterait
+  jusqu'à 100 % d'erreur en se lisant comme une mesure.
+- Le chronomètre est **dans le harnais**, pas dans `internal/router` : ce que la production paierait
+  n'est pas mesuré ici, et n'a pas à l'être (step-201d `D7`).
+- Ce run est **plus lent que celui de PR1** sur les petits paliers (4 810 contre 5 842/s à 1 lane) :
+  même dispersion qu'ailleurs dans ce fichier, un run par configuration. Le constat porte sur la
+  **forme** des deux courbes, jamais sur un palier isolé.
 
 ### Réserves, nommément
 
