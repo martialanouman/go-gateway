@@ -48,8 +48,9 @@ que l'audit du 01/08 a déjà enseigné qu'**un commentaire n'est pas un backlog
 > confondent à la première relecture.
 
 ### Deux PRs — la mesure d'abord, le chronomètre ensuite
-- **PR1** — `D1` + `D2`, plus l'extraction de scraper qu'ils réclament tous les deux.
-- **PR2** — `D3` + `D5` + la clause `Behind` (voir plus bas), puis le `git mv` de la fiche.
+- **PR1** *(livrée le 08/08/2026)* — `D1` + `D2`, plus l'extraction de scraper qu'ils réclament tous
+  les deux.
+- **PR2** — `D3` **requalifié** + la clause `Behind`, puis le `git mv` de la fiche. `D5` est abandonné.
 
 Précédent maison : step-201d, livrée en deux PRs sous fiche unique.
 
@@ -59,6 +60,30 @@ En PR1 le décorateur de producer **compte** sans chronométrer : cette branche 
 que par une *soustraction* — la famille de défaut que cette fiche reproche elle-même aux « ~819 µs
 bloqués » de step-201d `D9` — jusqu'à ce que `D3` arrive. Conséquence pratique : **PR2 relance le
 balayage de `D1`** pour lire l'histogramme. C'est un aller-retour choisi, pas un oubli.
+
+### Ce que PR1 a changé au périmètre de PR2 (arrêté le 09/08/2026)
+Les quatre cases de la Definition of Done sont **satisfaites par PR1**. Cette fiche prévoyait que
+`D3`-`D5` ne servent qu'à « départager ce qui resterait » ; côté attribution, il ne reste rien à
+départager. Le périmètre de PR2 est donc rejugé sur ce que la mesure a réellement produit :
+
+- **`D3` est maintenu, mais sa question a changé.** Il ne sert plus à attribuer le plafond — c'est
+  fait — mais à expliquer un fait que personne n'avait anticipé : **le rendement par lane s'effondre de
+  70 %** (5 842 msg/s à 1 lane, 1 741/s par lane à 16). C'est cette sous-linéarité, et non le plafond,
+  qui conditionne le provisionnement de step-207. Un histogramme autour de `Producer.Produce` dit si
+  elle est payée dans le produce ou ailleurs.
+- **`D5` est abandonné.** Il devait discriminer « la contention est dans le runtime » de « le broker
+  répond lentement ». Le banc n'héberge plus qu'un composant et un conteneur, et `D2` a blanchi le
+  broker par la mesure : la question qu'il tranchait n'a plus de contenu. À rouvrir en step-201b, où
+  neuf composants se partagent de nouveau un hôte, si une courbe le réclame.
+- **La clause `Behind` est maintenue**, et pour une raison qui ne dépend d'aucun résultat : c'est une
+  **garde**, pas un diagnostic. Sans elle, le godoc de `steady` continue d'énoncer une règle que rien
+  n'applique — la dette exacte que cette fiche reproche à l'audit du 01/08.
+
+**Ce que `D1` devait à step-207 est transféré** (`tasks-todo/step-207.md`, points d'implémentation) :
+le parallélisme du routeur est plafonné par les partitions **de son pod**, donc le nombre de partitions
+doit dominer le plafond de l'HPA sous peine de voir le fan-out disparaître quand la charge monte.
+Aucun chiffre de dimensionnement n'y est écrit : le banc est un majorant sur un portable, et
+extrapoler une capacité d'un majorant est précisément ce que cette fiche existait pour empêcher.
 
 ### Le balayage de `D1` se fait sur des topics privés, pas sur `KAFKATEST_PARTITIONS`
 Écart assumé avec la lettre de la fiche, pour trois raisons :
@@ -230,12 +255,17 @@ production au motif que le pipeline pèse 2,3 % du budget, et rien n'a changé d
 `cpuSeconds` ne voit que le processus Go et le dit. Lire les cgroups de Redpanda / ClickHouse / Postgres
 sur la fenêtre complète le tableau, et transforme « 1,6 cœur sur 14 » en une phrase qui a un sens.
 
-### D5 — La latence d'ordonnancement Go
+### D5 — La latence d'ordonnancement Go : prévu, puis **abandonné par la mesure** (09/08/2026)
 `runtime/metrics` : `/sched/latencies:seconds` et `/sync/mutex/wait/total:seconds`, relevés sur la
 fenêtre. Si elle explose quand `BIND_POOL` passe de 4 à 16, la contention est **dans le runtime** et non
 chez le broker — ce que ni `D2` ni `D4` ne diraient.
 
-### D6 — Sortir l'injecteur du processus
+> **Abandonné.** Le banc de `D1` n'héberge ni pool de binds, ni injecteur, ni pair : il n'y a plus de
+> `BIND_POOL` à faire varier, donc plus de contention à imputer. Et `D2` a blanchi le broker par la
+> mesure (131 µs de latence de service au pire palier, 0,56 cœur). La question que `D5` tranchait n'a
+> plus de contenu ici. À rouvrir en **step-201b**, où neuf composants se partagent de nouveau un hôte.
+
+### D6 — Sortir l'injecteur du processus (remplacé, voir `## Design arrêté`)
 Ce que le godoc de `steady` réclame dès que `Behind` est haut. Deux formes possibles, à trancher à
 l'implémentation : plus de workers (correctif de surface) ou un injecteur dans son propre processus
 (correctif de fond). C'est la condition pour que « 4 800 msg/s » soit un débit d'entrée réel et non une

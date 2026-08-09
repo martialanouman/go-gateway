@@ -15,6 +15,18 @@ Fournir les manifests Kubernetes sous `deploy/` pour tous les services : Deploym
   (readiness) sur le port ops 9090.
 
 ## Points d'implémentation clés
+- **Le nombre de partitions doit dominer le plafond de l'HPA, pas l'égaler** (mesuré en step-201e `D1`).
+  Depuis step-201d le routeur ouvre **une goroutine par partition présente dans son lot de poll** : son
+  parallélisme est donc plafonné par les partitions **assignées à son pod**, pas par celles du topic. Si
+  l'HPA monte à autant de pods que `mt.inbound` a de partitions, chaque pod retombe à **une seule lane**
+  — le fan-out disparaît à l'instant précis où la charge le réclame, et l'HPA continue de croître sans
+  rien acheter.
+  Le banc « routeur seul » mesure 5 842 msg/s à 1 lane et 27 856 à 16, **mais 1 741/s par lane** à 16 :
+  le fan-out achète encore du débit à 16, et de moins en moins. Deux conséquences pour les manifests :
+  ne pas sous-provisionner les partitions, et **ne pas extrapoler un dimensionnement de ces chiffres** —
+  ils sont un majorant mesuré sur un portable, en un seul processus, pipeline partiellement bouché.
+  Le dimensionnement chiffré appartient à step-201b, sur environnement représentatif. Courbe et
+  réserves : `test/load/README.md`, mesure du 08/08/2026 (step-201e).
 - **Ports** (§1.4) : port métier + port ops 9090 par service ; le port ops **jamais exposé publiquement**.
 - `/healthz` = liveness (échec → restart), `/readyz` = readiness (échec → retrait LB, pas de restart) —
   respecter la sémantique (§1.5) dans les probes.
