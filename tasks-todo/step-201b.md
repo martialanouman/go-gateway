@@ -1,7 +1,7 @@
 # step-201b — Campagne NFR pleine échelle sur environnement représentatif
 
 > **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
-> **Dépend de :** step-201, **step-201c**, **step-201d**, **step-201e**, step-207 · **Bloque :** step-208
+> **Dépend de :** step-201, **step-201c**, **step-201d**, **step-201e**, **step-201f**, step-207 · **Bloque :** step-208
 
 ## But
 Rendre le **verdict NFR** que step-201 ne pouvait pas rendre : débit soutenu **8 000 SMS/s**, pic
@@ -23,6 +23,13 @@ par-worker (§2.5). Ici, seule **l'échelle** change.
 > un plafond — l'injecteur décroche de 17,3 %, les étages se disputent l'hôte, et la comptabilité CPU ne
 > voit que le processus Go quand le suspect probable est un conteneur. Ce qui manque est listé et
 > planifié en **step-201e**, qui bloque cette fiche.
+
+> **Mise à jour (09/08/2026, step-201e livrée).** Le harnais sait désormais attribuer, et il l'a fait :
+> le plafond de 4 800 msg/s était la **co-résidence**, ni le routeur (×4,2 une fois isolé) ni le broker
+> (131 µs de latence de service pour 0,56 cœur). Reste **un seul étage jamais mesuré seul** — le pool de
+> connecteurs, qui borne aujourd'hui le bout-en-bout à 2 400/s contre les 10 400 `submit_sm/s` de la
+> cible. C'est **step-201f**, et elle bloque cette fiche pour la même raison que step-201e la bloquait :
+> une campagne pleine échelle qui démarre sans savoir à qui appartient le plafond mesurera l'hôte.
 
 ## Prérequis logiciel : step-201c
 Le run de référence de step-201 a mesuré un plafond de sortie de **192–330 `submit_sm/s`** dû à quatre
