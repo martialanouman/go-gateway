@@ -4,6 +4,7 @@ package e2e_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -23,6 +24,8 @@ import (
 	"github.com/martialanouman/go-gateway/internal/router"
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
+	"github.com/martialanouman/go-gateway/internal/testutil/kafkatest"
+	"github.com/martialanouman/go-gateway/test/load/redpandametrics"
 )
 
 const (
@@ -97,6 +100,7 @@ func measureRouterCeiling(t *testing.T, brokers []string, partitions, records in
 
 	// The clock opens here, not at Run: see the join argument in TestRouterConsumeCeiling's godoc.
 	first := lagOf(t, cons, topic)
+	brokerBefore, brokerErr := scrapeBroker(t)
 	start, base := time.Now(), prod.ok.Load()
 	baseBatches, baseRecords, baseLanes := counted.snapshot()
 
@@ -109,6 +113,7 @@ func measureRouterCeiling(t *testing.T, brokers []string, partitions, records in
 
 	elapsed := time.Since(start)
 	done := prod.ok.Load() - base
+	brokerAfter, afterErr := scrapeBroker(t)
 	// Read while the group is still alive: kadm seeds a group's lag from its members, so a reading taken
 	// after cancel() describes a group that has left.
 	last := lagOf(t, cons, topic)
@@ -128,10 +133,40 @@ func measureRouterCeiling(t *testing.T, brokers []string, partitions, records in
 		crossCheck(rate, first, last, elapsed),
 		laneShape(batches-baseBatches, recs-baseRecords, lanes-baseLanes, partitions),
 		prefillRate)
+	t.Logf("             %2d partitions    %s", partitions, brokerReport(brokerBefore, brokerAfter, brokerErr, afterErr))
 
 	if rate == 0 {
 		t.Fatalf("the router moved nothing at %d partitions", partitions)
 	}
+}
+
+// scrapeBroker reads the test broker's own exposition (step-201e D2).
+//
+// It DEGRADES rather than fails: the broker reading answers "is the ceiling Kafka's?", and a scrape
+// that did not come back must not destroy a throughput measurement that did. The instrument's own
+// health is asserted by TestBrokerExpositionIsReadable instead, so a silently broken reader still
+// fails something.
+func scrapeBroker(t *testing.T) (redpandametrics.Snapshot, error) {
+	t.Helper()
+	c, err := redpandametrics.NewClient(kafkatest.AdminAPI(t))
+	if err != nil {
+		return redpandametrics.Snapshot{}, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return c.Scrape(ctx)
+}
+
+// brokerReport renders what the broker did during the window, or why it could not be read.
+func brokerReport(before, after redpandametrics.Snapshot, beforeErr, afterErr error) string {
+	if err := errors.Join(beforeErr, afterErr); err != nil {
+		return fmt.Sprintf("broker unreadable: %v", err)
+	}
+	rep, err := redpandametrics.Rate(before, after)
+	if err != nil {
+		return fmt.Sprintf("broker unreadable: %v", err)
+	}
+	return rep.Render()
 }
 
 // crossCheck renders the same throughput derived from the backlog instead of the producer, because two

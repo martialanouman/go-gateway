@@ -80,9 +80,19 @@ func topicPartitions() int32 {
 	return int32(n)
 }
 
+// endpoints are the shared broker's addresses. adminErr is kept INSIDE it, separate from sharedErr,
+// on purpose: over forty integration tests depend on Brokers, and a failure to resolve the admin port
+// — a port only the load harness reads — must fail AdminAPI and nothing else. A new instrument does
+// not get to take the suite hostage.
+type endpoints struct {
+	seed     string
+	admin    string
+	adminErr error
+}
+
 var (
 	once      sync.Once
-	broker    string
+	shared    endpoints
 	sharedErr error
 )
 
@@ -91,37 +101,61 @@ var (
 // process teardown reclaims it.
 func Brokers(t *testing.T) []string {
 	t.Helper()
+	return []string{ensure(t).seed}
+}
+
+// AdminAPI returns the origin of the shared Redpanda's Admin API (port 9644), where the broker serves
+// its Prometheus expositions: /public_metrics for the curated redpanda_* series and /metrics for the
+// internal vectorized_* ones.
+//
+// It skips and fails exactly as Brokers does, with one addition: a broker that came up but whose admin
+// port could not be resolved fails HERE and leaves Brokers working, because every other test in the
+// tree needs the Kafka port and none of them needs this one.
+func AdminAPI(t *testing.T) string {
+	t.Helper()
+	e := ensure(t)
+	if e.adminErr != nil {
+		t.Fatalf("kafkatest: admin API of shared redpanda: %v", e.adminErr)
+	}
+	return e.admin
+}
+
+func ensure(t *testing.T) endpoints {
+	t.Helper()
 
 	if testing.Short() {
 		t.Skip("kafkatest: skipped under -short (needs Docker)")
 	}
 	testcontainers.SkipIfProviderIsNotHealthy(t)
 
-	once.Do(func() { broker, sharedErr = start() })
+	once.Do(func() { shared, sharedErr = start() })
 	if sharedErr != nil {
 		t.Fatalf("kafkatest: start shared redpanda: %v", sharedErr)
 	}
-	return []string{broker}
+	return shared
 }
 
-func start() (string, error) {
+func start() (endpoints, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), provisionDeadline)
 	defer cancel()
 
 	container, err := redpanda.Run(ctx, image)
 	if err != nil {
-		return "", fmt.Errorf("run container: %w", err)
+		return endpoints{}, fmt.Errorf("run container: %w", err)
 	}
 
 	seed, err := container.KafkaSeedBroker(ctx)
 	if err != nil {
-		return "", fmt.Errorf("seed broker: %w", err)
+		return endpoints{}, fmt.Errorf("seed broker: %w", err)
 	}
 
 	if err := createTopics(ctx, seed); err != nil {
-		return "", err
+		return endpoints{}, err
 	}
-	return seed, nil
+
+	// Recorded, not returned: see endpoints.adminErr.
+	admin, adminErr := container.AdminAPIAddress(ctx)
+	return endpoints{seed: seed, admin: admin, adminErr: adminErr}, nil
 }
 
 // createTopics provisions the pipeline topics. A topic that already exists is not an error: the

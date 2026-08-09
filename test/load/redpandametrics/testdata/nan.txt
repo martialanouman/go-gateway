@@ -1,0 +1,10 @@
+# A cut-down exposition whose CPU reading is NaN.
+#
+# NaN and ±Inf are legal in the Prometheus text format and expfmt decodes them as-is. Left unchecked a
+# NaN propagates into a mean and prints as a figure; +Inf passes a "value >= 0" guard and prints as an
+# infinite ceiling. Both read like measurements. This fixture exists so the refusal is exercised on a
+# family the reader actually parses — a NaN on an ignored family would prove nothing.
+# HELP redpanda_cpu_busy_seconds_total Total CPU busy time in seconds
+# TYPE redpanda_cpu_busy_seconds_total gauge
+redpanda_cpu_busy_seconds_total{shard="0"} 9.998203
+redpanda_cpu_busy_seconds_total{shard="1"} NaN
