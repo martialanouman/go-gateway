@@ -82,6 +82,8 @@ Vocabulaire SMPP / SMS et termes propres au projet. À lire une fois ; sert de r
 
 **Pool de binds** (`bind_pool_size`) — plusieurs binds SMPP parallèles par connecteur pour lever le plafond de débit d'un bind unique. `mt.routed` est partitionné pour garder les segments d'un message sur un seul bind.
 
+**Lane** — dans le routeur, une goroutine qui traite tous les records d'**une partition** Kafka présente dans un lot de poll ; séquentielle à l'intérieur, parallèle entre lanes. La lane **est** la partition, jamais la clé de compte : c'est ce qui laisse intact le rayon de duplication (ADR-0014). Le nombre de lanes est donc celui des partitions **assignées au pod**, pas celui du topic — d'où la règle de dimensionnement de step-207 (les partitions doivent dominer le plafond de l'HPA).
+
 **Dead-letter** — file des messages ayant épuisé leurs retries (y compris `fallback_chain`), remontés pour retraitement.
 
 ## Facturation
