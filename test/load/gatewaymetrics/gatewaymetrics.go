@@ -50,15 +50,15 @@ import (
 	"io"
 	"math"
 	"net/http"
-	"net/url"
 	"sort"
 	"strconv"
-	"strings"
 	"time"
 
 	dto "github.com/prometheus/client_model/go"
 	"github.com/prometheus/common/expfmt"
 	"github.com/prometheus/common/model"
+
+	"github.com/martialanouman/go-gateway/test/load/promscrape"
 )
 
 // MetricE2E is the histogram this package reads, declared in internal/observability/metrics.
@@ -470,27 +470,24 @@ func seconds(v float64) time.Duration {
 
 // Client scrapes one gateway pod's ops endpoint. It is safe for concurrent use.
 //
-// It mirrors smscmetrics.Client deliberately rather than sharing it: the two read different peers'
-// metric contracts, and the shape (origin or full URL, credentials never echoed, early timestamp) is
-// the part worth having identical. Extracting a common scraper is worth doing the day a third one
-// appears.
-type Client struct {
-	// url is the URL actually requested, userinfo included. It never leaves the client: everything
-	// logged or wrapped in an error uses redacted instead.
-	url      string
-	redacted string
-	http     *http.Client
-}
+// It used to mirror smscmetrics.Client rather than share with it, on the standing note that
+// "extracting a common scraper is worth doing the day a third one appears". step-201e added the third
+// — the Redpanda broker's admin exposition — so the shape those two had in common (origin or full URL,
+// credentials never echoed, early timestamp, status guard) now lives in test/load/promscrape, and only
+// this peer's metric contract lives here.
+type Client struct{ inner *promscrape.Client }
 
 // Option configures a Client.
-type Option func(*Client)
+type Option func(*clientOptions)
+
+type clientOptions struct{ http *http.Client }
 
 // WithHTTPClient replaces the HTTP client used for scraping. The scrape deadline comes from the context
 // passed to Scrape, so a client set here needs no timeout of its own.
 func WithHTTPClient(c *http.Client) Option {
-	return func(cl *Client) {
+	return func(o *clientOptions) {
 		if c != nil {
-			cl.http = c
+			o.http = c
 		}
 	}
 }
@@ -502,38 +499,29 @@ func WithHTTPClient(c *http.Client) Option {
 // An endpoint may carry credentials. They are used for the request and never repeated back: no error
 // returned here, nor any produced later by this client, echoes the raw endpoint.
 func NewClient(endpoint string, opts ...Option) (*Client, error) {
-	u, err := url.Parse(endpoint)
-	if err != nil {
-		// url.Error prints the raw URL it failed on, credentials included, so only the reason is
-		// reported — the endpoint is precisely the string that could not be parsed, hence not redacted
-		// either.
-		var uerr *url.Error
-		if errors.As(err, &uerr) {
-			err = uerr.Err
-		}
-		return nil, fmt.Errorf("gatewaymetrics: parse endpoint: %w", err)
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return nil, fmt.Errorf("gatewaymetrics: endpoint %q needs an http or https scheme", u.Redacted())
-	}
-	if u.Host == "" {
-		return nil, fmt.Errorf("gatewaymetrics: endpoint %q has no host", u.Redacted())
-	}
-	if p := strings.TrimSuffix(u.Path, "/"); p == "" {
-		u.Path = "/metrics"
-	}
-
-	c := &Client{url: u.String(), redacted: u.Redacted(), http: &http.Client{}}
+	var o clientOptions
 	for _, opt := range opts {
-		opt(c)
+		opt(&o)
 	}
-	return c, nil
+	var popts []promscrape.Option
+	if o.http != nil {
+		popts = append(popts, promscrape.WithHTTPClient(o.http))
+	}
+	inner, err := promscrape.New(promscrape.Config{
+		Namespace:   "gatewaymetrics",
+		Endpoint:    endpoint,
+		DefaultPath: "/metrics",
+	}, popts...)
+	if err != nil {
+		return nil, err
+	}
+	return &Client{inner: inner}, nil
 }
 
 // URL reports the metrics URL the client scrapes, after any "/metrics" was appended, with any password
 // masked. It is a diagnostic accessor — callers log it — so it returns the redacted form rather than
 // url.URL.String, which does not mask userinfo.
-func (c *Client) URL() string { return c.redacted }
+func (c *Client) URL() string { return c.inner.URL() }
 
 // Scrape takes one reading, stamping it with the instant just before the request goes out.
 //
@@ -545,19 +533,14 @@ func (c *Client) URL() string { return c.redacted }
 //
 // The context governs the whole exchange, connection included.
 func (c *Client) Scrape(ctx context.Context) (Snapshot, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url, nil)
+	var snap Snapshot
+	err := c.inner.Scrape(ctx, func(body io.Reader, at time.Time) error {
+		var err error
+		snap, err = Parse(body, at)
+		return err
+	})
 	if err != nil {
-		return Snapshot{}, fmt.Errorf("gatewaymetrics: build request: %w", err)
+		return Snapshot{}, err
 	}
-	at := time.Now()
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return Snapshot{}, fmt.Errorf("gatewaymetrics: scrape %s: %w", c.redacted, err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		return Snapshot{}, fmt.Errorf("gatewaymetrics: scrape %s: status %d, want 200", c.redacted, resp.StatusCode)
-	}
-	return Parse(resp.Body, at)
+	return snap, nil
 }
