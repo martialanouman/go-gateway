@@ -411,7 +411,7 @@ type countingProducer struct {
 }
 
 func newCountingProducer(inner router.Producer) *countingProducer {
-	return &countingProducer{inner: inner, buckets: make([]atomic.Uint64, len(produceBounds())+1)}
+	return &countingProducer{inner: inner, buckets: make([]atomic.Uint64, len(produceBounds)+1)}
 }
 
 func (p *countingProducer) Produce(ctx context.Context, rec kafka.Record) error {
@@ -434,29 +434,6 @@ func (p *countingProducer) snapshot() (count, nanos uint64, buckets []uint64) {
 		buckets[i] = p.buckets[i].Load()
 	}
 	return p.ok.Load(), p.nanos.Load(), buckets
-}
-
-// produceBucket is the index d falls in: bucket i holds (bounds[i-1], bounds[i]], and the last one
-// everything above the top edge. It must agree with p99Interval's reading of the same slice — which is
-// why both sides read produceBounds rather than each carrying its own scale.
-func produceBucket(d time.Duration) int {
-	bounds := produceBounds()
-	for i, b := range bounds {
-		if d <= b {
-			return i
-		}
-	}
-	return len(bounds)
-}
-
-// deltaBuckets subtracts the opening reading from the closing one, so a palier reports its own window
-// and not everything since the producer was built.
-func deltaBuckets(before, after []uint64) []uint64 {
-	out := make([]uint64, len(after))
-	for i := range after {
-		out[i] = after[i] - before[i]
-	}
-	return out
 }
 
 // countingConsumer records the SHAPE of each poll batch: how many records, and across how many

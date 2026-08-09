@@ -95,18 +95,50 @@ func laneShape(batches, records, lanesSum uint64, partitions int) string {
 
 // produceBounds are the upper edges of the produce histogram, log2-spaced.
 //
-// They live here, beside the renderer and outside the build tag, because the decorator that fills the
-// buckets and the function that reads them have to agree on what a bucket means — two lists would
-// drift and nothing would say so.
+// It is a package-level value, computed once, and not a function: produceBucket runs on every single
+// produce of a palier — ~300 000 of them at sixteen lanes — and rebuilding the slice there allocated
+// 144 bytes per observation, some 43 MB per palier, inside the very path the histogram exists to
+// measure without disturbing.
+//
+// The whole bucketing convention lives in this file, outside the loadref build tag: the writer
+// (produceBucket) and the readers (p99Bucket, produceLatency) have to agree on what a bucket means, and
+// a convention split across a build tag cannot be exercised by the ordinary suite at all.
 //
 // The range is chosen to bracket the answer rather than to confirm it. step-201d put the blocked time
 // near 819 µs BY SUBTRACTION; bounds that started there could only agree with it. From 16 µs the
 // measurement can say "the produce is cheap and the cost is elsewhere", and up to 2 s it can say "the
 // broker stalls", which are the two findings that would change what step-207 provisions.
-func produceBounds() []time.Duration {
+var produceBounds = func() []time.Duration {
 	out := make([]time.Duration, 0, 18)
 	for d := 16 * time.Microsecond; d <= 2*time.Second; d *= 2 {
 		out = append(out, d)
+	}
+	return out
+}()
+
+// produceBucket is the index d falls in: bucket i holds (bounds[i-1], bounds[i]], and the last one
+// everything above the top edge. p99Bucket reads the same convention back — TestProduceBucketsAgreeWith
+// TheirReading is what keeps the two from drifting.
+func produceBucket(d time.Duration) int {
+	for i, b := range produceBounds {
+		if d <= b {
+			return i
+		}
+	}
+	return len(produceBounds)
+}
+
+// deltaBuckets subtracts the opening reading from the closing one, so a palier reports its own window
+// and not everything since the producer was built.
+//
+// Both readings come from one countingProducer.snapshot, sized by the same len(p.buckets), so their
+// lengths are equal by construction. The indexing is deliberately blind: were that invariant ever
+// broken, a panic naming the line is the right outcome. A length guard here would turn a real defect
+// into a plausible number published without a word — the failure mode this whole file exists to avoid.
+func deltaBuckets(before, after []uint64) []uint64 {
+	out := make([]uint64, len(after))
+	for i := range after {
+		out[i] = after[i] - before[i]
 	}
 	return out
 }
@@ -153,37 +185,133 @@ func produceLatency(count, sumNanos uint64, buckets []uint64, window time.Durati
 // Never a single value: the edges are a factor of two apart, so interpolating inside one carries up to
 // 100% of error while reading exactly like a measurement (the lesson gatewaymetrics states at length).
 func p99Interval(buckets []uint64) string {
-	bounds := produceBounds()
+	i := p99Bucket(buckets)
+	switch {
+	case i < 0:
+		return "unknown"
+	case i == 0:
+		return fmt.Sprintf("at most %v", produceBounds[0])
+	case i > len(produceBounds)-1:
+		return fmt.Sprintf("over %v", produceBounds[len(produceBounds)-1])
+	default:
+		return fmt.Sprintf("in (%v, %v]", produceBounds[i-1], produceBounds[i])
+	}
+}
+
+// p99Bucket is the index of the bucket the 99th percentile falls in, or -1 when nothing was observed.
+//
+// It is separate from the rendering because that is the only way to test it against produceBucket
+// exactly: an assertion on the rendered string would pass against a reader off by one bucket.
+//
+// The target is floored at one observation. uint64(1 * 0.99) rounds to zero, and a reader stopping at
+// "seen >= 0" would answer with the first bucket whether or not anything landed in it.
+func p99Bucket(buckets []uint64) int {
 	var total uint64
 	for _, n := range buckets {
 		total += n
 	}
 	if total == 0 {
-		return "unknown"
+		return -1
 	}
-	target := uint64(float64(total) * 0.99)
+	target := max(uint64(float64(total)*0.99), 1)
 	var seen uint64
 	for i, n := range buckets {
 		seen += n
-		if seen < target {
-			continue
-		}
-		switch {
-		case i == 0:
-			return fmt.Sprintf("at most %v", bounds[0])
-		case i > len(bounds)-1:
-			return fmt.Sprintf("over %v", bounds[len(bounds)-1])
-		default:
-			return fmt.Sprintf("in (%v, %v]", bounds[i-1], bounds[i])
+		if seen >= target {
+			return i
 		}
 	}
-	return "unknown"
+	return -1
+}
+
+// TestProduceBucketsAgreeWithTheirReading is the guard the first version of this code did not have.
+//
+// The bucketing convention — bucket i holds (bounds[i-1], bounds[i]] — is upheld by two functions:
+// produceBucket writes, p99Bucket reads. They must agree exactly, and nothing forced them to: the
+// writer used to live behind the loadref build tag and the reader outside it, so the ordinary suite
+// could not exercise the round trip at all. One of them switching < for <= would move every quantile by
+// a full bucket, silently.
+//
+// It asserts that the chosen bucket CONTAINS the observation. Comparing produceBucket against a reader
+// fed by produceBucket itself would be circular — it would only prove that an index survives a round
+// trip, which holds under any convention, including a wrong one.
+func TestProduceBucketsAgreeWithTheirReading(t *testing.T) {
+	bounds := produceBounds
+	for _, d := range []time.Duration{
+		time.Nanosecond,             // below the first edge
+		bounds[0],                   // exactly on it — the boundary < and <= disagree about
+		bounds[0] + time.Nanosecond, // just past it
+		500 * time.Microsecond,      // mid-scale
+		bounds[len(bounds)-1],       // exactly on the top edge
+		2 * bounds[len(bounds)-1],   // past the top: the overflow bucket
+	} {
+		i := produceBucket(d)
+
+		// The convention p99Interval renders: bucket i is (bounds[i-1], bounds[i]].
+		if i > 0 && d <= bounds[i-1] {
+			t.Errorf("%v landed in bucket %d, whose interval starts above it at %v", d, i, bounds[i-1])
+		}
+		if i < len(bounds) && d > bounds[i] {
+			t.Errorf("%v landed in bucket %d, whose interval ends below it at %v", d, i, bounds[i])
+		}
+		if i == len(bounds) && d <= bounds[len(bounds)-1] {
+			t.Errorf("%v went to the overflow bucket although it is under the top edge %v",
+				d, bounds[len(bounds)-1])
+		}
+
+		// And the reader lands on the same bucket when that is the only one carrying anything.
+		buckets := make([]uint64, len(bounds)+1)
+		buckets[i] = 100
+		if got := p99Bucket(buckets); got != i {
+			t.Errorf("%v was written to bucket %d and read back from %d", d, i, got)
+		}
+	}
+}
+
+// TestProduceBucketAllocatesNothing guards the one property no functional assertion can reach.
+//
+// produceBucket runs on every produce of a palier — ~300 000 at sixteen lanes. The first version
+// rebuilt the bounds slice on each call: 144 bytes an observation, ~43 MB a palier, allocated inside
+// the path whose whole purpose is to time that path without disturbing it. The measurement survived it
+// (~30 ns against a 188-507 µs produce), but an instrument that adds garbage collection to what it
+// measures is one regression away from mattering.
+func TestProduceBucketAllocatesNothing(t *testing.T) {
+	if n := testing.AllocsPerRun(100, func() { produceBucket(500 * time.Microsecond) }); n != 0 {
+		t.Errorf("produceBucket allocates %v times per call, and it runs once per produce", n)
+	}
+}
+
+// TestP99BucketIgnoresEmptyLeadingBuckets: with a single observation the 99th-percentile target rounds
+// down to zero, and a reader that stops at "seen >= target" would name the first bucket — empty — as
+// the answer. Marginal at the bench's hundreds of thousands of samples, wrong at any scale.
+func TestP99BucketIgnoresEmptyLeadingBuckets(t *testing.T) {
+	buckets := make([]uint64, len(produceBounds)+1)
+	buckets[3] = 1
+
+	if got := p99Bucket(buckets); got != 3 {
+		t.Errorf("a lone observation in bucket 3 must read back from 3, got %d", got)
+	}
+}
+
+// TestDeltaBucketsSubtractsTheOpeningReading pins the direction of the subtraction.
+//
+// Reversed, it underflows: these are unsigned counters, so `before - after` does not yield a negative
+// number that someone would notice — it yields a value near 2^64 that lands in the histogram and reads
+// as a produce that took several centuries.
+func TestDeltaBucketsSubtractsTheOpeningReading(t *testing.T) {
+	got := deltaBuckets([]uint64{1, 2, 0}, []uint64{5, 9, 4})
+	want := []uint64{4, 7, 4}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("deltaBuckets = %v, want %v", got, want)
+		}
+	}
 }
 
 // TestProduceLatencyRefusesToDivide: an empty histogram means the produce path was never exercised,
 // which is a finding. A mean of zero reads as "the produce is free", which is its opposite.
 func TestProduceLatencyRefusesToDivide(t *testing.T) {
-	got := produceLatency(0, 0, make([]uint64, len(produceBounds())+1), 10*time.Second, 50000)
+	got := produceLatency(0, 0, make([]uint64, len(produceBounds)+1), 10*time.Second, 50000)
 	if strings.Contains(got, "µs") || strings.Contains(got, "%") {
 		t.Errorf("an empty histogram must not be rendered as a latency or a share: %s", got)
 	}
@@ -198,7 +326,7 @@ func TestProduceLatencyRefusesToDivide(t *testing.T) {
 // message (10 s / 25 000 = 400 µs); the share is 205%, i.e. the produce alone costs twice what a
 // message may spend.
 func TestProduceLatencySplitsTheBudget(t *testing.T) {
-	buckets := make([]uint64, len(produceBounds())+1)
+	buckets := make([]uint64, len(produceBounds)+1)
 	buckets[0] = 50000
 	got := produceLatency(50000, uint64(41*time.Second), buckets, 10*time.Second, 25000)
 
@@ -227,7 +355,7 @@ func TestProduceLatencySplitsTheBudget(t *testing.T) {
 // TestProduceLatencyNamesWhatItExcludes: the figure is a share of the per-message budget, not the whole
 // of it. Without the clause a reader takes it for the message's cost and stops looking.
 func TestProduceLatencyNamesWhatItExcludes(t *testing.T) {
-	buckets := make([]uint64, len(produceBounds())+1)
+	buckets := make([]uint64, len(produceBounds)+1)
 	buckets[0] = 1000
 	got := produceLatency(1000, uint64(time.Second), buckets, 10*time.Second, 1000)
 	if !strings.Contains(got, "NOT counted") {
@@ -239,7 +367,7 @@ func TestProduceLatencyNamesWhatItExcludes(t *testing.T) {
 // Interpolating inside a bucket whose edges are a factor of two apart carries up to 100% of error while
 // reading exactly like a measurement — the lesson gatewaymetrics already paid for.
 func TestProduceLatencyBoundsTheQuantile(t *testing.T) {
-	bounds := produceBounds()
+	bounds := produceBounds
 	buckets := make([]uint64, len(bounds)+1)
 	// 990 observations in [512µs, 1ms), 10 above it: the 99th percentile of 1000 falls in the first.
 	lower := indexOfBound(t, bounds, 512*time.Microsecond)
