@@ -56,6 +56,8 @@ const (
 	CheckBreaker = "breaker"
 	// CheckPeerCeiling places the run below the ceiling measured in D3.
 	CheckPeerCeiling = "below peer ceiling"
+	// CheckBehind is the share of the window the injector itself was late for.
+	CheckBehind = "injector on schedule"
 )
 
 // Criteria are the bars a reference run has to clear. They live with the caller rather than in a
@@ -87,6 +89,13 @@ type Criteria struct {
 
 	// IngestP99Budget is the §1.2 acceptance budget (250 ms).
 	IngestP99Budget time.Duration
+
+	// MaxBehindFraction is the share of the window's attempts the injector may start late before the
+	// run stops being about the gateway at all. Past it the achieved rate is a property of THIS
+	// HARNESS: the injector asked for a rate it could not deliver, and every figure downstream is
+	// bounded by its own shortfall rather than by anything under test. Like PeerCeiling, zero is a bar
+	// and not a switch — a caller that does not set it is asking for an injector that was never late.
+	MaxBehindFraction float64
 
 	// PeerCeiling is the submit_sm rate the test peer was measured to absorb (D3). A run at or above it
 	// measures the peer, not the gateway. Zero means "never measured", which fails.
@@ -136,6 +145,12 @@ type Measurement struct {
 
 	// Lag is the consumer-lag trace over the window, in arrival order.
 	Lag []LagSample
+
+	// Behind is how many of the window's attempts started after their scheduled instant — the injector
+	// could not keep up. Read against Accepted+Errors it gives the share of the window that is a
+	// property of the harness rather than of the gateway. It comes from the injector, like Accepted and
+	// Errors, and it is windowed the same way (see steady.Sample.Late).
+	Behind uint64
 
 	// BreakerClosed reports the connector breaker's state at the end of the window.
 	BreakerClosed bool
@@ -218,6 +233,7 @@ func Evaluate(m Measurement, c Criteria) Verdict {
 		balanceCheck(m, c, v),
 		lagCheck(m, c, v),
 		ingestCheck(m, c),
+		behindCheck(m, c),
 		errorsCheck(m),
 		breakerCheck(m),
 		peerCeilingCheck(v.OutputRate, c),
@@ -326,6 +342,33 @@ func breakerCheck(m Measurement) Check {
 
 // peerCeilingCheck places the run under the figure D3 measured. An unmeasured ceiling fails: D2 asks
 // for a run BELOW a number, and there is no below without one.
+// behindCheck scores the injector against its own schedule.
+//
+// It is the clause that keeps a run from being read as the gateway's when the number it produced was
+// the harness's. inject.go has said so since it was written — "a large share means the achieved rate is
+// a property of this harness and not of the gateway" — but nothing applied it: the figure was printed
+// beside the verdict and never in it, so a run 17.3% behind was published with a footnote instead of
+// failing (step-201e).
+//
+// The share is taken over the window's own attempts, never over the run: warmup is where an injector
+// catches up to its schedule, so a run total would score the ramp-up and fail good measurements.
+func behindCheck(m Measurement, c Criteria) Check {
+	attempted := m.Accepted + m.Errors
+	if attempted == 0 {
+		return Check{
+			Name:   CheckBehind,
+			Detail: "no submission landed in the window, so the injector's own schedule cannot be scored",
+		}
+	}
+	share := float64(m.Behind) / float64(attempted)
+	return Check{
+		Name: CheckBehind,
+		Pass: share <= c.MaxBehindFraction,
+		Detail: fmt.Sprintf("%d of %d attempts started late (%.1f%%), budget %.1f%%",
+			m.Behind, attempted, 100*share, 100*c.MaxBehindFraction),
+	}
+}
+
 func peerCeilingCheck(outputRate float64, c Criteria) Check {
 	if c.PeerCeiling <= 0 {
 		return Check{

@@ -112,6 +112,11 @@ func refCriteria() steady.Criteria {
 		MaxLagSlopeFraction:  0.01,
 		MinLagSamples:        6,
 		IngestP99Budget:      250 * time.Millisecond,
+		// Five percent. Below it the injector's own shortfall is noise against the figure being read;
+		// above it the achieved rate is a property of this harness, which inject.go has said since it
+		// was written and nothing enforced until step-201e. The runs already on record place the bar:
+		// 1.7% at 2 400 msg/s carried a verdict, 6.4% and 17.3% at 4 800 carried a footnote instead.
+		MaxBehindFraction: 0.05,
 	}
 }
 
@@ -215,6 +220,7 @@ func TestReferenceRun(t *testing.T) {
 		SubmitRejected: rejectedAfter - rejectedBefore,
 		IngestP99:      win.P99,
 		IngestSamples:  win.Samples,
+		Behind:         win.Behind,
 		Lag:            lags.between(from, to),
 		BreakerClosed:  s.breakerClosed(t),
 	}
@@ -222,7 +228,10 @@ func TestReferenceRun(t *testing.T) {
 
 	t.Logf("\n===== step-201 D2 reference run =====\n"+
 		"target %.0f msg/s over %d workers · warmup %v · window %v · settle %v\n"+
-		"injector: %d attempted, %d behind schedule (%.1f%%), first error: %v\n"+
+		// Whole run, warmup and settle included — deliberately NOT the figure the verdict scores, which
+		// is the window's own (CheckBehind). The two differ, and saying which is which here is what
+		// stops a reader from taking one for the other.
+		"injector over the whole run: %d attempted, %d behind schedule (%.1f%%), first error: %v\n"+
 		"ingest latency in window: p50 %v · p99 %v · max %v\n"+
 		"end-to-end (gateway histogram): %s\n"+
 		"backlog by topic across the window: %s\n"+
