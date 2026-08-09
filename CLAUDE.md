@@ -1,101 +1,114 @@
 # CLAUDE.md — Passerelle SMS (Go)
 
-Manuel de travail pour Claude Code sur ce dépôt. Lis-le en entier avant d'écrire du code. Il est court volontairement : les détails vivent dans les guides et contrats référencés en bas.
+Manuel de travail pour Claude Code sur ce dépôt. Il ne porte que ce qu'aucune commande ni aucun fichier
+ne dit déjà : les invariants, les couplages invisibles, l'ordre qu'on ne peut pas deviner. Les
+commandes : `make help`. Les services : `ls cmd/`. Ce que le linter fait échouer n'est pas répété ici.
 
 ## Avant d'ouvrir un fichier
 
 Tout travail de code s'ouvre par le skill `using-agent-skills`, invoqué *avant* la première lecture
 de code — pas une fois le travail commencé.
 
-Deux exigences non négociables :
-
 - **TDD** — un rouge lu, échouant pour la bonne raison (« symbole inexistant » le prouve ;
-  « connexion refusée » ne prouve rien), avant toute implémentation ; aucun « vert » avant d'avoir
-  vu une mutation tomber. Une assertion jamais vue échouer n'en est pas une.
+  « connexion refusée » ne prouve rien), avant toute implémentation ; aucun « vert » avant d'avoir vu
+  une mutation tomber. Une assertion jamais vue échouer n'en est pas une.
 - **DoD** — aucune PR ne sort sans la Definition of Done ci-dessous, satisfaite en entier.
 
 ## Ce qu'on construit
 
-Une **passerelle SMS** en Go : elle reçoit des SMS (SMPP entrant + REST), les route vers des SMSC opérateurs (SMPP sortant), et gère la voie retour (MO/DLR). Double protocole sur **un pipeline unique**. Cible : agrégateur national, 8 000 SMS/s soutenu, 15 000 en pic. Ce n'est **pas** une plateforme de campagnes (pas de listes, modèles ni envoi programmé côté client).
+Une **passerelle SMS** en Go : elle reçoit des SMS (SMPP entrant + REST), les route vers des SMSC
+opérateurs (SMPP sortant), et gère la voie retour (MO/DLR). Double protocole sur **un pipeline
+unique**. Cible : agrégateur national, 8 000 SMS/s soutenu, 15 000 en pic. Ce n'est **pas** une
+plateforme de campagnes (pas de listes, modèles ni envoi programmé côté client).
 
-## Commandes
+## Architecture
 
-```bash
-make up          # docker-compose : Postgres 18, Redis/Dragonfly, Kafka, ClickHouse
-make migrate     # applique migrations/ (dérivées de schema_passerelle_sms.sql)
-make build       # compile tous les cmd/
-make test        # go test -race ./...   (OBLIGATOIRE avant toute PR)
-make lint        # golangci-lint (config .golangci.yml)
-make run SVC=router-svc   # lance un service
-make fake-smsc   # démarre le faux SMSC in-repo (pair de test — voir Tests)
-```
+Trois plans : **contrôle** (config dans PostgreSQL, exposée par `admin-api-svc`, poussée au plan de
+données par `config-sync`), **données** (le traitement), **observabilité** (Prometheus/OTel/ClickHouse).
 
-## Architecture (carte mentale)
+Magasins, et pourquoi chacun : **PostgreSQL 18** = plan de contrôle + autorité des soldes ;
+**Redis/Dragonfly** = état opérationnel (sessions, débit, Bloom, cache de solde) ; **Kafka** = plan de
+données durable (`mt.inbound` → `mt.routed` → …) ; **ClickHouse** = CDR/analytique.
 
-Trois plans : **contrôle** (config dans PostgreSQL, exposé par `admin-api-svc`, poussé au plan de données par `config-sync`), **données** (le traitement), **observabilité** (Prometheus/OTel/ClickHouse).
+**Ordre du pipeline MT (NON réordonnable)** : auth → ACK durable Kafka → E.164 → autorisation sender
+ID → opt-out → anti-spam → résolution de route (numéro exact → script → déclaratif) →
+encodage/segmentation → débit → réservation crédit MT → envoi SMSC → capture/libère → CDR.
 
-Services (`cmd/`) : `smpp-server-svc` (binds utilisateurs), `rest-api-svc` (HTTP), `router-svc` (pipeline MT), `connector-pool-svc` (envoi SMSC), `mo-dlr-router-svc` (retour), `session-manager-svc` (registre Redis), `billing-svc` (opt-in), `content-key-svc` (garde des clés de contenu, seul détenteur de la KMS), `admin-api-svc`, `config-sync`.
-
-Magasins : **PostgreSQL 18** = plan de contrôle + autorité des soldes ; **Redis/Dragonfly** = état opérationnel (sessions, débit, Bloom, cache de solde) ; **Kafka** = plan de données durable (`mt.inbound` → `mt.routed` → …) ; **ClickHouse** = CDR/analytique.
-
-**Ordre du pipeline MT (NON réordonnable)** : auth → ACK durable Kafka → E.164 → autorisation sender ID → opt-out → anti-spam → résolution de route (numéro exact → script → déclaratif) → encodage/segmentation → débit → réservation crédit MT → envoi SMSC → capture/libère → CDR.
-
-## Layout du dépôt
-
-```
-cmd/<service>/main.go   internal/smpp  internal/pipeline  internal/routing
-internal/billing  internal/connector  internal/storage/{postgres,redis,kafka,clickhouse}
-internal/config  internal/observability  internal/platform  api/  migrations/  deploy/
-```
-Tout le code métier vit sous `internal/`. Interfaces définies côté consommateur. Détail : `convention-style-go.md` §2.
+Tout le code métier vit sous `internal/` ; `cmd/<service>/main.go` ne fait que câbler. Interfaces
+définies **côté consommateur**. Détail : `convention-style-go.md` §2.
 
 ## Règles d'or (toujours / jamais)
 
-- **JAMAIS le corps d'un message dans un log, un span ou un label.** Invariant testable, pas un réglage. Utilise le type `Body` masquant (`Reveal()` pour le clair). Réf : guide de codage §11.
-- **TOUJOURS `go test -race ./...` vert** avant une PR. Aucune goroutine sans condition d'arrêt. `context.Context` en 1er paramètre partout.
-- **SQL toujours paramétré** (pgx/sqlc). Jamais de concaténation → faille d'injection.
-- **Opérations Redis atomiques en Lua** (token-bucket, réserve/capture de crédit). Jamais un read-modify-write côté Go.
-- **Ordre du pipeline figé.** Le court-circuit « numéro exact » saute la *résolution de route*, **jamais** la conformité (sender ID, opt-out, anti-spam).
-- **Facturation idempotente par `message_id`** ; désactivée = zéro appel réseau (contrôle booléen en cache).
-- **Secrets** (mots de passe bind, clés API) stockés en hash, révélés une seule fois à la création/rotation. Comparaison en temps constant.
-- **Modèle d'erreur plat** `{ code, message, errors[] }` en `application/json` (surcharge `huma.NewError`). `code` = contrat partagé avec les `command_status` SMPP et `cdr.error_code`. Réf : guide d'ingénierie §11.
-- **Les contrats sont la source de vérité** : implémente pour conformer `openapi-*.yaml` et `schema_passerelle_sms.sql`, jamais l'inverse.
-- **Fiches de travail** : une step vit dans `tasks-todo/step-NNN.md` et porte son design sous `## Design arrêté`. Elle passe en `tasks-done/` par un `git mv`, dernier commit de sa PR.
-- **Versions & API des bibliothèques : TOUJOURS via Context7 (`ctx7`), jamais de mémoire.** Avant d'ajouter, de mettre à jour ou d'utiliser l'API d'une bibliothèque (chi, huma, pgx, franz-go, go-redis, goja… — §1.2 du plan d'exécution), récupère la **doc à jour** et la **version correcte**. Les API changent entre majeures (pgx v4→v5, huma v1→v2) et un usage périmé compile parfois.
+- **JAMAIS le corps d'un message dans un log, un span ou un label** *(invariant a)*. Type `Body`
+  masquant, `Reveal()` pour le clair. Réf : guide de codage §11.
+- **Ordre du pipeline figé** *(invariant b)*. Le court-circuit « numéro exact » saute la *résolution de
+  route*, **jamais** la conformité (sender ID, opt-out, anti-spam).
+- **Facturation idempotente par `message_id`** *(invariant c)* ; désactivée = zéro appel réseau
+  (contrôle booléen en cache).
+- Aucune goroutine sans condition d'arrêt.
+- **Opérations Redis atomiques en Lua** (token-bucket, réserve/capture de crédit). Jamais un
+  read-modify-write côté Go.
+- **Secrets** (mots de passe bind, clés API) stockés en hash, révélés une seule fois à la
+  création/rotation. Comparaison en temps constant.
+- **Modèle d'erreur plat** `{ code, message, errors[] }` en `application/json` (surcharge
+  `huma.NewError`). `code` = contrat partagé avec les `command_status` SMPP et `cdr.error_code`.
+  Réf : guide d'ingénierie §11.
+- **Les contrats sont la source de vérité** : implémente pour conformer `openapi-*.yaml` et
+  `schema_passerelle_sms.sql`, jamais l'inverse.
+- **Bibliothèques : la doc via `ctx7` avant d'écrire, jamais de mémoire** — chi, huma, pgx, franz-go,
+  go-redis, goja. La procédure est une règle globale ; ce qui est propre à ce dépôt, c'est que pgx
+  v4→v5 et huma v1→v2 ont cassé, et qu'un usage périmé compile parfois.
+- **Fiches de travail** : une step vit dans `tasks-todo/step-NNN.md` et porte son design sous
+  `## Design arrêté`. Elle passe en `tasks-done/` par un `git mv`, dernier commit de sa PR.
 
 ## Les 4 invariants (tests bloquants, verts à vie)
 
-a) le corps ne fuit dans aucune sérialisation ; b) un message routé par numéro exact traverse toutes les étapes de conformité ; c) la facturation est idempotente sous double livraison d'un même `message_id` ; d) `max_sessions` refuse le bind au-delà du quota.
+a) le corps ne fuit dans aucune sérialisation ; b) un message routé par numéro exact traverse toutes
+les étapes de conformité ; c) la facturation est idempotente sous double livraison d'un même
+`message_id` ; d) `max_sessions` refuse le bind au-delà du quota.
 
 ## Tests
 
-Pyramide : beaucoup d'unitaires (logique de domaine), des intégrations (`testcontainers-go` : Postgres/Redis/Kafka/ClickHouse), peu de bout-en-bout. Détail complet : `strategie-de-test-passerelle.md`.
+Pyramide : beaucoup d'unitaires (logique de domaine), des intégrations (`testcontainers-go` :
+Postgres/Redis/Kafka/ClickHouse), peu de bout-en-bout. Détail : `strategie-de-test-passerelle.md`.
 
-> **Le simulateur SMSC (projet séparé) n'est pas encore prêt.** En attendant, utilise le **faux SMSC minimal in-repo** (`internal/testutil/fakesmsc`, `make fake-smsc`) comme pair SMPP pour les jalons M2→M7. Le vrai simulateur ne sera requis qu'à M8 (injection de pannes). N'écris aucun test qui dépende du simulateur avant M8.
+Deux pairs SMPP, chacun son usage : le **faux SMSC in-repo** (`internal/testutil/fakesmsc`,
+`make fake-smsc`) pour les tests ordinaires, et le **vrai simulateur** (`internal/testutil/smscsim`,
+`make smsc-sim`) pour l'injection de pannes des tests de résilience.
 
 ## Definition of Done (chaque PR)
 
-`gofmt`/`goimports` verts • `golangci-lint` sans alerte • `go test -race` vert • critères d'acceptation de la tâche couverts par des tests • aucun invariant violé • godoc sur l'exporté • PR petite et focalisée (une tâche du plan d'exécution).
+- **`make check` vert** — il agrège les quatre portes de la CI (lint, `test -race`, `govulncheck`,
+  contrats). Les énumérer ici les ferait diverger de la CI ; c'est déjà arrivé.
+- Critères d'acceptation de la tâche couverts par des tests ; aucun invariant violé ; PR petite et
+  focalisée (une tâche du plan d'exécution).
+- **Relire ce que la step vient de périmer.** Une step ne fait pas qu'ajouter du code : elle rend faux
+  ce qui décrivait l'état d'avant — ici, un README, un godoc, une fiche encore ouverte. La PR qui
+  périme une affirmation la corrige, dans la même PR. Ce fichier a porté pendant deux jalons un « le
+  simulateur SMSC n'est pas encore prêt » qui interdisait des tests que le dépôt écrivait déjà : un
+  document faux coûte plus cher qu'un document absent, parce qu'on lui obéit.
 
-## Recettes fréquentes
+## Les trois couplages qu'on oublie
 
-- **Ajouter une dépendance** : d'abord `ctx7` (Context7) pour la bonne version et l'API à jour, puis `go get`, puis `make tidy`. Jamais de version devinée.
-- **Ajouter un code d'erreur** : 3 endroits en même temps — `internal/platform/errors` (sentinelle + mapping HTTP/SMPP), le champ `code` des deux `api/openapi-*.yaml`, et la §11.3 du guide d'ingénierie.
-- **Ajouter un endpoint Admin** : le déclarer d'abord dans `api/openapi-admin.yaml`, **bumper `version` dans `api/package.json`**, puis l'implémenter chi+huma pour conformer, puis test de contrat.
-- **Modifier un contrat API** : les contrats sont publiés comme package npm versionné et consommés par le tableau de bord (dépôt séparé). Tout changement d'un `api/openapi-*.yaml` exige un bump de `api/package.json` — majeur si `oasdiff` classe la rupture `ERR`. `make contracts` le vérifie. Procédure : `api/README.md`.
-- **Changer le schéma** : éditer `db/schema_passerelle_sms.sql` **et** ajouter une migration `golang-migrate` correspondante dans `migrations/`.
-- **Ajouter une étape de pipeline** : respecter l'ordre §6.1 ; émettre un span ; ne jamais y logger le corps.
+- **Ajouter un code d'erreur** : 3 endroits en même temps — `internal/platform/errors` (sentinelle +
+  mapping HTTP/SMPP), le champ `code` des deux `api/openapi-*.yaml`, et la §11.3 du guide
+  d'ingénierie.
+- **Toucher un contrat API** : les contrats sont publiés comme package npm versionné et consommés par
+  le tableau de bord (dépôt séparé). Tout changement d'un `api/openapi-*.yaml` — un endpoint Admin
+  neuf compris — exige un bump de `api/package.json`, majeur si `oasdiff` classe la rupture `ERR`.
+  Le contrat se déclare **avant** l'implémentation. `make contracts` le vérifie ; procédure :
+  `api/README.md`.
+- **Changer le schéma** : éditer `db/schema_passerelle_sms.sql` **et** ajouter une migration
+  `golang-migrate` correspondante dans `migrations/`.
 
 ## Index documentaire (source de vérité)
 
-Contrats (référencés par le code, source de vérité) : `db/schema_passerelle_sms.sql`, `api/openapi-public.yaml`, `api/openapi-admin.yaml`. Le reste vit sous `docs/`.
+Contrats, référencés par le code : `db/schema_passerelle_sms.sql`, `api/openapi-public.yaml`,
+`api/openapi-admin.yaml`.
 
-- Quoi/pourquoi : `docs/specification-technique-passerelle-sms.md`
-- Plan de construction : `docs/plan-execution-passerelle.md`
-- Patterns Go : `docs/guide-codage-go.md` — Style Go : `docs/convention-style-go.md`
-- Archi & exploitation : `docs/guide-ingenierie-passerelle-sms.md`
-- Décisions : `docs/adr/` (ADR-0001…)
-- Vocabulaire : `docs/glossaire-domaine-sms.md`
-- Tests : `docs/strategie-de-test-passerelle.md`
-- Pair de test SMSC : `docs/specification-technique-simulateur-smsc.md` (à venir)
-- Consommateur de l'Admin API : `docs/specification-technique-tableau-de-bord.md`
+Sous `docs/` : quoi/pourquoi `specification-technique-passerelle-sms.md` · plan de construction
+`plan-execution-passerelle.md` · patterns Go `guide-codage-go.md` · style `convention-style-go.md` ·
+archi & exploitation `guide-ingenierie-passerelle-sms.md` · décisions `adr/` (ADR-0001…) · vocabulaire
+`glossaire-domaine-sms.md` · tests `strategie-de-test-passerelle.md` · pair de test SMSC
+`specification-technique-simulateur-smsc.md` · consommateur de l'Admin API
+`specification-technique-tableau-de-bord.md`.

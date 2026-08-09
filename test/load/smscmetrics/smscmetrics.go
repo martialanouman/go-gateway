@@ -35,14 +35,14 @@ import (
 	"io"
 	"math"
 	"net/http"
-	"net/url"
 	"sort"
-	"strings"
 	"time"
 
 	dto "github.com/prometheus/client_model/go"
 	"github.com/prometheus/common/expfmt"
 	"github.com/prometheus/common/model"
+
+	"github.com/martialanouman/go-gateway/test/load/promscrape"
 )
 
 // MinWindow is the shortest interval Rate accepts between two readings. Below it the elapsed
@@ -433,23 +433,23 @@ func sampleValue(m *dto.Metric) float64 {
 }
 
 // Client scrapes one simulator's metrics endpoint. It is safe for concurrent use.
-type Client struct {
-	// url is the URL actually requested, userinfo included. It never leaves the client:
-	// everything logged or wrapped in an error uses redacted instead.
-	url      string
-	redacted string
-	http     *http.Client
-}
+//
+// The HTTP half — origin or full URL, credentials never echoed, early timestamp, status guard — is
+// test/load/promscrape, shared with the gateway and broker readers since step-201e. What stays here is
+// what cannot be shared: this peer's metric contract.
+type Client struct{ inner *promscrape.Client }
 
 // Option configures a Client.
-type Option func(*Client)
+type Option func(*clientOptions)
+
+type clientOptions struct{ http *http.Client }
 
 // WithHTTPClient replaces the HTTP client used for scraping. The scrape deadline comes from the
 // context passed to Scrape, so a client set here needs no timeout of its own.
 func WithHTTPClient(c *http.Client) Option {
-	return func(cl *Client) {
+	return func(o *clientOptions) {
 		if c != nil {
-			cl.http = c
+			o.http = c
 		}
 	}
 }
@@ -463,38 +463,29 @@ func WithHTTPClient(c *http.Client) Option {
 // for the request and never repeated back: no error returned here, nor any produced later by
 // this client, echoes the raw endpoint.
 func NewClient(endpoint string, opts ...Option) (*Client, error) {
-	u, err := url.Parse(endpoint)
-	if err != nil {
-		// url.Error prints the raw URL it failed on, credentials included, so only the
-		// reason is reported. The endpoint itself cannot be shown: it is precisely the
-		// string that could not be parsed, hence could not be redacted either.
-		var uerr *url.Error
-		if errors.As(err, &uerr) {
-			err = uerr.Err
-		}
-		return nil, fmt.Errorf("smscmetrics: parse endpoint: %w", err)
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return nil, fmt.Errorf("smscmetrics: endpoint %q needs an http or https scheme", u.Redacted())
-	}
-	if u.Host == "" {
-		return nil, fmt.Errorf("smscmetrics: endpoint %q has no host", u.Redacted())
-	}
-	if p := strings.TrimSuffix(u.Path, "/"); p == "" {
-		u.Path = "/metrics"
-	}
-
-	c := &Client{url: u.String(), redacted: u.Redacted(), http: &http.Client{}}
+	var o clientOptions
 	for _, opt := range opts {
-		opt(c)
+		opt(&o)
 	}
-	return c, nil
+	var popts []promscrape.Option
+	if o.http != nil {
+		popts = append(popts, promscrape.WithHTTPClient(o.http))
+	}
+	inner, err := promscrape.New(promscrape.Config{
+		Namespace:   "smscmetrics",
+		Endpoint:    endpoint,
+		DefaultPath: "/metrics",
+	}, popts...)
+	if err != nil {
+		return nil, err
+	}
+	return &Client{inner: inner}, nil
 }
 
 // URL reports the metrics URL the client scrapes, after any "/metrics" was appended, with any
 // password masked. It is a diagnostic accessor — callers log it — so it returns the redacted
 // form rather than url.URL.String, which does not mask userinfo.
-func (c *Client) URL() string { return c.redacted }
+func (c *Client) URL() string { return c.inner.URL() }
 
 // Scrape takes one reading, stamping it with the instant just before the request goes out —
 // not the instant the body finished arriving.
@@ -509,21 +500,12 @@ func (c *Client) URL() string { return c.redacted }
 //
 // The context governs the whole exchange, connection included.
 func (c *Client) Scrape(ctx context.Context) (Snapshot, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url, nil)
-	if err != nil {
-		return Snapshot{}, fmt.Errorf("smscmetrics: build request: %w", err)
-	}
-	at := time.Now()
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return Snapshot{}, fmt.Errorf("smscmetrics: scrape %s: %w", c.redacted, err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		return Snapshot{}, fmt.Errorf("smscmetrics: scrape %s: status %d, want 200", c.redacted, resp.StatusCode)
-	}
-	snap, err := Parse(resp.Body, at)
+	var snap Snapshot
+	err := c.inner.Scrape(ctx, func(body io.Reader, at time.Time) error {
+		var err error
+		snap, err = Parse(body, at)
+		return err
+	})
 	if err != nil {
 		return Snapshot{}, err
 	}

@@ -1,0 +1,59 @@
+# Trimmed from a real /public_metrics reading of redpandadata/redpanda:v24.2.18, captured on
+# 2026-08-08 while TestRouterConsumeCeiling held its window, with:
+#
+#	docker port <container> 9644
+#	curl -s http://127.0.0.1:<port>/public_metrics
+#
+# Captured UNDER LOAD on purpose: on an idle broker every histogram is zero, and a parser test against
+# it cannot tell "parsed correctly" from "parsed nothing at all".
+#
+# Trimmed, not synthesised: the full reading is 1495 lines and each histogram carries 19 buckets. The
+# values below are verbatim; only whole buckets in the middle of each histogram were dropped, so the
+# cumulative counts still rise and still end at the family's own _count.
+#
+# TWO ADDITIONS are not from the capture, and are marked where they appear: a second shard (this
+# broker was allocated one core, so nothing here would exercise shard aggregation) and a NaN. Every
+# other line is as the broker served it.
+# HELP redpanda_kafka_handler_latency_seconds Latency histogram of kafka requests
+# TYPE redpanda_kafka_handler_latency_seconds histogram
+redpanda_kafka_handler_latency_seconds_sum{handler="produce"} 12.6993
+redpanda_kafka_handler_latency_seconds_count{handler="produce"} 186369
+redpanda_kafka_handler_latency_seconds_bucket{handler="produce",le="0.000255"} 184525
+redpanda_kafka_handler_latency_seconds_bucket{handler="produce",le="0.000511"} 185517
+redpanda_kafka_handler_latency_seconds_bucket{handler="produce",le="0.001023"} 186116
+redpanda_kafka_handler_latency_seconds_bucket{handler="produce",le="0.002047"} 186246
+redpanda_kafka_handler_latency_seconds_bucket{handler="produce",le="33.554431"} 186369
+redpanda_kafka_handler_latency_seconds_bucket{handler="produce",le="+Inf"} 186369
+redpanda_kafka_handler_latency_seconds_sum{handler="fetch"} 0.020644
+redpanda_kafka_handler_latency_seconds_count{handler="fetch"} 86
+redpanda_kafka_handler_latency_seconds_bucket{handler="fetch",le="0.000255"} 64
+redpanda_kafka_handler_latency_seconds_bucket{handler="fetch",le="0.000511"} 82
+redpanda_kafka_handler_latency_seconds_bucket{handler="fetch",le="+Inf"} 86
+# HELP redpanda_kafka_request_latency_seconds Internal latency of kafka produce requests
+# TYPE redpanda_kafka_request_latency_seconds histogram
+redpanda_kafka_request_latency_seconds_sum{redpanda_request="produce"} 13.2456
+redpanda_kafka_request_latency_seconds_count{redpanda_request="produce"} 211304
+redpanda_kafka_request_latency_seconds_bucket{redpanda_request="produce",le="0.000255"} 209001
+redpanda_kafka_request_latency_seconds_bucket{redpanda_request="produce",le="0.001023"} 211102
+redpanda_kafka_request_latency_seconds_bucket{redpanda_request="produce",le="+Inf"} 211304
+redpanda_kafka_request_latency_seconds_sum{redpanda_request="consume"} 0.005462
+redpanda_kafka_request_latency_seconds_count{redpanda_request="consume"} 86
+redpanda_kafka_request_latency_seconds_bucket{redpanda_request="consume",le="0.000255"} 86
+redpanda_kafka_request_latency_seconds_bucket{redpanda_request="consume",le="+Inf"} 86
+# HELP redpanda_cpu_busy_seconds_total Total CPU busy time in seconds
+# TYPE redpanda_cpu_busy_seconds_total gauge
+redpanda_cpu_busy_seconds_total{shard="0"} 9.998203
+# ADDED, not captured: this broker ran on a single shard, so without a second series nothing here
+# would exercise summing across shards or counting how many there are.
+redpanda_cpu_busy_seconds_total{shard="1"} 4.001797
+# HELP redpanda_kafka_request_bytes_total Total number of bytes produced per topic
+# TYPE redpanda_kafka_request_bytes_total counter
+redpanda_kafka_request_bytes_total{redpanda_namespace="kafka",redpanda_request="produce",redpanda_topic="mt.routed"} 153197406
+redpanda_kafka_request_bytes_total{redpanda_namespace="kafka",redpanda_request="produce",redpanda_topic="loadref.inbound.p4.71f95de3"} 99598734
+redpanda_kafka_request_bytes_total{redpanda_namespace="kafka",redpanda_request="consume",redpanda_topic="loadref.inbound.p4.71f95de3"} 14129301
+redpanda_kafka_request_bytes_total{redpanda_namespace="kafka",redpanda_request="follower_consume",redpanda_topic="mt.routed"} 0
+redpanda_kafka_request_bytes_total{redpanda_namespace="kafka",redpanda_request="produce",redpanda_topic="mt.inbound"} 0
+# A family this reader does not know. It must be skipped in silence, not counted into anything.
+# HELP redpanda_rpc_request_errors_total Number of rpc errors
+# TYPE redpanda_rpc_request_errors_total counter
+redpanda_rpc_request_errors_total{redpanda_server="kafka"} 0
