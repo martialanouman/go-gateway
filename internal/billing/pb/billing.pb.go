@@ -268,7 +268,7 @@ func (x *ReserveRequest) GetCredits() int32 {
 // deterministic BUSINESS outcome carried in the response, not a gRPC error — callers must distinguish it
 // from a retryable transport fault. balance_after is the owner's MT balance after the reservation (or the
 // unchanged current balance when denied). code is drawn from the shared platform/errors vocabulary (e.g.
-// "insufficient_balance", which maps to REST 402) so the denial reason never drifts from the one `code`
+// "insufficient_credit", which maps to REST 402) so the denial reason never drifts from the one `code`
 // contract shared across REST / SMPP command_status / cdr.error_code; empty on success.
 type ReserveResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
