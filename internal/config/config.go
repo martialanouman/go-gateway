@@ -387,9 +387,10 @@ type GRPC struct {
 }
 
 // Billing configures a service's CLIENT connection to billing-svc (the gRPC server on :7001, step-144).
-// router-svc declares SectionBilling to reserve MT credit (step-145); connector-pool-svc will to capture
-// (step-146). It is a client dial target, not a listen port — distinct from GRPC, which is a server's own
-// listener.
+// Its two declarants are router-svc, which reserves MT credit (step-145), and connector-pool-svc, which
+// captures and releases it (step-146). It is a client dial target, not a listen port — distinct from GRPC,
+// which is a server's own listener. billing-svc itself does NOT declare it: it is the server, and it dials
+// nobody (step-193d).
 type Billing struct {
 	// Addr is the host:port of the billing gRPC service (billing-svc, :7001). The credit stage dials it
 	// lazily to reserve credit; billing being disabled for a customer is a cached-boolean decision upstream

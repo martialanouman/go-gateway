@@ -37,7 +37,7 @@ func run() error {
 	// (plan §1.4); the shared default is 8081.
 	cfg, err := config.Load(serviceName,
 		config.SectionOTel, config.SectionPostgres, config.SectionKafka, config.SectionClickHouse,
-		config.SectionRedis, config.SectionHTTP, config.SectionBilling)
+		config.SectionRedis, config.SectionHTTP)
 	if err != nil {
 		return err
 	}

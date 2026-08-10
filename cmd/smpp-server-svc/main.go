@@ -53,7 +53,7 @@ func run() error {
 	// against the ops port at boot. No HTTP business surface of its own: the SMPP listener is it.
 	cfg, err := config.Load(serviceName,
 		config.SectionOTel, config.SectionPostgres, config.SectionKafka, config.SectionClickHouse,
-		config.SectionRedis, config.SectionSMPP, config.SectionGRPC, config.SectionBilling)
+		config.SectionRedis, config.SectionSMPP, config.SectionGRPC)
 	if err != nil {
 		return err
 	}
