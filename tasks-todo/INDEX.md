@@ -175,3 +175,19 @@ promesse de contrat dont la source durable n'existe pas.
 Constat sorti de l'implémentation de step-209 : la course d'envoi est fermée, mais le rejeu manuel d'un
 dead-letter reste un chemin par lequel un message annulé peut repartir.
 - [ ] step-212 — Le rejeu d'un dead-letter ne doit pas remettre sur le fil un message annulé
+
+## Audit de conformité contrat ↔ implémentation (revue du 2026-08-10)
+`api/openapi-admin.yaml` déclare **133 opérations** sous `paths:` ; `internal/adminapi` en enregistre
+**103**. Les **30** restantes ont leurs tables en base et leur description dans la spec (§6.16, §6.17,
+§6.22, §6.23), le tableau de bord les attend — et **aucun jalon ne les porte**. Aucune garde ne voyait
+l'écart : les trois tests de contrat vont tous dans le sens *implémenté → déclaré*, jamais l'inverse.
+step-213 pose la garde et le triage ; les sept suivantes construisent les surfaces, dans l'ordre qu'on
+voudra.
+- [ ] step-213 — La garde contrat ↔ implémentation, et le triage des 30 (**bloque step-208**)
+- [ ] step-214 — Groupes de clients (§6.17) : la table existe, rien ne la remplit
+- [ ] step-215 — Webhooks : le repo est livré depuis M4, l'admin n'a jamais été écrite
+- [ ] step-216 — Réécriture de sender ID (§6.16) : ni l'admin, ni l'évaluation dans le pool
+- [ ] step-217 — Sessions SMPP : le flux temps réel existe, la lecture REST non
+- [ ] step-218 — Politiques de contenu (§6.23) : la plateforme n'a pas de défaut configurable
+- [ ] step-219 — Métriques agrégées en lecture : le flux pousse, rien ne se lit
+- [ ] step-220 — Réglages de compte créables mais non modifiables, et trois opérations orphelines
