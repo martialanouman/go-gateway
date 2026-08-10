@@ -1,0 +1,180 @@
+# step-213 — Le contrat déclare 30 opérations que personne n'implémente, et rien ne le dit
+
+> **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
+> **Dépend de :** — · **Bloque :** step-208 (go-live), step-214 → step-220
+
+## But
+
+Rendre **impossible** qu'une opération soit déclarée dans un contrat publié sans que quelqu'un ait dit
+ce qu'elle devient. Aujourd'hui l'écart entre le contrat Admin et le code est de 30 opérations, et
+aucune des gardes existantes ne le voit.
+
+Cette fiche produit une **garde et un triage**. Elle n'implémente aucune des 30 : leur construction est
+step-214 → step-220.
+
+## Le constat, mesuré
+
+| Source | Compte |
+|---|---:|
+| Opérations déclarées sous `paths:` dans `api/openapi-admin.yaml` | **133** |
+| Opérations enregistrées par `internal/adminapi` | **103** |
+| **Déclarées sans aucune implémentation** | **30** |
+| Implémentées hors contrat | 0 |
+
+Recoupé par deux sources indépendantes : l'extraction des `OperationID` du code, et la liste
+`m1Operations` de `internal/adminapi/contract_test.go` (103 entrées, tenue honnête par
+`TestGeneratedSpecRegistersNoOperationOutsideTheM1Surface`). Les deux concordent exactement.
+
+**Ce ne sont pas des reliquats.** Les tables existent (`control_plane.customer_groups`, `webhooks`,
+`sender_id_rewrite_rules`), la spec les décrit (§6.16, §6.17, §6.22, §6.23 ; les webhooks par le modèle
+§6.18 qui les attribue au compte SMPP, et par la §MO/DLR), et
+`docs/specification-technique-tableau-de-bord.md` les attend explicitement. Mais
+`docs/plan-execution-passerelle.md` ne mentionne ni §6.16, ni §6.17, ni §6.18 : **aucun jalon ne les
+porte**, et le plan s'arrête au go-live. Trois plans documentaires affirment que ces surfaces existent ;
+le code dit le contraire ; le tableau de bord, dépôt séparé, consomme le contrat en package npm et
+générerait des clients typés qui appellent des 404.
+
+**Pourquoi rien ne l'a signalé.** `contract_test.go` porte cinq tests, dont **quatre** itèrent
+`m1Operations` — et tous les quatre vont dans le sens **implémenté → déclaré** :
+
+- `TestContractCoversEveryM1Operation` — chaque opération de la liste est dans le contrat ;
+- `TestGeneratedSpecMatchesTheContractForEveryM1Operation` — et elle y correspond, champ par champ ;
+- `TestGeneratedSpecRegistersNoOperationOutsideTheM1Surface` — le service n'expose rien hors liste ;
+- `TestUpgradeOperationsDeclareTheirContract` — les opérations d'upgrade déclarent leur 101.
+
+Le sens inverse — *déclaré au contrat publié, implémenté par personne* — n'appartient à aucun d'eux.
+`make contracts` ne le couvre pas non plus : il refuse un changement de contrat sans bump de
+`api/package.json`, ce qui est une autre question.
+
+**Le même trou existe côté public, latent.** `internal/restapi/conformance_test.go` a déjà le bon
+vocabulaire (`implemented` + `deferred`, avec un commentaire qui explique que `cancel-message` a été
+*retiré* du contrat par ADR-0009) — mais sa boucle fait `if !implemented[cop.OperationID] { continue }`.
+Une opération ajoutée au YAML public sans être inscrite dans l'une des deux maps est ignorée en silence.
+Il n'y a aujourd'hui aucun écart (5 servies sur 5) : la garde est donc gratuite à poser, et ne le sera
+plus une fois qu'un écart existera.
+
+## Périmètre
+
+Des **tests** et un triage documenté. Aucun handler, aucun changement de contrat, aucune migration.
+
+### D1 — La garde, côté Admin
+
+Un test qui charge `api/openapi-admin.yaml` et exige **trois** propriétés. Une seule ne suffit pas — les
+deux autres ferment les modes de pourrissement de la liste, et c'est par elles que la garde vaut mieux
+qu'un compteur :
+
+1. **Couverture** — chaque opération déclarée sous `paths:` est classée : servie (dans `m1Operations`)
+   ou inscrite dans une nouvelle liste `deferred`. Une opération dans aucune des deux fait échouer le
+   test, en la nommant.
+2. **Exclusion mutuelle** — `m1Operations ∩ deferred = ∅`. Sans elle, step-214…220 y conduisent
+   mécaniquement : en servant une opération, elles devront l'ajouter à `m1Operations` (l'autre garde les
+   y force) mais **rien** ne les obligera à la retirer de `deferred` — et la suite reste verte avec une
+   ligne qui affirme « différée à step-214 » pour une opération en production.
+3. **Pas d'entrée périmée** — chaque entrée de `deferred` est encore déclarée sous `paths:`. C'est le
+   pendant de la couverture : sans elle, une opération retirée du contrat laisse sa ligne pour toujours.
+
+**Sur la forme de `deferred`, la fiche tranche** — parce que la version précédente se contredisait :
+elle exigeait une liste annotée *et* imposait le `map[string]bool` de `restapi`, qui ne peut porter
+aucune annotation. La forme retenue est une **map vers une struct** (`{reason, step string}`), avec
+l'assertion que ni `reason` ni `step` n'est vide : une annotation qu'aucun test ne lit est un
+commentaire, et un commentaire ne tient pas une liste de 30 lignes sur sept steps. Ce qui reste emprunté
+à `restapi`, c'est le **vocabulaire** (`implemented`/`deferred`) et l'idée, pas le type.
+
+**Clé sur l'`operationId`, pas sur (méthode, path).** Aucun test n'assert aujourd'hui l'`operationId`
+du **contrat** — `TestContractCoversEveryM1Operation` ne vérifie que l'existence du nœud à (path,
+méthode), et la comparaison stricte ne lit que celui du spec *généré*. Un `operationId` renommé côté
+contrat seul passe donc toutes les gardes actuelles ; clée sur l'`operationId`, celle-ci ferme ce trou
+sans rien coûter. Vérifié au préalable : les 133 `operationId` du contrat sont **uniques**.
+
+### D2 — La même garde, côté public
+
+Ajouter à `conformance_test.go` l'assertion de couverture qui lui manque : toute opération de `paths:`
+est dans `implemented` ∪ `deferred`. Zéro écart à absorber aujourd'hui (5 servies sur 5).
+
+**`deferred` y est vide**, donc la mutation « retirer une entrée de `deferred` » n'y est pas exerçable :
+elle se démontre sur D1. Décider si la forme annotée de D1 est rétro-appliquée ici — recommandé pour ne
+pas laisser deux formes — ou si `restapi` garde son `map[string]bool` tant que sa liste est vide.
+
+### D3 — Le triage des 30
+
+Chaque entrée de `deferred` porte sa raison et sa step. Le triage arrêté :
+
+| Surface | Ops | Step | État réel |
+|---|---:|---|---|
+| Groupes de clients (§6.17) | 7 | step-214 | table + affectation à la création + 2 filtres ; **aucun groupe créable** |
+| Webhooks admin | 4 | step-215 | repo `postgres/webhooks.go` livré en M4, aucune surface admin |
+| Réécriture de sender ID (§6.16) | 5 | step-216 | table + modèle sqlc ; **ni repo, ni admin, ni évaluation** |
+| Sessions REST | 3 | step-217 | `stream-sessions` existe, pas les trois opérations REST |
+| Politiques de contenu (§6.23) | 4 | step-218 | client : colonne présente ; **plateforme : aucune table** |
+| Métriques agrégées | 2 | step-219 | `stream-metrics` existe (push), rien en pull |
+| Comptes et routes | 5 | step-220 | dont **trois réglages créables et jamais modifiables** |
+
+Total 30. Le compte par surface fait partie de ce qui est vérifié : il a été faux d'une unité à la
+première rédaction (webhooks compté 5, faute d'un `get-webhook` que le contrat ne déclare pas).
+
+## Points d'implémentation clés
+
+- **Ne lire que `paths:`.** `api/openapi-public.yaml` déclare `on-mo` et `on-dlr` sous `webhooks:`
+  (OpenAPI 3.1) : ce sont des **callbacks sortants**, pas des endpoints servis. Une garde qui balaie le
+  document entier les compterait comme manquants et forcerait à les inscrire en `deferred`, ce qui
+  serait un mensonge de plus. Le piège est vérifié : une première mesure les a comptés.
+- **Ne pas confondre les clés d'un path-item avec ses opérations.** Le contrat Admin porte **59** clés
+  `parameters:` au niveau path-item (contre 47 `get`, 38 `post`, 29 `patch`, 19 `delete`) : un parcours
+  naïf des clés les compterait comme des opérations non classées, et la garde échouerait 59 fois au
+  premier run. Filtrer sur les verbes HTTP, comme le fait déjà le `switch` de
+  `TestGeneratedSpecRegistersNoOperationOutsideTheM1Surface`. C'est le piège qui mord le plus vite —
+  bien avant celui de `webhooks:`.
+- **Une liste `deferred` non annotée devient un fourre-tout.** Ce qui donne sa valeur à la garde n'est
+  pas le test, c'est l'obligation d'écrire une raison à côté de chaque ligne. Une entrée sans step ni
+  raison doit être aussi visible qu'une opération non classée — d'où l'assertion sur les champs vides,
+  et non un simple commentaire.
+- **Le sort de `list-customer-accounts` (§ step-220) est une décision, pas une évidence.**
+  `list-smpp-accounts` accepte déjà `customerId` **et** `groupId` en paramètres de requête : l'opération
+  dédiée est fonctionnellement redondante. La retirer du contrat est une rupture que `oasdiff` classera
+  `ERR` (bump majeur de `api/package.json`, dépôt du tableau de bord à prévenir). Trancher dans
+  step-220, pas ici.
+- **La garde ne doit pas figer le processus du dépôt.** CLAUDE.md impose que « le contrat se déclare
+  **avant** l'implémentation » : un écart contrat → code est donc *normal* pendant une step. Ce que la
+  garde interdit, c'est l'écart **non déclaré**. Une step qui ouvre un endpoint commence par l'inscrire
+  en `deferred` et l'en retire quand elle le sert — deux lignes de diff qui rendent l'intention lisible
+  en revue.
+
+## Tests
+
+- `D1`/`D2` : les deux gardes sont des tests ordinaires (pas de conteneur, pas de build tag) — elles
+  lisent un YAML et un spec généré en mémoire.
+- **Quatre mutations doivent tomber, une par propriété — toutes sur D1** (D2 ne peut en démontrer qu'une,
+  sa liste `deferred` étant vide) :
+  1. **ajouter** une opération au contrat sans toucher aux listes → la garde doit la nommer ;
+  2. **retirer** une opération de `deferred` en la laissant au contrat → même verdict ;
+  3. **inscrire** une opération déjà servie dans `deferred` → l'exclusion mutuelle doit la refuser ;
+  4. **laisser** dans `deferred` une opération retirée du contrat → l'entrée périmée doit être nommée.
+  La première seule ne prouve rien : une garde qui compare des tailles passe la première et rate les
+  trois autres. Précédent direct : step-201e a produit quatre tests creux, tous révélés par la mutation
+  et aucun par la relecture.
+- Vérifier que le triage est **exhaustif** en le recomptant depuis les sources, pas depuis la fiche :
+  les 30 lignes de `deferred` doivent être exactement l'écart entre les `operationId` de `paths:` et les
+  `OperationID` d'`internal/adminapi`.
+
+## Definition of Done
+
+- [ ] `make check` vert (lint · `test -race` · govulncheck · contrats)
+- [ ] toute opération des deux contrats est classée : servie ou différée avec raison **et** step
+- [ ] `m1Operations ∩ deferred = ∅` et aucune entrée `deferred` absente du contrat, tous deux assertés
+- [ ] les **quatre** mutations ont été **vues** tomber sur D1
+- [ ] aucune opération nouvellement servie, aucun contrat modifié
+
+## Hors périmètre
+
+**Un trou voisin, constaté et laissé ouvert :** la comparaison stricte
+(`TestGeneratedSpecMatchesTheContractForEveryM1Operation`) porte sur l'`operationId`, les codes de
+réponse et les schémas de requête/réponse — **pas sur les paramètres de requête**. Un `?groupId=`
+déclaré au contrat et non lu par le handler passerait donc inaperçu, comme passerait un paramètre
+implémenté que le contrat ne déclare pas. Aucun écart connu aujourd'hui ; le noter suffit ici, et
+l'élargissement de la comparaison reste à faire — son coût est le bruit qu'elle produira sur 103
+opérations, ce qui est précisément pourquoi elle n'appartient pas à cette fiche.
+
+L'implémentation des 30 → step-214 à step-220. Le retrait éventuel d'une opération du contrat, et le
+bump majeur qui l'accompagne → la step qui la porte. La couverture de `api/collections/admin-api.yaml`
+(déjà gardée par son propre test bloquant) et le versionnage du package npm (déjà couvert par
+`make contracts`).

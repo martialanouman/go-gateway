@@ -1,7 +1,7 @@
 # step-205 — TLS / SMPP-TLS / mTLS sur les transports
 
 > **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
-> **Dépend de :** — · **Bloque :** step-206
+> **Dépend de :** step-193c · **Bloque :** step-206
 
 ## But
 Chiffrer et authentifier les transports : TLS sur les APIs HTTP, SMPP-TLS sur les binds, mTLS entre
@@ -16,6 +16,10 @@ services internes (dont l'Admin API et le gRPC billing).
 ## Points d'implémentation clés
 - L'Admin API est **interne** et déjà pensée derrière un ingress mTLS (`internal/adminapi/api.go` :
   scheme « mTLS + operator bearer ») — matérialiser le mTLS ici.
+- **Prérequis : step-193c.** Le mTLS gRPC vise `billing-svc` et le TLS public vise `rest-api-svc` — deux
+  des **cinq** mains encore sans `wiring.go`/`wiring_test.go` (avec `content-key-svc`,
+  `session-manager-svc` et `config-sync`). Sans le patron, un handshake TLS raté reste un `log.Fatal`
+  que rien ne peut tester. Le travail appartient à step-193c, pas à cette fiche : ne pas l'absorber ici.
 - **`ctx7`** avant toute API `crypto/tls` avancée / config TLS de `grpc` (credentials) / `coder/websocket` TLS.
 - Certs/clés/CA fournis par config ou secrets, jamais commités ; rotation possible.
 - Ne pas casser les tests d'intégration : TLS activable par config (off en test unitaire, on en prod).

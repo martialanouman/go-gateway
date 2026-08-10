@@ -1,7 +1,7 @@
 # step-208 — Dérouler la checklist de mise en production (go-live)
 
 > **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
-> **Dépend de :** step-201b, step-203, step-204, step-206, step-207 · **Bloque :** —
+> **Dépend de :** step-201b, step-203, step-204, step-206, step-207, step-213 · **Bloque :** —
 
 ## But
 Clore M12 : dérouler la checklist de mise en production (guide d'ingénierie §15), consigner l'état de
@@ -43,6 +43,10 @@ chaque item et matérialiser la porte de go-live.
 - [ ] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck · gosec verts
 - [ ] les 4 invariants (a/b/c/d) re-vérifiés verts · checklist §15 entièrement cochée avec preuves
 - [ ] auth opérateur réelle active · NFR et politiques de panne consignés
+- [ ] **le contrat publié ne ment pas** : toute opération d'`openapi-admin.yaml` et d'`openapi-public.yaml`
+      est servie, ou différée avec sa raison et sa step (garde de step-213). Le contrat part en package
+      npm versionné vers le tableau de bord : une opération déclarée et non servie devient un client
+      typé qui appelle un 404.
 - [ ] dette du harnais soldée : verrou d'envoi en place, aucun secret de bind sur `argv`
 
 ## Hors périmètre

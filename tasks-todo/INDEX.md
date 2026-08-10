@@ -146,6 +146,8 @@ structurelles et à faire **avant** que M12 n'empile dessus.
 - [x] step-192 — Topic `webhook.retry` différé (sortir les retries du chemin chaud)
 - [x] step-193 — Câblage de router-svc / connector-pool-svc en constructeurs testables
 - [x] step-193b — Même patron pour mo-dlr-router-svc, admin-api-svc, smpp-server-svc
+- [ ] step-193c — Les cinq mains restées hors du patron (**bloque step-205 et step-207**) — le pari de
+  193b « à aligner si elles grossissent » a été perdu : `billing-svc` est la plus longue main du dépôt
 - [x] step-194 — Découper `connectorpool.go` (extraction du mapping SMPP/CDR)
 
 ## M12 — Durcissement, charge & mise en production
@@ -162,7 +164,8 @@ structurelles et à faire **avant** que M12 n'empile dessus.
 - [ ] step-205 — TLS / SMPP-TLS / mTLS sur les transports
 - [ ] step-206 — Auth opérateur réelle (OIDC/mTLS) remplaçant le stub M1
 - [ ] step-207 — Manifests deploy/ Kubernetes (Deployments, Services, HPA, PDB, probes)
-- [ ] step-208 — Dérouler la checklist de mise en production (go-live)
+- [ ] step-208 — Dérouler la checklist de mise en production (go-live) — dépend aussi de step-213 (le
+  contrat publié ne doit pas mentir)
 - [x] step-209 — `cancelled` ne doit plus enterrer un message réellement livré (course élargie par step-201c)
 
 ## Audit post-M11 — dettes du flux temps réel (revue du 2026-08-07)
@@ -175,3 +178,20 @@ promesse de contrat dont la source durable n'existe pas.
 Constat sorti de l'implémentation de step-209 : la course d'envoi est fermée, mais le rejeu manuel d'un
 dead-letter reste un chemin par lequel un message annulé peut repartir.
 - [ ] step-212 — Le rejeu d'un dead-letter ne doit pas remettre sur le fil un message annulé
+
+## Audit de conformité contrat ↔ implémentation (revue du 2026-08-10)
+`api/openapi-admin.yaml` déclare **133 opérations** sous `paths:` ; `internal/adminapi` en enregistre
+**103**. Les **30** restantes sont décrites par la spec (§6.16, §6.17, §6.22, §6.23) et attendues par le
+tableau de bord — la plupart ont même leur table en base — mais **aucun jalon ne les porte**. Aucune
+garde ne voyait l'écart : les tests de contrat vont tous dans le sens *implémenté → déclaré*, jamais
+l'inverse.
+step-213 pose la garde et le triage ; les sept suivantes construisent les surfaces, dans l'ordre qu'on
+voudra.
+- [ ] step-213 — La garde contrat ↔ implémentation, et le triage des 30 (bloque step-208)
+- [ ] step-214 — Groupes de clients (§6.17) : la table existe, rien ne la remplit
+- [ ] step-215 — Webhooks : le repo est livré depuis M4, l'admin n'a jamais été écrite
+- [ ] step-216 — Réécriture de sender ID (§6.16) : ni l'admin, ni l'évaluation dans le pool
+- [ ] step-217 — Sessions SMPP : le flux temps réel existe, la lecture REST non
+- [ ] step-218 — Politiques de contenu (§6.23) : la plateforme n'a pas de défaut configurable
+- [ ] step-219 — Métriques agrégées en lecture : le flux pousse, rien ne se lit
+- [ ] step-220 — Réglages de compte créables mais non modifiables, et trois opérations orphelines

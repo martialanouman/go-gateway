@@ -1,7 +1,7 @@
 # step-207 — Manifests deploy/ Kubernetes (Deployments, Services, HPA, PDB, probes)
 
 > **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
-> **Dépend de :** step-203 · **Bloque :** step-208
+> **Dépend de :** step-203, step-193c · **Bloque :** step-208
 
 ## But
 Fournir les manifests Kubernetes sous `deploy/` pour tous les services : Deployments, Services, HPA
@@ -30,6 +30,11 @@ Fournir les manifests Kubernetes sous `deploy/` pour tous les services : Deploym
 - **Ports** (§1.4) : port métier + port ops 9090 par service ; le port ops **jamais exposé publiquement**.
 - `/healthz` = liveness (échec → restart), `/readyz` = readiness (échec → retrait LB, pas de restart) —
   respecter la sémantique (§1.5) dans les probes.
+- **La readiness de `billing-svc` encode une décision que rien ne teste — c'est l'objet de step-193c.**
+  `cmd/billing-svc/main.go` écrit que ClickHouse y est en lecture seule et **PAS** une dépendance de
+  readiness : le reaper est un job périodique, donc une panne ClickHouse ne doit pas sortir billing-svc
+  du load balancer. Ce manifeste va s'appuyer sur cette propriété, aujourd'hui portée par un seul
+  commentaire. Une probe qui affirme une propriété non testée est un incident différé.
 - PDB cohérent avec le drain SMPP (step-203) : ne pas évincer tous les binds d'un connecteur d'un coup.
 - Secrets/certs (step-205) et config OIDC (step-206) injectés via Secrets/ConfigMaps, jamais en clair.
 - Ce sont des artefacts de déploiement : pas de code Go, mais versionnés et revus.
