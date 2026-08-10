@@ -22,9 +22,6 @@ import (
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/platform/supervisor"
-	"github.com/martialanouman/go-gateway/internal/session"
-	"github.com/martialanouman/go-gateway/internal/session/pb"
-	redisstore "github.com/martialanouman/go-gateway/internal/storage/redis"
 )
 
 // serviceName identifies this binary in logs, traces and metrics.
@@ -60,24 +57,11 @@ func run() error {
 	//nolint:contextcheck // Detaching is the point: see DrainTracing's comment.
 	defer observability.DrainTracing(shutdownTracing, cfg.ShutdownTimeout, logger)
 
-	rdb, err := redisstore.NewClient(ctx, cfg.Redis)
+	app, err := newSessionManagerApp(ctx, cfg, logger)
 	if err != nil {
-		return fmt.Errorf("open redis client: %w", err)
+		return err
 	}
-	defer func() { _ = rdb.Close() }()
-
-	grpcServer := grpc.NewServer()
-	pb.RegisterSessionRegistryServer(grpcServer,
-		session.NewServer(session.NewRegistry(rdb), redisstore.NewPubSubPublisher(rdb)))
-
-	// Redis is vital: without it the registry can neither enforce max_sessions nor answer a lookup, so
-	// a pod that cannot reach it must leave the load balancer (plan §1.5). The probe pings the client,
-	// not a TCP address.
-	redisCheck := redisstore.PingCheck("redis", rdb, cfg.Redis.Timeout)
-	ops, err := observability.NewOpsServer(cfg, logger, redisCheck)
-	if err != nil {
-		return fmt.Errorf("init ops server: %w", err)
-	}
+	defer app.close()
 
 	logger.InfoContext(ctx, "starting", "config", cfg)
 
@@ -85,9 +69,9 @@ func run() error {
 	// predictably rather than leaving a half-dead pod (guide de codage §5). Neither has a
 	// teardown-ordering constraint, so the unordered supervisor fits.
 	var g supervisor.Group
-	g.Add("ops server", func(c context.Context) error { return ops.Run(c, cfg.ShutdownTimeout) })
+	g.Add("ops server", func(c context.Context) error { return app.ops.Run(c, cfg.ShutdownTimeout) })
 	g.Add("grpc server", func(c context.Context) error {
-		return runGRPC(c, grpcServer, cfg.GRPC.Port, cfg.ShutdownTimeout, logger)
+		return runGRPC(c, app.grpc, cfg.GRPC.Port, cfg.ShutdownTimeout, logger)
 	})
 	if err := g.Run(ctx, logger); err != nil {
 		return err

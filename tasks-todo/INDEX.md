@@ -146,8 +146,11 @@ structurelles et à faire **avant** que M12 n'empile dessus.
 - [x] step-192 — Topic `webhook.retry` différé (sortir les retries du chemin chaud)
 - [x] step-193 — Câblage de router-svc / connector-pool-svc en constructeurs testables
 - [x] step-193b — Même patron pour mo-dlr-router-svc, admin-api-svc, smpp-server-svc
-- [ ] step-193c — Les cinq mains restées hors du patron (**bloque step-205 et step-207**) — le pari de
-  193b « à aligner si elles grossissent » a été perdu : `billing-svc` est la plus longue main du dépôt
+- [x] step-193c — Les cinq mains restées hors du patron — le premier test de câblage a trouvé que
+  `billing-svc` **paniquait au boot** depuis step-190 (label `action` hors vocabulaire borné)
+- [ ] step-193d — `billing-svc` lit `cfg.Billing.*` sans déclarer `SectionBilling` : personne ne la valide
+- [ ] step-193e — l'ordre de fermeture est une propriété du câblage que le test synthétique ne garde pas
+  (chez `admin-api-svc` il est load-bearing, et l'inverser laisserait toute la suite verte)
 - [x] step-194 — Découper `connectorpool.go` (extraction du mapping SMPP/CDR)
 
 ## M12 — Durcissement, charge & mise en production

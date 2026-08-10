@@ -19,7 +19,6 @@ import (
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/platform/supervisor"
-	redisstore "github.com/martialanouman/go-gateway/internal/storage/redis"
 )
 
 // serviceName identifies this binary in logs, traces and metrics.
@@ -54,37 +53,17 @@ func run() error {
 	//nolint:contextcheck // Detaching is the point: see DrainTracing's comment.
 	defer observability.DrainTracing(shutdownTracing, cfg.ShutdownTimeout, logger)
 
-	rdb, err := redisstore.NewClient(ctx, cfg.Redis)
+	app, err := newConfigSyncApp(ctx, cfg, logger)
 	if err != nil {
-		return fmt.Errorf("open redis client: %w", err)
+		return err
 	}
-	defer func() { _ = rdb.Close() }()
-
-	// The relay: subscribe to config:changed, coalesce, republish one invalidation on breaker:events.
-	pub := redisstore.NewPubSubPublisher(rdb)
-	relay := config.NewWatcher(
-		func(ctx context.Context) (config.Stream, error) {
-			return redisstore.Subscribe(ctx, rdb, config.ChannelConfigChanged), nil
-		},
-		func(ctx context.Context) error {
-			return pub.Publish(ctx, config.ChannelSnapshotInvalidation, []byte(`{"reason":"config"}`))
-		},
-		config.WithLogger(logger),
-	)
-
-	// Redis is vital: without it config-sync can neither hear a change nor announce one, so a pod that
-	// cannot reach it must leave the load balancer (plan §1.5). The probe pings the client.
-	redisCheck := redisstore.PingCheck("redis", rdb, cfg.Redis.Timeout)
-	ops, err := observability.NewOpsServer(cfg, logger, redisCheck)
-	if err != nil {
-		return fmt.Errorf("init ops server: %w", err)
-	}
+	defer app.close()
 
 	logger.InfoContext(ctx, "starting", "config", cfg)
 
 	var g supervisor.Group
-	g.Add("ops server", func(c context.Context) error { return ops.Run(c, cfg.ShutdownTimeout) })
-	g.Add("invalidation relay", relay.Run)
+	g.Add("ops server", func(c context.Context) error { return app.ops.Run(c, cfg.ShutdownTimeout) })
+	g.Add("invalidation relay", app.relay.Run)
 	if err := g.Run(ctx, logger); err != nil {
 		return err
 	}
