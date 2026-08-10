@@ -164,7 +164,8 @@ structurelles et à faire **avant** que M12 n'empile dessus.
 - [ ] step-205 — TLS / SMPP-TLS / mTLS sur les transports
 - [ ] step-206 — Auth opérateur réelle (OIDC/mTLS) remplaçant le stub M1
 - [ ] step-207 — Manifests deploy/ Kubernetes (Deployments, Services, HPA, PDB, probes)
-- [ ] step-208 — Dérouler la checklist de mise en production (go-live)
+- [ ] step-208 — Dérouler la checklist de mise en production (go-live) — dépend aussi de step-213 (le
+  contrat publié ne doit pas mentir)
 - [x] step-209 — `cancelled` ne doit plus enterrer un message réellement livré (course élargie par step-201c)
 
 ## Audit post-M11 — dettes du flux temps réel (revue du 2026-08-07)
@@ -186,7 +187,7 @@ garde ne voyait l'écart : les tests de contrat vont tous dans le sens *impléme
 l'inverse.
 step-213 pose la garde et le triage ; les sept suivantes construisent les surfaces, dans l'ordre qu'on
 voudra.
-- [ ] step-213 — La garde contrat ↔ implémentation, et le triage des 30 (**bloque step-208**)
+- [ ] step-213 — La garde contrat ↔ implémentation, et le triage des 30 (bloque step-208)
 - [ ] step-214 — Groupes de clients (§6.17) : la table existe, rien ne la remplit
 - [ ] step-215 — Webhooks : le repo est livré depuis M4, l'admin n'a jamais été écrite
 - [ ] step-216 — Réécriture de sender ID (§6.16) : ni l'admin, ni l'évaluation dans le pool
