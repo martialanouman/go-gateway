@@ -1,6 +1,6 @@
 # step-218 — Politiques de stockage de contenu (§6.23) : la plateforme n'a pas de défaut configurable
 
-> **Jalon :** M12 · **Statut :** À FAIRE
+> **Jalon :** Surfaces Admin déclarées au contrat, jamais construites (§6.23 `docs/specification-technique-passerelle-sms.md`) · **Statut :** À FAIRE
 > **Dépend de :** step-213 (triage) · **Bloque :** —
 
 ## But

@@ -1,7 +1,7 @@
 # step-214 — Groupes de clients (§6.17) : la table existe, rien ne la remplit
 
-> **Jalon :** M12 · **Statut :** À FAIRE
-> **Dépend de :** step-213 (triage) · **Bloque :** —
+> **Jalon :** Surfaces Admin déclarées au contrat, jamais construites (§6.17 `docs/specification-technique-passerelle-sms.md`) · **Statut :** À FAIRE
+> **Dépend de :** step-213 (triage) · **Bloque :** step-219
 
 ## But
 
@@ -66,7 +66,8 @@ décision de conception explicite, et créer un second chemin d'affectation.
 - [ ] `make check` vert (lint · `test -race` · govulncheck · contrats)
 - [ ] les 7 opérations servies, conformes au contrat déclaré (aucun changement de contrat attendu)
 - [ ] `api/collections/admin-api.yaml` synchronisée (test bloquant)
-- [ ] `tasks-todo/step-213.md` : les 7 lignes retirées de `deferred`
+- [ ] les 7 lignes retirées de la liste `deferred` posée par step-213 (elle vit dans le test de
+      contrat, pas dans la fiche)
 
 ## Hors périmètre
 

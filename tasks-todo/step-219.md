@@ -1,7 +1,7 @@
 # step-219 — Métriques agrégées en lecture : le flux pousse, rien ne se lit
 
-> **Jalon :** M12 · **Statut :** À FAIRE
-> **Dépend de :** step-213 (triage) · **Bloque :** —
+> **Jalon :** Surfaces Admin déclarées au contrat, jamais construites (`docs/specification-technique-tableau-de-bord.md`) · **Statut :** À FAIRE
+> **Dépend de :** step-213 (triage), step-214 (la ventilation par groupe) · **Bloque :** —
 
 ## But
 

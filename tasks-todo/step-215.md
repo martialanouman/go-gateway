@@ -1,6 +1,6 @@
 # step-215 — Webhooks : le repo est livré depuis M4, l'admin n'a jamais été écrite
 
-> **Jalon :** M12 · **Statut :** À FAIRE
+> **Jalon :** Surfaces Admin déclarées au contrat, jamais construites (§6.18 `docs/specification-technique-passerelle-sms.md`) · **Statut :** À FAIRE
 > **Dépend de :** step-213 (triage) · **Bloque :** —
 
 ## But
@@ -61,7 +61,8 @@ manque est la seule chose qu'un opérateur touche.
 - [ ] `make check` vert (lint · `test -race` · govulncheck · contrats)
 - [ ] les 4 opérations servies ; secret jamais relu ; unicité et `disabled` vérifiés côté remise
 - [ ] `api/collections/admin-api.yaml` synchronisée
-- [ ] `tasks-todo/step-213.md` : les 4 lignes retirées de `deferred`
+- [ ] les 4 lignes retirées de la liste `deferred` posée par step-213 (elle vit dans le test de
+      contrat, pas dans la fiche)
 
 ## Hors périmètre
 

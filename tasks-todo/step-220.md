@@ -1,6 +1,6 @@
 # step-220 — Réglages de compte créables mais non modifiables, et trois opérations orphelines
 
-> **Jalon :** M12 · **Statut :** À FAIRE
+> **Jalon :** Surfaces Admin déclarées au contrat, jamais construites (§6.19, §6.22 `docs/specification-technique-passerelle-sms.md`) · **Statut :** À FAIRE
 > **Dépend de :** step-213 (triage) · **Bloque :** —
 
 ## But

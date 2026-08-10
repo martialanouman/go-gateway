@@ -1,6 +1,6 @@
 # step-217 — Sessions SMPP : le flux temps réel existe, la lecture REST non
 
-> **Jalon :** M12 · **Statut :** À FAIRE
+> **Jalon :** Surfaces Admin déclarées au contrat, jamais construites (§6.18 `docs/specification-technique-passerelle-sms.md`) · **Statut :** À FAIRE
 > **Dépend de :** step-213 (triage) · **Bloque :** —
 
 ## But

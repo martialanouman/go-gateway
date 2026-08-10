@@ -1,7 +1,7 @@
 # step-216 — Réécriture de sender ID (§6.16) : ni l'admin, ni l'évaluation
 
-> **Jalon :** M12 · **Statut :** À FAIRE
-> **Dépend de :** step-213 (triage) · **Bloque :** —
+> **Jalon :** Surfaces Admin déclarées au contrat, jamais construites (§6.16 `docs/specification-technique-passerelle-sms.md`) · **Statut :** À FAIRE
+> **Dépend de :** step-213 (triage), step-201f (PR2 seulement) · **Bloque :** —
 
 ## But
 
@@ -29,11 +29,21 @@ connector-pool comme évaluant la réécriture avant l'envoi, et il ne l'évalue
 
 ## Périmètre — deux PRs
 
-**PR1 — repo + admin.** Les 5 opérations, sur le modèle des autres CRUD admin (`routes.go`,
-`sender_ids.go`). `test-sender-rewrite-rule` évalue une règle contre un échantillon **sans écrire** :
-c'est le seul endroit où un opérateur peut vérifier une règle avant de la publier.
+**PR1 — repo + CRUD.** Les **4** opérations de CRUD, sur le modèle des autres CRUD admin (`routes.go`,
+`sender_ids.go`). `test-sender-rewrite-rule` **n'en fait pas partie** : évaluer une règle contre un
+échantillon exige le moteur d'évaluation, et le dupliquer dans PR1 pour le remplacer en PR2 est du
+travail jeté. À la fin de PR1, cette cinquième opération reste donc dans `deferred`, avec pour raison
+« attend le moteur de PR2 » — c'est exactement l'usage que step-213 prévoit pour cette liste.
 
-**PR2 — évaluation dans connector-pool.** L'étage manquant du chemin chaud.
+**PR2 — moteur d'évaluation + câblage.** L'étage manquant du chemin chaud, **et**
+`test-sender-rewrite-rule`, qui l'expose sans écrire : c'est le seul endroit où un opérateur peut
+vérifier une règle avant de la publier, et il doit répondre exactement ce que le pool ferait.
+
+**Ordre vis-à-vis de la mesure de débit.** PR2 ajoute un étage au chemin d'envoi. Elle ne doit pas
+merger entre step-201f (qui attribue le plafond du pool) et step-201b (la campagne NFR) : step-201b
+mesurerait un pipeline différent de celui que step-201f a caractérisé, et le dimensionnement que
+step-201f doit à step-207 deviendrait périmé sans que personne ne le voie. Soit PR2 attend step-201b,
+soit elle déclare invalider la mesure et fait relancer le banc.
 
 ## Points d'implémentation clés
 
@@ -68,10 +78,21 @@ c'est le seul endroit où un opérateur peut vérifier une règle avant de la pu
 
 ## Definition of Done
 
+Une DoD par PR — chacune doit être atteignable seule.
+
+**PR1**
 - [ ] `make check` vert (lint · `test -race` · govulncheck · contrats)
-- [ ] les 5 opérations servies ; l'évaluation câblée dans connector-pool avec l'ordre §6.16 respecté
-- [ ] `original_source_addr` renseigné ; aucun invariant (a/b/c/d) violé
-- [ ] `api/collections/admin-api.yaml` synchronisée ; lignes retirées de `deferred` (step-213)
+- [ ] les 4 opérations de CRUD servies ; `test-sender-rewrite-rule` toujours en `deferred`, avec sa raison
+- [ ] `api/collections/admin-api.yaml` synchronisée ; les 4 lignes retirées de `deferred`
+- [ ] aucun changement du chemin d'envoi
+
+**PR2**
+- [ ] `make check` vert
+- [ ] évaluation câblée dans connector-pool avec l'ordre §6.16 respecté ; `original_source_addr` renseigné
+- [ ] `test-sender-rewrite-rule` servi, et il répond ce que le pool ferait
+- [ ] aucun invariant (a/b/c/d) violé ; la 5ᵉ ligne retirée de `deferred`
+- [ ] l'effet sur le débit du pool est mesuré, ou la mesure de step-201f est explicitement déclarée à
+      relancer
 
 ## Hors périmètre
 
