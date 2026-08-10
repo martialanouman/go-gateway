@@ -56,14 +56,16 @@ func TestAppCloseReleasesInReverseOrderOfOpening(t *testing.T) {
 	t.Parallel()
 
 	// This is the invariant the deferred Closes in run() used to guarantee for free: a store must never
-	// be released before something built on top of it.
+	// be released before something built on top of it. The markers are synthetic — this service holds a
+	// single closer today, the stores — so they name positions, not components: a label like "handler"
+	// would claim a release that does not happen.
 	var released []string
 	a := &restAPIApp{}
-	a.onClose(func() { released = append(released, "stores") })
-	a.onClose(func() { released = append(released, "handler") })
+	a.onClose(func() { released = append(released, "opened first") })
+	a.onClose(func() { released = append(released, "opened second") })
 	a.close()
 
-	if want := []string{"handler", "stores"}; !reflect.DeepEqual(released, want) {
+	if want := []string{"opened second", "opened first"}; !reflect.DeepEqual(released, want) {
 		t.Errorf("released %v, want %v", released, want)
 	}
 }
