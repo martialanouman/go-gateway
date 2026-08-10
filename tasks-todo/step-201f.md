@@ -1,7 +1,8 @@
 # step-201f — Isoler le pool de connecteurs : le dernier étage jamais mesuré seul
 
 > **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
-> **Dépend de :** step-201e (livrée) · **Bloque :** step-201b
+> **Dépend de :** step-201e (livrée) · **Bloque :** step-201b, step-216 PR2 (elle ajoute un étage au
+> chemin d'envoi et ne doit pas s'insérer entre cette mesure et step-201b)
 
 ## But
 
