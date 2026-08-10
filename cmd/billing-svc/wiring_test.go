@@ -231,7 +231,7 @@ func testConfig() config.Config {
 		Kafka:           config.Kafka{Brokers: []string{closed}, Timeout: time.Second},
 		ClickHouse:      config.ClickHouse{Addr: []string{closed}, Database: "gateway", Timeout: time.Second},
 		GRPC:            config.GRPC{Port: freePort()},
-		Billing:         config.Billing{ReaperMinAge: 15 * time.Minute, ReaperInterval: time.Minute},
+		BillingReaper:   config.BillingReaper{MinAge: 15 * time.Minute, Interval: time.Minute},
 		OTel:            config.OTel{Disabled: true},
 	}
 }
@@ -250,4 +250,36 @@ func freePort() int {
 
 func silentLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// TestRequiredSectionsValidatesTheReaperKnobs is the boot contract of this binary, asserted on the very
+// declaration the process uses. config.Load validates only what a service declares, so an omission here
+// is silent by construction: BILLING_REAPER_INTERVAL=0 booted fine until step-193d and then panicked in
+// time.NewTicker, and BILLING_REAPER_MIN_AGE=1s would have let the reaper settle messages still in
+// flight.
+//
+// Removing config.SectionBillingReaper from requiredSections must turn this red.
+func TestRequiredSectionsValidatesTheReaperKnobs(t *testing.T) {
+	for name, vars := range map[string]map[string]string{
+		"an interval time.NewTicker would panic on": {"BILLING_REAPER_INTERVAL": "0"},
+		"a window that would race connector-pool":   {"BILLING_REAPER_MIN_AGE": "1s"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			for k, v := range vars {
+				t.Setenv(k, v)
+			}
+
+			_, err := config.Load(serviceName, requiredSections...)
+			if err == nil {
+				t.Fatalf("billing-svc accepted %v at boot", vars)
+			}
+			// The environment here is the developer's, not a hermetic one: without naming the variable
+			// an unrelated failure would pass this test for the wrong reason.
+			for k := range vars {
+				if !strings.Contains(err.Error(), k) {
+					t.Errorf("boot refusal does not name %s: %v", k, err)
+				}
+			}
+		})
+	}
 }

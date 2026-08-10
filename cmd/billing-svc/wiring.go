@@ -261,7 +261,7 @@ func newReaperStack(cfg config.Config, repo *postgres.BillingRepo, settler billi
 	})
 
 	r.reaper = billing.NewReaper(repo, clickhouse.NewCDRReader(r.ch), settler,
-		billing.WithMinAge(cfg.Billing.ReaperMinAge),
+		billing.WithMinAge(cfg.BillingReaper.MinAge),
 		billing.WithReaperMetric(reaperMetric{reaped: reapedTotal, unresolvable: unresolvableTotal}),
 		billing.WithReaperLogger(logger))
 	r.collectors = []prometheus.Collector{reapedTotal, unresolvableTotal}

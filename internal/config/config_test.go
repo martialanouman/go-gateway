@@ -1067,3 +1067,97 @@ func TestDefaultsIgnoresTheEnvironment(t *testing.T) {
 		t.Errorf("Postgres.MaxConns = %d, want 10 (declared default)", def.Postgres.MaxConns)
 	}
 }
+
+// TestReaperSectionRefusesWhatWouldBreakBillingSvc covers the values step-193d was opened for. Both
+// fields are billing-svc's own — its reaper's window and cadence — and until that step nothing validated
+// them for any binary, because the only section carrying them was the one describing a CLIENT dial to
+// billing-svc, which billing-svc has no reason to declare.
+func TestReaperSectionRefusesWhatWouldBreakBillingSvc(t *testing.T) {
+	cases := map[string]struct {
+		vars map[string]string
+		want string
+	}{
+		// runReap hands the interval straight to time.NewTicker, which panics on a non-positive
+		// duration: the pod would die at boot, exactly as it did under the metric-label defect
+		// step-193c found.
+		"a zero sweep interval": {
+			vars: map[string]string{"BILLING_REAPER_INTERVAL": "0"},
+			want: "BILLING_REAPER_INTERVAL",
+		},
+		// billing.WithMinAge ignores a non-positive value and keeps its own 15m default. The knob would
+		// therefore report a setting it does not have — the trap CLICKHOUSE_MAX_OPEN_CONNS refuses too.
+		"a zero minimum age": {
+			vars: map[string]string{"BILLING_REAPER_MIN_AGE": "0"},
+			want: "BILLING_REAPER_MIN_AGE",
+		},
+		// The dangerous direction: a reaper sweeping messages seconds old races connector-pool's settle
+		// loop and releases credit for SMS the SMSC actually took.
+		"a minimum age under the floor": {
+			vars: map[string]string{"BILLING_REAPER_MIN_AGE": "10s"},
+			want: "BILLING_REAPER_MIN_AGE",
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			setEnv(t, tc.vars)
+
+			_, err := config.Load("billing-svc", config.SectionBillingReaper)
+			if err == nil {
+				t.Fatalf("Load accepted %v", tc.vars)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error does not name %s: %v", tc.want, err)
+			}
+		})
+	}
+}
+
+// TestReaperSectionIsValidatedBySectionAll is what keeps SectionAll honest for this section. Its own
+// godoc requires it to hold every section, "or Validate() would quietly stop being a full check", and a
+// caller declaring nothing is precisely the case that relies on it.
+func TestReaperSectionIsValidatedBySectionAll(t *testing.T) {
+	setEnv(t, map[string]string{"BILLING_REAPER_INTERVAL": "-1s"})
+
+	if _, err := config.Load("billing-svc"); err == nil {
+		t.Fatal("Load with no declared section accepted a negative reaper interval: SectionAll is incomplete")
+	}
+}
+
+// TestReaperSectionIsNotValidatedWhenUndeclared is the other half of the section contract (the migrate
+// case): a binary that never runs a reaper must not be refused a boot over its settings.
+func TestReaperSectionIsNotValidatedWhenUndeclared(t *testing.T) {
+	setEnv(t, map[string]string{"BILLING_REAPER_INTERVAL": "0"})
+
+	if _, err := config.Load("router-svc", config.SectionPostgres); err != nil {
+		t.Errorf("Load refused a binary that declared no reaper section: %v", err)
+	}
+}
+
+// TestReaperDefaultsAreUnchanged pins that extracting the fields into their own section moved no value:
+// the defaults are still step-190's, and the variable names an operator sets are still BILLING_REAPER_*.
+func TestReaperDefaultsAreUnchanged(t *testing.T) {
+	setEnv(t, map[string]string{
+		"BILLING_REAPER_MIN_AGE":  "20m",
+		"BILLING_REAPER_INTERVAL": "90s",
+	})
+
+	cfg, err := config.Load("billing-svc", config.SectionBillingReaper)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got, want := cfg.BillingReaper.MinAge, 20*time.Minute; got != want {
+		t.Errorf("BillingReaper.MinAge = %s, want %s (BILLING_REAPER_MIN_AGE must keep its name)", got, want)
+	}
+	if got, want := cfg.BillingReaper.Interval, 90*time.Second; got != want {
+		t.Errorf("BillingReaper.Interval = %s, want %s (BILLING_REAPER_INTERVAL must keep its name)", got, want)
+	}
+
+	def := config.Defaults()
+	if got, want := def.BillingReaper.MinAge, 15*time.Minute; got != want {
+		t.Errorf("declared MinAge default = %s, want %s (step-190's value)", got, want)
+	}
+	if got, want := def.BillingReaper.Interval, 5*time.Minute; got != want {
+		t.Errorf("declared Interval default = %s, want %s (step-190's value)", got, want)
+	}
+}

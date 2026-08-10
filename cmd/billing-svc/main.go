@@ -29,6 +29,20 @@ import (
 
 const serviceName = "billing-svc"
 
+// requiredSections is what config.Load validates for this binary. It is a package variable rather than a
+// literal argument list so a test can boot the same declaration the process boots — a section left out
+// here is a set of values nobody checks, which is how BILLING_REAPER_* went unvalidated until step-193d.
+//
+// Billing needs Redis (the balance cache), Postgres (the durable ledger) and gRPC; Kafka only for the
+// best-effort realtime alert feed (deliberately out of readiness), no HTTP. Note what is NOT here:
+// SectionBilling describes a CLIENT dial to billing-svc, and this binary is that server — it dials
+// nobody. Its own knobs are SectionBillingReaper.
+var requiredSections = []config.Section{
+	config.SectionOTel, config.SectionRedis, config.SectionPostgres,
+	config.SectionGRPC, config.SectionKafka, config.SectionClickHouse,
+	config.SectionBillingReaper,
+}
+
 // configRefreshInterval is how often billing-svc rebuilds its per-customer billing-config snapshot from
 // Postgres. Floor config changes are rare and non-urgent, so a periodic reload keeps the hot-path read
 // lock-free without a change-stream dependency (config-sync push can replace it later).
@@ -44,9 +58,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
 
-	// Billing needs Redis (the balance cache), Postgres (the durable ledger) and gRPC; Kafka only for the best-effort realtime alert feed (deliberately out of readiness), no HTTP.
-	cfg, err := config.Load(serviceName, config.SectionOTel, config.SectionRedis, config.SectionPostgres,
-		config.SectionGRPC, config.SectionKafka, config.SectionClickHouse)
+	cfg, err := config.Load(serviceName, requiredSections...)
 	if err != nil {
 		return err
 	}
@@ -84,7 +96,7 @@ func run() error {
 		return runReconcile(c, app.reconciler, logger)
 	})
 	g.Add("reservation reaper", func(c context.Context) error {
-		return runReap(c, app.reaper, cfg.Billing.ReaperInterval, logger)
+		return runReap(c, app.reaper, cfg.BillingReaper.Interval, logger)
 	})
 	if err := g.Run(ctx, logger); err != nil {
 		return err
