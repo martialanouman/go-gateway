@@ -26,11 +26,8 @@ import (
 
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/content"
-	"github.com/martialanouman/go-gateway/internal/contentkeys"
-	"github.com/martialanouman/go-gateway/internal/contentkeys/pb"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/platform/supervisor"
-	"github.com/martialanouman/go-gateway/internal/storage/postgres"
 )
 
 // serviceName identifies this binary in logs, traces and metrics.
@@ -67,35 +64,18 @@ func run() error {
 	//nolint:contextcheck // Detaching is the point: see DrainTracing's comment.
 	defer observability.DrainTracing(shutdownTracing, cfg.ShutdownTimeout, logger)
 
-	pool, err := postgres.NewPool(ctx, cfg.Postgres)
-	if err != nil {
-		return fmt.Errorf("open postgres pool: %w", err)
-	}
-	defer pool.Close()
-
-	kms, err := loadContentKMS(cfg.Environment, logger)
+	app, err := newContentKeyApp(ctx, cfg, logger)
 	if err != nil {
 		return err
 	}
-
-	grpcServer := grpc.NewServer()
-	pb.RegisterContentKeysServer(grpcServer,
-		contentkeys.NewContentKeyServer(kms, postgres.NewContentKeyRepo(pool)))
-
-	// Postgres is vital: without it no key can be read, created or shredded, so a pod that cannot reach it
-	// must leave the load balancer (plan §1.5).
-	pgCheck := postgres.PingCheck("postgres", pool, cfg.Postgres.Timeout)
-	ops, err := observability.NewOpsServer(cfg, logger, pgCheck)
-	if err != nil {
-		return fmt.Errorf("init ops server: %w", err)
-	}
+	defer app.close()
 
 	logger.InfoContext(ctx, "starting", "config", cfg)
 
 	var g supervisor.Group
-	g.Add("ops server", func(c context.Context) error { return ops.Run(c, cfg.ShutdownTimeout) })
+	g.Add("ops server", func(c context.Context) error { return app.ops.Run(c, cfg.ShutdownTimeout) })
 	g.Add("grpc server", func(c context.Context) error {
-		return runGRPC(c, grpcServer, cfg.GRPC.Port, cfg.ShutdownTimeout, logger)
+		return runGRPC(c, app.grpc, cfg.GRPC.Port, cfg.ShutdownTimeout, logger)
 	})
 	if err := g.Run(ctx, logger); err != nil {
 		return err

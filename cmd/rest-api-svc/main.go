@@ -12,27 +12,16 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/martialanouman/go-gateway/internal/config"
-	"github.com/martialanouman/go-gateway/internal/idempotency"
-	"github.com/martialanouman/go-gateway/internal/ingest"
 	"github.com/martialanouman/go-gateway/internal/observability"
-	"github.com/martialanouman/go-gateway/internal/platform/buildinfo"
 	"github.com/martialanouman/go-gateway/internal/platform/supervisor"
-	"github.com/martialanouman/go-gateway/internal/restapi"
-	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
-	"github.com/martialanouman/go-gateway/internal/storage/kafka"
-	"github.com/martialanouman/go-gateway/internal/storage/postgres"
-	redisstore "github.com/martialanouman/go-gateway/internal/storage/redis"
 )
 
 const serviceName = "rest-api-svc"
 
-// Accepted-row worker pool sizing. The pool absorbs bursts off the request path; these are ample for
-// M2 and become configurable when throughput tuning matters.
 func main() {
 	if err := run(); err != nil {
 		log.Fatalf("%s: %v", serviceName, err)
@@ -66,66 +55,11 @@ func run() error {
 	//nolint:contextcheck // Detaching is the point: see DrainTracing's comment.
 	defer observability.DrainTracing(shutdownTracing, cfg.ShutdownTimeout, logger)
 
-	pool, err := postgres.NewPool(ctx, cfg.Postgres)
+	app, err := newRestAPIApp(ctx, cfg, logger)
 	if err != nil {
-		return fmt.Errorf("connect postgres: %w", err)
+		return err
 	}
-	defer pool.Close()
-
-	chConn, err := clickhouse.NewConn(cfg.ClickHouse)
-	if err != nil {
-		return fmt.Errorf("connect clickhouse: %w", err)
-	}
-	defer func() { _ = chConn.Close() }()
-
-	producer, err := kafka.NewProducer(cfg.Kafka)
-	if err != nil {
-		return fmt.Errorf("kafka producer: %w", err)
-	}
-	defer producer.Close()
-
-	// Redis backs the Idempotency-Key window on POST /messages. Like the other stores, it is required at
-	// boot (NewClient pings and fails fast). At runtime, though, a Redis outage fails only idempotent
-	// submits — each returns a per-request 503 — so Redis is deliberately NOT wired into /readyz: a blip
-	// must not pull the pod out and take reads and non-idempotent submits down with it.
-	rdb, err := redisstore.NewClient(ctx, cfg.Redis)
-	if err != nil {
-		return fmt.Errorf("connect redis: %w", err)
-	}
-	defer func() { _ = rdb.Close() }()
-
-	ingestor := ingest.NewIngestor(producer, logger)
-	tracer := observability.Tracer(nil, serviceName)
-
-	handler, _ := restapi.New(restapi.Deps{
-		Principals:  postgres.NewAPIKeyRepo(pool),
-		Ingestor:    ingestor,
-		CDRReader:   clickhouse.NewCDRReader(chConn),
-		Accounts:    postgres.NewAccountRepo(pool),
-		SenderIDs:   postgres.NewSenderIDRepo(pool),
-		RateLimits:  postgres.NewRateLimitRepo(pool),
-		Idempotency: idempotency.New(rdb),
-		Tracer:      tracer,
-		Logger:      logger,
-		Version:     buildinfo.Version,
-	})
-
-	srv := &http.Server{
-		Addr:              ":" + strconv.Itoa(cfg.HTTP.Port),
-		Handler:           handler,
-		ReadHeaderTimeout: cfg.HTTP.ReadHeaderTimeout,
-	}
-
-	// Vital dependencies (plan §1.5): Kafka and Postgres gate accepting a message (POST), ClickHouse
-	// gates reading its status (GET). All three remove the pod from the LB when unreachable.
-	ops, err := observability.NewOpsServer(cfg, logger,
-		producer.ReadyCheck("kafka", cfg.Kafka.Timeout),
-		postgres.PingCheck("postgres", pool, cfg.Postgres.Timeout),
-		chConn.ReadyCheck("clickhouse", cfg.ClickHouse.Timeout),
-	)
-	if err != nil {
-		return fmt.Errorf("init ops server: %w", err)
-	}
+	defer app.close()
 
 	logger.InfoContext(ctx, "starting", "config", cfg)
 
@@ -133,8 +67,8 @@ func run() error {
 	// order). The accepted CDR row is no longer written here — it is projected durably off mt.inbound by
 	// router-svc (step-101) — so there is no off-path writer to drain.
 	var g supervisor.Ordered
-	g.Add("ops server", func(c context.Context) error { return ops.Run(c, cfg.ShutdownTimeout) })
-	g.Add("rest http server", func(c context.Context) error { return runHTTP(c, srv, cfg.ShutdownTimeout, logger) })
+	g.Add("ops server", func(c context.Context) error { return app.ops.Run(c, cfg.ShutdownTimeout) })
+	g.Add("rest http server", func(c context.Context) error { return runHTTP(c, app.http, cfg.ShutdownTimeout, logger) })
 	if err := g.Run(ctx, logger); err != nil {
 		return err
 	}
