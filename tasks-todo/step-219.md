@@ -22,8 +22,11 @@ lecture initiale, le flux ne suffit pas : il donne le mouvement, pas l'état.
 
 ## Points d'implémentation clés
 
-- **La source est ClickHouse, pas Prometheus.** Les ventilations demandées (par client, compte,
-  connecteur, groupe) sont exactement celles que le catalogue de métriques **interdit** en labels — la
+- **La source est ClickHouse, pas Prometheus.** Le contrat n'offre que trois dimensions —
+  `groupBy: [connector, customer, group]`, **pas** `account`, alors que la spec du tableau de bord en
+  cite quatre : c'est le contrat qui est en retrait, et c'est lui qu'il faut servir (l'élargir est une
+  décision à part, avec son bump). Ces ventilations sont exactement celles que le catalogue de métriques
+  **interdit** en labels — la
   garde de cardinalité de step-180 refuse un label non borné à l'enregistrement. Aller chercher ces
   séries dans Prometheus serait contourner cette garde par la porte de service.
 - **Le groupe se résout à la lecture** (§6.17) : le CDR ne porte pas `group_id`, une ventilation par

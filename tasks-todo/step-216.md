@@ -21,8 +21,9 @@ surfaces manquantes qui **touche le chemin chaud** — à découper en deux PRs.
 
 `control_plane.sender_id_rewrite_rules` est en base, complète : portées, types, priorité, motifs de
 correspondance, contraintes de cohérence (`platform ⇒ scope_id NULL`, `static ⇒ rewrite_to NOT NULL`) et
-son index `(scope, scope_id, priority) WHERE status = 'active'`. La spec décrit la sémantique. **Aucun
-fichier Go ne référence cette table** — ni repo, ni admin, ni évaluation. La §6.16 est le seul cas où le
+son index `(scope, scope_id, priority) WHERE status = 'active'`. Le modèle sqlc est même déjà généré
+(`ControlPlaneSenderIDRewriteRule`) — inutile de le régénérer. La spec décrit la sémantique. Mais **ni
+repo, ni admin, ni évaluation** n'existent : la §6.16 est le seul cas où le
 chemin critique lui-même est amputé : `docs/specification-technique-passerelle-sms.md` décrit
 connector-pool comme évaluant la réécriture avant l'envoi, et il ne l'évalue pas.
 
@@ -39,8 +40,8 @@ c'est le seul endroit où un opérateur peut vérifier une règle avant de la pu
 - **Où, exactement** (§6.16) : dans `connector-pool-svc`, **après** la résolution du connecteur et
   **après** que l'anti-spam et le routage ont évalué le sender ID **original**. La réécriture est une
   décision du fournisseur, pas une revendication du client : elle **n'est pas ré-autorisée** par §6.19.
-  L'inverser — réécrire avant l'autorisation — contournerait silencieusement la conformité, et c'est
-  l'invariant (b) sous un autre nom.
+  L'inverser — réécrire avant l'autorisation — ferait contourner silencieusement une étape de
+  conformité, dans le même esprit que l'invariant (b) sans en être un cas.
 - **L'original est préservé sur le CDR** (`original_source_addr`). Une réécriture qui écrase la trace
   rend l'incident client indiagnosticable.
 - **Précédence `connector → account → customer → platform`, première correspondance gagnante.** Le tri

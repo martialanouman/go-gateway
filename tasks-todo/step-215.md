@@ -24,19 +24,29 @@ manque est la seule chose qu'un opérateur touche.
 
 ## Points d'implémentation clés
 
-- **`secret` est un secret** : la règle du dépôt s'applique — stocké en hash, révélé **une seule fois**
-  à la création et à la rotation, jamais relu par `list` ni `get`. Le champ masqué doit refuser d'être
-  ré-écrit tel quel (la garde sentinelle de step-149 existe déjà pour ce cas, la réutiliser plutôt que
-  d'en écrire une seconde).
+- **`secret` est un secret d'un genre différent de ceux du dépôt, et la règle générale ne s'y applique
+  pas.** Les mots de passe de bind et les clés API sont *vérifiés* par la passerelle, donc hachés. Ce
+  secret-ci est *utilisé* : `webhook.Sign(wh.Secret, …)` en a besoin **en clair** à chaque remise. Le
+  hacher rendrait toutes les signatures invérifiables côté client. Le contrat a déjà tranché la bonne
+  forme — `secret` est **write-only, jamais retourné** (`Webhook` n'a pas ce champ ; `WebhookCreate` et
+  `WebhookUpdate` l'acceptent en entrée) : c'est l'opérateur qui **fournit** la valeur, rien n'est
+  « révélé ». Donc pas de hash, pas de sentinelle masquée (celle de step-149 sert à `auth_config_json`,
+  qui, lui, est retourné masqué). La règle à tenir est plus étroite et déjà écrite dans le code : le
+  secret ne doit **jamais** être persisté hors du plan de contrôle — la doc de `webhook.RetrySink`
+  l'interdit explicitement pour les records de retry, un opérateur pouvant les lire.
 - **`webhooks_uq UNIQUE (account_id, event_type)`** : un compte a au plus un webhook `mo` et un `dlr`.
   Une création en double est un 409 déterministe, pas une erreur de base remontée telle quelle. Le
   résumé du contrat le dit déjà (« one per event_type ») — le handler doit le dire aussi.
 - **`status = disabled` ≠ suppression.** Désactiver doit couper la remise sans perdre l'URL ni le
   secret. Vérifier ce que le consommateur de remise lit réellement : s'il ignore `status`, la bascule
   est décorative, et c'est un défaut de cette step, pas une amélioration future.
-- **`retry_policy_json`** existe en base et le runner de retry a ses propres bornes (8 essais, back-off
-  30 s ×2 plafonné à 10 min, âge max 6 h). Ne pas exposer un réglage que le runner n'honore pas :
-  soit la colonne est câblée, soit elle reste hors du corps de requête.
+- **`retry_policy_json` est déjà câblée et déjà au contrat** — la sortir serait une rupture.
+  `webhook.parseRetryPolicy` lit `max_attempts`, `initial_backoff_ms`, `max_backoff_ms` et `multiplier`,
+  sous des plafonds durs (20 essais, 5 min). Le vrai constat est ailleurs : **le runner différé
+  (step-192) ne pace que sur ses propres constantes** — seul `max_attempts` traverse
+  (`retriesExhausted`), le back-off de la politique n'est pas honoré sur ce chemin. Une surface qui
+  laisse configurer `initial_backoff_ms` sans que le retry différé s'en serve promet un réglage inerte :
+  soit le runner l'honore, soit la fiche le documente comme non honoré sur le chemin différé.
 
 ## Tests
 

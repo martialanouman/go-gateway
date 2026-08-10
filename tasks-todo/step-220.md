@@ -35,11 +35,17 @@ défaut fonctionnel réel : **un compte créé avec la mauvaise politique ne peu
 
 ## Points d'implémentation clés
 
-- **Un changement de politique doit atteindre les sessions vivantes.** Durcir `sender_id_policy` ou
-  couper `cancel_sm` sur un compte qui a des binds ouverts ne doit pas attendre leur reconnexion : le
-  plan de données lit ces valeurs par projection d'authentification. Vérifier par quel chemin
-  l'invalidation passe (le mécanisme de step-032 pour les sessions, le compteur de génération de config
-  pour les projections) et le câbler — sinon le PATCH est vrai en base et faux en production.
+- **Un changement de politique doit atteindre les sessions vivantes, et les deux réglages n'empruntent
+  pas le même chemin.** Vérifié :
+  - `query_sm_enabled` / `cancel_sm_enabled` sont lus **au bind** depuis PostgreSQL
+    (`internal/storage/postgres/bind_authn.go`) puis **figés dans l'état de session** : seule une
+    déconnexion forcée (le mécanisme de step-032) les propage à une session déjà ouverte ;
+  - `sender_id_policy` est lu par l'instantané du routeur (`senderid.LoadSnapshot`), rechargé par le
+    watcher de config : aucune reconnexion nécessaire.
+
+  Ne pas chercher un « compteur de génération de config » pour ces projections : le seul du dépôt
+  (`connector:cfggen:{id}`, step-128) est **par connecteur** et ne les concerne pas. Sans ce câblage, le
+  PATCH est vrai en base et faux en production.
 - **`suspend-smpp-account` ne doit pas devenir un second chemin de suspension.** L'aligner sur le
   handler existant : même transition de statut, même appel de déconnexion forcée avec motif
   `account_suspended`. Deux chemins qui divergent d'un jour à l'autre valent moins qu'un seul.

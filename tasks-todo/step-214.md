@@ -7,8 +7,8 @@
 
 Servir les 7 opérations de groupes que `api/openapi-admin.yaml` déclare et qu'aucun handler
 n'implémente. La segmentation par groupe est aujourd'hui **à moitié construite** : la table, la clé
-étrangère et jusqu'au filtre de lecture existent — seule la surface qui permet d'assigner un groupe
-manque.
+étrangère, l'affectation à la création et les filtres de lecture existent — ce qui manque, c'est de
+pouvoir **créer un groupe** et **changer une appartenance** après coup.
 
 | Opération | Méthode et chemin |
 |---|---|
@@ -22,11 +22,19 @@ manque.
 
 ## Le constat
 
-`control_plane.customer_groups` existe, `customers.group_id` la référence en `ON DELETE SET NULL`, et
-`list-smpp-accounts` **implémente déjà** le filtre `?groupId=` (`internal/adminapi/accounts.go`). Ce
-filtre ne peut aujourd'hui rien retourner : rien ne permet d'affecter un client à un groupe. La moitié
-aval est donc écrite et non exerçable — un test de bout en bout du filtre est le premier bénéfice de
-cette step.
+Ce qui existe déjà, servi : `control_plane.customer_groups` et son modèle sqlc généré,
+`customers.group_id` en `ON DELETE SET NULL`, l'affectation **à la création**
+(`customerCreateBody.GroupID`, `internal/adminapi/customers.go`), et **deux** filtres `?groupId=` —
+`list-customers` et `list-smpp-accounts`.
+
+Ce qui manque, exactement : **aucun groupe ne peut être créé par l'API**, donc les filtres et le champ
+de création ne peuvent référencer qu'un UUID inséré à la main ; et **l'appartenance ne peut plus
+changer** après la création du client. Le code le sait déjà : `customerUpdateBody` porte le commentaire
+« group_id is absent (group membership has its own endpoint) » — cet endpoint est
+`set-customer-group`, précisément l'une des 7 non implémentées.
+
+**Ne pas « réparer » cela en ajoutant `group_id` à `customerUpdateBody`** : ce serait contredire une
+décision de conception explicite, et créer un second chemin d'affectation.
 
 ## Points d'implémentation clés
 
@@ -46,9 +54,11 @@ cette step.
 
 - CRUD sur repo réel (`testcontainers`), et la suppression vérifiée par ce qu'elle **préserve** : les
   clients existent toujours après, avec `group_id` à NULL.
-- Le filtre `list-smpp-accounts?groupId=` retourne enfin quelque chose : un compte dont le client est
-  dans le groupe, et **pas** un compte d'un client hors groupe. Une fixture où les deux clients seraient
-  dans le même groupe ne prouverait rien.
+- Les deux filtres `?groupId=` (`list-customers`, `list-smpp-accounts`) deviennent exerçables de bout en
+  bout, sur un groupe créé par l'API : ils retournent le client du groupe et **pas** un client hors
+  groupe. Une fixture où les deux clients seraient dans le même groupe ne prouverait rien.
+- Un changement d'appartenance par `set-customer-group` change ce que ces filtres retournent, et le
+  retour à `null` détache sans supprimer.
 - Contrat : les 7 opérations sortent de la liste `deferred` de step-213 et entrent dans la liste servie.
 
 ## Definition of Done

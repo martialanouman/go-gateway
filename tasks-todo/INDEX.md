@@ -178,9 +178,10 @@ dead-letter reste un chemin par lequel un message annulé peut repartir.
 
 ## Audit de conformité contrat ↔ implémentation (revue du 2026-08-10)
 `api/openapi-admin.yaml` déclare **133 opérations** sous `paths:` ; `internal/adminapi` en enregistre
-**103**. Les **30** restantes ont leurs tables en base et leur description dans la spec (§6.16, §6.17,
-§6.22, §6.23), le tableau de bord les attend — et **aucun jalon ne les porte**. Aucune garde ne voyait
-l'écart : les trois tests de contrat vont tous dans le sens *implémenté → déclaré*, jamais l'inverse.
+**103**. Les **30** restantes sont décrites par la spec (§6.16, §6.17, §6.22, §6.23) et attendues par le
+tableau de bord — la plupart ont même leur table en base — mais **aucun jalon ne les porte**. Aucune
+garde ne voyait l'écart : les tests de contrat vont tous dans le sens *implémenté → déclaré*, jamais
+l'inverse.
 step-213 pose la garde et le triage ; les sept suivantes construisent les surfaces, dans l'ordre qu'on
 voudra.
 - [ ] step-213 — La garde contrat ↔ implémentation, et le triage des 30 (**bloque step-208**)

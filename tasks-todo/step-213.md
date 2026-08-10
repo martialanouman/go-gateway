@@ -7,7 +7,7 @@
 
 Rendre **impossible** qu'une opération soit déclarée dans un contrat publié sans que quelqu'un ait dit
 ce qu'elle devient. Aujourd'hui l'écart entre le contrat Admin et le code est de 30 opérations, et
-aucune des quatre gardes existantes ne le voit.
+aucune des gardes existantes ne le voit.
 
 Cette fiche produit une **garde et un triage**. Elle n'implémente aucune des 30 : leur construction est
 step-214 → step-220.
@@ -34,14 +34,15 @@ porte**, et le plan s'arrête au go-live. Trois plans documentaires affirment qu
 le code dit le contraire ; le tableau de bord, dépôt séparé, consomme le contrat en package npm et
 générerait des clients typés qui appellent des 404.
 
-**Pourquoi rien ne l'a signalé.** Les trois gardes de `contract_test.go` raisonnent toutes sur
-`m1Operations`, et vont toutes dans le sens **implémenté → déclaré** :
+**Pourquoi rien ne l'a signalé.** `contract_test.go` porte cinq tests, dont **quatre** itèrent
+`m1Operations` — et tous les quatre vont dans le sens **implémenté → déclaré** :
 
 - `TestContractCoversEveryM1Operation` — chaque opération de la liste est dans le contrat ;
 - `TestGeneratedSpecMatchesTheContractForEveryM1Operation` — et elle y correspond, champ par champ ;
-- `TestGeneratedSpecRegistersNoOperationOutsideTheM1Surface` — le service n'expose rien hors liste.
+- `TestGeneratedSpecRegistersNoOperationOutsideTheM1Surface` — le service n'expose rien hors liste ;
+- `TestUpgradeOperationsDeclareTheirContract` — les opérations d'upgrade déclarent leur 101.
 
-Le sens inverse — *déclaré au contrat publié, implémenté par personne* — n'appartient à aucune d'elles.
+Le sens inverse — *déclaré au contrat publié, implémenté par personne* — n'appartient à aucun d'eux.
 `make contracts` ne le couvre pas non plus : il refuse un changement de contrat sans bump de
 `api/package.json`, ce qui est une autre question.
 
@@ -78,13 +79,13 @@ Chaque entrée de `deferred` porte sa raison et sa step. Le triage arrêté :
 
 | Surface | Ops | Step | État réel |
 |---|---:|---|---|
-| Groupes de clients (§6.17) | 7 | step-214 | table `customer_groups` présente, **zéro code** |
+| Groupes de clients (§6.17) | 7 | step-214 | table + affectation à la création + 2 filtres ; **aucun groupe créable** |
 | Webhooks admin | 4 | step-215 | repo `postgres/webhooks.go` livré en M4, aucune surface admin |
-| Réécriture de sender ID (§6.16) | 5 | step-216 | table présente, **ni admin ni évaluation** dans le pool |
+| Réécriture de sender ID (§6.16) | 5 | step-216 | table + modèle sqlc ; **ni repo, ni admin, ni évaluation** |
 | Sessions REST | 3 | step-217 | `stream-sessions` existe, pas les trois opérations REST |
 | Politiques de contenu (§6.23) | 4 | step-218 | client : colonne présente ; **plateforme : aucune table** |
 | Métriques agrégées | 2 | step-219 | `stream-metrics` existe (push), rien en pull |
-| Comptes et routes | 5 | step-220 | dont deux réglages **créables mais non modifiables** |
+| Comptes et routes | 5 | step-220 | dont **trois réglages créables et jamais modifiables** |
 
 Total 30. Le compte par surface fait partie de ce qui est vérifié : il a été faux d'une unité à la
 première rédaction (webhooks compté 5, faute d'un `get-webhook` que le contrat ne déclare pas).
@@ -136,10 +137,10 @@ première rédaction (webhooks compté 5, faute d'un `get-webhook` que le contra
 **Un trou voisin, constaté et laissé ouvert :** la comparaison stricte
 (`TestGeneratedSpecMatchesTheContractForEveryM1Operation`) porte sur l'`operationId`, les codes de
 réponse et les schémas de requête/réponse — **pas sur les paramètres de requête**. Un `?groupId=`
-déclaré au contrat et non lu par le handler passerait donc inaperçu. Le cas inverse existe déjà
-(`list-smpp-accounts` implémente `groupId` alors qu'aucune surface ne permet d'assigner un groupe).
-Le noter suffit ici ; l'élargissement de la comparaison est une step à part, dont le coût est le bruit
-qu'elle produira sur 103 opérations.
+déclaré au contrat et non lu par le handler passerait donc inaperçu, comme passerait un paramètre
+implémenté que le contrat ne déclare pas. Aucun écart connu aujourd'hui ; le noter suffit ici, et
+l'élargissement de la comparaison reste à faire — son coût est le bruit qu'elle produira sur 103
+opérations, ce qui est précisément pourquoi elle n'appartient pas à cette fiche.
 
 L'implémentation des 30 → step-214 à step-220. Le retrait éventuel d'une opération du contrat, et le
 bump majeur qui l'accompagne → la step qui la porte. La couverture de `api/collections/admin-api.yaml`

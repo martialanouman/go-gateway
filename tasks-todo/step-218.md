@@ -39,10 +39,13 @@ support de cette valeur.
   choix a une conséquence concrète : le plan de données lit la politique par un **instantané de boot**
   (`content.PolicySnapshot`), donc la valeur plateforme doit arriver par le même chemin, sous peine
   d'être lue à des instants différents selon les pods.
-- **La propagation n'est pas instantanée, et ça compte ici.** Un client passé de `stored_encrypted` à
-  `off` continue d'être scellé tant que l'instantané n'a pas été rechargé. Le patron de rechargement
-  existe (watcher de config, cf. step-102) ; si cette step ne le câble pas, la fenêtre doit être écrite
-  dans le godoc **et** dans la réponse d'API, pas laissée à la surprise.
+- **Le rechargement à chaud est déjà câblé pour la politique CLIENT — n'en construis pas un second.**
+  `content.PolicyHolder` tient l'instantané derrière un pointeur atomique précisément « so the data
+  plane can HOT-RELOAD the content-storage policy on a config change without a restart », le routeur le
+  recharge à chaque invalidation, et le middleware admin publie l'événement sur **toute** mutation
+  réussie. Une mise à jour de politique client devient donc effective sans redémarrage, et le test doit
+  le vérifier plutôt que documenter une fenêtre. Seule la **valeur plateforme** est neuve : c'est elle
+  qui doit rejoindre ce chemin, faute de quoi elle serait lue à des instants différents selon les pods.
 - **Ne jamais dégrader vers le clair.** La règle de step-162 tient : en cas d'indisponibilité du service
   de clés, on écrit la ligne CDR **sans contenu** et on incrémente `content_dropped` — jamais un repli
   en clair. Une surface d'administration ne doit pas ouvrir un chemin qui contourne cette règle.
