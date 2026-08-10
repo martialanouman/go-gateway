@@ -42,6 +42,7 @@ var allowed = map[string]struct{}{
 	"reason":     {}, // the error taxonomy, never free text
 	"code":       {}, // the flat error code (§11.3)
 	"result":     {}, // hit | miss
+	"action":     {}, // capture | release — how the reaper settled a reservation
 	"cause":      {}, // promhttp's own handler-error metric: gathering | encoding
 	"version":    {}, // go_info's build version: one value per binary
 	"event_type": {}, // DLR / MO event kinds
