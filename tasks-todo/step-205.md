@@ -16,6 +16,16 @@ services internes (dont l'Admin API et le gRPC billing).
 ## Points d'implémentation clés
 - L'Admin API est **interne** et déjà pensée derrière un ingress mTLS (`internal/adminapi/api.go` :
   scheme « mTLS + operator bearer ») — matérialiser le mTLS ici.
+- **Prérequis : appliquer d'abord le patron de câblage aux deux mains que cette step touche.** Le mTLS
+  gRPC vise `billing-svc` et le TLS public vise `rest-api-svc` — les **deux seules** mains sans
+  `wiring.go`/`wiring_test.go` depuis step-193/193b, et `cmd/billing-svc/main.go` est la plus longue du
+  dépôt (351 lignes). Extraire `newXxxApp(ctx, cfg, logger) (…, error)` *avant* d'y ajouter du TLS,
+  plutôt qu'empiler dans `run()` : le patron sépare « assembler le graphe » de « le faire tourner »
+  (`cmd/router-svc/wiring.go`), et c'est ce qui rend un échec de boot **inspectable** au lieu de tuer le
+  processus. Le test type est déjà écrit cinq fois (`cmd/router-svc/wiring_test.go`) : une dépendance
+  injoignable remonte une erreur attribuée, sans fuiter la chaîne de connexion, et aucun port n'écoute
+  tant que `Run` n'est pas appelé. Sans ce préalable, un handshake TLS raté restera un `log.Fatal` que
+  rien ne peut tester.
 - **`ctx7`** avant toute API `crypto/tls` avancée / config TLS de `grpc` (credentials) / `coder/websocket` TLS.
 - Certs/clés/CA fournis par config ou secrets, jamais commités ; rotation possible.
 - Ne pas casser les tests d'intégration : TLS activable par config (off en test unitaire, on en prod).
