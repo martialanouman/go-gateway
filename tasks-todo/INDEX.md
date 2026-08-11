@@ -148,7 +148,9 @@ structurelles et à faire **avant** que M12 n'empile dessus.
 - [x] step-193b — Même patron pour mo-dlr-router-svc, admin-api-svc, smpp-server-svc
 - [x] step-193c — Les cinq mains restées hors du patron — le premier test de câblage a trouvé que
   `billing-svc` **paniquait au boot** depuis step-190 (label `action` hors vocabulaire borné)
-- [ ] step-193d — `billing-svc` lit `cfg.Billing.*` sans déclarer `SectionBilling` : personne ne la valide
+- [x] step-193d — `billing-svc` lit `cfg.Billing.*` sans déclarer `SectionBilling` : personne ne la valide.
+  Les champs sont partis dans `SectionBillingReaper` (la section client ne validait aucun d'eux), et une
+  garde remplace la relecture — elle a trouvé `smpp-server-svc` dans le même cas
 - [ ] step-193e — l'ordre de fermeture est une propriété du câblage que le test synthétique ne garde pas
   (chez `admin-api-svc` il est load-bearing, et l'inverser laisserait toute la suite verte)
 - [x] step-194 — Découper `connectorpool.go` (extraction du mapping SMPP/CDR)
