@@ -101,6 +101,29 @@ func TestSectionConstantsMatchTheConfigStructs(t *testing.T) {
 	}
 }
 
+// TestSectionsOfFollowsARenamedConfigVariable pins the parser itself, on the case the guard would
+// otherwise miss in silence: a service whose configuration variable is not called "cfg".
+//
+// The global floors cannot catch that. One service dropping out of the scan still leaves the other
+// seventeen far above the minimum, so the guard would report a clean repository while covering less of
+// it. The fixture never uses the name "cfg", declares one section and reads three — one through each
+// declaration form configHolders knows, so dropping any one branch fails this test rather than quietly
+// narrowing the guard.
+func TestSectionsOfFollowsARenamedConfigVariable(t *testing.T) {
+	t.Parallel()
+
+	declared, read := sectionsOf(t, "testdata/renamed", sectionFields(t))
+
+	if want := []string{"Postgres"}; !slices.Equal(declared, want) {
+		t.Errorf("declared = %v, want %v", declared, want)
+	}
+	slices.Sort(read)
+	// Kafka comes from config.Load's result, Redis from a var declaration, Postgres from a parameter.
+	if want := []string{"Kafka", "Postgres", "Redis"}; !slices.Equal(read, want) {
+		t.Errorf("read = %v, want %v — the parser is blind to a config variable not named cfg", read, want)
+	}
+}
+
 // sectionFields returns the names of Config's sub-structs — OTel, Postgres, … — which are exactly the
 // configuration groups a binary can declare.
 func sectionFields(t *testing.T) []string {
@@ -163,20 +186,10 @@ func commandPackages(t *testing.T) []commandPackage {
 func sectionsOf(t *testing.T, dir string, sections []string) (declared, read []string) {
 	t.Helper()
 
-	sources, err := filepath.Glob(filepath.Join(dir, "*.go"))
-	if err != nil {
-		t.Fatalf("glob %s: %v", dir, err)
-	}
+	files := parseNonTestFiles(t, dir)
+	holders := configHolders(files)
 
-	for _, source := range sources {
-		if strings.HasSuffix(source, "_test.go") {
-			continue
-		}
-		file, err := parser.ParseFile(token.NewFileSet(), source, nil, 0)
-		if err != nil {
-			t.Fatalf("parse %s: %v", source, err)
-		}
-
+	for _, file := range files {
 		ast.Inspect(file, func(n ast.Node) bool {
 			sel, ok := n.(*ast.SelectorExpr)
 			if !ok {
@@ -186,14 +199,14 @@ func sectionsOf(t *testing.T, dir string, sections []string) (declared, read []s
 			if !ok {
 				return true
 			}
-			switch ident.Name {
-			case "config":
+			switch {
+			case ident.Name == "config":
 				// config.SectionAll is the declare-everything case, not a group of its own.
 				if name := strings.TrimPrefix(sel.Sel.Name, "Section"); name != sel.Sel.Name &&
 					slices.Contains(sections, name) && !slices.Contains(declared, name) {
 					declared = append(declared, name)
 				}
-			case "cfg":
+			case slices.Contains(holders, ident.Name):
 				if slices.Contains(sections, sel.Sel.Name) && !slices.Contains(read, sel.Sel.Name) {
 					read = append(read, sel.Sel.Name)
 				}
@@ -202,6 +215,92 @@ func sectionsOf(t *testing.T, dir string, sections []string) (declared, read []s
 		})
 	}
 	return declared, read
+}
+
+// parseNonTestFiles parses a package's sources. Test files are skipped on purpose: they build arbitrary
+// configs, which says nothing about what the binary reads at boot.
+func parseNonTestFiles(t *testing.T, dir string) []*ast.File {
+	t.Helper()
+
+	sources, err := filepath.Glob(filepath.Join(dir, "*.go"))
+	if err != nil {
+		t.Fatalf("glob %s: %v", dir, err)
+	}
+
+	var files []*ast.File
+	for _, source := range sources {
+		if strings.HasSuffix(source, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), source, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", source, err)
+		}
+		files = append(files, file)
+	}
+	return files
+}
+
+// configHolders returns the identifiers holding a config.Config in this package — parameters and
+// variables declared as one, plus whatever config.Load returns.
+//
+// Deriving them beats assuming the name is "cfg". Every service uses that name today, but nothing
+// enforces it, and a renamed variable would drop its service out of the guard without any floor
+// noticing: seventeen services still clear the minimum on their own.
+func configHolders(files []*ast.File) []string {
+	var holders []string
+	add := func(name string) {
+		if name != "" && name != "_" && !slices.Contains(holders, name) {
+			holders = append(holders, name)
+		}
+	}
+
+	isConfig := func(expr ast.Expr) bool {
+		sel, ok := expr.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "Config" {
+			return false
+		}
+		pkg, ok := sel.X.(*ast.Ident)
+		return ok && pkg.Name == "config"
+	}
+
+	for _, file := range files {
+		ast.Inspect(file, func(n ast.Node) bool {
+			switch node := n.(type) {
+			case *ast.Field: // func newApp(cfg config.Config), and struct fields
+				if isConfig(node.Type) {
+					for _, name := range node.Names {
+						add(name.Name)
+					}
+				}
+			case *ast.ValueSpec: // var cfg config.Config
+				if isConfig(node.Type) {
+					for _, name := range node.Names {
+						add(name.Name)
+					}
+				}
+			case *ast.AssignStmt: // cfg, err := config.Load(...)
+				if len(node.Lhs) == 0 || len(node.Rhs) != 1 {
+					return true
+				}
+				call, ok := node.Rhs[0].(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				fn, ok := call.Fun.(*ast.SelectorExpr)
+				if !ok || (fn.Sel.Name != "Load" && fn.Sel.Name != "Defaults") {
+					return true
+				}
+				if pkg, ok := fn.X.(*ast.Ident); ok && pkg.Name == "config" {
+					if name, ok := node.Lhs[0].(*ast.Ident); ok {
+						add(name.Name)
+					}
+				}
+			}
+			return true
+		})
+	}
+	return holders
 }
 
 // declaredSectionConstants reads the Section constant names out of the package's own source, so the
