@@ -67,12 +67,21 @@ fois sous le défaut. Le godoc invite ops à **élargir** la fenêtre une fois m
 
 ### La garde plutôt qu'une relecture
 
-Un test parse `cmd/` et échoue si un binaire lit `cfg.<Section>.*` sans nommer `config.Section<Section>`.
+Un test parse `cmd/` et échoue si un binaire lit une section sans nommer sa `config.Section<Nom>`.
 Elle a nommé les deux trous avant tout correctif, et c'est son argument : trois steps de câblage avaient lu
 ces fichiers sans les voir. Elle est **à sens unique** — garder l'inverse demanderait des exemptions
 (`config-sync` déclare `SectionOTel` sans jamais nommer `cfg.OTel`, il passe `cfg` entier à
 `InitTracing`), et une garde qui s'ouvre sur une liste d'exceptions est une garde qu'on désapprend à lire.
 Deux planchers de sanité la protègent du faux vert, vérifiés en mutant l'identifiant racine et le chemin.
+
+Elle ne suppose pas que la variable de config s'appelle `cfg` : elle **dérive** les identifiants qui
+portent un `config.Config` (paramètre, `var`, résultat de `config.Load`). La convention tient partout
+aujourd'hui, mais rien ne l'impose, et un service qui renommerait sa variable serait sorti de la garde sans
+qu'aucun plancher ne le voie — le minimum est global, dix-sept services suffisent à le franchir. De même,
+l'exhaustivité de `SectionAll` se vérifie en comptant ses bits, pas via une table de noms : une table peut
+contenir une entrée fausse et passer quand même.
+
+Ajouter une section ne touche donc que deux endroits — la struct et la constante — le test dérive le reste.
 
 ## Périmètre (ce que fait CETTE PR)
 
@@ -100,6 +109,20 @@ garde, et fermer les deux écarts que le balayage a trouvés.
   avec trois autres mutations : supprimer le refus d'intervalle, ramener le plancher à zéro, retirer la
   section de `SectionAll`. La garde, elle, a été mutée sur son identifiant racine et son chemin relatif —
   ses deux planchers de sanité crient.
+
+### Ce que la revue a ajouté
+
+La validation garde la valeur, elle ne garde pas le fil qui la porte. Écrire
+`billing.WithMinAge(cfg.BillingReaper.Interval)` au câblage compilait et laissait toute la suite verte :
+deux durées sur la même struct, interchangeables en silence. Le reaper aurait balayé à une minute au lieu
+d'un quart d'heure — le défaut même que le plancher interdit, réintroduit une couche plus bas. Le défaut
+est **antérieur** à cette step (`cfg.Billing.ReaperMinAge` avait la même exposition), il est fermé ici
+parce que c'est cette step qui déplace ces valeurs et prétend les rendre sûres.
+
+`TestReaperIsWiredWithTheConfiguredMinAge` construit le reaper via `reaperOptions`, l'appel que le
+processus fait — répéter `WithMinAge(cfg…)` dans le test aurait gardé une copie, pas le code. Aucune API
+n'est ajoutée à `internal/billing` : `ReapOnce` sur une source vide n'appelle ni l'`OutcomeReader` ni le
+settler, donc la fenêtre s'observe sans base.
 
 ## Definition of Done
 
