@@ -14,7 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/martialanouman/go-gateway/internal/billing"
 	"github.com/martialanouman/go-gateway/internal/config"
+	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	"github.com/martialanouman/go-gateway/internal/testutil/pgtest"
 	"github.com/martialanouman/go-gateway/internal/testutil/redistest"
 )
@@ -281,5 +283,47 @@ func TestRequiredSectionsValidatesTheReaperKnobs(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// spyOrphanSource records the cut-off the reaper asked for and reports no orphans, so ReapOnce touches
+// neither the outcome reader nor the settler — the sweep window is observable without a database.
+type spyOrphanSource struct{ olderThan time.Time }
+
+func (s *spyOrphanSource) OrphanedReservations(_ context.Context, olderThan time.Time, _ int) ([]cp.OrphanedReservation, error) {
+	s.olderThan = olderThan
+	return nil, nil
+}
+
+// TestReaperIsWiredWithTheConfiguredMinAge closes the hole this PR's review found: swapping MinAge and
+// Interval at the wiring site compiles and — until now — left the whole suite green. The reaper would
+// then sweep reservations minutes old instead of a quarter of an hour, settling messages still in flight
+// and refunding SMS the SMSC actually took. That is the exact failure BILLING_REAPER_MIN_AGE's floor
+// exists to prevent, reintroduced one layer below the validation.
+//
+// It builds the reaper through reaperOptions — the call the process itself uses — rather than repeating
+// billing.WithMinAge(cfg…) here, which would pass no matter what the wiring did.
+func TestReaperIsWiredWithTheConfiguredMinAge(t *testing.T) {
+	cfg := testConfig()
+	cfg.BillingReaper.MinAge = 42 * time.Minute
+	// Distinct from MinAge, so wiring the wrong field lands far outside the window asserted below.
+	cfg.BillingReaper.Interval = time.Minute
+
+	spy := &spyOrphanSource{}
+	reaper := billing.NewReaper(spy, nil, nil, reaperOptions(cfg)...)
+
+	before := time.Now()
+	if err := reaper.ReapOnce(t.Context()); err != nil {
+		t.Fatalf("ReapOnce: %v", err)
+	}
+	after := time.Now()
+
+	// ReapOnce reads the clock itself, somewhere between these two samples, and subtracts MinAge from it.
+	// Bracketing the cut-off by both samples asserts the window exactly, with no arbitrary slack: any
+	// other duration — Interval's minute, or the reaper's own 15m default — falls outside.
+	if spy.olderThan.Before(before.Add(-cfg.BillingReaper.MinAge)) ||
+		spy.olderThan.After(after.Add(-cfg.BillingReaper.MinAge)) {
+		t.Errorf("reaper sweeps reservations older than %s, want %s (BILLING_REAPER_MIN_AGE)",
+			before.Sub(spy.olderThan), cfg.BillingReaper.MinAge)
 	}
 }
