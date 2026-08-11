@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"math/bits"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -93,11 +94,13 @@ func TestSectionConstantsMatchTheConfigStructs(t *testing.T) {
 	}
 
 	// SectionAll is the fallback for a caller that declares nothing, so a section missing from it makes
-	// Validate() silently partial.
-	for _, field := range fields {
-		if config.SectionAll&sectionValue(t, "Section"+field) == 0 {
-			t.Errorf("SectionAll omits Section%s: Validate() would quietly stop being a full check", field)
-		}
+	// Validate() silently partial. Each section is one bit, so counting the bits set in SectionAll and
+	// comparing that to the number of sub-structs says it without naming any of them — a lookup table
+	// mapping names to constants could hold a wrong entry and still pass, since a mistyped section is
+	// usually in SectionAll too.
+	if got, want := bits.OnesCount16(uint16(config.SectionAll)), len(fields); got != want {
+		t.Errorf("SectionAll holds %d sections but Config has %d sub-structs: Validate() would quietly stop "+
+			"being a full check", got, want)
 	}
 }
 
@@ -334,30 +337,4 @@ func declaredSectionConstants(t *testing.T) []string {
 		t.Fatalf("parsed %d Section constants from config.go, want at least 8 — the parser is not reading the file", len(names))
 	}
 	return names
-}
-
-// sectionValue resolves a section constant by name. The constants are untyped bit flags with no runtime
-// registry, so the mapping is spelled out here; TestSectionConstantsMatchTheConfigStructs is what keeps
-// this list from drifting away from the package.
-func sectionValue(t *testing.T, name string) config.Section {
-	t.Helper()
-
-	byName := map[string]config.Section{
-		"SectionOTel":          config.SectionOTel,
-		"SectionPostgres":      config.SectionPostgres,
-		"SectionKafka":         config.SectionKafka,
-		"SectionClickHouse":    config.SectionClickHouse,
-		"SectionHTTP":          config.SectionHTTP,
-		"SectionRedis":         config.SectionRedis,
-		"SectionGRPC":          config.SectionGRPC,
-		"SectionSMPP":          config.SectionSMPP,
-		"SectionBilling":       config.SectionBilling,
-		"SectionContentKey":    config.SectionContentKey,
-		"SectionBillingReaper": config.SectionBillingReaper,
-	}
-	section, ok := byName[name]
-	if !ok {
-		t.Fatalf("no value known for %s: add it here when the section lands", name)
-	}
-	return section
 }
