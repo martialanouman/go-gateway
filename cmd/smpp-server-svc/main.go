@@ -46,11 +46,14 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
 
-	// PostgreSQL (bind auth), Kafka (produce mt.inbound), ClickHouse (accepted CDR row) and gRPC to
-	// session-manager (max_sessions). No HTTP business surface of its own — the SMPP listener is it.
+	// PostgreSQL (bind auth), Kafka (produce mt.inbound), ClickHouse (CDR) and Redis. Two gRPC surfaces
+	// meet here, which is how SectionGRPC came to be missing: the CLIENT dial to session-manager for
+	// max_sessions travels in SectionSMPP (SMPP_SESSION_MANAGER_ADDR), while this pod's OWN Deliver
+	// server listens on cfg.GRPC.Port (step-048) — declaring SectionGRPC is what gets that port checked
+	// against the ops port at boot. No HTTP business surface of its own: the SMPP listener is it.
 	cfg, err := config.Load(serviceName,
 		config.SectionOTel, config.SectionPostgres, config.SectionKafka, config.SectionClickHouse,
-		config.SectionRedis, config.SectionSMPP, config.SectionBilling)
+		config.SectionRedis, config.SectionSMPP, config.SectionGRPC)
 	if err != nil {
 		return err
 	}

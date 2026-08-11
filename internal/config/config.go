@@ -73,6 +73,11 @@ type Config struct {
 	SMPP       SMPP       `envPrefix:"SMPP_"`
 	Billing    Billing    `envPrefix:"BILLING_"`
 	ContentKey ContentKey `envPrefix:"CONTENT_KEY_"`
+
+	// BillingReaper sits under the BILLING_REAPER_ prefix, inside Billing's own BILLING_ space. The
+	// nesting is deliberate: the variables an operator sets keep the names step-190 gave them, while
+	// the two roles stop sharing a section.
+	BillingReaper BillingReaper `envPrefix:"BILLING_REAPER_"`
 }
 
 // OTel configures tracing export. The variable names follow the OpenTelemetry specification so
@@ -131,6 +136,13 @@ const (
 	// in the whole milliseconds the client stores after truncating the duration (kgo/config.go:1497).
 	kafkaMinFetchMaxWaitMillis = 10
 )
+
+// minReaperMinAge is the floor under BillingReaper.MinAge. It is a guard against catastrophe, not a
+// policy: a settle lands milliseconds after the SMSC responds, so a minute is orders of magnitude above
+// any nominal time in flight, and fifteen times under the default. It refuses the values that would make
+// the reaper refund sent messages (1s, 10s, 30s) without constraining an operator who has measured the
+// real window — the direction the godoc invites is to WIDEN it.
+const minReaperMinAge = time.Minute
 
 // Postgres is the control-plane database (plan §1). It is also the target of the migration
 // runner.
@@ -387,9 +399,10 @@ type GRPC struct {
 }
 
 // Billing configures a service's CLIENT connection to billing-svc (the gRPC server on :7001, step-144).
-// router-svc declares SectionBilling to reserve MT credit (step-145); connector-pool-svc will to capture
-// (step-146). It is a client dial target, not a listen port — distinct from GRPC, which is a server's own
-// listener.
+// Its two declarants are router-svc, which reserves MT credit (step-145), and connector-pool-svc, which
+// captures and releases it (step-146). It is a client dial target, not a listen port — distinct from GRPC,
+// which is a server's own listener. billing-svc itself does NOT declare it: it is the server, and it dials
+// nobody (step-193d).
 type Billing struct {
 	// Addr is the host:port of the billing gRPC service (billing-svc, :7001). The credit stage dials it
 	// lazily to reserve credit; billing being disabled for a customer is a cached-boolean decision upstream
@@ -409,17 +422,25 @@ type Billing struct {
 	// send pipeline; capture/release do a synchronous durable write, so it must stay above that commit
 	// latency, and is a knob ops can widen without a redeploy. Capture/release are idempotent by message_id.
 	SettleTimeout time.Duration `env:"SETTLE_TIMEOUT" envDefault:"200ms"`
+}
 
-	// ReaperMinAge is how long a reservation must sit unsettled before billing-svc's reaper reconciles it
-	// (step-190). The nominal settle lands milliseconds after the SMSC responds, so anything still open
-	// past this window is genuinely stuck rather than in flight. Too short is the dangerous direction: the
-	// reaper would race connector-pool and settle live messages. Ops widens it per deployment once the
-	// real time-to-terminal-outcome is measured under load (step-200/201).
-	ReaperMinAge time.Duration `env:"REAPER_MIN_AGE" envDefault:"15m"`
+// BillingReaper configures billing-svc's own orphan-reservation reaper (step-190) — the net under the
+// fail-open settle of step-146. Where Billing is a CLIENT dial target, these are the SERVER's knobs:
+// billing-svc is the only binary that declares SectionBillingReaper, and the only one that reads them.
+//
+// They lived in Billing until step-193d, which is how they went unvalidated: billing-svc is the server,
+// so it never declared the client section, so nothing checked what an operator put in these two.
+type BillingReaper struct {
+	// MinAge is how long a reservation must sit unsettled before the reaper reconciles it. The nominal
+	// settle lands milliseconds after the SMSC responds, so anything still open past this window is
+	// genuinely stuck rather than in flight. Too short is the dangerous direction — the reaper would race
+	// connector-pool and settle live messages — hence the floor below. Ops widens it per deployment once
+	// the real time-to-terminal-outcome is measured under load (step-200/201).
+	MinAge time.Duration `env:"MIN_AGE" envDefault:"15m"`
 
-	// ReaperInterval is how often the reaper sweeps. Reconciliation is not urgent — the money is already
+	// Interval is how often the reaper sweeps. Reconciliation is not urgent — the money is already
 	// recorded, only its settlement is late — so a slow cadence keeps the sweep well off the hot path.
-	ReaperInterval time.Duration `env:"REAPER_INTERVAL" envDefault:"5m"`
+	Interval time.Duration `env:"INTERVAL" envDefault:"5m"`
 }
 
 // ContentKey configures a service's CLIENT connection to content-key-svc (the gRPC server on :7002,
@@ -520,12 +541,14 @@ const (
 	SectionSMPP
 	SectionBilling
 	SectionContentKey
+	SectionBillingReaper
 
 	// SectionAll is what a caller declaring nothing gets. It must include every section, or
 	// Validate() — which runs validate(SectionAll) — would quietly stop being a full check. The
 	// cost of a section a binary does not use is nil: its fields carry valid defaults.
 	SectionAll = SectionOTel | SectionPostgres | SectionKafka | SectionClickHouse | SectionHTTP |
-		SectionRedis | SectionGRPC | SectionSMPP | SectionBilling | SectionContentKey
+		SectionRedis | SectionGRPC | SectionSMPP | SectionBilling | SectionContentKey |
+		SectionBillingReaper
 )
 
 // Load reads the configuration for serviceName from the environment and validates the sections it
@@ -625,6 +648,9 @@ func (c Config) validate(sections Section) error {
 	}
 	if sections&SectionContentKey != 0 {
 		problems = append(problems, c.contentKeyProblems()...)
+	}
+	if sections&SectionBillingReaper != 0 {
+		problems = append(problems, c.billingReaperProblems()...)
 	}
 
 	if len(problems) == 0 {
@@ -999,9 +1025,6 @@ func (c Config) smppProblems() []string {
 	return problems
 }
 
-// billingProblems checks the billing client dial target (step-145). A service that declared SectionBilling
-// will call billing-svc, so the address must be a scheme-less host:port and must not stay the localhost
-// development default in production (the same discipline as SMPP_SESSION_MANAGER_ADDR).
 // contentKeyProblems validates the client dial target of content-key-svc.
 func (c Config) contentKeyProblems() []string {
 	var problems []string
@@ -1017,6 +1040,10 @@ func (c Config) contentKeyProblems() []string {
 	return problems
 }
 
+// billingProblems checks the billing client dial target (step-145). A service that declared SectionBilling
+// will call billing-svc, so the address must be a scheme-less host:port and must not stay the localhost
+// development default in production (the same discipline as SMPP_SESSION_MANAGER_ADDR). The two RPC
+// deadlines are checked here too: a non-positive one would fail every call it bounds.
 func (c Config) billingProblems() []string {
 	var problems []string
 	if strings.TrimSpace(c.Billing.Addr) == "" {
@@ -1037,6 +1064,35 @@ func (c Config) billingProblems() []string {
 		problems = append(problems, fmt.Sprintf(
 			"BILLING_SETTLE_TIMEOUT %s must be positive: a non-positive deadline would fail every capture/release",
 			c.Billing.SettleTimeout))
+	}
+	return problems
+}
+
+// billingReaperProblems checks billing-svc's reaper knobs (step-190). Each refusal below describes a
+// failure the running service would otherwise show only in production: one kills the pod at boot, the
+// two others give back money for messages that were sent, or pretend to hold a setting they dropped.
+func (c Config) billingReaperProblems() []string {
+	var problems []string
+
+	// runReap hands this straight to time.NewTicker, which panics on a non-positive duration. A config
+	// refusal is a message an operator reads; a panic is a crash-loop they have to diagnose.
+	if c.BillingReaper.Interval <= 0 {
+		problems = append(problems, fmt.Sprintf(
+			"BILLING_REAPER_INTERVAL %s must be positive: time.NewTicker panics on a non-positive interval, "+
+				"so billing-svc would die at boot", c.BillingReaper.Interval))
+	}
+	// billing.WithMinAge ignores a non-positive value and keeps its own 15m default, so accepting one
+	// would ship a knob that reports a setting it does not have — the same trap CLICKHOUSE_MAX_OPEN_CONNS
+	// refuses. Reported separately from the floor so the message matches what the operator actually wrote.
+	switch {
+	case c.BillingReaper.MinAge <= 0:
+		problems = append(problems, fmt.Sprintf(
+			"BILLING_REAPER_MIN_AGE %s must be positive: billing.WithMinAge silently ignores a non-positive "+
+				"value and the reaper keeps its own default, so the knob would lie", c.BillingReaper.MinAge))
+	case c.BillingReaper.MinAge < minReaperMinAge:
+		problems = append(problems, fmt.Sprintf(
+			"BILLING_REAPER_MIN_AGE %s is below the %s floor: the reaper would race connector-pool's settle "+
+				"loop and release credit for messages the SMSC actually took", c.BillingReaper.MinAge, minReaperMinAge))
 	}
 	return problems
 }

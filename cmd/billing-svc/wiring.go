@@ -261,11 +261,19 @@ func newReaperStack(cfg config.Config, repo *postgres.BillingRepo, settler billi
 	})
 
 	r.reaper = billing.NewReaper(repo, clickhouse.NewCDRReader(r.ch), settler,
-		billing.WithMinAge(cfg.Billing.ReaperMinAge),
-		billing.WithReaperMetric(reaperMetric{reaped: reapedTotal, unresolvable: unresolvableTotal}),
-		billing.WithReaperLogger(logger))
+		append(reaperOptions(cfg),
+			billing.WithReaperMetric(reaperMetric{reaped: reapedTotal, unresolvable: unresolvableTotal}),
+			billing.WithReaperLogger(logger))...)
 	r.collectors = []prometheus.Collector{reapedTotal, unresolvableTotal}
 	return r, nil
+}
+
+// reaperOptions is the part of the reaper's construction that comes from configuration. It is split out
+// so a test can build a reaper from the SAME call the process makes: repeating billing.WithMinAge(cfg…)
+// in the test would pass whatever the wiring actually did, and the two fields here are both durations —
+// swapping them compiles.
+func reaperOptions(cfg config.Config) []billing.ReaperOption {
+	return []billing.ReaperOption{billing.WithMinAge(cfg.BillingReaper.MinAge)}
 }
 
 func (r *reaperStack) close() {
