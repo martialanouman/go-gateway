@@ -137,6 +137,13 @@ const (
 	kafkaMinFetchMaxWaitMillis = 10
 )
 
+// minReaperMinAge is the floor under BillingReaper.MinAge. It is a guard against catastrophe, not a
+// policy: a settle lands milliseconds after the SMSC responds, so a minute is orders of magnitude above
+// any nominal time in flight, and fifteen times under the default. It refuses the values that would make
+// the reaper refund sent messages (1s, 10s, 30s) without constraining an operator who has measured the
+// real window — the direction the godoc invites is to WIDEN it.
+const minReaperMinAge = time.Minute
+
 // Postgres is the control-plane database (plan §1). It is also the target of the migration
 // runner.
 type Postgres struct {
@@ -435,13 +442,6 @@ type BillingReaper struct {
 	// recorded, only its settlement is late — so a slow cadence keeps the sweep well off the hot path.
 	Interval time.Duration `env:"INTERVAL" envDefault:"5m"`
 }
-
-// minReaperMinAge is the floor under BillingReaper.MinAge. It is a guard against catastrophe, not a
-// policy: a settle lands milliseconds after the SMSC responds, so a minute is orders of magnitude above
-// any nominal time in flight, and fifteen times under the default. It refuses the values that would make
-// the reaper refund sent messages (1s, 10s, 30s) without constraining an operator who has measured the
-// real window — the direction the godoc invites is to WIDEN it.
-const minReaperMinAge = time.Minute
 
 // ContentKey configures a service's CLIENT connection to content-key-svc (the gRPC server on :7002,
 // step-167). admin-api-svc declares it to rotate, read and shred content keys; router-svc declares it to
@@ -1067,9 +1067,9 @@ func (c Config) billingProblems() []string {
 	return problems
 }
 
-// billingReaperProblems checks billing-svc's reaper knobs (step-190). Both refusals below describe a
+// billingReaperProblems checks billing-svc's reaper knobs (step-190). Each refusal below describes a
 // failure the running service would otherwise show only in production: one kills the pod at boot, the
-// other quietly gives back money for messages that were sent.
+// two others give back money for messages that were sent, or pretend to hold a setting they dropped.
 func (c Config) billingReaperProblems() []string {
 	var problems []string
 
