@@ -1025,9 +1025,6 @@ func (c Config) smppProblems() []string {
 	return problems
 }
 
-// billingProblems checks the billing client dial target (step-145). A service that declared SectionBilling
-// will call billing-svc, so the address must be a scheme-less host:port and must not stay the localhost
-// development default in production (the same discipline as SMPP_SESSION_MANAGER_ADDR).
 // contentKeyProblems validates the client dial target of content-key-svc.
 func (c Config) contentKeyProblems() []string {
 	var problems []string
@@ -1043,6 +1040,10 @@ func (c Config) contentKeyProblems() []string {
 	return problems
 }
 
+// billingProblems checks the billing client dial target (step-145). A service that declared SectionBilling
+// will call billing-svc, so the address must be a scheme-less host:port and must not stay the localhost
+// development default in production (the same discipline as SMPP_SESSION_MANAGER_ADDR). The two RPC
+// deadlines are checked here too: a non-positive one would fail every call it bounds.
 func (c Config) billingProblems() []string {
 	var problems []string
 	if strings.TrimSpace(c.Billing.Addr) == "" {
