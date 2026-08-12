@@ -43,18 +43,29 @@ type smppApp struct {
 	rdb      *goredis.Client
 
 	// closers release what was opened, in reverse order of opening — the exact LIFO the deferred
-	// Closes in run() used to provide.
-	closers []func()
+	// Closes in run() used to provide. They are named because that order is the property worth
+	// guarding, and an anonymous stack cannot be asserted against.
+	closers []closer
+}
+
+// closer is a release step and the name it answers to. The name carries no behaviour: it exists so
+// that the release ORDER — a property of newSMPPApp, and one a wrong edit breaks silently — can be
+// asserted on the graph the service actually builds.
+type closer struct {
+	name string
+	fn   func()
 }
 
 // onClose registers a release step, to be run in reverse order by close.
-func (a *smppApp) onClose(f func()) { a.closers = append(a.closers, f) }
+func (a *smppApp) onClose(name string, f func()) {
+	a.closers = append(a.closers, closer{name: name, fn: f})
+}
 
 // close releases every connection the app holds. It is safe to call on a partially built app: only
 // what was actually opened is registered.
 func (a *smppApp) close() {
 	for i := len(a.closers) - 1; i >= 0; i-- {
-		a.closers[i]()
+		a.closers[i].fn()
 	}
 }
 
@@ -75,14 +86,14 @@ func newSMPPApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (_ 
 	if err != nil {
 		return nil, err
 	}
-	a.onClose(st.close)
+	a.onClose("stores", st.close)
 	a.rdb = st.rdb
 
 	stack, err := newListener(cfg, st, logger)
 	if err != nil {
 		return nil, err
 	}
-	a.onClose(stack.close)
+	a.onClose("listeners", stack.close)
 	a.listener = stack.listener
 
 	// The pod-local Deliver gRPC surface: step-048 dials this pod (after a Lookup) to push a deliver_sm

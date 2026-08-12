@@ -51,23 +51,49 @@ func (a *adminApp) close() {
 }
 ```
 
-Le test qui construit déjà le graphe complet (`TestNewXxxAppBuildsTheWholeGraph`, ou un test frère)
-lit `app.closers` — il est dans le même `package main`, donc **aucune méthode de production n'est
-ajoutée pour les besoins du test** :
+Un test frère construit le graphe complet et asserte l'ordre — il est dans le même `package main`, donc
+**aucune méthode de production n'est ajoutée pour les besoins du test**.
+
+`TestAppCloseReleasesInReverseOrderOfOpening` **disparaît** : la nouvelle assertion couvre à la fois
+l'inversion et l'ordre d'enregistrement. Le bilan est un échange — un test synthétique en moins par
+service, une assertion réelle en plus, zéro API nouvelle.
+
+### L'extrait que cette fiche portait ne tenait pas sa propre exigence
+
+Cette fiche demandait, plus bas : « Inverser la boucle de `close()` doit le faire tomber aussi. » Elle
+proposait pour cela de lire la pile à l'envers dans le test :
 
 ```go
-got := make([]string, 0, len(app.closers))
-for i := len(app.closers) - 1; i >= 0; i-- {
+for i := len(app.closers) - 1; i >= 0; i-- {   // ← rejoue la boucle de close() côté test
 	got = append(got, app.closers[i].name)
-}
-if want := []string{"runners", "stores"}; !slices.Equal(got, want) {
-	t.Errorf("release order is %v, want %v — the runners' jobs use the pool", got, want)
 }
 ```
 
-`TestAppCloseReleasesInReverseOrderOfOpening` **disparaît** : la nouvelle assertion couvre à la fois
-l'inversion et l'ordre d'enregistrement. Le bilan net est un retrait — un test synthétique en moins par
-service, une assertion réelle en plus, zéro API nouvelle.
+`close()` n'y est jamais appelé : le test réimplémente sa boucle, donc l'inverser en production le laisse
+vert. Les deux côtés bougent ensemble — le défaut aller-retour.
+
+L'ordre s'observe donc en **exécutant** `close()`. `releaseOrder` enveloppe chaque `fn` enregistrée pour
+qu'elle s'annonce avant de libérer, puis appelle la vraie méthode :
+
+```go
+func releaseOrder(a *adminApp) []string {
+	var released []string
+	for i := range a.closers {
+		c := a.closers[i] // une copie : c.fn est l'originale, pas la doublure
+		a.closers[i].fn = func() { released = append(released, c.name); c.fn() }
+	}
+	a.close()
+	return released
+}
+```
+
+Conséquence de structure : l'assertion ne peut pas vivre dans `TestNewXxxAppBuildsTheWholeGraph`, qui
+tient déjà un `defer app.close()` — libérer deux fois un consumer Kafka n'est pas anodin. Elle prend la
+place laissée par le test synthétique, en test frère.
+
+Vérifié : les deux mutations tombent, aucune ne casse la compilation. Sur `admin-api-svc`,
+`onClose("stores", …)` déplacé après `onClose("runners", …)` donne `[… stores runners]`, et `close()`
+itéré à l'endroit donne `[stores runners redis clients feed]`.
 
 ## Périmètre (ce que fait CETTE PR)
 
@@ -83,25 +109,34 @@ suppression du test synthétique.
 - **Aucun changement de comportement.** L'ordre réel doit rester exactement celui d'aujourd'hui : la
   PR le rend vérifiable, elle ne le corrige pas. Si un service s'avère avoir le mauvais ordre, c'est
   une découverte à traiter dans son propre commit, annoncée comme telle.
-- Les noms sont ceux des sous-graphes déjà en place (`stores`, `runners`, `clients`, `clickhouse`,
-  `alerts`…), pas des noms neufs.
+- Les noms sont ceux des sous-graphes déjà en place (`stores`, `runners`, `clients`, `alerts`…), pas des
+  noms neufs. Deux corrigent ce que le test synthétique racontait de faux : `router-svc` empilait trois
+  marqueurs (`postgres`, `redis`, `billing`) pour un graphe qui en enregistre **six**, et `billing` n'y
+  est même pas un closer ; `billing-svc` nommait `clickhouse` ce qui est le sous-graphe `reaper`, dont
+  la connexion n'est qu'un champ.
 - Les quatre services à un seul closer (`content-key-svc`, `session-manager-svc`, `config-sync`,
   `rest-api-svc`) gagnent une assertion à un élément. Elle vaut quand même : elle cassera le jour où
   quelqu'un ajoutera un second closer du mauvais côté — précisément ce que step-205 (TLS) va faire.
 
 ## Tests
 
-- Par service : l'assertion d'ordre sur le graphe réellement construit.
+- Par service : l'assertion d'ordre sur le graphe réellement construit. **Vérifié** : les dix passent, et
+  aucune ne saute — elles vivent derrière `pgtest`/`redistest`, donc elles sont muettes sous `-short` et
+  sans Docker. C'est déjà le régime de tous les `TestNewXxxAppBuildsTheWholeGraph`, et la CI
+  (`go test -race ./...`, sans `-short`) les exécute.
 - Muter à la couche où le défaut vivrait : **échanger deux `onClose` dans `newXxxApp`** doit faire
-  tomber le test. Inverser la boucle de `close()` doit le faire tomber aussi.
+  tomber le test. Inverser la boucle de `close()` doit le faire tomber aussi. **Vérifié** sur
+  `admin-api-svc` (stores/runners) et `router-svc` (accepted/outcome), pour les deux mutations.
 - Vérifier qu'un service à un seul closer voit bien son assertion échouer si on retire l'`onClose`.
+  **Vérifié** sur `config-sync` : `release order is [], want [stores]` — le client Redis fuyait, et plus
+  rien ne le disait.
 
 ## Definition of Done
 
-- [ ] `make check` vert
-- [ ] les dix services assertent leur ordre de fermeture sur le graphe réel
-- [ ] `TestAppCloseReleasesInReverseOrderOfOpening` n'existe plus nulle part
-- [ ] aucun ordre de fermeture n'a changé (ou le changement est isolé et annoncé)
+- [x] `make check` vert
+- [x] les dix services assertent leur ordre de fermeture sur le graphe réel
+- [x] `TestAppCloseReleasesInReverseOrderOfOpening` n'existe plus nulle part
+- [x] aucun ordre de fermeture n'a changé — le diff des `onClose` est une pure addition d'argument
 
 ## Hors périmètre
 

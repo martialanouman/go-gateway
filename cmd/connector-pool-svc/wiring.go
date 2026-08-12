@@ -51,18 +51,29 @@ type poolApp struct {
 	catalog  *metrics.Catalog
 
 	// closers release what was opened, in reverse order of opening — the exact LIFO the deferred
-	// Closes in run() used to provide.
-	closers []func()
+	// Closes in run() used to provide. They are named because that order is the property worth
+	// guarding, and an anonymous stack cannot be asserted against.
+	closers []closer
+}
+
+// closer is a release step and the name it answers to. The name carries no behaviour: it exists so
+// that the release ORDER — a property of newPoolApp, and one a wrong edit breaks silently — can be
+// asserted on the graph the service actually builds.
+type closer struct {
+	name string
+	fn   func()
 }
 
 // onClose registers a release step, to be run in reverse order by close.
-func (a *poolApp) onClose(f func()) { a.closers = append(a.closers, f) }
+func (a *poolApp) onClose(name string, f func()) {
+	a.closers = append(a.closers, closer{name: name, fn: f})
+}
 
 // close releases every connection the app holds. It is safe to call on a partially built app: only
 // what was actually opened is registered.
 func (a *poolApp) close() {
 	for i := len(a.closers) - 1; i >= 0; i-- {
-		a.closers[i]()
+		a.closers[i].fn()
 	}
 }
 
@@ -84,7 +95,7 @@ func newPoolApp(ctx context.Context, cfg config.Config, bindEnv connectorEnv, lo
 	if err != nil {
 		return nil, err
 	}
-	a.onClose(st.close)
+	a.onClose("stores", st.close)
 	a.consumer = st.consumer
 
 	throttle := newThrottleMetrics(bindEnv)
@@ -112,14 +123,14 @@ func newPoolApp(ctx context.Context, cfg config.Config, bindEnv connectorEnv, lo
 	if err != nil {
 		return nil, err
 	}
-	a.onClose(billing.close)
+	a.onClose("billing", billing.close)
 
 	tracer := observability.Tracer(nil, serviceName)
 	stream, err := newMetricStream(cfg)
 	if err != nil {
 		return nil, err
 	}
-	a.onClose(stream.close)
+	a.onClose("stream", stream.close)
 	a.emitter = stream.emitter
 	a.catalog = metrics.NewCatalog()
 
@@ -180,7 +191,7 @@ func newPoolApp(ctx context.Context, cfg config.Config, bindEnv connectorEnv, lo
 	if err != nil {
 		return nil, err
 	}
-	a.onClose(drainer.close)
+	a.onClose("drainer", drainer.close)
 	a.drainer = drainer.drainer
 	return a, nil
 }

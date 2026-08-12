@@ -34,18 +34,29 @@ type restAPIApp struct {
 	http *http.Server
 
 	// closers release what was opened, in reverse order of opening — the exact LIFO the deferred Closes
-	// in run() used to provide.
-	closers []func()
+	// in run() used to provide. They are named because that order is the property worth guarding,
+	// and an anonymous stack cannot be asserted against.
+	closers []closer
+}
+
+// closer is a release step and the name it answers to. The name carries no behaviour: it exists so
+// that the release ORDER — a property of newRestAPIApp, and one a wrong edit breaks silently — can be
+// asserted on the graph the service actually builds.
+type closer struct {
+	name string
+	fn   func()
 }
 
 // onClose registers a release step, to be run in reverse order by close.
-func (a *restAPIApp) onClose(f func()) { a.closers = append(a.closers, f) }
+func (a *restAPIApp) onClose(name string, f func()) {
+	a.closers = append(a.closers, closer{name: name, fn: f})
+}
 
 // close releases every connection the app holds. It is safe to call on a partially built app: only what
 // was actually opened is registered.
 func (a *restAPIApp) close() {
 	for i := len(a.closers) - 1; i >= 0; i-- {
-		a.closers[i]()
+		a.closers[i].fn()
 	}
 }
 
@@ -65,7 +76,7 @@ func newRestAPIApp(ctx context.Context, cfg config.Config, logger *slog.Logger) 
 	if err != nil {
 		return nil, err
 	}
-	a.onClose(st.close)
+	a.onClose("stores", st.close)
 
 	//nolint:contextcheck // The boot context has no business inside a request handler: the API-key
 	// middleware authenticates on the REQUEST context (ctx.Context()), which is the only correct one —

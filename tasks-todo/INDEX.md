@@ -151,8 +151,10 @@ structurelles et à faire **avant** que M12 n'empile dessus.
 - [x] step-193d — `billing-svc` lit `cfg.Billing.*` sans déclarer `SectionBilling` : personne ne la valide.
   Les champs sont partis dans `SectionBillingReaper` (la section client ne validait aucun d'eux), et une
   garde remplace la relecture — elle a trouvé `smpp-server-svc` dans le même cas
-- [ ] step-193e — l'ordre de fermeture est une propriété du câblage que le test synthétique ne garde pas
-  (chez `admin-api-svc` il est load-bearing, et l'inverser laisserait toute la suite verte)
+- [x] step-193e — l'ordre de fermeture est une propriété du câblage que le test synthétique ne gardait pas
+  (chez `admin-api-svc` il est load-bearing, et l'inverser laissait toute la suite verte). Les 28 closers
+  des dix services sont nommés, et l'assertion s'observe en exécutant `close()` — la relire à l'envers
+  aurait rejoué sa boucle des deux côtés
 - [x] step-194 — Découper `connectorpool.go` (extraction du mapping SMPP/CDR)
 
 ## M12 — Durcissement, charge & mise en production

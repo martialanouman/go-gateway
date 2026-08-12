@@ -43,18 +43,29 @@ type adminApp struct {
 	stream   *kafka.Consumer
 
 	// closers release what was opened, in reverse order of opening — the exact LIFO the deferred
-	// Closes in run() used to provide.
-	closers []func()
+	// Closes in run() used to provide. They are named because that order is the property worth
+	// guarding, and an anonymous stack cannot be asserted against.
+	closers []closer
+}
+
+// closer is a release step and the name it answers to. The name carries no behaviour: it exists so
+// that the release ORDER — a property of newAdminApp, and one a wrong edit breaks silently — can be
+// asserted on the graph the service actually builds.
+type closer struct {
+	name string
+	fn   func()
 }
 
 // onClose registers a release step, to be run in reverse order by close.
-func (a *adminApp) onClose(f func()) { a.closers = append(a.closers, f) }
+func (a *adminApp) onClose(name string, f func()) {
+	a.closers = append(a.closers, closer{name: name, fn: f})
+}
 
 // close releases every connection the app holds, and drains the background runners. It is safe to
 // call on a partially built app: only what was actually opened is registered.
 func (a *adminApp) close() {
 	for i := len(a.closers) - 1; i >= 0; i-- {
-		a.closers[i]()
+		a.closers[i].fn()
 	}
 }
 
@@ -76,7 +87,7 @@ func newAdminApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (_
 	if err != nil {
 		return nil, err
 	}
-	a.onClose(st.close)
+	a.onClose("stores", st.close)
 
 	retention, err := newRetainer(cfg, st.ch, logger)
 	if err != nil {
@@ -85,7 +96,7 @@ func newAdminApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (_
 	a.retainer = retention.retainer
 
 	runners := newRunners(ctx, cfg, logger)
-	a.onClose(runners.close)
+	a.onClose("runners", runners.close)
 
 	// Redis carries the config-change announcement (step-105): the Admin API publishes a coarse event
 	// after each mutation. A publish failure is best-effort (logged, not fatal), so — unlike Postgres —
@@ -94,7 +105,7 @@ func newAdminApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (_
 	if err != nil {
 		return nil, fmt.Errorf("open redis client: %w", err)
 	}
-	a.onClose(func() { _ = rdb.Close() })
+	a.onClose("redis", func() { _ = rdb.Close() })
 
 	verifier, err := auth.NewStaticVerifier(cfg.HTTP.AdminTokens)
 	if err != nil {
@@ -105,13 +116,13 @@ func newAdminApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (_
 	if err != nil {
 		return nil, err
 	}
-	a.onClose(clients.close)
+	a.onClose("clients", clients.close)
 
 	feed, err := newRealtimeFeed(cfg)
 	if err != nil {
 		return nil, err
 	}
-	a.onClose(feed.close)
+	a.onClose("feed", feed.close)
 	a.hub = feed.hub
 	a.stream = feed.reader
 
@@ -217,7 +228,8 @@ type runners struct {
 	gdpr    *async.Runner
 
 	// close drains both. Their jobs use the Postgres pool, so the drain must complete BEFORE the pool
-	// is closed: this closer is registered after the stores', and closers run in reverse, so it does.
+	// is closed — which holds because this closer is registered after the stores', and closers run in
+	// reverse. TestNewAdminAppReleasesInDependencyOrder is what enforces that, not this sentence.
 	// The drain uses a cancel-detached deadline so a SIGTERM does not cut it short.
 	close func()
 }

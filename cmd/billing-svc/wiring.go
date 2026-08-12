@@ -41,18 +41,29 @@ type billingApp struct {
 	reaper         *billing.Reaper
 
 	// closers release what was opened, in reverse order of opening — the exact LIFO the deferred Closes
-	// in run() used to provide.
-	closers []func()
+	// in run() used to provide. They are named because that order is the property worth guarding,
+	// and an anonymous stack cannot be asserted against.
+	closers []closer
+}
+
+// closer is a release step and the name it answers to. The name carries no behaviour: it exists so
+// that the release ORDER — a property of newBillingApp, and one a wrong edit breaks silently — can be
+// asserted on the graph the service actually builds.
+type closer struct {
+	name string
+	fn   func()
 }
 
 // onClose registers a release step, to be run in reverse order by close.
-func (a *billingApp) onClose(f func()) { a.closers = append(a.closers, f) }
+func (a *billingApp) onClose(name string, f func()) {
+	a.closers = append(a.closers, closer{name: name, fn: f})
+}
 
 // close releases every connection the app holds. It is safe to call on a partially built app: only what
 // was actually opened is registered.
 func (a *billingApp) close() {
 	for i := len(a.closers) - 1; i >= 0; i-- {
-		a.closers[i]()
+		a.closers[i].fn()
 	}
 }
 
@@ -77,7 +88,7 @@ func newBillingApp(ctx context.Context, cfg config.Config, logger *slog.Logger) 
 	if err != nil {
 		return nil, err
 	}
-	a.onClose(st.close)
+	a.onClose("stores", st.close)
 
 	acct, err := newAccountant(ctx, st.pg, st.rdb, logger)
 	if err != nil {
@@ -93,7 +104,7 @@ func newBillingApp(ctx context.Context, cfg config.Config, logger *slog.Logger) 
 	if err != nil {
 		return nil, err
 	}
-	a.onClose(reap.close)
+	a.onClose("reaper", reap.close)
 	a.reaper = reap.reaper
 
 	a.grpc = grpc.NewServer()
@@ -102,7 +113,7 @@ func newBillingApp(ctx context.Context, cfg config.Config, logger *slog.Logger) 
 	if err != nil {
 		return nil, err
 	}
-	a.onClose(feed.close)
+	a.onClose("alerts", feed.close)
 
 	pb.RegisterBillingServer(a.grpc, billing.NewServer(ext.biller, acct.repo, feed.alerts))
 

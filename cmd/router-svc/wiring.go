@@ -59,18 +59,29 @@ type routerApp struct {
 	catalog  *metrics.Catalog
 
 	// closers release what was opened, in reverse order of opening — the exact LIFO the deferred
-	// Closes in run() used to provide.
-	closers []func()
+	// Closes in run() used to provide. They are named because that order is the property worth
+	// guarding, and an anonymous stack cannot be asserted against.
+	closers []closer
+}
+
+// closer is a release step and the name it answers to. The name carries no behaviour: it exists so
+// that the release ORDER — a property of newRouterApp, and one a wrong edit breaks silently — can be
+// asserted on the graph the service actually builds.
+type closer struct {
+	name string
+	fn   func()
 }
 
 // onClose registers a release step, to be run in reverse order by close.
-func (a *routerApp) onClose(f func()) { a.closers = append(a.closers, f) }
+func (a *routerApp) onClose(name string, f func()) {
+	a.closers = append(a.closers, closer{name: name, fn: f})
+}
 
 // close releases every connection the app holds. It is safe to call on a partially built app: only
 // what was actually opened is registered.
 func (a *routerApp) close() {
 	for i := len(a.closers) - 1; i >= 0; i-- {
-		a.closers[i]()
+		a.closers[i].fn()
 	}
 }
 
@@ -92,7 +103,7 @@ func newRouterApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 	if err != nil {
 		return nil, err
 	}
-	a.onClose(st.close)
+	a.onClose("stores", st.close)
 	a.consumer = st.consumer
 
 	boot, err := loadBootSnapshots(ctx, st.pg, logger)
@@ -109,7 +120,7 @@ func newRouterApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 	if err != nil {
 		return nil, fmt.Errorf("connect redis: %w", err)
 	}
-	a.onClose(func() { _ = rdb.Close() })
+	a.onClose("redis", func() { _ = rdb.Close() })
 
 	// The metric catalogue (step-180) declares the bounded label sets this service feeds.
 	a.catalog = metrics.NewCatalog()
@@ -119,27 +130,27 @@ func newRouterApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 	if err != nil {
 		return nil, err
 	}
-	a.onClose(stack.close)
+	a.onClose("pipeline", stack.close)
 
 	proj, err := newAcceptedProjector(ctx, cfg, st.pg, st.ch, logger)
 	if err != nil {
 		return nil, err
 	}
-	a.onClose(proj.close)
+	a.onClose("accepted", proj.close)
 	a.accepted = proj.consumer
 
 	outc, err := newOutcomeProjector(cfg, st.ch, logger)
 	if err != nil {
 		return nil, err
 	}
-	a.onClose(outc.close)
+	a.onClose("outcome", outc.close)
 	a.outcome = outc
 
 	stream, err := newMetricStream(cfg)
 	if err != nil {
 		return nil, err
 	}
-	a.onClose(stream.close)
+	a.onClose("stream", stream.close)
 	a.emitter = stream.emitter
 
 	a.router = router.New(router.Deps{
