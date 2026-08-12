@@ -9,9 +9,24 @@ import (
 	"github.com/martialanouman/go-gateway/internal/testutil/kafkatest"
 )
 
-// sweepAWindow is the SMPP window sweep A holds fixed: the reference run's own default, so sweep A's
-// bind curve is drawn in the conditions the 2 400/s figure was measured under.
-const sweepAWindow = 64
+const (
+	// sweepAWindow is the SMPP window sweep A holds fixed: the reference run's own default, so sweep A's
+	// bind curve is drawn in the conditions the 2 400/s figure was measured under.
+	sweepAWindow = 64
+
+	// poolCeilingHold is this bench's own window, three times the shared REF_CAL_HOLD default, and the
+	// difference is measured rather than assumed. At ten seconds the 1-bind palier's two sources
+	// disagreed by 13,3% — a palier the guard refuses to quote — and at thirty they agree to 3,8%. The
+	// small paliers move the fewest records, so they carry the most relative noise, and they are the end
+	// of the curve a bind sweep is read from. REF_CAL_HOLD still overrides it.
+	poolCeilingHold = 30 * time.Second
+
+	// poolCeilingPrefill must outlast the FASTEST palier, not the average one: backlogHeld refuses any
+	// palier whose backlog ran dry, and at 16 binds the pool drained 600 000 records inside a thirty
+	// second window. This is roughly twice what that palier consumes, so the queue is still deep when
+	// the window closes.
+	poolCeilingPrefill = 1500000
+)
 
 // TestPoolSubmitCeiling measures what the connector pool sustains ALONE, which is the one figure the
 // throughput story has never had.
@@ -57,17 +72,20 @@ const sweepAWindow = 64
 // file may be quoted as a sizing.
 func TestPoolSubmitCeiling(t *testing.T) {
 	brokers := kafkatest.Brokers(t)
-	hold := envDuration(t, envCalHold, 10*time.Second)
-	records := int(envFloat(t, envPrefill, 150000))
+	hold := envDuration(t, envCalHold, poolCeilingHold)
+	records := int(envFloat(t, envPrefill, poolCeilingPrefill))
 
 	// Sweep B's bind count. REF_BIND_POOL moves it, so a knee that lands away from 8 in sweep A can be
 	// re-swept without editing this file.
 	atBinds := int(envFloat(t, envBindPool, 8))
 
+	sweepA := []int{1, 2, 4, 8, 16}
+	bed := newPoolBed(t, brokers, records, sweepA[len(sweepA)-1])
+
 	// Sweep A — the bind count, at the reference run's window.
 	var crossingA float64
-	for _, binds := range []int{1, 2, 4, 8, 16} {
-		rate := measurePoolCeiling(t, brokers, binds, sweepAWindow, records, hold)
+	for _, binds := range sweepA {
+		rate := measurePoolCeiling(t, brokers, bed, binds, sweepAWindow, hold)
 		if binds == atBinds {
 			crossingA = rate
 		}
@@ -76,7 +94,7 @@ func TestPoolSubmitCeiling(t *testing.T) {
 	// Sweep B — the SMPP window, at that fixed bind count.
 	var crossingB float64
 	for _, window := range []int{1, 10, 64, 256} {
-		rate := measurePoolCeiling(t, brokers, atBinds, window, records, hold)
+		rate := measurePoolCeiling(t, brokers, bed, atBinds, window, hold)
 		if window == sweepAWindow {
 			crossingB = rate
 		}

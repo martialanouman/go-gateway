@@ -52,32 +52,11 @@ const poolCeilingPartitions = 8
 //
 // The breaker is NOT stubbed away. With Deps.Breaker nil the pool builds no local breaker at all: the
 // palier would be faster than production AND breakerHeld would have nothing to read.
-func measurePoolCeiling(t *testing.T, brokers []string, binds, window, records int, hold time.Duration) float64 {
+func measurePoolCeiling(t *testing.T, brokers []string, bed poolBed, binds, window int, hold time.Duration) float64 {
 	t.Helper()
 
 	label := poolLabel(binds, window)
-
-	// The pool filters on ConnectorID and SKIPS-AND-COMMITS what does not match, so a prefill carrying
-	// the wrong one drains the backlog at full speed and submits nothing — a flattering consumer rate
-	// with an empty peer. One id, used by both ends.
-	connectorID := uuid.New()
-
-	// records must divide evenly by binds or the shard split is not exactly even; the guard downstream
-	// reads the peer, but there is no reason to hand it an imbalance we chose.
-	records -= records % binds
-	ids := balancedShardIDs(t, records, binds)
-
-	topic := newCeilingTopic(t, brokers, "routed", poolCeilingPartitions)
-	prefillRate := prefill(t, brokers, topic, records, func(i int) (kafka.Record, error) {
-		return pipeline.EncodeRouted(routedForPool(ids[i], connectorID))
-	})
-
-	// The routed key is the message id, so the partition is murmur2(id) and the shard is FNV(id): two
-	// independent geometries over the same bytes. The ids are chosen for the shard, so this reads where
-	// they happened to land partition-wise rather than predicting it.
-	if err := prefillBalance(endOffsets(t, brokers, topic), poolCeilingPartitions); err != nil {
-		t.Fatalf("%s: %v", label, err)
-	}
+	topic, connectorID := bed.topic, bed.connectorID
 
 	cfg := refKafkaConfig(brokers)
 	cons := newConsumer(t, cfg, "loadref-pool-ceiling-"+uuid.NewString(), topic)
@@ -172,7 +151,7 @@ func measurePoolCeiling(t *testing.T, brokers []string, binds, window, records i
 		crossCheck(rate, first, last, elapsed),
 		calibratePeer(t, binds),
 		laneShape(batches-baseBatches, recs-baseRecords, lanes-baseLanes, poolCeilingPartitions),
-		prefillRate)
+		bed.prefillRate)
 	t.Logf("            %s    %s", label, brokerReport(brokerBefore, brokerAfter, brokerErr, afterErr))
 	t.Logf("            %s    %s", label,
 		produceLatency(done, nanos-baseNanos, deltaBuckets(baseBuckets, buckets), elapsed, done))
@@ -215,6 +194,50 @@ func waitUntilSubmitting(t *testing.T, prod *countingProducer, counted *counting
 // read weeks later — and so a sweep that moved one lever cannot be filed under the other.
 func poolLabel(binds, window int) string {
 	return fmt.Sprintf("%2d binds w%-3d", binds, window)
+}
+
+// newPoolBed builds the one backlog every palier of the sweep reads.
+//
+// One topic for the whole sweep, not one per palier. The router bench needs a fresh topic each time
+// because it VARIES the partition count; here partitions are fixed and only the pool's own two levers
+// move, so a single prefill serves every palier — each one joins with a fresh group id and re-reads the
+// same records from offset zero. That is nine times less disk on a single-node broker, nine prefills
+// saved, and — the part that matters for the curve — an IDENTICAL fixture under every point rather than
+// nine independently sampled ones.
+//
+// The ids are balanced across maxBinds shards, which balances every smaller power of two for free:
+// FNV(id) % 16 uniform means FNV(id) % 8 uniform, because each residue mod 8 collects exactly two
+// residues mod 16. The sweep's bind counts are all powers of two for that reason. Nothing downstream
+// trusts this arithmetic — shardBalance reads what the peer counted.
+func newPoolBed(t *testing.T, brokers []string, records, maxBinds int) poolBed {
+	t.Helper()
+
+	// The pool filters on ConnectorID and SKIPS-AND-COMMITS what does not match, so a prefill carrying
+	// the wrong one drains the backlog at full speed and submits nothing — a flattering consumer rate
+	// with an empty peer. One id, used by both ends.
+	bed := poolBed{connectorID: uuid.New()}
+	records -= records % maxBinds
+	ids := balancedShardIDs(t, records, maxBinds)
+
+	bed.topic = newCeilingTopic(t, brokers, "routed", poolCeilingPartitions)
+	bed.prefillRate = prefill(t, brokers, bed.topic, records, func(i int) (kafka.Record, error) {
+		return pipeline.EncodeRouted(routedForPool(ids[i], bed.connectorID))
+	})
+
+	// The routed key is the message id, so the partition is murmur2(id) and the shard is FNV(id): two
+	// independent geometries over the same bytes. The ids are chosen for the shard, so this reads where
+	// they happened to land partition-wise rather than predicting it.
+	if err := prefillBalance(endOffsets(t, brokers, bed.topic), poolCeilingPartitions); err != nil {
+		t.Fatalf("prefill: %v", err)
+	}
+	return bed
+}
+
+// poolBed is the backlog and the connector identity every palier of a sweep shares.
+type poolBed struct {
+	topic       string
+	connectorID uuid.UUID
+	prefillRate float64
 }
 
 // balancedShardIDs returns count message ids spread exactly evenly across `shards` bind shards, using
