@@ -146,7 +146,7 @@ func TestReferenceRun(t *testing.T) {
 	}
 
 	criteria := refCriteria()
-	criteria.PeerCeiling = calibratePeer(t)
+	criteria.PeerCeiling = calibratePeer(t, int(envFloat(t, envCalBinds, 4)))
 
 	s := buildRefStack(t, pool, brokers, chCfg, accounts)
 
@@ -265,9 +265,11 @@ func TestReferenceRun(t *testing.T) {
 // ALONE on the host, while the reference run has it sharing those cores with the whole stack. The
 // reserve is harmless at the margin actually observed — three orders of magnitude — and would matter the
 // day a run came within a factor of a few of this number.
-func calibratePeer(t *testing.T) float64 {
+// It takes the bind count rather than reading REF_CAL_BINDS itself: the pool ceiling bench calibrates
+// at the bind count of the palier it is about to run, and a peer figure measured at four binds says
+// nothing about a palier that opened sixteen.
+func calibratePeer(t *testing.T, binds int) float64 {
 	t.Helper()
-	binds := int(envFloat(t, envCalBinds, 4))
 	hold := envDuration(t, envCalHold, 10*time.Second)
 
 	// New rather than Start: Start wires the fake's logger to t.Logf, and tearing a saturated peer down
