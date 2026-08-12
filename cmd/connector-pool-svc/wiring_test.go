@@ -57,7 +57,8 @@ func TestNewPoolAppReportsAnUnreachableRedis(t *testing.T) {
 }
 
 // TestNewPoolAppReleasesInDependencyOrder asserts the order on the graph newPoolApp actually
-// builds, not on a stack a test pushed by hand: the drainer parks messages through the stores it must outlive.
+// builds, not on a stack a test pushed by hand: newDrainer takes the stores, so the drainer must
+// be released before them.
 func TestNewPoolAppReleasesInDependencyOrder(t *testing.T) {
 	cfg := testConfig()
 	cfg.Postgres = pgtest.Config(t)

@@ -80,7 +80,8 @@ func TestNewBillingAppReportsAnUnreachableRedis(t *testing.T) {
 }
 
 // TestNewBillingAppReleasesInDependencyOrder asserts the order on the graph newBillingApp actually
-// builds, not on a stack a test pushed by hand: the reaper settles through the Postgres and Redis pools it must outlive.
+// builds, not on a stack a test pushed by hand: the reaper settles through the accountant, which
+// holds the Postgres and Redis pools the stores own.
 func TestNewBillingAppReleasesInDependencyOrder(t *testing.T) {
 	cfg := testConfig()
 	cfg.Postgres = pgtest.Config(t)

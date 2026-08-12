@@ -61,7 +61,9 @@ func TestNewRouterAppReportsAnUnreachablePostgres(t *testing.T) {
 }
 
 // TestNewRouterAppReleasesInDependencyOrder asserts the order on the graph newRouterApp actually
-// builds, not on a stack a test pushed by hand: the pipeline, both projectors and the metric stream all read the stores.
+// builds, not on a stack a test pushed by hand: the pipeline and both projectors read the stores,
+// and the pipeline also holds the Redis client released right after it. Only "stream" is
+// independent — newMetricStream opens its own producer from the config, touching no store.
 func TestNewRouterAppReleasesInDependencyOrder(t *testing.T) {
 	cfg := testConfig()
 	cfg.Postgres = pgtest.Config(t)

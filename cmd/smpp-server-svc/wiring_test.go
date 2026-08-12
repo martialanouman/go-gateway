@@ -54,7 +54,8 @@ func TestNewSMPPAppReportsAnUnreachablePostgres(t *testing.T) {
 }
 
 // TestNewSMPPAppReleasesInDependencyOrder asserts the order on the graph newSMPPApp actually
-// builds, not on a stack a test pushed by hand: the listener stack produces to the Kafka producer the stores hold.
+// builds, not on a stack a test pushed by hand: newListener takes the stores, so the listeners
+// must be released before them.
 func TestNewSMPPAppReleasesInDependencyOrder(t *testing.T) {
 	cfg := testConfig()
 	cfg.Postgres = pgtest.Config(t)

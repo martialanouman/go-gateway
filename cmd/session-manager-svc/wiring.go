@@ -33,8 +33,8 @@ type sessionManagerApp struct {
 }
 
 // closer is a release step and the name it answers to. The name carries no behaviour: it exists so
-// that the release ORDER — a property of newSessionManagerApp, and one a wrong edit breaks silently — can be
-// asserted on the graph the service actually builds.
+// that the release ORDER — a property of newSessionManagerApp, and one a wrong edit breaks
+// silently — can be asserted on the graph the service actually builds.
 type closer struct {
 	name string
 	fn   func()

@@ -53,8 +53,9 @@ func TestNewReturnPathAppReportsAnUnreachableRedis(t *testing.T) {
 	}
 }
 
-// TestNewReturnPathAppReleasesInDependencyOrder asserts the order on the graph newReturnPathApp actually
-// builds, not on a stack a test pushed by hand: the webhook retry loop delivers through the legs, which read the stores.
+// TestNewReturnPathAppReleasesInDependencyOrder asserts the order on the graph newReturnPathApp
+// actually builds, not on a stack a test pushed by hand: the webhook retry loop holds the MO leg's
+// pool and the delivery leg's sender, and both legs take the stores.
 func TestNewReturnPathAppReleasesInDependencyOrder(t *testing.T) {
 	cfg := testConfig()
 	cfg.Postgres = pgtest.Config(t)
