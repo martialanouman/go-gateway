@@ -24,18 +24,29 @@ type configSyncApp struct {
 	relay *config.Watcher
 
 	// closers release what was opened, in reverse order of opening — the exact LIFO the deferred Closes
-	// in run() used to provide.
-	closers []func()
+	// in run() used to provide. They are named because that order is the property worth guarding,
+	// and an anonymous stack cannot be asserted against.
+	closers []closer
+}
+
+// closer is a release step and the name it answers to. The name carries no behaviour: it exists so
+// that the release ORDER — a property of newConfigSyncApp, and one a wrong edit breaks silently — can be
+// asserted on the graph the service actually builds.
+type closer struct {
+	name string
+	fn   func()
 }
 
 // onClose registers a release step, to be run in reverse order by close.
-func (a *configSyncApp) onClose(f func()) { a.closers = append(a.closers, f) }
+func (a *configSyncApp) onClose(name string, f func()) {
+	a.closers = append(a.closers, closer{name: name, fn: f})
+}
 
 // close releases every connection the app holds. It is safe to call on a partially built app: only what
 // was actually opened is registered.
 func (a *configSyncApp) close() {
 	for i := len(a.closers) - 1; i >= 0; i-- {
-		a.closers[i]()
+		a.closers[i].fn()
 	}
 }
 
@@ -54,7 +65,7 @@ func newConfigSyncApp(ctx context.Context, cfg config.Config, logger *slog.Logge
 	if err != nil {
 		return nil, err
 	}
-	a.onClose(st.close)
+	a.onClose("stores", st.close)
 
 	a.relay = newRelay(st.rdb, logger)
 

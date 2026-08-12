@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -51,22 +52,44 @@ func TestNewSessionManagerAppReportsAnUnreachableRedis(t *testing.T) {
 	}
 }
 
-func TestAppCloseReleasesInReverseOrderOfOpening(t *testing.T) {
-	t.Parallel()
+// TestNewSessionManagerAppReleasesInDependencyOrder asserts the release order on the graph
+// newSessionManagerApp actually builds. This service holds a single closer today, so the assertion
+// names no ordering — it names the ONE step there is, and it breaks the day a second one is registered
+// on the wrong side of it.
+func TestNewSessionManagerAppReleasesInDependencyOrder(t *testing.T) {
+	cfg := testConfig()
+	cfg.Redis = redistest.Config(t)
 
-	// This is the invariant the deferred Closes in run() used to guarantee for free: a store must never
-	// be released before something built on top of it. The markers are synthetic — this service holds a
-	// single closer today — so they name positions, not components: a label like "registry" would claim
-	// a release that does not happen.
-	var released []string
-	a := &sessionManagerApp{}
-	a.onClose(func() { released = append(released, "opened first") })
-	a.onClose(func() { released = append(released, "opened second") })
-	a.close()
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
 
-	if want := []string{"opened second", "opened first"}; !reflect.DeepEqual(released, want) {
-		t.Errorf("released %v, want %v", released, want)
+	app, err := newSessionManagerApp(ctx, cfg, silentLogger())
+	if err != nil {
+		t.Fatalf("newSessionManagerApp: %v", err)
 	}
+
+	want := []string{"stores"}
+	if got := releaseOrder(app); !slices.Equal(got, want) {
+		t.Errorf("release order is %v, want %v", got, want)
+	}
+}
+
+// releaseOrder runs close() and reports the names in the order the closers ACTUALLY ran. It wraps the
+// registered functions rather than reading the slice backwards: a test that reverses the slice itself
+// would replay close()'s own loop, and an inverted loop would keep it green.
+//
+// It releases the app, so a caller must not close it a second time.
+func releaseOrder(a *sessionManagerApp) []string {
+	var released []string
+	for i := range a.closers {
+		c := a.closers[i] // a copy, so c.fn is the original and not the stand-in below
+		a.closers[i].fn = func() {
+			released = append(released, c.name)
+			c.fn()
+		}
+	}
+	a.close()
+	return released
 }
 
 func TestNewSessionManagerAppBuildsTheWholeGraph(t *testing.T) {

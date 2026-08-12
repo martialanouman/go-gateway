@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -49,22 +50,44 @@ func TestNewContentKeyAppReportsAnUnreachablePostgres(t *testing.T) {
 	}
 }
 
-func TestAppCloseReleasesInReverseOrderOfOpening(t *testing.T) {
-	t.Parallel()
+// TestNewContentKeyAppReleasesInDependencyOrder asserts the release order on the graph
+// newContentKeyApp actually builds. This service holds a single closer today, so the assertion
+// names no ordering — it names the ONE step there is, and it breaks the day a second one is registered
+// on the wrong side of it.
+func TestNewContentKeyAppReleasesInDependencyOrder(t *testing.T) {
+	cfg := testConfig()
+	cfg.Postgres = pgtest.Config(t)
 
-	// This is the invariant the deferred Closes in run() used to guarantee for free: a store must never
-	// be released before something built on top of it. The markers are synthetic — this service holds a
-	// single closer today — so they name positions, not components: a label like "kms" would claim a
-	// release that does not happen.
-	var released []string
-	a := &contentKeyApp{}
-	a.onClose(func() { released = append(released, "opened first") })
-	a.onClose(func() { released = append(released, "opened second") })
-	a.close()
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
 
-	if want := []string{"opened second", "opened first"}; !reflect.DeepEqual(released, want) {
-		t.Errorf("released %v, want %v", released, want)
+	app, err := newContentKeyApp(ctx, cfg, discardLogger())
+	if err != nil {
+		t.Fatalf("newContentKeyApp: %v", err)
 	}
+
+	want := []string{"stores"}
+	if got := releaseOrder(app); !slices.Equal(got, want) {
+		t.Errorf("release order is %v, want %v", got, want)
+	}
+}
+
+// releaseOrder runs close() and reports the names in the order the closers ACTUALLY ran. It wraps the
+// registered functions rather than reading the slice backwards: a test that reverses the slice itself
+// would replay close()'s own loop, and an inverted loop would keep it green.
+//
+// It releases the app, so a caller must not close it a second time.
+func releaseOrder(a *contentKeyApp) []string {
+	var released []string
+	for i := range a.closers {
+		c := a.closers[i] // a copy, so c.fn is the original and not the stand-in below
+		a.closers[i].fn = func() {
+			released = append(released, c.name)
+			c.fn()
+		}
+	}
+	a.close()
+	return released
 }
 
 func TestNewContentKeyAppBuildsTheWholeGraph(t *testing.T) {
