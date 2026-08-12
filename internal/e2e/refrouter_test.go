@@ -173,30 +173,6 @@ func brokerReport(before, after redpandametrics.Snapshot, beforeErr, afterErr er
 	return rep.Render()
 }
 
-// crossCheck renders the same throughput derived from the backlog instead of the producer, because two
-// independent readings that agree are a measurement and one reading is an assertion.
-//
-// The topic is static for the window — nothing produces to it while the router drains it — so the
-// backlog consumed and the records published must match. They are counted at different layers (the
-// consumer's committed offsets against the producer's acknowledgements), so a wide gap means one of the
-// two is not counting what its name says.
-func crossCheck(rate float64, first, last map[int32]int64, window time.Duration) string {
-	var drained int64
-	for p, n := range first {
-		drained += n - last[p]
-	}
-	if window <= 0 || drained <= 0 {
-		return "no backlog delta to cross-check against"
-	}
-	byLag := float64(drained) / window.Seconds()
-	gap := 100 * (byLag - rate) / rate
-	out := fmt.Sprintf("backlog says %.0f msg/s (%+.1f%%)", byLag, gap)
-	if gap > 5 || gap < -5 {
-		return out + " — the two sources disagree, this palier is not quotable"
-	}
-	return out
-}
-
 // newCeilingTopic creates a private mt.inbound-shaped topic with exactly `partitions` partitions.
 //
 // The sweep does NOT move KAFKATEST_PARTITIONS: that is read once with the shared container, so it
