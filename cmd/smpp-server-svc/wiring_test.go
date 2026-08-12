@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -52,20 +53,43 @@ func TestNewSMPPAppReportsAnUnreachablePostgres(t *testing.T) {
 	}
 }
 
-func TestAppCloseReleasesInReverseOrderOfOpening(t *testing.T) {
-	t.Parallel()
+// TestNewSMPPAppReleasesInDependencyOrder asserts the order on the graph newSMPPApp actually
+// builds, not on a stack a test pushed by hand: the listener stack produces to the Kafka producer the stores hold.
+func TestNewSMPPAppReleasesInDependencyOrder(t *testing.T) {
+	cfg := testConfig()
+	cfg.Postgres = pgtest.Config(t)
+	cfg.Redis = redistest.Config(t)
 
-	// This is the invariant the deferred Closes in run() used to guarantee for free: a store must
-	// never be released before something built on top of it.
-	var released []string
-	a := &smppApp{}
-	a.onClose(func() { released = append(released, "stores") })
-	a.onClose(func() { released = append(released, "stream") })
-	a.close()
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
 
-	if want := []string{"stream", "stores"}; !reflect.DeepEqual(released, want) {
-		t.Errorf("released %v, want %v", released, want)
+	app, err := newSMPPApp(ctx, cfg, silentLogger())
+	if err != nil {
+		t.Fatalf("newSMPPApp: %v", err)
 	}
+
+	want := []string{"listeners", "stores"}
+	if got := releaseOrder(app); !slices.Equal(got, want) {
+		t.Errorf("release order is %v, want %v", got, want)
+	}
+}
+
+// releaseOrder runs close() and reports the names in the order the closers ACTUALLY ran. It wraps the
+// registered functions rather than reading the slice backwards: a test that reverses the slice itself
+// would replay close()'s own loop, and an inverted loop would keep it green.
+//
+// It releases the app, so a caller must not close it a second time.
+func releaseOrder(a *smppApp) []string {
+	var released []string
+	for i := range a.closers {
+		c := a.closers[i] // a copy, so c.fn is the original and not the stand-in below
+		a.closers[i].fn = func() {
+			released = append(released, c.name)
+			c.fn()
+		}
+	}
+	a.close()
+	return released
 }
 
 // TestNewSMPPAppBuildsTheWholeGraph assembles the real service against test dependencies. Kafka,

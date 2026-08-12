@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -59,21 +60,43 @@ func TestNewRouterAppReportsAnUnreachablePostgres(t *testing.T) {
 	}
 }
 
-func TestAppCloseReleasesInReverseOrderOfOpening(t *testing.T) {
-	t.Parallel()
+// TestNewRouterAppReleasesInDependencyOrder asserts the order on the graph newRouterApp actually
+// builds, not on a stack a test pushed by hand: the pipeline, both projectors and the metric stream all read the stores.
+func TestNewRouterAppReleasesInDependencyOrder(t *testing.T) {
+	cfg := testConfig()
+	cfg.Postgres = pgtest.Config(t)
+	cfg.Redis = redistest.Config(t)
 
-	// This is the invariant the deferred Closes in run() used to guarantee for free: a store must
-	// never be released before something built on top of it.
-	var released []string
-	a := &routerApp{}
-	a.onClose(func() { released = append(released, "postgres") })
-	a.onClose(func() { released = append(released, "redis") })
-	a.onClose(func() { released = append(released, "billing") })
-	a.close()
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
 
-	if want := []string{"billing", "redis", "postgres"}; !reflect.DeepEqual(released, want) {
-		t.Errorf("released %v, want %v", released, want)
+	app, err := newRouterApp(ctx, cfg, silentLogger())
+	if err != nil {
+		t.Fatalf("newRouterApp: %v", err)
 	}
+
+	want := []string{"stream", "outcome", "accepted", "pipeline", "redis", "stores"}
+	if got := releaseOrder(app); !slices.Equal(got, want) {
+		t.Errorf("release order is %v, want %v", got, want)
+	}
+}
+
+// releaseOrder runs close() and reports the names in the order the closers ACTUALLY ran. It wraps the
+// registered functions rather than reading the slice backwards: a test that reverses the slice itself
+// would replay close()'s own loop, and an inverted loop would keep it green.
+//
+// It releases the app, so a caller must not close it a second time.
+func releaseOrder(a *routerApp) []string {
+	var released []string
+	for i := range a.closers {
+		c := a.closers[i] // a copy, so c.fn is the original and not the stand-in below
+		a.closers[i].fn = func() {
+			released = append(released, c.name)
+			c.fn()
+		}
+	}
+	a.close()
+	return released
 }
 
 // TestNewRouterAppBuildsTheWholeGraph assembles the real service against test dependencies. Kafka,

@@ -63,18 +63,29 @@ type returnPathApp struct {
 	retryRunner   *modlrrouter.WebhookRetryRunner
 
 	// closers release what was opened, in reverse order of opening — the exact LIFO the deferred
-	// Closes in run() used to provide.
-	closers []func()
+	// Closes in run() used to provide. They are named because that order is the property worth
+	// guarding, and an anonymous stack cannot be asserted against.
+	closers []closer
+}
+
+// closer is a release step and the name it answers to. The name carries no behaviour: it exists so
+// that the release ORDER — a property of newReturnPathApp, and one a wrong edit breaks silently — can be
+// asserted on the graph the service actually builds.
+type closer struct {
+	name string
+	fn   func()
 }
 
 // onClose registers a release step, to be run in reverse order by close.
-func (a *returnPathApp) onClose(f func()) { a.closers = append(a.closers, f) }
+func (a *returnPathApp) onClose(name string, f func()) {
+	a.closers = append(a.closers, closer{name: name, fn: f})
+}
 
 // close releases every connection the app holds. It is safe to call on a partially built app: only
 // what was actually opened is registered.
 func (a *returnPathApp) close() {
 	for i := len(a.closers) - 1; i >= 0; i-- {
-		a.closers[i]()
+		a.closers[i].fn()
 	}
 }
 
@@ -96,7 +107,7 @@ func newReturnPathApp(ctx context.Context, cfg config.Config, logger *slog.Logge
 	if err != nil {
 		return nil, err
 	}
-	a.onClose(st.close)
+	a.onClose("stores", st.close)
 
 	dlr := newDLRLeg(st, logger)
 	a.dlr = dlr.router
@@ -105,14 +116,14 @@ func newReturnPathApp(ctx context.Context, cfg config.Config, logger *slog.Logge
 	if err != nil {
 		return nil, err
 	}
-	a.onClose(mo.close)
+	a.onClose("mo", mo.close)
 	a.mo = mo.router
 
 	delivery, err := newDeliveryLeg(cfg, st, mo, logger)
 	if err != nil {
 		return nil, err
 	}
-	a.onClose(delivery.close)
+	a.onClose("delivery", delivery.close)
 	a.moDelivery = delivery.mo
 	a.dlrDelivery = delivery.dlr
 
@@ -120,7 +131,7 @@ func newReturnPathApp(ctx context.Context, cfg config.Config, logger *slog.Logge
 	if err != nil {
 		return nil, err
 	}
-	a.onClose(retry.close)
+	a.onClose("retry", retry.close)
 	a.retryConsumer = retry.consumer
 	a.retryRunner = retry.runner
 
