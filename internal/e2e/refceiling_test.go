@@ -104,6 +104,37 @@ func breakerHeld(reports int, worst breaker.State) error {
 	return nil
 }
 
+// maxSweepGap is the fraction by which two readings of the same configuration may differ before the
+// curves drawn through them stop meaning anything.
+//
+// It is wider than crossCheck's ±5% because it compares two windows minutes apart rather than two
+// counters over one window: the host's own drift rides on top. It is still narrower than the smallest
+// step a two-lever sweep is read for — a lever that moves throughput by less than this is a lever the
+// bench cannot see, and saying so is the point.
+const maxSweepGap = 0.10
+
+// sweepsAgree reports whether the two sweeps measured the same configuration to the same number.
+//
+// It is the between-palier counterpart of crossCheck. Every other guard in this bench compares two
+// readings of the SAME window, so a host that slowed down between the two sweeps satisfies all of them
+// and still bends both curves — the crossing point is the only place that drift becomes visible.
+func sweepsAgree(atA, atB float64) error {
+	if atA <= 0 || atB <= 0 {
+		return fmt.Errorf("a crossing reading was zero (%.0f and %.0f): a palier that moved nothing agrees "+
+			"with nothing, and the ratio would come from a division by it", atA, atB)
+	}
+	gap := (atB - atA) / atA
+	if gap < 0 {
+		gap = -gap
+	}
+	if gap > maxSweepGap {
+		return fmt.Errorf("the two sweeps read their shared configuration as %.0f/s and %.0f/s, a %.0f%% gap: "+
+			"the host moved between them, so the slope of either curve is worth less than the spread of one of "+
+			"its own points — lengthen the window (REF_CAL_HOLD) before reading either", atA, atB, 100*gap)
+	}
+	return nil
+}
+
 // backlogHeld reports whether every partition still held work when the window closed.
 //
 // A ceiling measured over an exhausted backlog is not a ceiling: past the last record the router idles,
@@ -703,5 +734,43 @@ func TestCrossCheckFlagsDisagreeingSources(t *testing.T) {
 	// No backlog delta is not agreement: there is simply nothing to check against.
 	if got := crossCheck(1000, first, first, 10*time.Second); strings.Contains(got, "%") {
 		t.Errorf("no delta must not be rendered as a percentage agreement, got: %s", got)
+	}
+}
+
+// TestSweepsAgreeOnTheirCrossingPoint pins the guard between two sweeps, where crossCheck guards within
+// one palier.
+//
+// A two-lever sweep measures the same configuration twice — once in each lever's curve — and the pair
+// is the only evidence that the two curves were drawn under the same conditions. Nothing else in the
+// bench can see host drift: every palier's internal cross-check compares two readings of the SAME
+// window, so a host that slowed down between the sweeps satisfies all of them and still bends both
+// curves.
+//
+// The band is wider than crossCheck's ±5% on purpose. That one compares two counters over one window;
+// this compares two windows minutes apart, which carries the host's own variance on top.
+func TestSweepsAgreeOnTheirCrossingPoint(t *testing.T) {
+	if err := sweepsAgree(19710, 19969); err != nil {
+		t.Errorf("two readings within a percent must pass: %v", err)
+	}
+
+	// The reading actually observed on the first full run: 16 888 against 19 710 is 17%, so the slope of
+	// either curve is worth less than the gap between two readings of one of its own points.
+	err := sweepsAgree(16888, 19710)
+	if err == nil {
+		t.Fatal("a 17% gap on the same configuration must fail: neither curve is readable through it")
+	}
+	if !strings.Contains(err.Error(), "%") {
+		t.Errorf("the error must quantify the gap so a reader can judge it, got: %v", err)
+	}
+
+	// Order must not decide the verdict: the same pair swapped is the same disagreement.
+	if err := sweepsAgree(19710, 16888); err == nil {
+		t.Error("the guard must be symmetric: swapping the two readings is the same gap")
+	}
+
+	// A palier that moved nothing is not agreement with anything, and dividing by it would render a
+	// verdict from an infinity.
+	if err := sweepsAgree(0, 19710); err == nil {
+		t.Error("a zero reading must fail rather than divide")
 	}
 }

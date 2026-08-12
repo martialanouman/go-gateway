@@ -33,7 +33,8 @@ import (
 const poolCeilingPartitions = 8
 
 // measurePoolCeiling runs one palier: prefill a private mt.routed topic, run the connector pool alone
-// over it against a fake SMSC for `hold`, and report the rate with the facts needed to read it.
+// over it against a fake SMSC for `hold`, and report the rate with the facts needed to read it. The rate
+// is returned as well as logged so the caller can cross the two sweeps at their shared configuration.
 //
 // "Alone" means no router, no REST, no injector — not "without its own stores". The pool's post-send
 // path is part of what it costs: mt.outcome is produced synchronously with acks=all on every message
@@ -51,7 +52,7 @@ const poolCeilingPartitions = 8
 //
 // The breaker is NOT stubbed away. With Deps.Breaker nil the pool builds no local breaker at all: the
 // palier would be faster than production AND breakerHeld would have nothing to read.
-func measurePoolCeiling(t *testing.T, brokers []string, binds, window, records int, hold time.Duration) {
+func measurePoolCeiling(t *testing.T, brokers []string, binds, window, records int, hold time.Duration) float64 {
 	t.Helper()
 
 	label := poolLabel(binds, window)
@@ -179,6 +180,7 @@ func measurePoolCeiling(t *testing.T, brokers []string, binds, window, records i
 	if rate == 0 {
 		t.Fatalf("the pool moved nothing at %s", label)
 	}
+	return rate
 }
 
 // waitUntilSubmitting blocks until the pool has produced its first mt.outcome, and names WHY if it

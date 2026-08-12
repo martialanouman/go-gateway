@@ -60,15 +60,31 @@ func TestPoolSubmitCeiling(t *testing.T) {
 	hold := envDuration(t, envCalHold, 10*time.Second)
 	records := int(envFloat(t, envPrefill, 150000))
 
+	// Sweep B's bind count. REF_BIND_POOL moves it, so a knee that lands away from 8 in sweep A can be
+	// re-swept without editing this file.
+	atBinds := int(envFloat(t, envBindPool, 8))
+
 	// Sweep A — the bind count, at the reference run's window.
+	var crossingA float64
 	for _, binds := range []int{1, 2, 4, 8, 16} {
-		measurePoolCeiling(t, brokers, binds, sweepAWindow, records, hold)
+		rate := measurePoolCeiling(t, brokers, binds, sweepAWindow, records, hold)
+		if binds == atBinds {
+			crossingA = rate
+		}
 	}
 
-	// Sweep B — the SMPP window, at a fixed bind count. REF_BIND_POOL moves it, so a knee that lands
-	// away from 8 in sweep A can be re-swept without editing this file.
-	atBinds := int(envFloat(t, envBindPool, 8))
+	// Sweep B — the SMPP window, at that fixed bind count.
+	var crossingB float64
 	for _, window := range []int{1, 10, 64, 256} {
-		measurePoolCeiling(t, brokers, atBinds, window, records, hold)
+		rate := measurePoolCeiling(t, brokers, atBinds, window, records, hold)
+		if window == sweepAWindow {
+			crossingB = rate
+		}
+	}
+
+	// The crossing is the only place host drift between the two sweeps becomes visible: every other
+	// guard compares two readings of the same window and would pass through it untouched.
+	if err := sweepsAgree(crossingA, crossingB); err != nil {
+		t.Errorf("%d binds w%d measured in both sweeps: %v", atBinds, sweepAWindow, err)
 	}
 }
