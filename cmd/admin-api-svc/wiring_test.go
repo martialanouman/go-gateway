@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -65,22 +66,45 @@ func TestNewRetainerRejectsAMalformedArchivePrefix(t *testing.T) {
 	}
 }
 
-func TestAppCloseReleasesInReverseOrderOfOpening(t *testing.T) {
-	t.Parallel()
+// TestNewAdminAppReleasesInDependencyOrder asserts the order on the graph newAdminApp actually builds,
+// not on a stack a test pushed by hand. Here that order is load-bearing: the background runners' jobs
+// use the Postgres pool, so their drain must complete BEFORE the pool is closed. Swap those two
+// registrations and this service closes the pool under in-flight jobs on every deploy.
+func TestNewAdminAppReleasesInDependencyOrder(t *testing.T) {
+	cfg := testConfig()
+	cfg.Postgres = pgtest.Config(t)
+	cfg.Redis = redistest.Config(t)
 
-	// This is the invariant the deferred Closes in run() used to guarantee for free — and here it is
-	// load-bearing beyond tidiness: the background runners' jobs use the Postgres pool, so their drain
-	// must complete before the pool is closed.
-	var released []string
-	a := &adminApp{}
-	a.onClose(func() { released = append(released, "stores") })
-	a.onClose(func() { released = append(released, "runners") })
-	a.onClose(func() { released = append(released, "clients") })
-	a.close()
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
 
-	if want := []string{"clients", "runners", "stores"}; !reflect.DeepEqual(released, want) {
-		t.Errorf("released %v, want %v", released, want)
+	app, err := newAdminApp(ctx, cfg, silentLogger())
+	if err != nil {
+		t.Fatalf("newAdminApp: %v", err)
 	}
+
+	want := []string{"feed", "clients", "redis", "runners", "stores"}
+	if got := releaseOrder(app); !slices.Equal(got, want) {
+		t.Errorf("release order is %v, want %v — the runners' jobs use the Postgres pool", got, want)
+	}
+}
+
+// releaseOrder runs close() and reports the names in the order the closers ACTUALLY ran. It wraps the
+// registered functions rather than reading the slice backwards: a test that reverses the slice itself
+// would replay close()'s own loop, and an inverted loop would keep it green.
+//
+// It releases the app, so a caller must not close it a second time.
+func releaseOrder(a *adminApp) []string {
+	var released []string
+	for i := range a.closers {
+		c := a.closers[i] // a copy, so c.fn is the original and not the stand-in below
+		a.closers[i].fn = func() {
+			released = append(released, c.name)
+			c.fn()
+		}
+	}
+	a.close()
+	return released
 }
 
 // TestNewAdminAppBuildsTheWholeGraph assembles the real service against test dependencies. Kafka,
