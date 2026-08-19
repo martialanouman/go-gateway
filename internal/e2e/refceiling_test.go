@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/martialanouman/go-gateway/internal/connector/breaker"
 )
 
 // minPrefillShare is the fraction of the mean below which a partition is treated as starved.
@@ -14,6 +16,124 @@ import (
 // that will run dry mid-window. franz-go's default partitioner spreads a handful of keys unevenly by
 // construction, and a tight band would fail runs that measure perfectly well.
 const minPrefillShare = 0.5
+
+// minShardShare is the fraction of the mean below which a bind is treated as starved. It is the shard
+// analogue of minPrefillShare and deliberately as generous: FNV over a few thousand ids is not perfectly
+// flat, and the point is to catch the bind that idles, not to police the hash.
+const minShardShare = 0.5
+
+// crossCheck renders the same throughput derived from the backlog instead of the producer, because two
+// independent readings that agree are a measurement and one reading is an assertion.
+//
+// The topic is static for the window — nothing produces to it while the consumer drains it — so the
+// backlog consumed and the records published must match. They are counted at different layers (the
+// consumer's committed offsets against the producer's acknowledgements), so a wide gap means one of the
+// two is not counting what its name says.
+func crossCheck(rate float64, first, last map[int32]int64, window time.Duration) string {
+	var drained int64
+	for p, n := range first {
+		drained += n - last[p]
+	}
+	if window <= 0 || drained <= 0 {
+		return "no backlog delta to cross-check against"
+	}
+	byLag := float64(drained) / window.Seconds()
+	gap := 100 * (byLag - rate) / rate
+	out := fmt.Sprintf("backlog says %.0f msg/s (%+.1f%%)", byLag, gap)
+	if gap > 5 || gap < -5 {
+		return out + " — the two sources disagree, this palier is not quotable"
+	}
+	return out
+}
+
+// shardBalance reports whether every bind carried a comparable share of the window's submits.
+//
+// The pool fans a poll batch out by FNV32a(MessageID) % len(binds) (step-124), a geometry independent of
+// the Kafka partition: a prefill balanced across partitions can still leave binds idle. A palier whose
+// binds did not all work is a smaller pool wearing a larger label, and it fails quietly — a lower rate,
+// no error.
+//
+// counts are the submits the PEER observed per connection, never a recomputation of the shard hash. A
+// guard that re-derived the shard from the ids would agree with a prefill built from the same copied
+// hash however far both had drifted from the pool's own shardIndex: it would confirm the copy rather
+// than the geometry, and pass under any convention.
+func shardBalance(counts []int64, binds int) error {
+	if len(counts) == 0 {
+		return fmt.Errorf("the peer counted no connection: nothing was observed, which is not the same as a fan-out that worked")
+	}
+	if len(counts) != binds {
+		return fmt.Errorf("the peer served %d connections against %d binds configured: the curve would be drawn "+
+			"against a bind count that never carried records", len(counts), binds)
+	}
+	var total int64
+	for _, n := range counts {
+		total += n
+	}
+	mean := float64(total) / float64(binds)
+	for i, n := range counts {
+		if n == 0 {
+			return fmt.Errorf("bind %d carried no submit at all: the shard geometry left it idle, so this palier "+
+				"measured %d binds and reports %d", i, binds-1, binds)
+		}
+		if float64(n) < minShardShare*mean {
+			return fmt.Errorf("bind %d carried %d submits against a mean of %.0f: it starves before the window "+
+				"closes and drags the palier down without saying so", i, n, mean)
+		}
+	}
+	return nil
+}
+
+// breakerHeld reports whether the send path stayed open for the whole window.
+//
+// A breaker that trips mid-window refuses submits until its cooldown elapses, and the palier then
+// divides the work done before the cut by the whole window: a lower number, no error, no sign of why.
+// That is a throughput reading of an outage, and it must fail rather than print.
+//
+// reports is not decoration. breaker.Closed is the ZERO value of breaker.State, so a window that
+// observed nothing — a heartbeat that never fired, a spy never wired — carries the same value as one
+// that stayed healthy. Without this check the guard would pass its own absence.
+func breakerHeld(reports int, worst breaker.State) error {
+	if reports == 0 {
+		return fmt.Errorf("no breaker state was reported during the window: Closed is the zero value, so an "+
+			"unobserved window is indistinguishable from a healthy one — check the heartbeat against the hold (%d readings)", reports)
+	}
+	if worst != breaker.Closed {
+		return fmt.Errorf("the breaker reached %q during the window: the send path was refused for at least a "+
+			"cooldown, so this palier measured a cut and not a ceiling", worst)
+	}
+	return nil
+}
+
+// maxSweepGap is the fraction by which two readings of the same configuration may differ before the
+// curves drawn through them stop meaning anything.
+//
+// It is wider than crossCheck's ±5% because it compares two windows minutes apart rather than two
+// counters over one window: the host's own drift rides on top. It is still narrower than the smallest
+// step a two-lever sweep is read for — a lever that moves throughput by less than this is a lever the
+// bench cannot see, and saying so is the point.
+const maxSweepGap = 0.10
+
+// sweepsAgree reports whether the two sweeps measured the same configuration to the same number.
+//
+// It is the between-palier counterpart of crossCheck. Every other guard in this bench compares two
+// readings of the SAME window, so a host that slowed down between the two sweeps satisfies all of them
+// and still bends both curves — the crossing point is the only place that drift becomes visible.
+func sweepsAgree(atA, atB float64) error {
+	if atA <= 0 || atB <= 0 {
+		return fmt.Errorf("a crossing reading was zero (%.0f and %.0f): a palier that moved nothing agrees "+
+			"with nothing, and the ratio would come from a division by it", atA, atB)
+	}
+	gap := (atB - atA) / atA
+	if gap < 0 {
+		gap = -gap
+	}
+	if gap > maxSweepGap {
+		return fmt.Errorf("the two sweeps read their shared configuration as %.0f/s and %.0f/s, a %.0f%% gap: "+
+			"the host moved between them, so the slope of either curve is worth less than the spread of one of "+
+			"its own points — lengthen the window (REF_CAL_HOLD) before reading either", atA, atB, 100*gap)
+	}
+	return nil
+}
 
 // backlogHeld reports whether every partition still held work when the window closed.
 //
@@ -505,5 +625,152 @@ func TestLaneShapeNamesTheObservedLaneCount(t *testing.T) {
 	// happen", which is a different finding from "nothing was measured".
 	if got := laneShape(0, 0, 0, 16); strings.Contains(got, "per batch") {
 		t.Errorf("no batch must not be rendered as a lane mean: %s", got)
+	}
+}
+
+// TestShardBalanceRefusesAnIdleBind pins the guard the pool ceiling needs and the router never did.
+//
+// The pool fans a poll batch out by FNV32a(MessageID) % len(binds) — a geometry that has nothing to do
+// with the Kafka partition. A prefill whose ids land unevenly leaves binds idle, and the palier then
+// measures fewer binds than its label claims, which is the exact shape of the lane trap step-201e hit.
+//
+// It reads what the PEER counted per connection, never a recomputation of the hash. A guard that
+// re-derived the shard from the ids would agree with a prefill built from the same copied hash however
+// far both had drifted from the pool's own shardIndex — it would confirm the copy, not the geometry.
+func TestShardBalanceRefusesAnIdleBind(t *testing.T) {
+	if err := shardBalance([]int64{4000, 3900, 4100, 4000}, 4); err != nil {
+		t.Errorf("four binds carrying comparable traffic must pass: %v", err)
+	}
+
+	// One bind never carried a submit. The total is a healthy 12 000, which is why a sum would miss it
+	// and why the palier would publish a four-bind figure that three binds produced.
+	err := shardBalance([]int64{4000, 3900, 4100, 0}, 4)
+	if err == nil {
+		t.Fatal("a bind that carried nothing must fail the palier, however healthy the total looks")
+	}
+	if !strings.Contains(err.Error(), "3") {
+		t.Errorf("the error must name the idle bind, got: %v", err)
+	}
+
+	// A bind at 2% of the mean is not idle, so the zero check misses it — and it drags the palier down
+	// without saying so, exactly like a starved partition.
+	if err := shardBalance([]int64{4000, 3900, 4100, 80}, 4); err == nil {
+		t.Error("a bind carrying a fraction of the mean must fail: it starves without saying so")
+	}
+
+	// Every bind at zero is the ONLY case the starvation check cannot reach: the mean is zero too, so
+	// no count is below half of it and the guard would report a fan-out that never sent a single
+	// submit. It is also the bench's most dangerous failure — a prefill whose ConnectorID does not
+	// match is skipped-and-committed, which drains the backlog at full speed and submits nothing.
+	err = shardBalance([]int64{0, 0, 0, 0}, 4)
+	if err == nil {
+		t.Fatal("four silent binds must fail: a zero mean puts every count above half of it")
+	}
+	if !strings.Contains(err.Error(), "no submit") {
+		t.Errorf("the error must say the binds carried nothing, not that they starved, got: %v", err)
+	}
+
+	// The peer saw fewer connections than the pool was configured for: some bind never dialled, and the
+	// curve would be drawn against a bind count that never carried anything.
+	if err := shardBalance([]int64{4000, 3900, 4100}, 4); err == nil {
+		t.Error("fewer connections at the peer than binds configured must fail")
+	}
+
+	if err := shardBalance(nil, 4); err == nil {
+		t.Error("no observation is not a passing observation")
+	}
+}
+
+// TestBreakerHeldRefusesAPalierThatOpened pins the guard that separates a throughput from an outage.
+//
+// A breaker that opens mid-window cuts the send path, and the palier then divides the work it managed
+// before the cut by the whole window: a lower number, no error, no sign of why.
+//
+// The reading count is not decoration. breaker.Closed is the ZERO value of breaker.State, so a window
+// that observed nothing at all carries the same value as a window that stayed healthy — "no evidence"
+// would read as "healthy" and the guard would pass its own absence.
+func TestBreakerHeldRefusesAPalierThatOpened(t *testing.T) {
+	if err := breakerHeld(5, breaker.Closed); err != nil {
+		t.Errorf("a breaker that stayed closed across five readings must pass: %v", err)
+	}
+
+	if err := breakerHeld(5, breaker.Open); err == nil {
+		t.Fatal("a breaker that opened must fail: the palier measured a cut, not a ceiling")
+	}
+
+	// Half-open is recovery from an open episode: the send path was refused for the cooldown, so the
+	// window still holds a cut whatever the state at the end.
+	if err := breakerHeld(5, breaker.HalfOpen); err == nil {
+		t.Error("a breaker probing its way back must fail too: the cut already happened")
+	}
+
+	if err := breakerHeld(0, breaker.Closed); err == nil {
+		t.Error("zero readings must fail: Closed is the zero value, so no evidence would read as healthy")
+	}
+}
+
+// TestCrossCheckFlagsDisagreeingSources pins the renderer that turns one reading into a measurement.
+//
+// It moved out of the loadref build tag when the pool bench became its second caller: a convention the
+// ordinary suite cannot compile is a convention no test can exercise, which is the argument this file's
+// header already makes for the bucketing helpers.
+func TestCrossCheckFlagsDisagreeingSources(t *testing.T) {
+	first := map[int32]int64{0: 10000, 1: 10000}
+	last := map[int32]int64{0: 5000, 1: 5000}
+
+	// 10 000 records drained over 10s is 1 000/s. The producer says the same, so the palier is quotable.
+	got := crossCheck(1000, first, last, 10*time.Second)
+	if strings.Contains(got, "disagree") {
+		t.Errorf("two sources within the band must not be flagged, got: %s", got)
+	}
+
+	// The producer claims 2 000/s while the backlog only gave up 1 000/s. One of the two is not counting
+	// what its name says, and neither number may be published.
+	got = crossCheck(2000, first, last, 10*time.Second)
+	if !strings.Contains(got, "disagree") {
+		t.Errorf("a 50%% gap must be flagged as unquotable, got: %s", got)
+	}
+
+	// No backlog delta is not agreement: there is simply nothing to check against.
+	if got := crossCheck(1000, first, first, 10*time.Second); strings.Contains(got, "%") {
+		t.Errorf("no delta must not be rendered as a percentage agreement, got: %s", got)
+	}
+}
+
+// TestSweepsAgreeOnTheirCrossingPoint pins the guard between two sweeps, where crossCheck guards within
+// one palier.
+//
+// A two-lever sweep measures the same configuration twice — once in each lever's curve — and the pair
+// is the only evidence that the two curves were drawn under the same conditions. Nothing else in the
+// bench can see host drift: every palier's internal cross-check compares two readings of the SAME
+// window, so a host that slowed down between the sweeps satisfies all of them and still bends both
+// curves.
+//
+// The band is wider than crossCheck's ±5% on purpose. That one compares two counters over one window;
+// this compares two windows minutes apart, which carries the host's own variance on top.
+func TestSweepsAgreeOnTheirCrossingPoint(t *testing.T) {
+	if err := sweepsAgree(19710, 19969); err != nil {
+		t.Errorf("two readings within a percent must pass: %v", err)
+	}
+
+	// The reading actually observed on the first full run: 16 888 against 19 710 is 17%, so the slope of
+	// either curve is worth less than the gap between two readings of one of its own points.
+	err := sweepsAgree(16888, 19710)
+	if err == nil {
+		t.Fatal("a 17% gap on the same configuration must fail: neither curve is readable through it")
+	}
+	if !strings.Contains(err.Error(), "%") {
+		t.Errorf("the error must quantify the gap so a reader can judge it, got: %v", err)
+	}
+
+	// Order must not decide the verdict: the same pair swapped is the same disagreement.
+	if err := sweepsAgree(19710, 16888); err == nil {
+		t.Error("the guard must be symmetric: swapping the two readings is the same gap")
+	}
+
+	// A palier that moved nothing is not agreement with anything, and dividing by it would render a
+	// verdict from an infinity.
+	if err := sweepsAgree(0, 19710); err == nil {
+		t.Error("a zero reading must fail rather than divide")
 	}
 }

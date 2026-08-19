@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -72,6 +73,12 @@ type conn struct {
 	id      int
 	writeMu sync.Mutex
 	canRecv bool // bound as receiver or transceiver: eligible to receive deliver_sm
+
+	// submits counts the submit_sm this bind carried. It is the bounded counterpart of RecordSubmits:
+	// one integer per connection rather than one retained PDU per message, so a throughput bench can
+	// read the per-bind distribution over millions of messages without a slice growing under a mutex
+	// on the hot path.
+	submits atomic.Int64
 }
 
 // Start launches an embedded fake SMSC on an ephemeral port and registers its shutdown with t. It
@@ -126,6 +133,28 @@ func (s *Server) ConnCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.conns)
+}
+
+// SubmitsByConn is how many submit_sm each live connection carried, ordered by the connection id the
+// fake assigns at accept time — so index i is the i-th bind to dial, not a pool slot.
+//
+// It is what a throughput bench reads to see whether a bind pool actually fanned out: the pool shards a
+// batch by FNV32a(message id) % binds, so a bind that carried nothing means the geometry left it idle
+// and the palier measured a smaller pool than its label claims. Unlike Submits it retains nothing, so
+// it is safe to leave on for a window of millions of messages.
+func (s *Server) SubmitsByConn() []int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	live := make([]*conn, 0, len(s.conns))
+	for c := range s.conns {
+		live = append(live, c)
+	}
+	sort.Slice(live, func(i, j int) bool { return live[i].id < live[j].id })
+	counts := make([]int64, len(live))
+	for i, c := range live {
+		counts[i] = c.submits.Load()
+	}
+	return counts
 }
 
 // Close stops accepting, closes every connection and waits for all goroutines to exit.
@@ -233,6 +262,7 @@ func (s *Server) markReceiver(c *conn) {
 }
 
 func (s *Server) handleSubmit(c *conn, seq uint32, body *smpp.SubmitSM) {
+	c.submits.Add(1)
 	if s.cfg.RecordSubmits {
 		s.mu.Lock()
 		s.submits = append(s.submits, Submit{ConnID: c.id, SM: *body})

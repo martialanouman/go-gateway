@@ -48,9 +48,11 @@ const (
 func measureRouterCeiling(t *testing.T, brokers []string, partitions, records int, hold time.Duration) {
 	t.Helper()
 
-	topic := newCeilingTopic(t, brokers, partitions)
+	topic := newCeilingTopic(t, brokers, "inbound", partitions)
 	accounts := partitionAccounts(topic, partitions)
-	prefillRate := prefill(t, brokers, topic, records, accounts)
+	prefillRate := prefill(t, brokers, topic, records, func(i int) (kafka.Record, error) {
+		return pipeline.EncodeInbound(inboundBench(accounts[i%len(accounts)]))
+	})
 
 	if err := prefillBalance(endOffsets(t, brokers, topic), partitions); err != nil {
 		t.Fatalf("%d partitions: %v", partitions, err)
@@ -173,38 +175,16 @@ func brokerReport(before, after redpandametrics.Snapshot, beforeErr, afterErr er
 	return rep.Render()
 }
 
-// crossCheck renders the same throughput derived from the backlog instead of the producer, because two
-// independent readings that agree are a measurement and one reading is an assertion.
-//
-// The topic is static for the window — nothing produces to it while the router drains it — so the
-// backlog consumed and the records published must match. They are counted at different layers (the
-// consumer's committed offsets against the producer's acknowledgements), so a wide gap means one of the
-// two is not counting what its name says.
-func crossCheck(rate float64, first, last map[int32]int64, window time.Duration) string {
-	var drained int64
-	for p, n := range first {
-		drained += n - last[p]
-	}
-	if window <= 0 || drained <= 0 {
-		return "no backlog delta to cross-check against"
-	}
-	byLag := float64(drained) / window.Seconds()
-	gap := 100 * (byLag - rate) / rate
-	out := fmt.Sprintf("backlog says %.0f msg/s (%+.1f%%)", byLag, gap)
-	if gap > 5 || gap < -5 {
-		return out + " — the two sources disagree, this palier is not quotable"
-	}
-	return out
-}
-
-// newCeilingTopic creates a private mt.inbound-shaped topic with exactly `partitions` partitions.
+// newCeilingTopic creates a private topic of the given shape with exactly `partitions` partitions. The
+// shape names the record type the caller will prefill it with ("inbound", "routed"), so a topic left
+// behind by a crashed run says what it held.
 //
 // The sweep does NOT move KAFKATEST_PARTITIONS: that is read once with the shared container, so it
 // would be one container per point, and it widens mt.routed too — varying the output alongside the
-// input. Here the router's lane count is the only thing that changes between rows.
-func newCeilingTopic(t *testing.T, brokers []string, partitions int) string {
+// input. Here the bench's lane count is the only thing that changes between rows.
+func newCeilingTopic(t *testing.T, brokers []string, shape string, partitions int) string {
 	t.Helper()
-	topic := fmt.Sprintf("loadref.inbound.p%d.%s", partitions, uuid.NewString()[:8])
+	topic := fmt.Sprintf("loadref.%s.p%d.%s", shape, partitions, uuid.NewString()[:8])
 
 	adm, closeAdm := adminClient(t, brokers)
 	defer closeAdm()
@@ -277,8 +257,12 @@ func partitionAccounts(topic string, partitions int) []uuid.UUID {
 	return out
 }
 
-// prefill writes `records` mt.inbound records to topic, round-robin over accounts, and returns the rate
-// it achieved in records per second.
+// prefill writes `records` records built by `encode` to topic, and returns the rate it achieved in
+// records per second.
+//
+// The record shape is the caller's: mt.inbound for the router bench, mt.routed for the pool's. What
+// this function owns is the writing — the client, the durability and the failure accounting — because
+// those are what every backlog needs and none of them belong to a record type.
 //
 // It uses a raw kgo client rather than kafka.Producer because Producer.Produce is ProduceSync with
 // acks=all: at the ~2 000/s that path has been measured at, 150 000 records would cost 75 seconds per
@@ -296,7 +280,7 @@ func partitionAccounts(topic string, partitions int) []uuid.UUID {
 // The returned rate is not decoration. It is what the broker absorbs WITH batching, against what the
 // router achieves one synchronous acks=all record at a time — a free upper bound on the broker before
 // step-201e D2 scrapes it.
-func prefill(t *testing.T, brokers []string, topic string, records int, accounts []uuid.UUID) float64 {
+func prefill(t *testing.T, brokers []string, topic string, records int, encode func(i int) (kafka.Record, error)) float64 {
 	t.Helper()
 	cl, err := kgo.NewClient(
 		kgo.SeedBrokers(brokers...),
@@ -315,12 +299,12 @@ func prefill(t *testing.T, brokers []string, topic string, records int, accounts
 
 	start := time.Now()
 	for i := range records {
-		rec, err := pipeline.EncodeInbound(inboundBench(accounts[i%len(accounts)]))
+		rec, err := encode(i)
 		if err != nil {
-			t.Fatalf("encode mt.inbound: %v", err)
+			t.Fatalf("encode record %d: %v", i, err)
 		}
-		// EncodeInbound hard-codes the production topic. Only the destination is overridden; the key,
-		// the value and the headers stay exactly what a REST or SMPP submission publishes.
+		// The encoders hard-code the production topic. Only the destination is overridden; the key, the
+		// value and the headers stay exactly what production publishes.
 		kr := &kgo.Record{Topic: topic, Key: rec.Key, Value: rec.Value}
 		for _, h := range rec.Headers {
 			kr.Headers = append(kr.Headers, kgo.RecordHeader{Key: h.Key, Value: h.Value})

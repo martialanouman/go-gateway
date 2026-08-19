@@ -754,6 +754,66 @@ partout) pour zéro gain — l'injecteur Go pose la même requête sur le même 
 échantillons**, ce qui donne un p99 exact au lieu d'un bucket. Le script k6 reste l'outil pour viser une
 passerelle **déployée** ; c'est lui que `step-201b` utilisera. À corriger dans la fiche.
 
+### Mesure du 12/08/2026 (step-201f) — le pool **n'est pas** le plafond, et la pente n'est pas mesurable ici
+
+`make load-reference RUN=TestPoolSubmitCeiling`. Le pool de connecteurs seul : un topic `mt.routed`
+privé pré-rempli, aucun routeur, aucun REST, aucun injecteur, un faux SMSC en face. Trois runs, dix-huit
+paliers.
+
+#### Le pool seul, contre les 2 400/s du plein-stack
+
+| Binds (w64) | run 1 (10 s) | run 2 (30 s) | run 3 (30 s, lit unique) |
+|---:|---:|---:|---:|
+| 1 | 4 044/s | 4 351/s | 3 294/s |
+| 2 | 7 724/s | 6 690/s | 4 814/s |
+| 4 | 12 947/s | 9 547/s | 8 125/s |
+| 8 | 16 888/s | 19 724/s | 12 573/s |
+| 16 | 25 313/s | — | 29 313/s |
+
+**Le plus mauvais palier du plus mauvais run — 3 294/s, à UN bind — dépasse déjà les 2 400/s mesurés en
+plein-stack.** À 8 binds les trois runs donnent 12 573, 16 888 et 19 724/s, tous au-dessus de la cible
+NFR de 10 400 `submit_sm/s`. Le pair, calibré à chaque palier au nombre de binds du palier, tient entre
+123 000 et 190 000/s : **cinq à soixante fois au-dessus de toute mesure**, donc il n'est jamais la
+contrainte — c'est la réponse au piège que la fiche appelait `D3`.
+
+Les 2 400/s n'appartenaient donc **pas au pool**. Ils appartenaient à l'hôte, exactement comme les
+4 702/s qui semblaient appartenir au routeur avant qu'il en fasse 20 741 isolé.
+
+#### Ce que ce banc ne peut pas dire
+
+**La pente.** Le balayage mesure deux fois la même configuration — 8 binds / w64, une fois dans chaque
+courbe — et les deux lectures divergent de 17 % au run 1 et de 19 % au run 3. La garde `sweepsAgree`
+refuse la courbe sur ce seul motif.
+
+Ce n'est pas une dérive entre balayages : au run 3, le balayage B lit 19 540 · 19 257 · 14 972 · 19 025
+sur un levier (la fenêtre SMPP) que le run 1 a montré inerte à 1,5 % près. **30 % de dispersion entre
+quatre paliers de configuration équivalente**, tous en fin de run. Le bruit de cet hôte est du même
+ordre que les pas que la courbe sert à lire.
+
+Conséquence : aucun coude, aucune loi d'échelle par bind, aucun verdict sur la fenêtre SMPP ne sort de
+ce banc **sur cette machine**. Le run 1 suggérait une fenêtre inerte de w1 à w256 ; le run 3 l'a
+contredit. Ces deux lectures s'annulent.
+
+#### Ce que step-207 peut retenir
+
+Le seul énoncé robuste au bruit de ±30 % : **8 binds par connecteur passent la cible NFR dans les trois
+runs** (minimum 12 573/s contre 10 400 visés), **4 binds ne la passent pas de façon fiable** (8 125,
+9 547 puis 12 947 — à cheval). C'est un plancher de dimensionnement, pas un optimum ; l'optimum demande
+l'environnement représentatif de `step-201b`.
+
+#### Réserves propres à cette mesure
+
+- **Tous ces chiffres sont des MAJORANTS de la production.** `DLRMap` est nil, donc aucun palier ne paie
+  l'écriture Redis de corrélation DLR que la production effectue à chaque `submit_sm` acquitté. Le run
+  de référence faisait la même omission — en silence — ce qui rend ses 2 400/s comparables à ces lignes
+  et fait qu'aucune des deux n'est une capacité de production. Mesurer ce delta reste à faire.
+- `Billing` est nil : le banc mesure un déploiement facturation-off, ce qu'autorise l'invariant (c).
+- Le disjoncteur n'est **pas** bouchonné, et aucun palier ne l'a vu s'ouvrir.
+- Le produce `mt.outcome` acquitté est bien sur le chemin mesuré. La ligne de latence de produit
+  l'annonce à 83 % du budget par message à 1 bind : **le coût par message est le produce, pas
+  l'aller-retour SMPP** — ce qui est cohérent avec une fenêtre SMPP sans effet visible, et reste à
+  confirmer par un chronométrage du `submit_sm` lui-même.
+
 ## Contenu
 
 | Chemin | Rôle |

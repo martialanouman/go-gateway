@@ -34,6 +34,52 @@ mesuré dans le bruit.
 Tant que ce banc n'existe pas, on ne sait pas si les 2 400/s sont le pool, le nombre de binds, le pair,
 ou l'hôte — et **aucun dimensionnement ne peut être écrit** pour step-207 ni step-201b.
 
+## Design arrêté
+
+### Ce que l'exploration a trouvé, et qui change la lecture du 2 400/s
+
+**Le harnais de référence ne paie pas le `dlrmap`.** `DLRMap` est nil dans son câblage du pool
+(`reference_test.go:424-447` ; `dlrmap` n'apparaît nulle part sous `internal/e2e/`), alors que la
+production écrit une entrée Redis **synchrone à chaque `submit_sm` acquitté**
+(`connectorpool.go:976` → `recordDLRMapping`). Le 2 400/s est donc le débit d'un pool **plus rapide que
+la production**, et il plafonne quand même à 2 400.
+
+C'est le motif de `loadref-harness-fidelity-traps` : le harnais mesure autre chose que la production,
+par une dépendance laissée à nil. Le banc mesure donc **les deux** configurations — le delta nomme la
+part de Redis, et c'est cela, « attribuer ».
+
+### Les étages, tranchés
+
+| Étage | Décision | Pourquoi |
+|---|---|---|
+| `Producer` → `mt.outcome` | **réel, non négociable** | `New` panique si nil ; c'est un produce acquitté par message, fail-closed, sur le chemin chaud |
+| `DLRMap` → Redis | **balayage sans, palier de fidélité avec** | sans = comparable au 2 400/s ; avec = la vérité de production ; le delta est l'attribution |
+| `Billing` | **nil** | facturation opt-in (M9) ; invariant (c) : désactivée = zéro appel réseau. Le banc mesure le déploiement facturation-off, et son godoc le dit |
+| `Breaker` | **espion, pas nil** | à nil, **aucun breaker local n'est créé** — le pool serait plus rapide que la production *et* le garde du disjoncteur serait sans objet |
+| `CancelFlags`, `Stream`, `RerouteLimiter`, `ConfigSource`, `StatusControl` | nil | hors du chemin d'envoi nominal |
+
+### Les trois pièges qui rendraient le banc creux
+
+1. **`ConnectorID`** — `routedBench()` en tire un au hasard ; le pool filtre dessus et
+   **skippe-et-commite** en silence. Le banc rapporterait un débit consommateur flatteur et **zéro
+   `submit_sm`**. Le pré-remplissage porte l'ID du banc.
+2. **La géométrie de shard** — le fan-out est `FNV32a(MessageID) % len(binds)`, **par batch de poll**.
+   Des UUID aléatoires laissent des binds inactifs à petit batch.
+3. **`refKafkaConfig` obligatoire** — un `config.Kafka{…}` littéral laisse les champs fetch à zéro et
+   franz-go substitue 1 MiB au lieu des 56 KiB de production : batch ~18× plus gros, toute conclusion
+   sur le fan-out fausse.
+
+### Le pair, et les leviers
+
+**`fakesmsc` + `calibratePeer` au nombre de binds du palier**, pas le simulateur : `smscsim.Launch`
+*skippe* si l'image est absente (un banc muet est pire qu'un banc lent), `fakesmsc` est le pair du run
+de référence donc les chiffres sont comparables, et les 43 498/s du simulateur ont été mesurés à 80
+binds — incomparables à un palier à 4.
+
+Deux leviers : balayage A sur `bind_pool_size ∈ {1,2,4,8,16}` à `window` 64 ; balayage B sur
+`window ∈ {1,10,64,256}` au coude de A. Partitions fixées à 8 et **nommées** : elles gouvernent la
+taille de batch via `FetchMaxPartitionBytes`, donc le fan-out atteignable.
+
 ## Périmètre
 
 Des **instruments**, aucun changement du chemin chaud de production. Même contrainte qu'en step-201e :

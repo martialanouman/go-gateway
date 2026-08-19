@@ -2,6 +2,7 @@ package fakesmsc_test
 
 import (
 	"net"
+	"slices"
 	"testing"
 	"time"
 
@@ -158,5 +159,53 @@ func TestSendDLRWithoutReceiverFails(t *testing.T) {
 	// No bound connection at all: SendDLR has nowhere to deliver.
 	if err := s.SendDLR("smsc-1", fakesmsc.Delivered); err == nil {
 		t.Fatal("expected an error when no receiver is bound")
+	}
+}
+
+// TestSubmitsByConnCountsEachBindSeparately pins the reading a throughput bench uses to tell a pool
+// that fanned out from one that did not.
+//
+// The pool shards a poll batch by FNV32a(message id) % binds, so a bind that carried nothing means the
+// geometry left it idle and the palier measured a smaller pool than its label claims. A total would
+// hide that: two binds carrying 3 and 0 sum to the same 3 as 2 and 1.
+func TestSubmitsByConnCountsEachBindSeparately(t *testing.T) {
+	s := fakesmsc.Start(t, fakesmsc.Config{})
+
+	// The counts are ordered by the connection id assigned at accept time, so the first dialer is
+	// index 0 whatever order the responses come back in.
+	first := dial(t, s.Addr())
+	first.bindTransceiver()
+	second := dial(t, s.Addr())
+	second.bindTransceiver()
+
+	for range 3 {
+		first.send(&smpp.SubmitSM{SMFields: smpp.SMFields{DestinationAddr: "22507000000"}})
+		first.read()
+	}
+	second.send(&smpp.SubmitSM{SMFields: smpp.SMFields{DestinationAddr: "22507000001"}})
+	second.read()
+
+	counts := s.SubmitsByConn()
+	if want := []int64{3, 1}; !slices.Equal(counts, want) {
+		t.Fatalf("submits by conn: got %v want %v", counts, want)
+	}
+}
+
+// TestSubmitsByConnCountsARejectedSubmit: the count is what the bind CARRIED, not what succeeded.
+//
+// A bench reads it to check the fan-out geometry, and a throttled peer is precisely when the geometry
+// matters most. Counting only successes would report a bind as idle exactly when it is working hardest.
+func TestSubmitsByConnCountsARejectedSubmit(t *testing.T) {
+	s := fakesmsc.Start(t, fakesmsc.Config{
+		OnSubmit: func(smpp.SubmitSM) fakesmsc.Resp { return fakesmsc.Throttled() },
+	})
+	c := dial(t, s.Addr())
+	c.bindTransceiver()
+
+	c.send(&smpp.SubmitSM{SMFields: smpp.SMFields{DestinationAddr: "22507000000"}})
+	c.read()
+
+	if counts := s.SubmitsByConn(); !slices.Equal(counts, []int64{1}) {
+		t.Errorf("a throttled submit still rode the bind: got %v want [1]", counts)
 	}
 }
