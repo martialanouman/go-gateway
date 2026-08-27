@@ -68,8 +68,11 @@ const (
 // Every figure here is an UPPER bound on production: DLRMap is nil, so no palier pays the Redis
 // correlation write production performs on every acknowledged submit_sm. The reference run made the
 // same omission silently, which is what makes its 2 400/s comparable to these rows and neither of them
-// a production capacity. Measuring that delta is the next step, and until it lands no number from this
-// file may be quoted as a sizing.
+// a production capacity.
+//
+// The size of that omission is measured next door, by TestPoolDLRMapFidelity: same bed, same
+// configuration, the real store wired on half the paliers. Read the two together — this file draws the
+// curve, that one says how far below it production sits.
 func TestPoolSubmitCeiling(t *testing.T) {
 	brokers := kafkatest.Brokers(t)
 	hold := envDuration(t, envCalHold, poolCeilingHold)
@@ -85,7 +88,7 @@ func TestPoolSubmitCeiling(t *testing.T) {
 	// Sweep A — the bind count, at the reference run's window.
 	var crossingA float64
 	for _, binds := range sweepA {
-		rate := measurePoolCeiling(t, brokers, bed, binds, sweepAWindow, hold)
+		rate := measurePoolCeiling(t, brokers, bed, binds, sweepAWindow, hold, nil)
 		if binds == atBinds {
 			crossingA = rate
 		}
@@ -94,7 +97,7 @@ func TestPoolSubmitCeiling(t *testing.T) {
 	// Sweep B — the SMPP window, at that fixed bind count.
 	var crossingB float64
 	for _, window := range []int{1, 10, 64, 256} {
-		rate := measurePoolCeiling(t, brokers, bed, atBinds, window, hold)
+		rate := measurePoolCeiling(t, brokers, bed, atBinds, window, hold, nil)
 		if window == sweepAWindow {
 			crossingB = rate
 		}
