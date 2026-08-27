@@ -2,6 +2,7 @@ package e2e_test
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"testing"
@@ -102,6 +103,137 @@ func breakerHeld(reports int, worst breaker.State) error {
 			"cooldown, so this palier measured a cut and not a ceiling", worst)
 	}
 	return nil
+}
+
+// putsSamplingSlack is how far the two counters may differ before the difference stops being the
+// boundary between them and starts being a fault.
+//
+// It is SYMMETRIC, and the first version of this guard was not. "The write follows the response, so it
+// cannot outnumber it" is true of the two counters at one instant and false of what the palier actually
+// compares: two DELTAS, each the difference of two readings taken microseconds apart on a live path.
+// The first run measured 64 194 writes against 64 189 submits and failed a palier that was sound. The
+// readings are taken in the same order at both ends of the window, which makes the two spans nearly
+// equal and the residue small — but nothing makes it zero, or gives it a sign.
+//
+// One percent of a palier that moves hundreds of thousands of records is thousands of messages: two
+// orders of magnitude above that residue, and still an order below the smallest real fault. A counter
+// wired to segments instead of messages reads 30% high; a store that is never reached reads 100% low.
+const putsSamplingSlack = 0.01
+
+// putsMatchSubmits reports whether the DLR store was actually on the path the palier measured.
+//
+// It exists because recordDLRMapping returns EARLY on a non-ROK submit_sm_resp and on a response
+// carrying no smsc message id: both are ordinary production behaviour, and both mean a wired store is
+// never called. A fidelity palier can therefore hold a real Redis client, dial it, and pay nothing —
+// at which point the "with" and "without" configurations are the same configuration, their delta is
+// host noise, and the noise gets published under Redis's name.
+//
+// Nothing else in this bench can see that: the rate is plausible, the breaker is closed, the producer
+// and the backlog agree. The only evidence is the store's own counter.
+func putsMatchSubmits(puts, submits int64) error {
+	if submits <= 0 {
+		return fmt.Errorf("the peer counted no submit in the window: there was nothing for the DLR store to "+
+			"record, so its silence proves nothing about whether it is wired (%d writes)", puts)
+	}
+	if puts == 0 {
+		return fmt.Errorf("the DLR store was never called across %d submits: recordDLRMapping skips a non-ROK "+
+			"response and one carrying no smsc message id, so this palier paid no Redis at all and its delta "+
+			"against the storeless one is host noise", submits)
+	}
+	ratio := float64(puts) / float64(submits)
+	if ratio > 1+putsSamplingSlack {
+		return fmt.Errorf("the DLR store recorded %d writes against %d submits (%.0f%%): more writes than the "+
+			"traffic they are derived from is not a sampling boundary at this size — one of the two counters is "+
+			"not counting what its name says", puts, submits, 100*ratio)
+	}
+	if ratio < 1-putsSamplingSlack {
+		return fmt.Errorf("the DLR store recorded %d writes for %d submits (%.0f%%): the palier paid Redis for "+
+			"part of its traffic, so any delta read from it understates the cost by the rest",
+			puts, submits, 100*ratio)
+	}
+	return nil
+}
+
+// fidelityDelta renders what wiring the real DLR store cost the pool, and refuses to name a figure the
+// readings cannot support.
+//
+// The delta between two configurations is only meaningful against the spread of the readings it is
+// drawn from. step-201f PR1 measured ONE configuration twice inside a single run and read 12 573/s then
+// 14 972/s — 19% apart on a lever the same bench had shown inert. A fidelity palier that ran three
+// windows without the store, then three with, and subtracted the means would attribute that drift to
+// Redis with a straight face, and the resulting number would go into step-207's sizing.
+//
+// So the pairs must be INTERLEAVED by the caller, and the caller must ALTERNATE which member runs first:
+// interleaving puts the two members minutes apart instead of half an hour, and alternating stops a host
+// that drifts monotonically from penalising whichever side always ran second — a systematic error, which
+// is the kind an average does not remove. The spread within a side is then this host's own variance over
+// the same span the delta is measured across, and the only local estimate of the noise available.
+//
+// A delta under that spread is reported as unreadable rather than as a cost. Two pairs is the floor; one
+// bounds no spread at all, so any delta would clear a noise estimate of zero.
+//
+// It returns an ERROR, not a verdict, when the stored side comes out ahead by more than the scatter: an
+// added synchronous write cannot raise throughput, so that reading says the two sides were not measured
+// under the same conditions, and a caller left green over it would publish nothing and notice nothing.
+func fidelityDelta(without, with []float64) (string, error) {
+	if len(without) != len(with) {
+		return "", fmt.Errorf("%d readings without the store against %d with: the pairing is what defends "+
+			"against drift, and unpaired sides were not measured across the same span", len(without), len(with))
+	}
+	if len(without) < 2 {
+		return "", fmt.Errorf("%d pair(s) measured: a single pair bounds no spread, so any delta would clear a "+
+			"noise estimate of zero — run at least two interleaved pairs", len(without))
+	}
+	meanW, spreadW, err := meanAndSpread(without, "without the store")
+	if err != nil {
+		return "", err
+	}
+	meanD, spreadD, err := meanAndSpread(with, "with the store")
+	if err != nil {
+		return "", err
+	}
+
+	noise := max(spreadW, spreadD)
+	cost := (meanW - meanD) / meanW
+	out := fmt.Sprintf("%d interleaved pairs · %.0f/s without the DLR store, %.0f/s with · spread within a "+
+		"side %.0f%%", len(without), meanW, meanD, 100*noise)
+
+	switch {
+	case math.Abs(cost) <= noise:
+		return fmt.Sprintf("%s · the %.0f%% delta is under the spread of the readings it is drawn from: this "+
+			"bench cannot put a figure on the DLR write", out, 100*math.Abs(cost)), nil
+	case cost < 0:
+		// An error, not a verdict. A synchronous write added to every message cannot RAISE throughput, so a
+		// reading that says it did was not taken under one set of conditions — and the run it belongs to
+		// bounds nothing. Rendering it as a sentence would leave the caller green over an unusable
+		// measurement, which is the one thing this file exists to refuse. sweepsAgree treats the same class
+		// the same way.
+		return "", fmt.Errorf("%s · the palier ran %.0f%% FASTER with the store wired, past its own %.0f%% "+
+			"scatter: no added write can do that, so the two sides were not measured under the same "+
+			"conditions and neither bounds the other — re-run the pairs", out, -100*cost, 100*noise)
+	default:
+		return fmt.Sprintf("%s · the store costs %.0f%% of the throughput", out, 100*cost), nil
+	}
+}
+
+// meanAndSpread is the mean of a side and how far its own readings spread around it, as a fraction of
+// the mean.
+//
+// Peak-to-peak rather than a standard deviation: three readings are too few for a deviation to describe
+// anything, and the question asked of it is "could the delta be one more of these readings", which the
+// full range answers directly and a deviation only after a distributional assumption this bench has no
+// grounds for.
+func meanAndSpread(rates []float64, side string) (mean, spread float64, err error) {
+	lo, hi, sum := rates[0], rates[0], 0.0
+	for _, r := range rates {
+		if r <= 0 {
+			return 0, 0, fmt.Errorf("a palier %s read %.0f/s: a window that moved nothing is a broken palier, "+
+				"not a slow one, and averaging it in manufactures a delta", side, r)
+		}
+		lo, hi, sum = min(lo, r), max(hi, r), sum+r
+	}
+	mean = sum / float64(len(rates))
+	return mean, (hi - lo) / mean, nil
 }
 
 // maxSweepGap is the fraction by which two readings of the same configuration may differ before the
@@ -263,41 +395,63 @@ func deltaBuckets(before, after []uint64) []uint64 {
 	return out
 }
 
-// produceLatency renders what the synchronous acks=all produce cost, measured rather than subtracted.
+// refProduceStage and refProduceExcludes name the acks=all produce for stageLatency, once, for the two
+// benches that time it. The exclusion clause is the honest half: the timer brackets the Produce call and
+// nothing else, so the share it renders is a FLOOR on the per-message budget and never the whole of it.
+const (
+	refProduceStage    = "produces"
+	refProduceExcludes = "decode, Pipeline.Process and encode are NOT counted here"
+)
+
+// refDLRStage and refDLRExcludes name the DLR correlation write for stageLatency (step-201f PR2).
+//
+// Its exclusion clause carries more weight than the produce's, because the DLR timer is the closest
+// this bench gets to the fiche's D2 — chronométrer le submit_sm in situ — and it is NOT that. There is
+// no seam around bind.Submit: it is concrete, unexported, and reached from one call site inside the
+// send path, so timing it would mean adding an interface to connectorpool.Deps, which the fiche forbids
+// twice. What the two timers give instead is a decomposition: budget minus produce minus DLR write is a
+// residual that CONTAINS the submit_sm round trip, and a ceiling on it is not a measurement of it.
+const (
+	refDLRStage    = "DLR writes"
+	refDLRExcludes = "the submit_sm round trip and the mt.outcome produce are NOT counted here"
+)
+
+// stageLatency renders what one per-message stage cost, measured rather than subtracted.
 //
 // It is the answer to a question PR1 could only reach by arithmetic: the router's throughput per lane
 // falls 70% between 1 and 16 lanes, and the per-record cost has to be paid somewhere. The mean here is
-// what one Produce took; the budget is the window divided by what came out; the share is which of the
-// two dominates.
+// what one occurrence of the stage took; the budget is the window divided by what came out; the share is
+// which of the two dominates.
 //
-// It refuses to divide rather than print a plausible zero, and it names what it does NOT cover — the
-// decode, Pipeline.Process and the encode are outside this timer, so the share is a floor on the
-// per-message budget and never the whole of it.
+// It refuses to divide rather than print a plausible zero, and `excludes` names what the timer does NOT
+// cover — a share of a budget is not the budget, and a reader who takes it for the message's whole cost
+// stops looking. It is a parameter because the same arithmetic now serves two stages: the router's and
+// the pool's acks=all produce, and the pool's DLR correlation write (step-201f PR2). A second renderer
+// would have been the same code with a different noun, and the two would have drifted.
+//
+// stage is the plural noun the count is rendered with ("produces", "DLR writes").
 //
 // buckets are per-class counts (one increment per observation), not the cumulative form a Prometheus
 // exposition uses: the hot path pays one atomic add instead of one per bucket above the value.
-func produceLatency(count, sumNanos uint64, buckets []uint64, window time.Duration, produced uint64) string {
+func stageLatency(stage, excludes string, count, sumNanos uint64, buckets []uint64, window time.Duration, messages uint64) string {
 	if count == 0 {
-		return "no produce observed in this window"
+		return "no " + stage + " observed in this window"
 	}
 	mean := time.Duration(sumNanos / count)
-	out := fmt.Sprintf("%d produces, mean %v, p99 %s", count, mean.Round(time.Microsecond), p99Interval(buckets))
-	if produced == 0 || window <= 0 {
+	out := fmt.Sprintf("%d %s, mean %v, p99 %s", count, stage, mean.Round(time.Microsecond), p99Interval(buckets))
+	if messages == 0 || window <= 0 {
 		return out + " (no output in the window: no budget to compare it against)"
 	}
-	budget := window / time.Duration(produced)
+	budget := window / time.Duration(messages)
 	share := 100 * float64(mean) / float64(budget)
-	out = fmt.Sprintf("%s · budget %v/message · the produce alone is %.0f%% of it "+
-		"(decode, Pipeline.Process and encode are NOT counted here)",
-		out, budget.Round(time.Microsecond), share)
+	out = fmt.Sprintf("%s · budget %v/message · they are %.0f%% of it (%s)", out, budget.Round(time.Microsecond), share, excludes)
 	if share <= 100 {
 		return out
 	}
-	// Over 100% is not an arithmetic slip and must not read as one. The budget is the WHOLE router's
-	// output rate inverted, while the mean is what ONE produce took: a share above 100% is exactly what
-	// concurrent lanes buy, and its size says how many produces are in flight at once.
-	return fmt.Sprintf("%s — above 100%% because the produces overlap: ~%.1f of them are in flight at "+
-		"any instant, which is what the lanes bought", out, share/100)
+	// Over 100% is not an arithmetic slip and must not read as one. The budget is the WHOLE stage's
+	// output rate inverted, while the mean is what ONE occurrence took: a share above 100% is exactly
+	// what concurrency buys, and its size says how many are in flight at once.
+	return fmt.Sprintf("%s — above 100%% because they overlap: ~%.1f in flight at any instant", out, share/100)
 }
 
 // p99Interval renders the 99th percentile as the interval between two bucket edges.
@@ -428,16 +582,16 @@ func TestDeltaBucketsSubtractsTheOpeningReading(t *testing.T) {
 	}
 }
 
-// TestProduceLatencyRefusesToDivide: an empty histogram means the produce path was never exercised,
+// TestStageLatencyRefusesToDivide: an empty histogram means the produce path was never exercised,
 // which is a finding. A mean of zero reads as "the produce is free", which is its opposite.
-func TestProduceLatencyRefusesToDivide(t *testing.T) {
-	got := produceLatency(0, 0, make([]uint64, len(produceBounds)+1), 10*time.Second, 50000)
+func TestStageLatencyRefusesToDivide(t *testing.T) {
+	got := stageLatency(refProduceStage, refProduceExcludes, 0, 0, make([]uint64, len(produceBounds)+1), 10*time.Second, 50000)
 	if strings.Contains(got, "µs") || strings.Contains(got, "%") {
 		t.Errorf("an empty histogram must not be rendered as a latency or a share: %s", got)
 	}
 }
 
-// TestProduceLatencySplitsTheBudget pins the arithmetic the whole point of D3 rests on: what share of a
+// TestStageLatencySplitsTheBudget pins the arithmetic the whole point of D3 rests on: what share of a
 // message's wall time is the synchronous acks=all produce.
 //
 // The two counts are deliberately DIFFERENT — 50 000 produces for 25 000 messages, the shape a
@@ -445,10 +599,10 @@ func TestProduceLatencyRefusesToDivide(t *testing.T) {
 // cannot tell one from the other. The mean is per produce (41 s / 50 000 = 820 µs); the budget is per
 // message (10 s / 25 000 = 400 µs); the share is 205%, i.e. the produce alone costs twice what a
 // message may spend.
-func TestProduceLatencySplitsTheBudget(t *testing.T) {
+func TestStageLatencySplitsTheBudget(t *testing.T) {
 	buckets := make([]uint64, len(produceBounds)+1)
 	buckets[0] = 50000
-	got := produceLatency(50000, uint64(41*time.Second), buckets, 10*time.Second, 25000)
+	got := stageLatency(refProduceStage, refProduceExcludes, 50000, uint64(41*time.Second), buckets, 10*time.Second, 25000)
 
 	if !strings.Contains(got, "820µs") {
 		t.Errorf("41s over 50000 produces is a mean of 820µs per produce, got: %s", got)
@@ -466,27 +620,34 @@ func TestProduceLatencySplitsTheBudget(t *testing.T) {
 	}
 
 	// At or below 100% there is nothing to explain, and the sentence would be noise.
-	quiet := produceLatency(50000, uint64(5*time.Second), buckets, 10*time.Second, 50000)
+	quiet := stageLatency(refProduceStage, refProduceExcludes, 50000, uint64(5*time.Second), buckets, 10*time.Second, 50000)
 	if strings.Contains(quiet, "in flight") {
 		t.Errorf("a share under 100%% needs no overlap clause, got: %s", quiet)
 	}
 }
 
-// TestProduceLatencyNamesWhatItExcludes: the figure is a share of the per-message budget, not the whole
+// TestStageLatencyNamesWhatItExcludes: the figure is a share of the per-message budget, not the whole
 // of it. Without the clause a reader takes it for the message's cost and stops looking.
-func TestProduceLatencyNamesWhatItExcludes(t *testing.T) {
+//
+// It is checked with the DLR stage's own constants rather than the produce's, because the clause became
+// a PARAMETER when the renderer grew its second caller: what this guards is that a caller's clause
+// reaches the output at all, which is what a third caller passing "" would break. Those constants are
+// the second caller's real wording, and this is the only place the ordinary suite can reach them — the
+// caller itself lives behind the loadref tag.
+func TestStageLatencyNamesWhatItExcludes(t *testing.T) {
 	buckets := make([]uint64, len(produceBounds)+1)
 	buckets[0] = 1000
-	got := produceLatency(1000, uint64(time.Second), buckets, 10*time.Second, 1000)
+	got := stageLatency(refDLRStage, refDLRExcludes, 1000, uint64(time.Second), buckets, 10*time.Second, 1000)
 	if !strings.Contains(got, "NOT counted") {
-		t.Errorf("the figure must say what it leaves out (decode, pipeline, encode), got: %s", got)
+		t.Errorf("the figure must say what the timer leaves out (here: the submit_sm round trip and the "+
+			"mt.outcome produce), got: %s", got)
 	}
 }
 
-// TestProduceLatencyBoundsTheQuantile: on log-spaced buckets a quantile is an interval, never a value.
+// TestStageLatencyBoundsTheQuantile: on log-spaced buckets a quantile is an interval, never a value.
 // Interpolating inside a bucket whose edges are a factor of two apart carries up to 100% of error while
 // reading exactly like a measurement — the lesson gatewaymetrics already paid for.
-func TestProduceLatencyBoundsTheQuantile(t *testing.T) {
+func TestStageLatencyBoundsTheQuantile(t *testing.T) {
 	bounds := produceBounds
 	buckets := make([]uint64, len(bounds)+1)
 	// 990 observations in [512µs, 1ms), 10 above it: the 99th percentile of 1000 falls in the first.
@@ -494,7 +655,7 @@ func TestProduceLatencyBoundsTheQuantile(t *testing.T) {
 	buckets[lower+1] = 990
 	buckets[lower+2] = 10
 
-	got := produceLatency(1000, uint64(990*512*time.Microsecond), buckets, 10*time.Second, 1000)
+	got := stageLatency(refProduceStage, refProduceExcludes, 1000, uint64(990*512*time.Microsecond), buckets, 10*time.Second, 1000)
 
 	// Both edges of the bucket the 99th percentile falls in, read from the bounds themselves so the
 	// assertion survives a change of scale.
@@ -772,5 +933,166 @@ func TestSweepsAgreeOnTheirCrossingPoint(t *testing.T) {
 	// verdict from an infinity.
 	if err := sweepsAgree(0, 19710); err == nil {
 		t.Error("a zero reading must fail rather than divide")
+	}
+}
+
+// TestPutsMatchSubmitsRefusesASilentNoop pins the guard without which the fidelity palier could compare
+// a configuration against ITSELF and publish the difference as the cost of Redis.
+//
+// recordDLRMapping returns early on a non-ROK submit_sm_resp and on a response carrying no smsc message
+// id (connectorpool.go). Both are ordinary production behaviour and both mean the wired store is never
+// called — so a palier can hold a real Redis client, dial it, and pay nothing. The two paliers would
+// then be identical, their delta would be host noise, and the noise would be published under Redis's
+// name. Nothing else in the bench can see it: the rate is plausible, the breaker is closed, the two
+// sources agree.
+func TestPutsMatchSubmitsRefusesASilentNoop(t *testing.T) {
+	if err := putsMatchSubmits(100000, 100000); err != nil {
+		t.Errorf("a store called once per submit must pass: %v", err)
+	}
+
+	// The reading is taken from two counters sampled a few microseconds apart, with submits in flight
+	// between them: a handful of submits with no Put yet is the boundary, not a fault.
+	if err := putsMatchSubmits(99995, 100000); err != nil {
+		t.Errorf("a handful of submits in flight at the sampling boundary must pass: %v", err)
+	}
+
+	err := putsMatchSubmits(0, 100000)
+	if err == nil {
+		t.Fatal("a store that recorded nothing under 100 000 submits must fail: the palier paid no Redis at all")
+	}
+	if !strings.Contains(err.Error(), "never called") {
+		t.Errorf("the error must say the store was never reached, not that it lagged, got: %v", err)
+	}
+
+	// Half the submits recorded is not a sampling boundary; it is a palier that paid Redis for half its
+	// traffic and would report half the cost.
+	if err := putsMatchSubmits(50000, 100000); err == nil {
+		t.Error("a store reached for half the submits must fail: the delta would be half the cost")
+	}
+
+	// The excess side carries the same boundary as the shortfall, and the first version of this guard
+	// did not: it refused any excess outright, on the argument that a write follows the response it is
+	// derived from. True of the two counters at one instant; false of the deltas the palier compares.
+	// The first run read 64 194 writes against 64 189 submits and failed a sound palier on five messages.
+	if err := putsMatchSubmits(100001, 100000); err != nil {
+		t.Errorf("a handful of writes over at the sampling boundary must pass: %v", err)
+	}
+
+	// A counter wired to segments rather than messages reads about 30% high, which is what the excess
+	// side is actually there to catch — two orders of magnitude above the boundary.
+	if err := putsMatchSubmits(130000, 100000); err == nil {
+		t.Error("30% more writes than submits must fail: one of the two counters is not counting what it names")
+	}
+
+	if err := putsMatchSubmits(0, 0); err == nil {
+		t.Error("a window with no submit at all must fail rather than pass vacuously")
+	}
+}
+
+// TestFidelityDeltaRefusesASinglePair pins the arithmetic that decides whether this bench is ALLOWED to
+// name a cost for the DLR write.
+//
+// step-201f PR1 measured the same configuration twice in one run and read 12 573/s then 14 972/s — 19%
+// apart, on an inert lever. A fidelity palier that ran three paliers without Redis, then three with, and
+// subtracted the means would attribute that drift to Redis with a straight face. So the delta is only
+// readable against the spread of the readings it is drawn from, and one pair bounds no spread at all.
+func TestFidelityDeltaRefusesASinglePair(t *testing.T) {
+	if _, err := fidelityDelta([]float64{12000}, []float64{9000}); err == nil {
+		t.Fatal("one pair must fail: with no spread to compare against, any delta reads as significant")
+	}
+
+	if _, err := fidelityDelta(nil, nil); err == nil {
+		t.Error("no pair at all must fail rather than render a verdict from nothing")
+	}
+
+	if _, err := fidelityDelta([]float64{12000, 12100}, []float64{9000}); err == nil {
+		t.Error("unpaired readings must fail: the pairing is what defends against drift")
+	}
+
+	// A palier that moved nothing is not a fast configuration; it is a broken one, and it would drag a
+	// mean toward zero and manufacture a cost.
+	if _, err := fidelityDelta([]float64{12000, 0}, []float64{9000, 9100}); err == nil {
+		t.Error("a palier that moved nothing must fail rather than be averaged in")
+	}
+}
+
+// TestFidelityDeltaCallsADeltaUnderTheNoiseUnreadable is the case this host actually produces.
+//
+// Three tight readings on each side and a delta smaller than the spread within one side: arithmetic
+// will still yield a percentage, and printing it would turn host variance into a measured cost of
+// Redis. The verdict has to say the bench cannot see it.
+func TestFidelityDeltaCallsADeltaUnderTheNoiseUnreadable(t *testing.T) {
+	// Each side spreads ~15% within itself; the two means differ by ~3%.
+	without := []float64{12000, 13800, 12500}
+	with := []float64{11900, 13200, 12300}
+
+	got, err := fidelityDelta(without, with)
+	if err != nil {
+		t.Fatalf("three usable pairs must render a verdict: %v", err)
+	}
+	if !strings.Contains(got, "under the spread") {
+		t.Errorf("a delta smaller than the spread of its own readings must be called unreadable, got: %s", got)
+	}
+
+	// The noise estimate must be the WIDEST side, not the narrowest. Here the storeless side is tight
+	// (~2%) and the stored side scatters (~18%), and the 8% delta falls between the two: read against the
+	// tight side it is a measured cost of Redis, read against the wide one it is one more of the readings
+	// the wide side already produced. A guard that took the narrower estimate would publish the figure.
+	got, err = fidelityDelta([]float64{12000, 12100, 11900}, []float64{10000, 12000, 11000})
+	if err != nil {
+		t.Fatalf("three usable pairs must render a verdict: %v", err)
+	}
+	if !strings.Contains(got, "under the spread") {
+		t.Errorf("a delta inside the WIDER side's own scatter must be called unreadable, got: %s", got)
+	}
+}
+
+// TestFidelityDeltaNamesACostThatClearsTheNoise is the other outcome, and the one step-201b would act
+// on: readings tight enough that the delta stands outside them.
+func TestFidelityDeltaNamesACostThatClearsTheNoise(t *testing.T) {
+	// Each side is within 2% of itself; the means are 40% apart.
+	without := []float64{12000, 12100, 11900}
+	with := []float64{7200, 7260, 7140}
+
+	got, err := fidelityDelta(without, with)
+	if err != nil {
+		t.Fatalf("three usable pairs must render a verdict: %v", err)
+	}
+	if strings.Contains(got, "under the spread") {
+		t.Errorf("a 40%% delta against a 2%% spread must be named as a cost, got: %s", got)
+	}
+	if !strings.Contains(got, "40") {
+		t.Errorf("the verdict must quantify the cost so step-207 can size against it, got: %s", got)
+	}
+
+	// A configuration that ran FASTER with the store wired, by more than its own readings scatter, is not
+	// a cost with a lost sign — it is arithmetically impossible. An added synchronous write per message
+	// cannot raise throughput, so the two sides were not measured under the same conditions and the
+	// comparison is void. That is the class sweepsAgree already refuses with an error, and it must fail
+	// the run rather than render a sentence a green test invites nobody to read.
+	_, err = fidelityDelta(with, without)
+	if err == nil {
+		t.Fatal("a palier 40% FASTER with the store wired must fail: no added write can do that, so the two " +
+			"sides drifted and neither bounds the other")
+	}
+	if !strings.Contains(err.Error(), "FASTER") {
+		t.Errorf("the error must name what is impossible about the reading, got: %v", err)
+	}
+}
+
+// TestFidelityDeltaToleratesASlowSideInsideTheNoise separates the impossible reading above from the
+// ordinary one that looks like it.
+//
+// The store side coming out marginally ahead is not a finding: it is one of the readings the host was
+// already producing, and refusing it would fail every run whose delta happens to land just the wrong
+// side of zero. Only an excess LARGER than the scatter is impossible.
+func TestFidelityDeltaToleratesASlowSideInsideTheNoise(t *testing.T) {
+	// The stored side is 1,6% ahead, inside a 14% scatter.
+	got, err := fidelityDelta([]float64{12000, 13800, 12500}, []float64{12400, 13900, 12600})
+	if err != nil {
+		t.Fatalf("a side marginally ahead inside its own scatter must render, not fail: %v", err)
+	}
+	if !strings.Contains(got, "under the spread") {
+		t.Errorf("a negative delta inside the scatter is still an unreadable delta, got: %s", got)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -42,17 +43,17 @@ const poolCeilingPartitions = 8
 //
 // Two production stages ARE left out, and the cost of each is named rather than assumed:
 //
-//   - DLRMap (the Redis correlation write, §1.11) is nil, which is what the reference run does too —
-//     so this palier is comparable to the 2 400/s it published. Production pays one Redis round-trip
-//     per acknowledged submit_sm on this path, so every figure here is an UPPER bound on production.
-//     Measuring the other side of that delta is the next step, and until it exists no number from this
-//     bench may be quoted as a production capacity.
+//   - DLRMap (the Redis correlation write, §1.11) is the caller's choice. Passed nil it is left out, which
+//     is what the reference run does too — so the palier is comparable to the 2 400/s it published, and
+//     it is an UPPER bound on production, which pays one Redis round-trip per acknowledged submit_sm on
+//     this path. Passed a store it is wired, timed, and checked: putsMatchSubmits refuses a palier that
+//     held a store and never reached it, which is what recordDLRMapping does on a non-ROK response.
 //   - Billing is nil. Billing is opt-in (M9) and invariant (c) requires a disabled deployment to make
 //     zero network calls, so a no-op settler is a faithful billing-off pod, not a shortcut.
 //
 // The breaker is NOT stubbed away. With Deps.Breaker nil the pool builds no local breaker at all: the
 // palier would be faster than production AND breakerHeld would have nothing to read.
-func measurePoolCeiling(t *testing.T, brokers []string, bed poolBed, binds, window int, hold time.Duration) float64 {
+func measurePoolCeiling(t *testing.T, brokers []string, bed poolBed, binds, window int, hold time.Duration, dlr *countingDLRMap) float64 {
 	t.Helper()
 
 	label := poolLabel(binds, window)
@@ -79,7 +80,10 @@ func measurePoolCeiling(t *testing.T, brokers []string, bed poolBed, binds, wind
 	t.Cleanup(peer.Close)
 
 	breakers := &watchingAggregator{}
-	pool := connectorpool.New(connectorpool.Deps{
+	// Assigned through a branch rather than inline: a (*countingDLRMap)(nil) stored in the Deps.DLRMap
+	// interface is a NON-nil interface holding a nil pointer, so New would keep it instead of defaulting
+	// to its no-op and the first acknowledged submit would panic inside the send path.
+	deps := connectorpool.Deps{
 		Consumer:    counted,
 		Producer:    prod,
 		ConnectorID: connectorID,
@@ -93,7 +97,11 @@ func measurePoolCeiling(t *testing.T, brokers []string, bed poolBed, binds, wind
 		BreakerGauge: metrics.NewCatalog(),
 		Metrics:      metrics.NewCatalog(),
 		Tracer:       tracer,
-	})
+	}
+	if dlr != nil {
+		deps.DLRMap = dlr
+	}
+	pool := connectorpool.New(deps)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	runErr := make(chan error, 1)
@@ -115,6 +123,7 @@ func measurePoolCeiling(t *testing.T, brokers []string, bed poolBed, binds, wind
 	start := time.Now()
 	base, baseNanos, baseBuckets := prod.snapshot()
 	baseBatches, baseRecords, baseLanes := counted.snapshot()
+	basePuts, baseDLRNanos, baseDLRBuckets := dlr.snapshot()
 	baseSubmits := peer.SubmitsByConn()
 
 	select {
@@ -132,6 +141,14 @@ func measurePoolCeiling(t *testing.T, brokers []string, bed poolBed, binds, wind
 	// after cancel() describes a group that has left.
 	last := lagOf(t, cons, topic)
 	batches, recs, lanes := counted.snapshot()
+	// The store is read before the peer here because it is read before the peer at the other end of the
+	// window too. What matters is not which comes first but that the ORDER is the same at both ends: the
+	// two deltas then cover spans offset by the same read gap, and the residue between them stays a
+	// handful of messages instead of accumulating. It does not vanish — the first run read 64 194 writes
+	// against 64 189 submits — which is why putsMatchSubmits bands it symmetrically rather than ordering it.
+	endPuts, endDLRNanos, endDLRBuckets := dlr.snapshot()
+	puts, dlrNanos := endPuts-basePuts, endDLRNanos-baseDLRNanos
+	dlrBuckets := deltaBuckets(baseDLRBuckets, endDLRBuckets)
 	submits := subtractSubmits(baseSubmits, peer.SubmitsByConn())
 	reports, worst := breakers.worst()
 
@@ -144,6 +161,15 @@ func measurePoolCeiling(t *testing.T, brokers []string, bed poolBed, binds, wind
 	if err := breakerHeld(reports, worst); err != nil {
 		t.Fatalf("%s: %v", label, err)
 	}
+	if dlr != nil {
+		var carried int64
+		for _, n := range submits {
+			carried += n
+		}
+		if err := putsMatchSubmits(int64(puts), carried); err != nil {
+			t.Fatalf("%s: %v", label, err)
+		}
+	}
 
 	rate := float64(done) / elapsed.Seconds()
 	t.Logf("pool alone: %s -> %8.0f submit_sm/s · %s · peer %.0f/s · %s · prefill %.0f rec/s",
@@ -154,12 +180,67 @@ func measurePoolCeiling(t *testing.T, brokers []string, bed poolBed, binds, wind
 		bed.prefillRate)
 	t.Logf("            %s    %s", label, brokerReport(brokerBefore, brokerAfter, brokerErr, afterErr))
 	t.Logf("            %s    %s", label,
-		produceLatency(done, nanos-baseNanos, deltaBuckets(baseBuckets, buckets), elapsed, done))
+		stageLatency(refProduceStage, refProduceExcludes, done, nanos-baseNanos, deltaBuckets(baseBuckets, buckets), elapsed, done))
+	if dlr != nil {
+		t.Logf("            %s    %s", label, stageLatency(refDLRStage, refDLRExcludes, puts, dlrNanos, dlrBuckets, elapsed, done))
+	}
 
 	if rate == 0 {
 		t.Fatalf("the pool moved nothing at %s", label)
 	}
 	return rate
+}
+
+// countingDLRMap decorates a DLR correlation store with the counter and the timer the fidelity palier
+// reads, on the pattern of countingProducer: it decorates rather than replaces, so the palier measures
+// the production store and not a stand-in for it.
+//
+// The counter is the load-bearing half. recordDLRMapping returns early on a non-ROK submit_sm_resp and
+// on a response carrying no smsc message id, so a palier can hold a real store, dial it, and never call
+// it — at which point the "with" and "without" configurations are the same configuration and their
+// delta is host noise wearing Redis's name. putsMatchSubmits is what refuses that, and it needs this
+// count.
+//
+// It counts SUCCESSES only, for countingProducer's reason: a store failing under load is a finding, not
+// a latency, and averaging failed round trips into the mean would make a broken Redis look fast.
+type countingDLRMap struct {
+	inner   connectorpool.DLRMap
+	ok      atomic.Uint64
+	nanos   atomic.Uint64
+	buckets []atomic.Uint64
+}
+
+func newCountingDLRMap(inner connectorpool.DLRMap) *countingDLRMap {
+	return &countingDLRMap{inner: inner, buckets: make([]atomic.Uint64, len(produceBounds)+1)}
+}
+
+func (m *countingDLRMap) Put(ctx context.Context, smscMsgID string, r pipeline.RoutedMT) error {
+	started := time.Now()
+	if err := m.inner.Put(ctx, smscMsgID, r); err != nil {
+		return err
+	}
+	took := time.Since(started)
+	m.ok.Add(1)
+	m.nanos.Add(uint64(took))
+	m.buckets[produceBucket(took)].Add(1)
+	return nil
+}
+
+// snapshot reads the three counters together, and answers for a nil receiver.
+//
+// The nil case is not defensiveness: measurePoolCeiling brackets its window with one block of opening
+// readings and one of closing ones, and those two blocks are read side by side when a palier looks
+// wrong. Wrapping two of the lines in a condition to serve the storeless paliers would break that
+// symmetry for a value the guard and the log already skip.
+func (m *countingDLRMap) snapshot() (count, nanos uint64, buckets []uint64) {
+	if m == nil {
+		return 0, 0, nil
+	}
+	buckets = make([]uint64, len(m.buckets))
+	for i := range m.buckets {
+		buckets[i] = m.buckets[i].Load()
+	}
+	return m.ok.Load(), m.nanos.Load(), buckets
 }
 
 // waitUntilSubmitting blocks until the pool has produced its first mt.outcome, and names WHY if it

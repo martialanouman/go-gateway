@@ -139,7 +139,7 @@ func measureRouterCeiling(t *testing.T, brokers []string, partitions, records in
 		prefillRate)
 	t.Logf("             %2d partitions    %s", partitions, brokerReport(brokerBefore, brokerAfter, brokerErr, afterErr))
 	t.Logf("             %2d partitions    %s", partitions,
-		produceLatency(done, nanos-baseNanos, deltaBuckets(baseBuckets, buckets), elapsed, done))
+		stageLatency(refProduceStage, refProduceExcludes, done, nanos-baseNanos, deltaBuckets(baseBuckets, buckets), elapsed, done))
 
 	if rate == 0 {
 		t.Fatalf("the router moved nothing at %d partitions", partitions)

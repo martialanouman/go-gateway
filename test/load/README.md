@@ -806,13 +806,124 @@ l'environnement représentatif de `step-201b`.
 - **Tous ces chiffres sont des MAJORANTS de la production.** `DLRMap` est nil, donc aucun palier ne paie
   l'écriture Redis de corrélation DLR que la production effectue à chaque `submit_sm` acquitté. Le run
   de référence faisait la même omission — en silence — ce qui rend ses 2 400/s comparables à ces lignes
-  et fait qu'aucune des deux n'est une capacité de production. Mesurer ce delta reste à faire.
+  et fait qu'aucune des deux n'est une capacité de production. **Ce majorant vaut 1,6× : mesuré le
+  27/08/2026, section suivante.**
 - `Billing` est nil : le banc mesure un déploiement facturation-off, ce qu'autorise l'invariant (c).
 - Le disjoncteur n'est **pas** bouchonné, et aucun palier ne l'a vu s'ouvrir.
 - Le produce `mt.outcome` acquitté est bien sur le chemin mesuré. La ligne de latence de produit
   l'annonce à 83 % du budget par message à 1 bind : **le coût par message est le produce, pas
-  l'aller-retour SMPP** — ce qui est cohérent avec une fenêtre SMPP sans effet visible, et reste à
-  confirmer par un chronométrage du `submit_sm` lui-même.
+  l'aller-retour SMPP** — ce qui est cohérent avec une fenêtre SMPP sans effet visible. **Confirmé le
+  27/08/2026 par décomposition** (section suivante) ; le `submit_sm` lui-même n'a pas de chronomètre, et
+  la section dit pourquoi.
+
+
+### Mesure du 27/08/2026 (step-201f PR2) — ce que coûte l'écriture DLR, et où passe vraiment la milliseconde
+
+`make load-reference RUN=TestPoolDLRMapFidelity`. Même banc que ci-dessus, même lit, une seule
+configuration — **8 binds / fenêtre 64**, le plancher de dimensionnement que PR1 avait nommé — mesurée
+six fois : trois paliers avec le vrai store Redis câblé (`dlrmap.NewRedisMap`), trois sans.
+
+Les couples sont **entrelacés et alternés** : sans/avec, avec/sans, sans/avec. Trois fenêtres sans puis
+trois avec auraient ramassé la dérive de l'hôte — PR1 a lu 12 573 puis 14 972/s sur *une même*
+configuration — et l'auraient rendue sous le nom de Redis. L'alternance interdit en plus qu'un côté soit
+systématiquement celui qui passe en second.
+
+#### Le prix de la corrélation DLR
+
+| Couple | ordre | sans le store | avec le store |
+|---:|---|---:|---:|
+| 1 | sans d'abord | 19 763/s | 12 847/s |
+| 2 | avec d'abord | 19 673/s | 12 178/s |
+| 3 | sans d'abord | 19 567/s | 12 242/s |
+| **moyenne** | | **19 668/s** | **12 422/s** |
+
+**Dispersion à l'intérieur d'un côté : 5 %. Écart entre les deux : 37 %.** L'écart est sept fois la
+dispersion, ce qui est la condition que `fidelityDelta` exige avant de laisser nommer un coût. Un run de
+fumée indépendant (fenêtres de 5 s, deux couples) avait lu 34 % : les deux se recoupent.
+
+**Second run, instrument corrigé.** La revue a trouvé un confondant : les enregistrements du banc ne
+portent pas de `validity_period`, donc `ttlForValidity` retombe sur `maxTTL` et chaque entrée vit
+**72 heures**. Rien n'expirait pendant le run, et le troisième palier « avec » mesurait un Redis d'un
+million de clés que le premier n'avait jamais vu — l'appariement existe précisément pour exclure cela.
+Le store est désormais vidé avant chaque palier « avec ». **Le chiffre n'a pas bougé : 37 % à nouveau**
+(16 918/s sans, 10 740/s avec), sur un hôte pourtant plus lent — le pair calibrait à 136 000–141 000/s
+contre 156 000–170 000 au premier run. Le confondant était réel en principe et sans effet mesurable ;
+trois runs indépendants donnent 34 %, 37 %, 37 %.
+
+Ce second run est aussi celui où la garde travaille près de sa limite : le côté « sans » y disperse de
+15 % (18 046 · 17 226 · 15 482), et l'écart de 37 % ne le dépasse plus que d'un facteur 2,5. À la
+dispersion qu'avait lue PR1 sur cet hôte — 30 % entre paliers équivalents — le verdict serait devenu
+illisible, et c'est ce que `fidelityDelta` dirait alors plutôt que de publier un coût.
+
+Les six paliers sont propres : `crossCheck` entre −0,7 % et +0,0 %, aucun disjoncteur ouvert, les huit
+binds actifs à chaque fois, `putsMatchSubmits` vérifiant que le store a bien été appelé une fois par
+`submit_sm` **compté par le pair** — c'est cette paire-là que la garde compare, et le journal ne la
+publie pas ; il montre 365 392 écritures pour 365 338 `mt.outcome` produits, même ordre de grandeur.
+**Une garde neuve, et elle est le cœur du palier** : `recordDLRMapping` saute un `submit_sm_resp` non-ROK et une réponse sans
+`smsc_msg_id`, si bien qu'un palier peut détenir un vrai store, l'ouvrir, et ne jamais l'appeler. Les
+deux côtés seraient alors la même configuration et leur écart serait du bruit publié sous le nom de
+Redis — sans que le débit, le disjoncteur ni le recoupement n'aient rien à en dire.
+
+#### Où passe la milliseconde : la décomposition, faute de chronomètre
+
+La fiche demandait de **chronométrer le `submit_sm` in situ**. Ce n'est pas ce que cette PR livre, et le
+motif n'est pas un manque de temps : **il n'y a pas de couture**. `bind.Submit` est concret, non exporté,
+et atteint depuis un unique site d'appel à l'intérieur du chemin d'envoi ; le chronométrer exigerait
+d'ajouter une interface à `connectorpool.Deps`, c'est-à-dire un changement du chemin chaud de production
+que la fiche s'interdit deux fois. La réponse vient donc d'une décomposition, et elle est bornée en
+conséquence.
+
+À 8 binds / w64 avec le store, à 12 242 `submit_sm/s` (budget 82 µs par message, 8,0 lanes par batch) :
+
+| Étage | Moyenne mesurée | Occupation (loi de Little) |
+|---|---:|---:|
+| produce `mt.outcome` (acks=all) | 347 µs | 4,2 lanes sur 8 |
+| écriture DLR Redis | 213 µs | 2,6 lanes sur 8 |
+| **reste** (décodage, `buildSubmit`, **aller-retour SMPP**, encodage) | — | **≤ 1,2 lane sur 8** |
+
+Le reste est un **majorant** : la concurrence réelle vaut au plus les 8 goroutines du fan-out, jamais
+plus, donc 8 − 6,8 borne par le haut ce que tous les autres étages consomment ensemble. Et le pair,
+calibré à 156 318–170 531/s sur ces mêmes 8 binds, place l'aller-retour SMPP autour de 49 µs par
+message, soit environ la moitié de ce reste.
+
+L'occupation de l'écriture DLR se reproduit au second run — 2,7 lanes sur 8 aux trois paliers « avec »,
+contre 2,6 ici — sur un hôte plus lent où sa moyenne monte à 243–255 µs. Ce qui se déplace, c'est la
+durée absolue ; la part, non.
+
+**Le coût par message est le produce et l'écriture Redis — pas l'aller-retour SMPP**, qui pèse au plus
+15 % et vraisemblablement la moitié de cela. C'est ce que PR1 soupçonnait à 1 bind sans pouvoir le
+confirmer, et cela explique une fenêtre SMPP restée inerte de w1 à w256 : élargir la fenêtre n'élargit
+que l'étage qui ne coûte rien.
+
+#### Ce que step-207 doit corriger de PR1
+
+PR1 concluait « 8 binds passent la cible NFR dans les trois runs ». **Cette conclusion ne survit pas au
+store.**
+
+- Lecture directe : à 8 binds avec le store, 12 178–12 847/s, au-dessus des 10 400 visés. Marge 17–23 %.
+- Mais PR1 avait lu, *sans* le store, 12 573 / 16 888 / 19 724/s sur la même configuration à trois runs
+  — 57 % d'étalement. Le côté « sans » d'aujourd'hui (19 567–19 763) est le haut de cette plage.
+  Appliquer les 37 % au bas de la plage donne ≈ 7 900/s, **sous la cible**.
+
+Autrement dit : **la marge à 8 binds est plus petite que la variation entre runs.** Ce n'est plus un
+plancher défendable. Ce que ce banc autorise à écrire : 8 binds passent *quand l'hôte est au mieux*, et
+le dimensionnement doit prendre 16 binds ou attendre l'environnement représentatif de step-201b.
+
+#### Réserves propres à cette mesure
+
+- **Les 37 % sont eux-mêmes un chiffre de co-résidence.** Le Redis du banc est un conteneur sur le même
+  portable que le pool, le broker et le pair : il se dispute leurs cœurs, et 205–213 µs de moyenne est
+  lent pour un Redis local. En production le store est sur un autre hôte — sans concurrence CPU, mais
+  avec un aller-retour réseau. **Le signe de l'écart est inconnu**, et c'est la même leçon que celle qui
+  a fait tomber les 2 400/s.
+- L'écriture DLR est **synchrone et avant le règlement** par conception (step-201c : un accusé de
+  réception ne doit pas être orphelin si la comptabilité échoue). Les 37 % sont le prix de cette
+  garantie. S'il faut le baisser — pipeliner, grouper — c'est un correctif, donc sa propre fiche et son
+  propre arbitrage de durabilité ; cette fiche produit une attribution, pas un correctif.
+- `Billing` reste nil, comme en PR1 : déploiement facturation-off, ce qu'autorise l'invariant (c).
+- La décomposition ci-dessus n'est pas un chronométrage. Un chronomètre autour du `submit_sm` dirait sa
+  durée ; la décomposition en donne un plafond. Si step-201b a besoin de la durée elle-même, la couture
+  devra être arbitrée pour ce qu'elle est : un changement du chemin chaud.
 
 ## Contenu
 
