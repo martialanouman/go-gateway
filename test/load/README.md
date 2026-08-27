@@ -841,10 +841,25 @@ systématiquement celui qui passe en second.
 dispersion, ce qui est la condition que `fidelityDelta` exige avant de laisser nommer un coût. Un run de
 fumée indépendant (fenêtres de 5 s, deux couples) avait lu 34 % : les deux se recoupent.
 
+**Second run, instrument corrigé.** La revue a trouvé un confondant : les enregistrements du banc ne
+portent pas de `validity_period`, donc `ttlForValidity` retombe sur `maxTTL` et chaque entrée vit
+**72 heures**. Rien n'expirait pendant le run, et le troisième palier « avec » mesurait un Redis d'un
+million de clés que le premier n'avait jamais vu — l'appariement existe précisément pour exclure cela.
+Le store est désormais vidé avant chaque palier « avec ». **Le chiffre n'a pas bougé : 37 % à nouveau**
+(16 918/s sans, 10 740/s avec), sur un hôte pourtant plus lent — le pair calibrait à 136 000–141 000/s
+contre 156 000–170 000 au premier run. Le confondant était réel en principe et sans effet mesurable ;
+trois runs indépendants donnent 34 %, 37 %, 37 %.
+
+Ce second run est aussi celui où la garde travaille près de sa limite : le côté « sans » y disperse de
+15 % (18 046 · 17 226 · 15 482), et l'écart de 37 % ne le dépasse plus que d'un facteur 2,5. À la
+dispersion qu'avait lue PR1 sur cet hôte — 30 % entre paliers équivalents — le verdict serait devenu
+illisible, et c'est ce que `fidelityDelta` dirait alors plutôt que de publier un coût.
+
 Les six paliers sont propres : `crossCheck` entre −0,7 % et +0,0 %, aucun disjoncteur ouvert, les huit
 binds actifs à chaque fois, `putsMatchSubmits` vérifiant que le store a bien été appelé une fois par
-`submit_sm` (365 392 écritures pour 365 338 produces, par exemple). **Une garde neuve, et elle est le
-cœur du palier** : `recordDLRMapping` saute un `submit_sm_resp` non-ROK et une réponse sans
+`submit_sm` **compté par le pair** — c'est cette paire-là que la garde compare, et le journal ne la
+publie pas ; il montre 365 392 écritures pour 365 338 `mt.outcome` produits, même ordre de grandeur.
+**Une garde neuve, et elle est le cœur du palier** : `recordDLRMapping` saute un `submit_sm_resp` non-ROK et une réponse sans
 `smsc_msg_id`, si bien qu'un palier peut détenir un vrai store, l'ouvrir, et ne jamais l'appeler. Les
 deux côtés seraient alors la même configuration et leur écart serait du bruit publié sous le nom de
 Redis — sans que le débit, le disjoncteur ni le recoupement n'aient rien à en dire.
@@ -870,6 +885,10 @@ Le reste est un **majorant** : la concurrence réelle vaut au plus les 8 gorouti
 plus, donc 8 − 6,8 borne par le haut ce que tous les autres étages consomment ensemble. Et le pair,
 calibré à 156 318–170 531/s sur ces mêmes 8 binds, place l'aller-retour SMPP autour de 49 µs par
 message, soit environ la moitié de ce reste.
+
+L'occupation de l'écriture DLR se reproduit au second run — 2,7 lanes sur 8 aux trois paliers « avec »,
+contre 2,6 ici — sur un hôte plus lent où sa moyenne monte à 243–255 µs. Ce qui se déplace, c'est la
+durée absolue ; la part, non.
 
 **Le coût par message est le produce et l'écriture Redis — pas l'aller-retour SMPP**, qui pèse au plus
 15 % et vraisemblablement la moitié de cela. C'est ce que PR1 soupçonnait à 1 bind sans pouvoir le

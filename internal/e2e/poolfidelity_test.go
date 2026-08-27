@@ -3,8 +3,12 @@
 package e2e_test
 
 import (
+	"context"
 	"testing"
 
+	"github.com/redis/go-redis/v9"
+
+	"github.com/martialanouman/go-gateway/internal/connectorpool"
 	"github.com/martialanouman/go-gateway/internal/dlrmap"
 	"github.com/martialanouman/go-gateway/internal/testutil/kafkatest"
 	"github.com/martialanouman/go-gateway/internal/testutil/redistest"
@@ -94,10 +98,10 @@ func TestPoolDLRMapFidelity(t *testing.T) {
 		// Alternate, so neither side is always the one that ran second.
 		if i%2 == 0 {
 			without = append(without, run(nil))
-			with = append(with, run(newCountingDLRMap(store)))
+			with = append(with, run(freshStore(t, rdb, store)))
 			continue
 		}
-		with = append(with, run(newCountingDLRMap(store)))
+		with = append(with, run(freshStore(t, rdb, store)))
 		without = append(without, run(nil))
 	}
 
@@ -106,4 +110,27 @@ func TestPoolDLRMapFidelity(t *testing.T) {
 		t.Fatalf("%d binds w%d, %d pairs: %v", binds, sweepAWindow, pairs, err)
 	}
 	t.Logf("dlr fidelity: %d binds w%d · %s", binds, sweepAWindow, verdict)
+}
+
+// freshStore empties the DLR store, then wraps it in the counter one palier reads.
+//
+// Emptying it is not tidiness, it is the pairing. The bench's routed records carry no validity_period,
+// so ttlForValidity falls back to maxTTL and every entry lives 72 HOURS: a palier writes one key per
+// acknowledged submit_sm — some 370 000 over a thirty second window — and nothing expires inside a run.
+// Without this, the third stored palier measures a Redis holding a million keys the first one never saw,
+// which is exactly the thing pairing exists to rule out: an identical fixture under both members.
+//
+// It costs nothing the measurement can see. The flush runs before the pool is built, so it lands outside
+// the window and outside the warmup, and its own duration is never divided by anything.
+//
+// It empties the WHOLE database, and redistest.Client hands out a container shared across the package.
+// That is safe here because Go runs a package's tests sequentially unless they ask otherwise, and this
+// one lives behind the loadref tag where nothing else runs alongside it. A test in this package that
+// took t.Parallel() and a Redis key would break on it, loudly.
+func freshStore(t *testing.T, rdb *redis.Client, store connectorpool.DLRMap) *countingDLRMap {
+	t.Helper()
+	if err := rdb.FlushDB(context.Background()).Err(); err != nil {
+		t.Fatalf("emptying the DLR store between paliers: %v", err)
+	}
+	return newCountingDLRMap(store)
 }

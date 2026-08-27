@@ -163,11 +163,18 @@ func putsMatchSubmits(puts, submits int64) error {
 // windows without the store, then three with, and subtracted the means would attribute that drift to
 // Redis with a straight face, and the resulting number would go into step-207's sizing.
 //
-// So the pairs must be INTERLEAVED by the caller — with, without, with, without — and read here as
-// pairs: the spread within a side is this host's own variance over the same span the delta is measured
-// across, which is the only local estimate of the noise available. A delta under it is reported as
-// unreadable rather than as a cost. Two pairs is the floor; one bounds no spread at all, so any delta
-// would clear a noise estimate of zero.
+// So the pairs must be INTERLEAVED by the caller, and the caller must ALTERNATE which member runs first:
+// interleaving puts the two members minutes apart instead of half an hour, and alternating stops a host
+// that drifts monotonically from penalising whichever side always ran second — a systematic error, which
+// is the kind an average does not remove. The spread within a side is then this host's own variance over
+// the same span the delta is measured across, and the only local estimate of the noise available.
+//
+// A delta under that spread is reported as unreadable rather than as a cost. Two pairs is the floor; one
+// bounds no spread at all, so any delta would clear a noise estimate of zero.
+//
+// It returns an ERROR, not a verdict, when the stored side comes out ahead by more than the scatter: an
+// added synchronous write cannot raise throughput, so that reading says the two sides were not measured
+// under the same conditions, and a caller left green over it would publish nothing and notice nothing.
 func fidelityDelta(without, with []float64) (string, error) {
 	if len(without) != len(with) {
 		return "", fmt.Errorf("%d readings without the store against %d with: the pairing is what defends "+
@@ -196,8 +203,14 @@ func fidelityDelta(without, with []float64) (string, error) {
 		return fmt.Sprintf("%s · the %.0f%% delta is under the spread of the readings it is drawn from: this "+
 			"bench cannot put a figure on the DLR write", out, 100*math.Abs(cost)), nil
 	case cost < 0:
-		return fmt.Sprintf("%s · the palier ran %.0f%% FASTER with the store wired, which no added write can "+
-			"do: the two sides drifted apart and neither bounds the other", out, -100*cost), nil
+		// An error, not a verdict. A synchronous write added to every message cannot RAISE throughput, so a
+		// reading that says it did was not taken under one set of conditions — and the run it belongs to
+		// bounds nothing. Rendering it as a sentence would leave the caller green over an unusable
+		// measurement, which is the one thing this file exists to refuse. sweepsAgree treats the same class
+		// the same way.
+		return "", fmt.Errorf("%s · the palier ran %.0f%% FASTER with the store wired, past its own %.0f%% "+
+			"scatter: no added write can do that, so the two sides were not measured under the same "+
+			"conditions and neither bounds the other — re-run the pairs", out, -100*cost, 100*noise)
 	default:
 		return fmt.Sprintf("%s · the store costs %.0f%% of the throughput", out, 100*cost), nil
 	}
@@ -626,7 +639,8 @@ func TestStageLatencyNamesWhatItExcludes(t *testing.T) {
 	buckets[0] = 1000
 	got := stageLatency(refDLRStage, refDLRExcludes, 1000, uint64(time.Second), buckets, 10*time.Second, 1000)
 	if !strings.Contains(got, "NOT counted") {
-		t.Errorf("the figure must say what it leaves out (decode, pipeline, encode), got: %s", got)
+		t.Errorf("the figure must say what the timer leaves out (here: the submit_sm round trip and the "+
+			"mt.outcome produce), got: %s", got)
 	}
 }
 
@@ -1051,13 +1065,34 @@ func TestFidelityDeltaNamesACostThatClearsTheNoise(t *testing.T) {
 		t.Errorf("the verdict must quantify the cost so step-207 can size against it, got: %s", got)
 	}
 
-	// The direction must survive the reading: a configuration that ran FASTER with the store wired is
-	// not a 40% cost with a lost sign, it is a reading that says the store costs nothing measurable.
-	got, err = fidelityDelta(with, without)
-	if err != nil {
-		t.Fatalf("the swapped pair must still render: %v", err)
+	// A configuration that ran FASTER with the store wired, by more than its own readings scatter, is not
+	// a cost with a lost sign — it is arithmetically impossible. An added synchronous write per message
+	// cannot raise throughput, so the two sides were not measured under the same conditions and the
+	// comparison is void. That is the class sweepsAgree already refuses with an error, and it must fail
+	// the run rather than render a sentence a green test invites nobody to read.
+	_, err = fidelityDelta(with, without)
+	if err == nil {
+		t.Fatal("a palier 40% FASTER with the store wired must fail: no added write can do that, so the two " +
+			"sides drifted and neither bounds the other")
 	}
-	if strings.Contains(got, "costs") {
-		t.Errorf("a store that made the palier faster must not be rendered as a cost, got: %s", got)
+	if !strings.Contains(err.Error(), "FASTER") {
+		t.Errorf("the error must name what is impossible about the reading, got: %v", err)
+	}
+}
+
+// TestFidelityDeltaToleratesASlowSideInsideTheNoise separates the impossible reading above from the
+// ordinary one that looks like it.
+//
+// The store side coming out marginally ahead is not a finding: it is one of the readings the host was
+// already producing, and refusing it would fail every run whose delta happens to land just the wrong
+// side of zero. Only an excess LARGER than the scatter is impossible.
+func TestFidelityDeltaToleratesASlowSideInsideTheNoise(t *testing.T) {
+	// The stored side is 1,6% ahead, inside a 14% scatter.
+	got, err := fidelityDelta([]float64{12000, 13800, 12500}, []float64{12400, 13900, 12600})
+	if err != nil {
+		t.Fatalf("a side marginally ahead inside its own scatter must render, not fail: %v", err)
+	}
+	if !strings.Contains(got, "under the spread") {
+		t.Errorf("a negative delta inside the scatter is still an unreadable delta, got: %s", got)
 	}
 }
