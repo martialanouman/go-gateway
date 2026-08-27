@@ -1,4 +1,4 @@
-# step-211 — `billing.events` durable : de l'affichage à la détection
+# step-400 — `billing.events` durable : de l'affichage à la détection
 
 > **Jalon :** M11, dette découverte après coup (§15 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
 > **Dépend de :** step-143, step-184 · **Bloque :** l'alerting métier du tableau de bord (dépôt séparé)

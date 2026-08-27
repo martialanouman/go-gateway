@@ -1,7 +1,7 @@
-# step-207 — Manifests deploy/ Kubernetes (Deployments, Services, HPA, PDB, probes)
+# step-270 — Manifests deploy/ Kubernetes (Deployments, Services, HPA, PDB, probes)
 
 > **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
-> **Dépend de :** step-203 · **Bloque :** step-208
+> **Dépend de :** step-260 · **Bloque :** step-410
 
 ## But
 Fournir les manifests Kubernetes sous `deploy/` pour tous les services : Deployments, Services, HPA
@@ -11,7 +11,7 @@ Fournir les manifests Kubernetes sous `deploy/` pour tous les services : Deploym
 - `deploy/k8s/` : un Deployment + Service par service `cmd/` (rest-api, admin-api, smpp-server,
   connector-pool, router, mo-dlr-router, session-manager, billing, config-sync).
 - HPA : CPU **et** lag de consommation Kafka pour les consumers (router, connector-pool, mo-dlr).
-- PDB (drain gracieux, binds préservés — cf. step-203) ; probes `/healthz` (liveness) + `/readyz`
+- PDB (drain gracieux, binds préservés — cf. step-260) ; probes `/healthz` (liveness) + `/readyz`
   (readiness) sur le port ops 9090.
 
 ## Points d'implémentation clés
@@ -25,7 +25,7 @@ Fournir les manifests Kubernetes sous `deploy/` pour tous les services : Deploym
   le fan-out achète encore du débit à 16, et de moins en moins. Deux conséquences pour les manifests :
   ne pas sous-provisionner les partitions, et **ne pas extrapoler un dimensionnement de ces chiffres** —
   ils sont un majorant mesuré sur un portable, en un seul processus, pipeline partiellement bouché.
-  Le dimensionnement chiffré appartient à step-201b, sur environnement représentatif. Courbe et
+  Le dimensionnement chiffré appartient à step-280, sur environnement représentatif. Courbe et
   réserves : `test/load/README.md`, mesure du 08/08/2026 (step-201e).
 - **Ports** (§1.4) : port métier + port ops 9090 par service ; le port ops **jamais exposé publiquement**.
 - `/healthz` = liveness (échec → restart), `/readyz` = readiness (échec → retrait LB, pas de restart) —
@@ -36,8 +36,8 @@ Fournir les manifests Kubernetes sous `deploy/` pour tous les services : Deploym
   `TestClickHouseIsNotAReadinessDependency` sert un vrai `/readyz` et exige exactement
   `{redis, postgres}` — la probe `readinessProbe` de ce manifeste pointe sur cet endpoint et n'a donc
   rien à redéclarer, mais tout à ne pas contredire.
-- PDB cohérent avec le drain SMPP (step-203) : ne pas évincer tous les binds d'un connecteur d'un coup.
-- Secrets/certs (step-205) et config OIDC (step-206) injectés via Secrets/ConfigMaps, jamais en clair.
+- PDB cohérent avec le drain SMPP (step-260) : ne pas évincer tous les binds d'un connecteur d'un coup.
+- Secrets/certs (step-300) et config OIDC (step-310) injectés via Secrets/ConfigMaps, jamais en clair.
 - Ce sont des artefacts de déploiement : pas de code Go, mais versionnés et revus.
 - **Arbitrage reporté depuis step-181 — échantillonnage des traces.** L'échantillonnage 100 % sur erreur est
   aujourd'hui **in-process** (`observability.ErrorBiasedSampler` + `ErrorBiased`). Il tient la promesse de
@@ -58,4 +58,4 @@ Fournir les manifests Kubernetes sous `deploy/` pour tous les services : Deploym
 - [ ] port ops non exposé publiquement
 
 ## Hors périmètre
-Checklist de mise en production → step-208. Dashboards Grafana/règles Alertmanager (infra).
+Checklist de mise en production → step-410. Dashboards Grafana/règles Alertmanager (infra).

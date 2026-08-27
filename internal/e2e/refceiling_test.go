@@ -161,7 +161,7 @@ func putsMatchSubmits(puts, submits int64) error {
 // drawn from. step-201f PR1 measured ONE configuration twice inside a single run and read 12 573/s then
 // 14 972/s — 19% apart on a lever the same bench had shown inert. A fidelity palier that ran three
 // windows without the store, then three with, and subtracted the means would attribute that drift to
-// Redis with a straight face, and the resulting number would go into step-207's sizing.
+// Redis with a straight face, and the resulting number would go into step-270's sizing.
 //
 // So the pairs must be INTERLEAVED by the caller, and the caller must ALTERNATE which member runs first:
 // interleaving puts the two members minutes apart instead of half an hour, and alternating stops a host
@@ -359,7 +359,7 @@ func laneShape(batches, records, lanesSum uint64, partitions int) string {
 // The range is chosen to bracket the answer rather than to confirm it. step-201d put the blocked time
 // near 819 µs BY SUBTRACTION; bounds that started there could only agree with it. From 16 µs the
 // measurement can say "the produce is cheap and the cost is elsewhere", and up to 2 s it can say "the
-// broker stalls", which are the two findings that would change what step-207 provisions.
+// broker stalls", which are the two findings that would change what step-270 provisions.
 var produceBounds = func() []time.Duration {
 	out := make([]time.Duration, 0, 18)
 	for d := 16 * time.Microsecond; d <= 2*time.Second; d *= 2 {
@@ -1047,7 +1047,7 @@ func TestFidelityDeltaCallsADeltaUnderTheNoiseUnreadable(t *testing.T) {
 	}
 }
 
-// TestFidelityDeltaNamesACostThatClearsTheNoise is the other outcome, and the one step-201b would act
+// TestFidelityDeltaNamesACostThatClearsTheNoise is the other outcome, and the one step-280 would act
 // on: readings tight enough that the delta stands outside them.
 func TestFidelityDeltaNamesACostThatClearsTheNoise(t *testing.T) {
 	// Each side is within 2% of itself; the means are 40% apart.
@@ -1062,7 +1062,7 @@ func TestFidelityDeltaNamesACostThatClearsTheNoise(t *testing.T) {
 		t.Errorf("a 40%% delta against a 2%% spread must be named as a cost, got: %s", got)
 	}
 	if !strings.Contains(got, "40") {
-		t.Errorf("the verdict must quantify the cost so step-207 can size against it, got: %s", got)
+		t.Errorf("the verdict must quantify the cost so step-270 can size against it, got: %s", got)
 	}
 
 	// A configuration that ran FASTER with the store wired, by more than its own readings scatter, is not

@@ -33,11 +33,11 @@ const envPrefill = "REF_PREFILL"
 //
 //	the curve lands on the PR2 curve, 8 lanes  -> co-residency was not the subject. The ceiling belongs
 //	near 4 700/s                                  to the router or to the broker, 4 702/s keeps its
-//	                                              meaning, and step-207 provisions on it.
+//	                                              meaning, and step-270 provisions on it.
 //	the curve sits FRANKLY above it            -> the PR2 ceiling WAS contention. 4 702/s is a property
 //	                                              of one laptop hosting nine components and three
 //	                                              containers, not of the router, and the README figure
-//	                                              must be annotated rather than carried into step-201b.
+//	                                              must be annotated rather than carried into step-280.
 //	1 lane alone already beats the full-stack  -> nothing measured in PR2 was about the router at all,
 //	8-lane figure                                 and the lane sweep of step-201d D11 priced a
 //	                                              contention rather than a fan-out.
@@ -55,7 +55,7 @@ const envPrefill = "REF_PREFILL"
 // PR1 measured 5 842 msg/s at one lane and 27 856 at sixteen — but that is 1 741/s PER LANE, a 70%
 // collapse. The fan-out still buys throughput; it buys less and less of it. Since a message's cost has
 // to be paid somewhere, the produce histogram below says whether it is paid in the synchronous acks=all
-// produce or outside it. The answer is what step-207 provisions on.
+// produce or outside it. The answer is what step-270 provisions on.
 //
 //	the mean produce climbs with the lane count,  -> the cost is IN the produce: the broker serialises
 //	and its share of the budget grows               what the lanes parallelise, and more partitions per

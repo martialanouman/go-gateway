@@ -1,4 +1,4 @@
-# step-204 — Sécurité : gosec, govulncheck, secrets, piste d'audit
+# step-290 — Sécurité : gosec, govulncheck, secrets, piste d'audit
 
 > **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
 > **Dépend de :** — · **Bloque :** —
@@ -33,4 +33,4 @@ piste d'audit consolidée des actions sensibles.
 - [ ] gosec intégré ; govulncheck en gate ; audit sans secret/corps
 
 ## Hors périmètre
-TLS/mTLS transport → step-205. Auth opérateur OIDC → step-206.
+TLS/mTLS transport → step-300. Auth opérateur OIDC → step-310.

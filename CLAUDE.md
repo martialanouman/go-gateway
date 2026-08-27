@@ -60,6 +60,10 @@ définies **côté consommateur**. Détail : `convention-style-go.md` §2.
   v4→v5 et huma v1→v2 ont cassé, et qu'un usage périmé compile parfois.
 - **Fiches de travail** : une step vit dans `tasks-todo/step-NNN.md` et porte son design sous
   `## Design arrêté`. Elle passe en `tasks-done/` par un `git mv`, dernier commit de sa PR.
+  **Le numéro est l'ordre d'exécution**, pas un identifiant : une fiche neuve prend un multiple de dix
+  libre *à sa place dans l'ordre*, jamais le suivant disponible. Une step ne doit dépendre que de
+  numéros plus petits. Rien ne le vérifie — les en-têtes sont de la prose, et une garde qui les
+  regexerait passerait au vert le jour où l'une d'elles se reformule.
 
 ## Les 4 invariants (tests bloquants, verts à vie)
 

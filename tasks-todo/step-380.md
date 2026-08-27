@@ -1,7 +1,7 @@
-# step-219 — Métriques agrégées en lecture : le flux pousse, rien ne se lit
+# step-380 — Métriques agrégées en lecture : le flux pousse, rien ne se lit
 
 > **Jalon :** Surfaces Admin déclarées au contrat, jamais construites (`docs/specification-technique-tableau-de-bord.md`) · **Statut :** À FAIRE
-> **Dépend de :** step-213 (triage), step-214 (la ventilation par groupe) · **Bloque :** —
+> **Dépend de :** step-320 (triage), step-330 (la ventilation par groupe) · **Bloque :** —
 
 ## But
 
@@ -56,7 +56,7 @@ lecture initiale, le flux ne suffit pas : il donne le mouvement, pas l'état.
 - [ ] `make check` vert (lint · `test -race` · govulncheck · contrats)
 - [ ] les 2 opérations servies ; agrégations résolues sur `argMax(version)` ; fenêtre et lignes bornées
 - [ ] définitions identiques à celles du flux temps réel
-- [ ] `api/collections/admin-api.yaml` synchronisée ; lignes retirées de `deferred` (step-213)
+- [ ] `api/collections/admin-api.yaml` synchronisée ; lignes retirées de `deferred` (step-320)
 
 ## Hors périmètre
 

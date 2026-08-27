@@ -1,7 +1,7 @@
-# step-206 — Auth opérateur réelle (OIDC/mTLS) remplaçant le stub M1
+# step-310 — Auth opérateur réelle (OIDC/mTLS) remplaçant le stub M1
 
 > **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
-> **Dépend de :** step-205 · **Bloque :** —
+> **Dépend de :** step-300 · **Bloque :** —
 
 ## But
 Remplacer le vérificateur de jetons statiques de M1 (`internal/auth/static.go`) par une **authentification
@@ -20,7 +20,7 @@ existants.
 - **`ctx7`** avant d'ajouter une lib OIDC/JWKS (validation de signature, rotation de clés) — ne pas rouler
   sa propre validation JWT.
 - Scopes opérateur inchangés (mêmes `Scope`) ; mapping depuis les claims du fournisseur d'identité.
-- Comparaisons/erreurs sans fuite ; adossé au mTLS de step-205.
+- Comparaisons/erreurs sans fuite ; adossé au mTLS de step-300.
 
 ## Tests (écrits dans la même PR)
 - Jeton OIDC valide → `Principal` + scopes ; jeton invalide/expiré → refusé.
@@ -32,4 +32,4 @@ existants.
 - [ ] auth opérateur réelle active ; stub M1 retiré ; validation OIDC via lib figée par `ctx7`
 
 ## Hors périmètre
-Manifests k8s → step-207. Checklist prod → step-208.
+Manifests k8s → step-270. Checklist prod → step-410.

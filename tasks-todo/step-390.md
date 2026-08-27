@@ -1,7 +1,7 @@
-# step-220 — Réglages de compte créables mais non modifiables, et trois opérations orphelines
+# step-390 — Réglages de compte créables mais non modifiables, et trois opérations orphelines
 
 > **Jalon :** Surfaces Admin déclarées au contrat, jamais construites (§6.19, §6.22 `docs/specification-technique-passerelle-sms.md`) · **Statut :** À FAIRE
-> **Dépend de :** step-213 (triage) · **Bloque :** —
+> **Dépend de :** step-320 (triage) · **Bloque :** —
 
 ## But
 
@@ -73,7 +73,7 @@ défaut fonctionnel réel : **un compte créé avec la mauvaise politique ne peu
 - [ ] `make check` vert (lint · `test -race` · govulncheck · contrats)
 - [ ] les changements de politique atteignent les sessions vivantes, prouvé par un test de bout en bout
 - [ ] le sort de `list-customer-accounts` tranché et écrit ; bump majeur si retrait du contrat
-- [ ] `api/collections/admin-api.yaml` synchronisée ; les 5 lignes retirées de `deferred` (step-213)
+- [ ] `api/collections/admin-api.yaml` synchronisée ; les 5 lignes retirées de `deferred` (step-320)
 
 ## Hors périmètre
 

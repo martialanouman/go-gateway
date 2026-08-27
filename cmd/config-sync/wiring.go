@@ -17,8 +17,8 @@ import (
 // watcher subscribes inside its own Run.
 //
 // Every step that can fail returns an error rather than ending the process, so a boot failure is a value
-// the caller (or a test) can inspect. The graph is small; the point of extracting it is that step-205
-// (Redis TLS) and step-207 (probes) will add to it, and they must have something a test can hold.
+// the caller (or a test) can inspect. The graph is small; the point of extracting it is that step-300
+// (Redis TLS) and step-270 (probes) will add to it, and they must have something a test can hold.
 type configSyncApp struct {
 	ops   *observability.OpsServer
 	relay *config.Watcher

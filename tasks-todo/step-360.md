@@ -1,7 +1,7 @@
-# step-217 — Sessions SMPP : le flux temps réel existe, la lecture REST non
+# step-360 — Sessions SMPP : le flux temps réel existe, la lecture REST non
 
 > **Jalon :** Surfaces Admin déclarées au contrat, jamais construites (§6.18 `docs/specification-technique-passerelle-sms.md`) · **Statut :** À FAIRE
-> **Dépend de :** step-213 (triage) · **Bloque :** —
+> **Dépend de :** step-320 (triage) · **Bloque :** —
 
 ## But
 
@@ -53,7 +53,7 @@ refuser un bind (invariant d).
 
 - [ ] `make check` vert (lint · `test -race` · govulncheck · contrats)
 - [ ] les 3 opérations servies ; la déconnexion vérifiée côté pair, avec motif
-- [ ] `api/collections/admin-api.yaml` synchronisée ; lignes retirées de `deferred` (step-213)
+- [ ] `api/collections/admin-api.yaml` synchronisée ; lignes retirées de `deferred` (step-320)
 
 ## Hors périmètre
 

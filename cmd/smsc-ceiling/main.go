@@ -10,7 +10,7 @@
 //
 // The SMPP address and the metrics URL are inputs. That keeps testcontainers out of a measurement
 // binary, and it is what lets the same command point at a remote simulator for the full-scale campaign
-// (step-201b). Start the peer yourself — the config below is the HealthyConfig of
+// (step-280). Start the peer yourself — the config below is the HealthyConfig of
 // internal/testutil/smscsim, the profile the reference run will use:
 //
 // The bind password below is a throwaway for a local simulator, and /tmp/smsc-ceiling.yml is

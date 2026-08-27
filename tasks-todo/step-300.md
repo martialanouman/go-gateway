@@ -1,7 +1,7 @@
-# step-205 — TLS / SMPP-TLS / mTLS sur les transports
+# step-300 — TLS / SMPP-TLS / mTLS sur les transports
 
 > **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
-> **Dépend de :** — (step-193c livrée) · **Bloque :** step-206
+> **Dépend de :** — (step-193c livrée) · **Bloque :** step-310
 
 ## But
 Chiffrer et authentifier les transports : TLS sur les APIs HTTP, SMPP-TLS sur les binds, mTLS entre
@@ -34,4 +34,4 @@ services internes (dont l'Admin API et le gRPC billing).
 - [ ] TLS/SMPP-TLS/mTLS activables par config ; aucun secret en dur
 
 ## Hors périmètre
-Auth opérateur réelle (OIDC) → step-206. Manifests k8s → step-207.
+Auth opérateur réelle (OIDC) → step-310. Manifests k8s → step-270.

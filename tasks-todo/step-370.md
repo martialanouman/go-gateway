@@ -1,7 +1,7 @@
-# step-218 — Politiques de stockage de contenu (§6.23) : la plateforme n'a pas de défaut configurable
+# step-370 — Politiques de stockage de contenu (§6.23) : la plateforme n'a pas de défaut configurable
 
 > **Jalon :** Surfaces Admin déclarées au contrat, jamais construites (§6.23 `docs/specification-technique-passerelle-sms.md`) · **Statut :** À FAIRE
-> **Dépend de :** step-213 (triage) · **Bloque :** —
+> **Dépend de :** step-320 (triage) · **Bloque :** —
 
 ## But
 
@@ -65,7 +65,7 @@ support de cette valeur.
 - [ ] les 4 opérations servies ; le défaut plateforme = `off`, sans changement de comportement observable
 - [ ] fenêtre de propagation câblée ou documentée ; invariant (a) vert sous les trois modes
 - [ ] `db/schema_passerelle_sms.sql` **et** la migration `golang-migrate` si une table est ajoutée
-- [ ] `api/collections/admin-api.yaml` synchronisée ; lignes retirées de `deferred` (step-213)
+- [ ] `api/collections/admin-api.yaml` synchronisée ; lignes retirées de `deferred` (step-320)
 
 ## Hors périmètre
 

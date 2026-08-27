@@ -56,7 +56,7 @@ func registerStreams(api huma.API, hub StreamHub, quit Quit, logger *slog.Logger
 		Description: "Upgrade to a WebSocket. Emits one metricstream SessionEvent per frame (`{v, feed, account_id, system_id, state, sessions}`). `101 Switching Protocols` on upgrade.",
 	}, h.serve(realtime.StreamSessions))
 
-	// The description's "no configured threshold yet" is tracked by step-211, which also settles the larger
+	// The description's "no configured threshold yet" is tracked by step-400, which also settles the larger
 	// point: this feed serves display, and detection needs a durable source the BFF can replay.
 	registerUpgrade(api, huma.Operation{
 		OperationID: "stream-billing-alerts",

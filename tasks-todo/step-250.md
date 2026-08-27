@@ -1,4 +1,4 @@
-# step-202 — Chaos : perte Redis (chaque politique de panne) + flapping connecteur
+# step-250 — Chaos : perte Redis (chaque politique de panne) + flapping connecteur
 
 > **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
 > **Dépend de :** step-200 · **Bloque :** —
@@ -31,4 +31,4 @@ Redis (pour **chaque** politique) et sous connecteur instable (flapping), **sans
 - [ ] chaque politique de panne Redis vérifiée ; zéro perte de message
 
 ## Hors périmètre
-Drain de pods/PDB + failover Postgres → step-203. Sécurité → step-204+.
+Drain de pods/PDB + failover Postgres → step-260. Sécurité → step-290+.
