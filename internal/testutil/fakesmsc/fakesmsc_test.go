@@ -1,8 +1,8 @@
 package fakesmsc_test
 
 import (
+	"maps"
 	"net"
-	"slices"
 	"testing"
 	"time"
 
@@ -185,8 +185,11 @@ func TestSubmitsByConnCountsEachBindSeparately(t *testing.T) {
 	second.send(&smpp.SubmitSM{SMFields: smpp.SMFields{DestinationAddr: "22507000001"}})
 	second.read()
 
+	// The ids are handed out in dial order from 1, so the map names WHICH bind carried what — where a
+	// slice only said "the first one". A bench subtracts two of these readings, and the id is what tells
+	// it whether the second reading describes the same binds as the first.
 	counts := s.SubmitsByConn()
-	if want := []int64{3, 1}; !slices.Equal(counts, want) {
+	if want := map[int]int64{1: 3, 2: 1}; !maps.Equal(counts, want) {
 		t.Fatalf("submits by conn: got %v want %v", counts, want)
 	}
 }
@@ -205,7 +208,7 @@ func TestSubmitsByConnCountsARejectedSubmit(t *testing.T) {
 	c.send(&smpp.SubmitSM{SMFields: smpp.SMFields{DestinationAddr: "22507000000"}})
 	c.read()
 
-	if counts := s.SubmitsByConn(); !slices.Equal(counts, []int64{1}) {
-		t.Errorf("a throttled submit still rode the bind: got %v want [1]", counts)
+	if counts := s.SubmitsByConn(); !maps.Equal(counts, map[int]int64{1: 1}) {
+		t.Errorf("a throttled submit still rode the bind: got %v want map[1:1]", counts)
 	}
 }

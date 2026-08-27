@@ -1,6 +1,6 @@
 # step-230 — Deux gardes du banc `loadref` ne refusent pas ce qu'elles nomment
 
-> **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
+> **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** LIVRÉE
 > **Dépend de :** step-201f (livrée) · **Bloque :** step-280 — la campagne publie des chiffres, et une
 > garde qui avertit au lieu de refuser est précisément la façon dont un mauvais chiffre se publie
 
@@ -86,7 +86,19 @@ de production**, même contrainte qu'en step-201e et step-201f.
 - `subtractSubmits` : une carte dont les identifiants ont changé doit produire une erreur nommant la
   reconnexion, pas une soustraction. Une carte identique doit produire les mêmes deltas qu'aujourd'hui.
 - Mutation obligatoire, aucune ne cassant la compilation : rendre `sourcesAgree` tolérant à 500 % ;
-  faire glisser les identifiants d'un cran dans `subtractSubmits` et vérifier que `shardBalance` crie.
+  retirer le refus de `subtractSubmits` pour le faire retomber sur un appariement positionnel ; faire
+  nommer la position au lieu de l'identifiant par `shardBalance`.
+
+> **Correction du 27/08.** Cette ligne demandait à l'origine de « faire glisser les identifiants d'un cran
+> dans `subtractSubmits` et vérifier que `shardBalance` crie ». C'était le monde d'avant : une fois le
+> refus en place, un jeu d'identifiants décalé fait retourner une **erreur** à `subtractSubmits`, et
+> `shardBalance` ne tourne jamais. La mutation ci-dessus est celle qui mord sur le code livré.
+>
+> **Une mutation a survécu au premier passage**, et c'est celle qui comptait : diviser par le littéral
+> `10` au lieu de `window.Seconds()` dans `lagRate`. La fixture n'utilisait qu'une fenêtre de dix
+> secondes, donc le test ne pouvait pas voir la différence. La table exerce désormais **trois** fenêtres
+> — 5 s, 10 s, 20 s — dont un cas où les mêmes lectures sur une fenêtre plus longue doivent produire un
+> verdict opposé.
 - **Validation par run**, et elle n'est pas optionnelle : `TestRouterConsumeCeiling`,
   `TestPoolSubmitCeiling` et `TestPoolDLRMapFidelity` doivent passer avec les gardes durcies. Si un
   palier tombe, c'est une découverte, pas une régression — mais il faut alors décider entre allonger la
@@ -94,12 +106,30 @@ de production**, même contrainte qu'en step-201e et step-201f.
 
 ## Definition of Done
 
-- [ ] `make check` vert (lint · `test -race` · govulncheck · contrats)
-- [ ] aucune garde de palier ne rend un avertissement là où ses sœurs refusent
-- [ ] une reconnexion de bind en cours de fenêtre fait tomber le palier au lieu de le fausser
-- [ ] les trois bancs `loadref` ont été relancés, et tout palier nouvellement refusé est consigné dans
+- [x] `make check` vert (lint · `test -race` · govulncheck · contrats)
+- [x] aucune garde de palier ne rend un avertissement là où ses sœurs refusent
+- [x] une reconnexion de bind en cours de fenêtre fait tomber le palier au lieu de le fausser
+- [x] les trois bancs `loadref` ont été relancés, et tout palier nouvellement refusé est consigné dans
       `test/load/README.md` en lignes ajoutées
-- [ ] aucun changement du chemin chaud de production
+- [x] aucun changement du chemin chaud de production
+
+## Ce que le durcissement a trouvé
+
+**Un palier est tombé, et ce n'était pas un accident de seuil.** Le banc du routeur tournait sur les
+défauts partagés — fenêtre 10 s, file 150 000 — quand le banc du pool s'était donné 30 s et 1 500 000 en
+step-201f, avec un godoc qui expliquait pourquoi. Personne n'avait appliqué la leçon au routeur : rien ne
+l'y obligeait tant que `crossCheck` se contentait d'imprimer.
+
+À 1 partition, la fenêtre courte lisait **693 msg/s côté producteur contre 566 côté backlog, 18,3 %
+d'écart**. La même configuration à 30 s lit **4 418 contre 4 410 — 0,2 %**. Le chiffre court n'était pas
+six fois trop petit : il mesurait la jointure du groupe et les premiers lots, pas le routeur.
+
+Allonger la fenêtre sans approfondir la file échange un refus contre l'autre — `backlogHeld` a refusé la
+tentative intermédiaire. Le banc a donc reçu ses propres `routerCeilingHold` et `routerCeilingPrefill`,
+`REF_CAL_HOLD` et `REF_PREFILL` continuant de les surcharger. Consigné en lignes **ajoutées** à
+`test/load/README.md`.
+
+Après durcissement, les trois bancs passent : écarts de −1,0 % à +0,0 % sur les vingt paliers.
 
 ## Hors périmètre
 

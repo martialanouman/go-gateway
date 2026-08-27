@@ -2,7 +2,9 @@ package e2e_test
 
 import (
 	"fmt"
+	"maps"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -23,28 +25,76 @@ const minPrefillShare = 0.5
 // flat, and the point is to catch the bind that idles, not to police the hash.
 const minShardShare = 0.5
 
-// crossCheck renders the same throughput derived from the backlog instead of the producer, because two
-// independent readings that agree are a measurement and one reading is an assertion.
+// maxSourceGap is how far the producer and the backlog may disagree before the palier stops being a
+// measurement. It is tighter than maxSweepGap on purpose: this compares two counters over ONE window,
+// where that one compares two windows minutes apart and carries the host's variance on top.
+const maxSourceGap = 0.05
+
+// lagRate is the throughput the backlog says, as opposed to the one the producer claims.
 //
 // The topic is static for the window — nothing produces to it while the consumer drains it — so the
 // backlog consumed and the records published must match. They are counted at different layers (the
 // consumer's committed offsets against the producer's acknowledgements), so a wide gap means one of the
 // two is not counting what its name says.
-func crossCheck(rate float64, first, last map[int32]int64, window time.Duration) string {
+//
+// It is a function of its own so that crossCheck and sourcesAgree cannot compute it differently. The
+// renderer prints a percentage and the guard refuses one; two derivations of a single quantity drift,
+// and the number printed stops being the number judged.
+//
+// The second return is false when there is nothing to check against — no reading, no window, or a
+// backlog that stood still. That is not agreement, and each caller says what it makes of it.
+func lagRate(first, last map[int32]int64, window time.Duration) (float64, bool) {
 	var drained int64
 	for p, n := range first {
 		drained += n - last[p]
 	}
 	if window <= 0 || drained <= 0 {
+		return 0, false
+	}
+	return float64(drained) / window.Seconds(), true
+}
+
+// crossCheck renders the second reading beside the first, because two independent readings that agree
+// are a measurement and one reading is an assertion.
+//
+// It RENDERS and no longer judges: the verdict moved to sourcesAgree in step-230, because a string
+// saying "this palier is not quotable" was being quoted anyway — the palier went on into sweepsAgree and
+// fidelityDelta all the same. The threshold left with the verdict, so there is no longer a copy of it
+// here to fall out of step with the one that refuses.
+func crossCheck(rate float64, first, last map[int32]int64, window time.Duration) string {
+	byLag, ok := lagRate(first, last, window)
+	if !ok {
 		return "no backlog delta to cross-check against"
 	}
-	byLag := float64(drained) / window.Seconds()
-	gap := 100 * (byLag - rate) / rate
-	out := fmt.Sprintf("backlog says %.0f msg/s (%+.1f%%)", byLag, gap)
-	if gap > 5 || gap < -5 {
-		return out + " — the two sources disagree, this palier is not quotable"
+	return fmt.Sprintf("backlog says %.0f msg/s (%+.1f%%)", byLag, 100*(byLag-rate)/rate)
+}
+
+// sourcesAgree reports whether the producer and the backlog measured the same window to the same number.
+//
+// It is the within-palier counterpart of sweepsAgree, and it exists because crossCheck used to be the
+// only guard of the four that warned where its sisters refused. A palier it flags is not quotable, and
+// "not quotable" has to mean the run stops — the smoke run of step-201f marked two paliers at -5.1% and
+// -6.7% and both counted in a published 34% verdict.
+//
+// An absent second reading fails rather than passes. That is the same rule breakerHeld states for the
+// breaker and backlogHeld for the partitions: a window nobody observed is not a healthy one. Nothing
+// else catches it — backlogHeld refuses a partition that ran DRY, never one that stood still.
+func sourcesAgree(rate float64, first, last map[int32]int64, window time.Duration) error {
+	byLag, ok := lagRate(first, last, window)
+	if !ok {
+		return fmt.Errorf("the backlog gave up nothing over %s while the producer counted %.0f/s: there is no "+
+			"second reading to cross-check against, and an absent source is not an agreeing one", window, rate)
 	}
-	return out
+	gap := (byLag - rate) / rate
+	if gap < 0 {
+		gap = -gap
+	}
+	if gap > maxSourceGap {
+		return fmt.Errorf("the producer says %.0f/s and the backlog says %.0f/s, a %.1f%% gap: the two are "+
+			"counted at different layers, so one of them is not counting what its name says and neither may be "+
+			"published — lengthen the window (REF_CAL_HOLD) and read the pair again", rate, byLag, 100*gap)
+	}
+	return nil
 }
 
 // shardBalance reports whether every bind carried a comparable share of the window's submits.
@@ -54,11 +104,14 @@ func crossCheck(rate float64, first, last map[int32]int64, window time.Duration)
 // binds did not all work is a smaller pool wearing a larger label, and it fails quietly — a lower rate,
 // no error.
 //
-// counts are the submits the PEER observed per connection, never a recomputation of the shard hash. A
-// guard that re-derived the shard from the ids would agree with a prefill built from the same copied
-// hash however far both had drifted from the pool's own shardIndex: it would confirm the copy rather
-// than the geometry, and pass under any convention.
-func shardBalance(counts []int64, binds int) error {
+// counts are the submits the PEER observed per connection, keyed by its connection id and never a
+// recomputation of the shard hash. A guard that re-derived the shard from the ids would agree with a
+// prefill built from the same copied hash however far both had drifted from the pool's own shardIndex:
+// it would confirm the copy rather than the geometry, and pass under any convention.
+//
+// The id, not the position: the peer hands ids out in dial order, so naming one points at a specific
+// connection in the peer's own record, where an index only pointed into a slice that no longer exists.
+func shardBalance(counts map[int]int64, binds int) error {
 	if len(counts) == 0 {
 		return fmt.Errorf("the peer counted no connection: nothing was observed, which is not the same as a fan-out that worked")
 	}
@@ -71,17 +124,60 @@ func shardBalance(counts []int64, binds int) error {
 		total += n
 	}
 	mean := float64(total) / float64(binds)
-	for i, n := range counts {
+	// Sorted so the palier that fails names the same connection every time it is re-run.
+	for _, id := range slices.Sorted(maps.Keys(counts)) {
+		n := counts[id]
 		if n == 0 {
-			return fmt.Errorf("bind %d carried no submit at all: the shard geometry left it idle, so this palier "+
-				"measured %d binds and reports %d", i, binds-1, binds)
+			return fmt.Errorf("connection %d carried no submit at all: the shard geometry left it idle, so this "+
+				"palier measured %d binds and reports %d", id, binds-1, binds)
 		}
 		if float64(n) < minShardShare*mean {
-			return fmt.Errorf("bind %d carried %d submits against a mean of %.0f: it starves before the window "+
-				"closes and drags the palier down without saying so", i, n, mean)
+			return fmt.Errorf("connection %d carried %d submits against a mean of %.0f: it starves before the "+
+				"window closes and drags the palier down without saying so", id, n, mean)
 		}
 	}
 	return nil
+}
+
+// subtractSubmits turns two per-bind readings into what the window carried. The peer counts for its
+// whole life, and the binds are dialled before the clock opens, so the opening reading is rarely zero.
+//
+// It lives here rather than beside its caller because its test does: a helper behind the loadref build
+// tag is a helper the ordinary suite cannot compile, hence cannot exercise — the argument this file's
+// header already makes for the bucketing helpers, and the one that moved crossCheck out in step-201f.
+//
+// It REFUSES a changed id set instead of repairing it. The peer only reports live connections, so a
+// bind that dropped and redialled leaves one id and brings another; the two readings then describe
+// different pools and the window measured neither. There is nothing to repair, either: the departed
+// connection took its counter with it, so what it carried before it left is not recoverable.
+func subtractSubmits(before, after map[int]int64) (map[int]int64, error) {
+	if left := missingFrom(after, before); len(left) > 0 {
+		return nil, fmt.Errorf("connection(s) %v were counted at the start of the window and gone at the end, "+
+			"replaced by %v: a bind dropped and redialled, so the two readings describe different pools and "+
+			"neither bounds the window — the departed bind left with its counter", left, missingFrom(before, after))
+	}
+	if joined := missingFrom(before, after); len(joined) > 0 {
+		return nil, fmt.Errorf("connection(s) %v appeared during the window: they carried an unknown share of it "+
+			"before the first reading could see them", joined)
+	}
+	out := make(map[int]int64, len(after))
+	for id, n := range after {
+		out[id] = n - before[id]
+	}
+	return out, nil
+}
+
+// missingFrom lists the ids present in have and absent from want, sorted so a failure reads the same
+// way every time it is re-run.
+func missingFrom(want, have map[int]int64) []int {
+	var missing []int
+	for id := range have {
+		if _, ok := want[id]; !ok {
+			missing = append(missing, id)
+		}
+	}
+	slices.Sort(missing)
+	return missing
 }
 
 // breakerHeld reports whether the send path stayed open for the whole window.
@@ -799,23 +895,27 @@ func TestLaneShapeNamesTheObservedLaneCount(t *testing.T) {
 // re-derived the shard from the ids would agree with a prefill built from the same copied hash however
 // far both had drifted from the pool's own shardIndex — it would confirm the copy, not the geometry.
 func TestShardBalanceRefusesAnIdleBind(t *testing.T) {
-	if err := shardBalance([]int64{4000, 3900, 4100, 4000}, 4); err != nil {
+	if err := shardBalance(map[int]int64{1: 4000, 2: 3900, 3: 4100, 4: 4000}, 4); err != nil {
 		t.Errorf("four binds carrying comparable traffic must pass: %v", err)
 	}
 
 	// One bind never carried a submit. The total is a healthy 12 000, which is why a sum would miss it
 	// and why the palier would publish a four-bind figure that three binds produced.
-	err := shardBalance([]int64{4000, 3900, 4100, 0}, 4)
+	err := shardBalance(map[int]int64{1: 4000, 2: 3900, 3: 4100, 7: 0}, 4)
 	if err == nil {
 		t.Fatal("a bind that carried nothing must fail the palier, however healthy the total looks")
 	}
-	if !strings.Contains(err.Error(), "3") {
-		t.Errorf("the error must name the idle bind, got: %v", err)
+	// Connection 7, not "the fourth": the ids are the peer's own, handed out in dial order, so the
+	// number in the message points at a connection that exists rather than at a slice position. The
+	// id here is deliberately not 4 — an index-based message would have said "bind 3" and passed a
+	// test looking for the id.
+	if !strings.Contains(err.Error(), "7") {
+		t.Errorf("the error must name the idle connection by its id, got: %v", err)
 	}
 
 	// A bind at 2% of the mean is not idle, so the zero check misses it — and it drags the palier down
 	// without saying so, exactly like a starved partition.
-	if err := shardBalance([]int64{4000, 3900, 4100, 80}, 4); err == nil {
+	if err := shardBalance(map[int]int64{1: 4000, 2: 3900, 3: 4100, 4: 80}, 4); err == nil {
 		t.Error("a bind carrying a fraction of the mean must fail: it starves without saying so")
 	}
 
@@ -823,7 +923,7 @@ func TestShardBalanceRefusesAnIdleBind(t *testing.T) {
 	// no count is below half of it and the guard would report a fan-out that never sent a single
 	// submit. It is also the bench's most dangerous failure — a prefill whose ConnectorID does not
 	// match is skipped-and-committed, which drains the backlog at full speed and submits nothing.
-	err = shardBalance([]int64{0, 0, 0, 0}, 4)
+	err = shardBalance(map[int]int64{1: 0, 2: 0, 3: 0, 4: 0}, 4)
 	if err == nil {
 		t.Fatal("four silent binds must fail: a zero mean puts every count above half of it")
 	}
@@ -833,7 +933,7 @@ func TestShardBalanceRefusesAnIdleBind(t *testing.T) {
 
 	// The peer saw fewer connections than the pool was configured for: some bind never dialled, and the
 	// curve would be drawn against a bind count that never carried anything.
-	if err := shardBalance([]int64{4000, 3900, 4100}, 4); err == nil {
+	if err := shardBalance(map[int]int64{1: 4000, 2: 3900, 3: 4100}, 4); err == nil {
 		t.Error("fewer connections at the peer than binds configured must fail")
 	}
 
@@ -870,31 +970,169 @@ func TestBreakerHeldRefusesAPalierThatOpened(t *testing.T) {
 	}
 }
 
-// TestCrossCheckFlagsDisagreeingSources pins the renderer that turns one reading into a measurement.
+// TestCrossCheckRendersTheSecondReading pins what is left of the renderer once the verdict moved out.
 //
 // It moved out of the loadref build tag when the pool bench became its second caller: a convention the
 // ordinary suite cannot compile is a convention no test can exercise, which is the argument this file's
-// header already makes for the bucketing helpers.
-func TestCrossCheckFlagsDisagreeingSources(t *testing.T) {
+// header already makes for the bucketing helpers. It was named ...FlagsDisagreeingSources while
+// crossCheck decided; step-230 moved the decision to sourcesAgree, and a test named for a flag the
+// function no longer raises would outlive what it describes.
+//
+// The band itself is not asserted here. That belongs to sourcesAgree, and pinning it in two places is
+// how the printed number and the judged number start to differ —
+// TestCrossCheckAndSourcesAgreeOnTheSameReadings is where the two are held together.
+func TestCrossCheckRendersTheSecondReading(t *testing.T) {
 	first := map[int32]int64{0: 10000, 1: 10000}
 	last := map[int32]int64{0: 5000, 1: 5000}
 
-	// 10 000 records drained over 10s is 1 000/s. The producer says the same, so the palier is quotable.
-	got := crossCheck(1000, first, last, 10*time.Second)
-	if strings.Contains(got, "disagree") {
-		t.Errorf("two sources within the band must not be flagged, got: %s", got)
+	// 10 000 records drained over 10s is 1 000/s, and the renderer must publish that figure beside the
+	// producer's own — the reader compares the two, which is the whole point of printing both.
+	if got := crossCheck(1000, first, last, 10*time.Second); !strings.Contains(got, "1000 msg/s") {
+		t.Errorf("the backlog's own rate must appear in the line, got: %s", got)
 	}
 
-	// The producer claims 2 000/s while the backlog only gave up 1 000/s. One of the two is not counting
-	// what its name says, and neither number may be published.
-	got = crossCheck(2000, first, last, 10*time.Second)
-	if !strings.Contains(got, "disagree") {
-		t.Errorf("a 50%% gap must be flagged as unquotable, got: %s", got)
-	}
-
-	// No backlog delta is not agreement: there is simply nothing to check against.
+	// No backlog delta is not agreement: there is simply nothing to check against, and rendering a
+	// percentage would dress an absent reading up as a matching one.
 	if got := crossCheck(1000, first, first, 10*time.Second); strings.Contains(got, "%") {
 		t.Errorf("no delta must not be rendered as a percentage agreement, got: %s", got)
+	}
+}
+
+// TestCrossCheckAndSourcesAgreeOnTheSameReadings is the guard that keeps the renderer and the refusal
+// from drifting apart, and it is the reason the split is safe to make at all.
+//
+// crossCheck prints a percentage; sourcesAgree decides whether that percentage is acceptable. Before
+// this step they were the same function, so they could not disagree. Splitting them creates exactly the
+// hazard this repo has already paid for twice: two computations of one quantity, each correct on its own
+// day, drifting until the number printed is no longer the number judged.
+//
+// So the assertion is not "sourcesAgree refuses beyond 5%" — that would only pin sourcesAgree. It is
+// that for each set of readings, the sign and magnitude crossCheck RENDERS and the verdict sourcesAgree
+// RETURNS describe the same gap. A mutation in the shared arithmetic must break both, or the extraction
+// was never shared.
+func TestCrossCheckAndSourcesAgreeOnTheSameReadings(t *testing.T) {
+	// 10 000 records drained, and the window decides what rate that is: 2 000/s over five seconds,
+	// 1 000/s over ten, 500/s over twenty.
+	first := map[int32]int64{0: 10000, 1: 10000}
+	last := map[int32]int64{0: 5000, 1: 5000}
+
+	for _, tc := range []struct {
+		name     string
+		window   time.Duration
+		rate     float64
+		agrees   bool
+		rendered string
+	}{
+		// The producer agrees with the backlog to the digit.
+		{"identical sources", 5 * time.Second, 2000, true, "+0.0%"},
+		// Inside the band: 1 000 against 1 020 is -2.0%, quotable and printed as such.
+		{"inside the band", 10 * time.Second, 1020, true, "-2.0%"},
+		// Just outside: 1 000 against 1 060 is -5.7%. The renderer still prints it; the guard refuses it.
+		{"outside the band", 10 * time.Second, 1060, false, "-5.7%"},
+		// Symmetry: a producer UNDER the backlog by the same margin is the same disagreement.
+		{"outside the band, other sign", 10 * time.Second, 950, false, "+5.3%"},
+		// The SAME drained count over a longer window is a different rate, and the verdict must follow
+		// it. Three windows across this table is not decoration: with one, a lagRate that ignored its
+		// window and divided by that window's own length would satisfy every row — the mutation survived
+		// exactly that way before this case existed.
+		{"same readings, longer window", 20 * time.Second, 1000, false, "-50.0%"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			window := tc.window
+			got := crossCheck(tc.rate, first, last, window)
+			if !strings.Contains(got, tc.rendered) {
+				t.Errorf("the renderer must print the gap %s, got: %s", tc.rendered, got)
+			}
+			err := sourcesAgree(tc.rate, first, last, window)
+			if tc.agrees && err != nil {
+				t.Errorf("crossCheck rendered %s and the guard refused it: %v", got, err)
+			}
+			if !tc.agrees {
+				if err == nil {
+					t.Fatalf("crossCheck rendered %s, outside the band, and the guard let it through", got)
+				}
+				// The refusal must carry the figure, or a reader cannot judge whether to lengthen the
+				// window or widen the band — the two outcomes the fiche demands be decided with a number.
+				if !strings.Contains(err.Error(), "%") {
+					t.Errorf("the refusal must quantify the gap, got: %v", err)
+				}
+			}
+		})
+	}
+}
+
+// TestSourcesAgreeRefusesASilentSecondSource pins the third outcome, the one crossCheck has always had
+// and never judged.
+//
+// A backlog that did not move is not agreement: it is the absence of the second reading the whole guard
+// is built on. crossCheck renders "no backlog delta to cross-check against" and the palier sails past —
+// and backlogHeld does not catch it either, because it refuses a partition that ran DRY, never one that
+// stood still. So a producer counting against an immobile backlog clears all four guards today.
+//
+// This is the same argument breakerHeld makes in its own godoc — "an unobserved window is
+// indistinguishable from a healthy one" — and the same one sweepsAgree makes when it refuses a zero
+// reading. It is the house rule, and crossCheck was the only guard exempt from it.
+func TestSourcesAgreeRefusesASilentSecondSource(t *testing.T) {
+	still := map[int32]int64{0: 10000, 1: 10000}
+
+	// The producer counted 1 000/s and the backlog gave up nothing. One of the two is not counting what
+	// its name says, which is precisely the disagreement this guard exists to find.
+	if err := sourcesAgree(1000, still, still, 10*time.Second); err == nil {
+		t.Error("an immobile backlog against a counting producer must fail: a missing second source is not agreement")
+	}
+
+	// A window of zero divides nothing by nothing. It must refuse rather than render an infinity.
+	if err := sourcesAgree(1000, still, map[int32]int64{0: 5000, 1: 5000}, 0); err == nil {
+		t.Error("a zero window must fail rather than divide by it")
+	}
+
+	// No reading at all is the same absence, one layer earlier.
+	if err := sourcesAgree(1000, nil, nil, 10*time.Second); err == nil {
+		t.Error("no backlog reading must fail: nothing observed is not the same as two sources that agree")
+	}
+}
+
+// TestSubtractSubmitsRefusesAReconnection pins the difference between "this bind carried less" and "this
+// is not the same bind".
+//
+// fakesmsc.SubmitsByConn returns only LIVE connections. A bind that drops and redials mid-window leaves
+// the table and its replacement enters with a higher id, so a positional subtraction keeps the same
+// length, slides every entry by one, and compares the END of bind i to the START of bind i+1. The
+// replacement's counter starts at zero, so the last slot goes negative or near it.
+//
+// shardBalance MAY catch that — a tiny delta looks like a starved bind — but nothing guarantees it: when
+// the binds carry comparable volumes the slid deltas stay plausible and the palier is published. Keying
+// by connection id turns a maybe into a refusal, and a refusal is right because the vanished bind's
+// share is unknowable: it left with its counter.
+func TestSubtractSubmitsRefusesAReconnection(t *testing.T) {
+	before := map[int]int64{1: 100, 2: 200, 3: 300}
+
+	// The ordinary case: the same three binds, further along. The window carried the difference.
+	got, err := subtractSubmits(before, map[int]int64{1: 150, 2: 260, 3: 390})
+	if err != nil {
+		t.Fatalf("three unchanged binds must subtract cleanly: %v", err)
+	}
+	if want := map[int]int64{1: 50, 2: 60, 3: 90}; !maps.Equal(got, want) {
+		t.Errorf("deltas by connection id: got %v want %v", got, want)
+	}
+
+	// Bind 2 dropped and redialled as bind 4. Positionally this is still three entries of plausible size
+	// — 150, 300, 60 against 100, 200, 300 — and the old subtraction would have published 50, 100, -240.
+	_, err = subtractSubmits(before, map[int]int64{1: 150, 3: 390, 4: 60})
+	if err == nil {
+		t.Fatal("a replaced bind must fail: the two readings describe different pools, and the palier measured neither")
+	}
+	// The id is what makes the failure actionable: it says WHICH dial, and the ids are handed out in
+	// dial order, so a gap in them is itself the reconnection.
+	//
+	// Each id must sit in ITS OWN clause, not merely appear somewhere in the line. Asserting that both
+	// numbers are present passes just as well when the message swaps them, and a refusal that says the
+	// arriving bind is the departed one points the reader at the wrong dial — which is the whole reason
+	// this step went from positions to ids.
+	departed, replacement, split := strings.Cut(err.Error(), "replaced by")
+	if !split || !strings.Contains(departed, "2") || !strings.Contains(replacement, "4") {
+		t.Errorf("the refusal must name the connection that left and, separately, the one that took its "+
+			"place, got: %v", err)
 	}
 }
 
