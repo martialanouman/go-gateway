@@ -1,7 +1,7 @@
-# step-213 — Le contrat déclare 30 opérations que personne n'implémente, et rien ne le dit
+# step-320 — Le contrat déclare 30 opérations que personne n'implémente, et rien ne le dit
 
 > **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
-> **Dépend de :** — · **Bloque :** step-208 (go-live), step-214 → step-220
+> **Dépend de :** — · **Bloque :** step-410 (go-live), step-330 → step-390
 
 ## But
 
@@ -10,7 +10,7 @@ ce qu'elle devient. Aujourd'hui l'écart entre le contrat Admin et le code est d
 aucune des gardes existantes ne le voit.
 
 Cette fiche produit une **garde et un triage**. Elle n'implémente aucune des 30 : leur construction est
-step-214 → step-220.
+step-330 → step-390.
 
 ## Le constat, mesuré
 
@@ -66,10 +66,10 @@ qu'un compteur :
 1. **Couverture** — chaque opération déclarée sous `paths:` est classée : servie (dans `m1Operations`)
    ou inscrite dans une nouvelle liste `deferred`. Une opération dans aucune des deux fait échouer le
    test, en la nommant.
-2. **Exclusion mutuelle** — `m1Operations ∩ deferred = ∅`. Sans elle, step-214…220 y conduisent
+2. **Exclusion mutuelle** — `m1Operations ∩ deferred = ∅`. Sans elle, step-330…390 y conduisent
    mécaniquement : en servant une opération, elles devront l'ajouter à `m1Operations` (l'autre garde les
    y force) mais **rien** ne les obligera à la retirer de `deferred` — et la suite reste verte avec une
-   ligne qui affirme « différée à step-214 » pour une opération en production.
+   ligne qui affirme « différée à step-330 » pour une opération en production.
 3. **Pas d'entrée périmée** — chaque entrée de `deferred` est encore déclarée sous `paths:`. C'est le
    pendant de la couverture : sans elle, une opération retirée du contrat laisse sa ligne pour toujours.
 
@@ -101,13 +101,13 @@ Chaque entrée de `deferred` porte sa raison et sa step. Le triage arrêté :
 
 | Surface | Ops | Step | État réel |
 |---|---:|---|---|
-| Groupes de clients (§6.17) | 7 | step-214 | table + affectation à la création + 2 filtres ; **aucun groupe créable** |
-| Webhooks admin | 4 | step-215 | repo `postgres/webhooks.go` livré en M4, aucune surface admin |
-| Réécriture de sender ID (§6.16) | 5 | step-216 | table + modèle sqlc ; **ni repo, ni admin, ni évaluation** |
-| Sessions REST | 3 | step-217 | `stream-sessions` existe, pas les trois opérations REST |
-| Politiques de contenu (§6.23) | 4 | step-218 | client : colonne présente ; **plateforme : aucune table** |
-| Métriques agrégées | 2 | step-219 | `stream-metrics` existe (push), rien en pull |
-| Comptes et routes | 5 | step-220 | dont **trois réglages créables et jamais modifiables** |
+| Groupes de clients (§6.17) | 7 | step-330 | table + affectation à la création + 2 filtres ; **aucun groupe créable** |
+| Webhooks admin | 4 | step-340 | repo `postgres/webhooks.go` livré en M4, aucune surface admin |
+| Réécriture de sender ID (§6.16) | 5 | step-350 | table + modèle sqlc ; **ni repo, ni admin, ni évaluation** |
+| Sessions REST | 3 | step-360 | `stream-sessions` existe, pas les trois opérations REST |
+| Politiques de contenu (§6.23) | 4 | step-370 | client : colonne présente ; **plateforme : aucune table** |
+| Métriques agrégées | 2 | step-380 | `stream-metrics` existe (push), rien en pull |
+| Comptes et routes | 5 | step-390 | dont **trois réglages créables et jamais modifiables** |
 
 Total 30. Le compte par surface fait partie de ce qui est vérifié : il a été faux d'une unité à la
 première rédaction (webhooks compté 5, faute d'un `get-webhook` que le contrat ne déclare pas).
@@ -128,11 +128,11 @@ première rédaction (webhooks compté 5, faute d'un `get-webhook` que le contra
   pas le test, c'est l'obligation d'écrire une raison à côté de chaque ligne. Une entrée sans step ni
   raison doit être aussi visible qu'une opération non classée — d'où l'assertion sur les champs vides,
   et non un simple commentaire.
-- **Le sort de `list-customer-accounts` (§ step-220) est une décision, pas une évidence.**
+- **Le sort de `list-customer-accounts` (§ step-390) est une décision, pas une évidence.**
   `list-smpp-accounts` accepte déjà `customerId` **et** `groupId` en paramètres de requête : l'opération
   dédiée est fonctionnellement redondante. La retirer du contrat est une rupture que `oasdiff` classera
   `ERR` (bump majeur de `api/package.json`, dépôt du tableau de bord à prévenir). Trancher dans
-  step-220, pas ici.
+  step-390, pas ici.
 - **La garde ne doit pas figer le processus du dépôt.** CLAUDE.md impose que « le contrat se déclare
   **avant** l'implémentation » : un écart contrat → code est donc *normal* pendant une step. Ce que la
   garde interdit, c'est l'écart **non déclaré**. Une step qui ouvre un endpoint commence par l'inscrire
@@ -174,7 +174,7 @@ implémenté que le contrat ne déclare pas. Aucun écart connu aujourd'hui ; le
 l'élargissement de la comparaison reste à faire — son coût est le bruit qu'elle produira sur 103
 opérations, ce qui est précisément pourquoi elle n'appartient pas à cette fiche.
 
-L'implémentation des 30 → step-214 à step-220. Le retrait éventuel d'une opération du contrat, et le
+L'implémentation des 30 → step-330 à step-390. Le retrait éventuel d'une opération du contrat, et le
 bump majeur qui l'accompagne → la step qui la porte. La couverture de `api/collections/admin-api.yaml`
 (déjà gardée par son propre test bloquant) et le versionnage du package npm (déjà couvert par
 `make contracts`).

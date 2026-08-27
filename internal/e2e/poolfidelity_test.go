@@ -24,7 +24,7 @@ const (
 
 	// poolFidelityBinds is the configuration the pairs are measured at: the one step-201f PR1 named as
 	// the sizing floor (8 binds pass the 10 400 submit_sm/s NFR target in all three runs, 4 do not). The
-	// cost of the DLR write is worth knowing where step-207 will actually operate, not at the ends of a
+	// cost of the DLR write is worth knowing where step-270 will actually operate, not at the ends of a
 	// curve this host could not draw.
 	poolFidelityBinds = 8
 
@@ -56,7 +56,7 @@ const (
 //
 // fidelityDelta then refuses to name a cost smaller than the spread of the readings it is drawn from.
 // On this host that refusal is the likely outcome, and it is a finding: it says the DLR write costs
-// less than what the host's own variance can hide, which is a bound step-201b can carry.
+// less than what the host's own variance can hide, which is a bound step-280 can carry.
 //
 // # What the guard behind it is for
 //

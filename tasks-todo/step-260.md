@@ -1,7 +1,7 @@
-# step-203 — Chaos : drain gracieux + PDB + binds préservés ; failover Postgres
+# step-260 — Chaos : drain gracieux + PDB + binds préservés ; failover Postgres
 
 > **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
-> **Dépend de :** step-202 · **Bloque :** —
+> **Dépend de :** step-250 · **Bloque :** —
 
 ## But
 Prouver qu'un redémarrage de pods se fait **sans coupure des binds** (drain gracieux + PDB) et qu'un
@@ -33,4 +33,4 @@ failover Postgres se solde par une **réhydratation correcte des soldes**, sans 
 - [ ] rolling deploy sans coupure des binds (drain + PDB) prouvé
 
 ## Hors périmètre
-Manifests k8s (PDB déclaré) → step-207. Sécurité → step-204+.
+Manifests k8s (PDB déclaré) → step-270. Sécurité → step-290+.

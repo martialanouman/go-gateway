@@ -1,4 +1,4 @@
-# step-212 — le rejeu d'un dead-letter ne doit pas remettre sur le fil un message annulé
+# step-240 — le rejeu d'un dead-letter ne doit pas remettre sur le fil un message annulé
 
 > **Jalon :** M12, dette découverte pendant step-209 · **Statut :** À FAIRE
 > **Dépend de :** step-129 (dead-letter + rejeu), step-209 (jeton d'annulation) · **Bloque :** —

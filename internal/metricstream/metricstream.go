@@ -81,7 +81,7 @@ type BillingAlert struct {
 	// Alert is mo_floor_reached. Low-balance and breaker-open alerts are not emitted yet: neither has a
 	// configured threshold to fire on, and the threshold belongs to the dashboard's alert_rules, not here.
 	// This feed is for display in any case — detection needs a durable source with a persisted cursor
-	// (step-211).
+	// (step-400).
 	Alert   string `json:"alert"`
 	Balance int64  `json:"balance"`
 }

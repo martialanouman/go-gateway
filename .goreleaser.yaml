@@ -94,7 +94,7 @@ builds:
     goarch: [amd64, arm64]
     ldflags: *ldflags
   # Operator tool like migrate: topics are infrastructure schema, provisioned by a deliberate act
-  # (step-201 D7). step-207's Job has no binary to run without this build.
+  # (step-201 D7). step-270's Job has no binary to run without this build.
   - id: kafka-provision
     main: ./cmd/kafka-provision
     binary: kafka-provision

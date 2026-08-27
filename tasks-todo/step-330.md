@@ -1,7 +1,7 @@
-# step-214 — Groupes de clients (§6.17) : la table existe, rien ne la remplit
+# step-330 — Groupes de clients (§6.17) : la table existe, rien ne la remplit
 
 > **Jalon :** Surfaces Admin déclarées au contrat, jamais construites (§6.17 `docs/specification-technique-passerelle-sms.md`) · **Statut :** À FAIRE
-> **Dépend de :** step-213 (triage) · **Bloque :** step-219
+> **Dépend de :** step-320 (triage) · **Bloque :** step-380
 
 ## But
 
@@ -59,14 +59,14 @@ décision de conception explicite, et créer un second chemin d'affectation.
   groupe. Une fixture où les deux clients seraient dans le même groupe ne prouverait rien.
 - Un changement d'appartenance par `set-customer-group` change ce que ces filtres retournent, et le
   retour à `null` détache sans supprimer.
-- Contrat : les 7 opérations sortent de la liste `deferred` de step-213 et entrent dans la liste servie.
+- Contrat : les 7 opérations sortent de la liste `deferred` de step-320 et entrent dans la liste servie.
 
 ## Definition of Done
 
 - [ ] `make check` vert (lint · `test -race` · govulncheck · contrats)
 - [ ] les 7 opérations servies, conformes au contrat déclaré (aucun changement de contrat attendu)
 - [ ] `api/collections/admin-api.yaml` synchronisée (test bloquant)
-- [ ] les 7 lignes retirées de la liste `deferred` posée par step-213 (elle vit dans le test de
+- [ ] les 7 lignes retirées de la liste `deferred` posée par step-320 (elle vit dans le test de
       contrat, pas dans la fiche)
 
 ## Hors périmètre

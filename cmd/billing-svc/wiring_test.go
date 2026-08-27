@@ -159,7 +159,7 @@ func TestNewBillingAppBuildsTheWholeGraph(t *testing.T) {
 	}
 }
 
-// TestClickHouseIsNotAReadinessDependency pins the property step-207 is about to turn into a kubelet
+// TestClickHouseIsNotAReadinessDependency pins the property step-270 is about to turn into a kubelet
 // probe. The reaper reads ClickHouse to settle orphaned reservations, but it is a periodic background
 // job: a ClickHouse outage must leave billing-svc IN the load balancer, since balances are still served
 // from Redis and the durable ledger. Until now a comment said so and nothing checked it.

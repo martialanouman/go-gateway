@@ -2,7 +2,10 @@
 
 Dérivé de `docs/plan-execution-passerelle.md`. **Un fichier `step-NNN.md` = une PR** : petite,
 reviewable, laisse le dépôt vert une fois mergée. Découpage par jalon (M0…M12) ; les jalons trop gros
-sont éclatés en plusieurs PRs. Numérotation par blocs de 20 (marge d'insertion), ordre = exécution.
+sont éclatés en plusieurs PRs. **La numérotation croissante EST l'ordre d'exécution** : une step ne
+dépend jamais que de numéros plus petits. Les jalons livrés sont numérotés par blocs de 20, le reste à
+faire par dizaines — la marge d'insertion existe parce que six steps de ce dépôt sont nées d'une revue,
+pas du plan.
 
 **Workflow :** on prend le prochain `step-NNN.md` dans `tasks-todo/`, on l'exécute (1 session = 1 PR), puis
 on déplace le fichier dans `tasks-done/`. Un jalon est terminé quand toutes ses steps sont dans `tasks-done/`.
@@ -164,42 +167,99 @@ structurelles et à faire **avant** que M12 n'empile dessus.
 - [x] step-201d — Le routeur est le goulot suivant du débit traversant (mesuré après step-201c)
 - [x] step-201e — Attribuer le plafond : c'était la co-résidence, ni le routeur ni le broker
 - [x] step-201f — Isoler le pool de connecteurs : c'était l'hôte ; l'écriture DLR coûte 37 % du débit
-- [ ] step-201g — Deux gardes du banc `loadref` avertissent au lieu de refuser (bloque step-201b)
-- [ ] step-201b — Campagne NFR pleine échelle sur environnement représentatif (dépend aussi de step-201c, step-201e, step-201f, step-201g, step-207)
-- [ ] step-202 — Chaos : perte Redis (chaque politique de panne) + flapping connecteur
-- [ ] step-203 — Chaos : drain gracieux + PDB + binds préservés ; failover Postgres
-- [ ] step-204 — Sécurité : gosec, govulncheck, secrets, piste d'audit
-- [ ] step-205 — TLS / SMPP-TLS / mTLS sur les transports
-- [ ] step-206 — Auth opérateur réelle (OIDC/mTLS) remplaçant le stub M1
-- [ ] step-207 — Manifests deploy/ Kubernetes (Deployments, Services, HPA, PDB, probes)
-- [ ] step-208 — Dérouler la checklist de mise en production (go-live) — dépend aussi de step-213 (le
-  contrat publié ne doit pas mentir)
 - [x] step-209 — `cancelled` ne doit plus enterrer un message réellement livré (course élargie par step-201c)
+
+Ce qui restait de M12 — chaos, sécurité, transports, manifests, campagne NFR, go-live — a été renuméroté
+et vit dans **Reste à faire**, plus bas, à sa place dans l'ordre d'exécution.
 
 ## Audit post-M11 — dettes du flux temps réel (revue du 2026-08-07)
 Deux dettes laissées par step-184, de nature différente : un compteur construit que personne ne lit, et une
 promesse de contrat dont la source durable n'existe pas.
 - [x] step-210 — Les rejets du flux temps réel redeviennent visibles (le plafond tronquait en silence)
-- [ ] step-211 — `billing.events` durable : le BFF doit pouvoir détecter, pas seulement afficher
 
-## Suite de step-209 — la dernière porte de l'annulation (revue du 2026-08-08)
-Constat sorti de l'implémentation de step-209 : la course d'envoi est fermée, mais le rejeu manuel d'un
-dead-letter reste un chemin par lequel un message annulé peut repartir.
-- [ ] step-212 — Le rejeu d'un dead-letter ne doit pas remettre sur le fil un message annulé
+La seconde — `billing.events` durable — est devenue **step-400**.
 
-## Audit de conformité contrat ↔ implémentation (revue du 2026-08-10)
+---
+
+# Reste à faire — 19 steps, dans l'ordre où elles doivent être écrites
+
+⛓ marque une position **forcée** par une dépendance. Les autres sont un choix d'ordonnancement : elles ne
+bloquent rien et peuvent bouger sans rien casser.
+
+## Débloquer la mesure, puis le déploiement
+Une seule chaîne, et elle commande tout le reste de M12 : le banc doit refuser ce qu'il nomme avant que la
+campagne ne publie un chiffre, et les manifests doivent exister avant qu'on mesure un environnement
+représentatif.
+- [ ] step-230 — Deux gardes du banc `loadref` avertissent au lieu de refuser ⛓ bloque step-280
+- [ ] step-240 — Le rejeu d'un dead-letter ne doit pas remettre sur le fil un message annulé
+- [ ] step-250 — Chaos : perte Redis (chaque politique de panne) + flapping connecteur
+- [ ] step-260 — Chaos : drain gracieux + PDB + binds préservés ; failover Postgres ⛓ step-250
+- [ ] step-270 — Manifests deploy/ Kubernetes (Deployments, Services, HPA, PDB, probes) ⛓ step-260
+- [ ] step-280 — Campagne NFR pleine échelle sur environnement représentatif ⛓ step-230, step-270
+
+step-240 ne bloque rien et pourrait aller n'importe où ; elle est placée tôt parce que c'est le seul
+**défaut de correction** du lot — un message annulé peut encore repartir par le rejeu manuel.
+
+## Sécurité et authentification
+Indépendantes de la chaîne de charge : parallélisables si deux mains travaillent.
+- [ ] step-290 — Sécurité : gosec, govulncheck, secrets, piste d'audit
+- [ ] step-300 — TLS / SMPP-TLS / mTLS sur les transports
+- [ ] step-310 — Auth opérateur réelle (OIDC/mTLS) remplaçant le stub M1 ⛓ step-300
+
+## Écart contrat ↔ implémentation (revue du 2026-08-10)
 `api/openapi-admin.yaml` déclare **133 opérations** sous `paths:` ; `internal/adminapi` en enregistre
 **103**. Les **30** restantes sont décrites par la spec (§6.16, §6.17, §6.22, §6.23) et attendues par le
-tableau de bord — la plupart ont même leur table en base — mais **aucun jalon ne les porte**. Aucune
+tableau de bord — la plupart ont même leur table en base — mais **aucun jalon ne les portait**. Aucune
 garde ne voyait l'écart : les tests de contrat vont tous dans le sens *implémenté → déclaré*, jamais
-l'inverse.
-step-213 pose la garde et le triage ; les sept suivantes construisent les surfaces, dans l'ordre qu'on
-voudra.
-- [ ] step-213 — La garde contrat ↔ implémentation, et le triage des 30 (bloque step-208)
-- [ ] step-214 — Groupes de clients (§6.17) : la table existe, rien ne la remplit
-- [ ] step-215 — Webhooks : le repo est livré depuis M4, l'admin n'a jamais été écrite
-- [ ] step-216 — Réécriture de sender ID (§6.16) : ni l'admin, ni l'évaluation dans le pool
-- [ ] step-217 — Sessions SMPP : le flux temps réel existe, la lecture REST non
-- [ ] step-218 — Politiques de contenu (§6.23) : la plateforme n'a pas de défaut configurable
-- [ ] step-219 — Métriques agrégées en lecture : le flux pousse, rien ne se lit
-- [ ] step-220 — Réglages de compte créables mais non modifiables, et trois opérations orphelines
+l'inverse. step-320 pose la garde et le triage ; les sept suivantes construisent les surfaces, dans
+l'ordre qu'on voudra sauf là où une dépendance le fixe.
+- [ ] step-320 — La garde contrat ↔ implémentation, et le triage des 30 ⛓ bloque step-410 et step-330→390
+- [ ] step-330 — Groupes de clients (§6.17) : la table existe, rien ne la remplit ⛓ step-320
+- [ ] step-340 — Webhooks : le repo est livré depuis M4, l'admin n'a jamais été écrite ⛓ step-320
+- [ ] step-350 — Réécriture de sender ID (§6.16) : ni l'admin, ni l'évaluation dans le pool ⛓ step-320 ;
+      **sa PR2 doit merger après step-280**, sinon elle ajoute un étage au chemin d'envoi entre la
+      caractérisation du pool et la campagne, et périme le dimensionnement sans que personne ne le voie
+- [ ] step-360 — Sessions SMPP : le flux temps réel existe, la lecture REST non ⛓ step-320
+- [ ] step-370 — Politiques de contenu (§6.23) : la plateforme n'a pas de défaut configurable ⛓ step-320
+- [ ] step-380 — Métriques agrégées en lecture : le flux pousse, rien ne se lit ⛓ step-320, step-330
+- [ ] step-390 — Réglages de compte créables mais non modifiables, et trois opérations orphelines ⛓ step-320
+
+## La dette du tableau de bord, puis la porte
+- [ ] step-400 — `billing.events` durable : le BFF doit pouvoir détecter, pas seulement afficher
+- [ ] step-410 — **GO-LIVE** : dérouler la checklist de mise en production
+      ⛓ step-260, step-270, step-280, step-290, step-310, step-320
+
+---
+
+## Correspondance des numéros — renumérotation du 2026-08-27
+
+Les fiches **livrées** (`tasks-done/`), les ADR, le glossaire et `test/load/README.md` ont été écrits
+quand les anciens numéros étaient les bons. `tasks-done/step-201f.md` dit « reporté à step-201b », et il
+l'a dit ce jour-là : réécrire un document daté lui fait affirmer ce qu'il n'a jamais affirmé. Ils gardent
+donc leurs mots, et cette table est ce qui les rend lisibles.
+
+Ce qui **a** été réécrit : les fiches encore ouvertes, les commentaires Go qui renvoient à une step à
+venir, `.goreleaser.yaml` et le glossaire — tous des documents vivants, qui décrivent un futur, pas un
+passé. La `git history` n'est pas concernée : aucune step renumérotée n'avait de commit.
+
+| Cité dans l'historique | Fiche aujourd'hui | |
+|---|---|---|
+| step-201b | **step-280** | campagne NFR |
+| step-201g | **step-230** | gardes du banc `loadref` |
+| step-202 | **step-250** | chaos Redis |
+| step-203 | **step-260** | chaos drain / failover |
+| step-204 | **step-290** | sécurité |
+| step-205 | **step-300** | TLS / mTLS |
+| step-206 | **step-310** | auth OIDC |
+| step-207 | **step-270** | manifests Kubernetes |
+| step-208 | **step-410** | go-live |
+| step-211 | **step-400** | `billing.events` durable |
+| step-212 | **step-240** | rejeu d'un annulé |
+| step-213 | **step-320** | garde contrat ↔ implémentation |
+| step-214 | **step-330** | groupes de clients |
+| step-215 | **step-340** | webhooks admin |
+| step-216 | **step-350** | réécriture de sender ID |
+| step-217 | **step-360** | sessions REST |
+| step-218 | **step-370** | politiques de contenu |
+| step-219 | **step-380** | métriques en lecture |
+| step-220 | **step-390** | réglages de compte |

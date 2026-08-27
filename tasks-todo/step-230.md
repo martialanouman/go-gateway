@@ -1,7 +1,7 @@
-# step-201g — Deux gardes du banc `loadref` ne refusent pas ce qu'elles nomment
+# step-230 — Deux gardes du banc `loadref` ne refusent pas ce qu'elles nomment
 
 > **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
-> **Dépend de :** step-201f (livrée) · **Bloque :** step-201b — la campagne publie des chiffres, et une
+> **Dépend de :** step-201f (livrée) · **Bloque :** step-280 — la campagne publie des chiffres, et une
 > garde qui avertit au lieu de refuser est précisément la façon dont un mauvais chiffre se publie
 
 ## But
@@ -103,7 +103,7 @@ de production**, même contrainte qu'en step-201e et step-201f.
 
 ## Hors périmètre
 
-Le verdict NFR et l'environnement représentatif → step-201b. Le dimensionnement → step-207. La couture
+Le verdict NFR et l'environnement représentatif → step-280. Le dimensionnement → step-270. La couture
 autour de `bind.Submit` que step-201f a refusée — chronométrer le `submit_sm` in situ exige d'ajouter
-une interface à `connectorpool.Deps`, donc un arbitrage sur le chemin chaud : si step-201b en a besoin,
+une interface à `connectorpool.Deps`, donc un arbitrage sur le chemin chaud : si step-280 en a besoin,
 elle porte cet arbitrage, pas cette fiche.

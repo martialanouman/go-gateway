@@ -1,7 +1,7 @@
-# step-201b — Campagne NFR pleine échelle sur environnement représentatif
+# step-280 — Campagne NFR pleine échelle sur environnement représentatif
 
 > **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
-> **Dépend de :** step-201, **step-201c**, **step-201d**, **step-201e**, **step-201f**, step-207 · **Bloque :** step-208
+> **Dépend de :** step-201, **step-201c**, **step-201d**, **step-201e**, **step-201f**, step-270 · **Bloque :** step-410
 
 ## But
 Rendre le **verdict NFR** que step-201 ne pouvait pas rendre : débit soutenu **8 000 SMS/s**, pic
@@ -40,7 +40,7 @@ l'avoir levé mesurerait ce goulot, pas la passerelle.
 - Environnement représentatif : workers dédiés, Kafka **répliqué 3**, ClickHouse et Postgres séparés
   des workers, simulateur SMSC sur sa propre machine (sinon il concourt pour le CPU qu'il mesure).
 - Dimensionné d'après la spec §2.5 et les valeurs de leviers retenues en step-201.
-- La dépendance à **step-207** est structurelle : les manifests Kubernetes sont ce qui rend cet
+- La dépendance à **step-270** est structurelle : les manifests Kubernetes sont ce qui rend cet
   environnement instanciable de façon reproductible.
 
 ## Périmètre
@@ -76,10 +76,10 @@ l'avoir levé mesurerait ce goulot, pas la passerelle.
 - [ ] plafond du pair à l'échelle mesuré et consigné · runs de référence en dessous
 - [ ] débit soutenu **8 000 SMS/s traversants** tenu, budgets de latence respectés (disjoncteur fermé)
 - [ ] pic **15 000 SMS/s** tenu ou dégradation conforme aux politiques documentées
-- [ ] valeurs de leviers retenues consignées et reportées dans les manifests de step-207
+- [ ] valeurs de leviers retenues consignées et reportées dans les manifests de step-270
 - [ ] chemin `Idempotency-Key` mesuré, pas seulement le chemin nominal
 - [ ] si un NFR n'est pas tenu : consigné **nommément** comme non tenu, avec le goulot identifié —
       jamais coché par approximation
 
 ## Hors périmètre
-Chaos → step-202/203. Sécurité → step-204+. Manifests → step-207 (prérequis, pas livrable d'ici).
+Chaos → step-250/260. Sécurité → step-290+. Manifests → step-270 (prérequis, pas livrable d'ici).

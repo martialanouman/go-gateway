@@ -37,7 +37,7 @@ const (
 // belonged to the host. The pool is in exactly that position, accused on a figure measured in noise.
 //
 // The target is 10 400 submit_sm/s (8 000 SMS/s × 1,3 segments). The gap is ×4,3 and it is entirely in
-// the outbound leg, so nothing can be sized for step-207 or claimed in step-201b until it is attributed.
+// the outbound leg, so nothing can be sized for step-270 or claimed in step-280 until it is attributed.
 //
 // # What each outcome means
 //
@@ -47,7 +47,7 @@ const (
 //     Sweep B says which: a curve flat in binds and steep in window is a window bound, the reverse is a
 //     bind bound, flat in both is neither and the cost is per-message work.
 //   - It climbs sharply → the 2 400/s were co-residency, like the router's 4 702/s, and the README
-//     figure must be annotated rather than carried into step-201b as a component capacity.
+//     figure must be annotated rather than carried into step-280 as a component capacity.
 //   - It climbs to roughly the peer's calibrated rate → the bench measured the FAKE SMSC, not the pool.
 //     That is why every row carries the peer's own ceiling at the same bind count: a palier whose rate
 //     approaches its peer figure is a reading of the peer wearing the pool's name.
