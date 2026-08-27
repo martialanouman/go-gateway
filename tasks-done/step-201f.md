@@ -1,6 +1,6 @@
 # step-201f — Isoler le pool de connecteurs : le dernier étage jamais mesuré seul
 
-> **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
+> **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** LIVRÉE (PR1 #156, PR2)
 > **Dépend de :** step-201e (livrée) · **Bloque :** step-201b, step-216 PR2 (elle ajoute un étage au
 > chemin d'envoi et ne doit pas s'insérer entre cette mesure et step-201b)
 
@@ -103,6 +103,18 @@ Le pendant de step-201e `D3`. Un histogramme autour de l'envoi, posé **dans le 
 par message est l'aller-retour SMPP ou autre chose. `produceBounds` / `produceBucket` / `p99Bucket` sont
 déjà écrits, testés et hors build tag (step-201e) : les réutiliser, ne pas les redécliner.
 
+> **NON LIVRÉ tel quel, et le motif est structurel : il n'y a pas de couture.** `bind.Submit` est
+> concret, non exporté, atteint depuis un unique site d'appel à l'intérieur du chemin d'envoi ; le
+> chronométrer exigerait d'ajouter une interface à `connectorpool.Deps` — un changement du chemin chaud
+> que cette fiche s'interdit deux fois (« Périmètre » et la dernière ligne de la DoD). Aucun histogramme
+> de latence de `submit_sm` n'existe non plus côté production : `message_e2e_duration_seconds` part de
+> `ageBase(routed)`, donc en banc pré-rempli chaque échantillon est un âge de file, pas un coût.
+>
+> Ce que PR2 livre à la place : la **décomposition**. Le produce et l'écriture DLR sont chronométrés
+> chacun sur le patron de `produceBounds`, et l'occupation qu'ils laissent libre borne par le haut tout
+> le reste — aller-retour SMPP compris. Un plafond, pas une mesure, et le README le dit ainsi. Si
+> step-201b a besoin de la durée elle-même, la couture devra être arbitrée pour ce qu'elle est.
+
 ### D3 — Blanchir ou accuser le pair, par la mesure
 **C'est le piège central de cette fiche.** Le plafond du **faux SMSC in-repo n'a jamais été mesuré** —
 seul le simulateur l'a été (43 498/s à 80 binds, step-201 `D3`). Un banc « pool seul » branché sur le
@@ -148,13 +160,19 @@ le fait déjà pour le run de référence. Aucun chiffre du banc n'est lisible s
 
 ## Definition of Done
 
-- [ ] `make check` vert (lint · `test -race` · govulncheck · contrats)
-- [ ] le plafond de 2 400 msg/s de bout en bout est **attribué** — pool, binds, fenêtre, pair ou hôte —
-      ou l'échec à l'attribuer est consigné avec ce qui manque
-- [ ] le plafond du pair réellement utilisé est **mesuré** et cité à côté de chaque chiffre, faute de
-      quoi aucun palier n'est lisible
-- [ ] step-207 reçoit ce que ce banc lui doit : combien de binds pour quel débit, et par quel levier
-- [ ] aucun changement du chemin chaud de production
+- [x] `make check` vert (lint · `test -race` · govulncheck · contrats)
+- [x] le plafond de 2 400 msg/s de bout en bout est **attribué** — c'est **l'hôte**, comme pour le
+      routeur : le plus mauvais palier du plus mauvais run, à UN bind, fait déjà 3 294/s (PR1). PR2
+      chiffre en plus l'omission qui rendait ces figures des majorants : **37 %**
+- [x] le plafond du pair réellement utilisé est **mesuré** et cité à côté de chaque chiffre — `fakesmsc`,
+      calibré au nombre de binds du palier, 123 000 à 190 000/s, cinq à soixante fois au-dessus de toute
+      mesure (`D3` : le pair n'est jamais la contrainte)
+- [x] step-207 reçoit ce que ce banc lui doit : **8 binds ne sont plus un plancher défendable** — la
+      marge sur la cible NFR (17–23 %) est plus petite que la variation entre runs (57 %). Prendre 16
+      binds, ou attendre l'environnement représentatif de step-201b
+- [x] aucun changement du chemin chaud de production — le diff des deux PR ne touche que `internal/e2e`,
+      `internal/testutil/fakesmsc` et le `Makefile`
+- [x] `D2` non livré tel quel, et ce qui manque est consigné : voir l'encadré de `D2` ci-dessus
 
 ## Hors périmètre
 
