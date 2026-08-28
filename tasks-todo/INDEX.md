@@ -168,6 +168,7 @@ structurelles et à faire **avant** que M12 n'empile dessus.
 - [x] step-201e — Attribuer le plafond : c'était la co-résidence, ni le routeur ni le broker
 - [x] step-201f — Isoler le pool de connecteurs : c'était l'hôte ; l'écriture DLR coûte 37 % du débit
 - [x] step-209 — `cancelled` ne doit plus enterrer un message réellement livré (course élargie par step-201c)
+- [x] step-230 — Les gardes du banc `loadref` refusent enfin — et le banc du routeur publiait son préchauffage
 
 Ce qui restait de M12 — chaos, sécurité, transports, manifests, campagne NFR, go-live — a été renuméroté
 et vit dans **Reste à faire**, plus bas, à sa place dans l'ordre d'exécution.
@@ -181,16 +182,15 @@ La seconde — `billing.events` durable — est devenue **step-400**.
 
 ---
 
-# Reste à faire — 19 steps, dans l'ordre où elles doivent être écrites
+# Reste à faire — dans l'ordre où elles doivent être écrites
 
 ⛓ marque une position **forcée** par une dépendance. Les autres sont un choix d'ordonnancement : elles ne
 bloquent rien et peuvent bouger sans rien casser.
 
 ## Débloquer la mesure, puis le déploiement
-Une seule chaîne, et elle commande tout le reste de M12 : le banc doit refuser ce qu'il nomme avant que la
-campagne ne publie un chiffre, et les manifests doivent exister avant qu'on mesure un environnement
-représentatif.
-- [ ] step-230 — Deux gardes du banc `loadref` avertissent au lieu de refuser ⛓ bloque step-280
+Une seule chaîne, et elle commande tout le reste de M12 : le banc devait refuser ce qu'il nomme avant que
+la campagne ne publie un chiffre — c'est fait (step-230, livrée) — et les manifests doivent exister avant
+qu'on mesure un environnement représentatif.
 - [ ] step-240 — Le rejeu d'un dead-letter ne doit pas remettre sur le fil un message annulé
 - [ ] step-250 — Chaos : perte Redis (chaque politique de panne) + flapping connecteur
 - [ ] step-260 — Chaos : drain gracieux + PDB + binds préservés ; failover Postgres ⛓ step-250

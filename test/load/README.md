@@ -925,6 +925,60 @@ le dimensionnement doit prendre 16 binds ou attendre l'environnement représenta
   durée ; la décomposition en donne un plafond. Si step-201b a besoin de la durée elle-même, la couture
   devra être arbitrée pour ce qu'elle est : un changement du chemin chaud.
 
+### Mesure du 27/08/2026 (step-230) — le banc du routeur publiait son préchauffage
+
+step-230 a transformé `crossCheck` d'un avertissement en un refus. La première relance des trois bancs a
+fait tomber un palier, et ce palier n'était pas un accident de seuil.
+
+**Le banc du routeur tournait sur une fenêtre de 10 s et une file de 150 000**, les défauts partagés,
+alors que le banc du pool s'était donné 30 s et 1 500 000 en step-201f — avec un godoc qui expliquait
+pourquoi : *« les petits paliers déplacent le moins d'enregistrements, donc ils portent le plus de bruit
+relatif »*. Personne n'avait appliqué la leçon au routeur, parce que rien ne l'y obligeait.
+
+| Palier à 1 partition | Producteur | Backlog | Écart |
+|---|---|---|---|
+| fenêtre 10 s, file 150 000 | 693 msg/s | 566 msg/s | **18,3 %** |
+| fenêtre 30 s, file 1 500 000 | 4 418 msg/s | 4 410 msg/s | **0,2 %** |
+
+**Le chiffre court n'était pas six fois trop petit : il ne mesurait pas le routeur.** Une fenêtre de 10 s
+est dominée par la jointure du groupe et les premiers lots ; à 30 s la boucle tourne en régime. Et
+allonger la fenêtre sans approfondir la file échange un refus contre l'autre — `backlogHeld` a refusé la
+tentative intermédiaire, file vidée en cours de fenêtre.
+
+Le banc du routeur a donc désormais ses propres `routerCeilingHold` et `routerCeilingPrefill`, sur le
+modèle du pool, `REF_CAL_HOLD` et `REF_PREFILL` continuant de les surcharger.
+
+#### Les trois bancs après durcissement
+
+| Banc | Paliers | Écart producteur ↔ backlog |
+|---|---|---|
+| `TestRouterConsumeCeiling` | 5 (1→16 partitions) | −0,1 % à −1,0 % |
+| `TestPoolSubmitCeiling` | 9 (2 balayages) | −1,0 % à +0,0 % |
+| `TestPoolDLRMapFidelity` | 6 (3 couples) | −0,0 % à −0,9 % |
+
+Courbe du routeur seul, sur sa nouvelle fenêtre : **5 201 · 8 937 · 13 505 · 18 319 · 26 317 msg/s** pour
+1 · 2 · 4 · 8 · 16 partitions.
+
+**Ce que ça ne dit pas.** Ces chiffres ne remplacent aucun de ceux consignés plus haut : ils sont mesurés
+sur un hôte différemment chargé, et la comparaison entre deux sections de ce journal n'a jamais été
+valide. Ce qui est établi ici, c'est que **le palier à 1 partition des mesures précédentes n'était pas
+citable** et que rien ne le disait.
+
+#### Deux lectures de la fidélité DLR, et pourquoi les deux comptent
+
+Le banc de fidélité a été lancé deux fois de suite, et la différence est instructive :
+
+| Run | Dispersion dans un côté | Verdict |
+|---|---|---|
+| après 25 min de bancs enchaînés | **125 %** | *« this bench cannot put a figure on the DLR write »* |
+| hôte reposé | **0 %** | **la boutique coûte 34 % du débit** |
+
+Le premier n'est pas un échec : c'est `fidelityDelta` qui refuse de chiffrer un écart plus petit que la
+dispersion dont il est tiré. Le second donne **34 %**, à comparer aux 34 % · 37 % · 37 % des trois runs
+de step-201f — le chiffre tient sur quatre lectures indépendantes. **Un banc de charge lancé à la suite
+d'un autre mesure l'hôte qui vient de travailler**, et c'est la seule garde de ce dépôt qui l'ait dit
+d'elle-même.
+
 ## Contenu
 
 | Chemin | Rôle |

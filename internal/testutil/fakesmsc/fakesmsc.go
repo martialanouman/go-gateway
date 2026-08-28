@@ -15,7 +15,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"sort"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -135,24 +134,24 @@ func (s *Server) ConnCount() int {
 	return len(s.conns)
 }
 
-// SubmitsByConn is how many submit_sm each live connection carried, ordered by the connection id the
-// fake assigns at accept time — so index i is the i-th bind to dial, not a pool slot.
+// SubmitsByConn is how many submit_sm each live connection carried, keyed by the connection id the fake
+// assigns at accept time — ids handed out in dial order, starting at 1 and never reused.
 //
 // It is what a throughput bench reads to see whether a bind pool actually fanned out: the pool shards a
 // batch by FNV32a(message id) % binds, so a bind that carried nothing means the geometry left it idle
 // and the palier measured a smaller pool than its label claims. Unlike Submits it retains nothing, so
 // it is safe to leave on for a window of millions of messages.
-func (s *Server) SubmitsByConn() []int64 {
+//
+// It is keyed rather than ordered because only LIVE connections appear. A bind that drops and redials
+// mid-window leaves the map and its replacement enters under a new id, so a caller subtracting two
+// readings positionally would keep the same length, slide every entry by one, and compare the end of one
+// bind to the start of another. The id makes that visible instead of plausible.
+func (s *Server) SubmitsByConn() map[int]int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	live := make([]*conn, 0, len(s.conns))
+	counts := make(map[int]int64, len(s.conns))
 	for c := range s.conns {
-		live = append(live, c)
-	}
-	sort.Slice(live, func(i, j int) bool { return live[i].id < live[j].id })
-	counts := make([]int64, len(live))
-	for i, c := range live {
-		counts[i] = c.submits.Load()
+		counts[c.id] = c.submits.Load()
 	}
 	return counts
 }

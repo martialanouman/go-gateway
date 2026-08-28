@@ -12,9 +12,28 @@ import (
 // envPrefill is how many mt.inbound records are written ahead of each palier.
 //
 // It is not a target, it is a floor with a guard behind it: the window must close before the backlog
-// does, and backlogHeld fails the palier when it did not. The default holds ~15 000 msg/s for a
-// ten-second window — about three times the full-stack ceiling of step-201d PR2.
+// does, and backlogHeld fails the palier when it did not.
 const envPrefill = "REF_PREFILL"
+
+// routerCeilingHold is this bench's own window, and it is three times the shared REF_CAL_HOLD default
+// for a reason that was measured, not assumed — the same reason poolCeilingHold gave itself one in
+// step-201f, and this bench simply never got the same treatment.
+//
+// At ten seconds the 1-partition palier read 693 msg/s from the producer against 566/s from the backlog:
+// an 18,3% disagreement, and neither figure was the router. At thirty seconds the same palier reads
+// 4 418/s against 4 410/s — 0,2% apart, and six times the number the short window produced. The short
+// window was measuring the group joining and the first batches landing, not the steady state.
+//
+// Nothing said so before step-230, because crossCheck rendered that 18,3% as a line of text and the
+// palier went into the curve anyway. REF_CAL_HOLD still overrides it.
+const routerCeilingHold = 30 * time.Second
+
+// routerCeilingPrefill must outlast the FASTEST palier, not the average one, and it follows from the
+// window above: backlogHeld refuses a palier whose backlog ran dry, and at thirty seconds the 16-lane
+// palier drains 700 000 records. The old default of 150 000 held ten seconds and no more — raising the
+// window without raising this traded one refusal for the other, which is exactly what the first re-run
+// of step-230 did.
+const routerCeilingPrefill = 1500000
 
 // TestRouterConsumeCeiling isolates the router from everything that shared its host, because the
 // 08/08/2026 run at 4 800 msg/s could say the router slowed down and never why — the same reason
@@ -111,8 +130,8 @@ const envPrefill = "REF_PREFILL"
 // keyed by account id, a GSM-7 body of the length the injector sends. Only the topic is overridden.
 func TestRouterConsumeCeiling(t *testing.T) {
 	brokers := kafkatest.Brokers(t)
-	hold := envDuration(t, envCalHold, 10*time.Second)
-	records := int(envFloat(t, envPrefill, 150000))
+	hold := envDuration(t, envCalHold, routerCeilingHold)
+	records := int(envFloat(t, envPrefill, routerCeilingPrefill))
 
 	for _, partitions := range []int{1, 2, 4, 8, 16} {
 		measureRouterCeiling(t, brokers, partitions, records, hold)

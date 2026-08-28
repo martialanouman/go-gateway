@@ -123,7 +123,18 @@ func measureRouterCeiling(t *testing.T, brokers []string, partitions, records in
 	last := lagOf(t, cons, topic)
 	batches, recs, lanes := counted.snapshot()
 
+	// The rate is computed before the guards because one of them now judges it, and the "moved nothing"
+	// check comes first of all: a dead palier has its own diagnosis, and letting it fail on sourcesAgree
+	// would answer a question about disagreeing sources when the answer is that there was no traffic.
+	rate := float64(done) / elapsed.Seconds()
+	if rate == 0 {
+		t.Fatalf("the router moved nothing at %d partitions", partitions)
+	}
+
 	if err := backlogHeld(first, last); err != nil {
+		t.Fatalf("%d partitions: %v", partitions, err)
+	}
+	if err := sourcesAgree(rate, first, last, elapsed); err != nil {
 		t.Fatalf("%d partitions: %v", partitions, err)
 	}
 	if n := cdr.n.Load(); n != 0 {
@@ -131,7 +142,6 @@ func measureRouterCeiling(t *testing.T, brokers []string, partitions, records in
 			partitions, n)
 	}
 
-	rate := float64(done) / elapsed.Seconds()
 	t.Logf("router alone: %2d partitions -> %8.0f msg/s · %s · %s · prefill %.0f rec/s",
 		partitions, rate,
 		crossCheck(rate, first, last, elapsed),
@@ -141,9 +151,6 @@ func measureRouterCeiling(t *testing.T, brokers []string, partitions, records in
 	t.Logf("             %2d partitions    %s", partitions,
 		stageLatency(refProduceStage, refProduceExcludes, done, nanos-baseNanos, deltaBuckets(baseBuckets, buckets), elapsed, done))
 
-	if rate == 0 {
-		t.Fatalf("the router moved nothing at %d partitions", partitions)
-	}
 }
 
 // scrapeBroker reads the test broker's own exposition (step-201e D2).

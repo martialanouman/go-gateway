@@ -149,11 +149,25 @@ func measurePoolCeiling(t *testing.T, brokers []string, bed poolBed, binds, wind
 	endPuts, endDLRNanos, endDLRBuckets := dlr.snapshot()
 	puts, dlrNanos := endPuts-basePuts, endDLRNanos-baseDLRNanos
 	dlrBuckets := deltaBuckets(baseDLRBuckets, endDLRBuckets)
-	submits := subtractSubmits(baseSubmits, peer.SubmitsByConn())
+	submits, submitsErr := subtractSubmits(baseSubmits, peer.SubmitsByConn())
 	reports, worst := breakers.worst()
+
+	// The rate is computed before the guards because one of them now judges it, and the "moved nothing"
+	// check comes first of all: a dead palier has its own diagnosis, and letting it fail on sourcesAgree
+	// would answer a question about disagreeing sources when the answer is that there was no traffic.
+	rate := float64(done) / elapsed.Seconds()
+	if rate == 0 {
+		t.Fatalf("the pool moved nothing at %s", label)
+	}
 
 	if err := backlogHeld(first, last); err != nil {
 		t.Fatalf("%s: %v", label, err)
+	}
+	if err := sourcesAgree(rate, first, last, elapsed); err != nil {
+		t.Fatalf("%s: %v", label, err)
+	}
+	if submitsErr != nil {
+		t.Fatalf("%s: %v", label, submitsErr)
 	}
 	if err := shardBalance(submits, binds); err != nil {
 		t.Fatalf("%s: %v", label, err)
@@ -171,7 +185,6 @@ func measurePoolCeiling(t *testing.T, brokers []string, bed poolBed, binds, wind
 		}
 	}
 
-	rate := float64(done) / elapsed.Seconds()
 	t.Logf("pool alone: %s -> %8.0f submit_sm/s · %s · peer %.0f/s · %s · prefill %.0f rec/s",
 		label, rate,
 		crossCheck(rate, first, last, elapsed),
@@ -185,9 +198,6 @@ func measurePoolCeiling(t *testing.T, brokers []string, bed poolBed, binds, wind
 		t.Logf("            %s    %s", label, stageLatency(refDLRStage, refDLRExcludes, puts, dlrNanos, dlrBuckets, elapsed, done))
 	}
 
-	if rate == 0 {
-		t.Fatalf("the pool moved nothing at %s", label)
-	}
 	return rate
 }
 
@@ -372,20 +382,6 @@ func routedForPool(id, connectorID uuid.UUID) pipeline.RoutedMT {
 		SegmentCount: 1,
 		SubmittedAt:  time.Now().UTC(),
 	}
-}
-
-// subtractSubmits turns two per-bind readings into what the window carried. The peer counts for its
-// whole life, and the binds are dialled before the clock opens, so the opening reading is rarely zero.
-func subtractSubmits(before, after []int64) []int64 {
-	out := make([]int64, len(after))
-	for i := range after {
-		if i < len(before) {
-			out[i] = after[i] - before[i]
-			continue
-		}
-		out[i] = after[i]
-	}
-	return out
 }
 
 // watchingAggregator is the in-process stand-in for the Redis breaker aggregate, plus the reading
