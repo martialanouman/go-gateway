@@ -40,8 +40,15 @@ func newBillingHarness(t *testing.T, initialBalance int) *billingHarness {
 
 func newBillingHarnessTTL(t *testing.T, initialBalance int, holdTTL time.Duration, extra ...billing.Option) *billingHarness {
 	t.Helper()
+	return newBillingHarnessOn(t, redistest.Client(t), initialBalance, holdTTL, extra...)
+}
+
+// newBillingHarnessOn is newBillingHarnessTTL over a caller-supplied Redis client. The chaos test
+// (step-250) passes a cuttable one so it can make Redis disappear mid-test; everyone else goes through
+// newBillingHarnessTTL and gets the shared client.
+func newBillingHarnessOn(t *testing.T, rdb *redis.Client, initialBalance int, holdTTL time.Duration, extra ...billing.Option) *billingHarness {
+	t.Helper()
 	pool := pgtest.Pool(t)
-	rdb := redistest.Client(t)
 	ctx := context.Background()
 
 	var customerID uuid.UUID

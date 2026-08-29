@@ -171,6 +171,7 @@ structurelles et à faire **avant** que M12 n'empile dessus.
 - [x] step-230 — Les gardes du banc `loadref` refusent enfin — et le banc du routeur publiait son préchauffage
 - [x] step-240 — Le rejeu d'un dead-letter ne remet plus sur le fil un message annulé
 - [x] step-245 — La branche d'expiration consulte le jeton d'annulation (résiduel de step-240)
+- [x] step-250 — Chaos : perte Redis, chaque politique de panne prouvée sur un Redis réellement coupé
 
 Ce qui restait de M12 — chaos, sécurité, transports, manifests, campagne NFR, go-live — a été renuméroté
 et vit dans **Reste à faire**, plus bas, à sa place dans l'ordre d'exécution.
@@ -193,14 +194,16 @@ bloquent rien et peuvent bouger sans rien casser.
 Une seule chaîne, et elle commande tout le reste de M12 : le banc devait refuser ce qu'il nomme avant que
 la campagne ne publie un chiffre — c'est fait (step-230, livrée) — et les manifests doivent exister avant
 qu'on mesure un environnement représentatif.
-- [ ] step-250 — Chaos : perte Redis (chaque politique de panne) + flapping connecteur
+- [ ] step-250b — Chaos : flapping connecteur (disjoncteur + invariant c) ⛓ step-250
 - [ ] step-260 — Chaos : drain gracieux + PDB + binds préservés ; failover Postgres ⛓ step-250
 - [ ] step-270 — Manifests deploy/ Kubernetes (Deployments, Services, HPA, PDB, probes) ⛓ step-260
 - [ ] step-280 — Campagne NFR pleine échelle sur environnement représentatif ⛓ step-230, step-270
 
 Le seul **défaut de correction** du lot est clos : step-240 a fermé le rejeu d'un message annulé, et
-step-245 le cas où l'annulation avait gagné son jeton sans jamais écrire sa ligne CDR. Ce qui reste de
-cette section est du chaos, des manifests et une campagne de mesure.
+step-245 le cas où l'annulation avait gagné son jeton sans jamais écrire sa ligne CDR. step-250 a
+ensuite prouvé les politiques de panne Redis sur un Redis réellement coupé, et complété la matrice de
+référence (`guide-codage-go.md` §16) des quatre politiques qu'elle omettait. Ce qui reste de cette
+section est du chaos connecteur, des manifests et une campagne de mesure.
 
 ## Sécurité et authentification
 Indépendantes de la chaîne de charge : parallélisables si deux mains travaillent.

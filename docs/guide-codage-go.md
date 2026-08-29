@@ -377,6 +377,10 @@ Chaque dépendance dégradée a un comportement **codé explicitement**, jamais 
 | Redis (rate-limit) | débit | **fail-closed** : plafond technique statique local du connecteur | ne jamais envoyer sans borne |
 | Redis (anti-spam à état) | dédup/vélocité/réputation | **fail-open avec flag** ; les règles de contenu statiques continuent | disponibilité > précision, traçable |
 | Redis (cache de solde) | crédit MT strict | **fail-closed** pendant la réhydratation depuis Postgres | garantie de zéro dépassement |
+| Redis (registre de sessions) | bind SMPP | **fail-closed** : le bind est refusé (`ESME_RSYSERR`) | sans le registre, `max_sessions` (invariant d) n'est plus opposable |
+| Redis (anti-brute-force de bind) | throttle de bind | **fail-open** : le throttle s'efface, argon2id reste seul juge | c'est de la défense en profondeur, pas l'authentification ; une panne ne doit pas fermer l'ingress SMPP |
+| Redis (routage L0, numéro exact) | résolution de route | **fail-closed en rejeu** : erreur non codée → offset non commité → redélivrance | un numéro exact injoignable ne doit pas se dégrader en routage par défaut, qui enverrait sur le mauvais opérateur |
+| Redis (jeton d'annulation) | `cancel_sm` | **asymétrique** : fail-closed côté SMPP (refuse l'annulation), fail-open côté pool (journalise et envoie) | une annulation est elle-même best-effort ; en cas de doute on refuse d'annuler, jamais de retenir la livraison (ADR-0013) |
 | Facturation (globale) | crédit | **fail-open** par défaut ; fail-closed opt-in par plateforme/client | l'envoi ne dépend pas de la facturation |
 | SMSC (connecteur dégradé) | envoi | disjoncteur ouvre → `fallback_chain` → dead-letter borné | isoler un opérateur défaillant |
 | Kafka | pipeline | pas d'accusé tant que non durable ; aucune perte après ACK | frontière de durabilité |
