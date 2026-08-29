@@ -105,7 +105,7 @@ Le squelette vertical (`M2`) : `POST /messages` → CDR `enroute` → `GET /mess
 
 Outils : `k6` ou `vegeta` côté REST, un générateur de binds SMPP côté ingress. Cibles (§1.2 de la spec) : soutenu 8 000 SMS/s, pic 15 000 ; ingestion p99 < 250 ms ; bout-en-bout p99 < 2 s (disjoncteur fermé). Mesurer la profondeur de file Kafka, le lag consumer, la latence par étape. Tuning : partitions Kafka, batch ClickHouse, pool `pgx`.
 
-### 4.8 Chaos & injection de pannes (M8+, requiert le vrai simulateur)
+### 4.8 Chaos & injection de pannes
 
 Perte Redis (vérifier **chaque** politique de panne — la matrice de référence est `guide-codage-go.md` §16, pas cette liste) ; flapping de connecteur (disjoncteur ouvre → `fallback_chain` → `mt.reroute-park`) ; redémarrage de pods (drain gracieux, `PodDisruptionBudget`, binds préservés) ; failover Postgres (réhydratation du cache de solde).
 

@@ -73,14 +73,24 @@ func TestReserveFailsClosedWhenRedisIsCut(t *testing.T) {
 
 	proxy.Resume()
 
-	// Recovery: the very same message_id reserves successfully — this is the redelivery the uncoded
-	// error buys, and it must land exactly once. The durable balance proves it: both reserves counted,
-	// neither doubled.
+	// Recovery: the redelivery the uncoded error bought now goes through.
 	if _, err := h.acc.Reserve(ctx, h.owner, during, 7); err != nil {
 		t.Fatalf("after redis came back the redelivered reserve must succeed: %v", err)
 	}
 	if got := h.balance(t); got != initial-3-7 {
-		t.Errorf("durable balance = %d, want %d: the replayed message must be charged exactly once",
-			got, initial-3-7)
+		t.Fatalf("durable balance = %d, want %d after the redelivery", got, initial-3-7)
+	}
+
+	// And once more, because ONE redelivery proves nothing about idempotence: the outage reserve wrote
+	// nothing, so the call above was this message's first successful one and could not have doubled
+	// anything. Kafka's guarantee is at-least-once, not exactly-twice — a commit lost a second time
+	// redelivers a second time. This is the call that can double-charge, so this is the one that has to
+	// be asserted (invariant c).
+	if _, err := h.acc.Reserve(ctx, h.owner, during, 7); err != nil {
+		t.Fatalf("a second redelivery of the same message_id must be idempotent, not an error: %v", err)
+	}
+	if got := h.balance(t); got != initial-3-7 {
+		t.Errorf("durable balance = %d, want %d: redelivering %s charged it twice — billing must be "+
+			"idempotent by message_id across the Kafka hop (invariant c)", got, initial-3-7, during)
 	}
 }

@@ -117,7 +117,7 @@ Le **port ops** (9090) sert `/metrics`, `/healthz`, `/readyz` — **interne, jam
 
 Services = `cmd/<nom>-svc/main.go`. Code métier sous `internal/` (jamais importable dehors). Protos gRPC sous `api/proto/`, code généré sous `internal/…/pb`. Migrations `migrations/NNNN_description.up.sql`/`.down.sql` (golang-migrate, dérivées de `db/schema_passerelle_sms.sql`). Colonnes SQL, clés JSON, topics : `snake_case` ; identifiants Go : `MixedCaps` (convention de style §2/§3).
 
-### 1.8 Le faux SMSC in-repo (pair de test, tant que le simulateur n'est pas prêt)
+### 1.8 Le faux SMSC in-repo (le pair de test des scénarios ordinaires)
 
 Package `internal/testutil/fakesmsc`, lançable en test (embarqué) ou en process (`make fake-smsc`). Parle SMPP via `internal/smpp` (le codec, livré à `M2`). Réponses **scriptables** (`OK`, `Throttled`, `SysErr`, `Delay`), émission de MO/DLR à la demande. Débloque `M2`→`M7`. Le vrai simulateur (`docs/specification-technique-simulateur-smsc.md`) n'est requis qu'à `M8`. Détail : `strategie-de-test-passerelle.md` §2.
 

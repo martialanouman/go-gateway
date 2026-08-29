@@ -118,7 +118,7 @@ func TestRedisOutageAccountsForEveryMessage(t *testing.T) {
 	sendBatch()
 
 	// Reconcile: build the ledger of what happened to each id, and demand it match what went in.
-	seen := make(map[uuid.UUID]string, batch)
+	seen := make(map[uuid.UUID]string, 2*batch)
 	claim := func(id uuid.UUID, outcome string) {
 		t.Helper()
 		if prev, dup := seen[id]; dup {
