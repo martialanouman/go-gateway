@@ -841,6 +841,13 @@ func (s *Service) processOne(ctx context.Context, b *bind, bindIndex int, rec ka
 		// Terminal outcomes commit the offset, so processOne returns nil and the deferred recorder above
 		// sees nothing. They are marked here instead — the step asks for error/REJECT/timeout, and a
 		// permanent reject is exactly what an operator goes looking for.
+		//
+		// KNOWN IMPRECISION, assumed (step-240): this returns before the cancel token is claimed below, so
+		// a message the customer already cancelled is parked — and COUNTED — as delivery_expired. An
+		// operator investigating a spike of expiries will find cancellations among them. Correcting the
+		// label means consulting the token here, and the only way to consult it is to claim it: a
+		// `dispatched` claim would refuse legitimate cancel_sm for 5 minutes on a message that will never
+		// be sent. The count that is exact lives on the other side, in mt-replay's refusal counters.
 		observability.RecordSpanError(span, errs.ErrDeliveryExpired)
 		return s.deadLetterWith(ctx, routed, errs.ErrDeliveryExpired)
 	}

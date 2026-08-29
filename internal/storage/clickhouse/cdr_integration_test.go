@@ -693,3 +693,67 @@ func TestCDRByMessageIDReturnsContent(t *testing.T) {
 		t.Errorf("unknown message: found=%v err=%v, want (false, nil)", found, err)
 	}
 }
+
+// TestCancelledOutranksFailedInTheAggregate pins the precedence the replay guard of step-240 rests on.
+//
+// A message cancelled before dispatch and then dead-lettered carries BOTH rows: `cancelled` written by
+// the Canceller at segment 0, and one `failed` per segment written by the pool when it parked the
+// message. The replay refuses to put a cancelled message back on the wire, and it recognises one by
+// asking this reader for the current status — so if `failed` ever won, the guard would silently open
+// and nothing in the Go tests would notice: they all answer through a fake reader that never touches
+// this SQL.
+//
+// Two precedences are at work and both are asserted here. Within a segment, ReplacingMergeTree keeps
+// the highest `version` (cancelled 60 over failed 50). Across segments, the message-level aggregate
+// applies its own fixed order — rejected, cancelled, failed, expired, delivered — which is why a single
+// cancelled segment must outrank several failed ones.
+func TestCancelledOutranksFailedInTheAggregate(t *testing.T) {
+	cfg := chtest.Config(t)
+	conn, err := clickhouse.NewConn(cfg)
+	if err != nil {
+		t.Fatalf("new conn: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	writer := clickhouse.NewCDRWriter(conn)
+	reader := clickhouse.NewCDRReader(conn)
+	ctx := context.Background()
+
+	messageID, accountID, customerID := uuid.New(), uuid.New(), uuid.New()
+	submittedAt := time.Now().UTC().Truncate(time.Millisecond)
+	row := func(status clickhouse.Status, seq uint16) clickhouse.CDRRow {
+		return clickhouse.CDRRow{
+			MessageID: messageID, TraceID: uuid.New(), AccountID: accountID, CustomerID: customerID,
+			Direction: clickhouse.DirectionMT, SourceAddr: "GATEWAY", DestAddr: "22507000000",
+			SubmittedAt: submittedAt, Status: status, SegmentCount: 3, SegmentSeq: seq,
+			Encoding: clickhouse.EncodingGSM7,
+		}
+	}
+
+	// The message as the pipeline leaves it: accepted at ingress, cancelled by the customer, then three
+	// segments parked as failed when the max-age SLA fired. The cancelled row is written LAST so the test
+	// cannot pass merely because it arrived first.
+	if err := writer.Insert(ctx, row(clickhouse.StatusAccepted, 0)); err != nil {
+		t.Fatalf("insert accepted: %v", err)
+	}
+	for seq := uint16(1); seq <= 3; seq++ {
+		if err := writer.Insert(ctx, row(clickhouse.StatusFailed, seq)); err != nil {
+			t.Fatalf("insert failed seg %d: %v", seq, err)
+		}
+	}
+	if err := writer.Insert(ctx, row(clickhouse.StatusCancelled, 0)); err != nil {
+		t.Fatalf("insert cancelled: %v", err)
+	}
+
+	got, found, err := reader.Current(ctx, customerID, accountID, messageID)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !found {
+		t.Fatal("a message with rows in this scope must be found: the replay guard reads it by this exact scope")
+	}
+	if got.Status != clickhouse.StatusCancelled {
+		t.Fatalf("status = %q, want cancelled: three failed segments must not outrank one cancellation, "+
+			"or the replay would put a cancelled message back on the wire", got.Status)
+	}
+}
