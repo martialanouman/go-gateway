@@ -71,12 +71,22 @@ type CDRWriter interface {
 // door (ADR-0013). The connector claims it as cancel.HolderDispatched before submit_sm; the returned
 // holder is who actually owns it. *cancel.RedisFlags satisfies it.
 //
-// Claiming rather than merely reading is what closes step-209: it is the claim, not the lagging CDR
-// projection, that decides whether a cancel_sm still may cancel. New defaults a nil CancelFlags to a
-// no-op that always concedes the token, so the hot path never branches on nil and a missing wiring
-// cannot silently disable the check without the no-op being explicit.
+// The two methods are NOT interchangeable, and which one a path may use follows from one question:
+// does a submit_sm depend on the answer?
+//
+//   - Before a send, only Claim will do. That is what closes step-209: between a read and the send a
+//     cancel_sm can win, so a reader would dispatch a message the customer was told would not go out.
+//     The claim, not the lagging CDR projection, is what decides whether a cancel_sm still may cancel.
+//   - On a path that has already decided NOT to send — the max-age expiry branch (step-245) — Peek is
+//     the right call, and claiming would be the wrong one: a dispatched token there would refuse
+//     legitimate cancel_sm for its whole TTL on a message that is never going out.
+//
+// New defaults a nil CancelFlags to a no-op that always concedes the token, so the hot path never
+// branches on nil and a missing wiring cannot silently disable the check without the no-op being
+// explicit.
 type CancelFlags interface {
 	Claim(ctx context.Context, messageID uuid.UUID, as cancel.Holder) (cancel.Holder, error)
+	Peek(ctx context.Context, messageID uuid.UUID) (cancel.Holder, error)
 }
 
 // noopCancelFlags is the New default when no token store is wired: it reports the token as free, so
@@ -84,6 +94,10 @@ type CancelFlags interface {
 type noopCancelFlags struct{}
 
 func (noopCancelFlags) Claim(context.Context, uuid.UUID, cancel.Holder) (cancel.Holder, error) {
+	return cancel.HolderNone, nil
+}
+
+func (noopCancelFlags) Peek(context.Context, uuid.UUID) (cancel.Holder, error) {
 	return cancel.HolderNone, nil
 }
 
@@ -786,6 +800,37 @@ func (s *Service) expired(r pipeline.RoutedMT) bool {
 // record's immutable (partition, offset) and accumulates across redeliveries for as long as this Service
 // lives (a re-dial keeps it; a process restart resets the window). A zero RetryWindow disables
 // dead-lettering, and the max-age SLA is the ultimate backstop in every case.
+// heldByACancellation reports whether a token holder means "a cancel_sm owns this message".
+//
+// Anything that is not a free token and not OUR OWN is a cancellation: HolderCancel, or a holder this
+// build cannot name — including the plain "1" the previous build wrote into this very key, which a
+// rolling deploy can still surface. Reading either as free would put a cancelled message on the wire
+// (ADR-0013, DN8: when in doubt, refuse).
+//
+// HolderDispatched is deliberately excluded: that is our own token, re-read after a Kafka redelivery,
+// and treating it as a cancellation would record a cancellation of a message we have already sent.
+func heldByACancellation(holder cancel.Holder) bool {
+	return holder != cancel.HolderNone && holder != cancel.HolderDispatched
+}
+
+// cancelBeforeDispatch records a cancellation and commits the record without submitting.
+//
+// Writing the row HERE (not only in the Canceller) is what makes the skip safe: it is idempotent under
+// ReplacingMergeTree (rank 60, collapsing with the Canceller's row) and closes the window where the
+// Canceller crashed — or failed its ClickHouse write — after claiming the token but before writing the
+// row. Otherwise the message would be neither sent nor recorded, leaving the CDR stuck on accepted.
+//
+// A cancelled message is never sent, so its reservation is released (step-146). Fail-open, gated on
+// Billable — a billing-disabled or unreserved message makes no call.
+func (s *Service) cancelBeforeDispatch(ctx context.Context, r pipeline.RoutedMT) error {
+	s.deps.Billing.Release(ctx, r)
+	if err := s.deps.CDR.Insert(ctx, cancelledRow(r)); err != nil {
+		return fmt.Errorf("connectorpool: write cancelled cdr: %w", err)
+	}
+	s.deps.Logger.InfoContext(ctx, "connector: message cancelled before dispatch", "message_id", r.MessageID)
+	return nil
+}
+
 func (s *Service) healthRetry(ctx context.Context, rec kafka.Record, r pipeline.RoutedMT, cause error) error {
 	if s.deps.RetryWindow > 0 {
 		first, _ := s.retryFirstFail.LoadOrStore(retryKey(rec), time.Now())
@@ -838,16 +883,29 @@ func (s *Service) processOne(ctx context.Context, b *bind, bindIndex int, rec ka
 	// throttle backpressure or churned across reconnects — is dead-lettered as delivery_expired rather
 	// than submitted, so nothing lingers on the data plane forever. Checked before any submit work.
 	if s.expired(routed) {
+		// Ask who holds the cancel token before parking it — READ, never claim (step-245). A cancelled
+		// message must be recorded as cancelled, not as expired: parking it is what left the residual the
+		// replay guard cannot see, because the Canceller claims the token BEFORE writing its CDR row, so a
+		// failed write leaves the token as the only evidence the message was ever cancelled. The dispatch
+		// path below repairs exactly that case; this branch used to be the one that skipped the repair.
+		//
+		// Reading is admissible HERE and nowhere before a send. ADR-0013 requires the claim because
+		// between a read and a submit_sm a cancel_sm can win, and the message goes out anyway. This branch
+		// has already decided not to send, so a raced read can only misfile a message that is going
+		// nowhere. Claiming instead would put a `dispatched` token on it and refuse legitimate cancel_sm
+		// for the whole 5-minute TTL — on the message that most needs cancelling.
+		//
+		// Fail-open on a Redis fault, like the claim below: cancellation is best-effort and an outage must
+		// not stop the pool from clearing its backlog. The replay guard (step-240) is the net behind this.
+		if holder, perr := s.deps.CancelFlags.Peek(ctx, routed.MessageID); perr != nil {
+			s.deps.Logger.WarnContext(ctx, "connector: cancel-token peek failed, dead-lettering as expired",
+				"message_id", routed.MessageID, "err", perr)
+		} else if heldByACancellation(holder) {
+			return s.cancelBeforeDispatch(ctx, routed)
+		}
 		// Terminal outcomes commit the offset, so processOne returns nil and the deferred recorder above
 		// sees nothing. They are marked here instead — the step asks for error/REJECT/timeout, and a
 		// permanent reject is exactly what an operator goes looking for.
-		//
-		// KNOWN IMPRECISION, assumed (step-240): this returns before the cancel token is claimed below, so
-		// a message the customer already cancelled is parked — and COUNTED — as delivery_expired. An
-		// operator investigating a spike of expiries will find cancellations among them. Correcting the
-		// label means consulting the token here, and the only way to consult it is to claim it: a
-		// `dispatched` claim would refuse legitimate cancel_sm for 5 minutes on a message that will never
-		// be sent. The count that is exact lives on the other side, in mt-replay's refusal counters.
 		observability.RecordSpanError(span, errs.ErrDeliveryExpired)
 		return s.deadLetterWith(ctx, routed, errs.ErrDeliveryExpired)
 	}
@@ -870,28 +928,8 @@ func (s *Service) processOne(ctx context.Context, b *bind, bindIndex int, rec ka
 	if err != nil {
 		s.deps.Logger.WarnContext(ctx, "connector: cancel-token claim failed, dispatching anyway",
 			"message_id", routed.MessageID, "err", err)
-	} else if holder != cancel.HolderNone && holder != cancel.HolderDispatched {
-		// Anything that is not a free token and not OUR OWN is a cancellation: HolderCancel, or a
-		// holder this build cannot name — including the plain "1" the previous build wrote into this
-		// very key, which a rolling deploy can still surface. Reading either as free would put a
-		// cancelled message on the wire.
-		//
-		// HolderDispatched is deliberately excluded: that is our own token, re-read after a Kafka
-		// redelivery, and treating it as a cancellation would skip a message we have already sent.
-		//
-		// Honour the cancel: record the cancelled outcome and commit without submitting. Writing the
-		// row here (not only in the Canceller) is what makes the skip safe: it is idempotent under
-		// ReplacingMergeTree (rank 60, collapsing with the Canceller's row) and closes the window where
-		// the Canceller crashed after claiming but before writing the row — otherwise the message would
-		// be neither sent nor recorded, leaving the CDR stuck on accepted.
-		// A cancelled message is never sent, so release its reservation (step-146). Fail-open, gated on
-		// Billable — a billing-disabled or unreserved message makes no call.
-		s.deps.Billing.Release(ctx, routed)
-		if err := s.deps.CDR.Insert(ctx, cancelledRow(routed)); err != nil {
-			return fmt.Errorf("connectorpool: write cancelled cdr: %w", err)
-		}
-		s.deps.Logger.InfoContext(ctx, "connector: message cancelled before dispatch", "message_id", routed.MessageID)
-		return nil
+	} else if heldByACancellation(holder) {
+		return s.cancelBeforeDispatch(ctx, routed)
 	}
 
 	// Reroute before submitting if this connector's own breaker is already open and the message carries a

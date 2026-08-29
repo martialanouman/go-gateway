@@ -101,3 +101,31 @@ func (f *RedisFlags) Claim(ctx context.Context, id uuid.UUID, as Holder) (Holder
 		return Holder(prev), nil
 	}
 }
+
+// Peek reports who holds the token of id without taking it, returning HolderNone when it is free. It
+// writes nothing and leaves the holder's expiry untouched.
+//
+// WHERE IT MAY BE USED, and this bound is the point of the method rather than a caveat on it: only on a
+// path that has ALREADY decided not to send the message. Its single caller today is the connector
+// pool's max-age expiry branch (step-245), which is about to park the message and only wants to know
+// whether to record it as cancelled instead of expired.
+//
+// WHERE IT MAY NOT: anywhere the answer decides a submit_sm. That is the whole subject of ADR-0013 —
+// step-209 was closed by making the connector CLAIM the token rather than read it, because between a
+// read and the send a cancel_sm can win, and a message the customer was told would not go out goes out.
+// A read cannot arbitrate a race it does not enter. On a path that will not send, a raced read can only
+// misfile a message that is going nowhere, which is why the same weakness is harmless there.
+//
+// So: reaching for Peek before a send is not a shortcut, it is the reintroduction of a closed bug. The
+// call to reach for there is Claim.
+func (f *RedisFlags) Peek(ctx context.Context, id uuid.UUID) (Holder, error) {
+	v, err := f.rdb.Get(ctx, key(id)).Result()
+	switch {
+	case errors.Is(err, redis.Nil):
+		return HolderNone, nil // no key: nobody holds this message's token
+	case err != nil:
+		return HolderNone, fmt.Errorf("cancel: peek %s: %w", id, err)
+	default:
+		return Holder(v), nil
+	}
+}

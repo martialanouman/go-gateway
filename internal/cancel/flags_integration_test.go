@@ -270,3 +270,56 @@ func TestClaimDoesNotExtendTheWinnersTTL(t *testing.T) {
 			before, after)
 	}
 }
+
+// TestPeekReportsTheHolderWithoutTakingIt is the test a fake cannot stand in for, and the reason this
+// one runs against real Redis.
+//
+// Peek exists so the connector pool can ask who holds a message's token on a path that has ALREADY
+// decided not to send it — the max-age expiry branch (step-245). Its whole safety rests on it being a
+// read: it must not take a free token, and it must not touch the expiry of one that is held. Neither
+// property lives in our code; both live in Redis, and the package's two fakes simulate neither NX nor
+// TTL. A Peek accidentally written as a Claim would satisfy every unit test in the repo.
+func TestPeekReportsTheHolderWithoutTakingIt(t *testing.T) {
+	rdb := redistest.Client(t)
+	flags := cancel.NewRedisFlags(rdb)
+	ctx := context.Background()
+
+	// A free token reads as free — and STAYS free, which is the half a Claim would break.
+	free := uuid.New()
+	holder, err := flags.Peek(ctx, free)
+	if err != nil {
+		t.Fatalf("Peek on a free token: %v", err)
+	}
+	if holder != cancel.HolderNone {
+		t.Errorf("Peek on a free token = %q, want HolderNone", holder)
+	}
+	if n, err := rdb.Exists(ctx, "cancel:{"+free.String()+"}").Result(); err != nil || n != 0 {
+		t.Errorf("the key exists after a Peek (exists=%d, err=%v): Peek must not take the token, or a "+
+			"cancel_sm arriving later would find it held and refuse", n, err)
+	}
+
+	// A held token reads back its holder, and the peek leaves its expiry alone: a stream of peeks must
+	// not keep a token alive past the window its TTL was chosen for.
+	held := uuid.New()
+	if _, err := flags.Claim(ctx, held, cancel.HolderCancel); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	before, err := rdb.TTL(ctx, "cancel:{"+held.String()+"}").Result()
+	if err != nil {
+		t.Fatalf("TTL before: %v", err)
+	}
+	holder, err = flags.Peek(ctx, held)
+	if err != nil {
+		t.Fatalf("Peek on a held token: %v", err)
+	}
+	if holder != cancel.HolderCancel {
+		t.Errorf("Peek = %q, want HolderCancel — the pool decides on this value", holder)
+	}
+	after, err := rdb.TTL(ctx, "cancel:{"+held.String()+"}").Result()
+	if err != nil {
+		t.Fatalf("TTL after: %v", err)
+	}
+	if after > before {
+		t.Errorf("TTL grew from %v to %v — a peek must not renew the token it reads", before, after)
+	}
+}

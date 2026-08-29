@@ -170,6 +170,7 @@ structurelles et à faire **avant** que M12 n'empile dessus.
 - [x] step-209 — `cancelled` ne doit plus enterrer un message réellement livré (course élargie par step-201c)
 - [x] step-230 — Les gardes du banc `loadref` refusent enfin — et le banc du routeur publiait son préchauffage
 - [x] step-240 — Le rejeu d'un dead-letter ne remet plus sur le fil un message annulé
+- [x] step-245 — La branche d'expiration consulte le jeton d'annulation (résiduel de step-240)
 
 Ce qui restait de M12 — chaos, sécurité, transports, manifests, campagne NFR, go-live — a été renuméroté
 et vit dans **Reste à faire**, plus bas, à sa place dans l'ordre d'exécution.
@@ -192,17 +193,14 @@ bloquent rien et peuvent bouger sans rien casser.
 Une seule chaîne, et elle commande tout le reste de M12 : le banc devait refuser ce qu'il nomme avant que
 la campagne ne publie un chiffre — c'est fait (step-230, livrée) — et les manifests doivent exister avant
 qu'on mesure un environnement représentatif.
-- [ ] step-245 — Un jeton d'annulation gagné sans sa ligne CDR laisse un message rejouable (résiduel de step-240)
 - [ ] step-250 — Chaos : perte Redis (chaque politique de panne) + flapping connecteur
 - [ ] step-260 — Chaos : drain gracieux + PDB + binds préservés ; failover Postgres ⛓ step-250
 - [ ] step-270 — Manifests deploy/ Kubernetes (Deployments, Services, HPA, PDB, probes) ⛓ step-260
 - [ ] step-280 — Campagne NFR pleine échelle sur environnement représentatif ⛓ step-230, step-270
 
-step-245 ne bloque rien et pourrait aller n'importe où ; elle est placée ici parce qu'elle est ce qui
-reste du seul **défaut de correction** du lot. step-240 a fermé le rejeu d'un message annulé ; il subsiste
-le cas où l'annulation a gagné son jeton sans jamais écrire sa ligne CDR, que la garde du rejeu ne peut
-donc pas voir. Son numéro n'est pas un multiple de dix parce qu'aucun n'était libre à sa place dans
-l'ordre — la suite doit venir après son parent et avant step-250.
+Le seul **défaut de correction** du lot est clos : step-240 a fermé le rejeu d'un message annulé, et
+step-245 le cas où l'annulation avait gagné son jeton sans jamais écrire sa ligne CDR. Ce qui reste de
+cette section est du chaos, des manifests et une campagne de mesure.
 
 ## Sécurité et authentification
 Indépendantes de la chaîne de charge : parallélisables si deux mains travaillent.

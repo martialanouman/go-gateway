@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/martialanouman/go-gateway/internal/cancel"
 	"github.com/martialanouman/go-gateway/internal/connectorpool"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
@@ -46,7 +47,7 @@ func (m *recordingDeadLetter) count(reason string) int {
 // deadLetterDeps wires a single-connector pool (ConnectorID nil → processes every record) with a
 // recording producer, CDR and dead-letter metric, plus the given guards, and drives it through the given
 // consumer. It returns the sinks after Run completes.
-func deadLetterDeps(t *testing.T, consumer connectorpool.Consumer, resp func(smpp.SubmitSM) fakesmsc.Resp, retryWindow, maxAge time.Duration) (*recordingProducer, *fakeCDR, *recordingDeadLetter) {
+func deadLetterDeps(t *testing.T, consumer connectorpool.Consumer, resp func(smpp.SubmitSM) fakesmsc.Resp, retryWindow, maxAge time.Duration, flags connectorpool.CancelFlags) (*recordingProducer, *fakeCDR, *recordingDeadLetter) {
 	t.Helper()
 	smsc := fakesmsc.Start(t, fakesmsc.Config{OnSubmit: resp})
 	prod := newRecordingProducer()
@@ -58,6 +59,7 @@ func deadLetterDeps(t *testing.T, consumer connectorpool.Consumer, resp func(smp
 		CDR:           cdr,
 		Producer:      prod,
 		DeadLetter:    dl,
+		CancelFlags:   flags,
 		RetryWindow:   retryWindow,
 		MaxMessageAge: maxAge,
 		Bind:          poolBind(smsc.Addr(), 1),
@@ -79,7 +81,7 @@ func TestMaxAgeDeadLetters(t *testing.T) {
 		t.Fatalf("encode: %v", err)
 	}
 	prod, cdr, dl := deadLetterDeps(t, &fakeConsumer{records: []kafka.Record{rec}},
-		func(smpp.SubmitSM) fakesmsc.Resp { return fakesmsc.OK() }, 0, time.Hour)
+		func(smpp.SubmitSM) fakesmsc.Resp { return fakesmsc.OK() }, 0, time.Hour, nil)
 
 	recs := prod.records()
 	if len(recs) != 1 || recs[0].Topic != kafka.TopicMTDeadLetter {
@@ -110,7 +112,7 @@ func TestRetryWindowDeadLetters(t *testing.T) {
 	// (elapsed time only grows under load, so this cannot flake short), so the second delivery is past
 	// the window and dead-letters.
 	prod, cdr, dl := deadLetterDeps(t, &pausingConsumer{records: []kafka.Record{rec, rec}, pause: 10 * time.Millisecond},
-		func(smpp.SubmitSM) fakesmsc.Resp { return fakesmsc.SysErr() }, 5*time.Millisecond, 0)
+		func(smpp.SubmitSM) fakesmsc.Resp { return fakesmsc.SysErr() }, 5*time.Millisecond, 0, nil)
 
 	recs := prod.records()
 	if len(recs) != 1 || recs[0].Topic != kafka.TopicMTDeadLetter {
@@ -249,7 +251,7 @@ func TestReplayedMessageNotReExpired(t *testing.T) {
 		t.Fatalf("encode: %v", err)
 	}
 	prod, cdr, dl := deadLetterDeps(t, &fakeConsumer{records: []kafka.Record{rec}},
-		func(smpp.SubmitSM) fakesmsc.Resp { return fakesmsc.OK() }, 0, time.Hour)
+		func(smpp.SubmitSM) fakesmsc.Resp { return fakesmsc.OK() }, 0, time.Hour, nil)
 
 	// The pool shares one producer across the dead-letter and outcome paths, so the assertion is on the
 	// TOPIC: nothing may be parked, and the one record published must be the enroute outcome of a normal
@@ -476,5 +478,91 @@ func TestReplayerWithoutACDRReaderFailsClosed(t *testing.T) {
 	}
 	if recs := prod.records(); len(recs) != 0 {
 		t.Fatalf("produced %d records, want none", len(recs))
+	}
+}
+
+// TestExpiredCancelledMessageIsNotDeadLettered is the defect of step-245, and the guard against
+// over-correcting it, in one fixture.
+//
+// A message the customer cancelled must be RECORDED as cancelled, not parked as expired. Parking it is
+// what leaves the residual step-240's replay guard cannot see: the Canceller claims the token before
+// writing its CDR row, so a failed write leaves a message whose only evidence of cancellation is the
+// token — and the expiry branch was the one path that never looked at it.
+//
+// The two messages carry DIFFERENT token holders on purpose. With a cancelled one alone, a branch that
+// stopped dead-lettering everything would pass this test just as well as the correct one; the assertion
+// is on WHICH message ends up parked.
+func TestExpiredCancelledMessageIsNotDeadLettered(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		flags        connectorpool.CancelFlags
+		wantParked   bool
+		wantCDRState clickhouse.Status
+	}{
+		// A cancel_sm owns the token: record the cancellation, park nothing.
+		{"cancelled", &fakeFlags{holder: cancel.HolderCancel}, false, clickhouse.StatusCancelled},
+		// Nobody cancelled it. This is an ordinary max-age expiry and must stay one (step-129).
+		{"free token", &fakeFlags{holder: cancel.HolderNone}, true, clickhouse.StatusFailed},
+		// Our OWN token, re-read after a Kafka redelivery. Treating it as a cancellation would record a
+		// cancellation of a message we may already have sent — the exact falsehood ADR-0013 forbids.
+		{"our own token", &fakeFlags{holder: cancel.HolderDispatched}, true, clickhouse.StatusFailed},
+		// A holder this build cannot name is not a free one (ADR-0013, DN8): when in doubt, refuse.
+		{"unknown holder", &fakeFlags{holder: "1"}, false, clickhouse.StatusCancelled},
+		// Redis is down. Cancellation is best-effort and delivery must not halt on it, so the branch
+		// fails OPEN and parks as before — step-240's replay guard is the net behind this one.
+		{"peek fails", &fakeFlags{peekErr: errors.New("redis down")}, true, clickhouse.StatusFailed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := routed()
+			r.SubmittedAt = time.Now().Add(-2 * time.Hour).UTC() // well past the 1h SLA below
+			flags := tc.flags.(*fakeFlags)
+			rec, err := pipeline.EncodeRouted(r)
+			if err != nil {
+				t.Fatalf("encode: %v", err)
+			}
+			prod, cdr, dl := deadLetterDeps(t, &fakeConsumer{records: []kafka.Record{rec}},
+				func(smpp.SubmitSM) fakesmsc.Resp { return fakesmsc.OK() }, 0, time.Hour, tc.flags)
+
+			var parked int
+			for _, got := range prod.records() {
+				if got.Topic == kafka.TopicMTDeadLetter {
+					parked++
+				}
+			}
+			if want := map[bool]int{true: 1, false: 0}[tc.wantParked]; parked != want {
+				t.Errorf("parked %d records on mt.dead-letter, want %d", parked, want)
+			}
+			if len(cdr.rows) != 1 {
+				t.Fatalf("wrote %d cdr rows, want exactly one", len(cdr.rows))
+			}
+			if got := cdr.rows[0].Status; got != tc.wantCDRState {
+				t.Fatalf("cdr status = %q, want %q", got, tc.wantCDRState)
+			}
+			// The counter is the other half of the fix: an annulment must stop being counted as an
+			// expiry, or an operator investigating a spike of expiries finds cancellations among them.
+			want := 0
+			if tc.wantParked {
+				want = 1
+			}
+			if got := dl.count("delivery_expired"); got != want {
+				t.Errorf("delivery_expired metric = %d, want %d", got, want)
+			}
+
+			// WHICH call the branch made, and about WHICH message. Both matter and neither shows in the
+			// verdict: Claim and Peek answer the same holder, so a branch that claimed would pass every
+			// assertion above while placing a 5-minute `dispatched` token on a message it is parking —
+			// refusing legitimate cancel_sm on the one message that most needs cancelling. And a peek of
+			// the wrong id would read a key that does not exist, quietly turning this whole guard off.
+			claimed, peeked := flags.calls()
+			if len(claimed) != 0 {
+				t.Errorf("the expiry branch claimed %v: it must READ the token, never take it — a dispatched "+
+					"token here refuses cancel_sm for 5 minutes on a message that is never going out", claimed)
+			}
+			if len(peeked) != 1 || peeked[0] != r.MessageID {
+				t.Errorf("peeked %v, want exactly [%s]: the token is keyed by message_id, and any other id "+
+					"reads a key that does not exist — which reads as 'not cancelled' for every message",
+					peeked, r.MessageID)
+			}
+		})
 	}
 }

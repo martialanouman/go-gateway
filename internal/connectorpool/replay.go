@@ -183,10 +183,12 @@ func (r *Replayer) mayReplay(ctx context.Context, routed pipeline.RoutedMT) (boo
 		// written synchronously by its own author (internal/cancel), and it is the only row this guard
 		// reads.
 		//
-		// RESIDUAL, deliberately left open (see the step-245 follow-up): the Canceller claims the token
-		// BEFORE writing the row, and a retry after a failed write returns success without writing it. A
-		// message in that state reads `failed` here and IS replayed. Closing it means consulting the token
-		// in the pool's expiry branch, which touches ground ADR-0013 holds out of scope.
+		// This guard used to carry a residual: the Canceller claims the token BEFORE writing its row, so a
+		// failed write left a cancelled message whose CDR reads `failed` — invisible here, and replayed.
+		// step-245 closed it upstream rather than here: the pool's expiry branch now PEEKS the token and
+		// records the cancellation instead of parking the message, so such a message no longer reaches
+		// mt.dead-letter at all. The CDR is still the right source for this guard; it just no longer has
+		// to be the only one.
 		r.refused.Add(1)
 		r.logger.WarnContext(ctx, "connector: refusing to replay a message that never left the gateway",
 			"message_id", routed.MessageID, "status", string(row.Status))
