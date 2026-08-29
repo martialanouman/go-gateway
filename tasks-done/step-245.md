@@ -1,6 +1,6 @@
 # step-245 — un jeton d'annulation gagné sans sa ligne CDR laisse un message rejouable
 
-> **Jalon :** M12, dette découverte pendant step-240 · **Statut :** À FAIRE
+> **Jalon :** M12, dette découverte pendant step-240 · **Statut :** LIVRÉE
 > **Dépend de :** step-209 (jeton d'annulation), step-240 (garde du rejeu) · **Bloque :** —
 
 ## But
@@ -94,14 +94,60 @@ Fenêtre : annulation **+ échec d'écriture ClickHouse** + expiration avant dis
 
 ## Definition of Done
 
-- [ ] `make check` vert (lint · `test -race` · govulncheck · contrats)
-- [ ] un message annulé dont la ligne CDR n'a jamais été écrite ne peut plus repartir par le rejeu
-- [ ] le geste retenu est tranché et écrit avec sa raison, y compris pourquoi ADR-0013 ne s'y oppose pas
-- [ ] la branche `holder == HolderCancel` distingue « ligne écrite, pas encore visible » de « ligne
-      jamais écrite », ou explique pourquoi elle n'a pas à le faire (le geste 2 rend la question sans
-      objet : elle écrit dans les deux cas)
-- [ ] si le geste 1 est retenu : l'imprécision du compteur `delivery_expired`, documentée par step-240
+- [x] `make check` vert (lint · `test -race` · govulncheck · contrats)
+- [x] un message annulé dont la ligne CDR n'a jamais été écrite ne peut plus repartir par le rejeu
+- [x] le geste retenu est tranché et écrit avec sa raison, y compris pourquoi ADR-0013 ne s'y oppose pas
+- [x] la branche `holder == HolderCancel` distingue « ligne écrite, pas encore visible » de « ligne
+      jamais écrite », ou explique pourquoi elle n'a pas à le faire — **sans objet** : le geste 1 rend la
+      distinction inutile, voir ci-dessous
+- [x] si le geste 1 est retenu : l'imprécision du compteur `delivery_expired`, documentée par step-240
       dans `connectorpool.go`, est retirée puisqu'elle n'a plus lieu d'être
+
+## Ce qui a été tranché, et pourquoi
+
+**Geste 1 : le pool consulte le jeton, il ne le revendique pas.** `cancel.RedisFlags` gagne un `Peek`
+(`GET`, aucune écriture, aucun TTL touché) ; la branche d'expiration l'appelle et, si le jeton est détenu
+par autre chose que `HolderDispatched`, prend la branche d'annulation existante au lieu de parquer.
+
+**Pourquoi ADR-0013 ne s'y oppose pas.** L'ADR exige le `Claim` parce qu'entre une lecture et le
+`submit_sm` un `cancel_sm` peut gagner : le message part alors qu'on avait dit qu'il ne partirait pas.
+Une lecture ne peut pas arbitrer une course à laquelle elle n'entre pas. Mais la branche d'expiration a
+**déjà renoncé à envoyer** : une lecture racée n'y peut que mal classer un message qui ne va nulle part.
+Et revendiquer y serait activement nuisible — un jeton `dispatched` (TTL 5 min) refuserait des
+`cancel_sm` légitimes sur le message qui en a le plus besoin.
+
+Cette borne vit dans le **godoc de `Peek`**, pas dans un ADR : elle est lue par qui ouvre la méthode.
+Une garde AST a été écartée — épingler une position d'appel casserait au premier refactor légitime.
+
+**Le geste 2 (écrire la ligne côté Canceller sur le chemin « le jeton est déjà à nous ») a été écarté
+comme presque redondant**, et c'est un constat, pas une préférence : si le message n'expire pas, il
+atteint le dispatch, dont le `Claim` voit `HolderCancel` et écrit déjà la ligne. Le Canceller ne
+guérirait donc que le cas d'un message **ni** dispatché **ni** expiré. La distinction « ligne écrite mais
+pas encore visible » vs « ligne jamais écrite » devient sans objet par le même raisonnement : les deux
+causes mènent à la même réparation, et elle a désormais lieu sur les deux chemins.
+
+**La branche d'annulation a été extraite** (`cancelBeforeDispatch`) plutôt que dupliquée, avec le
+prédicat `heldByACancellation` qui porte la règle « un jeton inconnu n'est pas un jeton libre »
+(ADR-0013 DN8). Le diff retire de la duplication au lieu d'en ajouter.
+
+## Ce que la revue a trouvé
+
+Deux mutations que le plan ne listait pas **survivaient** : consulter `ConnectorID` au lieu de
+`MessageID`, et **revendiquer** au lieu de consulter. La première aurait rendu step-245 inopérante en
+silence (aucune clé sous cet identifiant ⇒ « pas annulé » pour tout message) ; la seconde aurait posé le
+jeton `dispatched` que tout l'argument de conception dit d'éviter.
+
+Une seule cause : le faux `fakeFlags` du paquet **n'enregistrait rien** — ni l'identifiant demandé, ni
+quelle méthode avait été appelée. Or `Claim` et `Peek` y rendent la même valeur, donc les substituer
+l'une à l'autre était invisible à toute assertion portant sur le verdict. Le patron correct existait
+déjà dans le paquet voisin (`internal/cancel/cancel_test.go`, qui enregistre `claimed`).
+
+La table assert désormais **quel appel** la branche a fait et **sur quel identifiant** : `claimed` doit
+rester vide, `peeked` doit valoir exactement le `message_id`. Les deux mutations tombent.
+
+**Aucun compteur ne remplace `delivery_expired` pour les annulations**, délibérément : la branche
+d'annulation du dispatch n'en pose aucun non plus, et une annulation se compte sur ses lignes CDR
+`cancelled`. Le compteur ne mesure désormais que de vraies expirations.
 
 ## Hors périmètre
 

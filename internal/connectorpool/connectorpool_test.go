@@ -66,12 +66,45 @@ func (f *fakeCDR) Insert(_ context.Context, row clickhouse.CDRRow) error {
 // fakeFlags stands in for the shared cancel-token store. holder is the token already in place:
 // HolderNone means the token was free and the connector has just claimed it.
 type fakeFlags struct {
-	holder cancel.Holder
-	err    error
+	holder  cancel.Holder
+	err     error
+	peekErr error
+
+	// The two calls are RECORDED separately, because on this store they are not interchangeable and a
+	// fake that only answered would not say so: Claim and Peek return the same holder, so substituting
+	// one for the other is invisible to any assertion on the verdict alone. Which one a path used is
+	// the whole subject of step-245, and the id it asked about is what makes the answer mean anything.
+	mu      sync.Mutex
+	claimed []uuid.UUID
+	peeked  []uuid.UUID
 }
 
-func (f *fakeFlags) Claim(_ context.Context, _ uuid.UUID, _ cancel.Holder) (cancel.Holder, error) {
+func (f *fakeFlags) Claim(_ context.Context, id uuid.UUID, _ cancel.Holder) (cancel.Holder, error) {
+	f.mu.Lock()
+	f.claimed = append(f.claimed, id)
+	f.mu.Unlock()
 	return f.holder, f.err
+}
+
+// Peek answers the same token, and by default the same error: a fake that let Peek succeed where Claim
+// fails would hide the fail-open branch the expiry path relies on. peekErr overrides it for the tests
+// that need the two to disagree.
+func (f *fakeFlags) Peek(_ context.Context, id uuid.UUID) (cancel.Holder, error) {
+	f.mu.Lock()
+	f.peeked = append(f.peeked, id)
+	f.mu.Unlock()
+	if f.peekErr != nil {
+		return cancel.HolderNone, f.peekErr
+	}
+	return f.holder, f.err
+}
+
+// calls reports what the store was asked, so a test can assert WHICH call a path made and about WHICH
+// message — not merely what it got back.
+func (f *fakeFlags) calls() (claimed, peeked []uuid.UUID) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]uuid.UUID(nil), f.claimed...), append([]uuid.UUID(nil), f.peeked...)
 }
 
 // dlrPut is one recorded DLRMap.Put call.

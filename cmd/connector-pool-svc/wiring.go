@@ -250,11 +250,13 @@ func openStores(ctx context.Context, cfg config.Config, connectorID uuid.UUID) (
 		return nil, fmt.Errorf("kafka producer: %w", err)
 	}
 
-	// Redis backs the cancel-flag check before each submit_sm: a cancel_sm on smpp-server-svc flags a
-	// message here so it is not dispatched. NewClient pings eagerly, so Redis must be reachable at boot
-	// (a startup outage crash-loops the pod, as everywhere else). At RUNTIME it is deliberately NOT a
-	// readiness dependency and the flag check fails OPEN (connectorpool.handler): a Redis outage lets
-	// delivery continue rather than halting all outbound traffic — cancellation is best-effort.
+	// Redis backs the cancel token, consulted on two paths: CLAIMED before each submit_sm so a cancel_sm
+	// on smpp-server-svc cannot lose a race it should win, and merely READ in the max-age expiry branch,
+	// which has already decided not to send and only wants to record a cancellation as one rather than as
+	// an expiry (step-245). NewClient pings eagerly, so Redis must be reachable at boot (a startup outage
+	// crash-loops the pod, as everywhere else). At RUNTIME it is deliberately NOT a readiness dependency
+	// and BOTH checks fail OPEN: a Redis outage lets delivery continue rather than halting all outbound
+	// traffic — cancellation is best-effort.
 	s.rdb, err = redisstore.NewClient(ctx, cfg.Redis)
 	if err != nil {
 		return nil, fmt.Errorf("connect redis: %w", err)
