@@ -4,7 +4,7 @@
 **Statut :** Stratégie de test v1.0
 **À lire avec :** `plan-execution-passerelle.md` (jalons), `guide-codage-go.md` §13 (règles de test).
 
-Ce document dit **quoi tester, à quel niveau, et comment**, en tenant compte d'une contrainte forte : **le simulateur SMSC n'est pas encore prêt**. On s'appuie donc sur un **faux SMSC minimal in-repo** pour tout le début, et on n'introduit le vrai simulateur qu'au jalon `M8`.
+Ce document dit **quoi tester, à quel niveau, et comment**. Les deux pairs SMPP coexistent : le **faux SMSC minimal in-repo** (`internal/testutil/fakesmsc`) porte les tests ordinaires, et le **vrai simulateur**, livré à `M8` (`internal/testutil/smscsim`), porte l'injection de pannes des tests de résilience.
 
 ---
 
@@ -52,7 +52,7 @@ defer smsc.Close()
 smsc.SendDLR(messageID, smpp.StatusDelivered)
 ```
 
-> **Règle :** aucun test ne doit dépendre du vrai simulateur avant `M8`. Les tests de résilience (disjoncteur, reroute, reconnexion) qui exigent une injection de pannes réaliste sont **écrits mais marqués `t.Skip("needs SMSC simulator — M8")`** jusqu'à sa disponibilité, pour que l'intention soit visible sans casser la CI.
+> **Règle :** un test choisit son pair par ce qu'il exerce, pas par le jalon. Le faux SMSC suffit dès qu'il s'agit de réponses applicatives (`OK`, `Throttled`, `SysErr`, `Delay`) ; le vrai simulateur est requis pour l'injection de pannes réaliste (disjoncteur, reroute, reconnexion). Ces tests s'auto-sautent quand l'image `smsc-simulator:dev` est absente — **`make smsc-sim` la construit**, et sans cette étape ils ne tournent pas, ils passent.
 
 ---
 
@@ -105,9 +105,11 @@ Le squelette vertical (`M2`) : `POST /messages` → CDR `enroute` → `GET /mess
 
 Outils : `k6` ou `vegeta` côté REST, un générateur de binds SMPP côté ingress. Cibles (§1.2 de la spec) : soutenu 8 000 SMS/s, pic 15 000 ; ingestion p99 < 250 ms ; bout-en-bout p99 < 2 s (disjoncteur fermé). Mesurer la profondeur de file Kafka, le lag consumer, la latence par étape. Tuning : partitions Kafka, batch ClickHouse, pool `pgx`.
 
-### 4.8 Chaos & injection de pannes (M8+, requiert le vrai simulateur)
+### 4.8 Chaos & injection de pannes
 
-Perte Redis (vérifier **chaque** politique de panne : fail-closed débit, fail-open-flag anti-spam, fail-closed crédit strict) ; flapping de connecteur (disjoncteur ouvre → `fallback_chain` → `mt.reroute-park`) ; redémarrage de pods (drain gracieux, `PodDisruptionBudget`, binds préservés) ; failover Postgres (réhydratation du cache de solde). **Ces scénarios attendent le simulateur SMSC** ; les tests sont écrits et `Skip`és d'ici là.
+Perte Redis (vérifier **chaque** politique de panne — la matrice de référence est `guide-codage-go.md` §16, pas cette liste) ; flapping de connecteur (disjoncteur ouvre → `fallback_chain` → `mt.reroute-park`) ; redémarrage de pods (drain gracieux, `PodDisruptionBudget`, binds préservés) ; failover Postgres (réhydratation du cache de solde).
+
+La perte Redis n'a jamais eu besoin du simulateur SMSC : elle se coupe avec un `tcpproxy` devant le Redis de `redistest` (`redistest.Cuttable`), et chaque politique est prouvée dans le paquet qui la porte plutôt que dans une suite de chaos unique — l'assertion y est nette et le test n'a besoin que de Redis. Livré en step-250. Seuls les scénarios de **connecteur** (flapping, reroute) demandent un pair SMPP.
 
 ---
 
@@ -147,4 +149,4 @@ La couverture est un indicateur, pas une fin : 100 % de lignes couvertes sans le
 
 ## 7. Écriture des tests avec Claude Code
 
-Pour chaque tâche, demande à Claude Code d'**écrire les tests en même temps que le code**, en recopiant les critères d'acceptation du plan comme cas de test. Rappels à mettre dans le prompt : table-driven idiomatique ; fakes écrits à la main plutôt que mocks lourds ; `-race` systématique ; pour toute nouvelle étape de pipeline, un test qui vérifie qu'elle **ne logge pas le corps**. Les scénarios qui exigent le simulateur SMSC sont écrits puis `t.Skip("needs SMSC simulator — M8")`.
+Pour chaque tâche, demande à Claude Code d'**écrire les tests en même temps que le code**, en recopiant les critères d'acceptation du plan comme cas de test. Rappels à mettre dans le prompt : table-driven idiomatique ; fakes écrits à la main plutôt que mocks lourds ; `-race` systématique ; pour toute nouvelle étape de pipeline, un test qui vérifie qu'elle **ne logge pas le corps**. Les scénarios qui exigent le simulateur SMSC s'écrivent contre `internal/testutil/smscsim` et s'auto-sautent sans son image (`make smsc-sim`).

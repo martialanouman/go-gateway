@@ -117,7 +117,7 @@ Le **port ops** (9090) sert `/metrics`, `/healthz`, `/readyz` — **interne, jam
 
 Services = `cmd/<nom>-svc/main.go`. Code métier sous `internal/` (jamais importable dehors). Protos gRPC sous `api/proto/`, code généré sous `internal/…/pb`. Migrations `migrations/NNNN_description.up.sql`/`.down.sql` (golang-migrate, dérivées de `db/schema_passerelle_sms.sql`). Colonnes SQL, clés JSON, topics : `snake_case` ; identifiants Go : `MixedCaps` (convention de style §2/§3).
 
-### 1.8 Le faux SMSC in-repo (pair de test, tant que le simulateur n'est pas prêt)
+### 1.8 Le faux SMSC in-repo (le pair de test des scénarios ordinaires)
 
 Package `internal/testutil/fakesmsc`, lançable en test (embarqué) ou en process (`make fake-smsc`). Parle SMPP via `internal/smpp` (le codec, livré à `M2`). Réponses **scriptables** (`OK`, `Throttled`, `SysErr`, `Delay`), émission de MO/DLR à la demande. Débloque `M2`→`M7`. Le vrai simulateur (`docs/specification-technique-simulateur-smsc.md`) n'est requis qu'à `M8`. Détail : `strategie-de-test-passerelle.md` §2.
 
@@ -554,4 +554,4 @@ M0 ─► M1 ─► M2 ─► M3 ─► M4 ─► M5 ─► M6 ─┬─► M7 �
 
 ## 18. Le test harness (transversal)
 
-Le pair SMSC arrive en deux temps. **Le simulateur SMSC (`docs/specification-technique-simulateur-smsc.md`) n'est pas encore prêt**, donc de `M2` à `M7` on utilise le **faux SMSC minimal in-repo** (`internal/testutil/fakesmsc`, §1.8) : il joue le SMSC en sortie et l'ESME en entrée, réponses scriptables et émission de MO/DLR. Les scénarios de résilience exigeant une injection de pannes réaliste (disjoncteur, reroute, reconnexion) sont **écrits puis `t.Skip("needs SMSC simulator — M8")`** jusqu'à `M8`, où l'on branche le vrai simulateur. Les **tests de contrat** vérifient que chi+huma reste fidèle à `api/openapi-*.yaml` ; les **tests d'intégration** (`testcontainers-go`) montent Postgres/Redis/Kafka/ClickHouse ; les **quatre invariants** (§0.5) restent verts en permanence. Détail complet : `strategie-de-test-passerelle.md`.
+Le pair SMSC arrive en deux temps. De `M2` à `M7` on utilise le **faux SMSC minimal in-repo** (`internal/testutil/fakesmsc`, §1.8) : il joue le SMSC en sortie et l'ESME en entrée, réponses scriptables et émission de MO/DLR. Le **vrai simulateur est livré depuis `M8`** (`internal/testutil/smscsim`, `make smsc-sim`) et porte les scénarios de résilience exigeant une injection de pannes réaliste (disjoncteur, reroute, reconnexion) ; la coupure de lien elle-même passe par `internal/testutil/tcpproxy`, à une adresse stable que le redémarrage d'un conteneur ne préserverait pas. Les **tests de contrat** vérifient que chi+huma reste fidèle à `api/openapi-*.yaml` ; les **tests d'intégration** (`testcontainers-go`) montent Postgres/Redis/Kafka/ClickHouse ; les **quatre invariants** (§0.5) restent verts en permanence. Détail complet : `strategie-de-test-passerelle.md`.

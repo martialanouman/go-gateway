@@ -10,6 +10,7 @@ package redistest
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"sync"
 	"testing"
 	"time"
@@ -19,6 +20,8 @@ import (
 	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 
 	"github.com/martialanouman/go-gateway/internal/config"
+	redisstore "github.com/martialanouman/go-gateway/internal/storage/redis"
+	"github.com/martialanouman/go-gateway/internal/testutil/tcpproxy"
 )
 
 // image must match docker-compose.yml so the test stack and the dev stack cannot drift. Keep the two
@@ -92,4 +95,51 @@ func start() (*redis.Client, error) {
 		return nil, fmt.Errorf("ping: %w", err)
 	}
 	return client, nil
+}
+
+// Cuttable returns a client to the SAME shared Redis as Client, reached through an in-process TCP proxy
+// the test can Cut (Redis disappears) and Resume (it comes back). It is how a chaos test proves a
+// failure policy against a real outage instead of a fake that returns an error (step-250).
+//
+// It proxies rather than stopping the container, for two reasons and not merely as a convenience.
+// First, it is the only option available: the container handle is a package-local variable inside
+// start(), deliberately never exposed, because every helper here shares one container per test package
+// (see the package doc). Second, and more importantly, stopping it would be WRONG — the sibling tests
+// of the same package are talking to that container, and a chaos test must not decide their fate. A
+// proxy severs one client's link and nothing else.
+//
+// The client is built by redisstore.NewClient, the production constructor, so the test inherits the
+// real dial/read/write timeouts rather than test-special ones — the point is to exercise what
+// production would do. (Those timeouts are an upper bound the outage never reaches: Cut accepts a
+// connection and immediately closes it, so commands fail on a dead socket, not on a deadline.) Because
+// the constructor pings eagerly, the client is opened while the link is still up; call Cut afterwards.
+//
+// The returned client is this test's own — unlike Client's — and is closed by t.Cleanup.
+func Cuttable(t *testing.T) (*redis.Client, *tcpproxy.Proxy) {
+	t.Helper()
+
+	cfg, proxy := CuttableConfig(t)
+	client, err := redisstore.NewClient(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("redistest: open client through proxy: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	return client, proxy
+}
+
+// CuttableConfig is Cuttable for code that opens its own client from configuration — a service's
+// wiring, say — rather than receiving one. It returns a config.Redis addressed to the proxy, and the
+// proxy that cuts it. Same discipline as Cuttable: build whatever reads the config BEFORE calling Cut.
+func CuttableConfig(t *testing.T) (config.Redis, *tcpproxy.Proxy) {
+	t.Helper()
+
+	cfg := Config(t) // skips without Docker, and leaves sharedURL set
+	u, err := url.Parse(cfg.URL)
+	if err != nil {
+		t.Fatalf("redistest: parse shared url: %v", err)
+	}
+	proxy := tcpproxy.New(t, u.Host)
+	u.Host = proxy.Addr()
+	cfg.URL = u.String()
+	return cfg, proxy
 }
