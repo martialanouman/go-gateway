@@ -2,9 +2,13 @@ package connectorpool_test
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/martialanouman/go-gateway/internal/connectorpool"
 	"github.com/martialanouman/go-gateway/internal/observability"
@@ -176,6 +180,7 @@ func TestReplayReinjectsCorrelated(t *testing.T) {
 	prod := newRecordingProducer()
 	replayer := connectorpool.NewReplayer(connectorpool.ReplayerDeps{
 		Producer: prod,
+		CDR:      permissiveReader(),
 		Now:      func() time.Time { return replayAt },
 	})
 	if err := replayer.Run(context.Background(), &handlerConsumer{records: []kafka.Record{in}}); err != nil {
@@ -217,7 +222,7 @@ func TestReplaySkipsUndecodable(t *testing.T) {
 	good := deadLetterRecord(t, routed(), "retries_exhausted")
 
 	prod := newRecordingProducer()
-	replayer := connectorpool.NewReplayer(connectorpool.ReplayerDeps{Producer: prod})
+	replayer := connectorpool.NewReplayer(connectorpool.ReplayerDeps{Producer: prod, CDR: permissiveReader()})
 	if err := replayer.Run(context.Background(), &handlerConsumer{records: []kafka.Record{corrupt, good}}); err != nil {
 		t.Fatalf("replay Run: %v", err)
 	}
@@ -270,5 +275,206 @@ func TestReplayedMessageNotReExpired(t *testing.T) {
 	}
 	if len(cdr.rows) != 0 {
 		t.Fatalf("cdr rows = %+v, want none: the send path no longer writes ClickHouse", cdr.rows)
+	}
+}
+
+// fakeCDRReader answers Current from a per-message table, so ONE test can hold several messages in
+// different lifecycle states. A reader that answered the same thing to every id could not tell a guard
+// that refuses cancelled messages from a guard that refuses every message — the fixture would be blind
+// to the very mutation it exists to catch (step-230).
+//
+// A message id absent from the table reads as "no CDR row", which is a distinct verdict from an error.
+type fakeCDRReader struct {
+	mu     sync.Mutex
+	status map[uuid.UUID]clickhouse.Status
+	// fallback answers for any id absent from status. The zero value means "no CDR row", which is a
+	// verdict of its own — so a test that wants the ordinary population must set it explicitly.
+	fallback clickhouse.Status
+	err      error
+	calls    int
+	lastFor  uuid.UUID
+	customer uuid.UUID
+	account  uuid.UUID
+}
+
+func (f *fakeCDRReader) Current(_ context.Context, customerID, accountID, messageID uuid.UUID) (clickhouse.CDRRow, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	f.lastFor, f.customer, f.account = messageID, customerID, accountID
+	if f.err != nil {
+		return clickhouse.CDRRow{}, false, f.err
+	}
+	st, ok := f.status[messageID]
+	if !ok {
+		if f.fallback == "" {
+			return clickhouse.CDRRow{}, false, nil
+		}
+		st = f.fallback
+	}
+	return clickhouse.CDRRow{MessageID: messageID, CustomerID: customerID, AccountID: accountID, Status: st}, true, nil
+}
+
+// permissiveReader answers "failed" to every message: the ordinary population of mt.dead-letter. It is
+// for the tests that are about something OTHER than the cancellation guard — they must still carry a
+// reader, because a nil one refuses by design and letting nil mean "no guard" is the defect step-240
+// removes.
+func permissiveReader() *fakeCDRReader {
+	return &fakeCDRReader{fallback: clickhouse.StatusFailed}
+}
+
+// TestReplayRefusesACancelledMessageAndReplaysAFailedOne is the defect of step-240, and the guard
+// against over-correcting it, in one fixture.
+//
+// A message cancelled before it was parked must NOT go back on the wire: past the 72h cancel-token TTL
+// the connector would claim a free token and dispatch it, and the cancelled CDR row (rank 60) would then
+// bury the enroute and delivered rows that follow — the exact symptom step-209 closed.
+//
+// The two message ids carry DIFFERENT statuses on purpose. With a single cancelled message, a guard that
+// refused every record would pass this test just as well as the correct one; the assertion is on WHICH
+// message comes out, not on how many.
+func TestReplayRefusesACancelledMessageAndReplaysAFailedOne(t *testing.T) {
+	cancelled, ordinary := routed(), routed()
+	cdr := &fakeCDRReader{status: map[uuid.UUID]clickhouse.Status{
+		cancelled.MessageID: clickhouse.StatusCancelled,
+		ordinary.MessageID:  clickhouse.StatusFailed,
+	}}
+
+	prod := newRecordingProducer()
+	replayer := connectorpool.NewReplayer(connectorpool.ReplayerDeps{Producer: prod, CDR: cdr})
+	err := replayer.Run(context.Background(), &handlerConsumer{records: []kafka.Record{
+		deadLetterRecord(t, cancelled, "delivery_expired"),
+		deadLetterRecord(t, ordinary, "retries_exhausted"),
+	}})
+	if err != nil {
+		t.Fatalf("a cancelled record is a committed verdict, not a run failure: %v", err)
+	}
+
+	recs := prod.records()
+	if len(recs) != 1 {
+		t.Fatalf("produced %d records, want 1: the cancelled message must stay parked", len(recs))
+	}
+	out, decErr := pipeline.DecodeRouted(recs[0])
+	if decErr != nil {
+		t.Fatalf("decode replay: %v", decErr)
+	}
+	if out.MessageID != ordinary.MessageID {
+		t.Errorf("replayed %s, want the FAILED message %s — the guard let the wrong one through",
+			out.MessageID, ordinary.MessageID)
+	}
+	if got := replayer.Replayed(); got != 1 {
+		t.Errorf("Replayed() = %d, want 1", got)
+	}
+	if got := replayer.Refused(); got != 1 {
+		t.Errorf("Refused() = %d, want 1", got)
+	}
+
+	// The guard must read within the envelope's OWN scope. That is what makes the lookup cheap (the
+	// sorting-key prefix) and what guarantees it finds the row the pool wrote from this same envelope.
+	if cdr.customer != ordinary.CustomerID || cdr.account != ordinary.AccountID {
+		t.Errorf("read scope = (%s,%s), want the envelope's own (%s,%s)",
+			cdr.customer, cdr.account, ordinary.CustomerID, ordinary.AccountID)
+	}
+}
+
+// TestReplayRefusesARejectedMessage closes a shadow in the guard rather than widening its scope.
+//
+// The message-level aggregate resolves status by a fixed precedence — rejected, THEN cancelled, then
+// failed (internal/storage/clickhouse/cdr.go). A message carrying both a rejected and a cancelled row
+// therefore reads "rejected", and a guard testing only for "cancelled" would wave it through. That the
+// case is unreachable today (a rejected message never reaches mt.routed) is a property of ANOTHER
+// service; this guard should not depend on it. Both statuses mean the same thing here — the message
+// never left the gateway — so both refuse.
+func TestReplayRefusesARejectedMessage(t *testing.T) {
+	r := routed()
+	cdr := &fakeCDRReader{status: map[uuid.UUID]clickhouse.Status{r.MessageID: clickhouse.StatusRejected}}
+
+	prod := newRecordingProducer()
+	replayer := connectorpool.NewReplayer(connectorpool.ReplayerDeps{Producer: prod, CDR: cdr})
+	if err := replayer.Run(context.Background(), &handlerConsumer{records: []kafka.Record{
+		deadLetterRecord(t, r, "retries_exhausted"),
+	}}); err != nil {
+		t.Fatalf("replay Run: %v", err)
+	}
+	if recs := prod.records(); len(recs) != 0 {
+		t.Fatalf("produced %d records, want none: a rejected message never left the gateway either", len(recs))
+	}
+}
+
+// TestReplayFailsClosedOnCDRError pins what happens when the guard cannot answer.
+//
+// Returning the error leaves the offset UNCOMMITTED: the consumer commits only the prefix it handled
+// successfully, so the tool stops, prints what it replayed, and a re-run resumes at exactly this record.
+// Nothing is lost. Skipping-and-committing would be the only true silent data loss in the design — and
+// for a message that is very likely legitimate. Replaying anyway would open the guard precisely during
+// the outage where nobody is watching.
+func TestReplayFailsClosedOnCDRError(t *testing.T) {
+	r := routed()
+	cdr := &fakeCDRReader{err: errors.New("clickhouse down")}
+
+	prod := newRecordingProducer()
+	replayer := connectorpool.NewReplayer(connectorpool.ReplayerDeps{Producer: prod, CDR: cdr})
+	err := replayer.Run(context.Background(), &handlerConsumer{records: []kafka.Record{
+		deadLetterRecord(t, r, "retries_exhausted"),
+	}})
+	if err == nil {
+		t.Fatal("an unreadable status must stop the drain: a committed offset here is a lost message")
+	}
+	if !strings.Contains(err.Error(), r.MessageID.String()) {
+		t.Errorf("the error must name the record it stopped on, got: %v", err)
+	}
+	if recs := prod.records(); len(recs) != 0 {
+		t.Fatalf("produced %d records, want none: nothing may be replayed on an unreadable status", len(recs))
+	}
+}
+
+// TestReplayRefusesWhenTheCDRRowIsAbsent pins the third verdict, the one that is neither a cancellation
+// nor an error.
+//
+// deadLetterWith writes the failed CDR row BEFORE it produces to mt.dead-letter, from the same RoutedMT
+// the replay decodes — so every parked record has a CDR row in the exact scope this guard reads. An
+// absent row therefore cannot come from the normal path: it means the row was purged by retention (90
+// days) or erased under GDPR. Putting such a message back on the wire is worse than leaving it parked.
+//
+// It commits, unlike the error case: the verdict is settled, re-reading it would give the same answer.
+// The separate counter is what makes the invariant falsifiable — if it ever moves, someone broke it.
+func TestReplayRefusesWhenTheCDRRowIsAbsent(t *testing.T) {
+	r := routed()
+	cdr := &fakeCDRReader{status: map[uuid.UUID]clickhouse.Status{}} // the id is absent from the table
+
+	prod := newRecordingProducer()
+	replayer := connectorpool.NewReplayer(connectorpool.ReplayerDeps{Producer: prod, CDR: cdr})
+	if err := replayer.Run(context.Background(), &handlerConsumer{records: []kafka.Record{
+		deadLetterRecord(t, r, "retries_exhausted"),
+	}}); err != nil {
+		t.Fatalf("an absent row is a settled verdict, not a run failure: %v", err)
+	}
+	if recs := prod.records(); len(recs) != 0 {
+		t.Fatalf("produced %d records, want none: a message with no CDR row was purged or erased", len(recs))
+	}
+	if got := replayer.RefusedAbsent(); got != 1 {
+		t.Errorf("RefusedAbsent() = %d, want 1 — the counter is what makes the invariant falsifiable", got)
+	}
+	if got := replayer.Refused(); got != 0 {
+		t.Errorf("Refused() = %d, want 0: an absent row is not a cancellation, and conflating the two "+
+			"would hide a broken invariant behind a normal-looking count", got)
+	}
+}
+
+// TestReplayerWithoutACDRReaderFailsClosed pins the wiring regression that would be silent otherwise.
+//
+// A binary built without a CDR reader must not degrade into "no guard": that is exactly the behaviour
+// step-240 exists to remove, and it would come back with no test failing and no log saying so.
+func TestReplayerWithoutACDRReaderFailsClosed(t *testing.T) {
+	prod := newRecordingProducer()
+	replayer := connectorpool.NewReplayer(connectorpool.ReplayerDeps{Producer: prod})
+	err := replayer.Run(context.Background(), &handlerConsumer{records: []kafka.Record{
+		deadLetterRecord(t, routed(), "retries_exhausted"),
+	}})
+	if err == nil {
+		t.Fatal("a replayer with no CDR reader must refuse to replay, not replay without the guard")
+	}
+	if recs := prod.records(); len(recs) != 0 {
+		t.Fatalf("produced %d records, want none", len(recs))
 	}
 }
