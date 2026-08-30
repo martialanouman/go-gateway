@@ -91,6 +91,14 @@ jobs:
           echo "=== dmesg: OOM / segfault ? ==="
           sudo dmesg | grep -iE "oom|killed process|segfault|general protection|out of memory" | tail -40 || echo "(rien dans dmesg)"
           echo "=== dmesg (queue brute) ==="; sudo dmesg | tail -30
+          echo "=== ce que les conteneurs morts disent EUX-MEMES ==="
+          for c in $(docker ps -a --filter "status=exited" --format '{{.ID}}'); do
+            echo "--- $c : $(docker inspect -f '{{.Config.Image}} exit={{.State.ExitCode}} oomkilled={{.State.OOMKilled}}' $c) ---"
+            docker inspect -f 'cmd={{.Config.Cmd}}' "$c" || true
+            docker logs --tail 60 "$c" 2>&1 || true
+          done
+          echo "=== cpu du runner (seastar sonde les extensions) ==="
+          lscpu | grep -iE "model name|flags" | cut -c1-400
 
   # Exercises the load harness, NOT the gateway's throughput. It runs the k6 script twice against a
   # local stub — idle (must pass) then slowed past the latency budget (must fail) — so a harness whose
