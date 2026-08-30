@@ -216,10 +216,19 @@ func (f *flapper) observed() []breaker.State {
 
 // run watches the reported breaker state until ctx ends, recording every transition and steering the
 // SMSC so the breaker keeps cycling.
+//
+// It ignores the aggregator until it has actually reported. fakeAgg.state reads a map that is empty
+// until the first heartbeat, and the zero State is Closed — so a naive watcher records a "closed" that
+// nobody ever published, and a failure message then shows a transition list whose first entry is
+// fiction. Waiting for reports() keeps the recorded list to observations only.
 func (f *flapper) run(ctx context.Context, agg *fakeAgg) {
 	f.sick.Store(true)
 	last := breaker.State(-1)
 	for ctx.Err() == nil {
+		if agg.reports() == 0 {
+			time.Sleep(5 * time.Millisecond)
+			continue
+		}
 		s := agg.state(0)
 		if s != last {
 			f.mu.Lock()
@@ -237,8 +246,10 @@ func (f *flapper) run(ctx context.Context, agg *fakeAgg) {
 	}
 }
 
-// countCycles counts how many times the breaker went Open after having been Closed — i.e. how many
-// distinct sickness episodes the pool lived through.
+// countCycles counts the Open states that followed a Closed one. The breaker starts closed and the
+// heartbeat publishes that before anything fails, so the first opening counts too: n cycles means n
+// sickness episodes, and anything above 1 required a genuine recovery in between — which is precisely
+// what distinguishes flapping from a connector that broke once and stayed broken.
 func countCycles(states []breaker.State) int {
 	cycles, closedSince := 0, false
 	for _, s := range states {
