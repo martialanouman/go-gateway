@@ -37,11 +37,38 @@ n'ouvre le disjoncteur **qu'une fois** et n'asserte **rien** sur la facturation.
   flap est le cas qui l'exerce.
 - Aucune goroutine sans arrêt même sous chaos ; `go test -race`.
 
-## À trancher dans la PR
-**Les tests `sim_*.go` sont aujourd'hui skippés en CI** : le workflow `Test (race)` n'a pas d'étape
-`make smsc-sim`, donc l'image `smsc-simulator:dev` manque et ces tests **passent sans rien exercer**.
-Soit on ajoute l'étape au workflow, soit on écrit ce scénario sur `fakesmsc` + `tcpproxy` (qui tournent
-toujours). Livrer un test de chaos qui ne s'exécute pas en CI serait le pire des deux.
+## Design arrêté
+
+**Le test s'écrit sur `fakesmsc` + un pool en mémoire, pas sur le harnais `sim_*`.** Trois raisons
+vérifiées, dont deux dirimantes :
+
+1. `smscsim` n'a **aucune mutation de scénario à chaud** (sa doc : « un test qui a besoin d'un
+   comportement différent relance un simulateur »). `fakesmsc.Config.OnSubmit` est une closure évaluée à
+   chaque submit : un `atomic.Bool` suffit à alterner malade/sain. Pour ce test, fakesmsc est l'outil
+   juste, pas un pis-aller.
+2. Le harnais `sim_*` **ne peut pas tester l'invariant (c)** : `startSimPool` ne renseigne jamais
+   `deps.Billing` (donc `noopSettler`) et `injectRouted*` ne fixe jamais `Billable`. L'assertion serait
+   creuse par construction.
+3. Les tests `sim_*` **ne tournent pas en CI** — trou plus large que cette step, parti en **step-250c**.
+
+**Le double enregistre, il ne compte pas** (leçon de step-245). `spySettler` ne tient que deux entiers ;
+« A réglé deux fois, B jamais réglé » leur laisse exactement les valeurs d'un run correct. L'invariant
+(c) est une propriété **par message**, donc le double est indexé par `message_id`.
+
+**Le flapping suit le disjoncteur, pas l'horloge** : la sonde bascule le SMSC en observant l'état
+rapporté, ce qui produit de vrais cycles au lieu d'un script temporel qui ne prouverait que le SMSC a
+changé d'avis à l'heure dite. `ResponseTimeout` (100 ms) reste sous `Cooldown` (300 ms) — invariant
+documenté du disjoncteur, qui attribue chaque issue à l'état *courant*.
+
+**Trois pièges rencontrés, tous côté fixture :**
+
+- `recordingProducer` signale chaque `Produce` dans un canal de **16** que rien ne draine : au 17ᵉ record
+  le pool se bloque dans sa propre goroutine. Un collecteur non bloquant le remplace.
+- Un consommateur qui rejoue **tous** les records à chaque passe n'est pas Kafka : il réinjecte des
+  messages déjà commités, et le pool *paraît* les régler plusieurs fois. Le double ne rejoue que le
+  **non commité**.
+- `retryKey` est `(partition, offset)` : des records partageant un offset partagent **une seule** entrée
+  de fenêtre de rejeu, et l'horloge d'échec du premier message gouverne tous les autres.
 
 ## Tests (écrits dans la même PR)
 - Plusieurs cycles ouvre/ferme du disjoncteur sous trafic : aucun message perdu (réconciliation par
