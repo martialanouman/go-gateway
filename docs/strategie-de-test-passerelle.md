@@ -52,7 +52,7 @@ defer smsc.Close()
 smsc.SendDLR(messageID, smpp.StatusDelivered)
 ```
 
-> **Règle :** un test choisit son pair par ce qu'il exerce, pas par le jalon. Le faux SMSC suffit dès qu'il s'agit de réponses applicatives (`OK`, `Throttled`, `SysErr`, `Delay`) ; le vrai simulateur est requis pour l'injection de pannes réaliste (disjoncteur, reroute, reconnexion). Ces tests s'auto-sautent quand l'image `smsc-simulator:dev` est absente — **`make smsc-sim` la construit** — mais **seulement hors CI** : `internal/testutil/ciguard` transforme un saut en échec dès que `CI` est posée. C'est la règle générale de la suite d'intégration, pas une exception du simulateur : **en CI, un test qui saute se lit exactement comme un test qui passe**, et dix tests de résilience ont traversé un jalon entier sans jamais s'exécuter avant qu'on le remarque (step-250b/250c).
+> **Règle :** un test choisit son pair par ce qu'il exerce, pas par le jalon. Le faux SMSC suffit dès qu'il s'agit de réponses applicatives (`OK`, `Throttled`, `SysErr`, `Delay`) ; le vrai simulateur est requis pour l'injection de pannes réaliste (disjoncteur, reroute, reconnexion). Ces tests s'auto-sautent quand l'image `smsc-simulator:dev` est absente — **`make smsc-sim` la construit**, et sans cette étape ils ne tournent pas, ils passent.
 
 ---
 
@@ -149,4 +149,4 @@ La couverture est un indicateur, pas une fin : 100 % de lignes couvertes sans le
 
 ## 7. Écriture des tests avec Claude Code
 
-Pour chaque tâche, demande à Claude Code d'**écrire les tests en même temps que le code**, en recopiant les critères d'acceptation du plan comme cas de test. Rappels à mettre dans le prompt : table-driven idiomatique ; fakes écrits à la main plutôt que mocks lourds ; `-race` systématique ; pour toute nouvelle étape de pipeline, un test qui vérifie qu'elle **ne logge pas le corps**. Les scénarios qui exigent le simulateur SMSC s'écrivent contre `internal/testutil/smscsim` : sans son image ils sautent en local (`make smsc-sim` la construit) et **échouent en CI**, par `internal/testutil/ciguard`.
+Pour chaque tâche, demande à Claude Code d'**écrire les tests en même temps que le code**, en recopiant les critères d'acceptation du plan comme cas de test. Rappels à mettre dans le prompt : table-driven idiomatique ; fakes écrits à la main plutôt que mocks lourds ; `-race` systématique ; pour toute nouvelle étape de pipeline, un test qui vérifie qu'elle **ne logge pas le corps**. Les scénarios qui exigent le simulateur SMSC s'écrivent contre `internal/testutil/smscsim` et s'auto-sautent sans son image (`make smsc-sim`).

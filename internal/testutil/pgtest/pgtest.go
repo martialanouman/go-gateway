@@ -19,11 +19,11 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/storage/postgres"
-	"github.com/martialanouman/go-gateway/internal/testutil/ciguard"
 )
 
 // image must be PostgreSQL 18: uuidv7() is native only there, and migrations/0001 RAISE EXCEPTIONs
@@ -59,9 +59,9 @@ func Pool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 
 	if testing.Short() {
-		ciguard.Skip(t, "pgtest: skipped under -short (needs Docker)")
+		t.Skip("pgtest: skipped under -short (needs Docker)")
 	}
-	ciguard.RequireDocker(t)
+	testcontainers.SkipIfProviderIsNotHealthy(t)
 
 	once.Do(func() { shared, sharedErr = start() })
 	if sharedErr != nil {

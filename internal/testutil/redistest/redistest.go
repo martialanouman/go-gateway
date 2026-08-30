@@ -16,11 +16,11 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/testcontainers/testcontainers-go"
 	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 
 	"github.com/martialanouman/go-gateway/internal/config"
 	redisstore "github.com/martialanouman/go-gateway/internal/storage/redis"
-	"github.com/martialanouman/go-gateway/internal/testutil/ciguard"
 	"github.com/martialanouman/go-gateway/internal/testutil/tcpproxy"
 )
 
@@ -56,9 +56,9 @@ func Client(t *testing.T) *redis.Client {
 	t.Helper()
 
 	if testing.Short() {
-		ciguard.Skip(t, "redistest: skipped under -short (needs Docker)")
+		t.Skip("redistest: skipped under -short (needs Docker)")
 	}
-	ciguard.RequireDocker(t)
+	testcontainers.SkipIfProviderIsNotHealthy(t)
 
 	once.Do(func() { shared, sharedErr = start() })
 	if sharedErr != nil {

@@ -91,9 +91,7 @@ fake-smsc: ## Run the in-repo fake SMSC (SMPP peer) on :2775 for local pipeline 
 .PHONY: smsc-sim
 SMSC_SIM_IMAGE ?= smsc-simulator:dev
 SMSC_SIM_REPO  ?= https://github.com/martialanouman/go-smsc-simulator
-# Pinned, not tracked: with SMSC_SIM_REF=main this repository's CI could turn red because ANOTHER
-# repository moved, with no change here to explain it. Bump deliberately.
-SMSC_SIM_REF   ?= v0.7.0
+SMSC_SIM_REF   ?= main
 smsc-sim: ## Build the real SMSC simulator image ($(SMSC_SIM_IMAGE)) used by M8 resilience tests (internal/testutil/smscsim). Pin with SMSC_SIM_REF=<tag>; force a rebuild by removing the image first.
 	@if docker image inspect $(SMSC_SIM_IMAGE) >/dev/null 2>&1; then \
 		echo "$(SMSC_SIM_IMAGE) already present (docker rmi it to rebuild)"; \
