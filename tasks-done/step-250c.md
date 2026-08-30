@@ -52,22 +52,36 @@ sans cela on ne peut asserter ni le saut ni l'échec, un vrai `*testing.T` ne po
 parce qu'un AUTRE dépôt avait bougé, sans qu'une ligne ici l'explique. Le mécanisme d'épinglage existait
 déjà et le `make help` le documentait ; seul le défaut ne l'était pas.
 
-**Coût mesuré, et une contrainte qui n'avait pas été anticipée.** Construction de l'image 42 s, tests
-+53 s — mais la première exécution CI a échoué, deux fois de suite, sur un Redpanda mort au démarrage
-(`exit 139`, SIGSEGV) dans `storage/kafkaprovision`, alors qu'un autre paquet avait démarré le sien sans
-problème dans la même exécution.
+**Coût mesuré, et un défaut d'infrastructure qu'il a fallu diagnostiquer.** Construction de l'image
+42 s, tests +53 s.
 
-Ni l'image ni le code : la place manquait. `go test ./...` lance les paquets en parallèle et **six
-d'entre eux démarrent chacun leur propre Redpanda**, d'autres une ClickHouse, un Postgres, un Redis.
-Cette step ajoute cinq conteneurs simulateur et allonge `connectorpool` à 57 s, donc son chevauchement
-avec les paquets Kafka ; celui qui démarre en dernier tape le plafond.
+La première tentative a échoué en CI : `storage/kafkaprovision` sur un Redpanda mort au démarrage
+(`exit 139`), par intermittence. J'ai supposé une saturation mémoire, poussé `-p 2`, vu **une**
+exécution verte et déclaré résolu — `main` a échoué identiquement et la PR a dû être revertée. Sur un
+défaut intermittent, un run vert ne distingue pas « corrigé » de « moins fréquent ».
 
-D'où **`-p 2`** sur le job : borner le nombre de PAQUETS simultanés, pas les tests. Rien n'est exclu ni
-sauté ; les conteneurs ne sont simplement plus tous détenus au même instant. Le module redpanda plafonne
-déjà chaque instance (`--smp=1 --memory=1G`) : le problème est leur **nombre**, pas leur taille.
+La cause, obtenue en faisant parler le conteneur mort au lieu de la supposer :
 
-Job final : **6,8 min** (contre 3,9 avant), pour un `-timeout 10m` par paquet. Mettre l'image en cache
-reste inutile tant qu'on est sous ~8 min.
+```
+Could not setup Async I/O: Resource temporarily unavailable.
+The required nr_event (1) exceeds the limit of request capacity in /proc/sys/fs/aio-max-nr (65536)
+```
+
+**`fs.aio-max-nr`.** Seastar, le socle de Redpanda, réserve des contextes d'I/O asynchrone au
+démarrage ; la limite du runner est déjà consommée par les ClickHouse, Postgres et autres Redpanda que
+`go test ./...` fait tourner en parallèle. Le dernier servi se voit refuser son contexte, seastar lève,
+libc++abi abandonne. L'`exit 139` et la « general protection fault in libc » de `dmesg` n'étaient que le
+chemin d'`abort` — deux symptômes qui ne ressemblent en rien à la cause.
+
+`oomkilled=false`, 9,5 Go de mémoire libres, 72 Go de disque : **ni mémoire, ni disque, ni parallélisme
+des paquets** — mes trois hypothèses successives, toutes fausses, et aucune n'aurait mené à la bonne.
+
+Correctif : `fs.aio-max-nr` 65536 → 1048576. `-p 2` est retiré : il masquait le symptôme sans toucher la
+cause. Mesuré : sans le relèvement, 3 échecs sur 4 ; avec, 4 passages verts. Job à ~6 min.
+
+**La leçon de méthode, qui vaut plus que le correctif** : une reproduction contrôlée — l'étape d'image
+SEULE, sans `ciguard` ni `-p 2` — a prouvé que ces deux-là étaient hors de cause. Sans elle je serais
+reparti soupçonner `ciguard`, pour lequel j'avais un mécanisme candidat tout prêt et parfaitement faux.
 
 ## Tests (écrits dans la même PR)
 - `ciguard` : le saut reste un saut hors CI, devient un échec en CI, la variable lue est la bonne, et un
