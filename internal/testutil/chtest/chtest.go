@@ -15,11 +15,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/testcontainers/testcontainers-go"
 	tcclickhouse "github.com/testcontainers/testcontainers-go/modules/clickhouse"
 
 	"github.com/martialanouman/go-gateway/internal/config"
 	chstorage "github.com/martialanouman/go-gateway/internal/storage/clickhouse"
-	"github.com/martialanouman/go-gateway/internal/testutil/ciguard"
 )
 
 // image must match docker-compose.yml so the test store and the dev store cannot drift.
@@ -44,9 +44,9 @@ func Config(t *testing.T) config.ClickHouse {
 	t.Helper()
 
 	if testing.Short() {
-		ciguard.Skip(t, "chtest: skipped under -short (needs Docker)")
+		t.Skip("chtest: skipped under -short (needs Docker)")
 	}
-	ciguard.RequireDocker(t)
+	testcontainers.SkipIfProviderIsNotHealthy(t)
 
 	once.Do(func() { shared, sharedErr = start() })
 	if sharedErr != nil {
