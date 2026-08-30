@@ -63,8 +63,34 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      # DIAGNOSTIC (step-250c) — reproduction contrôlée. On n'ajoute QUE la construction de l'image :
+      # elle suffit à faire tourner les tests M8, donc à ajouter leurs conteneurs. Ni ciguard ni -p ne
+      # sont là, pour qu'un échec accuse cette seule variable.
+      - name: Build the SMSC simulator image
+        run: make smsc-sim
+
+      - name: Baseline ressources (avant les tests)
+        run: |
+          echo "=== free -m ==="; free -m
+          echo "=== df -h / ==="; df -h /
+          echo "=== docker system df ==="; docker system df
+          echo "=== nproc ==="; nproc
+
       - name: go test -race
         run: go test -race -timeout 10m ./...
+
+      # if: always() — on veut la photo même quand la suite est verte, pour disposer d'un point de
+      # comparaison. Sans baseline, un chiffre relevé après un échec ne dit rien.
+      - name: Ressources après les tests
+        if: always()
+        run: |
+          echo "=== free -m ==="; free -m
+          echo "=== df -h / ==="; df -h /
+          echo "=== docker system df ==="; docker system df
+          echo "=== conteneurs (dont morts) ==="; docker ps -a --format '{{.Names}}\t{{.Image}}\t{{.Status}}'
+          echo "=== dmesg: OOM / segfault ? ==="
+          sudo dmesg | grep -iE "oom|killed process|segfault|general protection|out of memory" | tail -40 || echo "(rien dans dmesg)"
+          echo "=== dmesg (queue brute) ==="; sudo dmesg | tail -30
 
   # Exercises the load harness, NOT the gateway's throughput. It runs the k6 script twice against a
   # local stub — idle (must pass) then slowed past the latency budget (must fail) — so a harness whose
