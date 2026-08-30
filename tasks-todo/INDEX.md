@@ -173,6 +173,7 @@ structurelles et à faire **avant** que M12 n'empile dessus.
 - [x] step-245 — La branche d'expiration consulte le jeton d'annulation (résiduel de step-240)
 - [x] step-250 — Chaos : perte Redis, chaque politique de panne prouvée sur un Redis réellement coupé
 - [x] step-250b — Chaos : flapping connecteur, un règlement par message et aucun perdu (invariant c)
+- [x] step-250c — La suite de résilience M8 tourne en CI ; en CI, un test d'intégration qui saute échoue
 
 Ce qui restait de M12 — chaos, sécurité, transports, manifests, campagne NFR, go-live — a été renuméroté
 et vit dans **Reste à faire**, plus bas, à sa place dans l'ordre d'exécution.
@@ -195,7 +196,6 @@ bloquent rien et peuvent bouger sans rien casser.
 Une seule chaîne, et elle commande tout le reste de M12 : le banc devait refuser ce qu'il nomme avant que
 la campagne ne publie un chiffre — c'est fait (step-230, livrée) — et les manifests doivent exister avant
 qu'on mesure un environnement représentatif.
-- [ ] step-250c — Faire tourner la suite de résilience M8 en CI (10 tests sautent en silence)
 - [ ] step-260 — Chaos : drain gracieux + PDB + binds préservés ; failover Postgres ⛓ step-250
 - [ ] step-270 — Manifests deploy/ Kubernetes (Deployments, Services, HPA, PDB, probes) ⛓ step-260
 - [ ] step-280 — Campagne NFR pleine échelle sur environnement représentatif ⛓ step-230, step-270
@@ -204,9 +204,9 @@ Le seul **défaut de correction** du lot est clos : step-240 a fermé le rejeu d
 step-245 le cas où l'annulation avait gagné son jeton sans jamais écrire sa ligne CDR. step-250 a
 ensuite prouvé les politiques de panne Redis sur un Redis réellement coupé, et complété la matrice de
 référence (`guide-codage-go.md` §16) des quatre politiques qu'elle omettait. Ce qui reste de cette
-section est du chaos d'infrastructure, des manifests et une campagne de mesure. step-250b a par ailleurs
-mis au jour un trou qui la dépasse : **dix tests de résilience M8 ne s'exécutent jamais en CI**, faute de
-l'image du simulateur — d'où step-250c.
+section est du chaos d'infrastructure, des manifests et une campagne de mesure. step-250b avait par ailleurs
+mis au jour un trou qui la dépassait — dix tests de résilience M8 ne s'exécutant jamais en CI — que
+step-250c a fermé, en généralisant la règle : **en CI, un test d'intégration qui saute échoue**.
 
 ## Sécurité et authentification
 Indépendantes de la chaîne de charge : parallélisables si deux mains travaillent.

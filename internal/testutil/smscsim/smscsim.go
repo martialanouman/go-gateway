@@ -22,6 +22,8 @@ import (
 
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
+
+	"github.com/martialanouman/go-gateway/internal/testutil/ciguard"
 )
 
 // Image is the simulator image tag. It is a local/CI-built image (the simulator is a separate repo);
@@ -48,16 +50,16 @@ type Sim struct {
 func Launch(t *testing.T, configYAML string) *Sim {
 	t.Helper()
 	if testing.Short() {
-		t.Skip("smscsim: skipped under -short (needs Docker + the simulator image)")
+		ciguard.Skip(t, "smscsim: skipped under -short (needs Docker + the simulator image)")
 	}
-	testcontainers.SkipIfProviderIsNotHealthy(t)
+	ciguard.RequireDocker(t)
 
 	ctx := context.Background()
 	// Check image presence explicitly (the :dev tag lives in no registry) and skip if absent, rather
 	// than inferring it from a launch error's text — an offline machine's pull failure must not turn a
 	// missing image into a hard failure, and a genuine launch fault must not be mis-skipped.
 	if !imagePresent(ctx) {
-		t.Skipf("smscsim: image %q not available — run `make smsc-sim`", Image)
+		ciguard.Skip(t, "smscsim: image %q not available — run `make smsc-sim`", Image)
 	}
 	req := testcontainers.ContainerRequest{
 		Image:        Image,
