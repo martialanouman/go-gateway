@@ -69,8 +69,14 @@ jobs:
       # into a failure whenever CI is set, so removing this step turns the pipeline red instead of quiet.
       - name: Build the SMSC simulator image
         run: make smsc-sim
+      # -p bounds how many PACKAGES run at once, and each container-backed package starts its own
+      # stack: six of them run a Redpanda, others a ClickHouse, a Postgres, a Redis. At the runner's
+      # default parallelism that peak is enough to make a Redpanda die on startup (exit 139) — which is
+      # what happened as soon as the M8 resilience tests above joined the run and held their simulator
+      # containers for a minute. Bounding packages, not tests, keeps every test running: nothing is
+      # skipped or excluded, they simply do not all hold their containers at the same instant.
       - name: go test -race
-        run: go test -race -timeout 10m ./...
+        run: go test -race -p 2 -timeout 10m ./...
 
   # Exercises the load harness, NOT the gateway's throughput. It runs the k6 script twice against a
   # local stub — idle (must pass) then slowed past the latency budget (must fail) — so a harness whose
