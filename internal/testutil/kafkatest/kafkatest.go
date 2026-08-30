@@ -17,12 +17,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/redpanda"
 	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kgo"
 
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
+	"github.com/martialanouman/go-gateway/internal/testutil/ciguard"
 )
 
 // image must match docker-compose.yml so the test broker and the dev broker cannot drift.
@@ -124,9 +124,9 @@ func ensure(t *testing.T) endpoints {
 	t.Helper()
 
 	if testing.Short() {
-		t.Skip("kafkatest: skipped under -short (needs Docker)")
+		ciguard.Skip(t, "kafkatest: skipped under -short (needs Docker)")
 	}
-	testcontainers.SkipIfProviderIsNotHealthy(t)
+	ciguard.RequireDocker(t)
 
 	once.Do(func() { shared, sharedErr = start() })
 	if sharedErr != nil {

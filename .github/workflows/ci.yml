@@ -63,6 +63,12 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      # The M8 resilience tests bind a real SMSC simulator, and its image lives in no registry. Without
+      # this step they do not fail — they SKIP, which reads exactly like passing, and ten of them went a
+      # whole milestone without ever running (step-250b). internal/testutil/ciguard now turns such a skip
+      # into a failure whenever CI is set, so removing this step turns the pipeline red instead of quiet.
+      - name: Build the SMSC simulator image
+        run: make smsc-sim
       - name: go test -race
         run: go test -race -timeout 10m ./...
 
