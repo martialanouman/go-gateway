@@ -69,6 +69,18 @@ jobs:
       - name: Build the SMSC simulator image
         run: make smsc-sim
 
+      # LA CAUSE, mesurée et non supposée. Seastar (le socle de Redpanda) réserve des contextes d'I/O
+      # asynchrone au démarrage ; la limite noyau du runner est fs.aio-max-nr=65536, déjà consommée par
+      # les ClickHouse, Postgres et autres Redpanda en vol. Le dernier à démarrer se voit refuser son
+      # contexte, seastar lève, libc++abi abandonne — d'où l'exit 139 et la « general protection fault
+      # in libc » de dmesg, qui n'était que le chemin d'abort. Ni mémoire (9,5 Go libres, oomkilled=false)
+      # ni disque (72 Go) n'étaient en cause.
+      - name: Relever la limite noyau d'I/O asynchrone
+        run: |
+          echo "avant : $(cat /proc/sys/fs/aio-max-nr)"
+          sudo sysctl -w fs.aio-max-nr=1048576
+          echo "après : $(cat /proc/sys/fs/aio-max-nr)"
+
       - name: Baseline ressources (avant les tests)
         run: |
           echo "=== free -m ==="; free -m
