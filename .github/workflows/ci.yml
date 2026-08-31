@@ -63,6 +63,25 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      # The M8 resilience tests bind a real SMSC simulator, and its image lives in no registry. Without
+      # this step they do not fail — they SKIP, which reads exactly like passing, and ten of them went a
+      # whole milestone without ever running (step-250b). internal/testutil/ciguard now turns such a skip
+      # into a failure whenever CI is set, so removing this step turns the pipeline red instead of quiet.
+      - name: Build the SMSC simulator image
+        run: make smsc-sim
+      # Redpanda ne démarre pas si le noyau ne peut plus lui allouer de contexte d'I/O asynchrone.
+      # Seastar, son socle, en réserve au démarrage ; la limite par défaut du runner
+      # (fs.aio-max-nr=65536) est déjà consommée par les ClickHouse, Postgres et autres Redpanda que
+      # `go test ./...` fait tourner en parallèle. Le dernier servi se voit refuser son contexte,
+      # seastar lève, libc++abi abandonne — ce qui se lit `container exited with code 139` côté
+      # testcontainers et « general protection fault in libc » dans dmesg, deux symptômes qui ne
+      # ressemblent en rien à la cause. Ni mémoire (oomkilled=false, 9,5 Go libres) ni disque (72 Go).
+      #
+      # Mesuré : sans ce relèvement, la suite échoue 3 fois sur 4 dès que les tests M8 ajoutent leurs
+      # conteneurs ; avec, 4 passages verts.
+      - name: Relever la limite noyau d'I/O asynchrone (Redpanda/seastar)
+        run: sudo sysctl -w fs.aio-max-nr=1048576
+
       - name: go test -race
         run: go test -race -timeout 10m ./...
 
