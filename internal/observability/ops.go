@@ -106,12 +106,12 @@ func (o *OpsServer) DrainHook(delay time.Duration) func(context.Context) {
 			return
 		}
 		o.log.InfoContext(ctx, "draining: marked not ready, waiting for load balancer", "delay", delay)
-		timer := time.NewTimer(delay)
-		defer timer.Stop()
-		select {
-		case <-timer.C:
-		case <-ctx.Done():
-		}
+		// Sleep, not a select on ctx.Done(): the supervisor hands a hook a context detached from the one
+		// SIGTERM cancelled, so it is never cancelled and such an arm would be dead code that reads as an
+		// escape hatch. The wait is deliberately uninterruptible — cutting it short is the same bug as
+		// not waiting, since the endpoint is still live — and it is bounded by delay, which config keeps
+		// under ShutdownTimeout.
+		time.Sleep(delay)
 	}
 }
 

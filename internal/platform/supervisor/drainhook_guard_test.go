@@ -15,7 +15,11 @@ import (
 const minSupervisedCommands = 10
 
 var (
-	usesSupervisor = regexp.MustCompile(`var \w+ supervisor\.(Group|Ordered)`)
+	// Both idioms, because the guard's whole job is to catch the service someone adds LATER, and that
+	// someone may not copy today's uniform style. The composite-literal alternative needs its brace:
+	// matching a bare `supervisor.Ordered` would also match the prose in two mains that explain the
+	// reverse drain order, and demand OnDrain of a file that merely mentions the type.
+	usesSupervisor = regexp.MustCompile(`var \w+ supervisor\.(Group|Ordered)|supervisor\.(Group|Ordered)\{`)
 	registersHook  = regexp.MustCompile(`\.OnDrain\(`)
 )
 

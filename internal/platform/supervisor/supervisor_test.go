@@ -260,3 +260,32 @@ func TestGroupRunsTheDrainHookBeforeCancelling(t *testing.T) {
 		t.Errorf("drain sequence = %v, want %v", events, want)
 	}
 }
+
+// TestDrainHooksRunOnComponentFailureToo pins a case the drain hook's own name does not suggest: the
+// hooks run when a COMPONENT FAILS, not only on SIGTERM.
+//
+// It is intended, and the reason is the runtime failure rather than the startup one. When a consumer
+// dies under load the pod is still in the Service endpoints and still being handed work; announcing
+// itself not-ready before tearing the rest down is exactly right. The supervisor cannot tell that case
+// from a boot failure — distinguishing them means knowing whether this pod was ever ready, which lives
+// above it — so both pay the drain delay, and a pod that fails to bind its port takes DRAIN_DELAY
+// longer to report it. That is the accepted cost, not an oversight.
+//
+// Without this test the behaviour is deliberate but invisible, which is indistinguishable from an
+// accident: the next reader could "fix" it in either direction and break the runtime case silently.
+func TestDrainHooksRunOnComponentFailureToo(t *testing.T) {
+	var g supervisor.Group
+	var ran atomic.Int32
+	g.OnDrain(func(context.Context) { ran.Add(1) })
+	g.Add("boom", func(context.Context) error { return errors.New("bind: address already in use") })
+
+	err := g.Run(context.Background(), quietLogger())
+	if err == nil {
+		t.Fatal("Run() = nil, want the component's failure")
+	}
+	if got := ran.Load(); got != 1 {
+		t.Errorf("drain hook ran %d times on a component failure, want exactly 1: a pod whose "+
+			"consumer dies under load is still in the load balancer, and must leave it before the "+
+			"rest tears down", got)
+	}
+}

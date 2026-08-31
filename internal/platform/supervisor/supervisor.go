@@ -25,8 +25,17 @@ type Component func(context.Context) error
 // NOT-ready and give the load balancer time to stop routing to it BEFORE its listeners close.
 // Running that as a component cannot work — components tear down, they do not run first.
 //
-// It receives a context detached from the one that just fired (the parent is already cancelled by the
-// time a hook runs), bounded by the caller, so a hook that must wait can actually wait.
+// It receives a context detached from the one that just fired — the parent is already cancelled by the
+// time a hook runs, so a hook that must wait can actually wait. That detached context carries the
+// parent's values but is NEVER cancelled: a hook is responsible for bounding its own wait, because
+// neither Group nor Ordered imposes an overall drain budget today.
+//
+// Hooks also run when a COMPONENT FAILS, not only on SIGTERM. That is deliberate: a consumer that dies
+// under load leaves the pod in the Service endpoints and still being handed work, so it must announce
+// itself not-ready before the rest tears down. The supervisor cannot tell that case from a boot
+// failure — that would mean knowing whether the pod was ever ready, which lives above it — so a
+// service that fails to bind its port also pays the drain delay before reporting the error.
+// TestDrainHooksRunOnComponentFailureToo pins it.
 type DrainHook func(context.Context)
 
 // runDrainHooks runs every registered hook in registration order on a detached context, before the
