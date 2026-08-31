@@ -196,8 +196,10 @@ bloquent rien et peuvent bouger sans rien casser.
 Une seule chaîne, et elle commande tout le reste de M12 : le banc devait refuser ce qu'il nomme avant que
 la campagne ne publie un chiffre — c'est fait (step-230, livrée) — et les manifests doivent exister avant
 qu'on mesure un environnement représentatif.
-- [ ] step-260 — Chaos : drain gracieux + PDB + binds préservés ; failover Postgres ⛓ step-250
-- [ ] step-270 — Manifests deploy/ Kubernetes (Deployments, Services, HPA, PDB, probes) ⛓ step-260
+- [ ] step-250d — Les quatre politiques Redis documentées en step-250 mais jamais prouvées ⛓ step-250
+- [x] step-260 — Chaos : drain gracieux (unbind SMPP, offsets Kafka, retrait LB) ⛓ step-250
+- [ ] step-260b — Failover Postgres : réhydratation du solde, fail-closed pendant la fenêtre ⛓ step-260
+- [ ] step-270 — Manifests deploy/ Kubernetes (Deployments, Services, HPA, PDB, probes) ⛓ step-260b
 - [ ] step-280 — Campagne NFR pleine échelle sur environnement représentatif ⛓ step-230, step-270
 
 Le seul **défaut de correction** du lot est clos : step-240 a fermé le rejeu d'un message annulé, et
@@ -207,6 +209,16 @@ référence (`guide-codage-go.md` §16) des quatre politiques qu'elle omettait. 
 section est du chaos d'infrastructure, des manifests et une campagne de mesure. step-250b avait par ailleurs
 mis au jour un trou qui la dépassait — dix tests de résilience M8 ne s'exécutant jamais en CI — que
 step-250c a fermé, en généralisant la règle : **en CI, un test d'intégration qui saute échoue**.
+
+**step-260 a rompu avec ses deux aînées : elle a trouvé des défauts de production, pas seulement des
+preuves manquantes.** Le `[MUST]` d'arrêt gracieux (`guide-codage-go.md` §5) énonce trois obligations ;
+une seule était tenue. `smpp-server-svc` coupait la socket sans `unbind`, et les consumers Kafka
+jetaient le commit d'un lot déjà traité — un SIGTERM gracieux perdait donc autant qu'un `kill -9`, et
+`connector-pool-svc` re-soumettait au SMSC à chaque rolling deploy. Rien ne le disait parce que **rien
+ne testait le drain**. S'y ajoutait un `/readyz` qui ne basculait jamais : le pod restait dans le load
+balancer pendant qu'il fermait ses listeners. Deux fiches en sont nées : **step-260b** pour le failover
+Postgres, que step-260 portait à tort dans le même lot, et **step-250d** pour la dette que step-250
+avait promise sans jamais ouvrir la fiche.
 
 ## Sécurité et authentification
 Indépendantes de la chaîne de charge : parallélisables si deux mains travaillent.

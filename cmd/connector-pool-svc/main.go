@@ -112,6 +112,7 @@ func run() error {
 
 	// Ops and the connector pool tear down together; the unordered supervisor fits (guide de codage §5).
 	var g supervisor.Group
+	g.OnDrain(app.ops.DrainHook(cfg.DrainDelay))
 	g.Add("ops server", func(c context.Context) error { return app.ops.Run(c, cfg.ShutdownTimeout) })
 	g.Add("connector pool", app.pool.Run)
 	g.Add("reroute-park drainer", app.drainer.Run)

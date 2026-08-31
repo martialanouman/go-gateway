@@ -158,3 +158,105 @@ func waitFor(t *testing.T, cond func() bool) {
 		time.Sleep(time.Millisecond)
 	}
 }
+
+// TestOrderedRunsTheDrainHookBeforeAnyComponent: the hook registered with OnDrain runs at the START of
+// the drain, before the first component is cancelled.
+//
+// The assertion records the hook and the components into ONE ordered slice rather than checking a
+// boolean, because "the hook ran" is not the property that matters: a hook that fires after the
+// listener has already closed removes the pod from the load balancer too late, which is precisely the
+// race this hook exists to close. Only the position proves it.
+func TestOrderedRunsTheDrainHookBeforeAnyComponent(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	var mu sync.Mutex
+	var events []string
+	var started atomic.Int32
+	comp := func(name string) supervisor.Component {
+		return func(c context.Context) error {
+			started.Add(1)
+			<-c.Done()
+			mu.Lock()
+			events = append(events, name)
+			mu.Unlock()
+			return nil
+		}
+	}
+
+	var o supervisor.Ordered
+	o.OnDrain(func(context.Context) {
+		mu.Lock()
+		events = append(events, "hook")
+		mu.Unlock()
+	})
+	o.Add("a", comp("a"))
+	o.Add("b", comp("b"))
+
+	done := make(chan error, 1)
+	go func() { done <- o.Run(ctx, quietLogger()) }()
+
+	waitFor(t, func() bool { return started.Load() == 2 })
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("clean shutdown returned %v, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after ctx cancellation")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if want := []string{"hook", "b", "a"}; !reflect.DeepEqual(events, want) {
+		t.Errorf("drain sequence = %v, want %v: the hook must run before the first component is "+
+			"drained, or /readyz flips to 503 after the listener has already closed", events, want)
+	}
+}
+
+// TestGroupRunsTheDrainHookBeforeCancelling: same guarantee on the unordered supervisor, which
+// router-svc, billing-svc and connector-pool-svc use. They too must leave the load balancer first.
+func TestGroupRunsTheDrainHookBeforeCancelling(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	var mu sync.Mutex
+	var events []string
+	var started atomic.Int32
+
+	var g supervisor.Group
+	g.OnDrain(func(context.Context) {
+		mu.Lock()
+		events = append(events, "hook")
+		mu.Unlock()
+	})
+	g.Add("a", func(c context.Context) error {
+		started.Add(1)
+		<-c.Done()
+		mu.Lock()
+		events = append(events, "a")
+		mu.Unlock()
+		return nil
+	})
+
+	done := make(chan error, 1)
+	go func() { done <- g.Run(ctx, quietLogger()) }()
+
+	waitFor(t, func() bool { return started.Load() == 1 })
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("clean shutdown returned %v, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after ctx cancellation")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if want := []string{"hook", "a"}; !reflect.DeepEqual(events, want) {
+		t.Errorf("drain sequence = %v, want %v", events, want)
+	}
+}

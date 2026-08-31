@@ -180,7 +180,18 @@ func (s *Session) watch(ctx context.Context) {
 	defer s.wg.Done()
 	select {
 	case <-ctx.Done():
-		s.shutdown()
+		// Close, not shutdown: a cancelled context is a pod drain, and a draining pod owes its ESME an
+		// unbind rather than a bare FIN (guide de codage §5 [MUST], spec §6.3). Without it a rolling
+		// deploy is indistinguishable from a network fault, and the ESME reconnects on its error
+		// backoff instead of immediately. sendUnbind is best-effort and bounded by unbindWriteTimeout,
+		// so an unresponsive peer delays this drain by at most that, never indefinitely.
+		//
+		// cancelWork runs FIRST, ahead of the unbind: releasing the in-flight submit workers is the
+		// urgent half of a drain, and making it queue behind a courtesy write to a peer that may not be
+		// reading would hold them for the whole write deadline. It is idempotent, so shutdown's own
+		// call below is harmless.
+		s.cancelWork()
+		s.Close()
 	case <-s.done:
 	}
 }

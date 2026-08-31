@@ -511,3 +511,118 @@ func truncate(s string, n int) string {
 	}
 	return s[:n] + "..."
 }
+
+// startOpsWithServer is startOps plus the server handle, for the tests that must act on the pod's
+// lifecycle rather than on its dependencies.
+func startOpsWithServer(t *testing.T, checks ...observability.ReadinessCheck) (string, *observability.OpsServer) {
+	t.Helper()
+
+	ops, err := observability.NewOpsServer(testConfig(t), discardLogger(), checks...)
+	if err != nil {
+		t.Fatalf("NewOpsServer() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- ops.Run(ctx, 2*time.Second) }()
+
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("Run() error = %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("ops server did not shut down within 5s")
+		}
+	})
+
+	base := "http://" + waitForAddr(t, ops)
+	waitReachable(t, base+"/healthz")
+	return base, ops
+}
+
+// TestReadyzGoesNotReadyOnDrain: once the drain starts, the pod reports NOT ready even though every
+// vital dependency is healthy.
+//
+// Both halves matter. The healthy-checks control comes first, because a 503 from a broken dependency
+// would satisfy the drain assertion for entirely the wrong reason. And the checks stay healthy on
+// purpose: readiness during a drain is a statement about THIS POD's lifecycle, not about Postgres.
+// A draining pod that keeps answering 200 stays in the Service endpoints and keeps being handed new
+// binds while it closes the listener underneath them — the race this exists to close.
+func TestReadyzGoesNotReadyOnDrain(t *testing.T) {
+	base, ops := startOpsWithServer(t, okCheck("kafka"), okCheck("postgres"))
+
+	if code, body := get(t, base+"/readyz"); code != http.StatusOK {
+		t.Fatalf("before the drain GET /readyz = %d, want 200: %s — the control failed", code, body)
+	}
+
+	ops.BeginDrain()
+
+	code, body := get(t, base+"/readyz")
+	if code != http.StatusServiceUnavailable {
+		t.Fatalf("while draining GET /readyz = %d, want 503 (dependencies are healthy — a pod that "+
+			"is going away is not ready, whatever Postgres says): %s", code, body)
+	}
+
+	var resp struct {
+		Status string            `json:"status"`
+		Checks map[string]string `json:"checks"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("decode body: %v (%s)", err, body)
+	}
+	if resp.Status != "draining" {
+		t.Errorf("status = %q, want %q: an operator reading a 503 must be able to tell a shutdown "+
+			"apart from a dependency outage", resp.Status, "draining")
+	}
+}
+
+// TestHealthzStaysOKWhileDraining: liveness must NOT follow readiness here. /healthz failing during a
+// drain would make the kubelet restart the very pod that is deliberately going away (plan §1.5:
+// liveness failure → restart, readiness failure → LB removal).
+func TestHealthzStaysOKWhileDraining(t *testing.T) {
+	base, ops := startOpsWithServer(t, okCheck("kafka"))
+
+	ops.BeginDrain()
+
+	if code, body := get(t, base+"/healthz"); code != http.StatusOK {
+		t.Errorf("while draining GET /healthz = %d, want 200: a draining pod is alive, and failing "+
+			"liveness would have the kubelet restart it mid-drain: %s", code, body)
+	}
+}
+
+// TestDrainHookMarksNotReadyThenWaits: the hook flips readiness FIRST and only then spends the delay.
+// Waiting before flipping would burn the grace period while still advertising the pod as ready, which
+// is the same bug as not waiting at all.
+func TestDrainHookMarksNotReadyThenWaits(t *testing.T) {
+	base, ops := startOpsWithServer(t, okCheck("kafka"))
+
+	const delay = 150 * time.Millisecond
+	flipped := make(chan struct{})
+	go func() {
+		// Observe readiness while the hook is still inside its wait.
+		defer close(flipped)
+		deadline := time.Now().Add(delay)
+		for time.Now().Before(deadline) {
+			if code, _ := get(t, base+"/readyz"); code == http.StatusServiceUnavailable {
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		t.Error("readiness never went 503 while the drain hook was still waiting: the hook waited " +
+			"before marking the pod not-ready, so the grace period was spent advertising it as ready")
+	}()
+
+	start := time.Now()
+	ops.DrainHook(delay)(context.Background())
+	elapsed := time.Since(start)
+
+	<-flipped
+	if elapsed < delay {
+		t.Errorf("drain hook returned after %v, want at least %v: without the wait the listener "+
+			"closes before kube-proxy has removed the endpoint, and the flip buys nothing",
+			elapsed, delay)
+	}
+}

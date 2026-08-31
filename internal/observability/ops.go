@@ -73,6 +73,46 @@ type OpsServer struct {
 	// from another goroutine, so it is atomic rather than a plain field.
 	addr  string
 	bound atomic.Pointer[string]
+
+	// draining is set once the shutdown starts, by BeginDrain, and read by /readyz from every request
+	// goroutine — hence atomic rather than a plain bool. It is one-way: a pod that has begun draining
+	// never becomes ready again.
+	draining atomic.Bool
+}
+
+// BeginDrain marks this pod NOT ready. It is one-way and idempotent.
+//
+// It exists because readiness has two independent reasons to fail and only one of them was
+// expressible: a vital dependency being down, and this pod going away. Without it a draining pod keeps
+// answering 200 on /readyz — it stays in the Service endpoints and is handed new work while it closes
+// its listeners underneath, which is exactly the "rolling deploy without cutting binds" criterion
+// failing (plan §16).
+func (o *OpsServer) BeginDrain() { o.draining.Store(true) }
+
+// DrainHook returns the supervisor pre-drain hook: it marks the pod not-ready, then waits delay so the
+// load balancer can observe the change before the components tear down.
+//
+// The order is the whole point. Flipping without waiting buys nothing — the listener would close
+// before kube-proxy has removed the endpoint — and waiting before flipping spends the grace period
+// while still advertising the pod as ready. Keep delay below ShutdownTimeout, which itself sits below
+// the pod's terminationGracePeriodSeconds; a zero delay flips and returns at once, which is what a
+// test or a service with no load balancer in front of it wants.
+// The return type is the bare func rather than supervisor.DrainHook: it is assignable to it (same
+// underlying type), and observability has no business depending on the supervisor to say so.
+func (o *OpsServer) DrainHook(delay time.Duration) func(context.Context) {
+	return func(ctx context.Context) {
+		o.BeginDrain()
+		if delay <= 0 {
+			return
+		}
+		o.log.InfoContext(ctx, "draining: marked not ready, waiting for load balancer", "delay", delay)
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+		}
+	}
 }
 
 // NewOpsServer builds the ops server for cfg with the given vital dependency checks. Passing no
@@ -208,6 +248,16 @@ type readyzResponse struct {
 // handleReadyz answers readiness by probing every vital dependency concurrently: probes are
 // independent, and running them in series would make the endpoint as slow as their sum.
 func (o *OpsServer) handleReadyz(w http.ResponseWriter, r *http.Request) {
+	// A draining pod is not ready, whatever its dependencies say — and it answers without probing
+	// them, because the verdict cannot change: this pod is going away. Reported as "draining" rather
+	// than "unavailable" so an operator reading a 503 can tell a deliberate shutdown apart from an
+	// outage. /healthz deliberately keeps answering 200: liveness failing here would have the kubelet
+	// restart the very pod that is on its way out (plan §1.5).
+	if o.draining.Load() {
+		writeJSON(w, http.StatusServiceUnavailable, readyzResponse{Status: "draining"})
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), readinessTimeout)
 	defer cancel()
 

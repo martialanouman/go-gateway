@@ -18,7 +18,7 @@ import (
 // knownVars is every variable Config reads. Tests clear them all so a developer's own shell
 // cannot leak into a result.
 var knownVars = []string{
-	"ENVIRONMENT", "LOG_LEVEL", "OPS_PORT", "SHUTDOWN_TIMEOUT", "SERVICE_NAME",
+	"ENVIRONMENT", "LOG_LEVEL", "OPS_PORT", "SHUTDOWN_TIMEOUT", "DRAIN_DELAY", "SERVICE_NAME",
 	"OTEL_SDK_DISABLED", "OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_INSECURE",
 	"OTEL_TRACES_SAMPLER_ARG",
 	"POSTGRES_URL", "POSTGRES_MAX_CONNS", "POSTGRES_MIN_CONNS", "POSTGRES_TIMEOUT",
@@ -80,6 +80,14 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.ShutdownTimeout != 30*time.Second {
 		t.Errorf("ShutdownTimeout = %s, want 30s", cfg.ShutdownTimeout)
+	}
+	// The default is the operational value: nobody sets DRAIN_DELAY by hand, so this constant is what
+	// every pod actually waits between announcing itself not-ready and closing its listeners. Dropping
+	// it to zero would silently disable the load-balancer removal window in every service, and the
+	// drain tests would not notice — they inject their own delay.
+	if cfg.DrainDelay != 5*time.Second {
+		t.Errorf("DrainDelay = %s, want 5s: a zero default gives kube-proxy no time to remove the "+
+			"endpoint, so a rolling deploy cuts binds the pod has just accepted", cfg.DrainDelay)
 	}
 	if got, want := cfg.Kafka.Brokers, []string{"localhost:9092"}; len(got) != 1 || got[0] != want[0] {
 		t.Errorf("Kafka.Brokers = %v, want %v", got, want)
@@ -248,6 +256,7 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		{"ops port not a number", map[string]string{"OPS_PORT": "nine thousand"}, "OpsPort"},
 		{"shutdown timeout zero", map[string]string{"SHUTDOWN_TIMEOUT": "0s"}, "SHUTDOWN_TIMEOUT"},
 		{"shutdown timeout negative", map[string]string{"SHUTDOWN_TIMEOUT": "-5s"}, "SHUTDOWN_TIMEOUT"},
+		{"drain delay negative", map[string]string{"DRAIN_DELAY": "-1s"}, "DRAIN_DELAY"},
 		{"otlp endpoint with scheme", map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "http://c:4317"}, "OTEL_EXPORTER_OTLP_ENDPOINT"},
 		{"otlp endpoint empty", map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": " "}, "OTEL_EXPORTER_OTLP_ENDPOINT"},
 		{"sample ratio above one", map[string]string{"OTEL_TRACES_SAMPLER_ARG": "1.5"}, "OTEL_TRACES_SAMPLER_ARG"},
