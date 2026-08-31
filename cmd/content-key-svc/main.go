@@ -73,6 +73,7 @@ func run() error {
 	logger.InfoContext(ctx, "starting", "config", cfg)
 
 	var g supervisor.Group
+	g.OnDrain(app.ops.DrainHook(cfg.DrainDelay))
 	g.Add("ops server", func(c context.Context) error { return app.ops.Run(c, cfg.ShutdownTimeout) })
 	g.Add("grpc server", func(c context.Context) error {
 		return runGRPC(c, app.grpc, cfg.GRPC.Port, cfg.ShutdownTimeout, logger)

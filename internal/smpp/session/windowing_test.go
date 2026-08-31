@@ -185,7 +185,19 @@ func TestDrainWaitsForInFlightWorkers(t *testing.T) {
 	bindOK(t, client, session.BindTransmitter)
 
 	writePDU(t, client, smpp.PDU{Sequence: 2, Body: &smpp.SubmitSM{}}) // worker in flight
-	cancel()                                                           // end the session
+
+	// A drain now sends the ESME an outbound unbind before closing (step-260), and that write is
+	// synchronous over net.Pipe. Keep reading like a real ESME would, or Serve blocks on the write
+	// deadline and this test measures unbindWriteTimeout instead of the worker drain.
+	go func() {
+		for {
+			if _, err := smpp.ReadPDU(client); err != nil {
+				return
+			}
+		}
+	}()
+
+	cancel() // end the session
 
 	select {
 	case <-errc:
@@ -197,5 +209,40 @@ func TestDrainWaitsForInFlightWorkers(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("Serve did not return — a worker was not drained (orphan goroutine)")
+	}
+}
+
+// TestDrainReleasesWorkersEvenWhenThePeerStopsReading: the in-flight workers are cancelled at the
+// START of the drain, not behind the outbound unbind.
+//
+// The unbind is a courtesy write bounded by unbindWriteTimeout (5s). A peer that has stopped reading —
+// a wedged ESME, a full receive window — makes that write block for the whole deadline. If worker
+// cancellation queued behind it, every in-flight submit would stay pending for those five seconds on
+// a pod that is already going away. The budget below is deliberately far under unbindWriteTimeout:
+// that gap is the assertion.
+func TestDrainReleasesWorkersEvenWhenThePeerStopsReading(t *testing.T) {
+	released := make(chan struct{})
+	cfg := session.Config{
+		Logger: discardLogger(),
+		OnSubmit: func(ctx context.Context, _ session.SubmitRequest) session.SubmitResult {
+			<-ctx.Done()
+			close(released)
+			return session.SubmitResult{Status: smpp.StatusOK}
+		},
+	}
+	client, _, cancel, _ := newSession(t, cfg)
+	bindOK(t, client, session.BindTransmitter)
+
+	writePDU(t, client, smpp.PDU{Sequence: 2, Body: &smpp.SubmitSM{}}) // worker in flight
+
+	// Deliberately NO reader: the drain's unbind write will stall until its deadline.
+	cancel()
+
+	select {
+	case <-released:
+	case <-time.After(time.Second):
+		t.Fatal("the in-flight worker was still pending 1s into the drain: worker cancellation is " +
+			"queued behind the courtesy unbind write, so a peer that stopped reading holds every " +
+			"in-flight submit for the whole unbindWriteTimeout")
 	}
 }

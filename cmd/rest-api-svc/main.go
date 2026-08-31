@@ -67,6 +67,7 @@ func run() error {
 	// order). The accepted CDR row is no longer written here — it is projected durably off mt.inbound by
 	// router-svc (step-101) — so there is no off-path writer to drain.
 	var g supervisor.Ordered
+	g.OnDrain(app.ops.DrainHook(cfg.DrainDelay))
 	g.Add("ops server", func(c context.Context) error { return app.ops.Run(c, cfg.ShutdownTimeout) })
 	g.Add("rest http server", func(c context.Context) error { return runHTTP(c, app.http, cfg.ShutdownTimeout, logger) })
 	if err := g.Run(ctx, logger); err != nil {

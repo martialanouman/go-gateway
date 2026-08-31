@@ -2,6 +2,7 @@ package kafka_test
 
 import (
 	"context"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -141,5 +142,107 @@ func TestConsumerCommitsAfterProcessing(t *testing.T) {
 		if v == "v1" {
 			t.Fatalf("second consumer re-read committed record v1; values=%v", values)
 		}
+	}
+}
+
+// TestConsumerCommitsHandledRecordsOnShutdown: a record already handled when SIGTERM lands is NOT
+// redelivered to the next instance.
+//
+// The window is narrow and routine: the handler returns just as the context is cancelled, so the
+// commit that follows runs on a context that is already dead. Before step-260 that commit failed
+// instantly and the failure was reclassified as a clean stop (`if ctx.Err() != nil { return nil }`) —
+// a graceful drain therefore discarded offsets exactly like a kill -9.
+//
+// What that costs is not abstract. connectorpool consumes mt.routed and submits to the SMSC; a
+// redelivered record is submitted AGAIN, and reroute.go says it plainly: billing is idempotent by
+// message_id, "but the extra submit itself is not undone". A duplicate SMS reaches the subscriber on
+// every rolling deploy.
+//
+// The assertion is the redelivery, not the call to CommitRecords: checking the call would replay the
+// function under test on both sides of the equals sign and pass under any commit that was merely
+// attempted.
+func TestConsumerCommitsHandledRecordsOnShutdown(t *testing.T) {
+	brokers := kafkatest.Brokers(t)
+	cfg := config.Kafka{Brokers: brokers, Timeout: 3 * time.Second}
+	group := "test-commit-on-shutdown-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+
+	producer, err := kafka.NewProducer(cfg)
+	if err != nil {
+		t.Fatalf("new producer: %v", err)
+	}
+	defer producer.Close()
+
+	ctx := context.Background()
+	if err := producer.Produce(ctx, kafka.Record{Topic: kafka.TopicMTRouted, Key: []byte("k"), Value: []byte("shutdown-v1")}); err != nil {
+		t.Fatalf("produce: %v", err)
+	}
+
+	// First instance: the handler succeeds at the very moment the drain begins, so the commit that
+	// follows it runs on a cancelled context — the SIGTERM race, made deterministic.
+	first, err := kafka.NewConsumer(cfg, group, kafka.TopicMTRouted)
+	if err != nil {
+		t.Fatalf("new consumer: %v", err)
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	handled := make(chan struct{}, 8)
+	done := make(chan error, 1)
+	go func() {
+		done <- first.Run(runCtx, func(c context.Context, _ kafka.Record) error {
+			handled <- struct{}{}
+			<-c.Done() // still in flight when the drain starts
+			return nil // ...and then succeeds: the work IS done
+		})
+	}()
+
+	select {
+	case <-handled:
+	case <-time.After(30 * time.Second):
+		t.Fatal("first consumer never received the record")
+	}
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run on shutdown = %v, want nil", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("first consumer did not stop after cancellation")
+	}
+	first.Close()
+
+	// Second instance, same group: it must resume PAST the handled record.
+	second, err := kafka.NewConsumer(cfg, group, kafka.TopicMTRouted)
+	if err != nil {
+		t.Fatalf("new consumer 2: %v", err)
+	}
+	defer second.Close()
+
+	redelivered := make(chan string, 8)
+	secondCtx, secondCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer secondCancel()
+	secondDone := make(chan struct{})
+	go func() {
+		defer close(secondDone)
+		_ = second.Run(secondCtx, func(_ context.Context, rec kafka.Record) error {
+			redelivered <- string(rec.Value)
+			return nil
+		})
+	}()
+	<-secondCtx.Done()
+	<-secondDone
+
+	for {
+		select {
+		case v := <-redelivered:
+			if v == "shutdown-v1" {
+				t.Fatalf("record %q was redelivered after a graceful shutdown: the offset of work "+
+					"that was already done went uncommitted, so a rolling deploy re-submits it — a "+
+					"duplicate SMS to the subscriber", v)
+			}
+			continue
+		default:
+		}
+		break
 	}
 }

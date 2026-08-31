@@ -69,6 +69,7 @@ func run() error {
 	// predictably rather than leaving a half-dead pod (guide de codage §5). Neither has a
 	// teardown-ordering constraint, so the unordered supervisor fits.
 	var g supervisor.Group
+	g.OnDrain(app.ops.DrainHook(cfg.DrainDelay))
 	g.Add("ops server", func(c context.Context) error { return app.ops.Run(c, cfg.ShutdownTimeout) })
 	g.Add("grpc server", func(c context.Context) error {
 		return runGRPC(c, app.grpc, cfg.GRPC.Port, cfg.ShutdownTimeout, logger)

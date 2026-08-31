@@ -66,6 +66,7 @@ func run() error {
 	// Ops and the router pipeline tear down together — neither must outlive the other — so the
 	// unordered supervisor fits (guide de codage §5).
 	var g supervisor.Group
+	g.OnDrain(app.ops.DrainHook(cfg.DrainDelay))
 	g.Add("ops server", func(c context.Context) error { return app.ops.Run(c, cfg.ShutdownTimeout) })
 	g.Add("router", app.router.Run)
 	// The accepted-CDR projector is SELF-RESTARTING rather than a plain g.Add: it writes ClickHouse on every

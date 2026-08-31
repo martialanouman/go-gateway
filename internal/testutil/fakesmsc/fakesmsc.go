@@ -60,6 +60,10 @@ type Server struct {
 	connSeq atomic.Int64  // assigns per-connection ids
 	closed  atomic.Bool
 
+	// unbinds counts the unbind PDUs received. It is what lets a drain test tell an orderly leave-taking
+	// apart from a socket that simply died: ConnCount falls to zero either way.
+	unbinds atomic.Int64
+
 	mu      sync.Mutex
 	conns   map[*conn]struct{}
 	submits []Submit // recorded submit_sm, when cfg.RecordSubmits
@@ -125,6 +129,10 @@ func (s *Server) Submits() []Submit {
 	defer s.mu.Unlock()
 	return append([]Submit(nil), s.submits...)
 }
+
+// Unbinds reports how many unbind PDUs this SMSC has received. A peer that closes its socket without
+// one has not drained gracefully, and only this counter distinguishes the two.
+func (s *Server) Unbinds() int64 { return s.unbinds.Load() }
 
 // ConnCount is the number of live connections — the number of established binds a pool holds. A test
 // resizing a bind pool asserts on it (step-128b).
@@ -240,6 +248,7 @@ func (s *Server) handle(c *conn, pdu smpp.PDU) bool {
 	case *smpp.EnquireLink:
 		s.reply(c, smpp.PDU{Sequence: pdu.Sequence, Body: &smpp.EnquireLinkResp{}})
 	case *smpp.Unbind:
+		s.unbinds.Add(1)
 		s.reply(c, smpp.PDU{Sequence: pdu.Sequence, Body: &smpp.UnbindResp{}})
 		return true
 	case *smpp.DeliverSMResp:

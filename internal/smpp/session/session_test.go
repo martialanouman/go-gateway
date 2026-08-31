@@ -620,16 +620,35 @@ func TestSession_CloseIdempotent(t *testing.T) {
 	sess.Close()
 }
 
+// TestSession_ContextCancel pins that a pod drain unbinds gracefully: cancelling the context sends the
+// ESME an outbound unbind before the socket closes, exactly as a force-disconnect does.
+//
+// This test asserted the OPPOSITE until step-260 — that a cancelled context closed the socket with no
+// unbind at all. That was not a stale fixture; it faithfully described the code, and the code was
+// wrong. guide-codage-go.md §5 carries a [MUST]: "l'arrêt gracieux draine : smpp-server-svc fait un
+// unbind gracieux des binds (§6.3)". sendUnbind existed and was reachable only from Close(), i.e. only
+// from the revocation path of step-032 — never from the drain. An ESME therefore saw a rolling deploy
+// as a bare FIN, indistinguishable from a network fault, and reconnected on its own error backoff
+// instead of immediately. If a future change makes this test fail, the question to ask is whether the
+// [MUST] still holds, not whether the assertion drifted.
 func TestSession_ContextCancel(t *testing.T) {
 	t.Parallel()
 	client, _, cancel, errc := newSession(t, session.Config{})
 	bindOK(t, client, session.BindTransceiver)
 
 	cancel()
+
+	// Read before waiting on Serve: the unbind write is synchronous over net.Pipe, so Serve cannot
+	// return until this side has consumed it.
+	if pdu := readPDU(t, client); pdu.CommandID() != smpp.CmdUnbind {
+		t.Fatalf("drain sent cmd = %#x, want unbind: a pod that goes away must take its leave, not "+
+			"drop the socket", pdu.CommandID())
+	}
 	if err := waitErr(t, errc); err != nil {
 		t.Errorf("Serve after ctx cancel = %v, want nil", err)
 	}
-	// The socket is closed: a further read from the client observes it.
+	// The unbind is a courtesy, not a handshake: the socket closes regardless, without waiting for an
+	// unbind_resp that a draining pod has no time to collect.
 	_ = client.SetReadDeadline(time.Now().Add(ioDeadline))
 	if _, err := smpp.ReadPDU(client); err == nil {
 		t.Error("expected read error after ctx cancel closed the connection")

@@ -20,6 +20,37 @@ import (
 // clean stop or an error to bring the whole group down.
 type Component func(context.Context) error
 
+// DrainHook runs once at the very start of a shutdown, before any component is cancelled. It exists
+// because the drain has an instant that no component can occupy: a pod must announce itself
+// NOT-ready and give the load balancer time to stop routing to it BEFORE its listeners close.
+// Running that as a component cannot work — components tear down, they do not run first.
+//
+// It receives a context detached from the one that just fired — the parent is already cancelled by the
+// time a hook runs, so a hook that must wait can actually wait. That detached context carries the
+// parent's values but is NEVER cancelled: a hook is responsible for bounding its own wait, because
+// neither Group nor Ordered imposes an overall drain budget today.
+//
+// Hooks also run when a COMPONENT FAILS, not only on SIGTERM. That is deliberate: a consumer that dies
+// under load leaves the pod in the Service endpoints and still being handed work, so it must announce
+// itself not-ready before the rest tears down. The supervisor cannot tell that case from a boot
+// failure — that would mean knowing whether the pod was ever ready, which lives above it — so a
+// service that fails to bind its port also pays the drain delay before reporting the error.
+// TestDrainHooksRunOnComponentFailureToo pins it.
+type DrainHook func(context.Context)
+
+// runDrainHooks runs every registered hook in registration order on a detached context, before the
+// components are torn down. A hook is best-effort: it cannot fail the shutdown, because there is
+// nothing left to abort — the process is going down either way.
+func runDrainHooks(ctx context.Context, hooks []DrainHook) {
+	if len(hooks) == 0 {
+		return
+	}
+	detached := context.WithoutCancel(ctx)
+	for _, fn := range hooks {
+		fn(detached)
+	}
+}
+
 type namedComponent struct {
 	name string
 	fn   Component
@@ -28,7 +59,8 @@ type namedComponent struct {
 // Group collects components and runs them together under one lifecycle. The zero value is ready to
 // use; add components with Add, then call Run.
 type Group struct {
-	comps []namedComponent
+	comps   []namedComponent
+	onDrain []DrainHook
 }
 
 // Add registers a component under a name used in shutdown logs and error wrapping. Call it before
@@ -37,12 +69,23 @@ func (g *Group) Add(name string, fn Component) {
 	g.comps = append(g.comps, namedComponent{name: name, fn: fn})
 }
 
+// OnDrain registers a hook run once when the drain starts, BEFORE any component is cancelled. See
+// DrainHook for why that instant needs a name of its own.
+func (g *Group) OnDrain(fn DrainHook) {
+	g.onDrain = append(g.onDrain, fn)
+}
+
 // Run starts every registered component, then blocks until ctx is cancelled or the first component
 // fails. It then cancels all components, waits for them, and returns the first non-nil error — nil on
 // a clean ctx-driven shutdown. errCh is sized to the component count, so no goroutine blocks
 // reporting its error even if several fail at once.
 func (g *Group) Run(ctx context.Context, logger *slog.Logger) error {
-	runCtx, cancel := context.WithCancel(ctx)
+	// Detached from the parent, like Ordered's: a component whose context died the instant SIGTERM
+	// arrived would already be tearing down before the pre-drain hooks could run, which would make
+	// OnDrain unimplementable here. Run cancels runCtx explicitly below, once the hooks have run, so
+	// the observable shutdown behaviour is unchanged.
+	//nolint:gosec // G118: cancel is invoked below on every path and by the defer safety net.
+	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancel()
 
 	var wg sync.WaitGroup
@@ -67,6 +110,7 @@ func (g *Group) Run(ctx context.Context, logger *slog.Logger) error {
 	case runErr = <-errCh:
 		logger.Error("component failed, shutting down", "err", runErr)
 	}
+	runDrainHooks(ctx, g.onDrain)
 	cancel()
 	wg.Wait()
 
@@ -89,13 +133,20 @@ func (g *Group) Run(ctx context.Context, logger *slog.Logger) error {
 // reverse. It captures the per-component cancel/waitgroup/errCh scaffolding the pipeline mains
 // otherwise re-inline. The zero value is ready to use.
 type Ordered struct {
-	comps []namedComponent
+	comps   []namedComponent
+	onDrain []DrainHook
 }
 
 // Add registers a component under a name used in shutdown logs and error wrapping. Registration order
 // IS the shutdown order: the last component added is drained first.
 func (o *Ordered) Add(name string, fn Component) {
 	o.comps = append(o.comps, namedComponent{name: name, fn: fn})
+}
+
+// OnDrain registers a hook run once when the drain starts, BEFORE the first component is drained —
+// that is, before even the last-registered one. See DrainHook.
+func (o *Ordered) OnDrain(fn DrainHook) {
+	o.onDrain = append(o.onDrain, fn)
 }
 
 // Run starts every component on its own detached, cancellable context, then blocks until ctx is
@@ -140,6 +191,8 @@ func (o *Ordered) Run(ctx context.Context, logger *slog.Logger) error {
 	case runErr = <-errCh:
 		logger.Error("component failed, shutting down", "err", runErr)
 	}
+
+	runDrainHooks(ctx, o.onDrain)
 
 	// Drain in reverse registration order: cancel each component and wait for it before the next.
 	for i := len(o.comps) - 1; i >= 0; i-- {

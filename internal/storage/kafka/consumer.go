@@ -29,6 +29,10 @@ type Consumer struct {
 	cl    *kgo.Client
 	group string
 
+	// commitTimeout bounds the ONE commit that matters most: the last one, issued while the pod is
+	// already draining and its own context is dead. config validates KAFKA_TIMEOUT as positive.
+	commitTimeout time.Duration
+
 	// fromEnd records where a fresh group starts, so a caller can assert it. The choice is a
 	// durability property — a group that starts at the end skips whatever was produced before it first
 	// joined — and one that no test could observe was one no test could guard (step-201c D9).
@@ -69,7 +73,34 @@ func newConsumer(cfg config.Kafka, group string, reset kgo.Offset, topics ...str
 	if err != nil {
 		return nil, fmt.Errorf("kafka: new consumer: %w", err)
 	}
-	return &Consumer{cl: cl, group: group, fromEnd: reset.EpochOffset().Offset == kgo.NewOffset().AtEnd().EpochOffset().Offset}, nil
+	return &Consumer{
+		cl:            cl,
+		group:         group,
+		commitTimeout: cfg.Timeout,
+		fromEnd:       reset.EpochOffset().Offset == kgo.NewOffset().AtEnd().EpochOffset().Offset,
+	}, nil
+}
+
+// commit commits the handled records, and retries ONCE on a detached context when the failure was the
+// drain itself.
+//
+// The retry is the point. A commit issued on a context that SIGTERM has already cancelled fails
+// instantly without reaching the broker, and treating that as a clean stop discards the offsets of work
+// that was actually done — a graceful shutdown then loses exactly as much as a kill -9, and the next
+// instance redelivers records the SMSC has already been sent (guide de codage §5 [MUST]: "les consumers
+// Kafka valident leurs offsets en cours puis s'arrêtent").
+//
+// Detaching on shutdown is the established shape here: smppserver's releaseToken and
+// observability.DrainTracing both do the same thing for the same reason — the work outlives the context
+// that asked for it to stop.
+func (c *Consumer) commit(ctx context.Context, recs ...*kgo.Record) error {
+	err := c.cl.CommitRecords(ctx, recs...)
+	if err == nil || ctx.Err() == nil {
+		return err
+	}
+	dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.commitTimeout)
+	defer cancel()
+	return c.cl.CommitRecords(dctx, recs...)
 }
 
 // Run polls and processes records until ctx is cancelled, committing each record's offset only
@@ -108,8 +139,11 @@ func (c *Consumer) Run(ctx context.Context, handle Handler) error {
 		// first failure stays uncommitted for redelivery.
 		// A groupless tail reader has nothing to commit to.
 		if len(handled) > 0 && c.group != "" {
-			if err := c.cl.CommitRecords(ctx, handled...); err != nil {
+			if err := c.commit(ctx, handled...); err != nil {
 				if ctx.Err() != nil {
+					// The detached retry inside commit failed too: the broker is unreachable, not merely
+					// cancelled. Nothing more to try on a pod that is going away — the records stay
+					// uncommitted and are redelivered, which is the at-least-once contract doing its job.
 					return nil
 				}
 				return fmt.Errorf("kafka: commit in group %s: %w", c.group, err)
@@ -174,8 +208,9 @@ func (c *Consumer) RunBatch(ctx context.Context, handle BatchHandler) error {
 			return fmt.Errorf("kafka: batch handle in group %s: %w", c.group, err)
 		}
 		if len(commit) > 0 && c.group != "" {
-			if err := c.cl.CommitRecords(ctx, commit...); err != nil {
+			if err := c.commit(ctx, commit...); err != nil {
 				if ctx.Err() != nil {
+					// See Run: the detached retry failed too, so the broker is gone, not just the context.
 					return nil
 				}
 				return fmt.Errorf("kafka: commit in group %s: %w", c.group, err)

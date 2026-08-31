@@ -62,6 +62,7 @@ func run() error {
 	logger.InfoContext(ctx, "starting", "config", cfg)
 
 	var g supervisor.Group
+	g.OnDrain(app.ops.DrainHook(cfg.DrainDelay))
 	g.Add("ops server", func(c context.Context) error { return app.ops.Run(c, cfg.ShutdownTimeout) })
 	g.Add("invalidation relay", app.relay.Run)
 	if err := g.Run(ctx, logger); err != nil {

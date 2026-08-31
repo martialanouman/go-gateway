@@ -59,9 +59,18 @@ type Config struct {
 	// absent from the OpenAPI contracts (plan §1.4).
 	OpsPort int `env:"OPS_PORT" envDefault:"9090"`
 
-	// ShutdownTimeout bounds the graceful drain on SIGTERM. Keep it below the pod's
-	// terminationGracePeriodSeconds, or the kubelet SIGKILLs mid-drain (guide de codage §5).
+	// ShutdownTimeout bounds the graceful drain on SIGTERM, once the components start tearing down.
+	// Keep DrainDelay + ShutdownTimeout below the pod's terminationGracePeriodSeconds, or the kubelet
+	// SIGKILLs mid-drain (guide de codage §5).
 	ShutdownTimeout time.Duration `env:"SHUTDOWN_TIMEOUT" envDefault:"30s"`
+
+	// DrainDelay is how long a pod keeps serving AFTER marking itself not-ready on /readyz and BEFORE
+	// its components tear down. It buys the load balancer time to observe the change and stop routing;
+	// without it a rolling deploy hands new work to a pod that is already closing its listeners, which
+	// for smpp-server-svc means cutting binds it just accepted (plan §16). It is dead time on every
+	// shutdown, so it should be a few seconds, not tens. Zero disables the wait — correct for a
+	// service with no load balancer in front of it, and for tests.
+	DrainDelay time.Duration `env:"DRAIN_DELAY" envDefault:"5s"`
 
 	OTel       OTel       `envPrefix:"OTEL_"`
 	Postgres   Postgres   `envPrefix:"POSTGRES_"`
@@ -675,6 +684,14 @@ func (c Config) coreProblems() []string {
 	if c.OpsPort < 1 || c.OpsPort > 65535 {
 		problems = append(problems, fmt.Sprintf("OPS_PORT %d is outside 1-65535", c.OpsPort))
 	}
+	// Zero is legal and means "do not wait" — a service with no load balancer in front of it, or a
+	// test. Negative is a typo, and silently accepting it would make the drain skip the wait it was
+	// configured to take.
+	if c.DrainDelay < 0 {
+		problems = append(problems, fmt.Sprintf(
+			"DRAIN_DELAY %s must not be negative: use 0 to drain without waiting for the load balancer",
+			c.DrainDelay))
+	}
 	if c.ShutdownTimeout <= 0 {
 		problems = append(problems, fmt.Sprintf(
 			"SHUTDOWN_TIMEOUT %s must be positive: a service that cannot drain loses in-flight work",
@@ -1123,6 +1140,7 @@ func (c Config) LogValue() slog.Value {
 		slog.String("log_level", c.LogLevel),
 		slog.Int("ops_port", c.OpsPort),
 		slog.Duration("shutdown_timeout", c.ShutdownTimeout),
+		slog.Duration("drain_delay", c.DrainDelay),
 		slog.Bool("otel_disabled", c.OTel.Disabled),
 		slog.String("otel_endpoint", c.OTel.Endpoint),
 		slog.Bool("postgres_url_set", strings.TrimSpace(c.Postgres.URL) != ""),

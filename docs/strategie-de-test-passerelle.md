@@ -111,6 +111,8 @@ Perte Redis (vérifier **chaque** politique de panne — la matrice de référen
 
 La perte Redis n'a jamais eu besoin du simulateur SMSC : elle se coupe avec un `tcpproxy` devant le Redis de `redistest` (`redistest.Cuttable`), et chaque politique est prouvée dans le paquet qui la porte plutôt que dans une suite de chaos unique — l'assertion y est nette et le test n'a besoin que de Redis. Livré en step-250. Seuls les scénarios de **connecteur** (flapping, reroute) demandent un pair SMPP.
 
+**Le drain gracieux est livré (step-260)**, et il n'a demandé ni conteneur tué ni cluster : le `cancel()` d'un `context.WithCancel` **est** le SIGTERM. C'est ce qui rend ces tests ordinaires — `internal/smppserver/drain_integration_test.go` bind un ESME sur le vrai listener, draine, et exige l'`unbind` puis un rebind immédiat sur un pod de **nouvelle identité**, à `max_sessions=1`. Le PDB lui-même n'est pas testable ici (aucun manifeste avant step-270) ; ce que step-260 fige, c'est le comportement que le PDB devra respecter. Restent à couvrir : le **failover Postgres** (step-260b, qui exige un `pgtest.Cuttable` encore inexistant) et les **quatre politiques Redis documentées mais non prouvées** (step-250d).
+
 ---
 
 ## 5. Cibles de couverture (indicatives)
