@@ -120,10 +120,18 @@ utilisent aussi. Deux règles s'en dégagent, payées cher : le pool sous test s
 coupure (son constructeur de production pingue à chaud), et les assertions se lisent par un **second pool
 non coupé**, faute de quoi la vérification meurt avec la dépendance et le test passe en n'observant rien.
 
-Restent à couvrir : les **quatre politiques Redis documentées mais non prouvées** (step-250d) et les
-**trois politiques PostgreSQL hors facturation** — auth de bind SMPP, clés API REST, snapshots du
-routeur (step-260c). Aucune n'a de ligne §16, et le `[MUST]` de §16 exige documentée **et** testée : on
-n'écrit pas la ligne avant d'avoir le test, sous peine de refaire la dette que step-250d répare.
+**Les quatre politiques Redis de step-250 sont prouvées (step-250d)**, chacune dans le paquet qui la
+porte. Deux règles s'en dégagent. D'abord, **le contrôle doit rendre la coupure observable** : un test
+qui passe aussi bien Redis debout ne teste rien — d'où un sujet réellement bloqué avant de couper le
+throttle, un MSISDN réellement dans le Bloom pour le L0, un quota réellement plein pour distinguer
+`ESME_RBINDFAIL` d'`ESME_RSYSERR`. Ensuite, **une politique asymétrique demande un test par côté** : la
+même mutation doit faire tomber le versant fail-closed et laisser le versant fail-open vert, faute de
+quoi on a testé deux fois le même.
+
+Restent à couvrir : les **trois politiques PostgreSQL hors facturation** — auth de bind SMPP, clés API
+REST, snapshots du routeur (step-260c). Aucune n'a de ligne §16, et le `[MUST]` de §16 exige documentée
+**et** testée : on n'écrit pas la ligne avant d'avoir le test, sous peine de refaire la dette que
+step-250d vient de solder.
 
 ---
 

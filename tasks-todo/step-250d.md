@@ -42,6 +42,58 @@ step-250 côté billing : `errs.CodeOf(err)` doit dire si l'erreur est **codée*
 `ESME_RSYSERR` définitif ; un refus non codé est une faute transitoire. Se tromper de camp change le
 sort du bind.
 
+## Design arrêté
+
+**Deux erreurs de cette fiche, corrigées.** La colonne « Ce qui existe » attribuait au registre de
+sessions « un faux qui erre : `internal/session/server_test.go:121` ». Ce test est
+`TestServer_DisconnectPublishErrorIsInternal` : un faux **publisher**, sur le chemin **Disconnect**,
+construit avec `session.NewServer(nil, pub)` — registre nil. `Registry.Bind` sous panne Redis n'avait
+**aucune couverture, d'aucune sorte**, et ne pouvait pas en avoir : `Registry` détient un
+`*redis.Client` concret, pas une interface. C'était la plus nue des quatre, pas la mieux lotie. La
+section « Hors périmètre » était elle aussi périmée : elle renvoyait les politiques PostgreSQL à
+step-260b « qui les documente et les teste », alors que 260b n'a livré que la ligne billing et a renvoyé
+les trois autres à step-260c.
+
+**L'écart §16 prédit existe, il est unique, et il est dans la ligne du jeton d'annulation.** §16 écrivait
+« fail-open côté pool (journalise et envoie) » ; le pool a **deux** sites fail-open, et le second
+(`connectorpool.go:900`, branche d'expiration max-age) journalise et **dead-letter en
+`delivery_expired`**. Une annulation concurrente y est mésenregistrée comme périmée. Le code l'assumait
+en commentaire ; §16 l'ignorait. Corrigé, avec la précision du camp SMPP (`ESME_RSYSERR`, pas
+`ESME_RCANCELFAIL`).
+
+**Ce qui n'était PAS un écart, vérifié avant d'écrire.** ADR-0013 nomme `ESME_RCANCELFAIL` ; sur panne
+Redis le refus est `ESME_RSYSERR`. Ce n'est pas une contradiction : `cancel.go:122-136` sépare nettement
+`err != nil` → `ErrInternal` de `holder != HolderNone` → `ErrCancelFailed`. L'ADR décrit le second cas.
+Rien à corriger.
+
+**Cinq tests pour quatre politiques.** La politique du jeton **est** l'asymétrie : n'en prouver qu'un
+côté n'en prouve que la moitié, et les deux côtés vivent dans deux paquets. Le couple est ce qui le
+démontre — la mutation « `Claim` concède un jeton libre sous panne » fait tomber le versant fail-closed
+(`internal/cancel`) **et laisse le versant fail-open vert** (`internal/connectorpool`). Sans ce couple on
+aurait testé deux fois le même camp.
+
+**Le contrôle doit rendre la coupure observable** — la leçon de step-250, appliquée quatre fois. Pour le
+throttle : franchir réellement `MaxFailures` avant de couper, avec un mot de passe **valide**, parce
+qu'un bind bloqué répond `ESME_RINVPASWD`, délibérément indiscernable d'un mauvais mot de passe. Pour le
+registre : **deux comptes**, l'un à quota plein pour montrer à quoi ressemble un refus sur le fond
+(`ESME_RBINDFAIL`), l'autre avec un slot libre pour que le refus mesuré ne puisse être que la panne.
+Pour le L0 : semer le Bloom **et** la clé, un numéro hors Bloom étant un miss définitif sans appel
+réseau. Pour le pool : le magasin doit prendre le jeton avant la coupure et redevenir décisif après,
+sinon « le message est parti » serait vrai de toute façon.
+
+**Ce qui n'est délibérément pas testé.** Le *coût* du fail-open : `throttleBlocks` appelle `Check` sans
+timeout, et une découverte de panne devenue lente ferait de l'anti-brute-force un vecteur de DoS.
+Hors de portée de l'outil — `Cut()` produit une socket morte, jamais un Redis lent. C'est la leçon de
+step-260b (couper un lien ne teste pas ce qu'une coupure ne produit pas) ; le proxy retardateur est déjà
+fiché en step-260c.
+
+**La trouvaille qui dépasse la step.** En cherchant comment semer la clé du test L0 : **rien n'écrit
+`exactroute:{msisdn}`** — ni config-sync, ni l'Admin API, et `EncodeTarget` n'a aucun appelant. Le
+court-circuit L0 ne résout jamais et la portabilité des numéros ne fonctionne pas en production. Trois
+commentaires du code affirmaient le contraire ; ils sont corrigés ici, et **step-250e** ouvre la
+réparation. Cela n'invalide pas le test L0 : la lecture Redis, elle, s'exécute à chaque faux positif du
+Bloom, donc la politique de panne est vivante même si la résolution ne l'est pas.
+
 ## Definition of Done
 
 - [ ] `make check` vert

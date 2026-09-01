@@ -30,7 +30,13 @@ func NewResolver(bloom *Bloom, redis RedisGetter) *Resolver {
 }
 
 // redisKey is the exact-route key for an MSISDN (Appendix B). The hash tag ({msisdn}) pins a number's
-// key to one cluster slot, matching how config-sync writes it (step-105).
+// key to one cluster slot.
+//
+// NOTE (step-250d): nothing writes this key yet. config-sync does not know about exact routes and the
+// Admin API persists them to Postgres only, so in production every Bloom possible-hit reads a missing
+// key and falls back to declarative routing — the L0 short-circuit never resolves, and number
+// portability (spec §6.1) does not work. The reader below is correct and its failure policy is live
+// (the read happens on every false positive); what is missing is the writer. See tasks-todo/step-250e.
 func redisKey(msisdn string) string { return "exactroute:{" + msisdn + "}" }
 
 // Resolve returns the exact-route target for an MSISDN. ok is false for the common "no override" case
@@ -55,9 +61,9 @@ func (r *Resolver) Resolve(ctx context.Context, msisdn string) (Target, bool, er
 	return target, true, nil
 }
 
-// parseTarget decodes the Redis value "<target_type>:<uuid>" into a Target — the Appendix B encoding
-// config-sync writes (step-105). A malformed or unknown value is an error, not a silent miss, so a
-// sync bug surfaces rather than mis-routing.
+// parseTarget decodes the Redis value "<target_type>:<uuid>" into a Target — the Appendix B encoding.
+// A malformed or unknown value is an error, not a silent miss, so a sync bug surfaces rather than
+// mis-routing.
 func parseTarget(val string) (Target, error) {
 	kind, id, ok := strings.Cut(val, ":")
 	if !ok {
@@ -74,8 +80,9 @@ func parseTarget(val string) (Target, error) {
 	return Target{Type: tt, ID: uid}, nil
 }
 
-// EncodeTarget renders a Target as the Redis value config-sync writes (step-105). It is the inverse of
-// parseTarget and lives here so the encoding has one owner.
+// EncodeTarget renders a Target as the Redis value an exact-route sync must write. It is the inverse of
+// parseTarget and lives here so the encoding has one owner. It has no production caller today — see the
+// note on redisKey.
 func EncodeTarget(t Target) string {
 	return string(t.Type) + ":" + t.ID.String()
 }
