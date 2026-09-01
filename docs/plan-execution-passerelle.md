@@ -17,7 +17,7 @@ Une tâche = **une session Claude Code ciblée = une PR petite et verte**. Pour 
 
 ### 0.2 `CLAUDE.md` (déjà en place, à la racine)
 
-Claude Code le lit à chaque session : commandes, carte d'architecture, règles d'or, invariants, index docs. Garde-le à jour.
+Claude Code le lit à chaque session : ce qu'on construit, l'ordre du pipeline MT, les 4 invariants, les couplages qui se savent d'avance, la *definition of done*, l'index docs. Le détail par territoire vit dans `.claude/rules/*.md`, chargé automatiquement à la lecture d'un fichier concerné (code Go, tests, `api/`, `db/`+`migrations/`, `internal/platform/errors`, fiches de travail). Garde les deux à jour.
 
 ### 0.3 Règle d'or du séquencement + convention STUB
 
