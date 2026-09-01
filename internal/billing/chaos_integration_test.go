@@ -9,6 +9,7 @@ import (
 
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
+	"github.com/martialanouman/go-gateway/internal/testutil/pgtest"
 	"github.com/martialanouman/go-gateway/internal/testutil/redistest"
 )
 
@@ -31,7 +32,7 @@ import (
 func TestReserveFailsClosedWhenRedisIsCut(t *testing.T) {
 	rdb, proxy := redistest.Cuttable(t)
 	const initial = 100
-	h := newBillingHarnessOn(t, rdb, initial, time.Minute)
+	h := newBillingHarnessOn(t, rdb, pgtest.Pool(t), initial, time.Minute)
 	ctx := context.Background()
 
 	// Control, with Redis up: a reserve succeeds and debits the durable ledger. Without it the outage
@@ -65,7 +66,7 @@ func TestReserveFailsClosedWhenRedisIsCut(t *testing.T) {
 	if got := h.balance(t); got != initial-3 {
 		t.Errorf("durable balance = %d, want %d: a refused reserve must not touch the ledger", got, initial-3)
 	}
-	if exists, err := h.repo.LedgerEntryExists(ctx, during, cp.EntryReserve); err != nil {
+	if exists, err := h.verify.LedgerEntryExists(ctx, during, cp.EntryReserve); err != nil {
 		t.Fatalf("LedgerEntryExists: %v", err)
 	} else if exists {
 		t.Error("a reserve refused during the outage still wrote a ledger entry")

@@ -198,7 +198,8 @@ la campagne ne publie un chiffre — c'est fait (step-230, livrée) — et les m
 qu'on mesure un environnement représentatif.
 - [ ] step-250d — Les quatre politiques Redis documentées en step-250 mais jamais prouvées ⛓ step-250
 - [x] step-260 — Chaos : drain gracieux (unbind SMPP, offsets Kafka, retrait LB) ⛓ step-250
-- [ ] step-260b — Failover Postgres : réhydratation du solde, fail-closed pendant la fenêtre ⛓ step-260
+- [x] step-260b — Failover Postgres : fail-closed sur les trois voies de la réserve, et le crédit fantôme du release ⛓ step-260
+- [ ] step-260c — Les trois politiques PostgreSQL hors facturation (bind SMPP, clés API REST, snapshots) ⛓ step-260b
 - [ ] step-270 — Manifests deploy/ Kubernetes (Deployments, Services, HPA, PDB, probes) ⛓ step-260b
 - [ ] step-280 — Campagne NFR pleine échelle sur environnement représentatif ⛓ step-230, step-270
 
@@ -219,6 +220,18 @@ ne testait le drain**. S'y ajoutait un `/readyz` qui ne basculait jamais : le po
 balancer pendant qu'il fermait ses listeners. Deux fiches en sont nées : **step-260b** pour le failover
 Postgres, que step-260 portait à tort dans le même lot, et **step-250d** pour la dette que step-250
 avait promise sans jamais ouvrir la fiche.
+
+**step-260b a confirmé la leçon : là où rien ne coupe, rien ne se voit.** Le seul garde-fou du
+fail-closed billing était un faux `LedgerStore` renvoyant un `errors.New` nu — la *forme* d'une panne,
+pas son *contrat* : une vraie erreur pgx traverse `postgres.translate` et revient porteuse d'un code que
+ce faux n'a jamais eu. Sous une coupure réelle, `Release` s'est révélé laisser le cache crédité d'un
+remboursement que le grand livre n'avait jamais appliqué — jusqu'à dix minutes pendant lesquelles une
+réserve dépense un crédit qui n'existe pas. Le reaper ne pouvait pas rattraper : son `MIN_AGE` de 15 min
+est plus long que le TTL du cache. Et le tour de mutations a trouvé mieux que le défaut :
+`TestReleaseYieldsToCaptureReconcilesCache`, le garde BLOQUANT-1, **ne gardait rien** — sa mise en scène
+appelait `Accountant.Capture`, qui supprime le hold, si bien que le crédit fantôme qu'il prétendait
+attraper ne pouvait pas se produire. Une fiche en est née, **step-260c**, pour les trois politiques
+PostgreSQL que §16 n'écrit toujours pas : rien ne s'écrit dans la matrice avant d'avoir son test.
 
 ## Sécurité et authentification
 Indépendantes de la chaîne de charge : parallélisables si deux mains travaillent.

@@ -381,7 +381,10 @@ Chaque dépendance dégradée a un comportement **codé explicitement**, jamais 
 | Redis (anti-brute-force de bind) | throttle de bind | **fail-open** : le throttle s'efface, argon2id reste seul juge | c'est de la défense en profondeur, pas l'authentification ; une panne ne doit pas fermer l'ingress SMPP |
 | Redis (routage L0, numéro exact) | résolution de route | **fail-closed en rejeu** : erreur non codée → offset non commité → redélivrance | un numéro exact injoignable ne doit pas se dégrader en routage par défaut, qui enverrait sur le mauvais opérateur |
 | Redis (jeton d'annulation) | `cancel_sm` | **asymétrique** : fail-closed côté SMPP (refuse l'annulation), fail-open côté pool (journalise et envoie) | une annulation est elle-même best-effort ; en cas de doute on refuse d'annuler, jamais de retenir la livraison (ADR-0013) |
-| Facturation (globale) | crédit | **fail-open** par défaut ; fail-closed opt-in par plateforme/client | l'envoi ne dépend pas de la facturation |
+| PostgreSQL (autorité durable du solde) | crédit MT | **fail-closed avec rejeu** : la réserve refuse, le débit spéculatif du cache est compensé, et l'erreur traverse la frontière gRPC **non codée** → offset non commité → redélivrance | le cache seul ne prouve rien ; et une panne ne doit jamais se déguiser en refus de fonds, qui rejetterait le message définitivement (step-260b) |
+| Facturation — réserve | crédit MT | **fail-closed** : le message facturé n'est pas envoyé tant que la facturation n'a pas répondu | envoyer sur une réserve non confirmée est une perte sèche |
+| Facturation — règlement (capture/release) | crédit MT | **fail-open** : journalisé et compté, **jamais** propagé ; `billing.Reaper` réconcilie | propager redélivrerait le record et **ré-enverrait le SMS** ; le débit de la réserve a déjà rendu l'argent juste |
+| Facturation — autorisation externe (§6.10) | crédit | **configurable par fournisseur** : `fail_open` par défaut, `fail_closed` opt-in | une panne fournisseur ne ferme pas l'envoi par défaut, mais un client peut l'exiger |
 | SMSC (connecteur dégradé) | envoi | disjoncteur ouvre → `fallback_chain` → dead-letter borné | isoler un opérateur défaillant |
 | Kafka | pipeline | pas d'accusé tant que non durable ; aucune perte après ACK | frontière de durabilité |
 

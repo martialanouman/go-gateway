@@ -127,9 +127,18 @@ func TestReleaseYieldsToCaptureReconcilesCache(t *testing.T) {
 	if _, err := h.acc.Reserve(ctx, h.owner, msg, 6); err != nil {
 		t.Fatalf("Reserve: %v", err)
 	}
-	// Capture wins durably first (simulates a late-DLR capture landing before the release resolves).
-	if _, err := h.acc.Capture(ctx, h.owner, msg); err != nil {
-		t.Fatalf("Capture: %v", err)
+	// Capture wins DURABLY first (a late-DLR capture landing before the release resolves), written straight
+	// to the ledger rather than through Accountant.Capture. That distinction IS the test: capture.lua deletes
+	// the hold, and with the hold gone release.lua answers "no_reservation" and never touches the cached
+	// balance — so the phantom refund this guard exists to catch could not arise, and the guard would pass
+	// while guarding nothing. Found in step-260b by mutating the reconciliation away and watching this test
+	// stay green. The capture entry carries a zero delta: a capture confirms the reserve's debit, it does
+	// not repeat it.
+	if _, _, err := h.verify.RecordDurable(ctx, cp.LedgerEntry{
+		OwnerType: h.owner.Type, OwnerID: h.owner.ID, Direction: cp.BillingDirectionMT,
+		CustomerID: h.owner.CustomerID, MessageID: &msg, EntryType: cp.EntryCapture, Credits: 0,
+	}); err != nil {
+		t.Fatalf("record the winning capture durably: %v", err)
 	}
 	if h.balance(t) != 94 {
 		t.Fatalf("durable balance after reserve+capture = %d, want 94", h.balance(t))

@@ -65,6 +65,54 @@ réserve**, qui est fail-closed avec rejeu : elle confond trois politiques (rés
 autorisation externe §6.10). La seule politique Postgres écrite du dépôt est un commentaire de câblage
 dans `cmd/billing-svc/wiring.go:328`.
 
+## Design arrêté
+
+**Le critère d'acceptation, réécrit.** La prémisse « réhydratation depuis le grand livre » est fausse et
+le reste : il n'existe aucun `SUM(billing_ledger)` en production. Retenu — la seconde option de la
+recommandation ci-dessus : *« le cache se réhydrate correctement depuis l'autorité durable, et rien ne
+passe pendant la panne »*. Aucune reconstruction par les entrées n'est ajoutée : elle ne servirait qu'à
+réparer une divergence dont rien n'établit qu'elle survienne.
+
+**`Reserve` a trois voies durables, pas deux.** `"cold"` (rehydrate), `"reserved"` (le miroir durable
+d'un débit déjà pris au cache) et **`"held"`** — la troisième, que la fiche ne nommait pas, est celle
+qu'emprunte une redélivrance pendant la panne. Les trois sont testées.
+
+**L'assertion qui compte n'est pas « erreur non codée ».** Contrairement à la voie Redis, une erreur
+Postgres EST codée : `postgres.translate` enveloppe une panne pgx non reconnue dans `errs.ErrInternal`.
+C'est sans conséquence, parce que le code ne survit pas au gRPC : `grpcerr.Status` en fait un
+`*status.Error`, dont `errs.CodeOf` ne tire rien, et le routeur rejoue. La seule confusion qui coûterait
+est une panne prenant le masque d'un refus de fonds — `grpcserver.go` répond `reserved=false` pour
+`errs.ErrInsufficientCredit` seul, et le routeur en fait un rejet **définitif**. C'est donc ça qui est
+asserté, sur les deux voies où c'est atteignable. L'asymétrie du code est épinglée par un tripwire qui
+dit, dans son message, qu'il n'est pas une règle.
+
+**Défaut 1 corrigé, défaut 2 documenté.** `Release` lâche désormais le cache que `release.lua` vient de
+recréditer quand le durable n'atterrit pas — le geste exact de la branche `outcomeYielded` et de
+`undoReserveCacheDebit`, factorisé en `dropBalanceCache` sur les quatre sites. `Capture` garde son `DEL`
+en première mutation : le rejeu reconstruit le montant depuis `ReserveEntry`, et compenser rouvrirait la
+course de double-capture que le `DEL` atomique existe pour fermer. Un test le prouve au lieu de le
+supposer.
+
+**§16 : une seule ligne PostgreSQL, celle qui est prouvée.** Il en manque trois autres (bind SMPP, clés
+API REST, snapshots du routeur). Le `[MUST]` de §16 exige documentée **et** testée ; les écrire sans
+test aurait refait la faute que step-250d répare. Elles partent en **step-260c**, avec ce que
+l'exploration a déjà établi de chacune. La ligne « Facturation (globale) », elle, est scindée en trois —
+réserve, règlement, autorisation externe — parce que le code sépare ce qu'elle confondait.
+
+**Deux règles de harnais, payées cher.** Le pool sous test se construit **avant** la coupure (le
+constructeur de production pingue à chaud), et les assertions se lisent par un **second pool non coupé** :
+la mutation qui repointe `verify` sur le pool coupé fait tomber les trois tests, ce qui est la preuve que
+la garde porte. `MinConns = 2` dans `CuttableConfig` est de la fidélité, pas du mécanisme — mesuré : à
+zéro les tests passent quand même et la panne reste immédiate. Le commentaire le dit, parce que la
+première version affirmait le contraire.
+
+**Ce que le tour de mutations a trouvé en plus.** `TestReleaseYieldsToCaptureReconcilesCache`, le garde
+BLOQUANT-1, ne gardait rien : sa mise en scène passait par `Accountant.Capture`, qui supprime le hold, si
+bien que `release.lua` répondait `no_reservation` et ne touchait jamais au solde caché — le crédit
+fantôme que le test prétendait attraper ne pouvait pas se produire. La capture gagnante est désormais
+écrite directement au grand livre, et le test tombe quand on retire la réconciliation. Corrigé ici parce
+que c'est la branche que cette PR vient de refactorer.
+
 ## Périmètre
 
 - `pgtest.Cuttable` / `CuttableConfig` (+ le point d'injection dans le harnais billing).

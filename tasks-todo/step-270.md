@@ -48,6 +48,16 @@ Fournir les manifests Kubernetes sous `deploy/` pour tous les services : Deploym
   +120 ns par span seulement si l'exploitant baisse le ratio. Décision utilisateur du 2026-08-01 : garder
   l'in-process et revoir ici ; les deux peuvent coexister (à ratio 1.0 le code in-process est inerte).
 
+- **Dette reportée depuis step-260b — le drain n'a pas de plafond global.** `supervisor.Ordered.Run`
+  draine ses composants en ordre inverse en attendant `<-dones[i]` **sans timeout d'ensemble** : un
+  composant qui ignore son contexte bloque le drain jusqu'au `SIGKILL` du kubelet, et le pod meurt
+  brutalement au lieu de partir proprement. Aucun composant actuel ne l'exhibe, c'est pourquoi rien ne
+  l'a jamais montré. C'est ici que la dette mord, parce que c'est ici qu'on fixe le
+  `terminationGracePeriodSeconds` : il doit rester **supérieur à `DRAIN_DELAY` + `SHUTDOWN_TIMEOUT`**,
+  et cette arithmétique ne veut rien dire tant que le drain lui-même n'est pas borné. Trancher :
+  plafonner le drain dans `supervisor`, ou l'assumer explicitement et dimensionner la grâce en
+  conséquence.
+
 ## Tests (écrits dans la même PR)
 - Validation statique des manifests (kubeconform/`kubectl --dry-run=client` ou lint YAML en CI).
 - Cohérence des ports/probes avec §1.4/§1.5 (revue + check automatisable).

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	redis "github.com/redis/go-redis/v9"
 
 	"github.com/martialanouman/go-gateway/internal/billing"
@@ -20,8 +21,15 @@ import (
 // billingHarness wires the Accountant against real Redis + Postgres and seeds a customer with an initial
 // durable balance. The Redis balance cache starts COLD, so the first reserve exercises rehydration.
 type billingHarness struct {
-	acc   *billing.Accountant
-	repo  *postgres.BillingRepo
+	acc  *billing.Accountant
+	repo *postgres.BillingRepo
+
+	// verify reads the durable side for ASSERTIONS, and is always backed by the healthy shared pool —
+	// never by the caller's, which a chaos test cuts. Asserting through the cut pool would make the
+	// verification die with the dependency and pass by observing nothing (step-260b). Outside a chaos
+	// test the two are the same pool, so nothing else changes.
+	verify *postgres.BillingRepo
+
 	rdb   *redis.Client
 	cfg   *billing.ConfigProvider
 	owner billing.Owner
@@ -40,25 +48,29 @@ func newBillingHarness(t *testing.T, initialBalance int) *billingHarness {
 
 func newBillingHarnessTTL(t *testing.T, initialBalance int, holdTTL time.Duration, extra ...billing.Option) *billingHarness {
 	t.Helper()
-	return newBillingHarnessOn(t, redistest.Client(t), initialBalance, holdTTL, extra...)
+	return newBillingHarnessOn(t, redistest.Client(t), pgtest.Pool(t), initialBalance, holdTTL, extra...)
 }
 
-// newBillingHarnessOn is newBillingHarnessTTL over a caller-supplied Redis client. The chaos test
-// (step-250) passes a cuttable one so it can make Redis disappear mid-test; everyone else goes through
-// newBillingHarnessTTL and gets the shared client.
-func newBillingHarnessOn(t *testing.T, rdb *redis.Client, initialBalance int, holdTTL time.Duration, extra ...billing.Option) *billingHarness {
+// newBillingHarnessOn is newBillingHarnessTTL over a caller-supplied Redis client and Postgres pool. The
+// chaos tests pass a cuttable one so they can make that dependency disappear mid-test — Redis in step-250,
+// Postgres in step-260b; everyone else goes through newBillingHarnessTTL and gets the shared pair.
+//
+// Only the Accountant is wired to the supplied pool. Seeding and assertions go through the shared, healthy
+// one (see billingHarness.verify), so a cut severs the code under test and nothing else.
+func newBillingHarnessOn(t *testing.T, rdb *redis.Client, pool *pgxpool.Pool, initialBalance int, holdTTL time.Duration, extra ...billing.Option) *billingHarness {
 	t.Helper()
-	pool := pgtest.Pool(t)
+	healthy := pgtest.Pool(t)
 	ctx := context.Background()
 
 	var customerID uuid.UUID
-	if err := pool.QueryRow(ctx,
+	if err := healthy.QueryRow(ctx,
 		`INSERT INTO control_plane.customers (name) VALUES ('billing-core-test') RETURNING id`).Scan(&customerID); err != nil {
 		t.Fatalf("seed customer: %v", err)
 	}
 	repo := postgres.NewBillingRepo(pool)
+	verify := postgres.NewBillingRepo(healthy)
 	// Establish the durable balance with a topup entry; the Redis cache stays absent (cold).
-	if _, _, err := repo.RecordDurable(ctx, cp.LedgerEntry{
+	if _, _, err := verify.RecordDurable(ctx, cp.LedgerEntry{
 		OwnerType: cp.OwnerTypeCustomer, OwnerID: customerID, Direction: cp.BillingDirectionMT,
 		CustomerID: customerID, EntryType: cp.EntryTopup, Credits: initialBalance,
 	}); err != nil {
@@ -71,14 +83,14 @@ func newBillingHarnessOn(t *testing.T, rdb *redis.Client, initialBalance int, ho
 	if err := acc.EnsureNonClustered(ctx); err != nil {
 		t.Fatalf("EnsureNonClustered on a single Redis: %v", err)
 	}
-	return &billingHarness{acc: acc, repo: repo, rdb: rdb, cfg: cfg, owner: billing.Owner{
+	return &billingHarness{acc: acc, repo: repo, verify: verify, rdb: rdb, cfg: cfg, owner: billing.Owner{
 		Type: cp.OwnerTypeCustomer, ID: customerID, CustomerID: customerID,
 	}}
 }
 
 func (h *billingHarness) balance(t *testing.T) int {
 	t.Helper()
-	credits, _, err := h.repo.Balance(context.Background(), h.owner.Type, h.owner.ID, cp.BillingDirectionMT)
+	credits, _, err := h.verify.Balance(context.Background(), h.owner.Type, h.owner.ID, cp.BillingDirectionMT)
 	if err != nil {
 		t.Fatalf("read balance: %v", err)
 	}
@@ -100,10 +112,21 @@ func (h *billingHarness) cachedBalance(t *testing.T) (value int, present bool) {
 	return v, true
 }
 
+// dropCachedBalance deletes the owner's Redis balance key, the way its TTL eventually does. A test uses it
+// to reach the COLD branch of reserve.lua on demand, instead of waiting out a ten-minute TTL or standing up
+// a second customer just to have an unwarmed cache.
+func (h *billingHarness) dropCachedBalance(t *testing.T) {
+	t.Helper()
+	key := "billing:balance:" + cp.BillingDirectionMT + ":" + h.owner.Type + ":" + h.owner.ID.String()
+	if err := h.rdb.Del(context.Background(), key).Err(); err != nil {
+		t.Fatalf("drop cached balance: %v", err)
+	}
+}
+
 // moBalance reads the durable MO meter for the owner.
 func (h *billingHarness) moBalance(t *testing.T) int {
 	t.Helper()
-	credits, _, err := h.repo.Balance(context.Background(), h.owner.Type, h.owner.ID, cp.BillingDirectionMO)
+	credits, _, err := h.verify.Balance(context.Background(), h.owner.Type, h.owner.ID, cp.BillingDirectionMO)
 	if err != nil {
 		t.Fatalf("read MO balance: %v", err)
 	}
@@ -112,7 +135,7 @@ func (h *billingHarness) moBalance(t *testing.T) int {
 
 func (h *billingHarness) ledgerCount(t *testing.T, entryType cp.EntryType, messageID uuid.UUID) int {
 	t.Helper()
-	ok, err := h.repo.LedgerEntryExists(context.Background(), messageID, entryType)
+	ok, err := h.verify.LedgerEntryExists(context.Background(), messageID, entryType)
 	if err != nil {
 		t.Fatalf("ledger exists: %v", err)
 	}
