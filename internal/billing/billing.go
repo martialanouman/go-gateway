@@ -620,7 +620,14 @@ func (a *Accountant) undoReserveCacheDebit(ctx context.Context, bkey, rkey strin
 // A failure to clear is logged, never returned: every caller is already reporting a more important fault,
 // and the balance cache's bounded TTL (step-142b) closes whatever residual a failed DEL leaves. reason
 // names the site so a warning says which divergence was being repaired.
+//
+// It runs DETACHED, and that is not a precaution — it is the common case. The caller's context expiring is
+// the ordinary way a terminal write fails (settle.Settler allows a release 200ms while the critical
+// section here runs to terminalCriticalTimeout), and on that path the cache has ALREADY been refunded by
+// release.lua. A repair that reused the dead context could not reach Redis, so the very failure it exists
+// to clean up would leave the phantom credit standing.
 func (a *Accountant) dropBalanceCache(ctx context.Context, bkey string, messageID uuid.UUID, reason string) {
+	ctx = context.WithoutCancel(ctx)
 	if err := a.rdb.Del(ctx, bkey).Err(); err != nil {
 		a.logger.WarnContext(ctx, "billing: could not clear the balance cache",
 			"message_id", messageID, "reason", reason, "err", err)

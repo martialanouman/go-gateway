@@ -7,8 +7,10 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/martialanouman/go-gateway/internal/billing"
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	"github.com/martialanouman/go-gateway/internal/testutil/pgtest"
+	"github.com/martialanouman/go-gateway/internal/testutil/redistest"
 )
 
 // TestConcurrentReservesSameOwner is the concurrency guard for the durable balance model (the bug the
@@ -206,5 +208,91 @@ func TestReserveReplayAfterHoldExpiryIdempotent(t *testing.T) {
 	}
 	if reserves != 1 {
 		t.Errorf("reserve ledger rows = %d, want 1 (replay wrote none)", reserves)
+	}
+}
+
+// expiringStore is a LedgerStore that lets the reserve through, then makes the next durable call behave
+// like a caller whose deadline expired mid-write: it cancels the request context and fails. It models the
+// production shape exactly — settle.Settler gives a release 200ms while billing's critical section runs to
+// 4s (terminalCriticalTimeout), so the request context dying under an in-flight durable write is the
+// ORDINARY failure, not the exotic one.
+type expiringStore struct {
+	balance int
+	cancel  context.CancelFunc
+	armed   bool
+}
+
+func (e *expiringStore) Balance(context.Context, string, uuid.UUID, string) (int, bool, error) {
+	return e.balance, true, nil
+}
+
+func (e *expiringStore) RecordDurable(_ context.Context, entry cp.LedgerEntry) (int, bool, error) {
+	if e.armed {
+		e.cancel()
+		return 0, false, context.Canceled
+	}
+	e.balance += entry.Credits
+	return e.balance, true, nil
+}
+
+func (e *expiringStore) LedgerEntryExists(context.Context, uuid.UUID, cp.EntryType) (bool, error) {
+	if e.armed {
+		e.cancel()
+		return false, context.Canceled
+	}
+	return false, nil
+}
+
+func (e *expiringStore) ReserveEntry(context.Context, uuid.UUID) (int, int, bool, error) {
+	return 0, 0, false, nil
+}
+
+// TestReleaseRepairsTheCacheEvenWhenTheRequestExpires is the sibling of
+// TestReleaseYieldsToCaptureReconcilesCache, for the failure that actually happens in production.
+//
+// step-260b fixed Release to drop the cache when the durable release does not land, and proved it against
+// a severed Postgres. But a severed Postgres is the RARE trigger. The common one is the caller's deadline:
+// settle.Settler allows 200ms, billing's terminal critical section runs to 4s, and its own comment warns
+// the deadline "must stay above its commit latency". When it does not, release.lua has already refunded
+// the live cache — and a repair that reuses the dead context cannot undo it, so the phantom credit the fix
+// exists to prevent comes straight back.
+//
+// The repair must therefore outlive the request, exactly as undoReserveCacheDebit already does one
+// function away. Nothing pinned that, and a chaos test could not: cutting the link never cancels a context.
+func TestReleaseRepairsTheCacheEvenWhenTheRequestExpires(t *testing.T) {
+	rdb := redistest.Client(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	const initial = 100
+	const credits = 6
+	store := &expiringStore{balance: initial, cancel: cancel}
+	acc := billing.New(rdb, store)
+	owner := billing.Owner{Type: cp.OwnerTypeCustomer, ID: uuid.New(), CustomerID: uuid.New()}
+	msg := uuid.New()
+
+	// Control: with the request healthy the reserve debits the cache and leaves a live hold.
+	if _, err := acc.Reserve(ctx, owner, msg, credits); err != nil {
+		t.Fatalf("the control reserve must succeed: %v", err)
+	}
+	bkey := "billing:balance:" + cp.BillingDirectionMT + ":" + owner.Type + ":" + owner.ID.String()
+	if got, err := rdb.Get(ctx, bkey).Int(); err != nil || got != initial-credits {
+		t.Fatalf("cached balance after the control reserve = %d (err=%v), want %d", got, err, initial-credits)
+	}
+
+	// The release now runs against a request that dies under its durable write: release.lua refunds the
+	// live cache to 100, then the terminal resolution fails with the context gone.
+	store.armed = true
+	if err := acc.Release(ctx, owner, msg); err == nil {
+		t.Fatal("a release whose durable side failed must report it")
+	}
+
+	// The cache must not be left claiming a refund the ledger never applied. Absent is the expected
+	// outcome; equal-to-durable is accepted, because what must hold is that the cache never claims more.
+	got, err := rdb.Get(context.Background(), bkey).Int()
+	if err == nil && got > initial-credits {
+		t.Errorf("balance cache = %d, want absent or at most %d: the durable release never landed, so the "+
+			"cache is holding %d credits of phantom refund — the repair ran on the caller's dead context "+
+			"and could not reach Redis", got, initial-credits, got-(initial-credits))
 	}
 }

@@ -15,16 +15,17 @@ import (
 	"github.com/martialanouman/go-gateway/internal/testutil/redistest"
 )
 
-// staleConnBudget bounds drainStaleConns. A pool cannot hold more dead connections than its MaxConns
-// (pgtest.Config sets 4), and each failed round-trip destroys exactly one, so twice that is slack, not a
-// licence to loop until something works.
+// staleConnBudget bounds drainStaleConns. MaxConns (4, via pgtest.Config) is the hard ceiling on how many
+// connections a pool can be holding at all, so twice that is generous slack. It is a BOUND, not a
+// mechanism: in every observed run one round-trip has sufficed, and how pgx reaps corpses was not
+// measured. The loop exists so the helper cannot hang — no test should depend on the count.
 const staleConnBudget = 8
 
-// drainStaleConns sheds the connections a pool opened BEFORE the link was cut. pgx discovers such a
-// connection is dead only when a query on it fails, and destroys it then, so the first call after the link
-// comes back can still fail on a corpse. That is infrastructure recovery, not the behaviour any of these
-// tests is about — production wears it as one failed reaper pass, not as a lost refund — so it is drained
-// here, deliberately, rather than folded into an assertion that would then be measuring pgxpool.
+// drainStaleConns sheds the connections a pool opened BEFORE the link was cut. Measured: without it, the
+// first query after Resume fails with "unexpected EOF" on a connection that died during the outage; with
+// it, it does not. That is infrastructure recovery, not the behaviour any of these tests is about —
+// production wears it as one failed reaper pass, not as a lost refund — so it is drained here,
+// deliberately, rather than folded into an assertion that would then be measuring pgxpool.
 func drainStaleConns(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	for range staleConnBudget {
