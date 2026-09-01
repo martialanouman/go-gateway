@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
 	"path/filepath"
 	"runtime"
 	"sync"
@@ -24,6 +25,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/storage/postgres"
 	"github.com/martialanouman/go-gateway/internal/testutil/ciguard"
+	"github.com/martialanouman/go-gateway/internal/testutil/tcpproxy"
 )
 
 // image must be PostgreSQL 18: uuidv7() is native only there, and migrations/0001 RAISE EXCEPTIONs
@@ -41,6 +43,10 @@ var (
 // connectTimeout bounds a boot connection made from Config. It is generous: the container is already
 // up by the time Config returns, and a tight timeout would only make a busy CI flaky.
 const connectTimeout = 10 * time.Second
+
+// productionMinConns mirrors config.Postgres's MIN_CONNS default; see CuttableConfig's doc comment for why
+// it is fidelity rather than mechanism.
+const productionMinConns = 2
 
 // Config returns a config.Postgres pointing at the same shared, migrated PostgreSQL 18 as Pool. Use
 // it when the code under test opens its own pool from configuration — a service's wiring, say —
@@ -129,4 +135,65 @@ func migrationsDir() string {
 	_, thisFile, _, _ := runtime.Caller(0)
 	// this file: internal/testutil/pgtest/pgtest.go -> repo root is three levels up.
 	return filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "migrations")
+}
+
+// Cuttable returns a pool to the SAME shared, migrated PostgreSQL as Pool, reached through an in-process
+// TCP proxy the test can Cut (Postgres disappears) and Resume (it comes back). It is how a chaos test
+// proves a failure policy against a real outage instead of a fake LedgerStore that returns an error
+// (step-260b) — a fake imitates the SHAPE of a fault, never its contract: a real pgx error travels through
+// postgres.translate, which wraps it in a platform code a hand-rolled errors.New never carries.
+//
+// It proxies rather than stopping the container, for the same two reasons as redistest.Cuttable. First, it
+// is the only option available: the container handle is a package-local variable inside start(),
+// deliberately never exposed, because every helper here shares one container per test package (see the
+// package doc). Second, and more importantly, stopping it would be WRONG — the sibling tests of the same
+// package are talking to that container, and a chaos test must not decide their fate. A proxy severs one
+// client's link and nothing else.
+//
+// The pool is built by postgres.NewPool, the production constructor, so the test inherits the real
+// timeouts and lifetimes rather than test-special ones. Because that constructor pings eagerly, the pool
+// is opened while the link is still up; call Cut afterwards.
+//
+// A test that asserts on durable state MUST read it through a second, uncut pool (pgtest.Pool) — reading
+// it through this one makes the verification die with the dependency and pass by observing nothing.
+//
+// The pool is this test's own — unlike Pool's — and is closed by t.Cleanup.
+func Cuttable(t *testing.T) (*pgxpool.Pool, *tcpproxy.Proxy) {
+	t.Helper()
+
+	cfg, proxy := CuttableConfig(t)
+	pool, err := postgres.NewPool(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("pgtest: open pool through proxy: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	return pool, proxy
+}
+
+// CuttableConfig is Cuttable for code that opens its own pool from configuration — a service's wiring,
+// say — rather than receiving one. It returns a config.Postgres addressed to the proxy, and the proxy that
+// cuts it. Same discipline as Cuttable: build whatever reads the config BEFORE calling Cut.
+//
+// It starts from Config, so the pool lands on the shared container that is ALREADY MIGRATED; a second
+// container would come up empty and every query would fail on a missing relation rather than on the
+// outage under test.
+//
+// MinConns is set to the production default rather than left at Config's zero, for fidelity and nothing
+// more: Cuttable exists to exercise what production does, and production keeps two connections warm. It is
+// deliberately NOT load-bearing, and that was measured rather than assumed — with MinConns at zero the
+// tests still pass and the outage is still immediate, because Cut closes the pool's boot connection like
+// any other and a redial lands in the proxy's accept-then-close. Do not write a test that depends on it.
+func CuttableConfig(t *testing.T) (config.Postgres, *tcpproxy.Proxy) {
+	t.Helper()
+
+	cfg := Config(t) // skips without Docker, and leaves sharedURL set
+	u, err := url.Parse(cfg.URL)
+	if err != nil {
+		t.Fatalf("pgtest: parse shared url: %v", err)
+	}
+	proxy := tcpproxy.New(t, u.Host)
+	u.Host = proxy.Addr()
+	cfg.URL = u.String()
+	cfg.MinConns = productionMinConns
+	return cfg, proxy
 }

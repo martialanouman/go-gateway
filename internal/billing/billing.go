@@ -464,17 +464,22 @@ func (a *Accountant) Release(ctx context.Context, owner Owner, messageID uuid.UU
 			return nil // nothing to release
 		}
 		refund = -credits // reserve credits are negative
-		// The hold lapsed but the reserve debit may still sit in a warm cache. DEL it so a stale value can
+		// The hold lapsed but the reserve debit may still sit in a warm cache. Drop it so a stale value can
 		// never diverge — the durable balance is the authority and rehydrates correctly (delta-accurate).
-		if delErr := a.rdb.Del(ctx, bkey).Err(); delErr != nil {
-			a.logger.WarnContext(ctx, "billing: release could not clear the balance cache", "message_id", messageID, "err", delErr)
-		}
+		a.dropBalanceCache(ctx, bkey, messageID, "release of a lapsed hold")
 	default:
 		return fmt.Errorf("billing: release unexpected status %q", status)
 	}
 
 	outcome, err := a.resolveTerminal(ctx, owner, messageID, cp.EntryRelease, refund, false)
 	if err != nil {
+		// release.lua already refunded the LIVE cache and dropped the hold, and the durable release did
+		// not land: the cache now shows credit the ledger never applied, and nothing is left to refund in
+		// place. Drop it, or a warm-cache reserve spends that phantom credit for as long as the cache
+		// lives — the reaper cannot arrive first, its MIN_AGE (15m) being longer than the cache TTL (10m).
+		if cacheRefunded {
+			a.dropBalanceCache(ctx, bkey, messageID, "release durable write failed")
+		}
 		return fmt.Errorf("billing: release durable: %w", err)
 	}
 	if outcome == outcomeYielded {
@@ -485,10 +490,7 @@ func (a *Accountant) Release(ctx context.Context, owner Owner, messageID uuid.UU
 		// (A concurrent reserve rehydrating from an in-flight, not-yet-committed durable write could still
 		// leave a brief cache/durable skew; that residual is bounded by the balance cache's TTL — step-142b.)
 		if cacheRefunded {
-			if delErr := a.rdb.Del(ctx, bkey).Err(); delErr != nil {
-				a.logger.WarnContext(ctx, "billing: release yield could not clear the balance cache",
-					"message_id", messageID, "err", delErr)
-			}
+			a.dropBalanceCache(ctx, bkey, messageID, "release yielded to a winning capture")
 		}
 	}
 	return nil
@@ -606,10 +608,29 @@ func (a *Accountant) undoReserveCacheDebit(ctx context.Context, bkey, rkey strin
 	if status, _ := res[0].(string); status != "released" {
 		// The fresh hold was gone (consumed concurrently, or the cache had lapsed): the debit could not be
 		// refunded in place. Drop the cache so it rehydrates from the durable authority, not a stuck value.
-		if delErr := a.rdb.Del(ctx, bkey).Err(); delErr != nil {
-			a.logger.WarnContext(ctx, "billing: reserve cache undo could not clear the balance cache",
-				"message_id", messageID, "err", delErr)
-		}
+		a.dropBalanceCache(ctx, bkey, messageID, "reserve cache debit could not be undone in place")
+	}
+}
+
+// dropBalanceCache clears the owner's cached balance so the next reserve rehydrates from the durable
+// authority rather than from a value the ledger does not back. It is the only repair available once the
+// cache has moved and the durable side has not: release.lua and reserve.lua consume the hold as they go,
+// so by the time a caller notices there is nothing left to refund in place.
+//
+// A failure to clear is logged, never returned: every caller is already reporting a more important fault,
+// and the balance cache's bounded TTL (step-142b) closes whatever residual a failed DEL leaves. reason
+// names the site so a warning says which divergence was being repaired.
+//
+// It runs DETACHED, and that is not a precaution — it is the common case. The caller's context expiring is
+// the ordinary way a terminal write fails (settle.Settler allows a release 200ms while the critical
+// section here runs to terminalCriticalTimeout), and on that path the cache has ALREADY been refunded by
+// release.lua. A repair that reused the dead context could not reach Redis, so the very failure it exists
+// to clean up would leave the phantom credit standing.
+func (a *Accountant) dropBalanceCache(ctx context.Context, bkey string, messageID uuid.UUID, reason string) {
+	ctx = context.WithoutCancel(ctx)
+	if err := a.rdb.Del(ctx, bkey).Err(); err != nil {
+		a.logger.WarnContext(ctx, "billing: could not clear the balance cache",
+			"message_id", messageID, "reason", reason, "err", err)
 	}
 }
 

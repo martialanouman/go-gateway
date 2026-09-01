@@ -12,8 +12,15 @@ import (
 	"github.com/martialanouman/go-gateway/internal/testutil/redistest"
 )
 
-// failingStore is a LedgerStore whose durable read fails, standing in for an unreachable Postgres.
-// RecordDurable records that it was reached, so a test can prove a denied reserve never mirrored anything.
+// failingStore is a LedgerStore whose durable read fails. RecordDurable records that it was reached, so a
+// test can prove a denied reserve never mirrored anything.
+//
+// It used to stand in for an unreachable Postgres; since step-260b it does not, and should not be read that
+// way. A real outage travels through postgres.translate, which wraps an unrecognised pgx failure in a
+// platform code this bare errors.New never carries — same shape, different contract, and only one of the two
+// is what production does. What this fake still buys is the part a container cannot reach: it fails ONE
+// method of an arbitrary LedgerStore, so the assertion is about the Accountant's logic and nothing else.
+// The contract under a genuine cut is proven in chaos_postgres_integration_test.go.
 type failingStore struct {
 	balanceErr   error
 	recordCalled bool
@@ -36,9 +43,11 @@ func (f *failingStore) ReserveEntry(context.Context, uuid.UUID) (int, int, bool,
 	return 0, 0, false, nil
 }
 
-// TestReserveFailsClosedWhenAuthorityDown proves the fail-closed rule (§6.9): with the Redis balance cache
-// cold and the durable authority unreachable, a reserve is REFUSED (a credit is never passed unverified),
-// no hold is placed, and nothing is mirrored to the ledger.
+// TestReserveFailsClosedWhenAuthorityDown proves the fail-closed rule (§6.9) at the unit level: with the
+// Redis balance cache cold and the durable read failing, a reserve is REFUSED (a credit is never passed
+// unverified), no hold is placed, and nothing is mirrored to the ledger. Its sibling
+// TestReserveFailsClosedWhenPostgresIsCut proves the same rule against a real severed Postgres, on all
+// three of Reserve's durable paths rather than this one.
 func TestReserveFailsClosedWhenAuthorityDown(t *testing.T) {
 	rdb := redistest.Client(t) // real, but the owner's balance key is cold (fresh id)
 	ctx := context.Background()
