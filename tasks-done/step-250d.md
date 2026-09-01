@@ -66,11 +66,18 @@ Redis le refus est `ESME_RSYSERR`. Ce n'est pas une contradiction : `cancel.go:1
 `err != nil` → `ErrInternal` de `holder != HolderNone` → `ErrCancelFailed`. L'ADR décrit le second cas.
 Rien à corriger.
 
-**Cinq tests pour quatre politiques.** La politique du jeton **est** l'asymétrie : n'en prouver qu'un
+**Six tests pour quatre politiques.** La politique du jeton **est** l'asymétrie : n'en prouver qu'un
 côté n'en prouve que la moitié, et les deux côtés vivent dans deux paquets. Le couple est ce qui le
 démontre — la mutation « `Claim` concède un jeton libre sous panne » fait tomber le versant fail-closed
 (`internal/cancel`) **et laisse le versant fail-open vert** (`internal/connectorpool`). Sans ce couple on
 aurait testé deux fois le même camp.
+
+Le sixième est venu de la revue, et redit la même leçon d'un cran plus bas : **compter les sites, pas les
+politiques.** La §16 corrigée ci-dessus nomme **deux** sites fail-open côté pool ; n'en prouver qu'un
+laissait le second — la branche d'expiration, précisément celle qui mésenregistre — appuyé sur un faux
+qui erre, soit la dette que cette fiche solde, refaite en petit par la PR qui la solde.
+`TestExpiredCancellationIsMisfiledWhenTheCancelTokenStoreIsCut` le couvre : le jeton d'annulation posé
+avant la coupure est ce qui empêche l'assertion d'être vraie de toute façon.
 
 **Le contrôle doit rendre la coupure observable** — la leçon de step-250, appliquée quatre fois. Pour le
 throttle : franchir réellement `MaxFailures` avant de couper, avec un mot de passe **valide**, parce
