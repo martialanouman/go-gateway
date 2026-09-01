@@ -196,7 +196,8 @@ bloquent rien et peuvent bouger sans rien casser.
 Une seule chaîne, et elle commande tout le reste de M12 : le banc devait refuser ce qu'il nomme avant que
 la campagne ne publie un chiffre — c'est fait (step-230, livrée) — et les manifests doivent exister avant
 qu'on mesure un environnement représentatif.
-- [ ] step-250d — Les quatre politiques Redis documentées en step-250 mais jamais prouvées ⛓ step-250
+- [x] step-250d — Les quatre politiques Redis documentées en step-250 mais jamais prouvées ⛓ step-250
+- [ ] step-250e — La table de routage exact n'a aucun écrivain : la portabilité des numéros ne marche pas
 - [x] step-260 — Chaos : drain gracieux (unbind SMPP, offsets Kafka, retrait LB) ⛓ step-250
 - [x] step-260b — Failover Postgres : fail-closed sur les trois voies de la réserve, et le crédit fantôme du release ⛓ step-260
 - [ ] step-260c — Les trois politiques PostgreSQL hors facturation (bind SMPP, clés API REST, snapshots) ⛓ step-260b
@@ -232,6 +233,17 @@ est plus long que le TTL du cache. Et le tour de mutations a trouvé mieux que l
 appelait `Accountant.Capture`, qui supprime le hold, si bien que le crédit fantôme qu'il prétendait
 attraper ne pouvait pas se produire. Une fiche en est née, **step-260c**, pour les trois politiques
 PostgreSQL que §16 n'écrit toujours pas : rien ne s'écrit dans la matrice avant d'avoir son test.
+
+**step-250d a soldé la dette de step-250, et trouvé plus gros en chemin.** Les quatre politiques Redis
+sont prouvées sur un Redis réellement coupé, et la matrice §16 corrigée là où le code disait autre chose :
+le fail-open du pool sur le jeton d'annulation a **deux** sites, et le second dead-letter en
+`delivery_expired` au lieu d'envoyer. Deux erreurs de la fiche elle-même ont été corrigées — le
+« faux qui erre » qu'elle prêtait au registre de sessions n'existait pas, cette politique n'ayant
+**aucune** couverture d'aucune sorte. Mais la trouvaille qui compte est ailleurs : en cherchant comment
+semer une clé pour le test L0, on a constaté que **rien n'écrit `exactroute:{msisdn}`** — ni config-sync,
+ni l'Admin API. Le court-circuit L0 ne résout jamais, et la **portabilité des numéros ne fonctionne pas
+en production**. D'où **step-250e**, placée à ce rang parce qu'elle fausse le profil de routage que
+mesurera la campagne NFR (step-280) et bloque le go-live.
 
 ## Sécurité et authentification
 Indépendantes de la chaîne de charge : parallélisables si deux mains travaillent.

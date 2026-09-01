@@ -121,3 +121,31 @@ func TestMightContainNoFalseNegative(t *testing.T) {
 		}
 	}
 }
+
+// TestExactRouteRedisEncodingIsPinned pins the wire form of an exact route — key AND value — against
+// literals, rather than against the functions that produce them.
+//
+// Everything else in this package, the chaos test included, seeds through redisKey/EncodeTarget and
+// reads back through the resolver, so the encoding is only ever checked against itself: drop the {}
+// hash tag and the entire suite stays green (verified by mutation). The tag is not cosmetic — it is what
+// pins a number's key to one cluster slot — and step-250e is about to add the writer this key has never
+// had. Two components agreeing on a format that nothing anchors is how they drift apart in silence.
+func TestExactRouteRedisEncodingIsPinned(t *testing.T) {
+	if got := redisKey("2250700000001"); got != "exactroute:{2250700000001}" {
+		t.Errorf("redisKey = %q, want exactroute:{2250700000001}: without the hash tag a number's key is "+
+			"no longer pinned to a single cluster slot", got)
+	}
+
+	id := uuid.MustParse("3f2504e0-4f89-11d3-9a0c-0305e82c3301")
+	for _, tc := range []struct {
+		target Target
+		want   string
+	}{
+		{Target{Type: TargetConnector, ID: id}, "connector:3f2504e0-4f89-11d3-9a0c-0305e82c3301"},
+		{Target{Type: TargetRoute, ID: id}, "route:3f2504e0-4f89-11d3-9a0c-0305e82c3301"},
+	} {
+		if got := EncodeTarget(tc.target); got != tc.want {
+			t.Errorf("EncodeTarget(%+v) = %q, want %q", tc.target, got, tc.want)
+		}
+	}
+}
