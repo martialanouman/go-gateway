@@ -21,6 +21,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/platform/async"
 	"github.com/martialanouman/go-gateway/internal/realtime"
+	"github.com/martialanouman/go-gateway/internal/routing/exact"
 	registrypb "github.com/martialanouman/go-gateway/internal/session/pb"
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
@@ -348,6 +349,7 @@ func newHTTPServer(
 		OptOutKeywords:   postgres.NewOptOutKeywordRepo(st.pg),
 		AntispamRules:    postgres.NewAntispamRuleRepo(st.pg),
 		ExactRoutes:      postgres.NewExactRouteRepo(st.pg),
+		ExactRouteCache:  exact.NewInvalidator(rdb),
 		RoutingScripts:   postgres.NewRoutingScriptRepo(st.pg),
 		Imports:          runners.imports,
 		Disconnector:     adminapi.NewGRPCDisconnector(registrypb.NewSessionRegistryClient(clients.registry)),

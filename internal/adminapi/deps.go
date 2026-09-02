@@ -168,6 +168,7 @@ type Deps struct {
 	OptOutKeywords   OptOutKeywordStore
 	AntispamRules    AntispamRuleStore
 	ExactRoutes      ExactRouteAdminStore
+	ExactRouteCache  ExactRouteCacheInvalidator
 	RoutingScripts   RoutingScriptAdminStore
 	Imports          ImportRunner
 	Disconnector     Disconnector
@@ -219,6 +220,16 @@ type BillingProviderStore interface {
 	Create(ctx context.Context, in cp.NewExternalBillingProvider) (cp.ExternalBillingProvider, error)
 	Update(ctx context.Context, id uuid.UUID, p cp.ExternalBillingProviderPatch) (cp.ExternalBillingProvider, error)
 	Delete(ctx context.Context, id uuid.UUID) error
+}
+
+// ExactRouteCacheInvalidator drops the cached exact routes of the numbers an admin mutation just changed
+// durably, so the next Bloom possible-hit repopulates exactroute:{msisdn} from Postgres (step-250e). It is
+// the control plane's ONLY write to that cache: it never says what the new target is, which is what keeps
+// the key rebuildable rather than a second source of truth. Best-effort — a failure is logged, not fatal,
+// because the commit already happened and the resolver's TTL bounds the staleness. *exact.Invalidator
+// satisfies it; registerExactRoutes defaults a nil one to a no-op. Declared consumer-side.
+type ExactRouteCacheInvalidator interface {
+	Invalidate(ctx context.Context, msisdns ...string) error
 }
 
 // BalanceCacheInvalidator deletes the Redis balance-cache keys of the owners an admin money op just changed

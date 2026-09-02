@@ -75,15 +75,21 @@ type ImportRunner interface {
 
 type exactRouteHandlers struct {
 	store  ExactRouteAdminStore
+	cache  ExactRouteCacheInvalidator
 	runner ImportRunner
 	logger *slog.Logger
 }
 
-func registerExactRoutes(api huma.API, store ExactRouteAdminStore, runner ImportRunner, logger *slog.Logger) {
+func registerExactRoutes(api huma.API, store ExactRouteAdminStore, cache ExactRouteCacheInvalidator,
+	runner ImportRunner, logger *slog.Logger,
+) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	h := &exactRouteHandlers{store: store, runner: runner, logger: logger}
+	if cache == nil {
+		cache = noopRouteCache{}
+	}
+	h := &exactRouteHandlers{store: store, cache: cache, runner: runner, logger: logger}
 
 	register(api, huma.Operation{
 		OperationID: "import-exact-routes", Method: http.MethodPost, Path: "/admin/exact-routes/import",
@@ -161,6 +167,26 @@ func (h *exactRouteHandlers) list(ctx context.Context, in *listExactRoutesInput)
 	return out, nil
 }
 
+// noopRouteCache stands in when no invalidator is wired (tests, and any deployment running without the
+// data-plane cache). It is deliberately silent: the resolver still reads the durable table on a miss.
+type noopRouteCache struct{}
+
+func (noopRouteCache) Invalidate(context.Context, ...string) error { return nil }
+
+// forget drops the cached routes of numbers whose durable row just changed. It is always called AFTER
+// the commit: invalidating first lets a concurrent reader repopulate the pre-commit value and pin it for
+// a whole TTL, since nothing else ever writes that key.
+//
+// A failure is logged, never returned. The row is already durable, so failing the request would send the
+// operator to retry a write that succeeded; the resolver's TTL bounds how long a missed invalidation can
+// matter, and both the upsert and the DEL are idempotent.
+func (h *exactRouteHandlers) forget(ctx context.Context, msisdns ...string) {
+	if err := h.cache.Invalidate(ctx, msisdns...); err != nil {
+		h.logger.Warn("exact-route cache invalidation failed",
+			"numbers", len(msisdns), "err", err)
+	}
+}
+
 type createExactRouteInput struct{ Body exactRouteCreateBody }
 type exactRouteOutput struct{ Body exactRouteDTO }
 
@@ -184,6 +210,7 @@ func (h *exactRouteHandlers) create(ctx context.Context, in *createExactRouteInp
 	if err != nil {
 		return nil, humaerr.FromError(err)
 	}
+	h.forget(ctx, msisdn)
 	return &exactRouteOutput{Body: toExactRouteDTO(saved)}, nil
 }
 
@@ -210,6 +237,7 @@ func (h *exactRouteHandlers) importRoutes(_ context.Context, in *importExactRout
 	// background closure, with no request-scoped state.
 	byMSISDN := make(map[string]int, len(in.Body.Rows))
 	routes := make([]exact.Route, 0, len(in.Body.Rows))
+	msisdns := make([]string, 0, len(in.Body.Rows))
 	for _, row := range in.Body.Rows {
 		msisdn, err := normalizeMSISDN(row.MSISDN)
 		if err != nil {
@@ -227,6 +255,7 @@ func (h *exactRouteHandlers) importRoutes(_ context.Context, in *importExactRout
 		}
 		byMSISDN[msisdn] = len(routes)
 		routes = append(routes, r)
+		msisdns = append(msisdns, msisdn)
 	}
 
 	jobID := uuid.NewString()
@@ -235,6 +264,7 @@ func (h *exactRouteHandlers) importRoutes(_ context.Context, in *importExactRout
 		if berr := h.store.BulkUpsert(jctx, routes); berr != nil {
 			return berr
 		}
+		h.forget(jctx, msisdns...)
 		logger.Info("exact-route import completed")
 		return nil
 	})
@@ -296,6 +326,7 @@ func (h *exactRouteHandlers) update(ctx context.Context, in *updateExactRouteInp
 	if err != nil {
 		return nil, humaerr.FromError(err)
 	}
+	h.forget(ctx, msisdn)
 	return &exactRouteOutput{Body: toExactRouteDTO(saved)}, nil
 }
 
@@ -309,8 +340,9 @@ func (h *exactRouteHandlers) delete(ctx context.Context, in *msisdnPathInput) (*
 		return nil, humaerr.FromError(err)
 	}
 	if !found {
-		return nil, notFound("exact route")
+		return nil, notFound("exact route") // nothing was committed, so there is nothing to forget
 	}
+	h.forget(ctx, msisdn)
 	return &deleteOutput{}, nil
 }
 
