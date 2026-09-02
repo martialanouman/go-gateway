@@ -82,6 +82,15 @@ reconstructible** — et supprime au passage le besoin d'un outil de rattrapage 
 **Règle d'ordre :** la source de vérité commet d'abord, toujours ; le cache suit. Un crash entre les
 deux laisse une clé périmée **au plus le TTL**.
 
+**Ce que l'option A ne résout PAS, et que le rejet de B laissait croire.** B est écartée entre autres
+parce que « des millions de clés sans TTL cohabiteraient avec les soldes de facturation ». A produit
+**les mêmes millions de clés** dès que la localité par MSISDN est faible — la seule différence est
+qu'elles expirent. En régime établi, `clés en vol = taux de peuplement × TTL`, soit **1,3 à 10 Go** sur
+le Redis partagé pour 400 à 2 400 peuplements/s. Ce que A gagne réellement sur B, c'est que ces clés
+sont **reconstructibles** (une éviction ou un `FLUSHALL` dégrade la latence, il ne casse pas le
+routage) et **bornées dans le temps**. Ce n'est pas rien, mais ce n'est pas « pas de millions de
+clés » : le dimensionnement du Redis reste à faire, et la campagne NFR (step-280) le porte.
+
 **Résidu assumé :** la fenêtre classique du cache-aside (un lecteur lit Postgres, un écrivain commite
 et invalide, le lecteur écrit ensuite la valeur ancienne). Elle s'ouvre en une latence de requête, et
 sa *conséquence* dure jusqu'à un TTL. Elle est nommée ici plutôt que corrigée par un « delayed double
@@ -112,4 +121,7 @@ delete » que rien ne justifie aujourd'hui.
 1. [x] Read-through + TTL jitteré dans `internal/routing/exact` ; invalidation par l'Admin API.
 2. [x] Politique de panne PostgreSQL du L0 écrite en §16 **avec** son test de chaos.
 3. [ ] Cache négatif pour les faux positifs du Bloom — à décider sur `pg_miss`.
-4. [ ] Réglage du TTL — à décider sur `pg_hit`.
+4. [ ] Réglage du TTL — à décider sur `pg_hit`. Le jitter ±10 % étale une cohorte repeuplée en rafale
+       sur `2 × 10 % × TTL = 72 min`, soit un plateau à **5×** le régime établi (forme close
+       `1/(2·jitter)`) : la constante est un paramètre à décider avec le TTL, pas un acquis.
+5. [ ] Dimensionner le pool pgx de `router-svc` et l'empreinte Redis du cache — step-270/step-280.

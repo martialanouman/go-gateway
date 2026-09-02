@@ -80,6 +80,21 @@ Depuis step-250e, `exactroute:{msisdn}` est un cache read-through — un numéro
 Redis en régime établi, et une lecture Postgres par clé primaire à froid ou sur faux positif du Bloom
 (taux 0,001, soit ~8 req/s à 8 000 SMS/s). Le filtre pèse ~1,8 Mo par million d'entrées.
 
+**Trois grandeurs à mesurer, que step-250e n'a pas pu établir** (revue de branche du 2026-09-02) :
+
+1. **Débit Postgres du L0.** `pg_hit/s = débit × part portée × (1 − localité par MSISDN sur le TTL)`.
+   En A2P la localité est faible : 400 à 2 400 req/s à 8 000 SMS/s pour 10-30 % de portés. S'y ajoutent
+   ~8 req/s de faux positifs du Bloom, constants.
+2. **Pool pgx de `router-svc`.** `MaxConns=10` par défaut, et `internal/storage/postgres/pool.go`
+   annonce lui-même qu'« un jalon qui met du trafic ici devrait les revisiter ». Loi de Little : à
+   2 400 req/s la marge disparaît dès ~4 ms de latence PK, et un pod peut posséder plus de lanes Kafka
+   (12 par défaut) que de connexions. Le mode de panne est vicieux : `Acquire` attend jusqu'à 2 s, puis
+   erreur transitoire, donc redélivrance — qui refait le même lookup sur un pool déjà saturé. Toute
+   hausse se pèse contre `max_connections`=100 × services × réplicas (step-201 D9).
+3. **Empreinte Redis du cache.** `clés en vol = taux de peuplement × TTL(6 h)`, soit 1,3 à 10 Go sur le
+   Redis partagé avec les soldes de facturation. Le TTL est une constante de paquet, sans levier de
+   configuration : si le Redis se remplit, le recours est un redéploiement.
+
 La campagne doit décider quelle part de numéros portés est représentative d'un agrégateur national
 (10 à 30 % en marché MNP mûr) et semer le banc en conséquence, sans quoi le dimensionnement publié
 ignorera une étape du chemin chaud. La métrique `exact_route_lookups_total{outcome}` sépare les cas.

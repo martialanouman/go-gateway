@@ -106,7 +106,10 @@ type RouteStore interface {
 // Resolver is the L0 exact-number lookup: a per-pod Bloom gate in front of exactroute:{msisdn}
 // (Appendix B), which is a read-through cache over the durable exact_routes table.
 //
-// A Bloom miss is a definitive "no override" answered without any network call (~99% of traffic). A
+// A Bloom miss is a definitive "no override" answered without any network call. Its share is the
+// complement of the ported-number rate, so 70-90% in a mature MNP market (step-280 retains 10-30%
+// ported) — NOT the "~99%" inherited from ADR-0004, which predates any MNP figure and which every
+// sizing calculation would otherwise start from, ten to thirty times too low. A
 // Bloom possible-hit reads Redis; on a cache miss the durable table decides, and a row found there
 // populates the cache for the next message. The control plane never writes a value here — it DELs the
 // key after its own commit — so Redis is a cache that can always be rebuilt, never a second source of

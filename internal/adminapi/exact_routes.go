@@ -189,7 +189,7 @@ func (noopRouteCache) Invalidate(context.Context, ...string) error { return nil 
 // A failure is logged, never returned. The row is already durable, so failing the request would send the
 // operator to retry a write that succeeded; the resolver's TTL bounds how long a missed invalidation can
 // matter, and both the upsert and the DEL are idempotent.
-func (h *exactRouteHandlers) forget(ctx context.Context, msisdns ...string) {
+func (h *exactRouteHandlers) forget(ctx context.Context, msisdns ...string) bool {
 	// Detached from cancellation, like the config-change publish next door: the row is already durable,
 	// and a client that disconnects — or a runner draining — right after the write must not be what
 	// leaves a stale route behind for a whole TTL. Bounded so a hung Redis cannot stall the caller.
@@ -202,15 +202,17 @@ func (h *exactRouteHandlers) forget(ctx context.Context, msisdns ...string) {
 		// is recorded as an open follow-up on the step rather than silently accepted.
 		h.logger.WarnContext(ctx, "exact-route cache invalidation failed",
 			"numbers", len(msisdns), "err", err)
+		return false
 	}
+	return true
 }
 
 // announceReload asks the fleet to rebuild its routing snapshot, for a mutation whose commit lands
 // AFTER its HTTP response — the background bulk import. Every synchronous handler is already covered by
 // the PublishConfigChanges middleware and must NOT call this.
-func (h *exactRouteHandlers) announceReload(ctx context.Context) {
+func (h *exactRouteHandlers) announceReload(ctx context.Context) bool {
 	if h.pub == nil {
-		return // no publisher wired: the next admin mutation still triggers a rebuild
+		return true // no publisher wired: the next admin mutation still triggers a rebuild
 	}
 	actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), invalidateTimeout)
 	defer cancel()
@@ -218,7 +220,9 @@ func (h *exactRouteHandlers) announceReload(ctx context.Context) {
 	if err := h.pub.Publish(actx, h.channel, ConfigChangePayload); err != nil {
 		h.logger.WarnContext(ctx, "exact-route reload announcement failed; "+
 			"imported numbers stay out of the Bloom until the next admin mutation", "err", err)
+		return false
 	}
+	return true
 }
 
 type createExactRouteInput struct{ Body exactRouteCreateBody }
@@ -302,8 +306,17 @@ func (h *exactRouteHandlers) importRoutes(_ context.Context, in *importExactRout
 		if berr := h.store.BulkUpsert(jctx, routes); berr != nil {
 			return berr
 		}
-		h.forget(jctx, msisdns...)
-		h.announceReload(jctx)
+		// Both are best-effort, but the completion line is the ONLY signal an operator gets — there is
+		// no status endpoint — so it must not read "completed" when the rows landed and the data plane
+		// was never told. A degraded import leaves stale keys until the TTL and numbers outside the
+		// Bloom until some unrelated mutation happens by; that has to be visible.
+		invalidated := h.forget(jctx, msisdns...)
+		announced := h.announceReload(jctx)
+		if !invalidated || !announced {
+			logger.Warn("exact-route import committed but the data plane was not fully notified",
+				"cache_invalidated", invalidated, "reload_announced", announced)
+			return nil
+		}
 		logger.Info("exact-route import completed")
 		return nil
 	})

@@ -159,8 +159,19 @@ couplage de la garde « section lue ⇒ section déclarée ». Le TTL n'est **pa
 cohérence — le `DEL` l'est — c'est le filet quand le `DEL` échoue. Le jitter évite l'expiration
 synchronisée d'une rafale peuplée à froid.
 
-Coût en régime établi : une relecture par clé primaire, par msisdn actif et par TTL, plus les faux
-positifs du Bloom — `bloomFP = 0.001`, soit **~8 req/s à 8 000 SMS/s**.
+Coût en régime établi, **deux termes** — le chiffre publié d'abord ici n'en comptait qu'un :
+
+- les **faux positifs** du Bloom, `bloomFP = 0.001`, soit ~8 req/s à 8 000 SMS/s. Terme constant ;
+- les **numéros portés réellement visés** dont la clé a expiré : `débit × part portée × (1 − localité
+  par MSISDN sur le TTL)`. C'est le terme dominant, et il dépend du profil. En trafic A2P (OTP,
+  notifications), la localité par MSISDN sur 6 h est faible : avec 10 à 30 % de portés, cela donne
+  **400 à 2 400 req/s** à 8 000 SMS/s. Le « ~8 req/s » est donc le meilleur cas, pas le cas nominal.
+
+Deux conséquences à mesurer avant le go-live, fichées en suites ouvertes : le pool pgx de `router-svc`
+est à `MaxConns=10` — `pool.go` annonce lui-même qu'« un jalon qui met du trafic ici devrait les
+revisiter », et c'est ce jalon —, et un pod peut posséder plus de lanes Kafka (12 par défaut) que de
+connexions. L'empreinte mémoire du cache sur le Redis partagé suit le même terme dominant :
+`taux × 21 600 s` clés en vol, soit **1,3 à 10 Go** à ~150-200 o par clé.
 
 ### Trois décisions que le design initial ne nommait pas
 

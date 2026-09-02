@@ -225,7 +225,8 @@ func NewCatalog() *Catalog {
 
 		ExactRouteLookups: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "exact_route_lookups_total",
-			Help: "L0 exact-number lookups, by outcome (bloom_miss, redis_hit, redis_error, pg_hit, pg_miss, pg_error).",
+			Help: "L0 exact-number lookups, by outcome " +
+				"(bloom_miss, redis_hit, redis_error, pg_hit, pg_miss, pg_error).",
 		}, []string{"outcome"}),
 
 		ExactRouteCacheCorrupt: prometheus.NewCounter(prometheus.CounterOpts{

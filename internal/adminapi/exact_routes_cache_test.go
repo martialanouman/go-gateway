@@ -1,9 +1,11 @@
 package adminapi_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -318,4 +320,36 @@ func TestExactRouteMutationsInvalidateTheCanonicalNumber(t *testing.T) {
 	createRoute(t, api, "+2250700000001")
 
 	wantOps(t, log, []string{"upsert:2250700000001", "invalidate:2250700000001"})
+}
+
+// TestExactRouteImportDegradedDoesNotLogCompleted: with no status endpoint, the completion line is the
+// only signal an operator gets about a background import. It must not say "completed" when the rows
+// landed and the data plane was never told — that import leaves stale keys until the TTL and its
+// numbers outside the Bloom until some unrelated mutation happens by.
+func TestExactRouteImportDegradedDoesNotLogCompleted(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, nil))
+	log := &opLog{}
+	api := newTestAPIWith(t, adminapi.Deps{
+		ExactRoutes:     loggingStore{ExactRouteAdminStore: newFakeExactRouteStore(), log: log},
+		ExactRouteCache: &fakeRouteCache{log: log, err: errors.New("redis down")},
+		ConfigChanges:   &fakeAnnouncer{log: log},
+		Imports:         syncRunner{},
+		Logger:          logger,
+	})
+
+	w := httptest.NewRecorder()
+	body := fmt.Sprintf(`{"rows":[{"msisdn":"2250700000001","target_type":"connector","target_id":%q}]}`,
+		uuid.NewString())
+	api.ServeHTTP(w, authed(t, http.MethodPost, "/v1/admin/exact-routes/import", body))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("import status = %d, want 202; body=%s", w.Code, w.Body)
+	}
+
+	if out := buf.String(); strings.Contains(out, "exact-route import completed") {
+		t.Errorf("a degraded import logged \"completed\"; the operator has no other signal.\nlogs: %s", out)
+	}
+	if out := buf.String(); !strings.Contains(out, "not fully notified") {
+		t.Errorf("a degraded import logged no warning.\nlogs: %s", buf.String())
+	}
 }
