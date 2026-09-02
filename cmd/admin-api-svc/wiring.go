@@ -96,17 +96,22 @@ func newAdminApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (_
 	}
 	a.retainer = retention.retainer
 
-	runners := newRunners(ctx, cfg, logger)
-	a.onClose("runners", runners.close)
-
 	// Redis carries the config-change announcement (step-105): the Admin API publishes a coarse event
 	// after each mutation. A publish failure is best-effort (logged, not fatal), so — unlike Postgres —
 	// Redis is not a hard readiness dependency here.
+	//
+	// Opened BEFORE the runners so it is released after them: closers run in reverse, and since
+	// step-250e a background import touches Redis after its commit (cache invalidation, then its own
+	// config-change announcement). A client closed under a draining job fails both — silently, since
+	// both are best-effort — and leaves the imported numbers stale for a whole TTL.
 	rdb, err := redisstore.NewClient(ctx, cfg.Redis)
 	if err != nil {
 		return nil, fmt.Errorf("open redis client: %w", err)
 	}
 	a.onClose("redis", func() { _ = rdb.Close() })
+
+	runners := newRunners(ctx, cfg, logger)
+	a.onClose("runners", runners.close)
 
 	verifier, err := auth.NewStaticVerifier(cfg.HTTP.AdminTokens)
 	if err != nil {
@@ -229,8 +234,9 @@ type runners struct {
 	gdpr    *async.Runner
 
 	// close drains both. Their jobs use the Postgres pool, so the drain must complete BEFORE the pool
-	// is closed — which holds because this closer is registered after the stores', and closers run in
-	// reverse. TestNewAdminAppReleasesInDependencyOrder is what enforces that, not this sentence.
+	// is closed — which holds because this closer is registered after the stores'. The same now goes for
+	// Redis, which an import job touches after its commit (step-250e), hence its client is opened first.
+	// TestNewAdminAppReleasesInDependencyOrder is what enforces that order, not this sentence.
 	// The drain uses a cancel-detached deadline so a SIGTERM does not cut it short.
 	close func()
 }

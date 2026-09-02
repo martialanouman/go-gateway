@@ -83,9 +83,15 @@ func TestNewAdminAppReleasesInDependencyOrder(t *testing.T) {
 		t.Fatalf("newAdminApp: %v", err)
 	}
 
-	want := []string{"feed", "clients", "redis", "runners", "stores"}
+	// Redis is released AFTER the runners, not before: since step-250e the exact-route import job
+	// invalidates cache keys and announces its config change ON REDIS, after its Postgres commit. With
+	// the previous order, every deploy that caught an import in flight closed the client first, both
+	// calls failed silently (they are best-effort by design), and up to 10 000 numbers stayed pointed
+	// at their former carrier for a full TTL while the job logged "completed".
+	want := []string{"feed", "clients", "runners", "redis", "stores"}
 	if got := releaseOrder(app); !slices.Equal(got, want) {
-		t.Errorf("release order is %v, want %v — the runners' jobs use the Postgres pool", got, want)
+		t.Errorf("release order is %v, want %v — the runners' jobs use the Postgres pool AND Redis, so "+
+			"both must outlive the drain", got, want)
 	}
 }
 

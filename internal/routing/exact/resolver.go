@@ -47,6 +47,13 @@ type LookupMeter interface {
 	Observe(outcome string)
 }
 
+// LookupOutcomes is the closed vocabulary of Observe, in code and nowhere else. It is exported so the
+// wiring can seed every series at boot: a counter vector exposes nothing until it has a child, and a
+// ratio like pg_miss/pg_hit is unusable while one of its terms is simply absent from /metrics.
+func LookupOutcomes() []string {
+	return []string{outcomeBloomMiss, outcomeRedisHit, outcomeCacheCorrupt, outcomePgHit, outcomePgMiss}
+}
+
 // Option overrides a Resolver default. Only the meter is optional: a resolver without one still routes.
 type Option func(*Resolver)
 
@@ -62,6 +69,17 @@ func WithLookupTimeout(d time.Duration) Option {
 		}
 	}
 }
+
+// The outcome labels. Constants rather than literals: they are named in the resolver, in the boot
+// seeding and in the catalogue's Help text, and a typo in any one of them would split a series in
+// silence.
+const (
+	outcomeBloomMiss    = "bloom_miss"
+	outcomeRedisHit     = "redis_hit"
+	outcomeCacheCorrupt = "cache_corrupt"
+	outcomePgHit        = "pg_hit"
+	outcomePgMiss       = "pg_miss"
+)
 
 // nopMeter is the default, so the hot path needs no nil check.
 type nopMeter struct{}
@@ -123,7 +141,7 @@ func redisKey(msisdn string) string { return "exactroute:{" + msisdn + "}" }
 // is an open question rather than a silent default.
 func (r *Resolver) Resolve(ctx context.Context, msisdn string) (Target, bool, error) {
 	if !r.bloom.MightContain(msisdn) {
-		r.meter.Observe("bloom_miss")
+		r.meter.Observe(outcomeBloomMiss)
 		return Target{}, false, nil // definitive miss: no network call at all
 	}
 
@@ -132,14 +150,14 @@ func (r *Resolver) Resolve(ctx context.Context, msisdn string) (Target, bool, er
 	case err == nil:
 		target, perr := parseTarget(val)
 		if perr == nil {
-			r.meter.Observe("redis_hit")
+			r.meter.Observe(outcomeRedisHit)
 			return target, true, nil
 		}
 		// An illegible value is treated as a miss, not as a fault. Surfacing it would send the message
 		// back to the same key on every redelivery, wedging the whole partition until the TTL expires;
 		// the durable table is right here, and reading it rewrites a healthy value. Counted, so a drift
 		// never heals invisibly.
-		return r.loadAndCache(ctx, msisdn, "cache_corrupt")
+		return r.loadAndCache(ctx, msisdn, outcomeCacheCorrupt)
 	case !errors.Is(err, goredis.Nil):
 		return Target{}, false, fmt.Errorf("exact: redis lookup: %w", err)
 	}
@@ -160,14 +178,14 @@ func (r *Resolver) loadAndCache(ctx context.Context, msisdn, outcome string) (Ta
 		return Target{}, false, transient(err)
 	}
 	if !found {
-		r.meter.Observe(cmp.Or(outcome, "pg_miss"))
+		r.meter.Observe(cmp.Or(outcome, outcomePgMiss))
 		return Target{}, false, nil
 	}
 
 	// A cache write that fails must not fail the message: the target is already known and correct, and
 	// the next message simply pays another lookup. Only the read legs are fail-closed.
 	_ = r.cache.Set(ctx, redisKey(msisdn), EncodeTarget(route.Target), jitterTTL(r.ttl)).Err()
-	r.meter.Observe(cmp.Or(outcome, "pg_hit"))
+	r.meter.Observe(cmp.Or(outcome, outcomePgHit))
 	return route.Target, true, nil
 }
 
