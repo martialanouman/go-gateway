@@ -235,12 +235,12 @@ type bloomRebuilder struct {
 	out  chan *exact.Bloom
 }
 
-func (b bloomRebuilder) Announce(context.Context) error {
-	// Deliberately NOT the announcement's context. In production the announcement is a PUBLISH, bounded
-	// at five seconds; the rebuild it triggers happens elsewhere, on router-svc's own clock. Paginating
-	// the whole shared table under the publish budget would make a loaded CI fail with a message about
-	// an announcement that did in fact happen.
-	bloom, err := exact.LoadBloom(context.Background(), b.repo)
+func (b bloomRebuilder) Announce(ctx context.Context) error {
+	// Derived from the announcement's context but WITHOUT its deadline. In production the announcement
+	// is a PUBLISH bounded at five seconds, and the rebuild it triggers runs elsewhere on router-svc's
+	// own clock; paginating the whole shared table under the publish budget would make a loaded CI fail
+	// with a message about an announcement that did in fact happen.
+	bloom, err := exact.LoadBloom(context.WithoutCancel(ctx), b.repo)
 	if err != nil {
 		return err
 	}
