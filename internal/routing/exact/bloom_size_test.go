@@ -1,9 +1,8 @@
 package exact
 
 import (
+	"fmt"
 	"testing"
-
-	"github.com/bits-and-blooms/bloom/v3"
 )
 
 // TestBloomSizePerMillionEntries pins the memory the L0 filter actually costs, because both the spec
@@ -19,7 +18,9 @@ import (
 // loosens the rate to chase the old figure.
 func TestBloomSizePerMillionEntries(t *testing.T) {
 	const million = 1_000_000
-	bytesPerMillion := bloom.NewWithEstimates(million, bloomFP).Cap() / 8
+	// Through newFilter, not the library directly: the budget an operator sizes a pod with is what THIS
+	// package builds — including minBloomCapacity and any margin a later change adds.
+	bytesPerMillion := newFilter(msisdnsFor(million)).Cap() / 8
 
 	const (
 		lo = 1_700_000 // ~1.7 MB
@@ -36,11 +37,20 @@ func TestBloomSizePerMillionEntries(t *testing.T) {
 // TestBloomSizeGrowsLinearly: the per-million figure is only usable as a budget if it scales. A national
 // MNP base is several million numbers, and the operator sizing a pod needs to multiply.
 func TestBloomSizeGrowsLinearly(t *testing.T) {
-	one := bloom.NewWithEstimates(1_000_000, bloomFP).Cap()
-	five := bloom.NewWithEstimates(5_000_000, bloomFP).Cap()
+	one := newFilter(msisdnsFor(200_000)).Cap()
+	five := newFilter(msisdnsFor(1_000_000)).Cap()
 
 	if ratio := float64(five) / float64(one); ratio < 4.9 || ratio > 5.1 {
 		t.Errorf("5M/1M filter size ratio = %.2f, want ~5 (a per-million budget that does not scale "+
 			"cannot be multiplied by an operator sizing a pod)", ratio)
 	}
+}
+
+// msisdnsFor builds n distinct numbers, so the filter is sized the way LoadBloom sizes it.
+func msisdnsFor(n int) []string {
+	out := make([]string, n)
+	for i := range out {
+		out[i] = fmt.Sprintf("22507%08d", i)
+	}
+	return out
 }

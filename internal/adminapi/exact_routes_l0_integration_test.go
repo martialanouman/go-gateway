@@ -165,6 +165,9 @@ func TestExactRouteBulkImportIsReflectedByTheBloomAndResolvesThroughL0(t *testin
 
 	repo := postgres.NewExactRouteRepo(pool)
 	runner := async.New(1, nil)
+	// "Aucune goroutine sans condition d'arrêt": the job outlives the request, so the runner has to be
+	// drained before the test returns.
+	t.Cleanup(func() { _ = runner.Close(context.Background()) })
 	// The announcement is what makes the fleet rebuild, so the double rebuilds AT that instant — which
 	// is the whole assertion. Capturing the Bloom afterwards instead would let the commit land in
 	// between, and the test would pass against an announcement fired before BulkUpsert ran (verified by
@@ -173,7 +176,7 @@ func TestExactRouteBulkImportIsReflectedByTheBloomAndResolvesThroughL0(t *testin
 	api := newTestAPIWith(t, adminapi.Deps{
 		ExactRoutes:      repo,
 		ExactRouteCache:  exact.NewInvalidator(rdb),
-		ExactRouteReload: bloomRebuilder{t: t, repo: repo, out: rebuilt},
+		ExactRouteReload: bloomRebuilder{repo: repo, out: rebuilt},
 		Imports:          runner,
 	})
 
@@ -228,13 +231,16 @@ func TestExactRouteBulkImportIsReflectedByTheBloomAndResolvesThroughL0(t *testin
 // bloomRebuilder models what the announcement actually causes: router-svc reloads its Bloom from
 // Postgres. Building it here, inside Announce, is what makes the ordering observable.
 type bloomRebuilder struct {
-	t    *testing.T
 	repo *postgres.ExactRouteRepo
 	out  chan *exact.Bloom
 }
 
-func (b bloomRebuilder) Announce(ctx context.Context) error {
-	bloom, err := exact.LoadBloom(ctx, b.repo)
+func (b bloomRebuilder) Announce(context.Context) error {
+	// Deliberately NOT the announcement's context. In production the announcement is a PUBLISH, bounded
+	// at five seconds; the rebuild it triggers happens elsewhere, on router-svc's own clock. Paginating
+	// the whole shared table under the publish budget would make a loaded CI fail with a message about
+	// an announcement that did in fact happen.
+	bloom, err := exact.LoadBloom(context.Background(), b.repo)
 	if err != nil {
 		return err
 	}

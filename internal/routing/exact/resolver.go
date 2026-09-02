@@ -1,6 +1,7 @@
 package exact
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -36,8 +37,10 @@ type RedisCache interface {
 	Set(ctx context.Context, key string, value any, expiration time.Duration) *goredis.StatusCmd
 }
 
-// LookupMeter counts L0 lookups by outcome. The vocabulary is closed and declared in code — bloom_miss,
-// redis_hit, pg_hit, pg_miss — never derived from traffic, so it satisfies the bounded-label guard (§15).
+// LookupMeter counts L0 lookups by outcome, ONE observation per resolution — bloom_miss, redis_hit,
+// cache_corrupt, pg_hit, pg_miss. The vocabulary is closed and declared in code, never derived from
+// traffic, so it satisfies the bounded-label guard (§15). One-per-resolution is what makes the sum a
+// lookup count and the ratios usable, which is the whole point of shipping it (ADR-0015).
 // It is what makes the follow-ups this step defers decidable: whether a negative cache earns its keep
 // depends on the pg_miss rate, and the TTL on the pg_hit rate.
 type LookupMeter interface {
@@ -78,7 +81,7 @@ type RouteStore interface {
 // Bloom possible-hit reads Redis; on a cache miss the durable table decides, and a row found there
 // populates the cache for the next message. The control plane never writes a value here — it DELs the
 // key after its own commit — so Redis is a cache that can always be rebuilt, never a second source of
-// truth (ADR-0004, amended).
+// truth (ADR-0015).
 type Resolver struct {
 	bloom         *Bloom
 	cache         RedisCache
@@ -136,32 +139,35 @@ func (r *Resolver) Resolve(ctx context.Context, msisdn string) (Target, bool, er
 		// back to the same key on every redelivery, wedging the whole partition until the TTL expires;
 		// the durable table is right here, and reading it rewrites a healthy value. Counted, so a drift
 		// never heals invisibly.
-		r.meter.Observe("cache_corrupt")
-		return r.loadAndCache(ctx, msisdn)
+		return r.loadAndCache(ctx, msisdn, "cache_corrupt")
 	case !errors.Is(err, goredis.Nil):
 		return Target{}, false, fmt.Errorf("exact: redis lookup: %w", err)
 	}
 
-	return r.loadAndCache(ctx, msisdn)
+	return r.loadAndCache(ctx, msisdn, "")
 }
 
 // loadAndCache resolves a cache miss against the durable table and populates the key on a hit. A miss
 // in the table is a Bloom false positive: it falls back without caching anything, since this step
 // ships no negative caching and a key written here would be a route to nowhere.
-func (r *Resolver) loadAndCache(ctx context.Context, msisdn string) (Target, bool, error) {
+// outcome is the label to record instead of the usual pg_hit/pg_miss, empty for the ordinary cache
+// miss. It keeps the metric at exactly one observation per resolution: a healed corrupt value did
+// perform a durable read, but counting it as pg_hit too would inflate the very ratios ADR-0015 defers
+// two decisions to.
+func (r *Resolver) loadAndCache(ctx context.Context, msisdn, outcome string) (Target, bool, error) {
 	route, found, err := r.lookup(ctx, msisdn)
 	if err != nil {
 		return Target{}, false, transient(err)
 	}
 	if !found {
-		r.meter.Observe("pg_miss")
+		r.meter.Observe(cmp.Or(outcome, "pg_miss"))
 		return Target{}, false, nil
 	}
 
 	// A cache write that fails must not fail the message: the target is already known and correct, and
 	// the next message simply pays another lookup. Only the read legs are fail-closed.
 	_ = r.cache.Set(ctx, redisKey(msisdn), EncodeTarget(route.Target), jitterTTL(r.ttl)).Err()
-	r.meter.Observe("pg_hit")
+	r.meter.Observe(cmp.Or(outcome, "pg_hit"))
 	return route.Target, true, nil
 }
 

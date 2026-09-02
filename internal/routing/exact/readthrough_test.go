@@ -226,9 +226,12 @@ func TestResolveCorruptCacheValueHealsFromTheDurableTable(t *testing.T) {
 	if cached := cache.vals[redisKey(msisdn)]; cached != EncodeTarget(want) {
 		t.Errorf("cache still holds %q, want it healed to %q", cached, EncodeTarget(want))
 	}
-	if len(meter.seen) == 0 || meter.seen[0] != "cache_corrupt" {
-		t.Errorf("outcomes = %v, want cache_corrupt first — a value that healed invisibly is a drift "+
-			"nobody can see", meter.seen)
+	// Exactly one observation, like every other path: a healed value did perform a durable read, but
+	// counting it as pg_hit as well would inflate the ratios ADR-0015 defers two decisions to, and would
+	// stop sum(exact_route_lookups_total) from being a lookup count.
+	if len(meter.seen) != 1 || meter.seen[0] != "cache_corrupt" {
+		t.Errorf("outcomes = %v, want exactly [cache_corrupt] — one observation per resolution, and a "+
+			"value that healed invisibly is a drift nobody can see", meter.seen)
 	}
 }
 

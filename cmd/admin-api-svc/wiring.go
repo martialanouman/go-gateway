@@ -237,15 +237,20 @@ type runners struct {
 
 func newRunners(ctx context.Context, cfg config.Config, logger *slog.Logger) *runners {
 	r := &runners{imports: async.New(4, logger), gdpr: async.New(2, logger)}
-	r.close = func() {
+	// One deadline EACH, not one shared between the two. A job that ignores its cancellation — the
+	// exact-route import holds a detached, bounded invalidation after its commit (step-250e) — can make
+	// the first Close overrun; sharing the budget would then hand the second an already-expired context
+	// and cut a GDPR erasure short, which is precisely what this runner is kept separate to avoid.
+	drain := func(name string, close func(context.Context) error) {
 		dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cfg.ShutdownTimeout)
 		defer cancel()
-		if derr := r.imports.Close(dctx); derr != nil {
-			logger.Error("import runner drain incomplete", "err", derr)
+		if derr := close(dctx); derr != nil {
+			logger.Error(name+" runner drain incomplete", "err", derr)
 		}
-		if derr := r.gdpr.Close(dctx); derr != nil {
-			logger.Error("gdpr runner drain incomplete", "err", derr)
-		}
+	}
+	r.close = func() {
+		drain("import", r.imports.Close)
+		drain("gdpr", r.gdpr.Close)
 	}
 	return r
 }

@@ -174,3 +174,38 @@ func TestExactRouteRepoBulkUpsert(t *testing.T) {
 		t.Errorf("empty bulk upsert = %v, want nil (no-op)", err)
 	}
 }
+
+// TestExactRouteRepoBulkUpsertIsAllOrNothing pins the transactional semantics of BulkUpsert against a
+// real PostgreSQL, because step-250e briefly built handler behaviour on the opposite assumption.
+//
+// The claim written into four places was "BulkUpsert is a pgx.Batch, so a mid-batch error can still
+// have committed rows", and it is false: pgx's SendBatch documents that "all queries are run in an
+// implicit transaction unless explicit transaction control statements are executed" (v5.10.0
+// conn.go:936), so one failing statement rolls the whole batch back. A plausible mechanism attached to
+// a true observation — the failure mode the repo keeps paying for, which is why this is a test against
+// the real database and not a comment.
+//
+// The bad row violates exact_routes_msisdn_canonical_ck, the CHECK the admin layer normally screens
+// out before the repo ever sees it.
+func TestExactRouteRepoBulkUpsertIsAllOrNothing(t *testing.T) {
+	pool := pgtest.Pool(t)
+	repo := postgres.NewExactRouteRepo(pool)
+	ctx := context.Background()
+
+	good := fmt.Sprintf("22507%08d", uuid.New().ID()%100_000_000)
+	target := exact.Target{Type: exact.TargetConnector, ID: uuid.New()}
+
+	err := repo.BulkUpsert(ctx, []exact.Route{
+		{MSISDN: good, Target: target, Source: exact.SourceMNPImport},
+		{MSISDN: "+225-not-canonical", Target: target, Source: exact.SourceMNPImport},
+	})
+	if err == nil {
+		t.Fatal("BulkUpsert with a row violating the canonical-msisdn CHECK returned nil")
+	}
+
+	if _, found, gerr := repo.Get(ctx, good); gerr != nil || found {
+		t.Errorf("the valid row of a failed batch is present (found=%v, err=%v); the batch must be "+
+			"all-or-nothing, and any caller compensating for a partial commit is compensating for "+
+			"something that cannot happen", found, gerr)
+	}
+}

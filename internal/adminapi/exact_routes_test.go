@@ -29,9 +29,10 @@ type fakeExactRouteStore struct {
 	// bulkRelease. Both nil (the default) means BulkUpsert never blocks.
 	bulkStarted chan struct{}
 	bulkRelease chan struct{}
-	// bulkErr models a partially-applied batch: postgres.BulkUpsert is a pgx.Batch, so an error can come
-	// back with rows ALREADY committed. The double therefore writes what it was given and then fails,
-	// rather than failing cleanly — the failure mode the handler has to cope with.
+	// bulkErr fails the batch WITHOUT writing anything, which is what the real repo does: pgx runs
+	// SendBatch in an implicit transaction, so one bad statement rolls the whole batch back
+	// (TestExactRouteRepoBulkUpsertIsAllOrNothing proves it on a real database). A double that wrote
+	// the rows and then failed would model a state production cannot reach.
 	bulkErr error
 }
 
@@ -92,13 +93,13 @@ func (s *fakeExactRouteStore) BulkUpsert(_ context.Context, routes []exact.Route
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.bulkErr != nil {
+		return s.bulkErr // all-or-nothing: nothing was written
+	}
 	for _, r := range routes {
 		s.now = s.now.Add(time.Second)
 		r.UpdatedAt = s.now
 		s.rows[r.MSISDN] = r
-	}
-	if s.bulkErr != nil {
-		return s.bulkErr
 	}
 	return nil
 }

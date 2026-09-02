@@ -276,11 +276,14 @@ func TestExactRouteImportAnnouncementFailureDoesNotFailTheJob(t *testing.T) {
 	}
 }
 
-// TestExactRouteImportInvalidatesEvenWhenTheBatchFails: postgres.BulkUpsert is a pgx.Batch, so an error
-// can come back with rows already committed. Skipping the invalidation and the announcement on that path
-// would leave exactly those rows stale for a full TTL, and outside the Bloom until some unrelated admin
-// mutation happens by — a silent half-import, which is worse than a loud failed one.
-func TestExactRouteImportInvalidatesEvenWhenTheBatchFails(t *testing.T) {
+// TestExactRouteImportTouchesNothingWhenTheBatchFails: a failed batch commits nothing.
+//
+// pgx runs SendBatch in an implicit transaction, so one bad statement rolls the whole batch back —
+// proved against a real database by TestExactRouteRepoBulkUpsertIsAllOrNothing. This step briefly
+// believed the opposite and invalidated on failure "just in case"; that deleted up to 10 000 valid
+// cache keys and made every router pod rebuild its snapshots for a table that had not changed. A
+// belt-and-braces move justified by a mechanism that does not exist is not caution, it is cost.
+func TestExactRouteImportTouchesNothingWhenTheBatchFails(t *testing.T) {
 	log := &opLog{}
 	store := newFakeExactRouteStore()
 	store.bulkErr = errors.New("connection reset mid-batch")
@@ -299,7 +302,7 @@ func TestExactRouteImportInvalidatesEvenWhenTheBatchFails(t *testing.T) {
 		t.Fatalf("import status = %d, want 202; body=%s", w.Code, w.Body)
 	}
 
-	wantOps(t, log, []string{"bulk:1", "invalidate:2250700000001", "announce"})
+	wantOps(t, log, []string{"bulk:1"})
 }
 
 // TestExactRouteMutationsInvalidateTheCanonicalNumber: the operator may write "+225 07 …", the resolver

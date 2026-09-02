@@ -97,3 +97,20 @@ func TestNoPublishOnReadOnlyPost(t *testing.T) {
 		}
 	}
 }
+
+// TestNoPublishOnSelfAnnouncingPost: an async import commits AFTER its 202, so the middleware's
+// announcement would fire against a table that does not hold the rows yet — a fleet-wide rebuild of
+// every snapshot for nothing, and the reason the job announces for itself once it has committed
+// (step-250e).
+func TestNoPublishOnSelfAnnouncingPost(t *testing.T) {
+	pub := &fakeChangePublisher{}
+	h := adminapi.PublishConfigChanges(handlerReturning(http.StatusAccepted), pub, "config:changed", nil)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/admin/exact-routes/import", http.NoBody))
+
+	if got := pub.count(); got != 0 {
+		t.Errorf("the middleware published %d time(s) for a self-announcing import; the job announces "+
+			"after its commit, and this one would rebuild the fleet from a table without the rows", got)
+	}
+}

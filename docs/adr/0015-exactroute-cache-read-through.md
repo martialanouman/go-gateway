@@ -3,7 +3,8 @@
 **Status:** Accepted
 **Date:** 2026-09-02
 **Deciders:** Équipe plateforme
-**Réf spec:** §6.1, Appendix B · **Précise:** [ADR-0004](0004-routage-3-niveaux-numero-exact.md) (non remplacé)
+**Réf spec:** §6.1, Appendix B · **Étend:** [ADR-0004](0004-routage-3-niveaux-numero-exact.md) (non remplacé)
+**Réf code:** `internal/routing/exact` (resolver, invalidator) · `internal/adminapi/exact_routes.go`
 
 ## Context
 

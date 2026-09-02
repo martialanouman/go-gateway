@@ -18,7 +18,7 @@ Les décisions structurantes de la passerelle, une par fichier, au format ADR st
 | [0012](0012-duplication-submit-sm-bornee.md) | Duplication d'un `submit_sm` assumée et **bornée** (~250 par partition et par crash) | Accepted |
 | [0013](0013-annulation-jeton-vainqueur-unique.md) | `cancelled` signifie « jamais parti » ; arbitrage par jeton à vainqueur unique | Accepted |
 | [0014](0014-duplication-au-routeur.md) | La duplication a **deux** causes ; la seconde est au routeur, bornée par la même grandeur | Accepted |
-| [0015](0015-exactroute-cache-read-through.md) | `exactroute:{msisdn}` est un cache read-through, pas une projection (précise 0004) | Accepted |
+| [0015](0015-exactroute-cache-read-through.md) | `exactroute:{msisdn}` est un cache read-through, pas une projection (étend 0004) | Accepted |
 
 ## Convention
 

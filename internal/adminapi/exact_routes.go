@@ -56,6 +56,10 @@ type exactRoutePage struct {
 	Data []exactRouteDTO `json:"data"`
 }
 
+// invalidateTimeout bounds a post-commit cache operation, so a hung Redis cannot hold an admin request
+// (or a draining import job) open. Same bound and same reasoning as the config-change publish.
+const invalidateTimeout = 5 * time.Second
+
 // ExactRouteAdminStore is the persistence the exact-route handlers need (declared consumer-side).
 // *postgres.ExactRouteRepo satisfies it. List is keyset-paginated by msisdn (the primary key), so the
 // cursor is simply the last msisdn of the previous page.
@@ -216,10 +220,6 @@ func (h *exactRouteHandlers) announceReload(ctx context.Context) {
 	}
 }
 
-// invalidateTimeout bounds a post-commit cache operation, so a hung Redis cannot hold an admin request
-// (or a draining import job) open. Same bound and same reasoning as the config-change publish.
-const invalidateTimeout = 5 * time.Second
-
 type createExactRouteInput struct{ Body exactRouteCreateBody }
 type exactRouteOutput struct{ Body exactRouteDTO }
 
@@ -294,15 +294,15 @@ func (h *exactRouteHandlers) importRoutes(_ context.Context, in *importExactRout
 	jobID := uuid.NewString()
 	logger := h.logger.With("job_id", jobID, "rows", len(routes), "source", string(source))
 	err := h.runner.Go("import-exact-routes", func(jctx context.Context) error {
-		berr := h.store.BulkUpsert(jctx, routes)
-		// Invalidate and announce even on failure: BulkUpsert is a pgx.Batch, so a mid-batch error can
-		// still have committed rows. Skipping here would leave exactly those rows stale for a TTL, and
-		// out of the Bloom until some unrelated admin mutation happens by.
-		h.forget(jctx, msisdns...)
-		h.announceReload(jctx)
-		if berr != nil {
+		// A failed batch commits nothing: pgx runs SendBatch in an implicit transaction, so one bad
+		// statement rolls the whole thing back (proved on a real database by
+		// TestExactRouteRepoBulkUpsertIsAllOrNothing). There is therefore nothing to forget, and
+		// announcing would make every router pod rebuild its snapshots for a table that did not change.
+		if berr := h.store.BulkUpsert(jctx, routes); berr != nil {
 			return berr
 		}
+		h.forget(jctx, msisdns...)
+		h.announceReload(jctx)
 		logger.Info("exact-route import completed")
 		return nil
 	})

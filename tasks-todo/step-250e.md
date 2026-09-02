@@ -134,9 +134,13 @@ encore les lignes, les numéros importés restent hors du filtre, et `MightConta
 façon définitive — ni le cache ni la lecture durable ne sont jamais atteints. Les petits imports
 gagnaient cette course, les gros la perdaient : l'inverse du besoin.
 
-**Invalidation et annonce ont lieu même si le batch échoue** : `BulkUpsert` est un `pgx.Batch`, donc
-une erreur en cours de lot laisse des lignes commitées. Les sauter laisserait précisément celles-là
-périmées.
+**Un batch en échec ne commit rien, donc n'invalide ni n'annonce.** `pgx` exécute `SendBatch` dans une
+**transaction implicite** : une instruction fautive annule tout le lot. Cette PR a d'abord cru
+l'inverse et invalidait « par précaution » — ce qui supprimait jusqu'à 10 000 clés valides et faisait
+reconstruire ses instantanés à chaque pod routeur pour une table inchangée. Une ceinture-et-bretelles
+justifiée par un mécanisme inexistant n'est pas de la prudence, c'est du coût. La sémantique est
+désormais prouvée contre une vraie base par `TestExactRouteRepoBulkUpsertIsAllOrNothing`, parce qu'une
+docstring n'est pas une preuve.
 
 **La source de vérité commet d'abord, toujours ; le cache suit.** Postgres commit → `DEL`. Un crash
 entre les deux laisse une clé périmée **au plus le TTL**. Reste la fenêtre classique du cache-aside

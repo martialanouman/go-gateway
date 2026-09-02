@@ -49,7 +49,7 @@ Le préfixe seul (B) est incorrect ; le lookup systématique (C) est trop coûte
 2. [x] Test d'invariant (b) : un message routé L0 traverse toutes les étapes de conformité.
 3. [x] Import MNP asynchrone (`POST /admin/exact-routes/import`).
 
-> **Précisé par [ADR-0015](0015-exactroute-cache-read-through.md) (2026-09-02).** Cet ADR ne dit pas
+> **Étendu par [ADR-0015](0015-exactroute-cache-read-through.md) (2026-09-02).** Cet ADR ne dit pas
 > **qui écrit** `exactroute:{msisdn}` — et personne ne l'écrivait. ADR-0015 tranche : la clé est un
 > cache read-through, peuplé par son lecteur et invalidé par le plan de contrôle. La décision à trois
 > niveaux ci-dessus reste valide et n'est pas remplacée.
