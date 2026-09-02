@@ -94,11 +94,15 @@ type Catalog struct {
 	// timeout counter: two names for one event is how a dashboard ends up disagreeing with itself.
 	RoutingScriptFailures *prometheus.CounterVec
 
-	// ExactRouteLookups counts L0 exact-number lookups by outcome (bloom_miss | redis_hit |
-	// cache_corrupt | pg_hit | pg_miss). Since step-250e the key is a read-through cache, so this is what tells a stale-Bloom
-	// false positive (pg_miss, a Postgres round trip that resolves nothing) from a real cold hit — the
-	// two follow-ups that step defers, a negative cache and the TTL, are not decidable without it.
-	ExactRouteLookups *prometheus.CounterVec
+	// ExactRouteLookups counts L0 exact-number lookups by outcome, exactly one per resolution, failures
+	// included. Since step-250e the key is a read-through cache, so this is what tells a stale-Bloom
+	// false positive (pg_miss, a Postgres round trip resolving nothing) from a real cold hit — the two
+	// follow-ups that step defers, a negative cache and the TTL, are not decidable without it.
+	//
+	// ExactRouteCacheCorrupt counts undecodable cached values: a cache-leg anomaly, kept off the outcome
+	// label so it cannot inflate those ratios.
+	ExactRouteLookups      *prometheus.CounterVec
+	ExactRouteCacheCorrupt prometheus.Counter
 }
 
 // Native histogram settings, applied to every histogram in the catalogue. A factor of 1.1 gives ~10%
@@ -221,8 +225,13 @@ func NewCatalog() *Catalog {
 
 		ExactRouteLookups: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "exact_route_lookups_total",
-			Help: "L0 exact-number lookups, by outcome (bloom_miss, redis_hit, cache_corrupt, pg_hit, pg_miss).",
+			Help: "L0 exact-number lookups, by outcome (bloom_miss, redis_hit, redis_error, pg_hit, pg_miss, pg_error).",
 		}, []string{"outcome"}),
+
+		ExactRouteCacheCorrupt: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "exact_route_cache_corrupt_total",
+			Help: "Cached exact-route values that could not be decoded and were healed from the durable table.",
+		}),
 	}
 }
 
@@ -236,6 +245,7 @@ func (c *Catalog) Collectors() []prometheus.Collector {
 		c.BalanceCacheAge,
 		c.RoutingScriptFailures,
 		c.ExactRouteLookups,
+		c.ExactRouteCacheCorrupt,
 		c.MessagesTotal,
 		c.RejectedTotal,
 		c.PipelineDuration,

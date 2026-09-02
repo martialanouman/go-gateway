@@ -385,7 +385,8 @@ func newPipelineStack(
 	// same repo the Bloom is built from keeps one durable source behind both.
 	// exact_route_lookups_total carries one bounded label (outcome), from a vocabulary fixed in code.
 	exactResolver := exact.NewResolver(p.exactBloom, rdb, p.exactRepo, exact.DefaultCacheTTL,
-		exact.WithLookupMeter(lookupMeter{c: catalog.ExactRouteLookups}))
+		exact.WithLookupMeter(lookupMeter{c: catalog.ExactRouteLookups}),
+		exact.WithCorruptionMeter(catalog.ExactRouteCacheCorrupt))
 	resolver := routing.NewL0Resolver(exactResolver, p.scriptResolver, boot.routes)
 
 	// The credit stage (§6.9, step-145): a per-customer billing-scope snapshot gates the reserve, so a
@@ -643,7 +644,7 @@ func newOpsServer(
 	// rather than "not measured here".
 	ops.Registry().MustRegister(catalog.RoutingScriptFailures, catalog.QueueDepth,
 		catalog.MessagesTotal, catalog.RejectedTotal, catalog.PipelineDuration,
-		catalog.ExactRouteLookups)
+		catalog.ExactRouteLookups, catalog.ExactRouteCacheCorrupt)
 	ops.Registry().MustRegister(stream.dropped...)
 
 	blooms := bloomGauges{

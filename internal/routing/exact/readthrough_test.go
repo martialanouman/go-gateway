@@ -169,10 +169,10 @@ type fakeMeter struct{ seen []string }
 
 func (m *fakeMeter) Observe(outcome string) { m.seen = append(m.seen, outcome) }
 
-// TestResolveCountsEveryLookupOutcome: the four paths through Resolve must be distinguishable in
-// metrics, because the follow-ups this step defers are not decidable without them — whether a negative
-// cache is worth adding depends on the pg_miss rate, and the TTL on the pg_hit rate. Shipping the
-// decision "measure first" without the measurement would leave both open forever.
+// TestResolveCountsEveryLookupOutcome: every path through Resolve must be distinguishable in metrics,
+// because the follow-ups this step defers are not decidable without them — whether a negative cache is
+// worth adding depends on the pg_miss rate, and the TTL on the pg_hit rate. Shipping the decision
+// "measure first" without the measurement would leave both open forever.
 func TestResolveCountsEveryLookupOutcome(t *testing.T) {
 	cached, cold, absent := "2250700000001", "2250700000002", "2250700000003"
 	want := Target{Type: TargetConnector, ID: uuid.New()}
@@ -226,12 +226,11 @@ func TestResolveCorruptCacheValueHealsFromTheDurableTable(t *testing.T) {
 	if cached := cache.vals[redisKey(msisdn)]; cached != EncodeTarget(want) {
 		t.Errorf("cache still holds %q, want it healed to %q", cached, EncodeTarget(want))
 	}
-	// Exactly one observation, like every other path: a healed value did perform a durable read, but
-	// counting it as pg_hit as well would inflate the ratios ADR-0015 defers two decisions to, and would
-	// stop sum(exact_route_lookups_total) from being a lookup count.
-	if len(meter.seen) != 1 || meter.seen[0] != "cache_corrupt" {
-		t.Errorf("outcomes = %v, want exactly [cache_corrupt] — one observation per resolution, and a "+
-			"value that healed invisibly is a drift nobody can see", meter.seen)
+	// The outcome describes how the resolution ENDED — here, on a successful durable read. The
+	// corruption itself is counted on its own meter (TestResolveCountsCorruptionSeparately), so the two
+	// facts stay distinguishable instead of collapsing into one label.
+	if len(meter.seen) != 1 || meter.seen[0] != "pg_hit" {
+		t.Errorf("outcomes = %v, want exactly [pg_hit]", meter.seen)
 	}
 }
 
@@ -371,3 +370,83 @@ func TestCachePopulateDoesNotInheritTheLookupBudget(t *testing.T) {
 			time.Until(cache.setDeadline).Round(time.Millisecond))
 	}
 }
+
+// TestResolveObservesExactlyOnceOnEveryPath is the invariant the godoc and ADR-0015 both assert and
+// that nothing enforced: "one observation per resolution" is what makes the sum a lookup count, and
+// what gives the pg_miss/pg_hit ratios a denominator.
+//
+// Two of the paths used to observe nothing at all — a Redis fault and a durable-read failure — so the
+// series silently decoupled from real traffic exactly when an incident made someone look at it, and
+// the closed vocabulary had no failure label at all while fail-closed (§16) is the most sensitive
+// property of this path.
+func TestResolveObservesExactlyOnceOnEveryPath(t *testing.T) {
+	msisdn := "2250700000001"
+	want := Target{Type: TargetConnector, ID: uuid.New()}
+	coded := fmt.Errorf("get exact route: %w", errors.Join(errors.New("EOF"), errs.ErrInternal))
+
+	for _, tc := range []struct {
+		name  string
+		cache *fakeRedis
+		store *fakeStore
+		want  string
+	}{
+		{"bloom miss", &fakeRedis{}, &fakeStore{}, "bloom_miss"},
+		{"redis hit", &fakeRedis{vals: map[string]string{redisKey(msisdn): EncodeTarget(want)}}, &fakeStore{}, "redis_hit"},
+		{"redis fault", &fakeRedis{err: context.DeadlineExceeded}, &fakeStore{}, "redis_error"},
+		{"pg hit", &fakeRedis{vals: map[string]string{}}, &fakeStore{rows: map[string]Route{msisdn: {MSISDN: msisdn, Target: want}}}, "pg_hit"},
+		{"pg miss", &fakeRedis{vals: map[string]string{}}, &fakeStore{rows: map[string]Route{}}, "pg_miss"},
+		{"pg fault", &fakeRedis{vals: map[string]string{}}, &fakeStore{err: coded}, "pg_error"},
+		{"corrupt then pg hit", &fakeRedis{vals: map[string]string{redisKey(msisdn): "garbage"}},
+			&fakeStore{rows: map[string]Route{msisdn: {MSISDN: msisdn, Target: want}}}, "pg_hit"},
+		{"corrupt then pg fault", &fakeRedis{vals: map[string]string{redisKey(msisdn): "garbage"}},
+			&fakeStore{err: coded}, "pg_error"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			meter := &fakeMeter{}
+			bloom := newBloom([]string{msisdn})
+			target := msisdn
+			if tc.name == "bloom miss" {
+				target = "2250799999999"
+			}
+			r := NewResolver(bloom, tc.cache, tc.store, time.Hour, WithLookupMeter(meter))
+			_, _, _ = r.Resolve(context.Background(), target)
+
+			if len(meter.seen) != 1 {
+				t.Fatalf("observations = %v, want exactly one (the sum must be a lookup count)", meter.seen)
+			}
+			if meter.seen[0] != tc.want {
+				t.Errorf("outcome = %q, want %q", meter.seen[0], tc.want)
+			}
+		})
+	}
+}
+
+// TestResolveCountsCorruptionSeparately: a corrupt cached value and the durable read that heals it are
+// two different facts. Flattening them into one label loses the pair — a corrupt key healed from the
+// table and a corrupt key over a dead Postgres both read as "cache_corrupt" — and inflates the very
+// ratios ADR-0015 defers two decisions to.
+func TestResolveCountsCorruptionSeparately(t *testing.T) {
+	msisdn := "2250700000001"
+	want := Target{Type: TargetConnector, ID: uuid.New()}
+	meter := &fakeMeter{}
+	corrupt := &countingMeter{}
+
+	r := NewResolver(
+		newBloom([]string{msisdn}),
+		&fakeRedis{vals: map[string]string{redisKey(msisdn): "garbage"}},
+		&fakeStore{rows: map[string]Route{msisdn: {MSISDN: msisdn, Target: want}}},
+		time.Hour,
+		WithLookupMeter(meter), WithCorruptionMeter(corrupt),
+	)
+
+	if got, ok, err := r.Resolve(context.Background(), msisdn); err != nil || !ok || got != want {
+		t.Fatalf("Resolve(corrupt) = (%+v, ok=%v, err=%v), want the healed target", got, ok, err)
+	}
+	if corrupt.n != 1 {
+		t.Errorf("corruption counter = %d, want 1", corrupt.n)
+	}
+}
+
+type countingMeter struct{ n int }
+
+func (m *countingMeter) Inc() { m.n++ }

@@ -1,7 +1,6 @@
 package exact
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -37,21 +36,37 @@ type RedisCache interface {
 	Set(ctx context.Context, key string, value any, expiration time.Duration) *goredis.StatusCmd
 }
 
-// LookupMeter counts L0 lookups by outcome, ONE observation per resolution — bloom_miss, redis_hit,
-// cache_corrupt, pg_hit, pg_miss. The vocabulary is closed and declared in code, never derived from
-// traffic, so it satisfies the bounded-label guard (§15). One-per-resolution is what makes the sum a
-// lookup count and the ratios usable, which is the whole point of shipping it (ADR-0015).
-// It is what makes the follow-ups this step defers decidable: whether a negative cache earns its keep
-// depends on the pg_miss rate, and the TTL on the pg_hit rate.
+// LookupMeter counts L0 lookups by outcome, EXACTLY ONE observation per resolution — the failure paths
+// included, without which the series decouples from real traffic precisely when an incident makes
+// someone read it. The vocabulary is closed and declared in code, never derived from traffic, so it
+// satisfies the bounded-label guard (§15). One-per-resolution is what makes the sum a lookup count,
+// and what gives the follow-ups this step defers a denominator: whether a negative cache earns its
+// keep depends on the pg_miss rate, and the TTL on the pg_hit rate (ADR-0015).
 type LookupMeter interface {
 	Observe(outcome string)
 }
+
+// CorruptionMeter counts cached values that could not be decoded. Deliberately NOT an outcome label:
+// corruption is an anomaly of the cache leg, while the outcome says how the resolution ended on the
+// durable leg. Folding one into the other loses the pair — a corrupt key healed from the table and a
+// corrupt key over an unreachable Postgres would read alike — and inflates the ratios above.
+type CorruptionMeter interface {
+	Inc()
+}
+
+// nopCorruption is the default, so the hot path needs no nil check.
+type nopCorruption struct{}
+
+func (nopCorruption) Inc() {}
 
 // LookupOutcomes is the closed vocabulary of Observe, in code and nowhere else. It is exported so the
 // wiring can seed every series at boot: a counter vector exposes nothing until it has a child, and a
 // ratio like pg_miss/pg_hit is unusable while one of its terms is simply absent from /metrics.
 func LookupOutcomes() []string {
-	return []string{outcomeBloomMiss, outcomeRedisHit, outcomeCacheCorrupt, outcomePgHit, outcomePgMiss}
+	return []string{
+		outcomeBloomMiss, outcomeRedisHit, outcomeRedisError,
+		outcomePgHit, outcomePgMiss, outcomePgError,
+	}
 }
 
 // Option overrides a Resolver default. Only the meter is optional: a resolver without one still routes.
@@ -59,6 +74,9 @@ type Option func(*Resolver)
 
 // WithLookupMeter attaches the outcome counter.
 func WithLookupMeter(m LookupMeter) Option { return func(r *Resolver) { r.meter = m } }
+
+// WithCorruptionMeter attaches the undecodable-value counter.
+func WithCorruptionMeter(m CorruptionMeter) Option { return func(r *Resolver) { r.corrupt = m } }
 
 // WithLookupTimeout overrides the durable-lookup bound. Mainly for tests, which cannot wait out the
 // default.
@@ -74,11 +92,12 @@ func WithLookupTimeout(d time.Duration) Option {
 // seeding and in the catalogue's Help text, and a typo in any one of them would split a series in
 // silence.
 const (
-	outcomeBloomMiss    = "bloom_miss"
-	outcomeRedisHit     = "redis_hit"
-	outcomeCacheCorrupt = "cache_corrupt"
-	outcomePgHit        = "pg_hit"
-	outcomePgMiss       = "pg_miss"
+	outcomeBloomMiss  = "bloom_miss"
+	outcomeRedisHit   = "redis_hit"
+	outcomeRedisError = "redis_error"
+	outcomePgHit      = "pg_hit"
+	outcomePgMiss     = "pg_miss"
+	outcomePgError    = "pg_error"
 )
 
 // nopMeter is the default, so the hot path needs no nil check.
@@ -107,6 +126,7 @@ type Resolver struct {
 	ttl           time.Duration
 	lookupTimeout time.Duration
 	meter         LookupMeter
+	corrupt       CorruptionMeter
 }
 
 // NewResolver builds the L0 resolver over a boot-loaded Bloom, the Redis cache and the durable store.
@@ -117,7 +137,7 @@ func NewResolver(bloom *Bloom, cache RedisCache, store RouteStore, ttl time.Dura
 	}
 	r := &Resolver{
 		bloom: bloom, cache: cache, store: store, ttl: ttl,
-		lookupTimeout: DefaultLookupTimeout, meter: nopMeter{},
+		lookupTimeout: DefaultLookupTimeout, meter: nopMeter{}, corrupt: nopCorruption{},
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -136,12 +156,17 @@ func redisKey(msisdn string) string { return "exactroute:{" + msisdn + "}" }
 //
 // A non-nil error is transient and uncoded, from either leg: an exact route that cannot be reached
 // must not degrade into default routing, which for a ported number means its former operator (§16).
-// Only a MISSING key falls through to the store; a Redis fault is returned. Falling through on a fault
-// would move the hot path onto the control-plane database at full message rate during an outage, and
-// is an open question rather than a silent default.
+// A Redis FAULT is returned rather than falling through: doing otherwise would move the hot path onto
+// the control-plane database at full message rate during an outage, and is an open question rather
+// than a silent default. A missing key and an undecodable value both fall through — the second because
+// the durable table can rewrite a healthy one, which a returned error never would.
 func (r *Resolver) Resolve(ctx context.Context, msisdn string) (Target, bool, error) {
+	// One observation, whatever the exit. Assigning a variable a deferred call reads is what makes the
+	// invariant structural instead of a convention held at six return sites.
+	outcome := outcomeBloomMiss
+	defer func() { r.meter.Observe(outcome) }()
+
 	if !r.bloom.MightContain(msisdn) {
-		r.meter.Observe(outcomeBloomMiss)
 		return Target{}, false, nil // definitive miss: no network call at all
 	}
 
@@ -150,42 +175,46 @@ func (r *Resolver) Resolve(ctx context.Context, msisdn string) (Target, bool, er
 	case err == nil:
 		target, perr := parseTarget(val)
 		if perr == nil {
-			r.meter.Observe(outcomeRedisHit)
+			outcome = outcomeRedisHit
 			return target, true, nil
 		}
 		// An illegible value is treated as a miss, not as a fault. Surfacing it would send the message
 		// back to the same key on every redelivery, wedging the whole partition until the TTL expires;
-		// the durable table is right here, and reading it rewrites a healthy value. Counted, so a drift
-		// never heals invisibly.
-		return r.loadAndCache(ctx, msisdn, outcomeCacheCorrupt)
+		// the durable table is right here, and reading it rewrites a healthy value. Counted on its own
+		// meter, so a drift never heals invisibly — including when the durable read then fails.
+		r.corrupt.Inc()
 	case !errors.Is(err, goredis.Nil):
-		return Target{}, false, fmt.Errorf("exact: redis lookup: %w", err)
+		outcome = outcomeRedisError
+		return Target{}, false, transient(err)
 	}
 
-	return r.loadAndCache(ctx, msisdn, "")
+	target, ok, err := r.loadAndCache(ctx, msisdn)
+	switch {
+	case err != nil:
+		outcome = outcomePgError
+	case ok:
+		outcome = outcomePgHit
+	default:
+		outcome = outcomePgMiss
+	}
+	return target, ok, err
 }
 
 // loadAndCache resolves a cache miss against the durable table and populates the key on a hit. A miss
 // in the table is a Bloom false positive: it falls back without caching anything, since this step
 // ships no negative caching and a key written here would be a route to nowhere.
-// outcome is the label to record instead of the usual pg_hit/pg_miss, empty for the ordinary cache
-// miss. It keeps the metric at exactly one observation per resolution: a healed corrupt value did
-// perform a durable read, but counting it as pg_hit too would inflate the very ratios ADR-0015 defers
-// two decisions to.
-func (r *Resolver) loadAndCache(ctx context.Context, msisdn, outcome string) (Target, bool, error) {
+func (r *Resolver) loadAndCache(ctx context.Context, msisdn string) (Target, bool, error) {
 	route, found, err := r.lookup(ctx, msisdn)
 	if err != nil {
 		return Target{}, false, transient(err)
 	}
 	if !found {
-		r.meter.Observe(cmp.Or(outcome, outcomePgMiss))
 		return Target{}, false, nil
 	}
 
 	// A cache write that fails must not fail the message: the target is already known and correct, and
 	// the next message simply pays another lookup. Only the read legs are fail-closed.
 	_ = r.cache.Set(ctx, redisKey(msisdn), EncodeTarget(route.Target), jitterTTL(r.ttl)).Err()
-	r.meter.Observe(cmp.Or(outcome, outcomePgHit))
 	return route.Target, true, nil
 }
 

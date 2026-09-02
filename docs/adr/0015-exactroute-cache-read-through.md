@@ -98,9 +98,14 @@ delete » que rien ne justifie aujourd'hui.
   fige la lane, donc la partition.
 - **Garde-fou :** une valeur de cache illisible est traitée comme un miss et guérie depuis la table,
   jamais remontée en erreur : la remonter renverrait le message sur la même clé à chaque redélivrance.
-- **Mesure :** `exact_route_lookups_total{outcome}` (`bloom_miss` · `redis_hit` · `cache_corrupt` ·
-  `pg_hit` · `pg_miss`) rend décidables les deux suites différées — le cache négatif et le réglage du
-  TTL.
+- **Mesure :** `exact_route_lookups_total{outcome}` (`bloom_miss` · `redis_hit` · `redis_error` ·
+  `pg_hit` · `pg_miss` · `pg_error`), **exactement une observation par résolution, pannes comprises** —
+  sans quoi la série décroche du trafic réel précisément quand un incident fait qu'on la regarde. La
+  somme est donc un compte de résolutions, et c'est ce qui donne un dénominateur aux deux suites
+  différées (cache négatif jugé sur `pg_miss`, TTL sur `pg_hit`). Les valeurs illisibles sont comptées
+  à part (`exact_route_cache_corrupt_total`) : c'est une anomalie de la jambe cache, et la replier dans
+  l'étiquette d'issue perdrait la paire — une clé corrompue guérie et une clé corrompue au-dessus d'un
+  Postgres injoignable se liraient pareil — tout en gonflant les ratios ci-dessus.
 
 ## Action Items
 
