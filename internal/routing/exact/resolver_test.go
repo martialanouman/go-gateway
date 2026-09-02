@@ -84,7 +84,7 @@ func TestResolveHitReturnsTarget(t *testing.T) {
 	connID := uuid.New()
 	bloom := newBloom([]string{msisdn})
 	r := NewResolver(bloom, &fakeRedis{vals: map[string]string{
-		redisKey(msisdn): EncodeTarget(Target{Type: TargetConnector, ID: connID}),
+		redisKey(msisdn): encodeTarget(Target{Type: TargetConnector, ID: connID}),
 	}}, &fakeStore{}, time.Hour)
 
 	target, ok, err := r.Resolve(context.Background(), msisdn)
@@ -121,12 +121,12 @@ func TestResolveRedisFaultSurfaces(t *testing.T) {
 	}
 }
 
-// TestParseTargetRoundTrip: EncodeTarget/parseTarget are inverses for both kinds, and malformed values
+// TestParseTargetRoundTrip: encodeTarget/parseTarget are inverses for both kinds, and malformed values
 // are rejected rather than mis-decoded.
 func TestParseTargetRoundTrip(t *testing.T) {
 	for _, tt := range []TargetType{TargetConnector, TargetRoute} {
 		want := Target{Type: tt, ID: uuid.New()}
-		got, err := parseTarget(EncodeTarget(want))
+		got, err := parseTarget(encodeTarget(want))
 		if err != nil || got != want {
 			t.Errorf("round-trip %s = (%+v, %v), want (%+v, nil)", tt, got, err, want)
 		}
@@ -156,7 +156,7 @@ func TestMightContainNoFalseNegative(t *testing.T) {
 // TestExactRouteRedisEncodingIsPinned pins the wire form of an exact route — key AND value — against
 // literals, rather than against the functions that produce them.
 //
-// Everything else in this package, the chaos test included, seeds through redisKey/EncodeTarget and
+// Everything else in this package, the chaos test included, seeds through redisKey/encodeTarget and
 // reads back through the resolver, so the encoding is only ever checked against itself: drop the {}
 // hash tag and the entire suite stays green (verified by mutation). The tag is not cosmetic — it is what
 // pins a number's key to one cluster slot — and step-250e gave the key the writer it never had: the
@@ -176,8 +176,8 @@ func TestExactRouteRedisEncodingIsPinned(t *testing.T) {
 		{Target{Type: TargetConnector, ID: id}, "connector:3f2504e0-4f89-11d3-9a0c-0305e82c3301"},
 		{Target{Type: TargetRoute, ID: id}, "route:3f2504e0-4f89-11d3-9a0c-0305e82c3301"},
 	} {
-		if got := EncodeTarget(tc.target); got != tc.want {
-			t.Errorf("EncodeTarget(%+v) = %q, want %q", tc.target, got, tc.want)
+		if got := encodeTarget(tc.target); got != tc.want {
+			t.Errorf("encodeTarget(%+v) = %q, want %q", tc.target, got, tc.want)
 		}
 	}
 }

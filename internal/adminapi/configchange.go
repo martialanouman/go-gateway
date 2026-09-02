@@ -18,6 +18,11 @@ type ConfigChangePublisher interface {
 	Publish(ctx context.Context, channel string, payload []byte) error
 }
 
+// ConfigChangePayload is the announcement body. Subscribers are payload-agnostic (config-sync discards
+// it and republishes its own), so its only job is to be identical wherever it is sent: the middleware
+// here, and the background import that announces for itself after its commit (step-250e).
+var ConfigChangePayload = []byte(`{"reason":"admin"}`)
+
 // statusRecorder captures the response status so the middleware can publish only on success.
 type statusRecorder struct {
 	http.ResponseWriter
@@ -57,7 +62,7 @@ func PublishConfigChanges(h http.Handler, pub ConfigChangePublisher, channel str
 		// stall the mutation indefinitely.
 		pubCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), publishTimeout)
 		defer cancel()
-		if err := pub.Publish(pubCtx, channel, []byte(`{"reason":"admin"}`)); err != nil {
+		if err := pub.Publish(pubCtx, channel, ConfigChangePayload); err != nil {
 			logger.WarnContext(r.Context(), "config-change publish failed; invalidation skipped", "err", err)
 		}
 	})

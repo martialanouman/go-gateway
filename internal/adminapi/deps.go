@@ -169,7 +169,8 @@ type Deps struct {
 	AntispamRules    AntispamRuleStore
 	ExactRoutes      ExactRouteAdminStore
 	ExactRouteCache  ExactRouteCacheInvalidator
-	ExactRouteReload ExactRouteReloadAnnouncer
+	ConfigChanges    ConfigChangePublisher
+	ConfigChannel    string
 	RoutingScripts   RoutingScriptAdminStore
 	Imports          ImportRunner
 	Disconnector     Disconnector
@@ -233,18 +234,15 @@ type ExactRouteCacheInvalidator interface {
 	Invalidate(ctx context.Context, msisdns ...string) error
 }
 
-// ExactRouteReloadAnnouncer lets the BACKGROUND bulk-import job announce its own config change.
+// ConfigChanges publishes the coarse config-change announcement for mutations whose durable write
+// lands AFTER their HTTP response — today, the background bulk import of exact routes (step-250e).
+// Synchronous handlers are covered by the PublishConfigChanges middleware and must not use this.
 //
-// The PublishConfigChanges middleware announces when the HANDLER returns — for an import that is the
-// 202, while BulkUpsert is still running. The router would then rebuild its Bloom from a table that does
-// not hold the rows yet, and nothing would republish after the commit: the imported numbers would be
-// absent from the filter, MightContain would answer a definitive "no", and L0 would never resolve for
-// them (step-250e). Small imports win that race and large ones lose it — the inverse of the use case,
-// an MNP base being millions of rows. Best-effort, like the middleware: a lost announcement only defers
-// the rebuild to the next admin mutation. Declared consumer-side.
-type ExactRouteReloadAnnouncer interface {
-	Announce(ctx context.Context) error
-}
+// The middleware announces when the HANDLER returns, which for an import is the 202 while BulkUpsert
+// is still running: the fleet would rebuild its Bloom from a table that does not hold the rows yet,
+// and nothing would republish after the commit. Small imports won that race and large ones lost it,
+// the inverse of the use case — an MNP base being millions of rows. Best-effort, like the middleware:
+// a lost announcement only defers the rebuild to the next admin mutation. Declared consumer-side.
 
 // BalanceCacheInvalidator deletes the Redis balance-cache keys of the owners an admin money op just changed
 // durably, so the next reserve rehydrates the fresh Postgres balance instead of serving a stale cached one

@@ -57,13 +57,15 @@ func (s loggingStore) BulkUpsert(ctx context.Context, routes []exact.Route) erro
 	return s.ExactRouteAdminStore.BulkUpsert(ctx, routes)
 }
 
-// fakeAnnouncer records the background job's own config-change announcement, on the same timeline.
+// fakeAnnouncer records the background job's own config-change announcement, on the same timeline. It
+// satisfies ConfigChangePublisher — the same interface the middleware uses, so the payload cannot drift
+// between the two senders.
 type fakeAnnouncer struct {
 	log *opLog
 	err error
 }
 
-func (a *fakeAnnouncer) Announce(context.Context) error {
+func (a *fakeAnnouncer) Publish(_ context.Context, _ string, _ []byte) error {
 	a.log.add("announce")
 	return a.err
 }
@@ -85,10 +87,10 @@ func cacheTestAPI(t *testing.T, cacheErr error) (http.Handler, *opLog) {
 	log := &opLog{}
 	store := loggingStore{ExactRouteAdminStore: newFakeExactRouteStore(), log: log}
 	api := newTestAPIWith(t, adminapi.Deps{
-		ExactRoutes:      store,
-		ExactRouteCache:  &fakeRouteCache{log: log, err: cacheErr},
-		ExactRouteReload: &fakeAnnouncer{log: log},
-		Imports:          syncRunner{},
+		ExactRoutes:     store,
+		ExactRouteCache: &fakeRouteCache{log: log, err: cacheErr},
+		ConfigChanges:   &fakeAnnouncer{log: log},
+		Imports:         syncRunner{},
 	})
 	return api, log
 }
@@ -258,10 +260,10 @@ func TestExactRouteImportAnnouncementFailureDoesNotFailTheJob(t *testing.T) {
 	log := &opLog{}
 	store := loggingStore{ExactRouteAdminStore: newFakeExactRouteStore(), log: log}
 	api := newTestAPIWith(t, adminapi.Deps{
-		ExactRoutes:      store,
-		ExactRouteCache:  &fakeRouteCache{log: log},
-		ExactRouteReload: &fakeAnnouncer{log: log, err: errors.New("redis down")},
-		Imports:          syncRunner{},
+		ExactRoutes:     store,
+		ExactRouteCache: &fakeRouteCache{log: log},
+		ConfigChanges:   &fakeAnnouncer{log: log, err: errors.New("redis down")},
+		Imports:         syncRunner{},
 	})
 
 	w := httptest.NewRecorder()
@@ -288,10 +290,10 @@ func TestExactRouteImportTouchesNothingWhenTheBatchFails(t *testing.T) {
 	store := newFakeExactRouteStore()
 	store.bulkErr = errors.New("connection reset mid-batch")
 	api := newTestAPIWith(t, adminapi.Deps{
-		ExactRoutes:      loggingStore{ExactRouteAdminStore: store, log: log},
-		ExactRouteCache:  &fakeRouteCache{log: log},
-		ExactRouteReload: &fakeAnnouncer{log: log},
-		Imports:          syncRunner{},
+		ExactRoutes:     loggingStore{ExactRouteAdminStore: store, log: log},
+		ExactRouteCache: &fakeRouteCache{log: log},
+		ConfigChanges:   &fakeAnnouncer{log: log},
+		Imports:         syncRunner{},
 	})
 
 	w := httptest.NewRecorder()

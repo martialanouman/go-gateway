@@ -78,15 +78,16 @@ type ImportRunner interface {
 }
 
 type exactRouteHandlers struct {
-	store  ExactRouteAdminStore
-	cache  ExactRouteCacheInvalidator
-	reload ExactRouteReloadAnnouncer
-	runner ImportRunner
-	logger *slog.Logger
+	store   ExactRouteAdminStore
+	cache   ExactRouteCacheInvalidator
+	pub     ConfigChangePublisher
+	channel string
+	runner  ImportRunner
+	logger  *slog.Logger
 }
 
 func registerExactRoutes(api huma.API, store ExactRouteAdminStore, cache ExactRouteCacheInvalidator,
-	reload ExactRouteReloadAnnouncer, runner ImportRunner, logger *slog.Logger,
+	pub ConfigChangePublisher, channel string, runner ImportRunner, logger *slog.Logger,
 ) {
 	if logger == nil {
 		logger = slog.Default()
@@ -94,10 +95,9 @@ func registerExactRoutes(api huma.API, store ExactRouteAdminStore, cache ExactRo
 	if cache == nil {
 		cache = noopRouteCache{}
 	}
-	if reload == nil {
-		reload = noopRouteCache{}
+	h := &exactRouteHandlers{
+		store: store, cache: cache, pub: pub, channel: channel, runner: runner, logger: logger,
 	}
-	h := &exactRouteHandlers{store: store, cache: cache, reload: reload, runner: runner, logger: logger}
 
 	register(api, huma.Operation{
 		OperationID: "import-exact-routes", Method: http.MethodPost, Path: "/admin/exact-routes/import",
@@ -182,8 +182,6 @@ type noopRouteCache struct{}
 
 func (noopRouteCache) Invalidate(context.Context, ...string) error { return nil }
 
-func (noopRouteCache) Announce(context.Context) error { return nil }
-
 // forget drops the cached routes of numbers whose durable row just changed. It is always called AFTER
 // the commit: invalidating first lets a concurrent reader repopulate the pre-commit value and pin it for
 // a whole TTL, since nothing else ever writes that key.
@@ -211,10 +209,13 @@ func (h *exactRouteHandlers) forget(ctx context.Context, msisdns ...string) {
 // AFTER its HTTP response — the background bulk import. Every synchronous handler is already covered by
 // the PublishConfigChanges middleware and must NOT call this.
 func (h *exactRouteHandlers) announceReload(ctx context.Context) {
+	if h.pub == nil {
+		return // no publisher wired: the next admin mutation still triggers a rebuild
+	}
 	actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), invalidateTimeout)
 	defer cancel()
 
-	if err := h.reload.Announce(actx); err != nil {
+	if err := h.pub.Publish(actx, h.channel, ConfigChangePayload); err != nil {
 		h.logger.WarnContext(ctx, "exact-route reload announcement failed; "+
 			"imported numbers stay out of the Bloom until the next admin mutation", "err", err)
 	}

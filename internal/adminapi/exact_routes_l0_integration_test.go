@@ -174,10 +174,10 @@ func TestExactRouteBulkImportIsReflectedByTheBloomAndResolvesThroughL0(t *testin
 	// mutation: it did).
 	rebuilt := make(chan *exact.Bloom, 1)
 	api := newTestAPIWith(t, adminapi.Deps{
-		ExactRoutes:      repo,
-		ExactRouteCache:  exact.NewInvalidator(rdb),
-		ExactRouteReload: bloomRebuilder{repo: repo, out: rebuilt},
-		Imports:          runner,
+		ExactRoutes:     repo,
+		ExactRouteCache: exact.NewInvalidator(rdb),
+		ConfigChanges:   bloomRebuilder{repo: repo, out: rebuilt},
+		Imports:         runner,
 	})
 
 	ported, other := uniqueMSISDN(), uniqueMSISDN()
@@ -235,7 +235,7 @@ type bloomRebuilder struct {
 	out  chan *exact.Bloom
 }
 
-func (b bloomRebuilder) Announce(ctx context.Context) error {
+func (b bloomRebuilder) Publish(ctx context.Context, _ string, _ []byte) error {
 	// Derived from the announcement's context but WITHOUT its deadline. In production the announcement
 	// is a PUBLISH bounded at five seconds, and the rebuild it triggers runs elsewhere on router-svc's
 	// own clock; paginating the whole shared table under the publish budget would make a loaded CI fail

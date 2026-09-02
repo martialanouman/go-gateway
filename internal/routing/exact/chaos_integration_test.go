@@ -36,7 +36,7 @@ func TestExactRouteFailsClosedWhenRedisIsCut(t *testing.T) {
 	unknown := "22508" + uuid.NewString()[:8] // deliberately NOT in the Bloom
 	want := Target{Type: TargetConnector, ID: uuid.New()}
 
-	if err := rdb.Set(ctx, redisKey(ported), EncodeTarget(want), 0).Err(); err != nil {
+	if err := rdb.Set(ctx, redisKey(ported), encodeTarget(want), 0).Err(); err != nil {
 		t.Fatalf("seed the exact route: %v", err)
 	}
 	// The durable store COULD answer for this number. That is deliberate: a Redis fault must surface

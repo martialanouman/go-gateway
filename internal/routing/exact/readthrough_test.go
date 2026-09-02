@@ -52,8 +52,8 @@ func TestResolveRedisMissLoadsFromPostgresAndCaches(t *testing.T) {
 
 	// The lookup must also have populated the cache, or every message to a ported number would pay a
 	// Postgres round-trip forever.
-	if cached, seen := cache.vals[redisKey(msisdn)]; !seen || cached != EncodeTarget(want) {
-		t.Errorf("cache holds %q (present=%v), want %q", cached, seen, EncodeTarget(want))
+	if cached, seen := cache.vals[redisKey(msisdn)]; !seen || cached != encodeTarget(want) {
+		t.Errorf("cache holds %q (present=%v), want %q", cached, seen, encodeTarget(want))
 	}
 }
 
@@ -62,7 +62,7 @@ func TestResolveRedisMissLoadsFromPostgresAndCaches(t *testing.T) {
 func TestResolveRedisHitDoesNotTouchPostgres(t *testing.T) {
 	msisdn := "2250700000001"
 	want := Target{Type: TargetConnector, ID: uuid.New()}
-	cache := &fakeRedis{vals: map[string]string{redisKey(msisdn): EncodeTarget(want)}}
+	cache := &fakeRedis{vals: map[string]string{redisKey(msisdn): encodeTarget(want)}}
 	store := &fakeStore{rows: map[string]Route{msisdn: {MSISDN: msisdn, Target: want}}}
 	r := NewResolver(newBloom([]string{msisdn}), cache, store, time.Hour)
 
@@ -180,7 +180,7 @@ func TestResolveCountsEveryLookupOutcome(t *testing.T) {
 
 	r := NewResolver(
 		newBloom([]string{cached, cold, absent}),
-		&fakeRedis{vals: map[string]string{redisKey(cached): EncodeTarget(want)}},
+		&fakeRedis{vals: map[string]string{redisKey(cached): encodeTarget(want)}},
 		&fakeStore{rows: map[string]Route{cold: {MSISDN: cold, Target: want}}},
 		time.Hour,
 		WithLookupMeter(meter),
@@ -223,8 +223,8 @@ func TestResolveCorruptCacheValueHealsFromTheDurableTable(t *testing.T) {
 	if err != nil || !ok || got != want {
 		t.Fatalf("Resolve(corrupt) = (%+v, ok=%v, err=%v), want the durable target", got, ok, err)
 	}
-	if cached := cache.vals[redisKey(msisdn)]; cached != EncodeTarget(want) {
-		t.Errorf("cache still holds %q, want it healed to %q", cached, EncodeTarget(want))
+	if cached := cache.vals[redisKey(msisdn)]; cached != encodeTarget(want) {
+		t.Errorf("cache still holds %q, want it healed to %q", cached, encodeTarget(want))
 	}
 	// The outcome describes how the resolution ENDED — here, on a successful durable read. The
 	// corruption itself is counted on its own meter (TestResolveCountsCorruptionSeparately), so the two
@@ -289,8 +289,8 @@ func TestResolveBoundsTheDurableLookup(t *testing.T) {
 		&fakeRedis{vals: map[string]string{}},
 		blackHoleStore{},
 		time.Hour,
-		WithLookupTimeout(150*time.Millisecond),
 	)
+	r.lookupTimeout = 150 * time.Millisecond
 
 	done := make(chan error, 1)
 	go func() {
@@ -355,8 +355,8 @@ func TestCachePopulateDoesNotInheritTheLookupBudget(t *testing.T) {
 		newBloom([]string{msisdn}), cache,
 		slowStore{delay: 20 * time.Millisecond, route: Route{MSISDN: msisdn, Target: want}},
 		time.Hour,
-		WithLookupTimeout(150*time.Millisecond),
 	)
+	r.lookupTimeout = 150 * time.Millisecond
 
 	if _, ok, err := r.Resolve(context.Background(), msisdn); err != nil || !ok {
 		t.Fatalf("Resolve = (ok=%v, err=%v), want a hit", ok, err)
@@ -391,7 +391,7 @@ func TestResolveObservesExactlyOnceOnEveryPath(t *testing.T) {
 		want  string
 	}{
 		{"bloom miss", &fakeRedis{}, &fakeStore{}, "bloom_miss"},
-		{"redis hit", &fakeRedis{vals: map[string]string{redisKey(msisdn): EncodeTarget(want)}}, &fakeStore{}, "redis_hit"},
+		{"redis hit", &fakeRedis{vals: map[string]string{redisKey(msisdn): encodeTarget(want)}}, &fakeStore{}, "redis_hit"},
 		{"redis fault", &fakeRedis{err: context.DeadlineExceeded}, &fakeStore{}, "redis_error"},
 		{"pg hit", &fakeRedis{vals: map[string]string{}}, &fakeStore{rows: map[string]Route{msisdn: {MSISDN: msisdn, Target: want}}}, "pg_hit"},
 		{"pg miss", &fakeRedis{vals: map[string]string{}}, &fakeStore{rows: map[string]Route{}}, "pg_miss"},

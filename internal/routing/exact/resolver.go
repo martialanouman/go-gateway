@@ -69,7 +69,9 @@ func LookupOutcomes() []string {
 	}
 }
 
-// Option overrides a Resolver default. Only the meter is optional: a resolver without one still routes.
+// Option overrides a Resolver default — the two meters, both of which no-op when unset so a resolver
+// without them still routes. The lookup timeout is not an Option: it has no production caller, and the
+// package's own tests set the field directly.
 type Option func(*Resolver)
 
 // WithLookupMeter attaches the outcome counter.
@@ -77,16 +79,6 @@ func WithLookupMeter(m LookupMeter) Option { return func(r *Resolver) { r.meter 
 
 // WithCorruptionMeter attaches the undecodable-value counter.
 func WithCorruptionMeter(m CorruptionMeter) Option { return func(r *Resolver) { r.corrupt = m } }
-
-// WithLookupTimeout overrides the durable-lookup bound. Mainly for tests, which cannot wait out the
-// default.
-func WithLookupTimeout(d time.Duration) Option {
-	return func(r *Resolver) {
-		if d > 0 {
-			r.lookupTimeout = d
-		}
-	}
-}
 
 // The outcome labels. Constants rather than literals: they are named in the resolver, in the boot
 // seeding and in the catalogue's Help text, and a typo in any one of them would split a series in
@@ -214,7 +206,7 @@ func (r *Resolver) loadAndCache(ctx context.Context, msisdn string) (Target, boo
 
 	// A cache write that fails must not fail the message: the target is already known and correct, and
 	// the next message simply pays another lookup. Only the read legs are fail-closed.
-	_ = r.cache.Set(ctx, redisKey(msisdn), EncodeTarget(route.Target), jitterTTL(r.ttl)).Err()
+	_ = r.cache.Set(ctx, redisKey(msisdn), encodeTarget(route.Target), jitterTTL(r.ttl)).Err()
 	return route.Target, true, nil
 }
 
@@ -277,9 +269,9 @@ func parseTarget(val string) (Target, error) {
 	return Target{Type: tt, ID: uid}, nil
 }
 
-// EncodeTarget renders a Target as the Redis cache value. It is the inverse of parseTarget and lives
-// here so the encoding has exactly one owner: the resolver populating the cache and the Invalidator
-// clearing it both go through this file, and no other package knows the wire form.
-func EncodeTarget(t Target) string {
+// encodeTarget renders a Target as the Redis cache value, the inverse of parseTarget. Unexported since
+// step-250e gave the key its writer: that writer is this package, so no other package needs — or knows
+// — the wire form. It was exported for a synchroniser that never existed.
+func encodeTarget(t Target) string {
 	return string(t.Type) + ":" + t.ID.String()
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 
 	goredis "github.com/redis/go-redis/v9"
 )
@@ -37,7 +38,7 @@ func NewInvalidator(rdb RedisPipeliner) *Invalidator { return &Invalidator{rdb: 
 // idempotent and safe to retry — and safe on create, where there is usually nothing to drop.
 func (i *Invalidator) Invalidate(ctx context.Context, msisdns ...string) error {
 	var failures []error
-	for chunk := range slidingChunks(msisdns, invalidateChunk) {
+	for chunk := range slices.Chunk(msisdns, invalidateChunk) {
 		_, err := i.rdb.Pipelined(ctx, func(p goredis.Pipeliner) error {
 			for _, m := range chunk {
 				// One key per command: the {msisdn} hash tag puts each number on its own cluster slot,
@@ -59,20 +60,4 @@ func (i *Invalidator) Invalidate(ctx context.Context, msisdns ...string) error {
 		return fmt.Errorf("exact: invalidate cache: %w", errors.Join(failures...))
 	}
 	return nil
-}
-
-// slidingChunks yields s in slices of at most n. An empty input yields nothing, so a mutation that
-// validated no rows opens no Redis round trip.
-func slidingChunks(s []string, n int) func(func([]string) bool) {
-	return func(yield func([]string) bool) {
-		if n <= 0 {
-			return // a non-positive size would loop forever; unreachable today, cheap to make impossible
-		}
-		for start := 0; start < len(s); start += n {
-			end := min(start+n, len(s))
-			if !yield(s[start:end]) {
-				return
-			}
-		}
-	}
 }
