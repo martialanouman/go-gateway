@@ -10,7 +10,9 @@ import (
 
 // bloomFP is the target false-positive rate of the boot-loaded filter. A Bloom miss is definitive, so
 // it never drops a real override; a Bloom hit costs one Redis GET, so a low rate keeps wasted lookups
-// rare without an oversized filter (~1.2 MB per million entries at this rate).
+// rare without an oversized filter (~1.8 MB per million entries at this rate — the "~1.2 MB"
+// this comment and the spec both carried belongs to fp=0.01, and was wrong for two milestones;
+// pinned by TestBloomSizePerMillionEntries).
 const bloomFP = 0.001
 
 // minBloomCapacity floors the sizing estimate so an empty or tiny table still yields a usable filter:

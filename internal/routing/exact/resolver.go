@@ -18,6 +18,13 @@ import (
 // ported number per TTL; short enough that a missed DEL heals the same working day.
 const DefaultCacheTTL = 6 * time.Hour
 
+// DefaultLookupTimeout bounds ONE durable lookup. The Redis leg already has an equivalent (the client's
+// ReadTimeout); the durable leg had none — the pool sets only a connect timeout, the pipeline stage adds
+// no deadline, and the consumer's context is long-lived. Without this, a Postgres that absorbs without
+// answering hangs the lane, and the lane is the Kafka partition: no error, no redelivery, no metric.
+// Generous on purpose — it is a hang detector, not a latency budget.
+const DefaultLookupTimeout = 2 * time.Second
+
 // cacheJitterPct spreads expiry across keys warmed in the same burst — after a Redis loss the whole
 // working set repopulates within seconds, and a fixed TTL would then expire it in lockstep.
 const cacheJitterPct = 10
@@ -43,6 +50,16 @@ type Option func(*Resolver)
 // WithLookupMeter attaches the outcome counter.
 func WithLookupMeter(m LookupMeter) Option { return func(r *Resolver) { r.meter = m } }
 
+// WithLookupTimeout overrides the durable-lookup bound. Mainly for tests, which cannot wait out the
+// default.
+func WithLookupTimeout(d time.Duration) Option {
+	return func(r *Resolver) {
+		if d > 0 {
+			r.lookupTimeout = d
+		}
+	}
+}
+
 // nopMeter is the default, so the hot path needs no nil check.
 type nopMeter struct{}
 
@@ -63,11 +80,12 @@ type RouteStore interface {
 // key after its own commit — so Redis is a cache that can always be rebuilt, never a second source of
 // truth (ADR-0004, amended).
 type Resolver struct {
-	bloom *Bloom
-	cache RedisCache
-	store RouteStore
-	ttl   time.Duration
-	meter LookupMeter
+	bloom         *Bloom
+	cache         RedisCache
+	store         RouteStore
+	ttl           time.Duration
+	lookupTimeout time.Duration
+	meter         LookupMeter
 }
 
 // NewResolver builds the L0 resolver over a boot-loaded Bloom, the Redis cache and the durable store.
@@ -76,7 +94,10 @@ func NewResolver(bloom *Bloom, cache RedisCache, store RouteStore, ttl time.Dura
 	if ttl <= 0 {
 		ttl = DefaultCacheTTL
 	}
-	r := &Resolver{bloom: bloom, cache: cache, store: store, ttl: ttl, meter: nopMeter{}}
+	r := &Resolver{
+		bloom: bloom, cache: cache, store: store, ttl: ttl,
+		lookupTimeout: DefaultLookupTimeout, meter: nopMeter{},
+	}
 	for _, opt := range opts {
 		opt(r)
 	}
@@ -107,11 +128,16 @@ func (r *Resolver) Resolve(ctx context.Context, msisdn string) (Target, bool, er
 	switch {
 	case err == nil:
 		target, perr := parseTarget(val)
-		if perr != nil {
-			return Target{}, false, perr
+		if perr == nil {
+			r.meter.Observe("redis_hit")
+			return target, true, nil
 		}
-		r.meter.Observe("redis_hit")
-		return target, true, nil
+		// An illegible value is treated as a miss, not as a fault. Surfacing it would send the message
+		// back to the same key on every redelivery, wedging the whole partition until the TTL expires;
+		// the durable table is right here, and reading it rewrites a healthy value. Counted, so a drift
+		// never heals invisibly.
+		r.meter.Observe("cache_corrupt")
+		return r.loadAndCache(ctx, msisdn)
 	case !errors.Is(err, goredis.Nil):
 		return Target{}, false, fmt.Errorf("exact: redis lookup: %w", err)
 	}
@@ -123,6 +149,9 @@ func (r *Resolver) Resolve(ctx context.Context, msisdn string) (Target, bool, er
 // in the table is a Bloom false positive: it falls back without caching anything, since this step
 // ships no negative caching and a key written here would be a route to nowhere.
 func (r *Resolver) loadAndCache(ctx context.Context, msisdn string) (Target, bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, r.lookupTimeout)
+	defer cancel()
+
 	route, found, err := r.store.Get(ctx, msisdn)
 	if err != nil {
 		return Target{}, false, transient(err)
@@ -156,8 +185,11 @@ func transient(err error) error {
 // jitterTTL randomises d by ±cacheJitterPct%, uniformly. Same idiom as the reconnect backoff's own
 // jitter, for the same reason: it de-synchronises expiry, and it is not security-sensitive.
 func jitterTTL(d time.Duration) time.Duration {
+	// A non-positive duration would reach go-redis as expiration 0, which means NO EXPIRY — the
+	// unbounded-staleness state this design refuses. The constructor already clamps ttl, but the floor
+	// belongs here too: it makes the property structural rather than a convention held eighty lines away.
 	if d <= 0 {
-		return d
+		return DefaultCacheTTL
 	}
 	span := float64(cacheJitterPct) / 100.0
 	//nolint:gosec // G404: TTL jitter de-synchronises cache expiry, it is not a secret

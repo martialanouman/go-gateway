@@ -54,7 +54,11 @@ fausse la corrigeant — mais **corriger le commentaire ne répare pas la foncti
 - [ ] une route exacte créée par l'Admin API est résolue par L0 en bout de chaîne, prouvée par un test
 - [ ] la suppression retire la clé ; la mise à jour la remplace
 - [ ] l'import de masse remplit la table (et le Bloom la reflète) sans dépasser le budget mémoire annoncé
-      (~1,2 Mo de filtre par million d'entrées, spec §724)
+      (mesuré : **~1,8 Mo par million**. Le « ~1,2 Mo » de la spec §724 et du commentaire de
+      `bloom.go` correspondait à un taux de faux positifs de 0,01, jamais à celui du code, 0,001 —
+      faux depuis deux jalons. Le taux est conservé et le chiffre corrigé : depuis cette step, un
+      faux positif coûte une lecture Postgres et non un miss Redis, donc le taux serré se justifie
+      davantage qu'au moment où il a été choisi. Épinglé par `TestBloomSizePerMillionEntries`.)
 - [ ] la note `NOTE (step-250d)` de `internal/routing/exact/resolver.go` est retirée — c'est elle qui
       dit que cette step reste à faire
 

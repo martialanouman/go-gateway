@@ -14,6 +14,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/adminapi"
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
+	"github.com/martialanouman/go-gateway/internal/platform/async"
 	"github.com/martialanouman/go-gateway/internal/routing"
 	"github.com/martialanouman/go-gateway/internal/routing/exact"
 	"github.com/martialanouman/go-gateway/internal/storage/postgres"
@@ -152,6 +153,98 @@ func TestExactRouteUpdatedByAdminResolvesToTheNewTarget(t *testing.T) {
 	}
 }
 
+// TestExactRouteBulkImportIsReflectedByTheBloomAndResolvesThroughL0 is the DoD case the fiche states as
+// "l'import de masse remplit la table (et le Bloom la reflète)". It runs against the REAL async runner,
+// because the defect it guards lives in the asynchrony: the config-change announcement used to fire when
+// the handler returned 202, before BulkUpsert had committed, so the router rebuilt its Bloom from a table
+// that did not hold the rows. A syncRunner collapses exactly the gap that made that possible.
+func TestExactRouteBulkImportIsReflectedByTheBloomAndResolvesThroughL0(t *testing.T) {
+	pool := pgtest.Pool(t)
+	rdb := redistest.Client(t)
+	ctx := context.Background()
+
+	repo := postgres.NewExactRouteRepo(pool)
+	runner := async.New(1, nil)
+	// The announcement is what makes the fleet rebuild, so the double rebuilds AT that instant — which
+	// is the whole assertion. Capturing the Bloom afterwards instead would let the commit land in
+	// between, and the test would pass against an announcement fired before BulkUpsert ran (verified by
+	// mutation: it did).
+	rebuilt := make(chan *exact.Bloom, 1)
+	api := newTestAPIWith(t, adminapi.Deps{
+		ExactRoutes:      repo,
+		ExactRouteCache:  exact.NewInvalidator(rdb),
+		ExactRouteReload: bloomRebuilder{t: t, repo: repo, out: rebuilt},
+		Imports:          runner,
+	})
+
+	ported, other := uniqueMSISDN(), uniqueMSISDN()
+	portedConn, otherConn := uuid.New(), uuid.New()
+	declConn, declRoute := uuid.New(), uuid.New()
+
+	w := httptest.NewRecorder()
+	body := fmt.Sprintf(`{"source":"mnp_import","rows":[
+		{"msisdn":%q,"target_type":"connector","target_id":%q},
+		{"msisdn":%q,"target_type":"connector","target_id":%q}]}`,
+		ported, portedConn, other, otherConn)
+	api.ServeHTTP(w, authed(t, http.MethodPost, "/v1/admin/exact-routes/import", body))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("import status = %d, want 202; body=%s", w.Code, w.Body)
+	}
+
+	var bloom *exact.Bloom
+	select {
+	case bloom = <-rebuilt:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the import never announced its config change; the fleet would rebuild its Bloom from a " +
+			"table without the imported rows, and L0 would never resolve for them")
+	}
+
+	// The filter built at announcement time must already know the imported numbers. This is the DoD
+	// case "l'import de masse remplit la table (et le Bloom la reflète)": a Bloom that answers "no" is
+	// definitive and costs no network call, so neither the cache nor the durable read is ever reached.
+	for _, msisdn := range []string{ported, other} {
+		if !bloom.MightContain(msisdn) {
+			t.Fatalf("the Bloom rebuilt on the import's announcement does not know %s: the announcement "+
+				"outran the commit, and L0 will never resolve for the imported numbers", msisdn)
+		}
+	}
+
+	l0 := newL0WithBloom(ctx, t, bloom, rdb, repo, declRoute, declConn)
+	for _, tc := range []struct {
+		msisdn string
+		want   uuid.UUID
+	}{{ported, portedConn}, {other, otherConn}} {
+		got, err := l0.Resolve(ctx, pipeline.RouteRequest{Dest: tc.msisdn})
+		if err != nil {
+			t.Fatalf("Resolve(%s): %v", tc.msisdn, err)
+		}
+		if got.ConnectorID != tc.want {
+			t.Errorf("imported number %s routed to %s, want %s (declarative is %s)",
+				tc.msisdn, got.ConnectorID, tc.want, declConn)
+		}
+	}
+}
+
+// bloomRebuilder models what the announcement actually causes: router-svc reloads its Bloom from
+// Postgres. Building it here, inside Announce, is what makes the ordering observable.
+type bloomRebuilder struct {
+	t    *testing.T
+	repo *postgres.ExactRouteRepo
+	out  chan *exact.Bloom
+}
+
+func (b bloomRebuilder) Announce(ctx context.Context) error {
+	bloom, err := exact.LoadBloom(ctx, b.repo)
+	if err != nil {
+		return err
+	}
+	select {
+	case b.out <- bloom:
+	default:
+	}
+	return nil
+}
+
 // newL0 builds the production three-level resolver: a Bloom loaded from Postgres exactly as router-svc
 // loads it, the real read-through resolver over the real Redis, and a declarative route that matches
 // the same 225 prefix but points at declConn.
@@ -164,6 +257,16 @@ func newL0(ctx context.Context, t *testing.T, rdb *goredis.Client, repo *postgre
 	if err != nil {
 		t.Fatalf("LoadBloom: %v", err)
 	}
+	return newL0WithBloom(ctx, t, bloom, rdb, repo, declRoute, declConn)
+}
+
+// newL0WithBloom is newL0 over a filter the caller already holds — the case where the moment the Bloom
+// was built is itself the thing under test.
+func newL0WithBloom(ctx context.Context, t *testing.T, bloom *exact.Bloom, rdb *goredis.Client,
+	repo *postgres.ExactRouteRepo, declRoute, declConn uuid.UUID,
+) *routing.L0Resolver {
+	t.Helper()
+
 	decl, err := routing.LoadSnapshot(ctx, routeLister{routes: []cp.Route{{
 		ID: declRoute, Priority: 100, DistributionStrategy: cp.DistributionStatic, Status: cp.RouteActive,
 		MatchDestPattern: strptr("225"), TargetConnectorID: &declConn,

@@ -3,6 +3,7 @@ package exact
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	goredis "github.com/redis/go-redis/v9"
@@ -146,4 +147,49 @@ func (p *countingPipeliner) Del(_ context.Context, keys ...string) *goredis.IntC
 		p.owner.maxKeysPerCall = len(keys)
 	}
 	return goredis.NewIntResult(int64(len(keys)), nil)
+}
+
+// failingFirstChunk fails the first pipeline and succeeds afterwards, the shape of a blip — or, in a
+// cluster, of one node being down while the others are healthy.
+type failingFirstChunk struct {
+	calls   int
+	deleted []string
+	err     error
+}
+
+func (f *failingFirstChunk) Pipelined(_ context.Context, fn func(goredis.Pipeliner) error) ([]goredis.Cmder, error) {
+	f.calls++
+	p := &fakePipeliner{}
+	if err := fn(p); err != nil {
+		return nil, err
+	}
+	if f.calls == 1 {
+		return nil, f.err
+	}
+	f.deleted = append(f.deleted, p.deleted...)
+	return nil, nil
+}
+
+// TestInvalidateKeepsGoingAfterAFailedChunk: an MNP import invalidates thousands of numbers across many
+// pipelines. Stopping at the first failure abandons every later chunk — up to thousands of keys left
+// pointing at the previous carrier for a whole TTL, including keys whose Redis node was perfectly
+// healthy. DEL is idempotent, so continuing costs nothing; the error is still reported, aggregated.
+func TestInvalidateKeepsGoingAfterAFailedChunk(t *testing.T) {
+	msisdns := make([]string, invalidateChunk*2+1)
+	for i := range msisdns {
+		msisdns[i] = fmt.Sprintf("22507%08d", i)
+	}
+	boom := errors.New("node down")
+	rdb := &failingFirstChunk{err: boom}
+
+	err := NewInvalidator(rdb).Invalidate(context.Background(), msisdns...)
+	if !errors.Is(err, boom) {
+		t.Errorf("Invalidate = %v, want it to report %v", err, boom)
+	}
+	if rdb.calls != 3 {
+		t.Errorf("%d pipeline round trip(s) after a failing first chunk, want all 3 attempted", rdb.calls)
+	}
+	if got, want := len(rdb.deleted), len(msisdns)-invalidateChunk; got != want {
+		t.Errorf("deleted %d key(s) from the surviving chunks, want %d", got, want)
+	}
 }

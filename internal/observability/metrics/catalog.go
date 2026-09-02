@@ -94,8 +94,8 @@ type Catalog struct {
 	// timeout counter: two names for one event is how a dashboard ends up disagreeing with itself.
 	RoutingScriptFailures *prometheus.CounterVec
 
-	// ExactRouteLookups counts L0 exact-number lookups by outcome (bloom_miss | redis_hit | pg_hit |
-	// pg_miss). Since step-250e the key is a read-through cache, so this is what tells a stale-Bloom
+	// ExactRouteLookups counts L0 exact-number lookups by outcome (bloom_miss | redis_hit |
+	// cache_corrupt | pg_hit | pg_miss). Since step-250e the key is a read-through cache, so this is what tells a stale-Bloom
 	// false positive (pg_miss, a Postgres round trip that resolves nothing) from a real cold hit — the
 	// two follow-ups that step defers, a negative cache and the TTL, are not decidable without it.
 	ExactRouteLookups *prometheus.CounterVec
@@ -221,7 +221,7 @@ func NewCatalog() *Catalog {
 
 		ExactRouteLookups: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "exact_route_lookups_total",
-			Help: "L0 exact-number lookups, by outcome (bloom_miss, redis_hit, pg_hit, pg_miss).",
+			Help: "L0 exact-number lookups, by outcome (bloom_miss, redis_hit, cache_corrupt, pg_hit, pg_miss).",
 		}, []string{"outcome"}),
 	}
 }

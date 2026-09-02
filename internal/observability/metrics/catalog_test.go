@@ -40,6 +40,7 @@ func TestCatalogRegistersAndExposesEveryMetric(t *testing.T) {
 		c.SetConnectorBreakerState("00000000-0000-0000-0000-000000000001", metrics.BreakerStateOpen)
 		c.BalanceCacheAge.Observe(30)
 		c.RoutingScriptFailures.WithLabelValues("js", "timeout").Inc()
+		c.ExactRouteLookups.WithLabelValues("pg_hit").Inc()
 	})
 
 	for _, name := range []string{
@@ -49,6 +50,7 @@ func TestCatalogRegistersAndExposesEveryMetric(t *testing.T) {
 		"connector_breaker_state",
 		"billing_balance_cache_age_seconds",
 		"routing_script_failures_total",
+		"exact_route_lookups_total",
 	} {
 		if !strings.Contains(body, name+"{") && !strings.Contains(body, name+"_bucket{") {
 			t.Errorf("%s is not exposed on /metrics", name)

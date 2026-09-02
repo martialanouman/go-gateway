@@ -2,6 +2,7 @@ package exact
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	goredis "github.com/redis/go-redis/v9"
@@ -35,6 +36,7 @@ func NewInvalidator(rdb RedisPipeliner) *Invalidator { return &Invalidator{rdb: 
 // canonical E.164 digits-only form the resolver keys on. Deleting an absent key is a no-op, so this is
 // idempotent and safe to retry — and safe on create, where there is usually nothing to drop.
 func (i *Invalidator) Invalidate(ctx context.Context, msisdns ...string) error {
+	var failures []error
 	for chunk := range slidingChunks(msisdns, invalidateChunk) {
 		_, err := i.rdb.Pipelined(ctx, func(p goredis.Pipeliner) error {
 			for _, m := range chunk {
@@ -45,9 +47,16 @@ func (i *Invalidator) Invalidate(ctx context.Context, msisdns ...string) error {
 			}
 			return nil
 		})
+		// Keep going. Abandoning the remaining chunks on the first failure would leave thousands of an
+		// import's keys pointing at the previous carrier for a whole TTL — including keys whose Redis
+		// node was healthy, since a cluster pipeline fails per node. DEL is idempotent, so a chunk that
+		// partly applied costs nothing to retry, and every failure is still reported.
 		if err != nil {
-			return fmt.Errorf("exact: invalidate cache: %w", err)
+			failures = append(failures, err)
 		}
+	}
+	if len(failures) > 0 {
+		return fmt.Errorf("exact: invalidate cache: %w", errors.Join(failures...))
 	}
 	return nil
 }
@@ -56,6 +65,9 @@ func (i *Invalidator) Invalidate(ctx context.Context, msisdns ...string) error {
 // validated no rows opens no Redis round trip.
 func slidingChunks(s []string, n int) func(func([]string) bool) {
 	return func(yield func([]string) bool) {
+		if n <= 0 {
+			return // a non-positive size would loop forever; unreachable today, cheap to make impossible
+		}
 		for start := 0; start < len(s); start += n {
 			end := min(start+n, len(s))
 			if !yield(s[start:end]) {

@@ -202,3 +202,119 @@ func TestResolveCountsEveryLookupOutcome(t *testing.T) {
 		}
 	}
 }
+
+// TestResolveCorruptCacheValueHealsFromTheDurableTable: an unreadable cached value must not wedge the
+// lane.
+//
+// Returning the parse error is not enough. The resolver refuses to descend to the store, so the
+// redelivery it buys lands on the same key and fails again — and since the lane IS the Kafka partition,
+// that is the whole partition stalled until the TTL expires, up to six hours, for one bad key. Yet the
+// durable truth is right there: treat an illegible value as a miss, and the read-through rewrites a
+// healthy one. The outcome is counted so a drift still shows up rather than healing invisibly.
+func TestResolveCorruptCacheValueHealsFromTheDurableTable(t *testing.T) {
+	msisdn := "2250700000001"
+	want := Target{Type: TargetConnector, ID: uuid.New()}
+	cache := &fakeRedis{vals: map[string]string{redisKey(msisdn): "not-a-target"}}
+	store := &fakeStore{rows: map[string]Route{msisdn: {MSISDN: msisdn, Target: want}}}
+	meter := &fakeMeter{}
+	r := NewResolver(newBloom([]string{msisdn}), cache, store, time.Hour, WithLookupMeter(meter))
+
+	got, ok, err := r.Resolve(context.Background(), msisdn)
+	if err != nil || !ok || got != want {
+		t.Fatalf("Resolve(corrupt) = (%+v, ok=%v, err=%v), want the durable target", got, ok, err)
+	}
+	if cached := cache.vals[redisKey(msisdn)]; cached != EncodeTarget(want) {
+		t.Errorf("cache still holds %q, want it healed to %q", cached, EncodeTarget(want))
+	}
+	if len(meter.seen) == 0 || meter.seen[0] != "cache_corrupt" {
+		t.Errorf("outcomes = %v, want cache_corrupt first — a value that healed invisibly is a drift "+
+			"nobody can see", meter.seen)
+	}
+}
+
+// TestResolveCachesWithTheConfiguredTTL: the TTL is the ONLY bound on a lost invalidation, and the
+// fiche names "a key written without TTL" as the defect it refused to ship. In go-redis an expiration
+// of 0 means NO expiry, so a resolver that dropped the TTL would produce exactly that — silently.
+func TestResolveCachesWithTheConfiguredTTL(t *testing.T) {
+	msisdn := "2250700000001"
+	want := Target{Type: TargetConnector, ID: uuid.New()}
+	cache := &fakeRedis{vals: map[string]string{}}
+	store := &fakeStore{rows: map[string]Route{msisdn: {MSISDN: msisdn, Target: want}}}
+	r := NewResolver(newBloom([]string{msisdn}), cache, store, time.Hour)
+
+	if _, ok, err := r.Resolve(context.Background(), msisdn); err != nil || !ok {
+		t.Fatalf("Resolve = (ok=%v, err=%v), want a hit", ok, err)
+	}
+	if cache.sets != 1 {
+		t.Fatalf("cache Set called %d time(s), want 1", cache.sets)
+	}
+	low, high := time.Hour-time.Hour/10, time.Hour+time.Hour/10
+	if cache.lastTTL < low || cache.lastTTL > high {
+		t.Errorf("cache TTL = %v, want within [%v, %v]; 0 means NO EXPIRY in go-redis, which is the "+
+			"unbounded-staleness state this step exists to avoid", cache.lastTTL, low, high)
+	}
+}
+
+// TestResolveSurvivesACacheWriteFailure: the target is already known and correct, so a Redis write blip
+// must not fail the message — the next one simply pays another lookup. Only the READ legs are
+// fail-closed.
+func TestResolveSurvivesACacheWriteFailure(t *testing.T) {
+	msisdn := "2250700000001"
+	want := Target{Type: TargetConnector, ID: uuid.New()}
+	cache := &fakeRedis{vals: map[string]string{}, setErr: errors.New("READONLY replica")}
+	store := &fakeStore{rows: map[string]Route{msisdn: {MSISDN: msisdn, Target: want}}}
+	r := NewResolver(newBloom([]string{msisdn}), cache, store, time.Hour)
+
+	got, ok, err := r.Resolve(context.Background(), msisdn)
+	if err != nil || !ok || got != want {
+		t.Fatalf("Resolve(cache write fails) = (%+v, ok=%v, err=%v), want the durable target", got, ok, err)
+	}
+}
+
+// TestResolveBoundsTheDurableLookup: a Postgres that ABSORBS without answering — packet loss, a
+// failover, a locked table — must still end in an error, because "fail-closed en rejeu" (§16) buys
+// nothing if the call never returns.
+//
+// The Redis leg already has this bound (redis client ReadTimeout); the durable leg had none: the pool
+// sets only a connect timeout, the pipeline stage adds no deadline, and router.handle's context is the
+// consumer's long-lived one. The lane — which IS the partition — would hang silently, with no error, no
+// redelivery and no metric. The chaos test cannot catch it: a cut proxy resets the connection, which is
+// the "loud" outage, not this one.
+func TestResolveBoundsTheDurableLookup(t *testing.T) {
+	msisdn := "2250700000001"
+	r := NewResolver(
+		newBloom([]string{msisdn}),
+		&fakeRedis{vals: map[string]string{}},
+		blackHoleStore{},
+		time.Hour,
+		WithLookupTimeout(150*time.Millisecond),
+	)
+
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := r.Resolve(context.Background(), msisdn)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Resolve(black-hole postgres) = nil error, want a transient fault")
+		}
+		if _, coded := errs.CodeOf(err); coded {
+			t.Errorf("timeout error is coded (%v); it must be transient so the offset is not committed", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Resolve never returned against a Postgres that absorbs without answering; the lane " +
+			"(and so the whole partition) would hang with no error, no redelivery and no metric")
+	}
+}
+
+// blackHoleStore never answers on its own — it returns only when the caller's context gives up. That is
+// the failure mode a cut connection does NOT reproduce.
+type blackHoleStore struct{}
+
+func (blackHoleStore) Get(ctx context.Context, _ string) (Route, bool, error) {
+	<-ctx.Done()
+	return Route{}, false, ctx.Err()
+}

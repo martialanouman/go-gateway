@@ -15,10 +15,13 @@ import (
 // so a test can prove the definitive-miss short-cut never touches Redis; lastTTL records what a
 // populating Set asked for.
 type fakeRedis struct {
-	vals    map[string]string
-	err     error // when set, every command returns this transient fault
-	gets    int   // number of Get calls
-	sets    int   // number of Set calls
+	vals map[string]string
+	err  error // when set, every Get returns this transient fault
+	// setErr is separate from err on purpose: with one field, "the key is absent AND the populating
+	// write fails" — the exact case the read-through has to survive — could not be expressed at all.
+	setErr  error
+	gets    int // number of Get calls
+	sets    int // number of Set calls
 	lastTTL time.Duration
 }
 
@@ -35,8 +38,8 @@ func (f *fakeRedis) Get(_ context.Context, key string) *goredis.StringCmd {
 }
 
 func (f *fakeRedis) Set(_ context.Context, key string, value any, ttl time.Duration) *goredis.StatusCmd {
-	if f.err != nil {
-		return goredis.NewStatusResult("", f.err)
+	if f.setErr != nil {
+		return goredis.NewStatusResult("", f.setErr)
 	}
 	if f.vals == nil {
 		f.vals = map[string]string{}
