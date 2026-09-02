@@ -63,7 +63,7 @@ func TestExactRouteCreatedByAdminResolvesThroughL0(t *testing.T) {
 
 	// The data plane learns of it the way it does in production: router-svc rebuilds the Bloom from
 	// Postgres on the config-change notification.
-	l0 := newL0(t, ctx, rdb, repo, declRoute, declConn)
+	l0 := newL0(ctx, t, rdb, repo, declRoute, declConn)
 
 	got, err := l0.Resolve(ctx, pipeline.RouteRequest{Dest: ported})
 	if err != nil {
@@ -129,7 +129,7 @@ func TestExactRouteUpdatedByAdminResolvesToTheNewTarget(t *testing.T) {
 		t.Fatalf("create status = %d, want 201; body=%s", w.Code, w.Body)
 	}
 
-	l0 := newL0(t, ctx, rdb, repo, declRoute, declConn)
+	l0 := newL0(ctx, t, rdb, repo, declRoute, declConn)
 	if got, err := l0.Resolve(ctx, pipeline.RouteRequest{Dest: ported}); err != nil || got.ConnectorID != firstConn {
 		t.Fatalf("first resolve = (%v, %v), want the first carrier %s", got.ConnectorID, err, firstConn)
 	}
@@ -155,7 +155,7 @@ func TestExactRouteUpdatedByAdminResolvesToTheNewTarget(t *testing.T) {
 // newL0 builds the production three-level resolver: a Bloom loaded from Postgres exactly as router-svc
 // loads it, the real read-through resolver over the real Redis, and a declarative route that matches
 // the same 225 prefix but points at declConn.
-func newL0(t *testing.T, ctx context.Context, rdb *goredis.Client, repo *postgres.ExactRouteRepo,
+func newL0(ctx context.Context, t *testing.T, rdb *goredis.Client, repo *postgres.ExactRouteRepo,
 	declRoute, declConn uuid.UUID,
 ) *routing.L0Resolver {
 	t.Helper()
