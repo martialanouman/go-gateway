@@ -1,6 +1,6 @@
 # step-250e — La table de routage exact n'a aucun écrivain : la portabilité des numéros ne marche pas
 
-> **Jalon :** M12 · **Statut :** À FAIRE
+> **Jalon :** M12 · **Statut :** LIVRÉE (2026-09-02)
 > **Dépend de :** — · **Bloque :** step-280 (fidélité de la mesure), step-410
 
 ## Ce qui a été constaté
@@ -50,17 +50,18 @@ fausse la corrigeant — mais **corriger le commentaire ne répare pas la foncti
 
 ## Definition of Done
 
-- [ ] `make check` vert
-- [ ] une route exacte créée par l'Admin API est résolue par L0 en bout de chaîne, prouvée par un test
-- [ ] la suppression retire la clé ; la mise à jour la remplace
-- [ ] l'import de masse remplit la table (et le Bloom la reflète) sans dépasser le budget mémoire annoncé
+- [x] `make check` vert (il a fallu au passage lever GO-2026-6354/6355, préexistantes sur `main`)
+- [x] une route exacte créée par l'Admin API est résolue par L0 en bout de chaîne, prouvée par un test
+      (`TestExactRouteCreatedByAdminResolvesThroughL0`, vérifié rouge sur le comportement d'avant)
+- [x] la suppression retire la clé ; la mise à jour la remplace — éprouvées avec un Bloom **périmé**,
+      le cas réaliste, où seule l'invalidation empêche l'envoi vers la cible retirée
+- [x] l'import de masse remplit la table (et le Bloom la reflète) sans dépasser le budget mémoire annoncé
       (mesuré : **~1,8 Mo par million**. Le « ~1,2 Mo » de la spec §724 et du commentaire de
       `bloom.go` correspondait à un taux de faux positifs de 0,01, jamais à celui du code, 0,001 —
       faux depuis deux jalons. Le taux est conservé et le chiffre corrigé : depuis cette step, un
       faux positif coûte une lecture Postgres et non un miss Redis, donc le taux serré se justifie
       davantage qu'au moment où il a été choisi. Épinglé par `TestBloomSizePerMillionEntries`.)
-- [ ] la note `NOTE (step-250d)` de `internal/routing/exact/resolver.go` est retirée — c'est elle qui
-      dit que cette step reste à faire
+- [x] la note `NOTE (step-250d)` de `internal/routing/exact/resolver.go` est retirée
 
 ## Hors périmètre
 
