@@ -57,6 +57,17 @@ func (s loggingStore) BulkUpsert(ctx context.Context, routes []exact.Route) erro
 	return s.ExactRouteAdminStore.BulkUpsert(ctx, routes)
 }
 
+// fakeAnnouncer records the background job's own config-change announcement, on the same timeline.
+type fakeAnnouncer struct {
+	log *opLog
+	err error
+}
+
+func (a *fakeAnnouncer) Announce(context.Context) error {
+	a.log.add("announce")
+	return a.err
+}
+
 // fakeRouteCache records what the handlers ask to forget, on the same timeline.
 type fakeRouteCache struct {
 	log *opLog
@@ -74,9 +85,10 @@ func cacheTestAPI(t *testing.T, cacheErr error) (http.Handler, *opLog) {
 	log := &opLog{}
 	store := loggingStore{ExactRouteAdminStore: newFakeExactRouteStore(), log: log}
 	api := newTestAPIWith(t, adminapi.Deps{
-		ExactRoutes:     store,
-		ExactRouteCache: &fakeRouteCache{log: log, err: cacheErr},
-		Imports:         syncRunner{},
+		ExactRoutes:      store,
+		ExactRouteCache:  &fakeRouteCache{log: log, err: cacheErr},
+		ExactRouteReload: &fakeAnnouncer{log: log},
+		Imports:          syncRunner{},
 	})
 	return api, log
 }
@@ -149,8 +161,8 @@ func TestExactRouteMutationsInvalidateAfterTheCommit(t *testing.T) {
 			t.Fatalf("import status = %d, want 202; body=%s", w.Code, w.Body)
 		}
 		// Every imported number must be forgotten, or a re-ported number keeps its old carrier until
-		// the TTL — the exact failure this step exists to remove.
-		wantOps(t, log, []string{"bulk:2", "invalidate:2250700000001,2250700000002"})
+		// the TTL. And the job must announce the config change ITSELF, after its commit.
+		wantOps(t, log, []string{"bulk:2", "invalidate:2250700000001,2250700000002", "announce"})
 	})
 }
 
@@ -167,10 +179,14 @@ func TestExactRouteInvalidationFailureDoesNotFailTheRequest(t *testing.T) {
 	}
 }
 
-// TestExactRouteDeleteOfUnknownNumberInvalidatesNothing: a 404 changed nothing durably, so there is
-// nothing to forget. Invalidating anyway would be harmless but dishonest — it would suggest a write
-// happened.
-func TestExactRouteDeleteOfUnknownNumberInvalidatesNothing(t *testing.T) {
+// TestExactRouteDeleteOfUnknownNumberStillPurgesTheCache: "no row" does not mean "no key".
+//
+// A lost invalidation, or the cache-aside window on an earlier delete, can leave a key behind with no
+// durable row. The operator sees `lookup-exact-route` answer 404 and reaches for DELETE — which is the
+// only lever the API gives them over that key. A 404 that clears nothing disarms it exactly when it is
+// needed, and the stale route then survives until the TTL. The DEL is idempotent, so doing it
+// unconditionally costs one command.
+func TestExactRouteDeleteOfUnknownNumberStillPurgesTheCache(t *testing.T) {
 	api, log := cacheTestAPI(t, nil)
 
 	w := httptest.NewRecorder()
@@ -178,10 +194,16 @@ func TestExactRouteDeleteOfUnknownNumberInvalidatesNothing(t *testing.T) {
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("delete unknown = %d, want 404", w.Code)
 	}
+
+	var invalidated bool
 	for _, op := range log.snapshot() {
 		if strings.HasPrefix(op, "invalidate:") {
-			t.Errorf("a 404 delete invalidated the cache (%q); nothing was committed", op)
+			invalidated = true
 		}
+	}
+	if !invalidated {
+		t.Errorf("ops = %v; a 404 delete must still purge the cache key — it is the operator's only "+
+			"lever over an orphaned entry", log.snapshot())
 	}
 }
 
@@ -196,4 +218,99 @@ func wantOps(t *testing.T, log *opLog, want []string) {
 			t.Fatalf("ops = %v, want %v (differs at %d)", got, want, i)
 		}
 	}
+}
+
+// TestExactRouteImportAnnouncesTheConfigChangeAfterItsCommit is the second half of the import defect,
+// and the one no unit assertion on ordering alone would have surfaced.
+//
+// The PublishConfigChanges middleware announces a mutation when the HANDLER returns — which for an
+// import is the 202, while BulkUpsert is still running in the background. The router therefore rebuilds
+// its Bloom from a table that does not yet hold the rows, and nothing republishes after the commit.
+// The imported numbers are then absent from the Bloom, MightContain answers a definitive "no", and L0
+// never resolves for them: not the cache, not the durable read, not the invalidation above changes
+// that, because none of them is ever reached.
+//
+// Small imports win that race and large ones lose it — the exact inverse of the use case, since an MNP
+// base is millions of rows. So the job announces for itself, after its own commit.
+func TestExactRouteImportAnnouncesTheConfigChangeAfterItsCommit(t *testing.T) {
+	api, log := cacheTestAPI(t, nil)
+
+	w := httptest.NewRecorder()
+	body := fmt.Sprintf(`{"source":"mnp_import","rows":[{"msisdn":"2250700000001",`+
+		`"target_type":"connector","target_id":%q}]}`, uuid.NewString())
+	api.ServeHTTP(w, authed(t, http.MethodPost, "/v1/admin/exact-routes/import", body))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("import status = %d, want 202; body=%s", w.Code, w.Body)
+	}
+
+	ops := log.snapshot()
+	last := ops[len(ops)-1]
+	if last != "announce" {
+		t.Fatalf("ops = %v; want the config-change announcement LAST — announcing before the commit "+
+			"rebuilds the Bloom from a table that does not hold the rows yet", ops)
+	}
+}
+
+// TestExactRouteImportAnnouncementFailureDoesNotFailTheJob: the rows are committed and the cache is
+// clear; a lost announcement only delays the Bloom rebuild to the next admin mutation, which is the
+// same best-effort bargain the middleware already makes.
+func TestExactRouteImportAnnouncementFailureDoesNotFailTheJob(t *testing.T) {
+	log := &opLog{}
+	store := loggingStore{ExactRouteAdminStore: newFakeExactRouteStore(), log: log}
+	api := newTestAPIWith(t, adminapi.Deps{
+		ExactRoutes:      store,
+		ExactRouteCache:  &fakeRouteCache{log: log},
+		ExactRouteReload: &fakeAnnouncer{log: log, err: errors.New("redis down")},
+		Imports:          syncRunner{},
+	})
+
+	w := httptest.NewRecorder()
+	body := fmt.Sprintf(`{"rows":[{"msisdn":"2250700000001","target_type":"connector","target_id":%q}]}`,
+		uuid.NewString())
+	api.ServeHTTP(w, authed(t, http.MethodPost, "/v1/admin/exact-routes/import", body))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("import status = %d, want 202; body=%s", w.Code, w.Body)
+	}
+	if got := log.snapshot(); len(got) != 3 {
+		t.Errorf("ops = %v, want commit, invalidation, attempted announcement", got)
+	}
+}
+
+// TestExactRouteImportInvalidatesEvenWhenTheBatchFails: postgres.BulkUpsert is a pgx.Batch, so an error
+// can come back with rows already committed. Skipping the invalidation and the announcement on that path
+// would leave exactly those rows stale for a full TTL, and outside the Bloom until some unrelated admin
+// mutation happens by — a silent half-import, which is worse than a loud failed one.
+func TestExactRouteImportInvalidatesEvenWhenTheBatchFails(t *testing.T) {
+	log := &opLog{}
+	store := newFakeExactRouteStore()
+	store.bulkErr = errors.New("connection reset mid-batch")
+	api := newTestAPIWith(t, adminapi.Deps{
+		ExactRoutes:      loggingStore{ExactRouteAdminStore: store, log: log},
+		ExactRouteCache:  &fakeRouteCache{log: log},
+		ExactRouteReload: &fakeAnnouncer{log: log},
+		Imports:          syncRunner{},
+	})
+
+	w := httptest.NewRecorder()
+	body := fmt.Sprintf(`{"rows":[{"msisdn":"2250700000001","target_type":"connector","target_id":%q}]}`,
+		uuid.NewString())
+	api.ServeHTTP(w, authed(t, http.MethodPost, "/v1/admin/exact-routes/import", body))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("import status = %d, want 202; body=%s", w.Code, w.Body)
+	}
+
+	wantOps(t, log, []string{"bulk:1", "invalidate:2250700000001", "announce"})
+}
+
+// TestExactRouteMutationsInvalidateTheCanonicalNumber: the operator may write "+225 07 …", the resolver
+// only ever keys on digits. Invalidating the raw input would DEL a key that does not exist while the
+// real one keeps the old target until the TTL — two components agreeing on a form nothing anchors, the
+// very drift TestExactRouteRedisEncodingIsPinned exists to prevent, reappearing on the admin side.
+//
+// Every other fixture in this file already passes canonical digits, so none of them can catch it.
+func TestExactRouteMutationsInvalidateTheCanonicalNumber(t *testing.T) {
+	api, log := cacheTestAPI(t, nil)
+	createRoute(t, api, "+2250700000001")
+
+	wantOps(t, log, []string{"upsert:2250700000001", "invalidate:2250700000001"})
 }

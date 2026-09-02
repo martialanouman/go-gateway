@@ -76,12 +76,13 @@ type ImportRunner interface {
 type exactRouteHandlers struct {
 	store  ExactRouteAdminStore
 	cache  ExactRouteCacheInvalidator
+	reload ExactRouteReloadAnnouncer
 	runner ImportRunner
 	logger *slog.Logger
 }
 
 func registerExactRoutes(api huma.API, store ExactRouteAdminStore, cache ExactRouteCacheInvalidator,
-	runner ImportRunner, logger *slog.Logger,
+	reload ExactRouteReloadAnnouncer, runner ImportRunner, logger *slog.Logger,
 ) {
 	if logger == nil {
 		logger = slog.Default()
@@ -89,7 +90,10 @@ func registerExactRoutes(api huma.API, store ExactRouteAdminStore, cache ExactRo
 	if cache == nil {
 		cache = noopRouteCache{}
 	}
-	h := &exactRouteHandlers{store: store, cache: cache, runner: runner, logger: logger}
+	if reload == nil {
+		reload = noopRouteCache{}
+	}
+	h := &exactRouteHandlers{store: store, cache: cache, reload: reload, runner: runner, logger: logger}
 
 	register(api, huma.Operation{
 		OperationID: "import-exact-routes", Method: http.MethodPost, Path: "/admin/exact-routes/import",
@@ -167,11 +171,14 @@ func (h *exactRouteHandlers) list(ctx context.Context, in *listExactRoutesInput)
 	return out, nil
 }
 
-// noopRouteCache stands in when no invalidator is wired (tests, and any deployment running without the
-// data-plane cache). It is deliberately silent: the resolver still reads the durable table on a miss.
+// noopRouteCache stands in when no invalidator or announcer is wired (tests, and any deployment running
+// without the data-plane cache). It is deliberately silent: the resolver still reads the durable table
+// on a miss, and the next admin mutation still triggers a Bloom rebuild.
 type noopRouteCache struct{}
 
 func (noopRouteCache) Invalidate(context.Context, ...string) error { return nil }
+
+func (noopRouteCache) Announce(context.Context) error { return nil }
 
 // forget drops the cached routes of numbers whose durable row just changed. It is always called AFTER
 // the commit: invalidating first lets a concurrent reader repopulate the pre-commit value and pin it for
@@ -181,11 +188,37 @@ func (noopRouteCache) Invalidate(context.Context, ...string) error { return nil 
 // operator to retry a write that succeeded; the resolver's TTL bounds how long a missed invalidation can
 // matter, and both the upsert and the DEL are idempotent.
 func (h *exactRouteHandlers) forget(ctx context.Context, msisdns ...string) {
-	if err := h.cache.Invalidate(ctx, msisdns...); err != nil {
-		h.logger.Warn("exact-route cache invalidation failed",
+	// Detached from cancellation, like the config-change publish next door: the row is already durable,
+	// and a client that disconnects — or a runner draining — right after the write must not be what
+	// leaves a stale route behind for a whole TTL. Bounded so a hung Redis cannot stall the caller.
+	fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), invalidateTimeout)
+	defer cancel()
+
+	if err := h.cache.Invalidate(fctx, msisdns...); err != nil {
+		// Logged, not returned: see the note on forget. There is no counter here, matching
+		// BalanceCacheInvalidator; the consequence — a route stale until the TTL, visible only in logs —
+		// is recorded as an open follow-up on the step rather than silently accepted.
+		h.logger.WarnContext(ctx, "exact-route cache invalidation failed",
 			"numbers", len(msisdns), "err", err)
 	}
 }
+
+// announceReload asks the fleet to rebuild its routing snapshot, for a mutation whose commit lands
+// AFTER its HTTP response — the background bulk import. Every synchronous handler is already covered by
+// the PublishConfigChanges middleware and must NOT call this.
+func (h *exactRouteHandlers) announceReload(ctx context.Context) {
+	actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), invalidateTimeout)
+	defer cancel()
+
+	if err := h.reload.Announce(actx); err != nil {
+		h.logger.WarnContext(ctx, "exact-route reload announcement failed; "+
+			"imported numbers stay out of the Bloom until the next admin mutation", "err", err)
+	}
+}
+
+// invalidateTimeout bounds a post-commit cache operation, so a hung Redis cannot hold an admin request
+// (or a draining import job) open. Same bound and same reasoning as the config-change publish.
+const invalidateTimeout = 5 * time.Second
 
 type createExactRouteInput struct{ Body exactRouteCreateBody }
 type exactRouteOutput struct{ Body exactRouteDTO }
@@ -261,10 +294,15 @@ func (h *exactRouteHandlers) importRoutes(_ context.Context, in *importExactRout
 	jobID := uuid.NewString()
 	logger := h.logger.With("job_id", jobID, "rows", len(routes), "source", string(source))
 	err := h.runner.Go("import-exact-routes", func(jctx context.Context) error {
-		if berr := h.store.BulkUpsert(jctx, routes); berr != nil {
+		berr := h.store.BulkUpsert(jctx, routes)
+		// Invalidate and announce even on failure: BulkUpsert is a pgx.Batch, so a mid-batch error can
+		// still have committed rows. Skipping here would leave exactly those rows stale for a TTL, and
+		// out of the Bloom until some unrelated admin mutation happens by.
+		h.forget(jctx, msisdns...)
+		h.announceReload(jctx)
+		if berr != nil {
 			return berr
 		}
-		h.forget(jctx, msisdns...)
 		logger.Info("exact-route import completed")
 		return nil
 	})
@@ -340,7 +378,11 @@ func (h *exactRouteHandlers) delete(ctx context.Context, in *msisdnPathInput) (*
 		return nil, humaerr.FromError(err)
 	}
 	if !found {
-		return nil, notFound("exact route") // nothing was committed, so there is nothing to forget
+		// No row, but possibly a stale key: a lost invalidation, or the cache-aside window on an earlier
+		// delete, can leave one behind. DELETE is then the operator's ONLY lever to purge it, and a 404
+		// that clears nothing disarms it precisely when it is needed. The DEL is idempotent.
+		h.forget(ctx, msisdn)
+		return nil, notFound("exact route")
 	}
 	h.forget(ctx, msisdn)
 	return &deleteOutput{}, nil

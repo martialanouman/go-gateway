@@ -350,6 +350,7 @@ func newHTTPServer(
 		AntispamRules:    postgres.NewAntispamRuleRepo(st.pg),
 		ExactRoutes:      postgres.NewExactRouteRepo(st.pg),
 		ExactRouteCache:  exact.NewInvalidator(rdb),
+		ExactRouteReload: configChangeAnnouncer{pub: redisstore.NewPubSubPublisher(rdb)},
 		RoutingScripts:   postgres.NewRoutingScriptRepo(st.pg),
 		Imports:          runners.imports,
 		Disconnector:     adminapi.NewGRPCDisconnector(registrypb.NewSessionRegistryClient(clients.registry)),
@@ -415,6 +416,16 @@ func validateAdminConfig(cfg config.Config) error {
 type retentionMetric struct{ c *prometheus.CounterVec }
 
 func (m retentionMetric) Observe(outcome string) { m.c.WithLabelValues(outcome).Inc() }
+
+// configChangeAnnouncer lets the background bulk-import job publish the same coarse config-change event
+// the PublishConfigChanges middleware publishes for synchronous mutations. The import needs its own,
+// because the middleware fires when the handler returns 202 — before the job has committed anything, so
+// the Bloom would be rebuilt from a table that does not hold the imported rows yet (step-250e).
+type configChangeAnnouncer struct{ pub *redisstore.PubSubPublisher }
+
+func (a configChangeAnnouncer) Announce(ctx context.Context) error {
+	return a.pub.Publish(ctx, config.ChannelConfigChanged, []byte(`{"reason":"admin"}`))
+}
 
 // redisBalanceCache adapts the Redis client to adminapi.BalanceCacheInvalidator: it deletes the balance-cache
 // keys an admin money op just changed durably, so the next reserve rehydrates from Postgres (step-148).
