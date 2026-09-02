@@ -2,6 +2,8 @@ package exact
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -98,7 +100,12 @@ func TestResolveBloomFalsePositiveIsNotCached(t *testing.T) {
 func TestResolvePostgresFaultSurfacesUncoded(t *testing.T) {
 	msisdn := "2250700000001"
 	cache := &fakeRedis{vals: map[string]string{}}
-	store := &fakeStore{err: context.DeadlineExceeded}
+	// The fault must be what the repository ACTUALLY returns: postgres.translate wraps every
+	// infrastructure failure in errs.ErrInternal, so the error reaching the resolver is CODED. A bare
+	// errors.New here has the shape of an outage and none of its contract — and passes against a
+	// resolver that propagates the code, which is the defect the Postgres chaos test caught.
+	store := &fakeStore{err: fmt.Errorf("get exact route: %w",
+		errors.Join(errors.New("unexpected EOF"), errs.ErrInternal))}
 	r := NewResolver(newBloom([]string{msisdn}), cache, store, time.Hour)
 
 	_, ok, err := r.Resolve(context.Background(), msisdn)

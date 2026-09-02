@@ -99,7 +99,7 @@ func (r *Resolver) Resolve(ctx context.Context, msisdn string) (Target, bool, er
 func (r *Resolver) loadAndCache(ctx context.Context, msisdn string) (Target, bool, error) {
 	route, found, err := r.store.Get(ctx, msisdn)
 	if err != nil {
-		return Target{}, false, fmt.Errorf("exact: durable lookup: %w", err)
+		return Target{}, false, transient(err)
 	}
 	if !found {
 		return Target{}, false, nil
@@ -109,6 +109,20 @@ func (r *Resolver) loadAndCache(ctx context.Context, msisdn string) (Target, boo
 	// the next message simply pays another lookup. Only the read legs are fail-closed.
 	_ = r.cache.Set(ctx, redisKey(msisdn), EncodeTarget(route.Target), jitterTTL(r.ttl)).Err()
 	return route.Target, true, nil
+}
+
+// transient reports a durable-lookup failure WITHOUT the error code the repository attached.
+//
+// postgres.translate maps every infrastructure fault to errs.ErrInternal, and a CODED error means
+// something precise downstream: router.handle writes a CDR `rejected` and COMMITS the Kafka offset,
+// burying the message. On this path that is exactly backwards (§16) — an exact route that cannot be
+// reached is transient, and the message must be redelivered rather than rejected.
+//
+// The chain is dropped on purpose, not by oversight. Re-wrapping this with %w restores the burial in
+// silence; TestExactRouteFailsClosedWhenPostgresIsCut is what refuses it, against a really cut
+// Postgres, because a fake returning a bare error has the shape of an outage and none of its contract.
+func transient(err error) error {
+	return errors.New("exact: durable lookup: " + err.Error())
 }
 
 // jitterTTL randomises d by ±cacheJitterPct%, uniformly. Same idiom as the reconnect backoff's own
