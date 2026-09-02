@@ -87,7 +87,7 @@ func TestResolveHitReturnsTarget(t *testing.T) {
 // knows is a false positive. It falls back — ok=false, no error — so a false positive never mis-routes.
 func TestResolveBloomHitButRedisAbsent(t *testing.T) {
 	msisdn := "2250700000001"
-	bloom := newBloom([]string{msisdn}) // msisdn IS in the Bloom...
+	bloom := newBloom([]string{msisdn})                                                     // msisdn IS in the Bloom...
 	r := NewResolver(bloom, &fakeRedis{vals: map[string]string{}}, &fakeStore{}, time.Hour) // ...and absent from both.
 
 	target, ok, err := r.Resolve(context.Background(), msisdn)
