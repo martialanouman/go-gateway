@@ -127,6 +127,17 @@ contredirait la spec §6.1 qui nomme la clé.
 
 ### Règle d'ordre, et le seul sens de panne restant
 
+**L'import de masse annonce lui-même son changement de configuration**, après son commit : le
+middleware `PublishConfigChanges` publie au retour du handler, c'est-à-dire au 202, alors que
+`BulkUpsert` tourne encore. Sans cela le routeur reconstruit son Bloom depuis une table qui n'a pas
+encore les lignes, les numéros importés restent hors du filtre, et `MightContain` répond « non » de
+façon définitive — ni le cache ni la lecture durable ne sont jamais atteints. Les petits imports
+gagnaient cette course, les gros la perdaient : l'inverse du besoin.
+
+**Invalidation et annonce ont lieu même si le batch échoue** : `BulkUpsert` est un `pgx.Batch`, donc
+une erreur en cours de lot laisse des lignes commitées. Les sauter laisserait précisément celles-là
+périmées.
+
 **La source de vérité commet d'abord, toujours ; le cache suit.** Postgres commit → `DEL`. Un crash
 entre les deux laisse une clé périmée **au plus le TTL**. Reste la fenêtre classique du cache-aside
 (un lecteur lit Postgres, un écrivain commit et invalide, le lecteur écrit ensuite la valeur ancienne)
@@ -146,6 +157,21 @@ synchronisée d'une rafale peuplée à froid.
 Coût en régime établi : une relecture par clé primaire, par msisdn actif et par TTL, plus les faux
 positifs du Bloom — `bloomFP = 0.001`, soit **~8 req/s à 8 000 SMS/s**.
 
+### Trois décisions que le design initial ne nommait pas
+
+Relevées en revue, elles sont structurantes et vivent dans le code :
+
+1. **Une faute Redis ne se rabat PAS sur Postgres** — seule une clé *absente* traverse. Se rabattre
+   ressemble à de la résilience et déplacerait le chemin chaud sur la base du plan de contrôle, au
+   débit plein, pendant une panne ; cela viderait aussi de sens la politique fail-closed que step-250d
+   prouve. La question « faut-il dégrader ainsi ? » est une suite ouverte, pas un défaut silencieux.
+2. **Une valeur de cache illisible est traitée comme un miss**, et guérie depuis la table durable. La
+   remonter en erreur renverrait le message sur la même clé à chaque redélivrance — et la lane étant la
+   partition, ce serait tout son trafic figé jusqu'au TTL. L'issue `cache_corrupt` garde la dérive
+   visible.
+3. **L'échec du `SET` de peuplement est avalé** : la cible est déjà connue et correcte, le message
+   suivant repaiera une lecture. Seules les jambes de *lecture* sont fail-closed.
+
 ### Politique d'échec
 
 - **Lecture** : erreur Redis **ou** erreur Postgres → erreur **non codée** → offset Kafka non commité
@@ -153,28 +179,35 @@ positifs du Bloom — `bloomFP = 0.001`, soit **~8 req/s à 8 000 SMS/s**.
   la même raison : un numéro exact injoignable ne doit pas se dégrader en routage par défaut, qui
   enverrait sur le mauvais opérateur. La ligne Postgres est ajoutée à la matrice §16 **avec son
   test** — la règle de step-260c est que rien ne s'y écrit avant d'avoir sa preuve.
-- **Invalidation** : non bloquante, log + compteur — même politique que `BalanceCacheInvalidator`
-  (step-148) et que le middleware `config:changed`, défendable ici parce que le TTL borne la dérive et
-  que l'upsert comme le `DEL` sont idempotents. Conséquence : **aucun code d'erreur neuf, aucun `503`
-  ajouté à une opération, donc aucun changement de contrat et pas de bump `api/package.json`**.
+- **Invalidation** : non bloquante, **log seul** — même politique que `BalanceCacheInvalidator`
+  (step-148) et que le middleware `config:changed`, défendable parce que le TTL borne la dérive et que
+  l'upsert comme le `DEL` sont idempotents. Pas de compteur : `internal/adminapi` n'expose aujourd'hui
+  aucune métrique, et y introduire Prometheus pour un seul compteur poserait un patron neuf dans une PR
+  qui n'a pas à en poser. La conséquence est assumée et fichée en suite ouverte : **un `DEL` perdu n'est
+  visible que dans les logs**, pour une route périmée jusqu'au TTL. Conséquence de contrat : **aucun
+  code d'erreur neuf, aucun `503` ajouté à une opération, donc pas de bump `api/package.json`**.
 
 ### Où vit le code
 
 Dans `internal/routing/exact`, à côté du lecteur : le `SET` de peuplement et le `DEL` d'invalidation
-partagent `redisKey` et `EncodeTarget`, qui restent **non exportés**. L'Admin API ne connaît donc ni
-la forme de la clé ni celle de la valeur — elle reçoit un `Invalidate(ctx, msisdns ...string)` derrière
-une interface locale, sur le patron de `BalanceCacheInvalidator`. C'est exactement la propriété que
+partagent `redisKey`, qui reste **non exporté** (`EncodeTarget` l'est déjà, et l'était avant cette
+step). Aucun code de production hors de ce paquet ne construit la clé : l'Admin API ne connaît ni sa
+forme ni celle de la valeur, elle reçoit un `Invalidate(ctx, msisdns ...string)` derrière une interface
+locale, sur le patron de `BalanceCacheInvalidator`. Deux tests d'intégration écrivent la clé en dur —
+c'est un ancrage délibéré, du même ordre que le pin littéral, pas une dérive. C'est exactement la propriété que
 réclame `TestExactRouteRedisEncodingIsPinned` : « deux composants qui s'accordent sur un format que
 rien n'ancre, c'est ainsi qu'ils dérivent en silence ».
 
 ### Suites ouvertes (à mesurer avant de décider)
 
-La métrique `exact_route_lookup_total{outcome}` (`bloom_miss` · `redis_hit` · `pg_hit` · `pg_miss`)
-est livrée ici pour les rendre décidables :
+La métrique `exact_route_lookups_total{outcome}` (`bloom_miss` · `redis_hit` · `cache_corrupt` ·
+`pg_hit` · `pg_miss`) est livrée ici pour les rendre décidables :
 
 - **cache négatif** pour les faux positifs du Bloom — un numéro non porté à fort trafic qui tombe en
   faux positif frappe Postgres à chaque message, de façon déterministe jusqu'au prochain rebuild ;
 - **réglage du TTL**, et `singleflight` par msisdn si la pointe à froid après une perte de Redis le
   justifie ;
 - **profil L0 du banc de charge** : `test/load/` ne sème aujourd'hui aucune route exacte. Laissé à
-  step-280, qui possède son profil et sa fidélité.
+  step-280, qui possède son profil et sa fidélité (une note y a été ajoutée) ;
+- **visibilité d'un `DEL` perdu** : aujourd'hui une ligne de log, pour une route périmée jusqu'au TTL.
+  Un compteur suppose d'ouvrir `internal/adminapi` aux métriques, ce qui dépasse cette step.

@@ -56,6 +56,20 @@ Aucun des deux n'est atteignable avec l'outillage actuel. Les couvrir demande un
 plutôt qu'il ne coupe — une extension de `tcpproxy`, à peser contre le fait qu'un test qui attend 4 s
 coûte au budget CI.
 
+## Depuis step-250e — une quatrième voie Postgres, déjà écrite en §16
+
+La matrice §16 porte désormais une **deuxième** ligne PostgreSQL, ajoutée avec son test de chaos :
+« PostgreSQL (routage L0, numéro exact) ». Depuis que `exactroute:{msisdn}` est un cache read-through,
+un possible-hit du Bloom que le cache n'a pas interroge la table durable — donc **un Postgres coupé
+bloque aussi la résolution L0, en rejeu**. Ce n'est pas une des trois voies que cette fiche recense,
+c'est une quatrième, et elle est déjà prouvée : ne pas la ré-ouvrir, mais en tenir compte dans le
+recensement pour ne pas la déclarer manquante.
+
+Le piège consigné par step-250e vaut aussi ici : `postgres.translate` attache `errs.ErrInternal` à
+toute panne d'infra, et une erreur **codée** fait enterrer le message (CDR `rejected`, offset commité)
+au lieu de le redélivrer. Toute voie qu'on veut fail-closed en rejeu doit retirer ce code — et le
+vérifier sur un Postgres réellement coupé, un faux renvoyant un `errors.New` nu ne le montrant pas.
+
 ## Definition of Done
 
 - [ ] `make check` vert

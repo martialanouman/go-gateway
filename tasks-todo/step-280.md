@@ -72,6 +72,18 @@ l'avoir levé mesurerait ce goulot, pas la passerelle.
 - `peak` : 15 000 SMS/s tenus sur la durée de pic, dégradation conforme aux politiques documentées.
 - Les 4 invariants (a/b/c/d) restent verts sous charge.
 
+## Hérité de step-250e — le profil de routage L0
+
+`test/load/` ne sème **aucune** route exacte : le banc mesure donc un profil à 0 % de trafic L0, alors
+que le court-circuit par numéro exact est désormais fonctionnel et qu'il change le coût par message.
+Depuis step-250e, `exactroute:{msisdn}` est un cache read-through — un numéro porté coûte un `GET`
+Redis en régime établi, et une lecture Postgres par clé primaire à froid ou sur faux positif du Bloom
+(taux 0,001, soit ~8 req/s à 8 000 SMS/s). Le filtre pèse ~1,8 Mo par million d'entrées.
+
+La campagne doit décider quelle part de numéros portés est représentative d'un agrégateur national
+(10 à 30 % en marché MNP mûr) et semer le banc en conséquence, sans quoi le dimensionnement publié
+ignorera une étape du chemin chaud. La métrique `exact_route_lookups_total{outcome}` sépare les cas.
+
 ## Definition of Done
 - [ ] plafond du pair à l'échelle mesuré et consigné · runs de référence en dessous
 - [ ] débit soutenu **8 000 SMS/s traversants** tenu, budgets de latence respectés (disjoncteur fermé)

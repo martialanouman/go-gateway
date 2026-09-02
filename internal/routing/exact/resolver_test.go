@@ -149,8 +149,9 @@ func TestMightContainNoFalseNegative(t *testing.T) {
 // Everything else in this package, the chaos test included, seeds through redisKey/EncodeTarget and
 // reads back through the resolver, so the encoding is only ever checked against itself: drop the {}
 // hash tag and the entire suite stays green (verified by mutation). The tag is not cosmetic — it is what
-// pins a number's key to one cluster slot — and step-250e is about to add the writer this key has never
-// had. Two components agreeing on a format that nothing anchors is how they drift apart in silence.
+// pins a number's key to one cluster slot — and step-250e gave the key the writer it never had: the
+// resolver populates it, the Admin API deletes it. Two components agreeing on a format that nothing
+// anchors is how they drift apart in silence.
 func TestExactRouteRedisEncodingIsPinned(t *testing.T) {
 	if got := redisKey("2250700000001"); got != "exactroute:{2250700000001}" {
 		t.Errorf("redisKey = %q, want exactroute:{2250700000001}: without the hash tag a number's key is "+
