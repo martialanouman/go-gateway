@@ -29,6 +29,25 @@ type RedisCache interface {
 	Set(ctx context.Context, key string, value any, expiration time.Duration) *goredis.StatusCmd
 }
 
+// LookupMeter counts L0 lookups by outcome. The vocabulary is closed and declared in code — bloom_miss,
+// redis_hit, pg_hit, pg_miss — never derived from traffic, so it satisfies the bounded-label guard (§15).
+// It is what makes the follow-ups this step defers decidable: whether a negative cache earns its keep
+// depends on the pg_miss rate, and the TTL on the pg_hit rate.
+type LookupMeter interface {
+	Observe(outcome string)
+}
+
+// Option overrides a Resolver default. Only the meter is optional: a resolver without one still routes.
+type Option func(*Resolver)
+
+// WithLookupMeter attaches the outcome counter.
+func WithLookupMeter(m LookupMeter) Option { return func(r *Resolver) { r.meter = m } }
+
+// nopMeter is the default, so the hot path needs no nil check.
+type nopMeter struct{}
+
+func (nopMeter) Observe(string) {}
+
 // RouteStore is the durable source of truth behind the cache. *postgres.ExactRouteRepo satisfies it
 // structurally; the lookup is by primary key.
 type RouteStore interface {
@@ -48,15 +67,20 @@ type Resolver struct {
 	cache RedisCache
 	store RouteStore
 	ttl   time.Duration
+	meter LookupMeter
 }
 
 // NewResolver builds the L0 resolver over a boot-loaded Bloom, the Redis cache and the durable store.
 // A non-positive ttl falls back to DefaultCacheTTL.
-func NewResolver(bloom *Bloom, cache RedisCache, store RouteStore, ttl time.Duration) *Resolver {
+func NewResolver(bloom *Bloom, cache RedisCache, store RouteStore, ttl time.Duration, opts ...Option) *Resolver {
 	if ttl <= 0 {
 		ttl = DefaultCacheTTL
 	}
-	return &Resolver{bloom: bloom, cache: cache, store: store, ttl: ttl}
+	r := &Resolver{bloom: bloom, cache: cache, store: store, ttl: ttl, meter: nopMeter{}}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
 }
 
 // redisKey is the exact-route key for an MSISDN (Appendix B). The hash tag ({msisdn}) pins a number's
@@ -75,6 +99,7 @@ func redisKey(msisdn string) string { return "exactroute:{" + msisdn + "}" }
 // is an open question rather than a silent default.
 func (r *Resolver) Resolve(ctx context.Context, msisdn string) (Target, bool, error) {
 	if !r.bloom.MightContain(msisdn) {
+		r.meter.Observe("bloom_miss")
 		return Target{}, false, nil // definitive miss: no network call at all
 	}
 
@@ -85,6 +110,7 @@ func (r *Resolver) Resolve(ctx context.Context, msisdn string) (Target, bool, er
 		if perr != nil {
 			return Target{}, false, perr
 		}
+		r.meter.Observe("redis_hit")
 		return target, true, nil
 	case !errors.Is(err, goredis.Nil):
 		return Target{}, false, fmt.Errorf("exact: redis lookup: %w", err)
@@ -102,12 +128,14 @@ func (r *Resolver) loadAndCache(ctx context.Context, msisdn string) (Target, boo
 		return Target{}, false, transient(err)
 	}
 	if !found {
+		r.meter.Observe("pg_miss")
 		return Target{}, false, nil
 	}
 
 	// A cache write that fails must not fail the message: the target is already known and correct, and
 	// the next message simply pays another lookup. Only the read legs are fail-closed.
 	_ = r.cache.Set(ctx, redisKey(msisdn), EncodeTarget(route.Target), jitterTTL(r.ttl)).Err()
+	r.meter.Observe("pg_hit")
 	return route.Target, true, nil
 }
 

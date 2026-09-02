@@ -163,3 +163,42 @@ func TestCacheTTLJitterStaysInBand(t *testing.T) {
 			"cold-warmed burst in lockstep, which is what the jitter exists to prevent", len(seen))
 	}
 }
+
+// fakeMeter records the outcome of each lookup.
+type fakeMeter struct{ seen []string }
+
+func (m *fakeMeter) Observe(outcome string) { m.seen = append(m.seen, outcome) }
+
+// TestResolveCountsEveryLookupOutcome: the four paths through Resolve must be distinguishable in
+// metrics, because the follow-ups this step defers are not decidable without them — whether a negative
+// cache is worth adding depends on the pg_miss rate, and the TTL on the pg_hit rate. Shipping the
+// decision "measure first" without the measurement would leave both open forever.
+func TestResolveCountsEveryLookupOutcome(t *testing.T) {
+	cached, cold, absent := "2250700000001", "2250700000002", "2250700000003"
+	want := Target{Type: TargetConnector, ID: uuid.New()}
+	meter := &fakeMeter{}
+
+	r := NewResolver(
+		newBloom([]string{cached, cold, absent}),
+		&fakeRedis{vals: map[string]string{redisKey(cached): EncodeTarget(want)}},
+		&fakeStore{rows: map[string]Route{cold: {MSISDN: cold, Target: want}}},
+		time.Hour,
+		WithLookupMeter(meter),
+	)
+
+	for _, msisdn := range []string{"2250799999999", cached, cold, absent} {
+		if _, _, err := r.Resolve(context.Background(), msisdn); err != nil {
+			t.Fatalf("Resolve(%s): %v", msisdn, err)
+		}
+	}
+
+	want4 := []string{"bloom_miss", "redis_hit", "pg_hit", "pg_miss"}
+	if len(meter.seen) != len(want4) {
+		t.Fatalf("outcomes = %v, want %v", meter.seen, want4)
+	}
+	for i := range want4 {
+		if meter.seen[i] != want4[i] {
+			t.Errorf("outcome[%d] = %q, want %q", i, meter.seen[i], want4[i])
+		}
+	}
+}

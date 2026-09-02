@@ -382,7 +382,9 @@ func newPipelineStack(
 	// exactroute:{msisdn} is a read-through cache, not a projection (step-250e): the resolver populates
 	// it from p.exactRepo on a miss, and admin-api-svc DELs the key after its own commit. Passing the
 	// same repo the Bloom is built from keeps one durable source behind both.
-	exactResolver := exact.NewResolver(p.exactBloom, rdb, p.exactRepo, exact.DefaultCacheTTL)
+	// exact_route_lookups_total carries one bounded label (outcome), from a vocabulary fixed in code.
+	exactResolver := exact.NewResolver(p.exactBloom, rdb, p.exactRepo, exact.DefaultCacheTTL,
+		exact.WithLookupMeter(lookupMeter{c: catalog.ExactRouteLookups}))
 	resolver := routing.NewL0Resolver(exactResolver, p.scriptResolver, boot.routes)
 
 	// The credit stage (§6.9, step-145): a per-customer billing-scope snapshot gates the reserve, so a
@@ -815,6 +817,11 @@ func loadWithRetry[T any](ctx context.Context, logger *slog.Logger, what string,
 type failOpenMetric struct{ c prometheus.Counter }
 
 func (m failOpenMetric) FailOpen() { m.c.Inc() }
+
+// lookupMeter adapts the L0 lookup counter to exact.LookupMeter (one bounded label: outcome).
+type lookupMeter struct{ c *prometheus.CounterVec }
+
+func (m lookupMeter) Observe(outcome string) { m.c.WithLabelValues(outcome).Inc() }
 
 // scriptMeter adapts the routing-script failure counter to routing.FailureMeter (bounded labels only).
 type scriptMeter struct{ c *prometheus.CounterVec }

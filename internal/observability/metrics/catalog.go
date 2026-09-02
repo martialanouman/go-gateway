@@ -93,6 +93,12 @@ type Catalog struct {
 	// catalogue adopts the metric router-svc already exposed rather than adding a second, near-duplicate
 	// timeout counter: two names for one event is how a dashboard ends up disagreeing with itself.
 	RoutingScriptFailures *prometheus.CounterVec
+
+	// ExactRouteLookups counts L0 exact-number lookups by outcome (bloom_miss | redis_hit | pg_hit |
+	// pg_miss). Since step-250e the key is a read-through cache, so this is what tells a stale-Bloom
+	// false positive (pg_miss, a Postgres round trip that resolves nothing) from a real cold hit — the
+	// two follow-ups that step defers, a negative cache and the TTL, are not decidable without it.
+	ExactRouteLookups *prometheus.CounterVec
 }
 
 // Native histogram settings, applied to every histogram in the catalogue. A factor of 1.1 gives ~10%
@@ -212,6 +218,11 @@ func NewCatalog() *Catalog {
 			Name: "routing_script_failures_total",
 			Help: "Routing scripts that fell back to declarative resolution, by runtime and reason.",
 		}, []string{"runtime", "reason"}),
+
+		ExactRouteLookups: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "exact_route_lookups_total",
+			Help: "L0 exact-number lookups, by outcome (bloom_miss, redis_hit, pg_hit, pg_miss).",
+		}, []string{"outcome"}),
 	}
 }
 
@@ -224,6 +235,7 @@ func (c *Catalog) Collectors() []prometheus.Collector {
 		c.ConnectorBreakerState,
 		c.BalanceCacheAge,
 		c.RoutingScriptFailures,
+		c.ExactRouteLookups,
 		c.MessagesTotal,
 		c.RejectedTotal,
 		c.PipelineDuration,

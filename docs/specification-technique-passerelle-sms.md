@@ -401,7 +401,9 @@ session:{bind_id}                    -- session metadata (account_id, bind_type,
 ratelimit:{entity_type}:{entity_id}:{window}   -- atomic token-bucket counters (Lua)
 dedupe:{account_id}:{content_hash}   -- short-TTL set for duplicate-message anti-spam
 reputation:{account_id}              -- rolling spam-score, decayed
-exactroute:{msisdn}                  -- exact-number routing entry; read only on a Bloom-filter possible-hit (§6.1)
+exactroute:{msisdn}                  -- exact-number routing CACHE over exact_routes; read only on a Bloom-filter
+                                        possible-hit, populated by the reader on a miss (read-through, TTL 6h ±10%),
+                                        DELeted by the Admin API after its commit. Never a source of truth (§6.1)
 suppress:{scope}:{scope_id}:{msisdn} -- opt-out entry; read only on a Bloom-filter possible-hit (§6.20)
 billing:balance:{direction}:{owner_type}:{owner_id}   -- cached balance, mirroring `balances`. Atomic Lua for MT
                                          reserve/capture/release; accrual meter for MO. Reconciled with Postgres.
@@ -721,7 +723,7 @@ WS      /admin/stream/billing-alerts                    # MT low-balance / MT ov
 
 L'**exécution** de la route (cibles multi-connecteurs, chaîne de repli) est identique quelle que soit la voie de résolution, et toujours déclarative.
 
-0. **Correspondance de numéro exact (priorité maximale, court-circuit)** : si le MSISDN de destination figure dans `exact_routes`, sa cible est utilisée immédiatement, sans exécuter le script ni le matching déclaratif. C'est la réponse à la **portabilité des numéros** — le matching par préfixe (niveau 2) suppose à tort que le préfixe identifie l'opérateur, faux pour un numéro porté. La table est typiquement alimentée en masse depuis une base MNP. `router-svc` maintient en mémoire un **filtre de Bloom** de toutes les clés (rafraîchi via `config-sync`) : jamais de faux négatif, donc « absent » signifie certainement pas d'override et le message continue sans appel réseau (~99 % du trafic) ; seul un « peut-être » lit `exactroute:{msisdn}`. ~1,2 Mo de filtre par million d'entrées. Si la cible d'un numéro exact est indisponible (connecteur désactivé/disjoncteur ouvert), on retombe sur la chaîne normale plutôt que dead-letter.
+0. **Correspondance de numéro exact (priorité maximale, court-circuit)** : si le MSISDN de destination figure dans `exact_routes`, sa cible est utilisée immédiatement, sans exécuter le script ni le matching déclaratif. C'est la réponse à la **portabilité des numéros** — le matching par préfixe (niveau 2) suppose à tort que le préfixe identifie l'opérateur, faux pour un numéro porté. La table est typiquement alimentée en masse depuis une base MNP. `router-svc` maintient en mémoire un **filtre de Bloom** de toutes les clés (rafraîchi via `config-sync`) : jamais de faux négatif, donc « absent » signifie certainement pas d'override et le message continue sans appel réseau (~99 % du trafic) ; seul un « peut-être » lit `exactroute:{msisdn}`. Cette clé est un **cache read-through** sur `exact_routes`, jamais une projection : sur un miss, le routeur lit la table par clé primaire et peuple la clé avec un TTL (6 h, jitter ±10 %) ; l'Admin API se contente de la **supprimer** après son commit, sans jamais y écrire de cible. Les deux jambes de lecture sont fail-closed en rejeu (§16). Rien n'écrivait cette clé jusqu'à step-250e, et le court-circuit ne résolvait donc jamais. ~1,2 Mo de filtre par million d'entrées. Si la cible d'un numéro exact est indisponible (connecteur désactivé/disjoncteur ouvert), on retombe sur la chaîne normale plutôt que dead-letter.
 
 1. **Script de routage** : si le compte (ou la plateforme) a un script actif, il est invoqué (§6.2). S'il retourne un ID de route valide, cette route est utilisée directement.
 
