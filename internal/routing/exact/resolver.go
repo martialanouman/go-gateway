@@ -149,10 +149,7 @@ func (r *Resolver) Resolve(ctx context.Context, msisdn string) (Target, bool, er
 // in the table is a Bloom false positive: it falls back without caching anything, since this step
 // ships no negative caching and a key written here would be a route to nowhere.
 func (r *Resolver) loadAndCache(ctx context.Context, msisdn string) (Target, bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, r.lookupTimeout)
-	defer cancel()
-
-	route, found, err := r.store.Get(ctx, msisdn)
+	route, found, err := r.lookup(ctx, msisdn)
 	if err != nil {
 		return Target{}, false, transient(err)
 	}
@@ -180,6 +177,17 @@ func (r *Resolver) loadAndCache(ctx context.Context, msisdn string) (Target, boo
 // Postgres, because a fake returning a bare error has the shape of an outage and none of its contract.
 func transient(err error) error {
 	return errors.New("exact: durable lookup: " + err.Error())
+}
+
+// lookup reads the durable table under its own deadline. The bound is scoped to THIS call and released
+// before the cache write that follows: sharing one budget would leave the populate whatever the lookup
+// did not use — a sliver, after a slow Postgres — so the cache would start failing to fill exactly when
+// the system is slow, and every following message would pay another slow lookup.
+func (r *Resolver) lookup(ctx context.Context, msisdn string) (Route, bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, r.lookupTimeout)
+	defer cancel()
+
+	return r.store.Get(ctx, msisdn)
 }
 
 // jitterTTL randomises d by ±cacheJitterPct%, uniformly. Same idiom as the reconnect backoff's own

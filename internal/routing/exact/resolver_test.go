@@ -19,10 +19,14 @@ type fakeRedis struct {
 	err  error // when set, every Get returns this transient fault
 	// setErr is separate from err on purpose: with one field, "the key is absent AND the populating
 	// write fails" — the exact case the read-through has to survive — could not be expressed at all.
-	setErr  error
-	gets    int // number of Get calls
-	sets    int // number of Set calls
-	lastTTL time.Duration
+	setErr error
+	// setDeadline records the deadline the populating write was handed, so a test can prove the write
+	// does not inherit the durable lookup's budget.
+	setDeadline time.Time
+	setHadDL    bool
+	gets        int // number of Get calls
+	sets        int // number of Set calls
+	lastTTL     time.Duration
 }
 
 func (f *fakeRedis) Get(_ context.Context, key string) *goredis.StringCmd {
@@ -37,7 +41,13 @@ func (f *fakeRedis) Get(_ context.Context, key string) *goredis.StringCmd {
 	return goredis.NewStringResult(v, nil)
 }
 
-func (f *fakeRedis) Set(_ context.Context, key string, value any, ttl time.Duration) *goredis.StatusCmd {
+func (f *fakeRedis) Set(ctx context.Context, key string, value any, ttl time.Duration) *goredis.StatusCmd {
+	// The real client checks the context before issuing a command; a double that ignores it cannot show
+	// a populate starved by a deadline meant for someone else.
+	if err := ctx.Err(); err != nil {
+		return goredis.NewStatusResult("", err)
+	}
+	f.setDeadline, f.setHadDL = ctx.Deadline()
 	if f.setErr != nil {
 		return goredis.NewStatusResult("", f.setErr)
 	}

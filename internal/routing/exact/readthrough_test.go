@@ -318,3 +318,53 @@ func (blackHoleStore) Get(ctx context.Context, _ string) (Route, bool, error) {
 	<-ctx.Done()
 	return Route{}, false, ctx.Err()
 }
+
+// slowStore answers only after burning most of the lookup budget, the way a loaded Postgres does.
+type slowStore struct {
+	delay time.Duration
+	route Route
+}
+
+func (s slowStore) Get(ctx context.Context, _ string) (Route, bool, error) {
+	select {
+	case <-time.After(s.delay):
+		return s.route, true, nil
+	case <-ctx.Done():
+		return Route{}, false, ctx.Err()
+	}
+}
+
+// TestCachePopulateDoesNotInheritTheLookupBudget: the lookup deadline bounds the DURABLE READ, and
+// nothing else.
+//
+// Sharing one deadline with the write that follows is not a crash, which is what makes it easy to ship:
+// if store.Get returned at all, the context had not expired. But what is left of the budget can be a
+// sliver — a Postgres that burned 1.9s of 2s leaves the populate 100ms — so the cache write starts
+// failing exactly while the system is slow, and every following message pays another slow lookup. The
+// cache would stop working precisely when it is most needed.
+//
+// The assertion is structural rather than timing-based, because the symptom is a degradation and not a
+// deterministic failure: the write must simply not carry the lookup's deadline.
+func TestCachePopulateDoesNotInheritTheLookupBudget(t *testing.T) {
+	msisdn := "2250700000001"
+	want := Target{Type: TargetConnector, ID: uuid.New()}
+	cache := &fakeRedis{vals: map[string]string{}}
+	r := NewResolver(
+		newBloom([]string{msisdn}), cache,
+		slowStore{delay: 20 * time.Millisecond, route: Route{MSISDN: msisdn, Target: want}},
+		time.Hour,
+		WithLookupTimeout(150*time.Millisecond),
+	)
+
+	if _, ok, err := r.Resolve(context.Background(), msisdn); err != nil || !ok {
+		t.Fatalf("Resolve = (ok=%v, err=%v), want a hit", ok, err)
+	}
+	if cache.sets != 1 {
+		t.Fatalf("cache Set called %d time(s), want 1", cache.sets)
+	}
+	if cache.setHadDL && time.Until(cache.setDeadline) < 130*time.Millisecond {
+		t.Errorf("the cache write carried a deadline %v away — the durable lookup's leftover budget, "+
+			"not its own. A slow lookup would then starve the populate",
+			time.Until(cache.setDeadline).Round(time.Millisecond))
+	}
+}
