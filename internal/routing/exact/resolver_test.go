@@ -2,19 +2,24 @@ package exact
 
 import (
 	"context"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	goredis "github.com/redis/go-redis/v9"
 )
 
-// fakeRedis is a Get-only stand-in for the resolver: a missing key returns goredis.Nil, matching the
-// real client, so the Bloom-hit-but-absent path is exercised without a live Redis. gets counts calls so
-// a test can prove the definitive-miss short-cut never touches Redis.
+// fakeRedis is an in-memory stand-in for the resolver's cache: a missing key returns goredis.Nil,
+// matching the real client, so the cache-miss path is exercised without a live Redis. gets counts calls
+// so a test can prove the definitive-miss short-cut never touches Redis; lastTTL records what a
+// populating Set asked for.
 type fakeRedis struct {
-	vals map[string]string
-	err  error // when set, every Get returns this transient fault
-	gets int   // number of Get calls
+	vals    map[string]string
+	err     error // when set, every command returns this transient fault
+	gets    int   // number of Get calls
+	sets    int   // number of Set calls
+	lastTTL time.Duration
 }
 
 func (f *fakeRedis) Get(_ context.Context, key string) *goredis.StringCmd {
@@ -29,13 +34,26 @@ func (f *fakeRedis) Get(_ context.Context, key string) *goredis.StringCmd {
 	return goredis.NewStringResult(v, nil)
 }
 
+func (f *fakeRedis) Set(_ context.Context, key string, value any, ttl time.Duration) *goredis.StatusCmd {
+	if f.err != nil {
+		return goredis.NewStatusResult("", f.err)
+	}
+	if f.vals == nil {
+		f.vals = map[string]string{}
+	}
+	f.sets++
+	f.lastTTL = ttl
+	f.vals[key] = fmt.Sprint(value)
+	return goredis.NewStatusResult("OK", nil)
+}
+
 // TestResolveMissSkipsRedis: a number the Bloom does not know is a definitive miss — ok=false, and the
 // resolver must not read Redis at all (the counter proves the short-cut, so a regression that drops it
 // fails loudly).
 func TestResolveMissSkipsRedis(t *testing.T) {
 	bloom := newBloom([]string{"2250700000001"})
 	redis := &fakeRedis{}
-	r := NewResolver(bloom, redis)
+	r := NewResolver(bloom, redis, &fakeStore{}, time.Hour)
 
 	target, ok, err := r.Resolve(context.Background(), "2250799999999")
 	if err != nil || ok {
@@ -54,7 +72,7 @@ func TestResolveHitReturnsTarget(t *testing.T) {
 	bloom := newBloom([]string{msisdn})
 	r := NewResolver(bloom, &fakeRedis{vals: map[string]string{
 		redisKey(msisdn): EncodeTarget(Target{Type: TargetConnector, ID: connID}),
-	}})
+	}}, &fakeStore{}, time.Hour)
 
 	target, ok, err := r.Resolve(context.Background(), msisdn)
 	if err != nil || !ok {
@@ -65,12 +83,12 @@ func TestResolveHitReturnsTarget(t *testing.T) {
 	}
 }
 
-// TestResolveBloomHitButRedisAbsent: a Bloom possible-hit with no Redis entry (a false positive, or a
-// number not yet synced) falls back — ok=false, no error — so a false positive never mis-routes.
+// TestResolveBloomHitButRedisAbsent: a Bloom possible-hit that neither the cache nor the durable table
+// knows is a false positive. It falls back — ok=false, no error — so a false positive never mis-routes.
 func TestResolveBloomHitButRedisAbsent(t *testing.T) {
 	msisdn := "2250700000001"
-	bloom := newBloom([]string{msisdn})                            // msisdn IS in the Bloom...
-	r := NewResolver(bloom, &fakeRedis{vals: map[string]string{}}) // ...but absent from Redis.
+	bloom := newBloom([]string{msisdn}) // msisdn IS in the Bloom...
+	r := NewResolver(bloom, &fakeRedis{vals: map[string]string{}}, &fakeStore{}, time.Hour) // ...and absent from both.
 
 	target, ok, err := r.Resolve(context.Background(), msisdn)
 	if err != nil || ok {
@@ -83,7 +101,7 @@ func TestResolveBloomHitButRedisAbsent(t *testing.T) {
 func TestResolveRedisFaultSurfaces(t *testing.T) {
 	msisdn := "2250700000001"
 	bloom := newBloom([]string{msisdn})
-	r := NewResolver(bloom, &fakeRedis{err: context.DeadlineExceeded})
+	r := NewResolver(bloom, &fakeRedis{err: context.DeadlineExceeded}, &fakeStore{}, time.Hour)
 
 	if _, ok, err := r.Resolve(context.Background(), msisdn); err == nil || ok {
 		t.Fatalf("Resolve(redis fault) = (ok=%v, err=%v), want (false, non-nil)", ok, err)

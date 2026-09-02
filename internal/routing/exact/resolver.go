@@ -4,61 +4,123 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	goredis "github.com/redis/go-redis/v9"
 )
 
-// RedisGetter is the read surface the resolver needs from Redis. A *goredis.Client satisfies it.
-type RedisGetter interface {
+// DefaultCacheTTL bounds how long a cached exact route may outlive a durable change whose invalidation
+// was lost. It is a safety net, not the coherence mechanism — the Admin API DELs the key after every
+// commit (step-250e). Long enough that the steady-state Postgres read rate is one lookup per active
+// ported number per TTL; short enough that a missed DEL heals the same working day.
+const DefaultCacheTTL = 6 * time.Hour
+
+// cacheJitterPct spreads expiry across keys warmed in the same burst — after a Redis loss the whole
+// working set repopulates within seconds, and a fixed TTL would then expire it in lockstep.
+const cacheJitterPct = 10
+
+// RedisCache is the surface the resolver needs from Redis: read a cached route, and populate one on a
+// miss. A *goredis.Client satisfies it.
+type RedisCache interface {
 	Get(ctx context.Context, key string) *goredis.StringCmd
+	Set(ctx context.Context, key string, value any, expiration time.Duration) *goredis.StatusCmd
 }
 
-// Resolver is the L0 exact-number lookup: a per-pod Bloom gate in front of the shared Redis map
-// exactroute:{msisdn} (Appendix B). A Bloom miss is a definitive "no override" answered without a
-// network call; a Bloom hit is confirmed against Redis, so a false positive never routes a message to
-// the wrong target.
+// RouteStore is the durable source of truth behind the cache. *postgres.ExactRouteRepo satisfies it
+// structurally; the lookup is by primary key.
+type RouteStore interface {
+	Get(ctx context.Context, msisdn string) (Route, bool, error)
+}
+
+// Resolver is the L0 exact-number lookup: a per-pod Bloom gate in front of exactroute:{msisdn}
+// (Appendix B), which is a read-through cache over the durable exact_routes table.
+//
+// A Bloom miss is a definitive "no override" answered without any network call (~99% of traffic). A
+// Bloom possible-hit reads Redis; on a cache miss the durable table decides, and a row found there
+// populates the cache for the next message. The control plane never writes a value here — it DELs the
+// key after its own commit — so Redis is a cache that can always be rebuilt, never a second source of
+// truth (ADR-0004, amended).
 type Resolver struct {
 	bloom *Bloom
-	redis RedisGetter
+	cache RedisCache
+	store RouteStore
+	ttl   time.Duration
 }
 
-// NewResolver builds the L0 resolver over a boot-loaded Bloom and a Redis reader.
-func NewResolver(bloom *Bloom, redis RedisGetter) *Resolver {
-	return &Resolver{bloom: bloom, redis: redis}
+// NewResolver builds the L0 resolver over a boot-loaded Bloom, the Redis cache and the durable store.
+// A non-positive ttl falls back to DefaultCacheTTL.
+func NewResolver(bloom *Bloom, cache RedisCache, store RouteStore, ttl time.Duration) *Resolver {
+	if ttl <= 0 {
+		ttl = DefaultCacheTTL
+	}
+	return &Resolver{bloom: bloom, cache: cache, store: store, ttl: ttl}
 }
 
 // redisKey is the exact-route key for an MSISDN (Appendix B). The hash tag ({msisdn}) pins a number's
-// key to one cluster slot.
-//
-// NOTE (step-250d): nothing writes this key yet. config-sync does not know about exact routes and the
-// Admin API persists them to Postgres only, so in production every Bloom possible-hit reads a missing
-// key and falls back to declarative routing — the L0 short-circuit never resolves, and number
-// portability (spec §6.1) does not work. The reader below is correct and its failure policy is live
-// (the read happens on every false positive); what is missing is the writer. See tasks-todo/step-250e.
+// key to one cluster slot — which also means keys cannot be written or deleted in one cross-slot
+// command, hence the pipelining in the Invalidator.
 func redisKey(msisdn string) string { return "exactroute:{" + msisdn + "}" }
 
 // Resolve returns the exact-route target for an MSISDN. ok is false for the common "no override" case
-// — a Bloom miss, or a Bloom possible-hit with no Redis entry (a false positive, or not yet synced) —
-// and the caller then falls back to normal route resolution. A non-nil error is a transient Redis
-// fault; a missing key is not an error.
+// — a Bloom miss, or a possible-hit the durable table does not know (a false positive) — and the
+// caller then falls back to normal route resolution.
+//
+// A non-nil error is transient and uncoded, from either leg: an exact route that cannot be reached
+// must not degrade into default routing, which for a ported number means its former operator (§16).
+// Only a MISSING key falls through to the store; a Redis fault is returned. Falling through on a fault
+// would move the hot path onto the control-plane database at full message rate during an outage, and
+// is an open question rather than a silent default.
 func (r *Resolver) Resolve(ctx context.Context, msisdn string) (Target, bool, error) {
 	if !r.bloom.MightContain(msisdn) {
-		return Target{}, false, nil // definitive miss: no Redis read
+		return Target{}, false, nil // definitive miss: no network call at all
 	}
-	val, err := r.redis.Get(ctx, redisKey(msisdn)).Result()
-	if errors.Is(err, goredis.Nil) {
-		return Target{}, false, nil // Bloom false positive / not yet synced: fall back
-	}
-	if err != nil {
+
+	val, err := r.cache.Get(ctx, redisKey(msisdn)).Result()
+	switch {
+	case err == nil:
+		target, perr := parseTarget(val)
+		if perr != nil {
+			return Target{}, false, perr
+		}
+		return target, true, nil
+	case !errors.Is(err, goredis.Nil):
 		return Target{}, false, fmt.Errorf("exact: redis lookup: %w", err)
 	}
-	target, err := parseTarget(val)
+
+	return r.loadAndCache(ctx, msisdn)
+}
+
+// loadAndCache resolves a cache miss against the durable table and populates the key on a hit. A miss
+// in the table is a Bloom false positive: it falls back without caching anything, since this step
+// ships no negative caching and a key written here would be a route to nowhere.
+func (r *Resolver) loadAndCache(ctx context.Context, msisdn string) (Target, bool, error) {
+	route, found, err := r.store.Get(ctx, msisdn)
 	if err != nil {
-		return Target{}, false, err
+		return Target{}, false, fmt.Errorf("exact: durable lookup: %w", err)
 	}
-	return target, true, nil
+	if !found {
+		return Target{}, false, nil
+	}
+
+	// A cache write that fails must not fail the message: the target is already known and correct, and
+	// the next message simply pays another lookup. Only the read legs are fail-closed.
+	_ = r.cache.Set(ctx, redisKey(msisdn), EncodeTarget(route.Target), jitterTTL(r.ttl)).Err()
+	return route.Target, true, nil
+}
+
+// jitterTTL randomises d by ±cacheJitterPct%, uniformly. Same idiom as the reconnect backoff's own
+// jitter, for the same reason: it de-synchronises expiry, and it is not security-sensitive.
+func jitterTTL(d time.Duration) time.Duration {
+	if d <= 0 {
+		return d
+	}
+	span := float64(cacheJitterPct) / 100.0
+	//nolint:gosec // G404: TTL jitter de-synchronises cache expiry, it is not a secret
+	factor := 1 + (rand.Float64()*2-1)*span // uniform in [1-span, 1+span]
+	return time.Duration(float64(d) * factor)
 }
 
 // parseTarget decodes the Redis value "<target_type>:<uuid>" into a Target — the Appendix B encoding.
@@ -80,9 +142,9 @@ func parseTarget(val string) (Target, error) {
 	return Target{Type: tt, ID: uid}, nil
 }
 
-// EncodeTarget renders a Target as the Redis value an exact-route sync must write. It is the inverse of
-// parseTarget and lives here so the encoding has one owner. It has no production caller today — see the
-// note on redisKey.
+// EncodeTarget renders a Target as the Redis cache value. It is the inverse of parseTarget and lives
+// here so the encoding has exactly one owner: the resolver populating the cache and the Invalidator
+// clearing it both go through this file, and no other package knows the wire form.
 func EncodeTarget(t Target) string {
 	return string(t.Type) + ":" + t.ID.String()
 }

@@ -3,6 +3,7 @@ package exact
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -35,7 +36,11 @@ func TestExactRouteFailsClosedWhenRedisIsCut(t *testing.T) {
 	if err := rdb.Set(ctx, redisKey(ported), EncodeTarget(want), 0).Err(); err != nil {
 		t.Fatalf("seed the exact route: %v", err)
 	}
-	resolver := NewResolver(newBloom([]string{ported}), rdb)
+	// The durable store COULD answer for this number. That is deliberate: a Redis fault must surface
+	// rather than quietly fall through to Postgres (step-250e), and with an empty store the assertion
+	// below would hold for want of a row instead of for want of that policy.
+	store := &fakeStore{rows: map[string]Route{ported: {MSISDN: ported, Target: want}}}
+	resolver := NewResolver(newBloom([]string{ported}), rdb, store, time.Hour)
 
 	// Control, with Redis up: the override resolves. Without it we could not tell a fail-closed
 	// resolver from a harness that never reached Redis in the first place.

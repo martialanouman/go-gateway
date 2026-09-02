@@ -379,7 +379,11 @@ func newPipelineStack(
 	// routing_script_failures_total carries bounded labels only (runtime, reason) — never a body or
 	// script text.
 	p.scriptResolver = routing.NewScriptResolver(scriptSnap, logger, scriptMeter{c: catalog.RoutingScriptFailures})
-	resolver := routing.NewL0Resolver(exact.NewResolver(p.exactBloom, rdb), p.scriptResolver, boot.routes)
+	// exactroute:{msisdn} is a read-through cache, not a projection (step-250e): the resolver populates
+	// it from p.exactRepo on a miss, and admin-api-svc DELs the key after its own commit. Passing the
+	// same repo the Bloom is built from keeps one durable source behind both.
+	exactResolver := exact.NewResolver(p.exactBloom, rdb, p.exactRepo, exact.DefaultCacheTTL)
+	resolver := routing.NewL0Resolver(exactResolver, p.scriptResolver, boot.routes)
 
 	// The credit stage (§6.9, step-145): a per-customer billing-scope snapshot gates the reserve, so a
 	// billing-disabled customer makes ZERO billing round-trip, and the billing gRPC client reserves credit
