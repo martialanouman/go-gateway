@@ -27,6 +27,30 @@ piste d'audit consolidée des actions sensibles.
 - Un secret est bien hashé/comparé en temps constant (tests existants renforcés).
 - Une action sensible produit une entrée d'audit.
 
+## Hérité de la revue de step-250e (2026-09-02) — trois constats à trancher
+
+Aucun n'est une régression de step-250e ; les deux premiers sont préexistants, le troisième est un
+risque que cette step a rendu atteignable.
+
+1. **Une cible `connector` lue depuis Redis n'est confrontée à rien.** `internal/routing/snapshot.go`
+   vérifie l'appartenance d'une cible `route` au snapshot, mais renvoie une cible `connector` telle
+   quelle. Qui écrit dans ce Redis peut donc détourner le trafic d'un MSISDN vers n'importe quel
+   connecteur. Le modèle de menace le relativise — le même Redis porte les soldes de facturation et
+   les token-buckets, il est dans la frontière de confiance — mais la posture mérite d'être écrite
+   explicitement plutôt que subie.
+2. **Aucun vecteur de hash `argon2` n'est épinglé.** Les tests de `internal/credential` hachent et
+   vérifient avec la même version : un aller-retour circulaire. Si un futur bump de
+   `golang.org/x/crypto` changeait la dérivation, ils resteraient **verts** pendant que tous les
+   secrets déjà en base (mots de passe de bind SMPP, clés API) deviendraient invérifiables — panne
+   totale d'authentification. Vérifié au moment du bump v0.53→v0.56 : le code d'`argon2` est identique
+   entre les deux, donc le risque ne s'est pas matérialisé. Il n'est pas gardé pour autant.
+3. **Une clé `exactroute:` de mauvais type boucle sans borne.** Un `WRONGTYPE` n'est ni `redis.Nil` ni
+   une erreur de décodage : il est classé faute Redis, donc remonté, donc redélivré — sur la même clé,
+   indéfiniment, et le TTL ne le borne pas puisque la clé n'expire pas d'elle-même. Toute la partition
+   est figée jusqu'à un `DEL` manuel. Le traitement de la valeur illisible (guérie depuis la table)
+   s'applique mot pour mot ; la distinction demande de reconnaître l'erreur `WRONGTYPE`, ce qui repose
+   sur son texte — d'où le renvoi ici plutôt qu'un correctif fragile dans step-250e.
+
 ## Definition of Done
 - [ ] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts
 - [ ] critères couverts par tests · godoc sur l'exporté · aucun invariant (a/b/c/d) violé

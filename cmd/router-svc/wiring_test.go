@@ -189,6 +189,41 @@ func TestOpsExposesTheOutcomeProjectionDrainRate(t *testing.T) {
 	}
 }
 
+// TestOpsExposesTheExactRouteLookupCounter guards the metric step-250e shipped to make its two
+// deferred decisions decidable — a negative cache, judged on pg_miss, and the TTL, judged on pg_hit.
+//
+// It was fed and never registered: cmd/router-svc/wiring.go incremented catalog.ExactRouteLookups on
+// every MT message while the MustRegister list omitted it, so the series existed nowhere. The
+// catalogue's own test did not catch it, because it registers Collectors() wholesale on a throwaway
+// registry that this service never builds — green over a hole, which is the very shape of defect
+// step-250e exists to remove.
+func TestOpsExposesTheExactRouteLookupCounter(t *testing.T) {
+	cfg := testConfig()
+	cfg.Postgres = pgtest.Config(t)
+	cfg.Redis = redistest.Config(t)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	app, err := newRouterApp(ctx, cfg, silentLogger())
+	if err != nil {
+		t.Fatalf("newRouterApp: %v", err)
+	}
+	defer app.close()
+
+	rec := httptest.NewRecorder()
+	promhttp.HandlerFor(app.ops.Registry(), promhttp.HandlerOpts{}).
+		ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/metrics = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if !strings.Contains(rec.Body.String(), "exact_route_lookups_total") {
+		t.Error("exact_route_lookups_total is fed on every MT message but not exposed on /metrics: " +
+			"the cost is paid on the hot path and nobody can read the result, so the negative-cache " +
+			"and TTL decisions ADR-0015 defers to it stay undecidable")
+	}
+}
+
 // TestLagAlertOperandsHaveTheLabelSetsTheExpressionAssumes freezes the two facts the alert expression
 // rests on, because the expression itself is evaluated by no test in this repo (step-201c, D14/D17).
 //

@@ -168,6 +168,17 @@ type Deps struct {
 	OptOutKeywords   OptOutKeywordStore
 	AntispamRules    AntispamRuleStore
 	ExactRoutes      ExactRouteAdminStore
+	ExactRouteCache  ExactRouteCacheInvalidator
+	// ConfigChanges and ConfigChannel let a mutation whose durable write lands AFTER its HTTP response
+	// — today, the background bulk import of exact routes (step-250e) — publish its own config-change
+	// announcement once committed. Synchronous handlers are covered by the PublishConfigChanges
+	// middleware and must not use them: the middleware announces when the HANDLER returns, which for
+	// an import is the 202 while BulkUpsert is still running, so the fleet would rebuild its Bloom
+	// from a table that does not hold the rows yet and nothing would republish after the commit.
+	// Small imports won that race and large ones lost it, the inverse of the use case. Best-effort,
+	// like the middleware: a lost announcement only defers the rebuild to the next admin mutation.
+	ConfigChanges    ConfigChangePublisher
+	ConfigChannel    string
 	RoutingScripts   RoutingScriptAdminStore
 	Imports          ImportRunner
 	Disconnector     Disconnector
@@ -219,6 +230,16 @@ type BillingProviderStore interface {
 	Create(ctx context.Context, in cp.NewExternalBillingProvider) (cp.ExternalBillingProvider, error)
 	Update(ctx context.Context, id uuid.UUID, p cp.ExternalBillingProviderPatch) (cp.ExternalBillingProvider, error)
 	Delete(ctx context.Context, id uuid.UUID) error
+}
+
+// ExactRouteCacheInvalidator drops the cached exact routes of the numbers an admin mutation just changed
+// durably, so the next Bloom possible-hit repopulates exactroute:{msisdn} from Postgres (step-250e). It is
+// the control plane's ONLY write to that cache: it never says what the new target is, which is what keeps
+// the key rebuildable rather than a second source of truth. Best-effort — a failure is logged, not fatal,
+// because the commit already happened and the resolver's TTL bounds the staleness. *exact.Invalidator
+// satisfies it; registerExactRoutes defaults a nil one to a no-op. Declared consumer-side.
+type ExactRouteCacheInvalidator interface {
+	Invalidate(ctx context.Context, msisdns ...string) error
 }
 
 // BalanceCacheInvalidator deletes the Redis balance-cache keys of the owners an admin money op just changed

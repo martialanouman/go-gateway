@@ -354,7 +354,8 @@ func newPipelineStack(
 	rateLimiter := ratelimit.NewEnforcer(rateSnap, ratelimit.NewLimiter(rdb))
 
 	// The L0 exact-number short-cut (§6.1): an in-memory Bloom over every exact_routes MSISDN, loaded
-	// once at boot, in front of the shared Redis map. A ported number routes straight to its target
+	// at boot and hot-swapped by Reload on each invalidation, in front of the exactroute:{msisdn}
+	// read-through cache (ADR-0015). A ported number routes straight to its target
 	// (skipping route resolution only, never compliance); every other number falls through to the
 	// declarative resolver.
 	p.exactRepo = postgres.NewExactRouteRepo(pool)
@@ -379,7 +380,14 @@ func newPipelineStack(
 	// routing_script_failures_total carries bounded labels only (runtime, reason) — never a body or
 	// script text.
 	p.scriptResolver = routing.NewScriptResolver(scriptSnap, logger, scriptMeter{c: catalog.RoutingScriptFailures})
-	resolver := routing.NewL0Resolver(exact.NewResolver(p.exactBloom, rdb), p.scriptResolver, boot.routes)
+	// exactroute:{msisdn} is a read-through cache, not a projection (step-250e): the resolver populates
+	// it from p.exactRepo on a miss, and admin-api-svc DELs the key after its own commit. Passing the
+	// same repo the Bloom is built from keeps one durable source behind both.
+	// exact_route_lookups_total carries one bounded label (outcome), from a vocabulary fixed in code.
+	exactResolver := exact.NewResolver(p.exactBloom, rdb, p.exactRepo, exact.DefaultCacheTTL,
+		exact.WithLookupMeter(lookupMeter{c: catalog.ExactRouteLookups}),
+		exact.WithCorruptionMeter(catalog.ExactRouteCacheCorrupt))
+	resolver := routing.NewL0Resolver(exactResolver, p.scriptResolver, boot.routes)
 
 	// The credit stage (§6.9, step-145): a per-customer billing-scope snapshot gates the reserve, so a
 	// billing-disabled customer makes ZERO billing round-trip, and the billing gRPC client reserves credit
@@ -635,7 +643,8 @@ func newOpsServer(
 	// panic on the duplicate and expose always-zero series, which read as "measured, and nothing happened"
 	// rather than "not measured here".
 	ops.Registry().MustRegister(catalog.RoutingScriptFailures, catalog.QueueDepth,
-		catalog.MessagesTotal, catalog.RejectedTotal, catalog.PipelineDuration)
+		catalog.MessagesTotal, catalog.RejectedTotal, catalog.PipelineDuration,
+		catalog.ExactRouteLookups, catalog.ExactRouteCacheCorrupt)
 	ops.Registry().MustRegister(stream.dropped...)
 
 	blooms := bloomGauges{
@@ -651,6 +660,12 @@ func newOpsServer(
 	ops.Registry().MustRegister(blooms.reload, blooms.capacity)
 	// Seed both series at boot so the freshness gauge reads "last load", not "last hot reload": a pod
 	// that has not yet received an invalidation still reports current, non-absent filters.
+	// Same reason for the L0 lookup counter: a counter vector exposes nothing until it has a child, so
+	// a fresh pod would serve no exact_route_lookups_total at all and a pg_miss/pg_hit ratio would have
+	// no denominator until the first message of each kind happened by.
+	for _, outcome := range exact.LookupOutcomes() {
+		catalog.ExactRouteLookups.WithLabelValues(outcome)
+	}
 	blooms.set("exact", stack.exactBloom.CapacityBits())
 	blooms.set("optout", boot.optOut.CapacityBits())
 
@@ -811,6 +826,11 @@ func loadWithRetry[T any](ctx context.Context, logger *slog.Logger, what string,
 type failOpenMetric struct{ c prometheus.Counter }
 
 func (m failOpenMetric) FailOpen() { m.c.Inc() }
+
+// lookupMeter adapts the L0 lookup counter to exact.LookupMeter (one bounded label: outcome).
+type lookupMeter struct{ c *prometheus.CounterVec }
+
+func (m lookupMeter) Observe(outcome string) { m.c.WithLabelValues(outcome).Inc() }
 
 // scriptMeter adapts the routing-script failure counter to routing.FailureMeter (bounded labels only).
 type scriptMeter struct{ c *prometheus.CounterVec }

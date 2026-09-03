@@ -3,6 +3,7 @@ package exact
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -10,19 +11,22 @@ import (
 	"github.com/martialanouman/go-gateway/internal/testutil/redistest"
 )
 
-// TestExactRouteFailsClosedWhenRedisIsCut is the step-250d acceptance test for the sixth row of the
-// failure-policy matrix (guide de codage §16): "Redis (routage L0, numéro exact) -> fail-closed en
-// rejeu : erreur non codée → offset non commité → redélivrance".
+// TestExactRouteFailsClosedWhenRedisIsCut is the step-250d acceptance test for the "Redis (routage L0,
+// numéro exact)" row of the failure-policy matrix (guide de codage §16): "fail-closed en rejeu : erreur
+// non codée → offset non commité → redélivrance". Its Postgres twin, added when the read-through gave
+// this lookup a second leg, is TestExactRouteFailsClosedWhenPostgresIsCut.
 //
-// The row was written in step-250 and tested by nobody. What stood in for it was a fake whose Resolve
-// returned errors.New("redis down") (l0_test.go:23) — and that fake replaces the whole exact package,
-// so neither the Bloom gate, nor redisKey, nor the goredis.Nil discrimination, nor the %w wrapping on
-// resolver.go:49 was ever exercised. Same shape as an outage, none of its contract.
+// The row was written in step-250 and tested by nobody. What stood in for it was routing's fakeExact,
+// whose Resolve returned a bare errors.New — and that fake replaces the whole exact package, so neither
+// the Bloom gate, nor redisKey, nor the goredis.Nil discrimination, nor the %w wrapping in Resolve was
+// ever exercised. Same shape as an outage, none of its contract.
 //
 // The seeding is not scaffolding, it is the test. A Bloom miss is a definitive "no override" answered
-// with no network call at all (resolver.go:41-43), so an MSISDN outside the filter makes the cut
-// invisible and the test would pass identically against a healthy Redis. Only a number the Bloom
-// admits reaches Redis, and only that number can prove anything here.
+// with no network call at all, so an MSISDN outside the filter makes the cut invisible and the test
+// would pass identically against a healthy Redis. Only a number the Bloom admits reaches Redis, and
+// only that number can prove anything here.
+//
+// (The line references this comment used to carry drifted twice, so they now name symbols instead.)
 func TestExactRouteFailsClosedWhenRedisIsCut(t *testing.T) {
 	rdb, proxy := redistest.Cuttable(t)
 	ctx := context.Background()
@@ -32,10 +36,14 @@ func TestExactRouteFailsClosedWhenRedisIsCut(t *testing.T) {
 	unknown := "22508" + uuid.NewString()[:8] // deliberately NOT in the Bloom
 	want := Target{Type: TargetConnector, ID: uuid.New()}
 
-	if err := rdb.Set(ctx, redisKey(ported), EncodeTarget(want), 0).Err(); err != nil {
+	if err := rdb.Set(ctx, redisKey(ported), encodeTarget(want), 0).Err(); err != nil {
 		t.Fatalf("seed the exact route: %v", err)
 	}
-	resolver := NewResolver(newBloom([]string{ported}), rdb)
+	// The durable store COULD answer for this number. That is deliberate: a Redis fault must surface
+	// rather than quietly fall through to Postgres (step-250e), and with an empty store the assertion
+	// below would hold for want of a row instead of for want of that policy.
+	store := &fakeStore{rows: map[string]Route{ported: {MSISDN: ported, Target: want}}}
+	resolver := NewResolver(newBloom([]string{ported}), rdb, store, time.Hour)
 
 	// Control, with Redis up: the override resolves. Without it we could not tell a fail-closed
 	// resolver from a harness that never reached Redis in the first place.

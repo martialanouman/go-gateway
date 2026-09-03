@@ -62,6 +62,20 @@ Fournir les manifests Kubernetes sous `deploy/` pour tous les services : Deploym
 - Validation statique des manifests (kubeconform/`kubectl --dry-run=client` ou lint YAML en CI).
 - Cohérence des ports/probes avec §1.4/§1.5 (revue + check automatisable).
 
+## Hérité de step-250e — deux dimensionnements à porter dans les manifests
+
+La revue de branche de step-250e a laissé deux grandeurs que les manifests devront refléter une fois
+mesurées par step-280 :
+
+- **`POSTGRES_MAX_CONNS` de `router-svc`.** Le défaut 10 vient d'une prémisse désormais fausse pour ce
+  service (« le plan de contrôle n'est pas un chemin chaud ») : depuis step-250e, un possible-hit du
+  Bloom que le cache n'a pas interroge Postgres sur le chemin MT. À arbitrer contre `max_connections`
+  côté serveur, réplicas compris.
+- **Mémoire du Redis partagé.** Le cache `exactroute:{msisdn}` y ajoute 1,3 à 10 Go de clés en vol
+  selon le profil. La politique d'éviction compte : en `allkeys-*` Redis évincerait des clés de routage
+  (dégradation silencieuse vers Postgres), en `volatile-*` la pression retomberait sur les clés à TTL,
+  dont ce cache. À décider explicitement plutôt qu'à hériter du défaut.
+
 ## Definition of Done
 - [ ] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts (code inchangé)
 - [ ] manifests validés statiquement · probes/ports conformes §1.4/§1.5 · PDB cohérent avec le drain

@@ -29,6 +29,11 @@ type fakeExactRouteStore struct {
 	// bulkRelease. Both nil (the default) means BulkUpsert never blocks.
 	bulkStarted chan struct{}
 	bulkRelease chan struct{}
+	// bulkErr fails the batch WITHOUT writing anything, which is what the real repo does: pgx runs
+	// SendBatch in an implicit transaction, so one bad statement rolls the whole batch back
+	// (TestExactRouteRepoBulkUpsertIsAllOrNothing proves it on a real database). A double that wrote
+	// the rows and then failed would model a state production cannot reach.
+	bulkErr error
 }
 
 func newFakeExactRouteStore() *fakeExactRouteStore {
@@ -88,6 +93,9 @@ func (s *fakeExactRouteStore) BulkUpsert(_ context.Context, routes []exact.Route
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.bulkErr != nil {
+		return s.bulkErr // all-or-nothing: nothing was written
+	}
 	for _, r := range routes {
 		s.now = s.now.Add(time.Second)
 		r.UpdatedAt = s.now
@@ -104,10 +112,17 @@ func (s *fakeExactRouteStore) count() int {
 
 // syncRunner runs the job inline, so a test observes the import's effect the moment Go returns — the
 // production path is still the real async runner; only the injected runner collapses time.
+//
+// It swallows the job's error on purpose, because *async.Runner does: Go reports SUBMISSION failures
+// (ErrBusy, ErrClosed) and nothing else, logging whatever the job itself returns. Returning it here
+// instead made a failing background import surface as a 500 on a request that had already answered 202
+// — a failure mode production cannot produce, and one that hid how the handler really behaves when a
+// batch fails halfway.
 type syncRunner struct{}
 
 func (syncRunner) Go(_ string, job func(context.Context) error) error {
-	return job(context.Background())
+	_ = job(context.Background())
+	return nil
 }
 
 // TestExactRouteCreateLookupDeleteRoundTrip: a created override is found by lookup and gone after

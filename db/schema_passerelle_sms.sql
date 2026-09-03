@@ -574,7 +574,7 @@ CREATE TABLE control_plane.exact_routes (
   source      text NOT NULL DEFAULT 'manual' CHECK (source IN ('mnp_import','manual','carrier_feed')),
   imported_at timestamptz,
   updated_at  timestamptz NOT NULL DEFAULT now(),
-  -- The L0 Bloom snapshot and the exactroute:{msisdn} confirmation key are built on this exact form,
+  -- The L0 Bloom snapshot and the exactroute:{msisdn} read-through cache are built on this exact form,
   -- and the router queries it with e164.Normalize output (digits only). A write path storing a
   -- non-normalized value ("+225…") would silently defeat every override — a routing false negative.
   CONSTRAINT exact_routes_msisdn_canonical_ck CHECK (msisdn ~ '^[1-9][0-9]+$')
@@ -784,7 +784,9 @@ session:{bind_id}                                  -- session metadata + TTL hea
 ratelimit:{entity_type}:{entity_id}:{window}       -- atomic token-bucket counters (Lua)
 dedupe:{account_id}:{content_hash}                  -- short-TTL set for duplicate-message anti-spam
 reputation:{account_id}                             -- rolling spam-score, decayed
-exactroute:{msisdn}                                 -- exact-number routing entry; read on Bloom possible-hit (§6.1)
+exactroute:{msisdn}                                 -- exact-number routing CACHE over exact_routes; read on Bloom
+                                                       possible-hit, populated by the reader on a miss (read-through,
+                                                       TTL 6h ±10%), DELeted by the Admin API after commit (§6.1)
 suppress:{scope}:{scope_id}:{msisdn}                -- opt-out entry; read on Bloom possible-hit (§6.20)
 billing:balance:{direction}:{owner_type}:{owner_id} -- cached balance; atomic Lua MT reserve/capture/release
 billing:reservation:{message_id}                    -- short-TTL MT hold; cleared on capture/release

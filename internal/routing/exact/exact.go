@@ -1,7 +1,10 @@
-// Package exact models exact-number routes (schema §19): an MSISDN mapped to a specific connector or
-// route, the data behind the L0 routing short-cut (a ported number / MNP override that bypasses route
-// resolution). It holds only the domain types; the persistence lives in internal/storage/postgres and
-// the in-memory Bloom + short-cut in internal/routing (step-101).
+// Package exact implements exact-number routing (schema §19): an MSISDN mapped to a specific connector
+// or route — a ported number / MNP override that bypasses route resolution (the L0 short-cut).
+//
+// It owns the domain types, the in-memory Bloom filter, the L0 resolver and the cache invalidator. The
+// durable table lives in internal/storage/postgres; the Redis key exactroute:{msisdn} is a read-through
+// cache this package alone knows the wire form of — the resolver populates it, the Invalidator clears
+// it on behalf of the Admin API (ADR-0015).
 package exact
 
 import (

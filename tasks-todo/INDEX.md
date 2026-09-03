@@ -197,7 +197,8 @@ Une seule chaîne, et elle commande tout le reste de M12 : le banc devait refuse
 la campagne ne publie un chiffre — c'est fait (step-230, livrée) — et les manifests doivent exister avant
 qu'on mesure un environnement représentatif.
 - [x] step-250d — Les quatre politiques Redis documentées en step-250 mais jamais prouvées ⛓ step-250
-- [ ] step-250e — La table de routage exact n'a aucun écrivain : la portabilité des numéros ne marche pas
+- [x] step-250e — La table de routage exact n'avait aucun écrivain : la clé devient un cache
+      read-through, le lecteur peuple, l'admin invalide (ADR-0015)
 - [x] step-260 — Chaos : drain gracieux (unbind SMPP, offsets Kafka, retrait LB) ⛓ step-250
 - [x] step-260b — Failover Postgres : fail-closed sur les trois voies de la réserve, et le crédit fantôme du release ⛓ step-260
 - [ ] step-260c — Les trois politiques PostgreSQL hors facturation (bind SMPP, clés API REST, snapshots) ⛓ step-260b
@@ -240,10 +241,24 @@ le fail-open du pool sur le jeton d'annulation a **deux** sites, et le second de
 `delivery_expired` au lieu d'envoyer. Deux erreurs de la fiche elle-même ont été corrigées — le
 « faux qui erre » qu'elle prêtait au registre de sessions n'existait pas, cette politique n'ayant
 **aucune** couverture d'aucune sorte. Mais la trouvaille qui compte est ailleurs : en cherchant comment
-semer une clé pour le test L0, on a constaté que **rien n'écrit `exactroute:{msisdn}`** — ni config-sync,
-ni l'Admin API. Le court-circuit L0 ne résout jamais, et la **portabilité des numéros ne fonctionne pas
-en production**. D'où **step-250e**, placée à ce rang parce qu'elle fausse le profil de routage que
-mesurera la campagne NFR (step-280) et bloque le go-live.
+semer une clé pour le test L0, on a constaté que **rien n'écrivait `exactroute:{msisdn}`** — ni
+config-sync, ni l'Admin API. Le court-circuit L0 ne résolvait jamais, et la **portabilité des numéros
+ne fonctionnait pas en production**. D'où **step-250e**, placée à ce rang parce qu'elle faussait le
+profil de routage que mesurera la campagne NFR (step-280) et bloquait le go-live.
+
+**step-250e a renversé la question plutôt que d'y répondre.** L'écrivain n'avait pas été oublié : il
+n'avait jamais été fiché — ni par la spec §6.1, ni par le guide §3.9, ni par l'ADR-0004, ni par aucune
+des sept fiches M7. La clé est donc devenue un **cache read-through** (ADR-0015) : le lecteur la peuple
+depuis Postgres sur un miss, l'Admin API l'invalide après son commit, et rien n'est à rattraper — les
+lignes déjà en base redeviennent routables au premier message qui les vise. La step a trouvé trois
+défauts que sa propre réparation ne suffisait pas à couvrir : la voie durable remontait une erreur
+**codée**, donc `router.handle` enterrait le message au lieu de le redélivrer ; elle n'avait **aucune
+échéance**, donc un Postgres qui absorbe sans répondre figeait la partition en silence ; et l'import de
+masse **n'entrait jamais dans le Bloom**, le middleware annonçant le changement de config au 202,
+avant que `BulkUpsert` n'ait commité — les petits imports gagnaient cette course, les gros la
+perdaient, l'inverse du besoin. Au passage, le budget mémoire du filtre annoncé partout depuis deux
+jalons (« ~1,2 Mo par million ») était **faux** : il correspondait à un taux de faux positifs de 0,01
+et non au 0,001 du code, soit 1,8 Mo réels.
 
 ## Sécurité et authentification
 Indépendantes de la chaîne de charge : parallélisables si deux mains travaillent.

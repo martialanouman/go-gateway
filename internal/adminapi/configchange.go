@@ -18,6 +18,11 @@ type ConfigChangePublisher interface {
 	Publish(ctx context.Context, channel string, payload []byte) error
 }
 
+// ConfigChangePayload is the announcement body. Subscribers are payload-agnostic (config-sync discards
+// it and republishes its own), so its only job is to be identical wherever it is sent: the middleware
+// here, and the background import that announces for itself after its commit (step-250e).
+var ConfigChangePayload = []byte(`{"reason":"admin"}`)
+
 // statusRecorder captures the response status so the middleware can publish only on success.
 type statusRecorder struct {
 	http.ResponseWriter
@@ -57,7 +62,7 @@ func PublishConfigChanges(h http.Handler, pub ConfigChangePublisher, channel str
 		// stall the mutation indefinitely.
 		pubCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), publishTimeout)
 		defer cancel()
-		if err := pub.Publish(pubCtx, channel, []byte(`{"reason":"admin"}`)); err != nil {
+		if err := pub.Publish(pubCtx, channel, ConfigChangePayload); err != nil {
 			logger.WarnContext(r.Context(), "config-change publish failed; invalidation skipped", "err", err)
 		}
 	})
@@ -67,15 +72,27 @@ func PublishConfigChanges(h http.Handler, pub ConfigChangePublisher, channel str
 // NOT trigger a data-plane invalidation despite being POSTs (they are AdminRead-scoped).
 var readOnlyPostSuffixes = []string{"/validate", "/test"}
 
-// mutating reports whether a request changes control-plane state. A read method never does; a POST to
-// a declared read-only diagnostic (validate/test) does not either — otherwise an operator iterating on
-// a script would fire a fleet-wide snapshot rebuild on every dry-run.
+// selfAnnouncingPostSuffixes are POSTs whose durable write lands AFTER the response, in a background
+// job, and which therefore publish their own config change once committed. Announcing here as well
+// would fire a fleet-wide snapshot rebuild against a table that does not hold the rows yet — useless
+// work, and the defect step-250e had to fix on the import path.
+var selfAnnouncingPostSuffixes = []string{"/exact-routes/import"}
+
+// mutating reports whether a request should announce a config change HERE. A read method never does; a
+// POST to a declared read-only diagnostic (validate/test) does not either — otherwise an operator
+// iterating on a script would fire a fleet-wide snapshot rebuild on every dry-run. Nor does a POST that
+// announces for itself after a background commit (see selfAnnouncingPostSuffixes).
 func mutating(method, path string) bool {
 	switch method {
 	case http.MethodGet, http.MethodHead, http.MethodOptions:
 		return false
 	case http.MethodPost:
 		for _, suffix := range readOnlyPostSuffixes {
+			if strings.HasSuffix(path, suffix) {
+				return false
+			}
+		}
+		for _, suffix := range selfAnnouncingPostSuffixes {
 			if strings.HasSuffix(path, suffix) {
 				return false
 			}

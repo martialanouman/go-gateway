@@ -56,6 +56,10 @@ type exactRoutePage struct {
 	Data []exactRouteDTO `json:"data"`
 }
 
+// invalidateTimeout bounds a post-commit cache operation, so a hung Redis cannot hold an admin request
+// (or a draining import job) open. Same bound and same reasoning as the config-change publish.
+const invalidateTimeout = 5 * time.Second
+
 // ExactRouteAdminStore is the persistence the exact-route handlers need (declared consumer-side).
 // *postgres.ExactRouteRepo satisfies it. List is keyset-paginated by msisdn (the primary key), so the
 // cursor is simply the last msisdn of the previous page.
@@ -74,16 +78,26 @@ type ImportRunner interface {
 }
 
 type exactRouteHandlers struct {
-	store  ExactRouteAdminStore
-	runner ImportRunner
-	logger *slog.Logger
+	store   ExactRouteAdminStore
+	cache   ExactRouteCacheInvalidator
+	pub     ConfigChangePublisher
+	channel string
+	runner  ImportRunner
+	logger  *slog.Logger
 }
 
-func registerExactRoutes(api huma.API, store ExactRouteAdminStore, runner ImportRunner, logger *slog.Logger) {
+func registerExactRoutes(api huma.API, store ExactRouteAdminStore, cache ExactRouteCacheInvalidator,
+	pub ConfigChangePublisher, channel string, runner ImportRunner, logger *slog.Logger,
+) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	h := &exactRouteHandlers{store: store, runner: runner, logger: logger}
+	if cache == nil {
+		cache = noopRouteCache{}
+	}
+	h := &exactRouteHandlers{
+		store: store, cache: cache, pub: pub, channel: channel, runner: runner, logger: logger,
+	}
 
 	register(api, huma.Operation{
 		OperationID: "import-exact-routes", Method: http.MethodPost, Path: "/admin/exact-routes/import",
@@ -161,6 +175,55 @@ func (h *exactRouteHandlers) list(ctx context.Context, in *listExactRoutesInput)
 	return out, nil
 }
 
+// noopRouteCache stands in when no invalidator is wired (tests, and any deployment running without the
+// data-plane cache). It is deliberately silent: the resolver still reads the durable table on a miss.
+type noopRouteCache struct{}
+
+func (noopRouteCache) Invalidate(context.Context, ...string) error { return nil }
+
+// forget drops the cached routes of numbers whose durable row just changed. It is always called AFTER
+// the commit: invalidating first lets a concurrent reader repopulate the pre-commit value and pin it for
+// a whole TTL, since nothing else ever writes that key.
+//
+// A failure is logged, never returned. The row is already durable, so failing the request would send the
+// operator to retry a write that succeeded; the resolver's TTL bounds how long a missed invalidation can
+// matter, and both the upsert and the DEL are idempotent.
+func (h *exactRouteHandlers) forget(ctx context.Context, msisdns ...string) bool {
+	// Detached from cancellation, like the config-change publish next door: the row is already durable,
+	// and a client that disconnects — or a runner draining — right after the write must not be what
+	// leaves a stale route behind for a whole TTL. Bounded so a hung Redis cannot stall the caller.
+	fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), invalidateTimeout)
+	defer cancel()
+
+	if err := h.cache.Invalidate(fctx, msisdns...); err != nil {
+		// Logged, not returned: see the note on forget. There is no counter here, matching
+		// BalanceCacheInvalidator; the consequence — a route stale until the TTL, visible only in logs —
+		// is recorded as an open follow-up on the step rather than silently accepted.
+		h.logger.WarnContext(ctx, "exact-route cache invalidation failed",
+			"numbers", len(msisdns), "err", err)
+		return false
+	}
+	return true
+}
+
+// announceReload asks the fleet to rebuild its routing snapshot, for a mutation whose commit lands
+// AFTER its HTTP response — the background bulk import. Every synchronous handler is already covered by
+// the PublishConfigChanges middleware and must NOT call this.
+func (h *exactRouteHandlers) announceReload(ctx context.Context) bool {
+	if h.pub == nil {
+		return true // no publisher wired: the next admin mutation still triggers a rebuild
+	}
+	actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), invalidateTimeout)
+	defer cancel()
+
+	if err := h.pub.Publish(actx, h.channel, ConfigChangePayload); err != nil {
+		h.logger.WarnContext(ctx, "exact-route reload announcement failed; "+
+			"imported numbers stay out of the Bloom until the next admin mutation", "err", err)
+		return false
+	}
+	return true
+}
+
 type createExactRouteInput struct{ Body exactRouteCreateBody }
 type exactRouteOutput struct{ Body exactRouteDTO }
 
@@ -184,6 +247,7 @@ func (h *exactRouteHandlers) create(ctx context.Context, in *createExactRouteInp
 	if err != nil {
 		return nil, humaerr.FromError(err)
 	}
+	h.forget(ctx, msisdn)
 	return &exactRouteOutput{Body: toExactRouteDTO(saved)}, nil
 }
 
@@ -210,6 +274,7 @@ func (h *exactRouteHandlers) importRoutes(_ context.Context, in *importExactRout
 	// background closure, with no request-scoped state.
 	byMSISDN := make(map[string]int, len(in.Body.Rows))
 	routes := make([]exact.Route, 0, len(in.Body.Rows))
+	msisdns := make([]string, 0, len(in.Body.Rows))
 	for _, row := range in.Body.Rows {
 		msisdn, err := normalizeMSISDN(row.MSISDN)
 		if err != nil {
@@ -227,13 +292,29 @@ func (h *exactRouteHandlers) importRoutes(_ context.Context, in *importExactRout
 		}
 		byMSISDN[msisdn] = len(routes)
 		routes = append(routes, r)
+		msisdns = append(msisdns, msisdn)
 	}
 
 	jobID := uuid.NewString()
 	logger := h.logger.With("job_id", jobID, "rows", len(routes), "source", string(source))
 	err := h.runner.Go("import-exact-routes", func(jctx context.Context) error {
+		// A failed batch commits nothing: pgx runs SendBatch in an implicit transaction, so one bad
+		// statement rolls the whole thing back (proved on a real database by
+		// TestExactRouteRepoBulkUpsertIsAllOrNothing). There is therefore nothing to forget, and
+		// announcing would make every router pod rebuild its snapshots for a table that did not change.
 		if berr := h.store.BulkUpsert(jctx, routes); berr != nil {
 			return berr
+		}
+		// Both are best-effort, but the completion line is the ONLY signal an operator gets — there is
+		// no status endpoint — so it must not read "completed" when the rows landed and the data plane
+		// was never told. A degraded import leaves stale keys until the TTL and numbers outside the
+		// Bloom until some unrelated mutation happens by; that has to be visible.
+		invalidated := h.forget(jctx, msisdns...)
+		announced := h.announceReload(jctx)
+		if !invalidated || !announced {
+			logger.Warn("exact-route import committed but the data plane was not fully notified",
+				"cache_invalidated", invalidated, "reload_announced", announced)
+			return nil
 		}
 		logger.Info("exact-route import completed")
 		return nil
@@ -296,6 +377,7 @@ func (h *exactRouteHandlers) update(ctx context.Context, in *updateExactRouteInp
 	if err != nil {
 		return nil, humaerr.FromError(err)
 	}
+	h.forget(ctx, msisdn)
 	return &exactRouteOutput{Body: toExactRouteDTO(saved)}, nil
 }
 
@@ -309,8 +391,13 @@ func (h *exactRouteHandlers) delete(ctx context.Context, in *msisdnPathInput) (*
 		return nil, humaerr.FromError(err)
 	}
 	if !found {
+		// No row, but possibly a stale key: a lost invalidation, or the cache-aside window on an earlier
+		// delete, can leave one behind. DELETE is then the operator's ONLY lever to purge it, and a 404
+		// that clears nothing disarms it precisely when it is needed. The DEL is idempotent.
+		h.forget(ctx, msisdn)
 		return nil, notFound("exact route")
 	}
+	h.forget(ctx, msisdn)
 	return &deleteOutput{}, nil
 }
 

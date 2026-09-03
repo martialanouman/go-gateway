@@ -21,6 +21,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/platform/async"
 	"github.com/martialanouman/go-gateway/internal/realtime"
+	"github.com/martialanouman/go-gateway/internal/routing/exact"
 	registrypb "github.com/martialanouman/go-gateway/internal/session/pb"
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
@@ -95,17 +96,22 @@ func newAdminApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (_
 	}
 	a.retainer = retention.retainer
 
-	runners := newRunners(ctx, cfg, logger)
-	a.onClose("runners", runners.close)
-
 	// Redis carries the config-change announcement (step-105): the Admin API publishes a coarse event
 	// after each mutation. A publish failure is best-effort (logged, not fatal), so — unlike Postgres —
 	// Redis is not a hard readiness dependency here.
+	//
+	// Opened BEFORE the runners so it is released after them: closers run in reverse, and since
+	// step-250e a background import touches Redis after its commit (cache invalidation, then its own
+	// config-change announcement). A client closed under a draining job fails both — silently, since
+	// both are best-effort — and leaves the imported numbers stale for a whole TTL.
 	rdb, err := redisstore.NewClient(ctx, cfg.Redis)
 	if err != nil {
 		return nil, fmt.Errorf("open redis client: %w", err)
 	}
 	a.onClose("redis", func() { _ = rdb.Close() })
+
+	runners := newRunners(ctx, cfg, logger)
+	a.onClose("runners", runners.close)
 
 	verifier, err := auth.NewStaticVerifier(cfg.HTTP.AdminTokens)
 	if err != nil {
@@ -228,23 +234,29 @@ type runners struct {
 	gdpr    *async.Runner
 
 	// close drains both. Their jobs use the Postgres pool, so the drain must complete BEFORE the pool
-	// is closed — which holds because this closer is registered after the stores', and closers run in
-	// reverse. TestNewAdminAppReleasesInDependencyOrder is what enforces that, not this sentence.
+	// is closed — which holds because this closer is registered after the stores'. The same now goes for
+	// Redis, which an import job touches after its commit (step-250e), hence its client is opened first.
+	// TestNewAdminAppReleasesInDependencyOrder is what enforces that order, not this sentence.
 	// The drain uses a cancel-detached deadline so a SIGTERM does not cut it short.
 	close func()
 }
 
 func newRunners(ctx context.Context, cfg config.Config, logger *slog.Logger) *runners {
 	r := &runners{imports: async.New(4, logger), gdpr: async.New(2, logger)}
-	r.close = func() {
+	// One deadline EACH, not one shared between the two. A job that ignores its cancellation — the
+	// exact-route import holds a detached, bounded invalidation after its commit (step-250e) — can make
+	// the first Close overrun; sharing the budget would then hand the second an already-expired context
+	// and cut a GDPR erasure short, which is precisely what this runner is kept separate to avoid.
+	drain := func(name string, close func(context.Context) error) {
 		dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cfg.ShutdownTimeout)
 		defer cancel()
-		if derr := r.imports.Close(dctx); derr != nil {
-			logger.Error("import runner drain incomplete", "err", derr)
+		if derr := close(dctx); derr != nil {
+			logger.Error(name+" runner drain incomplete", "err", derr)
 		}
-		if derr := r.gdpr.Close(dctx); derr != nil {
-			logger.Error("gdpr runner drain incomplete", "err", derr)
-		}
+	}
+	r.close = func() {
+		drain("import", r.imports.Close)
+		drain("gdpr", r.gdpr.Close)
 	}
 	return r
 }
@@ -348,6 +360,9 @@ func newHTTPServer(
 		OptOutKeywords:   postgres.NewOptOutKeywordRepo(st.pg),
 		AntispamRules:    postgres.NewAntispamRuleRepo(st.pg),
 		ExactRoutes:      postgres.NewExactRouteRepo(st.pg),
+		ExactRouteCache:  exact.NewInvalidator(rdb),
+		ConfigChanges:    redisstore.NewPubSubPublisher(rdb),
+		ConfigChannel:    config.ChannelConfigChanged,
 		RoutingScripts:   postgres.NewRoutingScriptRepo(st.pg),
 		Imports:          runners.imports,
 		Disconnector:     adminapi.NewGRPCDisconnector(registrypb.NewSessionRegistryClient(clients.registry)),

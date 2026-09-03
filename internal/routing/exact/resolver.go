@@ -4,61 +4,255 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	goredis "github.com/redis/go-redis/v9"
 )
 
-// RedisGetter is the read surface the resolver needs from Redis. A *goredis.Client satisfies it.
-type RedisGetter interface {
+// DefaultCacheTTL bounds how long a cached exact route may outlive a durable change whose invalidation
+// was lost. It is a safety net, not the coherence mechanism — the Admin API DELs the key after every
+// commit (step-250e). Long enough that the steady-state Postgres read rate is one lookup per active
+// ported number per TTL; short enough that a missed DEL heals the same working day.
+const DefaultCacheTTL = 6 * time.Hour
+
+// DefaultLookupTimeout bounds ONE durable lookup. The Redis leg already has an equivalent (the client's
+// ReadTimeout); the durable leg had none — the pool sets only a connect timeout, the pipeline stage adds
+// no deadline, and the consumer's context is long-lived. Without this, a Postgres that absorbs without
+// answering hangs the lane, and the lane is the Kafka partition: no error, no redelivery, no metric.
+// Generous on purpose — it is a hang detector, not a latency budget.
+const DefaultLookupTimeout = 2 * time.Second
+
+// cacheJitterPct spreads expiry across keys warmed in the same burst — after a Redis loss the whole
+// working set repopulates within seconds, and a fixed TTL would then expire it in lockstep.
+const cacheJitterPct = 10
+
+// RedisCache is the surface the resolver needs from Redis: read a cached route, and populate one on a
+// miss. A *goredis.Client satisfies it.
+type RedisCache interface {
 	Get(ctx context.Context, key string) *goredis.StringCmd
+	Set(ctx context.Context, key string, value any, expiration time.Duration) *goredis.StatusCmd
 }
 
-// Resolver is the L0 exact-number lookup: a per-pod Bloom gate in front of the shared Redis map
-// exactroute:{msisdn} (Appendix B). A Bloom miss is a definitive "no override" answered without a
-// network call; a Bloom hit is confirmed against Redis, so a false positive never routes a message to
-// the wrong target.
+// LookupMeter counts L0 lookups by outcome, EXACTLY ONE observation per resolution — the failure paths
+// included, without which the series decouples from real traffic precisely when an incident makes
+// someone read it. The vocabulary is closed and declared in code, never derived from traffic, so it
+// satisfies the bounded-label guard (§15). One-per-resolution is what makes the sum a lookup count,
+// and what gives the follow-ups this step defers a denominator: whether a negative cache earns its
+// keep depends on the pg_miss rate, and the TTL on the pg_hit rate (ADR-0015).
+type LookupMeter interface {
+	Observe(outcome string)
+}
+
+// CorruptionMeter counts cached values that could not be decoded. Deliberately NOT an outcome label:
+// corruption is an anomaly of the cache leg, while the outcome says how the resolution ended on the
+// durable leg. Folding one into the other loses the pair — a corrupt key healed from the table and a
+// corrupt key over an unreachable Postgres would read alike — and inflates the ratios above.
+type CorruptionMeter interface {
+	Inc()
+}
+
+// nopCorruption is the default, so the hot path needs no nil check.
+type nopCorruption struct{}
+
+func (nopCorruption) Inc() {}
+
+// LookupOutcomes is the closed vocabulary of Observe, in code and nowhere else. It is exported so the
+// wiring can seed every series at boot: a counter vector exposes nothing until it has a child, and a
+// ratio like pg_miss/pg_hit is unusable while one of its terms is simply absent from /metrics.
+func LookupOutcomes() []string {
+	return []string{
+		outcomeBloomMiss, outcomeRedisHit, outcomeRedisError,
+		outcomePgHit, outcomePgMiss, outcomePgError,
+	}
+}
+
+// Option overrides a Resolver default — the two meters, both of which no-op when unset so a resolver
+// without them still routes. The lookup timeout is not an Option: it has no production caller, and the
+// package's own tests set the field directly.
+type Option func(*Resolver)
+
+// WithLookupMeter attaches the outcome counter.
+func WithLookupMeter(m LookupMeter) Option { return func(r *Resolver) { r.meter = m } }
+
+// WithCorruptionMeter attaches the undecodable-value counter.
+func WithCorruptionMeter(m CorruptionMeter) Option { return func(r *Resolver) { r.corrupt = m } }
+
+// The outcome labels. Constants rather than literals: the resolver and the boot seeding both name
+// them, and a typo in either would split a series in silence.
+const (
+	outcomeBloomMiss  = "bloom_miss"
+	outcomeRedisHit   = "redis_hit"
+	outcomeRedisError = "redis_error"
+	outcomePgHit      = "pg_hit"
+	outcomePgMiss     = "pg_miss"
+	outcomePgError    = "pg_error"
+)
+
+// nopMeter is the default, so the hot path needs no nil check.
+type nopMeter struct{}
+
+func (nopMeter) Observe(string) {}
+
+// RouteStore is the durable source of truth behind the cache. *postgres.ExactRouteRepo satisfies it
+// structurally; the lookup is by primary key.
+type RouteStore interface {
+	Get(ctx context.Context, msisdn string) (Route, bool, error)
+}
+
+// Resolver is the L0 exact-number lookup: a per-pod Bloom gate in front of exactroute:{msisdn}
+// (Appendix B), which is a read-through cache over the durable exact_routes table.
+//
+// A Bloom miss is a definitive "no override" answered without any network call. Its share is the
+// complement of the ported-number rate, so 70-90% in a mature MNP market (step-280 retains 10-30%
+// ported) — NOT the "~99%" inherited from ADR-0004, which predates any MNP figure and which every
+// sizing calculation would otherwise start from, ten to thirty times too low. A
+// Bloom possible-hit reads Redis; on a cache miss the durable table decides, and a row found there
+// populates the cache for the next message. The control plane never writes a value here — it DELs the
+// key after its own commit — so Redis is a cache that can always be rebuilt, never a second source of
+// truth (ADR-0015).
 type Resolver struct {
-	bloom *Bloom
-	redis RedisGetter
+	bloom         *Bloom
+	cache         RedisCache
+	store         RouteStore
+	ttl           time.Duration
+	lookupTimeout time.Duration
+	meter         LookupMeter
+	corrupt       CorruptionMeter
 }
 
-// NewResolver builds the L0 resolver over a boot-loaded Bloom and a Redis reader.
-func NewResolver(bloom *Bloom, redis RedisGetter) *Resolver {
-	return &Resolver{bloom: bloom, redis: redis}
+// NewResolver builds the L0 resolver over a boot-loaded Bloom, the Redis cache and the durable store.
+// A non-positive ttl falls back to DefaultCacheTTL.
+func NewResolver(bloom *Bloom, cache RedisCache, store RouteStore, ttl time.Duration, opts ...Option) *Resolver {
+	if ttl <= 0 {
+		ttl = DefaultCacheTTL
+	}
+	r := &Resolver{
+		bloom: bloom, cache: cache, store: store, ttl: ttl,
+		lookupTimeout: DefaultLookupTimeout, meter: nopMeter{}, corrupt: nopCorruption{},
+	}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
 }
 
 // redisKey is the exact-route key for an MSISDN (Appendix B). The hash tag ({msisdn}) pins a number's
-// key to one cluster slot.
-//
-// NOTE (step-250d): nothing writes this key yet. config-sync does not know about exact routes and the
-// Admin API persists them to Postgres only, so in production every Bloom possible-hit reads a missing
-// key and falls back to declarative routing — the L0 short-circuit never resolves, and number
-// portability (spec §6.1) does not work. The reader below is correct and its failure policy is live
-// (the read happens on every false positive); what is missing is the writer. See tasks-todo/step-250e.
+// key to one cluster slot — which also means keys cannot be written or deleted in one cross-slot
+// command, hence the pipelining in the Invalidator.
 func redisKey(msisdn string) string { return "exactroute:{" + msisdn + "}" }
 
 // Resolve returns the exact-route target for an MSISDN. ok is false for the common "no override" case
-// — a Bloom miss, or a Bloom possible-hit with no Redis entry (a false positive, or not yet synced) —
-// and the caller then falls back to normal route resolution. A non-nil error is a transient Redis
-// fault; a missing key is not an error.
+// — a Bloom miss, or a possible-hit the durable table does not know (a false positive) — and the
+// caller then falls back to normal route resolution.
+//
+// A non-nil error is transient and uncoded, from either leg: an exact route that cannot be reached
+// must not degrade into default routing, which for a ported number means its former operator (§16).
+// A Redis FAULT is returned rather than falling through: doing otherwise would move the hot path onto
+// the control-plane database at full message rate during an outage, and is an open question rather
+// than a silent default. A missing key and an undecodable value both fall through — the second because
+// the durable table can rewrite a healthy one, which a returned error never would.
 func (r *Resolver) Resolve(ctx context.Context, msisdn string) (Target, bool, error) {
+	// One observation, whatever the exit. Assigning a variable a deferred call reads is what makes the
+	// invariant structural instead of a convention held at six return sites.
+	outcome := outcomeBloomMiss
+	defer func() { r.meter.Observe(outcome) }()
+
 	if !r.bloom.MightContain(msisdn) {
-		return Target{}, false, nil // definitive miss: no Redis read
+		return Target{}, false, nil // definitive miss: no network call at all
 	}
-	val, err := r.redis.Get(ctx, redisKey(msisdn)).Result()
-	if errors.Is(err, goredis.Nil) {
-		return Target{}, false, nil // Bloom false positive / not yet synced: fall back
-	}
-	if err != nil {
+
+	val, err := r.cache.Get(ctx, redisKey(msisdn)).Result()
+	switch {
+	case err == nil:
+		target, perr := parseTarget(val)
+		if perr == nil {
+			outcome = outcomeRedisHit
+			return target, true, nil
+		}
+		// An illegible value is treated as a miss, not as a fault. Surfacing it would send the message
+		// back to the same key on every redelivery, wedging the whole partition until the TTL expires;
+		// the durable table is right here, and reading it rewrites a healthy value. Counted on its own
+		// meter, so a drift never heals invisibly — including when the durable read then fails.
+		r.corrupt.Inc()
+	case !errors.Is(err, goredis.Nil):
+		// Wrapped, not stripped: a go-redis error carries no platform code, so the chain is safe to
+		// keep — and the leg is named, since the durable one fails closed the same way for a different
+		// outage.
+		outcome = outcomeRedisError
 		return Target{}, false, fmt.Errorf("exact: redis lookup: %w", err)
 	}
-	target, err := parseTarget(val)
-	if err != nil {
-		return Target{}, false, err
+
+	target, ok, err := r.loadAndCache(ctx, msisdn)
+	switch {
+	case err != nil:
+		outcome = outcomePgError
+	case ok:
+		outcome = outcomePgHit
+	default:
+		outcome = outcomePgMiss
 	}
-	return target, true, nil
+	return target, ok, err
+}
+
+// loadAndCache resolves a cache miss against the durable table and populates the key on a hit. A miss
+// in the table is a Bloom false positive: it falls back without caching anything, since this step
+// ships no negative caching and a key written here would be a route to nowhere.
+func (r *Resolver) loadAndCache(ctx context.Context, msisdn string) (Target, bool, error) {
+	route, found, err := r.lookup(ctx, msisdn)
+	if err != nil {
+		return Target{}, false, transient(err)
+	}
+	if !found {
+		return Target{}, false, nil
+	}
+
+	// A cache write that fails must not fail the message: the target is already known and correct, and
+	// the next message simply pays another lookup. Only the read legs are fail-closed.
+	_ = r.cache.Set(ctx, redisKey(msisdn), encodeTarget(route.Target), jitterTTL(r.ttl)).Err()
+	return route.Target, true, nil
+}
+
+// transient reports a durable-lookup failure WITHOUT the error code the repository attached.
+//
+// postgres.translate maps every infrastructure fault to errs.ErrInternal, and a CODED error means
+// something precise downstream: router.handle writes a CDR `rejected` and COMMITS the Kafka offset,
+// burying the message. On this path that is exactly backwards (§16) — an exact route that cannot be
+// reached is transient, and the message must be redelivered rather than rejected.
+//
+// The chain is dropped on purpose, not by oversight. Re-wrapping this with %w restores the burial in
+// silence; TestExactRouteFailsClosedWhenPostgresIsCut is what refuses it, against a really cut
+// Postgres, because a fake returning a bare error has the shape of an outage and none of its contract.
+func transient(err error) error {
+	return errors.New("exact: durable lookup: " + err.Error())
+}
+
+// lookup reads the durable table under its own deadline. The bound is scoped to THIS call and released
+// before the cache write that follows: sharing one budget would leave the populate whatever the lookup
+// did not use — a sliver, after a slow Postgres — so the cache would start failing to fill exactly when
+// the system is slow, and every following message would pay another slow lookup.
+func (r *Resolver) lookup(ctx context.Context, msisdn string) (Route, bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, r.lookupTimeout)
+	defer cancel()
+
+	return r.store.Get(ctx, msisdn)
+}
+
+// jitterTTL randomises d by ±cacheJitterPct%, uniformly. Same idiom as the reconnect backoff's own
+// jitter, for the same reason: it de-synchronises expiry, and it is not security-sensitive.
+func jitterTTL(d time.Duration) time.Duration {
+	// A non-positive duration would reach go-redis as expiration 0, which means NO EXPIRY — the
+	// unbounded-staleness state this design refuses. The constructor already clamps ttl, but the floor
+	// belongs here too: it makes the property structural rather than a convention held eighty lines away.
+	if d <= 0 {
+		return DefaultCacheTTL
+	}
+	span := float64(cacheJitterPct) / 100.0
+	//nolint:gosec // G404: TTL jitter de-synchronises cache expiry, it is not a secret
+	factor := 1 + (rand.Float64()*2-1)*span // uniform in [1-span, 1+span]
+	return time.Duration(float64(d) * factor)
 }
 
 // parseTarget decodes the Redis value "<target_type>:<uuid>" into a Target — the Appendix B encoding.
@@ -80,9 +274,9 @@ func parseTarget(val string) (Target, error) {
 	return Target{Type: tt, ID: uid}, nil
 }
 
-// EncodeTarget renders a Target as the Redis value an exact-route sync must write. It is the inverse of
-// parseTarget and lives here so the encoding has one owner. It has no production caller today — see the
-// note on redisKey.
-func EncodeTarget(t Target) string {
+// encodeTarget renders a Target as the Redis cache value, the inverse of parseTarget. Unexported since
+// step-250e gave the key its writer: that writer is this package, so no other package needs — or knows
+// — the wire form. It was exported for a synchroniser that never existed.
+func encodeTarget(t Target) string {
 	return string(t.Type) + ":" + t.ID.String()
 }
