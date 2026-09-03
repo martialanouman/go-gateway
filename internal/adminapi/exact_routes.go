@@ -175,9 +175,8 @@ func (h *exactRouteHandlers) list(ctx context.Context, in *listExactRoutesInput)
 	return out, nil
 }
 
-// noopRouteCache stands in when no invalidator or announcer is wired (tests, and any deployment running
-// without the data-plane cache). It is deliberately silent: the resolver still reads the durable table
-// on a miss, and the next admin mutation still triggers a Bloom rebuild.
+// noopRouteCache stands in when no invalidator is wired (tests, and any deployment running without the
+// data-plane cache). It is deliberately silent: the resolver still reads the durable table on a miss.
 type noopRouteCache struct{}
 
 func (noopRouteCache) Invalidate(context.Context, ...string) error { return nil }

@@ -169,6 +169,14 @@ type Deps struct {
 	AntispamRules    AntispamRuleStore
 	ExactRoutes      ExactRouteAdminStore
 	ExactRouteCache  ExactRouteCacheInvalidator
+	// ConfigChanges and ConfigChannel let a mutation whose durable write lands AFTER its HTTP response
+	// — today, the background bulk import of exact routes (step-250e) — publish its own config-change
+	// announcement once committed. Synchronous handlers are covered by the PublishConfigChanges
+	// middleware and must not use them: the middleware announces when the HANDLER returns, which for
+	// an import is the 202 while BulkUpsert is still running, so the fleet would rebuild its Bloom
+	// from a table that does not hold the rows yet and nothing would republish after the commit.
+	// Small imports won that race and large ones lost it, the inverse of the use case. Best-effort,
+	// like the middleware: a lost announcement only defers the rebuild to the next admin mutation.
 	ConfigChanges    ConfigChangePublisher
 	ConfigChannel    string
 	RoutingScripts   RoutingScriptAdminStore
@@ -233,16 +241,6 @@ type BillingProviderStore interface {
 type ExactRouteCacheInvalidator interface {
 	Invalidate(ctx context.Context, msisdns ...string) error
 }
-
-// ConfigChanges publishes the coarse config-change announcement for mutations whose durable write
-// lands AFTER their HTTP response — today, the background bulk import of exact routes (step-250e).
-// Synchronous handlers are covered by the PublishConfigChanges middleware and must not use this.
-//
-// The middleware announces when the HANDLER returns, which for an import is the 202 while BulkUpsert
-// is still running: the fleet would rebuild its Bloom from a table that does not hold the rows yet,
-// and nothing would republish after the commit. Small imports won that race and large ones lost it,
-// the inverse of the use case — an MNP base being millions of rows. Best-effort, like the middleware:
-// a lost announcement only defers the rebuild to the next admin mutation. Declared consumer-side.
 
 // BalanceCacheInvalidator deletes the Redis balance-cache keys of the owners an admin money op just changed
 // durably, so the next reserve rehydrates the fresh Postgres balance instead of serving a stale cached one

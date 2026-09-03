@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -450,3 +451,24 @@ func TestResolveCountsCorruptionSeparately(t *testing.T) {
 type countingMeter struct{ n int }
 
 func (m *countingMeter) Inc() { m.n++ }
+
+// TestResolveRedisFaultNamesRedisAndKeepsTheCause: the two legs fail closed the same way, but they are
+// not the same outage, and the error is what an operator reads first. A Redis fault labelled "durable
+// lookup" sends them to Postgres. And nothing on this leg carries a platform code, so there is no reason
+// to drop the chain either: the cause stays reachable with errors.Is.
+func TestResolveRedisFaultNamesRedisAndKeepsTheCause(t *testing.T) {
+	msisdn := "2250700000001"
+	cause := errors.New("i/o timeout")
+	r := NewResolver(newBloom([]string{msisdn}), &fakeRedis{err: cause}, &fakeStore{}, time.Hour)
+
+	_, _, err := r.Resolve(context.Background(), msisdn)
+	if err == nil {
+		t.Fatal("Resolve(redis fault) = nil error, want a transient fault")
+	}
+	if !errors.Is(err, cause) {
+		t.Errorf("Resolve error = %v; want it to wrap the Redis cause %v", err, cause)
+	}
+	if s := err.Error(); !strings.Contains(s, "redis") || strings.Contains(s, "durable") {
+		t.Errorf("Resolve error = %q; want it to name redis and not the durable leg", s)
+	}
+}

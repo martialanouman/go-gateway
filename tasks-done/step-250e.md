@@ -183,8 +183,8 @@ Relevées en revue, elles sont structurantes et vivent dans le code :
    prouve. La question « faut-il dégrader ainsi ? » est une suite ouverte, pas un défaut silencieux.
 2. **Une valeur de cache illisible est traitée comme un miss**, et guérie depuis la table durable. La
    remonter en erreur renverrait le message sur la même clé à chaque redélivrance — et la lane étant la
-   partition, ce serait tout son trafic figé jusqu'au TTL. L'issue `cache_corrupt` garde la dérive
-   visible.
+   partition, ce serait tout son trafic figé jusqu'au TTL. Le compteur `exact_route_cache_corrupt_total`
+   garde la dérive visible, à part de l'issue, qui dit comment la résolution s'est terminée.
 3. **L'échec du `SET` de peuplement est avalé** : la cible est déjà connue et correcte, le message
    suivant repaiera une lecture. Seules les jambes de *lecture* sont fail-closed.
 
@@ -216,8 +216,9 @@ rien n'ancre, c'est ainsi qu'ils dérivent en silence ».
 
 ### Suites ouvertes (à mesurer avant de décider)
 
-La métrique `exact_route_lookups_total{outcome}` (`bloom_miss` · `redis_hit` · `cache_corrupt` ·
-`pg_hit` · `pg_miss`) est livrée ici pour les rendre décidables :
+La métrique `exact_route_lookups_total{outcome}` (`bloom_miss` · `redis_hit` · `redis_error` ·
+`pg_hit` · `pg_miss` · `pg_error`, une observation par résolution) et le compteur à part
+`exact_route_cache_corrupt_total` sont livrés ici pour les rendre décidables :
 
 - **cache négatif** pour les faux positifs du Bloom — un numéro non porté à fort trafic qui tombe en
   faux positif frappe Postgres à chaque message, de façon déterministe jusqu'au prochain rebuild ;

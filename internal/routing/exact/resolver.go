@@ -80,9 +80,8 @@ func WithLookupMeter(m LookupMeter) Option { return func(r *Resolver) { r.meter 
 // WithCorruptionMeter attaches the undecodable-value counter.
 func WithCorruptionMeter(m CorruptionMeter) Option { return func(r *Resolver) { r.corrupt = m } }
 
-// The outcome labels. Constants rather than literals: they are named in the resolver, in the boot
-// seeding and in the catalogue's Help text, and a typo in any one of them would split a series in
-// silence.
+// The outcome labels. Constants rather than literals: the resolver and the boot seeding both name
+// them, and a typo in either would split a series in silence.
 const (
 	outcomeBloomMiss  = "bloom_miss"
 	outcomeRedisHit   = "redis_hit"
@@ -179,8 +178,11 @@ func (r *Resolver) Resolve(ctx context.Context, msisdn string) (Target, bool, er
 		// meter, so a drift never heals invisibly — including when the durable read then fails.
 		r.corrupt.Inc()
 	case !errors.Is(err, goredis.Nil):
+		// Wrapped, not stripped: a go-redis error carries no platform code, so the chain is safe to
+		// keep — and the leg is named, since the durable one fails closed the same way for a different
+		// outage.
 		outcome = outcomeRedisError
-		return Target{}, false, transient(err)
+		return Target{}, false, fmt.Errorf("exact: redis lookup: %w", err)
 	}
 
 	target, ok, err := r.loadAndCache(ctx, msisdn)
