@@ -260,6 +260,24 @@ perdaient, l'inverse du besoin. Au passage, le budget mémoire du filtre annonc�
 jalons (« ~1,2 Mo par million ») était **faux** : il correspondait à un taux de faux positifs de 0,01
 et non au 0,001 du code, soit 1,8 Mo réels.
 
+## Audit du 2026-09-03 — six constats vérifiés, sept PR
+L'audit en lecture seule du 2026-09-03 (commit `0f86158`) a rendu toutes les portes vertes et les quatre
+invariants tenus, et laissé six constats « Required » qu'aucune fiche ne portait. Ils s'insèrent ici,
+avant step-270, parce que les deux premiers changent ce que la campagne NFR (step-280) mesure : le
+profil de routage et la borne de l'ingest. Aucune dépendance de code entre les sept ; merger dans
+l'ordre des numéros évite tout conflit sur `cmd/router-svc/wiring.go` et `internal/config/config.go`.
+- [ ] step-260d — `least_loaded` lisait une clé que personne n'écrit : le pool dérive `connectorload`
+      dans le script de `PublishBind`, le routeur la lit avec un cache d'une seconde ⛓ bloque step-280
+- [ ] step-260e — Le produce Kafka n'avait aucune borne : `KAFKA_PRODUCE_TIMEOUT` (record delivery +
+      produce request), l'ingest REST en hérite ⛓ bloque step-280
+- [ ] step-260f — Le mot de passe ClickHouse de développement était accepté en production
+- [ ] step-260g — Trois affirmations fausses corrigées (CDR `enroute`, simulateur SMSC), et `query_sm`
+      a enfin sa fiche (step-390b)
+- [ ] step-260h — Trois gardes passent de la prose au code : enum des codes d'erreur dans les contrats,
+      tag `loadref` linté, `make check` dit ce qu'il prouve
+- [ ] step-260i — `processOne` (239 lignes) en trois temps, `connectorpool.go` (1 142 lignes) en trois fichiers
+- [ ] step-260j — Un seul codec de curseur keyset (`platform/keyset`) à la place de trois copies
+
 ## Sécurité et authentification
 Indépendantes de la chaîne de charge : parallélisables si deux mains travaillent.
 - [ ] step-290 — Sécurité : gosec, govulncheck, secrets, piste d'audit
