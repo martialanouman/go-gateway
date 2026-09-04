@@ -35,10 +35,13 @@ const (
 )
 
 // LoadReader serves a connector's derived in-flight gauge to least_loaded. The strategy resolves per
-// message but the gauge is republished only every status heartbeat (2 s), so the reader caches each
-// connector's value in memory for cacheTTL: two targets at 8 000 msg/s cost 2 GETs per second per
-// pod instead of 16 000. A missing key reads 0 (nothing published yet); a Redis error reads 0 too —
-// least_loaded then degrades to its deterministic tie-break, it never blocks routing.
+// message (twice per target: the pick and the fallback chain) but the gauge is republished only every
+// status heartbeat (2 s), so the reader caches each connector's value in memory for cacheTTL: two
+// targets at 8 000 msg/s cost 2 GETs per second per pod instead of 32 000. A missing key reads 0
+// (nothing published yet); a Redis error reads 0 too — least_loaded then degrades to its deterministic
+// tie-break, it never blocks routing. The 0 of an error is cached like any value, which is what keeps
+// the warning to one per second per connector. Two readers racing on an expired entry both GET; the
+// last store wins, and the duplicate costs one round trip a second at most.
 type LoadReader struct {
 	store    LoadStore
 	cacheTTL time.Duration

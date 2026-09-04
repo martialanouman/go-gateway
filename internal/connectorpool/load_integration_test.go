@@ -21,8 +21,8 @@ import (
 // TestStatusHeartbeatFeedsConnectorLoad closes the loop step-114 left open: the pool's status heartbeat
 // publishes each bind's in_flight, and what least_loaded reads — connectorload:{id}, through the same
 // LoadReader the router wires — is derived from it. Until step-260d nothing wrote that key, so the
-// strategy always read 0. The SMSC answers slowly so the window is genuinely occupied while the
-// heartbeat fires: a pool that published 0 instead of its window depth would fail this test too.
+// strategy always read 0. The SMSC answers slowly so the single bind's window holds its one submit
+// while the heartbeat fires: a pool that published 0 instead of its window depth would fail this too.
 func TestStatusHeartbeatFeedsConnectorLoad(t *testing.T) {
 	rdb := redistest.Client(t)
 	ctx := context.Background()
@@ -31,29 +31,23 @@ func TestStatusHeartbeatFeedsConnectorLoad(t *testing.T) {
 	smsc := fakesmsc.Start(t, fakesmsc.Config{OnSubmit: func(smpp.SubmitSM) fakesmsc.Resp {
 		return fakesmsc.Delay(1500 * time.Millisecond)
 	}})
-	recs := make([]kafka.Record, 0, 4)
-	for range 4 {
-		r := routed()
-		r.ConnectorID = connectorID
-		rec, err := pipeline.EncodeRouted(r)
-		if err != nil {
-			t.Fatalf("encode routed: %v", err)
-		}
-		recs = append(recs, rec)
+	r := routed()
+	r.ConnectorID = connectorID
+	rec, err := pipeline.EncodeRouted(r)
+	if err != nil {
+		t.Fatalf("encode routed: %v", err)
 	}
 	sink := newPoolSink()
 	rrec := otelrec.New(t)
-	bind := poolBind(smsc.Addr(), 1)
-	bind.WindowSize = 4
 	svc := connectorpool.New(connectorpool.Deps{
 		ConnectorID:     connectorID,
-		Consumer:        &batchConsumer{records: recs},
+		Consumer:        &batchConsumer{records: []kafka.Record{rec}},
 		CDR:             sink.cdr,
 		Producer:        sink.out,
 		StatusControl:   status.NewReader(rdb),
 		PodID:           "pod-test",
 		StatusHeartbeat: 50 * time.Millisecond,
-		Bind:            bind,
+		Bind:            poolBind(smsc.Addr(), 1),
 		Tracer:          observability.Tracer(rrec.Provider(), "connector-pool"),
 	})
 
@@ -67,11 +61,11 @@ func TestStatusHeartbeatFeedsConnectorLoad(t *testing.T) {
 		seen = lr.InFlight(ctx, connectorID)
 		return seen > 0
 	}) {
-		t.Fatalf("connectorload never rose above 0 while 4 submits were in flight: the status heartbeat "+
+		t.Fatalf("connectorload never rose above 0 while a submit was in flight: the status heartbeat "+
 			"does not feed the gauge least_loaded reads (last read %d)", seen)
 	}
-	if seen > 4 {
-		t.Errorf("connectorload = %d, more than the 4 messages ever in flight", seen)
+	if seen != 1 {
+		t.Errorf("connectorload = %d, want exactly the 1 message this single bind holds in its window", seen)
 	}
 
 	if err := <-runErr; err != nil {

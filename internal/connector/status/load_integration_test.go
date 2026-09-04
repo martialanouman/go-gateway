@@ -2,6 +2,10 @@ package status_test
 
 import (
 	"context"
+	"errors"
+	"io"
+	"log/slog"
+	"slices"
 	"testing"
 	"time"
 
@@ -114,5 +118,43 @@ func TestLoadReaderCachesWithinTTL(t *testing.T) {
 	}
 	if store.gets != 2 {
 		t.Errorf("a read after the TTL cost %d GETs in total, want 2", store.gets)
+	}
+}
+
+// scriptedStore answers each Get with the next scripted result: a hit, an absent key, a Redis fault.
+type scriptedStore struct{ results []*goredis.StringCmd }
+
+func (s *scriptedStore) Get(_ context.Context, _ string) *goredis.StringCmd {
+	r := s.results[0]
+	s.results = s.results[1:]
+	return r
+}
+
+type recordingMeter struct{ outcomes []string }
+
+func (m *recordingMeter) ObserveLoadRead(outcome string) { m.outcomes = append(m.outcomes, outcome) }
+
+// TestLoadReaderCountsEveryOutcome: the counter is what makes "no gauge published" distinguishable from
+// "every connector idle" — both read 0 to the strategy. Each read lands on exactly one of the three
+// closed outcomes, and a Redis fault reads 0 rather than failing the resolve.
+func TestLoadReaderCountsEveryOutcome(t *testing.T) {
+	store := &scriptedStore{results: []*goredis.StringCmd{
+		goredis.NewStringResult("7", nil),
+		goredis.NewStringResult("", goredis.Nil),
+		goredis.NewStringResult("", errors.New("redis: connection refused")),
+	}}
+	meter := &recordingMeter{}
+	lr := status.NewLoadReader(store, status.WithLoadCacheTTL(0), status.WithLoadMeter(meter),
+		status.WithLoadLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
+	id := uuid.New()
+
+	for i, want := range []int{7, 0, 0} {
+		if got := lr.InFlight(context.Background(), id); got != want {
+			t.Errorf("read %d: InFlight = %d, want %d", i, got, want)
+		}
+	}
+	want := []string{status.LoadReadHit, status.LoadReadMissing, status.LoadReadError}
+	if !slices.Equal(meter.outcomes, want) {
+		t.Errorf("observed outcomes = %v, want %v", meter.outcomes, want)
 	}
 }

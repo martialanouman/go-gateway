@@ -414,7 +414,9 @@ breaker:binds:{connector_id}         -- HASH of per (pod_id, bind_index) sub-bin
                                          owning pod; the connector-level aggregate is derived by majority (§6.8/§6.15)
 breaker:state:{connector_id}         -- derived connector aggregate (closed|open|half_open), read by router-svc only
                                          when (re)building its routing snapshot, never per-message
-connectorload:{connector_id}         -- periodically-published in-flight gauge per connector, for least_loaded (§6.1)
+connectorload:{connector_id}         -- derived in-flight gauge per connector (sum of the live per-bind in_flight of
+                                         connector:binds, recomputed by the pool's status heartbeat script, TTL 30 s);
+                                         read by router-svc for least_loaded (§6.1) through a 1 s per-connector cache
 config:changed                       -- pub/sub channel: Admin API announces a control-plane mutation; config-sync coalesces these (§11, M7)
 breaker:events                       -- pub/sub channel for near-immediate routing-snapshot invalidation (config-sync M7, breaker transition M8)
 ```
@@ -811,7 +813,7 @@ Pour la logique que les règles déclaratives ne peuvent exprimer, le fournisseu
 - Tous les services du plan de données sont sans état et s'étendent via HPA (CPU/lag Kafka).
 - `smpp-server-svc` fait exception (état TCP) — scalé aussi, la remise MO/DLR utilisant le registre `session-manager-svc`. **Remise au bon pod** : le registre maintient `account → {pod_id, bind_id}[]` ; `mo-dlr-router-svc` remet **directement au pod détenteur via gRPC** (endpoint de remise interne), round-robin sur les binds vivants ; à défaut de bind, repli webhook.
 - **Pool de binds par connecteur** : `bind_pool_size > 1` (§3.1) partitionne `mt.routed` par `(connector_id, shard_index)`, `shard_index = hash(message_key) % bind_pool_size`. Chaque partition est consommée par une instance dédiée tenant un bind indépendant. `message_key` est l'**ID de message logique** (tous les segments UDH d'un message concaténé le partagent → même shard/bind, dans l'ordre — requis par les SMSC réassemblant sur un seul bind).
-- **Agrégation du disjoncteur multi-pod** : les binds étant répartis sur plusieurs pods, chacun écrit uniquement ses champs dans le hash `breaker:binds:{connector_id}` ; l'état connecteur agrégé (`breaker:state`) est **dérivé** par règle de majorité (recalcul-et-CAS sur transition, ou agrégateur élu). La charge (`connectorload`) suit le même schéma.
+- **Agrégation du disjoncteur multi-pod** : les binds étant répartis sur plusieurs pods, chacun écrit uniquement ses champs dans le hash `breaker:binds:{connector_id}` ; l'état connecteur agrégé (`breaker:state`) est **dérivé** par règle de majorité (recalcul-et-CAS sur transition, ou agrégateur élu). La charge (`connectorload`) suit le même schéma (une somme, recalculée à chaque publication, pas une majorité).
 - Kafka : partitions dimensionnées pour le parallélisme (partitions par connecteur × `bind_pool_size` pour `mt.routed` ; hash de compte pour `mt.inbound`/`mo.inbound`).
 - Multi-région : plan de données par région pour la latence, synchro de config cross-région ; primaire Postgres dans une région avec réplicas en lecture. *(La reprise après sinistre n'est pas traitée ici, §1.2bis.)*
 

@@ -34,6 +34,8 @@ for i = 1, #all, 2 do
 	end
 end
 
-redis.call('SET', loadkey, sum, 'PX', ttl)
+-- Formatted as an integer on purpose: under a Lua where cjson yields floats the sum would otherwise
+-- serialise as "12.0", which the reader's .Int() rejects — every connector would silently read 0.
+redis.call('SET', loadkey, string.format('%d', sum), 'PX', ttl)
 redis.call('PEXPIRE', binds, ttl)
 return sum

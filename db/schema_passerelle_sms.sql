@@ -793,7 +793,8 @@ billing:reservation:{message_id}                    -- short-TTL MT hold; cleare
 retry:delayed:{connector_id}                        -- sorted-set delay queue (score = due ts)
 breaker:binds:{connector_id}                        -- HASH of per (pod_id, bind_index) sub-bind states
 breaker:state:{connector_id}                        -- derived connector aggregate (closed|open|half_open)
-connectorload:{connector_id}                        -- in-flight gauge per connector, for least_loaded (§6.1)
+connectorload:{connector_id}                        -- derived in-flight gauge per connector (sum of the live connector:binds
+                                                    --   entries, recomputed by the pool's status heartbeat script), for least_loaded (§6.1)
 config:changed                                      -- pub/sub channel: Admin API announces a control-plane mutation; config-sync coalesces these
 breaker:events                                      -- pub/sub channel for routing-snapshot invalidation (config-sync M7, circuit breaker M8)
 

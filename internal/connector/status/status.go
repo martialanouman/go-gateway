@@ -1,5 +1,6 @@
 // Package status is the shared runtime-health surface of a connector (§6.13/§6.15): the per-bind
-// link_status and in_flight the connector pool publishes to Redis (step-128b), and the connector-wide
+// link_status and in_flight the connector pool publishes to Redis (step-128b), the connector-wide
+// in-flight gauge derived from them for least_loaded (connectorload, step-260d), and the connector-wide
 // breaker aggregate. The Admin API reads it for get-connector-status, keeping link_status and
 // breaker_state strictly DISTINCT — a live link can carry an open breaker and vice versa. It also owns
 // the reconfigure generation counter the pool polls to pick up a rebind / resize / policy change.

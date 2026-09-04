@@ -78,24 +78,34 @@ func TestLeastLoadedReadsTheGaugeThroughItsCache(t *testing.T) {
 	r.UseLoadReader(status.NewLoadReader(rdb, status.WithLoadCacheTTL(time.Second),
 		status.WithLoadClock(func() time.Time { return now })))
 	pub := status.NewReader(rdb)
-	_ = pub.PublishBind(ctx, a, "pod-a", 0, status.LinkUp, 10)
-	_ = pub.PublishBind(ctx, b, "pod-a", 0, status.LinkUp, 1)
-
-	first, _ := r.Resolve(ctx, "+2250700000001")
-	if first.ConnectorID != b {
-		t.Fatalf("first resolve picked %s, want b=%s", first.ConnectorID, b)
+	publish := func(connectorID uuid.UUID, inFlight int) {
+		t.Helper()
+		if err := pub.PublishBind(ctx, connectorID, "pod-a", 0, status.LinkUp, inFlight); err != nil {
+			t.Fatalf("publish %s: %v", connectorID, err)
+		}
+	}
+	resolve := func() uuid.UUID {
+		t.Helper()
+		got, err := r.Resolve(ctx, "+2250700000001")
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		return got.ConnectorID
+	}
+	publish(a, 10)
+	publish(b, 1)
+	if first := resolve(); first != b {
+		t.Fatalf("first resolve picked %s, want b=%s", first, b)
 	}
 
-	_ = pub.PublishBind(ctx, a, "pod-a", 0, status.LinkUp, 0)
-	_ = pub.PublishBind(ctx, b, "pod-a", 0, status.LinkUp, 20)
-	cached, _ := r.Resolve(ctx, "+2250700000001")
-	if cached.ConnectorID != b {
-		t.Errorf("inside the cache TTL the resolve moved to %s: the reader is hitting Redis per message", cached.ConnectorID)
+	publish(a, 0)
+	publish(b, 20)
+	if cached := resolve(); cached != b {
+		t.Errorf("inside the cache TTL the resolve moved to %s: the reader is hitting Redis per message", cached)
 	}
 
 	now = now.Add(1500 * time.Millisecond)
-	fresh, _ := r.Resolve(ctx, "+2250700000001")
-	if fresh.ConnectorID != a {
-		t.Errorf("after the cache TTL the resolve still picked %s, want a=%s", fresh.ConnectorID, a)
+	if fresh := resolve(); fresh != a {
+		t.Errorf("after the cache TTL the resolve still picked %s, want a=%s", fresh, a)
 	}
 }

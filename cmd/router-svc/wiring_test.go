@@ -355,14 +355,25 @@ func TestNewRouterAppRoutesLeastLoadedOnThePublishedGauge(t *testing.T) {
 		return c
 	}
 	a, b := newConnector("260d-a"), newConnector("260d-b")
-	prio, dest := 1, "22588"
-	if _, err := postgres.NewRouteRepo(pool).Create(ctx, cp.NewRoute{
+	t.Cleanup(func() {
+		_ = connectors.Delete(context.Background(), a.ID)
+		_ = connectors.Delete(context.Background(), b.ID)
+	})
+	// The snapshot ranks every route of the shared database (longest prefix, then priority, stable on
+	// id): a prefix unique to this run keeps a previous run's route — whose connectors still carry live
+	// gauges for 30 s — from ever being the most specific match.
+	prio, dest := 1, "2258"+strconv.Itoa(int(uuid.New().ID()%90000+10000))
+	routes := postgres.NewRouteRepo(pool)
+	route, err := routes.Create(ctx, cp.NewRoute{
 		Name: "260d-least-loaded-" + uuid.NewString(), Priority: &prio, MatchDestPattern: &dest,
 		DistributionStrategy: cp.DistributionLeastLoaded,
 		Targets:              []cp.RouteTarget{{ConnectorID: a.ID, Weight: 1}, {ConnectorID: b.ID, Weight: 1}},
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("create route: %v", err)
 	}
+	t.Cleanup(func() { _ = routes.Delete(context.Background(), route.ID) })
+	dial := "+" + dest + "0001"
 
 	pub := status.NewReader(redistest.Client(t))
 	publish := func(id uuid.UUID, inFlight int) {
@@ -380,7 +391,7 @@ func TestNewRouterAppRoutesLeastLoadedOnThePublishedGauge(t *testing.T) {
 	}
 	defer app.close()
 
-	got, err := app.routes.Resolve(ctx, "+2258800000001")
+	got, err := app.routes.Resolve(ctx, dial)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -391,7 +402,7 @@ func TestNewRouterAppRoutesLeastLoadedOnThePublishedGauge(t *testing.T) {
 	publish(a.ID, 0)
 	publish(b.ID, 20)
 	time.Sleep(1100 * time.Millisecond) // the wired reader caches for 1 s; wait it out, do not bypass it
-	got, err = app.routes.Resolve(ctx, "+2258800000001")
+	got, err = app.routes.Resolve(ctx, dial)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}

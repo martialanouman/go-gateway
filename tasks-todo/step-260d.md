@@ -59,10 +59,11 @@ même charge). La clé dérivée est le contrat partagé : Admin, routeur, drain
 clé n'est plus un littéral dans un main), `LoadReader` construit par `NewLoadReader(rdb, opts...)`, dont
 `InFlight(ctx, id) int` satisfait `routing.LoadReader` (`snapshot.go:52-54`, **inchangée**). Options :
 `WithLoadCacheTTL` (défaut **1 s**, `0` = pas de cache, pour les tests), `WithLoadMeter`,
-`WithLoadClock`. Clé absente → `0` ; erreur Redis → `0` + un `WarnContext`, naturellement limité par le
+`WithLoadClock`, `WithLoadLogger`. Clé absente → `0` ; erreur Redis → `0` + un `WarnContext`, naturellement limité par le
 cache. **Politique chemin chaud : cache mémoire par connecteur, TTL 1 s.** La jauge est republiée
 toutes les 2 s : un `GET` par message n'apporte rien de plus qu'un cache de 1 s, et le coût passe de
-~16 000 GET/s (deux cibles à 8 000 msg/s) à 2 GET/s par pod.
+~32 000 GET/s (deux cibles à 8 000 msg/s, lues deux fois : le choix et la chaîne de repli) à 2 GET/s
+par pod.
 
 *Écartés* : lire au rebuild seulement, comme `breaker:state` — le snapshot n'est reconstruit que sur
 invalidation de config, la charge serait gelée entre deux changements et `least_loaded` redeviendrait
