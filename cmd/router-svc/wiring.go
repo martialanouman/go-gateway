@@ -17,6 +17,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/billing/pb"
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/connector/breaker"
+	"github.com/martialanouman/go-gateway/internal/connector/status"
 	"github.com/martialanouman/go-gateway/internal/content"
 	contentkeypb "github.com/martialanouman/go-gateway/internal/contentkeys/pb"
 	"github.com/martialanouman/go-gateway/internal/ingest"
@@ -57,6 +58,9 @@ type routerApp struct {
 	emitter  *metricstream.Emitter
 	consumer *kafka.Consumer
 	catalog  *metrics.Catalog
+	// routes is the graph's route resolver, kept so a wiring test can resolve through the overlays the
+	// graph actually installs (the least_loaded gauge reader, step-260d) rather than through a stand-in.
+	routes *routing.SnapshotResolver
 
 	// closers release what was opened, in reverse order of opening — the exact LIFO the deferred
 	// Closes in run() used to provide. They are named because that order is the property worth
@@ -110,6 +114,7 @@ func newRouterApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 	if err != nil {
 		return nil, err
 	}
+	a.routes = boot.routes
 
 	// The anti-spam engine, the token bucket and the exact-route short-cut all read Redis, which is a
 	// boot dependency (NewClient pings eagerly). It retries with the same discipline as the snapshots —
@@ -319,9 +324,12 @@ func newPipelineStack(
 		}
 	}()
 
-	// least_loaded reads each connector's published in-flight gauge (connectorload:{id}) from Redis —
-	// the mutable overlay beside the immutable route snapshot (step-104/114). A missing gauge reads 0.
-	boot.routes.UseLoadReader(connectorLoad{rdb: rdb})
+	// least_loaded reads each connector's derived in-flight gauge (connectorload:{id}, published by the
+	// pool's status heartbeat, step-260d) — the mutable overlay beside the immutable route snapshot
+	// (step-104/114). The reader caches per connector for a second, so the hot path costs at most one
+	// GET per second per target; a missing gauge reads 0 and is counted.
+	boot.routes.UseLoadReader(status.NewLoadReader(rdb,
+		status.WithLoadMeter(loadMeter{c: catalog.ConnectorLoadReads}), status.WithLoadLogger(logger)))
 	// Breaker awareness (step-123): read each connector's aggregate breaker:state once at boot to seed the
 	// availability overlay, then refresh it on every snapshot rebuild. Reading here (not per message)
 	// keeps the hot path off Redis. A transient read failure just leaves every connector available.
@@ -837,17 +845,10 @@ type scriptMeter struct{ c *prometheus.CounterVec }
 
 func (m scriptMeter) Inc(language, reason string) { m.c.WithLabelValues(language, reason).Inc() }
 
-// connectorLoad reads the connectorload:{id} in-flight gauge from Redis for the least_loaded strategy.
-// A missing key or a parse/read error reads 0 — least_loaded then degrades to a deterministic pick.
-type connectorLoad struct{ rdb *goredis.Client }
+// loadMeter adapts the connector-load read counter to status.LoadMeter (one bounded label: outcome).
+type loadMeter struct{ c *prometheus.CounterVec }
 
-func (c connectorLoad) InFlight(ctx context.Context, connectorID uuid.UUID) int {
-	n, err := c.rdb.Get(ctx, "connectorload:{"+connectorID.String()+"}").Int()
-	if err != nil {
-		return 0
-	}
-	return n
-}
+func (m loadMeter) ObserveLoadRead(outcome string) { m.c.WithLabelValues(outcome).Inc() }
 
 // breakerAvailability reads breaker:state:{id} for a set of connectors (one MGET) and returns those that
 // are open — the routing availability overlay (step-123). It is consulted only at snapshot rebuild, so

@@ -42,6 +42,7 @@ func TestCatalogRegistersAndExposesEveryMetric(t *testing.T) {
 		c.RoutingScriptFailures.WithLabelValues("js", "timeout").Inc()
 		c.ExactRouteLookups.WithLabelValues("pg_hit").Inc()
 		c.ExactRouteCacheCorrupt.Inc()
+		c.ConnectorLoadReads.WithLabelValues("missing").Inc()
 	})
 
 	for _, name := range []string{
@@ -53,6 +54,7 @@ func TestCatalogRegistersAndExposesEveryMetric(t *testing.T) {
 		"routing_script_failures_total",
 		"exact_route_lookups_total",
 		"exact_route_cache_corrupt_total",
+		"routing_connector_load_reads_total",
 	} {
 		if !strings.Contains(body, name+"{") && !strings.Contains(body, name+"_bucket{") &&
 			!strings.Contains(body, "\n"+name+" ") {

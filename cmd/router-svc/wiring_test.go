@@ -16,7 +16,12 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/google/uuid"
+
 	"github.com/martialanouman/go-gateway/internal/config"
+	"github.com/martialanouman/go-gateway/internal/connector/status"
+	cp "github.com/martialanouman/go-gateway/internal/controlplane"
+	"github.com/martialanouman/go-gateway/internal/storage/postgres"
 	"github.com/martialanouman/go-gateway/internal/testutil/pgtest"
 	"github.com/martialanouman/go-gateway/internal/testutil/redistest"
 )
@@ -323,4 +328,86 @@ func freePort() int {
 
 func silentLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// TestNewRouterAppRoutesLeastLoadedOnThePublishedGauge proves the wiring, which no test did since
+// step-114: the reader the graph installs behind least_loaded reads the gauge the connector pool
+// publishes (connectorload:{id}, step-260d). Two connectors, one least_loaded route, loads published the
+// way the pool's status heartbeat publishes them — and the REAL resolver of the built graph must follow
+// them. Drop the UseLoadReader line from the wiring and both loads read 0: the UUID tie-break picks the
+// same connector twice and the second assertion fails.
+func TestNewRouterAppRoutesLeastLoadedOnThePublishedGauge(t *testing.T) {
+	cfg := testConfig()
+	cfg.Postgres = pgtest.Config(t)
+	cfg.Redis = redistest.Config(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	pool := pgtest.Pool(t)
+	connectors := postgres.NewConnectorRepo(pool)
+	newConnector := func(name string) cp.Connector {
+		t.Helper()
+		c, err := connectors.Create(ctx, cp.NewConnector{Name: name + "-" + uuid.NewString(), Host: "h", Port: 2775,
+			BindType: cp.BindTRX, SystemID: name, PasswordHash: "h"})
+		if err != nil {
+			t.Fatalf("create connector %s: %v", name, err)
+		}
+		return c
+	}
+	a, b := newConnector("260d-a"), newConnector("260d-b")
+	t.Cleanup(func() {
+		_ = connectors.Delete(context.Background(), a.ID)
+		_ = connectors.Delete(context.Background(), b.ID)
+	})
+	// The snapshot ranks every route of the shared database (longest prefix, then priority, stable on
+	// id): a prefix unique to this run keeps a previous run's route — whose connectors still carry live
+	// gauges for 30 s — from ever being the most specific match.
+	prio, dest := 1, "2258"+strconv.Itoa(int(uuid.New().ID()%90000+10000))
+	routes := postgres.NewRouteRepo(pool)
+	route, err := routes.Create(ctx, cp.NewRoute{
+		Name: "260d-least-loaded-" + uuid.NewString(), Priority: &prio, MatchDestPattern: &dest,
+		DistributionStrategy: cp.DistributionLeastLoaded,
+		Targets:              []cp.RouteTarget{{ConnectorID: a.ID, Weight: 1}, {ConnectorID: b.ID, Weight: 1}},
+	})
+	if err != nil {
+		t.Fatalf("create route: %v", err)
+	}
+	t.Cleanup(func() { _ = routes.Delete(context.Background(), route.ID) })
+	dial := "+" + dest + "0001"
+
+	pub := status.NewReader(redistest.Client(t))
+	publish := func(id uuid.UUID, inFlight int) {
+		t.Helper()
+		if err := pub.PublishBind(ctx, id, "pod-a", 0, status.LinkUp, inFlight); err != nil {
+			t.Fatalf("publish %s: %v", id, err)
+		}
+	}
+	publish(a.ID, 10)
+	publish(b.ID, 1)
+
+	app, err := newRouterApp(ctx, cfg, silentLogger())
+	if err != nil {
+		t.Fatalf("newRouterApp: %v", err)
+	}
+	defer app.close()
+
+	got, err := app.routes.Resolve(ctx, dial)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got.ConnectorID != b.ID {
+		t.Fatalf("with loads a=10 b=1 the built graph routed to %s, want b=%s", got.ConnectorID, b.ID)
+	}
+
+	publish(a.ID, 0)
+	publish(b.ID, 20)
+	time.Sleep(1100 * time.Millisecond) // the wired reader caches for 1 s; wait it out, do not bypass it
+	got, err = app.routes.Resolve(ctx, dial)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got.ConnectorID != a.ID {
+		t.Fatalf("with loads a=0 b=20 the built graph still routed to %s, want a=%s: least_loaded is "+
+			"not wired to the published gauge", got.ConnectorID, a.ID)
+	}
 }
