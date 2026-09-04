@@ -7,6 +7,7 @@ package status
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,15 +19,20 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/martialanouman/go-gateway/internal/connector/breaker"
+	redisstore "github.com/martialanouman/go-gateway/internal/storage/redis"
 )
 
 // Redis keys (Appendix B). All share the {connector_id} hash tag so a connector's runtime keys land on
 // one Cluster slot:
 //
-//	connector:binds:{id}   HASH  field "pod_id:bind_index" -> JSON {link_status,in_flight}
+//	connector:binds:{id}   HASH  field "pod_id:bind_index" -> JSON {link_status,in_flight,ts}
+//	connectorload:{id}     STRING derived in-flight sum of the live binds, for least_loaded (step-260d)
 //	breaker:binds:{id}     HASH  field "pod_id:bind_index" -> "breakerState:heartbeat_ms"  (step-122)
 //	breaker:state:{id}     STRING derived breaker aggregate token                          (step-122)
 //	connector:cfggen:{id}  STRING monotonically-incremented reconfigure generation         (step-128)
+
+//go:embed publish_bind.lua
+var publishBindSrc string
 
 // BindsKey is the per-bind link-status HASH a connector's pool publishes and the Admin API reads.
 func BindsKey(connectorID uuid.UUID) string { return "connector:binds:{" + connectorID.String() + "}" }
@@ -79,12 +85,18 @@ type Connector struct {
 	Binds        []Bind
 }
 
-// Reader assembles a connector's runtime status from Redis. It is read-only and best-effort: a missing
-// key means "nothing published yet" (empty binds, closed breaker), not an error.
-type Reader struct{ rdb *goredis.Client }
+// Reader assembles a connector's runtime status from Redis. Reads are best-effort: a missing key means
+// "nothing published yet" (empty binds, closed breaker), not an error. It also carries the pool's write
+// side (PublishBind, SignalReconfigure).
+type Reader struct {
+	rdb     *goredis.Client
+	publish *redisstore.Script
+}
 
 // NewReader builds a Reader over the shared Redis client.
-func NewReader(rdb *goredis.Client) *Reader { return &Reader{rdb: rdb} }
+func NewReader(rdb *goredis.Client) *Reader {
+	return &Reader{rdb: rdb, publish: redisstore.NewScript(rdb, publishBindSrc)}
+}
 
 // Read returns the connector's live status: the aggregate breaker_state and one Bind per (pod_id,
 // bind_index) seen in either the link hash or the breaker hash. link_status and breaker_state stay
@@ -155,16 +167,21 @@ func (r *Reader) Read(ctx context.Context, connectorID uuid.UUID) (Connector, er
 // from the status rather than lingering forever. The pool republishes every status heartbeat.
 const bindTTL = 30 * time.Second
 
-// PublishBind writes one bind's link_status + in_flight into connector:binds, refreshing the hash TTL.
-// The pool calls it every status heartbeat; the Admin API reads the merged result.
+// PublishBind writes one bind's link_status + in_flight into connector:binds and derives
+// connectorload:{id} from the live entries, in one atomic script (publish_bind.lua): the stale entries
+// are swept there, the hash and the gauge get the bind TTL. The pool calls it every status heartbeat;
+// the Admin API reads the merged hash, the router reads the derived gauge (LoadReader).
 func (r *Reader) PublishBind(ctx context.Context, connectorID uuid.UUID, podID string, bindIndex int, linkStatus string, inFlight int) error {
-	key := BindsKey(connectorID)
+	now := time.Now().UnixMilli()
 	field := podID + ":" + strconv.Itoa(bindIndex)
-	val := BindEntry{LinkStatus: linkStatus, InFlight: inFlight, TS: time.Now().UnixMilli()}.Encode()
-	if err := r.rdb.HSet(ctx, key, field, val).Err(); err != nil {
+	val := BindEntry{LinkStatus: linkStatus, InFlight: inFlight, TS: now}.Encode()
+	err := r.publish.Run(ctx,
+		[]string{BindsKey(connectorID), LoadKey(connectorID)},
+		field, string(val), now, bindTTL.Milliseconds(),
+	).Err()
+	if err != nil {
 		return fmt.Errorf("status: publish bind: %w", err)
 	}
-	r.rdb.PExpire(ctx, key, bindTTL) // whole-key backstop; per-field staleness is filtered in Read
 	return nil
 }
 
