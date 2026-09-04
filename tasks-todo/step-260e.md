@@ -37,7 +37,7 @@ même appel à 15 s en dur (`internal/smpp/session/session.go:35-38`) et répond
   (le broker Redpanda est partagé par package). Un broker muet (TCP accepté, jamais de réponse) n'est pas
   reproductible aujourd'hui.
 
-## Design arrêté
+## Design arrêté (premier jet — révisé ci-dessous après revue)
 
 **Une variable, deux options.** `config.Kafka.ProduceTimeout` (`KAFKA_PRODUCE_TIMEOUT`, défaut **5 s**),
 câblée dans un nouveau `producerOpts(cfg)` (`options.go`, à côté de `consumerOpts`) sur :
@@ -72,14 +72,59 @@ struct literal = défaut de la bibliothèque » (`options.go:9-16`).
 
 **`StreamProducer`** (best-effort, `TryProduce`, tampon 256) : non touché ; suite éventuelle.
 
+## Design révisé après revue (2026-09-04) — ce qui remplace le premier jet
+
+La revue de correction a vérifié trois mécanismes de kgo v1.21.5 que le premier jet ignorait, et un
+arbitre à contexte neuf a tranché (spec muette ; ADR-0012 et ADR-0014 comme cadre) :
+
+1. **Un lot idempotent en vol n'est pas bornable.** `RecordDeliveryTimeout` est évalué avant l'écriture
+   d'une requête, après une réponse, et par un minuteur dédié dans `waitUnknownTopic` ; un lot dont la
+   requête est partie sans réponse ne peut être échoué ni par le timeout ni par le contexte
+   (`sink.go:1749`, `:2134`, `:1359`, `:303`). Une réponse `REQUEST_TIMED_OUT` /
+   `NOT_ENOUGH_REPLICAS_AFTER_APPEND` pose `unsureIfProduced`, jamais remis à faux (`sink.go:1052`) :
+   ce lot est retenté jusqu'à réponse définitive. C'est le prix de l'absence de doublon côté broker.
+   → **Q1 : `RecordDeliveryTimeout` seul, sans `AllowIdempotentProduceCancellation`**, qui ouvrirait
+   une troisième cause de duplication à l'ingress (un `mt.inbound` annulé puis atterri, re-soumis par le
+   client avec un `message_id` neuf = deux SMS) que la spec §6.7 vient de fermer à deux. Le godoc de
+   `Produce` dit ce que T borne vraiment : un record jamais émis ou dont la dernière tentative a reçu
+   une réponse retriable définie. Une requête en vol est bornée par la read deadline kgo,
+   `RequestTimeoutOverhead + TimeoutMillis` = 10 s + 10 s (`client.go:816-828`).
+2. **Coupler `ProduceRequestTimeout` à T ne borne rien et aggrave.** À 5 s, un ISR en retard rend
+   `REQUEST_TIMED_OUT` plus tôt → lot `unsureIfProduced` plus fréquent, sur un cluster sain (rolling
+   upgrade broker : le follower traîne jusqu'à `replica.lag.time.max.ms`, 30 s). C'est une propriété du
+   cluster, pas un SLA d'ingress. → **Q2 : découplé, laissé au défaut kgo 10 s, non exposé.** Le premier
+   jet et son test `OptValue` sont corrigés : le test prouve désormais que l'option **reste** au défaut.
+3. **Le routeur est fail-closed lui aussi** (`router.go:231` : produce `mt.routed` avant le commit de
+   `mt.inbound`, cause n° 2 de duplication selon ADR-0014) : le classer « ingress à 5 s » était une
+   erreur. Et un godoc n'est pas une garde. → **Q3 : une option de politique par binaire**,
+   `kafka.ForFailClosedConsumer()`, passée à `NewProducer` dans le `wiring.go` de **router-svc,
+   connector-pool-svc, mo-dlr-router-svc** et dans `cmd/mt-replay` : elle impose une constante
+   `FailClosedProduceTimeout = 30 s` en ignorant `KAFKA_PRODUCE_TIMEOUT` — assez long pour une élection
+   de leader et l'attente ISR, strictement sous `RebalanceTimeout` kgo (60 s) au-delà duquel un
+   handler bloqué fait éjecter le membre et redélivrer toutes ses partitions. Non surchargeable par
+   l'env : un opérateur ne peut pas mal régler ce qu'il ne peut pas régler. `KAFKA_PRODUCE_TIMEOUT`
+   ne gouverne plus que **rest-api-svc et smpp-server-svc**. Prouvé par `OptValue` (l'option gagne sur
+   un `cfg.ProduceTimeout` de 1 s) et par une assertion dans chaque test de câblage concerné.
+
+**Correction de la fiche step-270** : la consigne « ≈ 30 s par déploiement » disparaît (elle devient
+fausse) ; il n'y a plus rien à porter dans les manifests pour ce levier.
+
+**Résidu corrigé** : « 3 × RequestTimeoutOverhead + T ≈ 35 s » était le chemin acks=0
+(`broker.go:1662-1703`) ; pour acks=all la read deadline d'un produce est 10 s + 10 s. Le broker muet
+reste non reproductible ; `RequestTimeoutOverhead` sur le client producteur reste la suite si le chaos
+le montre.
+
 ## Chaîne de preuves — le rouge d'abord, la mutation ensuite
 
 1. `internal/config/config_test.go` — `TestKafkaProduceTimeoutFloor` sur le modèle de
    `TestKafkaFetchMaxWaitFloor` (1s accepté, 999ms / 0s / -1s refusés en nommant la variable) ;
    `knownVars` et les tableaux d'env complets gagnent `KAFKA_PRODUCE_TIMEOUT`. Rouge : champ inexistant.
 2. `internal/storage/kafka/capacity_internal_test.go` — `TestProducerAppliesTheProduceTimeout` :
-   `assertOpt(producer.cl, kgo.RecordDeliveryTimeout, …)` et `kgo.ProduceRequestTimeout` sur la valeur
-   de `levers()` ; `TestAnUnsetLeverKeepsTheLibraryDefault` étendu (`0s` et `10s` sur un producteur nu).
+   `assertOpt(producer.cl, kgo.RecordDeliveryTimeout, …)` sur la valeur de `levers()`, et
+   `ProduceRequestTimeout` **resté au défaut 10 s** (Q2) ; `TestAnUnsetLeverKeepsTheLibraryDefault`
+   étendu (`0s` sur un producteur nu) ; `TestForFailClosedConsumerIgnoresTheEnvBound` : l'option
+   impose 30 s sur un `cfg.ProduceTimeout` de 1 s (Q3). Puis une assertion dans
+   `TestNew…BuildsTheWholeGraph` de router-svc, connector-pool-svc et mo-dlr-router-svc.
 3. `internal/storage/kafka/produce_timeout_internal_test.go` —
    `TestProduceFailsWithinTheProduceTimeoutWhenNoBrokerAnswers`, **sans conteneur** : seed = un port
    loopback qu'on vient de libérer (jamais `127.0.0.1:1`, rien ne garantit que rien n'y écoute) ;
@@ -94,12 +139,14 @@ struct literal = défaut de la bibliothèque » (`options.go:9-16`).
 
 `options.go:21-22` (« never a produce or fetch deadline » devient faux : réécrire) ; `config.go` godoc de
 `Timeout` (« and, later, client operations » → « each broker dial ») ; godoc de `ProduceTimeout` : les
-deux options, le plancher, la consigne par service, et le **résidu nommé** — un broker qui accepte le TCP
-et ne répond jamais n'est détecté qu'après `3 × RequestTimeoutOverhead + T` ≈ 35 s sur la première
-requête d'une connexion (`broker.go:1703`), et un record idempotent déjà parti n'est pas annulable par
-le contexte avant la réponse ou la mort de la connexion (`producer.go:541-549`) : le SMPP répondrait
-alors à 35 s, pas 15. Suite si le chaos le montre : `RequestTimeoutOverhead` sur le client producteur
-seul (il a son propre `kgo.Client`).
+deux options et la consigne par service, en cinq lignes. La consigne est aussi portée dans la fiche
+step-270 (manifests), là où un opérateur la lira.
+
+**Résidu nommé — ici, pas dans le code.** Un broker qui accepte le TCP et ne répond jamais n'est
+détecté qu'à la read deadline kgo, `RequestTimeoutOverhead + TimeoutMillis` = 20 s par tentative
+(`client.go:816-828`), et un record idempotent déjà parti n'est pas annulable avant la réponse ou la
+mort de la connexion. Non reproductible avec l'outillage actuel (`tcpproxy.Cut` ferme, il n'avale
+pas). Suite si le chaos le montre : `RequestTimeoutOverhead` sur le client producteur seul.
 
 ## Commits
 
