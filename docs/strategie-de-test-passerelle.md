@@ -26,7 +26,7 @@ Règle CI : `go test -race ./...` vert obligatoire ; aucune fusion sans CI vert 
 
 ## 2. Le faux SMSC in-repo (débloque M2→M7)
 
-Le vrai **simulateur SMSC** (`specification-technique-simulateur-smsc.md`) est un projet compagnon plus riche, non disponible pour l'instant. Pour ne pas bloquer le squelette vertical, on écrit un **double de test minimal** dans le dépôt.
+Le vrai **simulateur SMSC** (`specification-technique-simulateur-smsc.md`) est un projet compagnon, épinglé (`v0.7.0`) et construit par `make smsc-sim`, piloté depuis les tests par `internal/testutil/smscsim`, et requis par les tests de résilience depuis step-130. Le **double de test minimal** in-repo reste le pair de tout ce qui n'exerce que des réponses applicatives ; la règle de choix entre les deux est dans `.claude/rules/tests.md`.
 
 **Emplacement :** `internal/testutil/fakesmsc`. Lançable en test (embarqué) ou en process (`make fake-smsc`).
 
@@ -37,7 +37,7 @@ Le vrai **simulateur SMSC** (`specification-technique-simulateur-smsc.md`) est u
 - Émet `deliver_sm` sur demande (test) pour simuler un **MO** ou un **DLR** corrélé à un `message_id`.
 - Répond `enquire_link` ; gère `unbind`.
 
-**Ce qu'il ne fait PAS** (réservé au vrai simulateur, `M8`) : injection de pannes réaliste (flapping de lien, latences distribuées, fenêtres saturées, dégradation progressive), profils vendeur, volumétrie.
+**Ce qu'il ne fait PAS** (porté par le vrai simulateur depuis step-130) : injection de pannes réaliste (flapping de lien, latences distribuées, fenêtres saturées, dégradation progressive), profils vendeur, volumétrie.
 
 **Contrat de test :** le faux SMSC expose une API Go pour piloter ses réponses depuis un test :
 
