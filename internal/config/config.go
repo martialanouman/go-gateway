@@ -330,10 +330,9 @@ func parseTopicPartitionOverrides(raw string) (map[string]int32, []string) {
 	return overrides, problems
 }
 
-// ClickHouse is the CDR / analytics sink (plan §1.10). rest-api-svc, smpp-server-svc and admin-api-svc
-// read it; the router-svc projectors write the accepted and enroute/failed rows (ADR-0012), the other
-// writers (connector-pool-svc, smpp-server-svc, mo-dlr-router-svc) only rows that precede or follow
-// the SMSC wire.
+// ClickHouse is the CDR / analytics sink (plan §1.10). The router-svc projectors write the accepted
+// and enroute/failed rows (ADR-0012); connector-pool-svc and smpp-server-svc write the rows that
+// precede the SMSC wire, mo-dlr-router-svc the delivery outcome; admin-api-svc erases and archives.
 type ClickHouse struct {
 	// Addr is the native-protocol endpoint list ("host:port", port 9000 by default).
 	Addr []string `env:"ADDR" envDefault:"localhost:9000" envSeparator:","`

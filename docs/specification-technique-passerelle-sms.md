@@ -448,7 +448,7 @@ cdr
   original_source_addr (nullable)        -- populated when a sender_id_rewrite_rule changed it (§6.16)
   connector_id, route_id, routing_script_id (nullable)
   submitted_at, delivered_at
-  status                (enroute|delivered|failed|expired|rejected|rerouted)
+  status                (accepted|enroute|delivered|failed|expired|rejected|rerouted|cancelled)
   error_code, segment_count, encoding
   content_ciphertext    (nullable)       -- the body, present only when content_storage is stored_encrypted (with the
                                             customer's key) or stored_plaintext; NULL when off. Never in logs/traces.

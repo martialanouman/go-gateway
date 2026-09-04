@@ -133,7 +133,7 @@ Deux schémas distincts, choisis par fréquence de vérification et besoin de re
 
 Pas de mutation ClickHouse par message (infaisable à 8 000/s). Le CDR est un **`ReplacingMergeTree` versionné** : **chaque changement de statut = une nouvelle ligne** portant le même `message_id` et une version croissante ; la lecture prend la dernière version (`argMax`/`FINAL` sur `message_id`). Qui écrit quoi :
 
-1. **Ingestion** (`rest-api-svc`/`smpp-server-svc`) : ligne `status=accepted`, insérée en asynchrone **après** l'ACK durable Kafka (jamais bloquant pour le `202`).
+1. **`router-svc`** (projecteur `internal/ingest`, PR #108) : ligne `status=accepted`, projetée depuis `mt.inbound` **après** l'ACK durable Kafka (jamais bloquant pour le `202` ; l'ingestion ne l'écrit plus elle-même).
 2. **`router-svc`** (projecteur `internal/outcome`, ADR-0012) : ligne `status=enroute` (ou `failed`) depuis l'issue que `connector-pool-svc` publie sur `mt.outcome` après `submit_sm_resp` ; le pool n'écrit directement que les lignes qui précèdent l'envoi (`cancelled`, `rerouted`, dead-letter).
 3. **`mo-dlr-router-svc`** : ligne de statut final (`delivered`/`failed`/`expired`) à la corrélation DLR.
 
@@ -261,7 +261,7 @@ Dès que ce flux passe un test bout-en-bout, l'architecture est prouvée. Les ja
 - `internal/testutil/fakesmsc` : faux SMSC (§1.8), réponses scriptables, émission MO/DLR ; cible `make fake-smsc`.
 - `internal/storage/kafka` : producteur (`acks=all`, idempotent) + consommateur (franz-go), constantes de topics (§1.6), clé de partition.
 - `internal/storage/clickhouse` : sink CDR **versionné selon §1.10** (`ReplacingMergeTree`, une ligne par changement de statut, lecture `argMax`) + lecture de statut (schéma de l'appendice ClickHouse du `.sql`).
-- `cmd/rest-api-svc` (chi + huma) : `submit-messages` (`POST /messages`, auth clé API SHA-256 §1.9 → compte → client, contrôle `rest_enabled`, **génération `message_id`/`trace_id` UUIDv7 à l'ingestion**, publication `mt.inbound`, `202` **après** confirmation durable, **puis** ligne CDR `accepted` asynchrone §1.10), `get-message` (`GET /messages/{id}` depuis le CDR), et le `GET /health` public (§1.5). Span racine ouvert à l'ingestion.
+- `cmd/rest-api-svc` (chi + huma) : `submit-messages` (`POST /messages`, auth clé API SHA-256 §1.9 → compte → client, contrôle `rest_enabled`, **génération `message_id`/`trace_id` UUIDv7 à l'ingestion**, publication `mt.inbound`, `202` **après** confirmation durable, **puis** ligne CDR `accepted` asynchrone §1.10 — *projetée par `router-svc` depuis PR #108*), `get-message` (`GET /messages/{id}` depuis le CDR), et le `GET /health` public (§1.5). Span racine ouvert à l'ingestion.
 - `cmd/router-svc` : consomme `mt.inbound` → **E.164** → **résolution déclarative statique uniquement** → publie `mt.routed`. Étapes 2–5 et 7–8 du pipeline = **STUB marqués** (§0.3). Span par étape.
 - `cmd/connector-pool-svc` : `bind_pool_size=1`, consomme `mt.routed`, `submit_sm` → faux SMSC, suit `submit_sm_resp`, écrit le CDR (`status=enroute`) *(écriture déplacée vers le projecteur `mt.outcome` de `router-svc` par step-201c, ADR-0012)*.
 

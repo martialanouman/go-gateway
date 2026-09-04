@@ -737,8 +737,8 @@ COMMIT;
 --  status rows in one partition even when a later status arrives on another day.
 --
 --  The status enum is the full REST MessageStatus lifecycle: it adds `accepted` (the pre-dispatch
---  row that keeps GET /messages/{id} 404-free, §1.10) and `cancelled` (M3) to the six the
---  connector/DLR path writes.
+--  row that keeps GET /messages/{id} 404-free, §1.10) and `cancelled` (M3) to the six written after
+--  dispatch by the outcome projector, the pool's reroute/dead-letter rows and the DLR path (ADR-0012).
 -- =====================================================================================================
 /*
 CREATE TABLE cdr

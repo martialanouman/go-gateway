@@ -19,10 +19,10 @@ promesse de spec (§6.22) que le code ne tient pas et qu'aucune fiche ne portait
    compagnon épinglé `v0.7.0` par `make smsc-sim` (`Makefile:92-97`), construit en CI (`ci.yml:70`),
    piloté par `internal/testutil/smscsim`, requis par les tests de résilience. `CLAUDE.md` raconte déjà
    ce que cette phrase a coûté : deux jalons de tests interdits par un document faux.
-3. **`query_sm` répond toujours `UNKNOWN`.** `internal/smppserver/ops.go:36-40` renvoie `ESME_ROK` +
+3. **`query_sm` répond toujours `UNKNOWN`.** `internal/smppserver/ops.go:35-39` renvoie `ESME_ROK` +
    `MessageStateUnknown` ; l'aveu est dans `internal/smpp/smpp.go:58-59` (« while the real state lookup
-   is unimplemented »). La spec §6.22 exige « résolu contre le magasin de statut/CDR » ; step-390
-   déclare la résolution hors de son périmètre. Personne ne portait la dette.
+   is unimplemented »). La spec §6.22 exige « résolu contre le magasin de statut/CDR » ; step-390 ne
+   porte que les réglages de compte. Personne ne portait la dette.
 
 ## Ce que l'exploration a établi
 
@@ -36,7 +36,7 @@ promesse de spec (§6.22) que le code ne tient pas et qu'aucune fiche ne portait
   recopier.
 - Pour `query_sm`, tout est déjà câblé dans `smpp-server-svc` : `config.SectionClickHouse` déclarée
   (`main.go:55`), `clickhouse.NewCDRReader(st.ch)` construit pour `cancel_sm` (`wiring.go:231`), le
-  throttle dédié §6.22 posé (`wiring.go:241-249`). La lecture scopée tenant existe :
+  throttle dédié §6.22 posé (`wiring.go:250-257`). La lecture scopée tenant existe :
   `CDRReader.Current(ctx, customerID, accountID, messageID)` (`cdr.go:422`). `ByMessageID` et
   `MessageStatus` (`cdr.go:409,440`) sont cross-tenant et hors chemin chaud : à ne **jamais** utiliser
   depuis une session.
