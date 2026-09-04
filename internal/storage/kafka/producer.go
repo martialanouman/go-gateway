@@ -20,26 +20,52 @@ type Producer struct {
 	cl *kgo.Client
 }
 
+// FailClosedProduceTimeout bounds a produce whose failure redelivers records already sent to an SMSC
+// (mt.outcome after submit_sm, mt.routed before the mt.inbound commit): long enough for a leader
+// election and the ISR wait. A rebalance during the block still redelivers — the consumers do not
+// block rebalances on poll (kgo BlockRebalanceOnPoll, a follow-up) — so longer buys nothing.
+const FailClosedProduceTimeout = 30 * time.Second
+
+// ProducerOption is a per-binary policy, set in wiring and never by the environment.
+type ProducerOption func(*producerPolicy)
+
+type producerPolicy struct{ bound time.Duration }
+
+// ForFailClosedConsumer replaces KAFKA_PRODUCE_TIMEOUT with FailClosedProduceTimeout (step-260e): for a
+// consumer that produces before committing its offset, an expired record is a redelivery, and for
+// mt.outcome a redelivery is a duplicate SMS (ADR-0012). The environment cannot change it.
+func ForFailClosedConsumer() ProducerOption {
+	return func(p *producerPolicy) { p.bound = FailClosedProduceTimeout }
+}
+
 // NewProducer connects a Producer to the configured brokers. It does not block on reachability;
 // use ReadyCheck for that.
-func NewProducer(cfg config.Kafka) (*Producer, error) {
-	opts := append([]kgo.Opt{
+func NewProducer(cfg config.Kafka, opts ...ProducerOption) (*Producer, error) {
+	policy := producerPolicy{bound: cfg.ProduceTimeout}
+	for _, o := range opts {
+		o(&policy)
+	}
+	kopts := append([]kgo.Opt{
 		kgo.SeedBrokers(cfg.Brokers...),
 		// AllISRAcks is franz-go's default and the precondition for idempotent producing; naming it
 		// makes the durability contract explicit and guards against a future edit weakening it.
 		kgo.RequiredAcks(kgo.AllISRAcks()),
 		kgo.ProducerBatchMaxBytes(16 << 20),
-	}, dialOpts(cfg)...)
-	cl, err := kgo.NewClient(opts...)
+	}, producerOpts(cfg, policy.bound)...)
+	cl, err := kgo.NewClient(kopts...)
 	if err != nil {
 		return nil, fmt.Errorf("kafka: new producer: %w", err)
 	}
 	return &Producer{cl: cl}, nil
 }
 
-// Produce writes one record and blocks until it is durably acknowledged by the brokers. The record
-// MUST carry a key on an ordered topic (mt.inbound, mt.routed): producing keyless would scatter a
-// message's segments across partitions and lose their order (§7.3).
+// Produce writes one record and blocks until it is durably acknowledged. On a fault the delivery bound
+// (KAFKA_PRODUCE_TIMEOUT, or FailClosedProduceTimeout) fails it with kgo.ErrRecordTimeout — but only a
+// record never sent, or whose last attempt got a definite retriable reply: a request in flight is
+// bounded by kgo's read deadline instead, and a batch answered REQUEST_TIMED_OUT is retried until a
+// definite reply, since failing it could duplicate on the broker. The record MUST carry a key on an
+// ordered topic (mt.inbound, mt.routed): producing keyless would scatter a message's segments across
+// partitions and lose their order (§7.3).
 func (p *Producer) Produce(ctx context.Context, rec Record) error {
 	kr := &kgo.Record{Topic: rec.Topic, Key: rec.Key, Value: rec.Value}
 	for _, h := range rec.Headers {
@@ -58,6 +84,12 @@ func (p *Producer) Ping(ctx context.Context) error { return p.cl.Ping(ctx) }
 // that accepts messages, since a message cannot be durably accepted when it is gone (plan §1.5).
 func (p *Producer) ReadyCheck(name string, timeout time.Duration) observability.ReadinessCheck {
 	return observability.PingCheck(name, timeout, p.cl.Ping)
+}
+
+// DeliveryTimeout is the resolved kgo RecordDeliveryTimeout, 0 when unbounded.
+func (p *Producer) DeliveryTimeout() time.Duration {
+	d, _ := p.cl.OptValue(kgo.RecordDeliveryTimeout).(time.Duration)
+	return d
 }
 
 // Close flushes any buffered records and releases the client. Because Produce is synchronous there

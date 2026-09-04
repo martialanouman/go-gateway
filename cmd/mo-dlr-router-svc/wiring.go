@@ -61,6 +61,7 @@ type returnPathApp struct {
 	// retry is the webhook retry drain: its own consumer group and goroutine (step-192).
 	retryConsumer *kafka.Consumer
 	retryRunner   *modlrrouter.WebhookRetryRunner
+	producer      *kafka.Producer
 
 	// closers release what was opened, in reverse order of opening — the exact LIFO the deferred
 	// Closes in run() used to provide. They are named because that order is the property worth
@@ -118,6 +119,7 @@ func newReturnPathApp(ctx context.Context, cfg config.Config, logger *slog.Logge
 	}
 	a.onClose("mo", mo.close)
 	a.mo = mo.router
+	a.producer = mo.producer
 
 	delivery, err := newDeliveryLeg(cfg, st, mo, logger)
 	if err != nil {
@@ -266,7 +268,7 @@ func newMOLeg(ctx context.Context, cfg config.Config, st *stores, logger *slog.L
 		return nil, fmt.Errorf("load mo routing snapshot: %w", err)
 	}
 
-	m.producer, err = kafka.NewProducer(cfg.Kafka)
+	m.producer, err = kafka.NewProducer(cfg.Kafka, kafka.ForFailClosedConsumer())
 	if err != nil {
 		return nil, fmt.Errorf("kafka producer: %w", err)
 	}

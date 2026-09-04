@@ -49,6 +49,7 @@ type poolApp struct {
 	emitter  *metricstream.Emitter
 	consumer *kafka.Consumer
 	catalog  *metrics.Catalog
+	producer *kafka.Producer
 
 	// closers release what was opened, in reverse order of opening — the exact LIFO the deferred
 	// Closes in run() used to provide. They are named because that order is the property worth
@@ -97,6 +98,7 @@ func newPoolApp(ctx context.Context, cfg config.Config, bindEnv connectorEnv, lo
 	}
 	a.onClose("stores", st.close)
 	a.consumer = st.consumer
+	a.producer = st.producer
 
 	throttle := newThrottleMetrics(bindEnv)
 
@@ -244,8 +246,9 @@ func openStores(ctx context.Context, cfg config.Config, connectorID uuid.UUID) (
 	}
 
 	// The producer publishes the return path (mo.inbound, dlr.events) durably (acks=all): a deliver_sm
-	// from the SMSC is acknowledged only once its MO/DLR is on Kafka (step-043).
-	s.producer, err = kafka.NewProducer(cfg.Kafka)
+	// from the SMSC is acknowledged only once its MO/DLR is on Kafka (step-043). It also publishes
+	// mt.outcome after submit_sm, hence the fail-closed bound (step-260e).
+	s.producer, err = kafka.NewProducer(cfg.Kafka, kafka.ForFailClosedConsumer())
 	if err != nil {
 		return nil, fmt.Errorf("kafka producer: %w", err)
 	}

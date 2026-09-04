@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/martialanouman/go-gateway/internal/config"
+	"github.com/martialanouman/go-gateway/internal/storage/kafka"
 	"github.com/martialanouman/go-gateway/internal/testutil/pgtest"
 	"github.com/martialanouman/go-gateway/internal/testutil/redistest"
 )
@@ -122,6 +123,11 @@ func TestNewReturnPathAppBuildsTheWholeGraph(t *testing.T) {
 		if component == nil || reflect.ValueOf(component).IsNil() {
 			t.Errorf("component %q was not wired", name)
 		}
+	}
+
+	// Fail-closed producer (mo.routed before the offset commit): the constant, never the env (step-260e).
+	if got := app.producer.DeliveryTimeout(); got != kafka.FailClosedProduceTimeout {
+		t.Errorf("producer delivery timeout = %s, want the fail-closed constant %s", got, kafka.FailClosedProduceTimeout)
 	}
 
 	// Building the graph must not start serving: the ops port is bound by ops.Run, which only the

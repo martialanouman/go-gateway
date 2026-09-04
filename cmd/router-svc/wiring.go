@@ -58,6 +58,7 @@ type routerApp struct {
 	emitter  *metricstream.Emitter
 	consumer *kafka.Consumer
 	catalog  *metrics.Catalog
+	producer *kafka.Producer
 	// routes is the graph's route resolver, kept so a wiring test can resolve through the overlays the
 	// graph actually installs (the least_loaded gauge reader, step-260d) rather than through a stand-in.
 	routes *routing.SnapshotResolver
@@ -109,6 +110,7 @@ func newRouterApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 	}
 	a.onClose("stores", st.close)
 	a.consumer = st.consumer
+	a.producer = st.producer
 
 	boot, err := loadBootSnapshots(ctx, st.pg, logger)
 	if err != nil {
@@ -210,7 +212,7 @@ func openStores(ctx context.Context, cfg config.Config) (_ *stores, err error) {
 		return nil, fmt.Errorf("connect clickhouse: %w", err)
 	}
 
-	s.producer, err = kafka.NewProducer(cfg.Kafka)
+	s.producer, err = kafka.NewProducer(cfg.Kafka, kafka.ForFailClosedConsumer())
 	if err != nil {
 		return nil, fmt.Errorf("kafka producer: %w", err)
 	}

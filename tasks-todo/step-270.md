@@ -62,10 +62,10 @@ Fournir les manifests Kubernetes sous `deploy/` pour tous les services : Deploym
 - Validation statique des manifests (kubeconform/`kubectl --dry-run=client` ou lint YAML en CI).
 - Cohérence des ports/probes avec §1.4/§1.5 (revue + check automatisable).
 
-## Hérité de step-250e — deux dimensionnements à porter dans les manifests
+## Hérité de step-250e et step-260e — deux dimensionnements à porter, un levier à ne pas porter
 
-La revue de branche de step-250e a laissé deux grandeurs que les manifests devront refléter une fois
-mesurées par step-280 :
+Les revues de branche de step-250e et step-260e ont laissé trois grandeurs que les manifests devront
+refléter, les deux premières une fois mesurées par step-280 :
 
 - **`POSTGRES_MAX_CONNS` de `router-svc`.** Le défaut 10 vient d'une prémisse désormais fausse pour ce
   service (« le plan de contrôle n'est pas un chemin chaud ») : depuis step-250e, un possible-hit du
@@ -75,6 +75,10 @@ mesurées par step-280 :
   selon le profil. La politique d'éviction compte : en `allkeys-*` Redis évincerait des clés de routage
   (dégradation silencieuse vers Postgres), en `volatile-*` la pression retomberait sur les clés à TTL,
   dont ce cache. À décider explicitement plutôt qu'à hériter du défaut.
+- **`KAFKA_PRODUCE_TIMEOUT` (step-260e) ne gouverne que rest-api-svc et smpp-server-svc** (défaut 5 s,
+  sous les 15 s du chemin SMPP). Les producteurs fail-closed (router, connector-pool, mo-dlr-router,
+  mt-replay) sont construits avec `kafka.ForFailClosedConsumer()` : 30 s constants, ignorés de l'env —
+  rien à poser dans leurs manifests, et rien à pouvoir y régler de travers.
 
 ## Definition of Done
 - [ ] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts (code inchangé)

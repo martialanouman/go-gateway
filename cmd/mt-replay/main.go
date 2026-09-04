@@ -56,7 +56,7 @@ func run() error {
 	}
 	slog.SetDefault(logger)
 
-	producer, err := kafka.NewProducer(cfg.Kafka)
+	producer, err := kafka.NewProducer(cfg.Kafka, kafka.ForFailClosedConsumer())
 	if err != nil {
 		return err
 	}

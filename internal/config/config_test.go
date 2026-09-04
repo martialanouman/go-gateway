@@ -22,7 +22,7 @@ var knownVars = []string{
 	"OTEL_SDK_DISABLED", "OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_INSECURE",
 	"OTEL_TRACES_SAMPLER_ARG",
 	"POSTGRES_URL", "POSTGRES_MAX_CONNS", "POSTGRES_MIN_CONNS", "POSTGRES_TIMEOUT",
-	"KAFKA_BROKERS", "KAFKA_TIMEOUT",
+	"KAFKA_BROKERS", "KAFKA_TIMEOUT", "KAFKA_PRODUCE_TIMEOUT",
 	"KAFKA_FETCH_MIN_BYTES", "KAFKA_FETCH_MAX_WAIT", "KAFKA_FETCH_MAX_BYTES",
 	"KAFKA_FETCH_MAX_PARTITION_BYTES",
 	"KAFKA_TOPIC_PARTITIONS", "KAFKA_TOPIC_PARTITIONS_OVERRIDES", "KAFKA_TOPIC_REPLICATION_FACTOR",
@@ -284,6 +284,9 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		}, "KAFKA_FETCH_MIN_BYTES"},
 		{"kafka fetch max wait zero", map[string]string{"KAFKA_FETCH_MAX_WAIT": "0s"}, "KAFKA_FETCH_MAX_WAIT"},
 		{"kafka fetch max wait negative", map[string]string{"KAFKA_FETCH_MAX_WAIT": "-1s"}, "KAFKA_FETCH_MAX_WAIT"},
+		{"kafka produce timeout zero", map[string]string{"KAFKA_PRODUCE_TIMEOUT": "0s"}, "KAFKA_PRODUCE_TIMEOUT"},
+		{"kafka produce timeout negative", map[string]string{"KAFKA_PRODUCE_TIMEOUT": "-1s"}, "KAFKA_PRODUCE_TIMEOUT"},
+		{"kafka produce timeout below the franz-go floor", map[string]string{"KAFKA_PRODUCE_TIMEOUT": "999ms"}, "KAFKA_PRODUCE_TIMEOUT"},
 		{"kafka topic partitions zero", map[string]string{"KAFKA_TOPIC_PARTITIONS": "0"}, "KAFKA_TOPIC_PARTITIONS"},
 		{"kafka topic partitions negative", map[string]string{"KAFKA_TOPIC_PARTITIONS": "-1"}, "KAFKA_TOPIC_PARTITIONS"},
 		{"kafka replication factor zero", map[string]string{"KAFKA_TOPIC_REPLICATION_FACTOR": "0"}, "KAFKA_TOPIC_REPLICATION_FACTOR"},
@@ -643,6 +646,7 @@ func TestConfigLogValueReportsCapacityLevers(t *testing.T) {
 		"KAFKA_FETCH_MAX_WAIT":             "250ms",
 		"KAFKA_FETCH_MAX_BYTES":            "16777216",
 		"KAFKA_FETCH_MAX_PARTITION_BYTES":  "131072",
+		"KAFKA_PRODUCE_TIMEOUT":            "7s",
 		"KAFKA_TOPIC_PARTITIONS":           "24",
 		"KAFKA_TOPIC_PARTITIONS_OVERRIDES": "mt.inbound=48",
 		"KAFKA_TOPIC_REPLICATION_FACTOR":   "2",
@@ -664,6 +668,7 @@ func TestConfigLogValueReportsCapacityLevers(t *testing.T) {
 		`"kafka_fetch_max_wait":250000000`, // slog renders a Duration as nanoseconds
 		`"kafka_fetch_max_bytes":16777216`,
 		`"kafka_fetch_max_partition_bytes":131072`,
+		`"kafka_produce_timeout":7000000000`,
 		`"kafka_topic_partitions":24`,
 		`"kafka_topic_partitions_overrides":"mt.inbound=48"`,
 		`"kafka_topic_replication_factor":2`,
@@ -769,6 +774,10 @@ func TestCapacityLeverDefaults(t *testing.T) {
 	if cfg.Kafka.FetchMaxBytes != 50<<20 {
 		t.Errorf("Kafka.FetchMaxBytes = %d, want %d (franz-go default 50MiB)", cfg.Kafka.FetchMaxBytes, 50<<20)
 	}
+	// Under the 15s the SMPP session allows a submit, so the client is told why (step-260e).
+	if cfg.Kafka.ProduceTimeout != 5*time.Second {
+		t.Errorf("Kafka.ProduceTimeout = %s, want 5s", cfg.Kafka.ProduceTimeout)
+	}
 	if cfg.Kafka.TopicPartitions != 12 {
 		t.Errorf("Kafka.TopicPartitions = %d, want 12", cfg.Kafka.TopicPartitions)
 	}
@@ -797,6 +806,7 @@ func TestCapacityLeversFromEnvironment(t *testing.T) {
 		"KAFKA_FETCH_MIN_BYTES":            "65536",
 		"KAFKA_FETCH_MAX_WAIT":             "250ms",
 		"KAFKA_FETCH_MAX_BYTES":            "16777216",
+		"KAFKA_PRODUCE_TIMEOUT":            "7s",
 		"KAFKA_TOPIC_PARTITIONS":           "24",
 		"KAFKA_TOPIC_PARTITIONS_OVERRIDES": "mt.inbound=48,mt.routed=48",
 		"KAFKA_TOPIC_REPLICATION_FACTOR":   "2",
@@ -818,6 +828,9 @@ func TestCapacityLeversFromEnvironment(t *testing.T) {
 	}
 	if cfg.Kafka.FetchMaxBytes != 16<<20 {
 		t.Errorf("Kafka.FetchMaxBytes = %d, want %d", cfg.Kafka.FetchMaxBytes, 16<<20)
+	}
+	if cfg.Kafka.ProduceTimeout != 7*time.Second {
+		t.Errorf("Kafka.ProduceTimeout = %s, want 7s", cfg.Kafka.ProduceTimeout)
 	}
 	if cfg.Kafka.TopicPartitions != 24 {
 		t.Errorf("Kafka.TopicPartitions = %d, want 24", cfg.Kafka.TopicPartitions)
@@ -883,6 +896,42 @@ func TestKafkaFetchMaxWaitFloor(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), "KAFKA_FETCH_MAX_WAIT") {
 				t.Errorf("error %q should name KAFKA_FETCH_MAX_WAIT", err)
+			}
+		})
+	}
+}
+
+// TestKafkaProduceTimeoutFloor: the kgo floor (1s) is refused at Load, by name; zero is not
+// "disabled", it is refused too.
+func TestKafkaProduceTimeoutFloor(t *testing.T) {
+	tests := []struct {
+		value      string
+		wantAccept bool
+	}{
+		{"1s", true},
+		{"5s", true},
+		{"30s", true},
+		{"999ms", false},
+		{"0s", false},
+		{"-1s", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.value, func(t *testing.T) {
+			setEnv(t, map[string]string{"KAFKA_PRODUCE_TIMEOUT": tc.value})
+
+			_, err := config.Load("router-svc")
+			if tc.wantAccept {
+				if err != nil {
+					t.Fatalf("Load() with KAFKA_PRODUCE_TIMEOUT=%s error = %v, want accepted", tc.value, err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("Load() accepted KAFKA_PRODUCE_TIMEOUT=%s; franz-go would refuse the producer", tc.value)
+			}
+			if !strings.Contains(err.Error(), "KAFKA_PRODUCE_TIMEOUT") {
+				t.Errorf("error %q should name KAFKA_PRODUCE_TIMEOUT", err)
 			}
 		})
 	}

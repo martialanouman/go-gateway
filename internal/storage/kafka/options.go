@@ -1,6 +1,8 @@
 package kafka
 
 import (
+	"time"
+
 	"github.com/twmb/franz-go/pkg/kgo"
 
 	"github.com/martialanouman/go-gateway/internal/config"
@@ -20,12 +22,25 @@ import (
 // DialTimeout bounds one connection attempt to a broker; franz-go's own default is 10s
 // (kgo/config.go:602). Until step-201 KAFKA_TIMEOUT was read and validated but reached no client at
 // all, so it governed the readiness probe while every dial behind that probe ignored it. It is a dial
-// bound only, never a produce or fetch deadline — those come from the caller's context.
+// bound only: a produce is bounded by producerOpts (KAFKA_PRODUCE_TIMEOUT, step-260e), a fetch by the
+// caller's context.
 func dialOpts(cfg config.Kafka) []kgo.Opt {
 	if cfg.Timeout <= 0 {
 		return nil
 	}
 	return []kgo.Opt{kgo.DialTimeout(cfg.Timeout)}
+}
+
+// producerOpts bound how long a record may sit in the client (step-260e); franz-go retries without
+// limit by default. ProduceRequestTimeout is deliberately left at the library default: shortening the
+// broker's ISR wait only makes a batch "unsure if produced" sooner, and kgo retries such a batch past
+// every bound rather than risk a duplicate.
+func producerOpts(cfg config.Kafka, bound time.Duration) []kgo.Opt {
+	opts := dialOpts(cfg)
+	if bound > 0 {
+		opts = append(opts, kgo.RecordDeliveryTimeout(bound))
+	}
+	return opts
 }
 
 // consumerOpts are the capacity levers shared by every consumer built in this package (step-201, D5).

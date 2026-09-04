@@ -268,8 +268,8 @@ profil de routage et la borne de l'ingest. Aucune dépendance de code entre les 
 l'ordre des numéros évite tout conflit sur `cmd/router-svc/wiring.go` et `internal/config/config.go`.
 - [x] step-260d — `least_loaded` lisait une clé que personne n'écrit : le pool dérive `connectorload`
       dans le script de `PublishBind`, le routeur la lit avec un cache d'une seconde ⛓ bloque step-280
-- [ ] step-260e — Le produce Kafka n'avait aucune borne : `KAFKA_PRODUCE_TIMEOUT` (record delivery +
-      produce request), l'ingest REST en hérite ⛓ bloque step-280
+- [x] step-260e — Le produce Kafka n'avait aucune borne : `KAFKA_PRODUCE_TIMEOUT` pour l'ingress,
+      `ForFailClosedConsumer` (30 s constants) pour les quatre producteurs fail-closed ⛓ bloque step-280
 - [ ] step-260f — Le mot de passe ClickHouse de développement était accepté en production
 - [ ] step-260g — Trois affirmations fausses corrigées (CDR `enroute`, simulateur SMSC), et `query_sm`
       a enfin sa fiche (step-390b)

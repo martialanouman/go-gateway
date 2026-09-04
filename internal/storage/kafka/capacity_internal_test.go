@@ -23,6 +23,8 @@ func levers() config.Kafka {
 		// The duplication bound of ADR-0012: one poll's worth of already-sent messages is what a crash
 		// can re-submit, and this is the only knob that caps it.
 		FetchMaxPartitionBytes: 256 << 10, // default 1MiB
+
+		ProduceTimeout: 1500 * time.Millisecond, // default 0 (unbounded)
 	}
 }
 
@@ -121,6 +123,37 @@ func TestEveryClientAppliesTheDialTimeout(t *testing.T) {
 	}
 }
 
+// TestProducerAppliesTheProduceTimeout (step-260e): the record timeout, and ProduceRequestTimeout left
+// at the library default (see producerOpts).
+func TestProducerAppliesTheProduceTimeout(t *testing.T) {
+	cfg := levers()
+	producer, err := NewProducer(cfg)
+	if err != nil {
+		t.Fatalf("NewProducer() = %v, want nil", err)
+	}
+	defer producer.Close()
+
+	assertOpt(t, producer.cl, kgo.RecordDeliveryTimeout, "RecordDeliveryTimeout", cfg.ProduceTimeout)
+	assertOpt(t, producer.cl, kgo.ProduceRequestTimeout, "ProduceRequestTimeout", 10*time.Second)
+}
+
+// TestForFailClosedConsumerIgnoresTheEnvBound: a producer whose failure redelivers already-sent
+// records (a duplicate SMS for mt.outcome) gets the long constant bound whatever the environment says.
+func TestForFailClosedConsumerIgnoresTheEnvBound(t *testing.T) {
+	cfg := levers()
+	cfg.ProduceTimeout = time.Second
+	producer, err := NewProducer(cfg, ForFailClosedConsumer())
+	if err != nil {
+		t.Fatalf("NewProducer() = %v, want nil", err)
+	}
+	defer producer.Close()
+
+	assertOpt(t, producer.cl, kgo.RecordDeliveryTimeout, "RecordDeliveryTimeout", FailClosedProduceTimeout)
+	if got := producer.DeliveryTimeout(); got != FailClosedProduceTimeout {
+		t.Errorf("DeliveryTimeout() = %s, want %s", got, FailClosedProduceTimeout)
+	}
+}
+
 // TestAnUnsetLeverKeepsTheLibraryDefault pins the zero-value contract of consumerOpts and dialOpts.
 //
 // It is not a hypothetical: a config.Kafka built as a struct literal — which is how every integration
@@ -140,6 +173,15 @@ func TestAnUnsetLeverKeepsTheLibraryDefault(t *testing.T) {
 	assertOpt(t, c.cl, kgo.FetchMaxWait, "FetchMaxWait", 5*time.Second)
 	assertOpt(t, c.cl, kgo.FetchMaxBytes, "FetchMaxBytes", int32(50<<20))
 	assertOpt(t, c.cl, kgo.DialTimeout, "DialTimeout", 10*time.Second)
+
+	p, err := NewProducer(bare)
+	if err != nil {
+		t.Fatalf("NewProducer() with an unset config = %v, want nil", err)
+	}
+	defer p.Close()
+
+	assertOpt(t, p.cl, kgo.RecordDeliveryTimeout, "RecordDeliveryTimeout", time.Duration(0))
+	assertOpt(t, p.cl, kgo.ProduceRequestTimeout, "ProduceRequestTimeout", 10*time.Second)
 }
 
 // TestConsumerRefusesAFetchMaxBytesAboveTheBrokerReadCeiling proves the wiring a second way, and

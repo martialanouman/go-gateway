@@ -144,6 +144,10 @@ const (
 	// kafkaMinFetchMaxWaitMillis is franz-go's floor on the fetch max wait (kgo/config.go:373), expressed
 	// in the whole milliseconds the client stores after truncating the duration (kgo/config.go:1497).
 	kafkaMinFetchMaxWaitMillis = 10
+
+	// kafkaMinProduceTimeout is franz-go's floor on a non-zero record delivery timeout
+	// (kgo/config.go:363-368); zero is refused here on top, since it would mean no bound.
+	kafkaMinProduceTimeout = time.Second
 )
 
 // minReaperMinAge is the floor under BillingReaper.MinAge. It is a guard against catastrophe, not a
@@ -176,8 +180,15 @@ type Postgres struct {
 type Kafka struct {
 	Brokers []string `env:"BROKERS" envDefault:"localhost:9092" envSeparator:","`
 
-	// Timeout bounds readiness probes and, later, client operations.
+	// Timeout bounds readiness probes and each broker dial (kgo.DialTimeout). It is not a produce or
+	// fetch deadline: produces are bounded by ProduceTimeout, fetches by the caller's context.
 	Timeout time.Duration `env:"TIMEOUT" envDefault:"3s"`
+
+	// ProduceTimeout bounds a record's delivery on a fault (kgo RecordDeliveryTimeout, unbounded by
+	// default; step-260e). It governs the ingress producers only (rest-api, smpp-server): under the SMPP
+	// session's 15s, so the client is told why. The fail-closed producers ignore it for
+	// kafka.FailClosedProduceTimeout — an expired record there is a redelivery, and a duplicate SMS.
+	ProduceTimeout time.Duration `env:"PRODUCE_TIMEOUT" envDefault:"5s"`
 
 	// FetchMinBytes is how many bytes a broker waits to accumulate before answering a fetch, unless
 	// FetchMaxWait fires first. It is the batch-size lever of the ClickHouse CDR writer (step-201, D8):
@@ -793,6 +804,13 @@ func (c Config) kafkaProblems() []string {
 func (c Config) kafkaCapacityProblems() []string {
 	var problems []string
 
+	// Zero would mean "no bound", the defect step-260e closes: refused like a value under the kgo floor.
+	if c.Kafka.ProduceTimeout < kafkaMinProduceTimeout {
+		problems = append(problems, fmt.Sprintf(
+			"KAFKA_PRODUCE_TIMEOUT %s must be at least %s: franz-go refuses a record delivery timeout under "+
+				"1s, and a produce must always have a bound", c.Kafka.ProduceTimeout, kafkaMinProduceTimeout))
+	}
+
 	if c.Kafka.FetchMinBytes < 1 {
 		problems = append(problems, fmt.Sprintf(
 			"KAFKA_FETCH_MIN_BYTES %d must be at least 1 byte", c.Kafka.FetchMinBytes))
@@ -1152,6 +1170,7 @@ func (c Config) LogValue() slog.Value {
 		slog.Duration("kafka_fetch_max_wait", c.Kafka.FetchMaxWait),
 		slog.Int64("kafka_fetch_max_bytes", int64(c.Kafka.FetchMaxBytes)),
 		slog.Int64("kafka_fetch_max_partition_bytes", int64(c.Kafka.FetchMaxPartitionBytes)),
+		slog.Duration("kafka_produce_timeout", c.Kafka.ProduceTimeout),
 		slog.Int64("kafka_topic_partitions", int64(c.Kafka.TopicPartitions)),
 		slog.String("kafka_topic_partitions_overrides", c.Kafka.TopicPartitionsOverrides),
 		slog.Int64("kafka_topic_replication_factor", int64(c.Kafka.TopicReplicationFactor)),
