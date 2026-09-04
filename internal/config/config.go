@@ -117,7 +117,7 @@ const (
 	defaultPostgresURL    = "postgres://gateway:gateway@localhost:5432/gateway?sslmode=disable"
 	defaultKafkaBroker    = "localhost:9092"
 	defaultClickHouseAddr = "localhost:9000"
-	// defaultClickHousePassword matches docker-compose.yml; the tag on ClickHouse.Password is its only other copy.
+	// The tag on ClickHouse.Password is the only other copy of this literal.
 	defaultClickHousePassword = "gateway"
 	defaultRedisURL           = "redis://localhost:6379"
 

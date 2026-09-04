@@ -10,7 +10,8 @@ piste d'audit consolidée des actions sensibles.
 ## Périmètre (ce que fait CETTE PR)
 - `make lint`/CI : intégrer **gosec** (scan injection/mauvais usages) en plus de golangci-lint.
 - `govulncheck` déjà présent (`make`) → en faire une **gate** bloquante documentée.
-- Gestion des secrets : vérifier qu'aucun secret n'est en clair (hash pour mots de passe bind & clés API,
+- Gestion des secrets (les défauts de développement sont déjà refusés en production par `config`,
+  step-260f) : vérifier qu'aucun secret n'est en clair (hash pour mots de passe bind & clés API,
   §1.9), comparaison temps constant partout.
 - Piste d'audit consolidée des actions opérateur/sensibles (réutilise les audits M10 : content, GDPR).
 
