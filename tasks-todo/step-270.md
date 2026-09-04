@@ -79,6 +79,8 @@ refléter, les deux premières une fois mesurées par step-280 :
   sous les 15 s du chemin SMPP). Les producteurs fail-closed (router, connector-pool, mo-dlr-router,
   mt-replay) sont construits avec `kafka.ForFailClosedConsumer()` : 30 s constants, ignorés de l'env —
   rien à poser dans leurs manifests, et rien à pouvoir y régler de travers.
+- **`CLICKHOUSE_PASSWORD` (step-260f)** : refusé au défaut en production par tout binaire qui déclare la
+  section ClickHouse, le Job de migration ClickHouse compris.
 
 ## Definition of Done
 - [ ] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts (code inchangé)
