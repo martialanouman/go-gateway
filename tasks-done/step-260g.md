@@ -1,6 +1,6 @@
 # step-260g — Trois affirmations fausses corrigées, et `query_sm` a enfin sa fiche
 
-> **Jalon :** Audit du 2026-09-03 (correctifs) · **Statut :** EN COURS (2026-09-04)
+> **Jalon :** Audit du 2026-09-03 (correctifs) · **Statut :** LIVRÉE (2026-09-04)
 > **Dépend de :** — · **Bloque :** —
 
 ## Pourquoi cette fiche existe
@@ -87,10 +87,22 @@ Une PR documentaire n'a pas de rouge ; sa preuve est la relecture croisée :
 
 ## Definition of Done
 
-- [ ] `make check` vert
-- [ ] plus aucune source de vérité n'attribue la ligne `enroute` au pool (grep 1)
-- [ ] plus aucune ne dit le simulateur indisponible (grep 2)
-- [ ] `step-390b.md` présent, avec faits, mapping et arbitrage sur le lag
+- [x] `make check` vert (85 paquets ; puis lint + tests `config` et `billing/pb` après les correctifs de revue)
+- [x] plus aucune source de vérité n'attribue la ligne `enroute` au pool (grep 1 : cinq lignes, toutes corrigées)
+- [x] plus aucune ne dit le simulateur indisponible (grep 2 : vide)
+- [x] `step-390b.md` présent, avec faits, mapping et arbitrage sur le lag
+
+## Revue
+
+Un sous-agent en lecture seule a vérifié chaque affirmation nouvelle contre le code. Trois bloquants,
+tous corrigés dans la PR : la liste « qui écrit quoi » du plan (`:136`) attribuait encore la ligne
+`accepted` à l'ingestion — le grep `enroute` ne pouvait pas l'attraper, et la PR se contredisait
+elle-même ; la fiche 390b mappait `accepted → ACCEPTED (6)`, un contresens SMPP 3.4 §5.2.28 (ACCEPTED =
+« lu par le service client ») — `ENROUTE` pour `accepted` comme pour `enroute`, ce qui rend le lag de
+projection sans effet sur la réponse ; et `final_date` promettait un horodatage que `CDRRow` ne porte
+que dans `delivered_at`, jamais rempli par les writers `cancelled`/dead-letter. Retenus aussi : le godoc
+de `config.ClickHouse` énumérait des lecteurs incomplets (réécrit par écrivain), et deux affirmations
+de la même famille hors du recensement initial (en-tête du schéma CDR, liste des statuts `spec:451`).
 
 ## Hors périmètre
 
