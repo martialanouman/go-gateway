@@ -29,7 +29,7 @@ func NewProducer(cfg config.Kafka) (*Producer, error) {
 		// makes the durability contract explicit and guards against a future edit weakening it.
 		kgo.RequiredAcks(kgo.AllISRAcks()),
 		kgo.ProducerBatchMaxBytes(16 << 20),
-	}, dialOpts(cfg)...)
+	}, producerOpts(cfg)...)
 	cl, err := kgo.NewClient(opts...)
 	if err != nil {
 		return nil, fmt.Errorf("kafka: new producer: %w", err)
