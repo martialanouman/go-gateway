@@ -37,11 +37,10 @@ func NewProducer(cfg config.Kafka) (*Producer, error) {
 	return &Producer{cl: cl}, nil
 }
 
-// Produce writes one record and blocks until it is durably acknowledged by the brokers, or until
-// KAFKA_PRODUCE_TIMEOUT elapses on a fault — it then returns an error wrapping kgo.ErrRecordTimeout,
-// never later than about that bound (step-260e). The record MUST carry a key on an ordered topic
-// (mt.inbound, mt.routed): producing keyless would scatter a message's segments across partitions and
-// lose their order (§7.3).
+// Produce writes one record and blocks until it is durably acknowledged, or until KAFKA_PRODUCE_TIMEOUT
+// elapses on a fault (an error wrapping kgo.ErrRecordTimeout). The record MUST carry a key on an
+// ordered topic (mt.inbound, mt.routed): producing keyless would scatter a message's segments across
+// partitions and lose their order (§7.3).
 func (p *Producer) Produce(ctx context.Context, rec Record) error {
 	kr := &kgo.Record{Topic: rec.Topic, Key: rec.Key, Value: rec.Value}
 	for _, h := range rec.Headers {

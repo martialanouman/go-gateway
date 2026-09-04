@@ -29,17 +29,10 @@ func dialOpts(cfg config.Kafka) []kgo.Opt {
 	return []kgo.Opt{kgo.DialTimeout(cfg.Timeout)}
 }
 
-// producerOpts bound a produce (step-260e). Until then the durable producer had no bound of its own:
-// franz-go retries a record without limit by default, so ProduceSync returned only when the caller's
-// context did — and the REST ingest hands it a bare request context, so an unreachable or mute broker
-// held a handler for as long as the client stayed.
-//
-// One variable, two options, because a produce can stall on two fronts. RecordDeliveryTimeout is the
-// time a record may sit in the client — metadata loads, dial retries, leader elections — and fires
-// kgo.ErrRecordTimeout. ProduceRequestTimeout is the TimeoutMillis of the produce request itself, how
-// long a broker may hold it waiting for its ISR acks; without it a lagging replica adds franz-go's 10s
-// before the record timeout is even evaluated. Both from the same value: to an operator they are "the
-// produce timeout". The zero-value contract above applies — an unset field keeps the library defaults.
+// producerOpts bound a produce on both fronts (step-260e): RecordDeliveryTimeout is how long a record
+// may sit in the client (franz-go retries without limit by default), ProduceRequestTimeout how long a
+// broker may hold the request for its ISR acks — without it a lagging replica adds franz-go's 10s
+// before the record timeout is even evaluated.
 func producerOpts(cfg config.Kafka) []kgo.Opt {
 	opts := dialOpts(cfg)
 	if cfg.ProduceTimeout > 0 {

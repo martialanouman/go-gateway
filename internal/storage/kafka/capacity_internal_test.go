@@ -24,9 +24,7 @@ func levers() config.Kafka {
 		// can re-submit, and this is the only knob that caps it.
 		FetchMaxPartitionBytes: 256 << 10, // default 1MiB
 
-		// The produce bound of step-260e: franz-go's record delivery timeout defaults to 0 (unbounded)
-		// and its produce request timeout to 10s.
-		ProduceTimeout: 1500 * time.Millisecond,
+		ProduceTimeout: 1500 * time.Millisecond, // defaults 0 (unbounded) and 10s
 	}
 }
 
@@ -125,10 +123,7 @@ func TestEveryClientAppliesTheDialTimeout(t *testing.T) {
 	}
 }
 
-// TestProducerAppliesTheProduceTimeout is the step-260e contract: ONE variable bounds a produce on both
-// fronts — the time a record may sit in the client (RecordDeliveryTimeout) and the time a broker may
-// hold the request for its ISR acks (ProduceRequestTimeout). Wire only the first and a slow ISR adds
-// franz-go's 10s on top of the bound; wire only the second and an unreachable broker retries for ever.
+// TestProducerAppliesTheProduceTimeout: one variable, both options (step-260e).
 func TestProducerAppliesTheProduceTimeout(t *testing.T) {
 	cfg := levers()
 	producer, err := NewProducer(cfg)

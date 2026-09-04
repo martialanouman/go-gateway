@@ -897,10 +897,8 @@ func TestKafkaFetchMaxWaitFloor(t *testing.T) {
 	}
 }
 
-// TestKafkaProduceTimeoutFloor: franz-go refuses a client whose RecordDeliveryTimeout is non-zero and
-// under 1s (kgo/config.go:363-368). A value that would be refused at the producer's first boot is
-// refused here, by name, at Load — and zero is not "disabled", it is refused too: the whole point of
-// the lever (step-260e) is that a produce always has a bound.
+// TestKafkaProduceTimeoutFloor: the kgo floor (1s) is refused at Load, by name; zero is not
+// "disabled", it is refused too.
 func TestKafkaProduceTimeoutFloor(t *testing.T) {
 	tests := []struct {
 		value      string

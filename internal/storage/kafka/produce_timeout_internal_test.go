@@ -12,9 +12,8 @@ import (
 	"github.com/martialanouman/go-gateway/internal/config"
 )
 
-// closedLoopbackPort returns a host:port nothing listens on: a port is bound and released, so the
-// address is valid and refuses connections. Never a fixed port such as 127.0.0.1:1 — nothing
-// guarantees it is free, and a listener there would turn this test into a hang.
+// closedLoopbackPort binds and releases a port, so the address refuses connections; a fixed port such
+// as 127.0.0.1:1 could be listened on.
 func closedLoopbackPort(t *testing.T) string {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -26,18 +25,15 @@ func closedLoopbackPort(t *testing.T) string {
 	return addr
 }
 
-// TestProduceFailsWithinTheProduceTimeoutWhenNoBrokerAnswers is the behaviour behind the option, proven
-// without a container: with the only broker refusing connections, Produce must return within about
-// KAFKA_PRODUCE_TIMEOUT with kgo.ErrRecordTimeout — not run until the caller's context expires, which
-// was the pre-step-260e behaviour (franz-go retries a record without limit by default). The caller's
-// context is deliberately five times longer than the bound, so a produce that only stops when the
-// context does fails this test on both the error and the elapsed time.
+// TestProduceFailsWithinTheProduceTimeoutWhenNoBrokerAnswers: with the only broker refusing
+// connections, Produce returns within the bound with kgo.ErrRecordTimeout. The caller's context is five
+// times longer on purpose: before step-260e the produce ran until the context expired.
 func TestProduceFailsWithinTheProduceTimeoutWhenNoBrokerAnswers(t *testing.T) {
 	t.Parallel()
 	cfg := config.Kafka{
 		Brokers:        []string{closedLoopbackPort(t)},
 		Timeout:        200 * time.Millisecond,
-		ProduceTimeout: time.Second, // franz-go's floor: the suite pays one second, not more
+		ProduceTimeout: time.Second, // the kgo floor
 	}
 	p, err := NewProducer(cfg)
 	if err != nil {

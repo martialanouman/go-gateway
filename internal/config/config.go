@@ -184,31 +184,11 @@ type Kafka struct {
 	// fetch deadline: produces are bounded by ProduceTimeout, fetches by the caller's context.
 	Timeout time.Duration `env:"TIMEOUT" envDefault:"3s"`
 
-	// ProduceTimeout bounds how long ONE record may take to be durably acknowledged, whatever fails on
-	// the way (step-260e). It is wired to two franz-go options at once: RecordDeliveryTimeout (the
-	// time a record may sit in the client through retries, metadata loads and leader elections —
-	// franz-go's default is unbounded) and ProduceRequestTimeout (how long a broker may hold a produce
-	// request waiting for its ISR acks — franz-go's default is 10s, which would otherwise add itself to
-	// the bound). On expiry Produce returns kgo.ErrRecordTimeout; the REST ingest answers 503
-	// service_unavailable and the SMPP ingest ESME_RSYSERR, both retryable.
-	//
-	// It is a fault bound, not a nominal latency: a produce completes in milliseconds. franz-go refuses
-	// a non-zero value under 1s (kgo/config.go:363), and zero is refused here too — an unbounded produce
-	// is the defect this lever closes.
-	//
-	// Pick it per service. The ingress services (rest-api, smpp-server, router) keep the default: 5s
-	// covers an ordinary leader election and stays under the 15s the SMPP session allows a submit, so
-	// the client is told why rather than timed out. The consumers whose produce is fail-closed BEFORE
-	// their offset commit (connector-pool on mt.outcome, mo-dlr-router) must set it long, ~30s: there an
-	// expired record is redelivered, and for mt.outcome — published AFTER submit_sm — a redelivery is a
-	// duplicate SMS (ADR-0012). The bound only has to keep a shard, and the graceful drain, from being
-	// pinned for ever.
-	//
-	// Known residue: a broker that accepts TCP and never answers is detected only after franz-go's
-	// RequestTimeoutOverhead (10s, applied up to three times on a connection's first request) plus this
-	// bound, and an idempotent record already on the wire cannot be cancelled by the context before the
-	// response or the connection's death (kgo/producer.go). Not reproducible with the repository's
-	// fault tooling today; a follow-up if chaos shows it.
+	// ProduceTimeout bounds one record's delivery on a fault (kgo RecordDeliveryTimeout AND
+	// ProduceRequestTimeout, step-260e); franz-go's own defaults are unbounded and 10s. Set it per
+	// service: 5s for the ingress (under the SMPP session's 15s), ~30s for the consumers whose produce
+	// is fail-closed before their offset commit (connector-pool, mo-dlr-router) — there an expired
+	// record is redelivered, and for mt.outcome a redelivery is a duplicate SMS (ADR-0012).
 	ProduceTimeout time.Duration `env:"PRODUCE_TIMEOUT" envDefault:"5s"`
 
 	// FetchMinBytes is how many bytes a broker waits to accumulate before answering a fetch, unless
@@ -825,8 +805,7 @@ func (c Config) kafkaProblems() []string {
 func (c Config) kafkaCapacityProblems() []string {
 	var problems []string
 
-	// franz-go refuses a client whose record delivery timeout is non-zero and under 1s; zero would mean
-	// "no bound at all", which is the defect the lever exists to close (step-260e). Refuse both at Load.
+	// Zero would mean "no bound", the defect step-260e closes: refused like a value under the kgo floor.
 	if c.Kafka.ProduceTimeout < kafkaMinProduceTimeout {
 		problems = append(problems, fmt.Sprintf(
 			"KAFKA_PRODUCE_TIMEOUT %s must be at least %s: franz-go refuses a record delivery timeout under "+
