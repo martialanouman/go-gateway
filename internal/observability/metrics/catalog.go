@@ -103,6 +103,12 @@ type Catalog struct {
 	// label so it cannot inflate those ratios.
 	ExactRouteLookups      *prometheus.CounterVec
 	ExactRouteCacheCorrupt prometheus.Counter
+
+	// ConnectorLoadReads counts least_loaded's reads of the derived connectorload gauge by outcome
+	// (hit, missing, error). It exists because "no gauge published" and "every connector idle" both read
+	// 0 to the strategy — the blind spot that hid an absent writer for two milestones (step-260d). With
+	// the reader's cache, it grows by at most one per second per connector.
+	ConnectorLoadReads *prometheus.CounterVec
 }
 
 // Native histogram settings, applied to every histogram in the catalogue. A factor of 1.1 gives ~10%
@@ -233,6 +239,11 @@ func NewCatalog() *Catalog {
 			Name: "exact_route_cache_corrupt_total",
 			Help: "Cached exact-route values that could not be decoded and were healed from the durable table.",
 		}),
+
+		ConnectorLoadReads: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "routing_connector_load_reads_total",
+			Help: "least_loaded reads of the derived connectorload gauge, by outcome (hit, missing, error).",
+		}, []string{"outcome"}),
 	}
 }
 
@@ -247,6 +258,7 @@ func (c *Catalog) Collectors() []prometheus.Collector {
 		c.RoutingScriptFailures,
 		c.ExactRouteLookups,
 		c.ExactRouteCacheCorrupt,
+		c.ConnectorLoadReads,
 		c.MessagesTotal,
 		c.RejectedTotal,
 		c.PipelineDuration,
