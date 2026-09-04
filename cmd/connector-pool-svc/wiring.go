@@ -246,7 +246,8 @@ func openStores(ctx context.Context, cfg config.Config, connectorID uuid.UUID) (
 	}
 
 	// The producer publishes the return path (mo.inbound, dlr.events) durably (acks=all): a deliver_sm
-	// from the SMSC is acknowledged only once its MO/DLR is on Kafka (step-043).
+	// from the SMSC is acknowledged only once its MO/DLR is on Kafka (step-043). It also publishes
+	// mt.outcome after submit_sm, hence the fail-closed bound (step-260e).
 	s.producer, err = kafka.NewProducer(cfg.Kafka, kafka.ForFailClosedConsumer())
 	if err != nil {
 		return nil, fmt.Errorf("kafka producer: %w", err)

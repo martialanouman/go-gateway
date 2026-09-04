@@ -100,8 +100,9 @@ arbitre à contexte neuf a tranché (spec muette ; ADR-0012 et ADR-0014 comme ca
    `kafka.ForFailClosedConsumer()`, passée à `NewProducer` dans le `wiring.go` de **router-svc,
    connector-pool-svc, mo-dlr-router-svc** et dans `cmd/mt-replay` : elle impose une constante
    `FailClosedProduceTimeout = 30 s` en ignorant `KAFKA_PRODUCE_TIMEOUT` — assez long pour une élection
-   de leader et l'attente ISR, strictement sous `RebalanceTimeout` kgo (60 s) au-delà duquel un
-   handler bloqué fait éjecter le membre et redélivrer toutes ses partitions. Non surchargeable par
+   de leader et l'attente ISR. Plus long n'achète rien : les consommateurs ne bloquent pas le rebalance
+   pendant un poll (`BlockRebalanceOnPoll` kgo non posé, `consumer.go:63-70`), donc un rebalance
+   survenant pendant le blocage redélivre de toute façon — suite possible. Non surchargeable par
    l'env : un opérateur ne peut pas mal régler ce qu'il ne peut pas régler. `KAFKA_PRODUCE_TIMEOUT`
    ne gouverne plus que **rest-api-svc et smpp-server-svc**. Prouvé par `OptValue` (l'option gagne sur
    un `cfg.ProduceTimeout` de 1 s) et par une assertion dans chaque test de câblage concerné.
@@ -131,16 +132,15 @@ le montre.
    `Timeout 200 ms`, `ProduceTimeout 1 s` (le plancher : la suite ne ralentit que d'une seconde) ;
    contexte de 5 s ; assertions : erreur non nulle, `errors.Is(err, kgo.ErrRecordTimeout)`, durée < 3 s,
    `ctx.Err() == nil`. Mutation « retirer `RecordDeliveryTimeout` » : l'erreur devient
-   `context.DeadlineExceeded` à 5 s — le test tombe pour deux raisons visibles. Mutation
-   « `ProduceRequestTimeout` seul » : tombe aussi (ce test prouve le record timeout ; l'autre option est
-   prouvée par `OptValue`).
+   `context.DeadlineExceeded` à 5 s — le test tombe pour trois raisons visibles. Il ne prouve que le
+   chemin « record jamais émis » (minuteur dédié de `waitUnknownTopic`), et son nom le dit.
 
 ## Documentation dans la même PR
 
 `options.go:21-22` (« never a produce or fetch deadline » devient faux : réécrire) ; `config.go` godoc de
-`Timeout` (« and, later, client operations » → « each broker dial ») ; godoc de `ProduceTimeout` : les
-deux options et la consigne par service, en cinq lignes. La consigne est aussi portée dans la fiche
-step-270 (manifests), là où un opérateur la lira.
+`Timeout` (« and, later, client operations » → « each broker dial ») ; godoc de `ProduceTimeout` : une
+option, ingress seulement, en quatre lignes ; godoc de `Produce` : ce que la borne couvre vraiment. La
+fiche step-270 dit qu'il n'y a rien à porter dans les manifests pour ce levier.
 
 **Résidu nommé — ici, pas dans le code.** Un broker qui accepte le TCP et ne répond jamais n'est
 détecté qu'à la read deadline kgo, `RequestTimeoutOverhead + TimeoutMillis` = 20 s par tentative

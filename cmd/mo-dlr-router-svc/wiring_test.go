@@ -125,8 +125,7 @@ func TestNewReturnPathAppBuildsTheWholeGraph(t *testing.T) {
 		}
 	}
 
-	// mo.routed and the retry topic are produced before the offset commits: the fail-closed constant
-	// bound, never the env one (step-260e).
+	// Fail-closed producer (mo.routed before the offset commit): the constant, never the env (step-260e).
 	if got := app.producer.DeliveryTimeout(); got != kafka.FailClosedProduceTimeout {
 		t.Errorf("producer delivery timeout = %s, want the fail-closed constant %s", got, kafka.FailClosedProduceTimeout)
 	}

@@ -22,8 +22,8 @@ type Producer struct {
 
 // FailClosedProduceTimeout bounds a produce whose failure redelivers records already sent to an SMSC
 // (mt.outcome after submit_sm, mt.routed before the mt.inbound commit): long enough for a leader
-// election and the ISR wait, under kgo's 60s RebalanceTimeout past which a blocked handler gets the
-// member evicted and every partition redelivered.
+// election and the ISR wait. A rebalance during the block still redelivers — the consumers do not
+// block rebalances on poll (kgo BlockRebalanceOnPoll, a follow-up) — so longer buys nothing.
 const FailClosedProduceTimeout = 30 * time.Second
 
 // ProducerOption is a per-binary policy, set in wiring and never by the environment.
@@ -33,7 +33,7 @@ type producerPolicy struct{ bound time.Duration }
 
 // ForFailClosedConsumer replaces KAFKA_PRODUCE_TIMEOUT with FailClosedProduceTimeout (step-260e): for a
 // consumer that produces before committing its offset, an expired record is a redelivery, and for
-// mt.outcome a redelivery is a duplicate SMS (ADR-0012). The environment cannot lower it.
+// mt.outcome a redelivery is a duplicate SMS (ADR-0012). The environment cannot change it.
 func ForFailClosedConsumer() ProducerOption {
 	return func(p *producerPolicy) { p.bound = FailClosedProduceTimeout }
 }
@@ -86,7 +86,7 @@ func (p *Producer) ReadyCheck(name string, timeout time.Duration) observability.
 	return observability.PingCheck(name, timeout, p.cl.Ping)
 }
 
-// DeliveryTimeout is the bound the client resolved; wiring tests assert the per-binary policy on it.
+// DeliveryTimeout is the resolved kgo RecordDeliveryTimeout, 0 when unbounded.
 func (p *Producer) DeliveryTimeout() time.Duration {
 	d, _ := p.cl.OptValue(kgo.RecordDeliveryTimeout).(time.Duration)
 	return d

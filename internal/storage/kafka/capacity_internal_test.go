@@ -24,7 +24,7 @@ func levers() config.Kafka {
 		// can re-submit, and this is the only knob that caps it.
 		FetchMaxPartitionBytes: 256 << 10, // default 1MiB
 
-		ProduceTimeout: 1500 * time.Millisecond, // defaults 0 (unbounded) and 10s
+		ProduceTimeout: 1500 * time.Millisecond, // default 0 (unbounded)
 	}
 }
 
@@ -123,9 +123,8 @@ func TestEveryClientAppliesTheDialTimeout(t *testing.T) {
 	}
 }
 
-// TestProducerAppliesTheProduceTimeout (step-260e). ProduceRequestTimeout deliberately stays at the
-// library default: shortening the broker's ISR wait only makes a batch "unsure if produced" sooner,
-// and such a batch is retried past every bound.
+// TestProducerAppliesTheProduceTimeout (step-260e): the record timeout, and ProduceRequestTimeout left
+// at the library default (see producerOpts).
 func TestProducerAppliesTheProduceTimeout(t *testing.T) {
 	cfg := levers()
 	producer, err := NewProducer(cfg)

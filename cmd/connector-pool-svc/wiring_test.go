@@ -128,8 +128,7 @@ func TestNewPoolAppBuildsTheWholeGraph(t *testing.T) {
 		}
 	}
 
-	// mt.outcome is produced AFTER submit_sm and before the offset commits: a bounded-by-env producer
-	// would turn a leader election into duplicate SMS (step-260e).
+	// Fail-closed producer (mt.outcome after submit_sm): the constant, never the env (step-260e).
 	if got := app.producer.DeliveryTimeout(); got != kafka.FailClosedProduceTimeout {
 		t.Errorf("producer delivery timeout = %s, want the fail-closed constant %s", got, kafka.FailClosedProduceTimeout)
 	}
