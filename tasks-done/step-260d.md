@@ -1,6 +1,6 @@
 # step-260d — `least_loaded` lit une clé que personne n'écrit : le pool dérive `connectorload`
 
-> **Jalon :** Audit du 2026-09-03 (correctifs) · **Statut :** À FAIRE
+> **Jalon :** Audit du 2026-09-03 (correctifs) · **Statut :** LIVRÉE (2026-09-04)
 > **Dépend de :** — · **Bloque :** step-280 (la campagne NFR mesure le profil de routage)
 
 ## Pourquoi cette fiche existe
@@ -126,12 +126,39 @@ a caché le défaut. Avec le cache, au plus un incrément par seconde et par con
 
 ## Definition of Done
 
-- [ ] `make check` vert
-- [ ] après un heartbeat, `GET connectorload:{id}` = Σ `in_flight` des champs vivants, avec TTL
-- [ ] sur une route `least_loaded`, la cible change quand la charge publiée change, via le graphe réel de router-svc
-- [ ] plus un `GET` par message (test de cache) ; l'absence de jauge est comptée
-- [ ] chaque rouge lu, chaque mutation vue tomber, citée dans la PR
-- [ ] `spec:417` corrigée ; `tasks-done/step-114.md` **non** réécrite (document daté)
+- [x] `make check` vert (lint 0 issue, suite `-race` complète avec Docker et l'image du simulateur, govulncheck, contrats)
+- [x] après un heartbeat, `GET connectorload:{id}` = Σ `in_flight` des champs vivants, avec TTL —
+      `TestPublishBindDerivesConnectorLoad` (3+4+5 sur deux pods = 12, PTTL > 0), `TestPublishBindSweepsStaleBinds`
+- [x] sur une route `least_loaded`, la cible change quand la charge publiée change, via le graphe réel de router-svc —
+      `TestLeastLoadedFollowsThePublishedGauge`, `TestNewRouterAppRoutesLeastLoadedOnThePublishedGauge` (rejouable `-count=2`)
+- [x] plus un `GET` par message (`TestLoadReaderCachesWithinTTL`, `TestLeastLoadedReadsTheGaugeThroughItsCache`) ;
+      l'absence de jauge est comptée (`TestLoadReaderCountsEveryOutcome`)
+- [x] chaque rouge lu, chaque mutation vue tomber :
+      - rouge 1 : `undefined: status.LoadKey / NewLoadReader / WithLoadCacheTTL / WithLoadClock` (symboles inexistants)
+      - rouge 4 : `app.routes undefined (type *routerApp has no field or method routes)`
+      - mutation « SET retiré du script » → `GET connectorload: redis: nil` (status), les deux resolves valent 0 →
+        mauvaise cible (routing)
+      - mutation « balayage retiré » → `connectorload = 101, want 2` et le champ périmé subsiste
+      - mutation « cache non rempli » → `two reads inside the TTL cost 2 GETs, want 1`
+      - mutation « le pool publie `b.inFlight()*0` » → `connectorload never rose above 0`
+      - mutation « `UseLoadReader` retiré du wiring » → `the built graph routed to <a>, want b`
+      - mutation « missing compté comme hit » → `observed outcomes = [hit hit error], want [hit missing error]`
+- [x] `spec:417` et `db/schema` (appendice Redis) précisés ; `spec:816` lève l'ambiguïté « majorité » ;
+      `tasks-done/step-114.md` **non** réécrite (document daté)
+
+## Revue
+
+Deux sous-agents en lecture seule, axes disjoints (correction / honnêteté des tests et documents). Aucun
+bloquant. Deux Required corrigés dans `0daa227` : le compteur `routing_connector_load_reads_total` n'était
+asserté nulle part ; le test de câblage n'était pas rejouable dans un même processus (la route de
+l'exécution précédente restait en tête du snapshot, ses jauges vivantes 30 s). Retenus au passage : somme
+formatée en entier dans le script (un Lua qui rend des flottants écrirait `12.0`, que `.Int()` rejette),
+un seul record dans le test du pool (un bind unique ne tient qu'un submit en fenêtre, le « 4 en vol » de
+la première version était faux), et le coût « avant » sous-compté d'un facteur 2 (la chaîne de repli
+relisait chaque cible : 32 000 GET/s, pas 16 000).
+
+FYI laissé pour une fiche ultérieure : `breaker:state:{id}` reste un littéral dans deux wirings
+(`cmd/router-svc/wiring.go`, `cmd/connector-pool-svc/wiring.go`) — constat de l'audit, hors de cette PR.
 
 ## Hors périmètre
 

@@ -266,7 +266,7 @@ invariants tenus, et laissé six constats « Required » qu'aucune fiche ne port
 avant step-270, parce que les deux premiers changent ce que la campagne NFR (step-280) mesure : le
 profil de routage et la borne de l'ingest. Aucune dépendance de code entre les sept ; merger dans
 l'ordre des numéros évite tout conflit sur `cmd/router-svc/wiring.go` et `internal/config/config.go`.
-- [ ] step-260d — `least_loaded` lisait une clé que personne n'écrit : le pool dérive `connectorload`
+- [x] step-260d — `least_loaded` lisait une clé que personne n'écrit : le pool dérive `connectorload`
       dans le script de `PublishBind`, le routeur la lit avec un cache d'une seconde ⛓ bloque step-280
 - [ ] step-260e — Le produce Kafka n'avait aucune borne : `KAFKA_PRODUCE_TIMEOUT` (record delivery +
       produce request), l'ingest REST en hérite ⛓ bloque step-280
