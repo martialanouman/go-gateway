@@ -184,11 +184,10 @@ type Kafka struct {
 	// fetch deadline: produces are bounded by ProduceTimeout, fetches by the caller's context.
 	Timeout time.Duration `env:"TIMEOUT" envDefault:"3s"`
 
-	// ProduceTimeout bounds one record's delivery on a fault (kgo RecordDeliveryTimeout AND
-	// ProduceRequestTimeout, step-260e); franz-go's own defaults are unbounded and 10s. Set it per
-	// service: 5s for the ingress (under the SMPP session's 15s), ~30s for the consumers whose produce
-	// is fail-closed before their offset commit (connector-pool, mo-dlr-router) — there an expired
-	// record is redelivered, and for mt.outcome a redelivery is a duplicate SMS (ADR-0012).
+	// ProduceTimeout bounds a record's delivery on a fault (kgo RecordDeliveryTimeout, unbounded by
+	// default; step-260e). It governs the ingress producers only (rest-api, smpp-server): under the SMPP
+	// session's 15s, so the client is told why. The fail-closed producers ignore it for
+	// kafka.FailClosedProduceTimeout — an expired record there is a redelivery, and a duplicate SMS.
 	ProduceTimeout time.Duration `env:"PRODUCE_TIMEOUT" envDefault:"5s"`
 
 	// FetchMinBytes is how many bytes a broker waits to accumulate before answering a fetch, unless

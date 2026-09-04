@@ -126,7 +126,7 @@ le montre.
    impose 30 s sur un `cfg.ProduceTimeout` de 1 s (Q3). Puis une assertion dans
    `TestNew…BuildsTheWholeGraph` de router-svc, connector-pool-svc et mo-dlr-router-svc.
 3. `internal/storage/kafka/produce_timeout_internal_test.go` —
-   `TestProduceFailsWithinTheProduceTimeoutWhenNoBrokerAnswers`, **sans conteneur** : seed = un port
+   `TestProduceFailsWithinTheProduceTimeoutWhenTheBrokerIsUnreachable`, **sans conteneur** : seed = un port
    loopback qu'on vient de libérer (jamais `127.0.0.1:1`, rien ne garantit que rien n'y écoute) ;
    `Timeout 200 ms`, `ProduceTimeout 1 s` (le plancher : la suite ne ralentit que d'une seconde) ;
    contexte de 5 s ; assertions : erreur non nulle, `errors.Is(err, kgo.ErrRecordTimeout)`, durée < 3 s,

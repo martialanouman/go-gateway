@@ -774,6 +774,10 @@ func TestCapacityLeverDefaults(t *testing.T) {
 	if cfg.Kafka.FetchMaxBytes != 50<<20 {
 		t.Errorf("Kafka.FetchMaxBytes = %d, want %d (franz-go default 50MiB)", cfg.Kafka.FetchMaxBytes, 50<<20)
 	}
+	// Under the 15s the SMPP session allows a submit, so the client is told why (step-260e).
+	if cfg.Kafka.ProduceTimeout != 5*time.Second {
+		t.Errorf("Kafka.ProduceTimeout = %s, want 5s", cfg.Kafka.ProduceTimeout)
+	}
 	if cfg.Kafka.TopicPartitions != 12 {
 		t.Errorf("Kafka.TopicPartitions = %d, want 12", cfg.Kafka.TopicPartitions)
 	}

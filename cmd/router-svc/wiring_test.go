@@ -21,6 +21,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/connector/status"
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
+	"github.com/martialanouman/go-gateway/internal/storage/kafka"
 	"github.com/martialanouman/go-gateway/internal/storage/postgres"
 	"github.com/martialanouman/go-gateway/internal/testutil/pgtest"
 	"github.com/martialanouman/go-gateway/internal/testutil/redistest"
@@ -153,6 +154,12 @@ func TestNewRouterAppBuildsTheWholeGraph(t *testing.T) {
 
 	// Building the graph must not start serving: the ops port is bound by ops.Run, which only the
 	// supervisor calls.
+	// mt.routed is produced before the mt.inbound offset commits: a bounded-by-env producer here would
+	// turn a leader election into duplicate SMS (step-260e).
+	if got := app.producer.DeliveryTimeout(); got != kafka.FailClosedProduceTimeout {
+		t.Errorf("producer delivery timeout = %s, want the fail-closed constant %s", got, kafka.FailClosedProduceTimeout)
+	}
+
 	if c, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(cfg.OpsPort)), time.Second); err == nil {
 		_ = c.Close()
 		t.Errorf("ops port %d is listening after wiring alone", cfg.OpsPort)

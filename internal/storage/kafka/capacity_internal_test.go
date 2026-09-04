@@ -123,7 +123,9 @@ func TestEveryClientAppliesTheDialTimeout(t *testing.T) {
 	}
 }
 
-// TestProducerAppliesTheProduceTimeout: one variable, both options (step-260e).
+// TestProducerAppliesTheProduceTimeout (step-260e). ProduceRequestTimeout deliberately stays at the
+// library default: shortening the broker's ISR wait only makes a batch "unsure if produced" sooner,
+// and such a batch is retried past every bound.
 func TestProducerAppliesTheProduceTimeout(t *testing.T) {
 	cfg := levers()
 	producer, err := NewProducer(cfg)
@@ -133,7 +135,24 @@ func TestProducerAppliesTheProduceTimeout(t *testing.T) {
 	defer producer.Close()
 
 	assertOpt(t, producer.cl, kgo.RecordDeliveryTimeout, "RecordDeliveryTimeout", cfg.ProduceTimeout)
-	assertOpt(t, producer.cl, kgo.ProduceRequestTimeout, "ProduceRequestTimeout", cfg.ProduceTimeout)
+	assertOpt(t, producer.cl, kgo.ProduceRequestTimeout, "ProduceRequestTimeout", 10*time.Second)
+}
+
+// TestForFailClosedConsumerIgnoresTheEnvBound: a producer whose failure redelivers already-sent
+// records (a duplicate SMS for mt.outcome) gets the long constant bound whatever the environment says.
+func TestForFailClosedConsumerIgnoresTheEnvBound(t *testing.T) {
+	cfg := levers()
+	cfg.ProduceTimeout = time.Second
+	producer, err := NewProducer(cfg, ForFailClosedConsumer())
+	if err != nil {
+		t.Fatalf("NewProducer() = %v, want nil", err)
+	}
+	defer producer.Close()
+
+	assertOpt(t, producer.cl, kgo.RecordDeliveryTimeout, "RecordDeliveryTimeout", FailClosedProduceTimeout)
+	if got := producer.DeliveryTimeout(); got != FailClosedProduceTimeout {
+		t.Errorf("DeliveryTimeout() = %s, want %s", got, FailClosedProduceTimeout)
+	}
 }
 
 // TestAnUnsetLeverKeepsTheLibraryDefault pins the zero-value contract of consumerOpts and dialOpts.

@@ -1,6 +1,8 @@
 package kafka
 
 import (
+	"time"
+
 	"github.com/twmb/franz-go/pkg/kgo"
 
 	"github.com/martialanouman/go-gateway/internal/config"
@@ -29,17 +31,14 @@ func dialOpts(cfg config.Kafka) []kgo.Opt {
 	return []kgo.Opt{kgo.DialTimeout(cfg.Timeout)}
 }
 
-// producerOpts bound a produce on both fronts (step-260e): RecordDeliveryTimeout is how long a record
-// may sit in the client (franz-go retries without limit by default), ProduceRequestTimeout how long a
-// broker may hold the request for its ISR acks — without it a lagging replica adds franz-go's 10s
-// before the record timeout is even evaluated.
-func producerOpts(cfg config.Kafka) []kgo.Opt {
+// producerOpts bound how long a record may sit in the client (step-260e); franz-go retries without
+// limit by default. ProduceRequestTimeout is deliberately left at the library default: shortening the
+// broker's ISR wait only makes a batch "unsure if produced" sooner, and kgo retries such a batch past
+// every bound rather than risk a duplicate.
+func producerOpts(cfg config.Kafka, bound time.Duration) []kgo.Opt {
 	opts := dialOpts(cfg)
-	if cfg.ProduceTimeout > 0 {
-		opts = append(opts,
-			kgo.RecordDeliveryTimeout(cfg.ProduceTimeout),
-			kgo.ProduceRequestTimeout(cfg.ProduceTimeout),
-		)
+	if bound > 0 {
+		opts = append(opts, kgo.RecordDeliveryTimeout(bound))
 	}
 	return opts
 }

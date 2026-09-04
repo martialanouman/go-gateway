@@ -25,10 +25,11 @@ func closedLoopbackPort(t *testing.T) string {
 	return addr
 }
 
-// TestProduceFailsWithinTheProduceTimeoutWhenNoBrokerAnswers: with the only broker refusing
-// connections, Produce returns within the bound with kgo.ErrRecordTimeout. The caller's context is five
-// times longer on purpose: before step-260e the produce ran until the context expired.
-func TestProduceFailsWithinTheProduceTimeoutWhenNoBrokerAnswers(t *testing.T) {
+// TestProduceFailsWithinTheProduceTimeoutWhenTheBrokerIsUnreachable proves the never-sent path only:
+// with the only broker refusing connections, Produce returns within the bound with kgo.ErrRecordTimeout
+// (kgo's dedicated timer in waitUnknownTopic). The caller's context is five times longer on purpose:
+// before step-260e the produce ran until the context expired. A batch in flight is not bounded this way.
+func TestProduceFailsWithinTheProduceTimeoutWhenTheBrokerIsUnreachable(t *testing.T) {
 	t.Parallel()
 	cfg := config.Kafka{
 		Brokers:        []string{closedLoopbackPort(t)},
