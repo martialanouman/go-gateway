@@ -1,6 +1,6 @@
 # step-260e — Le produce Kafka n'a aucune borne : `KAFKA_PRODUCE_TIMEOUT`, et l'ingest REST en hérite
 
-> **Jalon :** Audit du 2026-09-03 (correctifs) · **Statut :** À FAIRE
+> **Jalon :** Audit du 2026-09-03 (correctifs) · **Statut :** LIVRÉE (2026-09-04)
 > **Dépend de :** — · **Bloque :** step-280 (la campagne NFR mesure l'ingest)
 
 ## Pourquoi cette fiche existe
@@ -165,12 +165,37 @@ pas). Suite si le chaos le montre : `RequestTimeoutOverhead` sur le client produ
 
 ## Definition of Done
 
-- [ ] `make check` vert
-- [ ] sans broker, `Produce` revient en ≈ T avec `kgo.ErrRecordTimeout`, sans expirer le ctx appelant
-- [ ] `KAFKA_PRODUCE_TIMEOUT < 1s` est refusé au boot en nommant la variable
-- [ ] `OptValue` confirme les deux options sur le producteur durable, et le défaut kgo quand le champ est zéro
-- [ ] chaque rouge lu, chaque mutation vue tomber, citée dans la PR
-- [ ] `options.go` ne dit plus « never a produce deadline » ; le godoc du champ porte la consigne par service
+- [x] `make check` vert (lint 0 issue, suite `-race` complète avec Docker et l'image du simulateur, govulncheck, contrats)
+- [x] sans broker, `Produce` revient en ≈ T avec `kgo.ErrRecordTimeout`, sans expirer le ctx appelant —
+      `TestProduceFailsWithinTheProduceTimeoutWhenTheBrokerIsUnreachable` (1,0 s mesuré sous `-race`)
+- [x] `KAFKA_PRODUCE_TIMEOUT < 1s` est refusé au boot en nommant la variable — `TestKafkaProduceTimeoutFloor`,
+      entrées de `TestLoadRejectsInvalid` ; défaut 5 s épinglé dans `TestCapacityLeverDefaults`
+- [x] `OptValue` confirme le record timeout sur le producteur durable, `ProduceRequestTimeout` resté à 10 s, et le
+      défaut kgo quand le champ est zéro — `TestProducerAppliesTheProduceTimeout`, `TestAnUnsetLeverKeepsTheLibraryDefault`
+- [x] les quatre producteurs fail-closed portent la constante, hors de portée de l'env —
+      `TestForFailClosedConsumerIgnoresTheEnvBound` + assertion dans `TestNew…BuildsTheWholeGraph` de router-svc,
+      connector-pool-svc, mo-dlr-router-svc (mt-replay : sans test de câblage, câblé à vue)
+- [x] chaque rouge lu, chaque mutation vue tomber :
+      - rouges : `cfg.Kafka.ProduceTimeout undefined` ; `OptValue` = `0s` / `10s` (défauts lib) ;
+        `ForFailClosedConsumer` / `app.producer` inexistants
+      - mutation « plancher retiré » → `999ms`, `0s`, `-1s` acceptés (deux tests tombent)
+      - mutation « `RecordDeliveryTimeout` retiré » → `context deadline exceeded` à 5,0 s, ctx expiré (trois assertions)
+      - mutation « option `ForFailClosedConsumer` inerte » → `RecordDeliveryTimeout = 1s, want 30s` (kafka) et
+        `producer delivery timeout = 0s, want 30s` (câblage router)
+      - mutation « option retirée du câblage du pool » → `0s, want 30s`
+      - mutation « défaut `50s` » → `Kafka.ProduceTimeout = 50s, want 5s`
+- [x] `options.go` ne dit plus « never a produce deadline » ; le godoc du champ dit « ingress seulement » ; celui de
+      `Produce` dit ce que la borne couvre et ne couvre pas
+
+## Revue
+
+Deux sous-agents en lecture seule (correction / tests et documents), puis un **arbitre à contexte neuf**
+sur le fork de conception que la première revue a ouvert (trois mécanismes kgo vérifiés : lot en vol
+non bornable, `unsureIfProduced` irréversible, read deadline = overhead + `TimeoutMillis`). Décisions
+appliquées : record timeout seul, `ProduceRequestTimeout` découplé, option de politique par binaire,
+le routeur reclassé fail-closed. Une seconde revue sur le delta des correctifs : aucun bloquant, quatre
+Required documentaires appliqués (la constante ne promet plus une non-éviction que les consommateurs
+n'ont pas ; `BlockRebalanceOnPoll` noté comme suite).
 
 ## Hors périmètre
 
