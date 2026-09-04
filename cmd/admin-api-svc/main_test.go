@@ -22,6 +22,7 @@ func TestRunRequiresAdminTokensInProduction(t *testing.T) {
 	t.Setenv("SMPP_SESSION_MANAGER_ADDR", "session-manager.internal:7000")
 	t.Setenv("BILLING_ADDR", "billing.internal:7001")
 	t.Setenv("CLICKHOUSE_ADDR", "clickhouse.internal:9000")
+	t.Setenv("CLICKHOUSE_PASSWORD", "s3cret")
 	t.Setenv("CONTENT_KEY_ADDR", "content-key.internal:7002")
 	t.Setenv("REDIS_URL", "redis://redis.internal:6379")
 	t.Setenv("KAFKA_BROKERS", "kafka.internal:9092")

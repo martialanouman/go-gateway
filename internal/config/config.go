@@ -117,7 +117,9 @@ const (
 	defaultPostgresURL    = "postgres://gateway:gateway@localhost:5432/gateway?sslmode=disable"
 	defaultKafkaBroker    = "localhost:9092"
 	defaultClickHouseAddr = "localhost:9000"
-	defaultRedisURL       = "redis://localhost:6379"
+	// defaultClickHousePassword matches docker-compose.yml; the tag on ClickHouse.Password is its only other copy.
+	defaultClickHousePassword = "gateway"
+	defaultRedisURL           = "redis://localhost:6379"
 
 	// defaultSessionManagerAddr is the throwaway localhost target from docker-compose.yml. Like the
 	// other loopback defaults, Validate refuses it on the production tier.
@@ -925,6 +927,9 @@ func (c Config) clickhouseProblems() []string {
 					"("+defaultClickHouseAddr+"): set every node explicitly in production")
 				break
 			}
+		}
+		if c.ClickHouse.Password == defaultClickHousePassword {
+			problems = append(problems, "CLICKHOUSE_PASSWORD is the development default: set it explicitly in production")
 		}
 	}
 	return problems
