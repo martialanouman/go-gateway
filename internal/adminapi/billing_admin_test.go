@@ -87,7 +87,7 @@ func (s *captureProviderStore) Update(_ context.Context, id uuid.UUID, p cp.Exte
 // replayed as ?cursor=, decodes into the last row's (created_at, id) keyset position — no row is skipped.
 func TestGetLedgerReturnsPageWithNextCursor(t *testing.T) {
 	cust := uuid.New()
-	last := cp.LedgerRow{ID: uuid.New(), OwnerType: "customer", OwnerID: cust, Direction: "mt", CustomerID: cust, EntryType: cp.EntryTopup, Credits: 10, CreatedAt: time.UnixMicro(1_700_000_000_000_000).UTC()}
+	last := cp.LedgerRow{ID: uuid.New(), OwnerType: "customer", OwnerID: cust, Direction: "mt", CustomerID: cust, EntryType: cp.EntryTopup, Credits: 10, CreatedAt: time.UnixMicro(1_700_000_000_123_789).UTC()}
 	first := cp.LedgerRow{ID: uuid.New(), OwnerType: "customer", OwnerID: cust, Direction: "mt", CustomerID: cust, EntryType: cp.EntryTopup, Credits: 20, CreatedAt: time.UnixMicro(1_700_000_001_000_000).UTC()}
 	billing := &fakeBillingStore{ledgerRows: []cp.LedgerRow{first, last}, ledgerMore: true}
 	api := newTestAPIWith(t, adminapi.Deps{Customers: fakeBillingCustomerStore{c: customerScoped(cust)}, Billing: billing})

@@ -2,13 +2,8 @@ package adminapi
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"net/http"
-	"strconv"
-	"strings"
-	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/google/uuid"
@@ -16,6 +11,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/auth"
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	humaerr "github.com/martialanouman/go-gateway/internal/platform/errors/humaerr"
+	"github.com/martialanouman/go-gateway/internal/platform/keyset"
 )
 
 // billingAdminHandlers serves the billing ledger read plus rate-plan and external-provider administration
@@ -224,11 +220,11 @@ func (h *billingAdminHandlers) getLedger(ctx context.Context, in *getLedgerInput
 		f.AccountID = &aid
 	}
 	if in.Cursor != "" {
-		key, cerr := decodeLedgerCursor(in.Cursor)
-		if cerr != nil {
-			return nil, humaerr.FailValidation("invalid cursor", humaerr.FieldError{Field: "cursor", Message: "malformed page cursor"})
+		key, err := keyset.Decode(in.Cursor, keyset.Micro)
+		if err != nil {
+			return nil, humaerr.FromError(err)
 		}
-		f.After = key
+		f.After = cp.LedgerKey{CreatedAt: key.At, ID: key.ID}
 	}
 	rows, hasMore, err := h.billing.Ledger(ctx, f)
 	if err != nil {
@@ -240,36 +236,9 @@ func (h *billingAdminHandlers) getLedger(ctx context.Context, in *getLedgerInput
 	}
 	if hasMore && len(rows) > 0 {
 		last := rows[len(rows)-1]
-		page.NextCursor = ptr(encodeLedgerCursor(cp.LedgerKey{CreatedAt: last.CreatedAt, ID: last.ID}))
+		page.NextCursor = ptr(keyset.Encode(keyset.Key{At: last.CreatedAt, ID: last.ID}, keyset.Micro))
 	}
 	return &ledgerPageOutput{Body: page}, nil
-}
-
-const ledgerCursorSep = "|"
-
-func encodeLedgerCursor(k cp.LedgerKey) string {
-	payload := strconv.FormatInt(k.CreatedAt.UnixMicro(), 10) + ledgerCursorSep + k.ID.String()
-	return base64.RawURLEncoding.EncodeToString([]byte(payload))
-}
-
-func decodeLedgerCursor(s string) (cp.LedgerKey, error) {
-	raw, err := base64.RawURLEncoding.DecodeString(s)
-	if err != nil {
-		return cp.LedgerKey{}, err
-	}
-	ts, id, ok := strings.Cut(string(raw), ledgerCursorSep)
-	if !ok {
-		return cp.LedgerKey{}, errors.New("cursor: missing separator")
-	}
-	us, err := strconv.ParseInt(ts, 10, 64)
-	if err != nil {
-		return cp.LedgerKey{}, err
-	}
-	entryID, err := uuid.Parse(id)
-	if err != nil {
-		return cp.LedgerKey{}, err
-	}
-	return cp.LedgerKey{CreatedAt: time.UnixMicro(us).UTC(), ID: entryID}, nil
 }
 
 // --- rate plans ---
