@@ -1686,7 +1686,35 @@ components:
       properties:
         code:
           type: string
-          description: Stable machine-readable error code.
+          description: |
+            Stable machine-readable error code. The enum is every catalogue code with an HTTP
+            surface (engineering guide §11.3); codes without one — max_sessions_exceeded (SMPP bind
+            only) and the outbound outcomes recorded in a message's error_code — never appear here.
+          enum:
+            - account_suspended
+            - cancel_failed
+            - channel_disabled
+            - conflict
+            - content_blocked
+            - external_billing_unavailable
+            - forbidden_scope
+            - idempotency_conflict
+            - insufficient_credit
+            - internal_error
+            - invalid_destination
+            - invalid_source
+            - message_not_found
+            - no_route
+            - not_found
+            - operation_not_supported
+            - payload_too_large
+            - queue_full
+            - rate_limited
+            - recipient_opted_out
+            - sender_id_not_authorized
+            - service_unavailable
+            - unauthenticated
+            - validation_error
           examples: [forbidden_scope, conflict, validation_error, message_not_found, insufficient_credit]
         message:
           type: string
