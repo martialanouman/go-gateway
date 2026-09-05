@@ -11,6 +11,9 @@ version: "2"
 
 run:
   timeout: 5m
+  # The load-reference suite (internal/e2e, `//go:build loadref`) is compiled and linted here even
+  # though no CI job runs it: a build error in it must not wait for the next load campaign (step-260h).
+  build-tags: [loadref]
 
 linters:
   enable:
