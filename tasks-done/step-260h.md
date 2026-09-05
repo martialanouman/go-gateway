@@ -1,6 +1,6 @@
 # step-260h — Trois gardes passent de la prose au code
 
-> **Jalon :** Audit du 2026-09-03 (correctifs) · **Statut :** EN COURS (2026-09-05)
+> **Jalon :** Audit du 2026-09-03 (correctifs) · **Statut :** LIVRÉE (2026-09-05)
 > **Dépend de :** — · **Bloque :** —
 
 ## Pourquoi cette fiche existe
@@ -22,7 +22,7 @@ La garde contrat ⊆ code reste dans step-320 (décision du 2026-09-03).
 
 ## Ce que l'exploration a établi
 
-- Le catalogue (`internal/platform/errors/errors.go:141-181`) compte **26** codes ; 4 codes d'issue
+- Le catalogue (`internal/platform/errors/errors.go:141-179`) compte **26** codes ; 4 codes d'issue
   sortante (`delivery_failed`, `delivery_expired`, `fallback_exhausted`, `retries_exhausted`) sont des
   constantes **hors catalogue**, gardées ainsi par `errors_test.go:108-127`. Parmi les 26, **24** ont un
   statut HTTP (`errs.HTTPStatus` ok) ; `max_sessions_exceeded` (bind SMPP seulement, §11.3 « — ») et
@@ -48,9 +48,15 @@ La garde contrat ⊆ code reste dans step-320 (décision du 2026-09-03).
 **A. L'enum du champ `code`.** Dans les deux `Error.code` : `enum:` = les **24 codes à surface HTTP**,
 triés. La description dit que les codes sans surface REST (`max_sessions_exceeded`, les issues
 sortantes de `cdr.error_code`) n'y figurent pas. `examples` conservés. `api/package.json` → `4.1.0`.
-Test `TestErrorCodeEnumMatchesTheCatalogue` dans `internal/adminapi/contract_test.go` (marche l'arbre
-générique) et `internal/restapi/conformance_test.go` (`contractDoc` gagne `Components`) : ensemble de
-l'enum == `{c ∈ errs.Codes() : HTTPStatus(c) ok}`, les deux sens. `.claude/rules/errors.md` point 2 et
+`errs.HTTPCodes()` est cette liste, calculée depuis le catalogue. **Le YAML seul ne suffit pas** : le
+test strict `TestGeneratedSpecMatchesTheContractForEveryM1Operation` compare le schéma résolu de chaque
+réponse d'erreur, `enum` compris, donc le modèle servi doit le déclarer aussi — `humaerr.Model`
+implémente `huma.SchemaTransformer` et pose l'enum sur `code` depuis `HTTPCodes()` ; servi et déclaré ne
+peuvent plus diverger. Les trois constructeurs de `humaerr` (`newError`, `Fail`, `FromError`) rendent un
+code sans surface HTTP en `internal_error`/500 : un tel code ne peut plus atteindre un corps hors enum.
+Tests `TestErrorCodeEnumMatchesTheCatalogue` dans `internal/adminapi/error_enum_test.go` (marche l'arbre
+générique) et `internal/restapi/error_enum_test.go` (`contractDoc` gagne `Components`) : ensemble de
+l'enum == `errs.HTTPCodes()`, les deux sens. `.claude/rules/errors.md` point 2 et
 guide §11.2 : « l'énumération de référence » devient « l'enum des codes à surface HTTP, gardée par
 `TestErrorCodeEnumMatchesTheCatalogue` ; le catalogue complet est le tableau §11.3 ».
 
@@ -66,8 +72,12 @@ ce qu'il ne couvre pas (`contracts-types`, `load-smoke`, `migrate`).
 ## Chaîne de preuves
 
 1. Rouge lu : les deux `TestErrorCodeEnumMatchesTheCatalogue` échouent sur « le contrat n'a pas
-   d'enum ». Vert par le YAML. Mutations : un code ajouté au catalogue Go (HTTP 418) sans le YAML →
-   tombe ; une valeur retirée de l'enum → tombe ; `make contracts` sur la branche confirme le mineur.
+   d'enum ». Le YAML les rend verts et rend **rouge** le test strict Admin (drift `enum` sur chaque
+   réponse d'erreur) : c'est ce rouge qui a imposé le `SchemaTransformer`. Mutations : un code ajouté au
+   catalogue Go (HTTP 418) sans le YAML → les deux tests d'enum et le strict tombent ; une valeur retirée
+   de l'enum → tombe ; `HTTPCodes` renvoyant tout → `TestHTTPCodesAreTheCatalogueEntriesWithAStatus`
+   tombe ; `Fail(submit_failed)` rendait `submit_failed` dans le corps → rouge lu sur les trois
+   constructeurs, puis vert. `make contracts` : « Aucune rupture », mineur confirmé.
 2. Une erreur de compilation dans `internal/e2e/reference_test.go` → `make lint` rouge ; retirée.
 3. `GOFLAGS=-short make check` → rouge au premier `ciguard.Skip` (CI=1) ; `GOFLAGS=-short make test` →
    vert avec sauts. Un fichier non formaté → `make fmt-check` rouge.
@@ -84,10 +94,22 @@ ce qu'il ne couvre pas (`contracts-types`, `load-smoke`, `migrate`).
 
 ## Definition of Done
 
-- [ ] `make check` vert
-- [ ] un code ajouté au catalogue Go sans le contrat fait rouge (mutation 1)
-- [ ] une erreur de compilation sous `loadref` fait rouge (preuve 2)
-- [ ] `make check` échoue explicitement au lieu de sauter quand une dépendance manque (preuve 3)
+- [x] `make check` vert (85 paquets ; une première passe a refusé trois `prealloc` dans les tests neufs)
+- [x] un code ajouté au catalogue Go sans le contrat fait rouge (mutation 1, vue tomber)
+- [x] une erreur de compilation sous `loadref` fait rouge : avec `build-tags`, 2 findings ; sans, 0
+- [x] `make check` échoue au lieu de sauter : `GOFLAGS=-short make check` tombe sur 39 paquets avec
+      « this test may not be skipped in CI » ; `GOFLAGS=-short make test` reste vert (85 ok)
+- [x] `make fmt-check` rouge sur un fichier non formaté, vert sur l'arbre ; `make contracts-types` vert,
+      le TypeScript gagne une union sur `code`
+
+## Revue
+
+Un sous-agent en lecture seule, aucun bloquant. Deux Required corrigés dans la PR : la fiche décrivait
+« vert par le YAML » alors que le YAML seul rougit le test strict (d'où le `SchemaTransformer`, qui
+n'était pas dans le design) ; et `Fail`/`FromError`/`newError` laissaient un code sans surface HTTP
+sortir en 500 avec ce code dans le corps — hors de l'enum que le contrat venait de publier. Aucun
+appelant ne le faisait ; la porte est fermée et testée. Nits retenus : commentaire narratif retiré,
+`v.(string)` remplacé par un `Fatalf`, test de `HTTPCodes` recentré sur une assertion non circulaire.
 
 ## Hors périmètre
 
