@@ -2,11 +2,7 @@ package adminapi
 
 import (
 	"context"
-	"encoding/base64"
-	"errors"
 	"net/http"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -15,6 +11,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/auth"
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	humaerr "github.com/martialanouman/go-gateway/internal/platform/errors/humaerr"
+	"github.com/martialanouman/go-gateway/internal/platform/keyset"
 )
 
 // messageSummaryDTO is the wire form of a CDR/MO summary (contract schema MessageSummary). For an
@@ -102,11 +99,11 @@ type listUnroutedMOOutput struct {
 func (h *unroutedMOHandlers) list(ctx context.Context, in *listUnroutedMOInput) (*listUnroutedMOOutput, error) {
 	var after *cp.UnroutedMOKey
 	if in.Cursor != "" {
-		key, err := decodeUnroutedCursor(in.Cursor)
+		key, err := keyset.Decode(in.Cursor, keyset.Micro)
 		if err != nil {
-			return nil, huma.Error422UnprocessableEntity("invalid cursor")
+			return nil, humaerr.FromError(err)
 		}
-		after = &key
+		after = &cp.UnroutedMOKey{ReceivedAt: key.At, ID: key.ID}
 	}
 
 	// Fetch one extra row to learn whether a further page exists without a second query.
@@ -129,41 +126,8 @@ func (h *unroutedMOHandlers) list(ctx context.Context, in *listUnroutedMOInput) 
 	}
 	if hasMore {
 		last := rows[len(rows)-1]
-		cursor := encodeUnroutedCursor(cp.UnroutedMOKey{ReceivedAt: last.ReceivedAt, ID: last.ID})
+		cursor := keyset.Encode(keyset.Key{At: last.ReceivedAt, ID: last.ID}, keyset.Micro)
 		page.NextCursor = &cursor
 	}
 	return &listUnroutedMOOutput{Body: page}, nil
-}
-
-// unroutedCursorSep separates the two keyset fields inside the pre-base64 cursor payload.
-const unroutedCursorSep = "|"
-
-// encodeUnroutedCursor renders a keyset position as an opaque base64url token. received_at is encoded
-// at MICROSECOND precision to round-trip the unrouted_mo.received_at timestamptz column exactly — a
-// coarser precision (e.g. milliseconds) would drop rows sharing a millisecond from the keyset page.
-func encodeUnroutedCursor(k cp.UnroutedMOKey) string {
-	payload := strconv.FormatInt(k.ReceivedAt.UnixMicro(), 10) + unroutedCursorSep + k.ID.String()
-	return base64.RawURLEncoding.EncodeToString([]byte(payload))
-}
-
-// decodeUnroutedCursor parses a token produced by encodeUnroutedCursor; a malformed token is an error
-// the handler maps to 422.
-func decodeUnroutedCursor(s string) (cp.UnroutedMOKey, error) {
-	raw, err := base64.RawURLEncoding.DecodeString(s)
-	if err != nil {
-		return cp.UnroutedMOKey{}, err
-	}
-	ts, id, ok := strings.Cut(string(raw), unroutedCursorSep)
-	if !ok {
-		return cp.UnroutedMOKey{}, errors.New("cursor: missing separator")
-	}
-	us, err := strconv.ParseInt(ts, 10, 64)
-	if err != nil {
-		return cp.UnroutedMOKey{}, err
-	}
-	messageID, err := uuid.Parse(id)
-	if err != nil {
-		return cp.UnroutedMOKey{}, err
-	}
-	return cp.UnroutedMOKey{ReceivedAt: time.UnixMicro(us).UTC(), ID: messageID}, nil
 }

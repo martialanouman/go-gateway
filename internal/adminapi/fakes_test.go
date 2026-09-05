@@ -791,10 +791,12 @@ func (s *fakeInboundKeywordStore) Delete(_ context.Context, inboundNumberID, key
 // fakeUnroutedMOStore is an in-memory UnroutedMOStore for handler unit tests. items are newest-first;
 // List applies a simple id-positioned keyset so the pagination handler can be exercised without a DB.
 type fakeUnroutedMOStore struct {
-	items []cp.UnroutedMO
+	items    []cp.UnroutedMO
+	gotAfter *cp.UnroutedMOKey
 }
 
 func (s *fakeUnroutedMOStore) List(_ context.Context, limit int, after *cp.UnroutedMOKey) ([]cp.UnroutedMO, error) {
+	s.gotAfter = after
 	start := 0
 	if after != nil {
 		for i, u := range s.items {
