@@ -160,84 +160,7 @@ func (s *Service) processOne(ctx context.Context, b *bind, bindIndex int, rec ka
 	// other side, which is the honest direction.
 	e2e := max(time.Since(ageBase(routed)), 0)
 
-	// Feed the outcome to this bind's circuit breaker (step-121): a system error / bind failure is a
-	// health failure, a throttle/queue-full is transient (ignored), a success clears it.
-	s.feedBreaker(bindIndex, resp.Status, false)
-
-	// Feed the submit_sm_resp back to the adaptive throttle: an ESME_RTHROTTLED halves the send rate,
-	// a success nudges it back up toward the ceiling (step-086).
-	if s.aimd != nil {
-		if s.aimd.observe(resp.Status) {
-			s.deps.Throttle.IncThrottled()
-		}
-		s.deps.Throttle.SetRate(s.aimd.currentRate())
-	}
-
-	// Reroute on a connector-health rejection when a fallback chain is carried (step-125): this connector
-	// is sick, so try the next healthy one rather than redeliver here or fail. A throttle stays a
-	// redeliver (below) and a permanent per-message reject stays a terminal CDR — only failover-class
-	// statuses reroute, and only when a chain exists.
-	if resp.Status != smpp.StatusOK && len(routed.FallbackChain) > 0 && classifyReroute(resp.Status) == failover {
-		observability.RecordSpanError(span, errs.CodeFromSMPPStatus(resp.Status))
-		return s.reroute(ctx, routed, errs.CodeFromSMPPStatus(resp.Status))
-	}
-
-	// A transient SMSC rejection (throttled, system error, queue full) is backpressure, not a
-	// terminal outcome: do not write a failed CDR and do not commit, so the message is redelivered
-	// rather than lost. Permanent rejections (invalid address, submit_fail) fall through to the CDR
-	// write below. Proper rate-limited backoff is M7; this reuses the same "return error → no commit
-	// → reprocess" path the submit errors above use.
-	if resp.Status != smpp.StatusOK && errs.Retryable(errs.CodeFromSMPPStatus(resp.Status)) {
-		// A failover-class health rejection with no fallback chain runs through the retry window, so a
-		// persistently-sick connector eventually dead-letters (retries_exhausted) instead of redelivering
-		// without end. Throttle / queue-full is pure backpressure: redeliver, bounded only by the max-age
-		// SLA checked at the top on the next redelivery.
-		if classifyReroute(resp.Status) == failover {
-			return s.healthRetry(ctx, rec, routed, errTransientReject)
-		}
-		return fmt.Errorf("connectorpool: submit_sm rejected transiently (status 0x%08x): %w", resp.Status, errTransientReject)
-	}
-
-	// The SMS is on the SMSC's wire from here on, so remember smsc_msg_id -> message_id BEFORE any
-	// bookkeeping that can fail: the SMSC will send its receipt whether or not our settle and our publish
-	// succeed, and a receipt that arrives with no mapping is orphaned. It sat after the (fail-closed) CDR
-	// write until step-201c, which meant a storage fault also cost us the receipt of a message that really
-	// was delivered.
-	s.recordDLRMapping(ctx, routed, resp)
-
-	// Settle the reservation on the terminal outcome (step-146): capture a sent message, release a
-	// permanently-failed one. Both FAIL OPEN — neither returns an error — so a billing fault can never turn
-	// this committed outcome into a redelivery that re-submits the message (a duplicate SMS). A
-	// billing-disabled message makes no call. Capture fills billed/credits_charged on the outcome; the
-	// failed path leaves them false/nil (the reserve refund happens durably in billing-svc, not here).
-	event := submitOutcome(routed, resp)
-	if resp.Status == smpp.StatusOK {
-		event.Billed, event.CreditsCharged = s.deps.Billing.Capture(ctx, routed)
-	} else {
-		// A permanent SMSC rejection: a failed CDR is written and the offset commits, so this is the only
-		// place the span learns the message was refused.
-		observability.RecordSpanError(span, errs.CodeFromSMPPStatus(resp.Status))
-		s.deps.Billing.Release(ctx, routed)
-	}
-	s.observeSubmit(resp, e2e)
-	// Publish the outcome instead of writing the CDR here (step-201c, D1). The row is now a PROJECTION:
-	// a dedicated consumer batches mt.outcome into ClickHouse, which is what moves the batching to where a
-	// redelivery only rewrites a row instead of re-submitting an SMS.
-	//
-	// The produce is fail-closed and acked before the offset commits — the guarantee the synchronous CDR
-	// write used to provide, on a failure domain DECORRELATED from ClickHouse saturation (a Kafka the pool
-	// cannot produce to is a Kafka it is not consuming mt.routed from either, so there is nothing in flight
-	// to duplicate). It is not fail-open: without a recorded outcome the billing reaper (step-190) settles
-	// nothing, and a customer's reservation would be held for good. The residual window — a crash between
-	// the submit_sm and this ack — is the bounded duplicate ADR-0012 assumes.
-	outRec, err := pipeline.EncodeOutcome(event)
-	if err != nil {
-		return fmt.Errorf("connectorpool: encode mt.outcome: %w", err)
-	}
-	if err := s.deps.Producer.Produce(ctx, outRec); err != nil {
-		return fmt.Errorf("connectorpool: publish mt.outcome: %w", err)
-	}
-	return nil
+	return s.settleOutcome(ctx, span, bindIndex, rec, routed, resp, e2e)
 }
 
 // preDispatch settles everything that decides a record's fate WITHOUT putting it on the wire: the
@@ -323,6 +246,90 @@ func (s *Service) preDispatch(ctx context.Context, span trace.Span, bindIndex in
 		}
 	}
 	return false, nil
+}
+
+// settleOutcome runs everything that follows a submit_sm_resp: the breaker and the throttle learn from
+// it, then the record is rerouted, redelivered, or settled as terminal — DLR mapping, billing, both
+// metric sinks, the mt.outcome publish.
+func (s *Service) settleOutcome(ctx context.Context, span trace.Span, bindIndex int, rec kafka.Record, routed pipeline.RoutedMT, resp smpp.PDU, e2e time.Duration) error {
+	// Feed the outcome to this bind's circuit breaker (step-121): a system error / bind failure is a
+	// health failure, a throttle/queue-full is transient (ignored), a success clears it.
+	s.feedBreaker(bindIndex, resp.Status, false)
+
+	// Feed the submit_sm_resp back to the adaptive throttle: an ESME_RTHROTTLED halves the send rate,
+	// a success nudges it back up toward the ceiling (step-086).
+	if s.aimd != nil {
+		if s.aimd.observe(resp.Status) {
+			s.deps.Throttle.IncThrottled()
+		}
+		s.deps.Throttle.SetRate(s.aimd.currentRate())
+	}
+
+	// Reroute on a connector-health rejection when a fallback chain is carried (step-125): this connector
+	// is sick, so try the next healthy one rather than redeliver here or fail. A throttle stays a
+	// redeliver (below) and a permanent per-message reject stays a terminal CDR — only failover-class
+	// statuses reroute, and only when a chain exists.
+	if resp.Status != smpp.StatusOK && len(routed.FallbackChain) > 0 && classifyReroute(resp.Status) == failover {
+		observability.RecordSpanError(span, errs.CodeFromSMPPStatus(resp.Status))
+		return s.reroute(ctx, routed, errs.CodeFromSMPPStatus(resp.Status))
+	}
+
+	// A transient SMSC rejection (throttled, system error, queue full) is backpressure, not a
+	// terminal outcome: do not write a failed CDR and do not commit, so the message is redelivered
+	// rather than lost. Permanent rejections (invalid address, submit_fail) fall through to the CDR
+	// write below. Proper rate-limited backoff is M7; this reuses the same "return error → no commit
+	// → reprocess" path the submit errors above use.
+	if resp.Status != smpp.StatusOK && errs.Retryable(errs.CodeFromSMPPStatus(resp.Status)) {
+		// A failover-class health rejection with no fallback chain runs through the retry window, so a
+		// persistently-sick connector eventually dead-letters (retries_exhausted) instead of redelivering
+		// without end. Throttle / queue-full is pure backpressure: redeliver, bounded only by the max-age
+		// SLA checked at the top on the next redelivery.
+		if classifyReroute(resp.Status) == failover {
+			return s.healthRetry(ctx, rec, routed, errTransientReject)
+		}
+		return fmt.Errorf("connectorpool: submit_sm rejected transiently (status 0x%08x): %w", resp.Status, errTransientReject)
+	}
+
+	// The SMS is on the SMSC's wire from here on, so remember smsc_msg_id -> message_id BEFORE any
+	// bookkeeping that can fail: the SMSC will send its receipt whether or not our settle and our publish
+	// succeed, and a receipt that arrives with no mapping is orphaned. It sat after the (fail-closed) CDR
+	// write until step-201c, which meant a storage fault also cost us the receipt of a message that really
+	// was delivered.
+	s.recordDLRMapping(ctx, routed, resp)
+
+	// Settle the reservation on the terminal outcome (step-146): capture a sent message, release a
+	// permanently-failed one. Both FAIL OPEN — neither returns an error — so a billing fault can never turn
+	// this committed outcome into a redelivery that re-submits the message (a duplicate SMS). A
+	// billing-disabled message makes no call. Capture fills billed/credits_charged on the outcome; the
+	// failed path leaves them false/nil (the reserve refund happens durably in billing-svc, not here).
+	event := submitOutcome(routed, resp)
+	if resp.Status == smpp.StatusOK {
+		event.Billed, event.CreditsCharged = s.deps.Billing.Capture(ctx, routed)
+	} else {
+		// A permanent SMSC rejection: a failed CDR is written and the offset commits, so this is the only
+		// place the span learns the message was refused.
+		observability.RecordSpanError(span, errs.CodeFromSMPPStatus(resp.Status))
+		s.deps.Billing.Release(ctx, routed)
+	}
+	s.observeSubmit(resp, e2e)
+	// Publish the outcome instead of writing the CDR here (step-201c, D1). The row is now a PROJECTION:
+	// a dedicated consumer batches mt.outcome into ClickHouse, which is what moves the batching to where a
+	// redelivery only rewrites a row instead of re-submitting an SMS.
+	//
+	// The produce is fail-closed and acked before the offset commits — the guarantee the synchronous CDR
+	// write used to provide, on a failure domain DECORRELATED from ClickHouse saturation (a Kafka the pool
+	// cannot produce to is a Kafka it is not consuming mt.routed from either, so there is nothing in flight
+	// to duplicate). It is not fail-open: without a recorded outcome the billing reaper (step-190) settles
+	// nothing, and a customer's reservation would be held for good. The residual window — a crash between
+	// the submit_sm and this ack — is the bounded duplicate ADR-0012 assumes.
+	outRec, err := pipeline.EncodeOutcome(event)
+	if err != nil {
+		return fmt.Errorf("connectorpool: encode mt.outcome: %w", err)
+	}
+	if err := s.deps.Producer.Produce(ctx, outRec); err != nil {
+		return fmt.Errorf("connectorpool: publish mt.outcome: %w", err)
+	}
+	return nil
 }
 
 // recordDLRMapping remembers smsc_msg_id -> message_id after a successful submit, so a later
