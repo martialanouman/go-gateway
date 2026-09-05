@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/martialanouman/go-gateway/internal/cancel"
 	"github.com/martialanouman/go-gateway/internal/connector/breaker"
@@ -129,83 +130,8 @@ func (s *Service) processOne(ctx context.Context, b *bind, bindIndex int, rec ka
 		return fmt.Errorf("connectorpool: decode mt.routed: %w", err)
 	}
 
-	// Per-connector addressing (step-125, option B): the pool's group consumes ALL of mt.routed, so a
-	// record for another connector — including one another pool just rerouted — is not ours to send.
-	// Skip and commit it. A message rerouted TO this connector carries our id and is processed normally.
-	// A pool with no ConnectorID configured (uuid.Nil) filters nothing and processes every record (the
-	// pre-step-125 single-connector behaviour).
-	if s.deps.ConnectorID != uuid.Nil && routed.ConnectorID != s.deps.ConnectorID {
-		return nil
-	}
-
-	// Gateway max-age SLA (step-129): a message that has outlived MaxMessageAge — whether it aged out in
-	// throttle backpressure or churned across reconnects — is dead-lettered as delivery_expired rather
-	// than submitted, so nothing lingers on the data plane forever. Checked before any submit work.
-	if s.expired(routed) {
-		// Ask who holds the cancel token before parking it — READ, never claim (step-245). A cancelled
-		// message must be recorded as cancelled, not as expired: parking it is what left the residual the
-		// replay guard cannot see, because the Canceller claims the token BEFORE writing its CDR row, so a
-		// failed write leaves the token as the only evidence the message was ever cancelled. The dispatch
-		// path below repairs exactly that case; this branch used to be the one that skipped the repair.
-		//
-		// Reading is admissible HERE and nowhere before a send. ADR-0013 requires the claim because
-		// between a read and a submit_sm a cancel_sm can win, and the message goes out anyway. This branch
-		// has already decided not to send, so a raced read can only misfile a message that is going
-		// nowhere. Claiming instead would put a `dispatched` token on it and refuse legitimate cancel_sm
-		// for the whole 5-minute TTL — on the message that most needs cancelling.
-		//
-		// Fail-open on a Redis fault, like the claim below: cancellation is best-effort and an outage must
-		// not stop the pool from clearing its backlog. The replay guard (step-240) is the net behind this.
-		if holder, perr := s.deps.CancelFlags.Peek(ctx, routed.MessageID); perr != nil {
-			s.deps.Logger.WarnContext(ctx, "connector: cancel-token peek failed, dead-lettering as expired",
-				"message_id", routed.MessageID, "err", perr)
-		} else if heldByACancellation(holder) {
-			return s.cancelBeforeDispatch(ctx, routed)
-		}
-		// Terminal outcomes commit the offset, so processOne returns nil and the deferred recorder above
-		// sees nothing. They are marked here instead — the step asks for error/REJECT/timeout, and a
-		// permanent reject is exactly what an operator goes looking for.
-		observability.RecordSpanError(span, errs.ErrDeliveryExpired)
-		return s.deadLetterWith(ctx, routed, errs.ErrDeliveryExpired)
-	}
-
-	// Claim the cancel token before putting anything on the wire (ADR-0013). Claiming, not reading, is
-	// what makes this decisive: a cancel_sm arriving from here on loses the token and refuses, instead
-	// of reading a stale `accepted` off the CDR projection and recording a cancellation of a message
-	// already gone (step-209).
-	//
-	// Taking it HERE — before the reroute check and the AIMD wait — costs a few false negatives: a
-	// message that ends up rerouted, or that waits on the throttle, is no longer cancellable. That
-	// bias is deliberate. A false negative costs the ESME an ESME_RCANCELFAIL and writes nothing
-	// false; the opposite false positive is the bug this closes. When in doubt, refuse.
-	//
-	// Redis is best-effort here: cancellation is itself best-effort (an already-dispatched message
-	// cannot be recalled), so a claim failure fails OPEN — we log and dispatch rather than halt all
-	// outbound delivery on a Redis outage. Residual, accepted: the cancel_sm may then win a token it
-	// should not have and write the wrong row again, bounded to Redis outages.
-	holder, err := s.deps.CancelFlags.Claim(ctx, routed.MessageID, cancel.HolderDispatched)
-	if err != nil {
-		s.deps.Logger.WarnContext(ctx, "connector: cancel-token claim failed, dispatching anyway",
-			"message_id", routed.MessageID, "err", err)
-	} else if heldByACancellation(holder) {
-		return s.cancelBeforeDispatch(ctx, routed)
-	}
-
-	// Reroute before submitting if this connector's own breaker is already open and the message carries a
-	// fallback chain (step-125): no point pacing and submitting to a connector we know is down — advance
-	// the chain now. Uses the LOCAL breaker (this pod's view), so the hot path never reads Redis.
-	if len(routed.FallbackChain) > 0 && s.breakers != nil && s.breakers[bindIndex].State() == breaker.Open {
-		observability.RecordSpanError(span, errs.ErrServiceUnavailable)
-		return s.reroute(ctx, routed, errs.ErrServiceUnavailable)
-	}
-
-	// Adaptive throttle (step-086): pace to the connector's current AIMD send rate before submitting,
-	// so a throttled SMSC slows our outbound rather than being hammered. It blocks at most one send
-	// interval and honours ctx; it NEVER cuts the bind (that is the circuit breaker's job, M8).
-	if s.aimd != nil {
-		if err := s.aimd.acquire(ctx); err != nil {
-			return fmt.Errorf("connectorpool: throttle wait: %w", err)
-		}
+	if done, err := s.preDispatch(ctx, span, bindIndex, routed); done {
+		return err
 	}
 
 	resp, err := b.Submit(ctx, buildSubmit(routed))
@@ -312,6 +238,91 @@ func (s *Service) processOne(ctx context.Context, b *bind, bindIndex int, rec ka
 		return fmt.Errorf("connectorpool: publish mt.outcome: %w", err)
 	}
 	return nil
+}
+
+// preDispatch settles everything that decides a record's fate WITHOUT putting it on the wire: the
+// connector filter, the max-age SLA, the cancel token, a reroute off an open breaker, the AIMD wait.
+// done reports that the record is settled and processOne must return err as it is.
+func (s *Service) preDispatch(ctx context.Context, span trace.Span, bindIndex int, routed pipeline.RoutedMT) (done bool, err error) {
+	// Per-connector addressing (step-125, option B): the pool's group consumes ALL of mt.routed, so a
+	// record for another connector — including one another pool just rerouted — is not ours to send.
+	// Skip and commit it. A message rerouted TO this connector carries our id and is processed normally.
+	// A pool with no ConnectorID configured (uuid.Nil) filters nothing and processes every record (the
+	// pre-step-125 single-connector behaviour).
+	if s.deps.ConnectorID != uuid.Nil && routed.ConnectorID != s.deps.ConnectorID {
+		return true, nil
+	}
+
+	// Gateway max-age SLA (step-129): a message that has outlived MaxMessageAge — whether it aged out in
+	// throttle backpressure or churned across reconnects — is dead-lettered as delivery_expired rather
+	// than submitted, so nothing lingers on the data plane forever. Checked before any submit work.
+	if s.expired(routed) {
+		// Ask who holds the cancel token before parking it — READ, never claim (step-245). A cancelled
+		// message must be recorded as cancelled, not as expired: parking it is what left the residual the
+		// replay guard cannot see, because the Canceller claims the token BEFORE writing its CDR row, so a
+		// failed write leaves the token as the only evidence the message was ever cancelled. The dispatch
+		// path below repairs exactly that case; this branch used to be the one that skipped the repair.
+		//
+		// Reading is admissible HERE and nowhere before a send. ADR-0013 requires the claim because
+		// between a read and a submit_sm a cancel_sm can win, and the message goes out anyway. This branch
+		// has already decided not to send, so a raced read can only misfile a message that is going
+		// nowhere. Claiming instead would put a `dispatched` token on it and refuse legitimate cancel_sm
+		// for the whole 5-minute TTL — on the message that most needs cancelling.
+		//
+		// Fail-open on a Redis fault, like the claim below: cancellation is best-effort and an outage must
+		// not stop the pool from clearing its backlog. The replay guard (step-240) is the net behind this.
+		if holder, perr := s.deps.CancelFlags.Peek(ctx, routed.MessageID); perr != nil {
+			s.deps.Logger.WarnContext(ctx, "connector: cancel-token peek failed, dead-lettering as expired",
+				"message_id", routed.MessageID, "err", perr)
+		} else if heldByACancellation(holder) {
+			return true, s.cancelBeforeDispatch(ctx, routed)
+		}
+		// Terminal outcomes commit the offset, so processOne returns nil and the deferred recorder above
+		// sees nothing. They are marked here instead — the step asks for error/REJECT/timeout, and a
+		// permanent reject is exactly what an operator goes looking for.
+		observability.RecordSpanError(span, errs.ErrDeliveryExpired)
+		return true, s.deadLetterWith(ctx, routed, errs.ErrDeliveryExpired)
+	}
+
+	// Claim the cancel token before putting anything on the wire (ADR-0013). Claiming, not reading, is
+	// what makes this decisive: a cancel_sm arriving from here on loses the token and refuses, instead
+	// of reading a stale `accepted` off the CDR projection and recording a cancellation of a message
+	// already gone (step-209).
+	//
+	// Taking it HERE — before the reroute check and the AIMD wait — costs a few false negatives: a
+	// message that ends up rerouted, or that waits on the throttle, is no longer cancellable. That
+	// bias is deliberate. A false negative costs the ESME an ESME_RCANCELFAIL and writes nothing
+	// false; the opposite false positive is the bug this closes. When in doubt, refuse.
+	//
+	// Redis is best-effort here: cancellation is itself best-effort (an already-dispatched message
+	// cannot be recalled), so a claim failure fails OPEN — we log and dispatch rather than halt all
+	// outbound delivery on a Redis outage. Residual, accepted: the cancel_sm may then win a token it
+	// should not have and write the wrong row again, bounded to Redis outages.
+	holder, err := s.deps.CancelFlags.Claim(ctx, routed.MessageID, cancel.HolderDispatched)
+	if err != nil {
+		s.deps.Logger.WarnContext(ctx, "connector: cancel-token claim failed, dispatching anyway",
+			"message_id", routed.MessageID, "err", err)
+	} else if heldByACancellation(holder) {
+		return true, s.cancelBeforeDispatch(ctx, routed)
+	}
+
+	// Reroute before submitting if this connector's own breaker is already open and the message carries a
+	// fallback chain (step-125): no point pacing and submitting to a connector we know is down — advance
+	// the chain now. Uses the LOCAL breaker (this pod's view), so the hot path never reads Redis.
+	if len(routed.FallbackChain) > 0 && s.breakers != nil && s.breakers[bindIndex].State() == breaker.Open {
+		observability.RecordSpanError(span, errs.ErrServiceUnavailable)
+		return true, s.reroute(ctx, routed, errs.ErrServiceUnavailable)
+	}
+
+	// Adaptive throttle (step-086): pace to the connector's current AIMD send rate before submitting,
+	// so a throttled SMSC slows our outbound rather than being hammered. It blocks at most one send
+	// interval and honours ctx; it NEVER cuts the bind (that is the circuit breaker's job, M8).
+	if s.aimd != nil {
+		if err := s.aimd.acquire(ctx); err != nil {
+			return true, fmt.Errorf("connectorpool: throttle wait: %w", err)
+		}
+	}
+	return false, nil
 }
 
 // recordDLRMapping remembers smsc_msg_id -> message_id after a successful submit, so a later
