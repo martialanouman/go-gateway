@@ -3,6 +3,7 @@ package errors_test
 import (
 	goerrors "errors"
 	"fmt"
+	"slices"
 	"testing"
 
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
@@ -318,5 +319,25 @@ func TestCodesIsASnapshot(t *testing.T) {
 
 	if second := errs.Codes(); second[0] == "mutated" {
 		t.Error("Codes() exposes the catalogue: mutating the result changed it")
+	}
+}
+
+// TestHTTPCodesAreTheCatalogueEntriesWithAStatus (step-260h): HTTPCodes is the contracts' enum, so it
+// must hold exactly the published codes that can reach a REST body.
+func TestHTTPCodesAreTheCatalogueEntriesWithAStatus(t *testing.T) {
+	got := errs.HTTPCodes()
+	absent := []errs.Code{errs.ErrMaxSessionsExceeded, errs.ErrSubmitFailed}
+	if want := len(errs.Codes()) - len(absent); len(got) != want {
+		t.Errorf("HTTPCodes() has %d codes, want %d (the catalogue minus %v)", len(got), want, absent)
+	}
+	for _, c := range got {
+		if _, ok := errs.HTTPStatus(c); !ok {
+			t.Errorf("HTTPCodes() carries %q, which has no HTTP status", c)
+		}
+	}
+	for _, c := range absent {
+		if slices.Contains(got, c) {
+			t.Errorf("HTTPCodes() carries %q, which never reaches a REST body", c)
+		}
 	}
 }

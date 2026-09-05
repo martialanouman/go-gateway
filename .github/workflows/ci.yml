@@ -1,5 +1,6 @@
-# CI quality gates (plan §4, M0). Every job here mirrors a Makefile target, so a green local
-# `make check` means a green pipeline.
+# CI quality gates (plan §4, M0). Every job here mirrors a Makefile target: a green local `make check`
+# — run with Docker and the smsc-sim image, since it fails rather than skips (CI=1) — means a green
+# pipeline, except for the gates check leaves out (contracts-types, load-smoke, migrate).
 name: CI
 
 on:

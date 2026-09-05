@@ -48,6 +48,18 @@ func (m *Model) GetStatus() int { return m.status }
 // application/problem+json default.
 func (m *Model) ContentType(string) string { return "application/json" }
 
+// TransformSchema implements huma.SchemaTransformer: the served spec declares on code the same enum
+// as the contracts, computed from the catalogue so the served and the declared cannot drift apart.
+func (*Model) TransformSchema(_ huma.Registry, s *huma.Schema) *huma.Schema {
+	if code, ok := s.Properties["code"]; ok {
+		code.Enum = nil
+		for _, c := range errs.HTTPCodes() {
+			code.Enum = append(code.Enum, string(c))
+		}
+	}
+	return s
+}
+
 var installOnce sync.Once
 
 // Install replaces huma.NewError with the gateway's flat model. huma.NewError is package-global
@@ -76,6 +88,8 @@ func newError(status int, message string, errList ...error) huma.StatusError {
 	if code != "" {
 		if httpStatus, ok := errs.HTTPStatus(code); ok {
 			status = httpStatus
+		} else {
+			code, status = errs.ErrInternal, http.StatusInternalServerError
 		}
 	} else {
 		if status == http.StatusBadRequest {
@@ -139,11 +153,12 @@ func statusToCode(status int) errs.Code {
 }
 
 // Fail builds an error carrying code, for a handler to return directly. The status comes from the
-// catalogue, so the code and the status can never disagree.
+// catalogue, so the code and the status can never disagree; a code with no HTTP surface is outside
+// the contract's enum and is rendered as internal_error.
 func Fail(code errs.Code, format string, args ...any) huma.StatusError {
 	status, ok := errs.HTTPStatus(code)
 	if !ok {
-		status = http.StatusInternalServerError
+		code, status = errs.ErrInternal, http.StatusInternalServerError
 	}
 	return &Model{Code: string(code), Message: fmt.Sprintf(format, args...), status: status}
 }

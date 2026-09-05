@@ -223,3 +223,25 @@ func TestFromErrorKeepsClient4xxContext(t *testing.T) {
 		t.Errorf("4xx message = %q, want it to keep the operation label", model.Error())
 	}
 }
+
+// TestACodeWithNoHTTPSurfaceIsRenderedAsInternalError (step-260h): the contracts' Error.code enum is
+// the HTTP-surfaced catalogue, so a code without an HTTP status must never reach a body — whichever
+// of the three constructors it comes through.
+func TestACodeWithNoHTTPSurfaceIsRenderedAsInternalError(t *testing.T) {
+	humaerr.Install()
+	for name, model := range map[string]huma.StatusError{
+		"Fail":      humaerr.Fail(errs.ErrSubmitFailed, "smsc said no"),
+		"FromError": humaerr.FromError(fmt.Errorf("bind: %w", errs.ErrMaxSessionsExceeded)),
+		"huma":      huma.Error404NotFound("not found", errs.ErrSubmitFailed),
+	} {
+		if model.GetStatus() != http.StatusInternalServerError {
+			t.Errorf("%s: status = %d, want 500", name, model.GetStatus())
+		}
+		body, _ := json.Marshal(model)
+		var m map[string]any
+		_ = json.Unmarshal(body, &m)
+		if m["code"] != "internal_error" {
+			t.Errorf("%s: code = %v, want internal_error: a code outside the contract's enum reached the body", name, m["code"])
+		}
+	}
+}

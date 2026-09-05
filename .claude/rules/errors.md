@@ -9,9 +9,10 @@ paths:
 les `command_status` SMPP et `cdr.error_code`. En ajouter un touche :
 
 1. `internal/platform/errors` — la sentinelle **et** son mapping HTTP/SMPP ;
-2. le champ `code` des **deux** `api/openapi-*.yaml` (l'énumération de référence
-   y vit) — donc le couplage contrat s'applique aussi : bump de
-   `api/package.json` ;
+2. l'`enum` du champ `code` des **deux** `api/openapi-*.yaml`, si le code a un
+   statut HTTP — `TestErrorCodeEnumMatchesTheCatalogue` (adminapi, restapi) le
+   garde dans les deux sens ; le couplage contrat s'applique donc aussi : bump
+   de `api/package.json` ;
 3. la **§11.3** de `docs/guide-ingenierie-passerelle-sms.md` (catalogue, mapping
    unifié REST ↔ SMPP).
 
