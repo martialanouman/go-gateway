@@ -90,13 +90,15 @@ func TestListUnroutedMOMapsFields(t *testing.T) {
 // TestListUnroutedMOPaginates: with more rows than the limit, the page carries has_more and a
 // next_cursor that fetches the following page.
 func TestListUnroutedMOPaginates(t *testing.T) {
-	now := time.Now().UTC()
+	// Not millisecond-aligned: a millisecond cursor at the call site would land on another instant.
+	now := time.UnixMicro(1_700_000_000_123_789).UTC()
 	items := []cp.UnroutedMO{
 		unroutedItem("1", cp.UnroutedUnknownNumber, now),
 		unroutedItem("2", cp.UnroutedUnknownNumber, now.Add(-time.Second)),
 		unroutedItem("3", cp.UnroutedUnknownNumber, now.Add(-2*time.Second)),
 	}
-	api := newTestAPIWith(t, adminapi.Deps{UnroutedMO: &fakeUnroutedMOStore{items: items}})
+	store := &fakeUnroutedMOStore{items: items}
+	api := newTestAPIWith(t, adminapi.Deps{UnroutedMO: store})
 
 	// First page of 2.
 	w := httptest.NewRecorder()
@@ -130,6 +132,9 @@ func TestListUnroutedMOPaginates(t *testing.T) {
 	}
 	if page2.Data[0]["dest_addr"] != "3" {
 		t.Errorf("page2 first dest = %v, want 3 (the oldest)", page2.Data[0]["dest_addr"])
+	}
+	if store.gotAfter == nil || store.gotAfter.ID != items[1].ID || !store.gotAfter.ReceivedAt.Equal(items[1].ReceivedAt) {
+		t.Errorf("cursor decoded to %+v, want the last row of page 1 (%s, %s) to the microsecond", store.gotAfter, items[1].ID, items[1].ReceivedAt)
 	}
 }
 

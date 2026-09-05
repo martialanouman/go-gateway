@@ -65,7 +65,7 @@ func (s *server) listMessages(ctx context.Context, in *listMessagesInput) (*list
 	if in.Cursor != "" {
 		key, err := clickhouse.DecodeCDRCursor(in.Cursor)
 		if err != nil {
-			return nil, humaerr.FromError(errs.ErrValidation)
+			return nil, humaerr.FailValidation("invalid cursor", humaerr.FieldError{Field: "cursor", Message: "malformed page cursor"})
 		}
 		filter.After = &key
 	}

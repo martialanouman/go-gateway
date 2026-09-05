@@ -276,7 +276,7 @@ l'ordre des numéros évite tout conflit sur `cmd/router-svc/wiring.go` et `inte
 - [x] step-260h — Trois gardes passent de la prose au code : enum des codes d'erreur dans les contrats,
       tag `loadref` linté, `make check` dit ce qu'il prouve
 - [ ] step-260i — `processOne` (239 lignes) en trois temps, `connectorpool.go` (1 142 lignes) en trois fichiers
-- [ ] step-260j — Un seul codec de curseur keyset (`platform/keyset`) à la place de trois copies
+- [x] step-260j — Un seul codec de curseur keyset (`platform/keyset`) à la place de trois copies
 
 ## Sécurité et authentification
 Indépendantes de la chaîne de charge : parallélisables si deux mains travaillent.
