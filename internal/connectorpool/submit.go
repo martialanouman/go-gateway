@@ -32,6 +32,15 @@ func ageBase(r pipeline.RoutedMT) time.Time {
 	return base
 }
 
+// e2eLatency is the end-to-end figure (spec §1.2, "submission → SMSC delivery attempt"): the accept time
+// to the submit_sm_resp, the last instant that belongs to the delivery — everything after it (breaker,
+// throttle, settle, publish) is our own bookkeeping, and a stalled sink must not make the gateway look
+// slow for someone else's fault. Clamped at zero: the accept stamp was written by another pod and
+// survived a JSON round trip, so time.Since falls back to the wall clock, and a pod whose clock trails
+// the ingest pod's would yield a negative duration that Prometheus files in the lowest bucket — a p99
+// that passes trivially. The clamp still inflates _sum, which is the honest direction.
+func e2eLatency(r pipeline.RoutedMT) time.Duration { return max(time.Since(ageBase(r)), 0) }
+
 // expired reports whether a routed message has outlived the gateway's max-age SLA and must be
 // dead-lettered instead of submitted (step-129). A zero MaxMessageAge disables the check.
 func (s *Service) expired(r pipeline.RoutedMT) bool {
@@ -112,14 +121,11 @@ func retryKeyOf(rec kafka.Record) retryKey {
 func (s *Service) processOne(ctx context.Context, b *bind, bindIndex int, rec kafka.Record) (err error) {
 	ctx, span := s.deps.Tracer.Start(ctx, "connector.submit")
 	defer span.End()
-	// A transient fault leaves the record uncommitted for redelivery; marking the span failed is what makes
-	// it survive head sampling (step-181) and what get-message-trace looks for.
-	defer func() { observability.RecordSpanError(span, err) }()
-
-	// A committed outcome (nil return) means this offset advances and will not be redelivered, so any
-	// retry-window entry for it is dead weight — clear it. healthRetry keeps its entry only by returning a
-	// non-nil error (redelivery); every nil path drops it, so the map never outlives a record (step-129).
 	defer func() {
+		// Marking the span failed on a transient fault is what makes it survive head sampling (step-181)
+		// and what get-message-trace looks for. A nil return commits the offset, so its retry-window
+		// entry is dead weight; healthRetry keeps an entry only by returning non-nil (step-129).
+		observability.RecordSpanError(span, err)
 		if err == nil {
 			s.retryFirstFail.Delete(retryKeyOf(rec))
 		}
@@ -147,18 +153,8 @@ func (s *Service) processOne(ctx context.Context, b *bind, bindIndex int, rec ka
 		return s.healthRetry(ctx, rec, routed, fmt.Errorf("connectorpool: submit_sm: %w", err))
 	}
 
-	// The end-to-end span (spec §1.2, "submission → SMSC delivery attempt") closes HERE, on the
-	// submit_sm_resp — the last instant that belongs to the delivery. Everything below it (breaker,
-	// throttle, billing settle, CDR write) is our own bookkeeping, and folding a stalled ClickHouse
-	// writer into a delivery-latency budget would make the gateway look slow for someone else's fault.
-	// One nanotime read per submit, no allocation; it is only OBSERVED on a terminal outcome below.
-	// Clamped at zero: the accept stamp was written by another pod and survived a JSON round trip, so
-	// it carries no monotonic reading and time.Since falls back to the wall clock. A pod whose clock
-	// trails the ingest pod's by more than the send took yields a negative duration — which Prometheus
-	// accepts into the lowest bucket, so the p99 would read "under 10 ms" and the budget would pass
-	// trivially. Clamping keeps that skew from flattering the figure; it still inflates _sum on the
-	// other side, which is the honest direction.
-	e2e := max(time.Since(ageBase(routed)), 0)
+	// Read HERE, on the submit_sm_resp, before any bookkeeping.
+	e2e := e2eLatency(routed)
 
 	return s.settleOutcome(ctx, span, bindIndex, rec, routed, resp, e2e)
 }
@@ -265,29 +261,34 @@ func (s *Service) settleOutcome(ctx context.Context, span trace.Span, bindIndex 
 		s.deps.Throttle.SetRate(s.aimd.currentRate())
 	}
 
-	// Reroute on a connector-health rejection when a fallback chain is carried (step-125): this connector
-	// is sick, so try the next healthy one rather than redeliver here or fail. A throttle stays a
-	// redeliver (below) and a permanent per-message reject stays a terminal CDR — only failover-class
-	// statuses reroute, and only when a chain exists.
-	if resp.Status != smpp.StatusOK && len(routed.FallbackChain) > 0 && classifyReroute(resp.Status) == failover {
-		observability.RecordSpanError(span, errs.CodeFromSMPPStatus(resp.Status))
-		return s.reroute(ctx, routed, errs.CodeFromSMPPStatus(resp.Status))
-	}
-
-	// A transient SMSC rejection (throttled, system error, queue full) is backpressure, not a
-	// terminal outcome: do not write a failed CDR and do not commit, so the message is redelivered
-	// rather than lost. Permanent rejections (invalid address, submit_fail) fall through to the CDR
-	// write below. Proper rate-limited backoff is M7; this reuses the same "return error → no commit
-	// → reprocess" path the submit errors above use.
-	if resp.Status != smpp.StatusOK && errs.Retryable(errs.CodeFromSMPPStatus(resp.Status)) {
-		// A failover-class health rejection with no fallback chain runs through the retry window, so a
-		// persistently-sick connector eventually dead-letters (retries_exhausted) instead of redelivering
-		// without end. Throttle / queue-full is pure backpressure: redeliver, bounded only by the max-age
-		// SLA checked at the top on the next redelivery.
-		if classifyReroute(resp.Status) == failover {
-			return s.healthRetry(ctx, rec, routed, errTransientReject)
+	// code is set on a rejection only: CodeFromSMPPStatus must never see ESME_ROK.
+	var code errs.Code
+	if resp.Status != smpp.StatusOK {
+		code = errs.CodeFromSMPPStatus(resp.Status)
+		// Reroute on a connector-health rejection when a fallback chain is carried (step-125): this connector
+		// is sick, so try the next healthy one rather than redeliver here or fail. A throttle stays a
+		// redeliver (below) and a permanent per-message reject stays a terminal CDR — only failover-class
+		// statuses reroute, and only when a chain exists.
+		if len(routed.FallbackChain) > 0 && classifyReroute(resp.Status) == failover {
+			observability.RecordSpanError(span, code)
+			return s.reroute(ctx, routed, code)
 		}
-		return fmt.Errorf("connectorpool: submit_sm rejected transiently (status 0x%08x): %w", resp.Status, errTransientReject)
+
+		// A transient SMSC rejection (throttled, system error, queue full) is backpressure, not a
+		// terminal outcome: do not write a failed CDR and do not commit, so the message is redelivered
+		// rather than lost. Permanent rejections (invalid address, submit_fail) fall through to the CDR
+		// write below. Proper rate-limited backoff is M7; this reuses the same "return error → no commit
+		// → reprocess" path the submit errors above use.
+		if errs.Retryable(code) {
+			// A failover-class health rejection with no fallback chain runs through the retry window, so a
+			// persistently-sick connector eventually dead-letters (retries_exhausted) instead of redelivering
+			// without end. Throttle / queue-full is pure backpressure: redeliver, bounded only by the max-age
+			// SLA checked at the top on the next redelivery.
+			if classifyReroute(resp.Status) == failover {
+				return s.healthRetry(ctx, rec, routed, errTransientReject)
+			}
+			return fmt.Errorf("connectorpool: submit_sm rejected transiently (status 0x%08x): %w", resp.Status, errTransientReject)
+		}
 	}
 
 	// The SMS is on the SMSC's wire from here on, so remember smsc_msg_id -> message_id BEFORE any
@@ -308,10 +309,10 @@ func (s *Service) settleOutcome(ctx context.Context, span trace.Span, bindIndex 
 	} else {
 		// A permanent SMSC rejection: a failed CDR is written and the offset commits, so this is the only
 		// place the span learns the message was refused.
-		observability.RecordSpanError(span, errs.CodeFromSMPPStatus(resp.Status))
+		observability.RecordSpanError(span, code)
 		s.deps.Billing.Release(ctx, routed)
 	}
-	s.observeSubmit(resp, e2e)
+	s.observeSubmit(resp, code, e2e)
 	// Publish the outcome instead of writing the CDR here (step-201c, D1). The row is now a PROJECTION:
 	// a dedicated consumer batches mt.outcome into ClickHouse, which is what moves the batching to where a
 	// redelivery only rewrites a row instead of re-submitting an SMS.

@@ -9,21 +9,21 @@ import (
 )
 
 // observeSubmit counts a terminal submit outcome on both sinks — the realtime feed and Prometheus — from
-// one (status, code) so the two can never disagree.
-func (s *Service) observeSubmit(resp smpp.PDU, e2e time.Duration) {
+// one (status, code) so the two can never disagree. code is empty on ESME_ROK.
+func (s *Service) observeSubmit(resp smpp.PDU, code errs.Code, e2e time.Duration) {
 	// Both label values are closed vocabularies from the code — a connector id from the control plane and a
 	// platform Code — which is what keeps the emitter's series count bounded.
 	// status is a closed two-value vocabulary and the code goes in the label meant for it — mixing an error
 	// code into `status` would give one label name two meanings across the two legs of a message.
 	connectorID := s.deps.ConnectorID.String()
-	status, code := "ok", ""
+	status := "ok"
 	if resp.Status != smpp.StatusOK {
-		status, code = "rejected", string(errs.CodeFromSMPPStatus(resp.Status))
+		status = "rejected"
 	}
 	s.stream(func(e StreamEmitter) {
 		e.Add("submits_total", metricstream.Labels{"connector_id": connectorID, "status": status}, 1)
 		if status == "rejected" {
-			e.Add("submit_rejected_total", metricstream.Labels{"connector_id": connectorID, "code": code}, 1)
+			e.Add("submit_rejected_total", metricstream.Labels{"connector_id": connectorID, "code": string(code)}, 1)
 		}
 	})
 	if s.deps.Metrics != nil {
@@ -39,7 +39,7 @@ func (s *Service) observeSubmit(resp smpp.PDU, e2e time.Duration) {
 		// reading submit_rejected_total{code="rate_limited"} beside it.
 		s.deps.Metrics.MessageE2EDuration.WithLabelValues(connectorID, status).Observe(e2e.Seconds())
 		if status == "rejected" {
-			s.deps.Metrics.SubmitRejectedTotal.WithLabelValues(connectorID, code).Inc()
+			s.deps.Metrics.SubmitRejectedTotal.WithLabelValues(connectorID, string(code)).Inc()
 		}
 	}
 }
