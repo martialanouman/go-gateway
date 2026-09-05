@@ -70,7 +70,7 @@ type Service struct {
 	// failure, so the retry window can dead-letter a message that keeps failing past RetryWindow
 	// (step-129). Keyed by the immutable offset (stable across redeliveries). processOne clears the key
 	// on every committed outcome (its deferred cleanup), so it never outlives the record.
-	retryFirstFail sync.Map // "partition:offset" -> time.Time
+	retryFirstFail sync.Map // retryKey -> time.Time
 }
 
 // link_status states (atomic int).

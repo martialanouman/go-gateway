@@ -86,10 +86,10 @@ func TestUndecodableRecordIsNotCommitted(t *testing.T) {
 func TestRetryKeyDistinguishesPartitions(t *testing.T) {
 	p0 := kafka.Record{Partition: 0, Offset: 5}
 	p1 := kafka.Record{Partition: 1, Offset: 5}
-	if retryKey(p0) == retryKey(p1) {
-		t.Errorf("retryKey(%v) == retryKey(%v): the partition is ignored", p0, p1)
+	if retryKeyOf(p0) == retryKeyOf(p1) {
+		t.Errorf("retryKeyOf(%v) == retryKeyOf(%v): the partition is ignored", p0, p1)
 	}
-	if retryKey(p0) != retryKey(kafka.Record{Partition: 0, Offset: 5}) {
+	if retryKeyOf(p0) != retryKeyOf(kafka.Record{Partition: 0, Offset: 5}) {
 		t.Errorf("retryKey is not stable for the same record")
 	}
 }

@@ -86,7 +86,7 @@ func (s *Service) cancelBeforeDispatch(ctx context.Context, r pipeline.RoutedMT)
 
 func (s *Service) healthRetry(ctx context.Context, rec kafka.Record, r pipeline.RoutedMT, cause error) error {
 	if s.deps.RetryWindow > 0 {
-		first, _ := s.retryFirstFail.LoadOrStore(retryKey(rec), time.Now())
+		first, _ := s.retryFirstFail.LoadOrStore(retryKeyOf(rec), time.Now())
 		if time.Since(first.(time.Time)) > s.deps.RetryWindow {
 			return s.deadLetterWith(ctx, r, errs.ErrRetriesExhausted)
 		}
@@ -95,7 +95,14 @@ func (s *Service) healthRetry(ctx context.Context, rec kafka.Record, r pipeline.
 }
 
 // retryKey identifies a record for the retry window by its immutable (partition, offset).
-func retryKey(rec kafka.Record) string { return fmt.Sprintf("%d:%d", rec.Partition, rec.Offset) }
+type retryKey struct {
+	partition int32
+	offset    int64
+}
+
+func retryKeyOf(rec kafka.Record) retryKey {
+	return retryKey{partition: rec.Partition, offset: rec.Offset}
+}
 
 // processOne submits a single routed segment on the given bind and records its outcome. It returns a
 // non-nil error only on a transient fault (bad decode, dead bind, transient SMSC rejection, or a failed
@@ -114,7 +121,7 @@ func (s *Service) processOne(ctx context.Context, b *bind, bindIndex int, rec ka
 	// non-nil error (redelivery); every nil path drops it, so the map never outlives a record (step-129).
 	defer func() {
 		if err == nil {
-			s.retryFirstFail.Delete(retryKey(rec))
+			s.retryFirstFail.Delete(retryKeyOf(rec))
 		}
 	}()
 
