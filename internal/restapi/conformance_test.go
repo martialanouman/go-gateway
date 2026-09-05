@@ -16,8 +16,15 @@ import (
 // contractDoc is a minimal projection of api/openapi-public.yaml: enough to assert operation-level
 // conformance without wrestling with huma's JSON-Schema serialization quirks.
 type contractDoc struct {
-	Security []map[string][]string            `yaml:"security"`
-	Paths    map[string]map[string]contractOp `yaml:"paths"`
+	Security   []map[string][]string            `yaml:"security"`
+	Paths      map[string]map[string]contractOp `yaml:"paths"`
+	Components struct {
+		Schemas map[string]struct {
+			Properties map[string]struct {
+				Enum []string `yaml:"enum"`
+			} `yaml:"properties"`
+		} `yaml:"schemas"`
+	} `yaml:"components"`
 }
 
 type contractOp struct {

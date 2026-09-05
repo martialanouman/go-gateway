@@ -304,7 +304,7 @@ Côté REST, **toute** réponse d'erreur utilise `application/json` et un modèl
 
 ### 11.2 Règles de nommage et de cycle de vie du `code`
 
-Les codes sont en **`snake_case`**, courts, orientés cause métier (`sender_id_not_authorized`, pas `error_403_a`). Un code est **stable et immuable** : une fois publié il n'est jamais renommé ni réaffecté à un autre sens (les clients branchent leur logique dessus). On ajoute des codes, on n'en recycle pas. Ils ne sont pas versionnés et ne portent pas le statut HTTP dans leur nom (le statut peut varier selon le protocole, le code non). L'énumération de référence vit dans le champ `code` des specs OpenAPI ; toute nouvelle valeur y est ajoutée en même temps que le code applicatif.
+Les codes sont en **`snake_case`**, courts, orientés cause métier (`sender_id_not_authorized`, pas `error_403_a`). Un code est **stable et immuable** : une fois publié il n'est jamais renommé ni réaffecté à un autre sens (les clients branchent leur logique dessus). On ajoute des codes, on n'en recycle pas. Ils ne sont pas versionnés et ne portent pas le statut HTTP dans leur nom (le statut peut varier selon le protocole, le code non). Le catalogue de référence est le tableau §11.3 et `internal/platform/errors` ; l'`enum` du champ `code` des deux specs OpenAPI énumère ceux qui ont un statut HTTP, et `TestErrorCodeEnumMatchesTheCatalogue` refuse tout écart entre les deux (step-260h).
 
 ### 11.3 Catalogue — mapping unifié REST ↔ SMPP
 

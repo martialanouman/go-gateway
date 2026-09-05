@@ -280,3 +280,15 @@ func Codes() []Code {
 	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
 	return out
 }
+
+// HTTPCodes returns the published codes a REST response can carry, sorted: those with an HTTP status.
+// It is the enum of the contracts' Error.code (step-260h).
+func HTTPCodes() []Code {
+	var out []Code
+	for _, c := range Codes() {
+		if _, ok := HTTPStatus(c); ok {
+			out = append(out, c)
+		}
+	}
+	return out
+}
