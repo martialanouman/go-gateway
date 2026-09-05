@@ -349,3 +349,66 @@ func (p slowProducer) Produce(ctx context.Context, _ kafka.Record) error {
 		return ctx.Err()
 	}
 }
+
+// counterValues reads every series of counter name off reg as "connector_id|status|code" -> value,
+// gathering for the same reason gatherE2E does.
+func counterValues(t *testing.T, reg prometheus.Gatherer, name string) map[string]float64 {
+	t.Helper()
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	out := map[string]float64{}
+	for _, fam := range families {
+		if fam.GetName() != name {
+			continue
+		}
+		for _, m := range fam.GetMetric() {
+			var connectorID, status, code string
+			for _, l := range m.GetLabel() {
+				switch l.GetName() {
+				case "connector_id":
+					connectorID = l.GetValue()
+				case "status":
+					status = l.GetValue()
+				case "code":
+					code = l.GetValue()
+				}
+			}
+			out[connectorID+"|"+status+"|"+code] = m.GetCounter().GetValue()
+		}
+	}
+	return out
+}
+
+// TestSubmitCountersCarryTheOutcomeAndTheCode (step-260i): submits_total counts every terminal outcome
+// under the same status vocabulary as the histogram, and submit_rejected_total names the code of a
+// rejection — and only of a rejection.
+func TestSubmitCountersCarryTheOutcomeAndTheCode(t *testing.T) {
+	reg, err := runMetered(t, func(sm smpp.SubmitSM) fakesmsc.Resp {
+		if sm.DestinationAddr == "+2250700000002" {
+			return fakesmsc.SubmitFailed()
+		}
+		return fakesmsc.OK()
+	}, 0, meteredRoutedTo("+2250700000001"), meteredRoutedTo("+2250700000002"))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	id := meteredConnector.String()
+	submits := counterValues(t, reg, "submits_total")
+	if submits[id+"|ok|"] != 1 || submits[id+"|rejected|"] != 1 || len(submits) != 2 {
+		t.Errorf("submits_total = %v, want exactly ok=1 and rejected=1 on %s", submits, id)
+	}
+	rejected := counterValues(t, reg, "submit_rejected_total")
+	if rejected[id+"||submit_failed"] != 1 || len(rejected) != 1 {
+		t.Errorf("submit_rejected_total = %v, want exactly code=submit_failed 1", rejected)
+	}
+}
+
+// meteredRoutedTo is meteredRouted(0) addressed to dest.
+func meteredRoutedTo(dest string) pipeline.RoutedMT {
+	r := meteredRouted(0)
+	r.To = dest
+	return r
+}
