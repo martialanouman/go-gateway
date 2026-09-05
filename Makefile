@@ -202,7 +202,18 @@ contracts: ## Refuse a contract change without the matching version bump in api/
 contracts-types: ## Generate the TypeScript types from the contracts and typecheck them (needs Node)
 	cd api && npm ci && npm run build && npm run typecheck
 
-# contracts-types is deliberately out: it would make Node a prerequisite of every `make check`, for a
-# check that only matters when api/**.yaml moves. CI runs it on every PR.
+.PHONY: fmt-check
+fmt-check: ## Fail on files gofmt would rewrite (what CI verifies, without touching the tree)
+	@unformatted=$$(gofmt -l .); if [ -n "$$unformatted" ]; then echo "not gofmt-clean:"; echo "$$unformatted"; exit 1; fi
+
+.PHONY: tidy-check
+tidy-check: ## Fail when go.mod/go.sum are not tidy
+	go mod tidy -diff
+
+# Out of check, on purpose: contracts-types (Node), load-smoke (k6), migrate (a database) and
+# smsc-sim (builds the simulator image) — CI runs them on every PR. check needs Docker and the
+# smsc-sim image already built: under CI=1 an integration test that cannot start its dependency
+# FAILS instead of skipping (internal/testutil/ciguard), exactly as in the pipeline.
 .PHONY: check
-check: lint test vuln contracts ## Everything CI checks, in one command
+check: lint fmt-check tidy-check vuln contracts ## Everything CI checks, in one command
+	CI=1 $(MAKE) --no-print-directory test

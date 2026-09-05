@@ -50,8 +50,10 @@ fichier neuf n'en déclenche aucune. D'où ces trois déclencheurs, qui doivent 
 
 ## Definition of Done (chaque PR)
 
-- **`make check` vert** — il agrège ce que la CI vérifie. Ne pas énumérer ses portes ici : le
-  décompte a déjà divergé de `.github/workflows/ci.yml` une fois.
+- **`make check` vert** — il agrège ce que la CI vérifie, et exige Docker et l'image du simulateur
+  (`make smsc-sim`) : un test d'intégration qui ne peut pas démarrer sa dépendance y **échoue** au
+  lieu de sauter. Ne pas énumérer ses portes ici : le décompte a déjà divergé de
+  `.github/workflows/ci.yml` une fois ; ce qu'il laisse dehors est nommé dans le `Makefile`.
 - Critères d'acceptation de la tâche couverts par des tests ; aucun invariant violé ; PR petite et
   focalisée (une tâche du plan d'exécution).
 - **Relire ce que la step vient de périmer.** Une step ne fait pas qu'ajouter du code : elle rend faux
