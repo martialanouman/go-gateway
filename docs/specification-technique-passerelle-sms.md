@@ -448,7 +448,7 @@ cdr
   original_source_addr (nullable)        -- populated when a sender_id_rewrite_rule changed it (§6.16)
   connector_id, route_id, routing_script_id (nullable)
   submitted_at, delivered_at
-  status                (enroute|delivered|failed|expired|rejected|rerouted)
+  status                (accepted|enroute|delivered|failed|expired|rejected|rerouted|cancelled)
   error_code, segment_count, encoding
   content_ciphertext    (nullable)       -- the body, present only when content_storage is stored_encrypted (with the
                                             customer's key) or stored_plaintext; NULL when off. Never in logs/traces.
@@ -531,7 +531,7 @@ Partitionné par jour (`PARTITION BY toDate(submitted_at)`), avec tiering TTL (�
 
 ### 4.2 Flux de données — MT (soumission)
 
-Un client soumet (SMPP `submit_sm` ou REST `POST`) → le service d'ingestion **authentifie** l'identifiant (bind ou clé API), le résout vers son **compte SMPP** puis son **client** (les deux ID sont attachés à l'enveloppe et propagés comme en-têtes Kafka), vérifie que le canal est activé et le quota, ouvre le span racine, **accuse réception dès validation dans `mt.inbound`** → `router-svc` : normalisation E.164 → **autorisation de sender ID** (§6.19) → **contrôle d'opt-out** (§6.20) → anti-spam → **résolution de route** (§6.1 : numéro exact → script → déclaratif) → encodage/segmentation (`segment_count`) → contrôle de limite de débit → **réservation de crédit MT** (ignorée si facturation désactivée) → publication sur `mt.routed` → `connector-pool-svc` vérifie le disjoncteur, applique la réécriture de sender ID (§6.16), envoie `submit_sm`, suit `submit_sm_resp`, **capture** en cas de succès / **libère** en cas d'échec, écrit le CDR (statut=enroute) — ou republie vers le connecteur suivant du `fallback_chain` si le disjoncteur est ouvert (§6.15) → plus tard, DLR reçu → CDR mis à jour, span clos, DLR transmis au compte d'origine.
+Un client soumet (SMPP `submit_sm` ou REST `POST`) → le service d'ingestion **authentifie** l'identifiant (bind ou clé API), le résout vers son **compte SMPP** puis son **client** (les deux ID sont attachés à l'enveloppe et propagés comme en-têtes Kafka), vérifie que le canal est activé et le quota, ouvre le span racine, **accuse réception dès validation dans `mt.inbound`** → `router-svc` : normalisation E.164 → **autorisation de sender ID** (§6.19) → **contrôle d'opt-out** (§6.20) → anti-spam → **résolution de route** (§6.1 : numéro exact → script → déclaratif) → encodage/segmentation (`segment_count`) → contrôle de limite de débit → **réservation de crédit MT** (ignorée si facturation désactivée) → publication sur `mt.routed` → `connector-pool-svc` vérifie le disjoncteur, applique la réécriture de sender ID (§6.16), envoie `submit_sm`, suit `submit_sm_resp`, **capture** en cas de succès / **libère** en cas d'échec, publie l'issue sur `mt.outcome` (la ligne CDR `enroute`/`failed` est projetée par `router-svc`, ADR-0012) — ou republie vers le connecteur suivant du `fallback_chain` si le disjoncteur est ouvert (§6.15) → plus tard, DLR reçu → CDR mis à jour, span clos, DLR transmis au compte d'origine.
 
 ### 4.3 Flux de données — MO (réception)
 

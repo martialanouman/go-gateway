@@ -120,6 +120,6 @@ Vocabulaire SMPP / SMS et termes propres au projet. À lire une fois ; sert de r
 
 **Instantané immuable (snapshot)** — la configuration de routage compilée, échangée par pointeur atomique lors du hot reload, pour une lecture sans verrou sur le chemin chaud.
 
-**Faux SMSC (fake SMSC)** — le double de test minimal in-repo (`internal/testutil/fakesmsc`) qui joue le SMSC pour les tests tant que le vrai simulateur n'est pas prêt. À ne pas confondre avec le **simulateur SMSC**, le projet compagnon plus complet (injection de pannes) requis à partir de M8.
+**Faux SMSC (fake SMSC)** — le double de test minimal in-repo (`internal/testutil/fakesmsc`) qui joue le SMSC pour les réponses applicatives scriptées (`OK`, `Throttled`, `Delay`…). À ne pas confondre avec le **simulateur SMSC**, le projet compagnon (`make smsc-sim`, `internal/testutil/smscsim`) qui porte l'injection de pannes des tests de résilience.
 
 **Config-sync / hot reload** — la propagation des changements de config du plan de contrôle vers le plan de données par pub/sub, sans redémarrage.

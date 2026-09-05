@@ -83,11 +83,11 @@ Service HTTP **sans état** pour `POST /messages`, la requête de statut, l'annu
 
 ### 3.3 `router-svc` — le cœur du pipeline MT
 
-Consommateur **sans état** de `mt.inbound`. Applique, dans l'ordre : normalisation E.164 → autorisation de sender ID (§6.19) → opt-out (§6.20) → anti-spam (§6.5) → résolution de route (§6.1) → encodage/segmentation (§6.6) → limite de débit (§6.4) → réservation de crédit MT (§6.9). Publie sur `mt.routed`. Émet un span OpenTelemetry par étape. Maintient en mémoire des filtres de Bloom (numéros exacts, suppressions) et un instantané immuable de la configuration de routage, échangé atomiquement au rechargement à chaud. Les comptes portant un script de routage sont isolés sur des pools/quotas séparés car leur enveloppe de coût est distincte (§6.2).
+Consommateur **sans état** de `mt.inbound`. Applique, dans l'ordre : normalisation E.164 → autorisation de sender ID (§6.19) → opt-out (§6.20) → anti-spam (§6.5) → résolution de route (§6.1) → encodage/segmentation (§6.6) → limite de débit (§6.4) → réservation de crédit MT (§6.9). Publie sur `mt.routed`. Émet un span OpenTelemetry par étape. Maintient en mémoire des filtres de Bloom (numéros exacts, suppressions) et un instantané immuable de la configuration de routage, échangé atomiquement au rechargement à chaud. Les comptes portant un script de routage sont isolés sur des pools/quotas séparés car leur enveloppe de coût est distincte (§6.2). Héberge aussi les deux projecteurs CDR, chacun sur son propre groupe de consommation : `internal/ingest` écrit la ligne `accepted` depuis `mt.inbound`, `internal/outcome` la ligne `enroute`/`failed` depuis `mt.outcome` (ADR-0012).
 
 ### 3.4 `connector-pool-svc` — envoi vers les SMSC
 
-Un pool logique **par SMSC**, tenant `bind_pool_size` binds SMPP sortants parallèles (§6.8). Consomme `mt.routed`, applique le lissage de débit et le disjoncteur (§6.15), évalue la réécriture de sender ID juste avant l'envoi (§6.16), envoie `submit_sm`, suit `submit_sm_resp`. En cas de succès il **capture** la réservation de crédit ; en cas d'échec il **libère**. Écrit le CDR (statut `enroute`). Si le disjoncteur du connecteur cible est ouvert, il republie le message vers le connecteur suivant du `fallback_chain` porté en en-tête. Reçoit les `deliver_sm` entrants et publie sur `mo.inbound`/`dlr.events`. Publie l'état agrégé du disjoncteur et la charge dans Redis (par transition, pas par message).
+Un pool logique **par SMSC**, tenant `bind_pool_size` binds SMPP sortants parallèles (§6.8). Consomme `mt.routed`, applique le lissage de débit et le disjoncteur (§6.15), évalue la réécriture de sender ID juste avant l'envoi (§6.16), envoie `submit_sm`, suit `submit_sm_resp`. En cas de succès il **capture** la réservation de crédit ; en cas d'échec il **libère**. Publie l'issue de chaque `submit_sm_resp` sur `mt.outcome` et commite ; la ligne CDR `enroute`/`failed` est projetée par `router-svc` (ADR-0012), le pool n'écrivant directement que les lignes qui précèdent l'envoi (`cancelled`, `rerouted`, dead-letter). Si le disjoncteur du connecteur cible est ouvert, il republie le message vers le connecteur suivant du `fallback_chain` porté en en-tête. Reçoit les `deliver_sm` entrants et publie sur `mo.inbound`/`dlr.events`. Publie l'état agrégé du disjoncteur et la charge dans Redis (par transition, pas par message).
 
 ### 3.5 `mo-dlr-router-svc` — routage retour
 
@@ -164,7 +164,8 @@ submit_sm | POST /messages
    breaker fermé ? sinon → reroute via fallback_chain
    9. SENDER-ID REWRITE (côté fournisseur, avant envoi)
    submit_sm → SMSC → submit_sm_resp
-   succès → CAPTURE crédit ; échec → RELEASE ; écrit CDR (enroute)
+   succès → CAPTURE crédit ; échec → RELEASE ; publie mt.outcome
+   (router-svc projette mt.outcome → CDR enroute/failed, ADR-0012)
    plus tard : deliver_sm (DLR) → update CDR → push au client
 ```
 

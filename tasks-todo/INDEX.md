@@ -271,7 +271,7 @@ l'ordre des numéros évite tout conflit sur `cmd/router-svc/wiring.go` et `inte
 - [x] step-260e — Le produce Kafka n'avait aucune borne : `KAFKA_PRODUCE_TIMEOUT` pour l'ingress,
       `ForFailClosedConsumer` (30 s constants) pour les quatre producteurs fail-closed ⛓ bloque step-280
 - [x] step-260f — Le mot de passe ClickHouse de développement était accepté en production
-- [ ] step-260g — Trois affirmations fausses corrigées (CDR `enroute`, simulateur SMSC), et `query_sm`
+- [x] step-260g — Trois affirmations fausses corrigées (CDR `enroute`, simulateur SMSC), et `query_sm`
       a enfin sa fiche (step-390b)
 - [ ] step-260h — Trois gardes passent de la prose au code : enum des codes d'erreur dans les contrats,
       tag `loadref` linté, `make check` dit ce qu'il prouve
@@ -301,6 +301,7 @@ l'ordre qu'on voudra sauf là où une dépendance le fixe.
 - [ ] step-370 — Politiques de contenu (§6.23) : la plateforme n'a pas de défaut configurable ⛓ step-320
 - [ ] step-380 — Métriques agrégées en lecture : le flux pousse, rien ne se lit ⛓ step-320, step-330
 - [ ] step-390 — Réglages de compte créables mais non modifiables, et trois opérations orphelines ⛓ step-320
+- [ ] step-390b — `query_sm` résout l'état du message contre le CDR au lieu de répondre UNKNOWN (§6.22) — ouverte par step-260g, sans dépendance
 
 ## La dette du tableau de bord, puis la porte
 - [ ] step-400 — `billing.events` durable : le BFF doit pouvoir détecter, pas seulement afficher
