@@ -222,7 +222,7 @@ func (h *billingAdminHandlers) getLedger(ctx context.Context, in *getLedgerInput
 	if in.Cursor != "" {
 		key, err := keyset.Decode(in.Cursor, keyset.Micro)
 		if err != nil {
-			return nil, humaerr.FromError(err)
+			return nil, humaerr.FailValidation("invalid cursor", humaerr.FieldError{Field: "cursor", Message: "malformed page cursor"})
 		}
 		f.After = cp.LedgerKey{CreatedAt: key.At, ID: key.ID}
 	}

@@ -84,6 +84,7 @@ func registerUnroutedMO(api huma.API, store UnroutedMOStore) {
 		OperationID: "list-unrouted-mo", Method: http.MethodGet, Path: "/admin/mo/unrouted",
 		Summary: "List unrouted MO messages", Tags: []string{"Inbound Numbers"},
 		Security: scopeSecurity(auth.ScopeAdminRead),
+		Errors:   []int{http.StatusUnprocessableEntity},
 	}, h.list)
 }
 
@@ -101,7 +102,7 @@ func (h *unroutedMOHandlers) list(ctx context.Context, in *listUnroutedMOInput) 
 	if in.Cursor != "" {
 		key, err := keyset.Decode(in.Cursor, keyset.Micro)
 		if err != nil {
-			return nil, humaerr.FromError(err)
+			return nil, humaerr.FailValidation("invalid cursor", humaerr.FieldError{Field: "cursor", Message: "malformed page cursor"})
 		}
 		after = &cp.UnroutedMOKey{ReceivedAt: key.At, ID: key.ID}
 	}

@@ -1,7 +1,8 @@
 // Package keyset encodes a keyset-pagination position — a timestamp and a UUID — as an opaque
 // base64url token, for every listing paginated on a (time, id) sort key. The timestamp precision is the
-// caller's column precision, never a constant: a cursor finer than the column points between two rows
-// and skips one, a coarser one repeats rows sharing an instant.
+// caller's column precision, never a constant: the listings are keyset-paginated DESC, so a cursor
+// finer than the column points between two rows and a coarser one lands before the last row served —
+// either way every row in between is skipped, never repeated.
 package keyset
 
 import (
@@ -19,9 +20,11 @@ import (
 // Precision is the timestamp resolution a cursor carries.
 type Precision int
 
+// The zero value is deliberately not a precision: a Precision left unset in a struct must panic in
+// Encode, not silently drop the microseconds.
 const (
 	// Milli matches ClickHouse DateTime64(3).
-	Milli Precision = iota
+	Milli Precision = iota + 1
 	// Micro matches PostgreSQL timestamptz.
 	Micro
 )
@@ -35,8 +38,7 @@ type Key struct {
 // sep separates the two fields inside the payload: a UUID contains no '|' and the timestamp is decimal.
 const sep = "|"
 
-// Encode renders k as a token. Tokens issued before this package (three per-caller copies of the same
-// format) decode unchanged.
+// Encode renders k as a token.
 func Encode(k Key, p Precision) string {
 	var ts int64
 	switch p {

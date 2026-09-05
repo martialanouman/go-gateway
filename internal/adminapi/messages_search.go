@@ -164,7 +164,7 @@ func buildCDRSearchFilter(ctx context.Context, p searchPredicates, customers Cus
 	if p.Cursor != "" {
 		key, err := clickhouse.DecodeCDRCursor(p.Cursor)
 		if err != nil {
-			return zero, false, humaerr.FromError(err)
+			return zero, false, humaerr.FailValidation("invalid cursor", humaerr.FieldError{Field: "cursor", Message: "malformed page cursor"})
 		}
 		filter.After = &key
 	}
