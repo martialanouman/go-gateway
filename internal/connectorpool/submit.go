@@ -50,18 +50,6 @@ func (s *Service) expired(r pipeline.RoutedMT) bool {
 	return time.Since(ageBase(r)) > s.deps.MaxMessageAge
 }
 
-// healthRetry handles a connector-health failure for a message with NO viable fallback chain (a dead
-// bind, a submit timeout, or a failover-class SMSC rejection). It leaves the record uncommitted for
-// redelivery until the SAME record has been failing longer than RetryWindow, then dead-letters it as
-// retries_exhausted and commits, so a persistently-failing message is not retried without end (step-129).
-// Throttle / queue-full NEVER reach here: those are pure backpressure, bounded only by the max-age SLA.
-//
-// Redelivery is driven by the reconnect/re-dial cycle (a dropped bind) or by the pod restart the
-// supervisor performs when reconnection gives up — NOT a tight in-process loop, so no pacing is needed
-// here (the reconnect loop and k8s each apply their own backoff). The first-failure time is keyed by the
-// record's immutable (partition, offset) and accumulates across redeliveries for as long as this Service
-// lives (a re-dial keeps it; a process restart resets the window). A zero RetryWindow disables
-// dead-lettering, and the max-age SLA is the ultimate backstop in every case.
 // heldByACancellation reports whether a token holder means "a cancel_sm owns this message".
 //
 // Anything that is not a free token and not OUR OWN is a cancellation: HolderCancel, or a holder this
@@ -93,6 +81,18 @@ func (s *Service) cancelBeforeDispatch(ctx context.Context, r pipeline.RoutedMT)
 	return nil
 }
 
+// healthRetry handles a connector-health failure for a message with NO viable fallback chain (a dead
+// bind, a submit timeout, or a failover-class SMSC rejection). It leaves the record uncommitted for
+// redelivery until the SAME record has been failing longer than RetryWindow, then dead-letters it as
+// retries_exhausted and commits, so a persistently-failing message is not retried without end (step-129).
+// Throttle / queue-full NEVER reach here: those are pure backpressure, bounded only by the max-age SLA.
+//
+// Redelivery is driven by the reconnect/re-dial cycle (a dropped bind) or by the pod restart the
+// supervisor performs when reconnection gives up — NOT a tight in-process loop, so no pacing is needed
+// here (the reconnect loop and k8s each apply their own backoff). The first-failure time is keyed by the
+// record's immutable (partition, offset) and accumulates across redeliveries for as long as this Service
+// lives (a re-dial keeps it; a process restart resets the window). A zero RetryWindow disables
+// dead-lettering, and the max-age SLA is the ultimate backstop in every case.
 func (s *Service) healthRetry(ctx context.Context, rec kafka.Record, r pipeline.RoutedMT, cause error) error {
 	if s.deps.RetryWindow > 0 {
 		first, _ := s.retryFirstFail.LoadOrStore(retryKeyOf(rec), time.Now())
@@ -162,7 +162,7 @@ func (s *Service) processOne(ctx context.Context, b *bind, bindIndex int, rec ka
 // preDispatch settles everything that decides a record's fate WITHOUT putting it on the wire: the
 // connector filter, the max-age SLA, the cancel token, a reroute off an open breaker, the AIMD wait.
 // done reports that the record is settled and processOne must return err as it is.
-func (s *Service) preDispatch(ctx context.Context, span trace.Span, bindIndex int, routed pipeline.RoutedMT) (done bool, err error) {
+func (s *Service) preDispatch(ctx context.Context, span trace.Span, bindIndex int, routed pipeline.RoutedMT) (bool, error) {
 	// Per-connector addressing (step-125, option B): the pool's group consumes ALL of mt.routed, so a
 	// record for another connector — including one another pool just rerouted — is not ours to send.
 	// Skip and commit it. A message rerouted TO this connector carries our id and is processed normally.
@@ -196,7 +196,7 @@ func (s *Service) preDispatch(ctx context.Context, span trace.Span, bindIndex in
 		} else if heldByACancellation(holder) {
 			return true, s.cancelBeforeDispatch(ctx, routed)
 		}
-		// Terminal outcomes commit the offset, so processOne returns nil and the deferred recorder above
+		// Terminal outcomes commit the offset, so processOne returns nil and its deferred recorder
 		// sees nothing. They are marked here instead — the step asks for error/REJECT/timeout, and a
 		// permanent reject is exactly what an operator goes looking for.
 		observability.RecordSpanError(span, errs.ErrDeliveryExpired)
@@ -217,10 +217,10 @@ func (s *Service) preDispatch(ctx context.Context, span trace.Span, bindIndex in
 	// cannot be recalled), so a claim failure fails OPEN — we log and dispatch rather than halt all
 	// outbound delivery on a Redis outage. Residual, accepted: the cancel_sm may then win a token it
 	// should not have and write the wrong row again, bounded to Redis outages.
-	holder, err := s.deps.CancelFlags.Claim(ctx, routed.MessageID, cancel.HolderDispatched)
-	if err != nil {
+	holder, cerr := s.deps.CancelFlags.Claim(ctx, routed.MessageID, cancel.HolderDispatched)
+	if cerr != nil {
 		s.deps.Logger.WarnContext(ctx, "connector: cancel-token claim failed, dispatching anyway",
-			"message_id", routed.MessageID, "err", err)
+			"message_id", routed.MessageID, "err", cerr)
 	} else if heldByACancellation(holder) {
 		return true, s.cancelBeforeDispatch(ctx, routed)
 	}
@@ -278,12 +278,12 @@ func (s *Service) settleOutcome(ctx context.Context, span trace.Span, bindIndex 
 		// terminal outcome: do not write a failed CDR and do not commit, so the message is redelivered
 		// rather than lost. Permanent rejections (invalid address, submit_fail) fall through to the CDR
 		// write below. Proper rate-limited backoff is M7; this reuses the same "return error → no commit
-		// → reprocess" path the submit errors above use.
+		// → reprocess" path the submit errors in processOne use.
 		if errs.Retryable(code) {
 			// A failover-class health rejection with no fallback chain runs through the retry window, so a
 			// persistently-sick connector eventually dead-letters (retries_exhausted) instead of redelivering
 			// without end. Throttle / queue-full is pure backpressure: redeliver, bounded only by the max-age
-			// SLA checked at the top on the next redelivery.
+			// SLA preDispatch checks on the next redelivery.
 			if classifyReroute(resp.Status) == failover {
 				return s.healthRetry(ctx, rec, routed, errTransientReject)
 			}

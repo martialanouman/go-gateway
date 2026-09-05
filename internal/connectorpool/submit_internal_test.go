@@ -62,8 +62,8 @@ func routedRecord(t *testing.T, connectorID uuid.UUID, dest string) kafka.Record
 	return rec
 }
 
-// TestUndecodableRecordIsNotCommitted: a record that is not an mt.routed envelope is left uncommitted
-// and never reaches the SMSC.
+// TestUndecodableRecordIsNotCommitted: a record that is not an mt.routed envelope is reported non-nil —
+// which RunBatch leaves uncommitted — and never reaches the SMSC.
 func TestUndecodableRecordIsNotCommitted(t *testing.T) {
 	var submits atomic.Int32
 	smsc := fakesmsc.Start(t, fakesmsc.Config{OnSubmit: func(smpp.SubmitSM) fakesmsc.Resp {
@@ -101,7 +101,7 @@ type recordingEmitter struct {
 }
 
 func (e *recordingEmitter) key(kind string, labels metricstream.Labels) string {
-	return kind + "{status=" + labels["status"] + ",code=" + labels["code"] + "}"
+	return kind + "{connector_id=" + labels["connector_id"] + ",status=" + labels["status"] + ",code=" + labels["code"] + "}"
 }
 
 func (e *recordingEmitter) Add(kind string, labels metricstream.Labels, delta float64) {
@@ -137,10 +137,11 @@ func TestSubmitOutcomesReachTheStream(t *testing.T) {
 			t.Fatalf("results[%d] = %v, want nil (both outcomes are terminal)", i, err)
 		}
 	}
+	id := connectorID.String()
 	want := map[string]float64{
-		"submits_total{status=ok,code=}":                    1,
-		"submits_total{status=rejected,code=}":              1,
-		"submit_rejected_total{status=,code=submit_failed}": 1,
+		"submits_total{connector_id=" + id + ",status=ok,code=}":                    1,
+		"submits_total{connector_id=" + id + ",status=rejected,code=}":              1,
+		"submit_rejected_total{connector_id=" + id + ",status=,code=submit_failed}": 1,
 	}
 	emitter.mu.Lock()
 	defer emitter.mu.Unlock()

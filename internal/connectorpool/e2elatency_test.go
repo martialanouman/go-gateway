@@ -350,8 +350,8 @@ func (p slowProducer) Produce(ctx context.Context, _ kafka.Record) error {
 	}
 }
 
-// counterValues reads every series of counter name off reg as "status|code" -> value, gathering for the
-// same reason gatherE2E does.
+// counterValues reads every series of counter name off reg as "connector_id|status|code" -> value,
+// gathering for the same reason gatherE2E does.
 func counterValues(t *testing.T, reg prometheus.Gatherer, name string) map[string]float64 {
 	t.Helper()
 	families, err := reg.Gather()
@@ -364,16 +364,18 @@ func counterValues(t *testing.T, reg prometheus.Gatherer, name string) map[strin
 			continue
 		}
 		for _, m := range fam.GetMetric() {
-			var status, code string
+			var connectorID, status, code string
 			for _, l := range m.GetLabel() {
 				switch l.GetName() {
+				case "connector_id":
+					connectorID = l.GetValue()
 				case "status":
 					status = l.GetValue()
 				case "code":
 					code = l.GetValue()
 				}
 			}
-			out[status+"|"+code] = m.GetCounter().GetValue()
+			out[connectorID+"|"+status+"|"+code] = m.GetCounter().GetValue()
 		}
 	}
 	return out
@@ -393,12 +395,13 @@ func TestSubmitCountersCarryTheOutcomeAndTheCode(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
+	id := meteredConnector.String()
 	submits := counterValues(t, reg, "submits_total")
-	if submits["ok|"] != 1 || submits["rejected|"] != 1 || len(submits) != 2 {
-		t.Errorf("submits_total = %v, want exactly ok=1 and rejected=1", submits)
+	if submits[id+"|ok|"] != 1 || submits[id+"|rejected|"] != 1 || len(submits) != 2 {
+		t.Errorf("submits_total = %v, want exactly ok=1 and rejected=1 on %s", submits, id)
 	}
 	rejected := counterValues(t, reg, "submit_rejected_total")
-	if rejected["|submit_failed"] != 1 || len(rejected) != 1 {
+	if rejected[id+"||submit_failed"] != 1 || len(rejected) != 1 {
 		t.Errorf("submit_rejected_total = %v, want exactly code=submit_failed 1", rejected)
 	}
 }

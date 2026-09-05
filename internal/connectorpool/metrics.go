@@ -30,12 +30,12 @@ func (s *Service) observeSubmit(resp smpp.PDU, code errs.Code, e2e time.Duration
 		s.deps.Metrics.SubmitsTotal.WithLabelValues(connectorID, status).Inc()
 		// Same site, same labels, same values as submits_total, so _count and the counter stay
 		// comparable and one status vocabulary covers both legs. Only terminal outcomes reach here: a
-		// throttle redelivers above and a dead-letter returns earlier.
+		// throttle redelivers from settleOutcome and a dead-letter returns from preDispatch.
 		//
 		// That covers the dead-letter half of the NFR's carve-out (§1.2) and NOT the backpressure half:
 		// a throttled attempt is not observed, but the message it belonged to is — on the redelivery
 		// that finally succeeds, and the clock still runs from ageBase, so it carries the whole wait.
-		// Same for the AIMD pacing above. Reading a throttling episode out of this histogram means
+		// Same for the AIMD pacing in preDispatch. Reading a throttling episode out of this histogram means
 		// reading submit_rejected_total{code="rate_limited"} beside it.
 		s.deps.Metrics.MessageE2EDuration.WithLabelValues(connectorID, status).Observe(e2e.Seconds())
 		if status == "rejected" {
