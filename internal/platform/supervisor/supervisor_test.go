@@ -486,3 +486,45 @@ func TestABudgetThatExpiresOnAFinishedComponentReportsNothing(t *testing.T) {
 		})
 	}
 }
+
+// TestOrderedStillBoundsTheDrainAfterATieOnAnEarlierComponent pins the hole the tie-breaker of
+// TestABudgetThatExpiresOnAFinishedComponentReportsNothing opened. Confirming the component stopped
+// and moving on is right, but the deadline arm had already CONSUMED the timer's channel — a timer
+// delivers once — so every later component in the sequence waited on a channel that would never fire
+// again. The ceiling silently vanished for the rest of the drain, which is the very failure it was
+// added to prevent: the pod held open until the kubelet's SIGKILL.
+//
+// One component cannot show it: the tie has to be followed by another component to drain.
+func TestOrderedStillBoundsTheDrainAfterATieOnAnEarlierComponent(t *testing.T) {
+	t.Parallel()
+
+	// Repeated because the tie is decided by select's random choice: the deadline arm has to win at
+	// least once for the drain to reach the state under test.
+	for range 50 {
+		var o supervisor.Ordered
+		o.Add("deaf", func(context.Context) error { select {} })      // registered first, drained LAST
+		o.Add("punctual", func(context.Context) error { return nil }) // registered last, drained FIRST
+
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		// "punctual" has long since returned when the drain starts, and a 1 ns budget makes the
+		// deadline ready too: both arms are live on the first component of the sequence.
+		go func() { done <- o.Run(ctx, quietLogger(), time.Nanosecond) }()
+		time.Sleep(time.Millisecond)
+		cancel()
+
+		select {
+		case err := <-done:
+			if !errors.Is(err, supervisor.ErrDrainBudgetExceeded) {
+				t.Fatalf("Run() = %v, want it to wrap ErrDrainBudgetExceeded: the budget was spent on the "+
+					"first component, so the deaf one behind it must be abandoned, not awaited forever", err)
+			}
+			if !strings.Contains(err.Error(), "deaf") {
+				t.Errorf("Run() = %q, want it to name the component that never stopped", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("Run never returned: the drain budget was consumed by the tie and no longer bounds " +
+				"the components behind it")
+		}
+	}
+}

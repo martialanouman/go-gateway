@@ -96,6 +96,17 @@ forcées) ; et les `Job` échappaient à toute la garde, si bien qu'un `CLICKHOU
 une variable typo et une image arbitraire passaient les deux couches — dans le fichier même que cette
 fiche désignait pour ce mot de passe.
 
+**Deux défauts de plus, trouvés à la seconde passe de revue — le correctif ci-dessus en avait créé
+un.** Confirmer qu'un composant s'était bien arrêté avant de l'accuser était juste, mais la réception
+sur l'échéance **consommait le canal du timer**, qui ne délivre qu'une fois : chaque composant
+suivant de la séquence attendait alors un canal qui ne se déclencherait plus jamais. Le plafond
+disparaissait en silence pour le reste du drain — la panne même qu'il venait fermer. L'échéance est
+désormais le `Done` d'un contexte, qui reste **fermé** une fois franchi. Un composant ne suffisait pas
+à le montrer : il faut qu'une égalité soit suivie d'un autre composant à drainer.
+Et `known-env-name` ne lisait que le `env:` d'un conteneur, jamais les clés du **ConfigMap partagé** —
+là où une typo est distribuée aux dix services d'un coup par `envFrom`, et abandonnée en silence par
+`caarlos0/env`.
+
 **Deux choses que la garde a dû apprendre en route.** Elle résout `envFrom` : sans cela, un
 `ENVIRONMENT` posé dans le ConfigMap ne satisfaisait aucune règle et les dix services paraissaient
 non conformes. Et elle dérive `DRAIN_DELAY`/`SHUTDOWN_TIMEOUT` du manifeste, en retombant sur les
@@ -110,7 +121,8 @@ Les valeurs posées préservent la propriété d'ADR-0014 ; elles ne sont pas un
 - `internal/deploy` : onze invariants sur l'arbre réel, et `testdata/broken/` qui les viole tous une
   fois — un second test exige que chacun y soit rapporté, sinon onze assertions jamais vues échouer.
 - `supervisor` : un composant qui ignore son contexte ne tient plus le drain ; le budget n'est pas
-  dépensé sur un arrêt propre ; une vraie erreur de composant prime sur le dépassement.
+  dépensé sur un arrêt propre ; une vraie erreur de composant prime sur le dépassement ; et le budget
+  borne encore ce qui suit une égalité sur un composant plus tôt dans la séquence.
 - `make manifests` : kubeconform `-strict` sur les 36 ressources.
 
 ## Hérité de step-250e et step-260e — deux dimensionnements à porter, un levier à ne pas porter

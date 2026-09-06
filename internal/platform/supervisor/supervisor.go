@@ -138,7 +138,7 @@ wait:
 		select {
 		case <-dones[i]:
 		case <-deadline:
-			// The timer and the component can become ready in the same instant, and select picks
+			// The deadline and the component can become ready in the same instant, and select picks
 			// between two ready cases at random — so reaching this arm does not mean anything is
 			// still running. notStopped decides; an empty result means they all made it.
 			stuck = notStopped(g.comps, dones)
@@ -163,16 +163,22 @@ wait:
 	return nil
 }
 
-// drainDeadline returns the channel that fires when the drain budget runs out, and the func that
-// releases its timer. A non-positive budget yields a nil channel, which blocks forever in a select —
-// that is the "no ceiling" behaviour the package had before, kept for tests and for a caller with no
-// grace period to respect.
-func drainDeadline(budget time.Duration) (<-chan time.Time, func()) {
+// drainDeadline returns the channel that reports the drain budget as spent, and the func that
+// releases it. A non-positive budget yields a nil channel, which blocks forever in a select — that is
+// the "no ceiling" behaviour the package had before, kept for tests and for a caller with no grace
+// period to respect.
+//
+// It is a context's Done channel and not a timer's C on purpose: the budget bounds a SEQUENCE, so it
+// must stay spent once spent. A timer delivers its value once, so a single receive — the tie-break
+// below confirming a component had in fact stopped — would leave every later component in Ordered's
+// drain waiting on a channel that never fires again, silently removing the ceiling for the rest of
+// the drain. A cancelled context's Done channel is CLOSED, so every later receive succeeds at once.
+func drainDeadline(budget time.Duration) (<-chan struct{}, func()) {
 	if budget <= 0 {
 		return nil, func() {}
 	}
-	t := time.NewTimer(budget)
-	return t.C, func() { t.Stop() }
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	return ctx.Done(), cancel
 }
 
 // notStopped names the components whose goroutine has not returned, in registration order. It is a

@@ -204,11 +204,19 @@ func inspect(t *testing.T, dir string) []violation {
 				}
 			}
 		case "ConfigMap":
-			// A ConfigMap is the wrong home for a credential: anything able to list the namespace reads
-			// it, and unlike a Secret nothing marks it as sensitive.
 			for name := range m.Data {
+				// A ConfigMap is the wrong home for a credential: anything able to list the namespace
+				// reads it, and unlike a Secret nothing marks it as sensitive.
 				if isSecret(name) {
 					add("secrets-by-reference", "%s: ConfigMap %q carries %s — it belongs in a Secret",
+						m.Source, m.Metadata.Name, name)
+				}
+				// The same rule as a container's own env, applied where it bites hardest: envFrom hands
+				// this map to every service that mounts it, so one typo leaves ALL of them on the
+				// development default of a variable an operator believes they set.
+				if _, known := env[name]; !known && !excepted(name) {
+					add("known-env-name", "%s: ConfigMap %q carries %s, which no config section declares — "+
+						"envFrom hands it to every service mounting this map, and a variable config does not read is silently ignored",
 						m.Source, m.Metadata.Name, name)
 				}
 			}
@@ -526,3 +534,27 @@ func excepted(name string) bool {
 }
 
 func isSecret(name string) bool { return slices.Contains(secretVars, name) }
+
+// TestConfigMapKeysAreHeldToTheKnownNameRule pins the same hole Jobs shipped with, on the surface
+// that carries it furthest. inspect checked env NAMES on a container's own env: list only, so a key
+// reaching the pods through envFrom was read for secrets and nothing else. A typo in the shared
+// ConfigMap is therefore handed to all ten services at once and dropped by caarlos0/env in silence —
+// every one of them left on the development default of a variable an operator believes they set.
+func TestConfigMapKeysAreHeldToTheKnownNameRule(t *testing.T) {
+	t.Parallel()
+
+	var onConfigMap []violation
+	for _, v := range inspect(t, filepath.Join("testdata", "broken")) {
+		if strings.Contains(v.msg, "ConfigMap") {
+			onConfigMap = append(onConfigMap, v)
+		}
+	}
+
+	for _, v := range onConfigMap {
+		if v.rule == "known-env-name" && strings.Contains(v.msg, "POSTGRE_MAX_CONNS") {
+			return
+		}
+	}
+	t.Errorf("no known-env-name violation reported for the broken ConfigMap's POSTGRE_MAX_CONNS — a "+
+		"variable no config section declares reaches the pods through envFrom unchecked. Got: %v", onConfigMap)
+}
