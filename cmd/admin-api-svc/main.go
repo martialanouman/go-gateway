@@ -92,7 +92,7 @@ func run() error {
 			})
 		}, logger)
 	})
-	if err := g.Run(ctx, logger); err != nil {
+	if err := g.Run(ctx, logger, cfg.ShutdownTimeout); err != nil {
 		return err
 	}
 

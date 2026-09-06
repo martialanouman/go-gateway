@@ -60,8 +60,14 @@ type Config struct {
 	OpsPort int `env:"OPS_PORT" envDefault:"9090"`
 
 	// ShutdownTimeout bounds the graceful drain on SIGTERM, once the components start tearing down.
-	// Keep DrainDelay + ShutdownTimeout below the pod's terminationGracePeriodSeconds, or the kubelet
-	// SIGKILLs mid-drain (guide de codage §5).
+	// It is used twice over, in sequence: the supervisor takes it as the overall drain budget past
+	// which it abandons a component that will not stop (step-270), and DrainTracing then takes it
+	// again to flush the span exporter AFTER the supervisor has returned.
+	//
+	// So the pod's terminationGracePeriodSeconds must clear DrainDelay + 2 × ShutdownTimeout — 65 s at
+	// the defaults, which is why deploy/k8s asks for 90. Under that, the kubelet SIGKILLs mid-drain
+	// (guide de codage §5), and a hard kill costs re-delivered Kafka records and a session token held
+	// for its full 60 s TTL.
 	ShutdownTimeout time.Duration `env:"SHUTDOWN_TIMEOUT" envDefault:"30s"`
 
 	// DrainDelay is how long a pod keeps serving AFTER marking itself not-ready on /readyz and BEFORE
