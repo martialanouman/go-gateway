@@ -25,6 +25,10 @@ spec:
           env:
             - name: POSTGRES_URL
               value: postgres://gateway:gateway@db:5432/gateway
+            # The HPA below scales this Deployment: 8 pods on the 6 partitions set HERE is one lane
+            # per pod and two pods with none. Against config's default of 12 it looks fine.
+            - name: KAFKA_TOPIC_PARTITIONS
+              value: "6"
             - name: POSTGRE_URL
               value: typo
           livenessProbe:
@@ -73,11 +77,31 @@ spec:
     spec:
       terminationGracePeriodSeconds: 90
       containers:
+        # Two containers disagreeing on the drain: the grace period must cover the SLOWEST of them
+        # (5 + 300 + 30 = 335 s), not whichever happens to be written last (5 + 10 + 30 = 45 s).
         - name: not-a-service
           image: ghcr.io/martialanouman/go-gateway/not-a-service:v0.0.0
           env:
             - name: ENVIRONMENT
               value: production
+            - name: DRAIN_BUDGET
+              value: 300s
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 9090
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 9090
+            timeoutSeconds: 4
+        - name: sidecar
+          image: ghcr.io/martialanouman/go-gateway/sidecar:v0.0.0
+          env:
+            - name: ENVIRONMENT
+              value: production
+            - name: DRAIN_BUDGET
+              value: 10s
           livenessProbe:
             httpGet:
               path: /healthz
@@ -97,7 +121,7 @@ spec:
     kind: Deployment
     name: rest-api-svc
   minReplicas: 2
-  maxReplicas: 12
+  maxReplicas: 8
   metrics:
     - type: External
       external:
@@ -135,3 +159,25 @@ metadata:
 data:
   ENVIRONMENT: production
   POSTGRE_MAX_CONNS: "10"
+---
+# Violates, on purpose: hpa-max-replicas (scaleTargetRef names no Deployment in the tree, so the
+# partition count backing the ceiling cannot be read at all — silence there would be an blind spot,
+# not a pass).
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: orphan-hpa
+spec:
+  scaleTargetRef:
+    kind: Deployment
+    name: gone-svc
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+    - type: External
+      external:
+        metric:
+          name: queue_depth_records
+          selector:
+            matchLabels:
+              queue: mt.inbound

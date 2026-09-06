@@ -226,7 +226,7 @@ func inspect(t *testing.T, dir string) []violation {
 				add("secrets-by-reference", "%s: Secret %q carries data — manifests reference secrets, they never contain them", m.Source, m.Metadata.Name)
 			}
 		case "HorizontalPodAutoscaler":
-			out = append(out, inspectHPA(m, env)...)
+			out = append(out, inspectHPA(m, env, deployments, configMaps)...)
 		}
 	}
 
@@ -374,28 +374,61 @@ func inspectRequiredOverrides(m deploy.Manifest, c deploy.Container, svc string,
 // partition ASSIGNED TO ITS POD, so an HPA that reaches the partition count leaves every pod with a
 // single lane. The fan-out disappears at the exact moment the load calls for it, and the HPA keeps
 // growing without buying anything (ADR-0014).
-func inspectHPA(m deploy.Manifest, env map[string]string) []violation {
-	partitions, err := strconv.Atoi(env["KAFKA_TOPIC_PARTITIONS"])
-	if err != nil || partitions == 0 {
+func inspectHPA(m deploy.Manifest, env map[string]string, deployments map[string]deploy.Manifest,
+	configMaps map[string]map[string]string,
+) []violation {
+	var queue string
+	for _, metric := range m.Spec.Metrics {
+		// mt.routed is sized per connector by KAFKA_TOPIC_PARTITIONS_OVERRIDES, not by the shared
+		// default, so this rule cannot speak for connector-pool-svc. A CPU-only HPA has no queue at
+		// all and is not bounded by partitions either.
+		if q := metric.External.Metric.Selector.MatchLabels["queue"]; q != "" && q != "mt.routed" {
+			queue = q
+			break
+		}
+	}
+	if queue == "" {
 		return nil
 	}
-	for _, metric := range m.Spec.Metrics {
-		queue := metric.External.Metric.Selector.MatchLabels["queue"]
-		// mt.routed is sized per connector by KAFKA_TOPIC_PARTITIONS_OVERRIDES, not by the shared
-		// default, so this rule cannot speak for connector-pool-svc.
-		if queue == "" || queue == "mt.routed" {
-			continue
-		}
-		if m.Spec.MaxReplicas >= partitions {
-			return []violation{{
-				rule: "hpa-max-replicas",
-				msg: fmt.Sprintf("%s: HPA %q scales to %d pods on a %d-partition topic (%s) — at one pod per "+
-					"partition each pod is down to a single lane and the fan-out is gone. Keep maxReplicas under the partition count",
-					m.Source, m.Metadata.Name, m.Spec.MaxReplicas, partitions, queue),
-			}}
-		}
+
+	fail := func(format string, args ...any) []violation {
+		return []violation{{rule: "hpa-max-replicas", msg: fmt.Sprintf(format, args...)}}
+	}
+
+	// The count must come from what is DEPLOYED, not from config's envDefault: the two agree today,
+	// and a ConfigMap lowered to 6 while Go still says 12 would leave this rule clearing a ceiling
+	// that collapses the fan-out — the exact failure it exists to catch (ADR-0014).
+	target, ok := deployments[m.Spec.ScaleTargetRef.Name]
+	if !ok {
+		return fail("%s: HPA %q scales Deployment %q, which this tree does not define — its partition "+
+			"count cannot be read, so nothing bounds maxReplicas %d",
+			m.Source, m.Metadata.Name, m.Spec.ScaleTargetRef.Name, m.Spec.MaxReplicas)
+	}
+	raw := deployedEnv(target, env, configMaps, "KAFKA_TOPIC_PARTITIONS")
+	partitions, err := strconv.Atoi(raw)
+	if err != nil || partitions == 0 {
+		return fail("%s: HPA %q scales %q, whose KAFKA_TOPIC_PARTITIONS reads %q — an unparseable "+
+			"partition count leaves maxReplicas %d unbounded",
+			m.Source, m.Metadata.Name, target.Metadata.Name, raw, m.Spec.MaxReplicas)
+	}
+	if m.Spec.MaxReplicas >= partitions {
+		return fail("%s: HPA %q scales to %d pods on a %d-partition topic (%s) — at one pod per "+
+			"partition each pod is down to a single lane and the fan-out is gone. Keep maxReplicas under the partition count",
+			m.Source, m.Metadata.Name, m.Spec.MaxReplicas, partitions, queue)
 	}
 	return nil
+}
+
+// deployedEnv is the first literal value the workload's containers give a variable, falling back to
+// the default config would apply. It is what the pods actually receive, envFrom resolved — reading
+// config's default instead would make this guard agree with itself instead of with the manifests.
+func deployedEnv(m deploy.Manifest, env map[string]string, configMaps map[string]map[string]string, name string) string {
+	for _, c := range m.Spec.Template.Spec.Containers {
+		if v, ok := effectiveEnv(c, configMaps)[name]; ok && v != "" {
+			return v
+		}
+	}
+	return env[name]
 }
 
 // coveredByPDB reports whether some PodDisruptionBudget selects this Deployment's pods.
@@ -450,13 +483,23 @@ func effectiveEnv(c deploy.Container, configMaps map[string]map[string]string) m
 // durationEnv resolves a duration the manifest may override, falling back to the default config would
 // apply. Reading the fallback from config rather than hardcoding it means changing a default in Go
 // re-derives what the manifests must clear, instead of leaving this guard asserting a stale number.
+//
+// Across containers it takes the LONGEST, not the last one written: the kubelet grants one grace
+// period to the whole pod and SIGKILLs everything in it at once, so the budget the grace must cover
+// is the slowest container's.
 func durationEnv(m deploy.Manifest, env map[string]string, configMaps map[string]map[string]string, name string) time.Duration {
-	raw := env[name]
+	longest := parseDuration(env[name])
 	for _, c := range m.Spec.Template.Spec.Containers {
 		if v, ok := effectiveEnv(c, configMaps)[name]; ok && v != "" {
-			raw = v
+			longest = max(longest, parseDuration(v))
 		}
 	}
+	return longest
+}
+
+// parseDuration reads a Go duration, yielding 0 for anything unparseable — a value config itself
+// would reject at boot, so the guard leaves it to say so rather than reporting a second time.
+func parseDuration(raw string) time.Duration {
 	d, err := time.ParseDuration(raw)
 	if err != nil {
 		return 0
@@ -557,4 +600,61 @@ func TestConfigMapKeysAreHeldToTheKnownNameRule(t *testing.T) {
 	}
 	t.Errorf("no known-env-name violation reported for the broken ConfigMap's POSTGRE_MAX_CONNS — a "+
 		"variable no config section declares reaches the pods through envFrom unchecked. Got: %v", onConfigMap)
+}
+
+// TestHPACeilingUsesTheDeployedPartitionCount pins a rule that was right by coincidence. inspectHPA
+// read KAFKA_TOPIC_PARTITIONS from config's envDefault — never from what the manifests actually
+// deploy — and the two happened to both say 12. Lower the ConfigMap to 6 without touching Go and the
+// guard keeps clearing a maxReplicas of 8: six pods on one lane each, two with no partition at all.
+// That is precisely the fan-out collapse ADR-0014 has this rule for, waved through by the rule itself.
+func TestHPACeilingUsesTheDeployedPartitionCount(t *testing.T) {
+	t.Parallel()
+
+	for _, v := range inspect(t, filepath.Join("testdata", "broken")) {
+		if v.rule == "hpa-max-replicas" && strings.Contains(v.msg, `"rest-api-svc"`) {
+			if !strings.Contains(v.msg, "6-partition") {
+				t.Errorf("hpa-max-replicas reported %q — it must weigh the ceiling against the 6 partitions "+
+					"the Deployment deploys, not config's default", v.msg)
+			}
+			return
+		}
+	}
+	t.Error("no hpa-max-replicas violation for the rest-api-svc HPA: 8 replicas over 6 deployed " +
+		"partitions leaves every pod on a single lane, and the rule read the Go default instead")
+}
+
+// TestHPAWithNoResolvableTargetIsReported: an HPA whose scaleTargetRef names no Deployment in the tree
+// cannot have its partition count read at all. Returning no violation there would swap a coincidence
+// for a blind spot — the ceiling would go unchecked and the tree would still look clean.
+func TestHPAWithNoResolvableTargetIsReported(t *testing.T) {
+	t.Parallel()
+
+	for _, v := range inspect(t, filepath.Join("testdata", "broken")) {
+		if v.rule == "hpa-max-replicas" && strings.Contains(v.msg, "orphan-hpa") {
+			return
+		}
+	}
+	t.Error("HPA \"orphan-hpa\" targets a Deployment that does not exist and nothing was reported — " +
+		"an unreadable ceiling is a finding, not a pass")
+}
+
+// TestGracePeriodCoversTheSlowestContainer: durationEnv let each container overwrite the last, so a
+// pod's drain budget was whichever container happened to be written last in the YAML. The grace
+// period has to cover the container that takes LONGEST to go — the kubelet SIGKILLs the whole pod on
+// one deadline, not one per container. Not a failure any manifest here exhibits (one container each);
+// it is the invariant the function's name already promises and did not keep.
+func TestGracePeriodCoversTheSlowestContainer(t *testing.T) {
+	t.Parallel()
+
+	for _, v := range inspect(t, filepath.Join("testdata", "broken")) {
+		if v.rule == "grace-period" && strings.Contains(v.msg, "not-a-service") {
+			if !strings.Contains(v.msg, "DRAIN_BUDGET 5m0s") {
+				t.Errorf("grace-period reported %q — it must weigh the grace against the slowest "+
+					"container's 300s budget, not the last one written", v.msg)
+			}
+			return
+		}
+	}
+	t.Error("no grace-period violation for not-a-service: 90 s cannot cover a container asking for a " +
+		"300 s drain budget, and the rule read the last container instead of the slowest")
 }
