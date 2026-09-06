@@ -211,6 +211,7 @@ func Load(dir string) ([]Manifest, error) {
 // only the first document of a stream, so a decoder loop is not a style choice here: with Unmarshal
 // every object after the first Deployment would silently vanish from the guard's view.
 func decodeFile(path string) ([]Manifest, error) {
+	//nolint:gosec // G304: path comes from WalkDir over the caller's own manifest directory, never from input.
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
