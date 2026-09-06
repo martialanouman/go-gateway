@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -106,6 +107,37 @@ func TestTheGuardCatchesWhatItClaimsTo(t *testing.T) {
 	}
 }
 
+// TestJobsAreHeldToTheContainerRules pins a hole the first version of this guard shipped with: inspect
+// switched on Deployment, Service, Secret, ConfigMap and HPA, so a Job passed untouched. A literal
+// CLICKHOUSE_PASSWORD, a misspelt variable and an arbitrary image all went green — in the very file
+// step-270 named for the ClickHouse password that production refuses at its default.
+//
+// Jobs are held to the CONTAINER rules only. Probes and a grace period would be wrong for a process
+// that runs to completion: it has no ops port and nothing to drain.
+func TestJobsAreHeldToTheContainerRules(t *testing.T) {
+	t.Parallel()
+
+	var onJob []violation
+	for _, v := range inspect(t, filepath.Join("testdata", "broken")) {
+		if strings.Contains(v.msg, "migrate-postgres") || strings.Contains(v.msg, `container "migrate"`) {
+			onJob = append(onJob, v)
+		}
+	}
+
+	got := map[string]bool{}
+	for _, v := range onJob {
+		got[v.rule] = true
+		if v.rule == "probe-endpoints" || v.rule == "grace-period" || v.rule == "probe-timeout" {
+			t.Errorf("[%s] reported on a Job: %s — a Job exits, it has neither probes nor a drain", v.rule, v.msg)
+		}
+	}
+	for _, rule := range []string{"secrets-by-reference", "known-env-name", "image-convention"} {
+		if !got[rule] {
+			t.Errorf("rule %q reported nothing on the broken fixture's Job — Jobs are escaping it", rule)
+		}
+	}
+}
+
 // inspect reads a manifest tree and returns everything wrong with it. It takes the directory as an
 // argument so the guard can be pointed at a broken fixture and made to prove it still bites.
 func inspect(t *testing.T, dir string) []violation {
@@ -146,7 +178,7 @@ func inspect(t *testing.T, dir string) []violation {
 		}
 	}
 	for name := range deployments {
-		if !contains(services, name) {
+		if !slices.Contains(services, name) {
 			add("deployment-per-service", "Deployment %q matches no cmd/ service — remove it or fix its name", name)
 		}
 	}
@@ -155,6 +187,13 @@ func inspect(t *testing.T, dir string) []violation {
 		switch m.Kind {
 		case "Deployment":
 			out = append(out, inspectDeployment(m, env, configMaps)...)
+		case "Job":
+			// Container rules only. A Job exits, so it has no ops port to probe and nothing to drain —
+			// asking it for probes or a grace period would be asking for the wrong thing.
+			for _, c := range m.Spec.Template.Spec.Containers {
+				out = append(out, inspectContainerEnv(m, c, env, configMaps)...)
+				out = append(out, inspectImage(m, c)...)
+			}
 		case "Service":
 			// 2. The ops port is internal and absent from the OpenAPI contracts (plan §1.4). A Service
 			// that lists it is one ingress rule away from exposing /metrics publicly.
@@ -231,42 +270,53 @@ func inspectDeployment(m deploy.Manifest, env map[string]string, configMaps map[
 			}
 		}
 
-		if !strings.HasPrefix(c.Image, imagePrefix) {
-			add("image-convention", "%s: container %q image %q does not start with %q", m.Source, c.Name, c.Image, imagePrefix)
-		}
-
-		out = append(out, inspectEnv(m, c, svc, env, configMaps)...)
+		out = append(out, inspectImage(m, c)...)
+		out = append(out, inspectContainerEnv(m, c, env, configMaps)...)
+		out = append(out, inspectRequiredOverrides(m, c, svc, env, configMaps)...)
 	}
 
-	// The grace period must clear the whole drain: DRAIN_DELAY waiting for the load balancer, then the
-	// supervisor's drain budget (SHUTDOWN_TIMEOUT), then DrainTracing flushing the exporter — which
-	// runs in a defer AFTER the supervisor returns, and takes SHUTDOWN_TIMEOUT again. Under that, the
+	// The grace period must clear the whole drain, in sequence: DRAIN_DELAY waiting for the load
+	// balancer, then the supervisor's DRAIN_BUDGET, then DrainTracing flushing the span exporter —
+	// which runs in a defer AFTER the supervisor returns and takes SHUTDOWN_TIMEOUT. Under that, the
 	// kubelet SIGKILLs mid-drain and the pod dies exactly the way the drain exists to prevent.
 	drain := durationEnv(m, env, configMaps, "DRAIN_DELAY")
+	budget := durationEnv(m, env, configMaps, "DRAIN_BUDGET")
 	shutdown := durationEnv(m, env, configMaps, "SHUTDOWN_TIMEOUT")
-	need := drain + 2*shutdown
+	need := drain + budget + shutdown
 	grace := m.Spec.Template.Spec.TerminationGracePeriodSeconds
 	switch {
 	case grace == nil:
 		add("grace-period", "%s: Deployment %q sets no terminationGracePeriodSeconds — the 30 s default is under the %s this service needs",
 			m.Source, svc, need)
 	case time.Duration(*grace)*time.Second < need:
-		add("grace-period", "%s: Deployment %q terminationGracePeriodSeconds = %d, want at least %d (DRAIN_DELAY %s + 2 × SHUTDOWN_TIMEOUT %s)",
-			m.Source, svc, *grace, int(need.Seconds()), drain, shutdown)
+		add("grace-period", "%s: Deployment %q terminationGracePeriodSeconds = %d, want at least %d (DRAIN_DELAY %s + DRAIN_BUDGET %s + SHUTDOWN_TIMEOUT %s)",
+			m.Source, svc, *grace, int(need.Seconds()), drain, budget, shutdown)
 	}
 
 	return out
 }
 
-// inspectEnv checks the variables a container sets: known to config, secrets by reference only, and
-// the overrides whose shared default is wrong for this service.
-func inspectEnv(m deploy.Manifest, c deploy.Container, svc string, env map[string]string, configMaps map[string]map[string]string) []violation {
+// inspectImage holds a container to the release registry, so a copy-pasted manifest cannot ship the
+// neighbour's binary — or something off the internet.
+func inspectImage(m deploy.Manifest, c deploy.Container) []violation {
+	if strings.HasPrefix(c.Image, imagePrefix) {
+		return nil
+	}
+	return []violation{{
+		rule: "image-convention",
+		msg: fmt.Sprintf("%s: container %q image %q does not start with %q",
+			m.Source, c.Name, c.Image, imagePrefix),
+	}}
+}
+
+// inspectContainerEnv checks the variables a container sets: known to config, and secrets by
+// reference only. It applies to every container the tree holds, Jobs included.
+func inspectContainerEnv(m deploy.Manifest, c deploy.Container, env map[string]string, configMaps map[string]map[string]string) []violation {
 	var out []violation
 	add := func(rule, format string, args ...any) {
 		out = append(out, violation{rule: rule, msg: fmt.Sprintf(format, args...)})
 	}
 
-	literals := effectiveEnv(c, configMaps)
 	for _, e := range c.Env {
 		// A name config does not know is read by nobody: caarlos0/env ignores it in silence, so a
 		// POSTGRE_URL typo leaves the service on its localhost default with nothing to show for it.
@@ -279,7 +329,24 @@ func inspectEnv(m deploy.Manifest, c deploy.Container, svc string, env map[strin
 				m.Source, c.Name, e.Name)
 		}
 	}
+	for name, v := range effectiveEnv(c, configMaps) {
+		if v != "" && isSecret(name) {
+			add("secrets-by-reference", "%s: container %q receives %s as a literal value — it must come from a secretKeyRef",
+				m.Source, c.Name, name)
+		}
+	}
+	return out
+}
 
+// inspectRequiredOverrides checks the variables whose shared default belongs to another service, plus
+// the production switch. Deployments only: a Job takes them from the same ConfigMap.
+func inspectRequiredOverrides(m deploy.Manifest, c deploy.Container, svc string, env map[string]string, configMaps map[string]map[string]string) []violation {
+	var out []violation
+	add := func(rule, format string, args ...any) {
+		out = append(out, violation{rule: rule, msg: fmt.Sprintf(format, args...)})
+	}
+
+	literals := effectiveEnv(c, configMaps)
 	for name, want := range requiredOverrides[svc] {
 		got, literal := literals[name]
 		if !literal || got != want {
@@ -458,13 +525,4 @@ func excepted(name string) bool {
 	return false
 }
 
-func isSecret(name string) bool { return contains(secretVars, name) }
-
-func contains(haystack []string, needle string) bool {
-	for _, s := range haystack {
-		if s == needle {
-			return true
-		}
-	}
-	return false
-}
+func isSecret(name string) bool { return slices.Contains(secretVars, name) }

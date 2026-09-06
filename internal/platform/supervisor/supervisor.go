@@ -8,7 +8,7 @@
 // a shutdown ordering constraint (e.g. drain the HTTP listener before the writer it feeds) uses
 // Ordered instead, which drains in reverse registration order.
 //
-// Both bound the teardown with a drain budget (the caller passes cfg.ShutdownTimeout). Past it, Run
+// Both bound the teardown with a drain budget (the caller passes cfg.DrainBudget). Past it, Run
 // stops waiting, logs which components never returned and reports ErrDrainBudgetExceeded — their
 // goroutines are left running, which costs nothing since the process is on its way out. Without that
 // ceiling a single component that ignores its context holds the pod open until the kubelet's SIGKILL,
@@ -89,11 +89,11 @@ func (g *Group) OnDrain(fn DrainHook) {
 }
 
 // Run starts every registered component, then blocks until ctx is cancelled or the first component
-// fails. It then cancels all components, waits for them, and returns the first non-nil error — nil on
-// a clean ctx-driven shutdown. errCh is sized to the component count, so no goroutine blocks
-// reporting its error even if several fail at once.
+// fails. It then cancels all components and waits for them under budget, returning the first non-nil
+// error — a component's failure first, then ErrDrainBudgetExceeded if the budget ran out, then nil on
+// a clean shutdown. errCh is sized to the component count, so no goroutine blocks reporting its error
+// even if several fail at once.
 func (g *Group) Run(ctx context.Context, logger *slog.Logger, budget time.Duration) error {
-	_ = budget
 	// Detached from the parent, like Ordered's: a component whose context died the instant SIGTERM
 	// arrived would already be tearing down before the pre-drain hooks could run, which would make
 	// OnDrain unimplementable here. Run cancels runCtx explicitly below, once the hooks have run, so
@@ -133,17 +133,19 @@ func (g *Group) Run(ctx context.Context, logger *slog.Logger, budget time.Durati
 	var stuck []string
 	deadline, stop := drainDeadline(budget)
 	defer stop()
+wait:
 	for i := range dones {
 		select {
 		case <-dones[i]:
 		case <-deadline:
+			// The timer and the component can become ready in the same instant, and select picks
+			// between two ready cases at random — so reaching this arm does not mean anything is
+			// still running. notStopped decides; an empty result means they all made it.
 			stuck = notStopped(g.comps, dones)
-		}
-		if stuck != nil {
-			break
+			break wait
 		}
 	}
-	if stuck != nil {
+	if len(stuck) > 0 {
 		logger.Error("drain budget exceeded, abandoning components", "budget", budget, "components", stuck)
 	}
 
@@ -155,7 +157,7 @@ func (g *Group) Run(ctx context.Context, logger *slog.Logger, budget time.Durati
 		return err
 	default:
 	}
-	if stuck != nil {
+	if len(stuck) > 0 {
 		return fmt.Errorf("%w after %s: %s still running", ErrDrainBudgetExceeded, budget, strings.Join(stuck, ", "))
 	}
 	return nil
@@ -214,10 +216,14 @@ func (o *Ordered) OnDrain(fn DrainHook) {
 
 // Run starts every component on its own detached, cancellable context, then blocks until ctx is
 // cancelled or the first component fails. It then drains the components in reverse registration order —
-// cancelling each and waiting for it to stop before moving to the next — and returns the first non-nil
-// error, or nil on a clean ctx-driven shutdown.
+// cancelling each and waiting for it to stop before moving to the next — under one budget shared by
+// the whole sequence. It returns the first non-nil error: a component's failure first, then
+// ErrDrainBudgetExceeded if the budget ran out, then nil on a clean shutdown.
+//
+// budget must exceed what a single component may legitimately spend stopping (cfg.ShutdownTimeout),
+// since the drain is sequential: cfg.DrainBudget is the value services pass, and config refuses one
+// at or under the per-component timeout.
 func (o *Ordered) Run(ctx context.Context, logger *slog.Logger, budget time.Duration) error {
-	_ = budget
 	cancels := make([]context.CancelFunc, len(o.comps))
 	dones := make([]chan struct{}, len(o.comps))
 	errCh := make(chan error, len(o.comps))
@@ -292,6 +298,14 @@ func (o *Ordered) drain(cancels []context.CancelFunc, dones []chan struct{}, bud
 		select {
 		case <-dones[i]:
 		case <-deadline:
+			// Both arms can be ready at once — select would then blame a component that just stopped.
+			// Confirm before accusing; the budget is spent either way, so the next iteration lands
+			// here immediately and the sequence still gets released.
+			select {
+			case <-dones[i]:
+				continue
+			default:
+			}
 			for j := i; j >= 0; j-- {
 				cancels[j]()
 			}

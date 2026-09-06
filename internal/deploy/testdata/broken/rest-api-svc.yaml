@@ -106,3 +106,22 @@ spec:
           selector:
             matchLabels:
               queue: mt.inbound
+---
+# Violates, on purpose: job-container-rules (a literal secret, an unknown variable name, an image off
+# the release registry). A Job has no ops port and exits, so probes and grace period do NOT apply.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate-postgres
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: postgres:18-alpine
+          env:
+            - name: POSTGRES_URL
+              value: postgres://gateway:gateway@db:5432/gateway
+            - name: POSTGRE_MAX_CONNS
+              value: "10"

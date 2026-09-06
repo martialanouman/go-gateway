@@ -34,6 +34,9 @@ ne peut pas cocher son item manifests sur un déploiement que personne n'a jamai
   d'un `nofile` de 1024 plafonne les binds bien avant la configuration.
 - L'archive `content-key-svc` de `.goreleaser.yaml`, corrigée en step-270, est un prérequis : sans
   elle le service n'est publié nulle part.
+- **L'image `migrate` doit embarquer `migrations/`.** Le Job de `deploy/k8s/jobs/` l'invoque avec
+  `-dir migrations` ; un binaire statique sans ce répertoire échoue au premier démarrage, et la
+  migration ClickHouse a le même besoin pour ses fichiers.
 - **`release.yml` a besoin de `packages: write`** et d'un login GHCR ; les permissions du workflow
   sont aujourd'hui `contents: read`.
 - Vérifier que chaque image démarre et **échoue proprement** sur une configuration de production

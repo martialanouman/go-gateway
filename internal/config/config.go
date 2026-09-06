@@ -59,15 +59,9 @@ type Config struct {
 	// absent from the OpenAPI contracts (plan §1.4).
 	OpsPort int `env:"OPS_PORT" envDefault:"9090"`
 
-	// ShutdownTimeout bounds the graceful drain on SIGTERM, once the components start tearing down.
-	// It is used twice over, in sequence: the supervisor takes it as the overall drain budget past
-	// which it abandons a component that will not stop (step-270), and DrainTracing then takes it
-	// again to flush the span exporter AFTER the supervisor has returned.
-	//
-	// So the pod's terminationGracePeriodSeconds must clear DrainDelay + 2 × ShutdownTimeout — 65 s at
-	// the defaults, which is why deploy/k8s asks for 90. Under that, the kubelet SIGKILLs mid-drain
-	// (guide de codage §5), and a hard kill costs re-delivered Kafka records and a session token held
-	// for its full 60 s TTL.
+	// ShutdownTimeout bounds ONE component's own teardown: an HTTP or gRPC server's graceful stop, the
+	// ops server's, the span exporter's flush. It is not the budget of the drain as a whole — see
+	// DrainBudget, which must stay above it.
 	ShutdownTimeout time.Duration `env:"SHUTDOWN_TIMEOUT" envDefault:"30s"`
 
 	// DrainDelay is how long a pod keeps serving AFTER marking itself not-ready on /readyz and BEFORE
@@ -77,6 +71,24 @@ type Config struct {
 	// shutdown, so it should be a few seconds, not tens. Zero disables the wait — correct for a
 	// service with no load balancer in front of it, and for tests.
 	DrainDelay time.Duration `env:"DRAIN_DELAY" envDefault:"5s"`
+
+	// DrainBudget caps the WHOLE teardown, once the pre-drain hooks have run: past it the supervisor
+	// stops waiting, abandons whatever has not returned and reports it (step-270). Without that
+	// ceiling one component ignoring its context holds the pod open until the kubelet's SIGKILL.
+	//
+	// It is a variable of its own, and NOT ShutdownTimeout reused, because the two bound different
+	// things: a component is entitled to spend its full ShutdownTimeout, and on Ordered the budget
+	// covers the components in SEQUENCE. Making them one number turns a legitimate drain into a
+	// reported overrun and abandons everything behind the slow component — smpp-server-svc alone can
+	// legitimately need 80 s (deliver gRPC, then the listener's in-flight submits and unbinds, then
+	// the ops server). Validate refuses a budget at or under ShutdownTimeout for that reason.
+	//
+	// The pod's terminationGracePeriodSeconds must clear DrainDelay + DrainBudget + ShutdownTimeout —
+	// the last term being DrainTracing, which flushes the exporter in a defer AFTER the supervisor
+	// returns. That is 125 s at the defaults, which is why deploy/k8s asks for 150. Under it the
+	// kubelet SIGKILLs mid-drain (guide de codage §5): re-delivered Kafka records, and a session token
+	// held for its full 60 s TTL.
+	DrainBudget time.Duration `env:"DRAIN_BUDGET" envDefault:"90s"`
 
 	OTel       OTel       `envPrefix:"OTEL_"`
 	Postgres   Postgres   `envPrefix:"POSTGRES_"`
@@ -715,6 +727,15 @@ func (c Config) coreProblems() []string {
 		problems = append(problems, fmt.Sprintf(
 			"SHUTDOWN_TIMEOUT %s must be positive: a service that cannot drain loses in-flight work",
 			c.ShutdownTimeout))
+	}
+	// A ceiling at or under the per-component timeout is worse than none: a component spending the
+	// window it was granted would trip it, and on Ordered everything registered before it is then
+	// abandoned rather than drained.
+	if c.DrainBudget <= 0 || c.DrainBudget <= c.ShutdownTimeout {
+		problems = append(problems, fmt.Sprintf(
+			"DRAIN_BUDGET %s must be positive and above SHUTDOWN_TIMEOUT %s: it bounds the whole drain, "+
+				"of which one component may legitimately take the full shutdown timeout",
+			c.DrainBudget, c.ShutdownTimeout))
 	}
 	return problems
 }

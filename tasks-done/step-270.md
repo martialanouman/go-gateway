@@ -68,8 +68,13 @@ Fournir les manifests Kubernetes sous `deploy/` pour tous les services : Deploym
    budget de drain d'un côté, surface d'attaque et chaîne de publication de l'autre. La dette a une
    fiche et une échéance : step-270b bloque step-280 et step-410.
 2. **Le drain est plafonné dans `supervisor`**, pas assumé. Sans plafond,
-   `terminationGracePeriodSeconds` est une arithmétique sur du sable. Aucune variable neuve :
-   `SHUTDOWN_TIMEOUT` documentait déjà cette sémantique sans l'avoir jamais tenue globalement.
+   `terminationGracePeriodSeconds` est une arithmétique sur du sable. Le plafond a d'abord réutilisé
+   `SHUTDOWN_TIMEOUT` — « aucune variable neuve » — et **la revue de branche l'a cassé** : cette
+   valeur borne déjà *un* composant, or le drain d'`Ordered` est une séquence. Un composant dépensant
+   la fenêtre qu'on lui accorde épuisait le budget global à lui seul, requalifiait un drain légitime
+   en dépassement, et faisait abandonner tout ce qui était enregistré derrière lui — c'est-à-dire
+   réintroduisait la perte de `submit_sm` en vol que step-260 avait corrigée. `DRAIN_BUDGET` (90 s)
+   est donc une variable à part, et `config` refuse un budget ≤ `SHUTDOWN_TIMEOUT`.
 3. **Deux couches de validation, qui ne se recouvrent pas.** Vérifié plutôt que supposé : un
    `maxUnavailible: 1` dans un PDB laisse un budget qui ne protège rien et passe la garde Go — elle
    vérifie qu'un PDB existe et sélectionne son Deployment, pas l'orthographe d'un champ qu'elle ne lit
@@ -83,6 +88,13 @@ Fournir les manifests Kubernetes sous `deploy/` pour tous les services : Deploym
 **`content-key-svc` est entré au périmètre.** La fiche en listait neuf et l'oubliait ; il est
 déployable depuis ADR-0011, supervisé, compté dans les dix de la garde du drain — et il n'avait
 même pas d'archive dans `.goreleaser.yaml`.
+
+**Trois défauts trouvés en revue de branche, tous reproduits avant d'être corrigés.** Outre le budget
+ci-dessus : un dépassement pouvait être annoncé sans nommer aucun composant (le timer et le dernier
+composant devenant prêts ensemble, `select` tranche au hasard — 188 fois sur 400 en conditions
+forcées) ; et les `Job` échappaient à toute la garde, si bien qu'un `CLICKHOUSE_PASSWORD` en clair,
+une variable typo et une image arbitraire passaient les deux couches — dans le fichier même que cette
+fiche désignait pour ce mot de passe.
 
 **Deux choses que la garde a dû apprendre en route.** Elle résout `envFrom` : sans cela, un
 `ENVIRONMENT` posé dans le ConfigMap ne satisfaisait aucune règle et les dix services paraissaient

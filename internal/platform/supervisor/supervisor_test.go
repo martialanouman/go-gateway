@@ -438,3 +438,51 @@ func TestComponentFailureOutranksTheDrainBudget(t *testing.T) {
 		t.Fatal("Run did not return within the drain budget")
 	}
 }
+
+// TestABudgetThatExpiresOnAFinishedComponentReportsNothing pins the false positive the first version
+// of the ceiling shipped with. The timer and the last component can become ready in the same instant,
+// and select picks between two ready cases at random — so half the time the deadline arm won and Run
+// reported a drain overrun for components that had all stopped. Group named nobody ("… still
+// running" with an empty list); Ordered named the one it had just successfully waited for.
+//
+// It matters more than its odds suggest: the case is most likely exactly when a component uses its
+// full shutdown budget, which is the normal path, not a pathological one.
+func TestABudgetThatExpiresOnAFinishedComponentReportsNothing(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		run  func(context.Context, *slog.Logger, time.Duration) error
+	}{
+		{"group", func(c context.Context, l *slog.Logger, b time.Duration) error {
+			var g supervisor.Group
+			g.Add("already-finished", func(context.Context) error { return nil })
+			return g.Run(c, l, b)
+		}},
+		{"ordered", func(c context.Context, l *slog.Logger, b time.Duration) error {
+			var o supervisor.Ordered
+			o.Add("already-finished", func(context.Context) error { return nil })
+			return o.Run(c, l, b)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Repeated because the race is decided by select's random choice: one run proves nothing.
+			for range 200 {
+				ctx, cancel := context.WithCancel(context.Background())
+				done := make(chan error, 1)
+				// The component returns at once, so its done channel is closed well before Run reaches
+				// the wait; a 1 ns budget makes the deadline ready too.
+				go func() { done <- tc.run(ctx, quietLogger(), time.Nanosecond) }()
+				time.Sleep(time.Millisecond)
+				cancel()
+
+				if err := <-done; err != nil {
+					t.Fatalf("Run() = %v, want nil: every component had already stopped, so there was "+
+						"no overrun to report", err)
+				}
+			}
+		})
+	}
+}

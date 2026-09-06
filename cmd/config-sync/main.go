@@ -65,7 +65,7 @@ func run() error {
 	g.OnDrain(app.ops.DrainHook(cfg.DrainDelay))
 	g.Add("ops server", func(c context.Context) error { return app.ops.Run(c, cfg.ShutdownTimeout) })
 	g.Add("invalidation relay", app.relay.Run)
-	if err := g.Run(ctx, logger, cfg.ShutdownTimeout); err != nil {
+	if err := g.Run(ctx, logger, cfg.DrainBudget); err != nil {
 		return err
 	}
 

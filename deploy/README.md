@@ -32,17 +32,27 @@ L'arrêt d'un pod se déroule en trois temps, en séquence :
 | Étape | Durée | Ce qui la borne |
 |---|---|---|
 | `/readyz` bascule à 503, on attend le load balancer | `DRAIN_DELAY` = **5 s** | Le hook de pré-drain (`ops.DrainHook`), attente non interruptible |
-| Le superviseur arrête les composants | `SHUTDOWN_TIMEOUT` = **30 s** | Le budget de drain (step-270) : au-delà, les composants restants sont abandonnés et `ErrDrainBudgetExceeded` remonte |
+| Le superviseur arrête les composants | `DRAIN_BUDGET` = **90 s** | Au-delà, les composants restants sont abandonnés et `ErrDrainBudgetExceeded` remonte |
 | `DrainTracing` vide l'exporteur de spans | `SHUTDOWN_TIMEOUT` = **30 s** | Il court en `defer`, donc **après** le retour du superviseur |
 
-Soit **65 s**, et `terminationGracePeriodSeconds: 90` laisse la marge. En dessous, le kubelet envoie
+Soit **125 s**, et `terminationGracePeriodSeconds: 150` laisse la marge. En dessous, le kubelet envoie
 `SIGKILL` en plein drain — c'est-à-dire exactement ce que le drain existe pour éviter : des records
 Kafka redélivrés (jusqu'à ~250 `submit_sm` dupliqués par partition, ADR-0012/0014) et un jeton de
 session retenu pendant tout son TTL de 60 s, qui bloque le quota `max_sessions` du client.
 
-Changer `DRAIN_DELAY` ou `SHUTDOWN_TIMEOUT` dans `configmap.yaml` **change ce calcul**, et la garde Go
-le refait : elle lit les deux valeurs dans le manifeste, et retombe sur les défauts de `internal/config`
-quand il ne les surcharge pas.
+**`DRAIN_BUDGET` et `SHUTDOWN_TIMEOUT` sont deux variables, et ce n'est pas un doublon.**
+`SHUTDOWN_TIMEOUT` borne **un** composant — l'arrêt gracieux d'un serveur HTTP ou gRPC, celui du
+serveur ops, le flush de l'exporteur. `DRAIN_BUDGET` borne **leur ensemble**, et sur les superviseurs
+ordonnés cet ensemble est une **séquence**. Les confondre coupe un drain parfaitement légitime : un
+composant qui dépense la fenêtre qu'on lui a accordée épuiserait à lui seul le budget global, et tout
+ce qui est enregistré derrière lui serait abandonné au lieu d'être drainé. `smpp-server-svc` peut
+légitimement demander 80 s — deliver gRPC, puis les `submit_sm` en vol et les unbind du listener, puis
+le serveur ops. `internal/config` refuse d'ailleurs un budget inférieur ou égal au timeout par
+composant.
+
+Changer l'une des trois valeurs dans `configmap.yaml` **change ce calcul**, et la garde Go le refait :
+elle les lit dans le manifeste, et retombe sur les défauts de `internal/config` quand il ne les
+surcharge pas.
 
 ## Probes : `/healthz` n'est pas `/readyz`
 

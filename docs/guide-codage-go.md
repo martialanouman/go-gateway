@@ -138,7 +138,7 @@ func main() {
 }
 ```
 
-**[MUST]** L'arrêt gracieux draine : `smpp-server-svc` fait un unbind gracieux des binds (§6.3), les consumers Kafka valident leurs offsets en cours puis s'arrêtent, `connector-pool-svc` termine les `submit_sm` en vol dans la fenêtre. Respecter le `terminationGracePeriodSeconds` du pod : le superviseur borne le teardown par `SHUTDOWN_TIMEOUT` et abandonne au-delà (`ErrDrainBudgetExceeded`), puis `DrainTracing` le reprend pour vider l'exporteur — la grâce du pod doit donc dépasser `DRAIN_DELAY + 2 × SHUTDOWN_TIMEOUT`, ce que `deploy/k8s` pose à 90 s.
+**[MUST]** L'arrêt gracieux draine : `smpp-server-svc` fait un unbind gracieux des binds (§6.3), les consumers Kafka valident leurs offsets en cours puis s'arrêtent, `connector-pool-svc` termine les `submit_sm` en vol dans la fenêtre. Respecter le `terminationGracePeriodSeconds` du pod : le superviseur borne l'ensemble du teardown par `DRAIN_BUDGET` et abandonne au-delà (`ErrDrainBudgetExceeded`), puis `DrainTracing` vide l'exporteur sous `SHUTDOWN_TIMEOUT` — qui borne **un** composant, jamais leur somme. La grâce du pod doit donc dépasser `DRAIN_DELAY + DRAIN_BUDGET + SHUTDOWN_TIMEOUT`, ce que `deploy/k8s` pose à 150 s.
 
 **[MUST]** Modèle SMPP : **une goroutine par connexion** pour la lecture, une pour l'écriture, communiquant par canaux ; l'état de session (fenêtre, `enquire_link`) est possédé par une seule goroutine pour éviter les verrous. Le registre inter-pods (`session-manager-svc`) est la seule source de vérité partagée.
 

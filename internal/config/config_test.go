@@ -18,7 +18,8 @@ import (
 // knownVars is every variable Config reads. Tests clear them all so a developer's own shell
 // cannot leak into a result.
 var knownVars = []string{
-	"ENVIRONMENT", "LOG_LEVEL", "OPS_PORT", "SHUTDOWN_TIMEOUT", "DRAIN_DELAY", "SERVICE_NAME",
+	"ENVIRONMENT", "LOG_LEVEL", "OPS_PORT", "SHUTDOWN_TIMEOUT", "DRAIN_DELAY", "DRAIN_BUDGET",
+	"SERVICE_NAME",
 	"OTEL_SDK_DISABLED", "OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_INSECURE",
 	"OTEL_TRACES_SAMPLER_ARG",
 	"POSTGRES_URL", "POSTGRES_MAX_CONNS", "POSTGRES_MIN_CONNS", "POSTGRES_TIMEOUT",
@@ -88,6 +89,19 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.DrainDelay != 5*time.Second {
 		t.Errorf("DrainDelay = %s, want 5s: a zero default gives kube-proxy no time to remove the "+
 			"endpoint, so a rolling deploy cuts binds the pod has just accepted", cfg.DrainDelay)
+	}
+	// DrainBudget bounds the WHOLE teardown, ShutdownTimeout only one component of it. They are
+	// separate variables because making them one number breaks a legitimate drain: a component that
+	// uses its full ShutdownTimeout — which runGRPC and OpsServer.Run are entitled to do — would
+	// exhaust an overall budget worth the same, and on Ordered the components behind it are then
+	// abandoned instead of drained. So the default must stay comfortably above ShutdownTimeout.
+	if cfg.DrainBudget != 90*time.Second {
+		t.Errorf("DrainBudget = %s, want 90s", cfg.DrainBudget)
+	}
+	if cfg.DrainBudget <= cfg.ShutdownTimeout {
+		t.Errorf("DrainBudget (%s) must exceed ShutdownTimeout (%s): a single component using its "+
+			"full shutdown window would otherwise spend the entire drain budget",
+			cfg.DrainBudget, cfg.ShutdownTimeout)
 	}
 	if got, want := cfg.Kafka.Brokers, []string{"localhost:9092"}; len(got) != 1 || got[0] != want[0] {
 		t.Errorf("Kafka.Brokers = %v, want %v", got, want)
@@ -258,6 +272,11 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		{"shutdown timeout zero", map[string]string{"SHUTDOWN_TIMEOUT": "0s"}, "SHUTDOWN_TIMEOUT"},
 		{"shutdown timeout negative", map[string]string{"SHUTDOWN_TIMEOUT": "-5s"}, "SHUTDOWN_TIMEOUT"},
 		{"drain delay negative", map[string]string{"DRAIN_DELAY": "-1s"}, "DRAIN_DELAY"},
+		{"drain budget zero", map[string]string{"DRAIN_BUDGET": "0s"}, "DRAIN_BUDGET"},
+		{"drain budget negative", map[string]string{"DRAIN_BUDGET": "-1s"}, "DRAIN_BUDGET"},
+		// Under the per-component timeout the ceiling is worse than none: it cuts drains that were
+		// doing exactly what they were told.
+		{"drain budget below shutdown timeout", map[string]string{"DRAIN_BUDGET": "10s", "SHUTDOWN_TIMEOUT": "30s"}, "DRAIN_BUDGET"},
 		{"otlp endpoint with scheme", map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "http://c:4317"}, "OTEL_EXPORTER_OTLP_ENDPOINT"},
 		{"otlp endpoint empty", map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": " "}, "OTEL_EXPORTER_OTLP_ENDPOINT"},
 		{"sample ratio above one", map[string]string{"OTEL_TRACES_SAMPLER_ARG": "1.5"}, "OTEL_TRACES_SAMPLER_ARG"},

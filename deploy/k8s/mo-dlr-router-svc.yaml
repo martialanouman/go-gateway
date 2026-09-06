@@ -26,10 +26,12 @@ spec:
         prometheus.io/port: "9090"
         prometheus.io/path: /metrics
     spec:
-      # DRAIN_DELAY (5 s) + the supervisor's drain budget (SHUTDOWN_TIMEOUT, 30 s) + DrainTracing
-      # flushing the exporter after it (30 s again) = 65 s. 90 leaves the margin. Under it the kubelet
-      # SIGKILLs mid-drain: redelivered Kafka records, and a session token held for its full 60 s TTL.
-      terminationGracePeriodSeconds: 90
+      # DRAIN_DELAY (5 s) + DRAIN_BUDGET (90 s) + DrainTracing flushing the exporter after the
+      # supervisor returns (SHUTDOWN_TIMEOUT, 30 s) = 125 s. 150 leaves the margin. Under it the
+      # kubelet SIGKILLs mid-drain: redelivered Kafka records, and a session token held for its full
+      # 60 s TTL. DRAIN_BUDGET is deliberately above SHUTDOWN_TIMEOUT — one component may spend the
+      # whole shutdown window, and smpp-server-svc drains four of them in sequence.
+      terminationGracePeriodSeconds: 150
       containers:
         - name: mo-dlr-router-svc
           image: ghcr.io/martialanouman/go-gateway/mo-dlr-router-svc:v0.0.0

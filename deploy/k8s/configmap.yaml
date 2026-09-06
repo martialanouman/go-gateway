@@ -18,8 +18,13 @@ data:
   ENVIRONMENT: production
   LOG_LEVEL: info
   OPS_PORT: "9090"
+  # SHUTDOWN_TIMEOUT bounds ONE component's teardown; DRAIN_BUDGET bounds the whole drain and must
+  # stay above it — a component spending its full window would otherwise trip the ceiling, and on the
+  # ordered supervisors everything behind it would be abandoned rather than drained. Changing either
+  # changes terminationGracePeriodSeconds; the guard in internal/deploy recomputes it from here.
   SHUTDOWN_TIMEOUT: 30s
   DRAIN_DELAY: 5s
+  DRAIN_BUDGET: 90s
 
   # Tracing stays in-process: ErrorBiasedSampler already gives 100 % of failed messages, and at ratio
   # 1.0 it costs nothing (step-181, reviewed here). No collector is deployed from this repository —
