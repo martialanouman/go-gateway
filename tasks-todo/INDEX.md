@@ -202,8 +202,9 @@ qu'on mesure un environnement représentatif.
 - [x] step-260 — Chaos : drain gracieux (unbind SMPP, offsets Kafka, retrait LB) ⛓ step-250
 - [x] step-260b — Failover Postgres : fail-closed sur les trois voies de la réserve, et le crédit fantôme du release ⛓ step-260
 - [ ] step-260c — Les trois politiques PostgreSQL hors facturation (bind SMPP, clés API REST, snapshots) ⛓ step-260b
-- [ ] step-270 — Manifests deploy/ Kubernetes (Deployments, Services, HPA, PDB, probes) ⛓ step-260b
-- [ ] step-280 — Campagne NFR pleine échelle sur environnement représentatif ⛓ step-230, step-270
+- [x] step-270 — Manifests deploy/ Kubernetes (Deployments, Services, HPA, PDB, probes) ⛓ step-260b
+- [ ] step-270b — Images conteneur : Dockerfiles et publication GHCR ⛓ step-270
+- [ ] step-280 — Campagne NFR pleine échelle sur environnement représentatif ⛓ step-230, step-270b
 
 Le seul **défaut de correction** du lot est clos : step-240 a fermé le rejeu d'un message annulé, et
 step-245 le cas où l'annulation avait gagné son jeton sans jamais écrire sa ligne CDR. step-250 a

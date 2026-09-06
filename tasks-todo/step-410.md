@@ -1,7 +1,7 @@
 # step-410 — Dérouler la checklist de mise en production (go-live)
 
 > **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
-> **Dépend de :** step-280, step-260, step-290, step-310, step-270, step-320 · **Bloque :** —
+> **Dépend de :** step-280, step-260, step-290, step-310, step-270, **step-270b**, step-320 · **Bloque :** —
 
 ## But
 Clore M12 : dérouler la checklist de mise en production (guide d'ingénierie §15), consigner l'état de
@@ -14,7 +14,7 @@ chaque item et matérialiser la porte de go-live.
 
 ## Points d'implémentation clés
 - La checklist référence les livrables : NFR (step-200/201/**280**), chaos par politique (step-250/260),
-  sécurité (step-290/300), auth opérateur réelle (step-310), manifests (step-270).
+  sécurité (step-290/300), auth opérateur réelle (step-310), manifests (step-270) et images (step-270b).
 - **Le verdict NFR vient de step-280, pas de step-201.** step-201 a livré les leviers, les instruments
   de mesure et un run de référence à la borne basse du modèle par-worker (§2.5) ; le débit soutenu
   8 000 SMS/s **traversant** ne peut se prononcer que sur un environnement représentatif. Ne pas cocher

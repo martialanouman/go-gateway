@@ -1,7 +1,7 @@
 # step-280 — Campagne NFR pleine échelle sur environnement représentatif
 
 > **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
-> **Dépend de :** step-201, **step-201c**, **step-201d**, **step-201e**, **step-201f**, step-270 · **Bloque :** step-410
+> **Dépend de :** step-201, **step-201c**, **step-201d**, **step-201e**, **step-201f**, step-270, **step-270b** · **Bloque :** step-410
 
 ## But
 Rendre le **verdict NFR** que step-201 ne pouvait pas rendre : débit soutenu **8 000 SMS/s**, pic
@@ -35,6 +35,10 @@ par-worker (§2.5). Ici, seule **l'échelle** change.
 Le run de référence de step-201 a mesuré un plafond de sortie de **192–330 `submit_sm/s`** dû à quatre
 allers-retours ClickHouse par message dans le `connector-pool-svc`. Mesurer à pleine échelle avant de
 l'avoir levé mesurerait ce goulot, pas la passerelle.
+
+## Prérequis logiciel : step-270b
+Les manifests existent depuis step-270, mais **aucune image ne les accompagne** : ils nomment des
+images GHCR que rien ne construit encore. Un environnement représentatif ne se monte pas sans elles.
 
 ## Prérequis matériel (à provisionner — ce n'est pas du code)
 - Environnement représentatif : workers dédiés, Kafka **répliqué 3**, ClickHouse et Postgres séparés
