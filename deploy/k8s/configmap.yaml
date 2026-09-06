@@ -1,0 +1,49 @@
+# Shared, NON-SECRET configuration. Every service pulls it with envFrom and overrides what is its own.
+#
+# Nothing here is a credential: POSTGRES_URL, REDIS_URL, CLICKHOUSE_PASSWORD, HTTP_ADMIN_TOKENS,
+# CONTENT_KMS_MASTER_KEY and the connector's bind credentials come from the `gateway-secrets` Secret,
+# which this repository does NOT ship — step-300 (TLS/certs) and step-310 (operator auth) provision it.
+#
+# A set-but-empty variable falls back to its default rather than failing (internal/config), so an
+# entry left blank here is silently the development default, not an error. Leave it out instead.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway-config
+  labels:
+    app.kubernetes.io/part-of: go-gateway
+data:
+  # production is what refuses loopback addresses, an insecure OTLP exporter, a replication factor
+  # under 2 and the default ClickHouse password — in every binary that declares the section.
+  ENVIRONMENT: production
+  LOG_LEVEL: info
+  OPS_PORT: "9090"
+  SHUTDOWN_TIMEOUT: 30s
+  DRAIN_DELAY: 5s
+
+  # Tracing stays in-process: ErrorBiasedSampler already gives 100 % of failed messages, and at ratio
+  # 1.0 it costs nothing (step-181, reviewed here). No collector is deployed from this repository —
+  # like the Alertmanager rules, it lives on the infrastructure side (guide §13). Should one arrive,
+  # tail sampling there would give complete traces instead of the orphan error spans the in-process
+  # sampler exports when the trace was not sampled; the two can coexist, since at 1.0 the in-process
+  # path is inert.
+  OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector.observability:4317
+  OTEL_EXPORTER_OTLP_INSECURE: "false"
+  OTEL_TRACES_SAMPLER_ARG: "1.0"
+
+  KAFKA_BROKERS: kafka-0.kafka:9092,kafka-1.kafka:9092,kafka-2.kafka:9092
+  KAFKA_TOPIC_PARTITIONS: "12"
+  # Replication 3 is the durability boundary of the whole pipeline (ADR-0001); production refuses
+  # anything under 2.
+  KAFKA_TOPIC_REPLICATION_FACTOR: "3"
+
+  POSTGRES_MAX_CONNS: "10"
+  POSTGRES_MIN_CONNS: "2"
+
+  CLICKHOUSE_ADDR: clickhouse:9000
+  CLICKHOUSE_DATABASE: gateway
+  CLICKHOUSE_USERNAME: gateway
+
+  SMPP_SESSION_MANAGER_ADDR: session-manager-svc:7000
+  BILLING_ADDR: billing-svc:7001
+  CONTENT_KEY_ADDR: content-key-svc:7002

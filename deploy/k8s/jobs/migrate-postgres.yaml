@@ -1,0 +1,29 @@
+# The control-plane schema. Run to completion before a rollout — the same binary an init container
+# would run. No ops port, no probes: it exits.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate-postgres
+  labels:
+    app.kubernetes.io/part-of: go-gateway
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: go-gateway
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: ghcr.io/martialanouman/go-gateway/migrate:v0.0.0
+          args: ["-store", "postgres", "-dir", "migrations", "up"]
+          envFrom:
+            - configMapRef:
+                name: gateway-config
+          env:
+            - name: POSTGRES_URL
+              valueFrom:
+                secretKeyRef:
+                  name: gateway-secrets
+                  key: POSTGRES_URL
