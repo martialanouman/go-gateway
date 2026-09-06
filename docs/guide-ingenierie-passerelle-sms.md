@@ -361,6 +361,8 @@ Dimensionnement (§2.5) : un worker sans état soutient ~1 000–2 000 msg/s →
 
 Déploiement Kubernetes : services conteneurisés, tout état de session externalisé ou affinité gérée explicitement. Le module de facturation est déployé conditionnellement (`billing-svc` absent quand désactivé). `PodDisruptionBudget` sur `smpp-server-svc` et `connector-pool-svc` pour préserver les binds ; drain gracieux au rolling update.
 
+Les manifests vivent sous **`deploy/k8s`** (un fichier par service), et `deploy/README.md` porte ce qui ne se lit pas dans le YAML : le calcul de la période de grâce (`DRAIN_DELAY` + 2 × `SHUTDOWN_TIMEOUT`, le second facteur venant de `DrainTracing` qui court après le superviseur), la raison du plafond des HPA, et les trois dimensionnements laissés à step-280. Les images ne sont pas encore construites (step-270b) ; ni collecteur OTel, ni règles Alertmanager, ni Ingress ne partent de ce dépôt.
+
 ---
 
 ## 13. Observabilité

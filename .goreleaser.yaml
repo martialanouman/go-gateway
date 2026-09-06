@@ -132,6 +132,10 @@ archives:
     ids: [billing-svc]
     formats: ["tar.gz"]
     name_template: *archive_name
+  - id: content-key-svc
+    ids: [content-key-svc]
+    formats: ["tar.gz"]
+    name_template: *archive_name
   - id: mo-dlr-router-svc
     ids: [mo-dlr-router-svc]
     formats: ["tar.gz"]
@@ -178,8 +182,9 @@ changelog:
 release:
   prerelease: auto
 
-# Container images: enable once the service Dockerfiles land (release decision — images come in a
-# later step). Each service would get a `dockers:` entry tagged with {{ .Version }}, pushed to GHCR.
+# Container images: enable once the service Dockerfiles land — that is step-270b, which blocks step-280
+# and step-410. deploy/k8s already names the images this block must produce, so the tags are settled:
+# each service gets a `dockers:` entry tagged with {{ .Version }}, pushed to GHCR.
 # dockers:
 #   - image_templates: ["ghcr.io/martialanouman/go-gateway/rest-api-svc:{{ .Version }}"]
 #     ...

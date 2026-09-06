@@ -91,18 +91,21 @@ Un `make tools` installe les binaires Go (`sqlc`, `govulncheck`, plugins protoc)
 
 ### 1.4 Ports (chaque service : un port métier + un port ops commun)
 
-Le **port ops** (9090) sert `/metrics`, `/healthz`, `/readyz` — **interne, jamais exposé publiquement**, absent des contrats OpenAPI. Le port métier porte le trafic du service.
+Le **port ops** (9090) sert `/metrics`, `/healthz`, `/readyz` — **interne, jamais exposé publiquement**, absent des contrats OpenAPI. Le port métier porte le trafic du service. Les manifests de `deploy/k8s` matérialisent ce tableau, et une garde (`internal/deploy`) refuse un `Service` qui exposerait le port ops.
+
+Attention aux défauts **partagés** : `HTTP_PORT` vaut 8081 et `GRPC_PORT` 7000, donc `rest-api-svc`, `billing-svc` et `content-key-svc` ne tiennent leur ligne de ce tableau que par une surcharge explicite d'environnement.
 
 | Service (`cmd/`) | Port métier | Protocole métier | Port ops |
 |---|---|---|---|
 | `rest-api-svc` | 8080 | HTTP REST **public** | 9090 |
 | `admin-api-svc` | 8081 | HTTP REST **interne** | 9090 |
-| `smpp-server-svc` | 2775 | SMPP (TCP) | 9090 |
+| `smpp-server-svc` | 2775 (+ 7000 gRPC `Deliver`, pod-local) | SMPP (TCP) | 9090 |
 | `connector-pool-svc` | — (client sortant) | SMPP client | 9090 |
 | `router-svc` | — (consumer Kafka) | — | 9090 |
 | `mo-dlr-router-svc` | — (consumer Kafka) | — | 9090 |
 | `session-manager-svc` | 7000 | gRPC | 9090 |
 | `billing-svc` | 7001 | gRPC | 9090 |
+| `content-key-svc` | 7002 | gRPC (ADR-0011) | 9090 |
 | `config-sync` | — (pub/sub) | — | 9090 |
 
 ### 1.5 Health (tranché — voir aussi guide d'ingénierie)

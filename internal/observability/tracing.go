@@ -39,10 +39,16 @@ func DrainTracing(shutdown ShutdownFunc, timeout time.Duration, logger *slog.Log
 // function that drains it.
 //
 // Spans carry identifiers and decisions, never a message body nor a secret (guide de codage §12).
-// Sampling here is head-based: the ratio is decided when the trace starts, before its outcome is
-// known. The "100% of errors" rule of spec §6.11 is therefore a tail-sampling policy configured
-// on the collector, not something this SDK can decide — the ratio below only thins successful
-// traces.
+// Sampling is head-based — the ratio is decided when a trace starts, before its outcome exists — so
+// the "100% of errors" rule of spec §6.11 cannot come from the ratio alone. It comes from the pair
+// below: ErrorBiasedSampler records what the ratio rejected, and ErrorBiased re-stamps a failed span
+// as sampled on its way to the batcher. In-process, with no collector required (step-181).
+//
+// What that pair cannot do is reach back: a span that fails inside a trace the ratio never sampled
+// ships WITHOUT its ancestors — an orphan span, not a partial trace. Tail sampling on a collector
+// would fix that, and step-270 kept the in-process path anyway: no collector is deployed from this
+// repository, and at TRACES_SAMPLER_ARG=1.0 (the deployed default) this code is inert, so the two can
+// coexist the day one arrives.
 //
 // When the SDK is disabled, no exporter connection is opened and the returned shutdown is a
 // no-op; instrumented code keeps working against the API's no-op tracer.
