@@ -7,6 +7,8 @@ SHELL := /bin/bash
 
 MODULE      := github.com/martialanouman/go-gateway
 MIGRATIONS  := migrations
+# The Kubernetes API the manifests are validated against.
+KUBERNETES_VERSION := 1.31.0
 COMPOSE     := docker compose
 
 # Pinned tool versions. Guessing these is how a lint run passes locally and fails in CI.
@@ -14,6 +16,7 @@ GOLANGCI_VERSION   := v2.12.2
 SQLC_VERSION       := v1.30.0
 GOVULNCHECK_VERSION := latest
 OASDIFF_VERSION    := v1.26.0
+KUBECONFORM_VERSION := v0.8.0
 BUF_VERSION              := v1.72.0
 # protoc-gen-go tracks the google.golang.org/protobuf runtime version in go.mod — keep them in step.
 PROTOC_GEN_GO_VERSION      := v1.36.11
@@ -27,10 +30,11 @@ help: ## Show this help
 ## ---------------------------------------------------------------------------- tooling
 
 .PHONY: tools
-tools: ## Install the Go binaries the workflow needs (sqlc, govulncheck, oasdiff, golangci-lint, buf + protoc plugins)
+tools: ## Install the Go binaries the workflow needs (sqlc, govulncheck, oasdiff, kubeconform, golangci-lint, buf + protoc plugins)
 	go install github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION)
 	go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 	go install github.com/oasdiff/oasdiff@$(OASDIFF_VERSION)
+	go install github.com/yannh/kubeconform/cmd/kubeconform@$(KUBECONFORM_VERSION)
 	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_VERSION)
 	go install github.com/bufbuild/buf/cmd/buf@$(BUF_VERSION)
 	go install google.golang.org/protobuf/cmd/protoc-gen-go@$(PROTOC_GEN_GO_VERSION)
@@ -210,10 +214,19 @@ fmt-check: ## Fail on files gofmt would rewrite (what CI verifies, without touch
 tidy-check: ## Fail when go.mod/go.sum are not tidy
 	go mod tidy -diff
 
-# Out of check, on purpose: contracts-types (Node), load-smoke (k6), migrate (a database) and
-# smsc-sim (builds the simulator image) — CI runs them on every PR. check needs Docker and the
-# smsc-sim image already built: under CI=1 an integration test that cannot start its dependency
-# FAILS instead of skipping (internal/testutil/ciguard), exactly as in the pipeline.
+# The Kubernetes schema, which internal/deploy's guard cannot see: it holds the manifests to the
+# invariants this repo enforces (probes, ops port, grace period, secrets), and a misspelt field it
+# does not read — maxUnavailible in a PDB — leaves a budget that protects nothing while every Go
+# assertion still passes.
+.PHONY: manifests
+manifests: ## Validate deploy/k8s against the Kubernetes schemas (kubeconform; needs network)
+	kubeconform -strict -summary -kubernetes-version $(KUBERNETES_VERSION) deploy/k8s
+
+# Out of check, on purpose: contracts-types (Node), load-smoke (k6), migrate (a database),
+# smsc-sim (builds the simulator image) and manifests (kubeconform fetches the Kubernetes schemas over
+# the network) — CI runs them on every PR. check needs Docker and the smsc-sim image already built:
+# under CI=1 an integration test that cannot start its dependency FAILS instead of skipping
+# (internal/testutil/ciguard), exactly as in the pipeline.
 .PHONY: check
 check: lint fmt-check tidy-check vuln contracts ## Everything CI checks, in one command
 	CI=1 $(MAKE) --no-print-directory test

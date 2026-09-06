@@ -1,6 +1,6 @@
 # CI quality gates (plan §4, M0). Every job here mirrors a Makefile target: a green local `make check`
 # — run with Docker and the smsc-sim image, since it fails rather than skips (CI=1) — means a green
-# pipeline, except for the gates check leaves out (contracts-types, load-smoke, migrate).
+# pipeline, except for the gates check leaves out (contracts-types, load-smoke, migrate, manifests).
 name: CI
 
 on:
@@ -20,6 +20,8 @@ env:
   # Keep the linter version identical to the Makefile's, or CI and laptops disagree about style.
   GOLANGCI_VERSION: v2.12.2
   OASDIFF_VERSION: v1.26.0
+  KUBECONFORM_VERSION: v0.8.0
+  KUBERNETES_VERSION: 1.31.0
 
 jobs:
   lint:
@@ -129,6 +131,23 @@ jobs:
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
+
+  manifests:
+    name: Manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      # The Kubernetes schema only. What this repo itself requires of the manifests — probes on the
+      # ops port, the grace period, secrets by reference, the HPA ceiling — is asserted by
+      # internal/deploy under the `test` job.
+      - name: kubeconform
+        run: |
+          go install github.com/yannh/kubeconform/cmd/kubeconform@${{ env.KUBECONFORM_VERSION }}
+          kubeconform -strict -summary -kubernetes-version ${{ env.KUBERNETES_VERSION }} deploy/k8s
 
   contracts:
     name: Contracts version gate

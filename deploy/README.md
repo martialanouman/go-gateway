@@ -6,8 +6,9 @@ Ni kustomize ni Helm : ces fichiers se lisent et se valident tels quels.
 
 Deux gardes les tiennent, et elles ne se recouvrent pas :
 
-- `make manifests` — **kubeconform**, le schéma Kubernetes. Il attrape ce qu'aucun test Go ne peut
-  voir : un `terminationGracePeriodSecond` mal orthographié est ignoré en silence par l'API server.
+- `make manifests` — **kubeconform**, le schéma Kubernetes. Il attrape ce que la garde Go ne regarde
+  pas : un `maxUnavailible: 1` dans un PDB laisse un PDB qui ne protège rien, et la garde Go — qui
+  vérifie qu'un PDB *existe* et qu'il sélectionne bien le Deployment — passe au vert (vérifié).
 - `go test ./internal/deploy/` — les invariants **de ce dépôt** : un Deployment par service `cmd/`,
   les probes sur le port ops, la période de grâce, le port ops absent des Services, un PDB par
   Deployment, les secrets par référence, les surcharges de port obligatoires, le plafond des HPA.
