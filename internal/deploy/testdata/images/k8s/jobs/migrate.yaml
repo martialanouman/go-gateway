@@ -1,0 +1,14 @@
+# The migrate Job. Its dockers_v2 entry omits extra_files and its Dockerfile omits the COPY, so both
+# halves of migrations-in-migrate-image fire.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate-postgres
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: ghcr.io/martialanouman/go-gateway/migrate:v0.0.0
+          args: ["-store", "postgres", "-dir", "migrations", "up"]

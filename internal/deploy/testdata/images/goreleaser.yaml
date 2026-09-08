@@ -1,0 +1,37 @@
+# Deliberately broken. See README.md.
+version: 2
+builds:
+  - id: image-b
+    main: ./cmd/image-b
+    binary: image-b
+  - id: image-c
+    main: ./cmd/image-c
+    binary: image-c
+  - id: migrate
+    main: ./cmd/migrate
+    binary: migrate
+  - id: orphan
+    main: ./cmd/orphan
+    binary: orphan
+
+dockers_v2:
+  # tags: "latest" instead of {{ .Tag }} -> image-has-docker-entry
+  - id: image-b
+    ids: [image-b]
+    images: ["ghcr.io/martialanouman/go-gateway/image-b"]
+    tags: ["latest"]
+  - id: image-c
+    ids: [image-c]
+    images: ["ghcr.io/martialanouman/go-gateway/image-c"]
+    tags: ["{{ .Tag }}"]
+  # no extra_files -> migrations-in-migrate-image
+  - id: migrate
+    ids: [migrate]
+    dockerfile: Dockerfile.migrate
+    images: ["ghcr.io/martialanouman/go-gateway/migrate"]
+    tags: ["{{ .Tag }}"]
+  # published, deployed nowhere -> docker-entry-is-deployed
+  - id: orphan
+    ids: [orphan]
+    images: ["ghcr.io/martialanouman/go-gateway/orphan"]
+    tags: ["{{ .Tag }}"]

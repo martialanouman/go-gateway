@@ -1,0 +1,30 @@
+# syntax=docker/dockerfile:1
+#
+# The migration tool: the ONLY image of the set that carries files. cmd/migrate reads .sql from disk at
+# paths RELATIVE to its working directory —
+#   postgres.DefaultMigrationsDir   = "migrations"             (internal/storage/postgres/migrate.go:20)
+#   clickhouse.DefaultMigrationsDir = "migrations/clickhouse"  (internal/storage/clickhouse/migrate.go:22)
+# and deploy/k8s/jobs/migrate-postgres.yaml passes `-dir migrations`. A static binary without those
+# files fails on the first start of both Jobs.
+#
+# Do NOT fold this into the generic Dockerfile by adding COPY migrations there: extra_files is
+# per-entry, so the path would not exist in the other eleven build contexts — and if it were staged for
+# all of them, the SQL schema would land in the content-key-svc image, whose surface ADR-0011 requires
+# to be the narrowest of the lot.
+#
+# Same base as Dockerfile, and the guard in internal/deploy requires it to stay the same: a base that
+# drifts between the two files is a base nobody decided.
+FROM gcr.io/distroless/static-debian12:nonroot
+
+ARG TARGETPLATFORM
+
+USER 65532:65532
+
+# Load-bearing: the two paths above are relative to the working directory. / resolves them to
+# /migrations and /migrations/clickhouse. Changing it breaks both Jobs.
+WORKDIR /
+
+COPY $TARGETPLATFORM/migrate /app
+COPY migrations /migrations
+
+ENTRYPOINT ["/app"]

@@ -1,8 +1,8 @@
 # GoReleaser config (schema v2). Builds the deployable services and cuts a GitHub Release for the
 # tag the release workflow creates. Version metadata is stamped into internal/platform/buildinfo via
 # -ldflags so every binary reports the release version. fake-smsc is intentionally omitted: it is a
-# local test peer, not a deployable. Container images are a later step (see the commented dockers
-# block) once the Dockerfiles exist.
+# local test peer, not a deployable. Container images ship from the dockers_v2 block at the
+# bottom (step-270b): one per DEPLOYED binary, multi-arch, built from the two Dockerfiles at the root.
 version: 2
 
 project_name: go-gateway
@@ -23,6 +23,13 @@ builds:
       - -X github.com/martialanouman/go-gateway/internal/platform/buildinfo.Version={{ .Version }}
       - -X github.com/martialanouman/go-gateway/internal/platform/buildinfo.Commit={{ .Commit }}
       - -X github.com/martialanouman/go-gateway/internal/platform/buildinfo.Date={{ .Date }}
+  - id: smpp-server-svc
+    main: ./cmd/smpp-server-svc
+    binary: smpp-server-svc
+    env: [CGO_ENABLED=0]
+    goos: [linux]
+    goarch: [amd64, arm64]
+    ldflags: *ldflags
   - id: router-svc
     main: ./cmd/router-svc
     binary: router-svc
@@ -112,6 +119,10 @@ archives:
     ids: [rest-api-svc]
     formats: ["tar.gz"]
     name_template: &archive_name "{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+  - id: smpp-server-svc
+    ids: [smpp-server-svc]
+    formats: ["tar.gz"]
+    name_template: *archive_name
   - id: router-svc
     ids: [router-svc]
     formats: ["tar.gz"]
@@ -182,9 +193,100 @@ changelog:
 release:
   prerelease: auto
 
-# Container images: enable once the service Dockerfiles land — that is step-270b, which blocks step-280
-# and step-410. deploy/k8s already names the images this block must produce, so the tags are settled:
-# each service gets a `dockers:` entry tagged with {{ .Version }}, pushed to GHCR.
-# dockers:
-#   - image_templates: ["ghcr.io/martialanouman/go-gateway/rest-api-svc:{{ .Version }}"]
-#     ...
+# Container images (step-270b). dockers_v2 builds the multi-arch manifest in ONE `docker buildx build
+# --push`, so there is no per-platform entry and no docker_manifests: — twelve entries, twelve tags.
+# Platforms default to the goarch of the builds above (amd64 + arm64); these Dockerfiles have no RUN,
+# so nothing ever executes under emulation and the second architecture costs a layer extraction.
+#
+# The tag is {{ .Tag }} (v1.2.3, WITH the v), not {{ .Version }} (1.2.3): deploy/k8s carries the
+# :v0.0.0 placeholder and scripts/render-manifests.sh substitutes the published tag verbatim.
+#
+# One image per DEPLOYED binary. mt-replay is built and archived but no manifest deploys it, so it gets
+# no image — an image nobody deploys is attack surface published for free, and it goes stale with
+# nothing to report it. internal/deploy holds both directions.
+#
+# NOTE: images are built in the PUBLISH phase. `goreleaser build` and `release --skip=docker` do not
+# build them; `release --snapshot` does, without pushing.
+dockers_v2:
+  - id: rest-api-svc
+    ids: [rest-api-svc]
+    images: ["ghcr.io/martialanouman/go-gateway/rest-api-svc"]
+    tags: ["{{ .Tag }}"]
+    build_args: { BINARY: rest-api-svc }
+    labels: &oci_labels
+      org.opencontainers.image.title: "{{ .ProjectName }}"
+      org.opencontainers.image.source: "{{ .GitURL }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.created: "{{ .Date }}"
+  - id: smpp-server-svc
+    ids: [smpp-server-svc]
+    images: ["ghcr.io/martialanouman/go-gateway/smpp-server-svc"]
+    tags: ["{{ .Tag }}"]
+    build_args: { BINARY: smpp-server-svc }
+    labels: *oci_labels
+  - id: router-svc
+    ids: [router-svc]
+    images: ["ghcr.io/martialanouman/go-gateway/router-svc"]
+    tags: ["{{ .Tag }}"]
+    build_args: { BINARY: router-svc }
+    labels: *oci_labels
+  - id: connector-pool-svc
+    ids: [connector-pool-svc]
+    images: ["ghcr.io/martialanouman/go-gateway/connector-pool-svc"]
+    tags: ["{{ .Tag }}"]
+    build_args: { BINARY: connector-pool-svc }
+    labels: *oci_labels
+  - id: admin-api-svc
+    ids: [admin-api-svc]
+    images: ["ghcr.io/martialanouman/go-gateway/admin-api-svc"]
+    tags: ["{{ .Tag }}"]
+    build_args: { BINARY: admin-api-svc }
+    labels: *oci_labels
+  - id: session-manager-svc
+    ids: [session-manager-svc]
+    images: ["ghcr.io/martialanouman/go-gateway/session-manager-svc"]
+    tags: ["{{ .Tag }}"]
+    build_args: { BINARY: session-manager-svc }
+    labels: *oci_labels
+  - id: billing-svc
+    ids: [billing-svc]
+    images: ["ghcr.io/martialanouman/go-gateway/billing-svc"]
+    tags: ["{{ .Tag }}"]
+    build_args: { BINARY: billing-svc }
+    labels: *oci_labels
+  - id: content-key-svc
+    ids: [content-key-svc]
+    images: ["ghcr.io/martialanouman/go-gateway/content-key-svc"]
+    tags: ["{{ .Tag }}"]
+    build_args: { BINARY: content-key-svc }
+    labels: *oci_labels
+  - id: mo-dlr-router-svc
+    ids: [mo-dlr-router-svc]
+    images: ["ghcr.io/martialanouman/go-gateway/mo-dlr-router-svc"]
+    tags: ["{{ .Tag }}"]
+    build_args: { BINARY: mo-dlr-router-svc }
+    labels: *oci_labels
+  - id: config-sync
+    ids: [config-sync]
+    images: ["ghcr.io/martialanouman/go-gateway/config-sync"]
+    tags: ["{{ .Tag }}"]
+    build_args: { BINARY: config-sync }
+    labels: *oci_labels
+  - id: kafka-provision
+    ids: [kafka-provision]
+    images: ["ghcr.io/martialanouman/go-gateway/kafka-provision"]
+    tags: ["{{ .Tag }}"]
+    build_args: { BINARY: kafka-provision }
+    labels: *oci_labels
+  # The only entry that carries files: cmd/migrate reads the .sql from disk. extra_files stages the
+  # directory into the build context; Dockerfile.migrate copies it and pins the WORKDIR the two
+  # relative paths resolve against. Either half alone still ships a broken image.
+  - id: migrate
+    ids: [migrate]
+    dockerfile: Dockerfile.migrate
+    images: ["ghcr.io/martialanouman/go-gateway/migrate"]
+    tags: ["{{ .Tag }}"]
+    extra_files: [migrations]
+    labels: *oci_labels
+

@@ -1,0 +1,6 @@
+# Violates, on purpose: image-nonroot (USER 0 is root spelled numerically) and
+# migrations-in-migrate-image (no COPY of the migrations directory).
+FROM gcr.io/distroless/static-debian12:nonroot
+USER 0
+COPY migrate /app
+ENTRYPOINT ["/app"]
