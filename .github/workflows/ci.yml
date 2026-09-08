@@ -145,6 +145,61 @@ jobs:
       - name: kubeconform
         run: make kubeconform manifests
 
+  image:
+    name: Image builds, runs non-root and refuses an incomplete production config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The release configuration itself, before any build: a malformed dockers_v2 entry must not be
+      # discovered during a release.
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: check
+
+      # ONE image, not twelve. This job proves the pattern works; that all twelve follow it is the
+      # Go guard's job, and that one costs no Docker at all. content-key-svc is the one that matters:
+      # ADR-0011 makes it the narrowest surface of the set, and it holds the KEK.
+      - name: Build the image
+        run: make image SVC=content-key-svc
+
+      - name: Non-root, and no shell to escalate from
+        run: |
+          set -euo pipefail
+          img=ghcr.io/martialanouman/go-gateway/content-key-svc:dev
+
+          # Exactly what the kubelet reads for runAsNonRoot: a non-numeric user makes it refuse the pod.
+          user=$(docker inspect -f '{{.Config.User}}' "$img")
+          [ "$user" = "65532:65532" ] || { echo "::error::USER=$user, want 65532:65532"; exit 1; }
+
+          entry=$(docker inspect -f '{{json .Config.Entrypoint}}' "$img")
+          [ "$entry" = '["/app"]' ] || { echo "::error::entrypoint=$entry"; exit 1; }
+
+          # Proof at the filesystem level, not through a `which` we could not run for lack of a shell.
+          docker create --name probe "$img" >/dev/null
+          if docker export probe | tar -t | grep -Eq '(^|/)(sh|bash|dash|ash|busybox)$'; then
+            echo "::error::the image ships a shell"; docker rm probe; exit 1
+          fi
+          docker rm probe >/dev/null
+
+      # The behaviour ENVIRONMENT=production guarantees, and that an image would only be seen to have
+      # lost at deploy time. Only the first refusal is checked here: everything past the configuration
+      # gate needs a reachable Postgres, which is not this job's business.
+      - name: The image must refuse an incomplete production config
+        run: |
+          set -euo pipefail
+          img=ghcr.io/martialanouman/go-gateway/content-key-svc:dev
+
+          if out=$(docker run --rm -e ENVIRONMENT=production "$img" 2>&1); then
+            echo "::error::started on an incomplete production config"; echo "$out"; exit 1
+          fi
+          grep -q "POSTGRES_URL" <<<"$out" || { echo "::error::unexpected refusal: $out"; exit 1; }
+
   contracts:
     name: Contracts version gate
     runs-on: ubuntu-latest

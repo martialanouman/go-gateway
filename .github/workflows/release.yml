@@ -1,14 +1,17 @@
-# Release automation (plan §4). On every merge to main, derive the next SemVer from the conventional
-# commits since the last tag, create and push that tag, then build the service binaries and cut a
-# GitHub Release from it. A merge that carries no feat/fix (docs, chore, ci only) cuts no release.
+# Release automation (plan §4). Run BY HAND: derive the next SemVer from the conventional commits
+# since the last tag, create and push that tag, then build the binaries, the container images and cut
+# a GitHub Release from it. A base carrying no feat/fix (docs, chore, ci only) cuts no release.
+#
+# Manual on purpose (step-270b). A release is a gesture, not a side effect of merging: it publishes
+# twelve container images to a public registry, and that is not something a merge should do on its
+# own. One dispatch does the whole thing — tag, archives, images, Release.
 #
 # Everything runs in one job on purpose: a tag pushed with GITHUB_TOKEN does not trigger another
 # workflow, so a separate `on: push: tags` release job would never fire.
 name: Release
 
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
 
 # Never cancel a release that is already publishing; queue instead.
 concurrency:
@@ -17,6 +20,7 @@ concurrency:
 
 permissions:
   contents: write # create tags and the GitHub Release
+  packages: write # push the container images to GHCR (the packages belong to this repository)
 
 jobs:
   release:
@@ -51,6 +55,21 @@ jobs:
       - name: Fetch the new tag into the local checkout
         if: steps.tag.outputs.new_tag != ''
         run: git fetch --force origin "refs/tags/${{ steps.tag.outputs.new_tag }}:refs/tags/${{ steps.tag.outputs.new_tag }}"
+
+      # buildx with the docker-container driver: the runner's default driver cannot build for more
+      # than one platform. QEMU is NOT needed — the Dockerfiles have no RUN, so nothing ever executes
+      # under emulation and the second architecture costs a layer extraction.
+      - uses: docker/setup-buildx-action@v3
+        if: steps.tag.outputs.new_tag != ''
+
+      # Before GoReleaser, not after: dockers_v2 pushes DURING the build, because buildx cannot
+      # assemble a multi-arch manifest without pushing it.
+      - uses: docker/login-action@v3
+        if: steps.tag.outputs.new_tag != ''
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Release with GoReleaser
         if: steps.tag.outputs.new_tag != ''
