@@ -15,10 +15,28 @@ Deux gardes les tiennent, et elles ne se recouvrent pas :
 
 ## Ce que ces manifests ne contiennent pas
 
-- **Aucune image n'existe encore.** Elles sont nommées par convention
-  (`ghcr.io/martialanouman/go-gateway/<svc>:<version>`) ; les Dockerfiles et la publication GHCR sont
-  **step-270b**, qui bloque step-280 et step-410. Le tag `v0.0.0` est un gabarit : la chaîne de
-  déploiement y substitue la version publiée.
+- **Les images existent depuis step-270b**, publiées sur GHCR par le workflow `Release` — qui se
+  déclenche **à la main** (`workflow_dispatch`), pas au merge. Elles sont `linux/amd64` et
+  `linux/arm64`, distroless, sans shell, en `USER 65532`.
+  **Les paquets GHCR naissent privés.** Tant qu'ils ne sont pas basculés en public, ou qu'un
+  `imagePullSecret` n'est pas posé dans le namespace, tous les pods restent en `ImagePullBackOff` :
+  c'est le premier mur d'un déploiement neuf.
+- **Le tag `v0.0.0` est un gabarit, et doit le rester.** La version publiée y est substituée au
+  déploiement :
+
+  ```
+  make deploy-render VERSION=v1.4.2 | kubectl apply -f -
+  ```
+
+  Le script relit sa propre sortie et échoue si un `v0.0.0` a survécu. Ne figez pas une version à la
+  main dans un fichier : elle ne serait plus substituée, et ce service resterait en arrière pendant
+  que les onze autres avancent. Une garde de `internal/deploy` le refuse.
+- **Le `nofile` du nœud est un prérequis de `smpp-server-svc`, que ces manifests ne peuvent pas
+  poser.** `SMPP_MAX_CONNS` vaut 16384 et borne les descripteurs qu'un flood peut épingler. Le
+  runtime Go relève seul le *soft* limit jusqu'au *hard* (`syscall/rlimit.go`), mais le hard vient du
+  nœud — `LimitNOFILE` de l'unit systemd de containerd — et ni l'image, ni un `securityContext`, ni
+  un initContainer ne le changent. Le défaut de containerd (1048576) est très au-dessus de 16384 ;
+  **step-280 le vérifie sur environnement représentatif** plutôt que de le supposer.
 - **Aucun `Secret`.** Les manifests ne font que référencer `gateway-secrets` ; step-300 (TLS, certs)
   et step-310 (auth opérateur) le provisionnent. Un secret dans ce dépôt serait un secret dans
   l'historique git.

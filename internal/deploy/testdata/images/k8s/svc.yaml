@@ -1,0 +1,50 @@
+# Violates, on purpose: image-has-build (image-a is built by nothing).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: image-a
+  labels:
+    app: image-a
+spec:
+  template:
+    metadata:
+      labels:
+        app: image-a
+    spec:
+      containers:
+        - name: image-a
+          image: ghcr.io/martialanouman/go-gateway/image-a:v0.0.0
+---
+# Violates, on purpose: image-has-docker-entry (its entry publishes "latest", not {{ .Tag }}).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: image-b
+  labels:
+    app: image-b
+spec:
+  template:
+    metadata:
+      labels:
+        app: image-b
+    spec:
+      containers:
+        - name: image-b
+          image: ghcr.io/martialanouman/go-gateway/image-b:v0.0.0
+---
+# Violates, on purpose: image-tag-placeholder (a version pinned by hand is never substituted).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: image-c
+  labels:
+    app: image-c
+spec:
+  template:
+    metadata:
+      labels:
+        app: image-c
+    spec:
+      containers:
+        - name: image-c
+          image: ghcr.io/martialanouman/go-gateway/image-c:v1.2.3

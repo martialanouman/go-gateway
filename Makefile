@@ -9,6 +9,12 @@ MODULE      := github.com/martialanouman/go-gateway
 MIGRATIONS  := migrations
 # The Kubernetes API the manifests are validated against.
 KUBERNETES_VERSION := 1.31.0
+# Container images. IMAGE_ARCH defaults to the host so `make image` is fast on a laptop; the release
+# publishes both amd64 and arm64 from .goreleaser.yaml.
+IMAGE_REGISTRY ?= ghcr.io/martialanouman/go-gateway
+IMAGE_TAG      ?= dev
+IMAGE_ARCH     ?= $(shell go env GOARCH)
+IMAGE_CTX      := dist/imagectx
 COMPOSE     := docker compose
 
 # Pinned tool versions. Guessing these is how a lint run passes locally and fails in CI.
@@ -226,9 +232,28 @@ kubeconform: ## Install kubeconform at the pinned version (CI uses this; `make t
 manifests: ## Validate deploy/k8s against the Kubernetes schemas (kubeconform; needs network)
 	kubeconform -strict -summary -kubernetes-version $(KUBERNETES_VERSION) deploy/k8s
 
+# Container images. The context is dist/imagectx, laid out the way GoReleaser stages artefacts
+# (<goos>/<goarch>/<binary>) — NEVER the repository root, which is why no .dockerignore is needed and
+# why this target proves the same Dockerfile the release uses.
+.PHONY: image
+image: ## Build one service image locally: make image SVC=content-key-svc
+	@if [ -z "$(SVC)" ]; then echo "usage: make image SVC=content-key-svc"; exit 2; fi
+	rm -rf $(IMAGE_CTX) && mkdir -p $(IMAGE_CTX)/linux/$(IMAGE_ARCH)
+	CGO_ENABLED=0 GOOS=linux GOARCH=$(IMAGE_ARCH) \
+		go build -o $(IMAGE_CTX)/linux/$(IMAGE_ARCH)/$(SVC) ./cmd/$(SVC)
+	@if [ "$(SVC)" = "migrate" ]; then cp -R migrations $(IMAGE_CTX)/migrations; fi
+	docker build --platform linux/$(IMAGE_ARCH) \
+		$(if $(filter migrate,$(SVC)),-f Dockerfile.migrate,-f Dockerfile --build-arg BINARY=$(SVC)) \
+		-t $(IMAGE_REGISTRY)/$(SVC):$(IMAGE_TAG) $(IMAGE_CTX)
+
+.PHONY: deploy-render
+deploy-render: ## Render deploy/k8s at a published tag: make deploy-render VERSION=v1.4.2 | kubectl apply -f -
+	@scripts/render-manifests.sh $(VERSION)
+
 # Out of check, on purpose: contracts-types (Node), load-smoke (k6), migrate (a database),
-# smsc-sim (builds the simulator image) and manifests (kubeconform fetches the Kubernetes schemas over
-# the network) — CI runs them on every PR. check needs Docker and the smsc-sim image already built:
+# smsc-sim (builds the simulator image), manifests (kubeconform fetches the Kubernetes schemas over
+# the network) and image (Docker) — CI runs them on every PR. check needs Docker and the smsc-sim
+# image already built:
 # under CI=1 an integration test that cannot start its dependency FAILS instead of skipping
 # (internal/testutil/ciguard), exactly as in the pipeline.
 .PHONY: check

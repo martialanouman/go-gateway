@@ -1,0 +1,14 @@
+# The FIRST Job pulling the migrate image, in walk order, and the well-formed one. Its only job here is
+# to be seen first.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate-clickhouse
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: ghcr.io/martialanouman/go-gateway/migrate:v0.0.0
+          args: ["-store", "clickhouse", "up"]
