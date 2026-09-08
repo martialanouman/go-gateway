@@ -1,0 +1,26 @@
+# Creates the topics with their partition counts and replication factor 3.
+#
+# Partition counts are not cosmetic: they cap the router's fan-out (one goroutine per partition
+# assigned to a pod), so they must DOMINATE the HPA ceiling rather than equal it (ADR-0014), and
+# mt.routed needs one partition per bind of each connector — bind_pool_size, via
+# KAFKA_TOPIC_PARTITIONS_OVERRIDES. Run it before the first rollout and after adding a connector.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kafka-provision
+  labels:
+    app.kubernetes.io/part-of: go-gateway
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: go-gateway
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: kafka-provision
+          image: ghcr.io/martialanouman/go-gateway/kafka-provision:v0.0.0
+          envFrom:
+            - configMapRef:
+                name: gateway-config

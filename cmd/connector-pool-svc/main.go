@@ -128,7 +128,7 @@ func run() error {
 		pollQueueDepth(c, app.consumer, app.emitter, app.catalog, logger)
 		return nil
 	})
-	if err := g.Run(ctx, logger); err != nil {
+	if err := g.Run(ctx, logger, cfg.DrainBudget); err != nil {
 		return err
 	}
 

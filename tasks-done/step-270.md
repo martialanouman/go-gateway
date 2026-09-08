@@ -58,9 +58,72 @@ Fournir les manifests Kubernetes sous `deploy/` pour tous les services : Deploym
   plafonner le drain dans `supervisor`, ou l'assumer explicitement et dimensionner la grâce en
   conséquence.
 
+## Design arrêté
+
+**Quatre arbitrages, rendus avant la première ligne.**
+
+1. **Manifests seuls ; les images partent en step-270b.** Le dépôt n'a aucun `Dockerfile` et le bloc
+   `dockers:` de `.goreleaser.yaml` est commenté depuis M0 : les manifests nomment donc des images
+   que rien ne construit. Découpé parce que les deux revues n'ont rien en commun — ports, probes et
+   budget de drain d'un côté, surface d'attaque et chaîne de publication de l'autre. La dette a une
+   fiche et une échéance : step-270b bloque step-280 et step-410.
+2. **Le drain est plafonné dans `supervisor`**, pas assumé. Sans plafond,
+   `terminationGracePeriodSeconds` est une arithmétique sur du sable. Le plafond a d'abord réutilisé
+   `SHUTDOWN_TIMEOUT` — « aucune variable neuve » — et **la revue de branche l'a cassé** : cette
+   valeur borne déjà *un* composant, or le drain d'`Ordered` est une séquence. Un composant dépensant
+   la fenêtre qu'on lui accorde épuisait le budget global à lui seul, requalifiait un drain légitime
+   en dépassement, et faisait abandonner tout ce qui était enregistré derrière lui — c'est-à-dire
+   réintroduisait la perte de `submit_sm` en vol que step-260 avait corrigée. `DRAIN_BUDGET` (90 s)
+   est donc une variable à part, et `config` refuse un budget ≤ `SHUTDOWN_TIMEOUT`.
+3. **Deux couches de validation, qui ne se recouvrent pas.** Vérifié plutôt que supposé : un
+   `maxUnavailible: 1` dans un PDB laisse un budget qui ne protège rien et passe la garde Go — elle
+   vérifie qu'un PDB existe et sélectionne son Deployment, pas l'orthographe d'un champ qu'elle ne lit
+   pas. kubeconform le refuse. Inversement, kubeconform ne sait rien d'un Deployment manquant ni d'un
+   `maxReplicas` qui annule le fan-out.
+4. **Échantillonnage de traces : statu quo.** Aucun collecteur OTel n'est déployé depuis ce dépôt (le
+   guide §13 y place collecteur et alerting), et à `TRACES_SAMPLER_ARG=1.0` le code in-process est
+   inerte — les deux coexisteront le jour où un collecteur arrive. Le godoc de `tracing.go` qui
+   affirmait le contraire depuis step-181 est corrigé.
+
+**`content-key-svc` est entré au périmètre.** La fiche en listait neuf et l'oubliait ; il est
+déployable depuis ADR-0011, supervisé, compté dans les dix de la garde du drain — et il n'avait
+même pas d'archive dans `.goreleaser.yaml`.
+
+**Trois défauts trouvés en revue de branche, tous reproduits avant d'être corrigés.** Outre le budget
+ci-dessus : un dépassement pouvait être annoncé sans nommer aucun composant (le timer et le dernier
+composant devenant prêts ensemble, `select` tranche au hasard — 188 fois sur 400 en conditions
+forcées) ; et les `Job` échappaient à toute la garde, si bien qu'un `CLICKHOUSE_PASSWORD` en clair,
+une variable typo et une image arbitraire passaient les deux couches — dans le fichier même que cette
+fiche désignait pour ce mot de passe.
+
+**Deux défauts de plus, trouvés à la seconde passe de revue — le correctif ci-dessus en avait créé
+un.** Confirmer qu'un composant s'était bien arrêté avant de l'accuser était juste, mais la réception
+sur l'échéance **consommait le canal du timer**, qui ne délivre qu'une fois : chaque composant
+suivant de la séquence attendait alors un canal qui ne se déclencherait plus jamais. Le plafond
+disparaissait en silence pour le reste du drain — la panne même qu'il venait fermer. L'échéance est
+désormais le `Done` d'un contexte, qui reste **fermé** une fois franchi. Un composant ne suffisait pas
+à le montrer : il faut qu'une égalité soit suivie d'un autre composant à drainer.
+Et `known-env-name` ne lisait que le `env:` d'un conteneur, jamais les clés du **ConfigMap partagé** —
+là où une typo est distribuée aux dix services d'un coup par `envFrom`, et abandonnée en silence par
+`caarlos0/env`.
+
+**Deux choses que la garde a dû apprendre en route.** Elle résout `envFrom` : sans cela, un
+`ENVIRONMENT` posé dans le ConfigMap ne satisfaisait aucune règle et les dix services paraissaient
+non conformes. Et elle dérive `DRAIN_DELAY`/`SHUTDOWN_TIMEOUT` du manifeste, en retombant sur les
+tags `envDefault` de `config.Config` — changer un défaut en Go recalcule ce que la grâce doit
+couvrir, au lieu de laisser la garde épinglée sur un nombre périmé.
+
+**Ce qui reste à step-280**, et qui n'était pas devinable ici : `POSTGRES_MAX_CONNS` de `router-svc`,
+la mémoire et la politique d'éviction du Redis partagé, et le `maxReplicas` chiffré de chaque HPA.
+Les valeurs posées préservent la propriété d'ADR-0014 ; elles ne sont pas un dimensionnement.
+
 ## Tests (écrits dans la même PR)
-- Validation statique des manifests (kubeconform/`kubectl --dry-run=client` ou lint YAML en CI).
-- Cohérence des ports/probes avec §1.4/§1.5 (revue + check automatisable).
+- `internal/deploy` : onze invariants sur l'arbre réel, et `testdata/broken/` qui les viole tous une
+  fois — un second test exige que chacun y soit rapporté, sinon onze assertions jamais vues échouer.
+- `supervisor` : un composant qui ignore son contexte ne tient plus le drain ; le budget n'est pas
+  dépensé sur un arrêt propre ; une vraie erreur de composant prime sur le dépassement ; et le budget
+  borne encore ce qui suit une égalité sur un composant plus tôt dans la séquence.
+- `make manifests` : kubeconform `-strict` sur les 36 ressources.
 
 ## Hérité de step-250e et step-260e — deux dimensionnements à porter, un levier à ne pas porter
 
@@ -83,9 +146,13 @@ refléter, les deux premières une fois mesurées par step-280 :
   section ClickHouse, le Job de migration ClickHouse compris.
 
 ## Definition of Done
-- [ ] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts (code inchangé)
-- [ ] manifests validés statiquement · probes/ports conformes §1.4/§1.5 · PDB cohérent avec le drain
-- [ ] port ops non exposé publiquement
+- [x] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts
+- [x] manifests validés statiquement · probes/ports conformes §1.4/§1.5 · PDB cohérent avec le drain
+- [x] port ops non exposé publiquement
+
+> « pas de code Go » n'a pas tenu, et c'était le bon arbitrage : la dette du drain non borné que
+> cette fiche portait ne se solde qu'en Go, et une garde qui tient les manifests au code est elle
+> aussi du Go. Les manifests, eux, sont bien du YAML seul.
 
 ## Hors périmètre
 Checklist de mise en production → step-410. Dashboards Grafana/règles Alertmanager (infra).

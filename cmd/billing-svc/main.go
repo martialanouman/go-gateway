@@ -99,7 +99,7 @@ func run() error {
 	g.Add("reservation reaper", func(c context.Context) error {
 		return runReap(c, app.reaper, cfg.BillingReaper.Interval, logger)
 	})
-	if err := g.Run(ctx, logger); err != nil {
+	if err := g.Run(ctx, logger, cfg.DrainBudget); err != nil {
 		return err
 	}
 

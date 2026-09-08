@@ -101,7 +101,7 @@ func run() error {
 		pollQueueDepth(c, []lagReader{app.consumer, app.outcome.kafka}, app.emitter, app.catalog, logger)
 		return nil
 	})
-	if err := g.Run(ctx, logger); err != nil {
+	if err := g.Run(ctx, logger, cfg.DrainBudget); err != nil {
 		return err
 	}
 

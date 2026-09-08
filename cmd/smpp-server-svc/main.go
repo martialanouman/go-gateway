@@ -97,7 +97,7 @@ func run() error {
 	g.Add("deliver grpc server", func(c context.Context) error {
 		return runGRPC(c, app.grpc, cfg.GRPC.Port, cfg.ShutdownTimeout, logger)
 	})
-	if err := g.Run(ctx, logger); err != nil {
+	if err := g.Run(ctx, logger, cfg.DrainBudget); err != nil {
 		return err
 	}
 

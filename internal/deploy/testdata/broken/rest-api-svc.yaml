@@ -1,0 +1,183 @@
+# Violates, on purpose: deployment-per-service (nine services missing, plus not-a-service below),
+# probe-endpoints (liveness on /readyz), probe-timeout (2s), grace-period (30 < 65),
+# secrets-by-reference (POSTGRES_URL literal, and the Secret below), required-override (no HTTP_PORT,
+# no ENVIRONMENT), known-env-name (POSTGRE_URL), image-convention (nginx).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rest-api-svc
+  labels:
+    app: rest-api-svc
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: rest-api-svc
+  template:
+    metadata:
+      labels:
+        app: rest-api-svc
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: rest-api-svc
+          image: nginx:latest
+          env:
+            - name: POSTGRES_URL
+              value: postgres://gateway:gateway@db:5432/gateway
+            # The HPA below scales this Deployment: 8 pods on the 6 partitions set HERE is one lane
+            # per pod and two pods with none. Against config's default of 12 it looks fine.
+            - name: KAFKA_TOPIC_PARTITIONS
+              value: "6"
+            - name: POSTGRE_URL
+              value: typo
+          livenessProbe:
+            httpGet:
+              path: /readyz
+              port: 9090
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 9090
+            timeoutSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rest-api-svc
+spec:
+  selector:
+    app: rest-api-svc
+  ports:
+    - name: ops
+      port: 9090
+      targetPort: 9090
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gateway-secrets
+stringData:
+  POSTGRES_URL: postgres://gateway:gateway@db:5432/gateway
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: not-a-service
+  labels:
+    app: not-a-service
+spec:
+  selector:
+    matchLabels:
+      app: not-a-service
+  template:
+    metadata:
+      labels:
+        app: not-a-service
+    spec:
+      terminationGracePeriodSeconds: 90
+      containers:
+        # Two containers disagreeing on the drain: the grace period must cover the SLOWEST of them
+        # (5 + 300 + 30 = 335 s), not whichever happens to be written last (5 + 10 + 30 = 45 s).
+        - name: not-a-service
+          image: ghcr.io/martialanouman/go-gateway/not-a-service:v0.0.0
+          env:
+            - name: ENVIRONMENT
+              value: production
+            - name: DRAIN_BUDGET
+              value: 300s
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 9090
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 9090
+            timeoutSeconds: 4
+        - name: sidecar
+          image: ghcr.io/martialanouman/go-gateway/sidecar:v0.0.0
+          env:
+            - name: ENVIRONMENT
+              value: production
+            - name: DRAIN_BUDGET
+              value: 10s
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 9090
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 9090
+            timeoutSeconds: 4
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: rest-api-svc
+spec:
+  scaleTargetRef:
+    kind: Deployment
+    name: rest-api-svc
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+    - type: External
+      external:
+        metric:
+          name: queue_depth_records
+          selector:
+            matchLabels:
+              queue: mt.inbound
+---
+# Violates, on purpose: job-container-rules (a literal secret, an unknown variable name, an image off
+# the release registry). A Job has no ops port and exits, so probes and grace period do NOT apply.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate-postgres
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: postgres:18-alpine
+          env:
+            - name: POSTGRES_URL
+              value: postgres://gateway:gateway@db:5432/gateway
+            - name: POSTGRE_MAX_CONNS
+              value: "10"
+---
+# Violates, on purpose: known-env-name (POSTGRE_MAX_CONNS). A shared ConfigMap is where a typo hurts
+# most — envFrom hands it to every service at once, and caarlos0/env drops an unknown name in silence.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway-config
+data:
+  ENVIRONMENT: production
+  POSTGRE_MAX_CONNS: "10"
+---
+# Violates, on purpose: hpa-max-replicas (scaleTargetRef names no Deployment in the tree, so the
+# partition count backing the ceiling cannot be read at all — silence there would be an blind spot,
+# not a pass).
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: orphan-hpa
+spec:
+  scaleTargetRef:
+    kind: Deployment
+    name: gone-svc
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+    - type: External
+      external:
+        metric:
+          name: queue_depth_records
+          selector:
+            matchLabels:
+              queue: mt.inbound
