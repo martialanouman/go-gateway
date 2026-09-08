@@ -1,0 +1,33 @@
+# Violates, on purpose: deployment-per-service. Its extension is the point — a manifest saved as
+# .yml is a manifest Kubernetes applies and the guard must not skip.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stray-yml-svc
+  labels:
+    app: stray-yml-svc
+spec:
+  selector:
+    matchLabels:
+      app: stray-yml-svc
+  template:
+    metadata:
+      labels:
+        app: stray-yml-svc
+    spec:
+      terminationGracePeriodSeconds: 150
+      containers:
+        - name: stray-yml-svc
+          image: ghcr.io/martialanouman/go-gateway/stray-yml-svc:v0.0.0
+          env:
+            - name: ENVIRONMENT
+              value: production
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 9090
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 9090
+            timeoutSeconds: 4

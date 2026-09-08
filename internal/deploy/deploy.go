@@ -191,7 +191,9 @@ func Load(dir string) ([]Manifest, error) {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() || filepath.Ext(path) != ".yaml" {
+		// Both extensions: Kubernetes applies either, so a guard that reads one of them reports a
+		// clean tree while an unchecked Deployment ships beside it.
+		if d.IsDir() || !isManifest(path) {
 			return nil
 		}
 		docs, err := decodeFile(path)
@@ -251,5 +253,12 @@ func (m Manifest) ServiceName() string {
 	if v := m.Metadata.Labels["app"]; v != "" {
 		return v
 	}
-	return strings.TrimSuffix(filepath.Base(m.Source), ".yaml")
+	base := filepath.Base(m.Source)
+	return strings.TrimSuffix(base, filepath.Ext(base))
+}
+
+// isManifest reports whether the file is a YAML manifest, by either spelling of the extension.
+func isManifest(path string) bool {
+	ext := filepath.Ext(path)
+	return ext == ".yaml" || ext == ".yml"
 }
