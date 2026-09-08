@@ -218,6 +218,10 @@ tidy-check: ## Fail when go.mod/go.sum are not tidy
 # invariants this repo enforces (probes, ops port, grace period, secrets), and a misspelt field it
 # does not read — maxUnavailible in a PDB — leaves a budget that protects nothing while every Go
 # assertion still passes.
+.PHONY: kubeconform
+kubeconform: ## Install kubeconform at the pinned version (CI uses this; `make tools` covers it locally)
+	go install github.com/yannh/kubeconform/cmd/kubeconform@$(KUBECONFORM_VERSION)
+
 .PHONY: manifests
 manifests: ## Validate deploy/k8s against the Kubernetes schemas (kubeconform; needs network)
 	kubeconform -strict -summary -kubernetes-version $(KUBERNETES_VERSION) deploy/k8s

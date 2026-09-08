@@ -658,3 +658,18 @@ func TestGracePeriodCoversTheSlowestContainer(t *testing.T) {
 	t.Error("no grace-period violation for not-a-service: 90 s cannot cover a container asking for a " +
 		"300 s drain budget, and the rule read the last container instead of the slowest")
 }
+
+// TestLoadReadsYmlAsWellAsYaml: Load filtered on ".yaml", so a manifest saved as ".yml" was skipped
+// in silence. Kubernetes applies both; a guard that reads one of them reports a clean tree while an
+// unchecked Deployment ships beside it.
+func TestLoadReadsYmlAsWellAsYaml(t *testing.T) {
+	t.Parallel()
+
+	for _, v := range inspect(t, filepath.Join("testdata", "broken")) {
+		if strings.Contains(v.msg, "stray-yml-svc") {
+			return
+		}
+	}
+	t.Error("nothing reported for the Deployment in stray.yml — Load skipped the file for its " +
+		"extension, so a .yml manifest escapes every rule")
+}
