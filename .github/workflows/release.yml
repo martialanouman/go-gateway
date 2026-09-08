@@ -27,6 +27,18 @@ jobs:
     name: Tag and release
     runs-on: ubuntu-latest
     steps:
+      # workflow_dispatch lets the operator pick any ref in the UI. A release tags, cuts a GitHub
+      # Release and pushes twelve public images — from whatever was picked. `on: push: branches:[main]`
+      # used to make that structurally impossible; going manual removed the guarantee, so it is stated
+      # here instead. A failing step rather than a job-level `if:`, which would skip the job and show a
+      # green check for a release that never happened.
+      - name: Refuse to release from anywhere but main
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::dispatched from ${{ github.ref }}. A release tags the ref, publishes a GitHub \
+          Release and pushes twelve public images to GHCR — run it from main."
+          exit 1
+
       - uses: actions/checkout@v4
         with:
           # Full history and tags: the version bump and the changelog both need previous tags.

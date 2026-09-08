@@ -18,9 +18,10 @@ import (
 // pointed at a broken fixture instead.
 const goreleaserPath = "../../.goreleaser.yaml"
 
-// minImages is the floor for the real tree. An inspection that reads no image satisfies every
-// assertion it makes, so a wrong path reports a broken scan instead of a clean bill of health.
-// deploy/k8s names twelve today. The broken fixture is deliberately smaller and is not held to it.
+// minImages is the floor for the real tree, counted in REFERENCES rather than distinct names. An
+// inspection that reads no image satisfies every assertion it makes, so a wrong path reports a broken
+// scan instead of a clean bill of health. deploy/k8s holds thirteen references to twelve images today.
+// The broken fixture is deliberately smaller and is not held to it.
 const minImages = 12
 
 // wantTag is the tag every image entry must publish. {{ .Tag }} is v1.2.3, WITH the leading v;
@@ -93,9 +94,14 @@ type deployedImage struct {
 	source string
 }
 
-// deployedImages lists every image the manifest tree pulls, deduplicated by name — migrate appears in
-// two Jobs and is one image. An image outside the release registry is already reported by the manifest
-// guard's own image-convention rule, so it is skipped here rather than reported twice.
+// deployedImages lists EVERY image reference the manifest tree pulls, occurrence by occurrence — it
+// does not deduplicate. migrate is named twice (both migration Jobs), and the rules divide on exactly
+// that: whether an image is built and published is a question about the NAME, asked once, while the
+// tag it carries is a question about each REFERENCE. Deduplicating here answered the second question
+// with the first occurrence and cleared whatever the others said.
+//
+// An image outside the release registry is already reported by the manifest guard's own
+// image-convention rule, so it is skipped here rather than reported twice.
 func deployedImages(t *testing.T, dir string) []deployedImage {
 	t.Helper()
 
@@ -104,7 +110,6 @@ func deployedImages(t *testing.T, dir string) []deployedImage {
 		t.Fatalf("load %s: %v", dir, err)
 	}
 
-	seen := map[string]bool{}
 	var out []deployedImage
 	for _, m := range manifests {
 		for _, c := range m.Spec.Template.Spec.Containers {
@@ -112,10 +117,6 @@ func deployedImages(t *testing.T, dir string) []deployedImage {
 				continue
 			}
 			name, tag, _ := strings.Cut(strings.TrimPrefix(c.Image, imagePrefix), ":")
-			if seen[name] {
-				continue
-			}
-			seen[name] = true
 			out = append(out, deployedImage{name: name, tag: tag, source: m.Source})
 		}
 	}
@@ -197,11 +198,17 @@ func inspectImages(t *testing.T, manifestDir, releasePath string) []violation {
 		}
 	}
 
+	// Rules that speak once per image NAME, not once per reference: migrate is pulled by two Jobs and
+	// is one image, so reporting it twice would be noise.
+	reported := map[string]bool{}
 	for _, img := range images {
+		once := !reported[img.name]
+		reported[img.name] = true
+
 		// A manifest can only pull what the release builds. Without this a service is deployable,
 		// supervised, counted among the ten — and published nowhere, with nothing to say so until a
 		// rollout pulls an image that was never pushed.
-		if !binaries[img.name] {
+		if once && !binaries[img.name] {
 			add("image-has-build", "%s: pulls %s%s, and no build in %s produces a binary named %q — "+
 				"the image can never exist",
 				img.source, imagePrefix, img.name, filepath.Base(releasePath), img.name)
@@ -209,6 +216,8 @@ func inspectImages(t *testing.T, manifestDir, releasePath string) []violation {
 
 		entry, ok := entries[img.name]
 		switch {
+		case !once:
+			// Already answered for this name.
 		case !ok:
 			add("image-has-docker-entry", "%s: pulls %s%s, and no dockers_v2 entry in %s publishes it — "+
 				"the binary ships as an archive and the pod stays in ImagePullBackOff",
@@ -303,8 +312,16 @@ func inspectDockerfiles(cfg goreleaserConfig, root, releasePath string) []violat
 
 	// One base, decided once. Two Dockerfiles drifting onto different bases is a base nobody chose.
 	if len(bases) > 1 {
-		add("image-nonroot", "the Dockerfiles do not share one base: %v — a base that drifts between "+
-			"them is a base nobody decided", bases)
+		// Sorted: a map in a failure message reorders itself between runs, and a message that changes
+		// shape is a message people stop trusting.
+		distinct := make([]string, 0, len(bases))
+		for from, files := range bases {
+			slices.Sort(files)
+			distinct = append(distinct, fmt.Sprintf("%s (%s)", from, strings.Join(files, ", ")))
+		}
+		slices.Sort(distinct)
+		add("image-nonroot", "the Dockerfiles do not share one base: %s — a base that drifts between "+
+			"them is a base nobody decided", strings.Join(distinct, " vs "))
 	}
 	return out
 }
@@ -345,4 +362,22 @@ func TestTheImageGuardCatchesWhatItClaimsTo(t *testing.T) {
 				"either the fixture stopped violating it or the rule stopped looking", rule)
 		}
 	}
+}
+
+// TestEveryOccurrenceOfAnImageIsChecked pins a hole the first version of this guard shipped with.
+// deployedImages deduplicated by image name — right for the rules that speak once per image, wrong for
+// the ones that speak per occurrence. migrate is the only name deploy/k8s references twice (both
+// migration Jobs), so a version pinned by hand in the SECOND of them was cleared by the first, and the
+// one rule that exists to catch exactly that never fired.
+func TestEveryOccurrenceOfAnImageIsChecked(t *testing.T) {
+	t.Parallel()
+
+	for _, v := range inspectImages(t, filepath.Join("testdata", "images", "k8s"),
+		filepath.Join("testdata", "images", "goreleaser.yaml")) {
+		if v.rule == "image-tag-placeholder" && strings.Contains(v.msg, "migrate-postgres") {
+			return
+		}
+	}
+	t.Error("the hand-pinned tag in the second migrate Job went unreported — deployedImages keeps only " +
+		"the first occurrence of an image name, so the rule never sees the one that is wrong")
 }

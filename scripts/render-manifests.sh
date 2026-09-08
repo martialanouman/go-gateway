@@ -24,7 +24,7 @@ fi
 # Le tag publié par GoReleaser est {{ .Tag }} : vX.Y.Z, avec le v. Refuser tout le reste ici plutôt
 # que de laisser kubectl tirer une image qui n'existe pas.
 if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-  echo "$0: version %q invalide : ${VERSION} — attendu vX.Y.Z (le v compris)" >&2
+  echo "$0: version invalide : ${VERSION} — attendu vX.Y.Z (le v compris)" >&2
   exit 2
 fi
 

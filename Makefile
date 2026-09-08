@@ -244,7 +244,6 @@ image: ## Build one service image locally: make image SVC=content-key-svc
 	@if [ "$(SVC)" = "migrate" ]; then cp -R migrations $(IMAGE_CTX)/migrations; fi
 	docker build --platform linux/$(IMAGE_ARCH) \
 		$(if $(filter migrate,$(SVC)),-f Dockerfile.migrate,-f Dockerfile --build-arg BINARY=$(SVC)) \
-		--build-arg TARGETPLATFORM=linux/$(IMAGE_ARCH) \
 		-t $(IMAGE_REGISTRY)/$(SVC):$(IMAGE_TAG) $(IMAGE_CTX)
 
 .PHONY: deploy-render

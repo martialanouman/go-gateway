@@ -1,0 +1,16 @@
+# The SECOND Job pulling the migrate image, and the one carrying a hand-pinned version. migrate is the
+# only image name deploy/k8s references twice, so this is the one case where a guard that dedupes by
+# image name clears the occurrence that is actually wrong.
+# Violates, on purpose: image-tag-placeholder.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate-postgres
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: ghcr.io/martialanouman/go-gateway/migrate:v1.2.3
+          args: ["-store", "postgres", "-dir", "migrations", "up"]
