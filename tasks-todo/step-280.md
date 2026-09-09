@@ -1,7 +1,8 @@
 # step-280 — Campagne NFR pleine échelle sur environnement représentatif
 
 > **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
-> **Dépend de :** step-201, **step-201c**, **step-201d**, **step-201e**, **step-201f**, step-270, **step-270b** · **Bloque :** step-410
+> **Dépend de :** step-201, **step-201c**, **step-201d**, **step-201e**, **step-201f**, step-270,
+> **step-270b**, **step-270c** · **Bloque :** step-410
 
 ## But
 Rendre le **verdict NFR** que step-201 ne pouvait pas rendre : débit soutenu **8 000 SMS/s**, pic
@@ -30,6 +31,14 @@ par-worker (§2.5). Ici, seule **l'échelle** change.
 > connecteurs, qui borne aujourd'hui le bout-en-bout à 2 400/s contre les 10 400 `submit_sm/s` de la
 > cible. C'est **step-201f**, et elle bloque cette fiche pour la même raison que step-201e la bloquait :
 > une campagne pleine échelle qui démarre sans savoir à qui appartient le plafond mesurera l'hôte.
+
+> **Mise à jour (09/09/2026, step-270c ouverte).** Le prérequis logiciel de la section « profil de
+> routage L0 » est plus profond que ce qu'elle décrit : le banc ne mesure pas 0 % de trafic L0, **il ne
+> traverse pas du tout l'étage L0**. `internal/e2e/reference_test.go:887-893` branche le résolveur
+> déclaratif en direct, et le banc routeur isolé bouchonne le résolveur entièrement en figeant sa
+> destination à un seul numéro. **step-270c** livre le banc qui prix l'étage — les *ratios* (lookups
+> par message, part par `outcome`, octets par clé Redis, pression du pool pgx), qui seuls se
+> transposent depuis un portable. Elle ne rend aucun verdict et ne débloque pas le matériel.
 
 ## Prérequis logiciel : step-201c
 Le run de référence de step-201 a mesuré un plafond de sortie de **192–330 `submit_sm/s`** dû à quatre
@@ -98,6 +107,9 @@ Redis en régime établi, et une lecture Postgres par clé primaire à froid ou 
 3. **Empreinte Redis du cache.** `clés en vol = taux de peuplement × TTL(6 h)`, soit 1,3 à 10 Go sur le
    Redis partagé avec les soldes de facturation. Le TTL est une constante de paquet, sans levier de
    configuration : si le Redis se remplit, le recours est un redéploiement.
+
+**Les trois grandeurs se mesurent avec le banc de step-270c**, qui livre les ratios ; ce qui reste
+ici est de les évaluer à l'échelle et d'en tirer le dimensionnement.
 
 La campagne doit décider quelle part de numéros portés est représentative d'un agrégateur national
 (10 à 30 % en marché MNP mûr) et semer le banc en conséquence, sans quoi le dimensionnement publié
