@@ -1,9 +1,9 @@
 # CLAUDE.md — Passerelle SMS (Go)
 
-Manuel de travail pour Claude Code sur ce dépôt. Il ne porte que ce qu'aucune commande ni aucun fichier
-ne dit déjà : les invariants, les couplages invisibles, l'ordre qu'on ne peut pas deviner. Les
-commandes : `make help`. Les services : `ls cmd/`. Le reste vit dans `docs/` (index en bas) et dans
-`.claude/rules/`, qui se charge tout seul quand on ouvre le territoire concerné.
+Manuel de travail pour Claude Code sur ce dépôt. Il ne porte que ce qu'aucune commande ni aucun
+fichier ne dit déjà : les invariants, les couplages invisibles, l'ordre qu'on ne peut pas deviner.
+Les commandes : `make help`. Les services : `ls cmd/`. Les docs : `ls docs/`. Les règles
+`.claude/rules/` se chargent seules à la lecture d'un fichier de leur territoire.
 
 ## Avant d'ouvrir un fichier
 
@@ -56,24 +56,13 @@ fichier neuf n'en déclenche aucune. D'où ces trois déclencheurs, qui doivent 
   `.github/workflows/ci.yml` une fois ; ce qu'il laisse dehors est nommé dans le `Makefile`.
 - Critères d'acceptation de la tâche couverts par des tests ; aucun invariant violé ; PR petite et
   focalisée (une tâche du plan d'exécution).
-- **Relire ce que la step vient de périmer.** Une step ne fait pas qu'ajouter du code : elle rend faux
-  ce qui décrivait l'état d'avant — ici, un README, un godoc, une fiche encore ouverte. La PR qui
-  périme une affirmation la corrige, dans la même PR. Ce fichier a porté pendant deux jalons un « le
-  simulateur SMSC n'est pas encore prêt » qui interdisait des tests que le dépôt écrivait déjà : un
-  document faux coûte plus cher qu'un document absent, parce qu'on lui obéit.
+- **Corriger ce que la step vient de périmer** — README, godoc, fiche encore ouverte — dans la même
+  PR. Un document faux coûte plus cher qu'un document absent, parce qu'on lui obéit.
 
-## Index documentaire (source de vérité)
+## Contrats (source de vérité, référencés par le code)
 
-Contrats, référencés par le code : `db/schema_passerelle_sms.sql`, `api/openapi-public.yaml`,
-`api/openapi-admin.yaml`.
+`db/schema_passerelle_sms.sql` · `api/openapi-public.yaml` · `api/openapi-admin.yaml`
 
-Sous `docs/` : quoi/pourquoi `specification-technique-passerelle-sms.md` · plan de construction
-`plan-execution-passerelle.md` · patterns Go `guide-codage-go.md` · style `convention-style-go.md` ·
-archi & exploitation `guide-ingenierie-passerelle-sms.md` · décisions `adr/` (ADR-0001…) · vocabulaire
-`glossaire-domaine-sms.md` · tests `strategie-de-test-passerelle.md` · pair de test SMSC
-`specification-technique-simulateur-smsc.md` · consommateur de l'Admin API
-`specification-technique-tableau-de-bord.md`.
-
-Règles à chargement paresseux, sous `.claude/rules/` : `go-code.md` (internal, cmd) · `tests.md`
-(`*_test.go`) · `contracts-api.md` (api) · `db-schema.md` (db, migrations) · `errors.md`
-(platform/errors) · `tasks-steps.md` (fiches de travail).
+Sous `docs/`, les noms disent le contenu ; les deux points d'entrée sont
+`specification-technique-passerelle-sms.md` (le quoi/pourquoi) et
+`guide-ingenierie-passerelle-sms.md` (l'archi & l'exploitation) ; les décisions vivent dans `adr/`.

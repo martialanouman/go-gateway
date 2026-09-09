@@ -428,7 +428,7 @@ func toRatePlanDTO(p cp.RatePlan) ratePlanDTO {
 func toProviderDTO(p cp.ExternalBillingProvider) providerDTO {
 	return providerDTO{
 		ID: p.ID.String(), Name: p.Name, BaseURL: p.BaseURL,
-		// auth_config_json is MASKED on read (§6.10, CLAUDE.md secrets): the credentials never leave the server.
+		// auth_config_json is MASKED on read (§6.10, .claude/rules/go-code.md secrets): the credentials never leave the server.
 		AuthConfig: maskedAuthConfig(),
 		Mode:       p.Mode, CacheTTLMs: ptr(p.CacheTTLMs), SyncCallTimeoutMs: p.SyncCallTimeoutMs,
 		FailurePolicy: p.FailurePolicy, Status: p.Status,

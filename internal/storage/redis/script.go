@@ -7,7 +7,7 @@ import (
 )
 
 // Script is a Lua script bound to a client, executed atomically server-side. It is the project's one
-// mechanism for atomic operational state: the golden rule (CLAUDE.md) forbids a read-modify-write from
+// mechanism for atomic operational state: the golden rule (.claude/rules/go-code.md) forbids a read-modify-write from
 // Go for a shared counter, token bucket, credit reserve or breaker — put the whole atomic step in a
 // Script instead, so Redis runs it indivisibly.
 //
