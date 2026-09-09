@@ -232,10 +232,18 @@ func seedExactRoutes(t *testing.T, repo *postgres.ExactRouteRepo, connector uuid
 	if share <= 0 {
 		return
 	}
+	// portedSet is empty when the share rounds to no ported record per block — REF_PORTED_SHARE=0.0004
+	// clears `share > 0` and draws nothing. Refused here rather than left to a bench that would then
+	// measure a share it never seeded.
+	numbers := portedSet(share, pool)
+	if len(numbers) == 0 {
+		t.Fatalf("REF_PORTED_SHARE=%v rounds to no ported record per block of %d: the bench would seed "+
+			"nothing and price an L0 stage that never ran. The smallest share this bench can draw is %v",
+			share, portedShareDen, 1.0/portedShareDen)
+	}
+
 	ctx := context.Background()
 	target := exact.Target{Type: exact.TargetConnector, ID: connector}
-
-	seen := make(map[string]bool, pool)
 	batch := make([]exact.Route, 0, l0SeedChunk)
 	flush := func() {
 		if len(batch) == 0 {
@@ -246,22 +254,14 @@ func seedExactRoutes(t *testing.T, repo *postgres.ExactRouteRepo, connector uuid
 		}
 		batch = batch[:0]
 	}
-	// Drawn from l0Dest itself rather than from a parallel formula: a seed that computes its numbers a
-	// second way is a seed that can disagree with the lookup, and the disagreement reads as a clean
-	// 100% bloom_miss.
-	for i := 0; len(seen) < pool; i++ {
-		dest := l0Dest(i, share, pool)
-		if dest == nonPortedDest || seen[dest] {
-			continue
-		}
-		seen[dest] = true
-		batch = append(batch, exact.Route{MSISDN: dest, Target: target, Source: exact.SourceMNPImport})
+	for _, msisdn := range numbers {
+		batch = append(batch, exact.Route{MSISDN: msisdn, Target: target, Source: exact.SourceMNPImport})
 		if len(batch) == l0SeedChunk {
 			flush()
 		}
 	}
 	flush()
-	t.Logf("seeded %d exact routes on connector %s", len(seen), connector)
+	t.Logf("seeded %d exact routes on connector %s", len(numbers), connector)
 }
 
 // preflightL0 resolves one ported and one non-ported number before the window opens, so a seed that

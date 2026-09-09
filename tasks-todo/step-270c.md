@@ -156,6 +156,17 @@ Deux défauts trouvés par les mutations plutôt que par la relecture, et un par
 3. Le premier run réel a lu la ligne de base Redis **avant** le `FLUSHDB`, donc le delta de clés était
    nul. `cacheFootprint` a **refusé de chiffrer** au lieu d'imprimer un nombre plausible — le garde a
    fait exactement ce pour quoi il existe.
+4. **Un blocage infini, trouvé en revue.** Le semis énumérait ses numéros en appelant `l0Dest` jusqu'à en
+   avoir `pool` : cette boucle ne termine que si `l0Dest` finit par rendre un porté, et une part sous
+   **0,0005** s'arrondit à zéro record porté par bloc tout en franchissant le garde `share > 0`.
+   `REF_PORTED_SHARE=0.0004` faisait donc tourner le semis à l'infini, jusqu'au timeout de test, **sans
+   aucun diagnostic**. L'énumération est désormais **pure** (`portedSet`), termine par construction, et
+   rend l'ensemble vide que le banc refuse en nommant la plus petite part tirable. La mutation qui
+   retire le garde reproduit le blocage : `panic: test timed out`.
+
+| Tests purs | Mutations vues rouges |
+|---:|---:|
+| **13** | **14** |
 
 ## Tests — chacun avec la mutation qui doit le faire tomber
 
@@ -219,9 +230,9 @@ bouge → preuve que le lit est bien celui qu'on croit.
 ## Definition of Done
 
 - [x] `make check` vert (lint · `test -race` · govulncheck · contrats) ; `make test` inchangé en durée
-- [x] **12** tests purs verts hors build tag (11 prévus + la soustraction de fenêtre) ; pour chacun, la
-      mutation listée a été **vue** rouge — treize mutations au total, dont trois ont trouvé un défaut
-      plutôt que de confirmer un test
+- [x] **13** tests purs verts hors build tag (11 prévus, plus la soustraction de fenêtre et la
+      terminaison du semis) ; pour chacun, la mutation listée a été **vue** rouge — **quatorze**
+      mutations au total, dont **quatre ont trouvé un défaut** plutôt que de confirmer un test
 - [x] `TestRouterConsumeCeiling` relancé après la scission : écarts producteur ↔ backlog −0,3 à −1,1 %,
       courbe 4 995 · 8 500 · 13 220 · 17 142 · 25 614 — même forme que la courbe publiée
 - [x] `TestRouterL0Fidelity` livre les **trois** lignes, chacune avec son mélange, ses lookups/message et

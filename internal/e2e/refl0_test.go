@@ -42,7 +42,7 @@ func l0Dest(i int, share float64, pool int) string {
 	// One guard, not two: at share=0 num is 0 and `pos >= 0` already holds for every index, so an
 	// additional `num <= 0` early return would be unreachable — and it would make the share=0 clause
 	// impossible to falsify, which is how a test that guards nothing stays green.
-	num := int(math.Round(share * portedShareDen))
+	num := portedPerBlock(share)
 	pos := i % portedShareDen
 	if pos >= num {
 		return nonPortedDest
@@ -62,6 +62,34 @@ func l0Dest(i int, share float64, pool int) string {
 // digit. A seed that misses it is rejected by Postgres — but a seed that is merely INCONSISTENT with
 // what the router looks up is not, and that is the failure this file exists to make impossible.
 var canonicalMSISDN = regexp.MustCompile(`^[1-9][0-9]+$`)
+
+// portedPerBlock is how many of each block of portedShareDen records are ported. It is the ONE place the
+// share is rounded, so l0Dest and portedSet cannot round it differently.
+func portedPerBlock(share float64) int { return int(math.Round(share * portedShareDen)) }
+
+// portedSet enumerates the distinct ported numbers l0Dest draws, in first-draw order — the exact set the
+// seed must write into exact_routes.
+//
+// It TERMINATES by construction: a share that rounds to no ported record per block yields the empty set
+// instead of a loop with no exit, which the caller then refuses. Enumerating through l0Dest rather than
+// through a second formula is what keeps the seed and the lookup from disagreeing.
+func portedSet(share float64, pool int) []string {
+	num := portedPerBlock(share)
+	if num <= 0 || pool < 1 {
+		return nil
+	}
+	seen := make(map[string]bool, pool)
+	out := make([]string, 0, pool)
+	for i := 0; len(out) < pool; i++ {
+		dest := l0Dest(i, share, pool)
+		if dest == nonPortedDest || seen[dest] {
+			continue
+		}
+		seen[dest] = true
+		out = append(out, dest)
+	}
+	return out
+}
 
 // TestL0DestReproducesTheLegacyFixture is what keeps test/load/README.md readable.
 //
@@ -504,5 +532,43 @@ func TestSubtractMixKeepsOnlyTheWindow(t *testing.T) {
 	}
 	if subtractMix(nil, nil) != nil {
 		t.Error("a palier with no probe must yield no mix, not an empty one a guard would judge")
+	}
+}
+
+// TestPortedSetTerminatesAndMatchesTheDraw kills a whole class of hang.
+//
+// The seed used to enumerate the ported numbers by calling l0Dest until it had collected `pool` of them.
+// That loop terminates only if l0Dest ever RETURNS a ported number — and a share under 0.0005 rounds to
+// zero records per block while still clearing the share > 0 guard, so REF_PORTED_SHARE=0.0004 span the
+// loop forever and the bench hung until the test timeout with no diagnosis at all.
+//
+// The enumeration is pure now, so termination is provable here rather than observable after forty
+// minutes, and the empty answer is what the caller refuses.
+func TestPortedSetTerminatesAndMatchesTheDraw(t *testing.T) {
+	if got := portedSet(0.0004, 10); len(got) != 0 {
+		t.Errorf("share=0.0004 rounds to no ported record per block: the set must be empty, got %d — a "+
+			"non-empty answer here means the enumeration cannot terminate", len(got))
+	}
+
+	set := portedSet(0.3, 10)
+	if len(set) != 10 {
+		t.Fatalf("pool=10 must enumerate exactly 10 distinct numbers, got %d", len(set))
+	}
+
+	// Every member must be one l0Dest actually draws, and every number l0Dest draws must be a member:
+	// a seed enumerated by a second formula is a seed that can disagree with the lookup, and the
+	// disagreement reads as a clean 100% bloom_miss.
+	member := make(map[string]bool, len(set))
+	for _, msisdn := range set {
+		member[msisdn] = true
+	}
+	for i := range 5000 {
+		got := l0Dest(i, 0.3, 10)
+		if got == nonPortedDest {
+			continue
+		}
+		if !member[got] {
+			t.Fatalf("l0Dest draws %s at index %d, which the seed would never write", got, i)
+		}
 	}
 }
