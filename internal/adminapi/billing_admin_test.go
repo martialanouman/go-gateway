@@ -212,7 +212,7 @@ func TestDeleteRatePlanInUseReturns409(t *testing.T) {
 
 // --- providers ---
 
-// TestProviderAuthConfigMaskedOnRead is the secrets invariant (CLAUDE.md): the stored auth credentials
+// TestProviderAuthConfigMaskedOnRead is the secrets rule (.claude/rules/go-code.md): the stored auth credentials
 // never appear in a read response — auth_config_json comes back masked, and the secret value is absent.
 func TestProviderAuthConfigMaskedOnRead(t *testing.T) {
 	prov := cp.ExternalBillingProvider{

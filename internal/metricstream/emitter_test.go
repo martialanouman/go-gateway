@@ -311,7 +311,7 @@ func TestEmitterPublishesNothingWhenIdle(t *testing.T) {
 	}
 }
 
-// TestRunStopsWithItsContext: no goroutine without a stop condition (CLAUDE.md).
+// TestRunStopsWithItsContext: no goroutine without a stop condition (.claude/rules/go-code.md).
 func TestRunStopsWithItsContext(t *testing.T) {
 	sink := &fakeSink{}
 	e := newEmitter(t, sink)

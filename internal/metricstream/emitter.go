@@ -307,7 +307,7 @@ func (e *Emitter) drain() (Snapshot, bool) {
 
 // Run publishes a snapshot every interval until ctx is cancelled, then publishes once more so the final
 // interval is not lost at every redeployment. It returns on cancellation — no goroutine without a stop
-// condition (CLAUDE.md).
+// condition (.claude/rules/go-code.md).
 func (e *Emitter) Run(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
