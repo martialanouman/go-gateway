@@ -237,16 +237,12 @@ func seedExactRoutes(t *testing.T, repo *postgres.ExactRouteRepo, connector uuid
 	if share <= 0 {
 		return
 	}
-	// portedSet is empty when the share rounds to no ported record per block — REF_PORTED_SHARE=0.0004
-	// clears `share > 0` and draws nothing. Refused here rather than left to a bench that would then
-	// measure a share it never seeded.
-	numbers := portedSet(share, pool)
-	if len(numbers) == 0 {
-		t.Fatalf("REF_PORTED_SHARE=%v is outside the domain this bench can draw: it is a FRACTION, so it "+
-			"must land in [%v, 1]. Below that it rounds to no ported record per block and the bench would "+
-			"price an L0 stage that never ran; above 1 the draw strides instead of covering N, and whether "+
-			"it ever reaches the pool depends on gcd(num, pool) — a share is a fraction either way",
-			share, 1.0/portedShareDen)
+	// portedSet refuses whatever it cannot draw — a share that rounds to no ported record per block, one
+	// above 1, a working set of zero — and its refusal names which of the two levers is out of range.
+	// Refused here rather than left to a bench that would then measure a share it never seeded.
+	numbers, err := portedSet(share, pool)
+	if err != nil {
+		t.Fatalf("the ported working set cannot be drawn: %v", err)
 	}
 
 	ctx := context.Background()
@@ -287,7 +283,8 @@ func preflightL0(t *testing.T, l0 *routing.L0Resolver, lookups *countingLookups,
 		t.Fatalf("preflight on ported %s: %v", ported, err)
 	}
 	if route.ConnectorID == uuid.Nil {
-		t.Fatalf("preflight on ported %s resolved to no connector: the seed, the bloom or the canonical form disagree", ported)
+		t.Fatalf("preflight on ported %s resolved to no connector: the seed, the bloom or the canonical "+
+			"form disagree", ported)
 	}
 
 	// The non-ported side too, and it is not symmetry for its own sake. The bench draws ONE non-ported

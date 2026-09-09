@@ -235,7 +235,36 @@ défaut de la même famille que celui qu'il corrigeait :
     aucun `%`), une autre était satisfaite par les deux branches qu'elle prétendait séparer, et deux
     illustrations chiffrées avaient vieilli d'un run.
 
-**18 tests purs** (`grep -c '^func Test' internal/e2e/refl0_test.go`), et **chacun a été vu tomber sous
+**Quatrième tour, sur la branche entière.** Trois constats, dont deux du même motif que les tours
+précédents — un message qui nomme une cause que ses propres entrées écartent :
+
+18. **Le refus de `portedSet` accusait le levier qui allait bien.** Le garde repliait trois conditions
+    en une réponse vide, et l'appelant les ré-expliquait en **une** phrase — celle de la part. Donc
+    `make load-reference PORTED_POOL=0` mourait sur « `REF_PORTED_SHARE=0.3` is outside the domain … it
+    must land in [0.001, 1] », en nommant un domaine qui contient 0,3 : le lecteur est envoyé au bouton
+    qui était juste. `portedSet` rend désormais une **erreur**, chaque branche nomme son levier, et
+    l'appelant ne ré-explique plus rien.
+19. **Le clamp `pool < 1` de `l0Dest` n'était couvert par aucun test** — le retirer ne faisait rien
+    tomber, alors qu'il garde une division entière dans une fonction pure que deux bancs appellent. Il
+    n'est atteignable qu'en désaccord avec `portedSet`, qui refuse ce même pool : c'est précisément
+    pourquoi il n'avait pas de test. Le balayage de `TestL0DestIsCanonicalE164` porte maintenant
+    `pool=0`, et la mutation rend `integer divide by zero`.
+20. **`poolPressure` expliquait l'illisible par une cause qu'il pouvait écarter.** `messages == 0 ||
+    acquires == 0` rendait « the L0 lookups never reached the pool » y compris avec 500 acquisitions au
+    compteur : elles avaient atteint le pool, c'est le **dénominateur** qui manquait. Deux entrées, deux
+    faits, deux branches.
+
+Et, sans test possible parce que c'est de la prose :
+
+21. **Le godoc de `relGap` nommait la borne chaude** là où le zéro `redis_hit` est la borne **froide** —
+    l'inverse de ce que disent `mixHolds`, `TestRouterL0Fidelity` et la table de D4, dans le même paquet.
+22. **Le paragraphe de synthèse du journal contredisait sa propre table et sa propre méthode** : la
+    fourchette « 1 sur 4 300 à 16 600 » omettait le run (5) — 1 sur 25 323, deux lignes plus haut — et
+    « de l'ordre de 150 à 700 µs » était l'attente totale divisée par le plancher, c'est-à-dire la
+    moyenne que la même section répudie six lignes avant. C'est le constat n°13, appliqué au rendu et à
+    `step-280.md` mais jamais au journal. Corrigé sur les totaux.
+
+**19 tests purs** (`grep -c '^func Test' internal/e2e/refl0_test.go`), et **chacun a été vu tomber sous
 une mutation** — une seule exception, consignée plus bas.
 
 Pas de total de mutations dans cette fiche. J'en ai annoncé 13, puis 14, puis 22, puis 24, puis 26, sans
@@ -309,10 +338,11 @@ bouge → preuve que le lit est bien celui qu'on croit.
 ## Definition of Done
 
 - [x] `make check` vert (lint · `test -race` · govulncheck · contrats) ; `make test` inchangé en durée
-- [x] **18** tests purs verts hors build tag (11 prévus, plus la soustraction de fenêtre, la
+- [x] **19** tests purs verts hors build tag (11 prévus, plus la soustraction de fenêtre, la
       terminaison du semis, le rendu du mélange, le littéral du balayage, la séparation
-      construction/famine, la concurrence offerte et l'arrondi des attentes) ; **chacun a été vu tomber
-      sous une mutation**, à l'exception unique consignée ci-dessus
+      construction/famine, la concurrence offerte, l'arrondi des attentes et — quatrième tour — le levier
+      que le refus du semis doit nommer) ; **chacun a été vu tomber sous une mutation**, à l'exception
+      unique consignée ci-dessus
 - [x] `TestRouterConsumeCeiling` relancé après la scission : tous les gardes verts, écarts producteur ↔
       backlog −0,3 à **−1,1 %**, courbe 4 995 · 8 500 · 13 220 · 17 142 · 25 614. **Le −1,1 % est hors de
       la bande publiée (−0,1 à −1,0 %)**, de 0,1 point, sur un hôte différemment chargé. Ce que la

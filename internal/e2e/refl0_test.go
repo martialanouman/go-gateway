@@ -82,12 +82,23 @@ func portedPerBlock(share float64) int { return int(math.Round(share * portedSha
 //     the whole half-plane rather than compute that: a share is a FRACTION, and above 1 it is a typo
 //     whichever way the arithmetic falls.
 //
-// Outside that domain it yields the empty set, which the caller refuses. Enumerating through l0Dest
-// rather than through a second formula is what keeps the seed and the lookup from disagreeing.
-func portedSet(share float64, pool int) []string {
+// Outside that domain it refuses, and the refusal names WHICH lever is out of range: the guard folds
+// three conditions, and a caller re-explaining them in one sentence necessarily explains two of them
+// wrong. Enumerating through l0Dest rather than through a second formula is what keeps the seed and the
+// lookup from disagreeing.
+func portedSet(share float64, pool int) ([]string, error) {
 	num := portedPerBlock(share)
-	if num <= 0 || num > portedShareDen || pool < 1 {
-		return nil
+	if num <= 0 || num > portedShareDen {
+		return nil, fmt.Errorf("REF_PORTED_SHARE=%v is outside the domain this bench can draw: it is a "+
+			"FRACTION, so it must land in [%v, 1]. Below that it rounds to no ported record per block and "+
+			"the bench would price an L0 stage that never ran; above 1 the draw strides instead of "+
+			"covering N, and whether it ever reaches the pool depends on gcd(num, pool) — a share is a "+
+			"fraction either way", share, 1.0/portedShareDen)
+	}
+	if pool < 1 {
+		return nil, fmt.Errorf("REF_PORTED_POOL=%d: the working set is what the draw covers, what the "+
+			"seed writes into exact_routes and what the mix guard expects as pg_hit, so it must hold at "+
+			"least one number", pool)
 	}
 	seen := make(map[string]bool, pool)
 	out := make([]string, 0, pool)
@@ -99,7 +110,7 @@ func portedSet(share float64, pool int) []string {
 		seen[dest] = true
 		out = append(out, dest)
 	}
-	return out
+	return out, nil
 }
 
 // TestL0DestReproducesTheLegacyFixture is what keeps test/load/README.md readable.
@@ -155,23 +166,34 @@ func TestL0DestHitsTheSeededShare(t *testing.T) {
 // LOOKS present and a Bloom that answers false for every message: 100% bloom_miss, a measurement of
 // zero that reads like a result. Postgres would catch the "+" via the CHECK; nothing would catch the
 // second, which is why Normalize is asserted to be the identity here and not merely to succeed.
+//
+// The pool of 0 is in the sweep for a second reason: portedSet REFUSES that working set, so nothing in
+// the bench reaches l0Dest with it — which left its `pool < 1` clamp as a branch no test covered, and an
+// uncovered clamp is one edit away from an integer division by zero in a pure function two benches call.
 func TestL0DestIsCanonicalE164(t *testing.T) {
 	for _, i := range []int{0, 1, 7, 300, 999, 1000, 999999} {
 		for _, share := range []float64{0, 0.3, 1} {
-			got := l0Dest(i, share, 1000)
-			if !canonicalMSISDN.MatchString(got) {
-				t.Fatalf("l0Dest(%d, %v) = %q, which the exact_routes CHECK rejects", i, share, got)
-			}
-			norm, err := e164.Normalize(got)
-			if err != nil {
-				t.Fatalf("l0Dest(%d, %v) = %q: e164.Normalize rejects it (%v) — the router would never "+
-					"look up what the seed wrote", i, share, got, err)
-			}
-			if norm != got {
-				t.Fatalf("l0Dest(%d, %v) = %q but normalizes to %q: the seed and the lookup would "+
-					"disagree, and the bench would read 100%% bloom_miss as a result", i, share, got, norm)
+			for _, pool := range []int{0, 1, 1000} {
+				assertCanonicalDraw(t, i, share, pool)
 			}
 		}
+	}
+}
+
+func assertCanonicalDraw(t *testing.T, i int, share float64, pool int) {
+	t.Helper()
+	got := l0Dest(i, share, pool)
+	if !canonicalMSISDN.MatchString(got) {
+		t.Fatalf("l0Dest(%d, %v, pool=%d) = %q, which the exact_routes CHECK rejects", i, share, pool, got)
+	}
+	norm, err := e164.Normalize(got)
+	if err != nil {
+		t.Fatalf("l0Dest(%d, %v, pool=%d) = %q: e164.Normalize rejects it (%v) — the router would never "+
+			"look up what the seed wrote", i, share, pool, got, err)
+	}
+	if norm != got {
+		t.Fatalf("l0Dest(%d, %v, pool=%d) = %q but normalizes to %q: the seed and the lookup would "+
+			"disagree, and the bench would read 100%% bloom_miss as a result", i, share, pool, got, norm)
 	}
 }
 
@@ -264,7 +286,9 @@ func mixHolds(counts map[string]uint64, messages uint64, share float64, pool int
 }
 
 // relGap is the relative distance between an observation and its model, and it answers 0 when both are
-// zero — the hot bound legitimately expects no redis_hit at all, and dividing there would reject it.
+// zero — the COLD bound legitimately expects no redis_hit at all (pool >= ported lookups makes every
+// ported record a first touch), and dividing there would reject it. The hot bound is the opposite end:
+// it expects mostly redis_hit, with pg_hit capped at the pool.
 func relGap(got, want float64) float64 {
 	if want == 0 {
 		if got == 0 {
@@ -394,10 +418,18 @@ func TestMixHoldsRefusesAnErrorMix(t *testing.T) {
 // SEQUENTIALLY (internal/router/router.go, handleBatch), so one pod can never offer the pool more than
 // `lanes` simultaneous acquires however fast it consumes. Comparing MaxConns to a request rate invites
 // Little's law on a queue that is not shaped that way; the reading names the offered ceiling instead.
-func poolPressure(acquires, emptyAcquires, newConns int64, emptyWait time.Duration, messages uint64, maxConns int32, lanes int) string {
-	if messages == 0 || acquires == 0 {
-		return fmt.Sprintf("unreadable: %d acquisitions over %d messages — the L0 lookups never reached "+
-			"the pool, so there is no pressure to report", acquires, messages)
+func poolPressure(acquires, emptyAcquires, newConns int64, emptyWait time.Duration, messages uint64,
+	maxConns int32, lanes int,
+) string {
+	// Two ways in, two different facts: one sentence covering both would have to explain the missing
+	// denominator by an absence of lookups it can see did happen.
+	if acquires == 0 {
+		return fmt.Sprintf("unreadable: no acquisition over %d messages — the L0 lookups never reached "+
+			"the pool, so there is no pressure to report", messages)
+	}
+	if messages == 0 {
+		return fmt.Sprintf("unreadable: %d acquisitions over no message — the window routed nothing, so "+
+			"there is nothing to divide them by", acquires)
 	}
 	out := fmt.Sprintf("%d acquisitions over %d messages (%.2f/message), against MaxConns=%d for %d lanes "+
 		"— a lane is sequential, so this pod can offer the pool at most %d acquires at once",
@@ -541,6 +573,14 @@ func TestPoolPressureRefusesToDivide(t *testing.T) {
 	}
 	if strings.Contains(got, "NaN") {
 		t.Errorf("an empty window must not render as an arithmetic artefact: %s", got)
+	}
+
+	// The OTHER way into the same branch, and the one the single condition explained wrong: acquisitions
+	// with no message. "the L0 lookups never reached the pool" is then false — they reached it, and what
+	// is missing is the denominator. A renderer that explains an unreadable figure by a cause its own
+	// inputs rule out is the fault this file keeps finding in itself.
+	if got := poolPressure(500, 3, 0, time.Millisecond, 0, 10, 12); strings.Contains(got, "never reached") {
+		t.Errorf("500 acquisitions did reach the pool; it is the message count that is missing: %s", got)
 	}
 }
 
@@ -700,11 +740,11 @@ func TestSubtractMixKeepsOnlyTheWindow(t *testing.T) {
 // loop forever and the bench hung until the test timeout with no diagnosis at all.
 //
 // The enumeration is pure now, so termination is provable here rather than observable after forty
-// minutes, and the empty answer is what the caller refuses.
+// minutes, and the refusal is what the caller propagates.
 func TestPortedSetTerminatesAndMatchesTheDraw(t *testing.T) {
-	if got := portedSet(0.0004, 10); len(got) != 0 {
-		t.Errorf("share=0.0004 rounds to no ported record per block: the set must be empty, got %d — a "+
-			"non-empty answer here means the enumeration cannot terminate", len(got))
+	if got, err := portedSet(0.0004, 10); err == nil {
+		t.Errorf("share=0.0004 rounds to no ported record per block: the draw must be refused, got %d "+
+			"numbers — a non-empty answer here means the enumeration cannot terminate", len(got))
 	}
 
 	// The OTHER end of the same class, and the one the first guard missed. `make load-reference
@@ -712,12 +752,15 @@ func TestPortedSetTerminatesAndMatchesTheDraw(t *testing.T) {
 	// at portedShareDen-1, so the ordinals a block yields are [30000k, 30000k+999]: a strided set whose
 	// residues mod pool cover only a fraction of it, and the enumeration never collects `pool` of them.
 	// The terminating domain is 0 < num <= portedShareDen, not num > 0.
-	if got := portedSet(30, 100000); len(got) != 0 {
+	if got, err := portedSet(30, 100000); err == nil {
 		t.Errorf("a share above 1 draws a strided ordinal set that cannot cover the pool: the enumeration "+
 			"must refuse it, got %d numbers", len(got))
 	}
 
-	set := portedSet(0.3, 10)
+	set, err := portedSet(0.3, 10)
+	if err != nil {
+		t.Fatalf("pool=10 at share=0.3 is inside the domain: %v", err)
+	}
 	if len(set) != 10 {
 		t.Fatalf("pool=10 must enumerate exactly 10 distinct numbers, got %d", len(set))
 	}
@@ -802,5 +845,45 @@ func TestRoundWaitKeepsSubMillisecondReadable(t *testing.T) {
 	}
 	if got := roundWait(0); got != 0 {
 		t.Errorf("zero stays zero, got %v", got)
+	}
+}
+
+// TestPortedSetNamesWhichLeverIsOutOfDomain: a refusal that blames the wrong lever sends the reader to
+// the knob that was already right.
+//
+// The single guard this file shipped with folded three conditions into one empty answer, and the caller
+// re-explained it in ONE sentence — the share's. `make load-reference PORTED_POOL=0` therefore died on
+// "REF_PORTED_SHARE=0.3 is outside the domain ... it must land in [0.001, 1]", naming a domain that
+// contains 0.3. Which lever is out of range is the whole content of the message.
+func TestPortedSetNamesWhichLeverIsOutOfDomain(t *testing.T) {
+	// A pool of zero, with a share the bench draws perfectly well.
+	_, err := portedSet(0.3, 0)
+	if err == nil {
+		t.Fatal("a working set of zero numbers seeds nothing and must be refused")
+	}
+	if !strings.Contains(err.Error(), "REF_PORTED_POOL") {
+		t.Errorf("the refusal must name the lever that is out of range: %v", err)
+	}
+	if strings.Contains(err.Error(), "REF_PORTED_SHARE") {
+		t.Errorf("share=0.3 is inside the domain: naming it sends the reader to the knob that was "+
+			"right: %v", err)
+	}
+
+	// Both ends of the share domain still name the share, and neither mentions the pool, which is sound.
+	for _, share := range []float64{0.0004, 30} {
+		_, err := portedSet(share, 100000)
+		if err == nil {
+			t.Fatalf("share=%v is outside the domain the draw terminates over and must be refused", share)
+		}
+		if !strings.Contains(err.Error(), "REF_PORTED_SHARE") {
+			t.Errorf("share=%v: the refusal must name the share: %v", share, err)
+		}
+		if strings.Contains(err.Error(), "REF_PORTED_POOL") {
+			t.Errorf("share=%v: a pool of 100000 is not what is out of range: %v", share, err)
+		}
+	}
+
+	if _, err := portedSet(0.3, 10); err != nil {
+		t.Errorf("share=0.3 with a pool of 10 is inside the domain: %v", err)
 	}
 }

@@ -1105,9 +1105,12 @@ séquentiellement**, donc un pod ne peut jamais offrir au pool plus de `lanes` a
 plafonnée par le nombre de voies, pas par les ~4 500 lectures/s.
 
 Ce que ça donne pour step-280 : à 12 voies, `MaxConns=10` fait attendre **une acquisition sur 4 300 à
-16 600** selon le run (8/132 550 · 33/143 430 · 8/127 562), de l'ordre de 150 à 700 µs — trois ordres de grandeur sous le `DefaultLookupTimeout` de 2 s qui ferait
-basculer la lecture en échec. **La question n'est pas le débit de lookups, c'est le rapport
-`MaxConns` / voies par pod**, et il est aujourd'hui inférieur à 1.
+25 300** selon le run — les quatre lignes de la table, run (5) compris. Leur attente **totale** va de
+**826 µs à 12 ms** sur trente secondes, trois à quatre ordres de grandeur sous le `DefaultLookupTimeout`
+de 2 s qui ferait basculer la lecture en échec. C'est le total qui est écrit ici et pas une attente par
+appelant : diviser par le plancher rendrait la moyenne que le paragraphe précédent vient de refuser
+comme borne. **La question n'est pas le débit de lookups, c'est le rapport `MaxConns` / voies par
+pod**, et il est aujourd'hui inférieur à 1.
 
 **L'empreinte du cache est de ~185 octets par clé `exactroute:{msisdn}`.** Huit lectures : 210 o, 178 o
 et 178 o sur des paliers à 5 000 clés, **168 · 170 · 182 · 200 · 201 o** sur les cinq paliers à
@@ -1135,6 +1138,11 @@ de l'hôte ni de sa latence disque.
   d'empreinte à 178 o, et les taire tout en leur empruntant un chiffre serait une sélection. La lecture
   à 8 % est la plus basse de tout le lot ; elle ne renverse pas le verdict de 12 %, elle en borne le bas
   sur une fenêtre deux fois plus courte.
+- **La ligne de pression du pool est celle du DERNIER palier câblé**, pas une agrégation des trois : le
+  rendu est écrasé à chaque couple. Le pool y est donc déjà chaud, et c'est en partie pourquoi
+  `newConns = 0` sur chaque run publié — une propriété du choix de rendu autant qu'une observation. Le
+  plancher reste un plancher ; ce qui n'est **pas** établi, c'est qu'un premier palier, pool froid, en
+  dirait autant.
 - **Le delta est NET à part > 0** : L0 ajoute une sonde Bloom à tous les messages et une lecture du
   magasin aux portés, et il **saute** la résolution déclarative des portés qui touchent (une cible
   connecteur se résout sans consulter l'instantané). C'est le chiffre pertinent pour la production ; ce

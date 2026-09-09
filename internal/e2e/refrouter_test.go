@@ -132,7 +132,9 @@ type routerPalier struct {
 
 // measureRouterPalier runs the router alone over bed for `hold` and reports the rate with the facts
 // needed to read it. label names what is wired, since the bed is now shared by two benches.
-func measureRouterPalier(t *testing.T, bed *routerBed, hold time.Duration, resolver pipeline.Resolver, probe *l0Probe, label string) routerPalier {
+func measureRouterPalier(t *testing.T, bed *routerBed, hold time.Duration, resolver pipeline.Resolver,
+	probe *l0Probe, label string,
+) routerPalier {
 	t.Helper()
 
 	brokers, topic, partitions := bed.brokers, bed.topic, bed.partitions

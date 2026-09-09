@@ -304,8 +304,8 @@ func fidelityDelta(without, with []float64, subject string) (string, error) {
 			"bench cannot put a figure on %s", out, 100*math.Abs(cost), subject), nil
 	case cost < 0:
 		// An error, not a verdict. Nothing added to every message — a synchronous write, a cache lookup —
-		// can RAISE throughput, so a reading that says it did was not taken under one set of conditions — and the run it belongs to
-		// bounds nothing. Rendering it as a sentence would leave the caller green over an unusable
+		// can RAISE throughput, so a reading that says it did was not taken under one set of conditions,
+		// and the run it belongs to bounds nothing. Rendering it as a sentence would leave the caller green over an unusable
 		// measurement, which is the one thing this file exists to refuse. sweepsAgree treats the same class
 		// the same way.
 		return "", fmt.Errorf("%s · the palier ran %.0f%% FASTER with %s wired, past its own %.0f%% "+
