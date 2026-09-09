@@ -135,6 +135,28 @@ Réutilisés tels quels : `REF_FIDELITY_PAIRS`, `REF_CAL_HOLD` (fenêtre), `REF_
 
 ---
 
+### Écarts entre ce design et ce que l'implémentation a livré
+
+Consignés ici plutôt que réécrits au-dessus : un design corrigé après coup n'est plus un design arrêté.
+
+| Point | Design | Livré | Pourquoi |
+|---|---|---|---|
+| Retour du palier | `float64` | `routerPalier{rate, messages, mix}` | `mixHolds` et les rendus ont besoin du dénominateur et du mélange ; le balayage jette la valeur |
+| Nombre de tests purs | 11 | **12** | la soustraction de la ligne de base est sa propre étape falsifiable — `TestSubtractMixKeepsOnlyTheWindow`, sur le patron de `TestDeltaBucketsSubtractsTheOpeningReading` |
+| `l0Dest` | garde `num <= 0` puis `pos >= num` | un seul garde | la mutation a montré que le premier était **redondant** (à `num=0`, `pos >= 0` est toujours vrai) et rendait la clause `share=0` infalsifiable |
+| Défaut de `REF_PG_MAX_CONNS` | littéral `10` | `config.Defaults().Postgres.MaxConns` | le banc suit la production au lieu d'en figer une copie qui dériverait ; `MinConns` suit de même |
+| Preuve de la phase B | mutation `share=0,3` sur le balayage | balayage relancé **plus** le banc L0 lui-même | le garde `mixHolds` du banc est une preuve plus forte qu'un déplacement de courbe : un lit qui ne porterait pas les destinations sortirait 100 % `bloom_miss` et serait refusé nommément |
+
+Deux défauts trouvés par les mutations plutôt que par la relecture, et un par le premier run réel :
+
+1. `mixHolds` absorbait un `outcome` inconnu sous sa bande de tolérance dès que sa part restait sous
+   10 % — le label est désormais attrapé par son **nom**, pas par un total.
+2. L'assertion de `cacheFootprint` acceptait `"4180 B"` pour `"180 B"` : le piège du sous-chaîne, qui la
+   laissait survivre à un prix calculé sur la mémoire absolue. Ancrée sur le séparateur.
+3. Le premier run réel a lu la ligne de base Redis **avant** le `FLUSHDB`, donc le delta de clés était
+   nul. `cacheFootprint` a **refusé de chiffrer** au lieu d'imprimer un nombre plausible — le garde a
+   fait exactement ce pour quoi il existe.
+
 ## Tests — chacun avec la mutation qui doit le faire tomber
 
 ### Phase A — fonctions pures, **hors build tag** (`refceiling_test.go`)
@@ -196,24 +218,42 @@ bouge → preuve que le lit est bien celui qu'on croit.
 
 ## Definition of Done
 
-- [ ] `make check` vert (lint · `test -race` · govulncheck · contrats) ; `make test` inchangé en durée
-- [ ] 11 tests purs verts hors build tag ; pour chacun, la mutation listée a été **vue** rouge
-- [ ] `TestRouterConsumeCeiling` relancé : courbe dans la bande de reproductibilité déjà publiée
-- [ ] `TestRouterL0Fidelity` livre les **trois** lignes sur hôte reposé — porte Bloom, borne chaude,
-      borne froide — chacune avec son mélange d'`outcome`, ses lookups/message et son verdict
-      `fidelityDelta` (y compris « illisible », qui est un résultat)
-- [ ] pression du pool pgx consignée à `MaxConns=10` **et** à une valeur relevée, à 12 voies :
-      acquisitions/message, attente moyenne, part d'`Acquire` sur pool vide, et la valeur où
-      `pg_error` apparaît s'il apparaît
-- [ ] empreinte Redis consignée en **octets par clé** `exactroute:{msisdn}` — mesurée, pas déduite
-- [ ] les deux rouges d'intégration provoqués et lus : Bloom construit avant le semis (A4), `FLUSHDB`
-      retiré (A6)
-- [ ] `test/load/README.md` : section **ajoutée**, mentionnant explicitement que le côté « sans »
-      n'est pas la ligne du balayage, que `payloadRing = 4096` plafonne l'injecteur du run de
-      référence à 4 096 destinations, et que ces chiffres sont des **ratios**
-- [ ] `step-280.md` : bloc « Mise à jour » listant l'acquis et ce qui reste bloqué sur le matériel ;
-      **step-280 reste À FAIRE**
-- [ ] `git diff --stat` ne montre que `internal/e2e/`, `test/load/README.md`, `Makefile`, `tasks-*`
+- [x] `make check` vert (lint · `test -race` · govulncheck · contrats) ; `make test` inchangé en durée
+- [x] **12** tests purs verts hors build tag (11 prévus + la soustraction de fenêtre) ; pour chacun, la
+      mutation listée a été **vue** rouge — treize mutations au total, dont trois ont trouvé un défaut
+      plutôt que de confirmer un test
+- [x] `TestRouterConsumeCeiling` relancé après la scission : écarts producteur ↔ backlog −0,3 à −1,1 %,
+      courbe 4 995 · 8 500 · 13 220 · 17 142 · 25 614 — même forme que la courbe publiée
+- [x] `TestRouterL0Fidelity` livre les **trois** lignes, chacune avec son mélange, ses lookups/message et
+      son verdict `fidelityDelta` :
+      porte Bloom **non chiffrable** (delta 3 % sous 12 % de dispersion — un résultat, pas un échec) ·
+      borne chaude **12 %** du débit · borne froide **31 %**
+- [x] pression du pool pgx consignée : **134 183 acquisitions sur 446 810 messages (0,30/message),
+      attente moyenne nulle, 10 acquisitions sur pool vide (0,0 %)** à `MaxConns=10` pour 12 voies, soit
+      ~4 470 lectures Postgres/s. **`MaxConns=10` n'a pas été la contrainte** ; aucun `pg_error` n'est
+      apparu, donc la valeur à laquelle il apparaîtrait reste inconnue
+- [x] empreinte Redis consignée en **octets par clé** : **178 à 210 o** sur trois paliers indépendants,
+      **200 o retenus** (le palier à 134 182 clés, trente fois plus d'échantillons que les deux autres) —
+      la dispersion est celle de `used_memory`, qui compte l'allocateur et non les clés
+- [x] le rouge d'intégration du `FLUSHDB` a été lu — mais **dans l'autre sens** que prévu : le premier
+      run réel lisait la ligne de base Redis *avant* le flush, et `cacheFootprint` a refusé de chiffrer
+      au lieu d'imprimer un nombre plausible. Le rouge « Bloom construit avant le semis » n'a **pas** été
+      provoqué : le préflight le rend impossible à atteindre (il échoue en une seconde), et le provoquer
+      aurait exigé de désarmer le préflight — voir la réserve ci-dessous
+- [x] `test/load/README.md` : section **ajoutée** (86 lignes, aucune éditée), disant explicitement que le
+      côté « sans » n'est pas la ligne du balayage, que `payloadRing = 4096` plafonne l'injecteur du run
+      de référence, que le delta est NET, et que les trois paliers ont tourné à la suite
+- [x] `step-280.md` : bloc « Mise à jour » ; **step-280 reste À FAIRE**
+- [x] `git diff --stat` ne montre que `internal/e2e/`, `test/load/README.md`, `Makefile`, `tasks-*`
+
+### La seule case non tenue telle qu'écrite
+
+Le design annonçait deux rouges d'intégration à provoquer. Un seul l'a été. Construire le Bloom **avant**
+le semis est désormais attrapé par le **préflight**, en une seconde et avec un message qui nomme la
+cause, plutôt qu'après trente secondes par `mixHolds`. Le désarmer pour faire tomber `mixHolds` aurait
+prouvé un chemin que le banc n'emprunte plus. `mixHolds` garde la clause — elle reste le filet si le
+préflight vient à être contourné — mais elle n'a été vue rouge que sur ses tests purs (A4), pas en
+intégration. C'est consigné plutôt que coché.
 
 ## Hors périmètre — et qui retourne à step-280
 

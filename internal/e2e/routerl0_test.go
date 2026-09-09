@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/martialanouman/go-gateway/internal/config"
@@ -85,57 +86,15 @@ const (
 func TestRouterL0Fidelity(t *testing.T) {
 	brokers := kafkatest.Brokers(t)
 	rdb := redistest.Client(t)
-	ctx := context.Background()
 
 	hold := envDuration(t, envCalHold, routerCeilingHold)
 	records := int(envFloat(t, envPrefill, routerCeilingPrefill))
 	pairs := int(envFloat(t, envFidelityPairs, poolFidelityPairs))
 	share := envFloat(t, envPortedShare, 0.30)
 	portedPool := int(envFloat(t, envPortedPool, 100000))
-	// Production's own declared defaults, not a copy of them: MinConns matters as much as MaxConns here,
-	// since it is what the pool keeps warm and therefore what a burst does NOT have to dial.
-	prod := config.Defaults().Postgres
-	maxConns := int32(envFloat(t, envPgMaxConns, float64(prod.MaxConns)))
+	maxConns := int32(envFloat(t, envPgMaxConns, float64(config.Defaults().Postgres.MaxConns)))
 
-	// The control plane is seeded through the SHARED pool: the seed is not part of any window, and
-	// running it through the dedicated pool would leave its connections warm in a way production's would
-	// not be at the first message.
-	shared := pgtest.Pool(t)
-	_, connectorID := seedRefControlPlane(t, shared, 1)
-	seedExactRoutes(t, postgres.NewExactRouteRepo(shared), connectorID, share, portedPool)
-
-	// The dedicated pool is the instrument. pgtest.Pool hands out a pool shared by the whole package,
-	// opened by pgxpool.New with no config at all, so its Stat() describes every test that ran before —
-	// and its MaxConns is the driver's default, not production's.
-	cfg := pgtest.Config(t)
-	cfg.MaxConns = maxConns
-	cfg.MinConns = prod.MinConns
-	pgPool, err := postgres.NewPool(ctx, cfg)
-	if err != nil {
-		t.Fatalf("dedicated pool at MaxConns=%d: %v", maxConns, err)
-	}
-	t.Cleanup(pgPool.Close)
-
-	repo := postgres.NewExactRouteRepo(pgPool)
-	// The filter is built AFTER the seed, and that order is the bench's most dangerous invariant: built
-	// before, MightContain answers false for every ported number, the store is never reached, and the
-	// palier prices an L0 stage that did nothing while looking like a measurement. mixHolds refuses it.
-	bloom, err := exact.LoadBloom(ctx, repo)
-	if err != nil {
-		t.Fatalf("load exact-route bloom: %v", err)
-	}
-	snapshot, err := routing.LoadSnapshot(ctx, postgres.NewRouteRepo(pgPool))
-	if err != nil {
-		t.Fatalf("load route snapshot: %v", err)
-	}
-
-	lookups := newCountingLookups()
-	l0 := routing.NewL0Resolver(
-		exact.NewResolver(bloom, rdb, repo, exact.DefaultCacheTTL, exact.WithLookupMeter(lookups)),
-		nil, // no script stage: L1 is another milestone's question
-		snapshot,
-	)
-	preflightL0(t, l0, share, portedPool)
+	fix := newL0Fixture(t, rdb, share, portedPool, maxConns)
 
 	bed := newRouterBed(t, brokers, l0Lanes, records, func(i int) string {
 		return l0Dest(i, share, portedPool)
@@ -148,24 +107,28 @@ func TestRouterL0Fidelity(t *testing.T) {
 
 	for i := range pairs {
 		bare := func() float64 {
-			return measureRouterPalier(t, bed, hold, refResolver{snapshot}, nil, "declarative only").rate
+			return measureRouterPalier(t, bed, hold, refResolver{fix.snapshot}, nil, "declarative only").rate
 		}
 		wired := func() float64 {
-			keysBefore, memBefore := redisFootprint(t, rdb)
-			statBefore := pgPool.Stat()
 			// Emptied before every wired palier, never during one: the cache TTL is six hours and the
 			// window is thirty seconds, so without this the second palier reads a cache the first one
 			// warmed and pg_hit collapses to zero while the pool looks idle. This is the freshStore
 			// argument, and it empties the WHOLE database for the same reason and with the same safety:
 			// a package's tests run sequentially and nothing else lives behind the loadref tag.
-			if err := rdb.FlushDB(ctx).Err(); err != nil {
+			if err := rdb.FlushDB(context.Background()).Err(); err != nil {
 				t.Fatalf("emptying the exactroute cache between paliers: %v", err)
 			}
-			probe := &l0Probe{lookups: lookups, verify: func(mix map[string]uint64, messages uint64) error {
+			// The baseline is read AFTER the flush, and the order is the whole measurement: read before
+			// it and the count the palier "added" is its own keys minus the previous palier's identical
+			// set, which is zero. The first run of this bench did exactly that, and cacheFootprint
+			// refused to price it rather than print a plausible number.
+			keysBefore, memBefore := redisFootprint(t, rdb)
+			statBefore := fix.pool.Stat()
+			probe := &l0Probe{lookups: fix.lookups, verify: func(mix map[string]uint64, messages uint64) error {
 				return mixHolds(mix, messages, share, portedPool)
 			}}
-			last = measureRouterPalier(t, bed, hold, l0, probe, "L0 wired")
-			statAfter := pgPool.Stat()
+			last = measureRouterPalier(t, bed, hold, fix.l0, probe, "L0 wired")
+			statAfter := fix.pool.Stat()
 			keysAfter, memAfter := redisFootprint(t, rdb)
 			pressure = poolPressure(
 				statAfter.AcquireCount()-statBefore.AcquireCount(),
@@ -195,6 +158,67 @@ func TestRouterL0Fidelity(t *testing.T) {
 	t.Logf("             mix over the last wired window: %s", renderMix(last.mix, last.messages))
 	t.Logf("             pgx: %s", pressure)
 	t.Logf("             redis: %s", footprint)
+}
+
+// l0Fixture is everything the paliers measure THROUGH: the seeded control plane, the dedicated pgx pool,
+// the filter, the snapshot and the resolver chain.
+//
+// It exists as a type so the test body holds no context of its own. Every setup call needs one and every
+// palier must not: threading a single ctx through both would hand the measurement a cancellation channel
+// it has no use for, and the linter is right to refuse it.
+type l0Fixture struct {
+	pool     *pgxpool.Pool
+	snapshot *routing.SnapshotResolver
+	l0       *routing.L0Resolver
+	lookups  *countingLookups
+}
+
+func newL0Fixture(t *testing.T, rdb *redis.Client, share float64, portedPool int, maxConns int32) *l0Fixture {
+	t.Helper()
+	ctx := context.Background()
+
+	// The control plane is seeded through the SHARED pool: the seed is not part of any window, and
+	// running it through the dedicated pool would leave its connections warm in a way production's would
+	// not be at the first message.
+	shared := pgtest.Pool(t)
+	_, connectorID := seedRefControlPlane(t, shared, 1)
+	seedExactRoutes(t, postgres.NewExactRouteRepo(shared), connectorID, share, portedPool)
+
+	// The dedicated pool is the instrument. pgtest.Pool hands out a pool shared by the whole package,
+	// opened by pgxpool.New with no config at all, so its Stat() describes every test that ran before —
+	// and its MaxConns is the driver's default, not production's.
+	cfg := pgtest.Config(t)
+	cfg.MaxConns = maxConns
+	cfg.MinConns = config.Defaults().Postgres.MinConns
+	pool, err := postgres.NewPool(ctx, cfg)
+	if err != nil {
+		t.Fatalf("dedicated pool at MaxConns=%d: %v", maxConns, err)
+	}
+	t.Cleanup(pool.Close)
+
+	repo := postgres.NewExactRouteRepo(pool)
+	// The filter is built AFTER the seed, and that order is the bench's most dangerous invariant: built
+	// before, MightContain answers false for every ported number, the store is never reached, and the
+	// palier prices an L0 stage that did nothing while looking like a measurement. The preflight below
+	// catches it in a second; mixHolds is the net behind it.
+	bloom, err := exact.LoadBloom(ctx, repo)
+	if err != nil {
+		t.Fatalf("load exact-route bloom: %v", err)
+	}
+	snapshot, err := routing.LoadSnapshot(ctx, postgres.NewRouteRepo(pool))
+	if err != nil {
+		t.Fatalf("load route snapshot: %v", err)
+	}
+
+	lookups := newCountingLookups()
+	l0 := routing.NewL0Resolver(
+		exact.NewResolver(bloom, rdb, repo, exact.DefaultCacheTTL, exact.WithLookupMeter(lookups)),
+		nil, // no script stage: L1 is another milestone's question
+		snapshot,
+	)
+	preflightL0(t, l0, share, portedPool)
+
+	return &l0Fixture{pool: pool, snapshot: snapshot, l0: l0, lookups: lookups}
 }
 
 // seedExactRoutes writes the ported working set into exact_routes, every row pointing at the connector

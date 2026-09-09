@@ -979,6 +979,96 @@ de step-201f — le chiffre tient sur quatre lectures indépendantes. **Un banc 
 d'un autre mesure l'hôte qui vient de travailler**, et c'est la seule garde de ce dépôt qui l'ait dit
 d'elle-même.
 
+### Mesure du 09/09/2026 (step-270c) — l'étage L0 est mesuré pour la première fois
+
+Jusqu'ici le banc ne mesurait pas « 0 % de trafic L0 » : **il ne traversait pas l'étage**. Le run de
+référence branchait le résolveur déclaratif en direct, et le banc routeur isolé bouchonnait le résolveur
+en figeant sa destination à un seul numéro. Ni le Bloom, ni le `GET` Redis, ni la lecture Postgres par
+clé primaire n'étaient sur le chemin mesuré.
+
+`TestRouterL0Fidelity` les y met, sur le patron de `TestPoolDLRMapFidelity` : trois couples entrelacés,
+ordre alterné, 12 voies, `FLUSHDB` avant chaque palier « avec ».
+
+**Le côté « sans » de ce banc n'est PAS la ligne du balayage.** `TestRouterConsumeCeiling` tourne sur
+`ceilResolver`, un bouchon qui ne touche rien ; opposer L0 à *ça* prixerait l'étage L0 **plus** toute la
+résolution déclarative, et classerait la somme sous L0. Les deux côtés partagent ici un vrai
+`routing.SnapshotResolver`. Les lignes ci-dessous ne se comparent donc à aucune ligne du balayage.
+
+#### Le balayage après la scission lit/palier
+
+| Partitions | 1 | 2 | 4 | 8 | 16 |
+|---|---:|---:|---:|---:|---:|
+| msg/s | 4 995 | 8 500 | 13 220 | 17 142 | 25 614 |
+| écart producteur ↔ backlog | −0,3 % | −1,0 % | −1,1 % | −0,7 % | −0,2 % |
+
+Même forme que la courbe du 27/08, hôte différemment chargé — et la comparaison entre deux sections de
+ce journal n'a jamais été valide. Ce qui est établi, c'est que la scission n'a rien déplacé.
+
+#### Les trois paliers de l'étage L0
+
+Hôte : M4 Pro, 14 cœurs, 24 Go ; Docker à 12,0 Go. 12 voies, `MaxConns=10`, fenêtre 30 s, file
+1 500 000, trois couples.
+
+| Palier | part portée | pool porté | sans L0 | avec L0 | dispersion | verdict |
+|---|---:|---:|---:|---:|---:|---|
+| porte Bloom | 0 | — | 21 664/s | 21 038/s | 12 % | **non chiffrable** (delta 3 %) |
+| borne chaude | 0,30 | 5 000 | 21 863/s | 19 282/s | 11 % | **12 %** du débit |
+| borne froide | 0,30 | 250 000 | 21 988/s | 15 280/s | 10 % | **31 %** du débit |
+
+Mélange des `outcome`, une observation par résolution dans les trois cas (**1,00 lookup/message**, ce qui
+vérifie de bout en bout l'invariant que `resolver.go` tient par un `defer`) :
+
+| Palier | `bloom_miss` | `redis_hit` | `pg_hit` |
+|---|---:|---:|---:|
+| porte Bloom | 100,0 % | — | — |
+| borne chaude | 70,0 % | 29,1 % | 0,9 % (4 936 ≈ le pool de 5 000) |
+| borne froide | 70,0 % | — | 30,0 % (134 077 — aucune répétition) |
+
+#### Ce que chaque palier a répondu
+
+**La porte Bloom coûte moins que la dispersion propre de l'hôte.** Un delta de 3 % sous 12 % de
+dispersion n'est pas un coût nul : c'est un banc qui refuse de le chiffrer, et c'est un résultat. Ce que
+la ligne établit tout de même, c'est que la porte ne fait **aucun appel réseau** — zéro acquisition pgx,
+zéro clé Redis sur 616 744 messages, ce que le code promet (`resolver.go` : `MightContain==false` est un
+échec définitif) et que rien n'avait jamais vérifié sous charge.
+
+**Le bras Redis coûte 12 %, le bras Postgres 31 %.** L'écart entre les deux est le cadran de localité, et
+c'est lui que step-280 doit régler : `coût/msg = part × [(1−L)·c_pg + L·c_redis] + (1−part)·c_bloom`.
+
+**`MaxConns=10` n'a pas été la contrainte, et c'est la surprise.** La borne froide a fait
+**134 077 lectures Postgres en 30 s, soit ~4 470/s**, sur dix connexions pour douze voies — avec une
+attente moyenne d'acquisition **nulle** et **10 acquisitions sur pool vide sur 134 183** (0,0 %). La loi
+de Little que step-280 invoque supposait une latence de clé primaire de ~4 ms ; à dix connexions et
+4 470 req/s le budget par requête est de 2,2 ms, et il n'a pas été consommé. **Ce chiffre ne se transpose
+pas tel quel** : ce Postgres est un conteneur sur le même hôte, sans saut réseau. L'environnement
+représentatif doit le remesurer — mais la marge mesurée ici déplace la charge de la preuve.
+
+**L'empreinte du cache est de 178 à 210 octets par clé `exactroute:{msisdn}`**, sur trois paliers
+indépendants : 5 000 clés → 210 o, 134 182 clés → 200 o, 5 000 clés → 178 o. La dispersion est celle de
+`used_memory`, qui compte l'allocateur et non les clés : les deux paliers à 5 000 clés encadrent le
+palier à 134 182, et c'est ce dernier — trente fois plus d'échantillons — qui porte le chiffre.
+**Retenir 200 o/clé.** step-250e ne pouvait qu'estimer « ~150-200 o » et en dérivait 1,3 à 10 Go sur le
+Redis partagé avec les soldes de facturation : la mesure confirme le haut de son estimation et place le
+haut de la fourchette à ~10,4 Go. **C'est la grandeur de ce banc qui se transpose le mieux** — elle ne
+dépend ni du débit de l'hôte ni de sa latence disque.
+
+#### Réserves, nommément
+
+- **Les trois paliers ont été lancés à la suite**, ce que ce journal interdit ailleurs. Les dispersions
+  de 10 à 12 % dans un côté le disent : le banc DLR, sur hôte reposé, lisait 0 %. Les *ratios*
+  (mélange, lookups/message, octets/clé) n'en souffrent pas — ils ne sont pas des débits. Les trois
+  verdicts de coût, si.
+- **Le delta est NET à part > 0** : L0 ajoute une sonde Bloom à tous les messages et une lecture du
+  magasin aux portés, et il **saute** la résolution déclarative des portés qui touchent (une cible
+  connecteur se résout sans consulter l'instantané). C'est le chiffre pertinent pour la production ; ce
+  n'est pas le coût brut d'un lookup.
+- Le run de référence plein-stack ne traverse toujours pas L0, et `payloadRing = 4096`
+  (`test/load/steady/inject.go`) plafonne son injecteur à 4 096 destinations distinctes quoi qu'annonce
+  son `Dest`. Les deux restent à step-280.
+- Aucun `pg_error` ni `redis_error` sur les trois paliers : la garde qui les refuse n'a donc jamais
+  parlé, et la valeur de `MaxConns` à laquelle elle parlerait n'est pas connue.
+
+
 ## Contenu
 
 | Chemin | Rôle |

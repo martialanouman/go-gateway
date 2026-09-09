@@ -108,8 +108,30 @@ Redis en régime établi, et une lecture Postgres par clé primaire à froid ou 
    Redis partagé avec les soldes de facturation. Le TTL est une constante de paquet, sans levier de
    configuration : si le Redis se remplit, le recours est un redéploiement.
 
-**Les trois grandeurs se mesurent avec le banc de step-270c**, qui livre les ratios ; ce qui reste
-ici est de les évaluer à l'échelle et d'en tirer le dimensionnement.
+**Les trois grandeurs ont été mesurées par step-270c** (`TestRouterL0Fidelity`, journal du 09/09/2026),
+en *ratios* — les seuls chiffres qui se transposent depuis un portable :
+
+1. **Débit Postgres du L0** — la borne froide a tenu **~4 470 lectures/s** (134 077 en 30 s), et le coût
+   de l'étage va de **12 %** du débit (bras Redis, pool porté petit) à **31 %** (bras Postgres, aucune
+   répétition). La porte Bloom seule est **non chiffrable** sur cet hôte : son delta de 3 % est sous la
+   dispersion de 12 % des lectures dont il est tiré — mais elle ne fait **aucun** appel réseau, ce qui est
+   vérifié sous charge (zéro acquisition pgx sur 616 744 messages).
+2. **Pool pgx** — à `MaxConns=10` pour 12 voies : **0,30 acquisition/message, attente moyenne nulle,
+   10 acquisitions sur pool vide sur 134 183** (0,0 %). **`MaxConns=10` n'a pas été la contrainte** à ce
+   débit. La loi de Little invoquée plus haut supposait ~4 ms de latence de clé primaire ; ce Postgres est
+   un conteneur local, **sans saut réseau**, et c'est précisément ce que l'environnement représentatif
+   doit remesurer. Aucun `pg_error` n'est apparu : la valeur de `MaxConns` à laquelle il apparaîtrait
+   reste inconnue.
+3. **Empreinte Redis** — **200 octets par clé** `exactroute:{msisdn}` (fourchette 178-210 sur trois
+   paliers), ce qui confirme le haut de l'estimation de step-250e et place le haut de la fourchette à
+   **~10,4 Go** sur le Redis partagé avec les soldes.
+
+Ce qui reste **ici** : choisir la part portée et la localité représentatives, refaire ces mesures à
+l'échelle avec un Postgres et un Redis en réseau, et en tirer le dimensionnement. Restent aussi, non
+livrés par step-270c : le levier de configuration du TTL du cache (`cmd/router-svc/wiring.go` fige
+`exact.DefaultCacheTTL`), la valeur de `POSTGRES_MAX_CONNS` par service dans les manifests, le câblage de
+L0 dans le run de référence plein-stack, et le plafond de 4 096 destinations distinctes que
+`payloadRing` impose à l'injecteur de ce run (`test/load/steady/inject.go`).
 
 La campagne doit décider quelle part de numéros portés est représentative d'un agrégateur national
 (10 à 30 % en marché MNP mûr) et semer le banc en conséquence, sans quoi le dimensionnement publié
