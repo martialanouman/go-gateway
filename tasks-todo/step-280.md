@@ -1,7 +1,8 @@
 # step-280 — Campagne NFR pleine échelle sur environnement représentatif
 
 > **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
-> **Dépend de :** step-201, **step-201c**, **step-201d**, **step-201e**, **step-201f**, step-270, **step-270b** · **Bloque :** step-410
+> **Dépend de :** step-201, **step-201c**, **step-201d**, **step-201e**, **step-201f**, step-270,
+> **step-270b**, **step-270c** · **Bloque :** step-410
 
 ## But
 Rendre le **verdict NFR** que step-201 ne pouvait pas rendre : débit soutenu **8 000 SMS/s**, pic
@@ -30,6 +31,14 @@ par-worker (§2.5). Ici, seule **l'échelle** change.
 > connecteurs, qui borne aujourd'hui le bout-en-bout à 2 400/s contre les 10 400 `submit_sm/s` de la
 > cible. C'est **step-201f**, et elle bloque cette fiche pour la même raison que step-201e la bloquait :
 > une campagne pleine échelle qui démarre sans savoir à qui appartient le plafond mesurera l'hôte.
+
+> **Mise à jour (09/09/2026, step-270c ouverte).** Le prérequis logiciel de la section « profil de
+> routage L0 » est plus profond que ce qu'elle décrit : le banc ne mesure pas 0 % de trafic L0, **il ne
+> traverse pas du tout l'étage L0**. `internal/e2e/reference_test.go:887-893` branche le résolveur
+> déclaratif en direct, et le banc routeur isolé bouchonne le résolveur entièrement en figeant sa
+> destination à un seul numéro. **step-270c** livre le banc qui prix l'étage — les *ratios* (lookups
+> par message, part par `outcome`, octets par clé Redis, pression du pool pgx), qui seuls se
+> transposent depuis un portable. Elle ne rend aucun verdict et ne débloque pas le matériel.
 
 ## Prérequis logiciel : step-201c
 Le run de référence de step-201 a mesuré un plafond de sortie de **192–330 `submit_sm/s`** dû à quatre
@@ -98,6 +107,42 @@ Redis en régime établi, et une lecture Postgres par clé primaire à froid ou 
 3. **Empreinte Redis du cache.** `clés en vol = taux de peuplement × TTL(6 h)`, soit 1,3 à 10 Go sur le
    Redis partagé avec les soldes de facturation. Le TTL est une constante de paquet, sans levier de
    configuration : si le Redis se remplit, le recours est un redéploiement.
+
+**Les trois grandeurs ont été mesurées par step-270c** (`TestRouterL0Fidelity`, journal du 09/09/2026),
+en *ratios* — les seuls chiffres qui se transposent depuis un portable :
+
+1. **Débit Postgres du L0** — la borne froide a tenu **~4 500 lectures/s**, et le coût de l'étage va de
+   **12 %** du débit (bras Redis, pool porté petit) à **28-33 %** (bras Postgres, aucune répétition, cinq
+   lectures). La porte Bloom seule est **non chiffrable** sur cet hôte : son delta de 3 % est sous la
+   dispersion de 12 % des lectures dont il est tiré — mais elle ne fait **aucun** appel réseau, vérifié
+   sous charge (zéro acquisition pgx sur 616 744 messages).
+2. **Pool pgx — la question n'est pas celle que cette fiche posait.** `MaxConns=10` **est** atteint : sur les
+   quatre runs qui portent le compteur de constructions, 5 à 33 acquisitions ont attendu derrière un pool
+   plein — **une sur 4 300 à 25 300** — et **aucune** n'est explicable par une construction. Leur attente
+   **totale** va de **826 µs à 12 ms** sur trente secondes, trois à quatre ordres de grandeur sous le
+   `DefaultLookupTimeout` de 2 s qui ferait basculer la lecture en échec. *(Le total est le seul majorant
+   par appelant que ces compteurs donnent : le diviser par le nombre d'attentes rend une moyenne, qui
+   n'en est pas un.)*
+   *(Aucun compteur de `pgxpool` ne mesure une famine seul : `AcquireDuration` moyenne le chemin rapide,
+   et `EmptyAcquireCount` comme `EmptyAcquireWaitTime` comptent aussi les constructions de connexion. Le
+   chiffre ci-dessus est un plancher de contention, `emptyAcquires − newConns`.)*
+   **La loi de Little sur un débit était le mauvais modèle** : `MaxConns` borne une *concurrence*, et
+   `handleBatch` (`internal/router/router.go`) ouvre une goroutine par partition dont chaque voie traite
+   **séquentiellement** — un pod ne peut donc jamais offrir au pool plus d'acquisitions simultanées qu'il
+   n'a de voies. **Le levier est le rapport `MaxConns` / voies par pod**, aujourd'hui 10/12, et non les
+   4 500 req/s. C'est ce rapport qu'il faut porter dans les manifests.
+3. **Empreinte Redis** — **200 octets par clé** `exactroute:{msisdn}` comme majorant de
+   dimensionnement (moyenne 184 sur les cinq grands échantillons, étendue 168-201 ; fourchette
+   168-210 sur huit lectures, les petits échantillons étant biaisés par les tampons de connexion que
+   `used_memory` compte). Cela confirme le haut de l'estimation de step-250e et place le haut de la
+   fourchette à **~10,4 Go** sur le Redis partagé avec les soldes.
+
+Ce qui reste **ici** : choisir la part portée et la localité représentatives, refaire ces mesures à
+l'échelle avec un Postgres et un Redis en réseau, et en tirer le dimensionnement. Restent aussi, non
+livrés par step-270c : le levier de configuration du TTL du cache (`cmd/router-svc/wiring.go` fige
+`exact.DefaultCacheTTL`), la valeur de `POSTGRES_MAX_CONNS` par service dans les manifests, le câblage de
+L0 dans le run de référence plein-stack, et le plafond de 4 096 destinations distinctes que
+`payloadRing` impose à l'injecteur de ce run (`test/load/steady/inject.go`).
 
 La campagne doit décider quelle part de numéros portés est représentative d'un agrégateur national
 (10 à 30 % en marché MNP mûr) et semer le banc en conséquence, sans quoi le dimensionnement publié

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"go.opentelemetry.io/otel/trace/noop"
@@ -43,21 +44,100 @@ const (
 	prefillBatchMaxBytes = 1 << 20
 )
 
-// measureRouterCeiling runs one palier: prefill a private topic of `partitions` partitions, run the
-// router alone over it for `hold`, and report the rate with the facts needed to read it.
-func measureRouterCeiling(t *testing.T, brokers []string, partitions, records int, hold time.Duration) {
+// routerBed is a prefilled private topic, built once and measured many times.
+//
+// The split from the palier is not cosmetic. newCeilingTopic registers its DeleteTopics on the TEST, not
+// on the palier, and its own comment says why that matters: each prefill writes ~100MB and a handful left
+// behind fill the single-node broker's volume. A fidelity bench runs six paliers at one partition count,
+// so rebuilding the bed per palier would leave six topics standing until the test returned. Every palier
+// consumes from offset 0 under a fresh group id (kafka.NewConsumer resets AtStart), so one prefill serves
+// them all — the same shape newPoolBed already has.
+type routerBed struct {
+	brokers     []string
+	topic       string
+	partitions  int
+	prefillRate float64
+}
+
+// newRouterBed creates the topic and fills it. dest maps a record index to its destination MSISDN —
+// always explicitly, never nil: a nil default would be the one path no test covers, and it is the path
+// the whole sweep runs on. legacyDest is what the sweep passes.
+func newRouterBed(t *testing.T, brokers []string, partitions, records int, dest func(i int) string) *routerBed {
 	t.Helper()
 
 	topic := newCeilingTopic(t, brokers, "inbound", partitions)
 	accounts := partitionAccounts(topic, partitions)
 	prefillRate := prefill(t, brokers, topic, records, func(i int) (kafka.Record, error) {
-		return pipeline.EncodeInbound(inboundBench(accounts[i%len(accounts)]))
+		return pipeline.EncodeInbound(inboundBench(accounts[i%len(accounts)], dest(i)))
 	})
 
 	if err := prefillBalance(endOffsets(t, brokers, topic), partitions); err != nil {
 		t.Fatalf("%d partitions: %v", partitions, err)
 	}
+	return &routerBed{brokers: brokers, topic: topic, partitions: partitions, prefillRate: prefillRate}
+}
 
+// l0Probe is what a palier reads about the L0 stage from inside its own window. A nil probe leaves the
+// palier exactly as the sweep has always run it.
+//
+// The mix is verified BEFORE the CDR rejection guard on purpose: a saturated pgx pool surfaces as
+// pg_error, the lookup fails closed and the message is rejected, so the CDR guard would kill the palier
+// on "N messages were rejected" — true, and useless. mixHolds names the pool instead, which is the
+// answer step-280 came for.
+type l0Probe struct {
+	lookups *countingLookups
+	verify  func(mix map[string]uint64, messages uint64) error
+	// stat samples the DEDICATED pgx pool and cache samples the Redis side. Both are read from inside the
+	// palier, beside the message count, for the reason the mix is: bracketing them around the whole call
+	// would cover the group join, the broker scrape, the lag read and the drain, while the messages they
+	// are divided by cover only the window. The empty-acquire counts are small enough (8, 33) that one
+	// acquire from the cold join moves the published table, and the key count drifted by ~130 the same way.
+	stat  func() *pgxpool.Stat
+	cache func() (keys, used int64)
+}
+
+// snapshot on the probe so a nil probe needs no branch at either call site.
+func (p *l0Probe) snapshot() map[string]uint64 {
+	if p == nil || p.lookups == nil {
+		return nil
+	}
+	return p.lookups.snapshot()
+}
+
+// poolStat and cacheSize, same nil discipline.
+func (p *l0Probe) poolStat() *pgxpool.Stat {
+	if p == nil || p.stat == nil {
+		return nil
+	}
+	return p.stat()
+}
+
+func (p *l0Probe) cacheSize() (keys, used int64) {
+	if p == nil || p.cache == nil {
+		return 0, 0
+	}
+	return p.cache()
+}
+
+// routerPalier is one window's reading.
+type routerPalier struct {
+	rate     float64
+	messages uint64
+	mix      map[string]uint64
+	// statBefore and statAfter bracket the window itself, not the call. Nil when the palier ran no probe.
+	statBefore, statAfter *pgxpool.Stat
+	// The cache size on the same bracket, for the same reason.
+	keysBefore, keysAfter, memBefore, memAfter int64
+}
+
+// measureRouterPalier runs the router alone over bed for `hold` and reports the rate with the facts
+// needed to read it. label names what is wired, since the bed is now shared by two benches.
+func measureRouterPalier(t *testing.T, bed *routerBed, hold time.Duration, resolver pipeline.Resolver,
+	probe *l0Probe, label string,
+) routerPalier {
+	t.Helper()
+
+	brokers, topic, partitions := bed.brokers, bed.topic, bed.partitions
 	cfg := refKafkaConfig(brokers)
 	// A group id per palier: a reused one carries committed offsets and would consume none of the
 	// prefill, measuring an empty topic at a plausible-looking zero.
@@ -79,7 +159,7 @@ func measureRouterCeiling(t *testing.T, brokers []string, partitions, records in
 		Metrics:  metrics.NewCatalog(),
 		Pipeline: pipeline.New(pipeline.Deps{
 			Tracer:    tracer,
-			Resolver:  ceilResolver{conn: uuid.New()},
+			Resolver:  resolver,
 			SenderIDs: ceilSenderIDs{},
 			OptOut:    ceilOptOut{},
 			Antispam:  ceilAntispam{},
@@ -106,6 +186,8 @@ func measureRouterCeiling(t *testing.T, brokers []string, partitions, records in
 	start := time.Now()
 	base, baseNanos, baseBuckets := prod.snapshot()
 	baseBatches, baseRecords, baseLanes := counted.snapshot()
+	baseMix, baseStat := probe.snapshot(), probe.poolStat()
+	baseKeys, baseMem := probe.cacheSize()
 
 	select {
 	case err := <-runErr:
@@ -117,6 +199,11 @@ func measureRouterCeiling(t *testing.T, brokers []string, partitions, records in
 	elapsed := time.Since(start)
 	produced, nanos, buckets := prod.snapshot()
 	done := produced - base
+	// Read HERE, beside `done`, and not after the broker scrape and the lag read below: the router keeps
+	// running through both (cancel is deferred), so a mix taken there would cover a longer interval than
+	// the message count it is divided by — always in the direction that makes the L0 stage look busier.
+	mix, endStat := subtractMix(baseMix, probe.snapshot()), probe.poolStat()
+	endKeys, endMem := probe.cacheSize()
 	brokerAfter, afterErr := scrapeBroker(t)
 	// Read while the group is still alive: kadm seeds a group's lag from its members, so a reading taken
 	// after cancel() describes a group that has left.
@@ -137,20 +224,27 @@ func measureRouterCeiling(t *testing.T, brokers []string, partitions, records in
 	if err := sourcesAgree(rate, first, last, elapsed); err != nil {
 		t.Fatalf("%d partitions: %v", partitions, err)
 	}
+	if probe != nil && probe.verify != nil {
+		if err := probe.verify(mix, done); err != nil {
+			t.Fatalf("%d partitions: %v", partitions, err)
+		}
+	}
 	if n := cdr.n.Load(); n != 0 {
 		t.Fatalf("%d partitions: %d messages were rejected: this palier did not measure the path it reports",
 			partitions, n)
 	}
 
-	t.Logf("router alone: %2d partitions -> %8.0f msg/s · %s · %s · prefill %.0f rec/s",
-		partitions, rate,
+	t.Logf("%s: %2d partitions -> %8.0f msg/s · %s · %s · prefill %.0f rec/s",
+		label, partitions, rate,
 		crossCheck(rate, first, last, elapsed),
 		laneShape(batches-baseBatches, recs-baseRecords, lanes-baseLanes, partitions),
-		prefillRate)
+		bed.prefillRate)
 	t.Logf("             %2d partitions    %s", partitions, brokerReport(brokerBefore, brokerAfter, brokerErr, afterErr))
 	t.Logf("             %2d partitions    %s", partitions,
 		stageLatency(refProduceStage, refProduceExcludes, done, nanos-baseNanos, deltaBuckets(baseBuckets, buckets), elapsed, done))
 
+	return routerPalier{rate: rate, messages: done, mix: mix, statBefore: baseStat, statAfter: endStat,
+		keysBefore: baseKeys, keysAfter: endKeys, memBefore: baseMem, memAfter: endMem}
 }
 
 // scrapeBroker reads the test broker's own exposition (step-201e D2).
@@ -502,7 +596,7 @@ func (ceilAntispam) Evaluate(context.Context, uuid.UUID, uuid.UUID, string, stri
 // inboundBench is the record the REST API and the SMPP server publish: one GSM-7 segment of the length
 // the injector sends, keyed by the account so the prefill lands where partitionAccounts intended. A
 // synthetic payload would segment differently and price a different message.
-func inboundBench(account uuid.UUID) pipeline.InboundMT {
+func inboundBench(account uuid.UUID, to string) pipeline.InboundMT {
 	const body = "Your one time code is 424242. It expires in ten minutes. Do not share it with anyone, our staff will never ask you for it."
 	return pipeline.InboundMT{
 		MessageID:   uuid.New(),
@@ -510,7 +604,7 @@ func inboundBench(account uuid.UUID) pipeline.InboundMT {
 		AccountID:   account,
 		CustomerID:  uuid.New(),
 		From:        refSenderID,
-		To:          "2250700000000",
+		To:          to,
 		Body:        msg.NewBodyString(body),
 		Encoding:    "auto",
 		SubmittedAt: time.Now().UTC(),

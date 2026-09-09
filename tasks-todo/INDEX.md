@@ -204,7 +204,10 @@ qu'on mesure un environnement représentatif.
 - [ ] step-260c — Les trois politiques PostgreSQL hors facturation (bind SMPP, clés API REST, snapshots) ⛓ step-260b
 - [x] step-270 — Manifests deploy/ Kubernetes (Deployments, Services, HPA, PDB, probes) ⛓ step-260b
 - [x] step-270b — Images conteneur : Dockerfiles et publication GHCR ⛓ step-270
-- [ ] step-280 — Campagne NFR pleine échelle sur environnement représentatif ⛓ step-230, step-270b
+- [x] step-270c — Le banc ne traverse pas l'étage L0 : le rendre mesurable (ratios, pas verdict)
+      ⛓ step-250e, step-270b
+- [ ] step-280 — Campagne NFR pleine échelle sur environnement représentatif ⛓ step-230, step-270b,
+      step-270c
 
 Le seul **défaut de correction** du lot est clos : step-240 a fermé le rejeu d'un message annulé, et
 step-245 le cas où l'annulation avait gagné son jeton sans jamais écrire sa ligne CDR. step-250 a
