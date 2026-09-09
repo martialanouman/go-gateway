@@ -105,7 +105,7 @@ func TestPoolDLRMapFidelity(t *testing.T) {
 		without = append(without, run(nil))
 	}
 
-	verdict, err := fidelityDelta(without, with)
+	verdict, err := fidelityDelta(without, with, "the DLR store")
 	if err != nil {
 		t.Fatalf("%d binds w%d, %d pairs: %v", binds, sweepAWindow, pairs, err)
 	}

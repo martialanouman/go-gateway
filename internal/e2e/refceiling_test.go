@@ -250,8 +250,12 @@ func putsMatchSubmits(puts, submits int64) error {
 	return nil
 }
 
-// fidelityDelta renders what wiring the real DLR store cost the pool, and refuses to name a figure the
-// readings cannot support.
+// fidelityDelta renders what wiring a stage cost a bench, and refuses to name a figure the readings
+// cannot support.
+//
+// `subject` names what the "with" side wired — "the DLR store" for the pool bench, "the L0 stage" for
+// the router one. It is a parameter rather than a literal because a verdict that names the wrong bench
+// is worse than no verdict: it files one stage's cost under another's.
 //
 // The delta between two configurations is only meaningful against the spread of the readings it is
 // drawn from. step-201f PR1 measured ONE configuration twice inside a single run and read 12 573/s then
@@ -268,47 +272,47 @@ func putsMatchSubmits(puts, submits int64) error {
 // A delta under that spread is reported as unreadable rather than as a cost. Two pairs is the floor; one
 // bounds no spread at all, so any delta would clear a noise estimate of zero.
 //
-// It returns an ERROR, not a verdict, when the stored side comes out ahead by more than the scatter: an
-// added synchronous write cannot raise throughput, so that reading says the two sides were not measured
-// under the same conditions, and a caller left green over it would publish nothing and notice nothing.
-func fidelityDelta(without, with []float64) (string, error) {
+// It returns an ERROR, not a verdict, when the wired side comes out ahead by more than the scatter: an
+// added stage cannot raise throughput, so that reading says the two sides were not measured under the
+// same conditions, and a caller left green over it would publish nothing and notice nothing.
+func fidelityDelta(without, with []float64, subject string) (string, error) {
 	if len(without) != len(with) {
-		return "", fmt.Errorf("%d readings without the store against %d with: the pairing is what defends "+
-			"against drift, and unpaired sides were not measured across the same span", len(without), len(with))
+		return "", fmt.Errorf("%d readings without %s against %d with: the pairing is what defends "+
+			"against drift, and unpaired sides were not measured across the same span", len(without), subject, len(with))
 	}
 	if len(without) < 2 {
 		return "", fmt.Errorf("%d pair(s) measured: a single pair bounds no spread, so any delta would clear a "+
 			"noise estimate of zero — run at least two interleaved pairs", len(without))
 	}
-	meanW, spreadW, err := meanAndSpread(without, "without the store")
+	meanW, spreadW, err := meanAndSpread(without, "without "+subject)
 	if err != nil {
 		return "", err
 	}
-	meanD, spreadD, err := meanAndSpread(with, "with the store")
+	meanD, spreadD, err := meanAndSpread(with, "with "+subject)
 	if err != nil {
 		return "", err
 	}
 
 	noise := max(spreadW, spreadD)
 	cost := (meanW - meanD) / meanW
-	out := fmt.Sprintf("%d interleaved pairs · %.0f/s without the DLR store, %.0f/s with · spread within a "+
-		"side %.0f%%", len(without), meanW, meanD, 100*noise)
+	out := fmt.Sprintf("%d interleaved pairs · %.0f/s without %s, %.0f/s with · spread within a "+
+		"side %.0f%%", len(without), meanW, subject, meanD, 100*noise)
 
 	switch {
 	case math.Abs(cost) <= noise:
 		return fmt.Sprintf("%s · the %.0f%% delta is under the spread of the readings it is drawn from: this "+
-			"bench cannot put a figure on the DLR write", out, 100*math.Abs(cost)), nil
+			"bench cannot put a figure on %s", out, 100*math.Abs(cost), subject), nil
 	case cost < 0:
 		// An error, not a verdict. A synchronous write added to every message cannot RAISE throughput, so a
 		// reading that says it did was not taken under one set of conditions — and the run it belongs to
 		// bounds nothing. Rendering it as a sentence would leave the caller green over an unusable
 		// measurement, which is the one thing this file exists to refuse. sweepsAgree treats the same class
 		// the same way.
-		return "", fmt.Errorf("%s · the palier ran %.0f%% FASTER with the store wired, past its own %.0f%% "+
+		return "", fmt.Errorf("%s · the palier ran %.0f%% FASTER with %s wired, past its own %.0f%% "+
 			"scatter: no added write can do that, so the two sides were not measured under the same "+
-			"conditions and neither bounds the other — re-run the pairs", out, -100*cost, 100*noise)
+			"conditions and neither bounds the other — re-run the pairs", out, -100*cost, subject, 100*noise)
 	default:
-		return fmt.Sprintf("%s · the store costs %.0f%% of the throughput", out, 100*cost), nil
+		return fmt.Sprintf("%s · %s costs %.0f%% of the throughput", out, subject, 100*cost), nil
 	}
 }
 
@@ -1235,21 +1239,21 @@ func TestPutsMatchSubmitsRefusesASilentNoop(t *testing.T) {
 // subtracted the means would attribute that drift to Redis with a straight face. So the delta is only
 // readable against the spread of the readings it is drawn from, and one pair bounds no spread at all.
 func TestFidelityDeltaRefusesASinglePair(t *testing.T) {
-	if _, err := fidelityDelta([]float64{12000}, []float64{9000}); err == nil {
+	if _, err := fidelityDelta([]float64{12000}, []float64{9000}, "the DLR store"); err == nil {
 		t.Fatal("one pair must fail: with no spread to compare against, any delta reads as significant")
 	}
 
-	if _, err := fidelityDelta(nil, nil); err == nil {
+	if _, err := fidelityDelta(nil, nil, "the DLR store"); err == nil {
 		t.Error("no pair at all must fail rather than render a verdict from nothing")
 	}
 
-	if _, err := fidelityDelta([]float64{12000, 12100}, []float64{9000}); err == nil {
+	if _, err := fidelityDelta([]float64{12000, 12100}, []float64{9000}, "the DLR store"); err == nil {
 		t.Error("unpaired readings must fail: the pairing is what defends against drift")
 	}
 
 	// A palier that moved nothing is not a fast configuration; it is a broken one, and it would drag a
 	// mean toward zero and manufacture a cost.
-	if _, err := fidelityDelta([]float64{12000, 0}, []float64{9000, 9100}); err == nil {
+	if _, err := fidelityDelta([]float64{12000, 0}, []float64{9000, 9100}, "the DLR store"); err == nil {
 		t.Error("a palier that moved nothing must fail rather than be averaged in")
 	}
 }
@@ -1264,7 +1268,7 @@ func TestFidelityDeltaCallsADeltaUnderTheNoiseUnreadable(t *testing.T) {
 	without := []float64{12000, 13800, 12500}
 	with := []float64{11900, 13200, 12300}
 
-	got, err := fidelityDelta(without, with)
+	got, err := fidelityDelta(without, with, "the DLR store")
 	if err != nil {
 		t.Fatalf("three usable pairs must render a verdict: %v", err)
 	}
@@ -1276,7 +1280,7 @@ func TestFidelityDeltaCallsADeltaUnderTheNoiseUnreadable(t *testing.T) {
 	// (~2%) and the stored side scatters (~18%), and the 8% delta falls between the two: read against the
 	// tight side it is a measured cost of Redis, read against the wide one it is one more of the readings
 	// the wide side already produced. A guard that took the narrower estimate would publish the figure.
-	got, err = fidelityDelta([]float64{12000, 12100, 11900}, []float64{10000, 12000, 11000})
+	got, err = fidelityDelta([]float64{12000, 12100, 11900}, []float64{10000, 12000, 11000}, "the DLR store")
 	if err != nil {
 		t.Fatalf("three usable pairs must render a verdict: %v", err)
 	}
@@ -1292,7 +1296,7 @@ func TestFidelityDeltaNamesACostThatClearsTheNoise(t *testing.T) {
 	without := []float64{12000, 12100, 11900}
 	with := []float64{7200, 7260, 7140}
 
-	got, err := fidelityDelta(without, with)
+	got, err := fidelityDelta(without, with, "the DLR store")
 	if err != nil {
 		t.Fatalf("three usable pairs must render a verdict: %v", err)
 	}
@@ -1308,7 +1312,7 @@ func TestFidelityDeltaNamesACostThatClearsTheNoise(t *testing.T) {
 	// cannot raise throughput, so the two sides were not measured under the same conditions and the
 	// comparison is void. That is the class sweepsAgree already refuses with an error, and it must fail
 	// the run rather than render a sentence a green test invites nobody to read.
-	_, err = fidelityDelta(with, without)
+	_, err = fidelityDelta(with, without, "the DLR store")
 	if err == nil {
 		t.Fatal("a palier 40% FASTER with the store wired must fail: no added write can do that, so the two " +
 			"sides drifted and neither bounds the other")
@@ -1326,7 +1330,7 @@ func TestFidelityDeltaNamesACostThatClearsTheNoise(t *testing.T) {
 // side of zero. Only an excess LARGER than the scatter is impossible.
 func TestFidelityDeltaToleratesASlowSideInsideTheNoise(t *testing.T) {
 	// The stored side is 1,6% ahead, inside a 14% scatter.
-	got, err := fidelityDelta([]float64{12000, 13800, 12500}, []float64{12400, 13900, 12600})
+	got, err := fidelityDelta([]float64{12000, 13800, 12500}, []float64{12400, 13900, 12600}, "the DLR store")
 	if err != nil {
 		t.Fatalf("a side marginally ahead inside its own scatter must render, not fail: %v", err)
 	}
