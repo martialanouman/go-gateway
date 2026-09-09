@@ -789,3 +789,18 @@ func TestLegacyDestIsTheJournalsFixture(t *testing.T) {
 		}
 	}
 }
+
+// TestRoundWaitKeepsSubMillisecondReadable: rounding to the millisecond beside figures in microseconds
+// prints "0s in total, 60µs each" — a line that contradicts itself. The waits this bench measures are
+// 826µs to 12ms, so both sides of that boundary are live.
+func TestRoundWaitKeepsSubMillisecondReadable(t *testing.T) {
+	if got := roundWait(826 * time.Microsecond); got != 826*time.Microsecond {
+		t.Errorf("a sub-millisecond total must keep its microseconds, got %v", got)
+	}
+	if got := roundWait(12*time.Millisecond + 400*time.Microsecond); got != 12*time.Millisecond {
+		t.Errorf("a millisecond-scale total rounds to the millisecond, got %v", got)
+	}
+	if got := roundWait(0); got != 0 {
+		t.Errorf("zero stays zero, got %v", got)
+	}
+}

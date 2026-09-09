@@ -1,6 +1,6 @@
 # step-270c — Rendre l'étage L0 mesurable dans le banc
 
-> **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
+> **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** LIVRÉE
 > **Dépend de :** step-201e, step-201f, step-250e, step-270b · **Bloque :** step-280
 
 ## But
@@ -235,13 +235,12 @@ défaut de la même famille que celui qu'il corrigeait :
     aucun `%`), une autre était satisfaite par les deux branches qu'elle prétendait séparer, et deux
     illustrations chiffrées avaient vieilli d'un run.
 
-| Tests purs | Mutations vues rouges |
-|---:|---:|
-| **17** | **26** |
+**18 tests purs** (`grep -c '^func Test' internal/e2e/refl0_test.go`), et **chacun a été vu tomber sous
+une mutation** — une seule exception, consignée plus bas.
 
-*(Chiffres vérifiés par `grep -c '^func Test' internal/e2e/refl0_test.go`, la première version de cette
-fiche en annonçait 12 puis 17 — un décompte faux dans une DoD présentée comme piste d'audit vaut moins
-qu'une DoD sans décompte.)*
+Pas de total de mutations dans cette fiche. J'en ai annoncé 13, puis 14, puis 22, puis 24, puis 26, sans
+jamais les avoir comptées : un chiffre qu'on réestime à chaque tour n'est pas une piste d'audit, c'en
+est le contraire. Ce qui se vérifie est test par test, et c'est ce qui est écrit.
 
 Une mutation n'est pas tombée et c'est consigné : le modèle du mélange arrondit désormais la part par
 `portedPerBlock`, mais l'écart entre les deux arrondis est trois ordres de grandeur sous `maxMixGap`,
@@ -310,10 +309,10 @@ bouge → preuve que le lit est bien celui qu'on croit.
 ## Definition of Done
 
 - [x] `make check` vert (lint · `test -race` · govulncheck · contrats) ; `make test` inchangé en durée
-- [x] **17** tests purs verts hors build tag (11 prévus, plus la soustraction de fenêtre, la
-      terminaison du semis, le rendu du mélange, le littéral du balayage et la concurrence offerte au
-      pool) ; **26** mutations vues rouges, dont **dix-sept ont trouvé un défaut** plutôt que de
-      confirmer un test
+- [x] **18** tests purs verts hors build tag (11 prévus, plus la soustraction de fenêtre, la
+      terminaison du semis, le rendu du mélange, le littéral du balayage, la séparation
+      construction/famine, la concurrence offerte et l'arrondi des attentes) ; **chacun a été vu tomber
+      sous une mutation**, à l'exception unique consignée ci-dessus
 - [x] `TestRouterConsumeCeiling` relancé après la scission : tous les gardes verts, écarts producteur ↔
       backlog −0,3 à **−1,1 %**, courbe 4 995 · 8 500 · 13 220 · 17 142 · 25 614. **Le −1,1 % est hors de
       la bande publiée (−0,1 à −1,0 %)**, de 0,1 point, sur un hôte différemment chargé. Ce que la
