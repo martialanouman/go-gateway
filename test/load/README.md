@@ -1023,8 +1023,8 @@ make load-reference RUN=TestRouterL0Fidelity PORTED_SHARE=0.30 PORTED_POOL=25000
 | borne chaude | 0,30 | 5 000 | 21 863/s | 19 282/s | 11 % | **12 %** du débit |
 | borne froide | 0,30 | 250 000 | 21 988/s | 15 280/s | 10 % | **31 %** du débit |
 
-La borne froide a été relancée trois fois de plus, au fil des corrections de l'instrument (voir plus
-bas) : **31 % · 31 % · 28 % · 33 %**. Le verdict tient sur quatre lectures indépendantes.
+La borne froide a été relancée quatre fois de plus, au fil des corrections de l'instrument (voir plus
+bas) : **31 % · 31 % · 28 % · 33 % · 33 %**. Le verdict tient sur cinq lectures indépendantes.
 
 Mélange des `outcome`, une observation par résolution dans les trois cas (**1,00 lookup/message**, ce qui
 vérifie de bout en bout l'invariant que `resolver.go` tient par un `defer`) :
@@ -1075,17 +1075,27 @@ aussi **hors** `Acquire` (`createIdleResources` alimente `newConnsCount` sans to
 `emptyAcquireCount`), ce qui ne peut que le rendre plus conservateur. Symétriquement, l'attente est un
 **majorant** : elle porte le temps de connexion que la fenêtre a pu contenir.
 
-| Run | acquisitions | sans connexion libre | constructions | **plancher de contention** | attente totale | par attente (majorant) |
+| Run | acquisitions | sans connexion libre | constructions | **plancher** | rareté | attente totale |
 |---|---:|---:|---:|---:|---:|---:|
-| borne froide (2) | 132 550 | 8 | 0 | 8 | 6 ms | 735 µs |
-| borne froide (3) | 143 430 | 33 | 0 | 33 | 12 ms | 365 µs |
-| **borne froide (4)** | **127 562** | **8** | **0** | **8** | **1 ms** | **164 µs** |
+| borne froide (2) | 132 550 | 8 | 0 | 8 | 1 sur 16 568 | 6 ms |
+| borne froide (3) | 143 430 | 33 | 0 | 33 | 1 sur 4 346 | 12 ms |
+| **borne froide (4)** | **127 562** | **8** | **0** | **8** | **1 sur 15 945** | **1,3 ms** |
+| **borne froide (5)** | **126 617** | **5** | **0** | **5** | **1 sur 25 323** | **826 µs** |
 
 Les appelants **attendent**, à chaque run, et **aucune** de ces attentes n'est une construction — c'est
-la seule raison pour laquelle la conclusion tient. La quatrième ligne est la seule dont le relevé
-`Stat()` encadre la **fenêtre** et non l'appel entier : les trois premières comptaient aussi l'adhésion
-au groupe, le scrutin du broker et le drain, soit une centaine d'acquisitions hors fenêtre sur des
-compteurs de 8 et 33. Elle fait foi ; les deux autres corroborent l'ordre de grandeur.
+la seule raison pour laquelle la conclusion tient. (Le tout premier run de borne froide n'est pas dans
+la table : il a tourné sous l'instrument d'origine, qui ne lisait aucun compteur de construction.)
+
+**L'attente totale est le seul majorant par appelant que ces compteurs donnent.** La diviser par le
+plancher rend une *moyenne*, et une moyenne n'est pas une borne : un appelant bloqué derrière une
+lecture froide et quatre à quinze microsecondes se somment exactement comme cinq à la moyenne. Le rendu
+imprime donc le total comme borne et nomme la moyenne pour ce qu'elle est.
+
+**Les deux dernières lignes font foi ; les deux premières corroborent l'ordre de grandeur.** Seules
+elles ont les trois relevés — mélange, `Stat()` du pool, taille du cache — encadrant la **fenêtre** et
+non l'appel entier. Les précédentes comptaient aussi l'adhésion au groupe, le scrutin du broker et le
+drain : une centaine d'acquisitions et ~130 clés hors fenêtre, sur des compteurs de 5 à 33. Le correctif
+se lit dans la mesure : au run (5), 126 617 acquisitions et 126 614 clés pour 126 614 `pg_hit`.
 
 Ce qui sauve la marge n'est pas le débit, c'est la **structure** : `handleBatch`
 (`internal/router/router.go`) ouvre une goroutine par partition et **chaque voie traite
@@ -1099,14 +1109,15 @@ Ce que ça donne pour step-280 : à 12 voies, `MaxConns=10` fait attendre **une 
 basculer la lecture en échec. **La question n'est pas le débit de lookups, c'est le rapport
 `MaxConns` / voies par pod**, et il est aujourd'hui inférieur à 1.
 
-**L'empreinte du cache est de ~185 octets par clé `exactroute:{msisdn}`, majorant 210.** Sept lectures :
-210 o, 178 o et 178 o sur des paliers à 5 000 clés, **170 · 182 · 200 · 201 o** sur les quatre paliers à
+**L'empreinte du cache est de ~185 octets par clé `exactroute:{msisdn}`.** Huit lectures : 210 o, 178 o
+et 178 o sur des paliers à 5 000 clés, **168 · 170 · 182 · 200 · 201 o** sur les cinq paliers à
 127 000-143 000 clés.
 Les petits échantillons sont les plus dispersés, et pour une raison identifiée : `used_memory` est une
 grandeur d'**instance**, et le client go-redis ouvre jusqu'à douze connexions dont Redis compte les
 tampons — quelques centaines de kilo-octets, soit 20-30 % du delta à 5 000 clés et ~1 % à 140 000.
-**Retenir 200 o/clé comme majorant de dimensionnement** — la moyenne du grand échantillon est de 188 et
-son étendue de 170 à 201, ce qui est trop dispersé pour publier trois chiffres significatifs. step-250e ne pouvait qu'estimer « ~150-200 o » et en
+**Dimensionner à 200 o/clé**, qui borne le grand échantillon (moyenne 184, étendue 168 à 201) sans être
+le maximum absolu : la lecture à 210 vient d'un palier à 5 000 clés, où les tampons de connexion pèsent
+20 à 30 % du delta. step-250e ne pouvait qu'estimer « ~150-200 o » et en
 dérivait 1,3 à 10 Go sur le Redis partagé avec les soldes de facturation : la mesure confirme le haut de
 son estimation. **C'est la grandeur de ce banc qui se transpose le mieux** — elle ne dépend ni du débit
 de l'hôte ni de sa latence disque.

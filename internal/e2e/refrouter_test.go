@@ -87,12 +87,13 @@ func newRouterBed(t *testing.T, brokers []string, partitions, records int, dest 
 type l0Probe struct {
 	lookups *countingLookups
 	verify  func(mix map[string]uint64, messages uint64) error
-	// stat samples the DEDICATED pgx pool. It is sampled from inside the palier, beside the message
-	// count, for the reason the mix is: bracketing it around the whole call would cover the group join,
-	// the broker scrape, the lag read and the drain, while the messages it is divided by cover only the
-	// window — and the empty-acquire counts are small enough (8, 33) that one acquire from the cold join
-	// moves the published table.
-	stat func() *pgxpool.Stat
+	// stat samples the DEDICATED pgx pool and cache samples the Redis side. Both are read from inside the
+	// palier, beside the message count, for the reason the mix is: bracketing them around the whole call
+	// would cover the group join, the broker scrape, the lag read and the drain, while the messages they
+	// are divided by cover only the window. The empty-acquire counts are small enough (8, 33) that one
+	// acquire from the cold join moves the published table, and the key count drifted by ~130 the same way.
+	stat  func() *pgxpool.Stat
+	cache func() (keys, used int64)
 }
 
 // snapshot on the probe so a nil probe needs no branch at either call site.
@@ -103,12 +104,19 @@ func (p *l0Probe) snapshot() map[string]uint64 {
 	return p.lookups.snapshot()
 }
 
-// poolStat, same nil discipline.
+// poolStat and cacheSize, same nil discipline.
 func (p *l0Probe) poolStat() *pgxpool.Stat {
 	if p == nil || p.stat == nil {
 		return nil
 	}
 	return p.stat()
+}
+
+func (p *l0Probe) cacheSize() (keys, used int64) {
+	if p == nil || p.cache == nil {
+		return 0, 0
+	}
+	return p.cache()
 }
 
 // routerPalier is one window's reading.
@@ -118,6 +126,8 @@ type routerPalier struct {
 	mix      map[string]uint64
 	// statBefore and statAfter bracket the window itself, not the call. Nil when the palier ran no probe.
 	statBefore, statAfter *pgxpool.Stat
+	// The cache size on the same bracket, for the same reason.
+	keysBefore, keysAfter, memBefore, memAfter int64
 }
 
 // measureRouterPalier runs the router alone over bed for `hold` and reports the rate with the facts
@@ -175,6 +185,7 @@ func measureRouterPalier(t *testing.T, bed *routerBed, hold time.Duration, resol
 	base, baseNanos, baseBuckets := prod.snapshot()
 	baseBatches, baseRecords, baseLanes := counted.snapshot()
 	baseMix, baseStat := probe.snapshot(), probe.poolStat()
+	baseKeys, baseMem := probe.cacheSize()
 
 	select {
 	case err := <-runErr:
@@ -190,6 +201,7 @@ func measureRouterPalier(t *testing.T, bed *routerBed, hold time.Duration, resol
 	// running through both (cancel is deferred), so a mix taken there would cover a longer interval than
 	// the message count it is divided by — always in the direction that makes the L0 stage look busier.
 	mix, endStat := subtractMix(baseMix, probe.snapshot()), probe.poolStat()
+	endKeys, endMem := probe.cacheSize()
 	brokerAfter, afterErr := scrapeBroker(t)
 	// Read while the group is still alive: kadm seeds a group's lag from its members, so a reading taken
 	// after cancel() describes a group that has left.
@@ -229,7 +241,8 @@ func measureRouterPalier(t *testing.T, bed *routerBed, hold time.Duration, resol
 	t.Logf("             %2d partitions    %s", partitions,
 		stageLatency(refProduceStage, refProduceExcludes, done, nanos-baseNanos, deltaBuckets(baseBuckets, buckets), elapsed, done))
 
-	return routerPalier{rate: rate, messages: done, mix: mix, statBefore: baseStat, statAfter: endStat}
+	return routerPalier{rate: rate, messages: done, mix: mix, statBefore: baseStat, statAfter: endStat,
+		keysBefore: baseKeys, keysAfter: endKeys, memBefore: baseMem, memAfter: endMem}
 }
 
 // scrapeBroker reads the test broker's own exposition (step-201e D2).

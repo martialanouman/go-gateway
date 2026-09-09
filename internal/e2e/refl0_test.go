@@ -362,10 +362,10 @@ func TestMixHoldsRefusesAnErrorMix(t *testing.T) {
 // # None of pgxpool's counters measures a starvation on its own
 //
 // AcquireDuration is the total over ALL acquires, fast path included: a mean drawn from it is a mean
-// acquire LATENCY. The dilution is real but modest — the runs measured here spent 5 to 12 ms of wait
-// across ~140 000 acquires, which is 37 to 84 NANOSECONDS of mean, rounded away at microsecond
-// precision. It is not that long waits vanish; it is that the mean answers a different question than
-// the one asked, and cannot be read as "nobody waited".
+// acquire LATENCY, and it is dominated by the fast path: the runs here recorded 1 to 12 ms of
+// empty-acquire wait spread over ~130 000 acquires, which contributes single-digit to double-digit
+// NANOSECONDS to that mean. It is not that long waits vanish; it is that the mean answers a different
+// question than the one asked, and cannot be read as "nobody waited".
 //
 // EmptyAcquireCount is not a queue count either — puddle increments it whenever a connection has to be
 // CONSTRUCTED, including when the pool had room and nobody waited.
@@ -406,17 +406,32 @@ func poolPressure(acquires, emptyAcquires, newConns int64, emptyWait time.Durati
 	floor := max(0, emptyAcquires-newConns)
 	if floor == 0 {
 		return fmt.Sprintf("%s · %d acquisitions found no idle connection and %d connections were built, "+
-			"so every one of them is covered by a construction: nothing here shows a caller queueing, and "+
-			"the %v recorded as wait is connection setup, which puddle bills to the same counter",
-			out, emptyAcquires, newConns, emptyWait.Round(time.Millisecond))
+			"so the count is entirely covered: nothing here establishes a caller queueing, and nothing "+
+			"establishes the %v of recorded wait was setup either — newConns also counts constructions "+
+			"made outside Acquire, which consume the floor without ever having made anyone wait",
+			out, emptyAcquires, newConns, roundWait(emptyWait))
 	}
+	// The TOTAL is the bound, not the total over the floor. One caller stuck behind a cold read and
+	// thirty-two at fifteen microseconds sum exactly like thirty-three at the mean, so a per-caller
+	// figure divided out of a sum is a mean whatever it is labelled — the fault this renderer charges
+	// AcquireDuration with two paragraphs up.
 	return fmt.Sprintf("%s · %d acquisitions found no idle connection and %d connections were built, so "+
 		"at least %d of them queued behind a full pool — 1 in %d acquisitions. They waited %v in total, "+
-		"%v each at most (the figure carries any connection setup the window held). This is the "+
-		"starvation edge: past it Acquire waits out DefaultLookupTimeout, the lookup fails closed and the "+
-		"redelivery makes the same lookup against the same pool",
-		out, emptyAcquires, newConns, floor, acquires/floor, emptyWait.Round(time.Millisecond),
-		(emptyWait / time.Duration(floor)).Round(time.Microsecond))
+		"so no single wait exceeded %v (their distribution is unknown, and the mean of %v is not a bound "+
+		"on any one of them). This is the starvation edge: past it Acquire waits out "+
+		"DefaultLookupTimeout, the lookup fails closed and the redelivery makes the same lookup against "+
+		"the same pool",
+		out, emptyAcquires, newConns, floor, acquires/floor, roundWait(emptyWait), roundWait(emptyWait),
+		roundWait(emptyWait/time.Duration(floor)))
+}
+
+// roundWait rounds a wait to a precision it can actually carry. Rounding to the millisecond beside
+// figures in microseconds prints "0s in total, 60µs each", which contradicts itself on the same line.
+func roundWait(d time.Duration) time.Duration {
+	if d < time.Millisecond {
+		return d.Round(time.Microsecond)
+	}
+	return d.Round(time.Millisecond)
 }
 
 // cacheFootprint prices the exactroute keys THIS palier added, in bytes per key.
@@ -459,15 +474,21 @@ func cacheFootprint(keysBefore, keysAfter, memBefore, memAfter int64) string {
 // (createIdleResources feeds newConnsCount without touching emptyAcquireCount), which can only make the
 // floor more conservative.
 func TestPoolPressureRefusesToCallConstructionAStarvation(t *testing.T) {
-	// A pool warming 3 -> 10 under the first palier: seven empty acquires, seven constructions, and the
-	// connect time recorded as wait. Nobody queued.
+	// A pool warming under the first palier: seven empty acquires, seven constructions, and the connect
+	// time recorded as wait. Nobody queued. (This bench opens at MinConns=2, so its own warm-up is eight;
+	// seven is simply a reachable shape, not a transcript of a run.)
 	warming := poolPressure(134183, 7, 7, 35*time.Millisecond, 446810, 10, 12)
 	if strings.Contains(warming, "starvation") {
 		t.Errorf("seven empty acquires fully covered by seven constructions is a pool warming up, not a "+
 			"starvation: %s", warming)
 	}
-	if !strings.Contains(warming, "connection setup") {
-		t.Errorf("the wait figure includes connect time on that path and must say so: %s", warming)
+	if !strings.Contains(warming, "nothing here establishes") {
+		t.Errorf("floor zero means the counters cannot show a queue — not that the wait WAS setup: "+
+			"newConns also counts constructions made outside Acquire, which consume the floor without "+
+			"having produced any wait at all. The branch must say what it cannot establish: %s", warming)
+	}
+	if strings.Contains(warming, "queued behind a full pool") {
+		t.Errorf("a floor of zero must not be rendered as callers queueing: %s", warming)
 	}
 }
 
@@ -479,13 +500,21 @@ func TestPoolPressureNamesTheContentionFloor(t *testing.T) {
 	if !strings.Contains(got, "at least 33") {
 		t.Errorf("33 empty acquires against 0 constructions is a floor of 33 callers that queued: %s", got)
 	}
-	// A percentage rounds this to "0.0%", which reads as "none" — the opposite of the finding. One in N
-	// is what a reader can size.
-	if strings.Contains(got, "0.0%") {
-		t.Errorf("a rate that rounds to 0.0%% annuls the finding it was added to size: %s", got)
-	}
+	// The rarity is expressed as one-in-N and not as a percentage, because 33/143430 rounds to "0.0%",
+	// which reads as "none" — the opposite of the finding. Asserting the ABSENCE of "0.0%" would be
+	// unfalsifiable now that the renderer emits no percentage at all; asserting the ratio is what bites.
 	if !strings.Contains(got, "1 in 4346") {
 		t.Errorf("the rarity must be readable: %s", got)
+	}
+	// The TOTAL is the only per-caller upper bound these counters give: one caller stuck 11ms behind a
+	// cold read and thirty-two at 15µs sum exactly like thirty-three at 365µs. Dividing by the floor and
+	// calling the result "at most" is the same average the first version printed as "on average",
+	// relabelled — the very fault this renderer's own godoc charges AcquireDuration with.
+	if strings.Contains(got, "each at most") {
+		t.Errorf("a mean relabelled as a per-caller bound is the fault this renderer exists to avoid: %s", got)
+	}
+	if !strings.Contains(got, "no single wait exceeded 12ms") {
+		t.Errorf("the total is the bound that holds for one caller, and it must be stated as such: %s", got)
 	}
 }
 

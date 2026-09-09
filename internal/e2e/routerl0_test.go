@@ -121,23 +121,26 @@ func TestRouterL0Fidelity(t *testing.T) {
 			// it and the count the palier "added" is its own keys minus the previous palier's identical
 			// set, which is zero. The first run of this bench did exactly that, and cacheFootprint
 			// refused to price it rather than print a plausible number.
-			keysBefore, memBefore := redisFootprint(t, rdb)
 			probe := &l0Probe{
 				lookups: fix.lookups,
 				stat:    fix.pool.Stat,
+				cache:   func() (int64, int64) { return redisFootprint(t, rdb) },
 				verify: func(mix map[string]uint64, messages uint64) error {
 					return mixHolds(mix, messages, share, portedPool)
 				},
 			}
 			last = measureRouterPalier(t, bed, hold, fix.l0, probe, "L0 wired")
-			keysAfter, memAfter := redisFootprint(t, rdb)
+			if last.statBefore == nil || last.statAfter == nil {
+				t.Fatal("the palier ran with a probe but reported no pool bracket: the pressure line would " +
+					"be a reading of nothing")
+			}
 			pressure = poolPressure(
 				last.statAfter.AcquireCount()-last.statBefore.AcquireCount(),
 				last.statAfter.EmptyAcquireCount()-last.statBefore.EmptyAcquireCount(),
 				last.statAfter.NewConnsCount()-last.statBefore.NewConnsCount(),
 				last.statAfter.EmptyAcquireWaitTime()-last.statBefore.EmptyAcquireWaitTime(),
 				last.messages, maxConns, l0Lanes)
-			footprint = cacheFootprint(keysBefore, keysAfter, memBefore, memAfter)
+			footprint = cacheFootprint(last.keysBefore, last.keysAfter, last.memBefore, last.memAfter)
 			return last.rate
 		}
 		// Alternate, so neither side is always the one that ran second.

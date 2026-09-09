@@ -212,9 +212,32 @@ défaut de la même famille que celui qu'il corrigeait :
     décrivait la version entière précédente, et le test « pas de famine » s'appuyait sur une entrée que
     la bibliothèque **ne peut pas produire**.
 
+**Troisième tour, sur les correctifs du second.** Le même motif, une troisième fois :
+
+13. **`emptyWait / floor` étiqueté « at most » était l'arithmétique que le tour 1 étiquetait
+    « on average ».** Quand `newConns` vaut 0 — le cas de tous les runs — les deux expressions sont
+    identiques au caractère près. Une moyenne divisée hors d'une somme reste une moyenne quel que soit
+    son étiquette : c'est exactement le reproche que le godoc de ce rendu adresse à `AcquireDuration`,
+    deux paragraphes plus haut. Le seul majorant par appelant dérivable de ces compteurs est le
+    **total**.
+14. **La branche « plancher nul » affirmait une cause que les compteurs ne montrent pas** — « l'attente
+    est du setup de connexion ». `newConns` compte aussi les constructions faites **hors** `Acquire`,
+    qui consomment le plancher sans avoir produit la moindre attente. La branche dit désormais ce
+    qu'elle ne peut pas établir, et s'arrête là.
+15. **Le relevé Redis encadrait encore l'appel** — le même défaut que le mélange (tour 1) et que le
+    `Stat()` du pool (tour 2), à la troisième occurrence. Il dérivait de ~130 clés. Corrigé, le run (5)
+    lit **126 614 clés pour 126 614 `pg_hit`**.
+16. « Sur quatre runs, aucune n'est explicable par une construction » : à ce moment-là **trois** logs
+    seulement portaient le compteur. Un cinquième run l'a rendu vrai ; la formulation dit maintenant
+    *lesquels*. Et « 150 à 700 µs » excluait le 735 µs de sa propre table — un arrondi vers l'extérieur
+    en bas, vers l'intérieur en haut.
+17. Une assertion était devenue **infalsifiable** (elle refusait `"0.0%"` alors que le rendu n'émet plus
+    aucun `%`), une autre était satisfaite par les deux branches qu'elle prétendait séparer, et deux
+    illustrations chiffrées avaient vieilli d'un run.
+
 | Tests purs | Mutations vues rouges |
 |---:|---:|
-| **17** | **24** |
+| **17** | **26** |
 
 *(Chiffres vérifiés par `grep -c '^func Test' internal/e2e/refl0_test.go`, la première version de cette
 fiche en annonçait 12 puis 17 — un décompte faux dans une DoD présentée comme piste d'audit vaut moins
@@ -289,8 +312,8 @@ bouge → preuve que le lit est bien celui qu'on croit.
 - [x] `make check` vert (lint · `test -race` · govulncheck · contrats) ; `make test` inchangé en durée
 - [x] **17** tests purs verts hors build tag (11 prévus, plus la soustraction de fenêtre, la
       terminaison du semis, le rendu du mélange, le littéral du balayage et la concurrence offerte au
-      pool) ; **24** mutations vues rouges, dont **douze ont trouvé un défaut** plutôt que de confirmer
-      un test
+      pool) ; **26** mutations vues rouges, dont **dix-sept ont trouvé un défaut** plutôt que de
+      confirmer un test
 - [x] `TestRouterConsumeCeiling` relancé après la scission : tous les gardes verts, écarts producteur ↔
       backlog −0,3 à **−1,1 %**, courbe 4 995 · 8 500 · 13 220 · 17 142 · 25 614. **Le −1,1 % est hors de
       la bande publiée (−0,1 à −1,0 %)**, de 0,1 point, sur un hôte différemment chargé. Ce que la
@@ -304,13 +327,14 @@ bouge → preuve que le lit est bien celui qu'on croit.
 - [x] pression du pool pgx consignée, **et il a fallu deux tours pour la mesurer** : la première version
       concluait « pas la contrainte » sur deux compteurs incapables de le falsifier, la seconde criait
       « famine » sur un troisième qui compte aussi les constructions de connexion. Ce qui est
-      démontrable est un **plancher**, `emptyAcquires − newConns` : sur quatre runs, 8 à 33 acquisitions
-      ont attendu derrière un pool plein — **une sur 4 300 à 16 600** — dont **aucune** explicable par une
-      construction, au plus 150 à 700 µs chacune, trois ordres de grandeur sous `DefaultLookupTimeout`.
+      démontrable est un **plancher**, `emptyAcquires − newConns` : sur les quatre runs qui portent le
+      compteur de constructions, 5 à 33 acquisitions ont attendu derrière un pool plein — **une sur
+      4 300 à 25 300** — dont **aucune** explicable par une construction, pour un total de 826 µs à 12 ms
+      sur trente secondes, trois à quatre ordres de grandeur sous `DefaultLookupTimeout`.
       Le levier n'est pas le débit mais le rapport **`MaxConns` / voies par pod** (10/12), parce qu'une
       voie est séquentielle. Aucun `pg_error` n'est apparu, donc la valeur à laquelle il apparaîtrait
       reste inconnue
-- [x] empreinte Redis consignée en **octets par clé** : **170 à 210 o** sur sept lectures, **200 o
+- [x] empreinte Redis consignée en **octets par clé** : **168 à 210 o** sur huit lectures, **200 o
       retenus** du grand échantillon (182 · 200 · 201 sur les trois paliers à 132-143 000 clés). La
       dispersion des petits échantillons s'explique : `used_memory` est une grandeur d'instance et compte
       les tampons des douze connexions go-redis, soit 20-30 % du delta à 5 000 clés et ~1 % à 140 000

@@ -112,14 +112,17 @@ Redis en régime établi, et une lecture Postgres par clé primaire à froid ou 
 en *ratios* — les seuls chiffres qui se transposent depuis un portable :
 
 1. **Débit Postgres du L0** — la borne froide a tenu **~4 500 lectures/s**, et le coût de l'étage va de
-   **12 %** du débit (bras Redis, pool porté petit) à **28-33 %** (bras Postgres, aucune répétition, quatre
+   **12 %** du débit (bras Redis, pool porté petit) à **28-33 %** (bras Postgres, aucune répétition, cinq
    lectures). La porte Bloom seule est **non chiffrable** sur cet hôte : son delta de 3 % est sous la
    dispersion de 12 % des lectures dont il est tiré — mais elle ne fait **aucun** appel réseau, vérifié
    sous charge (zéro acquisition pgx sur 616 744 messages).
-2. **Pool pgx — la question n'est pas celle que cette fiche posait.** `MaxConns=10` **est** atteint : sur quatre
-   runs, 8 à 33 acquisitions ont attendu derrière un pool plein — **une sur 4 300 à 16 600** — et **aucune**
-   n'est explicable par une construction de connexion. Mais chacune dure au plus **150 à 700 µs**, trois
-   ordres de grandeur sous le `DefaultLookupTimeout` de 2 s qui ferait basculer la lecture en échec.
+2. **Pool pgx — la question n'est pas celle que cette fiche posait.** `MaxConns=10` **est** atteint : sur les
+   quatre runs qui portent le compteur de constructions, 5 à 33 acquisitions ont attendu derrière un pool
+   plein — **une sur 4 300 à 25 300** — et **aucune** n'est explicable par une construction. Leur attente
+   **totale** va de **826 µs à 12 ms** sur trente secondes, trois à quatre ordres de grandeur sous le
+   `DefaultLookupTimeout` de 2 s qui ferait basculer la lecture en échec. *(Le total est le seul majorant
+   par appelant que ces compteurs donnent : le diviser par le nombre d'attentes rend une moyenne, qui
+   n'en est pas un.)*
    *(Aucun compteur de `pgxpool` ne mesure une famine seul : `AcquireDuration` moyenne le chemin rapide,
    et `EmptyAcquireCount` comme `EmptyAcquireWaitTime` comptent aussi les constructions de connexion. Le
    chiffre ci-dessus est un plancher de contention, `emptyAcquires − newConns`.)*
@@ -129,8 +132,8 @@ en *ratios* — les seuls chiffres qui se transposent depuis un portable :
    n'a de voies. **Le levier est le rapport `MaxConns` / voies par pod**, aujourd'hui 10/12, et non les
    4 500 req/s. C'est ce rapport qu'il faut porter dans les manifests.
 3. **Empreinte Redis** — **200 octets par clé** `exactroute:{msisdn}` comme majorant de
-   dimensionnement (moyenne 188 sur les quatre grands échantillons, étendue 170-201 ; fourchette
-   170-210 sur sept lectures, les petits échantillons étant biaisés par les tampons de connexion que
+   dimensionnement (moyenne 184 sur les cinq grands échantillons, étendue 168-201 ; fourchette
+   168-210 sur huit lectures, les petits échantillons étant biaisés par les tampons de connexion que
    `used_memory` compte). Cela confirme le haut de l'estimation de step-250e et place le haut de la
    fourchette à **~10,4 Go** sur le Redis partagé avec les soldes.
 
