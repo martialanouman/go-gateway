@@ -1081,7 +1081,7 @@ de 400 à 700 µs sur trente secondes — trois ordres de grandeur sous le `Defa
 ferait basculer la lecture en échec. **La question n'est pas le débit de lookups, c'est le rapport
 `MaxConns` / voies par pod**, et il est aujourd'hui inférieur à 1.
 
-**L'empreinte du cache est de ~190 octets par clé `exactroute:{msisdn}`.** Cinq lectures : 210 o et
+**L'empreinte du cache est de ~190 octets par clé `exactroute:{msisdn}`.** Six lectures : 210 o, 178 o et
 178 o sur des paliers à 5 000 clés, **182 · 200 · 201 o** sur les trois paliers à 132 000-143 000 clés.
 Les petits échantillons sont les plus dispersés, et pour une raison identifiée : `used_memory` est une
 grandeur d'**instance**, et le client go-redis ouvre jusqu'à douze connexions dont Redis compte les
@@ -1097,11 +1097,13 @@ de l'hôte ni de sa latence disque.
   12 % dans un côté le disent : le banc DLR, sur hôte reposé, lisait 0 %. Les *ratios* (mélange,
   lookups/message, octets/clé, attentes) n'en souffrent pas — ils ne sont pas des débits. Les verdicts
   de coût, si.
-- **Une quatrième mesure de la borne chaude existe et n'est pas dans le tableau** : fenêtre de 15 s,
-  deux couples, file de 700 000, lancée pour revalider un refactor. Elle lit **8 %** au lieu de 12 %,
-  avec une dispersion de 4 %. Configuration différente sur trois axes, donc non comparable — mais c'est
-  d'elle que vient la lecture d'empreinte à 178 o, et la taire tout en lui empruntant un chiffre serait
-  une sélection.
+- **Deux mesures de la borne chaude ne sont pas dans le tableau, et il faut les nommer** : même
+  configuration courte toutes les deux (fenêtre 15 s, deux couples, file 700 000), lancées pour
+  revalider des refactors. Elles lisent **8 %** et **12 %**, avec des dispersions de 4 % et 8 %.
+  Non comparables au tableau — trois axes changent — mais c'est d'elles que vient la lecture
+  d'empreinte à 178 o, et les taire tout en leur empruntant un chiffre serait une sélection. La lecture
+  à 8 % est la plus basse de tout le lot ; elle ne renverse pas le verdict de 12 %, elle en borne le bas
+  sur une fenêtre deux fois plus courte.
 - **Le delta est NET à part > 0** : L0 ajoute une sonde Bloom à tous les messages et une lecture du
   magasin aux portés, et il **saute** la résolution déclarative des portés qui touchent (une cible
   connecteur se résout sans consulter l'instantané). C'est le chiffre pertinent pour la production ; ce

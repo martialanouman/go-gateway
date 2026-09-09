@@ -284,7 +284,7 @@ bouge → preuve que le lit est bien celui qu'on croit.
       chacune, soit trois ordres de grandeur sous `DefaultLookupTimeout`. Le levier n'est pas le débit
       mais le rapport **`MaxConns` / voies par pod** (10/12), parce qu'une voie est séquentielle. Aucun
       `pg_error` n'est apparu, donc la valeur à laquelle il apparaîtrait reste inconnue
-- [x] empreinte Redis consignée en **octets par clé** : **178 à 210 o** sur cinq lectures, **200 o
+- [x] empreinte Redis consignée en **octets par clé** : **178 à 210 o** sur six lectures, **200 o
       retenus** du grand échantillon (182 · 200 · 201 sur les trois paliers à 132-143 000 clés). La
       dispersion des petits échantillons s'explique : `used_memory` est une grandeur d'instance et compte
       les tampons des douze connexions go-redis, soit 20-30 % du delta à 5 000 clés et ~1 % à 140 000
