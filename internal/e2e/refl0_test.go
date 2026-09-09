@@ -513,6 +513,25 @@ func subtractMix(before, after map[string]uint64) map[string]uint64 {
 	return out
 }
 
+// renderMix prints the outcome mix as counts and as lookups per message.
+func renderMix(mix map[string]uint64, messages uint64) string {
+	if len(mix) == 0 || messages == 0 {
+		return "no observation"
+	}
+	var total uint64
+	out := ""
+	for _, name := range l0Outcomes {
+		n := mix[name]
+		total += n
+		if n == 0 {
+			continue
+		}
+		out += fmt.Sprintf("%s %d (%.1f%%) · ", name, n, 100*float64(n)/float64(messages))
+	}
+	return fmt.Sprintf("%s%d lookups over %d messages (%.2f/message)",
+		out, total, messages, float64(total)/float64(messages))
+}
+
 // TestSubtractMixKeepsOnlyTheWindow pins the direction of the subtraction, the way
 // TestDeltaBucketsSubtractsTheOpeningReading does for the produce histogram.
 //
@@ -570,5 +589,37 @@ func TestPortedSetTerminatesAndMatchesTheDraw(t *testing.T) {
 		if !member[got] {
 			t.Fatalf("l0Dest draws %s at index %d, which the seed would never write", got, i)
 		}
+	}
+}
+
+// TestRenderMixCountsWhatItDivides: the "lookups per message" figure is the end-to-end check of
+// resolver.go's one-observation-per-resolution invariant, so it must be the sum of what was OBSERVED
+// over the messages routed — not a share of a total the renderer assumed.
+func TestRenderMixCountsWhatItDivides(t *testing.T) {
+	// A mix that does NOT total the messages is the falsifying case, and it has to be here: at
+	// total == messages the observed sum and the message count give the same ratio, so a renderer that
+	// divided by the wrong one would read 1.00 either way. mixHolds is what refuses such a mix upstream;
+	// this test asks the renderer to REPORT it rather than launder it.
+	short := renderMix(map[string]uint64{"bloom_miss": 63000, "redis_hit": 26100, "pg_hit": 900}, 100000)
+	if !strings.Contains(short, "(0.90/message)") {
+		t.Errorf("90000 observations over 100000 messages is 0.90 per message, not a ratio of the "+
+			"messages by themselves: %s", short)
+	}
+
+	got := renderMix(map[string]uint64{"bloom_miss": 70000, "redis_hit": 29000, "pg_hit": 1000}, 100000)
+	if !strings.Contains(got, "(1.00/message)") {
+		t.Errorf("100000 observations over 100000 messages is 1.00 per message: %s", got)
+	}
+	if !strings.Contains(got, "bloom_miss 70000 (70.0%)") {
+		t.Errorf("each outcome must carry its own share: %s", got)
+	}
+	if strings.Contains(got, "redis_error") || strings.Contains(got, "pg_miss") {
+		t.Errorf("an outcome never observed must not be printed as a zero row: %s", got)
+	}
+
+	// A window with no messages must not render a ratio: dividing there is how "the resolver never ran"
+	// becomes "the resolver was free".
+	if got := renderMix(map[string]uint64{"bloom_miss": 1}, 0); strings.Contains(got, "/message") {
+		t.Errorf("an empty window must not be rendered as a per-message figure: %s", got)
 	}
 }

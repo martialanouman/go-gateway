@@ -4,7 +4,6 @@ package e2e_test
 
 import (
 	"context"
-	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -312,23 +311,4 @@ func redisFootprint(t *testing.T, rdb *redis.Client) (keys, used int64) {
 	}
 	t.Fatal("redis INFO memory carried no used_memory line: the footprint cannot be priced")
 	return 0, 0
-}
-
-// renderMix prints the outcome mix as counts and as lookups per message.
-func renderMix(mix map[string]uint64, messages uint64) string {
-	if len(mix) == 0 || messages == 0 {
-		return "no observation"
-	}
-	var total uint64
-	out := ""
-	for _, name := range l0Outcomes {
-		n := mix[name]
-		total += n
-		if n == 0 {
-			continue
-		}
-		out += fmt.Sprintf("%s %d (%.1f%%) · ", name, n, 100*float64(n)/float64(messages))
-	}
-	return fmt.Sprintf("%s%d lookups over %d messages (%.2f/message)",
-		out, total, messages, float64(total)/float64(messages))
 }
