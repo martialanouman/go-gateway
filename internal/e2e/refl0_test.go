@@ -2,10 +2,12 @@ package e2e_test
 
 import (
 	"fmt"
+	"maps"
 	"math"
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -441,5 +443,66 @@ func TestFidelityDeltaNamesItsSubject(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), subject) {
 		t.Errorf("the refusal must name the subject too: %v", err)
+	}
+}
+
+// countingLookups is the palier's own meter for the L0 resolver, on the pattern of countingProducer and
+// countingCDR: atomics read from inside the window, nothing retained, no HTTP scrape competing for the
+// host the palier is measuring.
+//
+// It satisfies exact.LookupMeter. The production wiring feeds the same observations into the Prometheus
+// catalog (cmd/router-svc/wiring.go); this bench reads them straight because a counter vector would have
+// to be scraped or reached through testutil, and both cost more than a map of atomics.
+type countingLookups struct {
+	mu sync.Mutex
+	n  map[string]uint64
+}
+
+func newCountingLookups() *countingLookups { return &countingLookups{n: map[string]uint64{}} }
+
+func (c *countingLookups) Observe(outcome string) {
+	c.mu.Lock()
+	c.n[outcome]++
+	c.mu.Unlock()
+}
+
+func (c *countingLookups) snapshot() map[string]uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return maps.Clone(c.n)
+}
+
+// subtractMix is the window's own observations. The seed and the preflight both resolve through the same
+// meter before the window opens, so the absolute counts would carry work the palier never did.
+func subtractMix(before, after map[string]uint64) map[string]uint64 {
+	if after == nil {
+		return nil
+	}
+	out := make(map[string]uint64, len(after))
+	for name, n := range after {
+		out[name] = n - before[name]
+	}
+	return out
+}
+
+// TestSubtractMixKeepsOnlyTheWindow pins the direction of the subtraction, the way
+// TestDeltaBucketsSubtractsTheOpeningReading does for the produce histogram.
+//
+// The seed and the preflight resolve through the same meter before the window opens. Reading the
+// absolute counts would credit the palier with lookups it never made — and it would do so in the
+// direction that makes the L0 stage look busier, which is the direction nobody questions.
+func TestSubtractMixKeepsOnlyTheWindow(t *testing.T) {
+	before := map[string]uint64{"bloom_miss": 100, "pg_hit": 7}
+	after := map[string]uint64{"bloom_miss": 700, "pg_hit": 57, "redis_hit": 9}
+
+	got := subtractMix(before, after)
+	want := map[string]uint64{"bloom_miss": 600, "pg_hit": 50, "redis_hit": 9}
+	for name, n := range want {
+		if got[name] != n {
+			t.Errorf("%s = %d after subtracting the opening reading, want %d", name, got[name], n)
+		}
+	}
+	if subtractMix(nil, nil) != nil {
+		t.Error("a palier with no probe must yield no mix, not an empty one a guard would judge")
 	}
 }

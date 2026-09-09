@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/martialanouman/go-gateway/internal/testutil/kafkatest"
 )
 
@@ -134,6 +136,9 @@ func TestRouterConsumeCeiling(t *testing.T) {
 	records := int(envFloat(t, envPrefill, routerCeilingPrefill))
 
 	for _, partitions := range []int{1, 2, 4, 8, 16} {
-		measureRouterCeiling(t, brokers, partitions, records, hold)
+		// A bed per palier here, unlike the fidelity bench: this sweep VARIES the partition count, and a
+		// partition count is a property of the topic.
+		bed := newRouterBed(t, brokers, partitions, records, nil)
+		measureRouterPalier(t, bed, hold, ceilResolver{conn: uuid.New()}, nil, "router alone")
 	}
 }
