@@ -117,7 +117,7 @@ en *ratios* — les seuls chiffres qui se transposent depuis un portable :
    dispersion de 12 % des lectures dont il est tiré — mais elle ne fait **aucun** appel réseau, vérifié
    sous charge (zéro acquisition pgx sur 616 744 messages).
 2. **Pool pgx — la question n'est pas celle que cette fiche posait.** `MaxConns=10` **est** atteint : sur quatre
-   runs, 8 à 33 acquisitions ont attendu derrière un pool plein — **une sur ~16 000** — et **aucune**
+   runs, 8 à 33 acquisitions ont attendu derrière un pool plein — **une sur 4 300 à 16 600** — et **aucune**
    n'est explicable par une construction de connexion. Mais chacune dure au plus **150 à 700 µs**, trois
    ordres de grandeur sous le `DefaultLookupTimeout` de 2 s qui ferait basculer la lecture en échec.
    *(Aucun compteur de `pgxpool` ne mesure une famine seul : `AcquireDuration` moyenne le chemin rapide,

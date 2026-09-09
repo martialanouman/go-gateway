@@ -305,7 +305,7 @@ bouge → preuve que le lit est bien celui qu'on croit.
       concluait « pas la contrainte » sur deux compteurs incapables de le falsifier, la seconde criait
       « famine » sur un troisième qui compte aussi les constructions de connexion. Ce qui est
       démontrable est un **plancher**, `emptyAcquires − newConns` : sur quatre runs, 8 à 33 acquisitions
-      ont attendu derrière un pool plein — **une sur ~16 000** — dont **aucune** explicable par une
+      ont attendu derrière un pool plein — **une sur 4 300 à 16 600** — dont **aucune** explicable par une
       construction, au plus 150 à 700 µs chacune, trois ordres de grandeur sous `DefaultLookupTimeout`.
       Le levier n'est pas le débit mais le rapport **`MaxConns` / voies par pod** (10/12), parce qu'une
       voie est séquentielle. Aucun `pg_error` n'est apparu, donc la valeur à laquelle il apparaîtrait

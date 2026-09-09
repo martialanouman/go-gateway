@@ -1094,8 +1094,8 @@ séquentiellement**, donc un pod ne peut jamais offrir au pool plus de `lanes` a
 *débit* était le mauvais modèle : `MaxConns` borne une **concurrence**, et la concurrence offerte est
 plafonnée par le nombre de voies, pas par les ~4 500 lectures/s.
 
-Ce que ça donne pour step-280 : à 12 voies, `MaxConns=10` fait attendre **une acquisition sur 16 000**,
-de l'ordre de 150 à 700 µs — trois ordres de grandeur sous le `DefaultLookupTimeout` de 2 s qui ferait
+Ce que ça donne pour step-280 : à 12 voies, `MaxConns=10` fait attendre **une acquisition sur 4 300 à
+16 600** selon le run (8/132 550 · 33/143 430 · 8/127 562), de l'ordre de 150 à 700 µs — trois ordres de grandeur sous le `DefaultLookupTimeout` de 2 s qui ferait
 basculer la lecture en échec. **La question n'est pas le débit de lookups, c'est le rapport
 `MaxConns` / voies par pod**, et il est aujourd'hui inférieur à 1.
 
