@@ -188,9 +188,33 @@ lecture seule, sur des axes disjoints :
    pas · la branche `dest == nil` de `newRouterBed` était le seul chemin non couvert, et c'est celui du
    balayage entier.
 
+**Second tour de revue, sur les correctifs du premier.** Il a trouvé, dans mon propre correctif, un
+défaut de la même famille que celui qu'il corrigeait :
+
+9. **`EmptyAcquireWaitTime` inclut le temps de connexion.** Le tour 1 avait remplacé deux compteurs
+   incapables de montrer une famine par un troisième qui la déclare à tort : sur le chemin de
+   construction, puddle ajoute à ce compteur tout le connect et l'authentification. Un pool qui monte de
+   `MinConns` à `MaxConns` aurait donc publié « starvation edge » avec des dizaines de millisecondes
+   d'attente sans que personne n'ait fait la queue — et les runs y échappaient **par accident**, seul le
+   dernier palier étant journalisé, pool déjà chaud. Ce qui est démontrable est un **plancher**,
+   `emptyAcquires − newConns`, et l'attente est un **majorant**.
+10. **Le relevé `Stat()` encadrait l'appel, pas la fenêtre** — exactement le défaut que le tour 1 avait
+    corrigé pour le mélange, et que je n'avais pas cherché ailleurs. Il comptait l'adhésion au groupe, le
+    scrutin du broker et le drain : une centaine d'acquisitions hors fenêtre sur des compteurs de 8 et 33.
+    Le correctif est visible dans la mesure — les acquisitions passent de 100+ au-dessus des `pg_hit` à
+    une différence de 1.
+11. Le champ de proportion ajouté au tour 1 rendait **`0.0%`** sur toutes les lectures réelles (33 sur
+    143 430), donc annulait la trouvaille qu'il était censé dimensionner : c'est « 1 sur N » qui se lit.
+    Et mon illustration arithmétique (« dix attentes de 2 s s'arrondissent à rien ») était fausse d'un
+    facteur 150 — l'ancien rendu aurait imprimé 149 µs, pas 0 s. La dilution était réelle, l'exemple non.
+12. La justification écrite du garde `num > den` était trop large (la couverture dépend de
+    `gcd(num, pool)`, pas de la seule striation), le commentaire de `TestPoolPressureRefusesToDivide`
+    décrivait la version entière précédente, et le test « pas de famine » s'appuyait sur une entrée que
+    la bibliothèque **ne peut pas produire**.
+
 | Tests purs | Mutations vues rouges |
 |---:|---:|
-| **16** | **22** |
+| **17** | **24** |
 
 *(Chiffres vérifiés par `grep -c '^func Test' internal/e2e/refl0_test.go`, la première version de cette
 fiche en annonçait 12 puis 17 — un décompte faux dans une DoD présentée comme piste d'audit vaut moins
@@ -263,10 +287,10 @@ bouge → preuve que le lit est bien celui qu'on croit.
 ## Definition of Done
 
 - [x] `make check` vert (lint · `test -race` · govulncheck · contrats) ; `make test` inchangé en durée
-- [x] **16** tests purs verts hors build tag (11 prévus, plus la soustraction de fenêtre, la
+- [x] **17** tests purs verts hors build tag (11 prévus, plus la soustraction de fenêtre, la
       terminaison du semis, le rendu du mélange, le littéral du balayage et la concurrence offerte au
-      pool) ; **22** mutations vues rouges, dont **sept ont trouvé un défaut** plutôt que de confirmer un
-      test
+      pool) ; **24** mutations vues rouges, dont **douze ont trouvé un défaut** plutôt que de confirmer
+      un test
 - [x] `TestRouterConsumeCeiling` relancé après la scission : tous les gardes verts, écarts producteur ↔
       backlog −0,3 à **−1,1 %**, courbe 4 995 · 8 500 · 13 220 · 17 142 · 25 614. **Le −1,1 % est hors de
       la bande publiée (−0,1 à −1,0 %)**, de 0,1 point, sur un hôte différemment chargé. Ce que la
@@ -277,14 +301,16 @@ bouge → preuve que le lit est bien celui qu'on croit.
       son verdict `fidelityDelta` :
       porte Bloom **non chiffrable** (delta 3 % sous 12 % de dispersion — un résultat, pas un échec) ·
       borne chaude **12 %** du débit · borne froide **31 %**
-- [x] pression du pool pgx consignée, **et la première version de cette case était fausse** : elle
-      concluait « `MaxConns=10` n'a pas été la contrainte » sur deux compteurs incapables de le
-      falsifier. Sur `EmptyAcquireWaitTime`/`NewConnsCount`, `MaxConns=10` **est** atteint — 8 puis 33
-      attentes sur ~140 000 acquisitions, **aucune** expliquée par une construction, 365 à 735 µs
-      chacune, soit trois ordres de grandeur sous `DefaultLookupTimeout`. Le levier n'est pas le débit
-      mais le rapport **`MaxConns` / voies par pod** (10/12), parce qu'une voie est séquentielle. Aucun
-      `pg_error` n'est apparu, donc la valeur à laquelle il apparaîtrait reste inconnue
-- [x] empreinte Redis consignée en **octets par clé** : **178 à 210 o** sur six lectures, **200 o
+- [x] pression du pool pgx consignée, **et il a fallu deux tours pour la mesurer** : la première version
+      concluait « pas la contrainte » sur deux compteurs incapables de le falsifier, la seconde criait
+      « famine » sur un troisième qui compte aussi les constructions de connexion. Ce qui est
+      démontrable est un **plancher**, `emptyAcquires − newConns` : sur quatre runs, 8 à 33 acquisitions
+      ont attendu derrière un pool plein — **une sur ~16 000** — dont **aucune** explicable par une
+      construction, au plus 150 à 700 µs chacune, trois ordres de grandeur sous `DefaultLookupTimeout`.
+      Le levier n'est pas le débit mais le rapport **`MaxConns` / voies par pod** (10/12), parce qu'une
+      voie est séquentielle. Aucun `pg_error` n'est apparu, donc la valeur à laquelle il apparaîtrait
+      reste inconnue
+- [x] empreinte Redis consignée en **octets par clé** : **170 à 210 o** sur sept lectures, **200 o
       retenus** du grand échantillon (182 · 200 · 201 sur les trois paliers à 132-143 000 clés). La
       dispersion des petits échantillons s'explique : `used_memory` est une grandeur d'instance et compte
       les tampons des douze connexions go-redis, soit 20-30 % du delta à 5 000 clés et ~1 % à 140 000

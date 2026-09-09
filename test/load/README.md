@@ -1023,8 +1023,8 @@ make load-reference RUN=TestRouterL0Fidelity PORTED_SHARE=0.30 PORTED_POOL=25000
 | borne chaude | 0,30 | 5 000 | 21 863/s | 19 282/s | 11 % | **12 %** du débit |
 | borne froide | 0,30 | 250 000 | 21 988/s | 15 280/s | 10 % | **31 %** du débit |
 
-La borne froide a été relancée deux fois de plus après correction de l'instrument (voir plus bas) :
-**31 % · 31 % · 28 %**. Le verdict tient sur trois lectures indépendantes.
+La borne froide a été relancée trois fois de plus, au fil des corrections de l'instrument (voir plus
+bas) : **31 % · 31 % · 28 % · 33 %**. Le verdict tient sur quatre lectures indépendantes.
 
 Mélange des `outcome`, une observation par résolution dans les trois cas (**1,00 lookup/message**, ce qui
 vérifie de bout en bout l'invariant que `resolver.go` tient par un `defer`) :
@@ -1046,7 +1046,7 @@ est vide, donc le filtre tombe sur son plancher de 1 024 entrées (`bloom.go`) �
 cache. La production en pèse ~1,8 Mo par million d'entrées, avec des accès hors cache. Le « aucun appel
 réseau » se transpose ; le coût de la sonde, non.*
 
-**Le bras Redis coûte 12 %, le bras Postgres 28 à 31 %.** L'écart entre les deux est le cadran de
+**Le bras Redis coûte 12 %, le bras Postgres 28 à 33 %.** L'écart entre les deux est le cadran de
 localité, et c'est lui que step-280 doit régler :
 `coût/msg = part × [(1−L)·c_pg + L·c_redis] + (1−part)·c_bloom`.
 
@@ -1061,32 +1061,52 @@ de son côté, s'incrémente **aussi à chaque construction de connexion**, y co
 attendu : la montée de `MinConns=2` à `MaxConns=10` en produit huit à elle seule. Les deux chiffres que
 la première version citait étaient donc incapables de falsifier la saturation qu'elle déclarait absente.
 
-Sur `EmptyAcquireWaitTime` et `NewConnsCount`, les deux relances disent l'inverse :
+**Mais `EmptyAcquireWaitTime` ne suffit pas non plus**, et la seconde version de cette section s'y est
+laissé prendre : sur le chemin de construction, puddle ajoute à ce même compteur **tout le temps de
+connexion et d'authentification** (`puddle/pool.go`, la branche qui appelle `initResourceValue` puis
+incrémente `emptyAcquireCount` et `emptyAcquireWaitTime` ensemble). Un pool qui monte de `MinConns` à
+`MaxConns` déclare donc plusieurs « acquisitions sur pool vide » et des dizaines de millisecondes
+d'« attente » sans que personne n'ait jamais fait la queue.
 
-| Run | acquisitions | sans connexion libre | dont construction | attente totale | par attente |
-|---|---:|---:|---:|---:|---:|
-| borne froide (2) | 132 550 | 8 | **0** | 6 ms | 735 µs |
-| borne froide (3) | 143 430 | 33 | **0** | 12 ms | 365 µs |
+**Ce qui est démontrable est un plancher, pas une égalité.** Au plus `newConns` des acquisitions sur
+pool vide peuvent être une construction, donc `emptyAcquires − newConns` borne **par en dessous** celles
+qui ont réellement attendu derrière un pool plein. Cela reste un plancher parce que `pgxpool` construit
+aussi **hors** `Acquire` (`createIdleResources` alimente `newConnsCount` sans toucher
+`emptyAcquireCount`), ce qui ne peut que le rendre plus conservateur. Symétriquement, l'attente est un
+**majorant** : elle porte le temps de connexion que la fenêtre a pu contenir.
 
-Les appelants **attendent**, à chaque run, et aucune de ces attentes ne s'explique par une construction.
+| Run | acquisitions | sans connexion libre | constructions | **plancher de contention** | attente totale | par attente (majorant) |
+|---|---:|---:|---:|---:|---:|---:|
+| borne froide (2) | 132 550 | 8 | 0 | 8 | 6 ms | 735 µs |
+| borne froide (3) | 143 430 | 33 | 0 | 33 | 12 ms | 365 µs |
+| **borne froide (4)** | **127 562** | **8** | **0** | **8** | **1 ms** | **164 µs** |
+
+Les appelants **attendent**, à chaque run, et **aucune** de ces attentes n'est une construction — c'est
+la seule raison pour laquelle la conclusion tient. La quatrième ligne est la seule dont le relevé
+`Stat()` encadre la **fenêtre** et non l'appel entier : les trois premières comptaient aussi l'adhésion
+au groupe, le scrutin du broker et le drain, soit une centaine d'acquisitions hors fenêtre sur des
+compteurs de 8 et 33. Elle fait foi ; les deux autres corroborent l'ordre de grandeur.
+
 Ce qui sauve la marge n'est pas le débit, c'est la **structure** : `handleBatch`
 (`internal/router/router.go`) ouvre une goroutine par partition et **chaque voie traite
 séquentiellement**, donc un pod ne peut jamais offrir au pool plus de `lanes` acquisitions simultanées —
 12 ici, contre 10 connexions, soit au plus deux en attente à un instant donné. La loi de Little sur un
 *débit* était le mauvais modèle : `MaxConns` borne une **concurrence**, et la concurrence offerte est
-plafonnée par le nombre de voies, pas par les 4 800 lectures/s.
+plafonnée par le nombre de voies, pas par les ~4 500 lectures/s.
 
-Ce que ça donne pour step-280 : à 12 voies, `MaxConns=10` coûte quelques dizaines d'attentes de l'ordre
-de 400 à 700 µs sur trente secondes — trois ordres de grandeur sous le `DefaultLookupTimeout` de 2 s qui
-ferait basculer la lecture en échec. **La question n'est pas le débit de lookups, c'est le rapport
+Ce que ça donne pour step-280 : à 12 voies, `MaxConns=10` fait attendre **une acquisition sur 16 000**,
+de l'ordre de 150 à 700 µs — trois ordres de grandeur sous le `DefaultLookupTimeout` de 2 s qui ferait
+basculer la lecture en échec. **La question n'est pas le débit de lookups, c'est le rapport
 `MaxConns` / voies par pod**, et il est aujourd'hui inférieur à 1.
 
-**L'empreinte du cache est de ~190 octets par clé `exactroute:{msisdn}`.** Six lectures : 210 o, 178 o et
-178 o sur des paliers à 5 000 clés, **182 · 200 · 201 o** sur les trois paliers à 132 000-143 000 clés.
+**L'empreinte du cache est de ~185 octets par clé `exactroute:{msisdn}`, majorant 210.** Sept lectures :
+210 o, 178 o et 178 o sur des paliers à 5 000 clés, **170 · 182 · 200 · 201 o** sur les quatre paliers à
+127 000-143 000 clés.
 Les petits échantillons sont les plus dispersés, et pour une raison identifiée : `used_memory` est une
 grandeur d'**instance**, et le client go-redis ouvre jusqu'à douze connexions dont Redis compte les
 tampons — quelques centaines de kilo-octets, soit 20-30 % du delta à 5 000 clés et ~1 % à 140 000.
-**Retenir 200 o/clé**, du grand échantillon. step-250e ne pouvait qu'estimer « ~150-200 o » et en
+**Retenir 200 o/clé comme majorant de dimensionnement** — la moyenne du grand échantillon est de 188 et
+son étendue de 170 à 201, ce qui est trop dispersé pour publier trois chiffres significatifs. step-250e ne pouvait qu'estimer « ~150-200 o » et en
 dérivait 1,3 à 10 Go sur le Redis partagé avec les soldes de facturation : la mesure confirme le haut de
 son estimation. **C'est la grandeur de ce banc qui se transpose le mieux** — elle ne dépend ni du débit
 de l'hôte ni de sa latence disque.

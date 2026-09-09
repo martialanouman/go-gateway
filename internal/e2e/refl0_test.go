@@ -76,8 +76,11 @@ func portedPerBlock(share float64) int { return int(math.Round(share * portedSha
 //   - num == 0 (a share under 0.0005) draws no ported record at all, so the loop has no exit.
 //   - num > portedShareDen (a share above 1, which is what `PORTED_SHARE=30` means when the percentage is
 //     typed where the fraction belongs) caps pos at portedShareDen-1 while advancing the ordinal by num
-//     per block: the ordinals become the strided set [num*k, num*k+999], whose residues mod pool cover
-//     only a fraction of it, and the enumeration never collects `pool` distinct numbers.
+//     per block, so the ordinals become the strided set [num*k, num*k+999] instead of covering N. Whether
+//     its residues cover `pool` then depends on gcd(num, pool) — PORTED_SHARE=30 with a pool of 100 000
+//     reaches one residue in ten and never terminates, while a coprime stride would. The guard refuses
+//     the whole half-plane rather than compute that: a share is a FRACTION, and above 1 it is a typo
+//     whichever way the arithmetic falls.
 //
 // Outside that domain it yields the empty set, which the caller refuses. Enumerating through l0Dest
 // rather than through a second formula is what keeps the seed and the lookup from disagreeing.
@@ -353,19 +356,37 @@ func TestMixHoldsRefusesAnErrorMix(t *testing.T) {
 
 // poolPressure renders what the L0 lookups asked of the pgx pool over the window.
 //
-// Every figure is a DELTA across the window (Stat counters are cumulative from the pool's birth) and per
-// message, because that is the only form that transposes off this host.
+// Every figure is a DELTA across the window and per message, because that is the only form that
+// transposes off this host.
 //
-// # The two quantities that CAN falsify starvation, and the two that cannot
+// # None of pgxpool's counters measures a starvation on its own
 //
-// EmptyAcquireCount is not a starvation count. puddle increments it whenever a connection has to be
-// CONSTRUCTED — including when the pool had room and nobody waited — so warming from MinConns to MaxConns
-// alone produces MaxConns-MinConns of them. NewConnsCount is what explains them away.
+// AcquireDuration is the total over ALL acquires, fast path included: a mean drawn from it is a mean
+// acquire LATENCY. The dilution is real but modest — the runs measured here spent 5 to 12 ms of wait
+// across ~140 000 acquires, which is 37 to 84 NANOSECONDS of mean, rounded away at microsecond
+// precision. It is not that long waits vanish; it is that the mean answers a different question than
+// the one asked, and cannot be read as "nobody waited".
 //
-// AcquireDuration is the total over ALL acquires, fast path included. A mean drawn from it is a mean
-// acquire LATENCY, not a mean wait: ten two-second waits buried in 134 000 fast acquires round to
-// nothing. EmptyAcquireWaitTime is the time actually spent waiting on an empty pool, and it is the one
-// that can refuse the claim.
+// EmptyAcquireCount is not a queue count either — puddle increments it whenever a connection has to be
+// CONSTRUCTED, including when the pool had room and nobody waited.
+//
+// EmptyAcquireWaitTime does not rescue it: on that same construction path puddle adds the whole connect
+// and authentication time to it (puddle/pool.go, the branch that calls initResourceValue then
+// increments emptyAcquireCount and emptyAcquireWaitTime together). A pool warming from MinConns to
+// MaxConns therefore reports several "empty acquires" and tens of milliseconds of "wait" with nobody
+// ever queued. Reading a non-zero wait as a starvation is the second version of this bench's mistake,
+// in the opposite direction from the first.
+//
+// # What IS sound: a floor, not an equality
+//
+// At most newConns of the empty acquires can be a construction, so
+//
+//	contention floor = max(0, emptyAcquires - newConns)
+//
+// bounds from below the acquires that queued behind a genuinely full pool. It stays a floor rather than
+// an equality because pgxpool also constructs OUTSIDE Acquire (createIdleResources feeds newConnsCount
+// without touching emptyAcquireCount), which can only make it more conservative. The wait, symmetric,
+// is an UPPER bound: it carries whatever connect time the window contained.
 //
 // # MaxConns bounds a concurrency, not a rate
 //
@@ -382,17 +403,20 @@ func poolPressure(acquires, emptyAcquires, newConns int64, emptyWait time.Durati
 		"— a lane is sequential, so this pod can offer the pool at most %d acquires at once",
 		acquires, messages, float64(acquires)/float64(messages), maxConns, lanes, lanes)
 
-	if emptyWait == 0 {
-		return fmt.Sprintf("%s · %d acquisitions found no idle connection and %d connections were built: "+
-			"the pool never made a caller wait, so MaxConns=%d was not reached at this offered concurrency",
-			out, emptyAcquires, newConns, maxConns)
+	floor := max(0, emptyAcquires-newConns)
+	if floor == 0 {
+		return fmt.Sprintf("%s · %d acquisitions found no idle connection and %d connections were built, "+
+			"so every one of them is covered by a construction: nothing here shows a caller queueing, and "+
+			"the %v recorded as wait is connection setup, which puddle bills to the same counter",
+			out, emptyAcquires, newConns, emptyWait.Round(time.Millisecond))
 	}
-	return fmt.Sprintf("%s · %d acquisitions found no idle connection (%.1f%% of them, %d explained by "+
-		"construction) and callers waited %v in total, %v each on average: this is the starvation edge — "+
-		"past it Acquire waits out DefaultLookupTimeout, the lookup fails closed and the redelivery makes "+
-		"the same lookup against the same pool", out, emptyAcquires,
-		100*float64(emptyAcquires)/float64(acquires), newConns, emptyWait.Round(time.Millisecond),
-		(emptyWait / time.Duration(max(emptyAcquires, 1))).Round(time.Microsecond))
+	return fmt.Sprintf("%s · %d acquisitions found no idle connection and %d connections were built, so "+
+		"at least %d of them queued behind a full pool — 1 in %d acquisitions. They waited %v in total, "+
+		"%v each at most (the figure carries any connection setup the window held). This is the "+
+		"starvation edge: past it Acquire waits out DefaultLookupTimeout, the lookup fails closed and the "+
+		"redelivery makes the same lookup against the same pool",
+		out, emptyAcquires, newConns, floor, acquires/floor, emptyWait.Round(time.Millisecond),
+		(emptyWait / time.Duration(floor)).Round(time.Microsecond))
 }
 
 // cacheFootprint prices the exactroute keys THIS palier added, in bytes per key.
@@ -419,39 +443,49 @@ func cacheFootprint(keysBefore, keysAfter, memBefore, memAfter int64) string {
 		"%d; only the difference belongs to this palier)", added, memAfter-memBefore, perKey, memBefore, memAfter)
 }
 
-// TestPoolPressureSeparatesConstructionFromStarvation is the correction of a reading this bench first
-// got wrong in both directions at once.
+// TestPoolPressureRefusesToCallConstructionAStarvation is the correction of a correction.
 //
-// EmptyAcquireCount is NOT a starvation count: puddle increments it whenever a connection has to be
-// CONSTRUCTED, including when the pool had room and nobody waited. Warming from MinConns to MaxConns
-// produces exactly MaxConns-MinConns of them on a pool that never made anyone wait. And AcquireDuration
-// is the total over ALL acquires, fast path included, so dividing it by the acquire count answers a mean
-// latency, not a mean wait — ten two-second waits inside 134 000 fast acquires round to nothing.
+// The first version read AcquireDuration and EmptyAcquireCount and concluded no starvation; both are
+// incapable of showing one. The second read EmptyAcquireWaitTime and called any non-zero wait a
+// starvation — and that is wrong in the other direction, because puddle adds the CONNECT time to
+// emptyAcquireWaitTime on the construction path (puddle/pool.go: emptyAcquireCount and
+// emptyAcquireWaitTime are both incremented after initResourceValue returns). A pool warming from
+// MinConns to MaxConns therefore reports several empty acquires and tens of milliseconds of "wait"
+// while nobody ever queued.
 //
-// EmptyAcquireWaitTime is the quantity that can falsify starvation, and NewConnsCount is what explains
-// the empty-acquire count away. Both are read now; neither was.
-func TestPoolPressureSeparatesConstructionFromStarvation(t *testing.T) {
-	// The shape the real run produced: 10 empty acquires, all explained by construction, zero wait.
-	warm := poolPressure(134183, 10, 10, 0, 446810, 10, 12)
-	if !strings.Contains(warm, "never made a caller wait") {
-		t.Errorf("an empty-acquire count fully explained by construction, with no wait, is not starvation: %s", warm)
+// The only sound discrimination is the COUNT: at most newConns of the empty acquires can be a
+// construction, so emptyAcquires - newConns is a floor on the acquires that queued behind a full pool.
+// It is a floor and not an equality because pgxpool also constructs OUTSIDE Acquire
+// (createIdleResources feeds newConnsCount without touching emptyAcquireCount), which can only make the
+// floor more conservative.
+func TestPoolPressureRefusesToCallConstructionAStarvation(t *testing.T) {
+	// A pool warming 3 -> 10 under the first palier: seven empty acquires, seven constructions, and the
+	// connect time recorded as wait. Nobody queued.
+	warming := poolPressure(134183, 7, 7, 35*time.Millisecond, 446810, 10, 12)
+	if strings.Contains(warming, "starvation") {
+		t.Errorf("seven empty acquires fully covered by seven constructions is a pool warming up, not a "+
+			"starvation: %s", warming)
 	}
-	if strings.Contains(warm, "starvation edge") {
-		t.Errorf("this reading must not be published as starvation: %s", warm)
+	if !strings.Contains(warming, "connection setup") {
+		t.Errorf("the wait figure includes connect time on that path and must say so: %s", warming)
 	}
+}
 
-	// Real starvation: callers waited, and the count exceeds what construction can explain.
-	starved := poolPressure(134183, 4200, 10, 6*time.Second, 446810, 10, 12)
-	if !strings.Contains(starved, "starvation edge") {
-		t.Errorf("4200 empty acquires against 10 constructions, with 6s of waiting, is starvation: %s", starved)
+// TestPoolPressureNamesTheContentionFloor: the real runs had newConns = 0, so every empty acquire is a
+// caller that queued — and that is the only reason the journal's conclusion stands.
+func TestPoolPressureNamesTheContentionFloor(t *testing.T) {
+	// The shape of /tmp/l0-cold3.log: 33 empty acquires, none of them a construction.
+	got := poolPressure(143430, 33, 0, 12*time.Millisecond, 477397, 10, 12)
+	if !strings.Contains(got, "at least 33") {
+		t.Errorf("33 empty acquires against 0 constructions is a floor of 33 callers that queued: %s", got)
 	}
-	if !strings.Contains(starved, "4200") {
-		t.Errorf("the count must appear: %s", starved)
+	// A percentage rounds this to "0.0%", which reads as "none" — the opposite of the finding. One in N
+	// is what a reader can size.
+	if strings.Contains(got, "0.0%") {
+		t.Errorf("a rate that rounds to 0.0%% annuls the finding it was added to size: %s", got)
 	}
-	// A raw count is unreadable against six figures of acquisitions: 8 waits and 4200 waits are the same
-	// sentence without the proportion, and they are not the same pool.
-	if !strings.Contains(starved, "3.1%") {
-		t.Errorf("the share of acquisitions that waited is what sizes the finding: %s", starved)
+	if !strings.Contains(got, "1 in 4346") {
+		t.Errorf("the rarity must be readable: %s", got)
 	}
 }
 
@@ -460,7 +494,7 @@ func TestPoolPressureSeparatesConstructionFromStarvation(t *testing.T) {
 // processes its records sequentially (internal/router/router.go). A figure that compares MaxConns to a
 // request RATE invites Little's law on a quantity that is not queued that way.
 func TestPoolPressureNamesTheOfferedConcurrency(t *testing.T) {
-	got := poolPressure(134183, 10, 10, 0, 446810, 10, 12)
+	got := poolPressure(143430, 33, 0, 12*time.Millisecond, 477397, 10, 12)
 	if !strings.Contains(got, "at most 12") {
 		t.Errorf("the reading is unreadable without the concurrency the router can actually offer: %s", got)
 	}
@@ -469,11 +503,15 @@ func TestPoolPressureNamesTheOfferedConcurrency(t *testing.T) {
 // TestPoolPressureRefusesToDivide mirrors TestStageLatencyRefusesToDivide: no messages means the
 // resolver never ran, which is a fact worth reading, not a NaN worth misreading.
 func TestPoolPressureRefusesToDivide(t *testing.T) {
-	// The artefact this guards is a division by zero on the per-message figure, not a NaN: the divisors
-	// are integers. Asserting on NaN here would be a clause that can never fire.
+	// The artefact is a float division by zero on the per-message figure, so removing the guard prints
+	// "NaN/message" rather than panicking — the earlier integer form did panic, and this comment said so
+	// after the form had changed.
 	got := poolPressure(0, 0, 0, 0, 0, 10, 12)
 	if !strings.Contains(got, "unreadable") {
 		t.Errorf("an empty window must say it is unreadable: %s", got)
+	}
+	if strings.Contains(got, "NaN") {
+		t.Errorf("an empty window must not render as an arithmetic artefact: %s", got)
 	}
 }
 

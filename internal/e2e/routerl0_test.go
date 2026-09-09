@@ -122,18 +122,20 @@ func TestRouterL0Fidelity(t *testing.T) {
 			// set, which is zero. The first run of this bench did exactly that, and cacheFootprint
 			// refused to price it rather than print a plausible number.
 			keysBefore, memBefore := redisFootprint(t, rdb)
-			statBefore := fix.pool.Stat()
-			probe := &l0Probe{lookups: fix.lookups, verify: func(mix map[string]uint64, messages uint64) error {
-				return mixHolds(mix, messages, share, portedPool)
-			}}
+			probe := &l0Probe{
+				lookups: fix.lookups,
+				stat:    fix.pool.Stat,
+				verify: func(mix map[string]uint64, messages uint64) error {
+					return mixHolds(mix, messages, share, portedPool)
+				},
+			}
 			last = measureRouterPalier(t, bed, hold, fix.l0, probe, "L0 wired")
-			statAfter := fix.pool.Stat()
 			keysAfter, memAfter := redisFootprint(t, rdb)
 			pressure = poolPressure(
-				statAfter.AcquireCount()-statBefore.AcquireCount(),
-				statAfter.EmptyAcquireCount()-statBefore.EmptyAcquireCount(),
-				statAfter.NewConnsCount()-statBefore.NewConnsCount(),
-				statAfter.EmptyAcquireWaitTime()-statBefore.EmptyAcquireWaitTime(),
+				last.statAfter.AcquireCount()-last.statBefore.AcquireCount(),
+				last.statAfter.EmptyAcquireCount()-last.statBefore.EmptyAcquireCount(),
+				last.statAfter.NewConnsCount()-last.statBefore.NewConnsCount(),
+				last.statAfter.EmptyAcquireWaitTime()-last.statBefore.EmptyAcquireWaitTime(),
 				last.messages, maxConns, l0Lanes)
 			footprint = cacheFootprint(keysBefore, keysAfter, memBefore, memAfter)
 			return last.rate
@@ -239,7 +241,8 @@ func seedExactRoutes(t *testing.T, repo *postgres.ExactRouteRepo, connector uuid
 	if len(numbers) == 0 {
 		t.Fatalf("REF_PORTED_SHARE=%v is outside the domain this bench can draw: it is a FRACTION, so it "+
 			"must land in [%v, 1]. Below that it rounds to no ported record per block and the bench would "+
-			"price an L0 stage that never ran; above 1 the draw strides and never covers the pool",
+			"price an L0 stage that never ran; above 1 the draw strides instead of covering N, and whether "+
+			"it ever reaches the pool depends on gcd(num, pool) — a share is a fraction either way",
 			share, 1.0/portedShareDen)
 	}
 
