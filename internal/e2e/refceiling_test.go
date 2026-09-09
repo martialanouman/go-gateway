@@ -303,14 +303,14 @@ func fidelityDelta(without, with []float64, subject string) (string, error) {
 		return fmt.Sprintf("%s · the %.0f%% delta is under the spread of the readings it is drawn from: this "+
 			"bench cannot put a figure on %s", out, 100*math.Abs(cost), subject), nil
 	case cost < 0:
-		// An error, not a verdict. A synchronous write added to every message cannot RAISE throughput, so a
-		// reading that says it did was not taken under one set of conditions — and the run it belongs to
+		// An error, not a verdict. Nothing added to every message — a synchronous write, a cache lookup —
+		// can RAISE throughput, so a reading that says it did was not taken under one set of conditions — and the run it belongs to
 		// bounds nothing. Rendering it as a sentence would leave the caller green over an unusable
 		// measurement, which is the one thing this file exists to refuse. sweepsAgree treats the same class
 		// the same way.
 		return "", fmt.Errorf("%s · the palier ran %.0f%% FASTER with %s wired, past its own %.0f%% "+
-			"scatter: no added write can do that, so the two sides were not measured under the same "+
-			"conditions and neither bounds the other — re-run the pairs", out, -100*cost, subject, 100*noise)
+			"scatter: nothing added to every message can do that, so the two sides were not measured under "+
+			"the same conditions and neither bounds the other — re-run the pairs", out, -100*cost, subject, 100*noise)
 	default:
 		return fmt.Sprintf("%s · %s costs %.0f%% of the throughput", out, subject, 100*cost), nil
 	}
@@ -1314,7 +1314,8 @@ func TestFidelityDeltaNamesACostThatClearsTheNoise(t *testing.T) {
 	// the run rather than render a sentence a green test invites nobody to read.
 	_, err = fidelityDelta(with, without, "the DLR store")
 	if err == nil {
-		t.Fatal("a palier 40% FASTER with the store wired must fail: no added write can do that, so the two " +
+		t.Fatal("a palier 40% FASTER with the store wired must fail: nothing added to every message can do " +
+			"that, so the two " +
 			"sides drifted and neither bounds the other")
 	}
 	if !strings.Contains(err.Error(), "FASTER") {

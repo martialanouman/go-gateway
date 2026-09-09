@@ -54,21 +54,18 @@ const (
 type routerBed struct {
 	brokers     []string
 	topic       string
-	accounts    []uuid.UUID
 	partitions  int
 	prefillRate float64
 }
 
-// newRouterBed creates the topic and fills it. dest maps a record index to its destination MSISDN; nil
-// keeps the single literal every earlier row of the journal was measured against.
+// newRouterBed creates the topic and fills it. dest maps a record index to its destination MSISDN —
+// always explicitly, never nil: a nil default would be the one path no test covers, and it is the path
+// the whole sweep runs on. legacyDest is what the sweep passes.
 func newRouterBed(t *testing.T, brokers []string, partitions, records int, dest func(i int) string) *routerBed {
 	t.Helper()
 
 	topic := newCeilingTopic(t, brokers, "inbound", partitions)
 	accounts := partitionAccounts(topic, partitions)
-	if dest == nil {
-		dest = func(int) string { return nonPortedDest }
-	}
 	prefillRate := prefill(t, brokers, topic, records, func(i int) (kafka.Record, error) {
 		return pipeline.EncodeInbound(inboundBench(accounts[i%len(accounts)], dest(i)))
 	})
@@ -76,7 +73,7 @@ func newRouterBed(t *testing.T, brokers []string, partitions, records int, dest 
 	if err := prefillBalance(endOffsets(t, brokers, topic), partitions); err != nil {
 		t.Fatalf("%d partitions: %v", partitions, err)
 	}
-	return &routerBed{brokers: brokers, topic: topic, accounts: accounts, partitions: partitions, prefillRate: prefillRate}
+	return &routerBed{brokers: brokers, topic: topic, partitions: partitions, prefillRate: prefillRate}
 }
 
 // l0Probe is what a palier reads about the L0 stage from inside its own window. A nil probe leaves the
@@ -172,6 +169,10 @@ func measureRouterPalier(t *testing.T, bed *routerBed, hold time.Duration, resol
 	elapsed := time.Since(start)
 	produced, nanos, buckets := prod.snapshot()
 	done := produced - base
+	// Read HERE, beside `done`, and not after the broker scrape and the lag read below: the router keeps
+	// running through both (cancel is deferred), so a mix taken there would cover a longer interval than
+	// the message count it is divided by — always in the direction that makes the L0 stage look busier.
+	mix := subtractMix(baseMix, probe.snapshot())
 	brokerAfter, afterErr := scrapeBroker(t)
 	// Read while the group is still alive: kadm seeds a group's lag from its members, so a reading taken
 	// after cancel() describes a group that has left.
@@ -192,7 +193,6 @@ func measureRouterPalier(t *testing.T, bed *routerBed, hold time.Duration, resol
 	if err := sourcesAgree(rate, first, last, elapsed); err != nil {
 		t.Fatalf("%d partitions: %v", partitions, err)
 	}
-	mix := subtractMix(baseMix, probe.snapshot())
 	if probe != nil && probe.verify != nil {
 		if err := probe.verify(mix, done); err != nil {
 			t.Fatalf("%d partitions: %v", partitions, err)

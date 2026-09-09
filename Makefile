@@ -175,7 +175,7 @@ smsc-ceiling: ## Measure the test peer's submit_sm ceiling (sweeps binds, reads 
 # minute and scores the steady state. It lives behind the `loadref` build tag so `make test` never
 # compiles it, let alone runs its two minutes.
 .PHONY: load-reference
-load-reference: ## Run the D2 steady-state reference run: make load-reference [RATE=1200] [ACCOUNTS=1] [PARTITIONS=4] [BIND_POOL=4] [MEASURE=60s] [RUN=Test...] [CAL_HOLD=10s] [PREFILL=150000] [FIDELITY_PAIRS=3] [PORTED_SHARE=0.3] [PORTED_POOL=100000] [PG_MAX_CONNS=10]
+load-reference: ## Run the D2 steady-state reference run: make load-reference [RATE=1200] [ACCOUNTS=1] [PARTITIONS=4] [BIND_POOL=4] [MEASURE=60s] [RUN=Test...] [CAL_HOLD=10s] [PREFILL=150000] [FIDELITY_PAIRS=3] [PORTED_SHARE=0.3] [PORTED_POOL=100000] [PG_MAX_CONNS=<defaut production>]
 	REF_RATE=$(RATE) REF_WORKERS=$(WORKERS) REF_MEASURE=$(MEASURE) REF_WARMUP=$(WARMUP) \
 	REF_CAL_HOLD=$(CAL_HOLD) REF_PREFILL=$(PREFILL) \
 	REF_SETTLE=$(SETTLE) REF_BIND_POOL=$(BIND_POOL) REF_WINDOW=$(SMPP_WINDOW) \

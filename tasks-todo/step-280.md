@@ -111,20 +111,24 @@ Redis en régime établi, et une lecture Postgres par clé primaire à froid ou 
 **Les trois grandeurs ont été mesurées par step-270c** (`TestRouterL0Fidelity`, journal du 09/09/2026),
 en *ratios* — les seuls chiffres qui se transposent depuis un portable :
 
-1. **Débit Postgres du L0** — la borne froide a tenu **~4 470 lectures/s** (134 077 en 30 s), et le coût
-   de l'étage va de **12 %** du débit (bras Redis, pool porté petit) à **31 %** (bras Postgres, aucune
-   répétition). La porte Bloom seule est **non chiffrable** sur cet hôte : son delta de 3 % est sous la
-   dispersion de 12 % des lectures dont il est tiré — mais elle ne fait **aucun** appel réseau, ce qui est
-   vérifié sous charge (zéro acquisition pgx sur 616 744 messages).
-2. **Pool pgx** — à `MaxConns=10` pour 12 voies : **0,30 acquisition/message, attente moyenne nulle,
-   10 acquisitions sur pool vide sur 134 183** (0,0 %). **`MaxConns=10` n'a pas été la contrainte** à ce
-   débit. La loi de Little invoquée plus haut supposait ~4 ms de latence de clé primaire ; ce Postgres est
-   un conteneur local, **sans saut réseau**, et c'est précisément ce que l'environnement représentatif
-   doit remesurer. Aucun `pg_error` n'est apparu : la valeur de `MaxConns` à laquelle il apparaîtrait
-   reste inconnue.
-3. **Empreinte Redis** — **200 octets par clé** `exactroute:{msisdn}` (fourchette 178-210 sur trois
-   paliers), ce qui confirme le haut de l'estimation de step-250e et place le haut de la fourchette à
-   **~10,4 Go** sur le Redis partagé avec les soldes.
+1. **Débit Postgres du L0** — la borne froide a tenu **~4 500 lectures/s**, et le coût de l'étage va de
+   **12 %** du débit (bras Redis, pool porté petit) à **28-31 %** (bras Postgres, aucune répétition, trois
+   lectures). La porte Bloom seule est **non chiffrable** sur cet hôte : son delta de 3 % est sous la
+   dispersion de 12 % des lectures dont il est tiré — mais elle ne fait **aucun** appel réseau, vérifié
+   sous charge (zéro acquisition pgx sur 616 744 messages).
+2. **Pool pgx — la question n'est pas celle que cette fiche posait.** `MaxConns=10` **est** atteint : les
+   appelants attendent à chaque run (8 puis 33 fois sur ~140 000 acquisitions), et **aucune** de ces
+   attentes ne s'explique par une construction de connexion. Mais chacune dure **365 à 735 µs**, trois
+   ordres de grandeur sous le `DefaultLookupTimeout` de 2 s qui ferait basculer la lecture en échec.
+   **La loi de Little sur un débit était le mauvais modèle** : `MaxConns` borne une *concurrence*, et
+   `handleBatch` (`internal/router/router.go`) ouvre une goroutine par partition dont chaque voie traite
+   **séquentiellement** — un pod ne peut donc jamais offrir au pool plus d'acquisitions simultanées qu'il
+   n'a de voies. **Le levier est le rapport `MaxConns` / voies par pod**, aujourd'hui 10/12, et non les
+   4 500 req/s. C'est ce rapport qu'il faut porter dans les manifests.
+3. **Empreinte Redis** — **200 octets par clé** `exactroute:{msisdn}` (grand échantillon ; fourchette
+   178-210 sur cinq lectures, les petits échantillons étant biaisés par les tampons de connexion que
+   `used_memory` compte). Cela confirme le haut de l'estimation de step-250e et place le haut de la
+   fourchette à **~10,4 Go** sur le Redis partagé avec les soldes.
 
 Ce qui reste **ici** : choisir la part portée et la localité représentatives, refaire ces mesures à
 l'échelle avec un Postgres et un Redis en réseau, et en tirer le dimensionnement. Restent aussi, non

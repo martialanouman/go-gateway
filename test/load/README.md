@@ -1001,19 +1001,30 @@ résolution déclarative, et classerait la somme sous L0. Les deux côtés parta
 | msg/s | 4 995 | 8 500 | 13 220 | 17 142 | 25 614 |
 | écart producteur ↔ backlog | −0,3 % | −1,0 % | −1,1 % | −0,7 % | −0,2 % |
 
-Même forme que la courbe du 27/08, hôte différemment chargé — et la comparaison entre deux sections de
-ce journal n'a jamais été valide. Ce qui est établi, c'est que la scission n'a rien déplacé.
+Tous les gardes passent, et l'écart de −1,1 % au palier à 4 partitions sort de 0,1 point de la bande
+publiée le 27/08 (−0,1 à −1,0 %). **Ce que ça établit est que les gardes passent et que la forme tient**
+— pas que « la scission n'a rien déplacé » : cette conclusion exigerait de comparer deux sections de ce
+journal, ce que ce journal déclare invalide six lignes plus haut.
 
 #### Les trois paliers de l'étage L0
 
 Hôte : M4 Pro, 14 cœurs, 24 Go ; Docker à 12,0 Go. 12 voies, `MaxConns=10`, fenêtre 30 s, file
-1 500 000, trois couples.
+1 500 000, trois couples entrelacés à ordre alterné.
+
+```bash
+make load-reference RUN=TestRouterL0Fidelity PORTED_SHARE=0
+make load-reference RUN=TestRouterL0Fidelity PORTED_SHARE=0.30 PORTED_POOL=5000
+make load-reference RUN=TestRouterL0Fidelity PORTED_SHARE=0.30 PORTED_POOL=250000
+```
 
 | Palier | part portée | pool porté | sans L0 | avec L0 | dispersion | verdict |
 |---|---:|---:|---:|---:|---:|---|
 | porte Bloom | 0 | — | 21 664/s | 21 038/s | 12 % | **non chiffrable** (delta 3 %) |
 | borne chaude | 0,30 | 5 000 | 21 863/s | 19 282/s | 11 % | **12 %** du débit |
 | borne froide | 0,30 | 250 000 | 21 988/s | 15 280/s | 10 % | **31 %** du débit |
+
+La borne froide a été relancée deux fois de plus après correction de l'instrument (voir plus bas) :
+**31 % · 31 % · 28 %**. Le verdict tient sur trois lectures indépendantes.
 
 Mélange des `outcome`, une observation par résolution dans les trois cas (**1,00 lookup/message**, ce qui
 vérifie de bout en bout l'invariant que `resolver.go` tient par un `defer`) :
@@ -1030,44 +1041,83 @@ vérifie de bout en bout l'invariant que `resolver.go` tient par un `defer`) :
 dispersion n'est pas un coût nul : c'est un banc qui refuse de le chiffrer, et c'est un résultat. Ce que
 la ligne établit tout de même, c'est que la porte ne fait **aucun appel réseau** — zéro acquisition pgx,
 zéro clé Redis sur 616 744 messages, ce que le code promet (`resolver.go` : `MightContain==false` est un
-échec définitif) et que rien n'avait jamais vérifié sous charge.
+échec définitif) et que rien n'avait jamais vérifié sous charge. *Réserve : à part portée nulle la table
+est vide, donc le filtre tombe sur son plancher de 1 024 entrées (`bloom.go`) — ~1,8 Ko, entièrement en
+cache. La production en pèse ~1,8 Mo par million d'entrées, avec des accès hors cache. Le « aucun appel
+réseau » se transpose ; le coût de la sonde, non.*
 
-**Le bras Redis coûte 12 %, le bras Postgres 31 %.** L'écart entre les deux est le cadran de localité, et
-c'est lui que step-280 doit régler : `coût/msg = part × [(1−L)·c_pg + L·c_redis] + (1−part)·c_bloom`.
+**Le bras Redis coûte 12 %, le bras Postgres 28 à 31 %.** L'écart entre les deux est le cadran de
+localité, et c'est lui que step-280 doit régler :
+`coût/msg = part × [(1−L)·c_pg + L·c_redis] + (1−part)·c_bloom`.
 
-**`MaxConns=10` n'a pas été la contrainte, et c'est la surprise.** La borne froide a fait
-**134 077 lectures Postgres en 30 s, soit ~4 470/s**, sur dix connexions pour douze voies — avec une
-attente moyenne d'acquisition **nulle** et **10 acquisitions sur pool vide sur 134 183** (0,0 %). La loi
-de Little que step-280 invoque supposait une latence de clé primaire de ~4 ms ; à dix connexions et
-4 470 req/s le budget par requête est de 2,2 ms, et il n'a pas été consommé. **Ce chiffre ne se transpose
-pas tel quel** : ce Postgres est un conteneur sur le même hôte, sans saut réseau. L'environnement
-représentatif doit le remesurer — mais la marge mesurée ici déplace la charge de la preuve.
+**`MaxConns=10` EST atteint — et la marge n'est pas celle qu'on croyait.** Ce paragraphe corrige une
+affirmation que la première version de cette section a portée : elle disait « `MaxConns=10` n'a pas été
+la contrainte, attente moyenne nulle ». **C'était faux, et c'est l'instrument qui l'était.**
 
-**L'empreinte du cache est de 178 à 210 octets par clé `exactroute:{msisdn}`**, sur trois paliers
-indépendants : 5 000 clés → 210 o, 134 182 clés → 200 o, 5 000 clés → 178 o. La dispersion est celle de
-`used_memory`, qui compte l'allocateur et non les clés : les deux paliers à 5 000 clés encadrent le
-palier à 134 182, et c'est ce dernier — trente fois plus d'échantillons — qui porte le chiffre.
-**Retenir 200 o/clé.** step-250e ne pouvait qu'estimer « ~150-200 o » et en dérivait 1,3 à 10 Go sur le
-Redis partagé avec les soldes de facturation : la mesure confirme le haut de son estimation et place le
-haut de la fourchette à ~10,4 Go. **C'est la grandeur de ce banc qui se transpose le mieux** — elle ne
-dépend ni du débit de l'hôte ni de sa latence disque.
+`Stat.AcquireDuration()` est le total sur **toutes** les acquisitions, chemin rapide compris : en le
+divisant par le nombre d'acquisitions on obtient une latence moyenne, pas une attente, et dix attentes
+de deux secondes noyées dans 134 000 acquisitions rapides s'arrondissent à rien. `EmptyAcquireCount`,
+de son côté, s'incrémente **aussi à chaque construction de connexion**, y compris quand personne n'a
+attendu : la montée de `MinConns=2` à `MaxConns=10` en produit huit à elle seule. Les deux chiffres que
+la première version citait étaient donc incapables de falsifier la saturation qu'elle déclarait absente.
+
+Sur `EmptyAcquireWaitTime` et `NewConnsCount`, les deux relances disent l'inverse :
+
+| Run | acquisitions | sans connexion libre | dont construction | attente totale | par attente |
+|---|---:|---:|---:|---:|---:|
+| borne froide (2) | 132 550 | 8 | **0** | 6 ms | 735 µs |
+| borne froide (3) | 143 430 | 33 | **0** | 12 ms | 365 µs |
+
+Les appelants **attendent**, à chaque run, et aucune de ces attentes ne s'explique par une construction.
+Ce qui sauve la marge n'est pas le débit, c'est la **structure** : `handleBatch`
+(`internal/router/router.go`) ouvre une goroutine par partition et **chaque voie traite
+séquentiellement**, donc un pod ne peut jamais offrir au pool plus de `lanes` acquisitions simultanées —
+12 ici, contre 10 connexions, soit au plus deux en attente à un instant donné. La loi de Little sur un
+*débit* était le mauvais modèle : `MaxConns` borne une **concurrence**, et la concurrence offerte est
+plafonnée par le nombre de voies, pas par les 4 800 lectures/s.
+
+Ce que ça donne pour step-280 : à 12 voies, `MaxConns=10` coûte quelques dizaines d'attentes de l'ordre
+de 400 à 700 µs sur trente secondes — trois ordres de grandeur sous le `DefaultLookupTimeout` de 2 s qui
+ferait basculer la lecture en échec. **La question n'est pas le débit de lookups, c'est le rapport
+`MaxConns` / voies par pod**, et il est aujourd'hui inférieur à 1.
+
+**L'empreinte du cache est de ~190 octets par clé `exactroute:{msisdn}`.** Cinq lectures : 210 o et
+178 o sur des paliers à 5 000 clés, **182 · 200 · 201 o** sur les trois paliers à 132 000-143 000 clés.
+Les petits échantillons sont les plus dispersés, et pour une raison identifiée : `used_memory` est une
+grandeur d'**instance**, et le client go-redis ouvre jusqu'à douze connexions dont Redis compte les
+tampons — quelques centaines de kilo-octets, soit 20-30 % du delta à 5 000 clés et ~1 % à 140 000.
+**Retenir 200 o/clé**, du grand échantillon. step-250e ne pouvait qu'estimer « ~150-200 o » et en
+dérivait 1,3 à 10 Go sur le Redis partagé avec les soldes de facturation : la mesure confirme le haut de
+son estimation. **C'est la grandeur de ce banc qui se transpose le mieux** — elle ne dépend ni du débit
+de l'hôte ni de sa latence disque.
 
 #### Réserves, nommément
 
-- **Les trois paliers ont été lancés à la suite**, ce que ce journal interdit ailleurs. Les dispersions
-  de 10 à 12 % dans un côté le disent : le banc DLR, sur hôte reposé, lisait 0 %. Les *ratios*
-  (mélange, lookups/message, octets/clé) n'en souffrent pas — ils ne sont pas des débits. Les trois
-  verdicts de coût, si.
+- **Les paliers ont été lancés à la suite**, ce que ce journal interdit ailleurs. Les dispersions de 9 à
+  12 % dans un côté le disent : le banc DLR, sur hôte reposé, lisait 0 %. Les *ratios* (mélange,
+  lookups/message, octets/clé, attentes) n'en souffrent pas — ils ne sont pas des débits. Les verdicts
+  de coût, si.
+- **Une quatrième mesure de la borne chaude existe et n'est pas dans le tableau** : fenêtre de 15 s,
+  deux couples, file de 700 000, lancée pour revalider un refactor. Elle lit **8 %** au lieu de 12 %,
+  avec une dispersion de 4 %. Configuration différente sur trois axes, donc non comparable — mais c'est
+  d'elle que vient la lecture d'empreinte à 178 o, et la taire tout en lui empruntant un chiffre serait
+  une sélection.
 - **Le delta est NET à part > 0** : L0 ajoute une sonde Bloom à tous les messages et une lecture du
   magasin aux portés, et il **saute** la résolution déclarative des portés qui touchent (une cible
   connecteur se résout sans consulter l'instantané). C'est le chiffre pertinent pour la production ; ce
   n'est pas le coût brut d'un lookup.
+- **`pg_hit` peut légèrement dépasser le pool porté** sans que le banc soit en faute :
+  `exact.Resolver` n'a pas de `singleflight`, donc deux voies qui touchent le même numéro froid avant
+  que la clé ne soit écrite paient deux lectures pour un distinct. La bande de 10 % de `mixHolds`
+  l'absorbe ; les runs mesurés sont restés en dessous du pool.
+- **`REF_PORTED_POOL` est plafonné en pratique par la file** : le tirage ne touche `pool` numéros
+  distincts qu'au bout de `pool × 1000 / num` enregistrements. À `PREFILL=1500000` et part 0,30, un pool
+  au-delà de 450 000 sème des lignes que rien n'adresse.
 - Le run de référence plein-stack ne traverse toujours pas L0, et `payloadRing = 4096`
   (`test/load/steady/inject.go`) plafonne son injecteur à 4 096 destinations distinctes quoi qu'annonce
   son `Dest`. Les deux restent à step-280.
-- Aucun `pg_error` ni `redis_error` sur les trois paliers : la garde qui les refuse n'a donc jamais
-  parlé, et la valeur de `MaxConns` à laquelle elle parlerait n'est pas connue.
-
+- Aucun `pg_error` ni `redis_error` sur aucun palier : la garde qui les refuse n'a jamais parlé, et la
+  valeur de `MaxConns` à laquelle elle parlerait n'est pas connue.
 
 ## Contenu
 

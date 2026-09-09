@@ -138,7 +138,7 @@ func TestRouterConsumeCeiling(t *testing.T) {
 	for _, partitions := range []int{1, 2, 4, 8, 16} {
 		// A bed per palier here, unlike the fidelity bench: this sweep VARIES the partition count, and a
 		// partition count is a property of the topic.
-		bed := newRouterBed(t, brokers, partitions, records, nil)
+		bed := newRouterBed(t, brokers, partitions, records, legacyDest)
 		measureRouterPalier(t, bed, hold, ceilResolver{conn: uuid.New()}, nil, "router alone")
 	}
 }

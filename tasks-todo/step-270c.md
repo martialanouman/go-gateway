@@ -37,7 +37,7 @@ C'est le motif de `loadref-harness-fidelity-traps` : le harnais mesure autre cho
 
 ### D1 — Le banc porteur est le **routeur isolé**, pas le run de référence
 
-`TestRouterL0Fidelity`, bâti sur `measureRouterCeiling` (`refrouter_test.go:48`) selon le patron exact
+`TestRouterL0Fidelity`, bâti sur le palier extrait de `measureRouterCeiling` (`refrouter_test.go`) selon le patron exact
 de `TestPoolDLRMapFidelity` (`poolfidelity_test.go:76`). Trois arguments, dans l'ordre de force :
 
 1. **Le run de référence a un débit d'*entrée*, pas de *sortie*.** `TestReferenceRun` **tient**
@@ -77,8 +77,7 @@ Le palier `share=0` est donc **publié comme mesure** : c'est ce que paient les 
 porté en production. La fiche refuse d'écrire « neutre » là où le code dit « une porte ».
 
 Ce qui reproduit l'existant, c'est que **le chemin d'hier n'est pas modifié** :
-`TestRouterConsumeCeiling` garde `ceilResolver` et appelle le lit avec `(share=0, pool=0)` ⇒ `l0Dest`
-rend le littéral d'hier. C'est `TestL0DestReproducesTheLegacyFixture` qui le prouve, pas un commentaire.
+`TestRouterConsumeCeiling` garde `ceilResolver` et passe `legacyDest`, qui rend le littéral d'hier. C'est `TestLegacyDestIsTheJournalsFixture` qui le prouve — le balayage ne passe PAS par `l0Dest`, il passe par `legacyDest`, et la branche `dest == nil` qui aurait porté cette garantie sans test a été supprimée.
 
 ### D4 — La géométrie : `share` et `pool`, déterministes par index
 
@@ -117,7 +116,7 @@ step-280 interpole avec **sa** localité :
 | D5 | `FLUSHDB` avant chaque palier « avec » | patron `freshStore` (`poolfidelity_test.go:118`). Sans lui le 2ᵉ palier lit un cache déjà chaud et `pg_hit` s'effondre en silence |
 | D6 | Pool pgx **dédié** — `postgres.NewPool(ctx, pgtest.Config(t))`, `MaxConns` = `REF_PG_MAX_CONNS` (défaut **10**, celui de production) | `pgtest.Pool` est **partagé** par le paquet et ouvert par `pgxpool.New(ctx, url)` sans config (`pgtest.go:103`) : inutilisable pour un dimensionnement. Le semis passe par le pool partagé ; le pool dédié ne porte que la fenêtre |
 | D7 | 12 voies, **constante** `l0Lanes`, pas de levier | patron `poolFidelityBinds = 8` : on mesure là où step-270 opère. 12 = `TopicPartitions` de production (`config.go:263`), le nombre même que step-280 oppose à `MaxConns=10`. Aucune env var tant que personne ne balaie |
-| D8 | `measureRouterCeiling` scindé en `newRouterBed` + palier retournant `float64` | **forcé** : `newCeilingTopic` pose son `t.Cleanup` sur le *test* (`refrouter_test.go:212-221`) et son propre commentaire nomme le risque (« five of them fill the single-node broker's volume »). Six paliers entrelacés × ~100 Mo resteraient jusqu'à la fin. Patron `newPoolBed`/`measurePoolCeiling` |
+| D8 | `measureRouterCeiling` scindé en `newRouterBed` + palier retournant `float64` | **forcé** : `newCeilingTopic` pose son `t.Cleanup` sur le *test* (`refrouter_test.go`, `newCeilingTopic`) et son propre commentaire nomme le risque (« five of them fill the single-node broker's volume »). Six paliers entrelacés × ~100 Mo resteraient jusqu'à la fin. Patron `newPoolBed`/`measurePoolCeiling` |
 | D9 | Compteur d'`outcome` local (`countingLookups`), pas Prometheus | patron `countingProducer`/`countingCDR` : atomiques, rien de retenu, aucun scrutin HTTP dans la fenêtre |
 | D10 | `fidelityDelta` gagne un paramètre `subject string` | il code « the DLR store » en dur (`refceiling_test.go:294-305`) : une ligne L0 nommerait le mauvais banc. 1 argument, 1 site d'appel existant |
 | D11 | Empreinte Redis **mesurée** (`DBSIZE` + `used_memory`, bracketés) | transforme la grandeur n°3 d'une arithmétique (« ~150-200 o par clé », step-250e) en une constante mesurée — et **celle-là** se transpose |
@@ -164,13 +163,47 @@ Deux défauts trouvés par les mutations plutôt que par la relecture, et un par
    rend l'ensemble vide que le banc refuse en nommant la plus petite part tirable. La mutation qui
    retire le garde reproduit le blocage : `panic: test timed out`.
 
+**Ce que la revue a trouvé, et que ni les mutations ni le run n'avaient attrapé.** Deux agents en
+lecture seule, sur des axes disjoints :
+
+5. **La seconde non-terminaison, à l'autre bout du même domaine.** Le garde ajouté en 4 ne couvrait que
+   `num == 0`. Une part **supérieure à 1** — ce que signifie `PORTED_SHARE=30`, le pourcentage tapé où
+   va la fraction — plafonne `pos` à 999 tout en avançant l'ordinal de `num` par bloc : le tirage devient
+   strié et ne couvre jamais le pool. Le domaine qui termine est `0 < num ≤ portedShareDen`, aux **deux**
+   bouts. Le godoc affirmait « TERMINATES by construction » sur la moitié basse seulement.
+6. **`poolPressure` mesurait deux grandeurs incapables de falsifier ce qu'il en concluait, et le journal
+   a publié la conclusion inverse de la vérité.** `AcquireDuration` est le total sur **toutes** les
+   acquisitions, chemin rapide compris — dix attentes de 2 s noyées dans 134 000 acquisitions rapides
+   s'arrondissent à rien ; `EmptyAcquireCount` s'incrémente **aussi à chaque construction**, si bien que
+   la montée de `MinConns` à `MaxConns` en produit huit sans qu'aucun appelant n'ait attendu. Sur
+   `EmptyAcquireWaitTime` et `NewConnsCount`, les relances disent que **les appelants attendent à chaque
+   run et qu'aucune attente n'est une construction**. Ce que le banc appelait « attente moyenne nulle »
+   n'existait pas.
+7. **Le vrai levier est structurel, et il n'était nulle part.** `handleBatch` ouvre une goroutine par
+   partition et chaque voie traite **séquentiellement** : un pod ne peut jamais offrir au pool plus
+   d'acquisitions simultanées qu'il n'a de voies. `MaxConns` borne une **concurrence**, pas un débit.
+8. `mixHolds` arrondissait la part une seconde fois · `cacheFootprint` ne gardait pas un delta mémoire
+   négatif · le mélange était relevé après le scrutin du broker, donc sur un intervalle plus long que son
+   dénominateur · le godoc de `preflightL0` annonçait un contrôle du numéro non porté qu'il ne faisait
+   pas · la branche `dest == nil` de `newRouterBed` était le seul chemin non couvert, et c'est celui du
+   balayage entier.
+
 | Tests purs | Mutations vues rouges |
 |---:|---:|
-| **13** | **14** |
+| **16** | **22** |
+
+*(Chiffres vérifiés par `grep -c '^func Test' internal/e2e/refl0_test.go`, la première version de cette
+fiche en annonçait 12 puis 17 — un décompte faux dans une DoD présentée comme piste d'audit vaut moins
+qu'une DoD sans décompte.)*
+
+Une mutation n'est pas tombée et c'est consigné : le modèle du mélange arrondit désormais la part par
+`portedPerBlock`, mais l'écart entre les deux arrondis est trois ordres de grandeur sous `maxMixGap`,
+donc **aucune entrée ne peut le falsifier**. C'est un correctif de cohérence, pas de comportement, et
+resserrer la bande pour l'attraper aurait été régler un test autour de son propre correctif.
 
 ## Tests — chacun avec la mutation qui doit le faire tomber
 
-### Phase A — fonctions pures, **hors build tag** (`refceiling_test.go`)
+### Phase A — fonctions pures, **hors build tag** (livrées dans un fichier neuf, `refl0_test.go`, sur le patron de `refshare_test.go`)
 
 | # | Test | Mutation |
 |---|---|---|
@@ -230,22 +263,31 @@ bouge → preuve que le lit est bien celui qu'on croit.
 ## Definition of Done
 
 - [x] `make check` vert (lint · `test -race` · govulncheck · contrats) ; `make test` inchangé en durée
-- [x] **13** tests purs verts hors build tag (11 prévus, plus la soustraction de fenêtre et la
-      terminaison du semis) ; pour chacun, la mutation listée a été **vue** rouge — **quatorze**
-      mutations au total, dont **quatre ont trouvé un défaut** plutôt que de confirmer un test
-- [x] `TestRouterConsumeCeiling` relancé après la scission : écarts producteur ↔ backlog −0,3 à −1,1 %,
-      courbe 4 995 · 8 500 · 13 220 · 17 142 · 25 614 — même forme que la courbe publiée
+- [x] **16** tests purs verts hors build tag (11 prévus, plus la soustraction de fenêtre, la
+      terminaison du semis, le rendu du mélange, le littéral du balayage et la concurrence offerte au
+      pool) ; **22** mutations vues rouges, dont **sept ont trouvé un défaut** plutôt que de confirmer un
+      test
+- [x] `TestRouterConsumeCeiling` relancé après la scission : tous les gardes verts, écarts producteur ↔
+      backlog −0,3 à **−1,1 %**, courbe 4 995 · 8 500 · 13 220 · 17 142 · 25 614. **Le −1,1 % est hors de
+      la bande publiée (−0,1 à −1,0 %)**, de 0,1 point, sur un hôte différemment chargé. Ce que la
+      relance établit est que les gardes passent et que la forme tient, pas que « la scission n'a rien
+      déplacé » : cette conclusion-là exigerait la comparaison entre deux sections du journal, que le
+      journal lui-même déclare invalide
 - [x] `TestRouterL0Fidelity` livre les **trois** lignes, chacune avec son mélange, ses lookups/message et
       son verdict `fidelityDelta` :
       porte Bloom **non chiffrable** (delta 3 % sous 12 % de dispersion — un résultat, pas un échec) ·
       borne chaude **12 %** du débit · borne froide **31 %**
-- [x] pression du pool pgx consignée : **134 183 acquisitions sur 446 810 messages (0,30/message),
-      attente moyenne nulle, 10 acquisitions sur pool vide (0,0 %)** à `MaxConns=10` pour 12 voies, soit
-      ~4 470 lectures Postgres/s. **`MaxConns=10` n'a pas été la contrainte** ; aucun `pg_error` n'est
-      apparu, donc la valeur à laquelle il apparaîtrait reste inconnue
-- [x] empreinte Redis consignée en **octets par clé** : **178 à 210 o** sur trois paliers indépendants,
-      **200 o retenus** (le palier à 134 182 clés, trente fois plus d'échantillons que les deux autres) —
-      la dispersion est celle de `used_memory`, qui compte l'allocateur et non les clés
+- [x] pression du pool pgx consignée, **et la première version de cette case était fausse** : elle
+      concluait « `MaxConns=10` n'a pas été la contrainte » sur deux compteurs incapables de le
+      falsifier. Sur `EmptyAcquireWaitTime`/`NewConnsCount`, `MaxConns=10` **est** atteint — 8 puis 33
+      attentes sur ~140 000 acquisitions, **aucune** expliquée par une construction, 365 à 735 µs
+      chacune, soit trois ordres de grandeur sous `DefaultLookupTimeout`. Le levier n'est pas le débit
+      mais le rapport **`MaxConns` / voies par pod** (10/12), parce qu'une voie est séquentielle. Aucun
+      `pg_error` n'est apparu, donc la valeur à laquelle il apparaîtrait reste inconnue
+- [x] empreinte Redis consignée en **octets par clé** : **178 à 210 o** sur cinq lectures, **200 o
+      retenus** du grand échantillon (182 · 200 · 201 sur les trois paliers à 132-143 000 clés). La
+      dispersion des petits échantillons s'explique : `used_memory` est une grandeur d'instance et compte
+      les tampons des douze connexions go-redis, soit 20-30 % du delta à 5 000 clés et ~1 % à 140 000
 - [x] le rouge d'intégration du `FLUSHDB` a été lu — mais **dans l'autre sens** que prévu : le premier
       run réel lisait la ligne de base Redis *avant* le flush, et `cacheFootprint` a refusé de chiffrer
       au lieu d'imprimer un nombre plausible. Le rouge « Bloom construit avant le semis » n'a **pas** été

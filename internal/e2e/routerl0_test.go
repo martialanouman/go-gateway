@@ -132,7 +132,8 @@ func TestRouterL0Fidelity(t *testing.T) {
 			pressure = poolPressure(
 				statAfter.AcquireCount()-statBefore.AcquireCount(),
 				statAfter.EmptyAcquireCount()-statBefore.EmptyAcquireCount(),
-				statAfter.AcquireDuration()-statBefore.AcquireDuration(),
+				statAfter.NewConnsCount()-statBefore.NewConnsCount(),
+				statAfter.EmptyAcquireWaitTime()-statBefore.EmptyAcquireWaitTime(),
 				last.messages, maxConns, l0Lanes)
 			footprint = cacheFootprint(keysBefore, keysAfter, memBefore, memAfter)
 			return last.rate
@@ -215,7 +216,7 @@ func newL0Fixture(t *testing.T, rdb *redis.Client, share float64, portedPool int
 		nil, // no script stage: L1 is another milestone's question
 		snapshot,
 	)
-	preflightL0(t, l0, share, portedPool)
+	preflightL0(t, l0, lookups, share, portedPool)
 
 	return &l0Fixture{pool: pool, snapshot: snapshot, l0: l0, lookups: lookups}
 }
@@ -236,9 +237,10 @@ func seedExactRoutes(t *testing.T, repo *postgres.ExactRouteRepo, connector uuid
 	// measure a share it never seeded.
 	numbers := portedSet(share, pool)
 	if len(numbers) == 0 {
-		t.Fatalf("REF_PORTED_SHARE=%v rounds to no ported record per block of %d: the bench would seed "+
-			"nothing and price an L0 stage that never ran. The smallest share this bench can draw is %v",
-			share, portedShareDen, 1.0/portedShareDen)
+		t.Fatalf("REF_PORTED_SHARE=%v is outside the domain this bench can draw: it is a FRACTION, so it "+
+			"must land in [%v, 1]. Below that it rounds to no ported record per block and the bench would "+
+			"price an L0 stage that never ran; above 1 the draw strides and never covers the pool",
+			share, 1.0/portedShareDen)
 	}
 
 	ctx := context.Background()
@@ -265,7 +267,7 @@ func seedExactRoutes(t *testing.T, repo *postgres.ExactRouteRepo, connector uuid
 
 // preflightL0 resolves one ported and one non-ported number before the window opens, so a seed that
 // never bound fails in a second instead of after thirty.
-func preflightL0(t *testing.T, l0 *routing.L0Resolver, share float64, pool int) {
+func preflightL0(t *testing.T, l0 *routing.L0Resolver, lookups *countingLookups, share float64, pool int) {
 	t.Helper()
 	if share <= 0 {
 		return
@@ -280,6 +282,20 @@ func preflightL0(t *testing.T, l0 *routing.L0Resolver, share float64, pool int) 
 	}
 	if route.ConnectorID == uuid.Nil {
 		t.Fatalf("preflight on ported %s resolved to no connector: the seed, the bloom or the canonical form disagree", ported)
+	}
+
+	// The non-ported side too, and it is not symmetry for its own sake. The bench draws ONE non-ported
+	// number, so a Bloom false positive on it is all-or-nothing: 70% of the messages would pay a store
+	// lookup, every guard would still pass, and only a human reading the outcome mix would notice. A
+	// deterministic false positive on a hot number is exactly the pathology ADR-0015 leaves open.
+	before := lookups.snapshot()
+	if _, err := l0.Resolve(context.Background(), pipeline.RouteRequest{Dest: nonPortedDest, Segments: 1}); err != nil {
+		t.Fatalf("preflight on the non-ported literal %s: %v", nonPortedDest, err)
+	}
+	if after := lookups.snapshot(); after["pg_miss"] != before["pg_miss"] || after["pg_hit"] != before["pg_hit"] {
+		t.Fatalf("the non-ported literal %s is a Bloom FALSE POSITIVE on this seed: 70%% of the messages "+
+			"would pay a Postgres round trip that resolves nothing, every guard would pass, and the cost "+
+			"would be filed under the L0 stage. Re-seed with a different pool size", nonPortedDest)
 	}
 }
 

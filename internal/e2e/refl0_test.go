@@ -70,12 +70,20 @@ func portedPerBlock(share float64) int { return int(math.Round(share * portedSha
 // portedSet enumerates the distinct ported numbers l0Dest draws, in first-draw order — the exact set the
 // seed must write into exact_routes.
 //
-// It TERMINATES by construction: a share that rounds to no ported record per block yields the empty set
-// instead of a loop with no exit, which the caller then refuses. Enumerating through l0Dest rather than
-// through a second formula is what keeps the seed and the lookup from disagreeing.
+// It TERMINATES over the whole domain, and the domain is 0 < num <= portedShareDen — both ends, not just
+// the low one:
+//
+//   - num == 0 (a share under 0.0005) draws no ported record at all, so the loop has no exit.
+//   - num > portedShareDen (a share above 1, which is what `PORTED_SHARE=30` means when the percentage is
+//     typed where the fraction belongs) caps pos at portedShareDen-1 while advancing the ordinal by num
+//     per block: the ordinals become the strided set [num*k, num*k+999], whose residues mod pool cover
+//     only a fraction of it, and the enumeration never collects `pool` distinct numbers.
+//
+// Outside that domain it yields the empty set, which the caller refuses. Enumerating through l0Dest
+// rather than through a second formula is what keeps the seed and the lookup from disagreeing.
 func portedSet(share float64, pool int) []string {
 	num := portedPerBlock(share)
-	if num <= 0 || pool < 1 {
+	if num <= 0 || num > portedShareDen || pool < 1 {
 		return nil
 	}
 	seen := make(map[string]bool, pool)
@@ -219,7 +227,14 @@ func mixHolds(counts map[string]uint64, messages uint64, share float64, pool int
 			total, 100*gap, messages, l0Outcomes)
 	}
 
-	ported := uint64(math.Round(share * float64(messages)))
+	// Through portedPerBlock, not through a second rounding of share: the draw seeds num/den of every
+	// block, so a model built on the raw share disagrees with the fixture by up to half a block.
+	//
+	// No mutation proves this line, and the honest reason is that it CANNOT be proven here: half a block
+	// is at most 0.05% of the messages, three orders of magnitude under maxMixGap, so both roundings
+	// clear the guard on every input. It is a consistency fix — one rounding, one place — not a behaviour
+	// fix, and tightening the band to catch it would be tuning a test around its own patch.
+	ported := uint64(portedPerBlock(share)) * messages / portedShareDen
 	if ported == 0 {
 		return nil // the share=0 palier prices the Bloom gate; there is no store leg to model.
 	}
@@ -232,8 +247,9 @@ func mixHolds(counts map[string]uint64, messages uint64, share float64, pool int
 	wantPg := min(ported, uint64(max(pool, 1)))
 	if gap := relGap(float64(counts["pg_hit"]), float64(wantPg)); gap > maxMixGap {
 		return fmt.Errorf("pg_hit %d against the %d expected (min of %d ported lookups and a pool of %d): "+
-			"a read-through cache cannot miss more distinct numbers than it holds, so a high reading means "+
-			"the cache was flushed under the palier and a low one means it was not flushed before it",
+			"a high reading means either the cache was flushed under the palier, or two lanes raced the "+
+			"same cold number — exact.Resolver has no singleflight, so a first touch is not strictly once "+
+			"per number; a low one means the cache was not flushed before the palier",
 			counts["pg_hit"], wantPg, ported, pool)
 	}
 	if gap := relGap(float64(counts["redis_hit"]), float64(ported-wantPg)); gap > maxMixGap {
@@ -337,32 +353,46 @@ func TestMixHoldsRefusesAnErrorMix(t *testing.T) {
 
 // poolPressure renders what the L0 lookups asked of the pgx pool over the window.
 //
-// Every figure is a DELTA across the window (Stat counters are cumulative from the pool's birth, and the
-// seed ran through the same pool before the palier opened), and every figure is per message, because
-// that is the only form that transposes off this host: the representative environment will have a
-// different rate and the same work per message.
+// Every figure is a DELTA across the window (Stat counters are cumulative from the pool's birth) and per
+// message, because that is the only form that transposes off this host.
 //
-// emptyAcquires is the one that matters. It is the count of Acquire calls that found no free connection
-// and had to wait, and it is the leading edge of the failure mode step-280 names: the wait runs up to
-// DefaultLookupTimeout, the lookup then fails closed, the record is redelivered, and the redelivery
-// makes the same lookup against the same saturated pool.
-func poolPressure(acquires, emptyAcquires int64, acquireWait time.Duration, messages uint64, maxConns int32, lanes int) string {
+// # The two quantities that CAN falsify starvation, and the two that cannot
+//
+// EmptyAcquireCount is not a starvation count. puddle increments it whenever a connection has to be
+// CONSTRUCTED — including when the pool had room and nobody waited — so warming from MinConns to MaxConns
+// alone produces MaxConns-MinConns of them. NewConnsCount is what explains them away.
+//
+// AcquireDuration is the total over ALL acquires, fast path included. A mean drawn from it is a mean
+// acquire LATENCY, not a mean wait: ten two-second waits buried in 134 000 fast acquires round to
+// nothing. EmptyAcquireWaitTime is the time actually spent waiting on an empty pool, and it is the one
+// that can refuse the claim.
+//
+// # MaxConns bounds a concurrency, not a rate
+//
+// The router runs one goroutine per partition in a batch and each lane processes its records
+// SEQUENTIALLY (internal/router/router.go, handleBatch), so one pod can never offer the pool more than
+// `lanes` simultaneous acquires however fast it consumes. Comparing MaxConns to a request rate invites
+// Little's law on a queue that is not shaped that way; the reading names the offered ceiling instead.
+func poolPressure(acquires, emptyAcquires, newConns int64, emptyWait time.Duration, messages uint64, maxConns int32, lanes int) string {
 	if messages == 0 || acquires == 0 {
 		return fmt.Sprintf("unreadable: %d acquisitions over %d messages — the L0 lookups never reached "+
 			"the pool, so there is no pressure to report", acquires, messages)
 	}
-	perMsg := float64(acquires) / float64(messages)
-	meanWait := time.Duration(int64(acquireWait) / acquires)
-	out := fmt.Sprintf("%d acquisitions over %d messages (%.2f/message), mean wait %v, against MaxConns=%d "+
-		"for %d lanes", acquires, messages, perMsg, meanWait.Round(time.Microsecond), maxConns, lanes)
+	out := fmt.Sprintf("%d acquisitions over %d messages (%.2f/message), against MaxConns=%d for %d lanes "+
+		"— a lane is sequential, so this pod can offer the pool at most %d acquires at once",
+		acquires, messages, float64(acquires)/float64(messages), maxConns, lanes, lanes)
 
-	if emptyAcquires == 0 {
-		return out + " · the pool never emptied over the window: this MaxConns was not the constraint here"
+	if emptyWait == 0 {
+		return fmt.Sprintf("%s · %d acquisitions found no idle connection and %d connections were built: "+
+			"the pool never made a caller wait, so MaxConns=%d was not reached at this offered concurrency",
+			out, emptyAcquires, newConns, maxConns)
 	}
-	return fmt.Sprintf("%s · %d of them found the pool empty and waited (%.1f%%): this is the starvation "+
-		"edge — past it Acquire waits out DefaultLookupTimeout, the lookup fails closed and the redelivery "+
-		"makes the same lookup against the same pool", out, emptyAcquires,
-		100*float64(emptyAcquires)/float64(acquires))
+	return fmt.Sprintf("%s · %d acquisitions found no idle connection (%.1f%% of them, %d explained by "+
+		"construction) and callers waited %v in total, %v each on average: this is the starvation edge — "+
+		"past it Acquire waits out DefaultLookupTimeout, the lookup fails closed and the redelivery makes "+
+		"the same lookup against the same pool", out, emptyAcquires,
+		100*float64(emptyAcquires)/float64(acquires), newConns, emptyWait.Round(time.Millisecond),
+		(emptyWait / time.Duration(max(emptyAcquires, 1))).Round(time.Microsecond))
 }
 
 // cacheFootprint prices the exactroute keys THIS palier added, in bytes per key.
@@ -377,43 +407,71 @@ func cacheFootprint(keysBefore, keysAfter, memBefore, memAfter int64) string {
 		return fmt.Sprintf("unreadable: %d keys before, %d after — this palier added none, so the memory "+
 			"delta prices nothing", keysBefore, keysAfter)
 	}
-	perKey := (memAfter - memBefore) / added
+	grew := memAfter - memBefore
+	if grew <= 0 {
+		return fmt.Sprintf("unreadable: %d keys added but used_memory went from %d to %d — an instance "+
+			"figure that fell while keys were written prices nothing (a client disconnected, a buffer was "+
+			"released), and the integer division would render it as a negative cost per key",
+			added, memBefore, memAfter)
+	}
+	perKey := grew / added
 	return fmt.Sprintf("%d keys added, %d B more used_memory: %d B per exactroute key (used_memory %d -> "+
 		"%d; only the difference belongs to this palier)", added, memAfter-memBefore, perKey, memBefore, memAfter)
 }
 
-// TestPoolPressureNamesTheStarvation is step-280's second quantity, made observable.
+// TestPoolPressureSeparatesConstructionFromStarvation is the correction of a reading this bench first
+// got wrong in both directions at once.
 //
-// MaxConns is 10 by default and a router pod can own 12 Kafka lanes: Little's law says the margin
-// disappears somewhere, and the failure mode is vicious — Acquire waits, the lookup fails closed, the
-// record is redelivered, and the redelivery makes the same lookup against the same saturated pool. A
-// figure that does not distinguish "the pool never emptied" from "it emptied N times" leaves that
-// invisible until production finds it.
-func TestPoolPressureNamesTheStarvation(t *testing.T) {
-	starved := poolPressure(30000, 4200, 6*time.Second, 100000, 10, 12)
-	if !strings.Contains(starved, "4200") {
-		t.Errorf("a pool that emptied 4200 times must say so: %s", starved)
+// EmptyAcquireCount is NOT a starvation count: puddle increments it whenever a connection has to be
+// CONSTRUCTED, including when the pool had room and nobody waited. Warming from MinConns to MaxConns
+// produces exactly MaxConns-MinConns of them on a pool that never made anyone wait. And AcquireDuration
+// is the total over ALL acquires, fast path included, so dividing it by the acquire count answers a mean
+// latency, not a mean wait — ten two-second waits inside 134 000 fast acquires round to nothing.
+//
+// EmptyAcquireWaitTime is the quantity that can falsify starvation, and NewConnsCount is what explains
+// the empty-acquire count away. Both are read now; neither was.
+func TestPoolPressureSeparatesConstructionFromStarvation(t *testing.T) {
+	// The shape the real run produced: 10 empty acquires, all explained by construction, zero wait.
+	warm := poolPressure(134183, 10, 10, 0, 446810, 10, 12)
+	if !strings.Contains(warm, "never made a caller wait") {
+		t.Errorf("an empty-acquire count fully explained by construction, with no wait, is not starvation: %s", warm)
 	}
-	if !strings.Contains(starved, "10") || !strings.Contains(starved, "12") {
-		t.Errorf("the figure is unreadable without MaxConns against the lane count: %s", starved)
+	if strings.Contains(warm, "starvation edge") {
+		t.Errorf("this reading must not be published as starvation: %s", warm)
 	}
 
-	healthy := poolPressure(30000, 0, 30*time.Millisecond, 100000, 24, 12)
-	if strings.Contains(healthy, "starv") && !strings.Contains(healthy, "never") {
-		t.Errorf("a pool that never emptied must be reported as such, not as starvation: %s", healthy)
+	// Real starvation: callers waited, and the count exceeds what construction can explain.
+	starved := poolPressure(134183, 4200, 10, 6*time.Second, 446810, 10, 12)
+	if !strings.Contains(starved, "starvation edge") {
+		t.Errorf("4200 empty acquires against 10 constructions, with 6s of waiting, is starvation: %s", starved)
 	}
-	if !strings.Contains(healthy, "never") {
-		t.Errorf("silence on an empty-acquire count of zero reads as an unmeasured pool: %s", healthy)
+	if !strings.Contains(starved, "4200") {
+		t.Errorf("the count must appear: %s", starved)
+	}
+	// A raw count is unreadable against six figures of acquisitions: 8 waits and 4200 waits are the same
+	// sentence without the proportion, and they are not the same pool.
+	if !strings.Contains(starved, "3.1%") {
+		t.Errorf("the share of acquisitions that waited is what sizes the finding: %s", starved)
+	}
+}
+
+// TestPoolPressureNamesTheOfferedConcurrency: MaxConns is a ceiling on a CONCURRENCY, and the router can
+// only ever offer it one acquire per lane — handleBatch runs one goroutine per partition and each lane
+// processes its records sequentially (internal/router/router.go). A figure that compares MaxConns to a
+// request RATE invites Little's law on a quantity that is not queued that way.
+func TestPoolPressureNamesTheOfferedConcurrency(t *testing.T) {
+	got := poolPressure(134183, 10, 10, 0, 446810, 10, 12)
+	if !strings.Contains(got, "at most 12") {
+		t.Errorf("the reading is unreadable without the concurrency the router can actually offer: %s", got)
 	}
 }
 
 // TestPoolPressureRefusesToDivide mirrors TestStageLatencyRefusesToDivide: no messages means the
 // resolver never ran, which is a fact worth reading, not a NaN worth misreading.
 func TestPoolPressureRefusesToDivide(t *testing.T) {
-	// The artefact this guards is a PANIC, not a NaN: both divisors are integers, so removing the guard
-	// takes the palier down with "integer divide by zero" instead of printing a plausible figure. Asserting
-	// on NaN here would be a clause that can never fire.
-	got := poolPressure(0, 0, 0, 0, 10, 12)
+	// The artefact this guards is a division by zero on the per-message figure, not a NaN: the divisors
+	// are integers. Asserting on NaN here would be a clause that can never fire.
+	got := poolPressure(0, 0, 0, 0, 0, 10, 12)
 	if !strings.Contains(got, "unreadable") {
 		t.Errorf("an empty window must say it is unreadable: %s", got)
 	}
@@ -438,6 +496,13 @@ func TestCacheFootprintPricesOnlyTheKeysItAdded(t *testing.T) {
 
 	if got := cacheFootprint(1050, 1050, 4_000_000, 4_180_000); !strings.Contains(got, "unreadable") {
 		t.Errorf("a palier that added no key prices nothing and must say so: %s", got)
+	}
+
+	// used_memory is an INSTANCE figure, not a sum over keys: a client disconnecting inside the window
+	// releases its buffers and the delta can go backwards while keys were written. Integer division
+	// would then render "-3 B per exactroute key" as a cost.
+	if got := cacheFootprint(50, 1050, 4_180_000, 4_000_000); !strings.Contains(got, "unreadable") {
+		t.Errorf("a used_memory that fell while keys were written prices nothing: %s", got)
 	}
 }
 
@@ -471,6 +536,12 @@ func TestFidelityDeltaNamesItsSubject(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), subject) {
 		t.Errorf("the refusal must name the subject too: %v", err)
+	}
+	// The refusal's REASON has to hold for whatever the subject is. "no added write can do that" is true
+	// of the DLR store and false of L0, which is a read: a sentence that names the L0 stage and then
+	// explains it by a write is a verdict nobody can act on.
+	if strings.Contains(err.Error(), "write") {
+		t.Errorf("the refusal explains itself by a WRITE while pricing %q, which is not one: %v", subject, err)
 	}
 }
 
@@ -569,6 +640,16 @@ func TestPortedSetTerminatesAndMatchesTheDraw(t *testing.T) {
 			"non-empty answer here means the enumeration cannot terminate", len(got))
 	}
 
+	// The OTHER end of the same class, and the one the first guard missed. `make load-reference
+	// PORTED_SHARE=30` — the percentage typed where a fraction belongs — gives num=30000. pos is capped
+	// at portedShareDen-1, so the ordinals a block yields are [30000k, 30000k+999]: a strided set whose
+	// residues mod pool cover only a fraction of it, and the enumeration never collects `pool` of them.
+	// The terminating domain is 0 < num <= portedShareDen, not num > 0.
+	if got := portedSet(30, 100000); len(got) != 0 {
+		t.Errorf("a share above 1 draws a strided ordinal set that cannot cover the pool: the enumeration "+
+			"must refuse it, got %d numbers", len(got))
+	}
+
 	set := portedSet(0.3, 10)
 	if len(set) != 10 {
 		t.Fatalf("pool=10 must enumerate exactly 10 distinct numbers, got %d", len(set))
@@ -621,5 +702,23 @@ func TestRenderMixCountsWhatItDivides(t *testing.T) {
 	// becomes "the resolver was free".
 	if got := renderMix(map[string]uint64{"bloom_miss": 1}, 0); strings.Contains(got, "/message") {
 		t.Errorf("an empty window must not be rendered as a per-message figure: %s", got)
+	}
+}
+
+// legacyDest is the destination every row of test/load/README.md before 09/09/2026 was measured
+// against: one number, for every record.
+//
+// It is a named function rather than a nil default in newRouterBed because the sweep runs on it, and a
+// nil default would be the single path no test covers while carrying the comparability of the whole
+// journal.
+func legacyDest(int) string { return nonPortedDest }
+
+// TestLegacyDestIsTheJournalsFixture is what actually proves the sweep still addresses what it always
+// addressed — l0Dest does not, since the sweep never calls it.
+func TestLegacyDestIsTheJournalsFixture(t *testing.T) {
+	for _, i := range []int{0, 1, 999, 1000, 123456} {
+		if got := legacyDest(i); got != "2250700000000" {
+			t.Errorf("legacyDest(%d) = %q, want the literal every earlier row was measured against", i, got)
+		}
 	}
 }
