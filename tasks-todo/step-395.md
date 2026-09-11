@@ -22,11 +22,15 @@ case <-timerC:
 Aucun timer n'est réarmé. La réparation attend **la prochaine notification d'invalidation**, c'est-à-dire
 une action d'exploitant ou d'admin. Si la panne dure plus longtemps que le silence du plan de contrôle
 — le cas normal la nuit — le pod sert une config périmée **sans borne**, et rien ne le dit : `/readyz`
-ne regarde que Kafka, aucune métrique de rebuild n'existe, et la seule trace est la ligne `Error`
-ci-dessus, écrite une fois.
+ne regarde que Kafka, aucune métrique d'**échec** de rebuild n'existe, et la seule trace est la ligne
+`Error` ci-dessus, écrite une fois. La seule instrumentation voisine,
+`bloom_last_reload_timestamp_seconds{filter}` (`cmd/router-svc/wiring.go:660-670`), est pire que rien
+sur ce point : elle ne couvre que les deux Bloom et se pose **en milieu de closure** (`:720`, `:725`),
+donc elle avance même quand le rebuild échoue plus loin — elle affiche « frais » sur un rebuild à
+moitié raté.
 
 Le cas est aggravé, pas créé, par le fait que le rebuild n'est pas atomique entre composants
-(`cmd/router-svc/wiring.go:709` swappe les routes avant quatre `return err` possibles) : un échec en
+(`cmd/router-svc/wiring.go:709` swappe les routes avant cinq `return err` possibles) : un échec en
 cours laisse une config **partiellement** appliquée, que seule une invalidation ultérieure réconcilie.
 
 Ce que ça coûte concrètement : un opt-out retiré qui continue de s'appliquer, un disjoncteur non
@@ -44,10 +48,11 @@ Réarmer la fenêtre sur `rerr`, avec un backoff borné, et le prouver.
 - Le backoff est un **paramètre de `Run` ou une option**, pas une constante muette : le test doit
   pouvoir le raccourcir sans mesurer autre chose que la production (cf. le piège de
   `loadref-harness-fidelity-traps`).
-- **Une métrique** de rebuild (succès / échec, et l'horodatage du dernier succès) : le rejeu rend la
-  panne récupérable, la métrique la rend visible. Les jauges `bloom_last_reload_timestamp_seconds`
-  existent déjà pour les deux Bloom et donnent le patron ; elles ne couvrent ni les routes, ni les
-  scripts, ni le crédit, ni la politique de contenu.
+- **Une métrique** de rebuild (succès / échec, et l'horodatage du dernier succès **de la closure
+  entière**) : le rejeu rend la panne récupérable, la métrique la rend visible. Les jauges
+  `bloom_last_reload_timestamp_seconds` donnent le patron mais pas le placement — posées en milieu de
+  closure, elles mentent sur un rebuild partiellement raté. La neuve se pose **après** la dernière
+  étape, ou pas du tout.
 
 ## Chaîne de preuves
 

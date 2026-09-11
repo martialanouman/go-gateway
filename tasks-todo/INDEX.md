@@ -279,6 +279,15 @@ pour le second. D'où **step-396** plutôt qu'un outillage payé pour rien. La s
 que le watcher **ne rejoue jamais** un rebuild échoué — la config périmée n'a donc aucune borne tant
 qu'aucune invalidation n'arrive : **step-395**.
 
+**Et la revue de step-260c a trouvé un défaut de production que le harnais ne pouvait pas voir.**
+`onBind` comptait `ESME_RSYSERR` comme un échec d'authentification ; le throttle anti-brute-force, qui
+refuse en `ESME_RINVPASWD`, est câblé inconditionnellement en production avec un seuil de 5. Au sixième
+bind d'une panne Postgres, la passerelle disait donc à l'ESME que son secret était faux — l'inverse de
+ce que la ligne §16 s'apprêtait à promettre — et la fenêtre glissante tenait le verrou au-delà de la
+panne. Le test ne pouvait pas l'attraper : `startListener` bâtissait un `Listener` **sans** throttle,
+donc différait de la production exactement sur l'axe dont dépendait l'affirmation. D'où la règle :
+**quand une assertion porte sur un code de retour, le harnais câble tout ce qui peut le produire.**
+
 ## Audit du 2026-09-03 — six constats vérifiés, sept PR
 L'audit en lecture seule du 2026-09-03 (commit `0f86158`) a rendu toutes les portes vertes et les quatre
 invariants tenus, et laissé six constats « Required » qu'aucune fiche ne portait. Ils s'insèrent ici,

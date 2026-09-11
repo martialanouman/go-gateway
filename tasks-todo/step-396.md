@@ -12,10 +12,10 @@ dépendance qui répond, mais trop tard.
 
 ## Ce que cette fiche N'EST PAS — la prémisse de step-260c, corrigée
 
-`tasks-todo/step-260c.md` désignait deux chemins « que seule la latence révèle ». **Les deux sont mal
+`tasks-done/step-260c.md` désignait deux chemins « que seule la latence révèle ». **Les deux sont mal
 décrits**, et c'est pour ça que cette fiche existe séparément plutôt que d'avoir été traitée là-bas.
 
-- **`withTerminalLock` (`internal/billing/billing.go:709-736`) ne rend pas `errs.ErrConflict` au
+- **`withTerminalLock` (`internal/billing/billing.go:707-732`) ne rend pas `errs.ErrConflict` au
   porteur lent.** Il le rend au **waiter** qui n'a rien obtenu après `terminalLockWait` = 2 × 5 s
   = 10 s. Le porteur, lui, voit sa section critique annulée à `terminalCriticalTimeout` (4 s) et reçoit
   un `DeadlineExceeded` que `postgres.translate` code en `ErrInternal`. Comme le `defer` rend le verrou
@@ -25,7 +25,7 @@ décrits**, et c'est pour ça que cette fiche existe séparément plutôt que d'
 - **Le « rejet définitif là où il faudrait un rejeu » n'existe pas sur ce chemin.** La règle « erreur
   codée ⇒ offset commité ⇒ message enterré » est celle de `router.handle`, sur la voie de la
   **réserve**. Sur la voie **terminale**, personne ne lit le code : `settle.Settler` échoue ouvert sur
-  *toute* erreur (`settle.go:37-41`) et `billing.Reaper` rejoue à la passe suivante sur *toute* erreur
+  *toute* erreur (`settle.go:116-121` et `:139-146`) et `billing.Reaper` rejoue à la passe suivante sur *toute* erreur
   (`reaper.go:215-225`).
 - **`defaultSettleTimeout` n'a jamais eu besoin d'un proxy retardateur.** `settle.WithTimeout`
   (`settle.go:63`) est une option publique : un faux client gRPC qui dort au-delà du délai reproduit

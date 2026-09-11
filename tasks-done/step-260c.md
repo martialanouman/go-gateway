@@ -31,6 +31,14 @@ disjoncteur non rafraîchi. Au **boot** en revanche Postgres est une dépendance
 (`cmd/router-svc/wiring.go:737-765`, retry backoff : le pod ne devient jamais ready). Les deux moitiés
 doivent être dans la ligne.
 
+> ⚠️ **Corrigé à l'exécution (11/09/2026).** La phrase ci-dessus est fausse à moitié et sa référence
+> ne pointe plus rien : `openStores` précède `loadBootSnapshots`, et `postgres.NewPool`
+> (`internal/storage/postgres/pool.go:26-56`) pingue à chaud **sans réessayer**. Un Postgres
+> injoignable au démarrage du process fait donc sortir `newRouterApp` — CrashLoopBackOff, pas un pod
+> qui pend. La boucle `loadWithRetry` (`cmd/router-svc/wiring.go:805-833`) n'est atteinte que si
+> Postgres tombe *entre* l'ouverture du pool et le chargement des snapshots. Détail sous
+> `## Design arrêté`.
+
 ## Périmètre
 
 Un test de chaos par politique, **dans le paquet qui porte la politique** (`docs/strategie-de-test-passerelle.md`
@@ -45,8 +53,9 @@ un rebuild échoué ne doit ni vider le snapshot, ni y glisser un `nil`, ni fair
 **Le Postgres *lent* plutôt que coupé.** `tcpproxy` ne sait que sévérer, jamais ralentir, et deux
 chemins ne se révèlent que sous latence :
 
-- `withTerminalLock` (`internal/billing/billing.go:709`) renvoie une erreur **codée** `errs.ErrConflict`
-  quand un porteur dépasse sa section critique de 4 s. Un Postgres lent produirait donc un rejet
+- `withTerminalLock` (`internal/billing/billing.go:707-732`) renvoie une erreur **codée**
+  `errs.ErrConflict` quand un porteur dépasse sa section critique de 4 s. *(Faux : voir
+  `## Design arrêté` — c'est le waiter qui la reçoit, après 10 s.)* Un Postgres lent produirait donc un rejet
   définitif là où il faudrait un rejeu — le contraire exact de la politique que §16 vient d'écrire.
 - `settle`'s `defaultSettleTimeout` de 200 ms expire pendant que billing-svc écrit encore (sa section
   critique va jusqu'à 4 s). Le settler compte un échec et abandonne alors que le terminal s'écrit
@@ -96,12 +105,12 @@ retry n'a aucune couverture.
 La DoD exige que la question soit tranchée. Elle l'est, et sur une **prémisse corrigée** : les deux
 chemins que la section « Ce que step-260b a laissé » désigne ne sont pas ce qu'elle en dit.
 
-- `withTerminalLock` (`internal/billing/billing.go:709-736`) ne rend **pas** `errs.ErrConflict` au
+- `withTerminalLock` (`internal/billing/billing.go:707-732`) ne rend **pas** `errs.ErrConflict` au
   porteur qui dépasse 4 s. Il le rend au **waiter** qui n'a rien obtenu après `terminalLockWait`
   = 2 × 5 s = 10 s. Le porteur lent, lui, reçoit un `DeadlineExceeded` de pgx à
   `terminalCriticalTimeout`, que `translate` code en `ErrInternal`.
 - Et sur le chemin terminal, **personne ne lit le code** : `settle.Settler` échoue ouvert sur *toute*
-  erreur (`settle.go:37-41`), `billing.Reaper` rejoue à la passe suivante sur *toute* erreur
+  erreur (`settle.go:116-121` et `:139-146`), `billing.Reaper` rejoue à la passe suivante sur *toute* erreur
   (`reaper.go:215-225`). Le « rejet définitif là où il faudrait un rejeu » que la fiche redoute
   **n'existe pas dans le code**.
 - `defaultSettleTimeout` n'a jamais eu besoin d'un proxy retardateur : `settle.WithTimeout`
@@ -130,7 +139,7 @@ déjà : `cmd/router-svc/chaos_test.go` fait « graphe bâti depuis la config, p
 
 ### Arbitrage 3 — le rebuild partiel : une note en §16, et le vrai défaut en fiche
 
-Constat vérifié : la closure swappe les routes (`wiring.go:709`) **avant** quatre `return err`
+Constat vérifié : la closure swappe les routes (`wiring.go:709`) **avant** cinq `return err`
 possibles (Bloom exact, opt-out, scripts, crédit, contenu). Chaque étape est individuellement atomique
 — `Bloom.Reload` et le garde d'opt-out ne swappent qu'en succès — donc un échec laisse un **préfixe
 appliqué**, jamais un état vide. Le commentaire `wiring.go:688-690` (« each component keeps its current
@@ -175,6 +184,31 @@ Postgres et Redis dans leurs tests de câblage.
 2. **Repointer le consommateur du pool coupable sur `pgtest.Pool`** : le test meurt alors avec la
    dépendance qu'il prétend observer, et doit tomber (mémoire `hollow-test-fixtures`).
 
+### Ce que la revue a trouvé, et qui a changé du code de production
+
+Trois relecteurs en lecture seule, axes disjoints. Deux ont convergé sur le même **bloquant**, et il
+portait sur la ligne §16 elle-même.
+
+`onBind` comptait **tout** statut non-OK comme un échec d'authentification, `ESME_RSYSERR` compris. Le
+throttle anti-brute-force est consulté *avant* l'authentification et refuse en `ESME_RINVPASWD` ;
+production le câble inconditionnellement avec `SMPP_BIND_MAX_FAILURES` à 5. Au sixième bind d'une panne
+Postgres, la passerelle se mettait donc à répondre « ton secret est faux » — le signal exact que la
+politique existe pour éviter — et la fenêtre glissante tenait le verrou ouvert au-delà de la panne.
+
+Le test ne pouvait pas le voir : `startListener` construisait un `Listener` **sans** `Throttle`, donc
+différait de la production précisément sur l'axe dont dépendait l'affirmation. Règle qui en sort :
+**quand une assertion porte sur un code de retour, le harnais doit câbler tout ce qui peut le
+produire.**
+
+L'arbitrage s'est réglé au premier échelon : la spec §6.3 et step-026 comptent les « échecs d'auth »,
+et un plan de contrôle muet n'a jugé aucun identifiant. `StatusSysErr` ne nourrit plus le compteur.
+
+Trois corrections de documentation en sont sorties aussi : « aucune métrique de rebuild n'existe » était
+faux (`bloom_last_reload_timestamp_seconds` existe — et, posée en milieu de closure, elle affiche
+« frais » sur un rebuild à moitié raté, ce qui est pire) ; la règle de readiness tirée de `rest-api-svc`
+ne valait pas pour `smpp-server-svc`, qui n'a qu'une sonde ; et le « aucun conteneur neuf » était vrai
+des `cmd/` mais taisait le seul conteneur que la step ajoute, dans `internal/restapi`.
+
 ## Definition of Done
 
 - [x] `make check` vert (87 paquets, 0 échec)
@@ -193,6 +227,9 @@ Postgres et Redis dans leurs tests de câblage.
       prémisse corrigée, les deux chemins que cette fiche désignait n'étant pas ce qu'elle en disait
 - [x] deux trouvailles fichées : le watcher ne rejoue jamais un rebuild échoué (**step-395**), et la
       moitié « fail-fast » du boot est déjà prouvée, donc citée plutôt que réécrite
+- [x] **un défaut de production corrigé**, trouvé par la revue : une panne Postgres alimentait le
+      throttle anti-brute-force, qui bascule en `ESME_RINVPASWD` au-delà du seuil — la ligne §16 était
+      fausse tant que le correctif n'était pas là (`TestAPostgresOutageNeverFeedsTheBindThrottle`)
 
 ## Hors périmètre
 

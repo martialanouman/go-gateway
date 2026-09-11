@@ -146,14 +146,28 @@ observé lien debout jusqu'au snapshot servi, qui rend la coupure mesurable. Le 
 fail-closed est le **second camp** : un bind refusé pour mauvais mot de passe, une clé API inconnue —
 sans eux, « la panne n'a pas répondu `ESME_RINVPASWD` / 401 » n'affirme rien.
 
-Enfin, **la readiness fait partie de la politique** (plan §1.5), et son assertion porte sur la sonde
-**nommée**, pas sur le statut agrégé : les autres dépendances d'un `testConfig` sont à port fermé, si
-bien que `/readyz` est déjà 503 avant la moindre coupure. Assertion utile, et bien moins chère qu'un
-Redpanda de plus par paquet.
+Enfin, **la readiness fait partie de la politique** (plan §1.5), et l'assertion se choisit **service par
+service**, jamais par recopie. `rest-api-svc` sonde trois dépendances dont deux sont à port fermé en
+test : son `/readyz` est déjà 503 avant la coupure, donc l'assertion porte sur la sonde **nommée** —
+lever Kafka et ClickHouse pour un fait que le corps énonce coûterait deux conteneurs. `smpp-server-svc`
+n'a qu'**une** sonde, Postgres : l'agrégat 200 → 503 → 200 y est gratuit, et c'est lui qui dit « le pod
+quitte le load balancer ». `router-svc` est le cas inverse : l'assertion utile est que postgres n'y soit
+**pas** sondé du tout. Le commentaire écrit pour le premier a d'abord été copié sur le second, où il
+était faux — une règle tirée d'un seul cas.
+
+**Le coût en conteneurs se compte, il ne se suppose pas.** Les quatre paquets `cmd/` et
+`internal/smppserver` démarraient déjà Postgres et Redis : zéro conteneur neuf. `internal/restapi`, lui,
+était **100 % doublures** et gagne un Postgres — le seul conteneur que cette step ajoute au dépôt. Aucun
+Redpanda ni ClickHouse de plus, donc le risque `fs.aio-max-nr` (step-250c) est inchangé ; ce qui change
+est qu'`internal/restapi` dépend désormais de Docker.
 
 Deux dettes ouvertes par cette step : le watcher **ne rejoue jamais** un rebuild échoué (step-395), et
 l'équivalence « Postgres lent ≡ Postgres coupé » reste non mesurée — `tcpproxy` ne sait que sévérer
-(step-396).
+(step-396). Elle a par ailleurs trouvé un **défaut de production** que seule la configuration réelle
+révélait : le listener des tests n'avait pas le throttle anti-brute-force que la production câble
+toujours, et sous ce throttle une panne Postgres finissait par répondre `ESME_RINVPASWD`. Règle :
+**quand une assertion porte sur un code de retour, le harnais doit câbler tout ce qui peut le
+produire.**
 
 ---
 
