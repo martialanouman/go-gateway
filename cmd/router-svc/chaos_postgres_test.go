@@ -144,29 +144,31 @@ func TestRouterConfigSnapshotsDegradeSilentlyWhenPostgresIsCut(t *testing.T) {
 		waitResolves(t, invalidate, resolved, second.ID, "the hot reload never reached the served "+
 			"snapshot with postgres up, so the outage assertion below would prove nothing")
 
-		// The outage. A third retarget is committed durably, then the link drops before the rebuild can
-		// read it.
-		retarget(third.ID)
-
 		// Everything the log has said so far is the control's business. Only the suffix written AFTER
 		// the cut can testify about the cut — and the distinction is not pedantic here: the rebuild
 		// closure swaps the routes BEFORE reloading the Blooms, the scripts, the credit and the content
 		// policy, so a control rebuild can perfectly well have reached its route swap and then failed
 		// further down, leaving this exact line in the buffer already.
-		mark := len(logs.String())
+		before := logs.String()
+
+		// The outage. The third retarget is committed AFTER the cut, through the uncut pool: committing
+		// it first would leave a rebuild still in flight from the control free to read it and swap it
+		// in before the link drops, which would fail the assertion below for no reason of policy.
 		proxy.Cut()
+		retarget(third.ID)
 
 		// Wait for the evidence rather than for a duration: the Watcher coalesces for 250 ms and a
 		// loaded CI can take much longer than a sleep would allow for.
 		deadline := time.Now().Add(20 * time.Second)
-		for !strings.Contains(logs.String()[mark:], "config watcher: rebuild failed; keeping current state") {
+		for !strings.Contains(strings.TrimPrefix(logs.String(), before),
+			"config watcher: rebuild failed; keeping current state") {
 			invalidate()
 			if time.Now().After(deadline) {
 				t.Fatal("no failed-rebuild log line after the cut: this log is the ONLY signal a stale " +
-					"snapshot produces — /readyz stays 200 and no metric of the route snapshot moves — so " +
-					"losing it makes the degradation completely invisible")
+					"snapshot produces — no readiness probe notices, no metric of the route snapshot " +
+					"moves — so losing it makes the degradation completely invisible")
 			}
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(300 * time.Millisecond)
 		}
 
 		if got := resolved(); got != second.ID {
@@ -190,12 +192,18 @@ func TestRouterConfigSnapshotsDegradeSilentlyWhenPostgresIsCut(t *testing.T) {
 		// The assertion is on the absence of the probe, not on a 200: Kafka sits at a closed port in
 		// testConfig, so the aggregate is 503 for a reason that has nothing to do with this outage.
 		// That Kafka DOES gate the router's readiness is pinned next door, in chaos_test.go.
-		if _, body := readyz(t, app); len(body) > 0 {
-			if _, named := body["postgres"]; named {
-				t.Errorf("/readyz now probes postgres (%v): §16 records this dependency as a MASKED "+
-					"degradation precisely because readiness ignores it, and gating on it would drain "+
-					"every router pod during an outage the router is built to serve through", body)
-			}
+		_, body := readyz(t, app)
+		if _, named := body["kafka"]; !named {
+			// Without this, an empty body would satisfy the check below by saying nothing at all: the
+			// readyz response omits `checks` entirely while draining, and would omit it too if the last
+			// probe were ever removed.
+			t.Fatalf("/readyz named no probe at all (%v): the assertion below would pass by observing "+
+				"nothing", body)
+		}
+		if _, named := body["postgres"]; named {
+			t.Errorf("/readyz now probes postgres (%v): §16 records this dependency as a MASKED "+
+				"degradation precisely because readiness ignores it, and gating on it would drain "+
+				"every router pod during an outage the router is built to serve through", body)
 		}
 
 		// Recovery, and the half a refusal alone would not establish: nothing latched. The republish loop
@@ -287,7 +295,7 @@ func waitResolves(t *testing.T, invalidate func(), resolve func() uuid.UUID, wan
 		if time.Now().After(deadline) {
 			t.Fatalf("the resolver never reached %s: %s", want, why)
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(300 * time.Millisecond)
 	}
 }
 

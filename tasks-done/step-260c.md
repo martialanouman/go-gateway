@@ -110,7 +110,7 @@ chemins que la section « Ce que step-260b a laissé » désigne ne sont pas ce 
   = 2 × 5 s = 10 s. Le porteur lent, lui, reçoit un `DeadlineExceeded` de pgx à
   `terminalCriticalTimeout`, que `translate` code en `ErrInternal`.
 - Et sur le chemin terminal, **personne ne lit le code** : `settle.Settler` échoue ouvert sur *toute*
-  erreur (`settle.go:116-121` et `:139-146`), `billing.Reaper` rejoue à la passe suivante sur *toute* erreur
+  erreur (`settle.go:116-121` et `:143-147`), `billing.Reaper` rejoue à la passe suivante sur *toute* erreur
   (`reaper.go:215-225`). Le « rejet définitif là où il faudrait un rejeu » que la fiche redoute
   **n'existe pas dans le code**.
 - `defaultSettleTimeout` n'a jamais eu besoin d'un proxy retardateur : `settle.WithTimeout`
@@ -209,6 +209,37 @@ faux (`bloom_last_reload_timestamp_seconds` existe — et, posée en milieu de c
 ne valait pas pour `smpp-server-svc`, qui n'a qu'une sonde ; et le « aucun conteneur neuf » était vrai
 des `cmd/` mais taisait le seul conteneur que la step ajoute, dans `internal/restapi`.
 
+### Le second tour, et le trou que le premier correctif venait d'ouvrir
+
+Le tour 2 a relu le correctif lui-même, et c'était justifié : **sa prémisse écrite était fausse.** Le
+commentaire disait « rien de ce qu'un client envoie ne peut faire échouer la lecture ». Or le codec ne
+valide rien — `system_id` est 15 octets arbitraires — et pgx envoie le paramètre en `text` : un
+`system_id` en UTF-8 invalide fait répondre `22021 invalid byte sequence` à PostgreSQL, un `PgError` et
+non un `ErrNoRows`, donc un `ESME_RSYSERR`. Le garde tout neuf **exemptait donc du compteur un chemin
+d'erreur déclenchable à volonté**, avec un aller-retour Postgres et une ligne de log par tentative.
+
+Corrigé à la racine plutôt qu'en élargissant le garde : un `system_id` qui n'est pas de l'UTF-8 valide
+ne peut nommer aucune ligne d'une base UTF-8, il est donc *exactement aussi inconnu* que n'importe quel
+autre, et `authorize` le refuse avant la requête — ce qui garde l'attentative dans le compteur.
+Vérifié rouge (`0x8`) avant correctif.
+
+Le tour 2 a aussi trouvé que **la garde du throttle ne gardait pas son propre câblage** : elle posait
+`Options.Throttle` sans jamais vérifier qu'il était appliqué, si bien qu'un `listenerOpt` ignoré
+l'aurait laissée verte — la faute que la step venait de nommer, reproduite un cran plus haut. Un
+contrôle positif (compteur semé au seuil, mot de passe **correct**, `ESME_RINVPASWD` attendu) la ferme ;
+mutation vue tomber en retirant l'application des options.
+
+Enfin, une course réelle : le troisième retarget était commité **avant** la coupure, et le flux de
+republications ajouté au tour 1 densifiait les rebuilds en vol, dont un pouvait lire la nouvelle cible
+et la swapper avant que le lien ne tombe. Il se commite désormais **après** la coupure — la voie durable
+passe par le pool sain de toute façon.
+
+**Une asymétrie voisine, constatée et laissée en l'état** : les `ESME_RBINDFAIL` d'`authorize` (compte
+suspendu, canal SMPP désactivé, mauvais type de bind) continuent d'alimenter le compteur, donc un ESME
+légitime d'un compte suspendu finit par s'entendre répondre `ESME_RINVPASWD`. C'est la même inversion,
+mais sur une condition que le client porte réellement, et marteler un identifiant désactivé *est* un
+signal de brute-force. Hors périmètre : le noter suffit.
+
 ## Definition of Done
 
 - [x] `make check` vert (87 paquets, 0 échec)
@@ -230,6 +261,10 @@ des `cmd/` mais taisait le seul conteneur que la step ajoute, dans `internal/res
 - [x] **un défaut de production corrigé**, trouvé par la revue : une panne Postgres alimentait le
       throttle anti-brute-force, qui bascule en `ESME_RINVPASWD` au-delà du seuil — la ligne §16 était
       fausse tant que le correctif n'était pas là (`TestAPostgresOutageNeverFeedsTheBindThrottle`)
+- [x] **un second défaut corrigé, ouvert par le premier correctif** (tour 2) : un `system_id` en UTF-8
+      invalide faisait répondre PostgreSQL `22021`, donc `ESME_RSYSERR`, donc un chemin d'erreur
+      déclenchable par le client et désormais exempt du compteur. Refusé avant la requête
+      (`TestAMalformedSystemIDIsAnAuthFailureNotAnOutage`)
 
 ## Hors périmètre
 

@@ -15,6 +15,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
+	"github.com/martialanouman/go-gateway/internal/bindthrottle"
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	"github.com/martialanouman/go-gateway/internal/credential"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
@@ -328,6 +329,9 @@ func (e *esme) bind(t *testing.T, mode smppsession.BindMode, systemID, password 
 	if err := e.conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
 		t.Fatalf("set bind read deadline: %v", err)
 	}
+	// And cleared on the way out: a deadline is a property of the CONNECTION, not of this read, so
+	// leaving it would hand unbind — which sets none of its own — a budget it never asked for.
+	defer func() { _ = e.conn.SetReadDeadline(time.Time{}) }()
 	resp, err := smpp.ReadPDU(e.conn)
 	if err != nil {
 		t.Fatalf("read bind resp: %v", err)
@@ -364,4 +368,59 @@ func eventuallyBind(t *testing.T, addr, systemID, password string) uint32 {
 		time.Sleep(20 * time.Millisecond)
 	}
 	return last
+}
+
+// TestAMalformedSystemIDIsAnAuthFailureNotAnOutage closes the hole a review of step-260c found in that
+// step's own fix.
+//
+// step-260c stopped ESME_RSYSERR from feeding the anti-brute-force throttle, on the stated grounds that
+// "nothing a client sends can make the credential lookup error". That was wrong. system_id arrives as a
+// C-Octet String and the codec validates nothing (internal/smpp/codec.go:180-197), so 15 arbitrary bytes
+// reach the query as a text parameter; PostgreSQL answers 22021 invalid byte sequence for encoding
+// "UTF8" — a PgError, not pgx.ErrNoRows. That surfaced as ESME_RSYSERR, and with the new guard it would
+// have escaped the throttle entirely: an error path a client can trigger at will, costing a round trip
+// and an unbounded Error log line each time, with no brake left on it.
+//
+// A system_id that is not valid UTF-8 cannot name a row in a UTF-8 database, so the right answer is the
+// one an unknown system_id already gets — which also keeps the attempt inside the counter.
+func TestAMalformedSystemIDIsAnAuthFailureNotAnOutage(t *testing.T) {
+	pool := pgtest.Pool(t)
+	rdb := redistest.Client(t)
+	registry := startRegistry(t, rdb)
+
+	throttle := bindthrottle.New(rdb, bindthrottle.Config{
+		MaxFailures: 50, // high: this test is about counting the attempt, not about blocking
+		Window:      time.Minute,
+		BackoffBase: time.Millisecond,
+		BackoffMax:  time.Millisecond,
+	})
+	addr := startListener(t, pool, registry, func(o *smppserver.Options) { o.Throttle = throttle })
+
+	// Invalid UTF-8, inside the 15-octet bound the codec enforces.
+	malformed := "esme-\xff\xfe"
+
+	e := dialESME(t, addr)
+	got := e.bind(t, smppsession.BindTransceiver, malformed, "bindpw12")
+	e.close()
+
+	if got == errs.StatusSysErr {
+		t.Fatalf("a malformed system_id answered %#x (ESME_RSYSERR): the lookup error reached the client "+
+			"as an infrastructure fault, which is both a lie — the database is healthy — and, since "+
+			"step-260c exempts ESME_RSYSERR from the anti-brute-force counter, a client-triggerable way "+
+			"to hammer the control plane with no brake at all", got)
+	}
+	if got != errs.StatusInvalidPasswd {
+		t.Fatalf("a malformed system_id answered %#x, want %#x (ESME_RINVPASWD): it cannot name a row in "+
+			"a UTF-8 database, so it is exactly as unknown as any other system_id that does not exist",
+			got, errs.StatusInvalidPasswd)
+	}
+
+	n, err := rdb.Get(context.Background(), "bindfail:{"+malformed+"}").Int()
+	if err != nil {
+		t.Fatalf("the attempt was not counted (%v): treating it as an auth failure is what puts the "+
+			"brake back on a path a client controls", err)
+	}
+	if n < 1 {
+		t.Errorf("bind failure counter = %d, want at least 1", n)
+	}
 }

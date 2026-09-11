@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9"
+
 	"github.com/martialanouman/go-gateway/internal/bindthrottle"
 	"github.com/martialanouman/go-gateway/internal/smppserver"
 
@@ -64,11 +66,13 @@ func TestBindFailsClosedWhenPostgresIsCut(t *testing.T) {
 
 	proxy.Cut()
 
-	// The cut severs THIS pool's link and nothing else — asserted, not assumed. A harness that took the
-	// shared container down instead would make every fail-closed assertion below pass for a reason that
-	// has nothing to do with the policy, and would wreck the sibling tests besides.
-	if err := seed.Ping(context.Background()); err != nil {
-		t.Fatalf("the uncut pool died with the cut one (%v): tcpproxy must sever one client, never the "+
+	// A regression guard, not a proof: tcpproxy only owns the connections it relays, so the uncut pool
+	// cannot die with the cut one unless someone rewrites pgtest to stop and start the shared container.
+	// It is here because that rewrite would make every assertion below pass for the wrong reason.
+	pingCtx, pingCancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer pingCancel()
+	if err := seed.Ping(pingCtx); err != nil {
+		t.Fatalf("the uncut pool died with the cut one (%v): a cut must sever one client, never the "+
 			"container the whole package shares", err)
 	}
 
@@ -127,13 +131,13 @@ func TestBindFailsClosedWhenPostgresIsCut(t *testing.T) {
 // TestAPostgresOutageNeverFeedsTheBindThrottle guards the half of the SMPP-bind failure policy that
 // the test above cannot see, and that a review of step-260c found the matrix about to state wrongly.
 //
-// authorize's ESME_RSYSERR is not the last word: onBind counts EVERY non-OK status as an
-// authentication failure (listener.go:190) and the anti-brute-force throttle is consulted BEFORE
-// authentication, refusing with ESME_RINVPASWD (listener.go:183). Production wires that throttle
-// unconditionally (cmd/smpp-server-svc/wiring.go:219,276) with SMPP_BIND_MAX_FAILURES defaulting to 5.
-// So without this guard, the sixth bind of an outage answers "your password is wrong" — the exact
-// signal the policy exists to avoid — and the sliding window holds the lockout open for as long as the
-// outage lasts, then past it.
+// authorize's ESME_RSYSERR was not the last word. onBind used to count EVERY non-OK status as an
+// authentication failure, and the anti-brute-force throttle is consulted BEFORE authentication,
+// refusing with ESME_RINVPASWD (listener.go:183). Production wires that throttle unconditionally
+// (cmd/smpp-server-svc/wiring.go:219,276) with SMPP_BIND_MAX_FAILURES defaulting to 5. So the sixth
+// bind of an outage answered "your password is wrong" — the exact signal the policy exists to avoid —
+// and the sliding window held the lockout open for as long as the outage lasted, then past it. The
+// exemption that fixes it is listener.go's `cmdStatus != errs.StatusSysErr`; this test is its guard.
 //
 // The spec settles which failures may count: §6.3 says "échecs d'auth comptés par system_id et IP" and
 // step-026 repeats it. A database that cannot answer is an infrastructure fault, not a failed
@@ -154,21 +158,38 @@ func TestAPostgresOutageNeverFeedsTheBindThrottle(t *testing.T) {
 		BackoffMax:  10 * time.Millisecond,
 	})
 
-	// The IP counter is keyed by source address, and every ESME in this package dials from 127.0.0.1
-	// against the SHARED Redis. A sibling test's failures would trip the threshold before ours and make
-	// this test pass for the wrong reason; the system_id counter needs no such care, seedBind minting a
-	// fresh one per run.
-	if err := rdb.Del(context.Background(), "bindfail:ip:{127.0.0.1}").Err(); err != nil {
-		t.Fatalf("clear the shared ip failure counter: %v", err)
-	}
+	clearSharedIPCounter(t, rdb)
 
 	cutPool, proxy := pgtest.Cuttable(t)
 	addr := startListener(t, cutPool, registry, func(o *smppserver.Options) { o.Throttle = throttle })
 
 	sid, pw, _ := seedBind(t, seed, seedOpts{maxSessions: 3, bindType: cp.BindTRX})
 
-	// Control, link up: the bind is accepted, which also proves the throttle is not blocking anything
-	// before the outage even starts.
+	// Control A: the throttle really is wired to this listener, and it really can block. Without it the
+	// whole test would keep passing on a Listener whose Throttle stayed nil — which is exactly how the
+	// defect this test guards got through in the first place. Seeding the counter directly (rather than
+	// through failed binds) keeps the control independent of what the outage does.
+	for i := 0; i < maxFailures; i++ {
+		if err := throttle.RecordFailure(context.Background(), sid, "127.0.0.1"); err != nil {
+			t.Fatalf("seed the throttle counter: %v", err)
+		}
+	}
+	blocked := dialESME(t, addr)
+	if got := blocked.bind(t, smppsession.BindTransceiver, sid, pw); got != errs.StatusInvalidPasswd {
+		t.Fatalf("with the counter at the threshold a CORRECT password = %#x, want %#x "+
+			"(ESME_RINVPASWD): the throttle is not blocking, so this listener is not the one production "+
+			"builds and the outage assertions below would prove nothing", got, errs.StatusInvalidPasswd)
+	}
+	blocked.close()
+
+	// Clear both counters — the throttle's own reset only clears the system_id one — and prove the
+	// listener is not latched, so any later refusal can only be the outage.
+	if err := throttle.Reset(context.Background(), sid); err != nil {
+		t.Fatalf("reset the throttle counter: %v", err)
+	}
+	clearSharedIPCounter(t, rdb)
+
+	// Control B, link up: the bind is accepted again.
 	accepted := dialESME(t, addr)
 	if got := accepted.bind(t, smppsession.BindTransceiver, sid, pw); got != smpp.StatusOK {
 		t.Fatalf("with postgres up the bind status = %#x, want ESME_ROK — the control failed", got)
@@ -209,9 +230,21 @@ func TestAPostgresOutageNeverFeedsTheBindThrottle(t *testing.T) {
 		}
 		after.close()
 		if time.Now().After(deadline) {
-			t.Fatalf("after postgres came back the bind status = %#x, want ESME_ROK: a lockout earned "+
-				"during the outage is still refusing binds the database can now answer", status)
+			t.Fatalf("after postgres came back the bind status = %#x, want ESME_ROK: the listener never "+
+				"recovered — either the pool is still handing out connections the cut killed, or the "+
+				"outage left a lockout behind", status)
 		}
 		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// clearSharedIPCounter zeroes the anti-brute-force counter keyed on the loopback address. Every ESME in
+// this package dials from 127.0.0.1 against the SHARED Redis, and the throttle blocks on the LARGER of
+// the system_id and IP counters, so a sibling test's failures would trip the threshold before this
+// test's own do. The system_id counter needs no such care: seedBind mints a fresh one per run.
+func clearSharedIPCounter(t *testing.T, rdb *redis.Client) {
+	t.Helper()
+	if err := rdb.Del(t.Context(), "bindfail:ip:{127.0.0.1}").Err(); err != nil {
+		t.Fatalf("clear the shared ip failure counter: %v", err)
 	}
 }

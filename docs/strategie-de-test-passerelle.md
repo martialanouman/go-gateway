@@ -155,8 +155,9 @@ quitte le load balancer ». `router-svc` est le cas inverse : l'assertion utile 
 **pas** sondé du tout. Le commentaire écrit pour le premier a d'abord été copié sur le second, où il
 était faux — une règle tirée d'un seul cas.
 
-**Le coût en conteneurs se compte, il ne se suppose pas.** Les quatre paquets `cmd/` et
-`internal/smppserver` démarraient déjà Postgres et Redis : zéro conteneur neuf. `internal/restapi`, lui,
+**Le coût en conteneurs se compte, il ne se suppose pas.** Les trois paquets `cmd/` touchés
+(`router-svc`, `rest-api-svc`, `smpp-server-svc`) et `internal/smppserver` démarraient déjà Postgres et
+Redis : zéro conteneur neuf. `internal/restapi`, lui,
 était **100 % doublures** et gagne un Postgres — le seul conteneur que cette step ajoute au dépôt. Aucun
 Redpanda ni ClickHouse de plus, donc le risque `fs.aio-max-nr` (step-250c) est inchangé ; ce qui change
 est qu'`internal/restapi` dépend désormais de Docker.

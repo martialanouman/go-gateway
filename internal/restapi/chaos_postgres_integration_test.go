@@ -50,11 +50,13 @@ func TestAPIKeyAuthFailsClosedWhenPostgresIsCut(t *testing.T) {
 
 	proxy.Cut()
 
-	// The cut severs THIS pool's link and nothing else — asserted, not assumed. A harness that took the
-	// shared container down instead would make every assertion below pass for a reason that has nothing
-	// to do with the policy.
-	if err := seed.Ping(context.Background()); err != nil {
-		t.Fatalf("the uncut pool died with the cut one (%v): tcpproxy must sever one client, never the "+
+	// A regression guard, not a proof: tcpproxy only owns the connections it relays, so the uncut pool
+	// cannot die with the cut one unless someone rewrites pgtest to stop and start the shared container.
+	// It is here because that rewrite would make every assertion below pass for the wrong reason.
+	pingCtx, pingCancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer pingCancel()
+	if err := seed.Ping(pingCtx); err != nil {
+		t.Fatalf("the uncut pool died with the cut one (%v): a cut must sever one client, never the "+
 			"container the whole package shares", err)
 	}
 

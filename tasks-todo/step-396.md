@@ -25,7 +25,7 @@ décrits**, et c'est pour ça que cette fiche existe séparément plutôt que d'
 - **Le « rejet définitif là où il faudrait un rejeu » n'existe pas sur ce chemin.** La règle « erreur
   codée ⇒ offset commité ⇒ message enterré » est celle de `router.handle`, sur la voie de la
   **réserve**. Sur la voie **terminale**, personne ne lit le code : `settle.Settler` échoue ouvert sur
-  *toute* erreur (`settle.go:116-121` et `:139-146`) et `billing.Reaper` rejoue à la passe suivante sur *toute* erreur
+  *toute* erreur (`settle.go:116-121` et `:143-147`) et `billing.Reaper` rejoue à la passe suivante sur *toute* erreur
   (`reaper.go:215-225`).
 - **`defaultSettleTimeout` n'a jamais eu besoin d'un proxy retardateur.** `settle.WithTimeout`
   (`settle.go:63`) est une option publique : un faux client gRPC qui dort au-delà du délai reproduit

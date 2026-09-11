@@ -99,7 +99,7 @@ func restReadyzCheck(t *testing.T, app *restAPIApp) string {
 
 	deadline := time.Now().Add(30 * time.Second)
 	for {
-		_, checks, err := getReadyzChecks(t, app.ops.Addr())
+		checks, err := getReadyzChecks(t, app.ops.Addr())
 		if err == nil {
 			got, named := checks["postgres"]
 			if !named {
@@ -116,7 +116,7 @@ func restReadyzCheck(t *testing.T, app *restAPIApp) string {
 	}
 }
 
-func getReadyzChecks(t *testing.T, addr string) (int, map[string]string, error) {
+func getReadyzChecks(t *testing.T, addr string) (map[string]string, error) {
 	t.Helper()
 
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
@@ -124,11 +124,11 @@ func getReadyzChecks(t *testing.T, addr string) (int, map[string]string, error) 
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/readyz", nil)
 	if err != nil {
-		return 0, nil, err
+		return nil, err
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return 0, nil, err
+		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -136,7 +136,7 @@ func getReadyzChecks(t *testing.T, addr string) (int, map[string]string, error) 
 		Checks map[string]string `json:"checks"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
-		return 0, nil, err
+		return nil, err
 	}
-	return resp.StatusCode, decoded.Checks, nil
+	return decoded.Checks, nil
 }

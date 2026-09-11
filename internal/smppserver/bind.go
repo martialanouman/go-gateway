@@ -3,6 +3,7 @@ package smppserver
 import (
 	"context"
 	"time"
+	"unicode/utf8"
 
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
@@ -32,6 +33,17 @@ import (
 // of malformed hashes. Past the deadline the previous secret is simply never tried again. viaGrace lets
 // the caller arm the pod-local cutoff that closes this session when the grace window ends (step-032).
 func (l *Listener) authorize(ctx context.Context, req session.BindRequest) (cred cp.BindCredential, cmdStatus uint32, viaGrace bool) {
+	// A system_id that is not valid UTF-8 never reaches the query. The codec validates nothing —
+	// system_id is 15 arbitrary octets (internal/smpp/codec.go) — and pgx sends it as a text parameter,
+	// so PostgreSQL answers 22021 invalid byte sequence: a PgError, not ErrNoRows, which would surface
+	// below as ESME_RSYSERR. That would be a lie (the database is healthy), and since an outage status
+	// is deliberately exempt from the anti-brute-force counter it would hand a client an error path it
+	// controls with no brake on it. Such a system_id cannot name a row in a UTF-8 database, so it is
+	// exactly as unknown as any other, and answering so keeps the attempt inside the counter.
+	if !utf8.ValidString(req.SystemID) {
+		return cp.BindCredential{}, errs.StatusInvalidPasswd, false
+	}
+
 	cred, found, err := l.creds.BindCredentialBySystemID(ctx, req.SystemID)
 	if err != nil {
 		l.logger.ErrorContext(ctx, "smpp bind: credential lookup failed", "err", err)

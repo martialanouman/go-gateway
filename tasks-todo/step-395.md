@@ -25,7 +25,7 @@ une action d'exploitant ou d'admin. Si la panne dure plus longtemps que le silen
 ne regarde que Kafka, aucune métrique d'**échec** de rebuild n'existe, et la seule trace est la ligne
 `Error` ci-dessus, écrite une fois. La seule instrumentation voisine,
 `bloom_last_reload_timestamp_seconds{filter}` (`cmd/router-svc/wiring.go:660-670`), est pire que rien
-sur ce point : elle ne couvre que les deux Bloom et se pose **en milieu de closure** (`:720`, `:725`),
+sur ce point : elle ne couvre que les deux Bloom et se pose **en milieu de closure** (`:721`, `:726`),
 donc elle avance même quand le rebuild échoue plus loin — elle affiche « frais » sur un rebuild à
 moitié raté.
 
