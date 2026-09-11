@@ -98,11 +98,15 @@ func seedAPIKey(t *testing.T, pool *pgxpool.Pool) string {
 	t.Helper()
 	ctx := context.Background()
 
-	customer, err := postgres.NewCustomerRepo(pool).Create(ctx, cp.NewCustomer{Name: "ChaosCo-" + uuid.NewString()})
+	customer, err := postgres.NewCustomerRepo(pool).Create(ctx, cp.NewCustomer{
+		Name: "ChaosCo-" + uuid.NewString(),
+	})
 	if err != nil {
 		t.Fatalf("create customer: %v", err)
 	}
-	account, err := postgres.NewAccountRepo(pool).Create(ctx, cp.NewAccount{CustomerID: customer.ID, Name: "rest-" + uuid.NewString()})
+	account, err := postgres.NewAccountRepo(pool).Create(ctx, cp.NewAccount{
+		CustomerID: customer.ID, Name: "rest-" + uuid.NewString(),
+	})
 	if err != nil {
 		t.Fatalf("create account: %v", err)
 	}
