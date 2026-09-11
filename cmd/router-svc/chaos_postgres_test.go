@@ -53,10 +53,16 @@ func TestRouterConfigSnapshotsDegradeSilentlyWhenPostgresIsCut(t *testing.T) {
 			if err != nil {
 				t.Fatalf("create connector %s: %v", name, err)
 			}
-			t.Cleanup(func() { _ = connectors.Delete(context.Background(), c.ID) })
 			return c
 		}
 		first, second, third := newConnector("260c-1"), newConnector("260c-2"), newConnector("260c-3")
+		t.Cleanup(func() {
+			// Background, not ctx: the test's context is cancelled by the time cleanups run, and the
+			// shared database would keep these rows for every sibling run.
+			for _, id := range []uuid.UUID{first.ID, second.ID, third.ID} {
+				_ = connectors.Delete(context.Background(), id)
+			}
+		})
 
 		// The snapshot ranks every route of the SHARED database (longest prefix, then priority): a prefix
 		// unique to this run keeps a sibling test's route from outranking ours and answering for it.

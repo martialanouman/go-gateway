@@ -1,6 +1,6 @@
 # step-260c — Les trois politiques PostgreSQL hors facturation
 
-> **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
+> **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** LIVRÉE (2026-09-11)
 > **Dépend de :** step-260b · **Bloque :** —
 
 ## Pourquoi cette fiche existe
@@ -177,11 +177,22 @@ Postgres et Redis dans leurs tests de câblage.
 
 ## Definition of Done
 
-- [ ] `make check` vert
-- [ ] les 3 politiques prouvées sur un Postgres **réellement coupé**, chacune dans son paquet
-- [ ] pour chacune, la mutation « la coupure ne compte pas » (neutraliser `Cut()`) vue tomber
-- [ ] §16 gagne les 3 lignes — **écrites après le test, jamais avant**
-- [ ] la question du Postgres lent tranchée : soit couverte, soit fichée avec son coût
+- [x] `make check` vert (87 paquets, 0 échec)
+- [x] les 3 politiques prouvées sur un Postgres **réellement coupé**, chacune dans son paquet —
+      `TestBindFailsClosedWhenPostgresIsCut` (`internal/smppserver`),
+      `TestAPIKeyAuthFailsClosedWhenPostgresIsCut` (`internal/restapi`),
+      `TestRouterConfigSnapshotsDegradeSilentlyWhenPostgresIsCut` (`cmd/router-svc`, deux sous-tests :
+      le dégradé masqué et la boucle de retry du boot). Plus la readiness des deux services du chemin
+      chaud : `TestRestAPIReadinessGatesOnPostgres`, `TestSMPPServerReadinessGatesOnPostgres`
+- [x] pour chacune, la mutation « la coupure ne compte pas » (neutraliser `Cut()`) vue tomber — et
+      une seconde par test, sur la fixture : le consommateur repointé sur le pool sain pour les trois
+      premières, `postgres.PingCheck` retiré du câblage pour les deux de readiness
+- [x] §16 gagne les 3 lignes — écrites après les tests : `PostgreSQL (credentials de bind)`,
+      `PostgreSQL (clés API)`, `PostgreSQL (snapshots de config)`
+- [x] la question du Postgres lent tranchée : **fichée en step-396**, avec son coût et — surtout — la
+      prémisse corrigée, les deux chemins que cette fiche désignait n'étant pas ce qu'elle en disait
+- [x] deux trouvailles fichées : le watcher ne rejoue jamais un rebuild échoué (**step-395**), et la
+      moitié « fail-fast » du boot est déjà prouvée, donc citée plutôt que réécrite
 
 ## Hors périmètre
 

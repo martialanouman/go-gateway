@@ -131,10 +131,29 @@ quoi on a testé deux fois le même. Enfin, **compter les sites, pas les politiq
 envoi et la branche d'expiration — et n'en couvrir qu'un laisse l'autre sur un double, ce que la ligne
 §16 ne dit pas.
 
-Restent à couvrir : les **trois politiques PostgreSQL hors facturation** — auth de bind SMPP, clés API
-REST, snapshots du routeur (step-260c). Aucune n'a de ligne §16, et le `[MUST]` de §16 exige documentée
-**et** testée : on n'écrit pas la ligne avant d'avoir le test, sous peine de refaire la dette que
-step-250d vient de solder.
+**Les trois politiques PostgreSQL hors facturation sont prouvées (step-260c)** — auth de bind SMPP,
+clés API REST, snapshots du routeur — et §16 a reçu ses trois lignes *après* les tests. Trois règles
+s'en dégagent, qui prolongent celles de step-250d.
+
+D'abord, **le test va là où la politique se décide, pas là où elle se lit**. Le log-et-garde du
+snapshot périmé s'écrit dans `internal/config`, mais ce que §16 affirme — *les routes restent
+résolvables, ni `nil` ni vides* — se décide dans la closure de rebuild de `cmd/router-svc`. Un test
+dans `internal/config` aurait dû fabriquer sa propre closure : il aurait testé le doublage.
+
+Ensuite, **pour un dégradé, le contrôle doit prouver que le chemin nominal marche**. « Ça sert encore
+l'ancien » est vrai d'un hot reload qui n'a jamais fonctionné : c'est le rechargement précédent,
+observé lien debout jusqu'au snapshot servi, qui rend la coupure mesurable. Le pendant côté
+fail-closed est le **second camp** : un bind refusé pour mauvais mot de passe, une clé API inconnue —
+sans eux, « la panne n'a pas répondu `ESME_RINVPASWD` / 401 » n'affirme rien.
+
+Enfin, **la readiness fait partie de la politique** (plan §1.5), et son assertion porte sur la sonde
+**nommée**, pas sur le statut agrégé : les autres dépendances d'un `testConfig` sont à port fermé, si
+bien que `/readyz` est déjà 503 avant la moindre coupure. Assertion utile, et bien moins chère qu'un
+Redpanda de plus par paquet.
+
+Deux dettes ouvertes par cette step : le watcher **ne rejoue jamais** un rebuild échoué (step-395), et
+l'équivalence « Postgres lent ≡ Postgres coupé » reste non mesurée — `tcpproxy` ne sait que sévérer
+(step-396).
 
 ---
 

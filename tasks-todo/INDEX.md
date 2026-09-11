@@ -201,7 +201,7 @@ qu'on mesure un environnement représentatif.
       read-through, le lecteur peuple, l'admin invalide (ADR-0015)
 - [x] step-260 — Chaos : drain gracieux (unbind SMPP, offsets Kafka, retrait LB) ⛓ step-250
 - [x] step-260b — Failover Postgres : fail-closed sur les trois voies de la réserve, et le crédit fantôme du release ⛓ step-260
-- [ ] step-260c — Les trois politiques PostgreSQL hors facturation (bind SMPP, clés API REST, snapshots) ⛓ step-260b
+- [x] step-260c — Les trois politiques PostgreSQL hors facturation (bind SMPP, clés API REST, snapshots) ⛓ step-260b
 - [x] step-270 — Manifests deploy/ Kubernetes (Deployments, Services, HPA, PDB, probes) ⛓ step-260b
 - [x] step-270b — Images conteneur : Dockerfiles et publication GHCR ⛓ step-270
 - [x] step-270c — Le banc ne traverse pas l'étage L0 : le rendre mesurable (ratios, pas verdict)
@@ -264,6 +264,21 @@ perdaient, l'inverse du besoin. Au passage, le budget mémoire du filtre annonc�
 jalons (« ~1,2 Mo par million ») était **faux** : il correspondait à un taux de faux positifs de 0,01
 et non au 0,001 du code, soit 1,8 Mo réels.
 
+**step-260c a fermé les trois voies restantes, et corrigé sa propre fiche deux fois.** Le bind SMPP et
+l'auth REST sont des dépendances dures **sans aucun cache** : chaque bind et chaque requête
+authentifiée lisent le plan de contrôle, et comme toutes les répliques partagent la même base, la
+sonde `/readyz` les retire du load balancer **ensemble** — la dégradation devient une indisponibilité,
+choix assumé qui n'était écrit nulle part. La branche 500 de l'auth REST n'avait **aucun** test, pas
+même unitaire. Les deux corrections portent sur ce que la fiche affirmait : le boot du routeur n'est
+pas « retry backoff, le pod ne devient jamais ready » mais **deux** comportements distincts —
+`postgres.NewPool` pingue sans réessayer (CrashLoopBackOff), et `loadWithRetry` ne mord que si Postgres
+tombe *entre* l'ouverture du pool et le chargement des snapshots ; et les deux chemins « Postgres
+lent » qu'elle désignait ne sont pas ce qu'elle en disait — `ErrConflict` est le code du *waiter* à
+10 s, aucun appelant terminal ne lit le code, et `settle.WithTimeout` rend le proxy retardateur inutile
+pour le second. D'où **step-396** plutôt qu'un outillage payé pour rien. La step a par ailleurs trouvé
+que le watcher **ne rejoue jamais** un rebuild échoué — la config périmée n'a donc aucune borne tant
+qu'aucune invalidation n'arrive : **step-395**.
+
 ## Audit du 2026-09-03 — six constats vérifiés, sept PR
 L'audit en lecture seule du 2026-09-03 (commit `0f86158`) a rendu toutes les portes vertes et les quatre
 invariants tenus, et laissé six constats « Required » qu'aucune fiche ne portait. Ils s'insèrent ici,
@@ -307,7 +322,13 @@ l'ordre qu'on voudra sauf là où une dépendance le fixe.
 - [ ] step-390 — Réglages de compte créables mais non modifiables, et trois opérations orphelines ⛓ step-320
 - [ ] step-390b — `query_sm` résout l'état du message contre le CDR au lieu de répondre UNKNOWN (§6.22) — ouverte par step-260g, sans dépendance
 
-## La dette du tableau de bord, puis la porte
+## Les dettes ouvertes par step-260c, la dette du tableau de bord, puis la porte
+Les deux premières sont nées de step-260c. **step-395 est un défaut de production** — une config
+périmée sans borne — et se solde avant le go-live ; **step-396** est une question de mesure, pas une
+politique manquante, et ne bloque rien.
+- [ ] step-395 — Le watcher de config ne rejoue jamais un rebuild échoué (correctif + métrique)
+- [ ] step-396 — Le Postgres *lent* : mesurer l'équivalence « lent ≡ coupé » (et trancher d'abord
+      l'atteignabilité de la branche `ErrConflict`)
 - [ ] step-400 — `billing.events` durable : le BFF doit pouvoir détecter, pas seulement afficher
 - [ ] step-410 — **GO-LIVE** : dérouler la checklist de mise en production
       ⛓ step-260, step-270, step-280, step-290, step-310, step-320
