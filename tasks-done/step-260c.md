@@ -240,6 +240,34 @@ légitime d'un compte suspendu finit par s'entendre répondre `ESME_RINVPASWD`. 
 mais sur une condition que le client porte réellement, et marteler un identifiant désactivé *est* un
 signal de brute-force. Hors périmètre : le noter suffit.
 
+### Le troisième tour, et ce qu'il reste ouvert
+
+Aucun bloquant. Deux constats qui comptent, tous deux sur la **documentation du correctif plutôt que
+sur le correctif** — et c'est précisément la faute que cette step passe son temps à nommer :
+
+- **La prémisse réfutée était toujours écrite**, mot pour mot, dans le commentaire de `listener.go` et
+  dans celui du test. Elle était devenue vraie *par l'effet d'un garde situé dans un autre fichier*,
+  qu'elle ne citait pas : le prochain lecteur qui jugerait `utf8.ValidString` redondant l'aurait
+  supprimé en toute bonne foi, avec cette phrase pour lui donner raison. Les deux commentaires disent
+  désormais que l'exemption et le garde sont **un seul mécanisme**, à ne pas défaire séparément.
+- **`utf8.ValidString` n'est exhaustif que grâce au terminateur NUL du codec.** PostgreSQL refuse aussi
+  `U+0000` dans un paramètre `text`, que `utf8.ValidString` accepte ; le C-Octet String s'arrête au
+  premier NUL, donc le cas est inatteignable. Le commentaire disait « 15 octets arbitraires » et
+  cachait la dépendance ; il dit maintenant « non nuls », et pourquoi ça rend le garde complet.
+
+Deux gardes ajoutées au passage. Le test d'intégration ne prouvait le statut que si le compteur partagé
+du paquet n'était pas déjà au seuil — le throttle répond le même `ESME_RINVPASWD` que le garde — donc il
+le vide et **vérifie qu'il est vide**. Et un test unitaire (`TestAuthorizeNeverQueriesOnAMalformedSystemID`)
+pin l'ORDRE, que l'intégration ne pouvait qu'inférer : le dépôt n'est jamais interrogé. Mutation vue
+tomber sur les deux.
+
+**Une famille laissée ouverte, hors périmètre.** Le même codec ne valide rien pour `source_addr` et
+`destination_addr` (`internal/smppserver/submit.go`) : de l'UTF-8 invalide y devient silencieusement
+`U+FFFD` au marshal JSON, puis part en CDR. Ce n'est pas une inversion de politique de panne — rien ne
+se déguise en autre chose — donc ce n'est pas un défaut de production au sens de cette step. Mais un
+garde posé chez un seul appelant plutôt qu'au codec laisse la famille entière ouverte, et ça méritera
+sa fiche le jour où quelqu'un regardera la fidélité des adresses en CDR.
+
 ## Definition of Done
 
 - [x] `make check` vert (87 paquets, 0 échec)
@@ -261,6 +289,8 @@ signal de brute-force. Hors périmètre : le noter suffit.
 - [x] **un défaut de production corrigé**, trouvé par la revue : une panne Postgres alimentait le
       throttle anti-brute-force, qui bascule en `ESME_RINVPASWD` au-delà du seuil — la ligne §16 était
       fausse tant que le correctif n'était pas là (`TestAPostgresOutageNeverFeedsTheBindThrottle`)
+- [x] **trois tours de revue**, le dernier sans bloquant ; les deux premiers ont chacun trouvé un
+      défaut de production, le troisième deux commentaires qui auraient fait défaire le correctif
 - [x] **un second défaut corrigé, ouvert par le premier correctif** (tour 2) : un `system_id` en UTF-8
       invalide faisait répondre PostgreSQL `22021`, donc `ESME_RSYSERR`, donc un chemin d'erreur
       déclenchable par le client et désormais exempt du compteur. Refusé avant la requête

@@ -345,6 +345,12 @@ func (e *esme) unbind(t *testing.T) {
 	if err := smpp.WritePDU(e.conn, smpp.PDU{Sequence: e.seq, Body: &smpp.Unbind{}}); err != nil {
 		t.Fatalf("write unbind: %v", err)
 	}
+	// Its own budget, like every other read in this package: bind clears the deadline it set, so
+	// inheriting one is no longer an option — and a server that never answers must fail here by name,
+	// not by hanging the package until the go test timeout.
+	if err := e.conn.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		t.Fatalf("set unbind read deadline: %v", err)
+	}
 	if _, err := smpp.ReadPDU(e.conn); err != nil {
 		t.Fatalf("read unbind resp: %v", err)
 	}
@@ -388,13 +394,23 @@ func TestAMalformedSystemIDIsAnAuthFailureNotAnOutage(t *testing.T) {
 	rdb := redistest.Client(t)
 	registry := startRegistry(t, rdb)
 
+	const maxFailures = 3
 	throttle := bindthrottle.New(rdb, bindthrottle.Config{
-		MaxFailures: 50, // high: this test is about counting the attempt, not about blocking
+		MaxFailures: maxFailures,
 		Window:      time.Minute,
 		BackoffBase: time.Millisecond,
 		BackoffMax:  time.Millisecond,
 	})
 	addr := startListener(t, pool, registry, func(o *smppserver.Options) { o.Throttle = throttle })
+
+	// The throttle answers ESME_RINVPASWD too, and it is consulted BEFORE authorize: if the counter
+	// shared by every ESME of this package were already at the threshold, the assertions below would
+	// pass without the guard existing at all. Clear it, then prove it really is clear.
+	clearSharedIPCounter(t, rdb)
+	if dec, err := throttle.Check(t.Context(), "unused", "127.0.0.1"); err != nil || dec.Blocked {
+		t.Fatalf("the throttle blocks before the test starts (dec=%+v, err=%v): every assertion below "+
+			"would then be measuring the throttle rather than the guard", dec, err)
+	}
 
 	// Invalid UTF-8, inside the 15-octet bound the codec enforces.
 	malformed := "esme-\xff\xfe"
@@ -415,12 +431,8 @@ func TestAMalformedSystemIDIsAnAuthFailureNotAnOutage(t *testing.T) {
 			got, errs.StatusInvalidPasswd)
 	}
 
-	n, err := rdb.Get(context.Background(), "bindfail:{"+malformed+"}").Int()
-	if err != nil {
+	if _, err := rdb.Get(t.Context(), "bindfail:{"+malformed+"}").Int(); err != nil {
 		t.Fatalf("the attempt was not counted (%v): treating it as an auth failure is what puts the "+
 			"brake back on a path a client controls", err)
-	}
-	if n < 1 {
-		t.Errorf("bind failure counter = %d, want at least 1", n)
 	}
 }

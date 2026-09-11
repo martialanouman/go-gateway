@@ -131,8 +131,9 @@ func TestBindFailsClosedWhenPostgresIsCut(t *testing.T) {
 // TestAPostgresOutageNeverFeedsTheBindThrottle guards the half of the SMPP-bind failure policy that
 // the test above cannot see, and that a review of step-260c found the matrix about to state wrongly.
 //
-// authorize's ESME_RSYSERR was not the last word. onBind used to count EVERY non-OK status as an
-// authentication failure, and the anti-brute-force throttle is consulted BEFORE authentication,
+// authorize's ESME_RSYSERR was not the last word. onBind used to count every status authorize
+// rejected — ESME_RSYSERR included; the registry's own refusals never counted — as an authentication
+// failure, and the anti-brute-force throttle is consulted BEFORE authentication,
 // refusing with ESME_RINVPASWD (listener.go:183). Production wires that throttle unconditionally
 // (cmd/smpp-server-svc/wiring.go:219,276) with SMPP_BIND_MAX_FAILURES defaulting to 5. So the sixth
 // bind of an outage answered "your password is wrong" — the exact signal the policy exists to avoid —
@@ -170,7 +171,7 @@ func TestAPostgresOutageNeverFeedsTheBindThrottle(t *testing.T) {
 	// defect this test guards got through in the first place. Seeding the counter directly (rather than
 	// through failed binds) keeps the control independent of what the outage does.
 	for i := 0; i < maxFailures; i++ {
-		if err := throttle.RecordFailure(context.Background(), sid, "127.0.0.1"); err != nil {
+		if err := throttle.RecordFailure(t.Context(), sid, "127.0.0.1"); err != nil {
 			t.Fatalf("seed the throttle counter: %v", err)
 		}
 	}
@@ -184,7 +185,7 @@ func TestAPostgresOutageNeverFeedsTheBindThrottle(t *testing.T) {
 
 	// Clear both counters — the throttle's own reset only clears the system_id one — and prove the
 	// listener is not latched, so any later refusal can only be the outage.
-	if err := throttle.Reset(context.Background(), sid); err != nil {
+	if err := throttle.Reset(t.Context(), sid); err != nil {
 		t.Fatalf("reset the throttle counter: %v", err)
 	}
 	clearSharedIPCounter(t, rdb)

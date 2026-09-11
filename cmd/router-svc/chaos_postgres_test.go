@@ -160,8 +160,17 @@ func TestRouterConfigSnapshotsDegradeSilentlyWhenPostgresIsCut(t *testing.T) {
 		// Wait for the evidence rather than for a duration: the Watcher coalesces for 250 ms and a
 		// loaded CI can take much longer than a sleep would allow for.
 		deadline := time.Now().Add(20 * time.Second)
-		for !strings.Contains(strings.TrimPrefix(logs.String(), before),
-			"config watcher: rebuild failed; keeping current state") {
+		outageLog := func() string {
+			// Explicit rather than TrimPrefix: if the buffer ever stopped growing monotonically, TrimPrefix
+			// would quietly return the WHOLE log — control era included — and the wait below would
+			// succeed on a line written before the cut. Failing loudly is the only safe way to be wrong.
+			now := logs.String()
+			if !strings.HasPrefix(now, before) {
+				t.Fatalf("the log buffer is no longer append-only, so the outage window cannot be isolated")
+			}
+			return now[len(before):]
+		}
+		for !strings.Contains(outageLog(), "config watcher: rebuild failed; keeping current state") {
 			invalidate()
 			if time.Now().After(deadline) {
 				t.Fatal("no failed-rebuild log line after the cut: this log is the ONLY signal a stale " +

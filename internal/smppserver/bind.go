@@ -33,13 +33,21 @@ import (
 // of malformed hashes. Past the deadline the previous secret is simply never tried again. viaGrace lets
 // the caller arm the pod-local cutoff that closes this session when the grace window ends (step-032).
 func (l *Listener) authorize(ctx context.Context, req session.BindRequest) (cred cp.BindCredential, cmdStatus uint32, viaGrace bool) {
-	// A system_id that is not valid UTF-8 never reaches the query. The codec validates nothing —
-	// system_id is 15 arbitrary octets (internal/smpp/codec.go) — and pgx sends it as a text parameter,
-	// so PostgreSQL answers 22021 invalid byte sequence: a PgError, not ErrNoRows, which would surface
-	// below as ESME_RSYSERR. That would be a lie (the database is healthy), and since an outage status
-	// is deliberately exempt from the anti-brute-force counter it would hand a client an error path it
-	// controls with no brake on it. Such a system_id cannot name a row in a UTF-8 database, so it is
-	// exactly as unknown as any other, and answering so keeps the attempt inside the counter.
+	// A system_id that is not valid UTF-8 never reaches the query. The codec validates nothing — it
+	// reads up to 15 arbitrary NON-NUL octets and stops at the terminator (internal/smpp/codec.go) —
+	// and pgx sends the result as a text parameter, so PostgreSQL answers 22021 invalid byte sequence:
+	// a PgError, not ErrNoRows, which would surface below as ESME_RSYSERR. That would be a lie (the
+	// database is healthy), and since an outage status is deliberately exempt from the anti-brute-force
+	// counter (listener.go) it would hand a client an error path it controls with no brake on it.
+	//
+	// utf8.ValidString is exhaustive here only because of that NUL terminator: PostgreSQL rejects U+0000
+	// in a text parameter too, and utf8.ValidString accepts it. Everything else it rejects — overlongs,
+	// UTF-8-encoded surrogates, code points past U+10FFFF — is exactly what pg_utf8_islegal rejects.
+	//
+	// Such a system_id cannot name a row in a UTF-8 database, so it is exactly as unknown as any other,
+	// and answering so keeps the attempt inside the counter. It also keeps the registry safe by
+	// construction rather than by luck: a proto3 string field cannot carry invalid UTF-8, and the bind
+	// that would build one never gets past here.
 	if !utf8.ValidString(req.SystemID) {
 		return cp.BindCredential{}, errs.StatusInvalidPasswd, false
 	}

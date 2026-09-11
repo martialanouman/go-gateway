@@ -193,8 +193,13 @@ func (l *Listener) onBind(ctx context.Context, st *connState, clientIP string, o
 			// credentials at all. Worse, counting it inverts the failure policy: past the threshold
 			// throttleBlocks refuses with ESME_RINVPASWD, so a PostgreSQL outage would start telling
 			// every ESME its secret is wrong — the one signal the policy exists to avoid — and the
-			// sliding window would hold that lockout open past the outage. Nothing a client sends can
-			// make the lookup error, so the throttle loses no signal it could have used.
+			// sliding window would hold that lockout open past the outage.
+			//
+			// This exemption is only safe because authorize refuses a malformed system_id BEFORE it can
+			// reach the query (bind.go). Without that guard, ESME_RSYSERR would be client-triggerable —
+			// PostgreSQL answers 22021 on an invalid UTF-8 text parameter — and exempting it here would
+			// hand an attacker an unthrottled path. The two changes are one mechanism; do not remove
+			// either on its own.
 			if cmdStatus != errs.StatusSysErr {
 				l.recordBindFailure(bctx, req.SystemID, clientIP)
 			}

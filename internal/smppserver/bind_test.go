@@ -344,3 +344,52 @@ func mutate(c cp.BindCredential, fn func(*cp.BindCredential)) cp.BindCredential 
 	fn(&c)
 	return c
 }
+
+// countingStore records whether the credential lookup was reached at all, which is the property the
+// malformed-system_id guard is really about: the statuses it produces are indistinguishable from an
+// unknown system_id, so only the absence of the call proves the guard runs BEFORE the query.
+type countingStore struct {
+	fakeStore
+	calls int
+}
+
+func (c *countingStore) BindCredentialBySystemID(ctx context.Context, sid string) (cp.BindCredential, bool, error) {
+	c.calls++
+	return c.fakeStore.BindCredentialBySystemID(ctx, sid)
+}
+
+// TestAuthorizeNeverQueriesOnAMalformedSystemID pins the ORDER, which the integration test can only
+// infer. A system_id that is not valid UTF-8 must be refused before the repository is asked: pgx would
+// send it as a text parameter and PostgreSQL would answer 22021, which authorize maps to
+// ESME_RSYSERR — a status deliberately exempt from the anti-brute-force counter (listener.go), so a
+// client would hold an unthrottled way to make the gateway hit its control plane.
+func TestAuthorizeNeverQueriesOnAMalformedSystemID(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		systemID string
+		wantCall bool
+	}{
+		{"invalid utf-8 is refused before the query", "esme-\xff\xfe", false},
+		{"a lone continuation byte too", "\x80esme", false},
+		{"valid non-ascii utf-8 still reaches the store", "esmé-ok", true},
+		{"plain ascii reaches the store", "esme-ok", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &countingStore{fakeStore: fakeStore{found: false}}
+			l := New(store, nil, nil, Options{}, discardLog())
+
+			_, cmdStatus, _ := l.authorize(context.Background(), session.BindRequest{
+				SystemID: tc.systemID, Password: testPassword,
+			})
+
+			if cmdStatus != errs.StatusInvalidPasswd {
+				t.Errorf("status = %#x, want %#x (ESME_RINVPASWD): a system_id that names no row must "+
+					"answer the same whether it is malformed or merely unknown, or the answer becomes an "+
+					"oracle", cmdStatus, errs.StatusInvalidPasswd)
+			}
+			if got := store.calls > 0; got != tc.wantCall {
+				t.Errorf("credential lookup reached = %v, want %v", got, tc.wantCall)
+			}
+		})
+	}
+}
