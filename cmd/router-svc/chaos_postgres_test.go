@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"io"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -99,13 +98,21 @@ func TestRouterConfigSnapshotsDegradeSilentlyWhenPostgresIsCut(t *testing.T) {
 		if err != nil {
 			t.Fatalf("newRouterApp: %v", err)
 		}
-		defer app.close()
 
-		// newRouterApp builds the Watcher but does not run it — only main.go supervises it — so the test
-		// plays the supervisor, and gives the Redis SUBSCRIBE a beat to register.
+		// newRouterApp builds the Watcher and the ops server but runs neither — only main.go supervises
+		// them — so the test plays the supervisor for both.
 		watcherDone := make(chan error, 1)
 		go func() { watcherDone <- app.watcher.Run(ctx) }()
-		time.Sleep(200 * time.Millisecond)
+		opsDone := make(chan struct{})
+		go func() { defer close(opsDone); _ = app.ops.Run(ctx, time.Second) }()
+		// Release in dependency order: stop the goroutines and JOIN them before closing what they read,
+		// or the Watcher can run a rebuild against a pool app.close() has already shut.
+		t.Cleanup(func() {
+			cancel()
+			<-watcherDone
+			<-opsDone
+			app.close()
+		})
 
 		pub := redisstore.NewPubSubPublisher(rdb)
 		invalidate := func() {
@@ -134,19 +141,33 @@ func TestRouterConfigSnapshotsDegradeSilentlyWhenPostgresIsCut(t *testing.T) {
 		// does reach the served snapshot. Without it, "still serving the old one" would hold just as well
 		// against a hot reload that never worked at all.
 		retarget(second.ID)
-		invalidate()
-		waitResolves(t, resolved, second.ID, "the hot reload never reached the served snapshot with "+
-			"postgres up, so the outage assertion below would prove nothing")
+		waitResolves(t, invalidate, resolved, second.ID, "the hot reload never reached the served "+
+			"snapshot with postgres up, so the outage assertion below would prove nothing")
 
 		// The outage. A third retarget is committed durably, then the link drops before the rebuild can
 		// read it.
 		retarget(third.ID)
-		proxy.Cut()
-		invalidate()
 
-		// Past the coalescing window plus a rebuild's worth of slack: whatever the Watcher was going to
-		// do, it has done.
-		time.Sleep(2 * time.Second)
+		// Everything the log has said so far is the control's business. Only the suffix written AFTER
+		// the cut can testify about the cut — and the distinction is not pedantic here: the rebuild
+		// closure swaps the routes BEFORE reloading the Blooms, the scripts, the credit and the content
+		// policy, so a control rebuild can perfectly well have reached its route swap and then failed
+		// further down, leaving this exact line in the buffer already.
+		mark := len(logs.String())
+		proxy.Cut()
+
+		// Wait for the evidence rather than for a duration: the Watcher coalesces for 250 ms and a
+		// loaded CI can take much longer than a sleep would allow for.
+		deadline := time.Now().Add(20 * time.Second)
+		for !strings.Contains(logs.String()[mark:], "config watcher: rebuild failed; keeping current state") {
+			invalidate()
+			if time.Now().After(deadline) {
+				t.Fatal("no failed-rebuild log line after the cut: this log is the ONLY signal a stale " +
+					"snapshot produces — /readyz stays 200 and no metric of the route snapshot moves — so " +
+					"losing it makes the degradation completely invisible")
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
 
 		if got := resolved(); got != second.ID {
 			t.Errorf("with postgres cut Resolve(%s) = %s, want %s (the last successfully built "+
@@ -160,10 +181,21 @@ func TestRouterConfigSnapshotsDegradeSilentlyWhenPostgresIsCut(t *testing.T) {
 				"but working snapshot with it", err)
 		default:
 		}
-		if !strings.Contains(logs.String(), "config watcher: rebuild failed; keeping current state") {
-			t.Error("the failed rebuild left no log line: this log is the ONLY signal a stale snapshot " +
-				"produces — /readyz stays 200 and no metric moves — so losing it makes the degradation " +
-				"completely invisible")
+
+		// The other half of "invisible", and the half a future edit is most likely to break: readiness
+		// does NOT notice. Adding postgres.PingCheck to the router's ops server would look like an
+		// improvement and would drain every router pod during an outage it is designed to serve
+		// through — the mirror image of the guard chaos_test.go keeps for Redis.
+		//
+		// The assertion is on the absence of the probe, not on a 200: Kafka sits at a closed port in
+		// testConfig, so the aggregate is 503 for a reason that has nothing to do with this outage.
+		// That Kafka DOES gate the router's readiness is pinned next door, in chaos_test.go.
+		if _, body := readyz(t, app); len(body) > 0 {
+			if _, named := body["postgres"]; named {
+				t.Errorf("/readyz now probes postgres (%v): §16 records this dependency as a MASKED "+
+					"degradation precisely because readiness ignores it, and gating on it would drain "+
+					"every router pod during an outage the router is built to serve through", body)
+			}
 		}
 
 		// Recovery, and the half a refusal alone would not establish: nothing latched. The republish loop
@@ -171,18 +203,7 @@ func TestRouterConfigSnapshotsDegradeSilentlyWhenPostgresIsCut(t *testing.T) {
 		// the pool is still handing out connections the cut killed, and NOTHING retries a failed rebuild
 		// on its own (step-395).
 		proxy.Resume()
-		deadline := time.Now().Add(20 * time.Second)
-		for {
-			invalidate()
-			if resolved() == third.ID {
-				break
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("after postgres came back Resolve(%s) never reached %s: the snapshot latched "+
-					"on the outage", dial, third.ID)
-			}
-			time.Sleep(300 * time.Millisecond)
-		}
+		waitResolves(t, invalidate, resolved, third.ID, "the snapshot latched on the outage")
 	})
 
 	t.Run("the boot snapshot load retries instead of giving up", func(t *testing.T) {
@@ -202,18 +223,31 @@ func TestRouterConfigSnapshotsDegradeSilentlyWhenPostgresIsCut(t *testing.T) {
 			err      error
 		}
 		done := make(chan result, 1)
+		// The logger is captured, not discarded: "it is still retrying" and "it is hung on the first
+		// attempt" are indistinguishable from the outside, and loadWithRetry's own per-attempt Warn is
+		// the only thing that tells them apart.
+		logs := &syncBuffer{}
 		go func() {
-			r, err := loadSnapshotWithRetry(ctx, postgres.NewRouteRepo(pool), silentLogger())
+			r, err := loadSnapshotWithRetry(ctx, postgres.NewRouteRepo(pool), slog.New(slog.NewTextHandler(logs, nil)))
 			done <- result{r, err}
 		}()
 
-		// The backoff runs 500 ms, 1 s, 2 s: by now several attempts have failed and been retried.
-		select {
-		case got := <-done:
-			t.Fatalf("loadSnapshotWithRetry returned (%v, %v) while postgres was cut: giving up here "+
-				"bricks a restarting pod on a transient outage, which is precisely what the retry exists "+
-				"to prevent", got.resolver, got.err)
-		case <-time.After(1500 * time.Millisecond):
+		// Wait for a SECOND attempt to have failed — the backoff runs 500 ms, 1 s, 2 s — rather than for
+		// a duration that would prove nothing about what happened during it.
+		deadline := time.Now().Add(20 * time.Second)
+		for !strings.Contains(logs.String(), "attempt=2") {
+			select {
+			case got := <-done:
+				t.Fatalf("loadSnapshotWithRetry returned (%v, %v) while postgres was cut: giving up here "+
+					"bricks a restarting pod on a transient outage, which is precisely what the retry "+
+					"exists to prevent", got.resolver, got.err)
+			default:
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("no second attempt was ever logged (log: %q): the first failure is not being "+
+					"retried at all, so the boot is hung rather than backing off", logs.String())
+			}
+			time.Sleep(50 * time.Millisecond)
 		}
 
 		proxy.Resume()
@@ -233,13 +267,20 @@ func TestRouterConfigSnapshotsDegradeSilentlyWhenPostgresIsCut(t *testing.T) {
 	})
 }
 
-// waitResolves polls resolve until it reports want, failing with why once the deadline passes. It
-// polls because a rebuild is asynchronous: the Watcher coalesces for 250 ms before it even starts.
-func waitResolves(t *testing.T, resolve func() uuid.UUID, want uuid.UUID, why string) {
+// waitResolves republishes the invalidation and polls resolve until it reports want, failing with why
+// once the deadline passes.
+//
+// It republishes on every pass rather than once up front, and that is not belt-and-braces: pub/sub has
+// no delivery guarantee, a notification published before the Watcher's SUBSCRIBE has registered is
+// simply gone, and NOTHING in the Watcher replays a missed or failed rebuild on its own (step-395). A
+// single publish would turn that into a 15-second hang ending in a misleading "the hot reload never
+// worked".
+func waitResolves(t *testing.T, invalidate func(), resolve func() uuid.UUID, want uuid.UUID, why string) {
 	t.Helper()
 
 	deadline := time.Now().Add(15 * time.Second)
 	for {
+		invalidate()
 		if got := resolve(); got == want {
 			return
 		}
@@ -268,5 +309,3 @@ func (b *syncBuffer) String() string {
 	defer b.mu.Unlock()
 	return b.buf.String()
 }
-
-var _ io.Writer = (*syncBuffer)(nil)

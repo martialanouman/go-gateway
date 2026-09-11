@@ -23,11 +23,13 @@ import (
 // cannot authenticate anyone has nothing to offer), and exactly the kind of choice that should be
 // written down rather than rediscovered during an incident.
 //
-// The assertion is on the NAMED check rather than the aggregate status, and deliberately so: Kafka and
-// ClickHouse sit at closed ports in testConfig, so /readyz is already 503 before anything is cut.
-// Bringing them up would cost this package a Redpanda and a ClickHouse container for a fact the
-// per-dependency body states directly — that postgres is one of the checks readiness gates on, and
-// that it reports the outage rather than staying "ok" off some cached verdict.
+// The assertion is on the NAMED check rather than the aggregate status, and deliberately so: this
+// service probes three dependencies (wiring.go:187-191) and two of them — Kafka and ClickHouse — sit
+// at closed ports in testConfig, so /readyz is already 503 before anything is cut. Bringing them up
+// would cost this package a Redpanda and a ClickHouse container for a fact the per-dependency body
+// states directly: that postgres is one of the checks readiness gates on, and that it reports the
+// outage rather than staying "ok" off some cached verdict. (Its twin in cmd/smpp-server-svc can assert
+// the aggregate, Postgres being that service's only probe.)
 func TestRestAPIReadinessGatesOnPostgres(t *testing.T) {
 	cfg := testConfig()
 	cfg.OpsPort = 0 // Run picks the port; Addr() reports the bound one
@@ -97,7 +99,7 @@ func restReadyzCheck(t *testing.T, app *restAPIApp) string {
 
 	deadline := time.Now().Add(30 * time.Second)
 	for {
-		checks, err := getReadyzChecks(t, app.ops.Addr())
+		_, checks, err := getReadyzChecks(t, app.ops.Addr())
 		if err == nil {
 			got, named := checks["postgres"]
 			if !named {
@@ -114,7 +116,7 @@ func restReadyzCheck(t *testing.T, app *restAPIApp) string {
 	}
 }
 
-func getReadyzChecks(t *testing.T, addr string) (map[string]string, error) {
+func getReadyzChecks(t *testing.T, addr string) (int, map[string]string, error) {
 	t.Helper()
 
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
@@ -122,11 +124,11 @@ func getReadyzChecks(t *testing.T, addr string) (map[string]string, error) {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/readyz", nil)
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -134,7 +136,7 @@ func getReadyzChecks(t *testing.T, addr string) (map[string]string, error) {
 		Checks map[string]string `json:"checks"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
-		return nil, err
+		return 0, nil, err
 	}
-	return decoded.Checks, nil
+	return resp.StatusCode, decoded.Checks, nil
 }

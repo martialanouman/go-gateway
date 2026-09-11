@@ -321,6 +321,13 @@ func (e *esme) bind(t *testing.T, mode smppsession.BindMode, systemID, password 
 	if err := smpp.WritePDU(e.conn, smpp.PDU{Sequence: e.seq, Body: body}); err != nil {
 		t.Fatalf("write bind: %v", err)
 	}
+	// A deadline, because the listener under test runs with IdleTimeout zero and ReadPDU would
+	// otherwise block for ever: a handler that never answers — the plausible outcome when the server's
+	// own dependency is down — would hang the whole package until the go test timeout, which reports
+	// nothing about which bind stopped answering. Generous, so it never fires on a slow CI.
+	if err := e.conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
+		t.Fatalf("set bind read deadline: %v", err)
+	}
 	resp, err := smpp.ReadPDU(e.conn)
 	if err != nil {
 		t.Fatalf("read bind resp: %v", err)

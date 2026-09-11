@@ -31,7 +31,7 @@ import (
 // (bind.go:40), so "the outage did not answer RINVPASWD" proves nothing until RINVPASWD has been seen
 // for the reason it exists.
 func TestBindFailsClosedWhenPostgresIsCut(t *testing.T) {
-	seed := pgtest.Pool(t)     // uncut: seeds the credential, and survives the outage to prove nothing else did
+	seed := pgtest.Pool(t)     // uncut: seeds the credential, and is the witness that the cut took only one link
 	rdb := redistest.Client(t) // healthy on purpose: the only fault in this test must be Postgres
 	registry := startRegistry(t, rdb)
 
@@ -63,6 +63,14 @@ func TestBindFailsClosedWhenPostgresIsCut(t *testing.T) {
 	wrong.close()
 
 	proxy.Cut()
+
+	// The cut severs THIS pool's link and nothing else — asserted, not assumed. A harness that took the
+	// shared container down instead would make every fail-closed assertion below pass for a reason that
+	// has nothing to do with the policy, and would wreck the sibling tests besides.
+	if err := seed.Ping(context.Background()); err != nil {
+		t.Fatalf("the uncut pool died with the cut one (%v): tcpproxy must sever one client, never the "+
+			"container the whole package shares", err)
+	}
 
 	// The outage, on credentials that are valid and a quota that has room: any refusal here is Postgres
 	// being unreachable and nothing else.

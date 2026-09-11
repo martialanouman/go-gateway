@@ -23,11 +23,10 @@ import (
 // that cannot authenticate anyone has nothing to offer), and exactly the kind of choice that should be
 // written down rather than rediscovered during an incident.
 //
-// The assertion is on the NAMED check rather than the aggregate status, and deliberately so: Kafka and
-// ClickHouse sit at closed ports in testConfig, so /readyz is already 503 before anything is cut.
-// Bringing them up would cost this package a Redpanda and a ClickHouse container for a fact the
-// per-dependency body states directly — that postgres is one of the checks readiness gates on, and
-// that it reports the outage rather than staying "ok" off some cached verdict.
+// PostgreSQL is this service's ONLY readiness probe (wiring.go:302-304 — Kafka and ClickHouse are
+// deliberately not vital here), so the aggregate status is the assertion that carries the policy: 200
+// with the link up, 503 without. The named check is asserted too, so the test cannot go green the day
+// a second probe is added and starts answering for this one.
 func TestSMPPServerReadinessGatesOnPostgres(t *testing.T) {
 	cfg := testConfig()
 	cfg.OpsPort = 0 // Run picks the port; Addr() reports the bound one
@@ -53,19 +52,24 @@ func TestSMPPServerReadinessGatesOnPostgres(t *testing.T) {
 		app.close()
 	})
 
-	// Control: postgres is among the checks, and it passes. Without it, "postgres is not ok" under the
-	// cut would hold just as well for a dependency nobody ever probes.
-	if got := smppReadyzCheck(t, app); got != "ok" {
-		t.Fatalf("with postgres up /readyz reports postgres = %q, want \"ok\" — the control failed", got)
+	// Control: the pod is in the load balancer, and postgres is the check that says so.
+	if status, got := smppReadyz(t, app); status != http.StatusOK || got != "ok" {
+		t.Fatalf("with postgres up /readyz = %d, postgres = %q, want 200 and \"ok\" — the control failed",
+			status, got)
 	}
 
 	proxy.Cut()
 
-	if got := smppReadyzCheck(t, app); got == "ok" {
-		t.Fatal("with postgres cut /readyz still reports postgres = \"ok\": PostgreSQL IS vital to " +
-			"smpp-server-svc — every bind reads the credential table and there is no credential cache — " +
-			"so a pod that cannot reach it refuses every bind and must leave the load balancer instead " +
-			"of collecting ESMEs it can only turn away")
+	status, got := smppReadyz(t, app)
+	if status != http.StatusServiceUnavailable {
+		t.Fatalf("with postgres cut /readyz = %d (postgres = %q), want 503: PostgreSQL IS vital to "+
+			"smpp-server-svc — every bind reads the credential table and there is no credential cache — "+
+			"so a pod that cannot reach it refuses every bind and must leave the load balancer instead "+
+			"of collecting ESMEs it can only turn away", status, got)
+	}
+	if got == "ok" {
+		t.Errorf("/readyz is 503 but reports postgres = \"ok\": the 503 is coming from some other check, " +
+			"so this test would keep passing the day postgres stops gating readiness at all")
 	}
 
 	proxy.Resume()
@@ -74,30 +78,31 @@ func TestSMPPServerReadinessGatesOnPostgres(t *testing.T) {
 	// to clear.
 	deadline := time.Now().Add(20 * time.Second)
 	for {
-		got := smppReadyzCheck(t, app)
-		if got == "ok" {
+		status, got := smppReadyz(t, app)
+		if status == http.StatusOK {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("after postgres came back /readyz still reports postgres = %q: readiness latched "+
-				"on the outage and the pod would never rejoin the load balancer", got)
+			t.Fatalf("after postgres came back /readyz = %d (postgres = %q), want 200: readiness "+
+				"latched on the outage and the pod would never rejoin the load balancer", status, got)
 		}
 		time.Sleep(300 * time.Millisecond)
 	}
 }
 
-// smppReadyzCheck GETs /readyz on the ops port and returns what the body says about postgres, failing
-// the test if the dependency is not named at all — an unprobed dependency cannot gate anything.
+// smppReadyz GETs /readyz on the ops port and returns the aggregate status plus what the body says
+// about postgres, failing the test if the dependency is not named at all — an unprobed dependency
+// cannot gate anything.
 //
 // It retries only while the listener is still coming up, never on a served response, which is the
 // answer. Addr() is re-read on every attempt: Run binds the ephemeral port, so until it does the
 // address is still the unbound ":0" the config asked for.
-func smppReadyzCheck(t *testing.T, app *smppApp) string {
+func smppReadyz(t *testing.T, app *smppApp) (int, string) {
 	t.Helper()
 
 	deadline := time.Now().Add(30 * time.Second)
 	for {
-		checks, err := getReadyzChecks(t, app.ops.Addr())
+		status, checks, err := getReadyzChecks(t, app.ops.Addr())
 		if err == nil {
 			got, named := checks["postgres"]
 			if !named {
@@ -105,7 +110,7 @@ func smppReadyzCheck(t *testing.T, app *smppApp) string {
 					"a dependency it never asks about, and this service cannot authenticate a single "+
 					"bind without it", checks)
 			}
-			return got
+			return status, got
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("ops port never answered /readyz: %v", err)
@@ -114,7 +119,7 @@ func smppReadyzCheck(t *testing.T, app *smppApp) string {
 	}
 }
 
-func getReadyzChecks(t *testing.T, addr string) (map[string]string, error) {
+func getReadyzChecks(t *testing.T, addr string) (int, map[string]string, error) {
 	t.Helper()
 
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
@@ -122,11 +127,11 @@ func getReadyzChecks(t *testing.T, addr string) (map[string]string, error) {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/readyz", nil)
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -134,7 +139,7 @@ func getReadyzChecks(t *testing.T, addr string) (map[string]string, error) {
 		Checks map[string]string `json:"checks"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
-		return nil, err
+		return 0, nil, err
 	}
-	return decoded.Checks, nil
+	return resp.StatusCode, decoded.Checks, nil
 }

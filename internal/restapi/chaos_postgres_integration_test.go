@@ -29,7 +29,7 @@ import (
 // with them. The control below establishes what a genuine 401 looks like, so the outage assertion can
 // tell the two apart rather than merely asserting a number.
 func TestAPIKeyAuthFailsClosedWhenPostgresIsCut(t *testing.T) {
-	seed := pgtest.Pool(t) // uncut: seeds the key, and stays alive to prove the cut one was the only fault
+	seed := pgtest.Pool(t) // uncut: seeds the key, and is the witness that the cut took only one link
 	key := seedAPIKey(t, seed)
 
 	// Built while the link is up — postgres.NewPool pings eagerly, so the cut comes after.
@@ -49,6 +49,14 @@ func TestAPIKeyAuthFailsClosedWhenPostgresIsCut(t *testing.T) {
 	}
 
 	proxy.Cut()
+
+	// The cut severs THIS pool's link and nothing else — asserted, not assumed. A harness that took the
+	// shared container down instead would make every assertion below pass for a reason that has nothing
+	// to do with the policy.
+	if err := seed.Ping(context.Background()); err != nil {
+		t.Fatalf("the uncut pool died with the cut one (%v): tcpproxy must sever one client, never the "+
+			"container the whole package shares", err)
+	}
 
 	// The outage, on a key that is valid and active: anything but a fault here is wrong.
 	status, code := statusAndCode(t, h, key)
