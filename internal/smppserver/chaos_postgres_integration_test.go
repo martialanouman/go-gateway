@@ -1,8 +1,12 @@
 package smppserver_test
 
 import (
+	"context"
 	"testing"
 	"time"
+
+	"github.com/martialanouman/go-gateway/internal/bindthrottle"
+	"github.com/martialanouman/go-gateway/internal/smppserver"
 
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
@@ -107,6 +111,98 @@ func TestBindFailsClosedWhenPostgresIsCut(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatalf("after postgres came back the bind status = %#x, want ESME_ROK: the listener "+
 				"latched on the outage", status)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// TestAPostgresOutageNeverFeedsTheBindThrottle guards the half of the SMPP-bind failure policy that
+// the test above cannot see, and that a review of step-260c found the matrix about to state wrongly.
+//
+// authorize's ESME_RSYSERR is not the last word: onBind counts EVERY non-OK status as an
+// authentication failure (listener.go:190) and the anti-brute-force throttle is consulted BEFORE
+// authentication, refusing with ESME_RINVPASWD (listener.go:183). Production wires that throttle
+// unconditionally (cmd/smpp-server-svc/wiring.go:219,276) with SMPP_BIND_MAX_FAILURES defaulting to 5.
+// So without this guard, the sixth bind of an outage answers "your password is wrong" — the exact
+// signal the policy exists to avoid — and the sliding window holds the lockout open for as long as the
+// outage lasts, then past it.
+//
+// The spec settles which failures may count: §6.3 says "échecs d'auth comptés par system_id et IP" and
+// step-026 repeats it. A database that cannot answer is an infrastructure fault, not a failed
+// authentication, and it is not attacker-inducible either — nothing a client sends can make the
+// credential lookup error — so declining to count it costs the throttle no signal it could use.
+func TestAPostgresOutageNeverFeedsTheBindThrottle(t *testing.T) {
+	seed := pgtest.Pool(t)
+	rdb := redistest.Client(t)
+	registry := startRegistry(t, rdb)
+
+	// A low threshold keeps the test short; the backoff is what a blocked bind waits before being
+	// refused, so it stays small for the same reason. Neither is the behaviour under test.
+	const maxFailures = 3
+	throttle := bindthrottle.New(rdb, bindthrottle.Config{
+		MaxFailures: maxFailures,
+		Window:      time.Minute,
+		BackoffBase: 10 * time.Millisecond,
+		BackoffMax:  10 * time.Millisecond,
+	})
+
+	// The IP counter is keyed by source address, and every ESME in this package dials from 127.0.0.1
+	// against the SHARED Redis. A sibling test's failures would trip the threshold before ours and make
+	// this test pass for the wrong reason; the system_id counter needs no such care, seedBind minting a
+	// fresh one per run.
+	if err := rdb.Del(context.Background(), "bindfail:ip:{127.0.0.1}").Err(); err != nil {
+		t.Fatalf("clear the shared ip failure counter: %v", err)
+	}
+
+	cutPool, proxy := pgtest.Cuttable(t)
+	addr := startListener(t, cutPool, registry, func(o *smppserver.Options) { o.Throttle = throttle })
+
+	sid, pw, _ := seedBind(t, seed, seedOpts{maxSessions: 3, bindType: cp.BindTRX})
+
+	// Control, link up: the bind is accepted, which also proves the throttle is not blocking anything
+	// before the outage even starts.
+	accepted := dialESME(t, addr)
+	if got := accepted.bind(t, smppsession.BindTransceiver, sid, pw); got != smpp.StatusOK {
+		t.Fatalf("with postgres up the bind status = %#x, want ESME_ROK — the control failed", got)
+	}
+	accepted.unbind(t)
+	accepted.close()
+
+	proxy.Cut()
+
+	// One more attempt than the threshold: if the outage were feeding the counter, the last one would
+	// be refused by the throttle instead of by authorize.
+	for attempt := 1; attempt <= maxFailures+1; attempt++ {
+		e := dialESME(t, addr)
+		got := e.bind(t, smppsession.BindTransceiver, sid, pw)
+		e.close()
+		if got == errs.StatusInvalidPasswd {
+			t.Fatalf("outage bind %d of %d answered %#x (ESME_RINVPASWD): the outage has been counted as "+
+				"an authentication failure and the anti-brute-force throttle has locked the account out. "+
+				"The ESME now reads \"your secret is wrong\" — the one signal this policy exists to avoid — "+
+				"and the window slides on every further attempt, so the lockout outlives the outage",
+				attempt, maxFailures+1, got)
+		}
+		if got != errs.StatusSysErr {
+			t.Fatalf("outage bind %d status = %#x, want %#x (ESME_RSYSERR)", attempt, got, errs.StatusSysErr)
+		}
+	}
+
+	proxy.Resume()
+
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		after := dialESME(t, addr)
+		status := after.bind(t, smppsession.BindTransceiver, sid, pw)
+		if status == smpp.StatusOK {
+			after.unbind(t)
+			after.close()
+			break
+		}
+		after.close()
+		if time.Now().After(deadline) {
+			t.Fatalf("after postgres came back the bind status = %#x, want ESME_ROK: a lockout earned "+
+				"during the outage is still refusing binds the database can now answer", status)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}

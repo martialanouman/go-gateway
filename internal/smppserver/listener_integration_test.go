@@ -251,20 +251,29 @@ func startRegistry(t *testing.T, rdb *redis.Client) registrypb.SessionRegistryCl
 }
 
 // startListener runs a Listener on an ephemeral SMPP port and returns its resolved address.
-func startListener(t *testing.T, pool *pgxpool.Pool, registry registrypb.SessionRegistryClient) string {
-	addr, _ := startListenerRef(t, pool, registry)
+func startListener(t *testing.T, pool *pgxpool.Pool, registry registrypb.SessionRegistryClient, opts ...listenerOpt) string {
+	addr, _ := startListenerRef(t, pool, registry, opts...)
 	return addr
 }
 
+// listenerOpt adjusts the Options a started listener is built with, for the rare test that needs a
+// surface the default graph leaves nil — the anti-brute-force throttle, say, which production always
+// wires and which therefore participates in what a bind answers.
+type listenerOpt func(*smppserver.Options)
+
 // startListenerRef starts the listener and returns both its address and the *Listener, so a test can
 // reach its pod-local surfaces (e.g. Deliver, step-046).
-func startListenerRef(t *testing.T, pool *pgxpool.Pool, registry registrypb.SessionRegistryClient) (string, *smppserver.Listener) {
+func startListenerRef(t *testing.T, pool *pgxpool.Pool, registry registrypb.SessionRegistryClient, opts ...listenerOpt) (string, *smppserver.Listener) {
 	t.Helper()
-	l := smppserver.New(postgres.NewBindRepo(pool), registry, nil, smppserver.Options{
+	o := smppserver.Options{
 		Addr:     "127.0.0.1:0",
 		PodID:    "pod-test",
 		SystemID: "smpp-server-svc",
-	}, discardLogger())
+	}
+	for _, opt := range opts {
+		opt(&o)
+	}
+	l := smppserver.New(postgres.NewBindRepo(pool), registry, nil, o, discardLogger())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
