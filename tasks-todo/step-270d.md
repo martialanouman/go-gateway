@@ -113,6 +113,79 @@ Quatre unités, dans cet ordre.
    couplage (`maxReplicas` strictement sous le nombre de partitions). Une garde plutôt qu'un
    paragraphe : c'est la seule forme qui survit au prochain changement de réplicas.
 
+## Design arrêté
+
+Trois décisions, prises avant la première ligne de code. Les deux premières sortent d'une lecture qui a
+trouvé, sous les deux collisions que « Portée » annonce, une troisième que personne n'avait vue.
+
+### D1 — La géométrie des destinations : composer, et refuser l'anneau trop petit
+
+Câbler `Dest = l0Dest` tel quel ne marche pas, pour trois raisons qui se cumulent :
+
+1. `l0Dest(i, 0, pool)` rend le **littéral unique** `nonPortedDest` pour tout `i`
+   (`internal/e2e/refl0_test.go:48`). À la part portée par défaut — 0 — l'injecteur retomberait sur
+   **une** destination, l'inverse exact de ce que R2 demande.
+2. Le bloc porté de `l0Dest` (`2250700%06d`, `1+ordinal%pool`) **recouvre** celui du `Dest` par défaut
+   de l'injecteur (`+2250700%06d`, `seq%10⁶`, `test/load/steady/inject.go:361`). Une destination tirée
+   comme « non portée » pourrait donc être portée en base : `mixHolds` calcule `pg_hit` attendu à partir
+   de `share`, et lirait un mélange que sa propre géométrie ne prédit pas.
+3. **Celle qu'on ne voyait pas.** `newPayloads` n'appelle `cfg.Dest(i)` que pour `i ∈ [0, ring)`
+   (`inject.go:325`) : l'anneau plafonne donc aussi la cardinalité **portée**. À `ring = 4096` et
+   `share = 0,3`, le tirage ne touche que ~1 200 numéros portés **quel que soit** `REF_PORTED_POOL`.
+   Le cadran de localité de step-270c ne commanderait rien dans le run plein-stack.
+
+D'où la composition : porté → `l0Dest` **tel quel**, aucune copie ; non porté → étalement sur
+`pool + 1 + i%ring`. Les portés vivent dans `[1, pool]`, donc la disjonction est **arithmétique** et
+s'assert contre `portedSet` — pas un bloc neuf à justifier, pas une convention à retenir.
+
+Et le point 3 devient une garde plutôt qu'une note : `ring ≥ pool × 1000 / num`, sinon le run
+**refuse**. C'est le seul moyen que le levier de cardinalité commande quelque chose à `share > 0` ;
+c'est aussi l'assertion que la mutation « figer l'anneau à 4 096 » doit faire tomber. Sans elle, R2
+livre un bouton, et `mixHolds` publierait un 100 % `redis_hit` comme une borne chaude légitime.
+
+### D2 — La bande de reproductibilité n'existe pas : cette PR l'établit
+
+La chaîne de preuves demande de comparer la relance à `share=0` « à la bande de reproductibilité
+consignée dans le journal ». Vérification faite, **il n'y en a pas** pour le run de référence : la
+bande « −0,1 à −1,0 % » est celle du **banc routeur isolé** (`test/load/README.md:1004`), et le run de
+référence n'a qu'un ordre de grandeur (1 100–1 200/s, 03/08) sous une réserve qui dit « un seul hôte,
+une seule mesure par configuration » (`:723-728`). Le journal déclare par ailleurs invalide toute
+comparaison entre deux de ses sections.
+
+Elle s'établit donc ici : **trois runs sur `main`**, puis **trois runs après le câblage**, même hôte,
+même session. La dispersion des trois « avant » EST la bande, et c'est la seule forme que ce journal
+reconnaisse — une section datée, un hôte, une session.
+
+Écarté : une bascule `REF_L0=off`. Elle laisserait dans le harnais un chemin permanent que la
+production n'a pas, pour un delta que D1 de step-270c prédit **nul par construction** — le run de
+référence *tient* `REF_RATE`, son débit est une entrée. Ce que les six runs mesurent n'est donc pas un
+débit : c'est de savoir si le Redis ajouté et la porte Bloom sortent la p99, la part pipeline et le
+verdict de la dispersion propre du run.
+
+### D3 — La garde R4 porte sur l'assignation, pas sur le fan-out
+
+`⌈partitions / minReplicas⌉` est le nombre de partitions qu'un pod peut se voir **assigner** par le
+rebalance du groupe. C'est vrai de tout membre, quel que soit son style de consommation — donc la garde
+prend le même filtre que `hpa-max-replicas` (métrique `queue` ≠ `mt.routed`), soit `router-svc` et
+`mo-dlr-router-svc`.
+
+Le message énonce ce fait-là, et cite `handleBatch` (`internal/router/router.go:124`) comme le cas où
+la borne est **serrée** : une goroutine par partition assignée, chacune séquentielle, donc au plus une
+acquisition pgx concurrente par voie. Il n'affirme pas que `mo-dlr-router-svc` fan-oute — il consomme
+avec `Consumer.Run`, un enregistrement à la fois, et passe la garde avec de la marge.
+
+Écarté : cibler `router-svc` par son nom. Un nom de Deployment en dur dans une garde pourrit au premier
+service qui passe à `RunBatch`, et c'est exactement ce que R4 reproche à la prose qu'il corrige.
+
+### Leviers
+
+| Levier | Défaut | Ce qu'il commande |
+|---|---|---|
+| `steady.InjectConfig.DestRing` / `REF_DEST_RING` | **4 096** | destinations distinctes pré-rendues — le run d'hier ne bouge pas tant que personne ne tourne le bouton |
+| `REF_PORTED_SHARE` | **0** | part portée du run de référence ; déjà déclaré par step-270c |
+| `REF_PORTED_POOL` | celui de step-270c | ensemble porté distinct, donc la localité |
+| `EXACT_CACHE_TTL` | **6h** | TTL du cache `exactroute:{msisdn}` — le levier, pas sa valeur |
+
 ## Chaîne de preuves
 
 L'ordre est contraignant, et le premier point n'est pas une formalité.
@@ -135,12 +208,16 @@ L'ordre est contraignant, et le premier point n'est pas une formalité.
 
 - [ ] `make check` vert (lint · `test -race` · govulncheck · contrats)
 - [ ] levier de cardinalité livré, défaut inchangé, et la mutation qui le fige vue tomber
+- [ ] la garde `ring ≥ pool × 1000 / num` livrée (D1, point 3) : sans elle le levier est un bouton qui
+      ne commande rien à `share > 0`, parce que `newPayloads` n'échantillonne `Dest` que sur l'anneau
 - [ ] le run de référence traverse L0 avec le vrai `NewL0Resolver`, semé par les fonctions pures de
       step-270c — aucune copie
-- [ ] relance à `share=0` consignée **contre la bande**, quel que soit son verdict
+- [ ] relance à `share=0` consignée **contre la bande**, quel que soit son verdict — bande qui n'existe
+      pas encore et que cette PR établit elle-même (D2), trois runs avant / trois après
 - [ ] clé de config du TTL livrée, câblée, et reportée dans `deploy/k8s/configmap.yaml`
-- [ ] `step-280.md:132-133` corrigée, et l'invariant `MaxConns ≥ ⌈partitions / minReplicas⌉` gardé
-      par un test dans `internal/deploy`
+- [ ] `step-280.md:132-133` corrigée **et `:103-104` avec elle** — les deux portent la même erreur à
+      trente lignes d'écart, et corriger l'une seule ferait se contredire la fiche
+- [ ] l'invariant `MaxConns ≥ ⌈partitions / minReplicas⌉` gardé par un test dans `internal/deploy`
 - [ ] `test/load/README.md:1157-1159` — « les deux restent à step-280 » ne survit pas à cette PR : le
       README dit ce que le run de référence traverse désormais et ce que le nouveau levier fait. Un
       document faux coûte plus cher qu'un document absent
