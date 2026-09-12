@@ -98,7 +98,7 @@ func TestTheGuardCatchesWhatItClaimsTo(t *testing.T) {
 	for _, rule := range []string{
 		"deployment-per-service", "probe-endpoints", "probe-timeout", "grace-period",
 		"ops-port-not-exposed", "pdb-per-deployment", "secrets-by-reference",
-		"required-override", "known-env-name", "hpa-max-replicas", "image-convention",
+		"required-override", "known-env-name", "hpa-max-replicas", "pool-covers-lanes", "image-convention",
 	} {
 		if !got[rule] {
 			t.Errorf("rule %q reported nothing on testdata/broken, so nothing proves it can fail — "+
@@ -411,10 +411,71 @@ func inspectHPA(m deploy.Manifest, env map[string]string, deployments map[string
 			"partition count leaves maxReplicas %d unbounded",
 			m.Source, m.Metadata.Name, target.Metadata.Name, raw, m.Spec.MaxReplicas)
 	}
+	// The ceiling and the floor are independent defects of the same coupling, so they ACCUMULATE. An
+	// early return here would hide the pool violation behind the replica one and hand an operator half
+	// the story — then the other half on the next run, after they fixed the first.
+	var out []violation
 	if m.Spec.MaxReplicas >= partitions {
-		return fail("%s: HPA %q scales to %d pods on a %d-partition topic (%s) — at one pod per "+
+		out = append(out, fail("%s: HPA %q scales to %d pods on a %d-partition topic (%s) — at one pod per "+
 			"partition each pod is down to a single lane and the fan-out is gone. Keep maxReplicas under the partition count",
-			m.Source, m.Metadata.Name, m.Spec.MaxReplicas, partitions, queue)
+			m.Source, m.Metadata.Name, m.Spec.MaxReplicas, partitions, queue)...)
+	}
+	return append(out, inspectPoolCoversLanes(m, target, env, configMaps, partitions, queue)...)
+}
+
+// inspectPoolCoversLanes holds the OTHER half of the maxReplicas coupling: the floor.
+//
+// maxReplicas is bounded above so a pod keeps more than one lane; minReplicas is what decides how many
+// lanes a pod may be handed at once, and that is the number the Postgres pool has to cover. A consumer
+// group hands each member ceil(partitions / members) partitions, so at the HPA's floor one pod owns
+// ceil(partitions/minReplicas) of them — and router-svc turns each assigned partition into a
+// CONCURRENT lane (handleBatch, internal/router/router.go), each lane processing sequentially and
+// therefore holding at most one pgx connection at a time. MaxConns under that count makes Acquire the
+// queue in front of the hot path: it waits, then returns a transient error, then the record is
+// redelivered and repeats the same lookup on a pool that is still full.
+//
+// It is stated as ASSIGNMENT rather than as fan-out on purpose, and that is what lets it apply to every
+// HPA the rule above already covers. How many partitions a member is handed is true of any consumer;
+// whether it turns them into concurrent lanes is a property of the code. mo-dlr-router-svc consumes one
+// record at a time and clears the bound with room to spare — the guard is conservative for it, not
+// wrong about it. Naming router-svc's Deployment instead would rot the day another service adopts
+// RunBatch, which is exactly what this rule replaces: a paragraph in step-280 that named a ratio
+// (10/12) the manifests never produced.
+func inspectPoolCoversLanes(m, target deploy.Manifest, env map[string]string,
+	configMaps map[string]map[string]string, partitions int, queue string,
+) []violation {
+	fail := func(format string, args ...any) []violation {
+		return []violation{{rule: "pool-covers-lanes", msg: fmt.Sprintf(format, args...)}}
+	}
+
+	// A missing minReplicas means one, which is what the HPA API defaults to — and it is the worst case
+	// rather than an unknown: one pod owns every partition.
+	minReplicas := 1
+	if m.Spec.MinReplicas != nil {
+		minReplicas = *m.Spec.MinReplicas
+	}
+	if minReplicas < 1 {
+		return fail("%s: HPA %q declares minReplicas %d — a floor below one pod leaves the lanes per pod "+
+			"unbounded, so nothing sizes the Postgres pool", m.Source, m.Metadata.Name, minReplicas)
+	}
+	lanes := lanesPerPod(partitions, minReplicas)
+
+	// Read from what is DEPLOYED, never from config's envDefault: the two agree today at 10, and a
+	// ConfigMap lowered while Go still says 10 would leave this rule clearing a pool that cannot cover
+	// the lanes — the same coincidence TestHPACeilingUsesTheDeployedPartitionCount exists to deny.
+	raw := deployedEnv(target, env, configMaps, "POSTGRES_MAX_CONNS")
+	maxConns, err := strconv.Atoi(raw)
+	if err != nil || maxConns == 0 {
+		return fail("%s: HPA %q scales %q, whose POSTGRES_MAX_CONNS reads %q — an unparseable pool size "+
+			"leaves the %d lanes a pod can own unbounded", m.Source, m.Metadata.Name, target.Metadata.Name, raw, lanes)
+	}
+	if maxConns < lanes {
+		return fail("%s: HPA %q floors at %d pods on a %d-partition topic (%s), so one pod can be assigned "+
+			"%d partitions against POSTGRES_MAX_CONNS %d. MaxConns bounds a CONCURRENCY, not a throughput: "+
+			"a pod that owns more lanes than connections makes Acquire the queue in front of the hot path, "+
+			"and its timeout turns into a redelivery that repeats the lookup on a pool still full. Raise "+
+			"MaxConns to at least %d, or raise minReplicas",
+			m.Source, m.Metadata.Name, minReplicas, partitions, queue, lanes, maxConns, lanes)
 	}
 	return nil
 }
@@ -621,6 +682,107 @@ func TestHPACeilingUsesTheDeployedPartitionCount(t *testing.T) {
 	}
 	t.Error("no hpa-max-replicas violation for the rest-api-svc HPA: 8 replicas over 6 deployed " +
 		"partitions leaves every pod on a single lane, and the rule read the Go default instead")
+}
+
+// lanesPerPod is the most partitions a single group member can be handed: the count divided by the
+// members, ROUNDED UP.
+//
+// The rounding is the whole content of this function. A group of 12 partitions over 5 members splits
+// 3+3+2+2+2, so a pod owns three — rounding down would size the pool for two and under-size it on the
+// pods that got the extra one. No manifest in this tree divides unevenly, which is exactly why the
+// arithmetic is pinned here instead of through a YAML fixture: replacing it with a plain division
+// changes nothing the deployed tree can show.
+func lanesPerPod(partitions, minReplicas int) int {
+	return (partitions + minReplicas - 1) / minReplicas
+}
+
+func TestLanesPerPodRoundsUp(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		partitions, minReplicas, want int
+	}{
+		{12, 4, 3},  // the deployed router-svc: divides evenly
+		{12, 1, 12}, // an HPA with no floor: one pod owns everything
+		{12, 5, 3},  // 3+3+2+2+2 — the pod that got three is the one the pool must cover
+		{6, 4, 2},   // 2+2+1+1
+		{12, 12, 1}, // one lane each, the ceiling hpa-max-replicas keeps the tree under
+		{12, 16, 1}, // more members than partitions: the extras idle, the busy ones own one
+	} {
+		if got := lanesPerPod(tc.partitions, tc.minReplicas); got != tc.want {
+			t.Errorf("lanesPerPod(%d, %d) = %d, want %d: a member is handed the count rounded UP, and "+
+				"rounding down sizes the pool for the pods that were handed fewer",
+				tc.partitions, tc.minReplicas, got, tc.want)
+		}
+	}
+}
+
+// TestPoolCoversTheLanesAPodCanBeAssigned is the floor half of the maxReplicas coupling, and it asserts
+// the MESSAGE rather than merely that the rule fired: the count it names must be the lanes the HPA's own
+// floor produces (ceil(6/2) = 3), not the topic's partition count.
+//
+// That distinction is the whole reason this guard exists. step-280 carried "the lever is the ratio
+// MaxConns / lanes per pod, today 10/12" — a ratio the manifests never produced, because 12 is the
+// partition count and a pod at four replicas owns three. A rule that reported the partition count here
+// would re-state the same error in code.
+func TestPoolCoversTheLanesAPodCanBeAssigned(t *testing.T) {
+	t.Parallel()
+
+	for _, v := range inspect(t, filepath.Join("testdata", "broken")) {
+		if v.rule != "pool-covers-lanes" {
+			continue
+		}
+		if !strings.Contains(v.msg, "assigned 3 partitions") {
+			t.Errorf("pool-covers-lanes reported %q — it must weigh the pool against the 3 partitions the "+
+				"HPA's floor of 2 pods hands one pod on a 6-partition topic, not against the topic's own "+
+				"count", v.msg)
+		}
+		if !strings.Contains(v.msg, "POSTGRES_MAX_CONNS 2") {
+			t.Errorf("pool-covers-lanes reported %q — it must read the pool size the manifests DEPLOY (2), "+
+				"not config's default of 10", v.msg)
+		}
+		return
+	}
+	t.Error("no pool-covers-lanes violation for the rest-api-svc HPA: 2 connections for the 3 partitions " +
+		"its floor assigns one pod is Acquire in front of the hot path, and the rule did not look")
+}
+
+// TestAnHPAWithoutAMinimumIsHeldToOnePod pins the branch nothing else reaches. Every HPA in deploy/k8s
+// declares minReplicas, so the nil case is invisible to the deployed tree — and an unread default is one
+// edit from becoming the partition count, which would clear the guard on exactly the manifest that most
+// needs it: an HPA whose author forgot the floor, where one pod owns all twelve lanes.
+func TestAnHPAWithoutAMinimumIsHeldToOnePod(t *testing.T) {
+	t.Parallel()
+
+	for _, v := range inspect(t, filepath.Join("testdata", "broken")) {
+		if v.rule != "pool-covers-lanes" || !strings.Contains(v.msg, `"not-a-service"`) {
+			continue
+		}
+		if !strings.Contains(v.msg, "floors at 1 pods") || !strings.Contains(v.msg, "assigned 12 partitions") {
+			t.Errorf("pool-covers-lanes reported %q — an absent minReplicas is one pod under the Kubernetes "+
+				"API, so that pod owns all 12 partitions", v.msg)
+		}
+		return
+	}
+	t.Error("no pool-covers-lanes violation for the not-a-service HPA, which declares no minReplicas: one " +
+		"pod would own every partition against a pool of 10")
+}
+
+// TestTheDeployedTreeCoversItsLanes is the same invariant on the REAL manifests, stated as arithmetic
+// rather than as a passing suite: router-svc floors at 4 pods over 12 partitions, so a pod owns 3 lanes
+// against MaxConns 10.
+//
+// TestManifestsHoldTheDeploymentInvariants already fails on a violation here. This says out loud what is
+// being held, because the number it pins is the one step-280 got wrong, and a green suite does not tell
+// a reader which ratio it agreed with.
+func TestTheDeployedTreeCoversItsLanes(t *testing.T) {
+	t.Parallel()
+
+	for _, v := range inspect(t, deploy.Dir) {
+		if v.rule == "pool-covers-lanes" {
+			t.Errorf("the deployed tree violates pool-covers-lanes: %s", v.msg)
+		}
+	}
 }
 
 // TestHPAWithNoResolvableTargetIsReported: an HPA whose scaleTargetRef names no Deployment in the tree

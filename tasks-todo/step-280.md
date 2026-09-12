@@ -101,7 +101,9 @@ Redis en régime établi, et une lecture Postgres par clé primaire à froid ou 
 2. **Pool pgx de `router-svc`.** `MaxConns=10` par défaut, et `internal/storage/postgres/pool.go`
    annonce lui-même qu'« un jalon qui met du trafic ici devrait les revisiter ». Loi de Little : à
    2 400 req/s la marge disparaît dès ~4 ms de latence PK, et un pod peut posséder plus de lanes Kafka
-   (12 par défaut) que de connexions. Le mode de panne est vicieux : `Acquire` attend jusqu'à 2 s, puis
+   que de connexions. *(Écrit « 12 par défaut » jusqu'à step-270d : c'est le nombre de partitions du
+   topic, pas ce qu'un pod se voit assigner. Le nombre de voies d'un pod est
+   ⌈partitions / réplicas⌉ — voir le point 2 ci-dessous.)* Le mode de panne est vicieux : `Acquire` attend jusqu'à 2 s, puis
    erreur transitoire, donc redélivrance — qui refait le même lookup sur un pool déjà saturé. Toute
    hausse se pèse contre `max_connections`=100 × services × réplicas (step-201 D9).
 3. **Empreinte Redis du cache.** `clés en vol = taux de peuplement × TTL(6 h)`, soit 1,3 à 10 Go sur le
@@ -129,8 +131,17 @@ en *ratios* — les seuls chiffres qui se transposent depuis un portable :
    **La loi de Little sur un débit était le mauvais modèle** : `MaxConns` borne une *concurrence*, et
    `handleBatch` (`internal/router/router.go`) ouvre une goroutine par partition dont chaque voie traite
    **séquentiellement** — un pod ne peut donc jamais offrir au pool plus d'acquisitions simultanées qu'il
-   n'a de voies. **Le levier est le rapport `MaxConns` / voies par pod**, aujourd'hui 10/12, et non les
-   4 500 req/s. C'est ce rapport qu'il faut porter dans les manifests.
+   n'a de voies. **Le levier est le rapport `MaxConns` / voies par pod**, et non les 4 500 req/s.
+   *(Corrigé par step-270d. Cette fiche l'annonçait « aujourd'hui 10/12 » : un cas que les manifests
+   livrés par step-270 **ne produisent pas**. Les voies d'un pod sont les partitions que le rebalance
+   lui assigne, soit ⌈12/4⌉ = **3** au plancher de l'HPA (`router-svc.yaml:13`, `:106`) et 2 au plafond
+   de 8 réplicas — jamais 12, qui n'existerait qu'à un seul pod. Le rapport réel est donc 10/3, et la
+   crainte telle qu'écrite envoyait au mauvais cadran.)*
+   Ce qui remplace le chiffre est un invariant calculable et **gardé** :
+   `MaxConns ≥ ⌈partitions / minReplicas⌉`, soit 10 ≥ 3 aujourd'hui, tenu par la règle
+   `pool-covers-lanes` d'`internal/deploy`. Une garde plutôt qu'un paragraphe : c'est la seule forme
+   qui survit au prochain changement de réplicas. Ce qui reste **ici**, et qu'aucune garde ne tranche,
+   est la **valeur** de `POSTGRES_MAX_CONNS`, à peser contre `max_connections` × services × réplicas.
 3. **Empreinte Redis** — **200 octets par clé** `exactroute:{msisdn}` comme majorant de
    dimensionnement (moyenne 184 sur les cinq grands échantillons, étendue 168-201 ; fourchette
    168-210 sur huit lectures, les petits échantillons étant biaisés par les tampons de connexion que
@@ -138,11 +149,14 @@ en *ratios* — les seuls chiffres qui se transposent depuis un portable :
    fourchette à **~10,4 Go** sur le Redis partagé avec les soldes.
 
 Ce qui reste **ici** : choisir la part portée et la localité représentatives, refaire ces mesures à
-l'échelle avec un Postgres et un Redis en réseau, et en tirer le dimensionnement. Restent aussi, non
-livrés par step-270c : le levier de configuration du TTL du cache (`cmd/router-svc/wiring.go` fige
-`exact.DefaultCacheTTL`), la valeur de `POSTGRES_MAX_CONNS` par service dans les manifests, le câblage de
-L0 dans le run de référence plein-stack, et le plafond de 4 096 destinations distinctes que
-`payloadRing` impose à l'injecteur de ce run (`test/load/steady/inject.go`).
+l'échelle avec un Postgres et un Redis en réseau, et en tirer le dimensionnement — plus la **valeur**
+de `POSTGRES_MAX_CONNS`, que le ConfigMap partagé impose à tous les services à la fois.
+
+**Les quatre autres résidus ont été livrés par step-270d**, parce qu'ils n'attendaient aucune machine :
+le TTL du cache a sa clé (`EXACT_CACHE_TTL`, câblée et reportée dans `deploy/k8s/configmap.yaml`), le
+run de référence plein-stack traverse L0 avec le vrai `NewL0Resolver`, la cardinalité des destinations
+est un levier (`REF_DEST_RING`, défaut inchangé) que `ringCoversPool` refuse de laisser sous-couvrir un
+pool porté, et le rapport `MaxConns`/voies ci-dessus est corrigé et gardé.
 
 La campagne doit décider quelle part de numéros portés est représentative d'un agrégateur national
 (10 à 30 % en marché MNP mûr) et semer le banc en conséquence, sans quoi le dimensionnement publié
