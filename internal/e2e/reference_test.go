@@ -47,6 +47,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/restapi"
 	"github.com/martialanouman/go-gateway/internal/router"
 	"github.com/martialanouman/go-gateway/internal/routing"
+	"github.com/martialanouman/go-gateway/internal/routing/exact"
 	"github.com/martialanouman/go-gateway/internal/smpp"
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
@@ -55,6 +56,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/testutil/fakesmsc"
 	"github.com/martialanouman/go-gateway/internal/testutil/kafkatest"
 	"github.com/martialanouman/go-gateway/internal/testutil/pgtest"
+	"github.com/martialanouman/go-gateway/internal/testutil/redistest"
 	"github.com/martialanouman/go-gateway/test/load/bindgen"
 	"github.com/martialanouman/go-gateway/test/load/gatewaymetrics"
 	"github.com/martialanouman/go-gateway/test/load/steady"
@@ -90,6 +92,24 @@ const (
 	envFetchMaxBytes          = "REF_FETCH_MAX_BYTES"
 	envFetchMaxPartitionBytes = "REF_FETCH_MAX_PARTITION_BYTES"
 
+	// refPortedPool is the working set REF_PORTED_SHARE spreads over when nobody names one. It matches
+	// the router-only bench's own default, so the two read the same locality — but it is only reached
+	// once the share is raised off zero, and at 4 096 destinations it is refused by ringCoversPool
+	// rather than silently drawn short. That refusal is the point: it names the ring to ask for.
+	refPortedPool = 100000
+)
+
+const (
+	// envDestRing is how many DISTINCT destinations the run injects. It defaults to the injector's own
+	// 4 096, so a run with no lever set is the run every line of test/load/README.md was measured on.
+	//
+	// It is the lever step-270d exists for. The destinations live in the pre-rendered payload ring, so
+	// 4 096 of them at any real rate make the exactroute:{msisdn} cache 100 % hot within a second — and
+	// a campaign reading pg_hit/s off such a run would publish that the L0 stage never touches Postgres.
+	// REF_PORTED_SHARE and REF_PORTED_POOL (declared with the router-only bench) are the other two thirds
+	// of that dial, and ringCoversPool refuses the combinations that cannot draw what they promise.
+	envDestRing = "REF_DEST_RING"
+
 	// envAccounts is how many SMPP accounts the run submits from. It DEFAULTS TO 1, which reproduces
 	// every measurement recorded before step-201d verbatim — the whole table in test/load/README.md
 	// depends on that. Raise it to spread the load across mt.inbound's partitions (D5).
@@ -99,6 +119,35 @@ const (
 // lagInterval paces the backlog poll. Each poll is a broker round-trip, so it is slow — but fast enough
 // that a 60-second window carries the readings [steady.Criteria.MinLagSamples] demands.
 const lagInterval = 3 * time.Second
+
+// l0Shape is what the run asks of the L0 stage: how many distinct destinations it injects, what share
+// of them is ported, and over how many distinct ported numbers those land.
+//
+// The three are read together because they are only meaningful together. The ring bounds the ported
+// draw as much as the non-ported one — newPayloads samples Dest over [0, ring) once — so a pool wider
+// than the ring is a working set the run seeds and never reaches.
+type l0Shape struct {
+	ring  int
+	share float64
+	pool  int
+}
+
+// refL0Shape reads the three levers and refuses the combinations that cannot draw what they promise,
+// BEFORE the containers start. A run refused here costs seconds; the same run refused by mixHolds costs
+// the whole window, and the combinations ringCoversPool catches are not refused by mixHolds at all —
+// they are read as a legitimate warm bound.
+func refL0Shape(t *testing.T) l0Shape {
+	t.Helper()
+	shape := l0Shape{
+		ring:  int(envFloat(t, envDestRing, steady.DefaultDestRing)),
+		share: envFloat(t, envPortedShare, 0),
+		pool:  int(envFloat(t, envPortedPool, refPortedPool)),
+	}
+	if err := ringCoversPool(shape.ring, shape.share, shape.pool); err != nil {
+		t.Fatalf("the L0 shape this run was given cannot be drawn: %v", err)
+	}
+	return shape
+}
 
 // refCriteria is D2, verbatim. PeerCeiling is left at zero and filled in by the calibration below: the
 // 43 498/s of D3 was measured against the SMSC SIMULATOR, and this run's peer is the in-repo fake SMSC.
@@ -148,7 +197,8 @@ func TestReferenceRun(t *testing.T) {
 	criteria := refCriteria()
 	criteria.PeerCeiling = calibratePeer(t, int(envFloat(t, envCalBinds, 4)))
 
-	s := buildRefStack(t, pool, brokers, chCfg, accounts)
+	shape := refL0Shape(t)
+	s := buildRefStack(t, pool, brokers, chCfg, accounts, shape)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -168,6 +218,13 @@ func TestReferenceRun(t *testing.T) {
 		Rate:     rate,
 		Workers:  workers,
 		Duration: warmup + measure + settle,
+		// The destination is what puts traffic through the L0 stage, and DestRing is what decides how
+		// much of the cache it can keep hot. Both default to the run already on record: a ring of 4 096
+		// and a ported share of zero.
+		DestRing: shape.ring,
+		Dest: func(seq uint64) string {
+			return refDest(int(seq), shape.ring, shape.share, shape.pool)
+		},
 	}
 
 	// The injection runs on its own goroutine so the counters can be read from INSIDE its window. Taking
@@ -201,10 +258,15 @@ func TestReferenceRun(t *testing.T) {
 	submittedBefore, rejectedBefore := s.submitCountersAt(t, from)
 	pipeSumBefore, pipeCountBefore := s.pipelineDurationAt(t, from)
 	cpuBefore := cpuSeconds(t)
+	// Bracketing the WINDOW and not the call, which is the reading step-270c got wrong three times: the
+	// seed and the preflight resolve through this same meter before the window opens, so an absolute
+	// count would carry work the window never did.
+	mixBefore := s.lookups.snapshot()
 
 	submittedAfter, rejectedAfter := s.submitCountersAt(t, to)
 	pipeSumAfter, pipeCountAfter := s.pipelineDurationAt(t, to)
 	cpuAfter := cpuSeconds(t)
+	mixAfter := s.lookups.snapshot()
 
 	<-done
 	if injectErr != nil {
@@ -237,6 +299,7 @@ func TestReferenceRun(t *testing.T) {
 		"backlog by topic across the window: %s\n"+
 		"mt.inbound backlog by partition at window close: %s\n"+
 		"router pipeline: %s\n"+
+		"L0 stage (share %.3f over %d ported numbers, %d distinct destinations): %s\n"+
 		"host: %s\n"+
 		"%s\n",
 		rate, workers, warmup, measure, settle,
@@ -244,8 +307,18 @@ func TestReferenceRun(t *testing.T) {
 		win.P50.Round(time.Millisecond), win.P99.Round(time.Millisecond), win.Max.Round(time.Millisecond),
 		s.e2eQuantile(t), lags.breakdown(from, to), lags.partitions(from, to),
 		pipelineShare(pipeSumAfter-pipeSumBefore, pipeCountAfter-pipeCountBefore, m.Submitted, measure),
+		shape.share, shape.pool, shape.ring, renderMix(subtractMix(mixBefore, mixAfter), m.Submitted),
 		cpuShare(cpuAfter-cpuBefore, measure),
 		verdict)
+
+	// The mix guard only has a model to check once something is ported: at share=0 every lookup is a
+	// bloom_miss by construction, and mixHolds says so by returning early rather than by pretending to
+	// verify a store leg that does not exist.
+	if shape.share > 0 {
+		if err := mixHolds(subtractMix(mixBefore, mixAfter), m.Submitted, shape.share, shape.pool); err != nil {
+			t.Errorf("the L0 outcome mix is not the one this shape draws: %v", err)
+		}
+	}
 
 	if !verdict.Pass() {
 		t.Fatalf("the reference run did not hold the D2 steady state — see the verdict above")
@@ -316,9 +389,14 @@ type refStack struct {
 	registry  *prometheus.Registry
 	connector uuid.UUID
 	consumers map[string]*kafka.Consumer
+
+	// lookups is the L0 stage's own meter, read from inside the window. The production wiring feeds the
+	// same observations into the Prometheus catalog; this run reads them straight, as the router-only
+	// bench does, because a counter vector would have to be scraped on the host being measured.
+	lookups *countingLookups
 }
 
-func buildRefStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg config.ClickHouse, accounts int) *refStack {
+func buildRefStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg config.ClickHouse, accounts int, shape l0Shape) *refStack {
 	t.Helper()
 	apiKeys, connectorID := seedRefControlPlane(t, pool, accounts)
 
@@ -380,6 +458,34 @@ func buildRefStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg con
 	if err != nil {
 		t.Fatalf("load route snapshot: %v", err)
 	}
+
+	// The L0 exact-number stage, as cmd/router-svc/wiring.go builds it. Until step-270d this run wired
+	// the declarative snapshot resolver DIRECTLY: the Bloom gate, the Redis GET and the Postgres lookup
+	// by primary key were absent from the path it timed, so every latency and every host reading it
+	// published described a pipeline production does not run.
+	//
+	// It is why the run grows a Redis container it never needed: the cache is not optional to the stage,
+	// and a stand-in would put a measurement of the stand-in in the journal (the localAggregator below
+	// is a stand-in for a breaker AGGREGATE, which is a different claim — it echoes real breaker state).
+	rdb := redistest.Client(t)
+	exactRepo := postgres.NewExactRouteRepo(pool)
+	// The seed comes FIRST and the Bloom is built after it. Built before, MightContain answers false for
+	// every ported number, the store is never reached, and the run prices an L0 stage that did nothing
+	// while looking like a measurement. seedExactRoutes returns immediately at share=0, which is the
+	// default: the stage is then a Bloom gate over an empty filter, and that is a reading, not a no-op
+	// (step-270c, D3).
+	seedExactRoutes(t, exactRepo, connectorID, shape.share, shape.pool)
+	bloom, err := exact.LoadBloom(ctx, exactRepo)
+	if err != nil {
+		t.Fatalf("load exact-route bloom: %v", err)
+	}
+	lookups := newCountingLookups()
+	l0 := routing.NewL0Resolver(
+		exact.NewResolver(bloom, rdb, exactRepo, exact.DefaultCacheTTL, exact.WithLookupMeter(lookups)),
+		nil, // no script stage: L1 is another milestone's question, as in step-270c
+		resolver,
+	)
+	preflightRefL0(t, l0, shape)
 	authorizer, err := senderid.LoadSnapshot(ctx, postgres.NewAccountRepo(pool), postgres.NewSenderIDRepo(pool))
 	if err != nil {
 		t.Fatalf("load sender-id snapshot: %v", err)
@@ -407,7 +513,7 @@ func buildRefStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg con
 		Metrics: catalog,
 		Pipeline: pipeline.New(pipeline.Deps{
 			Tracer:    tracer,
-			Resolver:  refResolver{resolver},
+			Resolver:  l0,
 			SenderIDs: authorizer,
 			OptOut:    enforcer,
 			Antispam:  spam,
@@ -475,7 +581,7 @@ func buildRefStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg con
 	waitBound(t, smsc, int(envFloat(t, envBindPool, 4)))
 
 	return &refStack{
-		rest: restSrv, ops: ops, apiKeys: apiKeys, registry: registry, connector: connectorID,
+		rest: restSrv, ops: ops, apiKeys: apiKeys, registry: registry, connector: connectorID, lookups: lookups,
 		consumers: map[string]*kafka.Consumer{
 			kafka.TopicMTInbound: routerConsumer,
 			kafka.TopicMTRouted:  connConsumer,
@@ -884,8 +990,44 @@ func seedRefControlPlane(t *testing.T, pool *pgxpool.Pool, accounts int) ([]stri
 	return keys, connector.ID
 }
 
-// refResolver adapts the declarative snapshot resolver to the enriched pipeline interface, as the
-// walking skeleton does: the reference run exercises declarative routing, not the script short-cut.
+// preflightRefL0 resolves the run's first ported destination before the window opens, so a seed that
+// never bound fails in a second rather than after ninety.
+//
+// It probes the PORTED half only, and that is a deliberate difference from the router-only bench's
+// preflightL0. There, one literal carries all the non-ported traffic, so a Bloom false positive on it
+// is all-or-nothing: 70 % of the messages would pay a store round trip and every guard would still
+// pass. Here the non-ported traffic is spread over the whole ring, a false positive costs one
+// destination in `ring`, and mixHolds is the net that would see it as a shifted mix.
+func preflightRefL0(t *testing.T, l0 *routing.L0Resolver, shape l0Shape) {
+	t.Helper()
+	if shape.share <= 0 {
+		return // nothing was seeded: the stage is a Bloom gate over an empty filter, which is the reading
+	}
+
+	// The lookup takes the canonical form the ingress produces, not the "+"-prefixed form the injector
+	// puts on the wire — refDest carries the plus, e164.Normalize strips it, and a preflight that probed
+	// the wire form would clear a Bloom that the run then misses on every message.
+	ported := l0Dest(0, shape.share, shape.pool)
+	if ported == nonPortedDest {
+		t.Fatalf("REF_PORTED_SHARE=%v puts no ported number at index 0: the run would measure a share it "+
+			"never seeded", shape.share)
+	}
+	route, err := l0.Resolve(context.Background(), pipeline.RouteRequest{Dest: ported, Segments: 1})
+	if err != nil {
+		t.Fatalf("preflight on ported %s: %v", ported, err)
+	}
+	if route.ConnectorID == uuid.Nil {
+		t.Fatalf("preflight on ported %s resolved to no connector: the seed, the Bloom or the canonical "+
+			"form disagree", ported)
+	}
+}
+
+// refResolver adapts the declarative snapshot resolver to the enriched pipeline interface.
+//
+// The reference run no longer uses it: since step-270d it wires routing.NewL0Resolver, as production
+// does. What still does is the router-only bench's "without" side (TestRouterL0Fidelity), which prices
+// the L0 stage by opposing it to the SAME declarative resolver placed behind it — so this type is now
+// the control arm of an A/B, not a shortcut a measurement takes.
 type refResolver struct{ *routing.SnapshotResolver }
 
 func (r refResolver) Resolve(ctx context.Context, req pipeline.RouteRequest) (pipeline.Route, error) {

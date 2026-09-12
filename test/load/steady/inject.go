@@ -59,7 +59,7 @@ type InjectConfig struct {
 	Dest func(seq uint64) string
 
 	// DestRing is how many distinct destinations the run carries: the number of bodies pre-rendered, and
-	// therefore the number of indices Dest is sampled at. Zero uses defaultDestRing.
+	// therefore the number of indices Dest is sampled at. Zero uses DefaultDestRing.
 	//
 	// It was a constant until step-270d, and that is a measurement bug rather than a tuning oversight.
 	// 4 096 destinations at 8 000 msg/s make the exactroute:{msisdn} cache 100 % hot within a second and
@@ -332,10 +332,12 @@ type payloadSet struct {
 	bodies [][]byte
 }
 
-// defaultDestRing is how many distinct bodies are pre-rendered when the caller names no [InjectConfig.DestRing].
+// DefaultDestRing is how many distinct bodies are pre-rendered when the caller names no [InjectConfig.DestRing].
+// It is exported because the reference run has to build a Dest over the same ring it will be sampled on,
+// and a second literal there is a second source of truth for the cardinality every published run carries.
 // It is large enough that the destinations spread across the fixture block and small enough to stay in
 // cache — and it is every figure in test/load/README.md's own cardinality, so it must not move.
-const defaultDestRing = 4096
+const DefaultDestRing = 4096
 
 func newPayloads(cfg InjectConfig) *payloadSet {
 	set := &payloadSet{bodies: make([][]byte, cfg.DestRing)}
@@ -375,7 +377,7 @@ func (c InjectConfig) withDefaults() InjectConfig {
 		c.Text = defaultText
 	}
 	if c.DestRing <= 0 {
-		c.DestRing = defaultDestRing
+		c.DestRing = DefaultDestRing
 	}
 	if c.Dest == nil {
 		c.Dest = func(seq uint64) string { return fmt.Sprintf("+2250700%06d", seq%1000000) }
