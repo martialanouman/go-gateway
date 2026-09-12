@@ -53,7 +53,23 @@ type InjectConfig struct {
 
 	// Dest maps a submission's sequence number to its destination MSISDN. Nil uses a spread over the
 	// +2250700xxxxxx block the repository reserves for fixtures.
+	//
+	// It is sampled over [0, DestRing) ONCE, before the first submission — never with the live sequence
+	// number. However wide a spread it describes, DestRing is what the run actually carries.
 	Dest func(seq uint64) string
+
+	// DestRing is how many distinct destinations the run carries: the number of bodies pre-rendered, and
+	// therefore the number of indices Dest is sampled at. Zero uses defaultDestRing.
+	//
+	// It was a constant until step-270d, and that is a measurement bug rather than a tuning oversight.
+	// 4 096 destinations at 8 000 msg/s make the exactroute:{msisdn} cache 100 % hot within a second and
+	// keep it hot for the whole window, so the campaign would read pg_hit/s ~ 0 and publish that the L0
+	// stage's Postgres throughput is nil — a property of this injector, filed under the gateway.
+	//
+	// Widening it costs the cache locality payloadRing was chosen for, and that cost is not silent: the
+	// injector scores its own shortfall against MaxBehindFraction, so a ring that turns the harness into
+	// the subject fails the run rather than colouring it.
+	DestRing int
 
 	// Key maps a submission's sequence number to the API key it is sent with, and therefore to the
 	// ACCOUNT it lands on. Nil sends every submission with APIKey.
@@ -316,12 +332,13 @@ type payloadSet struct {
 	bodies [][]byte
 }
 
-// payloadRing is how many distinct bodies are pre-rendered. It is large enough that the destinations
-// spread across the fixture block and small enough to stay in cache.
-const payloadRing = 4096
+// defaultDestRing is how many distinct bodies are pre-rendered when the caller names no [InjectConfig.DestRing].
+// It is large enough that the destinations spread across the fixture block and small enough to stay in
+// cache — and it is every figure in test/load/README.md's own cardinality, so it must not move.
+const defaultDestRing = 4096
 
 func newPayloads(cfg InjectConfig) *payloadSet {
-	set := &payloadSet{bodies: make([][]byte, payloadRing)}
+	set := &payloadSet{bodies: make([][]byte, cfg.DestRing)}
 	for i := range set.bodies {
 		body, err := json.Marshal(map[string]any{
 			"to": cfg.Dest(uint64(i)), "from": cfg.Sender, "text": cfg.Text,
@@ -337,7 +354,7 @@ func newPayloads(cfg InjectConfig) *payloadSet {
 }
 
 // at returns the pre-rendered body for a submission index, cycling through the ring.
-func (p *payloadSet) at(seq uint64) []byte { return p.bodies[seq%payloadRing] }
+func (p *payloadSet) at(seq uint64) []byte { return p.bodies[seq%uint64(len(p.bodies))] }
 
 func (c InjectConfig) validate() error {
 	switch {
@@ -356,6 +373,9 @@ func (c InjectConfig) validate() error {
 func (c InjectConfig) withDefaults() InjectConfig {
 	if c.Text == "" {
 		c.Text = defaultText
+	}
+	if c.DestRing <= 0 {
+		c.DestRing = defaultDestRing
 	}
 	if c.Dest == nil {
 		c.Dest = func(seq uint64) string { return fmt.Sprintf("+2250700%06d", seq%1000000) }
