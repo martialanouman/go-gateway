@@ -206,8 +206,10 @@ qu'on mesure un environnement représentatif.
 - [x] step-270b — Images conteneur : Dockerfiles et publication GHCR ⛓ step-270
 - [x] step-270c — Le banc ne traverse pas l'étage L0 : le rendre mesurable (ratios, pas verdict)
       ⛓ step-250e, step-270b
+- [ ] step-270d — Les résidus logiciels de step-270c : L0 dans le run plein-stack, la cardinalité des
+      destinations, le levier de TTL, et le rapport `MaxConns`/voies corrigé ⛓ step-250e, step-270c
 - [ ] step-280 — Campagne NFR pleine échelle sur environnement représentatif ⛓ step-230, step-270b,
-      step-270c
+      step-270c, step-270d
 
 Le seul **défaut de correction** du lot est clos : step-240 a fermé le rejeu d'un message annulé, et
 step-245 le cas où l'annulation avait gagné son jeton sans jamais écrire sa ligne CDR. step-250 a
@@ -287,6 +289,17 @@ ce que la ligne §16 s'apprêtait à promettre — et la fenêtre glissante tena
 panne. Le test ne pouvait pas l'attraper : `startListener` bâtissait un `Listener` **sans** throttle,
 donc différait de la production exactement sur l'axe dont dépendait l'affirmation. D'où la règle :
 **quand une assertion porte sur un code de retour, le harnais câble tout ce qui peut le produire.**
+
+**step-270d sort de step-280 ce qui n'attend pas de matériel.** step-280 est bloquée par un
+environnement représentatif à provisionner — sa propre fiche écrit qu'un « 8 000/s tenu » mesuré
+sur un portable ne validerait rien. Quatre résidus que step-270c lui avait renvoyés sont pourtant
+du logiciel : le run de référence plein-stack **ne traverse toujours pas** l'étage L0, l'injecteur
+plafonne les destinations distinctes à 4 096 — donc un cache `exactroute:{msisdn}` chaud en une
+seconde, et une campagne qui lirait « débit Postgres du L0 = 0 » —, le TTL du cache n'a **aucun
+levier de configuration** alors que la campagne doit en retenir une valeur, et le rapport
+« `MaxConns` / voies par pod » que step-280 annonce à 10/12 **n'est pas atteignable** aux réplicas
+déclarés : 4 à 8 pods pour 12 partitions font 2 à 3 voies par pod, pas 12. Les laisser dans la
+prose d'une fiche bloquée, c'est la dette sans fiche que ce plan a déjà payée plusieurs fois.
 
 ## Audit du 2026-09-03 — six constats vérifiés, sept PR
 L'audit en lecture seule du 2026-09-03 (commit `0f86158`) a rendu toutes les portes vertes et les quatre
