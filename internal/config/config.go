@@ -105,6 +105,7 @@ type Config struct {
 	// nesting is deliberate: the variables an operator sets keep the names step-190 gave them, while
 	// the two roles stop sharing a section.
 	BillingReaper BillingReaper `envPrefix:"BILLING_REAPER_"`
+	Exact         Exact         `envPrefix:"EXACT_"`
 }
 
 // OTel configures tracing export. The variable names follow the OpenTelemetry specification so
@@ -483,6 +484,29 @@ type BillingReaper struct {
 	Interval time.Duration `env:"INTERVAL" envDefault:"5m"`
 }
 
+// Exact configures the L0 exact-number resolver (§6.1, ADR-0015) — the Bloom gate and the
+// exactroute:{msisdn} read-through cache router-svc puts in front of declarative routing.
+//
+// It is a section of its own rather than a field of Redis, and the distinction is what the section
+// mechanism is for: Redis is a client dial target that nine binaries share, while this is a knob of ONE
+// stage in ONE binary. Folding it into Redis would hand the other eight a variable that cannot affect
+// them, and would validate it on their behalf.
+type Exact struct {
+	// CacheTTL bounds how long a cached exact route may outlive a durable change whose invalidation was
+	// lost. Its reasoning lives with the constant it defaults to, exact.DefaultCacheTTL.
+	//
+	// It is configurable because the cache has no other lever. The keys in flight are the populate rate
+	// times this TTL — 1.3 to 10 GB on the Redis shared with the billing balances (step-250e) — and
+	// until step-270d the only recourse on a filling Redis was a redeploy. step-280 has to be able to
+	// retain a value here and carry it into the manifests; that is what makes its decision applicable
+	// rather than merely recorded.
+	//
+	// Lowering it does not free memory at once: it shortens the life of keys written AFTER the change,
+	// and the resolver spreads expiries by +/-10% so a shortened TTL does not become a thundering herd
+	// against Postgres.
+	CacheTTL time.Duration `env:"CACHE_TTL" envDefault:"6h"`
+}
+
 // ContentKey configures a service's CLIENT connection to content-key-svc (the gRPC server on :7002,
 // step-167). admin-api-svc declares it to rotate, read and shred content keys; router-svc declares it to
 // fetch the data key that seals a body at CDR write. It is a client dial target, not a listen port.
@@ -582,13 +606,14 @@ const (
 	SectionBilling
 	SectionContentKey
 	SectionBillingReaper
+	SectionExact
 
 	// SectionAll is what a caller declaring nothing gets. It must include every section, or
 	// Validate() — which runs validate(SectionAll) — would quietly stop being a full check. The
 	// cost of a section a binary does not use is nil: its fields carry valid defaults.
 	SectionAll = SectionOTel | SectionPostgres | SectionKafka | SectionClickHouse | SectionHTTP |
 		SectionRedis | SectionGRPC | SectionSMPP | SectionBilling | SectionContentKey |
-		SectionBillingReaper
+		SectionBillingReaper | SectionExact
 )
 
 // Load reads the configuration for serviceName from the environment and validates the sections it
@@ -691,6 +716,9 @@ func (c Config) validate(sections Section) error {
 	}
 	if sections&SectionBillingReaper != 0 {
 		problems = append(problems, c.billingReaperProblems()...)
+	}
+	if sections&SectionExact != 0 {
+		problems = append(problems, c.exactProblems()...)
 	}
 
 	if len(problems) == 0 {
@@ -1164,6 +1192,20 @@ func (c Config) billingReaperProblems() []string {
 	return problems
 }
 
+func (c Config) exactProblems() []string {
+	var problems []string
+
+	// exact.NewResolver SILENTLY replaces a non-positive ttl with DefaultCacheTTL, and jitterTTL does it
+	// a second time on the write path. A knob that reports a setting it does not have is worse than no
+	// knob: an operator lowering the TTL to purge a filling Redis would get six hours and no sign of it.
+	if c.Exact.CacheTTL <= 0 {
+		problems = append(problems, fmt.Sprintf(
+			"EXACT_CACHE_TTL %s must be positive: exact.NewResolver silently falls back to its own 6h "+
+				"default on a non-positive value, so the knob would lie about the TTL in force", c.Exact.CacheTTL))
+	}
+	return problems
+}
+
 // ParseLogLevel maps a configured level name to its slog level.
 func ParseLogLevel(s string) (slog.Level, error) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
@@ -1206,6 +1248,9 @@ func (c Config) LogValue() slog.Value {
 		slog.Int64("kafka_topic_partitions", int64(c.Kafka.TopicPartitions)),
 		slog.String("kafka_topic_partitions_overrides", c.Kafka.TopicPartitionsOverrides),
 		slog.Int64("kafka_topic_replication_factor", int64(c.Kafka.TopicReplicationFactor)),
+		// The L0 cache TTL is a capacity lever like the ones above: it decides the Redis working set, and
+		// a campaign has to read from the pod's own boot log which value it actually got.
+		slog.Duration("exact_cache_ttl", c.Exact.CacheTTL),
 		slog.Int64("postgres_max_conns", int64(c.Postgres.MaxConns)),
 		slog.Int64("postgres_min_conns", int64(c.Postgres.MinConns)),
 		slog.Any("clickhouse_addr", c.ClickHouse.Addr),

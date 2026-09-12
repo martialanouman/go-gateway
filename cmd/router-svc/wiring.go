@@ -394,7 +394,7 @@ func newPipelineStack(
 	// it from p.exactRepo on a miss, and admin-api-svc DELs the key after its own commit. Passing the
 	// same repo the Bloom is built from keeps one durable source behind both.
 	// exact_route_lookups_total carries one bounded label (outcome), from a vocabulary fixed in code.
-	exactResolver := exact.NewResolver(p.exactBloom, rdb, p.exactRepo, exact.DefaultCacheTTL,
+	exactResolver := exact.NewResolver(p.exactBloom, rdb, p.exactRepo, cfg.Exact.CacheTTL,
 		exact.WithLookupMeter(lookupMeter{c: catalog.ExactRouteLookups}),
 		exact.WithCorruptionMeter(catalog.ExactRouteCacheCorrupt))
 	resolver := routing.NewL0Resolver(exactResolver, p.scriptResolver, boot.routes)
