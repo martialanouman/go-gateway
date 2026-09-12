@@ -131,10 +131,44 @@ quoi on a testé deux fois le même. Enfin, **compter les sites, pas les politiq
 envoi et la branche d'expiration — et n'en couvrir qu'un laisse l'autre sur un double, ce que la ligne
 §16 ne dit pas.
 
-Restent à couvrir : les **trois politiques PostgreSQL hors facturation** — auth de bind SMPP, clés API
-REST, snapshots du routeur (step-260c). Aucune n'a de ligne §16, et le `[MUST]` de §16 exige documentée
-**et** testée : on n'écrit pas la ligne avant d'avoir le test, sous peine de refaire la dette que
-step-250d vient de solder.
+**Les trois politiques PostgreSQL hors facturation sont prouvées (step-260c)** — auth de bind SMPP,
+clés API REST, snapshots du routeur — et §16 a reçu ses trois lignes *après* les tests. Trois règles
+s'en dégagent, qui prolongent celles de step-250d.
+
+D'abord, **le test va là où la politique se décide, pas là où elle se lit**. Le log-et-garde du
+snapshot périmé s'écrit dans `internal/config`, mais ce que §16 affirme — *les routes restent
+résolvables, ni `nil` ni vides* — se décide dans la closure de rebuild de `cmd/router-svc`. Un test
+dans `internal/config` aurait dû fabriquer sa propre closure : il aurait testé le doublage.
+
+Ensuite, **pour un dégradé, le contrôle doit prouver que le chemin nominal marche**. « Ça sert encore
+l'ancien » est vrai d'un hot reload qui n'a jamais fonctionné : c'est le rechargement précédent,
+observé lien debout jusqu'au snapshot servi, qui rend la coupure mesurable. Le pendant côté
+fail-closed est le **second camp** : un bind refusé pour mauvais mot de passe, une clé API inconnue —
+sans eux, « la panne n'a pas répondu `ESME_RINVPASWD` / 401 » n'affirme rien.
+
+Enfin, **la readiness fait partie de la politique** (plan §1.5), et l'assertion se choisit **service par
+service**, jamais par recopie. `rest-api-svc` sonde trois dépendances dont deux sont à port fermé en
+test : son `/readyz` est déjà 503 avant la coupure, donc l'assertion porte sur la sonde **nommée** —
+lever Kafka et ClickHouse pour un fait que le corps énonce coûterait deux conteneurs. `smpp-server-svc`
+n'a qu'**une** sonde, Postgres : l'agrégat 200 → 503 → 200 y est gratuit, et c'est lui qui dit « le pod
+quitte le load balancer ». `router-svc` est le cas inverse : l'assertion utile est que postgres n'y soit
+**pas** sondé du tout. Le commentaire écrit pour le premier a d'abord été copié sur le second, où il
+était faux — une règle tirée d'un seul cas.
+
+**Le coût en conteneurs se compte, il ne se suppose pas.** Les trois paquets `cmd/` touchés
+(`router-svc`, `rest-api-svc`, `smpp-server-svc`) et `internal/smppserver` démarraient déjà Postgres et
+Redis : zéro conteneur neuf. `internal/restapi`, lui,
+était **100 % doublures** et gagne un Postgres — le seul conteneur que cette step ajoute au dépôt. Aucun
+Redpanda ni ClickHouse de plus, donc le risque `fs.aio-max-nr` (step-250c) est inchangé ; ce qui change
+est qu'`internal/restapi` dépend désormais de Docker.
+
+Deux dettes ouvertes par cette step : le watcher **ne rejoue jamais** un rebuild échoué (step-395), et
+l'équivalence « Postgres lent ≡ Postgres coupé » reste non mesurée — `tcpproxy` ne sait que sévérer
+(step-396). Elle a par ailleurs trouvé un **défaut de production** que seule la configuration réelle
+révélait : le listener des tests n'avait pas le throttle anti-brute-force que la production câble
+toujours, et sous ce throttle une panne Postgres finissait par répondre `ESME_RINVPASWD`. Règle :
+**quand une assertion porte sur un code de retour, le harnais doit câbler tout ce qui peut le
+produire.**
 
 ---
 

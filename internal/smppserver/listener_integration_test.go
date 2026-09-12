@@ -15,6 +15,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
+	"github.com/martialanouman/go-gateway/internal/bindthrottle"
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	"github.com/martialanouman/go-gateway/internal/credential"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
@@ -251,20 +252,29 @@ func startRegistry(t *testing.T, rdb *redis.Client) registrypb.SessionRegistryCl
 }
 
 // startListener runs a Listener on an ephemeral SMPP port and returns its resolved address.
-func startListener(t *testing.T, pool *pgxpool.Pool, registry registrypb.SessionRegistryClient) string {
-	addr, _ := startListenerRef(t, pool, registry)
+func startListener(t *testing.T, pool *pgxpool.Pool, registry registrypb.SessionRegistryClient, opts ...listenerOpt) string {
+	addr, _ := startListenerRef(t, pool, registry, opts...)
 	return addr
 }
 
+// listenerOpt adjusts the Options a started listener is built with, for the rare test that needs a
+// surface the default graph leaves nil — the anti-brute-force throttle, say, which production always
+// wires and which therefore participates in what a bind answers.
+type listenerOpt func(*smppserver.Options)
+
 // startListenerRef starts the listener and returns both its address and the *Listener, so a test can
 // reach its pod-local surfaces (e.g. Deliver, step-046).
-func startListenerRef(t *testing.T, pool *pgxpool.Pool, registry registrypb.SessionRegistryClient) (string, *smppserver.Listener) {
+func startListenerRef(t *testing.T, pool *pgxpool.Pool, registry registrypb.SessionRegistryClient, opts ...listenerOpt) (string, *smppserver.Listener) {
 	t.Helper()
-	l := smppserver.New(postgres.NewBindRepo(pool), registry, nil, smppserver.Options{
+	o := smppserver.Options{
 		Addr:     "127.0.0.1:0",
 		PodID:    "pod-test",
 		SystemID: "smpp-server-svc",
-	}, discardLogger())
+	}
+	for _, opt := range opts {
+		opt(&o)
+	}
+	l := smppserver.New(postgres.NewBindRepo(pool), registry, nil, o, discardLogger())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -312,6 +322,16 @@ func (e *esme) bind(t *testing.T, mode smppsession.BindMode, systemID, password 
 	if err := smpp.WritePDU(e.conn, smpp.PDU{Sequence: e.seq, Body: body}); err != nil {
 		t.Fatalf("write bind: %v", err)
 	}
+	// A deadline, because the listener under test runs with IdleTimeout zero and ReadPDU would
+	// otherwise block for ever: a handler that never answers — the plausible outcome when the server's
+	// own dependency is down — would hang the whole package until the go test timeout, which reports
+	// nothing about which bind stopped answering. Generous, so it never fires on a slow CI.
+	if err := e.conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
+		t.Fatalf("set bind read deadline: %v", err)
+	}
+	// And cleared on the way out: a deadline is a property of the CONNECTION, not of this read, so
+	// leaving it would hand unbind — which sets none of its own — a budget it never asked for.
+	defer func() { _ = e.conn.SetReadDeadline(time.Time{}) }()
 	resp, err := smpp.ReadPDU(e.conn)
 	if err != nil {
 		t.Fatalf("read bind resp: %v", err)
@@ -324,6 +344,12 @@ func (e *esme) unbind(t *testing.T) {
 	e.seq++
 	if err := smpp.WritePDU(e.conn, smpp.PDU{Sequence: e.seq, Body: &smpp.Unbind{}}); err != nil {
 		t.Fatalf("write unbind: %v", err)
+	}
+	// Its own budget, like every other read in this package: bind clears the deadline it set, so
+	// inheriting one is no longer an option — and a server that never answers must fail here by name,
+	// not by hanging the package until the go test timeout.
+	if err := e.conn.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		t.Fatalf("set unbind read deadline: %v", err)
 	}
 	if _, err := smpp.ReadPDU(e.conn); err != nil {
 		t.Fatalf("read unbind resp: %v", err)
@@ -348,4 +374,65 @@ func eventuallyBind(t *testing.T, addr, systemID, password string) uint32 {
 		time.Sleep(20 * time.Millisecond)
 	}
 	return last
+}
+
+// TestAMalformedSystemIDIsAnAuthFailureNotAnOutage closes the hole a review of step-260c found in that
+// step's own fix.
+//
+// step-260c stopped ESME_RSYSERR from feeding the anti-brute-force throttle, on the stated grounds that
+// "nothing a client sends can make the credential lookup error". That was wrong. system_id arrives as a
+// C-Octet String and the codec validates nothing (internal/smpp/codec.go:180-197), so 15 arbitrary bytes
+// reach the query as a text parameter; PostgreSQL answers 22021 invalid byte sequence for encoding
+// "UTF8" — a PgError, not pgx.ErrNoRows. That surfaced as ESME_RSYSERR, and with the new guard it would
+// have escaped the throttle entirely: an error path a client can trigger at will, costing a round trip
+// and an unbounded Error log line each time, with no brake left on it.
+//
+// A system_id that is not valid UTF-8 cannot name a row in a UTF-8 database, so the right answer is the
+// one an unknown system_id already gets — which also keeps the attempt inside the counter.
+func TestAMalformedSystemIDIsAnAuthFailureNotAnOutage(t *testing.T) {
+	pool := pgtest.Pool(t)
+	rdb := redistest.Client(t)
+	registry := startRegistry(t, rdb)
+
+	const maxFailures = 3
+	throttle := bindthrottle.New(rdb, bindthrottle.Config{
+		MaxFailures: maxFailures,
+		Window:      time.Minute,
+		BackoffBase: time.Millisecond,
+		BackoffMax:  time.Millisecond,
+	})
+	addr := startListener(t, pool, registry, func(o *smppserver.Options) { o.Throttle = throttle })
+
+	// The throttle answers ESME_RINVPASWD too, and it is consulted BEFORE authorize: if the counter
+	// shared by every ESME of this package were already at the threshold, the assertions below would
+	// pass without the guard existing at all. Clear it, then prove it really is clear.
+	clearSharedIPCounter(t, rdb)
+	if dec, err := throttle.Check(t.Context(), "unused", "127.0.0.1"); err != nil || dec.Blocked {
+		t.Fatalf("the throttle blocks before the test starts (dec=%+v, err=%v): every assertion below "+
+			"would then be measuring the throttle rather than the guard", dec, err)
+	}
+
+	// Invalid UTF-8, inside the 15-octet bound the codec enforces.
+	malformed := "esme-\xff\xfe"
+
+	e := dialESME(t, addr)
+	got := e.bind(t, smppsession.BindTransceiver, malformed, "bindpw12")
+	e.close()
+
+	if got == errs.StatusSysErr {
+		t.Fatalf("a malformed system_id answered %#x (ESME_RSYSERR): the lookup error reached the client "+
+			"as an infrastructure fault, which is both a lie — the database is healthy — and, since "+
+			"step-260c exempts ESME_RSYSERR from the anti-brute-force counter, a client-triggerable way "+
+			"to hammer the control plane with no brake at all", got)
+	}
+	if got != errs.StatusInvalidPasswd {
+		t.Fatalf("a malformed system_id answered %#x, want %#x (ESME_RINVPASWD): it cannot name a row in "+
+			"a UTF-8 database, so it is exactly as unknown as any other system_id that does not exist",
+			got, errs.StatusInvalidPasswd)
+	}
+
+	if _, err := rdb.Get(t.Context(), "bindfail:{"+malformed+"}").Int(); err != nil {
+		t.Fatalf("the attempt was not counted (%v): treating it as an auth failure is what puts the "+
+			"brake back on a path a client controls", err)
+	}
 }
