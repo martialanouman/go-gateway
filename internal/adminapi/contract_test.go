@@ -865,6 +865,12 @@ var deferredSteps = []string{
 // thirty-line list across seven steps.
 func TestEveryContractOperationIsServedOrDeferred(t *testing.T) {
 	declared := operationRefs(loadContract(t))
+	// The stale-entry property below already screams when the contract goes unread — but only while
+	// deferred is non-empty, which stops being true once step-330…390 have served all thirty. This
+	// keeps the guard from quietly becoming a no-op on the day it finally has nothing left to defer.
+	if len(declared) == 0 {
+		t.Fatal("contract declares no operation: the contract went unread, or paths: moved")
+	}
 
 	served := make(map[string]bool, len(m1Operations))
 	for _, op := range m1Operations {

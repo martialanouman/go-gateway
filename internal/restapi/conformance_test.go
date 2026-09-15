@@ -85,6 +85,13 @@ type servedOp struct {
 // vs-batch submit body is a documented divergence); this guards the operation surface.
 func TestServedSpecConformsToContract(t *testing.T) {
 	contract := loadContract(t)
+	// Without this, the whole test is a no-op the day the projection stops matching the YAML: every
+	// assertion below hangs off ranging contract.Paths, so an empty decode passes in silence. Proven
+	// by mutation — renaming the `yaml:"paths"` tag left this test green. adminapi is guarded by its
+	// stale-entry property instead, but only while its deferred list is non-empty.
+	if len(contract.Paths) == 0 {
+		t.Fatal("contract declares no path: the projection no longer matches api/openapi-public.yaml")
+	}
 
 	// Build the API spec-only (nil Principals => no middleware, no requests issued).
 	_, api := restapi.New(restapi.Deps{})
