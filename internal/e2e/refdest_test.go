@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/martialanouman/go-gateway/internal/platform/e164"
 )
 
 // destBlockSize is how many numbers the +2250700xxxxxx fixture block holds. Both halves of the draw
@@ -55,28 +57,53 @@ func ringCoversPool(ring int, share float64, pool int) error {
 		return fmt.Errorf("REF_DEST_RING=%d: the ring is how many bodies the injector pre-renders, so it "+
 			"must hold at least one", ring)
 	}
-	// The block check comes FIRST, and the order is the finding rather than a preference: on a
-	// configuration that both overflows and under-covers, the coverage branch's remedy — a wider ring —
-	// makes the overflow worse. A guard whose advice deepens the other failure has to yield to it.
-	if pool+ring > destBlockSize {
-		return fmt.Errorf("REF_PORTED_POOL=%d and REF_DEST_RING=%d need %d numbers side by side, past the "+
-			"%d the +2250700xxxxxx fixture block holds: the non-ported spread would wrap into the ported "+
-			"set and every wrapped message would be an L0 hit the mix guard does not expect",
-			pool, ring, pool+ring, destBlockSize)
+	num := portedPerBlock(share)
+
+	// The domain of the two ported levers, mirrored from portedSet. refL0Shape calls nothing else, so a
+	// refusal portedSet owns and this guard does not is a refusal paid after three containers and a
+	// ten-second calibration — and, worse, the branches below would first phrase it in numbers that
+	// contradict each other (a share of 30 reports 120 096 draws as "short of" a pool of 100 000).
+	// num == 0 is NOT in here: it is the default, and it means no ported traffic rather than a typo.
+	if num > portedShareDen {
+		return fmt.Errorf("REF_PORTED_SHARE=%v is outside the domain the draw covers: it is a FRACTION, so "+
+			"it must land in [%v, 1]. Above 1 the draw strides instead of covering N, and whether it ever "+
+			"reaches the pool depends on gcd", share, 1.0/portedShareDen)
 	}
-	if num := portedPerBlock(share); num > 0 && ring < minRingFor(num, pool) {
+	if num > 0 && pool < 1 {
+		return fmt.Errorf("REF_PORTED_POOL=%d: the working set is what the draw covers, what the seed "+
+			"writes into exact_routes and what the mix guard expects, so it must hold at least one number", pool)
+	}
+
+	// The block bound, and it is read on the CLAMPED pool because that is the one refDest draws from:
+	// below one it spreads from 2, not from pool+1. At share=0 — the default — portedSet is never called,
+	// so this is the only thing that validates REF_PORTED_POOL at all.
+	//
+	// The comparison is >=, not >: refDest's last value is pool+1+(ring-1) = pool+ring, and slot 0 is
+	// taken by the non-ported literal, so the widest drawable number is destBlockSize-1. Accepting the
+	// boundary rendered "+22507001000000" — fourteen digits, refused by e164.Normalize, answered 400 by
+	// the ingress, and killed by the error clause after the whole window had run.
+	if drawn := max(pool, 1) + ring; drawn >= destBlockSize {
+		return fmt.Errorf("REF_PORTED_POOL=%d and REF_DEST_RING=%d draw up to %d, past the %d numbers the "+
+			"+2250700xxxxxx fixture block holds: the spread would leave the block and the ingress would "+
+			"refuse every number past its end", pool, ring, drawn, destBlockSize-1)
+	}
+
+	if num > 0 && ring < minRingFor(num, pool) {
 		return fmt.Errorf("REF_DEST_RING=%d draws %d distinct ported numbers at REF_PORTED_SHARE=%v, "+
 			"short of the REF_PORTED_POOL=%d the seed writes: the run would touch a fraction of the "+
-			"working set, read a 100%% redis_hit mix that mixHolds accepts as a legitimate warm bound, "+
-			"and publish a Postgres read rate of nil. Raise the ring to at least %d",
+			"working set, read a mix its guard cannot predict, and publish a Postgres read rate of nil. "+
+			"Raise the ring to at least %d",
 			ring, portedReach(ring, num), share, pool, minRingFor(num, pool))
 	}
 	return nil
 }
 
-// portedReach is how many DISTINCT ported numbers a ring of `ring` indices draws when l0Dest takes num
-// of every portedShareDen. The ordinals it produces are consecutive from zero, so the count is the
-// answer and no set has to be built.
+// portedReach is how many of a ring's indices are PORTED draws, when l0Dest takes num of every
+// portedShareDen. The ordinals it produces are consecutive from zero, so the count is the answer and no
+// set has to be built.
+//
+// It is a count of draws, not of distinct numbers: those are min(portedReach, pool), and the two differ
+// exactly when the ring already covers the pool — which is the case the coverage branch does not report.
 func portedReach(ring, num int) int {
 	return (ring/portedShareDen)*num + min(ring%portedShareDen, num)
 }
@@ -89,10 +116,10 @@ func portedReach(ring, num int) int {
 // A pool that is a whole number of blocks stops at the last ported index of its last block rather than
 // at the block boundary, hence the two cases.
 //
-// There is deliberately no pool < 1 guard. It would be dead code: below one the expression falls under
-// any ring the caller can still be holding — ring < 1 is refused before this is reached — so the
-// coverage branch cannot fire either way, and a pool of zero with a drawable share is refused by
-// portedSet at seed time, in the words of the lever an operator actually set.
+// There is deliberately no pool < 1 guard, and the reason is now upstream rather than incidental: the
+// caller refuses a pool below one whenever the share is drawable, so this is only ever reached with
+// pool >= 1. Before that guard existed the expression yielded -700 at pool=0 and the coverage branch
+// silently could not fire.
 func minRingFor(num, pool int) int {
 	blocks, rest := pool/num, pool%num
 	if rest == 0 {
@@ -206,18 +233,139 @@ func TestRefDestIsCanonicalE164(t *testing.T) {
 	for _, share := range []float64{0, 0.3, 1} {
 		for _, pool := range []int{-5, 0, 1, 1000} {
 			for i := range 2048 {
-				got := refDest(i, 2048, share, pool)
-				digits, ok := strings.CutPrefix(got, "+")
-				if !ok {
-					t.Fatalf("refDest(%d, share=%v, pool=%d) = %q, want the leading plus the REST ingress takes",
-						i, share, pool, got)
-				}
-				if !canonicalMSISDN.MatchString(digits) {
-					t.Fatalf("refDest(%d, share=%v, pool=%d) = %q: %q is not the canonical form exact_routes "+
-						"accepts", i, share, pool, got, digits)
-				}
+				assertDrawable(t, i, 2048, share, pool)
 			}
 		}
+	}
+}
+
+// TestRefDestStaysInsideTheBlockAtTheBoundary is the case the canonical sweep above cannot reach and
+// ringCoversPool is supposed to keep out: the widest ring the guard admits.
+//
+// It is the falsifying case for the guard's own arithmetic. refDest draws pool+1+i, so its LAST value is
+// pool+ring — one past what pool+ring <= destBlockSize allows, and the slot the non-ported literal
+// already occupies is 0. At the accepted boundary the draw rendered "+22507001000000", fourteen digits,
+// which e164.Normalize rejects: the ingress answers 400, steady.Criteria tolerates zero errors, and the
+// run dies after the full window on a diagnosis that names HTTP rather than the lever that caused it.
+func TestRefDestStaysInsideTheBlockAtTheBoundary(t *testing.T) {
+	for _, tc := range []struct{ ring, pool int }{
+		{destBlockSize - 2, 0}, // pool clamped to 1, so the last draw is exactly destBlockSize-1
+		{destBlockSize - 2, 1},
+		{900000, 99999},
+		{destBlockSize / 2, destBlockSize/2 - 1},
+	} {
+		t.Run(fmt.Sprintf("ring=%d/pool=%d", tc.ring, tc.pool), func(t *testing.T) {
+			if err := ringCoversPool(tc.ring, 0, tc.pool); err != nil {
+				t.Fatalf("ringCoversPool(%d, 0, %d) = %v, want nil: this is the widest admissible shape",
+					tc.ring, tc.pool, err)
+			}
+			// The last index is the only one that can overflow, so assert it first and by name.
+			assertDrawable(t, tc.ring-1, tc.ring, 0, tc.pool)
+			assertDrawable(t, 0, tc.ring, 0, tc.pool)
+		})
+	}
+}
+
+// assertDrawable holds a draw to what the whole chain accepts, and the e164 leg is the one that matters:
+// canonicalMSISDN is ^[1-9][0-9]+$ with NO length bound, so it passes a fourteen-digit number that no
+// numbering plan contains. refl0_test.go pays this lesson already — "Postgres would catch the '+' via the
+// CHECK; nothing would catch the second" — and refDest is the draw that can leave the block.
+func assertDrawable(t *testing.T, i, ring int, share float64, pool int) {
+	t.Helper()
+
+	got := refDest(i, ring, share, pool)
+	digits, ok := strings.CutPrefix(got, "+")
+	if !ok {
+		t.Fatalf("refDest(%d, ring=%d, share=%v, pool=%d) = %q, want the leading plus the REST ingress takes",
+			i, ring, share, pool, got)
+	}
+	if !canonicalMSISDN.MatchString(digits) {
+		t.Fatalf("refDest(%d, ring=%d, share=%v, pool=%d) = %q: %q is not the canonical form exact_routes "+
+			"accepts", i, ring, share, pool, got, digits)
+	}
+	norm, err := e164.Normalize(digits)
+	if err != nil {
+		t.Fatalf("refDest(%d, ring=%d, share=%v, pool=%d) = %q: e164.Normalize rejects it (%v) — the "+
+			"ingress would answer 400 and the run would die on its error clause", i, ring, share, pool, got, err)
+	}
+	if norm != digits {
+		t.Fatalf("refDest(%d, ring=%d, share=%v, pool=%d) = %q but normalizes to %q: the injected number "+
+			"and the looked-up key would differ", i, ring, share, pool, got, norm)
+	}
+}
+
+// TestRingCoversPoolRefusesTheBlockBoundary is the falsifying pair the overflow branch never had. It was
+// only ever asked at 1.2x the bound, where every variant of the inequality is green — the exact reproach
+// TestRingCoversPoolTurnsOnTheRingItAdvises makes to the other branch.
+func TestRingCoversPoolRefusesTheBlockBoundary(t *testing.T) {
+	if err := ringCoversPool(destBlockSize-1, 0, 1); err == nil {
+		t.Error("ringCoversPool(ring=destBlockSize-1, pool=1) = nil: the last draw is pool+ring = " +
+			"destBlockSize, one past the block")
+	}
+	if err := ringCoversPool(destBlockSize-2, 0, 1); err != nil {
+		t.Errorf("ringCoversPool(ring=destBlockSize-2, pool=1) = %v, want nil: the last draw is exactly "+
+			"destBlockSize-1, the widest number the block holds", err)
+	}
+}
+
+// TestRingCoversPoolReadsTheClampedPool: refDest clamps pool below one, the guard must weigh the same
+// number. At share=0 — the DEFAULT — portedSet is never called, so this branch is the only thing that
+// validates REF_PORTED_POOL at all.
+func TestRingCoversPoolReadsTheClampedPool(t *testing.T) {
+	if err := ringCoversPool(destBlockSize-1, 0, -100000); err == nil {
+		t.Error("ringCoversPool(ring=destBlockSize-1, pool=-100000) = nil: refDest clamps the pool to 1 " +
+			"and draws up to 1+ring, so the guard must not credit the negative pool with room it does not buy")
+	}
+}
+
+// TestPortedReachCountsTheDraw gives portedReach the assertion it never had. Every one of its uses is
+// inside a message — the refusal's diagnosis, and an Errorf reached only once a test has already failed
+// — so dropping its remainder term stayed green across the whole suite while the refusal told an
+// operator a false count.
+func TestPortedReachCountsTheDraw(t *testing.T) {
+	for _, num := range []int{1, 2, 7, 300, 999, 1000} {
+		for _, ring := range []int{1, 99, 300, 301, 1000, 1001, 4096} {
+			want := 0
+			for i := range ring {
+				if i%portedShareDen < num {
+					want++
+				}
+			}
+			if got := portedReach(ring, num); got != want {
+				t.Errorf("portedReach(%d, %d) = %d, want %d: the count the refusal reports must be the "+
+					"draw the run actually makes", ring, num, got, want)
+			}
+		}
+	}
+}
+
+// TestRingCoversPoolMirrorsThePortedSetDomain: refL0Shape exists to refuse BEFORE the containers start,
+// and it only calls ringCoversPool. Every refusal portedSet owns but this guard does not is a refusal
+// paid after three containers and a ten-second calibration — or, worse, a refusal phrased in numbers
+// that contradict themselves.
+func TestRingCoversPoolMirrorsThePortedSetDomain(t *testing.T) {
+	// The percentage typed where the fraction belongs — the case portedSet names in full.
+	err := ringCoversPool(4096, 30, 100000)
+	if err == nil {
+		t.Fatal("ringCoversPool(share=30) = nil: a share above 1 strides the draw, and portedSet refuses it " +
+			"after the containers are up")
+	}
+	if !strings.Contains(err.Error(), "REF_PORTED_SHARE") {
+		t.Errorf("the refusal is %q, want it to name the lever that is out of range", err)
+	}
+	if strings.Contains(err.Error(), "short of") {
+		t.Errorf("the refusal is %q — the coverage branch, which reports 120096 numbers as 'short of' "+
+			"100000 and advises a ring below the pool", err)
+	}
+
+	// A pool of zero with a drawable share: portedSet refuses it, this guard must too.
+	err = ringCoversPool(4096, 0.3, 0)
+	if err == nil {
+		t.Fatal("ringCoversPool(share=0.3, pool=0) = nil: minRingFor yields a negative ring there, so the " +
+			"coverage branch cannot fire and the refusal lands after the seed")
+	}
+	if !strings.Contains(err.Error(), "REF_PORTED_POOL") {
+		t.Errorf("the refusal is %q, want it to name the lever that is out of range", err)
 	}
 }
 
