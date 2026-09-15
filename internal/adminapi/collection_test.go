@@ -56,20 +56,9 @@ func collectionRequestNames(t *testing.T) map[string]bool {
 // registeredOperationIDs returns every operationId Huma registers for the Admin API.
 func registeredOperationIDs(t *testing.T) map[string]bool {
 	t.Helper()
-	generated := loadGenerated(t)
 	ids := map[string]bool{}
-	paths, _ := generated["paths"].(map[string]any)
-	for _, item := range paths {
-		methods, _ := item.(map[string]any)
-		for method, node := range methods {
-			switch method {
-			case "get", "post", "put", "patch", "delete", "head", "options", "trace":
-				op, _ := node.(map[string]any)
-				if id := str(op["operationId"]); id != "" {
-					ids[id] = true
-				}
-			}
-		}
+	for id := range operationRefs(loadGenerated(t)) {
+		ids[id] = true
 	}
 	return ids
 }
