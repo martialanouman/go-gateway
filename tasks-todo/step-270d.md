@@ -1,6 +1,6 @@
 # step-270d — Les résidus logiciels de step-270c, avant que la campagne ne mesure
 
-> **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
+> **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** FAIT
 > **Dépend de :** step-250e, step-270c · **Bloque :** step-280
 
 ## But
@@ -206,21 +206,53 @@ L'ordre est contraignant, et le premier point n'est pas une formalité.
 
 ## Definition of Done
 
-- [ ] `make check` vert (lint · `test -race` · govulncheck · contrats)
-- [ ] levier de cardinalité livré, défaut inchangé, et la mutation qui le fige vue tomber
-- [ ] la garde `ring ≥ pool × 1000 / num` livrée (D1, point 3) : sans elle le levier est un bouton qui
+- [x] `make check` vert (lint · `test -race` · govulncheck · contrats)
+- [x] levier de cardinalité livré, défaut inchangé, et la mutation qui le fige vue tomber
+- [x] la garde `ring ≥ pool × 1000 / num` livrée (D1, point 3) : sans elle le levier est un bouton qui
       ne commande rien à `share > 0`, parce que `newPayloads` n'échantillonne `Dest` que sur l'anneau
-- [ ] le run de référence traverse L0 avec le vrai `NewL0Resolver`, semé par les fonctions pures de
+- [x] le run de référence traverse L0 avec le vrai `NewL0Resolver`, semé par les fonctions pures de
       step-270c — aucune copie
-- [ ] relance à `share=0` consignée **contre la bande**, quel que soit son verdict — bande qui n'existe
+- [x] relance à `share=0` consignée **contre la bande**, quel que soit son verdict — bande qui n'existe
       pas encore et que cette PR établit elle-même (D2), trois runs avant / trois après
-- [ ] clé de config du TTL livrée, câblée, et reportée dans `deploy/k8s/configmap.yaml`
-- [ ] `step-280.md:132-133` corrigée **et `:103-104` avec elle** — les deux portent la même erreur à
+- [x] clé de config du TTL livrée, câblée, et reportée dans `deploy/k8s/configmap.yaml`
+- [x] `step-280.md:132-133` corrigée **et `:103-104` avec elle** — les deux portent la même erreur à
       trente lignes d'écart, et corriger l'une seule ferait se contredire la fiche
-- [ ] l'invariant `MaxConns ≥ ⌈partitions / minReplicas⌉` gardé par un test dans `internal/deploy`
-- [ ] `test/load/README.md:1157-1159` — « les deux restent à step-280 » ne survit pas à cette PR : le
+- [x] l'invariant `MaxConns ≥ ⌈partitions / minReplicas⌉` gardé par un test dans `internal/deploy`
+- [x] `test/load/README.md:1157-1159` — « les deux restent à step-280 » ne survit pas à cette PR : le
       README dit ce que le run de référence traverse désormais et ce que le nouveau levier fait. Un
       document faux coûte plus cher qu'un document absent
+
+## Ce que la livraison a trouvé
+
+**Neuf défauts, tous découverts par une mutation** plutôt que par une relecture. Les trois qui comptent :
+
+1. **Une troisième collision, que la fiche n'avait pas vue.** `newPayloads` n'échantillonne `Dest` que
+   sur `[0, ring)`, donc l'anneau bornait aussi le tirage **porté** — à 4 096 et part 0,3, ~1 200 numéros
+   quel que soit `REF_PORTED_POOL`. Le levier de R2 aurait été un bouton sans `ringCoversPool`.
+2. **Le conseil de `ringCoversPool` était faux, et tombait dans le mauvais ordre.** Il annonçait
+   `pool × 1000 / num` — 5 000 là où 4 001 couvre — et sa branche passait **avant** celle du débordement
+   de bloc, dont elle aggrave le défaut. `minRingFor` décide et conseille désormais avec la même
+   expression.
+3. **Le couple falsifiant de `minRingFor` était circulaire** : il tirait son attendu de la fonction que
+   `ringCoversPool` utilise aussi, donc les deux côtés bougeaient ensemble. `smallestCoveringRing`
+   énumère par `l0Dest`.
+
+Plus trois fixtures creuses (la disjonction ne mord qu'à `pool > num` ; « aucune copie » passait sous une
+seconde formule parce que `pool=100` divise 700 ; le garde de l'anneau vide n'était atteignable qu'à
+`share=0`), deux branches non couvertes dans `internal/deploy` (`minReplicas` absent, arrondi supérieur)
+et un code mort supprimé.
+
+**Et une case qui n'est pas tenue telle qu'écrite.** La « bande de reproductibilité consignée dans le
+journal » n'existait pas pour le run de référence — celle du journal est celle du banc routeur isolé.
+Elle a été **établie ici** (trois runs `main` contre trois runs branche, même session), et son premier
+enseignement porte sur elle-même : sur six runs de base, le critère D2 n'est tenu qu'une fois. Les trois
+runs à `share=0` tombent à l'intérieur sur chaque grandeur et tiennent le critère 2 fois sur 3. Ce que
+ça établit est que **la porte Bloom n'est pas chiffrable ici** — le résultat que `D1` annonçait, le run
+tenant son taux. Ce que ça n'établit pas est que « rien n'a bougé ».
+
+Le palier à `PORTED_SHARE=0.3` n'a pas rendu de chiffre : lancé pendant une campagne de mutations sur la
+même machine, il a été affamé jusqu'à ce que le démon Docker cesse de répondre, puis tué. Consigné
+plutôt que coché.
 
 ## Hors périmètre — et qui reste à step-280
 

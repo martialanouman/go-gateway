@@ -112,6 +112,10 @@ Restent trois grandeurs à trancher là-bas, et qui ne sont pas devinables ici :
   10 Go de clés en vol selon le profil. En `allkeys-*`, Redis évincerait des clés de routage —
   dégradation silencieuse vers Postgres ; en `volatile-*`, la pression retombe sur les clés à TTL,
   dont ce cache. À décider, pas à hériter du défaut.
+  Le TTL, lui, **est** réglable depuis step-270d : `EXACT_CACHE_TTL` (6h, le défaut inchangé) est dans
+  le ConfigMap, et les clés en vol valent le taux de peuplement × ce TTL. C'est la valeur qui reste à
+  step-280, plus le levier ; jusque-là le seul recours sur un Redis qui se remplissait était un
+  redéploiement.
 - **`maxReplicas` de chaque HPA**, avec le nombre de partitions correspondant.
 
 Une métrique `External` suppose un `prometheus-adapter` ou KEDA dans le cluster : la jauge
