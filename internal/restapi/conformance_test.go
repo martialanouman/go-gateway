@@ -16,7 +16,14 @@ import (
 // contractDoc is a minimal projection of api/openapi-public.yaml: enough to assert operation-level
 // conformance without wrestling with huma's JSON-Schema serialization quirks.
 type contractDoc struct {
-	Security   []map[string][]string            `yaml:"security"`
+	Security []map[string][]string `yaml:"security"`
+	// Paths is typed to the verb map, which is also what keeps webhooks: (the outgoing on-mo/on-dlr
+	// callbacks, OpenAPI 3.1) out of reach: they are not endpoints anyone serves, and a generic
+	// map[string]any sweep would demand they be classified. The known limit, observed rather than
+	// predicted: the day a path-item carries a `parameters:` key, this decode fails with
+	// `parse contract: yaml: unmarshal errors: line N: cannot unmarshal !!seq into contractOp` and
+	// t.Fatalf stops the test. That is loud, immediate and names the line — not a silent hole — so it
+	// is left alone; the fix, when it comes, is to key this on the HTTP verbs.
 	Paths      map[string]map[string]contractOp `yaml:"paths"`
 	Components struct {
 		Schemas map[string]struct {
@@ -33,14 +40,21 @@ type contractOp struct {
 	Security    []map[string][]string `yaml:"security"`
 }
 
+// deferredOp annotates an operation the contract declares and nobody serves yet. It is the same form
+// internal/adminapi uses, declared here rather than shared: a package exported for one type of two
+// fields would be an abstraction bought for nobody. The fields are asserted non-empty so the FIRST
+// entry to land here arrives annotated, instead of starting the free-text list this form exists to
+// prevent.
+type deferredOp struct{ reason, step string }
+
 // implemented are the operations the public API serves. deferred lists operations the contract
 // declares but does not serve yet — none currently: cancel-message was removed from the contract
 // because cancellation is SMPP-only (ADR-0009). The conformance test asserts the served spec is
-// exactly the implemented set: it matches the contract for what it serves, and serves nothing it
-// should not.
+// exactly the implemented set: it matches the contract for what it serves, serves nothing it should
+// not, and — since step-320 — leaves nothing in the contract unclassified.
 var (
 	implemented = map[string]bool{"submit-messages": true, "get-message": true, "get-account": true, "list-messages": true, "health": true}
-	deferred    = map[string]bool{}
+	deferred    = map[string]deferredOp{}
 )
 
 func loadContract(t *testing.T) contractDoc {
@@ -93,6 +107,14 @@ func TestServedSpecConformsToContract(t *testing.T) {
 
 	for path, methods := range contract.Paths {
 		for method, cop := range methods {
+			// The direction the loop below cannot take: declared in the published contract, classified
+			// by nobody. Without it, an operation added to the YAML and to neither map is skipped in
+			// silence. There is no gap to absorb today (5 served of 5), which is exactly why it is
+			// free to add now and will not be later.
+			if _, isDeferred := deferred[cop.OperationID]; !implemented[cop.OperationID] && !isDeferred {
+				t.Errorf("contract declares %s %s (%s): it is in neither implemented nor deferred",
+					method, path, cop.OperationID)
+			}
 			if !implemented[cop.OperationID] {
 				continue
 			}
@@ -119,9 +141,12 @@ func TestServedSpecConformsToContract(t *testing.T) {
 		}
 	}
 
-	for id := range deferred {
+	for id, entry := range deferred {
 		if _, ok := servedOps[id]; ok {
-			t.Errorf("operation %q is deferred to M3 but is served", id)
+			t.Errorf("operation %q is deferred but is served: drop the deferred entry", id)
+		}
+		if entry.reason == "" || entry.step == "" {
+			t.Errorf("deferred %q has reason=%q step=%q: both are required", id, entry.reason, entry.step)
 		}
 	}
 }
