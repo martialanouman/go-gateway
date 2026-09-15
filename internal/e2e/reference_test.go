@@ -132,6 +132,16 @@ type l0Shape struct {
 	pool  int
 }
 
+// describe renders the shape for the journal. At share=0 it says the pool is unused rather than printing
+// it: seedExactRoutes returns immediately there, so a line reading "over 100000 ported numbers" named a
+// working set of which ZERO rows were written.
+func (s l0Shape) describe() string {
+	if portedPerBlock(s.share) <= 0 {
+		return "no ported route seeded, Bloom gate only"
+	}
+	return fmt.Sprintf("share %.3f over %d ported numbers", s.share, s.pool)
+}
+
 // refL0Shape reads the three levers and refuses the combinations that cannot draw what they promise,
 // BEFORE the containers start. A run refused here costs seconds; the same run refused by mixHolds costs
 // the whole window, and the combinations ringCoversPool catches are not refused by mixHolds at all —
@@ -288,6 +298,16 @@ func TestReferenceRun(t *testing.T) {
 	}
 	verdict := steady.Evaluate(m, criteria)
 
+	// The L0 stage's own denominator is pipeline_duration_seconds' COUNT, not m.Submitted. Both read the
+	// same number today, and that coincidence is the trap: Submitted is submits_total, taken two stages
+	// and a Kafka topic downstream at the submit_sm_resp, and counted in SEGMENTS. A longer Text, or a
+	// connector pool that falls behind inside the window — which the D2 criteria tolerate — would make
+	// the mix guard fail on something that is not the L0 stage. pipeCount is incremented once per
+	// Pipeline.Process, which is exactly once per L0 resolution.
+	resolutions := pipeCountAfter - pipeCountBefore
+	mix := subtractMix(mixBefore, mixAfter)
+	ported := portedInWindow(resolutions, shape.ring, shape.share)
+
 	t.Logf("\n===== step-201 D2 reference run =====\n"+
 		"target %.0f msg/s over %d workers · warmup %v · window %v · settle %v\n"+
 		// Whole run, warmup and settle included — deliberately NOT the figure the verdict scores, which
@@ -299,7 +319,7 @@ func TestReferenceRun(t *testing.T) {
 		"backlog by topic across the window: %s\n"+
 		"mt.inbound backlog by partition at window close: %s\n"+
 		"router pipeline: %s\n"+
-		"L0 stage (share %.3f over %d ported numbers, %d distinct destinations): %s\n"+
+		"L0 stage (%s, %d distinct destinations): %s\n"+
 		"host: %s\n"+
 		"%s\n",
 		rate, workers, warmup, measure, settle,
@@ -307,17 +327,17 @@ func TestReferenceRun(t *testing.T) {
 		win.P50.Round(time.Millisecond), win.P99.Round(time.Millisecond), win.Max.Round(time.Millisecond),
 		s.e2eQuantile(t), lags.breakdown(from, to), lags.partitions(from, to),
 		pipelineShare(pipeSumAfter-pipeSumBefore, pipeCountAfter-pipeCountBefore, m.Submitted, measure),
-		shape.share, shape.pool, shape.ring, renderMix(subtractMix(mixBefore, mixAfter), m.Submitted),
+		shape.describe(), shape.ring, renderMix(mix, resolutions),
 		cpuShare(cpuAfter-cpuBefore, measure),
 		verdict)
 
-	// The mix guard only has a model to check once something is ported: at share=0 every lookup is a
-	// bloom_miss by construction, and mixHolds says so by returning early rather than by pretending to
-	// verify a store leg that does not exist.
-	if shape.share > 0 {
-		if err := mixHolds(subtractMix(mixBefore, mixAfter), m.Submitted, shape.share, shape.pool); err != nil {
-			t.Errorf("the L0 outcome mix is not the one this shape draws: %v", err)
-		}
+	// mixCarriesItsShare, NOT mixHolds: this window is HOT. The run warms for 20 s without ever flushing
+	// Redis, and its ring is cycled several times before the window opens, so every ported number is
+	// already cached — pg_hit is ~0 where the cold model expects the whole pool. mixHolds would refuse
+	// every run at a share above zero, accusing this harness of not flushing a cache it is not written
+	// to flush. What holds here is the share that reaches the store at all, and it holds at share=0 too.
+	if err := mixCarriesItsShare(mix, resolutions, ported); err != nil {
+		t.Errorf("the L0 outcome mix is not the one this shape draws: %v", err)
 	}
 
 	if !verdict.Pass() {

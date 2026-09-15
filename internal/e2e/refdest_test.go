@@ -486,3 +486,128 @@ func TestRingCoversPoolRefusesAnEmptyRing(t *testing.T) {
 		t.Errorf("the refusal is %q, want it to name the lever an operator has to change", err)
 	}
 }
+
+// portedInWindow is how many of a window's resolutions reach the store, given the ring the injector
+// actually samples.
+//
+// It is NOT share x messages, and the difference is a property of the harness rather than a rounding.
+// l0Dest places the ported draws at the HEAD of each block of portedShareDen, and the injector samples
+// Dest over [0, ring) — so a ring that is not a whole number of blocks is truncated in excess. At the
+// default 4 096 and a share of 0.3 the traffic is 1296/4096 = 31.6 % ported, not 30 %: a 5.5 % bias, half
+// of maxMixGap eaten by an artefact of the ring, and a journal line that publishes the share it was
+// asked for rather than the one it drew.
+func portedInWindow(messages uint64, ring int, share float64) uint64 {
+	num := portedPerBlock(share)
+	if num <= 0 || ring < 1 {
+		return 0
+	}
+	return messages * uint64(portedReach(ring, num)) / uint64(ring)
+}
+
+func TestPortedInWindowFollowsTheRingAndNotTheShare(t *testing.T) {
+	// The default shape: 4 096 is four whole blocks plus 96 indices, and the 96 are all ported at a
+	// share of 0.3 because the ported draws lead each block.
+	if got, want := portedInWindow(4096, 4096, 0.3), uint64(1296); got != want {
+		t.Errorf("portedInWindow(4096 messages, ring 4096, share 0.3) = %d, want %d: share x messages "+
+			"would say 1228, and the 5.5%% gap is the ring's truncation, not rounding", got, want)
+	}
+	// A ring that is a whole number of blocks carries exactly the share.
+	if got, want := portedInWindow(10000, 1000, 0.3), uint64(3000); got != want {
+		t.Errorf("portedInWindow over a whole block = %d, want %d", got, want)
+	}
+	// The pathological ring the guard admits: shorter than one block, every index ported.
+	if got, want := portedInWindow(1000, 300, 0.3), uint64(1000); got != want {
+		t.Errorf("portedInWindow(ring 300, share 0.3) = %d, want %d: the first 300 indices of a block are "+
+			"ALL ported, so the run is 100%% ported while the share says 30%%", got, want)
+	}
+	if got := portedInWindow(1000, 4096, 0); got != 0 {
+		t.Errorf("portedInWindow at share=0 = %d, want 0", got)
+	}
+}
+
+// TestMixCarriesItsShareAcceptsAWarmWindow is the defect this split exists for.
+//
+// The full-stack reference run holds a 20 s warmup, never FLUSHDBs, and cycles its ring several times
+// before the window opens — so by then every ported number is cached, pg_hit is ~0 and redis_hit carries
+// the whole ported share. That is a LEGITIMATE run: it is what production steady state looks like.
+// mixHolds refuses it, because its model is written for a cache flushed before the palier, and the
+// message it prints accuses the harness of not flushing.
+func TestMixCarriesItsShareAcceptsAWarmWindow(t *testing.T) {
+	const (
+		messages = 72000
+		ring     = 4096
+		share    = 0.3
+		pool     = 1000
+	)
+	ported := portedInWindow(messages, ring, share)
+	warm := map[string]uint64{"bloom_miss": messages - ported, "redis_hit": ported}
+
+	if err := mixCarriesItsShare(warm, messages, ported); err != nil {
+		t.Errorf("a warm window is refused: %v", err)
+	}
+	if err := mixHolds(warm, messages, share, pool); err == nil {
+		t.Error("mixHolds accepted a warm window: if it ever does, this split has stopped being needed " +
+			"and the reference run can go back to the full model")
+	}
+}
+
+// TestMixCarriesItsShareStillCatchesWhatMattersOnAWarmWindow: dropping the cold split must not drop the
+// four failures that do not depend on cache warmth.
+func TestMixCarriesItsShareStillCatchesWhatMattersOnAWarmWindow(t *testing.T) {
+	const messages, ported = uint64(1000), uint64(300)
+	sound := map[string]uint64{"bloom_miss": 700, "redis_hit": 300}
+
+	if err := mixCarriesItsShare(sound, messages, ported); err != nil {
+		t.Fatalf("the sound mix is refused: %v", err)
+	}
+	for name, tc := range map[string]struct {
+		counts map[string]uint64
+		want   string
+	}{
+		"a failed lookup": {
+			counts: map[string]uint64{"bloom_miss": 700, "redis_hit": 299, "pg_error": 1},
+			want:   "pg_error",
+		},
+		"an outcome the vocabulary does not hold": {
+			counts: map[string]uint64{"bloom_miss": 700, "redis_hit": 300, "pg_negative_hit": 40},
+			want:   "pg_negative_hit",
+		},
+		"fewer observations than resolutions": {
+			counts: map[string]uint64{"bloom_miss": 200, "redis_hit": 300},
+			want:   "observations",
+		},
+		"the store was never reached": {
+			counts: map[string]uint64{"bloom_miss": 1000},
+			want:   "300",
+		},
+		"the store carried more than the share": {
+			counts: map[string]uint64{"bloom_miss": 400, "redis_hit": 600},
+			want:   "600",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := mixCarriesItsShare(tc.counts, messages, ported)
+			if err == nil {
+				t.Fatalf("accepted %v", tc.counts)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("the refusal is %q, want it to name %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestMixCarriesItsShareRunsAtShareZero: the share=0 palier is the DEFAULT of the reference run, and it
+// still has three things worth checking — no failed lookup, no unknown outcome, one observation per
+// resolution. mixHolds returned nil before reaching any of them, so the run gated its call on share > 0
+// and checked nothing at all on the shape it actually publishes.
+func TestMixCarriesItsShareRunsAtShareZero(t *testing.T) {
+	if err := mixCarriesItsShare(map[string]uint64{"bloom_miss": 1000}, 1000, 0); err != nil {
+		t.Errorf("the share=0 mix is refused: %v", err)
+	}
+	err := mixCarriesItsShare(map[string]uint64{"bloom_miss": 999, "redis_error": 1}, 1000, 0)
+	if err == nil {
+		t.Error("a failed lookup at share=0 is accepted: the Bloom gate palier is the one every published " +
+			"line of this run rests on")
+	}
+}

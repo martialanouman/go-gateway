@@ -207,19 +207,26 @@ var l0Outcomes = []string{"bloom_miss", "redis_hit", "redis_error", "pg_hit", "p
 // the prefill, so the ported count it covers is exact only to within one share block.
 const maxMixGap = 0.10
 
-// mixHolds judges the outcome mix against the model the seed makes predictable.
+// The non-ported side is deliberately NOT split between bloom_miss and pg_miss. The router bench draws a
+// single non-ported number, so a Bloom false positive on it is all-or-nothing: either no message pays
+// Postgres for it, or every one of them does — the deterministic hammer ADR-0015 leaves open. Both are
+// legitimate runs, so the guard holds their SUM and the renderer prints which one happened.
+// mixCarriesItsShare judges what an outcome mix says INDEPENDENTLY of how warm the cache was: no lookup
+// failed closed, no outcome outside the vocabulary, exactly one observation per resolution, and exactly
+// the ported share of the traffic reaching the store.
 //
-// With a cache flushed before the palier, the FIRST touch of each distinct ported number is a pg_hit and
-// every later touch is a redis_hit, so:
+// It is the half of the model that survives a HOT window, and the split exists because the other half
+// does not. [mixHolds] predicts the pg_hit/redis_hit split from a cache flushed before the palier, which
+// the router-only bench provides — FLUSHDB, then the whole consumption scored. The full-stack reference
+// run provides neither: it holds a 20 s warmup, never flushes, and cycles its ring several times before
+// the window opens, so every ported number is already cached. Handing it the cold model made it fail
+// DETERMINISTICALLY at any share above zero — pg_hit ~0 against a model expecting the whole pool — with a
+// message accusing the run of not flushing a cache it was never written to flush.
 //
-//	pg_hit    = min(ported lookups, pool)      <- the Postgres arm, maximal at the cold bound
-//	redis_hit = ported lookups - pg_hit        <- the Redis arm, maximal at the hot bound
-//
-// The non-ported side is deliberately NOT split between bloom_miss and pg_miss. The bench draws a single
-// non-ported number, so a Bloom false positive on it is all-or-nothing: either no message pays Postgres
-// for it, or every one of them does — the deterministic hammer ADR-0015 leaves open. Both are legitimate
-// runs, so the guard holds their SUM and the renderer prints which one happened.
-func mixHolds(counts map[string]uint64, messages uint64, share float64, pool int) error {
+// `ported` is the caller's, because the two benches draw differently: the router bench seeds a prefill
+// and its share is num/den, while the reference run samples Dest over a RING whose truncation shifts the
+// real share (see portedInWindow). A share computed here would be right for one of them only.
+func mixCarriesItsShare(counts map[string]uint64, messages, ported uint64) error {
 	if messages == 0 {
 		return fmt.Errorf("no messages in the window: there is no mix to judge")
 	}
@@ -252,21 +259,43 @@ func mixHolds(counts map[string]uint64, messages uint64, share float64, pool int
 			total, 100*gap, messages, l0Outcomes)
 	}
 
+	// The store leg, held on the COUNT that reached it rather than on how it was served. At share=0 this
+	// asserts that nothing reached the store at all, which is the Bloom-gate palier's own claim — the
+	// early `return nil` it used to take skipped the three checks above on the very shape the reference
+	// run publishes by default.
+	reached := counts["pg_hit"] + counts["redis_hit"]
+	// Nothing at all is a wiring failure, not a drift, and it keeps its own sentence: a seed that never
+	// bound, a Bloom built before the rows landed, a canonicalisation that disagrees. Folding it into the
+	// relative gap below would report "100% off" for a run that priced an L0 stage doing nothing.
+	if ported > 0 && reached == 0 {
+		return fmt.Errorf("the draw carries %d lookups to the store and the store was never reached: the "+
+			"seed, the Bloom or the canonical form disagree, and this window priced an L0 stage that did "+
+			"nothing", ported)
+	}
+	if gap := relGap(float64(reached), float64(ported)); gap > maxMixGap {
+		return fmt.Errorf("%d lookups reached the store against the %d the draw carries there (%.0f%% off): "+
+			"either more traffic was ported than the ring draws, or part of the ported draw stopped at the "+
+			"Bloom gate", reached, ported, 100*gap)
+	}
+	return nil
+}
+
+// mixHolds adds the COLD-window model to [mixCarriesItsShare]: with a cache flushed before the palier,
+// the FIRST touch of each distinct ported number is a pg_hit and every later touch is a redis_hit, so
+//
+//	pg_hit    = min(ported lookups, pool)      <- the Postgres arm, maximal at the cold bound
+//	redis_hit = ported lookups - pg_hit        <- the Redis arm, maximal at the hot bound
+//
+// Only a caller that FLUSHES may use it. A warm window makes it fail by construction.
+func mixHolds(counts map[string]uint64, messages uint64, share float64, pool int) error {
 	// Through portedPerBlock, not through a second rounding of share: the draw seeds num/den of every
 	// block, so a model built on the raw share disagrees with the fixture by up to half a block.
-	//
-	// No mutation proves this line, and the honest reason is that it CANNOT be proven here: half a block
-	// is at most 0.05% of the messages, three orders of magnitude under maxMixGap, so both roundings
-	// clear the guard on every input. It is a consistency fix — one rounding, one place — not a behaviour
-	// fix, and tightening the band to catch it would be tuning a test around its own patch.
 	ported := uint64(portedPerBlock(share)) * messages / portedShareDen
-	if ported == 0 {
-		return nil // the share=0 palier prices the Bloom gate; there is no store leg to model.
+	if err := mixCarriesItsShare(counts, messages, ported); err != nil {
+		return err
 	}
-	if reached := counts["pg_hit"] + counts["redis_hit"]; reached == 0 {
-		return fmt.Errorf("share=%.3f should have carried %d lookups to the store and the store was never "+
-			"reached: the seed, the Bloom or the canonical form disagree, and this palier priced an L0 "+
-			"stage that did nothing", share, ported)
+	if ported == 0 {
+		return nil // the share=0 palier prices the Bloom gate; there is no store leg to split.
 	}
 
 	wantPg := min(ported, uint64(max(pool, 1)))
