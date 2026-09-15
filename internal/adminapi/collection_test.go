@@ -57,7 +57,7 @@ func collectionRequestNames(t *testing.T) map[string]bool {
 func registeredOperationIDs(t *testing.T) map[string]bool {
 	t.Helper()
 	ids := map[string]bool{}
-	for id := range operationRefs(loadGenerated(t)) {
+	for id := range operationRefs(t, loadGenerated(t)) {
 		ids[id] = true
 	}
 	return ids

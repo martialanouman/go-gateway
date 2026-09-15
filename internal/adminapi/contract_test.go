@@ -184,11 +184,11 @@ var deferred = map[string]deferredOp{
 	// SMPP sessions: the live stream is served, the three REST reads are not.
 	"list-sessions":         {"only stream-sessions exists, no REST read", "step-360"},
 	"list-account-sessions": {"only stream-sessions exists, no REST read", "step-360"},
-	"disconnect-session":    {"only stream-sessions exists, no REST read", "step-360"},
+	"disconnect-session":    {"the disconnector exists, it is not exposed", "step-360"},
 
 	// Content policy (§6.23): customers.content_storage exists; the platform default does not.
-	"get-customer-content-policy":    {"customer column exists, no read surface", "step-370"},
-	"update-customer-content-policy": {"customer column exists, no write surface", "step-370"},
+	"get-customer-content-policy":    {"get-customer returns it, no dedicated one", "step-370"},
+	"update-customer-content-policy": {"update-customer writes it, no dedicated one", "step-370"},
 	"get-platform-content-policy":    {"no platform-wide policy table at all", "step-370"},
 	"update-platform-content-policy": {"no platform-wide policy table at all", "step-370"},
 
@@ -200,7 +200,7 @@ var deferred = map[string]deferredOp{
 	"suspend-smpp-account":         {"PATCH update-smpp-account does it today", "step-390"},
 	"set-account-sender-id-policy": {"settable at create, never after", "step-390"},
 	"set-account-smpp-ops":         {"settable at create, never after", "step-390"},
-	"reorder-routes":               {"route priority has no admin surface", "step-390"},
+	"reorder-routes":               {"priority is per route, no atomic bulk reorder", "step-390"},
 	"list-customer-accounts":       {"redundant with list-smpp-accounts filters", "step-390"},
 }
 
@@ -373,9 +373,15 @@ func operationNode(doc map[string]any, path, method string) map[string]any {
 //   - the verb switch says what an operation IS: a path-item also carries parameters: (59 of them
 //     here), which is not one. It is what would still hold if a vendor extension nested an
 //     operationId under a non-verb key.
-//   - the empty-id check says an operation with no operationId cannot be classified by id, and keeps
-//     a malformed contract from entering the map under "".
-func operationRefs(doc map[string]any) map[string]opRef {
+//   - the empty-id check is NOT a safety net, which is why it reports instead of skipping. Keying on
+//     the operationId means an operation without one simply vanishes from this map — and "declared
+//     under paths:, classified by nobody" is the very thing the guard exists to catch. Proven by
+//     mutation: deleting one operationId: line from the contract left the whole package green.
+//
+// The duplicate check guards the same assumption from the other side: two operations sharing an id
+// would collapse onto one key, and the one that lost would go unclassified in silence.
+func operationRefs(t *testing.T, doc map[string]any) map[string]opRef {
+	t.Helper()
 	out := map[string]opRef{}
 	paths, _ := doc["paths"].(map[string]any)
 	for path, item := range paths {
@@ -384,9 +390,17 @@ func operationRefs(doc map[string]any) map[string]opRef {
 			switch method {
 			case "get", "post", "put", "patch", "delete", "head", "options", "trace":
 				op, _ := node.(map[string]any)
-				if id := str(op["operationId"]); id != "" {
-					out[id] = opRef{id: id, method: method, path: path}
+				id := str(op["operationId"])
+				if id == "" {
+					t.Errorf("%s %s is declared with no operationId: nothing can classify it, "+
+						"and every guard keyed on the id is blind to it", method, path)
+					continue
 				}
+				if prev, dup := out[id]; dup {
+					t.Errorf("operationId %q is declared twice (%s %s and %s %s): one hides the other",
+						id, prev.method, prev.path, method, path)
+				}
+				out[id] = opRef{id: id, method: method, path: path}
 			}
 		}
 	}
@@ -843,17 +857,21 @@ func declaresUpgrade(codes []string) bool {
 }
 
 // deferredSteps is the closed set of steps an entry may be deferred to. It is what keeps the `step`
-// field from rotting into prose ("later") or into a step that has already shipped: "not empty" does
-// not catch either. A step that needs to defer past step-390 widens this list in its own PR — one
-// line of diff, visible in review.
+// field from rotting into prose ("later"), into a typo, or into a step outside the window that owns
+// these surfaces — none of which "not empty" catches. What it does NOT catch: a step still listed
+// here after it has shipped. Pruning is left to the step itself, which empties its own lines from
+// deferred anyway. A step needing to defer past step-390 widens this list in its own PR — one line
+// of diff, visible in review.
 var deferredSteps = []string{
 	"step-330", "step-340", "step-350", "step-360", "step-370", "step-380", "step-390",
 }
 
 // TestEveryContractOperationIsServedOrDeferred is the direction the four tests above leave open:
-// declared in the published contract, implemented by nobody. It holds three properties, because one
-// alone is not a guard — a check that merely compared counts would pass the first and miss the other
-// two, and each closes a way the list rots:
+// declared in the published contract, implemented by nobody. It holds three properties, each closing
+// a different way the list rots. Counting instead (declared == served+deferred) would not do: it
+// names no culprit, and it cancels out in pairs — add an operation to the contract AND a phantom
+// deferred entry and the totals match again, green, with one operation unclassified and one entry
+// stale.
 //
 //   - coverage: every operationId under paths: is either served or deferred, on pain of being named;
 //   - mutual exclusion: an operation cannot be both, so a step that serves one MUST drop its deferred
@@ -864,7 +882,7 @@ var deferredSteps = []string{
 // The annotation is the fourth: a reason no test reads is a comment, and a comment does not hold a
 // thirty-line list across seven steps.
 func TestEveryContractOperationIsServedOrDeferred(t *testing.T) {
-	declared := operationRefs(loadContract(t))
+	declared := operationRefs(t, loadContract(t))
 	// The stale-entry property below already screams when the contract goes unread — but only while
 	// deferred is non-empty, which stops being true once step-330…390 have served all thirty. This
 	// keeps the guard from quietly becoming a no-op on the day it finally has nothing left to defer.

@@ -23,7 +23,9 @@ type contractDoc struct {
 	// predicted: the day a path-item carries a `parameters:` key, this decode fails with
 	// `parse contract: yaml: unmarshal errors: line N: cannot unmarshal !!seq into contractOp` and
 	// t.Fatalf stops the test. That is loud, immediate and names the line — not a silent hole — so it
-	// is left alone; the fix, when it comes, is to key this on the HTTP verbs.
+	// is left alone; the fix, when it comes, is to key this on the HTTP verbs. A non-verb key holding
+	// a MAP (an x- extension) decodes fine instead, with an empty OperationID, and the coverage
+	// assertion below then reports it as unclassified. Same fix, and equally loud.
 	Paths      map[string]map[string]contractOp `yaml:"paths"`
 	Components struct {
 		Schemas map[string]struct {

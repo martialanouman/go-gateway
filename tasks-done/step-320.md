@@ -228,6 +228,37 @@ futur (contrat non lu + `deferred` vidée).
 protègent mutuellement. La péremption est ce qui empêche la couverture de devenir muette — un argument
 de plus pour ne pas la sacrifier à un simple compteur.
 
+## Ce que la revue a trouvé
+
+Quatre constats bloquants, tous confirmés puis corrigés dans la même PR.
+
+**Le filtre `id != ""` était le trou, pas la protection.** Une opération dont on retire la ligne
+`operationId:` du contrat **disparaissait** de la garde : la suite restait entièrement verte. C'est
+exactement le cas « déclarée sous `paths:`, classée par personne » que cette step existe pour fermer, et
+le commentaire du helper le présentait comme un garde-fou. `operationRefs` prend désormais `t` et
+**signale** l'opération sans id, au lieu de l'avaler — ce qui ferme du même geste l'angle mort des
+`operationId` dupliqués que la fiche s'était contentée d'« accepter » après une vérification à la main.
+
+**Trois raisons sur trente étaient fausses**, et une liste dont le rôle est de rendre l'état du code
+lisible vaut moins qu'une ligne vide quand on lui fait confiance :
+`reorder-routes` — la priorité **a** une surface admin (`Priority` est dans `routeCreateBody` et
+`routeUpdateBody`) ; ce qui manque est le réordonnancement atomique en lot, ce que step-390 disait déjà.
+`get-` / `update-customer-content-policy` — `get-customer` et `update-customer` **servent déjà** les deux
+champs qui composent tout le schéma `ContentPolicy` ; ce qui manque est l'endpoint dédié.
+`disconnect-session` — décrit comme une lecture REST alors que c'est un `DELETE`, et que le
+`Disconnector` existe déjà, non exposé.
+
+**La garde change la procédure du dépôt, et la procédure ne le disait pas.** Depuis cette step, éditer un
+`api/openapi-*.yaml` pour y déclarer une opération rend la suite rouge tant qu'elle n'est classée nulle
+part. `api/README.md` — le seul endroit qu'un contributeur ouvre en éditant un contrat — l'ignorait, et
+la phrase qui l'anticipait vivait ici, dans une fiche que personne ne lit à ce moment-là. La procédure y
+gagne une étape, et `.claude/rules/contracts-api.md` la porte aussi.
+
+**Trois commentaires affirmaient un mécanisme faux**, corrigés : un compteur ne « raterait » pas trois
+des quatre mutations (il les fait toutes tomber — son défaut est de ne nommer personne et de se
+compenser par paires, ce qui a été vérifié par mutation) ; l'ensemble fermé des steps n'exclut **pas**
+une step déjà livrée ; et le décodage public a un second mode d'échec, une clé non-verbe portant une map.
+
 ## Definition of Done
 
 - [x] `make check` vert (lint · `test -race` · govulncheck · contrats)
