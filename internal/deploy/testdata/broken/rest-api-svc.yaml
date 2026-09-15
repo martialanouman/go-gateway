@@ -1,7 +1,9 @@
 # Violates, on purpose: deployment-per-service (nine services missing, plus not-a-service below),
 # probe-endpoints (liveness on /readyz), probe-timeout (2s), grace-period (30 < 65),
 # secrets-by-reference (POSTGRES_URL literal, and the Secret below), required-override (no HTTP_PORT,
-# no ENVIRONMENT), known-env-name (POSTGRE_URL), image-convention (nginx).
+# no ENVIRONMENT), known-env-name (POSTGRE_URL), image-convention (nginx),
+# pool-covers-lanes twice (minReplicas 2 over 6 partitions is 3 lanes per pod against POSTGRES_MAX_CONNS
+# 2; and the not-a-service HPA below omits minReplicas entirely).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -29,6 +31,10 @@ spec:
             # per pod and two pods with none. Against config's default of 12 it looks fine.
             - name: KAFKA_TOPIC_PARTITIONS
               value: "6"
+            # Two connections for the three partitions the HPA's floor hands one pod. Against config's
+            # default of 10 it looks fine, which is the same trap as the partition count above.
+            - name: POSTGRES_MAX_CONNS
+              value: "2"
             - name: POSTGRE_URL
               value: typo
           livenessProbe:
@@ -181,3 +187,29 @@ spec:
           selector:
             matchLabels:
               queue: mt.inbound
+---
+# An HPA with NO minReplicas. The Kubernetes API defaults it to one pod, which means one pod owns every
+# partition — 12 here, since not-a-service overrides neither KAFKA_TOPIC_PARTITIONS nor
+# POSTGRES_MAX_CONNS and takes both shared defaults (12 and 10). maxReplicas stays under the partition
+# count so this violates pool-covers-lanes and NOTHING ELSE: it is the only case in this tree that
+# reaches the nil-minReplicas branch, and without it that branch can be replaced by anything at all.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: not-a-service
+spec:
+  scaleTargetRef:
+    kind: Deployment
+    name: not-a-service
+  maxReplicas: 3
+  metrics:
+    - type: External
+      external:
+        metric:
+          name: queue_depth_records
+          selector:
+            matchLabels:
+              queue: mt.inbound
+        target:
+          type: AverageValue
+          averageValue: "10000"

@@ -1154,11 +1154,165 @@ de l'hôte ni de sa latence disque.
 - **`REF_PORTED_POOL` est plafonné en pratique par la file** : le tirage ne touche `pool` numéros
   distincts qu'au bout de `pool × 1000 / num` enregistrements. À `PREFILL=1500000` et part 0,30, un pool
   au-delà de 450 000 sème des lignes que rien n'adresse.
-- Le run de référence plein-stack ne traverse toujours pas L0, et `payloadRing = 4096`
-  (`test/load/steady/inject.go`) plafonne son injecteur à 4 096 destinations distinctes quoi qu'annonce
-  son `Dest`. Les deux restent à step-280.
+- ~~Le run de référence plein-stack ne traverse toujours pas L0, et `payloadRing = 4096` plafonne son
+  injecteur à 4 096 destinations distinctes.~~ **Les deux sont levés par step-270d** — voir la mesure
+  datée plus bas. Le run de référence câble `routing.NewL0Resolver` comme la production (L1 excepté), et la
+  cardinalité est le levier `REF_DEST_RING` (défaut 4 096, donc les lignes ci-dessus ne bougent pas).
+  Ce que le plafond cachait était pire que sa valeur : `newPayloads` échantillonne `Dest` sur
+  `[0, ring)` **une seule fois**, donc l'anneau bornait aussi le tirage PORTÉ — à 4 096 et part 0,3, il
+  ne touchait que 1 296 numéros quel que soit `REF_PORTED_POOL`. `ringCoversPool` refuse désormais
+  cette configuration au lieu de rendre un mélange 100 % `redis_hit` que `mixHolds` accepte comme une
+  borne chaude légitime.
 - Aucun `pg_error` ni `redis_error` sur aucun palier : la garde qui les refuse n'a jamais parlé, et la
   valeur de `MaxConns` à laquelle elle parlerait n'est pas connue.
+
+### Mesure du 15/09/2026 (step-270d) — le run plein-stack traverse L0, et la bande qu'on lui comparait n'existait pas
+
+step-270c avait laissé le run de référence branché sur le résolveur déclaratif **en direct** : la porte
+Bloom, le `GET` Redis et la lecture Postgres par clé primaire étaient absents du chemin qu'il
+chronométrait. Il les traverse désormais, avec le vrai `routing.NewL0Resolver` et le TTL de production
+(`config.Defaults().Exact.CacheTTL`). Le run gagne au passage un conteneur Redis, qu'il n'avait jamais
+eu. **Un écart assumé avec `cmd/router-svc/wiring.go`** : l'étage L1 est passé à `nil`, les scripts de
+routage étant le sujet d'un autre jalon — ce run prix donc L0 devant la résolution déclarative, pas la
+chaîne complète.
+
+#### La bande qu'il fallait établir d'abord
+
+La chaîne de preuves de step-270d demandait de comparer la relance « à la bande de reproductibilité
+consignée dans le journal ». **Il n'y en avait pas** pour le run de référence : la bande −0,1 à −1,0 %
+publiée plus haut est celle du **banc routeur isolé**, et ce run-ci n'avait qu'un ordre de grandeur —
+**1 100–1 200/s**, établi dans la section du **08/08** (« Le constat du 03/08 n'est pas reproductible »),
+sous la réserve « un seul hôte, une seule mesure par configuration ». Le run du 03/08 lui-même rendait
+892/s et son critère n'était pas tenu : citer la bande sous sa date inverserait la section qui la porte.
+
+Elle a donc été mesurée, sur le seul protocole que ce journal reconnaisse — **une session, un hôte, une
+section** : trois runs sur `main` (sans L0), trois runs sur la branche (avec), même machine, même heure,
+6 min de repos avant chaque série et 90 s entre les runs. Une première série de trois, lancée juste
+après `make check`, est donnée aussi : elle mesure un hôte qui vient de travailler, et c'est ce qu'elle
+montre.
+
+Le retard de l'injecteur est donné **en fenêtre**, qui est le chiffre que la clause score — et non celui
+du run entier, plus flatteur, que le bloc de sortie imprime en tête.
+
+| Série | Sortie (submit_sm/s) | p99 ingest | pipeline moyen | CPU (cœurs) | retard en fenêtre | verdict |
+|---|---:|---:|---:|---:|---:|:--|
+| `main` reposé (1) | 1 200 | 10 ms | 20 µs | 1,01 | 5,0 % | **PASSED** |
+| `main` reposé (2) | **842** | 20 ms | 22 µs | 0,81 | 5,2 % | FAILED |
+| `main` reposé (3) | 1 201 | 12 ms | 20 µs | 1,05 | 0,4 % | FAILED |
+| `main` enchaîné (1) | 1 109 | 14 ms | 25 µs | 1,00 | 4,4 % | FAILED |
+| `main` enchaîné (2) | 1 238 | 7 ms | 22 µs | 1,11 | 1,4 % | FAILED |
+| `main` enchaîné (3) | 1 153 | 22 ms | 20 µs | 0,92 | 6,4 % | FAILED |
+| **L0 `share=0`** (1) | 1 205 | 6 ms | 22 µs | 1,13 | 2,1 % | **PASSED** |
+| **L0 `share=0`** (2) | 1 200 | 11 ms | 22 µs | 1,10 | 4,7 % | **PASSED** |
+| **L0 `share=0`** (3) | 1 177 | 13 ms | 20 µs | 0,92 | 3,5 % | FAILED |
+
+**La bande de la base est très large, et son premier enseignement porte sur elle-même** : sur six runs
+de `main`, le critère D2 n'est tenu qu'**une fois**. **Trois** clauses tombent, jamais la latence ni les
+erreurs : la balance entrée/sortie (4 runs sur 6), la pente de backlog (3 sur 6) et — à 5,2 % et 6,4 % —
+**`injector on schedule`**, la clause qui dit que le harnais est devenu le sujet. C'est la plus lourde
+des trois pour ce qui suit, et le premier jet de cette section l'omettait. Le run de référence sur cet
+hôte **ne reproduit pas son propre verdict**, et rien ne le disait avant aujourd'hui.
+
+#### Ce que la relance à `share=0` établit, et ce qu'elle n'établit pas
+
+Les trois runs avec L0 tiennent le critère **2 fois sur 3** contre 1 sur 6, et tombent dans l'enveloppe
+de la base sur trois des cinq grandeurs : sortie (1 177–1 205 contre 842–1 238), pipeline moyen
+(20–22 µs contre 20–25) et retard en fenêtre (2,1–4,7 % contre 0,4–6,4 %).
+
+**Deux lectures en sortent, toutes deux sur le même run (L0-1), et il faut les nommer** : son CPU
+(1,13 cœur) dépasse le plus haut de la base (1,11), et sa p99 (6 ms) passe sous le plus bas (7 ms). La
+seconde est du bruit ; la première est la seule lecture de tout le tableau au-dessus de toute la base,
+et elle va **dans le sens que l'étage ajouté prédit**. Sur trois runs ce n'est pas un chiffrage — c'est
+la raison pour laquelle la conclusion ci-dessous est « non chiffrable » et non « nulle ».
+
+**Ce que ça établit : la porte Bloom n'est pas chiffrable ici.** La bande est d'un ordre de grandeur
+plus large que tout effet qu'elle pourrait avoir. C'est un résultat, pas un échec, et c'est celui que
+`D1` de step-270c annonçait : le run de référence **tient** `REF_RATE`, son débit est une *entrée*, donc
+y comparer un delta donne zéro par construction tant que la pile ne sature pas.
+
+**Ce que ça n'établit pas : que « rien n'a bougé ».** Cette conclusion-là exigerait une bande étroite,
+et celle-ci ne l'est pas. Elle exigerait aussi de comparer deux sections de ce journal, ce que ce
+journal déclare invalide.
+
+#### L'étage est sur le chemin, et c'est vérifié et non déduit
+
+| Run | mélange des `outcome` | lookups / message |
+|---|---|---:|
+| L0 (1) | `bloom_miss` 72 323 (100,0 %) | 1,00 |
+| L0 (2) | `bloom_miss` 71 994 (100,0 %) | 1,00 |
+| L0 (3) | `bloom_miss` 70 633 (100,0 %) | 1,00 |
+
+Une observation par résolution, exactement, sur les trois runs — le dénominateur est le compteur de
+`Pipeline.Process` (72 323, 71 994, 70 633), et non `submits_total`, qui est relevé deux étages plus
+loin et compté en segments. `share=0` ne signifie donc pas « L0 débranché » :
+`exact.LoadBloom` sur une table vide construit quand même un filtre (`minBloomCapacity = 1024`), et
+chaque message paie un vrai `MightContain`, l'observation d'`outcome` et un saut d'interface. C'est ce
+que paient les 70 à 90 % de trafic non porté en production, et c'est désormais sur le chemin mesuré du
+run plein-stack.
+
+#### Le palier porté, tenté pour la première fois — après la revue
+
+Les neuf runs ci-dessus sont tous à `share=0`. La revue en lecture seule a trouvé pourquoi : le run
+était câblé sur `mixHolds`, dont le modèle suppose un cache **vidé avant le palier**. Ce run n'en vide
+aucun et ouvre sa fenêtre après 20 s de warmup, donc il aurait échoué déterministement à toute part
+portée. Le palier n'était pas seulement non mesuré — il était **non exécutable**.
+
+Relancé après correction, à `PORTED_SHARE=0.3` / `PORTED_POOL=1000`, même hôte, même session :
+
+| | observé | attendu |
+|---|---:|---:|
+| `bloom_miss` | 41 989 (68,3 %) | — |
+| `redis_hit` | **19 440** (31,6 %) | **19 446** |
+| `pg_hit` | **0** | 0 sur une fenêtre chaude |
+| `pg_miss` | 30 (0,07 % des non portés) | faux positifs du Bloom |
+| lookups / message | 1,00 | 1,00 |
+
+**Trois choses s'y lisent.** La part tirée est 31,6 %, pas 30 : c'est la troncature de l'anneau, prédite
+par `portedInWindow` à six lookups près sur 19 446 — la quantification n'est donc pas une hypothèse.
+`pg_hit` vaut **zéro**, ce qui est exactement la forme que le modèle froid rejetait : toutes les
+premières touches sont tombées dans le warmup. Et le Bloom rend 30 faux positifs sur 41 989 non portés,
+du même ordre que le taux qu'ADR-0015 vise.
+
+**Ce palier n'a PAS tenu le critère D2** — sortie 1 024/s pour 1 200 injectés, backlog montant — et la
+moyenne pipeline passe de 20 µs à **114 µs**. Il serait tentant d'y lire le prix de l'étage. **Ce n'en
+est pas un** : c'est un run, contre une base qui échoue déjà cinq fois sur six sur cet hôte, et rien ici
+ne sépare le coût du saut Redis de celui de la machine. Ce que le palier établit est qu'il **s'exécute**
+et que son mélange est celui que sa géométrie prédit. Le chiffrage appartient à step-280.
+
+#### Le levier de cardinalité, et le plafond qu'il cachait
+
+`REF_DEST_RING` remplace la constante `payloadRing`, défaut **4 096** — donc toutes les lignes de ce
+journal antérieures à cette section restent comparables entre elles.
+
+Ce que le plafond cachait était plus grave que sa valeur. `newPayloads` échantillonne `Dest` sur
+`[0, ring)` **une seule fois**, avant la première soumission : l'anneau bornait donc aussi le tirage
+**porté**. À 4 096 et part 0,3, le run n'aurait touché que **1 296** numéros portés quel que soit
+`REF_PORTED_POOL` — un cache 100 % chaud et une lecture Postgres nulle publiée comme un résultat.
+`ringCoversPool` refuse cette configuration avant le semis, et nomme l'anneau à demander.
+
+La même troncature déplace la **part** elle-même : `l0Dest` place les portés en tête de chaque bloc de
+1 000, donc un anneau de 4 096 porte 1 296/4 096 = **31,6 %** de trafic porté là où le levier dit 0,30.
+Le journal publie la part tirée, pas la part demandée.
+
+#### Réserves propres à cette mesure
+
+- **Les neuf runs du tableau précèdent les correctifs de revue.** Ce qu'ils mesurent n'en dépend pas —
+  les correctifs changent ce qui est *asserté*, le dénominateur du mélange et le TTL lu (même valeur) —
+  et un run à `share=0` rejoué sur le code corrigé a reproduit la même forme : 1 200/s, critère tenu,
+  1,00 lookup par message.
+- **Un seul hôte, et un hôte dont on sait maintenant qu'il ne tient pas le critère de façon
+  reproductible.** Les six runs de base le disent. Les chiffres absolus n'appartiennent qu'à ce
+  portable ; ce qui transpose est le mélange des `outcome` et le rapport lookups/message.
+- **La comparaison base ↔ L0 n'est valide qu'à l'intérieur de cette section**, mesurée dans une même
+  session. Aucune ligne ci-dessus ne se compare aux sections datées plus haut.
+- **Le premier palier porté tenté n'a jamais rendu**, et pour une raison qui n'était pas celle du
+  code : il tournait pendant une campagne de mutations sur la même machine, a été affamé jusqu'à ce que
+  le démon Docker cesse de répondre, puis tué. Aucun chiffre n'en est tiré. La leçon est celle que ce
+  journal porte déjà — *un banc de charge lancé à la suite d'un autre mesure l'hôte qui vient de
+  travailler* — appliquée cette fois à un banc lancé **en même temps** qu'autre chose. C'est aussi ce
+  qui a laissé le défaut de `mixHolds` invisible jusqu'à la revue.
+- Le palier porté à pleine échelle appartient donc toujours à step-280, avec la part portée et la
+  localité représentatives.
 
 ## Contenu
 

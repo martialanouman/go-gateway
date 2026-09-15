@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/martialanouman/go-gateway/internal/config"
+	"github.com/martialanouman/go-gateway/internal/routing/exact"
 )
 
 // knownVars is every variable Config reads. Tests clear them all so a developer's own shell
@@ -39,6 +40,7 @@ var knownVars = []string{
 	"BILLING_ADDR", "BILLING_RESERVE_TIMEOUT", "BILLING_SETTLE_TIMEOUT",
 	"BILLING_REAPER_MIN_AGE", "BILLING_REAPER_INTERVAL",
 	"CONTENT_KEY_ADDR",
+	"EXACT_CACHE_TTL",
 }
 
 // setEnv installs a clean environment holding exactly kv. Each variable goes through t.Setenv
@@ -1247,5 +1249,76 @@ func TestReaperDefaultsAreUnchanged(t *testing.T) {
 	}
 	if got, want := def.BillingReaper.Interval, 5*time.Minute; got != want {
 		t.Errorf("declared Interval default = %s, want %s (step-190's value)", got, want)
+	}
+}
+
+// TestExactCacheTTLDefaultIsTheResolverConstant is the guard against two sources of truth. The knob's
+// envDefault and exact.DefaultCacheTTL are written in different packages, and the day they disagree the
+// pod boots with a TTL nobody chose while both files look right on their own.
+//
+// It is the config side that must follow: DefaultCacheTTL carries the reasoning (a safety net under a
+// lost invalidation, long enough that the steady-state Postgres read rate is one lookup per active
+// ported number per TTL, short enough that a missed DEL heals the same working day).
+func TestExactCacheTTLDefaultIsTheResolverConstant(t *testing.T) {
+	if got, want := config.Defaults().Exact.CacheTTL, exact.DefaultCacheTTL; got != want {
+		t.Errorf("EXACT_CACHE_TTL declares a default of %s but exact.DefaultCacheTTL is %s: a pod would "+
+			"boot with a TTL neither file admits to", got, want)
+	}
+}
+
+// TestExactSectionRefusesANonPositiveTTL: exact.NewResolver SILENTLY substitutes DefaultCacheTTL for a
+// non-positive ttl, so accepting one would ship a knob that reports a setting it does not have — the
+// same trap BILLING_REAPER_MIN_AGE and CLICKHOUSE_MAX_OPEN_CONNS refuse.
+//
+// It matters more here than for either of those. The whole reason this lever exists is that a Redis
+// filling up has no recourse but a redeploy; an operator who lowers the TTL to zero to purge faster
+// would get six hours and no message saying so.
+func TestExactSectionRefusesANonPositiveTTL(t *testing.T) {
+	for _, ttl := range []string{"0", "-1h"} {
+		t.Run(ttl, func(t *testing.T) {
+			setEnv(t, map[string]string{"EXACT_CACHE_TTL": ttl})
+
+			_, err := config.Load("router-svc", config.SectionExact)
+			if err == nil {
+				t.Fatalf("Load accepted EXACT_CACHE_TTL=%s", ttl)
+			}
+			if !strings.Contains(err.Error(), "EXACT_CACHE_TTL") {
+				t.Errorf("error does not name the variable an operator set: %v", err)
+			}
+		})
+	}
+}
+
+// TestExactSectionIsValidatedBySectionAll keeps SectionAll honest for this section: its own godoc
+// requires it to hold every section, and a caller declaring nothing is the case that relies on it.
+func TestExactSectionIsValidatedBySectionAll(t *testing.T) {
+	setEnv(t, map[string]string{"EXACT_CACHE_TTL": "0"})
+
+	if _, err := config.Load("router-svc"); err == nil {
+		t.Fatal("Load with no declared section accepted a zero exact cache TTL: SectionAll is incomplete")
+	}
+}
+
+// TestExactSectionIsNotValidatedWhenUndeclared is the other half of the section contract: the nine
+// binaries that never resolve an exact route must not be refused a boot over its setting.
+func TestExactSectionIsNotValidatedWhenUndeclared(t *testing.T) {
+	setEnv(t, map[string]string{"EXACT_CACHE_TTL": "0"})
+
+	if _, err := config.Load("rest-api-svc", config.SectionRedis); err != nil {
+		t.Errorf("Load refused a binary that declared no exact section: %v", err)
+	}
+}
+
+// TestExactCacheTTLReachesTheConfig pins the variable name an operator sets, and that it is read as a
+// duration rather than as a count of anything.
+func TestExactCacheTTLReachesTheConfig(t *testing.T) {
+	setEnv(t, map[string]string{"EXACT_CACHE_TTL": "45m"})
+
+	cfg, err := config.Load("router-svc", config.SectionExact)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got, want := cfg.Exact.CacheTTL, 45*time.Minute; got != want {
+		t.Errorf("Exact.CacheTTL = %s, want %s (EXACT_CACHE_TTL must keep its name)", got, want)
 	}
 }

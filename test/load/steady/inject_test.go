@@ -312,6 +312,10 @@ func TestInjectSendsDistinctDestinations(t *testing.T) {
 
 	cfg := injectCfg(srv.URL)
 	cfg.Duration = 200 * time.Millisecond
+	// A ring narrower than the run, so the count is exact rather than a floor. "At least two" was the
+	// assertion until step-270d, and it stayed green whether the ring held 8 destinations or a million
+	// — which is how payloadRing capped every reference run at 4 096 without a test noticing.
+	cfg.DestRing = 8
 	cfg.Dest = func(seq uint64) string { return fmt.Sprintf("+225070%06d", seq) }
 	if _, err := steady.Inject(t.Context(), cfg, nil); err != nil {
 		t.Fatalf("Inject: %v", err)
@@ -322,8 +326,65 @@ func TestInjectSendsDistinctDestinations(t *testing.T) {
 	for b := range seen {
 		bodies[b] = struct{}{}
 	}
-	if len(bodies) < 2 {
-		t.Errorf("the server saw %d distinct bodies, want the destinations to vary per submission", len(bodies))
+	if len(bodies) != cfg.DestRing {
+		t.Errorf("the server saw %d distinct bodies over a ring of %d, want exactly the ring: a smaller "+
+			"count means submissions never reached the whole ring, a larger one means the ring is not what "+
+			"bounds the destinations", len(bodies), cfg.DestRing)
+	}
+}
+
+// TestInjectPreRendersTheWholeDestRing: DestRing is how many distinct destinations a run carries, and
+// the injector must pre-render exactly that many bodies.
+//
+// It is a lever because payloadRing was a constant. At 4 096 destinations and 8 000 msg/s the
+// exactroute:{msisdn} cache is 100 % hot within a second and stays hot for the whole window, so a
+// campaign would read pg_hit/s ~ 0 and publish that the L0 stage's Postgres throughput is nil — a
+// measurement of the harness, filed under the gateway (step-270d, R2).
+//
+// It counts Dest calls rather than distinct bodies on the wire, and that is what makes the lever
+// testable at all: newPayloads renders the WHOLE ring before the first submission, so a ring of 100 000
+// is proved in milliseconds instead of 100 000 HTTP round trips.
+func TestInjectPreRendersTheWholeDestRing(t *testing.T) {
+	srv := acceptor(t, new(atomic.Int64))
+
+	var calls atomic.Int64
+	cfg := injectCfg(srv.URL)
+	cfg.Duration = 50 * time.Millisecond
+	cfg.DestRing = 100_000
+	cfg.Dest = func(seq uint64) string {
+		calls.Add(1)
+		return fmt.Sprintf("+225070%06d", seq)
+	}
+	if _, err := steady.Inject(t.Context(), cfg, nil); err != nil {
+		t.Fatalf("Inject: %v", err)
+	}
+
+	if got := calls.Load(); got != int64(cfg.DestRing) {
+		t.Errorf("Dest was called %d times for a ring of %d: the ring is what bounds the distinct "+
+			"destinations, so a lever that does not change this count changes nothing", got, cfg.DestRing)
+	}
+}
+
+// TestInjectWithoutDestRingKeepsThe4096Default pins the default, so adding the lever cannot silently
+// re-shape every run already on record in test/load/README.md. The run of yesterday must not move by a
+// byte until someone turns the dial.
+func TestInjectWithoutDestRingKeepsThe4096Default(t *testing.T) {
+	srv := acceptor(t, new(atomic.Int64))
+
+	var calls atomic.Int64
+	cfg := injectCfg(srv.URL)
+	cfg.Duration = 50 * time.Millisecond
+	cfg.Dest = func(seq uint64) string {
+		calls.Add(1)
+		return fmt.Sprintf("+225070%06d", seq)
+	}
+	if _, err := steady.Inject(t.Context(), cfg, nil); err != nil {
+		t.Fatalf("Inject: %v", err)
+	}
+
+	if got := calls.Load(); got != 4096 {
+		t.Errorf("Dest was called %d times with no DestRing set, want the 4096 every run on record was "+
+			"measured on", got)
 	}
 }
 

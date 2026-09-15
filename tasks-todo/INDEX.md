@@ -206,7 +206,7 @@ qu'on mesure un environnement représentatif.
 - [x] step-270b — Images conteneur : Dockerfiles et publication GHCR ⛓ step-270
 - [x] step-270c — Le banc ne traverse pas l'étage L0 : le rendre mesurable (ratios, pas verdict)
       ⛓ step-250e, step-270b
-- [ ] step-270d — Les résidus logiciels de step-270c : L0 dans le run plein-stack, la cardinalité des
+- [x] step-270d — Les résidus logiciels de step-270c : L0 dans le run plein-stack, la cardinalité des
       destinations, le levier de TTL, et le rapport `MaxConns`/voies corrigé ⛓ step-250e, step-270c
 - [ ] step-280 — Campagne NFR pleine échelle sur environnement représentatif ⛓ step-230, step-270b,
       step-270c, step-270d

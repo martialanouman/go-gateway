@@ -42,6 +42,13 @@ data:
   # anything under 2.
   KAFKA_TOPIC_REPLICATION_FACTOR: "3"
 
+  # The L0 exact-route cache TTL (router-svc only). It is the ONE lever on the working set this cache
+  # puts on the shared Redis — 1.3 to 10 GB of exactroute:{msisdn} keys in flight — and it is here so
+  # step-280 can retain a value and apply it without a redeploy of the binary. 6h is exact.DefaultCacheTTL,
+  # unchanged: a safety net under a lost invalidation, not the coherence mechanism (the Admin API DELs
+  # the key after every commit). Shortening it only affects keys written after the change.
+  EXACT_CACHE_TTL: 6h
+
   POSTGRES_MAX_CONNS: "10"
   POSTGRES_MIN_CONNS: "2"
 
