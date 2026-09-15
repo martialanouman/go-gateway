@@ -1250,6 +1250,35 @@ chaque message paie un vrai `MightContain`, l'observation d'`outcome` et un saut
 que paient les 70 à 90 % de trafic non porté en production, et c'est désormais sur le chemin mesuré du
 run plein-stack.
 
+#### Le palier porté, tenté pour la première fois — après la revue
+
+Les neuf runs ci-dessus sont tous à `share=0`. La revue en lecture seule a trouvé pourquoi : le run
+était câblé sur `mixHolds`, dont le modèle suppose un cache **vidé avant le palier**. Ce run n'en vide
+aucun et ouvre sa fenêtre après 20 s de warmup, donc il aurait échoué déterministement à toute part
+portée. Le palier n'était pas seulement non mesuré — il était **non exécutable**.
+
+Relancé après correction, à `PORTED_SHARE=0.3` / `PORTED_POOL=1000`, même hôte, même session :
+
+| | observé | attendu |
+|---|---:|---:|
+| `bloom_miss` | 41 989 (68,3 %) | — |
+| `redis_hit` | **19 440** (31,6 %) | **19 446** |
+| `pg_hit` | **0** | 0 sur une fenêtre chaude |
+| `pg_miss` | 30 (0,07 % des non portés) | faux positifs du Bloom |
+| lookups / message | 1,00 | 1,00 |
+
+**Trois choses s'y lisent.** La part tirée est 31,6 %, pas 30 : c'est la troncature de l'anneau, prédite
+par `portedInWindow` à six lookups près sur 19 446 — la quantification n'est donc pas une hypothèse.
+`pg_hit` vaut **zéro**, ce qui est exactement la forme que le modèle froid rejetait : toutes les
+premières touches sont tombées dans le warmup. Et le Bloom rend 30 faux positifs sur 41 989 non portés,
+du même ordre que le taux qu'ADR-0015 vise.
+
+**Ce palier n'a PAS tenu le critère D2** — sortie 1 024/s pour 1 200 injectés, backlog montant — et la
+moyenne pipeline passe de 20 µs à **114 µs**. Il serait tentant d'y lire le prix de l'étage. **Ce n'en
+est pas un** : c'est un run, contre une base qui échoue déjà cinq fois sur six sur cet hôte, et rien ici
+ne sépare le coût du saut Redis de celui de la machine. Ce que le palier établit est qu'il **s'exécute**
+et que son mélange est celui que sa géométrie prédit. Le chiffrage appartient à step-280.
+
 #### Le levier de cardinalité, et le plafond qu'il cachait
 
 `REF_DEST_RING` remplace la constante `payloadRing`, défaut **4 096** — donc toutes les lignes de ce
@@ -1267,24 +1296,21 @@ Le journal publie la part tirée, pas la part demandée.
 
 #### Réserves propres à cette mesure
 
+- **Les neuf runs du tableau précèdent les correctifs de revue.** Ce qu'ils mesurent n'en dépend pas —
+  les correctifs changent ce qui est *asserté*, le dénominateur du mélange et le TTL lu (même valeur) —
+  et un run à `share=0` rejoué sur le code corrigé a reproduit la même forme : 1 200/s, critère tenu,
+  1,00 lookup par message.
 - **Un seul hôte, et un hôte dont on sait maintenant qu'il ne tient pas le critère de façon
   reproductible.** Les six runs de base le disent. Les chiffres absolus n'appartiennent qu'à ce
   portable ; ce qui transpose est le mélange des `outcome` et le rapport lookups/message.
 - **La comparaison base ↔ L0 n'est valide qu'à l'intérieur de cette section**, mesurée dans une même
   session. Aucune ligne ci-dessus ne se compare aux sections datées plus haut.
-- **`share=0` n'a pas été le seul palier tenté.** Un run à `PORTED_SHARE=0.3` / `PORTED_POOL=1000` a été
-  lancé et n'a jamais rendu : il tournait pendant une campagne de mutations sur la même machine, le
-  démon Docker a fini par ne plus répondre et le run a été tué. **Aucun chiffre n'en est tiré.** La
-  leçon est celle que ce journal porte déjà — *un banc de charge lancé à la suite d'un autre mesure
-  l'hôte qui vient de travailler* — appliquée cette fois à un banc lancé **en même temps** qu'autre
-  chose.
-- **Le palier porté n'aurait pas rendu de chiffre même en tournant seul**, et c'est une revue en
-  lecture seule qui l'a trouvé, après coup. Le run avait été câblé sur `mixHolds`, dont le modèle
-  suppose un cache **vidé avant le palier** — la condition que le banc routeur remplit par un `FLUSHDB`.
-  Ce run-ci ne vide rien et ouvre sa fenêtre après 20 s de warmup, donc toutes les premières touches
-  sont dehors : `pg_hit` ~ 0 contre un modèle qui attend tout le pool, échec déterministe à toute part
-  portée, avec un message accusant un flush que ce banc n'a jamais été écrit pour faire. La garde est
-  désormais `mixCarriesItsShare`, la moitié du modèle qui survit à une fenêtre chaude.
+- **Le premier palier porté tenté n'a jamais rendu**, et pour une raison qui n'était pas celle du
+  code : il tournait pendant une campagne de mutations sur la même machine, a été affamé jusqu'à ce que
+  le démon Docker cesse de répondre, puis tué. Aucun chiffre n'en est tiré. La leçon est celle que ce
+  journal porte déjà — *un banc de charge lancé à la suite d'un autre mesure l'hôte qui vient de
+  travailler* — appliquée cette fois à un banc lancé **en même temps** qu'autre chose. C'est aussi ce
+  qui a laissé le défaut de `mixHolds` invisible jusqu'à la revue.
 - Le palier porté à pleine échelle appartient donc toujours à step-280, avec la part portée et la
   localité représentatives.
 

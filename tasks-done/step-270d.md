@@ -274,6 +274,15 @@ run porté n'a pas tourné. Une porte verte sur un chemin jamais emprunté ne di
 cette fiche l'a écrit dans ses réserves sans en tirer la conséquence : le palier à `share > 0` n'était
 pas seulement non mesuré, il était **non exécutable**.
 
+### Et le palier a fini par tourner
+
+Après correction, `PORTED_SHARE=0.3` / `PORTED_POOL=1000` rend un mélange de 31,6 % de trafic porté —
+la part que l'anneau **tire**, prédite par `portedInWindow` à six lookups près sur 19 446 — avec
+`pg_hit = 0`, qui est exactement la forme que le modèle froid rejetait. Les deux correctifs sont donc
+validés par la mesure et non par la relecture. Le journal du 15/09 le consigne, avec la réserve qui
+compte : ce palier ne tient pas D2 sur cet hôte, et un run contre une base qui échoue cinq fois sur six
+ne chiffre rien.
+
 ## Hors périmètre — et qui reste à step-280
 
 Trois décisions qui exigent l'environnement représentatif (`deploy/README.md`, « Restent trois
