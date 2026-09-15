@@ -328,11 +328,14 @@ Indépendantes de la chaîne de charge : parallélisables si deux mains travaill
 ## Écart contrat ↔ implémentation (revue du 2026-08-10)
 `api/openapi-admin.yaml` déclare **133 opérations** sous `paths:` ; `internal/adminapi` en enregistre
 **103**. Les **30** restantes sont décrites par la spec (§6.16, §6.17, §6.22, §6.23) et attendues par le
-tableau de bord — la plupart ont même leur table en base — mais **aucun jalon ne les portait**. Aucune
-garde ne voyait l'écart : les tests de contrat vont tous dans le sens *implémenté → déclaré*, jamais
-l'inverse. step-320 pose la garde et le triage ; les sept suivantes construisent les surfaces, dans
-l'ordre qu'on voudra sauf là où une dépendance le fixe.
-- [ ] step-320 — La garde contrat ↔ implémentation, et le triage des 30 ⛓ bloque step-410 et step-330→390
+tableau de bord — la plupart ont même leur table en base — mais **aucun jalon ne les portait**, et aucune
+garde ne voyait l'écart : les tests de contrat allaient tous dans le sens *implémenté → déclaré*, jamais
+l'inverse. **step-320 a fermé ce sens** : les 30 sont inscrites, avec raison et step, dans la liste
+`deferred` de `internal/adminapi/contract_test.go`, et une opération déclarée que personne ne classe
+fait désormais échouer la suite. Les sept steps suivantes construisent les surfaces, dans l'ordre qu'on
+voudra sauf là où une dépendance le fixe ; **chacune retire ses lignes de `deferred`** — l'exclusion
+mutuelle l'y force, la suite ne peut pas rester verte sur une ligne qui différerait une opération servie.
+- [x] step-320 — La garde contrat ↔ implémentation, et le triage des 30 ⛓ bloque step-410 et step-330→390
 - [ ] step-330 — Groupes de clients (§6.17) : la table existe, rien ne la remplit ⛓ step-320
 - [ ] step-340 — Webhooks : le repo est livré depuis M4, l'admin n'a jamais été écrite ⛓ step-320
 - [ ] step-350 — Réécriture de sender ID (§6.16) : ni l'admin, ni l'évaluation dans le pool ⛓ step-320 ;

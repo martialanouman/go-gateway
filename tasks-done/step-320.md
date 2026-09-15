@@ -205,13 +205,37 @@ propriété que cette fiche n'a pas demandée.
   les 30 lignes de `deferred` doivent être exactement l'écart entre les `operationId` de `paths:` et les
   `OperationID` d'`internal/adminapi`.
 
+## Ce que les mutations ont démenti
+
+Deux affirmations de cette fiche étaient fausses, et c'est la mutation qui l'a dit — pas la relecture.
+
+**« 59 erreurs au premier run » : non, une seule.** Retirer le filtre des verbes ne casse rien du tout :
+`parameters:` est une **séquence**, donc l'assertion de type rend nil et le garde `id != ""` l'écarte
+déjà. Les deux filtres se recouvrent sur ce contrat, et **aucun n'est isolément testable**. Retirer les
+deux ne produit pas 59 erreurs mais **une seule, à nom vide** : les 59 clés s'écrasent toutes sur la même
+clé `""` de la map. Le piège existe, mais il ne mord pas là où la fiche le disait.
+
+**Une garde peut devenir un no-op silencieux, et la fiche ne le voyait pas.** Renommer le tag
+`yaml:"paths"` de la projection publique laissait `TestServedSpecConformsToContract` **entièrement
+vert** : toutes ses assertions pendent au parcours de `contract.Paths`. Le défaut préexistait à la step ;
+la nouvelle assertion de couverture en héritait. Côté Admin le trou est seulement *masqué* — contrat non
+lu ⇒ couverture muette, mais la péremption crie trente fois. Cette protection est un effet de bord de la
+liste `deferred` : **elle disparaît le jour où step-330…390 l'auront vidée**, exactement quand la garde
+n'aura plus que ce rôle. D'où une assertion de non-vacuité de chaque côté, vue tomber dans cet état
+futur (contrat non lu + `deferred` vidée).
+
+**Ce que la troisième propriété achète en plus, et que la fiche ne disait pas :** les trois propriétés se
+protègent mutuellement. La péremption est ce qui empêche la couverture de devenir muette — un argument
+de plus pour ne pas la sacrifier à un simple compteur.
+
 ## Definition of Done
 
-- [ ] `make check` vert (lint · `test -race` · govulncheck · contrats)
-- [ ] toute opération des deux contrats est classée : servie ou différée avec raison **et** step
-- [ ] `m1Operations ∩ deferred = ∅` et aucune entrée `deferred` absente du contrat, tous deux assertés
-- [ ] les **quatre** mutations ont été **vues** tomber sur D1
-- [ ] aucune opération nouvellement servie, aucun contrat modifié
+- [x] `make check` vert (lint · `test -race` · govulncheck · contrats)
+- [x] toute opération des deux contrats est classée : servie ou différée avec raison **et** step
+- [x] `m1Operations ∩ deferred = ∅` et aucune entrée `deferred` absente du contrat, tous deux assertés
+- [x] les **quatre** mutations ont été **vues** tomber sur D1 — plus six autres, dont deux qui ont
+      trouvé un défaut (voir « Ce que les mutations ont démenti »)
+- [x] aucune opération nouvellement servie, aucun contrat modifié
 
 ## Hors périmètre
 
