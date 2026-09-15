@@ -139,6 +139,55 @@ première rédaction (webhooks compté 5, faute d'un `get-webhook` que le contra
   en `deferred` et l'en retire quand elle le sert — deux lignes de diff qui rendent l'intention lisible
   en revue.
 
+## Design arrêté
+
+Les deux points que le périmètre laissait ouverts sont tranchés ici, avant la première ligne de code.
+
+**Où vit la garde D1 : dans `internal/adminapi/contract_test.go`, pas dans un fichier neuf.**
+L'exclusion mutuelle est une propriété du **couple** `m1Operations` / `deferred` ; une revue qui ne voit
+qu'une moitié du couple ne la vérifie pas. `loadContract`, `opRef` et `str` y sont déjà.
+
+**Un seul helper neuf, et il absorbe une duplication existante.** Le `switch` sur les verbes HTTP vit
+déjà en double dans `adminapi_test` — dans `TestGeneratedSpecRegistersNoOperationOutsideTheM1Surface` et
+dans `registeredOperationIDs` (`collection_test.go`). La garde en serait la troisième copie, donc :
+
+```go
+// operationRefs returns a spec tree's operations keyed by operationId. Only HTTP verbs count.
+func operationRefs(doc map[string]any) map[string]opRef
+```
+
+appelé par la garde (sur `loadContract`) et par `registeredOperationIDs`, repliée dessus à signature
+inchangée. `TestGeneratedSpecRegistersNoOperationOutsideTheM1Surface` reste **intact** : son message
+nomme le chemin fautif, et on ne touche pas une garde porteuse pendant une step de gardes.
+`loadGenerated` n'est pas appelé par la garde : `m1Operations` est déjà prouvée égale à la surface
+enregistrée par les deux tests existants (⊆ et ⊇), donc la garde reste un pur test de fichier.
+
+**Forme de `deferred` : `map[string]deferredOp` avec `deferredOp struct{ reason, step string }`**, et la
+forme est **rétro-appliquée côté public** — struct déclarée localement dans chaque fichier, pas de
+paquet partagé : deux consommateurs dont l'un est vide ne paient pas une abstraction, et un générique
+imposerait un troisième parcours YAML à maintenir (les deux tests projettent déjà le document
+différemment). Sans cela, le premier qui diffère une opération publique devrait changer le type **en
+plus**, mélangeant deux diffs dans une PR qui devrait faire deux lignes. *Contre-opinion notée et
+écartée :* un type à deux champs sans instance pendant sept steps est du code mort ; le coût de trancher
+est d'une ligne dans les deux sens.
+
+**Le compte par surface n'est PAS figé dans le test.** Ce qui est vérifié est le **total**, et il l'est
+par construction : couverture + exclusion + non-périmé ⇒ `deferred` = contrat ∖ servies. Le test assert
+seulement que `step` appartient à un ensemble **fermé et littéral** `{step-330 … step-390}` — le seul
+mode de pourrissement que « non vide » ne ferme pas (`step-201`, « plus tard », une step inexistante).
+`step-350.md` démontre pourquoi un compte figé serait faux : sa PR1 sert 4 de ses 5 opérations et laisse
+la cinquième dans `deferred` avec une raison réécrite. Un compte à 5 serait faux entre ses deux PRs.
+
+**Côté public, `contractDoc.Paths` reste typé `map[string]map[string]contractOp`.** Le jour où une clé
+`parameters:` apparaît au niveau path-item, `yaml.Unmarshal` rend `cannot unmarshal !!seq into
+restapi_test.contractOp` et `loadContract` fait `t.Fatalf` : l'échec est bruyant, immédiat et nomme la
+ligne — ce n'est pas un trou silencieux. On ne s'en prémunit donc pas ; une ligne de commentaire nomme
+le mode d'échec et son correctif, pour que le futur lecteur n'accuse pas le YAML.
+
+**Angle mort accepté :** `operationRefs` étant une map par id, deux opérations partageant un
+`operationId` s'écraseraient. L'unicité est vérifiée sur les 133 ; l'asserter serait une quatrième
+propriété que cette fiche n'a pas demandée.
+
 ## Tests
 
 - `D1`/`D2` : les deux gardes sont des tests ordinaires (pas de conteneur, pas de build tag) — elles
