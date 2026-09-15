@@ -37,7 +37,9 @@ func run() error {
 
 	// Postgres for the startup route snapshot, Kafka for the data plane, ClickHouse for rejected
 	// CDR rows. No HTTP: the router has no client-facing listener.
-	cfg, err := config.Load(serviceName, config.SectionOTel, config.SectionPostgres, config.SectionKafka, config.SectionClickHouse, config.SectionRedis, config.SectionBilling, config.SectionContentKey, config.SectionExact)
+	cfg, err := config.Load(serviceName,
+		config.SectionOTel, config.SectionPostgres, config.SectionKafka, config.SectionClickHouse,
+		config.SectionRedis, config.SectionBilling, config.SectionContentKey, config.SectionExact)
 	if err != nil {
 		return err
 	}

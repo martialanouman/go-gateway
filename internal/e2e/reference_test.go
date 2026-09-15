@@ -143,9 +143,10 @@ func (s l0Shape) describe() string {
 }
 
 // refL0Shape reads the three levers and refuses the combinations that cannot draw what they promise,
-// BEFORE the containers start. A run refused here costs seconds; the same run refused by mixHolds costs
-// the whole window, and the combinations ringCoversPool catches are not refused by mixHolds at all —
-// they are read as a legitimate warm bound.
+// before the SEED and the window. It is called after the containers and the peer calibration, so a
+// refusal here still costs their startup — what it saves is the ninety seconds of injection after them,
+// and the combinations it catches are ones no later guard reports as a lever problem: an under-covering
+// ring reads as a legitimate warm mix, and a draw past the block reads as HTTP 400s.
 func refL0Shape(t *testing.T) l0Shape {
 	t.Helper()
 	shape := l0Shape{
@@ -416,7 +417,9 @@ type refStack struct {
 	lookups *countingLookups
 }
 
-func buildRefStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg config.ClickHouse, accounts int, shape l0Shape) *refStack {
+func buildRefStack(
+	t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg config.ClickHouse, accounts int, shape l0Shape,
+) *refStack {
 	t.Helper()
 	apiKeys, connectorID := seedRefControlPlane(t, pool, accounts)
 
@@ -501,7 +504,11 @@ func buildRefStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg con
 	}
 	lookups := newCountingLookups()
 	l0 := routing.NewL0Resolver(
-		exact.NewResolver(bloom, rdb, exactRepo, exact.DefaultCacheTTL, exact.WithLookupMeter(lookups)),
+		// The TTL is READ from config.Defaults() rather than written here, so the bench follows production's
+		// EXACT_CACHE_TTL instead of pinning a copy that would drift — the rule the pool bench beside it
+		// already states for POSTGRES_MAX_CONNS. It cannot be observed in a 60 s window either way; what
+		// matters is that the run does not measure a TTL production does not have.
+		exact.NewResolver(bloom, rdb, exactRepo, config.Defaults().Exact.CacheTTL, exact.WithLookupMeter(lookups)),
 		nil, // no script stage: L1 is another milestone's question, as in step-270c
 		resolver,
 	)
@@ -1014,10 +1021,11 @@ func seedRefControlPlane(t *testing.T, pool *pgxpool.Pool, accounts int) ([]stri
 // never bound fails in a second rather than after ninety.
 //
 // It probes the PORTED half only, and that is a deliberate difference from the router-only bench's
-// preflightL0. There, one literal carries all the non-ported traffic, so a Bloom false positive on it
-// is all-or-nothing: 70 % of the messages would pay a store round trip and every guard would still
-// pass. Here the non-ported traffic is spread over the whole ring, a false positive costs one
-// destination in `ring`, and mixHolds is the net that would see it as a shifted mix.
+// preflightL0. There, one literal carries all the non-ported traffic, so a Bloom false positive on it is
+// all-or-nothing: 70 % of the messages would pay a store round trip and every guard would still pass.
+// Here the non-ported traffic is spread over the whole ring, so one false positive costs one destination
+// in `ring` — 0.02 % at the default, which is the whole argument. No guard downstream would see it
+// either: it is three orders of magnitude under maxMixGap. The cost is bounded, not caught.
 func preflightRefL0(t *testing.T, l0 *routing.L0Resolver, shape l0Shape) {
 	t.Helper()
 	if shape.share <= 0 {

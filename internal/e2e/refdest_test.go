@@ -469,13 +469,17 @@ func TestRingCoversPoolIgnoresThePoolWhenNothingIsPorted(t *testing.T) {
 	}
 }
 
-// TestRingCoversPoolRefusesAnEmptyRing: zero divides by zero in the injector's at(), and a panic is a
-// stack trace where a refusal is a sentence.
+// TestRingCoversPoolRefusesAnEmptyRing: zero panics in refDest's own `i%ring`, and a panic is a stack
+// trace where a refusal is a sentence.
 //
-// It asks at share=0, and only there. At any drawable share the coverage branch refuses an empty ring
-// on its own, so a case with ported traffic would pass with this guard deleted — green on the strength
-// of the branch below it. share=0 is the DEFAULT of the reference run, and the one shape in which
-// nothing else stands between REF_DEST_RING=0 and the panic.
+// The injector's at() is NOT the exposure — withDefaults turns DestRing=0 into DefaultDestRing before
+// newPayloads ever runs, so its modulo is safe. What is exposed is the closure the reference run hands
+// it: newPayloads calls Dest(0), Dest calls refDest with shape.ring, and shape.ring is what this guard
+// holds.
+//
+// It asks at share=0, and only there. At any drawable share the coverage branch refuses an empty ring on
+// its own, so a case with ported traffic would pass with this guard deleted — green on the strength of
+// the branch below it. share=0 is the DEFAULT of the reference run.
 func TestRingCoversPoolRefusesAnEmptyRing(t *testing.T) {
 	err := ringCoversPool(0, 0, 10)
 	if err == nil {
