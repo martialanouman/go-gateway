@@ -21,7 +21,7 @@ d'ici, c'est aussi les rendre exécutables pendant que l'environnement se provis
 
 ### R1 — Le run de référence plein-stack ne traverse pas l'étage L0
 
-`internal/e2e/reference_test.go:410` câble `refResolver{resolver}`, et `refResolver` (`:887-893`)
+`internal/e2e/reference_test.go` câble `refResolver{resolver}` au pipeline, et `refResolver`
 enveloppe `routing.SnapshotResolver` **en direct**, godoc à l'appui. La production câble
 `exact.NewResolver` puis `routing.NewL0Resolver` (`cmd/router-svc/wiring.go:397-400`).
 
@@ -33,7 +33,7 @@ publier un dimensionnement faux — et le dimensionnement est le livrable de ste
 
 ### R2 — L'injecteur plafonne les destinations distinctes à 4 096, et R1 sans R2 ne mesure rien
 
-`newPayloads` (`test/load/steady/inject.go:323-338`) pré-rend `payloadRing = 4096` corps, et la
+`newPayloads` (`test/load/steady/inject.go`) pré-rend `payloadRing = 4096` corps, et la
 destination est **dans** le corps ; `at(seq) = bodies[seq%payloadRing]` (`:340`). Le `Dest` par
 défaut sait pourtant étaler sur un million de numéros (`:361`) — il n'est jamais appelé au-delà de
 l'index 4 095.
@@ -90,13 +90,15 @@ Quatre unités, dans cet ordre.
 1. **R2 — la cardinalité des destinations devient un levier de `steady.InjectConfig`**, défaut
    **4 096** : le run d'hier ne bouge pas d'un octet tant que personne ne tourne le bouton.
    Le compromis à écrire dans le design : un anneau large perd la localité de cache que le godoc de
-   `payloadRing` invoque (`inject.go:319-320`). Il n'est pas silencieux — l'injecteur **mesure déjà
-   son propre décrochage**, avec une bande de 5 % (`reference_test.go:115`) qui refuse un run dont
+   `payloadRing` invoque (godoc de `DefaultDestRing`, `inject.go`). Il n'est pas silencieux —
+   l'injecteur **mesure déjà son propre décrochage**, avec la bande de 5 % de
+   `refCriteria().MaxBehindFraction` qui refuse un run dont
    le harnais est devenu le sujet.
 2. **R1 — `refResolver` passe par `routing.NewL0Resolver(exact.NewResolver(...), nil, snap)`**, et
    le semis **réutilise tel quel** ce que step-270c a livré hors build tag dans
-   `internal/e2e/refl0_test.go` : `l0Dest` (`:41`), `portedSet` (`:89`), `mixHolds` (`:222`),
-   `cacheFootprint` (`:475`). Même paquet `e2e_test`, aucun tag — la réutilisation est gratuite, et
+   `internal/e2e/refl0_test.go` : `l0Dest`, `portedSet`, `cacheFootprint`, et la moitié de `mixHolds`
+   qui survit à une fenêtre chaude — voir la revue plus bas, l'autre moitié ne s'applique pas ici.
+   Même paquet `e2e_test`, aucun tag — la réutilisation est gratuite, et
    `l0Dest` est déjà indexé par l'entier que `newPayloads` fait varier.
    Part portée par défaut **0**, pour que le journal publié reste comparable.
    **`share=0` n'est pas neutre**, et c'est le D3 de step-270c : dès que L0 est câblé, chaque
@@ -109,7 +111,7 @@ Quatre unités, dans cet ordre.
    (`internal/config` — voir la garde de déclaration de section).
 4. **R4 — corriger `step-280.md:132-133`, et poser la garde.** L'invariant
    `MaxConns ≥ ⌈partitions / minReplicas⌉` va dans `internal/deploy/manifests_test.go`, à côté de
-   `TestHPACeilingUsesTheDeployedPartitionCount` (`:610`), qui garde déjà l'autre moitié du même
+   `TestHPACeilingUsesTheDeployedPartitionCount`, qui garde déjà l'autre moitié du même
    couplage (`maxReplicas` strictement sous le nombre de partitions). Une garde plutôt qu'un
    paragraphe : c'est la seule forme qui survit au prochain changement de réplicas.
 
@@ -123,14 +125,14 @@ trouvé, sous les deux collisions que « Portée » annonce, une troisième que 
 Câbler `Dest = l0Dest` tel quel ne marche pas, pour trois raisons qui se cumulent :
 
 1. `l0Dest(i, 0, pool)` rend le **littéral unique** `nonPortedDest` pour tout `i`
-   (`internal/e2e/refl0_test.go:48`). À la part portée par défaut — 0 — l'injecteur retomberait sur
+   (`l0Dest`, `internal/e2e/refl0_test.go`). À la part portée par défaut — 0 — l'injecteur retomberait sur
    **une** destination, l'inverse exact de ce que R2 demande.
 2. Le bloc porté de `l0Dest` (`2250700%06d`, `1+ordinal%pool`) **recouvre** celui du `Dest` par défaut
-   de l'injecteur (`+2250700%06d`, `seq%10⁶`, `test/load/steady/inject.go:361`). Une destination tirée
+   de l'injecteur (`+2250700%06d`, `seq%10⁶`, défaut de `Dest` dans `withDefaults`). Une destination tirée
    comme « non portée » pourrait donc être portée en base : `mixHolds` calcule `pg_hit` attendu à partir
    de `share`, et lirait un mélange que sa propre géométrie ne prédit pas.
 3. **Celle qu'on ne voyait pas.** `newPayloads` n'appelle `cfg.Dest(i)` que pour `i ∈ [0, ring)`
-   (`inject.go:325`) : l'anneau plafonne donc aussi la cardinalité **portée**. À `ring = 4096` et
+   (`newPayloads`, `inject.go`) : l'anneau plafonne donc aussi la cardinalité **portée**. À `ring = 4096` et
    `share = 0,3`, le tirage ne touche que ~1 200 numéros portés **quel que soit** `REF_PORTED_POOL`.
    Le cadran de localité de step-270c ne commanderait rien dans le run plein-stack.
 
@@ -141,7 +143,9 @@ s'assert contre `portedSet` — pas un bloc neuf à justifier, pas une conventio
 Et le point 3 devient une garde plutôt qu'une note : `ring ≥ pool × 1000 / num`, sinon le run
 **refuse**. C'est le seul moyen que le levier de cardinalité commande quelque chose à `share > 0` ;
 c'est aussi l'assertion que la mutation « figer l'anneau à 4 096 » doit faire tomber. Sans elle, R2
-livre un bouton, et `mixHolds` publierait un 100 % `redis_hit` comme une borne chaude légitime.
+livre un bouton : le run publierait une lecture Postgres nulle comme un résultat, et aucune garde ne
+le verrait — celle du mélange compare au tirage **de l'anneau**, donc un anneau trop étroit est cohérent
+avec lui-même.
 
 ### D2 — La bande de reproductibilité n'existe pas : cette PR l'établit
 
@@ -190,9 +194,9 @@ service qui passe à `RunBatch`, et c'est exactement ce que R4 reproche à la pr
 
 L'ordre est contraignant, et le premier point n'est pas une formalité.
 
-1. **R2 puis R1**, jamais l'inverse : un L0 câblé sur 4 096 destinations rend un mélange 100 %
-   `redis_hit` que `mixHolds` accepterait comme une borne chaude légitime. La mesure serait fausse
-   *et* verte.
+1. **R2 puis R1**, jamais l'inverse : un L0 câblé sur 4 096 destinations rend une lecture Postgres
+   nulle qu'aucune garde ne peut contredire, puisque le mélange attendu se déduit du tirage de
+   l'anneau. La mesure serait fausse *et* verte.
 2. Chaque test neuf est **vu tomber sous une mutation**, y compris et surtout le levier de
    cardinalité : le figer à 4 096 doit faire tomber une assertion, sinon le bouton n'est pas gardé.
 3. **Relance du run de référence à `share=0`**, comparée à la bande de reproductibilité consignée
@@ -224,40 +228,56 @@ L'ordre est contraignant, et le premier point n'est pas une formalité.
 
 ## Ce que la livraison a trouvé
 
-**Neuf défauts, tous découverts par une mutation** plutôt que par une relecture. Les trois qui comptent :
+Je ne donne pas de décompte global. J'en ai annoncé un — « neuf défauts, tous découverts par une
+mutation » — et il ne tenait sur aucun des deux mots : le premier de la liste vient d'une **lecture**,
+que le design de cette fiche décrit lui-même, et le total ne se réconciliait avec aucun des messages de
+commit. Un chiffre réestimé sans piste d'audit n'est pas une piste d'audit, c'en est le contraire ; c'est
+le constat que step-270c avait déjà payé. Ce qui se vérifie est test par test.
 
-1. **Une troisième collision, que la fiche n'avait pas vue.** `newPayloads` n'échantillonne `Dest` que
-   sur `[0, ring)`, donc l'anneau bornait aussi le tirage **porté** — à 4 096 et part 0,3, ~1 200 numéros
-   quel que soit `REF_PORTED_POOL`. Le levier de R2 aurait été un bouton sans `ringCoversPool`.
-2. **Le conseil de `ringCoversPool` était faux, et tombait dans le mauvais ordre.** Il annonçait
-   `pool × 1000 / num` — 5 000 là où 4 001 couvre — et sa branche passait **avant** celle du débordement
-   de bloc, dont elle aggrave le défaut. `minRingFor` décide et conseille désormais avec la même
-   expression.
-3. **Le couple falsifiant de `minRingFor` était circulaire** : il tirait son attendu de la fonction que
-   `ringCoversPool` utilise aussi, donc les deux côtés bougeaient ensemble. `smallestCoveringRing`
-   énumère par `l0Dest`.
+### Trouvé en écrivant, par mutation
 
-Plus trois fixtures creuses (la disjonction ne mord qu'à `pool > num` ; « aucune copie » passait sous une
-seconde formule parce que `pool=100` divise 700 ; le garde de l'anneau vide n'était atteignable qu'à
-`share=0`), deux branches non couvertes dans `internal/deploy` (`minReplicas` absent, arrondi supérieur)
-et un code mort supprimé.
+- **L'ordre des branches de `ringCoversPool`** : sur une configuration qui déborde *et* sous-couvre, le
+  remède de la couverture — élargir l'anneau — aggrave le débordement. Le débordement passe devant.
+- **Le conseil « augmenter l'anneau à au moins `pool × 1000 / num` »** annonçait un minimum faux :
+  5 000 là où 4 001 couvre, 333 là où 100 suffit.
+- **Le couple falsifiant de `minRingFor` était circulaire** : il tirait son attendu de la fonction que
+  `ringCoversPool` utilise aussi, donc les deux côtés bougeaient ensemble.
+- **Trois fixtures creuses** : la disjonction ne mord qu'à `pool > num` ; « aucune copie » passait sous
+  une seconde formule parce que `pool=100` divise 700 ; le garde de l'anneau vide n'était atteignable
+  qu'à `share=0`.
+- **Deux branches non couvertes dans `internal/deploy`** (`minReplicas` absent, arrondi supérieur) et
+  **un code mort** supprimé dans `minRingFor`.
 
-**Et une case qui n'est pas tenue telle qu'écrite.** La « bande de reproductibilité consignée dans le
-journal » n'existait pas pour le run de référence — celle du journal est celle du banc routeur isolé.
-Elle a été **établie ici** (trois runs `main` contre trois runs branche, même session), et son premier
-enseignement porte sur elle-même : sur six runs de base, le critère D2 n'est tenu qu'une fois. Les trois
-runs à `share=0` tombent à l'intérieur sur chaque grandeur et tiennent le critère 2 fois sur 3. Ce que
-ça établit est que **la porte Bloom n'est pas chiffrable ici** — le résultat que `D1` annonçait, le run
-tenant son taux. Ce que ça n'établit pas est que « rien n'a bougé ».
+### Trouvé par la revue en lecture seule, après coup
 
-Le palier à `PORTED_SHARE=0.3` n'a pas rendu de chiffre : lancé pendant une campagne de mutations sur la
-même machine, il a été affamé jusqu'à ce que le démon Docker cesse de répondre, puis tué. Consigné
-plutôt que coché.
+Deux défauts **bloquants**, tous deux invisibles aux portes vertes :
+
+- **`mixHolds` modélise une fenêtre FROIDE, ce run n'en a jamais.** Son godoc pose sa propre
+  précondition — un cache vidé avant le palier — que le banc routeur remplit par un `FLUSHDB` et que ce
+  run-ci ne remplit pas. Le palier porté échouait donc **déterministement**, avec un message accusant un
+  flush que ce banc n'a jamais été écrit pour faire. J'avais écrit « mixHolds est le filet ». C'était
+  faux, et le seul run qui l'aurait montré est celui qui a été affamé.
+- **Le garde de l'anneau acceptait un numéro hors bloc.** `refDest` tire `pool+1+i`, donc le dernier
+  tirage vaut `pool+ring` : la borne devait être stricte. `REF_DEST_RING=900000` au défaut rendait
+  « +22507001000000 », que l'ingress refuse — et le seul test qui pouvait l'attraper n'assérait que la
+  regex, qui n'a aucune contrainte de longueur.
+
+Plus : l'anneau **quantifie** la part portée (31,6 % à l'anneau par défaut, pas 30) · le dénominateur du
+mélange était le compteur SMSC, en segments, deux étages en aval · deux **mécanismes inventés** dans mes
+commentaires · une ligne de journal annonçant un ensemble porté à `share=0`, où rien n'est semé · le
+banc figeait `exact.DefaultCacheTTL` alors que cette PR même en fait un levier · et six affirmations
+fausses dans la documentation, dont une clause d'échec omise et une conclusion plus forte que ses
+données.
+
+**La leçon n'est pas « il fallait relire ».** C'est que les deux bloquants vivaient exactement là où le
+run porté n'a pas tourné. Une porte verte sur un chemin jamais emprunté ne dit rien de ce chemin, et
+cette fiche l'a écrit dans ses réserves sans en tirer la conséquence : le palier à `share > 0` n'était
+pas seulement non mesuré, il était **non exécutable**.
 
 ## Hors périmètre — et qui reste à step-280
 
-Trois décisions qui exigent l'environnement représentatif (`deploy/README.md:105-115`), et qu'aucun
-portable ne tranche :
+Trois décisions qui exigent l'environnement représentatif (`deploy/README.md`, « Restent trois
+grandeurs à trancher »), et qu'aucun portable ne tranche :
 
 - la **valeur retenue** de `POSTGRES_MAX_CONNS`, à arbitrer contre `max_connections` × services ×
   réplicas ;

@@ -103,12 +103,14 @@ Redis en régime établi, et une lecture Postgres par clé primaire à froid ou 
    2 400 req/s la marge disparaît dès ~4 ms de latence PK, et un pod peut posséder plus de lanes Kafka
    que de connexions. *(Écrit « 12 par défaut » jusqu'à step-270d : c'est le nombre de partitions du
    topic, pas ce qu'un pod se voit assigner. Le nombre de voies d'un pod est
-   ⌈partitions / réplicas⌉ — voir le point 2 ci-dessous.)* Le mode de panne est vicieux : `Acquire` attend jusqu'à 2 s, puis
+   ⌈partitions / minReplicas⌉ — 3 au plancher de l'HPA et 2 à son plafond, jamais 12. Voir le point 2
+   ci-dessous.)* Le mode de panne est vicieux : `Acquire` attend jusqu'à 2 s, puis
    erreur transitoire, donc redélivrance — qui refait le même lookup sur un pool déjà saturé. Toute
    hausse se pèse contre `max_connections`=100 × services × réplicas (step-201 D9).
 3. **Empreinte Redis du cache.** `clés en vol = taux de peuplement × TTL(6 h)`, soit 1,3 à 10 Go sur le
-   Redis partagé avec les soldes de facturation. Le TTL est une constante de paquet, sans levier de
-   configuration : si le Redis se remplit, le recours est un redéploiement.
+   Redis partagé avec les soldes de facturation. *(Écrit « Le TTL est une constante de paquet, sans
+   levier de configuration : si le Redis se remplit, le recours est un redéploiement » jusqu'à
+   step-270d, qui livre `EXACT_CACHE_TTL`. Reste ici la **valeur**, pas le levier.)*
 
 **Les trois grandeurs ont été mesurées par step-270c** (`TestRouterL0Fidelity`, journal du 09/09/2026),
 en *ratios* — les seuls chiffres qui se transposent depuis un portable :
