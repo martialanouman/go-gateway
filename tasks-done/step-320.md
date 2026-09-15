@@ -156,6 +156,11 @@ dans `registeredOperationIDs` (`collection_test.go`). La garde en serait la troi
 func operationRefs(doc map[string]any) map[string]opRef
 ```
 
+> **Révisé en cours de step** (voir « Ce que la revue a trouvé ») : le helper prend `*testing.T` et
+> **signale** l'opération sans `operationId` au lieu de l'écarter, ainsi que les `operationId`
+> dupliqués. L'unicité, notée plus bas comme « angle mort accepté », est donc **assertée** : la revue a
+> montré que le filtre silencieux creusait précisément le trou que la garde devait fermer.
+
 appelé par la garde (sur `loadContract`) et par `registeredOperationIDs`, repliée dessus à signature
 inchangée. `TestGeneratedSpecRegistersNoOperationOutsideTheM1Surface` reste **intact** : son message
 nomme le chemin fautif, et on ne touche pas une garde porteuse pendant une step de gardes.
@@ -239,14 +244,17 @@ le commentaire du helper le présentait comme un garde-fou. `operationRefs` pren
 **signale** l'opération sans id, au lieu de l'avaler — ce qui ferme du même geste l'angle mort des
 `operationId` dupliqués que la fiche s'était contentée d'« accepter » après une vérification à la main.
 
-**Trois raisons sur trente étaient fausses**, et une liste dont le rôle est de rendre l'état du code
+**Quatre raisons sur trente étaient fausses**, et une liste dont le rôle est de rendre l'état du code
 lisible vaut moins qu'une ligne vide quand on lui fait confiance :
 `reorder-routes` — la priorité **a** une surface admin (`Priority` est dans `routeCreateBody` et
 `routeUpdateBody`) ; ce qui manque est le réordonnancement atomique en lot, ce que step-390 disait déjà.
 `get-` / `update-customer-content-policy` — `get-customer` et `update-customer` **servent déjà** les deux
 champs qui composent tout le schéma `ContentPolicy` ; ce qui manque est l'endpoint dédié.
-`disconnect-session` — décrit comme une lecture REST alors que c'est un `DELETE`, et que le
-`Disconnector` existe déjà, non exposé.
+`disconnect-session` — décrit comme une lecture REST alors que c'est un `DELETE` ; et la deuxième
+rédaction (« le disconnector existe, il n'est pas exposé ») était fausse à son tour, relevée au second
+tour de revue : le `Disconnector` ne connaît que les scopes `account` et `customer`, l'opération cible
+**une session**. Ce n'est pas du câblage, c'est une granularité neuve à ajouter jusque dans le proto —
+ce que step-360 porte.
 
 **La garde change la procédure du dépôt, et la procédure ne le disait pas.** Depuis cette step, éditer un
 `api/openapi-*.yaml` pour y déclarer une opération rend la suite rouge tant qu'elle n'est classée nulle

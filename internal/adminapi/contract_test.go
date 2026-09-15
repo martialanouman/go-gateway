@@ -184,7 +184,7 @@ var deferred = map[string]deferredOp{
 	// SMPP sessions: the live stream is served, the three REST reads are not.
 	"list-sessions":         {"only stream-sessions exists, no REST read", "step-360"},
 	"list-account-sessions": {"only stream-sessions exists, no REST read", "step-360"},
-	"disconnect-session":    {"the disconnector exists, it is not exposed", "step-360"},
+	"disconnect-session":    {"disconnect is per account, not per session", "step-360"},
 
 	// Content policy (§6.23): customers.content_storage exists; the platform default does not.
 	"get-customer-content-policy":    {"get-customer returns it, no dedicated one", "step-370"},
@@ -365,21 +365,23 @@ func operationNode(doc map[string]any, path, method string) map[string]any {
 // those are not endpoints anyone serves, and sweeping the whole document would demand they be
 // classified — a lie, not a guard.
 //
-// The two filters below guard different things and, on today's contract, cover for each other — so
-// neither can be shown to fail on its own. Measured, not assumed: removing BOTH reports exactly one
-// unclassified operation with an EMPTY name, not the 59 one might expect, because the 59 path-item
-// parameters: keys all collapse onto the same "" key of this map.
+// Three checks, each seen to fail on its own:
 //
 //   - the verb switch says what an operation IS: a path-item also carries parameters: (59 of them
 //     here), which is not one. It is what would still hold if a vendor extension nested an
 //     operationId under a non-verb key.
-//   - the empty-id check is NOT a safety net, which is why it reports instead of skipping. Keying on
-//     the operationId means an operation without one simply vanishes from this map — and "declared
-//     under paths:, classified by nobody" is the very thing the guard exists to catch. Proven by
-//     mutation: deleting one operationId: line from the contract left the whole package green.
+//   - the missing-id check REPORTS rather than skips, and that is the whole point. Keying on the
+//     operationId means an operation without one simply vanishes from this map — and "declared under
+//     paths:, classified by nobody" is exactly what this guard exists to catch. It was written as a
+//     silent `if id != ""` first: deleting one operationId: line from the contract then left the
+//     whole package green.
+//   - the duplicate check guards the same assumption from the other side: two operations sharing an
+//     id collapse onto one key, and the loser goes unclassified in silence. Pointing a second
+//     operation at an existing id is what showed it red.
 //
-// The duplicate check guards the same assumption from the other side: two operations sharing an id
-// would collapse onto one key, and the one that lost would go unclassified in silence.
+// Measured rather than predicted: with the first two both removed, the contract reports exactly ONE
+// unclassified operation with an EMPTY name — not the 59 one might expect — because the 59 path-item
+// parameters: keys all collapse onto the same "" key of this map.
 func operationRefs(t *testing.T, doc map[string]any) map[string]opRef {
 	t.Helper()
 	out := map[string]opRef{}
