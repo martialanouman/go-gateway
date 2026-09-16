@@ -17,7 +17,7 @@ Une tâche = **une session Claude Code ciblée = une PR petite et verte**. Pour 
 
 ### 0.2 `CLAUDE.md` (déjà en place, à la racine)
 
-Claude Code le lit à chaque session : ce qu'on construit, l'ordre du pipeline MT, les 4 invariants, les couplages qui se savent d'avance, la *definition of done*, les contrats. Le détail par territoire vit dans `.claude/rules/*.md`, chargé automatiquement à la lecture d'un fichier concerné (code Go, tests, `api/`, `db/`+`migrations/`, `internal/platform/errors`, fiches de travail). Garde les deux à jour.
+Claude Code le lit à chaque session : ce qu'on construit, l'ordre du pipeline MT, les 4 invariants, les couplages qui se savent d'avance, ce qu'exige `make check`, les contrats. Il ne porte aucun processus de travail : la *definition of done* vit au §0.4. Le détail par territoire vit dans `.claude/rules/*.md`, chargé automatiquement à la lecture d'un fichier concerné (code Go, tests, `api/`, `db/`+`migrations/`, `internal/platform/errors`, fiches de travail). Garde les deux à jour.
 
 ### 0.3 Règle d'or du séquencement + convention STUB
 
@@ -31,7 +31,9 @@ Un STUB **émet quand même son span** et est couvert par le test « ne logge pa
 
 ### 0.4 Definition of Done (chaque PR)
 
-`gofmt`/`goimports` verts • `golangci-lint` sans alerte • `go test -race ./...` vert • `govulncheck` vert • critères d'acceptation couverts par des tests • aucun invariant violé • godoc sur l'exporté • PR focalisée sur une tâche.
+- **`make check` vert** — il agrège ce que la CI vérifie (Docker et `make smsc-sim` requis). Ne pas énumérer ses portes ici : le décompte a déjà divergé de `.github/workflows/ci.yml` une fois ; ce qu'il laisse dehors est nommé dans le `Makefile`.
+- Critères d'acceptation de la tâche couverts par des tests ; aucun invariant violé ; godoc sur l'exporté ; PR petite et focalisée (une tâche du plan).
+- **Corriger ce que la step vient de périmer** — README, godoc, fiche encore ouverte — dans la même PR. Un document faux coûte plus cher qu'un document absent, parce qu'on lui obéit.
 
 ### 0.5 Les 4 invariants (tests bloquants, verts à vie)
 
