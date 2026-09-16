@@ -117,6 +117,7 @@ jobs:
         run: make load-smoke
 
   vuln:
+    # A required status check of the `main` ruleset: a known-vulnerable dependency blocks the merge.
     name: Vulnerabilities
     runs-on: ubuntu-latest
     steps:
@@ -127,7 +128,12 @@ jobs:
           cache: true
       - name: govulncheck
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
+          # The Makefile pins the version; `make tools` installs the same one on a laptop. The
+          # vulnerability database is fetched fresh either way: pinning the tool does not freeze what
+          # it knows.
+          version=$(sed -n 's/^GOVULNCHECK_VERSION *:= *//p' Makefile)
+          test -n "$version"
+          go install "golang.org/x/vuln/cmd/govulncheck@${version}"
           govulncheck ./...
 
   manifests:

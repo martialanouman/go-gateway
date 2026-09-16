@@ -196,7 +196,7 @@ func TestClickHouseIsNotAReadinessDependency(t *testing.T) {
 	})
 
 	addr := boundAddr(t, app.ops.Addr)
-	resp, err := http.Get("http://" + addr + "/readyz") //nolint:noctx // bounded by the server's own timeouts
+	resp, err := http.Get("http://" + addr + "/readyz")
 	if err != nil {
 		t.Fatalf("get /readyz: %v", err)
 	}

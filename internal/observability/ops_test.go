@@ -86,7 +86,7 @@ func waitReachable(t *testing.T, url string) {
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		resp, err := http.Get(url) //nolint:noctx // test-local probe against a loopback server
+		resp, err := http.Get(url)
 		if err == nil {
 			_ = resp.Body.Close()
 			return
@@ -99,7 +99,7 @@ func waitReachable(t *testing.T, url string) {
 func get(t *testing.T, url string) (int, []byte) {
 	t.Helper()
 
-	resp, err := http.Get(url) //nolint:noctx // test-local probe against a loopback server
+	resp, err := http.Get(url)
 	if err != nil {
 		t.Fatalf("GET %s: %v", url, err)
 	}

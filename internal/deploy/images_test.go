@@ -134,7 +134,6 @@ type dockerfile struct {
 // on the stage that ships, and a later USER overrides an earlier one.
 func readDockerfile(root, name string) (dockerfile, error) {
 	path := filepath.Join(root, name)
-	//nolint:gosec // G304: the path comes from the repository's own release configuration, never from input.
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return dockerfile{path: path}, err
@@ -301,7 +300,6 @@ func inspectDockerfiles(cfg goreleaserConfig, root, releasePath string) []violat
 					"\"migrations\" — the directory never reaches the build context and both migration Jobs "+
 					"fail on first start", filepath.Base(releasePath), d.ExtraFiles)
 			}
-			//nolint:gosec // G304: same repository-owned path as above.
 			if raw, err := os.ReadFile(filepath.Join(root, name)); err == nil &&
 				!strings.Contains(string(raw), "COPY migrations") {
 				add("migrations-in-migrate-image", "%s: no COPY of migrations — cmd/migrate reads them "+

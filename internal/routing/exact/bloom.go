@@ -102,7 +102,7 @@ func newFilter(msisdns []string) *bloom.BloomFilter {
 	if capacity < minBloomCapacity {
 		capacity = minBloomCapacity
 	}
-	filter := bloom.NewWithEstimates(uint(capacity), bloomFP) //nolint:gosec // capacity is a non-negative count
+	filter := bloom.NewWithEstimates(uint(capacity), bloomFP)
 	for _, m := range msisdns {
 		filter.AddString(m)
 	}

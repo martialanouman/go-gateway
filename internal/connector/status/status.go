@@ -65,7 +65,7 @@ type BindEntry struct {
 
 // Encode serialises a BindEntry for a connector:binds hash field.
 func (e BindEntry) Encode() []byte {
-	b, _ := json.Marshal(e) //nolint:errchkjson // a fixed small struct never fails to marshal
+	b, _ := json.Marshal(e) // a fixed small struct never fails to marshal
 	return b
 }
 

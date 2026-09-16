@@ -96,7 +96,7 @@ func operatorSecurityScheme() *huma.SecurityScheme {
 	return &huma.SecurityScheme{
 		Type: "oauth2",
 		Flows: &huma.OAuthFlows{
-			// #nosec G101 -- a documented token endpoint URL, not an embedded credential.
+			//nolint:gosec // G101: a documented token endpoint URL, not an embedded credential.
 			ClientCredentials: &huma.OAuthFlow{
 				TokenURL: "https://admin.gateway.internal/oauth/token",
 				Scopes: map[string]string{

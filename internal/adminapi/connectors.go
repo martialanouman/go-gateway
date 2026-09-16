@@ -477,7 +477,7 @@ func (h *connectorHandlers) setReconnectPolicy(ctx context.Context, in *reconnec
 	if err != nil {
 		return nil, humaerr.FromError(err)
 	}
-	_ = h.control.SignalReconfigure(ctx, id) //nolint:errcheck // best-effort: the persist is authoritative
+	_ = h.control.SignalReconfigure(ctx, id) // best-effort: the persist is authoritative
 	return &connectorOutput{Body: toConnectorDTO(c)}, nil
 }
 
@@ -501,6 +501,6 @@ func (h *connectorHandlers) setBindPool(ctx context.Context, in *bindPoolInput) 
 	if err != nil {
 		return nil, humaerr.FromError(err)
 	}
-	_ = h.control.SignalReconfigure(ctx, id) //nolint:errcheck // best-effort: the persist is authoritative
+	_ = h.control.SignalReconfigure(ctx, id) // best-effort: the persist is authoritative
 	return &connectorOutput{Body: toConnectorDTO(c)}, nil
 }

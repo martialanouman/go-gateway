@@ -62,7 +62,7 @@ func buildSubmit(r pipeline.RoutedMT) *smpp.SubmitSM {
 // client is driving the DCS directly); otherwise it is derived from the resolved encoding.
 func submitDataCoding(r pipeline.RoutedMT) uint8 {
 	if dc := r.DataCoding; dc != nil && *dc >= 0 && *dc <= 255 {
-		return uint8(*dc) //nolint:gosec // bounded to 0..255 on the line above
+		return uint8(*dc)
 	}
 	return dataCoding(r.Encoding)
 }

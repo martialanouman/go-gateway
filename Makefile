@@ -20,7 +20,9 @@ COMPOSE     := docker compose
 # Pinned tool versions. Guessing these is how a lint run passes locally and fails in CI.
 GOLANGCI_VERSION   := v2.12.2
 SQLC_VERSION       := v1.30.0
-GOVULNCHECK_VERSION := latest
+# CI reads the next line with sed (ci.yml, job vuln): keep it `NAME := vX.Y.Z`, no trailing comment.
+# Revisit it with each Go bump: a release pins its own golang.org/x/tools, which can lag a newer language.
+GOVULNCHECK_VERSION := v1.8.0
 OASDIFF_VERSION    := v1.26.0
 KUBECONFORM_VERSION := v0.8.0
 BUF_VERSION              := v1.72.0

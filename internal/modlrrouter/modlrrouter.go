@@ -224,7 +224,7 @@ func latencyMs(delivered, submitted time.Time) *uint32 {
 	if d > math.MaxUint32 {
 		d = math.MaxUint32
 	}
-	v := uint32(d) //nolint:gosec // clamped to [0, MaxUint32] on the lines above
+	v := uint32(d)
 	return &v
 }
 
@@ -236,7 +236,7 @@ func segmentCount(n int) uint16 {
 	if n > math.MaxUint16 {
 		return math.MaxUint16
 	}
-	return uint16(n) //nolint:gosec // bounded to [1, MaxUint16] above
+	return uint16(n)
 }
 
 // segmentSeq narrows the stored segment sequence to the CDR's uint16. A DLR row is a dispatched
@@ -248,5 +248,5 @@ func segmentSeq(n int) uint16 {
 	if n > math.MaxUint16 {
 		return math.MaxUint16
 	}
-	return uint16(n) //nolint:gosec // bounded to [1, MaxUint16] above
+	return uint16(n)
 }

@@ -243,7 +243,7 @@ type CredentialType string
 
 // The credential kinds.
 const (
-	// #nosec G101 -- an enum discriminator matching the DDL, not a credential.
+	//nolint:gosec // G101: an enum discriminator matching the DDL, not a credential.
 	CredentialSMPPBind CredentialType = "smpp_bind"
 	CredentialAPIKey   CredentialType = "api_key"
 )

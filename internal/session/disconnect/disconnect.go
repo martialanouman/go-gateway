@@ -40,7 +40,7 @@ type Event struct {
 // Encode serialises e for publication. It never fails for a well-formed Event, so it returns only
 // the bytes; a malformed Event surfaces at Decode on the subscriber side.
 func Encode(e Event) []byte {
-	b, _ := json.Marshal(e) //nolint:errchkjson // Event has only string fields; Marshal cannot fail.
+	b, _ := json.Marshal(e) // Event has only string fields; Marshal cannot fail.
 	return b
 }
 
