@@ -84,8 +84,10 @@ l'utilisateur.
   embarqué dans golangci-lint v2.12.2 **ignore** ces deux clés : `// #nosec` sans règle ni raison
   passe. Arbitrage Fable : les 3 `#nosec` existants sont convertis au même endroit, et une garde de
   source (`internal/config/nosec_guard_test.go`, à côté de `sections_guard_test.go`) refuse tout
-  `#nosec` dans les commentaires des `.go` non générés, `_test.go` compris. nolintlint juge alors
-  toutes les suppressions.
+  `#nosec` dans les commentaires des `.go` non générés, `_test.go` compris. La revue a trouvé une
+  seconde forme native, `//gosec:disable`, que gosec v2.26.1 accepte aussi : la garde refuse les deux.
+  nolintlint juge alors toutes les suppressions, sauf celles qui visent un linter désactivé, qu'il ne
+  contrôle pas.
 - Supprimer les 8 `//nolint:gosec` que gosec ne justifie plus : G115 raisonne désormais sur les bornes.
   Réécrire le `// nolint:contextcheck` mal formé (`observability/ops.go`).
 - `GOVULNCHECK_VERSION` est épinglé dans le `Makefile`, et la CI lit la même version.

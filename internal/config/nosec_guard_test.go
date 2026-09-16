@@ -7,21 +7,26 @@ import (
 	"io/fs"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 )
 
-// minScannedGoFiles keeps the guard below from passing on nothing: a wrong root or a parser that stops
-// reading would scan zero files and find zero suppressions. The module holds several hundred.
-const minScannedGoFiles = 100
+// minScannedGoFiles keeps the guard below from passing on too little: a wrong root, or a skip rule that
+// grew too wide, would scan part of the tree and find nothing there. The walk reads about 640 files and
+// internal/ alone about 570, so the floor sits between the two and fires when cmd/ and test/ drop out.
+const minScannedGoFiles = 620
 
-// suppressionDirective matches gosec's own suppression comment, in any case. The keyword is built by
-// concatenation so this file does not trip its own guard.
-var suppressionDirective = regexp.MustCompile(`(?i)#` + `nosec`)
+// suppressionDirective matches both of gosec's native suppression comments (the tag and the directive, see
+// findNoSecDirective in gosec's analyzer.go), in any case. The keywords are built by concatenation so this
+// file does not trip its own guard.
+var suppressionDirective = regexp.MustCompile(`(?i)#` + `nosec|//\s*gosec` + `:disable`)
 
 // TestNoGosecNativeSuppression keeps one suppression syntax in the tree: //nolint:gosec // reason.
-// nolintlint refuses that form without a reason; gosec's native form it cannot see, and golangci-lint
+// nolintlint refuses that form without a reason; gosec's native forms it cannot see, and golangci-lint
 // ignores gosec's own nosec-require-justification setting (measured at v2.12.2, step-290a). Test files
 // are scanned too: gosec is excluded there, so a native suppression in one is dead weight no linter reads.
+// The walk skips what the go tool skips (dot and underscore directories, testdata, vendor), so a stale
+// worktree under .claude/ fails nothing ./... would not build.
 func TestNoGosecNativeSuppression(t *testing.T) {
 	t.Parallel()
 
@@ -32,8 +37,9 @@ func TestNoGosecNativeSuppression(t *testing.T) {
 			return err
 		}
 		if d.IsDir() {
-			switch d.Name() {
-			case ".git", "testdata", "node_modules":
+			name := d.Name()
+			if path != "../.." && (strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") ||
+				name == "testdata" || name == "vendor" || name == "node_modules") {
 				return filepath.SkipDir
 			}
 			return nil
