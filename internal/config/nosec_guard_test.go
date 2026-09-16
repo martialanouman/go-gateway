@@ -13,7 +13,8 @@ import (
 
 // minScannedGoFiles keeps the guard below from passing on too little: a wrong root, or a skip rule that
 // grew too wide, would scan part of the tree and find nothing there. The walk reads about 640 files and
-// internal/ alone about 570, so the floor sits between the two and fires when cmd/ and test/ drop out.
+// internal/ alone about 570 (cmd/ 52, test/ 22), so the floor fires when cmd/ drops out; test/ alone is
+// under the margin, which a floor closer to the count would buy with failures on ordinary deletions.
 const minScannedGoFiles = 620
 
 // suppressionDirective matches both of gosec's native suppression comments (the tag and the directive, see

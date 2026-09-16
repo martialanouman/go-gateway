@@ -86,8 +86,8 @@ l'utilisateur.
   source (`internal/config/nosec_guard_test.go`, à côté de `sections_guard_test.go`) refuse tout
   `#nosec` dans les commentaires des `.go` non générés, `_test.go` compris. La revue a trouvé une
   seconde forme native, `//gosec:disable`, que gosec v2.26.1 accepte aussi : la garde refuse les deux.
-  nolintlint juge alors toutes les suppressions, sauf celles qui visent un linter désactivé, qu'il ne
-  contrôle pas.
+  nolintlint juge alors toutes les suppressions ; il ne signale seulement pas comme inutile une
+  directive qui vise un linter désactivé.
 - Supprimer les directives qui ne suppriment plus rien. La sonde de lecture en comptait 8 (gosec seul) ;
   l'arbre réel en avait 27 : 10 contextcheck, 10 gosec, 3 noctx, 2 errcheck, et 2 errchkjson qui visaient
   un linter désactivé (trouvées en revue). Une raison qui dit ce que le code ne dit pas reste en

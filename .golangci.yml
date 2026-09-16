@@ -38,7 +38,7 @@ linters:
 
   settings:
     # Every //nolint names its linter and says why, and one that suppresses nothing fails the run
-    # (allow-unused defaults to false; a directive naming a DISABLED linter is not checked). It is the
+    # (allow-unused defaults to false; a directive naming a DISABLED linter is not reported as unused). It is the
     # only suppression syntax the tree allows: gosec's native forms are refused by
     # internal/config/nosec_guard_test.go, because golangci-lint ignores gosec's own
     # nosec-require-justification setting (step-290a). See convention-style-go.md §9.
