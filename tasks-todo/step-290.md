@@ -78,14 +78,21 @@ l'utilisateur.
 ### Découpage : quatre PR, dans l'ordre a → b → c → d
 
 **290a — Suppressions justifiées, govulncheck épinglé.**
-- Activer `nolintlint` (`require-explanation`, `require-specific`), ainsi que `nosec-require-rules` et
-  `nosec-require-justification` dans la config gosec.
+- Activer `nolintlint` (`require-explanation`, `require-specific`).
+- **Une seule syntaxe de suppression : `//nolint:gosec // raison`.** Une première version de ce design
+  prévoyait aussi `nosec-require-rules` et `nosec-require-justification`. Une sonde a montré que le gosec
+  embarqué dans golangci-lint v2.12.2 **ignore** ces deux clés : `// #nosec` sans règle ni raison
+  passe. Arbitrage Fable : les 3 `#nosec` existants sont convertis au même endroit, et une garde de
+  source (`internal/config/nosec_guard_test.go`, à côté de `sections_guard_test.go`) refuse tout
+  `#nosec` dans les commentaires des `.go` non générés, `_test.go` compris. nolintlint juge alors
+  toutes les suppressions.
 - Supprimer les 8 `//nolint:gosec` que gosec ne justifie plus : G115 raisonne désormais sur les bornes.
   Réécrire le `// nolint:contextcheck` mal formé (`observability/ops.go`).
 - `GOVULNCHECK_VERSION` est épinglé dans le `Makefile`, et la CI lit la même version.
 - La CI documente que « Vulnerabilities » est une vérification exigée.
 - Preuve par mutation, non commitée : une requête SQL construite par concaténation fait tomber
-  `make lint`, et un `//nolint:gosec` sans explication le fait tomber aussi.
+  `make lint`, et un `//nolint:gosec` sans explication le fait tomber aussi. Un `#nosec` ajouté fait
+  tomber la garde.
 
 **290b — Une identité d'opérateur qui n'est pas un secret.**
 - `auth.Fingerprint(token)` renvoie `"tok_"` suivi des 16 premiers caractères hexadécimaux de
