@@ -80,7 +80,7 @@ func (r *CredentialRepo) SetStatus(ctx context.Context, accountID, credID uuid.U
 func (r *CredentialRepo) Rotate(ctx context.Context, accountID, credID uuid.UUID, rot cp.CredentialRotation) (cp.Credential, error) {
 	var graceSeconds *int32
 	if rot.Grace != nil {
-		secs := int32(rot.Grace.Seconds()) //nolint:gosec // G115: grace is a small operator-set window.
+		secs := int32(rot.Grace.Seconds()) // at most 7 days: the rotate contract caps grace_period_sec
 		graceSeconds = &secs
 	}
 	newHash := rot.NewHash

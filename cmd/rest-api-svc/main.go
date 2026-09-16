@@ -52,7 +52,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("init tracing: %w", err)
 	}
-	//nolint:contextcheck // Detaching is the point: see DrainTracing's comment.
+	// Detaching is the point: see DrainTracing's comment.
 	defer observability.DrainTracing(shutdownTracing, cfg.ShutdownTimeout, logger)
 
 	app, err := newRestAPIApp(ctx, cfg, logger)

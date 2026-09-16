@@ -213,7 +213,7 @@ func (o *OpsServer) Run(ctx context.Context, shutdownTimeout time.Duration) erro
 		}
 		return fmt.Errorf("serve ops: %w", err)
 	case <-ctx.Done():
-		// nolint:contextcheck // Detaching is the point: see shutdown's comment. Draining on the
+		//nolint:contextcheck // Detaching is the point: see shutdown's comment. Draining on the
 		// context that just fired would abort instantly and drop in-flight requests.
 		return o.shutdown(shutdownTimeout)
 	}

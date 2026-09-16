@@ -34,8 +34,15 @@ linters:
     - sqlclosecheck
     - nakedret # no naked returns in long funcs
     - prealloc
+    - nolintlint # every suppression names its linter and says why
 
   settings:
+    # Every //nolint names its linter and says why. It is the only suppression syntax the tree allows:
+    # gosec's native form is refused by internal/config/nosec_guard_test.go, because golangci-lint
+    # ignores gosec's own nosec-require-justification setting (step-290a).
+    nolintlint:
+      require-explanation: true
+      require-specific: true
     revive:
       rules:
         - name: exported # godoc on exported symbols

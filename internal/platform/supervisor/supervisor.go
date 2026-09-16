@@ -98,7 +98,6 @@ func (g *Group) Run(ctx context.Context, logger *slog.Logger, budget time.Durati
 	// arrived would already be tearing down before the pre-drain hooks could run, which would make
 	// OnDrain unimplementable here. Run cancels runCtx explicitly below, once the hooks have run, so
 	// the observable shutdown behaviour is unchanged.
-	//nolint:gosec // G118: cancel is invoked below on every path and by the defer safety net.
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancel()
 

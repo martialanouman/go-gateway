@@ -319,7 +319,7 @@ func (p *Pipeline) Process(ctx context.Context, in InboundMT) (RoutedMT, []pipee
 // vocabulary. Without one, the requested encoding enum (auto|gsm7|ucs2|binary) is used as before.
 func requestedEncoding(in InboundMT) string {
 	if dc := in.DataCoding; dc != nil && *dc >= 0 && *dc <= 255 {
-		return encoding.FromDataCoding(uint8(*dc)) //nolint:gosec // bounded to 0..255 on the line above
+		return encoding.FromDataCoding(uint8(*dc))
 	}
 	return in.Encoding
 }
