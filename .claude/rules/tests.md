@@ -7,8 +7,10 @@ paths:
 
 Détail : `docs/strategie-de-test-passerelle.md`.
 
-- **TDD** : le rouge lu d'abord, la mutation vue tomber ensuite — la règle
-  complète est dans `CLAUDE.md`, toujours chargé.
+- **TDD** : un rouge lu, échouant pour la bonne raison (« symbole inexistant »
+  le prouve ; « connexion refusée » ne prouve rien), avant toute implémentation ;
+  aucun « vert » avant d'avoir vu une mutation tomber. Une assertion jamais vue
+  échouer n'en est pas une.
 - Pyramide : beaucoup d'unitaires (logique de domaine), des intégrations
   (`testcontainers-go` : Postgres/Redis/Kafka/ClickHouse), peu de bout-en-bout.
 - Toute nouvelle étape de pipeline porte un test qui vérifie qu'elle **ne logge
