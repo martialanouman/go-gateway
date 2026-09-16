@@ -187,7 +187,7 @@ ALTER TABLE control_plane.customers
 -- message, when, and the outcome. The audit stores only the FACT of access, never the plaintext (invariant a).
 CREATE TABLE control_plane.content_access_audit (
   id          uuid PRIMARY KEY DEFAULT uuidv7(),
-  operator    text NOT NULL,                     -- the operator principal (token subject) that read the content
+  operator    text NOT NULL,                     -- auth.Fingerprint of the operator's token, never the token (migration 0014)
   message_id  uuid NOT NULL,
   customer_id uuid,                               -- the message's customer, when the CDR row was found
   outcome     text NOT NULL
@@ -207,7 +207,7 @@ CREATE TABLE control_plane.gdpr_erase_jobs (
   status       text NOT NULL DEFAULT 'queued'
                  CHECK (status IN ('queued','running','completed','failed')),
   attestation  text,                    -- proof of execution, set when the job ends
-  operator     text NOT NULL,           -- the operator principal that requested the erasure
+  operator     text NOT NULL,           -- auth.Fingerprint of the requesting operator's token, never the token
   created_at   timestamptz NOT NULL DEFAULT now(),
   finished_at  timestamptz
 );
@@ -227,7 +227,7 @@ CREATE TABLE control_plane.message_export_jobs (
   row_count     integer,
   artefact_uri  text,                   -- file:// today; an object URI once the infrastructure provides one
   error         text,                   -- why a failed job failed; a status with no reason is not actionable
-  operator      text NOT NULL,
+  operator      text NOT NULL,          -- auth.Fingerprint of the requesting operator's token, never the token
   created_at    timestamptz NOT NULL DEFAULT now(),
   expires_at    timestamptz NOT NULL,
   finished_at   timestamptz
