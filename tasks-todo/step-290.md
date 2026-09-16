@@ -88,8 +88,10 @@ l'utilisateur.
   seconde forme native, `//gosec:disable`, que gosec v2.26.1 accepte aussi : la garde refuse les deux.
   nolintlint juge alors toutes les suppressions, sauf celles qui visent un linter désactivé, qu'il ne
   contrôle pas.
-- Supprimer les 8 `//nolint:gosec` que gosec ne justifie plus : G115 raisonne désormais sur les bornes.
-  Réécrire le `// nolint:contextcheck` mal formé (`observability/ops.go`).
+- Supprimer les directives qui ne suppriment plus rien. La sonde de lecture en comptait 8 (gosec seul) ;
+  l'arbre réel en avait 27 : 10 contextcheck, 10 gosec, 3 noctx, 2 errcheck, et 2 errchkjson qui visaient
+  un linter désactivé (trouvées en revue). Une raison qui dit ce que le code ne dit pas reste en
+  commentaire. Réécrire le `// nolint:contextcheck` mal formé (`observability/ops.go`).
 - `GOVULNCHECK_VERSION` est épinglé dans le `Makefile`, et la CI lit la même version.
 - La CI documente que « Vulnerabilities » est une vérification exigée.
 - Preuve par mutation, non commitée : une requête SQL construite par concaténation fait tomber
