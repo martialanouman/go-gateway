@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
@@ -410,16 +411,37 @@ func exportSink(cfg config.Config) adminapi.ExportSink {
 	return adminapi.NewFileExportSink(cfg.HTTP.ExportDir)
 }
 
+// minAdminTokenLen is the shortest operator token production accepts. Audit rows record an operator as
+// auth.Fingerprint(token), a 64-bit prefix of its SHA-256: that is only safe to publish if the token
+// itself cannot be guessed. Length is all this can check — not randomness.
+const minAdminTokenLen = 32
+
 // validateAdminConfig enforces the policies specific to this service, at the point of use rather than
 // in the shared config validator.
 //
 // Operator tokens are specific to this service (not the pipeline binaries that share the HTTP
-// section). Without this check a production Admin API would boot, pass readiness, and answer every
-// request with 401 — a silent, fully non-functional service.
+// section). Without them a production Admin API would boot, pass readiness, and answer every
+// request with 401 — a silent, fully non-functional service. A token short enough to guess from its
+// recorded fingerprint is refused on the same tier; the error names the entry, never the token, since
+// it lands in the boot log.
 func validateAdminConfig(cfg config.Config) error {
-	if cfg.Environment.IsProduction() && len(cfg.HTTP.AdminTokens) == 0 {
+	if !cfg.Environment.IsProduction() {
+		return nil
+	}
+	if len(cfg.HTTP.AdminTokens) == 0 {
 		return fmt.Errorf("HTTP_ADMIN_TOKENS must be set in production: " +
 			"the Admin API would otherwise reject every operator request")
+	}
+	for i, entry := range cfg.HTTP.AdminTokens {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue // auth.NewStaticVerifier skips blank entries too
+		}
+		token, _, _ := strings.Cut(entry, ":")
+		if n := len(strings.TrimSpace(token)); n < minAdminTokenLen {
+			return fmt.Errorf("HTTP_ADMIN_TOKENS entry %d: a production token needs at least %d characters, "+
+				"got %d (only the length is checked, not the randomness)", i, minAdminTokenLen, n)
+		}
 	}
 	return nil
 }

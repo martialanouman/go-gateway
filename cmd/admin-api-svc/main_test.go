@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/metricstream"
 	"github.com/martialanouman/go-gateway/internal/realtime"
 )
@@ -34,6 +35,42 @@ func TestRunRequiresAdminTokensInProduction(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "HTTP_ADMIN_TOKENS") {
 		t.Errorf("error %q should name HTTP_ADMIN_TOKENS", err)
+	}
+}
+
+// TestValidateAdminConfigRefusesShortTokensInProduction: the recorded operator identity is a truncated
+// hash of the token, so production refuses a token short enough to brute-force from it. The error names
+// the entry, never the token — a boot error lands in logs.
+func TestValidateAdminConfigRefusesShortTokensInProduction(t *testing.T) {
+	t.Parallel()
+
+	const short = "short-operator-token"
+	long := strings.Repeat("x", 32)
+	cfg := config.Config{
+		Environment: config.EnvProduction,
+		HTTP:        config.HTTP{AdminTokens: []string{long + ":admin:read", short + ":admin:read|admin:write"}},
+	}
+
+	err := validateAdminConfig(cfg)
+	if err == nil {
+		t.Fatal("validateAdminConfig() = nil, want a refusal for a 20-character production token")
+	}
+	if !strings.Contains(err.Error(), "entry 1") || !strings.Contains(err.Error(), "32") {
+		t.Errorf("error %q should name the entry and the minimum length", err)
+	}
+	if strings.Contains(err.Error(), short) {
+		t.Errorf("error %q leaks the token", err)
+	}
+
+	cfg.HTTP.AdminTokens = []string{long + ":admin:read", " ", long + "y:admin:write"}
+	if err := validateAdminConfig(cfg); err != nil {
+		t.Errorf("validateAdminConfig() = %v, want nil for 32+ character tokens (blank entries are skipped)", err)
+	}
+
+	cfg.Environment = config.EnvDevelopment
+	cfg.HTTP.AdminTokens = []string{short + ":admin:read"}
+	if err := validateAdminConfig(cfg); err != nil {
+		t.Errorf("validateAdminConfig() = %v, want nil outside production", err)
 	}
 }
 
