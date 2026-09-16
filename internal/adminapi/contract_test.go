@@ -174,14 +174,15 @@ var deferred = map[string]deferredOp{
 	"update-webhook": {"repo shipped in M4, admin never written", "step-340"},
 	"delete-webhook": {"repo shipped in M4, admin never written", "step-340"},
 
-	// Sender-ID rewrite (§6.16): sender_id_rewrite_rules is in the schema and in NO Go file.
+	// Sender-ID rewrite (§6.16): sender_id_rewrite_rules has a generated sqlc model
+	// (ControlPlaneSenderIDRewriteRule) and nothing else — no repo, no evaluation, no admin.
 	"list-sender-rewrite-rules":  {"table and sqlc model only: no repo", "step-350"},
 	"create-sender-rewrite-rule": {"table and sqlc model only: no repo", "step-350"},
 	"update-sender-rewrite-rule": {"table and sqlc model only: no repo", "step-350"},
 	"delete-sender-rewrite-rule": {"table and sqlc model only: no repo", "step-350"},
 	"test-sender-rewrite-rule":   {"needs the evaluation engine (PR2)", "step-350"},
 
-	// SMPP sessions: the live stream is served, the three REST reads are not.
+	// SMPP sessions: stream-sessions is served; the two REST reads and the per-session DELETE are not.
 	"list-sessions":         {"only stream-sessions exists, no REST read", "step-360"},
 	"list-account-sessions": {"only stream-sessions exists, no REST read", "step-360"},
 	"disconnect-session":    {"disconnect is per account, not per session", "step-360"},

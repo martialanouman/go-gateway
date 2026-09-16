@@ -1,6 +1,6 @@
 # step-320 — Le contrat déclare 30 opérations que personne n'implémente, et rien ne le dit
 
-> **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
+> **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** LIVRÉE (2026-09-16)
 > **Dépend de :** — · **Bloque :** step-410 (go-live), step-330 → step-390
 
 ## But
@@ -266,6 +266,13 @@ gagne une étape, et `.claude/rules/contracts-api.md` la porte aussi.
 des quatre mutations (il les fait toutes tomber — son défaut est de ne nommer personne et de se
 compenser par paires, ce qui a été vérifié par mutation) ; l'ensemble fermé des steps n'exclut **pas**
 une step déjà livrée ; et le décodage public a un second mode d'échec, une clé non-verbe portant une map.
+
+**Tour 3 — le correctif d'un commentaire n'était pas remonté d'une ligne.** Les deux en-têtes de groupe
+de `deferred` contredisaient les entrées qu'ils coiffent : « the three REST reads » alors que
+`disconnect-session` est un `DELETE` (c'est le défaut même que le tour 1 avait corrigé *dans* l'entrée,
+une ligne plus bas), et « in NO Go file » alors que `ControlPlaneSenderIDRewriteRule` est dans
+`sqlcgen/models.go` — ce que les cinq entrées du groupe disaient correctement (« table and sqlc model
+only »). Un commentaire de groupe se relit avec les lignes qu'il résume, pas seul.
 
 ## Definition of Done
 
