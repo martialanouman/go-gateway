@@ -1,6 +1,6 @@
 # step-320 — Le contrat déclare 30 opérations que personne n'implémente, et rien ne le dit
 
-> **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
+> **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** LIVRÉE (2026-09-16)
 > **Dépend de :** — · **Bloque :** step-410 (go-live), step-330 → step-390
 
 ## But
@@ -139,6 +139,60 @@ première rédaction (webhooks compté 5, faute d'un `get-webhook` que le contra
   en `deferred` et l'en retire quand elle le sert — deux lignes de diff qui rendent l'intention lisible
   en revue.
 
+## Design arrêté
+
+Les deux points que le périmètre laissait ouverts sont tranchés ici, avant la première ligne de code.
+
+**Où vit la garde D1 : dans `internal/adminapi/contract_test.go`, pas dans un fichier neuf.**
+L'exclusion mutuelle est une propriété du **couple** `m1Operations` / `deferred` ; une revue qui ne voit
+qu'une moitié du couple ne la vérifie pas. `loadContract`, `opRef` et `str` y sont déjà.
+
+**Un seul helper neuf, et il absorbe une duplication existante.** Le `switch` sur les verbes HTTP vit
+déjà en double dans `adminapi_test` — dans `TestGeneratedSpecRegistersNoOperationOutsideTheM1Surface` et
+dans `registeredOperationIDs` (`collection_test.go`). La garde en serait la troisième copie, donc :
+
+```go
+// operationRefs returns a spec tree's operations keyed by operationId. Only HTTP verbs count.
+func operationRefs(doc map[string]any) map[string]opRef
+```
+
+> **Révisé en cours de step** (voir « Ce que la revue a trouvé ») : le helper prend `*testing.T` et
+> **signale** l'opération sans `operationId` au lieu de l'écarter, ainsi que les `operationId`
+> dupliqués. L'unicité, notée plus bas comme « angle mort accepté », est donc **assertée** : la revue a
+> montré que le filtre silencieux creusait précisément le trou que la garde devait fermer.
+
+appelé par la garde (sur `loadContract`) et par `registeredOperationIDs`, repliée dessus à signature
+inchangée. `TestGeneratedSpecRegistersNoOperationOutsideTheM1Surface` reste **intact** : son message
+nomme le chemin fautif, et on ne touche pas une garde porteuse pendant une step de gardes.
+`loadGenerated` n'est pas appelé par la garde : `m1Operations` est déjà prouvée égale à la surface
+enregistrée par les deux tests existants (⊆ et ⊇), donc la garde reste un pur test de fichier.
+
+**Forme de `deferred` : `map[string]deferredOp` avec `deferredOp struct{ reason, step string }`**, et la
+forme est **rétro-appliquée côté public** — struct déclarée localement dans chaque fichier, pas de
+paquet partagé : deux consommateurs dont l'un est vide ne paient pas une abstraction, et un générique
+imposerait un troisième parcours YAML à maintenir (les deux tests projettent déjà le document
+différemment). Sans cela, le premier qui diffère une opération publique devrait changer le type **en
+plus**, mélangeant deux diffs dans une PR qui devrait faire deux lignes. *Contre-opinion notée et
+écartée :* un type à deux champs sans instance pendant sept steps est du code mort ; le coût de trancher
+est d'une ligne dans les deux sens.
+
+**Le compte par surface n'est PAS figé dans le test.** Ce qui est vérifié est le **total**, et il l'est
+par construction : couverture + exclusion + non-périmé ⇒ `deferred` = contrat ∖ servies. Le test assert
+seulement que `step` appartient à un ensemble **fermé et littéral** `{step-330 … step-390}` — le seul
+mode de pourrissement que « non vide » ne ferme pas (`step-201`, « plus tard », une step inexistante).
+`step-350.md` démontre pourquoi un compte figé serait faux : sa PR1 sert 4 de ses 5 opérations et laisse
+la cinquième dans `deferred` avec une raison réécrite. Un compte à 5 serait faux entre ses deux PRs.
+
+**Côté public, `contractDoc.Paths` reste typé `map[string]map[string]contractOp`.** Le jour où une clé
+`parameters:` apparaît au niveau path-item, `yaml.Unmarshal` rend `cannot unmarshal !!seq into
+restapi_test.contractOp` et `loadContract` fait `t.Fatalf` : l'échec est bruyant, immédiat et nomme la
+ligne — ce n'est pas un trou silencieux. On ne s'en prémunit donc pas ; une ligne de commentaire nomme
+le mode d'échec et son correctif, pour que le futur lecteur n'accuse pas le YAML.
+
+**Angle mort accepté :** `operationRefs` étant une map par id, deux opérations partageant un
+`operationId` s'écraseraient. L'unicité est vérifiée sur les 133 ; l'asserter serait une quatrième
+propriété que cette fiche n'a pas demandée.
+
 ## Tests
 
 - `D1`/`D2` : les deux gardes sont des tests ordinaires (pas de conteneur, pas de build tag) — elles
@@ -156,13 +210,78 @@ première rédaction (webhooks compté 5, faute d'un `get-webhook` que le contra
   les 30 lignes de `deferred` doivent être exactement l'écart entre les `operationId` de `paths:` et les
   `OperationID` d'`internal/adminapi`.
 
+## Ce que les mutations ont démenti
+
+Deux affirmations de cette fiche étaient fausses, et c'est la mutation qui l'a dit — pas la relecture.
+
+**« 59 erreurs au premier run » : non, une seule.** Retirer le filtre des verbes ne casse rien du tout :
+`parameters:` est une **séquence**, donc l'assertion de type rend nil et le garde `id != ""` l'écarte
+déjà. Les deux filtres se recouvrent sur ce contrat, et **aucun n'est isolément testable**. Retirer les
+deux ne produit pas 59 erreurs mais **une seule, à nom vide** : les 59 clés s'écrasent toutes sur la même
+clé `""` de la map. Le piège existe, mais il ne mord pas là où la fiche le disait.
+
+**Une garde peut devenir un no-op silencieux, et la fiche ne le voyait pas.** Renommer le tag
+`yaml:"paths"` de la projection publique laissait `TestServedSpecConformsToContract` **entièrement
+vert** : toutes ses assertions pendent au parcours de `contract.Paths`. Le défaut préexistait à la step ;
+la nouvelle assertion de couverture en héritait. Côté Admin le trou est seulement *masqué* — contrat non
+lu ⇒ couverture muette, mais la péremption crie trente fois. Cette protection est un effet de bord de la
+liste `deferred` : **elle disparaît le jour où step-330…390 l'auront vidée**, exactement quand la garde
+n'aura plus que ce rôle. D'où une assertion de non-vacuité de chaque côté, vue tomber dans cet état
+futur (contrat non lu + `deferred` vidée).
+
+**Ce que la troisième propriété achète en plus, et que la fiche ne disait pas :** les trois propriétés se
+protègent mutuellement. La péremption est ce qui empêche la couverture de devenir muette — un argument
+de plus pour ne pas la sacrifier à un simple compteur.
+
+## Ce que la revue a trouvé
+
+Quatre constats bloquants, tous confirmés puis corrigés dans la même PR.
+
+**Le filtre `id != ""` était le trou, pas la protection.** Une opération dont on retire la ligne
+`operationId:` du contrat **disparaissait** de la garde : la suite restait entièrement verte. C'est
+exactement le cas « déclarée sous `paths:`, classée par personne » que cette step existe pour fermer, et
+le commentaire du helper le présentait comme un garde-fou. `operationRefs` prend désormais `t` et
+**signale** l'opération sans id, au lieu de l'avaler — ce qui ferme du même geste l'angle mort des
+`operationId` dupliqués que la fiche s'était contentée d'« accepter » après une vérification à la main.
+
+**Quatre raisons sur trente étaient fausses**, et une liste dont le rôle est de rendre l'état du code
+lisible vaut moins qu'une ligne vide quand on lui fait confiance :
+`reorder-routes` — la priorité **a** une surface admin (`Priority` est dans `routeCreateBody` et
+`routeUpdateBody`) ; ce qui manque est le réordonnancement atomique en lot, ce que step-390 disait déjà.
+`get-` / `update-customer-content-policy` — `get-customer` et `update-customer` **servent déjà** les deux
+champs qui composent tout le schéma `ContentPolicy` ; ce qui manque est l'endpoint dédié.
+`disconnect-session` — décrit comme une lecture REST alors que c'est un `DELETE` ; et la deuxième
+rédaction (« le disconnector existe, il n'est pas exposé ») était fausse à son tour, relevée au second
+tour de revue : le `Disconnector` ne connaît que les scopes `account` et `customer`, l'opération cible
+**une session**. Ce n'est pas du câblage, c'est une granularité neuve à ajouter jusque dans le proto —
+ce que step-360 porte.
+
+**La garde change la procédure du dépôt, et la procédure ne le disait pas.** Depuis cette step, éditer un
+`api/openapi-*.yaml` pour y déclarer une opération rend la suite rouge tant qu'elle n'est classée nulle
+part. `api/README.md` — le seul endroit qu'un contributeur ouvre en éditant un contrat — l'ignorait, et
+la phrase qui l'anticipait vivait ici, dans une fiche que personne ne lit à ce moment-là. La procédure y
+gagne une étape, et `.claude/rules/contracts-api.md` la porte aussi.
+
+**Trois commentaires affirmaient un mécanisme faux**, corrigés : un compteur ne « raterait » pas trois
+des quatre mutations (il les fait toutes tomber — son défaut est de ne nommer personne et de se
+compenser par paires, ce qui a été vérifié par mutation) ; l'ensemble fermé des steps n'exclut **pas**
+une step déjà livrée ; et le décodage public a un second mode d'échec, une clé non-verbe portant une map.
+
+**Tour 3 — le correctif d'un commentaire n'était pas remonté d'une ligne.** Les deux en-têtes de groupe
+de `deferred` contredisaient les entrées qu'ils coiffent : « the three REST reads » alors que
+`disconnect-session` est un `DELETE` (c'est le défaut même que le tour 1 avait corrigé *dans* l'entrée,
+une ligne plus bas), et « in NO Go file » alors que `ControlPlaneSenderIDRewriteRule` est dans
+`sqlcgen/models.go` — ce que les cinq entrées du groupe disaient correctement (« table and sqlc model
+only »). Un commentaire de groupe se relit avec les lignes qu'il résume, pas seul.
+
 ## Definition of Done
 
-- [ ] `make check` vert (lint · `test -race` · govulncheck · contrats)
-- [ ] toute opération des deux contrats est classée : servie ou différée avec raison **et** step
-- [ ] `m1Operations ∩ deferred = ∅` et aucune entrée `deferred` absente du contrat, tous deux assertés
-- [ ] les **quatre** mutations ont été **vues** tomber sur D1
-- [ ] aucune opération nouvellement servie, aucun contrat modifié
+- [x] `make check` vert (lint · `test -race` · govulncheck · contrats)
+- [x] toute opération des deux contrats est classée : servie ou différée avec raison **et** step
+- [x] `m1Operations ∩ deferred = ∅` et aucune entrée `deferred` absente du contrat, tous deux assertés
+- [x] les **quatre** mutations ont été **vues** tomber sur D1 — plus six autres, dont deux qui ont
+      trouvé un défaut (voir « Ce que les mutations ont démenti »)
+- [x] aucune opération nouvellement servie, aucun contrat modifié
 
 ## Hors périmètre
 

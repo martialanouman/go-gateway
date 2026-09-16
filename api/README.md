@@ -51,7 +51,16 @@ propres contrats, au build, et n'atteint jamais un consommateur.
    un bump majeur.
 4. `make contracts-types` — prouve que les YAML se génèrent en TypeScript valide. Cette cible
    demande Node ; elle n'est donc pas dans `make check`, mais elle tourne en CI sur chaque PR.
-5. Implémenter côté Go pour se conformer, et mettre à jour la collection si l'Admin API a changé.
+5. **Une opération neuve que la PR ne sert pas encore : l'inscrire en `deferred`.** Depuis step-320,
+   une opération déclarée sous `paths:` que personne ne sert fait **échouer la suite** tant qu'elle
+   n'est classée nulle part — c'est voulu : le tableau de bord génère ses clients depuis ce YAML, et
+   une opération déclarée sans implémentation y devient un appel vers un 404. La liste vit dans
+   `internal/adminapi/contract_test.go` (`deferred`, avec une raison **et** une step) ; côté public,
+   dans `internal/restapi/conformance_test.go`. Déclarer le contrat avant l'implémentation reste la
+   règle : ce qui est interdit, c'est l'écart **non déclaré**.
+6. Implémenter côté Go pour se conformer, et mettre à jour la collection si l'Admin API a changé.
+   L'opération sort alors de `deferred` et entre dans la surface servie — l'exclusion mutuelle des
+   deux listes refuse qu'elle reste dans les deux.
 
 Le consommateur n'a jamais à éditer un contrat : tout changement dont il a besoin passe par une PR
 **ici**. Une fois le YAML mergé, il peut développer contre le mock sans attendre l'implémentation Go.

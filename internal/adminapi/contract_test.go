@@ -148,6 +148,63 @@ var m1Operations = []opRef{
 	{"stream-billing-alerts", "get", "/admin/stream/billing-alerts"},
 }
 
+// deferredOp annotates an operation the contract declares and nobody serves yet. Both fields are
+// asserted non-empty: an annotation no test reads is a comment, and a comment does not hold this list
+// honest across seven steps. A step that serves an operation drops its line here and adds it to
+// m1Operations — two lines of diff that make the intent readable in review.
+type deferredOp struct{ reason, step string }
+
+// deferred is the other half of the surface: the operations api/openapi-admin.yaml publishes that
+// internal/adminapi does not register. The dashboard consumes this contract as an npm package, so an
+// unclassified entry here is a typed client calling a 404. Kept honest by
+// TestEveryContractOperationIsServedOrDeferred, which also forbids overlapping with m1Operations.
+var deferred = map[string]deferredOp{
+	// Customer groups (§6.17): the table, the FK and two read filters exist.
+	"list-customer-groups":  {"no admin surface: no group is creatable", "step-330"},
+	"create-customer-group": {"no admin surface: no group is creatable", "step-330"},
+	"get-customer-group":    {"no admin surface: no group is creatable", "step-330"},
+	"update-customer-group": {"no admin surface: no group is creatable", "step-330"},
+	"delete-customer-group": {"no admin surface: no group is creatable", "step-330"},
+	"list-group-customers":  {"no admin surface: no group is creatable", "step-330"},
+	"set-customer-group":    {"membership is set at create, never after", "step-330"},
+
+	// Webhooks: internal/storage/postgres/webhooks.go shipped in M4.
+	"list-webhooks":  {"repo shipped in M4, admin never written", "step-340"},
+	"create-webhook": {"repo shipped in M4, admin never written", "step-340"},
+	"update-webhook": {"repo shipped in M4, admin never written", "step-340"},
+	"delete-webhook": {"repo shipped in M4, admin never written", "step-340"},
+
+	// Sender-ID rewrite (§6.16): sender_id_rewrite_rules has a generated sqlc model
+	// (ControlPlaneSenderIDRewriteRule) and nothing else — no repo, no evaluation, no admin.
+	"list-sender-rewrite-rules":  {"table and sqlc model only: no repo", "step-350"},
+	"create-sender-rewrite-rule": {"table and sqlc model only: no repo", "step-350"},
+	"update-sender-rewrite-rule": {"table and sqlc model only: no repo", "step-350"},
+	"delete-sender-rewrite-rule": {"table and sqlc model only: no repo", "step-350"},
+	"test-sender-rewrite-rule":   {"needs the evaluation engine (PR2)", "step-350"},
+
+	// SMPP sessions: stream-sessions is served; the two REST reads and the per-session DELETE are not.
+	"list-sessions":         {"only stream-sessions exists, no REST read", "step-360"},
+	"list-account-sessions": {"only stream-sessions exists, no REST read", "step-360"},
+	"disconnect-session":    {"disconnect is per account, not per session", "step-360"},
+
+	// Content policy (§6.23): customers.content_storage exists; the platform default does not.
+	"get-customer-content-policy":    {"get-customer returns it, no dedicated one", "step-370"},
+	"update-customer-content-policy": {"update-customer writes it, no dedicated one", "step-370"},
+	"get-platform-content-policy":    {"no platform-wide policy table at all", "step-370"},
+	"update-platform-content-policy": {"no platform-wide policy table at all", "step-370"},
+
+	// Aggregated metrics: stream-metrics pushes; nothing answers a pull.
+	"get-metrics-summary": {"stream-metrics pushes, nothing pulls", "step-380"},
+	"get-traffic-metrics": {"stream-metrics pushes, nothing pulls", "step-380"},
+
+	// Accounts and routes: three settings are creatable and never modifiable.
+	"suspend-smpp-account":         {"PATCH update-smpp-account does it today", "step-390"},
+	"set-account-sender-id-policy": {"settable at create, never after", "step-390"},
+	"set-account-smpp-ops":         {"settable at create, never after", "step-390"},
+	"reorder-routes":               {"priority is per route, no atomic bulk reorder", "step-390"},
+	"list-customer-accounts":       {"redundant with list-smpp-accounts filters", "step-390"},
+}
+
 // loadContract reads api/openapi-admin.yaml (the source of truth) into a generic tree.
 func loadContract(t *testing.T) map[string]any {
 	t.Helper()
@@ -301,6 +358,56 @@ func operationNode(doc map[string]any, path, method string) map[string]any {
 	item, _ := paths[path].(map[string]any)
 	op, _ := item[method].(map[string]any)
 	return op
+}
+
+// operationRefs returns a spec tree's operations, keyed by operationId.
+//
+// It reads paths: only. A contract may declare outgoing callbacks under webhooks: (OpenAPI 3.1);
+// those are not endpoints anyone serves, and sweeping the whole document would demand they be
+// classified — a lie, not a guard.
+//
+// Three checks, each seen to fail on its own:
+//
+//   - the verb switch says what an operation IS: a path-item also carries parameters: (59 of them
+//     here), which is not one. It is what would still hold if a vendor extension nested an
+//     operationId under a non-verb key.
+//   - the missing-id check REPORTS rather than skips, and that is the whole point. Keying on the
+//     operationId means an operation without one simply vanishes from this map — and "declared under
+//     paths:, classified by nobody" is exactly what this guard exists to catch. It was written as a
+//     silent `if id != ""` first: deleting one operationId: line from the contract then left the
+//     whole package green.
+//   - the duplicate check guards the same assumption from the other side: two operations sharing an
+//     id collapse onto one key, and the loser goes unclassified in silence. Pointing a second
+//     operation at an existing id is what showed it red.
+//
+// Measured rather than predicted: with the first two both removed, the contract reports exactly ONE
+// unclassified operation with an EMPTY name — not the 59 one might expect — because the 59 path-item
+// parameters: keys all collapse onto the same "" key of this map.
+func operationRefs(t *testing.T, doc map[string]any) map[string]opRef {
+	t.Helper()
+	out := map[string]opRef{}
+	paths, _ := doc["paths"].(map[string]any)
+	for path, item := range paths {
+		methods, _ := item.(map[string]any)
+		for method, node := range methods {
+			switch method {
+			case "get", "post", "put", "patch", "delete", "head", "options", "trace":
+				op, _ := node.(map[string]any)
+				id := str(op["operationId"])
+				if id == "" {
+					t.Errorf("%s %s is declared with no operationId: nothing can classify it, "+
+						"and every guard keyed on the id is blind to it", method, path)
+					continue
+				}
+				if prev, dup := out[id]; dup {
+					t.Errorf("operationId %q is declared twice (%s %s and %s %s): one hides the other",
+						id, prev.method, prev.path, method, path)
+				}
+				out[id] = opRef{id: id, method: method, path: path}
+			}
+		}
+	}
+	return out
 }
 
 func responseCodes(op map[string]any) []string {
@@ -750,4 +857,94 @@ func TestUpgradeOperationsDeclareTheirContract(t *testing.T) {
 // declaresUpgrade reports whether a contract operation answers with a protocol switch.
 func declaresUpgrade(codes []string) bool {
 	return slices.Contains(codes, "101")
+}
+
+// deferredSteps is the closed set of steps an entry may be deferred to. It is what keeps the `step`
+// field from rotting into prose ("later"), into a typo, or into a step outside the window that owns
+// these surfaces — none of which "not empty" catches. What it does NOT catch: a step still listed
+// here after it has shipped. Pruning is left to the step itself, which empties its own lines from
+// deferred anyway. A step needing to defer past step-390 widens this list in its own PR — one line
+// of diff, visible in review.
+var deferredSteps = []string{
+	"step-330", "step-340", "step-350", "step-360", "step-370", "step-380", "step-390",
+}
+
+// TestEveryContractOperationIsServedOrDeferred is the direction the four tests above leave open:
+// declared in the published contract, implemented by nobody. It holds three properties, each closing
+// a different way the list rots. Counting instead (declared == served+deferred) would not do: it
+// names no culprit, and it cancels out in pairs — add an operation to the contract AND a phantom
+// deferred entry and the totals match again, green, with one operation unclassified and one entry
+// stale.
+//
+//   - coverage: every operationId under paths: is either served or deferred, on pain of being named;
+//   - mutual exclusion: an operation cannot be both, so a step that serves one MUST drop its deferred
+//     line — otherwise the suite stays green while a line claims "deferred to step-330" about an
+//     operation in production;
+//   - no stale entry: an operation removed from the contract cannot leave its line behind forever.
+//
+// The annotation is the fourth: a reason no test reads is a comment, and a comment does not hold a
+// thirty-line list across seven steps.
+func TestEveryContractOperationIsServedOrDeferred(t *testing.T) {
+	declared := operationRefs(t, loadContract(t))
+	// The stale-entry property below already screams when the contract goes unread — but only while
+	// deferred is non-empty, which stops being true once step-330…390 have served all thirty. This
+	// keeps the guard from quietly becoming a no-op on the day it finally has nothing left to defer.
+	if len(declared) == 0 {
+		t.Fatal("contract declares no operation: the contract went unread, or paths: moved")
+	}
+
+	served := make(map[string]bool, len(m1Operations))
+	for _, op := range m1Operations {
+		served[op.id] = true
+	}
+
+	for _, id := range sortedRefs(declared) {
+		if !served[id] && !isDeferred(id) {
+			ref := declared[id]
+			t.Errorf("contract declares %s %s (%s): nothing serves it and nothing defers it — "+
+				"add it to m1Operations once served, or to deferred with a reason and a step",
+				ref.method, ref.path, id)
+		}
+	}
+
+	for _, id := range sortedDeferred() {
+		entry := deferred[id]
+		if served[id] {
+			t.Errorf("%q is in deferred and in m1Operations: it is served, so drop the deferred entry", id)
+		}
+		if _, ok := declared[id]; !ok {
+			t.Errorf("%q is deferred but the contract no longer declares it: drop the stale entry", id)
+		}
+		if entry.reason == "" || entry.step == "" {
+			t.Errorf("deferred %q has reason=%q step=%q: both are required", id, entry.reason, entry.step)
+		}
+		if entry.step != "" && !slices.Contains(deferredSteps, entry.step) {
+			t.Errorf("deferred %q targets step %q, which is not one of %v", id, entry.step, deferredSteps)
+		}
+	}
+}
+
+func isDeferred(id string) bool {
+	_, ok := deferred[id]
+	return ok
+}
+
+// sortedRefs and sortedDeferred keep the failure output in a stable order: ranging a map would
+// reorder the names on every run, and a thirty-line red is read by eye.
+func sortedRefs(refs map[string]opRef) []string {
+	out := make([]string, 0, len(refs))
+	for id := range refs {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func sortedDeferred() []string {
+	out := make([]string, 0, len(deferred))
+	for id := range deferred {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
 }
