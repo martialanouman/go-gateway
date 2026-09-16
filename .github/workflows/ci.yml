@@ -128,8 +128,9 @@ jobs:
           cache: true
       - name: govulncheck
         run: |
-          # The Makefile pins the version, so a laptop and CI run the same scanner. The vulnerability
-          # database is fetched fresh either way: pinning the tool does not freeze what it knows.
+          # The Makefile pins the version; `make tools` installs the same one on a laptop. The
+          # vulnerability database is fetched fresh either way: pinning the tool does not freeze what
+          # it knows.
           version=$(sed -n 's/^GOVULNCHECK_VERSION *:= *//p' Makefile)
           test -n "$version"
           go install "golang.org/x/vuln/cmd/govulncheck@${version}"
