@@ -131,7 +131,7 @@ type OTel struct {
 // Booting production on one of these would point a live service at a loopback address that does
 // not exist there, so Validate rejects them on that tier.
 const (
-	// #nosec G101 -- not a credential: the throwaway localhost pair from docker-compose.yml.
+	//nolint:gosec // G101: not a credential, the throwaway localhost pair from docker-compose.yml.
 	// Real deployments must override it, which Validate enforces on the production tier.
 	defaultPostgresURL    = "postgres://gateway:gateway@localhost:5432/gateway?sslmode=disable"
 	defaultKafkaBroker    = "localhost:9092"
