@@ -33,6 +33,8 @@ const (
 
 // Principal is the authenticated operator behind a request.
 type Principal struct {
+	// Subject identifies the operator in audit rows and logs. It is never a secret: a static token's
+	// subject is its Fingerprint.
 	Subject string
 	Scopes  []Scope
 }
