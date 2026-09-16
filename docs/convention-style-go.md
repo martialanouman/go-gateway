@@ -222,7 +222,11 @@ linters:
     - sqlclosecheck
     - nakedret       # no naked returns in long funcs
     - prealloc
+    - nolintlint     # every suppression names its linter and says why
 linters-settings:
+  nolintlint:
+    require-explanation: true
+    require-specific: true
   goimports:
     local-prefixes: github.com/org/sms-gateway
   revive:
@@ -235,6 +239,8 @@ linters-settings:
 issues:
   max-same-issues: 0
 ```
+
+**[MUST]** Une alerte se supprime d'**une seule** façon : `//nolint:<linter> // <raison>`, au plus près de la ligne visée. `nolintlint` refuse une directive sans linter nommé ou sans raison, et fait échouer le CI sur une directive qui ne supprime plus rien (`allow-unused` est à `false` par défaut). Il ne juge pas une directive qui vise un linter désactivé : une telle directive est du code mort, à retirer. Les formes natives de gosec (`#nosec`, `//gosec:disable`) sont refusées par une garde de source (`internal/config/nosec_guard_test.go`), parce que golangci-lint n'exige pas leur justification.
 
 **[SHOULD]** `revive` porte l'essentiel des règles de nommage de ce document ; quand une règle de style est ajoutée ici, on cherche d'abord à la faire porter par le linter avant de compter sur la revue humaine.
 
