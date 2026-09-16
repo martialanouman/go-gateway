@@ -109,6 +109,20 @@ l'utilisateur.
 - En production, `validateAdminConfig` (`cmd/admin-api-svc/wiring.go`) refuse un jeton de moins de
   32 caractères. La garde ne peut vérifier que la longueur, pas l'aléa, et son message le dit.
 - Les logs déjà émis ne se nettoient pas. La PR le signale et recommande une rotation des jetons.
+- **Détail validé le 2026-09-16, avant le code :**
+  - **Migration :** l'`UPDATE` laisse intacte toute valeur déjà au format `^tok_[0-9a-f]{16}$`. Si le
+    nouveau binaire écrit des empreintes avant que la migration tourne, elles ne sont donc pas hachées
+    une seconde fois. Le schéma ne change pas de structure : seuls les commentaires des trois
+    colonnes `operator` disent « empreinte, jamais le jeton ».
+  - **Test de migration :** il crée une base neuve dans le conteneur partagé, puisque `pgtest` en
+    fournit une déjà migrée jusqu'au bout. Il applique `Steps(13)`, insère un jeton brut, `unknown` et
+    une valeur déjà au format empreinte, puis applique `Steps(1)`. Il vérifie que le jeton brut vaut
+    exactement `auth.Fingerprint`, et que les deux autres valeurs restent intactes.
+  - **Vecteur de `Fingerprint` :** il est calculé hors Go (`shasum -a 256`), pour que le test ne soit
+    pas circulaire.
+  - **Message de la garde de longueur :** il nomme le numéro de l'entrée, jamais le jeton.
+  - **Format de `HTTP_ADMIN_TOKENS` :** inchangé. Le dépôt n'a pas de runbook : la rotation est
+    recommandée dans la PR.
 
 **290c — Piste d'audit consolidée.**
 - Nouvelle table `control_plane.audit_log`, dans le schéma et dans une migration :
