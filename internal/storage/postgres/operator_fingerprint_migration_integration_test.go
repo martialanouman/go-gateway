@@ -66,7 +66,7 @@ func TestOperatorFingerprintMigrationMatchesGo(t *testing.T) {
 	already := auth.Fingerprint("another-operator-token-0123456789")
 	// A token that merely STARTS like a fingerprint must still be rewritten: the regex is anchored at both
 	// ends. And a token with a backslash and non-ASCII bytes must hash the same way: convert_to yields the
-	// UTF-8 bytes Go hashes, where a ::bytea cast would read the backslash as an escape.
+	// UTF-8 bytes Go hashes, where a ::bytea cast parses the backslash as an escape and rejects the value.
 	prefixed := already + "-and-the-rest-of-a-real-token"
 	const exotic = `jeton-opérateur\x41-0123456789-0123456789`
 	operators := []string{rawToken, "unknown", already, prefixed, exotic}

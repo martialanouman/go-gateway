@@ -24,7 +24,7 @@ part** as `Authorization: Bearer <token>` — bearer auth is set once at the
 collection level (`request.auth`) as `{{operatorToken}}`, which the `Local` environment
 resolves to `dev-operator-token`. Reads need `admin:read`, mutations `admin:write`.
 Audit rows record the token's fingerprint (`tok_…`), never the token. Production refuses a token
-shorter than 32 bytes, so this development token only works with `ENVIRONMENT=development`.
+shorter than 32 bytes, so this development token only works outside `ENVIRONMENT=production`.
 
 ## Variables
 

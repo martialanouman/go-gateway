@@ -436,11 +436,12 @@ func validateAdminConfig(cfg config.Config) error {
 		}
 		configured++
 		token, _, ok := strings.Cut(entry, ":")
-		if !ok {
+		// Measured without surrounding spaces: padding is not entropy.
+		n := len(strings.TrimSpace(token))
+		if !ok || n == 0 {
 			continue // malformed, not short: auth.NewStaticVerifier reports it by entry number
 		}
-		// Measured without surrounding spaces: padding is not entropy.
-		if n := len(strings.TrimSpace(token)); n < minAdminTokenLen {
+		if n < minAdminTokenLen {
 			return fmt.Errorf("HTTP_ADMIN_TOKENS entry %d: a production token needs at least %d bytes, "+
 				"got %d (only the length is checked, not the randomness)", i, minAdminTokenLen, n)
 		}

@@ -80,9 +80,9 @@ func TestValidateAdminConfigRefusesShortTokensInProduction(t *testing.T) {
 		t.Errorf("validateAdminConfig() = %v, want the missing-tokens refusal for blank entries only", err)
 	}
 
-	// An entry without a colon is malformed, not short: auth.NewStaticVerifier names that fault, so the
+	// An entry without a colon, or with an empty token, is malformed, not short: auth.NewStaticVerifier names that fault, so the
 	// guard leaves it alone rather than report a misleading length.
-	cfg.HTTP.AdminTokens = []string{long + ":admin:read", "abc"}
+	cfg.HTTP.AdminTokens = []string{long + ":admin:read", "abc", ":admin:read"}
 	if err := validateAdminConfig(cfg); err != nil {
 		t.Errorf("validateAdminConfig() = %v, want nil: a malformed entry is the verifier's to report", err)
 	}
