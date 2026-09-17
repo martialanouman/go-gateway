@@ -226,6 +226,50 @@ l'utilisateur.
 
    La fiche est déplacée en `tasks-done/` au dernier commit de 290d.
 
+- **Détail validé le 2026-09-17, avant le code :**
+  - **ADR-0015 :** un `## Addendum (2026-09-17)` après *Consequences* écrit la posture, et le commentaire
+    de `routeForTarget` (`internal/routing/snapshot.go:369`) y renvoie. Le garde-fou « valeur illisible
+    traitée comme un miss » gagne une phrase pour le `WRONGTYPE` du point 3.
+  - **Vecteur argon2id :** deux vecteurs, pas un. Celui de `src/test.c` de `phc-winner-argon2` est en
+    `p=1`, or la production hache en `p=4` (`argonThreads`) et le chemin parallèle d'`argon2.IDKey` est
+    un code distinct ; le second vient de l'exemple de CLI du `README` amont (`-t 2 -m 16 -p 4`). Les deux
+    sont cités par permalien dans le test et passés à `VerifyBindPassword`. Le binaire `argon2` n'étant pas
+    installé, la source est le dépôt amont ; à défaut, `brew install argon2` avec la commande consignée.
+    Mutation qui doit le faire tomber : `argon2.IDKey` remplacé par `argon2.Key` (argon2i).
+  - **`WRONGTYPE` :** `goredis.HasErrorPrefix` existe en v9.21.0 (`error.go:37`). Le test est un test
+    d'intégration sur un vrai Redis (`redistest.Client`) : le texte `WRONGTYPE` vient du serveur, et un
+    faux qui le fabrique testerait notre propre littéral.
+  - **`CONNECTOR_PASSWORD` :** la garde vit dans `cmd/connector-pool-svc`, au point d'usage, comme
+    `validateAdminConfig` — `connectorEnv` est un bloc local à ce service, pas une section de
+    `internal/config`. **`CONNECTOR_ADDR` n'est pas gardé**, contrairement au modèle ClickHouse : un
+    défaut de mot de passe a deux issues, dont une où le SMSC l'accepte et où la jambe sortante est
+    protégée par un secret public ; un `localhost:2775` n'a pas de second cas de ce genre, et step-300
+    rend ce pair local légitime (terminaison TLS en sidecar). Dans `deploy/k8s`, ClickHouse est adressé
+    par nom de service, jamais en sidecar. `CONNECTOR_SYSTEM_ID` non plus : c'est une identité, que le
+    SMSC distant refuse de lui-même.
+  - **Clé API :** la dernière phrase du §1.9 (« Comparaisons en temps constant dans les deux cas ») est
+    **fausse** pour la clé API depuis que `internal/restapi/auth.go:38` cherche par hash en SQL. Le §1.9
+    et le godoc du paquet disent désormais ce qui est vrai.
+  - **Le MSISDN du log d'échec d'attestation (`gdpr.go:176`) part en fiche, il n'est pas corrigé ici.**
+    Cette branche est la copie de dernier recours de l'attestation, écrite quand la base l'a refusée ;
+    décider ce qu'elle a le droit de contenir, c'est répondre à la question que porte `audit_log` —
+    combien de temps le numéro d'une personne effacée survit dans un artefact que l'effacement ne touche
+    pas. Une seule décision, appliquée aux deux endroits (step-297).
+  - **Quatre fiches**, pas neuf : l'INDEX pose qu'un `step-NNN.md` est une PR. Neuf fiches feraient neuf
+    PR dont plusieurs d'un paragraphe ; une seule ferait une fiche inexécutable — step-290 est ce
+    cas-là. Le critère est donc « ce qui se merge ensemble, ou ce qui se décide une seule fois » :
+    - **step-295** — `smsc_connectors.password_hash` et `external_billing_providers.auth_config_json` :
+      même mécanisme, un secret rejouable donc réversible ;
+    - **step-296** — `mt-replay` et `test-billing-provider` : deux actions d'opérateur sans ligne d'audit ;
+    - **step-297** — une seule politique de conservation (rétention d'`audit_log`, base légale écrite
+      dans `docs/`, MSISDN du log d'attestation) ;
+    - **step-315** ⛓ step-310 — `GET /audit-log`, scope `audit:read`, immuabilité en base, collision avec
+      `dashboard.audit_log`. Le seul lot bloqué par l'auth réelle, et le seul qui soit une fonctionnalité.
+
+    Couplage nommé dans 297 **et** dans 315 : le `REVOKE DELETE` de 315 et la purge de 297 se contredisent
+    si personne ne l'écrit — la purge doit être le seul titulaire du `DELETE`. `step-300` gagne une section
+    pour la DEK en clair sur gRPC non authentifié ; `step-410` une ligne renvoyant aux quatre fiches.
+
 ## Definition of Done
 - [ ] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts
 - [ ] critères couverts par tests · godoc sur l'exporté · aucun invariant (a/b/c/d) violé
