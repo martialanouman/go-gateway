@@ -1,6 +1,7 @@
 package credential_test
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
 
@@ -21,26 +22,36 @@ func TestAnAPIKeyHashIsDeterministicSoTheLookupIndexWorks(t *testing.T) {
 
 // TestAPIKeyCarriesTheSgwPrefix: the prefix is what makes a leaked key recognisable on sight.
 func TestAPIKeyCarriesTheSgwPrefix(t *testing.T) {
-	key, hash, err := credential.GenerateAPIKey()
+	key, _, err := credential.GenerateAPIKey()
 	if err != nil {
 		t.Fatalf("GenerateAPIKey() error = %v", err)
 	}
 	if !strings.HasPrefix(key, credential.APIKeyPrefix) {
 		t.Errorf("key %q does not carry the %q prefix", key, credential.APIKeyPrefix)
 	}
-	if hash != credential.HashAPIKey(key) {
-		t.Error("returned hash does not match HashAPIKey(key)")
-	}
-	if !credential.VerifyAPIKey(key, hash) {
-		t.Error("VerifyAPIKey rejects the key it was generated with")
-	}
 }
 
-// TestVerifyAPIKeyRejectsAWrongKey: a different key must not verify.
-func TestVerifyAPIKeyRejectsAWrongKey(t *testing.T) {
-	_, hash, _ := credential.GenerateAPIKey()
-	if credential.VerifyAPIKey("sgw_not-the-right-key", hash) {
-		t.Error("VerifyAPIKey accepted a wrong key")
+// TestHashAPIKeyMatchesAnExternallyComputedDigest pins the API key hash the way the argon2id vectors pin
+// the bind password: against a value this package did not produce. Nothing else did. The determinism test
+// only proves the function agrees with itself, and GenerateAPIKey returns HashAPIKey(key) literally, so
+// comparing the two is a tautology — under all of them, changing the digest (a different algorithm, a
+// salt, a prefix) stays green while every api_key_hash already stored stops matching, and REST
+// authentication fails for every customer at once.
+//
+// Recompute the expected value with:
+//
+//	printf '%s' 'sgw_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' | shasum -a 256
+//
+// The key is the "sgw_" prefix followed by the base64url of 32 zero bytes: a real key shape, and one a
+// reader can retype without transcription risk.
+func TestHashAPIKeyMatchesAnExternallyComputedDigest(t *testing.T) {
+	const (
+		key  = "sgw_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+		want = "75e9218ed79af21e4dd064936c5ac8cf52b3d4d25f29ce980109f35d83bde7d5"
+	)
+	if got := credential.HashAPIKey(key); got != want {
+		t.Errorf("HashAPIKey(%q) = %q, want %q: the stored api_key_hash of every customer is computed "+
+			"this way, so a change here is a total REST authentication outage", key, got, want)
 	}
 }
 
@@ -141,5 +152,92 @@ func TestVerifyBindPasswordRejectsAMalformedHash(t *testing.T) {
 		if ok {
 			t.Errorf("VerifyBindPassword(%q) accepted a password against a malformed hash", enc)
 		}
+	}
+}
+
+// TestHashBindPasswordEmitsTheProductionParameters pins what a NEW hash is made with. The reference
+// vectors below verify against the parameters recorded in their own PHC string, so they stay green if
+// argonMemory or argonThreads are lowered — and the passwords hashed from then on become brute-forceable
+// in silence, since every old hash still verifies against its own recorded cost.
+func TestHashBindPasswordEmitsTheProductionParameters(t *testing.T) {
+	hash, err := credential.HashBindPassword("password")
+	if err != nil {
+		t.Fatalf("HashBindPassword() error = %v", err)
+	}
+	const want = "$argon2id$v=19$m=65536,t=1,p=4$"
+	if !strings.HasPrefix(hash, want) {
+		t.Fatalf("HashBindPassword() = %q, want the %q parameters: they are the cost of every hash "+
+			"written from now on", hash, want)
+	}
+
+	// The two lengths are not in the parameter block, so the prefix above says nothing about them — and
+	// shortening either weakens every NEW hash while every old one keeps verifying against its own
+	// recorded encoding, which is precisely the silent path this test exists to close. 16 and 32 are
+	// argonSaltLen and argonKeyLen.
+	parts := strings.Split(hash, "$")
+	if len(parts) != 6 {
+		t.Fatalf("HashBindPassword() = %q, want a 6-segment PHC string", hash)
+	}
+	salt, err := base64.RawStdEncoding.DecodeString(parts[4])
+	if err != nil {
+		t.Fatalf("decode salt: %v", err)
+	}
+	sum, err := base64.RawStdEncoding.DecodeString(parts[5])
+	if err != nil {
+		t.Fatalf("decode hash: %v", err)
+	}
+	if len(salt) != 16 || len(sum) != 32 {
+		t.Errorf("salt is %d bytes and the derived key %d, want 16 and 32", len(salt), len(sum))
+	}
+}
+
+// TestVerifyBindPasswordAcceptsTheReferenceImplementationVectors pins argon2id against hashes this
+// repository did not produce. Every other test here hashes and verifies with the same code, so a
+// future golang.org/x/crypto bump that changed the derivation would leave them ALL green while every
+// bind password already in the database became unverifiable — every SMPP bind refused at once, announced
+// by nothing. (The API key is hashed with crypto/sha256 from the standard library, so it is not exposed
+// to this particular bump; it has its own pinned digest above.) Verified at the v0.53→v0.56 bump: the
+// argon2 code was identical, so the risk had not materialised. It was not guarded either.
+//
+// The vectors come from the reference C implementation's own test suite, P-H-C/phc-winner-argon2,
+// src/test.c at commit f57e61e19229e23c4445b85494dbf7c07de721cb (the hashtest lines for Argon2_id).
+// Two of the eight, chosen for what they exercise rather than for coverage: the first carries the
+// production time and memory (t=1, m=64 MiB), the second is the only Argon2id vector upstream with
+// p > 1, so it exercises the lane-parallel derivation at all. Neither is p=4, which production uses:
+// upstream publishes no Argon2id vector at that parallelism, and the p=4 example in its README is an
+// argon2i, which parsePHC refuses. The 256 MiB vector is deliberately
+// left out: it would make every test run allocate a quarter of a gigabyte.
+//
+// They go through VerifyBindPassword — the path the stored hashes take — and not through argon2.IDKey
+// directly, so the PHC parsing is pinned along with the derivation.
+func TestVerifyBindPasswordAcceptsTheReferenceImplementationVectors(t *testing.T) {
+	vectors := []struct {
+		name     string
+		password string
+		encoded  string
+	}{
+		{
+			name:     "t=1,m=65536,p=1 (the production time and memory)",
+			password: "password",
+			encoded:  "$argon2id$v=19$m=65536,t=1,p=1$c29tZXNhbHQ$9qWtwbpyPd3vm1rB1GThgPzZ3/ydHL92zKL+15XZypg",
+		},
+		{
+			name:     "t=2,m=256,p=2 (the lane-parallel derivation production also takes at p=4)",
+			password: "password",
+			encoded:  "$argon2id$v=19$m=256,t=2,p=2$c29tZXNhbHQ$bQk8UB/VmZZF4Oo79iDXuL5/0ttZwg2f/5U52iv1cDc",
+		},
+	}
+
+	for _, v := range vectors {
+		t.Run(v.name, func(t *testing.T) {
+			ok, err := credential.VerifyBindPassword(v.password, v.encoded)
+			if err != nil {
+				t.Fatalf("VerifyBindPassword() error = %v", err)
+			}
+			if !ok {
+				t.Errorf("VerifyBindPassword rejects the reference vector %q: this Go argon2id no longer "+
+					"agrees with phc-winner-argon2, so every hash already stored is unverifiable", v.encoded)
+			}
+		})
 	}
 }

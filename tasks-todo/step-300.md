@@ -10,7 +10,11 @@ services internes (dont l'Admin API et le gRPC billing).
 ## Périmètre (ce que fait CETTE PR)
 - HTTP : TLS sur `rest-api-svc` (public) et mTLS sur `admin-api-svc` (interne).
 - SMPP : option SMPP-TLS pour `smpp-server-svc` (entrant) et `connector-pool-svc` (sortant).
-- gRPC : mTLS pour `billing-svc` (et futurs services gRPC).
+- gRPC : mTLS sur les **quatre** serveurs du dépôt — `billing-svc`, `content-key-svc`,
+  `session-manager-svc` et le `SessionRegistry` par pod servi par **`smpp-server-svc`** (remise
+  `deliver_sm`, step-046). Nommés, pas « et futurs services » : les **huit** clients gRPC du code de
+  production sont aujourd'hui construits avec `insecure.NewCredentials()`, celui de
+  `internal/modlrrouter/poddeliverer.go` compris.
 - Config TLS (certs/clés/CA) via `internal/config`, jamais de secret en dur.
 
 ## Points d'implémentation clés
@@ -23,6 +27,34 @@ services internes (dont l'Admin API et le gRPC billing).
 - **`ctx7`** avant toute API `crypto/tls` avancée / config TLS de `grpc` (credentials) / `coder/websocket` TLS.
 - Certs/clés/CA fournis par config ou secrets, jamais commités ; rotation possible.
 - Ne pas casser les tests d'intégration : TLS activable par config (off en test unitaire, on en prod).
+
+## Ajouté par step-290d — la DEK circule en clair, sans authentification
+
+ADR-0011 fait de `content-key-svc` le **seul détenteur de la KMS**, avec une surface volontairement
+minimale pour que le dépositaire de la clé reste auditable. Cette surface est un gRPC que
+`admin-api-svc` et `router-svc` appellent avec `insecure.NewCredentials()`
+(`cmd/admin-api-svc/wiring.go`, `cmd/router-svc/wiring.go`).
+
+Conséquence : la **clé de données** d'un client voyage en clair sur le réseau, et le service ne vérifie
+pas qui la demande. Le chiffrement du contenu au repos (step-162) protège contre un vol de base ; il ne
+protège de rien contre qui écoute ce lien ou sait l'appeler. C'est le lien le plus sensible du dépôt, et
+c'est celui que le périmètre de cette step ne nommait pas.
+
+**Ce que cette step doit donc faire :** mTLS sur `content-key-svc` avec une **liste d'appelants
+autorisés** (le certificat client identifie le service), pas seulement un tunnel chiffré. Un tunnel sans
+autorisation laisse n'importe quel pod du cluster demander n'importe quelle clé.
+
+**Cinq commentaires écrits à la main affirment un mesh qui n'existe pas** — `deploy/` n'installe ni
+istio, ni linkerd, ni sidecar. Les corriger fait partie de cette step, sans quoi elle laisserait derrière
+elle la justification de ce qu'elle vient de réparer :
+
+- `api/proto/contentkeys.proto` (deux occurrences, « ride the intra-mesh mTLS ») — et il faut
+  **régénérer** `internal/contentkeys/pb/`, qui en recopie quatre : corriger le `.proto` seul laisse
+  l'affirmation dans le Go compilé ;
+- `internal/modlrrouter/poddeliverer.go` (« terminates at the mesh ») ;
+- `cmd/smpp-server-svc/wiring.go` et `cmd/admin-api-svc/wiring.go` (« transport security is terminated at
+  the mesh, not here »), qui sont précisément les deux extrémités du `SessionRegistry` ajouté ci-dessus
+  aux cibles mTLS.
 
 ## Tests (écrits dans la même PR)
 - Handshake TLS/mTLS réussi ; un client sans cert client est rejeté sur les endpoints mTLS.

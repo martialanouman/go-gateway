@@ -181,3 +181,92 @@ func TestExactRouteRedisEncodingIsPinned(t *testing.T) {
 		}
 	}
 }
+
+// respError is a server error as go-redis models one: the RedisError marker is what redis.HasErrorPrefix
+// tests with errors.As, and without it the prefix is never even compared. Every existing fault test here
+// uses a transport error (a deadline, an i/o timeout) — none of which carries that marker — so none of
+// them can say anything about how a RESP error code is classified.
+type respError string
+
+func (e respError) Error() string { return string(e) }
+func (respError) RedisError()     {}
+
+// TestResolveClassifiesServerErrorsByTheirCode covers the fork the WRONGTYPE heal introduced. Only
+// WRONGTYPE may fall through to the durable table; every other RESP error code must stay a fault.
+//
+// The fault cases are the load-bearing ones. Emptying the prefix sends every one of them down the
+// healing path, which is the exact fail-open the resolver's godoc forbids: the whole MT hot path onto the
+// control-plane database, at full message rate, during a Redis outage. (A prefix merely SHORTENED to "W"
+// or "WRONG" is not distinguishable here — no other RESP code starts with a W — so what these cases pin
+// is the classification, not every possible typo.)
+func TestResolveClassifiesServerErrorsByTheirCode(t *testing.T) {
+	msisdn := "2250700000042"
+	want := Target{Type: TargetConnector, ID: uuid.New()}
+
+	for _, tc := range []struct {
+		name        string
+		err         error
+		wantOutcome string
+		wantErr     bool
+		wantCorrupt int
+	}{
+		{
+			name:        "WRONGTYPE heals from the durable table",
+			err:         respError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+			wantOutcome: outcomePgHit,
+			wantCorrupt: 1,
+		},
+		{
+			name:        "LOADING stays a fault",
+			err:         respError("LOADING Redis is loading the dataset in memory"),
+			wantOutcome: outcomeRedisError,
+			wantErr:     true,
+		},
+		{
+			name:        "READONLY stays a fault",
+			err:         respError("READONLY You can't write against a read only replica"),
+			wantOutcome: outcomeRedisError,
+			wantErr:     true,
+		},
+		{
+			name:        "OOM stays a fault",
+			err:         respError("OOM command not allowed when used memory > 'maxmemory'"),
+			wantOutcome: outcomeRedisError,
+			wantErr:     true,
+		},
+		{
+			name:        "CLUSTERDOWN stays a fault",
+			err:         respError("CLUSTERDOWN The cluster is down"),
+			wantOutcome: outcomeRedisError,
+			wantErr:     true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			meter := &fakeMeter{}
+			corrupt := &countingMeter{}
+			store := &fakeStore{rows: map[string]Route{msisdn: {MSISDN: msisdn, Target: want}}}
+			r := NewResolver(newBloom([]string{msisdn}), &fakeRedis{err: tc.err}, store, time.Hour,
+				WithLookupMeter(meter), WithCorruptionMeter(corrupt))
+
+			got, ok, err := r.Resolve(context.Background(), msisdn)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("Resolve() = %+v, %v, nil; want the fault returned, not a fall-through to Postgres",
+						got, ok)
+				}
+				if store.gets != 0 {
+					t.Errorf("durable lookups = %d, want 0: a Redis outage must not move the hot path "+
+						"onto the control-plane database", store.gets)
+				}
+			} else if err != nil || !ok || got != want {
+				t.Fatalf("Resolve() = %+v, %v, %v; want %+v, true, nil", got, ok, err, want)
+			}
+			if corrupt.n != tc.wantCorrupt {
+				t.Errorf("corruption counter = %d, want %d", corrupt.n, tc.wantCorrupt)
+			}
+			if len(meter.seen) != 1 || meter.seen[0] != tc.wantOutcome {
+				t.Errorf("outcomes = %v, want exactly [%s]", meter.seen, tc.wantOutcome)
+			}
+		})
+	}
+}

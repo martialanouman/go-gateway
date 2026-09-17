@@ -1,6 +1,6 @@
 # step-290 — Sécurité : gosec, govulncheck, secrets, piste d'audit
 
-> **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
+> **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** LIVRÉE (2026-09-17, PR #193, #194, #195 et 290d)
 > **Dépend de :** — · **Bloque :** —
 
 ## But
@@ -12,7 +12,8 @@ piste d'audit consolidée des actions sensibles.
 - `govulncheck` déjà présent (`make`) → en faire une **gate** bloquante documentée.
 - Gestion des secrets (les défauts de développement sont déjà refusés en production par `config`,
   step-260f) : vérifier qu'aucun secret n'est en clair (hash pour mots de passe bind & clés API,
-  §1.9), comparaison temps constant partout.
+  §1.9), comparaison temps constant partout — **corrigé en 290d : pas la clé API**,
+  cherchée par son hash, donc comparée par PostgreSQL (plan §1.9).
 - Piste d'audit consolidée des actions opérateur/sensibles (réutilise les audits M10 : content, GDPR).
 
 ## Points d'implémentation clés
@@ -139,7 +140,9 @@ l'utilisateur.
     y sont stockés en clair : un audit qui ne dit pas quel numéro a été détourné ne sert à rien ;
   - jamais de corps de requête ou de réponse (invariant a, §1.9) ;
   - un `status` NULL signifie « issue non enregistrée », pas « succès » ;
-  - index sur `(at)` et sur `(operator, at)` ;
+  - index sur `(at)` et sur `(operator, at)` — **corrigé en revue de 290d (2026-09-17) : la migration
+    0015 n'a livré que `audit_log_at_idx (at)`.** Le second n'a de lecteur qu'à partir de `GET /audit-log`,
+    et il est porté par step-315 ;
   - pas de partition mensuelle : le volume est de l'ordre de dizaines d'actions par jour. C'est un écart
     assumé à la spec l.890.
 - **Un seul middleware huma**, enregistré juste après `auth.Middleware` (huma enchaîne dans l'ordre
@@ -226,10 +229,58 @@ l'utilisateur.
 
    La fiche est déplacée en `tasks-done/` au dernier commit de 290d.
 
+- **Détail validé le 2026-09-17, avant le code :**
+  - **ADR-0015 :** un `## Addendum (2026-09-17)` après *Consequences* écrit la posture, et le commentaire
+    de `routeForTarget` (`internal/routing/snapshot.go:369`) y renvoie. Le garde-fou « valeur illisible
+    traitée comme un miss » gagne une phrase pour le `WRONGTYPE` du point 3.
+  - **Vecteur argon2id :** deux vecteurs, pas un. Celui de `src/test.c` de `phc-winner-argon2` est en
+    `p=1`, or la production hache en `p=4` (`argonThreads`) et le chemin parallèle d'`argon2.IDKey` est
+    un code distinct. **Corrigé à l'écriture :** le vecteur `p=4` du `README` amont est un `argon2i`,
+    que `parsePHC` refuse — le second vecteur est donc celui de `src/test.c` en `m=256,t=2,p=2`, seul
+    Argon2id amont avec `p > 1`. Le premier porte les paramètres de production (`t=1`, `m=64 Mio`) ;
+    celui à 256 Mio est écarté, il ferait allouer un quart de gigaoctet à chaque run. Les deux sont
+    cités par commit dans le test et passés à `VerifyBindPassword`, donc le décodage PHC est épinglé
+    avec la dérivation. Mutation : `argon2.IDKey` remplacé par `argon2.Key` **aux deux sites** — l'aller-
+    retour reste vert, seuls les vecteurs tombent, ce qui est exactement ce que ce test ajoute.
+  - **`WRONGTYPE` :** `goredis.HasErrorPrefix` existe en v9.21.0 (`error.go:37`). Le test est un test
+    d'intégration sur un vrai Redis (`redistest.Client`) : le texte `WRONGTYPE` vient du serveur, et un
+    faux qui le fabrique testerait notre propre littéral.
+  - **`CONNECTOR_PASSWORD` :** la garde vit dans `cmd/connector-pool-svc`, au point d'usage, comme
+    `validateAdminConfig` — `connectorEnv` est un bloc local à ce service, pas une section de
+    `internal/config`. **`CONNECTOR_ADDR` n'est pas gardé**, contrairement au modèle ClickHouse : un
+    défaut de mot de passe a deux issues, dont une où le SMSC l'accepte et où la jambe sortante est
+    protégée par un secret public ; un `localhost:2775` n'a pas de second cas de ce genre, et step-300
+    rend ce pair local légitime (terminaison TLS en sidecar). Dans `deploy/k8s`, ClickHouse est adressé
+    par nom de service, jamais en sidecar. `CONNECTOR_SYSTEM_ID` non plus : c'est une identité, que le
+    SMSC distant refuse de lui-même.
+  - **Clé API :** la dernière phrase du §1.9 (« Comparaisons en temps constant dans les deux cas ») est
+    **fausse** pour la clé API depuis que `internal/restapi/auth.go:38` cherche par hash en SQL. Le §1.9
+    et le godoc du paquet disent désormais ce qui est vrai.
+  - **Le MSISDN du log d'échec d'attestation (`gdpr.go:176`) part en fiche, il n'est pas corrigé ici.**
+    Cette branche est la copie de dernier recours de l'attestation, écrite quand la base l'a refusée ;
+    décider ce qu'elle a le droit de contenir, c'est répondre à la question que porte `audit_log` —
+    combien de temps le numéro d'une personne effacée survit dans un artefact que l'effacement ne touche
+    pas. Une seule décision, appliquée aux deux endroits (step-297).
+  - **Quatre fiches**, pas neuf : l'INDEX pose qu'un `step-NNN.md` est une PR. Neuf fiches feraient neuf
+    PR dont plusieurs d'un paragraphe ; une seule ferait une fiche inexécutable — step-290 est ce
+    cas-là. Le critère est donc « ce qui se merge ensemble, ou ce qui se décide une seule fois » :
+    - **step-295** — `smsc_connectors.password_hash` et `external_billing_providers.auth_config_json` :
+      même mécanisme, un secret rejouable donc réversible ;
+    - **step-296** — `mt-replay` et `test-billing-provider` : deux actions d'opérateur sans ligne d'audit ;
+    - **step-297** — une seule politique de conservation (rétention d'`audit_log`, base légale écrite
+      dans `docs/`, MSISDN du log d'attestation) ;
+    - **step-315** ⛓ step-310 — `GET /audit-log`, scope `audit:read`, immuabilité en base, collision avec
+      `dashboard.audit_log`. Le seul lot bloqué par l'auth réelle, et le seul qui soit une fonctionnalité.
+
+    Couplage nommé dans 297 **et** dans 315 : le `REVOKE DELETE` de 315 et la purge de 297 se contredisent
+    si personne ne l'écrit — la purge doit être le seul titulaire du `DELETE`. `step-300` gagne une section
+    pour la DEK en clair sur gRPC non authentifié ; `step-410` une ligne renvoyant aux quatre fiches.
+
 ## Definition of Done
-- [ ] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts
-- [ ] critères couverts par tests · godoc sur l'exporté · aucun invariant (a/b/c/d) violé
-- [ ] gosec intégré ; govulncheck en gate ; audit sans secret/corps
+- [x] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts
+- [x] critères couverts par tests · godoc sur l'exporté · aucun invariant (a/b/c/d) violé
+- [x] gosec jugé (une seule syntaxe de suppression, gardée) ; govulncheck en gate épinglée ; audit sans
+      secret ni corps. Ce que la step n'a pas fermé part en step-295, step-296, step-297 et step-315.
 
 ## Hors périmètre
 TLS/mTLS transport → step-300. Auth opérateur OIDC → step-310.

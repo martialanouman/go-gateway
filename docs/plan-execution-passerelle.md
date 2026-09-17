@@ -132,7 +132,7 @@ Deux schémas distincts, choisis par fréquence de vérification et besoin de re
 
 - **Mot de passe de bind SMPP** (`password_hash`) : **argon2id** (ou bcrypt). Vérifié rarement (au bind), lent par conception. La ligne est résolue par `system_id`, le hash est ensuite vérifié.
 - **Clé API** (`api_key_hash`) : **SHA-256 déterministe** de la clé (format `sgw_<random 32 o>`). Vérifiée **à chaque requête** REST (8 000/s) et cherchée **par hash** (index sur `api_key_hash`) — un hash salé non déterministe rendrait la recherche impossible et la vérification trop lente. L'entropie de la clé (256 bits aléatoires) rend le salage inutile.
-- Comparaisons en **temps constant** dans les deux cas (`subtle.ConstantTimeCompare`).
+- **Mot de passe de bind : comparaison en temps constant** (`subtle.ConstantTimeCompare`). **Clé API : non**, et c'est assumé — elle n'est jamais comparée en Go. `internal/restapi` cherche le compte **par** le hash (`PrincipalByAPIKeyHash`), donc l'égalité est celle de PostgreSQL sur une colonne indexée. Ce qu'une différence de temps y divulgue est un préfixe du SHA-256 d'une clé de 256 bits tirée de `crypto/rand` : aucun attaquant ne sait choisir une clé dont le hash commence par un préfixe donné, la fuite n'achète donc aucune tentative. (Cette ligne affirmait le contraire jusqu'à step-290d ; `credential.VerifyAPIKey`, qu'aucun chemin de production n'appelait, a été supprimé.)
 
 ### 1.10 Modèle d'écriture du CDR (tranché)
 

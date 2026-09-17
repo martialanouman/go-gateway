@@ -68,6 +68,28 @@ type connectorEnv struct {
 	MaxMessageAge time.Duration `env:"CONNECTOR_MAX_MESSAGE_AGE" envDefault:"0"`
 }
 
+// defaultConnectorPassword is the bind password of the in-repo fake SMSC. It repeats the envDefault of
+// the field above, because a struct tag cannot hold a constant — so the two CAN drift, and a drift would
+// disarm the guard in silence. TestTheDeclaredDefaultIsTheOneTheGuardRefuses parses the block with an
+// empty environment and compares the two.
+const defaultConnectorPassword = "gateway"
+
+// validateConnectorEnv enforces this service's own bind policy, at the point of use rather than in the
+// shared config validator: connectorEnv is a block local to this binary, not a config section.
+//
+// Only the password is checked, and only in production. A default address is not a secret and has a
+// legitimate production shape (a local sidecar, which SMPP-over-TLS makes likelier at step-300), and
+// CONNECTOR_SYSTEM_ID is an identity the far SMSC rejects by itself. A default password has an outcome
+// neither of those has: the SMSC accepts it, and the outbound leg is then held by a secret anyone can
+// read in this repository. The error names the variable, never the value — it lands in the boot log.
+func validateConnectorEnv(bind connectorEnv, environment config.Environment) error {
+	if environment.IsProduction() && bind.Password == defaultConnectorPassword {
+		return fmt.Errorf("CONNECTOR_PASSWORD is the development default (the in-repo fake SMSC): " +
+			"set it explicitly in production")
+	}
+	return nil
+}
+
 func main() {
 	if err := run(); err != nil {
 		log.Fatalf("%s: %v", serviceName, err)
