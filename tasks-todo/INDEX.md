@@ -321,9 +321,28 @@ l'ordre des numéros évite tout conflit sur `cmd/router-svc/wiring.go` et `inte
 
 ## Sécurité et authentification
 Indépendantes de la chaîne de charge : parallélisables si deux mains travaillent.
-- [ ] step-290 — Sécurité : gosec, govulncheck, secrets, piste d'audit
+- [x] step-290 — Sécurité : gosec, govulncheck, secrets, piste d'audit
+- [ ] step-295 — Deux secrets stockés sous une forme qui ne sert pas leur usage (bind sortant, fournisseur
+      de facturation) — ouverte par step-290d
+- [ ] step-296 — Deux actions d'opérateur qui échappent à la piste d'audit (`mt-replay`,
+      `test-billing-provider`) — ouverte par step-290d
+- [ ] step-297 — Ce qui survit à un effacement attesté : rétention d'`audit_log`, base légale, MSISDN
+      dans le log d'attestation — ouverte par step-290d
 - [ ] step-300 — TLS / SMPP-TLS / mTLS sur les transports
 - [ ] step-310 — Auth opérateur réelle (OIDC/mTLS) remplaçant le stub M1 ⛓ step-300
+- [ ] step-315 — Le journal d'audit se lit, et la base le rend immuable ⛓ step-310 — ouverte par step-290d
+
+**step-290 cherchait des preuves manquantes ; elle a trouvé des secrets en clair.** gosec tournait déjà
+dans golangci-lint et govulncheck était déjà une gate : ce qui manquait de ce côté n'était que le jugement
+des suppressions et l'épinglage des versions (290a). Le reste n'était pas au programme. Le **jeton admin**
+servait d'identité d'opérateur : `StaticVerifier` le posait dans `Principal.Subject`, d'où il partait en
+clair dans la colonne `operator` de trois tables et dans un log — corrigé par une empreinte et une
+migration (290b). Et **aucune mutation de l'Admin API n'était tracée**, alors que la spec annonce déjà des
+opérations « audit-logged » : d'où `control_plane.audit_log` et la règle « pas de ligne, pas d'action »,
+qui a au passage montré que deux POST de diagnostic publiaient un changement de configuration pour rien
+(290c). Les quatre fiches ci-dessus sont ce que 290d n'a **pas** fermé, et qui n'avait aucun porteur : un
+secret qu'on doit rejouer ne peut pas être haché, un rejeu de dead-letter n'a pas de nom d'auteur, et une
+exclusion d'effacement sans durée est une conservation indéfinie.
 
 ## Écart contrat ↔ implémentation (revue du 2026-08-10)
 `api/openapi-admin.yaml` déclare **133 opérations** sous `paths:` ; `internal/adminapi` en enregistre

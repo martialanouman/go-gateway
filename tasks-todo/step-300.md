@@ -10,7 +10,9 @@ services internes (dont l'Admin API et le gRPC billing).
 ## Périmètre (ce que fait CETTE PR)
 - HTTP : TLS sur `rest-api-svc` (public) et mTLS sur `admin-api-svc` (interne).
 - SMPP : option SMPP-TLS pour `smpp-server-svc` (entrant) et `connector-pool-svc` (sortant).
-- gRPC : mTLS pour `billing-svc` (et futurs services gRPC).
+- gRPC : mTLS pour `billing-svc`, **`content-key-svc` et `session-manager-svc`** — nommés, pas
+  « et futurs services » : les sept clients gRPC du dépôt sont aujourd'hui construits avec
+  `insecure.NewCredentials()`.
 - Config TLS (certs/clés/CA) via `internal/config`, jamais de secret en dur.
 
 ## Points d'implémentation clés
@@ -23,6 +25,22 @@ services internes (dont l'Admin API et le gRPC billing).
 - **`ctx7`** avant toute API `crypto/tls` avancée / config TLS de `grpc` (credentials) / `coder/websocket` TLS.
 - Certs/clés/CA fournis par config ou secrets, jamais commités ; rotation possible.
 - Ne pas casser les tests d'intégration : TLS activable par config (off en test unitaire, on en prod).
+
+## Ajouté par step-290d — la DEK circule en clair, sans authentification
+
+ADR-0011 fait de `content-key-svc` le **seul détenteur de la KMS**, avec une surface volontairement
+minimale pour que le dépositaire de la clé reste auditable. Cette surface est un gRPC que
+`admin-api-svc` et `router-svc` appellent avec `insecure.NewCredentials()`
+(`cmd/admin-api-svc/wiring.go`, `cmd/router-svc/wiring.go`).
+
+Conséquence : la **clé de données** d'un client voyage en clair sur le réseau, et le service ne vérifie
+pas qui la demande. Le chiffrement du contenu au repos (step-162) protège contre un vol de base ; il ne
+protège de rien contre qui écoute ce lien ou sait l'appeler. C'est le lien le plus sensible du dépôt, et
+c'est celui que le périmètre de cette step ne nommait pas.
+
+**Ce que cette step doit donc faire :** mTLS sur `content-key-svc` avec une **liste d'appelants
+autorisés** (le certificat client identifie le service), pas seulement un tunnel chiffré. Un tunnel sans
+autorisation laisse n'importe quel pod du cluster demander n'importe quelle clé.
 
 ## Tests (écrits dans la même PR)
 - Handshake TLS/mTLS réussi ; un client sans cert client est rejeté sur les endpoints mTLS.

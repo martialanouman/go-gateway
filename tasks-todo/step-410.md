@@ -15,6 +15,11 @@ chaque item et matérialiser la porte de go-live.
 ## Points d'implémentation clés
 - La checklist référence les livrables : NFR (step-200/201/**280**), chaos par politique (step-250/260),
   sécurité (step-290/300), auth opérateur réelle (step-310), manifests (step-270) et images (step-270b).
+- **Les quatre dettes de sécurité que step-290 a ouvertes sans les fermer sont à statuer ici, pas à
+  découvrir :** secrets stockés sous une forme inutilisable (step-295), actions d'opérateur hors piste
+  d'audit (step-296), rétention et base légale de ce qui survit à un effacement attesté (step-297),
+  lecture et immuabilité du journal d'audit (step-315). Aucune n'est un prérequis dur ; chacune doit
+  être cochée « faite » ou « acceptée, avec qui l'accepte ».
 - **Le verdict NFR vient de step-280, pas de step-201.** step-201 a livré les leviers, les instruments
   de mesure et un run de référence à la borne basse du modèle par-worker (§2.5) ; le débit soutenu
   8 000 SMS/s **traversant** ne peut se prononcer que sur un environnement représentatif. Ne pas cocher

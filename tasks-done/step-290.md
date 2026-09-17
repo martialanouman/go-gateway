@@ -1,6 +1,6 @@
 # step-290 — Sécurité : gosec, govulncheck, secrets, piste d'audit
 
-> **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
+> **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** LIVRÉE (2026-09-17, PR #193, #194, #195 et 290d)
 > **Dépend de :** — · **Bloque :** —
 
 ## But
@@ -274,9 +274,10 @@ l'utilisateur.
     pour la DEK en clair sur gRPC non authentifié ; `step-410` une ligne renvoyant aux quatre fiches.
 
 ## Definition of Done
-- [ ] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts
-- [ ] critères couverts par tests · godoc sur l'exporté · aucun invariant (a/b/c/d) violé
-- [ ] gosec intégré ; govulncheck en gate ; audit sans secret/corps
+- [x] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts
+- [x] critères couverts par tests · godoc sur l'exporté · aucun invariant (a/b/c/d) violé
+- [x] gosec jugé (une seule syntaxe de suppression, gardée) ; govulncheck en gate épinglée ; audit sans
+      secret ni corps. Ce que la step n'a pas fermé part en step-295, step-296, step-297 et step-315.
 
 ## Hors périmètre
 TLS/mTLS transport → step-300. Auth opérateur OIDC → step-310.
