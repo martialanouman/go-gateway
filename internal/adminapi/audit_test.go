@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -189,6 +190,51 @@ func TestAuditRecordsRevealReadsOnly(t *testing.T) {
 	intents, _, _ := revealed.snapshot()
 	if len(intents) != 1 || intents[0].OperationID != "search-messages" || intents[0].Target != "/v1/admin/messages/search" {
 		t.Errorf("revealing search recorded %+v, want one search-messages row on the bare path", intents)
+	}
+}
+
+// TestAuditNeedsAVerifier: without a token verifier there is no identity to record, so the trail is not
+// wired at all rather than filling up with "unknown" — a trail that looks sound and names no one.
+func TestAuditNeedsAVerifier(t *testing.T) {
+	audit := newFakeAuditLog()
+	store := &auditOrderStore{fakeCustomerStore: newFakeCustomerStore(), audit: audit}
+	mux, _ := adminapi.New(adminapi.Deps{Customers: store, AuditLog: audit}) // no Verifier
+
+	rec := postCustomer(t, mux, operatorToken)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 (no verifier means no authentication at all); body=%s", rec.Code, rec.Body)
+	}
+	if intents, _, _ := audit.snapshot(); len(intents) != 0 {
+		t.Errorf("recorded %+v, want nothing: an unidentified operator is not an audit trail", intents)
+	}
+}
+
+// TestAuditRecordsAnExportRetrieval: the export status read hands over the download URL of an artefact
+// that may hold unmasked numbers, and cdr:export_bulk alone opens it — so it is recorded whatever scopes
+// the caller holds, unlike the reads that only unmask under msisdn:reveal.
+func TestAuditRecordsAnExportRetrieval(t *testing.T) {
+	jobs := newFakeExportJobs()
+	job, err := jobs.Create(context.Background(), cp.NewMessageExportJob{
+		Format: cp.ExportFormatCSV, Masked: false, Filters: []byte(`{}`), Operator: "tok_0123456789abcdef",
+		ExpiresAt: time.Now().Add(time.Hour).UTC(),
+	})
+	if err != nil {
+		t.Fatalf("seed the job: %v", err)
+	}
+
+	audit := newFakeAuditLog()
+	h := newTestAPIWithScopes(t, adminapi.Deps{ExportJobs: jobs, AuditLog: audit}, "cdr:export_bulk")
+	req := httptest.NewRequest(http.MethodGet, "/v1/admin/messages/export/"+job.ID.String(), http.NoBody)
+	req.Header.Set("Authorization", "Bearer "+operatorToken)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body)
+	}
+
+	intents, _, _ := audit.snapshot()
+	if len(intents) != 1 || intents[0].OperationID != "get-message-export" {
+		t.Errorf("recorded %+v, want one get-message-export row", intents)
 	}
 }
 

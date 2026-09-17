@@ -2,6 +2,7 @@ package adminapi
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"time"
@@ -30,6 +31,15 @@ const auditTimeout = 5 * time.Second
 var revealReads = map[string]bool{
 	"search-messages":   true,
 	"get-message-trace": true,
+	"list-suppressions": true,
+	"list-unrouted-mo":  true,
+}
+
+// unconditionalReads are reads recorded whatever the caller's scopes, because what they hand over is not
+// masked by one: get-message-export returns the download URL of an export whose artefact may itself be
+// unmasked, and cdr:export_bulk alone opens it.
+var unconditionalReads = map[string]bool{
+	"get-message-export": true,
 }
 
 // auditMiddleware writes the audit row of every audited request before its handler runs, and its HTTP
@@ -64,8 +74,12 @@ func auditMiddleware(api huma.API, store AuditLogStore, logger *slog.Logger) fun
 		})
 		cancel()
 		if err != nil {
-			logger.ErrorContext(ctx.Context(), "audit intent not recorded; request refused",
-				"operation", operationID, "err", err)
+			level := slog.LevelError
+			if errors.Is(err, context.Canceled) {
+				level = slog.LevelDebug // the client hung up; nothing is wrong with the trail
+			}
+			logger.Log(ctx.Context(), level, "audit intent not recorded; request refused",
+				"operation", operationID, "operator", operatorSubject(ctx.Context()), "target", target, "err", err)
 			status, ok := errs.HTTPStatus(errs.ErrServiceUnavailable)
 			if !ok {
 				status = http.StatusServiceUnavailable
@@ -74,12 +88,12 @@ func auditMiddleware(api huma.API, store AuditLogStore, logger *slog.Logger) fun
 			return
 		}
 
-		completed := false
 		defer func() {
 			status := ctx.Status()
-			if !completed {
-				// The handler panicked: the recoverer upstream answers 500, and the panic keeps unwinding
-				// through this deferred write.
+			if status == 0 {
+				// Nothing was written: the handler panicked, and the recoverer upstream answers 500. Reading
+				// the status rather than a "did it panic" flag keeps the row honest when a response was
+				// already sent before the panic.
 				status = http.StatusInternalServerError
 			}
 			finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx.Context()), auditTimeout)
@@ -90,13 +104,15 @@ func auditMiddleware(api huma.API, store AuditLogStore, logger *slog.Logger) fun
 			}
 		}()
 		next(ctx)
-		completed = true
 	}
 }
 
 // audited reports whether a request enters the trail: every write, and a read that reveals numbers.
 func audited(ctx context.Context, operationID, method, path string) bool {
 	if !readOnlyRequest(method, path) {
+		return true
+	}
+	if unconditionalReads[operationID] {
 		return true
 	}
 	return revealReads[operationID] && mayRevealMSISDN(ctx)
