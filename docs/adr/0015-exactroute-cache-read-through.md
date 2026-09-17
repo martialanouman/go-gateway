@@ -125,3 +125,28 @@ delete » que rien ne justifie aujourd'hui.
        sur `2 × 10 % × TTL = 72 min`, soit un plateau à **5×** le régime établi (forme close
        `1/(2·jitter)`) : la constante est un paramètre à décider avec le TTL, pas un acquis.
 5. [ ] Dimensionner le pool pgx de `router-svc` et l'empreinte Redis du cache — step-270/step-280.
+
+## Addendum (2026-09-17) — une cible `connector` lue depuis Redis n'est confrontée à rien
+
+Ouvert par la revue de step-250e, tranché en step-290. Ce n'est pas une régression de step-250e : le
+résolveur déclaratif fait le même pari depuis M7. C'est step-250e qui l'a rendu atteignable depuis le
+cache, d'où l'addendum ici plutôt qu'un ADR à part.
+
+**Le constat.** `SnapshotResolver.routeForTarget` (`internal/routing/snapshot.go`) vérifie l'appartenance
+d'une cible `route` au snapshot courant, et renvoie une cible `connector` **telle quelle**. Qui sait
+écrire dans `exactroute:{msisdn}` détourne donc le trafic d'un numéro vers le connecteur de son choix.
+
+**La posture : aucun contrôle ajouté**, pour trois raisons qui ne valent qu'ensemble.
+
+1. **Redis est dans la frontière de confiance**, et pas marginalement : il porte les soldes de
+   facturation, les token-buckets de débit, les mappings DLR et le registre de sessions SMPP. Qui y écrit
+   peut déjà créditer un compte, ouvrir un débit ou libérer un bind. Contrôler la cible d'une route
+   exacte fermerait une porte d'une maison ouverte.
+2. **Le snapshot n'a aucun registre de connecteurs** : il compile des routes. Un contrôle d'appartenance
+   n'aurait rien à consulter, et l'ajouter changerait ce que le snapshot est.
+3. **Une cible pendante est attrapée à l'envoi**, où le connecteur inconnu fait échouer le message au
+   lieu de le livrer ailleurs.
+
+**Ce que cette décision engage.** Elle tient tant que Redis reste ce qu'il est ici : une instance du plan
+de données, non partagée hors du cluster, non multi-tenant. Si cela change, la décision se rouvre — et
+pas seulement pour L0 : la facturation et les sessions sont exposées de la même façon, et davantage.

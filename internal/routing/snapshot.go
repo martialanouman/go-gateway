@@ -366,6 +366,8 @@ func (r *SnapshotResolver) rrNext(routeID uuid.UUID) uint64 {
 //
 // A connector target is trusted without an existence check: the snapshot holds no connector registry,
 // so this mirrors the declarative resolver. A dangling connector is caught downstream at send time.
+// Why that stays true for a target read from Redis — and what would reopen it — is the 2026-09-17
+// addendum to ADR-0015.
 func (r *SnapshotResolver) routeForTarget(ctx context.Context, t exact.Target, dest string) (pipeline.Route, bool) {
 	switch t.Type {
 	case exact.TargetConnector:
