@@ -31,17 +31,6 @@ func TestAPIKeyCarriesTheSgwPrefix(t *testing.T) {
 	if hash != credential.HashAPIKey(key) {
 		t.Error("returned hash does not match HashAPIKey(key)")
 	}
-	if !credential.VerifyAPIKey(key, hash) {
-		t.Error("VerifyAPIKey rejects the key it was generated with")
-	}
-}
-
-// TestVerifyAPIKeyRejectsAWrongKey: a different key must not verify.
-func TestVerifyAPIKeyRejectsAWrongKey(t *testing.T) {
-	_, hash, _ := credential.GenerateAPIKey()
-	if credential.VerifyAPIKey("sgw_not-the-right-key", hash) {
-		t.Error("VerifyAPIKey accepted a wrong key")
-	}
 }
 
 // TestGeneratedAPIKeysDoNotRepeat: 10k draws must all be distinct, or the 256-bit entropy claim is

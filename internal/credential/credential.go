@@ -10,9 +10,13 @@
 //     crypto/rand, so there is no low-entropy secret for a salt to protect and no rainbow table to
 //     build.
 //
-// Comparisons are constant time in both cases. The Verify* functions are not called at M1 (no bind,
-// no REST yet); they ship now, with tests, so the hash formats are settled and M2/M3 cannot reopen
-// them.
+// The bind password is compared in constant time. The API key is NOT: it is never compared in Go at
+// all. internal/restapi looks the account up BY the hash (PrincipalByAPIKeyHash), so the equality is a
+// SQL one on an indexed column, and no constant-time primitive reaches it. That is deliberate and
+// bounded: what a timing difference leaks is a prefix of the SHA-256 of a key carrying 256 bits of
+// entropy from crypto/rand. An attacker cannot choose a key that hashes to a chosen prefix, so the leak
+// buys no guess. The same reasoning is written in plan §1.9, whose earlier claim that both comparisons
+// were constant time this package no longer supports.
 package credential
 
 import (
@@ -74,11 +78,6 @@ func GenerateAPIKey() (key, hash string, err error) {
 func HashAPIKey(key string) string {
 	sum := sha256.Sum256([]byte(key))
 	return hex.EncodeToString(sum[:])
-}
-
-// VerifyAPIKey reports whether key matches hash, in constant time.
-func VerifyAPIKey(key, hash string) bool {
-	return subtle.ConstantTimeCompare([]byte(HashAPIKey(key)), []byte(hash)) == 1
 }
 
 // GenerateBindPassword returns a new SMPP bind password and its argon2id hash. The password is 8
