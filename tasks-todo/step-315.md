@@ -42,19 +42,28 @@ a posé.
 `docs/specification-technique-tableau-de-bord.md` déclare un `audit_log` dans le schéma `dashboard`, de
 forme différente, partitionné mensuellement. Le nôtre vit dans `control_plane`. Les deux peuvent
 coexister — les schémas les séparent — mais rien ne dit **laquelle fait foi** pour l'audit des actions
-opérateur, ni si le BFF doit lire la nôtre ou projeter la sienne. À trancher ici, au plus tard.
+opérateur, ni si le BFF doit lire la nôtre ou projeter la sienne.
+
+step-290 annonçait cette décision « au plus tard à step-310 ». Elle glisse d'un cran, assumé : la
+question ne se tranche utilement qu'avec le lecteur, et le lecteur attend `audit:read`, donc step-310.
+Si le BFF avance avant, elle se tranche là-bas, pas ici.
 
 ## Tests
 
 - Un `UPDATE` d'une colonne autre que `status`, un second `FinishAudit` sur une ligne déjà close, et un
   `DELETE` par le rôle applicatif : les trois sont refusés **par la base**, pas par le code Go.
-- `GET /audit-log` respecte le contrat déclaré, et le test contrat ↔ implémentation retire l'opération
-  de `deferred` (step-320).
+- `GET /audit-log` respecte le contrat déclaré. **Rien à retirer de `deferred`** : cette liste
+  (`internal/adminapi/contract_test.go`) ne recense que des opérations **déjà publiées** que personne ne
+  sert, et l'audit n'en fait pas partie puisqu'il n'est déclaré nulle part. Déclarer et servir dans la
+  même step garde la garde verte sans y toucher — et `deferredSteps` est une liste close step-330→390,
+  à laquelle step-315 n'appartient pas.
 
 ## Definition of Done
 
 - [ ] Contrat déclaré avant l'implémentation, `api/package.json` bumpé, collection Admin regénérée.
 - [ ] `GET /audit-log` servi sous `audit:read`, avec pagination keyset (`platform/keyset`).
+- [ ] L'index `(operator, at)` que step-290c avait annoncé est créé : la migration 0015 n'a livré que
+      `audit_log_at_idx (at)`, et un filtre par opérateur sans lui balaie la table.
 - [ ] Trigger + `REVOKE DELETE` en migration, prouvés par des tests d'intégration.
 - [ ] La question de la collision de nom est tranchée et écrite.
 

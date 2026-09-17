@@ -34,7 +34,7 @@ Le nom de la colonne devra suivre la décision : `password_hash` ment aujourd'hu
 
 ## Constat 2 — `external_billing_providers.auth_config_json` est stocké en clair
 
-`auth_config_json jsonb NOT NULL DEFAULT '{}'` porte les identifiants d'appel au fournisseur de
+`auth_config_json jsonb NOT NULL DEFAULT '{}'::jsonb` porte les identifiants d'appel au fournisseur de
 facturation externe (§6.10). L'Admin API le **masque en lecture** (`internal/adminapi/billing_admin.go`,
 `maskedAuthConfig()`), ce qui protège la sortie HTTP — et rien d'autre : la valeur est en clair dans
 Postgres, donc dans les sauvegardes et dans toute réplique.

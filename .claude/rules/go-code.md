@@ -18,8 +18,10 @@ Ce que le linter fait échouer n'est pas répété ici. Détail des patterns :
 - **Facturation idempotente par `message_id`** *(invariant c)* ; désactivée = zéro
   appel réseau (contrôle booléen en cache). Réf : guide de codage §7.4.
 - **Secrets** (mots de passe bind, clés API) stockés en hash, révélés une seule
-  fois à la création/rotation. Comparaison en temps constant. Réf : guide de
-  codage §11 ; le *pourquoi* du choix argon2id/SHA-256 : plan d'exécution §1.9.
+  fois à la création/rotation. Comparaison en temps constant — **sauf la clé
+  API**, cherchée par son hash, donc comparée par PostgreSQL et non en Go. Réf :
+  guide de codage §11 ; le *pourquoi* du choix argon2id/SHA-256 et de cette
+  exception : plan d'exécution §1.9.
 - **Modèle d'erreur plat** `{ code, message, errors[] }` en `application/json`
   (surcharge `huma.NewError`). Réf : guide d'ingénierie §11.
 - Tout le code métier vit sous `internal/` ; `cmd/<service>/main.go` ne fait que

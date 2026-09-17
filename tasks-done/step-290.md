@@ -139,7 +139,9 @@ l'utilisateur.
     y sont stockés en clair : un audit qui ne dit pas quel numéro a été détourné ne sert à rien ;
   - jamais de corps de requête ou de réponse (invariant a, §1.9) ;
   - un `status` NULL signifie « issue non enregistrée », pas « succès » ;
-  - index sur `(at)` et sur `(operator, at)` ;
+  - index sur `(at)` et sur `(operator, at)` — **corrigé en revue de 290d (2026-09-17) : la migration
+    0015 n'a livré que `audit_log_at_idx (at)`.** Le second n'a de lecteur qu'à partir de `GET /audit-log`,
+    et il est porté par step-315 ;
   - pas de partition mensuelle : le volume est de l'ordre de dizaines d'actions par jour. C'est un écart
     assumé à la spec l.890.
 - **Un seul middleware huma**, enregistré juste après `auth.Middleware` (huma enchaîne dans l'ordre

@@ -130,9 +130,10 @@ delete » que rien ne justifie aujourd'hui.
 
 ## Addendum (2026-09-17) — une cible `connector` lue depuis Redis n'est confrontée à rien
 
-Ouvert par la revue de step-250e, tranché en step-290. Ce n'est pas une régression de step-250e : le
-résolveur déclaratif fait le même pari depuis M7. C'est step-250e qui l'a rendu atteignable depuis le
-cache, d'où l'addendum ici plutôt qu'un ADR à part.
+Ouvert par la revue de step-250e, tranché en step-290. Le **comportement** préexiste : le résolveur
+déclaratif fait le même pari depuis M7. Ce que step-250e a changé, c'est la **voie d'accès** — avant
+elle, personne n'écrivait `exactroute:{msisdn}`, donc rien ne pouvait y être injecté. D'où l'addendum
+ici plutôt qu'un ADR à part.
 
 **Le constat.** `SnapshotResolver.routeForTarget` (`internal/routing/snapshot.go`) vérifie l'appartenance
 d'une cible `route` au snapshot courant, et renvoie une cible `connector` **telle quelle**. Qui sait

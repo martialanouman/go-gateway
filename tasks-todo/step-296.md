@@ -38,15 +38,28 @@ sonde est un moyen d'exfiltration commode — elle prouve qu'une URL répond, et
 modifiable par la même API.
 
 **Ce que la fiche exige :** quand la sonde devient réelle, l'opération sort de `readOnlyPostSuffixes` et
-devient auditée. `internal/adminapi/audit_internal_test.go` épingle déjà la liste des quatre POST
-exonérés, donc la retirer est une modification visible, pas un oubli possible.
+devient auditée.
+
+**Aucun test ne peut l'imposer, et c'est le point.** `TestReadOnlyPostSuffixesNameKnownDiagnostics`
+épingle *quelles* opérations tombent sur un suffixe de lecture — remplacer le stub par une vraie sonde ne
+change ni le chemin, ni l'identifiant, ni la liste : le test reste vert. L'oubli est donc parfaitement
+possible. C'est pourquoi step-290d a écrit l'exigence **à côté du stub lui-même**
+(`internal/adminapi/billing_admin.go`), le seul endroit que la personne qui écrira la sonde ouvrira
+forcément.
+
+**Et son déclencheur n'a pas de porteur** : la sonde réelle est une « suite de step-147 », or step-147 est
+livrée et aucune fiche ouverte ne la porte. Ce constat ne peut donc pas être clos par l'exécution de
+step-296 ; il est ici pour exister, pas pour être coché.
 
 ## Definition of Done
 
+Cette PR ne porte que le constat 1 — le constat 2 n'a pas de déclencheur qu'elle contrôle.
+
 - [ ] Un rejeu de dead-letter laisse une trace nominative, ou la fiche écrit pourquoi ce n'est pas
       possible et ce qui le remplace.
-- [ ] `test-billing-provider` est audité dès que sa sonde sort du stub ; le test des suffixes exonérés
-      le reflète.
+
+**À honorer hors de cette PR, par celle qui livrera la sonde réelle :** `test-billing-provider` sort des
+suffixes de lecture et devient audité. Le rappel vit dans le code, à côté du stub.
 
 ## Hors périmètre
 

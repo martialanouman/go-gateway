@@ -328,7 +328,8 @@ Indépendantes de la chaîne de charge : parallélisables si deux mains travaill
       `test-billing-provider`) — ouverte par step-290d
 - [ ] step-297 — Ce qui survit à un effacement attesté : rétention d'`audit_log`, base légale, MSISDN
       dans le log d'attestation — ouverte par step-290d
-- [ ] step-300 — TLS / SMPP-TLS / mTLS sur les transports
+- [ ] step-300 — TLS / SMPP-TLS / mTLS sur les transports, **dont la DEK qui circule en clair sur un
+      gRPC non authentifié** (`content-key-svc`) — ce dernier point ajouté par step-290d
 - [ ] step-310 — Auth opérateur réelle (OIDC/mTLS) remplaçant le stub M1 ⛓ step-300
 - [ ] step-315 — Le journal d'audit se lit, et la base le rend immuable ⛓ step-310 — ouverte par step-290d
 
@@ -342,7 +343,11 @@ opérations « audit-logged » : d'où `control_plane.audit_log` et la règle «
 qui a au passage montré que deux POST de diagnostic publiaient un changement de configuration pour rien
 (290c). Les quatre fiches ci-dessus sont ce que 290d n'a **pas** fermé, et qui n'avait aucun porteur : un
 secret qu'on doit rejouer ne peut pas être haché, un rejeu de dead-letter n'a pas de nom d'auteur, et une
-exclusion d'effacement sans durée est une conservation indéfinie.
+exclusion d'effacement sans durée est une conservation indéfinie. Une cinquième dette n'a pas de fiche
+propre : la DEK en clair sur gRPC non authentifié rejoint step-300, dont c'est le sujet. **Numérotation :**
+295, 296, 297 et 315 sont des unités faute de multiple de dix libre à leur place dans l'ordre — la règle
+`.claude/rules/tasks-steps.md` en veut un, et les précédents existent (step-270b, step-390b, step-395,
+step-396). L'ordre reste l'ordre d'exécution, qui est ce que la règle protège.
 
 ## Écart contrat ↔ implémentation (revue du 2026-08-10)
 `api/openapi-admin.yaml` déclare **133 opérations** sous `paths:` ; `internal/adminapi` en enregistre

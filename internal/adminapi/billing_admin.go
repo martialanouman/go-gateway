@@ -380,6 +380,12 @@ func (h *billingAdminHandlers) testProvider(ctx context.Context, in *resourceIDI
 	// Loading the provider validates it exists (404 otherwise). The real HTTP probe over base_url ships with
 	// the production HTTP provider (deferred, step-147 follow-up); until then the connectivity check reports a
 	// stub OK so the endpoint is exercisable end to end.
+	//
+	// WHOEVER WRITES THAT PROBE: this operation must leave the read-only POST suffixes of readOnlyRequest
+	// (configchange.go) and become audited. It is classed as a read only because it writes nothing and
+	// calls nobody TODAY. A real probe is an outbound call to a third party, with stored credentials,
+	// under admin:write — and base_url is settable through the same API. The pinning test names the four
+	// exonerated operations; it cannot see a stub turning real, so this comment is the guard (step-296).
 	if _, err := h.providers.Get(ctx, id); err != nil {
 		return nil, humaerr.FromError(err)
 	}
