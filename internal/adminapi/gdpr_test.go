@@ -185,6 +185,10 @@ func TestGDPREraseMSISDNAcrossCustomersKeepsOptOut(t *testing.T) {
 	if !strings.Contains(att, "scope=") || !strings.Contains(att, "excludes:") {
 		t.Errorf("attestation %q must qualify its scope", att)
 	}
+	if !strings.Contains(att, "audit_log") {
+		t.Errorf("attestation %q must say the audit trail is outside the erasure: it is immutable and keeps "+
+			"the numbers operators acted on", att)
+	}
 }
 
 // TestGDPREraseCustomerShredsThenErases: a customer erasure crypto-shreds the content keys AND removes the

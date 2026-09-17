@@ -191,8 +191,11 @@ type Deps struct {
 	ContentKeyEraser ContentKeyEraser
 	Messages         MessageContentReader
 	ContentAudit     ContentAuditor
-	GDPRJobs         GDPRJobStore
-	CDREraser        CDREraser
+	// AuditLog records the consolidated audit trail of every write and every number-revealing read
+	// (step-290c). Nil disables the trail — the spec-only construction the contract test uses.
+	AuditLog  AuditLogStore
+	GDPRJobs  GDPRJobStore
+	CDREraser CDREraser
 	// GDPRRunner runs erasure jobs. It is SEPARATE from Imports on purpose: a legally-mandated erasure must
 	// not be refused because bulk MNP imports filled the shared pool.
 	GDPRRunner ImportRunner

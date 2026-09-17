@@ -68,9 +68,28 @@ func PublishConfigChanges(h http.Handler, pub ConfigChangePublisher, channel str
 	})
 }
 
-// readOnlyPostSuffixes are POST endpoints that change no control-plane state — diagnostics that must
-// NOT trigger a data-plane invalidation despite being POSTs (they are AdminRead-scoped).
-var readOnlyPostSuffixes = []string{"/validate", "/test"}
+// readOnlyPostSuffixes are POST endpoints that change no control-plane state — diagnostics and checks that
+// must NOT trigger a data-plane invalidation, nor enter the audit trail, despite being POSTs. The declared
+// scope does not identify them (test-billing-provider is admin:write): what holds the list honest is
+// TestReadOnlyPostSuffixesNameKnownDiagnostics, which names the four operations it may match.
+var readOnlyPostSuffixes = []string{"/validate", "/test", "/test-connection", "/check"}
+
+// readOnlyRequest reports whether a request changes nothing: a read method, or a POST to a declared
+// read-only diagnostic. It is the one classification the config-change publisher and the audit trail
+// share, so the two can never disagree about what a write is.
+func readOnlyRequest(method, path string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return true
+	case http.MethodPost:
+		for _, suffix := range readOnlyPostSuffixes {
+			if strings.HasSuffix(path, suffix) {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 // selfAnnouncingPostSuffixes are POSTs whose durable write lands AFTER the response, in a background
 // job, and which therefore publish their own config change once committed. Announcing here as well
@@ -78,27 +97,20 @@ var readOnlyPostSuffixes = []string{"/validate", "/test"}
 // work, and the defect step-250e had to fix on the import path.
 var selfAnnouncingPostSuffixes = []string{"/exact-routes/import"}
 
-// mutating reports whether a request should announce a config change HERE. A read method never does; a
-// POST to a declared read-only diagnostic (validate/test) does not either — otherwise an operator
-// iterating on a script would fire a fleet-wide snapshot rebuild on every dry-run. Nor does a POST that
-// announces for itself after a background commit (see selfAnnouncingPostSuffixes).
+// mutating reports whether a request should announce a config change HERE. A read-only request never
+// does — otherwise an operator iterating on a script would fire a fleet-wide snapshot rebuild on every
+// dry-run. Nor does a POST that announces for itself after a background commit (see
+// selfAnnouncingPostSuffixes).
 func mutating(method, path string) bool {
-	switch method {
-	case http.MethodGet, http.MethodHead, http.MethodOptions:
+	if readOnlyRequest(method, path) {
 		return false
-	case http.MethodPost:
-		for _, suffix := range readOnlyPostSuffixes {
-			if strings.HasSuffix(path, suffix) {
-				return false
-			}
-		}
+	}
+	if method == http.MethodPost {
 		for _, suffix := range selfAnnouncingPostSuffixes {
 			if strings.HasSuffix(path, suffix) {
 				return false
 			}
 		}
-		return true
-	default:
-		return true
 	}
+	return true
 }

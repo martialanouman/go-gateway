@@ -21,6 +21,18 @@ type ControlPlaneAntispamRule struct {
 	UpdatedAt  pgtype.Timestamptz
 }
 
+type ControlPlaneAuditLog struct {
+	ID          uuid.UUID
+	Operator    string
+	OperationID string
+	Method      string
+	Target      string
+	RequestID   *string
+	Status      *int16
+	At          pgtype.Timestamptz
+	FinishedAt  pgtype.Timestamptz
+}
+
 type ControlPlaneBalance struct {
 	OwnerType string
 	OwnerID   uuid.UUID

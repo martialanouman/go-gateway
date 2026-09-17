@@ -234,6 +234,26 @@ CREATE TABLE control_plane.message_export_jobs (
 );
 CREATE INDEX message_export_jobs_created_idx ON control_plane.message_export_jobs(created_at);
 
+-- audit_log is the consolidated operator audit trail (step-290c): one row per audited Admin API request —
+-- every write, and the reads that reveal subscriber numbers — written BEFORE the handler runs (no row, no
+-- action) and completed with its HTTP status after. Never a body, a query string or a token: an admin
+-- body carries the secrets revealed once (plan §1.9).
+-- status NULL = outcome not recorded, NOT success. No code path deletes a row. Read it with:
+--   SELECT at, operator, method, target, status FROM control_plane.audit_log
+--    WHERE at >= now() - interval '1 day' ORDER BY at DESC;
+CREATE TABLE control_plane.audit_log (
+  id           uuid PRIMARY KEY DEFAULT uuidv7(),
+  operator     text NOT NULL,           -- auth.Fingerprint of the operator's token, never the token
+  operation_id text NOT NULL,           -- the Admin API operationId
+  method       text NOT NULL,
+  target       text NOT NULL,           -- the resolved path, without its query string
+  request_id   text,                    -- correlates with the request's logs
+  status       smallint CHECK (status IS NULL OR status BETWEEN 100 AND 599),  -- NULL until recorded
+  at           timestamptz NOT NULL DEFAULT now(),
+  finished_at  timestamptz
+);
+CREATE INDEX audit_log_at_idx ON control_plane.audit_log(at);
+
 -- -----------------------------------------------------------------------------------------------------
 -- 6. SMPP accounts (§6.18) — one technical account of a customer (per app/env/brand)
 -- -----------------------------------------------------------------------------------------------------

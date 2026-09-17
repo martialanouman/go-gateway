@@ -153,8 +153,9 @@ l'utilisateur.
   sans trace. Le statut est écrit ensuite, en best-effort, dans un `defer` sous
   `context.WithoutCancel`.
 - **Les 401/403 ne sont pas écrits en base.** Une écriture bloquante par requête non authentifiée serait
-  un levier de DoS sur Postgres. `auth.Middleware` les logge en `Warn`, avec l'opération et
-  `RemoteAddr`, jamais le jeton.
+  un levier de DoS sur Postgres. Ils ne sont pas non plus journalisés : retiré du plan le 2026-09-17 à la
+  demande de l'utilisateur, faute d'alerte qui consommerait ces logs. À ajouter quand une telle alerte
+  existera.
 - Une seule fonction `readOnlyRequest(method, path)` sert à la fois à la publication de config
   (`!readOnly && !selfAnnouncing`) et à l'audit (`!readOnly`). Ses suffixes de lecture sont
   `/validate`, `/test`, `/test-connection` et `/check`, ce qui corrige les deux POST mal classés.
@@ -164,6 +165,26 @@ l'utilisateur.
 - **Aucun endpoint de lecture dans cette step.** `GET /audit-log` et le scope `audit:read` appartiennent
   au BFF du tableau de bord et à l'auth réelle (step-310). Aucun contrat ne bouge. Une fiche de suite est
   ouverte, et le runbook donne la requête SQL de lecture.
+- **Détail validé le 2026-09-17, avant le code :**
+  - **Refus d'audit : 503 non déclaré (arbitrage Fable).** Le contrat ne déclare aucune panne
+    d'infrastructure opération par opération, pas même le 500 d'une panne Postgres. `humaspec.Prune`
+    retire le 500/default de huma, et `recordGranted` renvoie déjà un 503 non déclaré. **Ne pas** ajouter
+    503 aux `Errors` des opérations : `contract_test.go` compare l'ensemble exact des codes et
+    échouerait. Le message est fixe ; le détail va dans un log `Error`.
+  - **Migration :** `0015_audit_log`. `FinishAudit` n'écrit que si `status IS NULL` : une issue ne
+    s'écrase pas. Dépôt `postgres.AuditLogRepo` avec `Begin(ctx, cp.AuditIntent) (uuid.UUID, error)` et
+    `Finish(ctx, id, status)`. La requête de lecture est donnée dans le commentaire de schéma, puisque le
+    dépôt n'a pas de runbook.
+  - **Lectures sensibles :** `search-messages` et `get-message-trace` forment un ensemble local
+    d'identifiants d'opération, et un test vérifie qu'ils existent dans la spec générée. Leur filtre
+    vit dans la query string, qui n'est jamais stockée : la ligne dit qui a révélé et quand, pas quel
+    numéro.
+  - **Issue et panique :** l'issue est écrite dans un `defer`, sous `context.WithoutCancel` et 5 s. Une
+    panique du handler est enregistrée comme 500, puis relancée.
+  - **Suffixes de lecture :** `readOnlyRequest` ajoute `/test-connection` et `/check` ;
+    `/exact-routes/import` reste exclu de la publication, mais il est audité.
+  - **Test de câblage :** une requête à travers `newAdminApp` doit produire une ligne dans `audit_log`.
+  - **Fiche de suite (`GET /audit-log`, immuabilité en base) :** elle est ouverte en 290d.
 
 **290d — Constats hérités et secrets restants.**
 1. **Cible `connector` lue depuis Redis.** On écrit la posture en addendum à ADR-0015 : Redis est dans la
@@ -189,7 +210,18 @@ l'utilisateur.
    - `external_billing_providers.auth_config_json` est stocké en clair ;
    - la CLI `mt-replay` n'a ni authentification ni audit ;
    - un MSISDN apparaît dans le log d'échec d'attestation RGPD ;
-   - `GET /audit-log`, et l'immuabilité de `audit_log` au niveau de la base ;
+   - `GET /audit-log`, et l'immuabilité de `audit_log` au niveau de la base. Attention : l'écriture se
+     fait en deux temps, donc « aucun UPDATE » ne suffit pas — il faut un trigger qui n'autorise que la
+     transition `status IS NULL → NOT NULL`, plus un `REVOKE DELETE` ;
+   - la **rétention** de `audit_log` : la spec veut 1 à 7 ans et une purge par partition, or la table
+     n'est pas partitionnée (volume négligeable) et `target` contient des numéros en clair, exclus de
+     l'effacement RGPD. Aucune échéance n'existe aujourd'hui ;
+   - la collision de nom avec `dashboard.audit_log` (spec du tableau de bord) : deux tables du même nom,
+     de formes différentes ; dire laquelle fait foi, au plus tard à step-310 ;
+   - l'audit de `test-billing-provider` le jour où sa sonde HTTP sera réelle : appel sortant vers un
+     tiers avec des identifiants stockés, sous scope `admin:write`, aujourd'hui sans trace ;
+   - la base légale de la conservation d'un MSISDN dans `audit_log` malgré un effacement attesté : elle
+     n'est écrite que dans un commentaire Go et dans cette fiche, pas dans `docs/` ;
    - dans step-300, ajouter le gRPC `content-key-svc`, où la DEK circule en clair sans authentification.
 
    La fiche est déplacée en `tasks-done/` au dernier commit de 290d.

@@ -59,6 +59,14 @@ func New(deps Deps) (*chi.Mux, huma.API) {
 		api.UseMiddleware(auth.Middleware(api, deps.Verifier, operatorScheme))
 	}
 
+	// The audit trail runs after authentication, which it relies on: the principal it records is the one
+	// auth.Middleware put on the context, and a request that middleware refused never reaches it. Without a
+	// verifier there is nothing to record — every row would read "unknown", a trail that looks sound and
+	// names no one.
+	if deps.AuditLog != nil && deps.Verifier != nil {
+		api.UseMiddleware(auditMiddleware(api, deps.AuditLog, deps.Logger))
+	}
+
 	registerCustomers(api, deps.Customers, deps.Disconnector, deps.Logger)
 	registerAccounts(api, deps.Accounts, deps.Disconnector, deps.Logger)
 	registerCredentials(api, deps.Credentials, deps.Accounts, deps.Disconnector, deps.Logger)
