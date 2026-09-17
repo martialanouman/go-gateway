@@ -64,7 +64,12 @@ func TestOperatorFingerprintMigrationMatchesGo(t *testing.T) {
 
 	const rawToken = "raw-token-0123456789-0123456789-abc"
 	already := auth.Fingerprint("another-operator-token-0123456789")
-	operators := []string{rawToken, "unknown", already}
+	// A token that merely STARTS like a fingerprint must still be rewritten: the regex is anchored at both
+	// ends. And a token with a backslash and non-ASCII bytes must hash the same way: convert_to yields the
+	// UTF-8 bytes Go hashes, where a ::bytea cast would read the backslash as an escape.
+	prefixed := already + "-and-the-rest-of-a-real-token"
+	const exotic = `jeton-opérateur\x41-0123456789-0123456789`
+	operators := []string{rawToken, "unknown", already, prefixed, exotic}
 
 	seed := map[string]string{
 		"content_access_audit": `INSERT INTO control_plane.content_access_audit (operator, message_id, outcome)
@@ -86,7 +91,10 @@ func TestOperatorFingerprintMigrationMatchesGo(t *testing.T) {
 		t.Fatalf("apply 0014: %v", err)
 	}
 
-	want := map[string]bool{auth.Fingerprint(rawToken): true, "unknown": true, already: true}
+	want := map[string]bool{
+		auth.Fingerprint(rawToken): true, "unknown": true, already: true,
+		auth.Fingerprint(prefixed): true, auth.Fingerprint(exotic): true,
+	}
 	for table := range seed {
 		rows, err := conn.Query(ctx, fmt.Sprintf("SELECT operator FROM control_plane.%s", table))
 		if err != nil {
@@ -101,8 +109,8 @@ func TestOperatorFingerprintMigrationMatchesGo(t *testing.T) {
 		}
 		seen := map[string]bool{}
 		for _, op := range got {
-			if op == rawToken {
-				t.Errorf("%s still records the raw token", table)
+			if op == rawToken || op == prefixed || op == exotic {
+				t.Errorf("%s still records a raw token", table)
 			}
 			if !want[op] {
 				t.Errorf("%s operator = %q, want one of %v (SQL and Go fingerprints disagree, or a kept value changed)", table, op, want)

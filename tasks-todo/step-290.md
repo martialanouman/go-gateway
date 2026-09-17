@@ -121,6 +121,13 @@ l'utilisateur.
   - **Vecteur de `Fingerprint` :** il est calculé hors Go (`shasum -a 256`), pour que le test ne soit
     pas circulaire.
   - **Message de la garde de longueur :** il nomme le numéro de l'entrée, jamais le jeton.
+  - **Corrigé en revue :** l'ordre de déploiement n'est **pas** indifférent. Le job de migration tourne
+    avant le rollout (`deploy/k8s/jobs/migrate-postgres.yaml`), si bien que les anciens pods peuvent
+    encore écrire des jetons après la migration. L'`UPDATE` étant idempotent, la PR demande de le rejouer
+    une fois le rollout terminé. Le filtre sur le format empreinte garantit seulement qu'aucune
+    empreinte n'est hachée deux fois. En contrepartie, un jeton brut qui vaut exactement `unknown` ou a
+    exactement la forme `tok_` + 16 caractères hexadécimaux reste tel quel : la rotation des jetons le
+    couvre.
   - **Format de `HTTP_ADMIN_TOKENS` :** inchangé. Le dépôt n'a pas de runbook : la rotation est
     recommandée dans la PR.
 
