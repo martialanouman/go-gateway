@@ -139,6 +139,11 @@ func NewResolver(bloom *Bloom, cache RedisCache, store RouteStore, ttl time.Dura
 	return r
 }
 
+// wrongTypePrefix is the RESP error code Redis answers with when a key holds another type. It is a
+// protocol code, not free text, and HasErrorPrefix is go-redis's own way of reading it — so matching on
+// it is not the string-sniffing it looks like.
+const wrongTypePrefix = "WRONGTYPE"
+
 // redisKey is the exact-route key for an MSISDN (Appendix B). The hash tag ({msisdn}) pins a number's
 // key to one cluster slot — which also means keys cannot be written or deleted in one cross-slot
 // command, hence the pipelining in the Invalidator.
@@ -152,8 +157,9 @@ func redisKey(msisdn string) string { return "exactroute:{" + msisdn + "}" }
 // must not degrade into default routing, which for a ported number means its former operator (§16).
 // A Redis FAULT is returned rather than falling through: doing otherwise would move the hot path onto
 // the control-plane database at full message rate during an outage, and is an open question rather
-// than a silent default. A missing key and an undecodable value both fall through — the second because
-// the durable table can rewrite a healthy one, which a returned error never would.
+// than a silent default. A missing key, an undecodable value and a key of the wrong type
+// all fall through — the last two because the durable table can rewrite a healthy one, which a
+// returned error never would.
 func (r *Resolver) Resolve(ctx context.Context, msisdn string) (Target, bool, error) {
 	// One observation, whatever the exit. Assigning a variable a deferred call reads is what makes the
 	// invariant structural instead of a convention held at six return sites.
@@ -176,6 +182,12 @@ func (r *Resolver) Resolve(ctx context.Context, msisdn string) (Target, bool, er
 		// back to the same key on every redelivery, wedging the whole partition until the TTL expires;
 		// the durable table is right here, and reading it rewrites a healthy value. Counted on its own
 		// meter, so a drift never heals invisibly — including when the durable read then fails.
+		r.corrupt.Inc()
+	case goredis.HasErrorPrefix(err, wrongTypePrefix):
+		// A key of the wrong type takes the illegible-value path, for the same reason and with more
+		// force: returning it would send the message back to this key on every redelivery, and unlike a
+		// bad string it does not even expire — the partition stays wedged until a manual DEL. The heal
+		// is complete because SET replaces a key whatever its type.
 		r.corrupt.Inc()
 	case !errors.Is(err, goredis.Nil):
 		// Wrapped, not stripped: a go-redis error carries no platform code, so the chain is safe to

@@ -107,6 +107,8 @@ delete » que rien ne justifie aujourd'hui.
   fige la lane, donc la partition.
 - **Garde-fou :** une valeur de cache illisible est traitée comme un miss et guérie depuis la table,
   jamais remontée en erreur : la remonter renverrait le message sur la même clé à chaque redélivrance.
+  Une clé du **mauvais type** (`WRONGTYPE`) suit le même chemin depuis step-290d, et pour une raison plus
+  forte : elle n'expire même pas d'elle-même, donc la redélivrance n'a aucune borne.
 - **Mesure :** `exact_route_lookups_total{outcome}` (`bloom_miss` · `redis_hit` · `redis_error` ·
   `pg_hit` · `pg_miss` · `pg_error`), **exactement une observation par résolution, pannes comprises** —
   sans quoi la série décroche du trafic réel précisément quand un incident fait qu'on la regarde. La
