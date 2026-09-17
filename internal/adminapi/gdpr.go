@@ -223,8 +223,9 @@ func (h *gdprHandlers) performErasure(ctx context.Context, job cp.GDPREraseJob) 
 // attestationScope states what an attestation covers — and, by omission, what it does not. An attestation is
 // a legal document, so it must not read as "everything, everywhere": the cold archives written by tiering and
 // the durable Kafka log are outside this erasure and are bounded by their own retention, which is the
-// operator's responsibility.
-const attestationScope = "scope=cdr+content_keys+unrouted_mo(excludes:cold_archives,kafka_log)"
+// operator's responsibility. The operator audit trail is outside it too, and deliberately so: it is
+// immutable by design (step-290c), and it keeps the numbers operators acted on.
+const attestationScope = "scope=cdr+content_keys+unrouted_mo(excludes:cold_archives,kafka_log,audit_log)"
 
 // getJob returns a job with its attestation.
 func (h *gdprHandlers) getJob(ctx context.Context, in *gdprJobInput) (*gdprEraseOutput, error) {
