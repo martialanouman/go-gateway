@@ -67,6 +67,26 @@ func TestValidateAdminConfigRefusesShortTokensInProduction(t *testing.T) {
 		t.Errorf("validateAdminConfig() = %v, want nil for 32+ character tokens (blank entries are skipped)", err)
 	}
 
+	// Padding is not entropy: the guard measures the token without it.
+	cfg.HTTP.AdminTokens = []string{strings.Repeat("x", 31) + "   :admin:read"}
+	if err := validateAdminConfig(cfg); err == nil {
+		t.Error("validateAdminConfig() = nil, want a refusal for a 31-byte token padded with spaces")
+	}
+
+	// A variable holding only separators and blanks configures no token: the same silent 401 service as an
+	// unset one.
+	cfg.HTTP.AdminTokens = []string{" ", " "}
+	if err := validateAdminConfig(cfg); err == nil || !strings.Contains(err.Error(), "must be set") {
+		t.Errorf("validateAdminConfig() = %v, want the missing-tokens refusal for blank entries only", err)
+	}
+
+	// An entry without a colon is malformed, not short: auth.NewStaticVerifier names that fault, so the
+	// guard leaves it alone rather than report a misleading length.
+	cfg.HTTP.AdminTokens = []string{long + ":admin:read", "abc"}
+	if err := validateAdminConfig(cfg); err != nil {
+		t.Errorf("validateAdminConfig() = %v, want nil: a malformed entry is the verifier's to report", err)
+	}
+
 	cfg.Environment = config.EnvDevelopment
 	cfg.HTTP.AdminTokens = []string{short + ":admin:read"}
 	if err := validateAdminConfig(cfg); err != nil {

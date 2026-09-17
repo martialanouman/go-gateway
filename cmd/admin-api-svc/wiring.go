@@ -411,9 +411,9 @@ func exportSink(cfg config.Config) adminapi.ExportSink {
 	return adminapi.NewFileExportSink(cfg.HTTP.ExportDir)
 }
 
-// minAdminTokenLen is the shortest operator token production accepts. Audit rows record an operator as
-// auth.Fingerprint(token), a 64-bit prefix of its SHA-256: that is only safe to publish if the token
-// itself cannot be guessed. Length is all this can check — not randomness.
+// minAdminTokenLen is the shortest operator token production accepts, in bytes. Audit rows record an
+// operator as auth.Fingerprint(token), a 64-bit prefix of its SHA-256: that is only safe to publish if the
+// token itself cannot be guessed. Length is all this can check — not randomness.
 const minAdminTokenLen = 32
 
 // validateAdminConfig enforces the policies specific to this service, at the point of use rather than
@@ -428,20 +428,26 @@ func validateAdminConfig(cfg config.Config) error {
 	if !cfg.Environment.IsProduction() {
 		return nil
 	}
-	if len(cfg.HTTP.AdminTokens) == 0 {
-		return fmt.Errorf("HTTP_ADMIN_TOKENS must be set in production: " +
-			"the Admin API would otherwise reject every operator request")
-	}
+	configured := 0
 	for i, entry := range cfg.HTTP.AdminTokens {
 		entry = strings.TrimSpace(entry)
 		if entry == "" {
 			continue // auth.NewStaticVerifier skips blank entries too
 		}
-		token, _, _ := strings.Cut(entry, ":")
+		configured++
+		token, _, ok := strings.Cut(entry, ":")
+		if !ok {
+			continue // malformed, not short: auth.NewStaticVerifier reports it by entry number
+		}
+		// Measured without surrounding spaces: padding is not entropy.
 		if n := len(strings.TrimSpace(token)); n < minAdminTokenLen {
-			return fmt.Errorf("HTTP_ADMIN_TOKENS entry %d: a production token needs at least %d characters, "+
+			return fmt.Errorf("HTTP_ADMIN_TOKENS entry %d: a production token needs at least %d bytes, "+
 				"got %d (only the length is checked, not the randomness)", i, minAdminTokenLen, n)
 		}
+	}
+	if configured == 0 {
+		return fmt.Errorf("HTTP_ADMIN_TOKENS must be set in production: " +
+			"the Admin API would otherwise reject every operator request")
 	}
 	return nil
 }
