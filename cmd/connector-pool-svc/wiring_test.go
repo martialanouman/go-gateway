@@ -191,3 +191,60 @@ func freePort() int {
 func silentLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
+
+// TestValidateConnectorEnvRefusesTheDevelopmentPasswordInProduction: CONNECTOR_PASSWORD defaults to
+// "gateway", the password of the in-repo fake SMSC. A production pod that kept it either fails its bind
+// — loud — or binds successfully, and then the outbound leg is held by a secret published in this
+// repository. The second case is the one this guard exists for.
+func TestValidateConnectorEnvRefusesTheDevelopmentPasswordInProduction(t *testing.T) {
+	defaults := connectorEnv{Addr: "smsc.operator.example:2775", SystemID: "gateway", Password: "gateway"}
+	set := defaults
+	set.Password = "a-real-secret"
+
+	tests := []struct {
+		name    string
+		env     config.Environment
+		bind    connectorEnv
+		wantErr bool
+	}{
+		{"production keeps the default password", config.EnvProduction, defaults, true},
+		{"production sets its own", config.EnvProduction, set, false},
+		{"development keeps the default password", config.EnvDevelopment, defaults, false},
+		{"staging keeps the default password", config.EnvStaging, defaults, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateConnectorEnv(tt.bind, tt.env)
+			if tt.wantErr != (err != nil) {
+				t.Fatalf("validateConnectorEnv() error = %v, want error: %v", err, tt.wantErr)
+			}
+			if err != nil {
+				if !strings.Contains(err.Error(), "CONNECTOR_PASSWORD") {
+					t.Errorf("error = %q, must name the variable an operator has to set", err)
+				}
+				if strings.Contains(err.Error(), defaults.Password) {
+					t.Errorf("error = %q, must not echo the secret it refuses: it lands in the boot log", err)
+				}
+			}
+		})
+	}
+}
+
+// TestNewPoolAppRefusesTheDefaultPasswordInProduction proves the guard is wired, not merely written:
+// the refusal must come from the construction path the binary uses. It also comes BEFORE any store is
+// opened — testConfig() points at nothing reachable, so a guard placed after openStores would report a
+// connection failure instead.
+func TestNewPoolAppRefusesTheDefaultPasswordInProduction(t *testing.T) {
+	cfg := testConfig()
+	cfg.Environment = config.EnvProduction
+
+	app, err := newPoolApp(t.Context(), cfg, testBindEnv(), silentLogger())
+	if err == nil {
+		app.close()
+		t.Fatal("newPoolApp built a production pool bound with the development password")
+	}
+	if !strings.Contains(err.Error(), "CONNECTOR_PASSWORD") {
+		t.Errorf("error = %v, want the bind-password refusal before any store is opened", err)
+	}
+}

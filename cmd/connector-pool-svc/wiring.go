@@ -85,6 +85,12 @@ func (a *poolApp) close() {
 // On failure it releases whatever it had already opened, so a caller that gets an error holds
 // nothing.
 func newPoolApp(ctx context.Context, cfg config.Config, bindEnv connectorEnv, logger *slog.Logger) (_ *poolApp, err error) {
+	// Before anything is opened: a refused bind policy must not leave a Kafka client and a ClickHouse
+	// connection to unwind.
+	if err := validateConnectorEnv(bindEnv, cfg.Environment); err != nil {
+		return nil, err
+	}
+
 	a := &poolApp{}
 	defer func() {
 		if err != nil {
