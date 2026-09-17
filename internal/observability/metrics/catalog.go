@@ -237,7 +237,7 @@ func NewCatalog() *Catalog {
 
 		ExactRouteCacheCorrupt: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "exact_route_cache_corrupt_total",
-			Help: "Exact-route cache entries the resolver could not use: an undecodable value, or a key of another Redis type. The durable table answers instead, and overwrites the entry unless it holds no row for that number.",
+			Help: "Exact-route cache entries the resolver could not use: an undecodable value, or a key of another Redis type. The durable table answers instead, and overwrites the entry — except when it holds no row for that number, or cannot be read, where the bad entry survives and counts again.",
 		}),
 
 		ConnectorLoadReads: prometheus.NewCounterVec(prometheus.CounterOpts{

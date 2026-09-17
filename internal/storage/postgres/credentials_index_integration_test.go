@@ -2,6 +2,9 @@ package postgres_test
 
 import (
 	"context"
+	"maps"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/martialanouman/go-gateway/internal/testutil/pgtest"
@@ -20,19 +23,20 @@ func TestCredentialLookupColumnsAreIndexed(t *testing.T) {
 	pool := pgtest.Pool(t)
 
 	rows, err := pool.Query(ctx,
-		`SELECT indexname FROM pg_indexes WHERE schemaname = 'control_plane' AND tablename = 'credentials'`)
+		`SELECT indexname, indexdef FROM pg_indexes
+		   WHERE schemaname = 'control_plane' AND tablename = 'credentials'`)
 	if err != nil {
 		t.Fatalf("read pg_indexes: %v", err)
 	}
 	defer rows.Close()
 
-	found := map[string]bool{}
+	found := map[string]string{}
 	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			t.Fatalf("scan index name: %v", err)
+		var name, def string
+		if err := rows.Scan(&name, &def); err != nil {
+			t.Fatalf("scan index definition: %v", err)
 		}
-		found[name] = true
+		found[name] = def
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate pg_indexes: %v", err)
@@ -40,10 +44,22 @@ func TestCredentialLookupColumnsAreIndexed(t *testing.T) {
 
 	// Both, because PrincipalByAPIKeyHash matches an OR — the live hash, or the previous one inside a
 	// rotation grace window. Indexing only the first leaves the planner scanning for the second branch.
-	for _, want := range []string{"credentials_api_key_hash_idx", "credentials_previous_secret_hash_idx"} {
-		if !found[want] {
+	//
+	// The COLUMN is asserted, not just the name: an index of the right name on the wrong column would
+	// leave the lookup exactly as slow while looking fixed here.
+	for _, want := range []struct{ name, column string }{
+		{"credentials_api_key_hash_idx", "api_key_hash"},
+		{"credentials_previous_secret_hash_idx", "previous_secret_hash"},
+	} {
+		def, ok := found[want.name]
+		if !ok {
 			t.Errorf("index %q is missing (present: %v): the REST auth lookup is a sequential scan, and "+
-				"three documents say otherwise", want, found)
+				"three documents say otherwise", want.name, slices.Sorted(maps.Keys(found)))
+			continue
+		}
+		if !strings.Contains(def, "("+want.column+")") {
+			t.Errorf("index %q is %q, want it on %s: a lookup by key hash cannot use it otherwise",
+				want.name, def, want.column)
 		}
 	}
 }

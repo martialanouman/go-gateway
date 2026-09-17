@@ -186,12 +186,11 @@ func (r *Resolver) Resolve(ctx context.Context, msisdn string) (Target, bool, er
 		r.corrupt.Inc()
 	case goredis.HasErrorPrefix(err, wrongTypePrefix):
 		// A key of the wrong type takes the illegible-value path, for the same reason and with more
-		// force: returning it would send the message back to this key on every redelivery, and unlike a
-		// bad string it does not even expire — the partition stays wedged until a manual DEL. SET
-		// replaces a key whatever its type, so the durable read overwrites it — unless the table has no
-		// row (a Bloom false positive), which writes nothing: the bad key then survives, and every
-		// message for that number counts here again. Routing stays correct throughout; what is lost is
-		// the heal.
+		// force: whoever wrote that key wrote it without our TTL, so nothing expires it — the partition
+		// stays wedged until a manual DEL. SET replaces a key whatever its type, so the durable read
+		// overwrites it, EXCEPT on the two paths that write nothing: a Bloom false positive (no row) and
+		// a failed durable read. The bad key then survives and every message for that number counts here
+		// again. Routing stays correct throughout; what is lost is the heal.
 		r.corrupt.Inc()
 	case !errors.Is(err, goredis.Nil):
 		// Wrapped, not stripped: a go-redis error carries no platform code, so the chain is safe to

@@ -309,11 +309,13 @@ CREATE TABLE control_plane.credentials (
 CREATE UNIQUE INDEX credentials_system_id_uq
   ON control_plane.credentials(system_id) WHERE type = 'smpp_bind' AND status <> 'revoked';
 -- REST auth resolves BY the key hash, on every request (plan §1.9). Two indexes because the lookup is an
--- OR: the live hash, or the previous one during a rotation grace window (§6.3). Partial on NOT NULL —
--- a bind credential holds neither column.
-CREATE INDEX credentials_api_key_hash_idx
+-- OR: the live hash, or the previous one during a rotation grace window (§6.3). Partial on NOT NULL, and
+-- the two predicates differ in reach: api_key_hash is confined to api_key rows by credentials_shape_ck,
+-- while previous_secret_hash is outside that CHECK and holds COALESCE(password_hash, api_key_hash), so
+-- the second index covers rotating bind rows as well.
+CREATE INDEX IF NOT EXISTS credentials_api_key_hash_idx
   ON control_plane.credentials(api_key_hash) WHERE api_key_hash IS NOT NULL;
-CREATE INDEX credentials_previous_secret_hash_idx
+CREATE INDEX IF NOT EXISTS credentials_previous_secret_hash_idx
   ON control_plane.credentials(previous_secret_hash) WHERE previous_secret_hash IS NOT NULL;
 
 -- -----------------------------------------------------------------------------------------------------

@@ -1,6 +1,7 @@
 package credential_test
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
 
@@ -165,8 +166,28 @@ func TestHashBindPasswordEmitsTheProductionParameters(t *testing.T) {
 	}
 	const want = "$argon2id$v=19$m=65536,t=1,p=4$"
 	if !strings.HasPrefix(hash, want) {
-		t.Errorf("HashBindPassword() = %q, want the %q parameters: they are the cost of every hash "+
+		t.Fatalf("HashBindPassword() = %q, want the %q parameters: they are the cost of every hash "+
 			"written from now on", hash, want)
+	}
+
+	// The two lengths are not in the parameter block, so the prefix above says nothing about them — and
+	// shortening either weakens every NEW hash while every old one keeps verifying against its own
+	// recorded encoding, which is precisely the silent path this test exists to close. 16 and 32 are
+	// argonSaltLen and argonKeyLen.
+	parts := strings.Split(hash, "$")
+	if len(parts) != 6 {
+		t.Fatalf("HashBindPassword() = %q, want a 6-segment PHC string", hash)
+	}
+	salt, err := base64.RawStdEncoding.DecodeString(parts[4])
+	if err != nil {
+		t.Fatalf("decode salt: %v", err)
+	}
+	sum, err := base64.RawStdEncoding.DecodeString(parts[5])
+	if err != nil {
+		t.Fatalf("decode hash: %v", err)
+	}
+	if len(salt) != 16 || len(sum) != 32 {
+		t.Errorf("salt is %d bytes and the derived key %d, want 16 and 32", len(salt), len(sum))
 	}
 }
 

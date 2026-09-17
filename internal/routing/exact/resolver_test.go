@@ -194,10 +194,11 @@ func (respError) RedisError()     {}
 // TestResolveClassifiesServerErrorsByTheirCode covers the fork the WRONGTYPE heal introduced. Only
 // WRONGTYPE may fall through to the durable table; every other RESP error code must stay a fault.
 //
-// The second case is the load-bearing one. Widening the prefix — to "", to "W" — would send LOADING,
-// READONLY, OOM, CLUSTERDOWN and MASTERDOWN down the healing path too, which is the exact fail-open the
-// resolver's godoc forbids: the whole MT hot path onto the control-plane database, at full message rate,
-// during a Redis outage.
+// The fault cases are the load-bearing ones. Emptying the prefix sends every one of them down the
+// healing path, which is the exact fail-open the resolver's godoc forbids: the whole MT hot path onto the
+// control-plane database, at full message rate, during a Redis outage. (A prefix merely SHORTENED to "W"
+// or "WRONG" is not distinguishable here — no other RESP code starts with a W — so what these cases pin
+// is the classification, not every possible typo.)
 func TestResolveClassifiesServerErrorsByTheirCode(t *testing.T) {
 	msisdn := "2250700000042"
 	want := Target{Type: TargetConnector, ID: uuid.New()}
@@ -227,10 +228,22 @@ func TestResolveClassifiesServerErrorsByTheirCode(t *testing.T) {
 			wantOutcome: outcomeRedisError,
 			wantErr:     true,
 		},
+		{
+			name:        "OOM stays a fault",
+			err:         respError("OOM command not allowed when used memory > 'maxmemory'"),
+			wantOutcome: outcomeRedisError,
+			wantErr:     true,
+		},
+		{
+			name:        "CLUSTERDOWN stays a fault",
+			err:         respError("CLUSTERDOWN The cluster is down"),
+			wantOutcome: outcomeRedisError,
+			wantErr:     true,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			meter := &fakeMeter{}
-			corrupt := &countingCorruption{}
+			corrupt := &countingMeter{}
 			store := &fakeStore{rows: map[string]Route{msisdn: {MSISDN: msisdn, Target: want}}}
 			r := NewResolver(newBloom([]string{msisdn}), &fakeRedis{err: tc.err}, store, time.Hour,
 				WithLookupMeter(meter), WithCorruptionMeter(corrupt))
@@ -257,8 +270,3 @@ func TestResolveClassifiesServerErrorsByTheirCode(t *testing.T) {
 		})
 	}
 }
-
-// countingCorruption counts the cache values the resolver could not use.
-type countingCorruption struct{ n int }
-
-func (c *countingCorruption) Inc() { c.n++ }
