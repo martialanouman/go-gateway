@@ -153,8 +153,9 @@ l'utilisateur.
   sans trace. Le statut est écrit ensuite, en best-effort, dans un `defer` sous
   `context.WithoutCancel`.
 - **Les 401/403 ne sont pas écrits en base.** Une écriture bloquante par requête non authentifiée serait
-  un levier de DoS sur Postgres. `auth.Middleware` les logge en `Warn`, avec l'opération et
-  `RemoteAddr`, jamais le jeton.
+  un levier de DoS sur Postgres. Ils ne sont pas non plus journalisés : retiré du plan le 2026-09-17 à la
+  demande de l'utilisateur, faute d'alerte qui consommerait ces logs. À ajouter quand une telle alerte
+  existera.
 - Une seule fonction `readOnlyRequest(method, path)` sert à la fois à la publication de config
   (`!readOnly && !selfAnnouncing`) et à l'audit (`!readOnly`). Ses suffixes de lecture sont
   `/validate`, `/test`, `/test-connection` et `/check`, ce qui corrige les deux POST mal classés.
@@ -180,8 +181,6 @@ l'utilisateur.
     numéro.
   - **Issue et panique :** l'issue est écrite dans un `defer`, sous `context.WithoutCancel` et 5 s. Une
     panique du handler est enregistrée comme 500, puis relancée.
-  - **Rejets d'authentification :** `auth.Middleware` reçoit un `*slog.Logger` et logge 401 et 403 en
-    `Warn`, jamais le jeton.
   - **Suffixes de lecture :** `readOnlyRequest` ajoute `/test-connection` et `/check` ;
     `/exact-routes/import` reste exclu de la publication, mais il est audité.
   - **Test de câblage :** une requête à travers `newAdminApp` doit produire une ligne dans `audit_log`.
