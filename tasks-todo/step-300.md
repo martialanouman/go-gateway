@@ -44,10 +44,17 @@ c'est celui que le périmètre de cette step ne nommait pas.
 autorisés** (le certificat client identifie le service), pas seulement un tunnel chiffré. Un tunnel sans
 autorisation laisse n'importe quel pod du cluster demander n'importe quelle clé.
 
-**Deux commentaires du code affirment un mesh qui n'existe pas** — `api/proto/contentkeys.proto`
-(« ride the intra-mesh mTLS ») et `internal/modlrrouter/poddeliverer.go` (« terminates at the mesh ») :
-`deploy/k8s/` n'installe aucun maillage de services. Les corriger fait partie de cette step, sans quoi
-elle laisserait derrière elle la justification de ce qu'elle vient de réparer.
+**Cinq commentaires écrits à la main affirment un mesh qui n'existe pas** — `deploy/` n'installe ni
+istio, ni linkerd, ni sidecar. Les corriger fait partie de cette step, sans quoi elle laisserait derrière
+elle la justification de ce qu'elle vient de réparer :
+
+- `api/proto/contentkeys.proto` (deux occurrences, « ride the intra-mesh mTLS ») — et il faut
+  **régénérer** `internal/contentkeys/pb/`, qui en recopie quatre : corriger le `.proto` seul laisse
+  l'affirmation dans le Go compilé ;
+- `internal/modlrrouter/poddeliverer.go` (« terminates at the mesh ») ;
+- `cmd/smpp-server-svc/wiring.go` et `cmd/admin-api-svc/wiring.go` (« transport security is terminated at
+  the mesh, not here »), qui sont précisément les deux extrémités du `SessionRegistry` ajouté ci-dessus
+  aux cibles mTLS.
 
 ## Tests (écrits dans la même PR)
 - Handshake TLS/mTLS réussi ; un client sans cert client est rejeté sur les endpoints mTLS.

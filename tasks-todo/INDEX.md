@@ -324,8 +324,8 @@ Indépendantes de la chaîne de charge : parallélisables si deux mains travaill
 - [x] step-290 — Sécurité : gosec, govulncheck, secrets, piste d'audit
 - [ ] step-295 — Deux secrets stockés sous une forme qui ne sert pas leur usage (bind sortant, fournisseur
       de facturation) — ouverte par step-290d
-- [ ] step-296 — Deux actions d'opérateur qui échappent à la piste d'audit (`mt-replay`,
-      `test-billing-provider`) — ouverte par step-290d
+- [ ] step-296 — `mt-replay` rejoue des messages sans laisser de trace ; la fiche porte aussi, sans
+      pouvoir le clore, l'audit de `test-billing-provider` — ouverte par step-290d
 - [ ] step-297 — Ce qui survit à un effacement attesté : rétention d'`audit_log`, base légale, MSISDN
       dans le log d'attestation — ouverte par step-290d
 - [ ] step-300 — TLS / SMPP-TLS / mTLS sur les transports, **dont la DEK qui circule en clair sur un
@@ -346,8 +346,8 @@ secret qu'on doit rejouer ne peut pas être haché, un rejeu de dead-letter n'a 
 exclusion d'effacement sans durée est une conservation indéfinie. Une cinquième dette n'a pas de fiche
 propre : la DEK en clair sur gRPC non authentifié rejoint step-300, dont c'est le sujet. **Numérotation :**
 295, 296, 297 et 315 sont des unités faute de multiple de dix libre à leur place dans l'ordre — la règle
-`.claude/rules/tasks-steps.md` en veut un, et les précédents existent (step-270b, step-390b, step-395,
-step-396). L'ordre reste l'ordre d'exécution, qui est ce que la règle protège.
+`.claude/rules/tasks-steps.md` en veut un, et les seuls précédents en unités sont step-395 et
+step-396 (step-270b et step-390b sont des suffixes de lettre, autre chose). L'ordre reste l'ordre d'exécution, qui est ce que la règle protège.
 
 ## Écart contrat ↔ implémentation (revue du 2026-08-10)
 `api/openapi-admin.yaml` déclare **133 opérations** sous `paths:` ; `internal/adminapi` en enregistre

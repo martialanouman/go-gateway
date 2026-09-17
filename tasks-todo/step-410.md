@@ -16,8 +16,8 @@ chaque item et matérialiser la porte de go-live.
 - La checklist référence les livrables : NFR (step-200/201/**280**), chaos par politique (step-250/260),
   sécurité (step-290/300), auth opérateur réelle (step-310), manifests (step-270) et images (step-270b).
 - **Les dettes de sécurité que step-290 a ouvertes sans les fermer sont à statuer ici, pas à
-  découvrir :** secrets stockés sous une forme inutilisable (step-295), actions d'opérateur hors piste
-  d'audit (step-296), rétention et base légale de ce qui survit à un effacement attesté (step-297),
+  découvrir :** secrets stockés sous une forme inutilisable (step-295), rejeu de dead-letter sans trace, et l'audit d'une sonde
+  de facturation que step-296 ne peut que rappeler (step-296), rétention et base légale de ce qui survit à un effacement attesté (step-297),
   lecture et immuabilité du journal d'audit (step-315) — plus la cinquième, sans fiche propre : la DEK
   en clair sur gRPC non authentifié, portée par step-300. Aucune n'est un prérequis dur ; chacune doit
   être cochée « faite » ou « acceptée, avec qui l'accepte ».

@@ -12,7 +12,8 @@ piste d'audit consolidée des actions sensibles.
 - `govulncheck` déjà présent (`make`) → en faire une **gate** bloquante documentée.
 - Gestion des secrets (les défauts de développement sont déjà refusés en production par `config`,
   step-260f) : vérifier qu'aucun secret n'est en clair (hash pour mots de passe bind & clés API,
-  §1.9), comparaison temps constant partout.
+  §1.9), comparaison temps constant partout — **corrigé en 290d : pas la clé API**,
+  cherchée par son hash, donc comparée par PostgreSQL (plan §1.9).
 - Piste d'audit consolidée des actions opérateur/sensibles (réutilise les audits M10 : content, GDPR).
 
 ## Points d'implémentation clés
