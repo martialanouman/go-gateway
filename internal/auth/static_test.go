@@ -3,6 +3,7 @@ package auth_test
 import (
 	"context"
 	goerrors "errors"
+	"strings"
 	"testing"
 
 	"github.com/martialanouman/go-gateway/internal/auth"
@@ -10,7 +11,7 @@ import (
 )
 
 // TestStaticVerifierParsesTokensAndScopes: a well-formed entry yields a principal whose subject is
-// the token and whose scopes are exactly those declared.
+// the token's fingerprint and whose scopes are exactly those declared.
 func TestStaticVerifierParsesTokensAndScopes(t *testing.T) {
 	v, err := auth.NewStaticVerifier([]string{"tok-abc:admin:read|admin:write"})
 	if err != nil {
@@ -21,8 +22,12 @@ func TestStaticVerifierParsesTokensAndScopes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Verify() error = %v", err)
 	}
-	if p.Subject != "tok-abc" {
-		t.Errorf("Subject = %q, want tok-abc", p.Subject)
+	// The vector is computed outside Go (printf 'tok-abc' | shasum -a 256), so this is not a round trip.
+	if p.Subject != "tok_0b9f31c5403adf5a" {
+		t.Errorf("Subject = %q, want the token's fingerprint tok_0b9f31c5403adf5a", p.Subject)
+	}
+	if strings.Contains(p.Subject, "tok-abc") {
+		t.Errorf("Subject %q carries the token: it is written to audit tables and logs", p.Subject)
 	}
 	if !p.Has(auth.ScopeAdminRead) || !p.Has(auth.ScopeAdminWrite) {
 		t.Errorf("scopes = %v, want admin:read and admin:write", p.Scopes)
@@ -58,6 +63,23 @@ func TestStaticVerifierRejectsMalformedConfig(t *testing.T) {
 	}
 }
 
+// TestStaticVerifierErrorsNeverEchoAnEntry: the error lands in the boot log, and an entry written in the
+// wrong order ("admin:read:<token>") puts the token where a scope is expected — so neither a scope nor a
+// token is ever quoted, only the entry number and the position.
+func TestStaticVerifierErrorsNeverEchoAnEntry(t *testing.T) {
+	const secret = "s3cret-operator-token-0123456789"
+	_, err := auth.NewStaticVerifier([]string{"admin:read:" + secret})
+	if err == nil {
+		t.Fatal("NewStaticVerifier() succeeded on a misordered entry, want an error")
+	}
+	if strings.Contains(err.Error(), "s3cret") {
+		t.Errorf("error %q echoes the token", err)
+	}
+	if !strings.Contains(err.Error(), "entry 0") {
+		t.Errorf("error %q should name the entry", err)
+	}
+}
+
 // TestStaticVerifierSkipsBlankEntries: a trailing empty entry from a comma-split env value is
 // ignored, not treated as a malformed token.
 func TestStaticVerifierSkipsBlankEntries(t *testing.T) {
@@ -67,5 +89,16 @@ func TestStaticVerifierSkipsBlankEntries(t *testing.T) {
 	}
 	if _, err := v.Verify(context.Background(), "tok"); err != nil {
 		t.Errorf("Verify() error = %v", err)
+	}
+}
+
+// TestFingerprintMatchesAnOutOfProcessDigest pins the identity format every audit row carries. The
+// vector comes from shasum, not from Fingerprint itself, and migration 0014 recomputes the same value
+// in SQL: changing either side orphans every operator already recorded.
+func TestFingerprintMatchesAnOutOfProcessDigest(t *testing.T) {
+	t.Parallel()
+
+	if got := auth.Fingerprint("operator-token-for-tests"); got != "tok_534125de141542e2" {
+		t.Errorf("Fingerprint = %q, want tok_534125de141542e2", got)
 	}
 }

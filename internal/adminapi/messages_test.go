@@ -93,7 +93,7 @@ func TestGetMessageContentDecryptsAndAudits(t *testing.T) {
 	if len(audit.recorded) != 1 || audit.recorded[0].Outcome != cp.ContentAccessGranted {
 		t.Fatalf("audit = %+v, want one granted row", audit.recorded)
 	}
-	if audit.recorded[0].MessageID != msgID || audit.recorded[0].Operator != operatorToken {
+	if audit.recorded[0].MessageID != msgID || audit.recorded[0].Operator != auth.Fingerprint(operatorToken) {
 		t.Errorf("audit row = %+v, want operator+message recorded", audit.recorded[0])
 	}
 }

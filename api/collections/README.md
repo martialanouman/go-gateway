@@ -20,9 +20,11 @@ the base URL is `http://localhost:8081/v1` (the `Local` environment's `baseUrl`)
 ## Auth
 
 `HTTP_ADMIN_TOKENS` entries are `token:scope|scope`. The client sends **only the token
-(subject) part** as `Authorization: Bearer <token>` — bearer auth is set once at the
+part** as `Authorization: Bearer <token>` — bearer auth is set once at the
 collection level (`request.auth`) as `{{operatorToken}}`, which the `Local` environment
 resolves to `dev-operator-token`. Reads need `admin:read`, mutations `admin:write`.
+Audit rows record the token's fingerprint (`tok_…`), never the token. Production refuses a token
+shorter than 32 bytes, so this development token only works outside `ENVIRONMENT=production`.
 
 ## Variables
 

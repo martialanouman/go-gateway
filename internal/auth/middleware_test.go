@@ -124,8 +124,8 @@ func TestAuthorizedRequestReachesTheHandlerWithItsPrincipal(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("status = %d, want 200", status)
 	}
-	if m["subject"] != "admin" {
-		t.Errorf("subject = %v, want admin — the principal did not reach the handler", m["subject"])
+	if m["subject"] != auth.Fingerprint("admin") {
+		t.Errorf("subject = %v, want the token's fingerprint — the principal did not reach the handler", m["subject"])
 	}
 }
 

@@ -22,7 +22,7 @@ type staticEntry struct {
 }
 
 // NewStaticVerifier parses "token:scope|scope" entries (config.HTTP.AdminTokens). Each entry's
-// token is the subject; the pipe-separated scopes must be known. An empty list is allowed (a
+// subject is the token's Fingerprint; the pipe-separated scopes must be known. An empty list is allowed (a
 // verifier that rejects everything), which is valid on a laptop; cmd/admin-api-svc enforces the
 // "at least one token in production" policy before wiring this verifier.
 func NewStaticVerifier(entries []string) (*StaticVerifier, error) {
@@ -38,20 +38,22 @@ func NewStaticVerifier(entries []string) (*StaticVerifier, error) {
 		}
 
 		var scopes []Scope
-		for _, s := range strings.Split(scopeSpec, "|") {
+		for pos, s := range strings.Split(scopeSpec, "|") {
 			s = strings.TrimSpace(s)
 			if s == "" {
 				continue
 			}
 			scope := Scope(s)
 			if !knownScope(scope) {
-				return nil, fmt.Errorf("admin token entry %d: unknown scope %q", i, s)
+				// The value is not echoed: an entry written in the wrong order puts the token here, and this
+				// error lands in the boot log.
+				return nil, fmt.Errorf("admin token entry %d: unknown scope at position %d", i, pos+1)
 			}
 			scopes = append(scopes, scope)
 		}
 		parsed = append(parsed, staticEntry{
 			token:     token,
-			principal: Principal{Subject: token, Scopes: scopes},
+			principal: Principal{Subject: Fingerprint(token), Scopes: scopes},
 		})
 	}
 	return &StaticVerifier{entries: parsed}, nil
