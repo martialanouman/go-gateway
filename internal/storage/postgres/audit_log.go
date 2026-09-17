@@ -2,7 +2,8 @@ package postgres
 
 import (
 	"context"
-	"math"
+	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -21,11 +22,21 @@ func NewAuditLogRepo(pool *pgxpool.Pool) *AuditLogRepo {
 	return &AuditLogRepo{q: sqlcgen.New(pool)}
 }
 
+// maxRequestIDLen bounds the stored request id. chi echoes a client's X-Request-Id header verbatim, so an
+// audited operator would otherwise choose how much of this immutable table their own row occupies.
+const maxRequestIDLen = 64
+
 // Begin records a request before its handler runs and returns the row to complete with Finish.
 func (r *AuditLogRepo) Begin(ctx context.Context, in cp.AuditIntent) (uuid.UUID, error) {
 	var reqID *string
 	if in.RequestID != "" {
-		reqID = &in.RequestID
+		// Bounded and made valid UTF-8: a header carrying a raw byte would otherwise make the INSERT fail,
+		// and a failed intent refuses the request (503).
+		id := strings.ToValidUTF8(in.RequestID, "")
+		if runes := []rune(id); len(runes) > maxRequestIDLen {
+			id = string(runes[:maxRequestIDLen])
+		}
+		reqID = &id
 	}
 	id, err := r.q.InsertAuditIntent(ctx, sqlcgen.InsertAuditIntentParams{
 		Operator:    in.Operator,
@@ -41,12 +52,14 @@ func (r *AuditLogRepo) Begin(ctx context.Context, in cp.AuditIntent) (uuid.UUID,
 }
 
 // Finish records the HTTP status of an audited request. It writes once: a row that already has an outcome
-// keeps it. A status outside the smallint range leaves the outcome unrecorded (NULL).
+// keeps it, and this reports no error for that case — the row simply keeps the first outcome. A value that
+// is not an HTTP status is refused rather than written, so a row reads as NULL ("outcome not recorded") or
+// as a status, never as 0; the column CHECK refuses it too, for any writer.
 func (r *AuditLogRepo) Finish(ctx context.Context, id uuid.UUID, status int) error {
-	if status < 0 || status > math.MaxInt16 {
-		return nil
+	if status < 100 || status > 599 {
+		return fmt.Errorf("record audit outcome: %d is not an HTTP status", status)
 	}
-	s := int16(status)
+	s := int16(status) // bounded to 100..599 on the line above
 	if err := r.q.FinishAudit(ctx, sqlcgen.FinishAuditParams{ID: id, Status: &s}); err != nil {
 		return translate("record audit outcome", err)
 	}
