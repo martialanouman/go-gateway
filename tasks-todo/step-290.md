@@ -210,7 +210,18 @@ l'utilisateur.
    - `external_billing_providers.auth_config_json` est stocké en clair ;
    - la CLI `mt-replay` n'a ni authentification ni audit ;
    - un MSISDN apparaît dans le log d'échec d'attestation RGPD ;
-   - `GET /audit-log`, et l'immuabilité de `audit_log` au niveau de la base ;
+   - `GET /audit-log`, et l'immuabilité de `audit_log` au niveau de la base. Attention : l'écriture se
+     fait en deux temps, donc « aucun UPDATE » ne suffit pas — il faut un trigger qui n'autorise que la
+     transition `status IS NULL → NOT NULL`, plus un `REVOKE DELETE` ;
+   - la **rétention** de `audit_log` : la spec veut 1 à 7 ans et une purge par partition, or la table
+     n'est pas partitionnée (volume négligeable) et `target` contient des numéros en clair, exclus de
+     l'effacement RGPD. Aucune échéance n'existe aujourd'hui ;
+   - la collision de nom avec `dashboard.audit_log` (spec du tableau de bord) : deux tables du même nom,
+     de formes différentes ; dire laquelle fait foi, au plus tard à step-310 ;
+   - l'audit de `test-billing-provider` le jour où sa sonde HTTP sera réelle : appel sortant vers un
+     tiers avec des identifiants stockés, sous scope `admin:write`, aujourd'hui sans trace ;
+   - la base légale de la conservation d'un MSISDN dans `audit_log` malgré un effacement attesté : elle
+     n'est écrite que dans un commentaire Go et dans cette fiche, pas dans `docs/` ;
    - dans step-300, ajouter le gRPC `content-key-svc`, où la DEK circule en clair sans authentification.
 
    La fiche est déplacée en `tasks-done/` au dernier commit de 290d.

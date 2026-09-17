@@ -68,9 +68,10 @@ func PublishConfigChanges(h http.Handler, pub ConfigChangePublisher, channel str
 	})
 }
 
-// readOnlyPostSuffixes are POST endpoints that change no control-plane state — diagnostics and checks
-// that must NOT trigger a data-plane invalidation, nor enter the audit trail, despite being POSTs (they
-// are AdminRead-scoped).
+// readOnlyPostSuffixes are POST endpoints that change no control-plane state — diagnostics and checks that
+// must NOT trigger a data-plane invalidation, nor enter the audit trail, despite being POSTs. The declared
+// scope does not identify them (test-billing-provider is admin:write): what holds the list honest is
+// TestReadOnlyPostSuffixesNameKnownDiagnostics, which names the four operations it may match.
 var readOnlyPostSuffixes = []string{"/validate", "/test", "/test-connection", "/check"}
 
 // readOnlyRequest reports whether a request changes nothing: a read method, or a POST to a declared
