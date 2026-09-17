@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/martialanouman/go-gateway/internal/auth"
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/testutil/pgtest"
 	"github.com/martialanouman/go-gateway/internal/testutil/redistest"
@@ -240,5 +241,50 @@ func TestNewAdminAppInvalidatesTheExactRouteCache(t *testing.T) {
 		t.Errorf("after the create the cache key is still there (err=%v); the booted service did not "+
 			"invalidate the data-plane cache, so a re-ported number would keep its former carrier for a "+
 			"whole TTL — the handlers' nil-to-no-op default hides a missing ExactRouteCache in the wiring", err)
+	}
+}
+
+// TestNewAdminAppAuditsAMutation: the booted service — not a test-built API — records a write in
+// control_plane.audit_log, under the token's fingerprint. A trail that only exists in handler tests is a
+// trail production does not have.
+func TestNewAdminAppAuditsAMutation(t *testing.T) {
+	cfg := testConfig()
+	cfg.Postgres = pgtest.Config(t)
+	cfg.Redis = redistest.Config(t)
+	pool := pgtest.Pool(t)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	app, err := newAdminApp(ctx, cfg, silentLogger())
+	if err != nil {
+		t.Fatalf("newAdminApp: %v", err)
+	}
+	defer app.close()
+
+	var start time.Time
+	if err := pool.QueryRow(ctx, "SELECT now()").Scan(&start); err != nil {
+		t.Fatalf("read the clock: %v", err)
+	}
+
+	body := fmt.Sprintf(`{"name":"audit-%s"}`, uuid.NewString())
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/customers", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer test-token")
+	rec := httptest.NewRecorder()
+	app.http.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create customer = %d, want 201; body=%s", rec.Code, rec.Body)
+	}
+
+	var status *int16
+	err = pool.QueryRow(ctx, `SELECT status FROM control_plane.audit_log
+		WHERE operation_id = 'create-customer' AND operator = $1 AND at >= $2
+		ORDER BY at DESC LIMIT 1`, auth.Fingerprint("test-token"), start).Scan(&status)
+	if err != nil {
+		t.Fatalf("no audit row for the booted service's write: %v", err)
+	}
+	if status == nil || *status != http.StatusCreated {
+		t.Errorf("audit status = %v, want 201", status)
 	}
 }

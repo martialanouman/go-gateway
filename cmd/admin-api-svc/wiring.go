@@ -379,6 +379,7 @@ func newHTTPServer(
 		ExportJobs:       postgres.NewMessageExportJobRepo(st.pg),
 		ExportSink:       exportSink(cfg),
 		ContentAudit:     postgres.NewContentAccessAuditRepo(st.pg),
+		AuditLog:         postgres.NewAuditLogRepo(st.pg),
 		GDPRJobs:         postgres.NewGDPREraseJobRepo(st.pg),
 		GDPRRunner:       runners.gdpr,
 		CDREraser:        clickhouse.NewCDREraser(st.ch),
