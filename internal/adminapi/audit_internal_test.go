@@ -7,9 +7,9 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 )
 
-// TestRevealReadsNameRegisteredOperations: the audit middleware recognises the number-revealing reads by
+// TestAuditedReadsNameRegisteredOperations: the audit middleware recognises the reads it records by
 // operation id; a renamed operation would silently drop out of the trail, so every id must be served.
-func TestRevealReadsNameRegisteredOperations(t *testing.T) {
+func TestAuditedReadsNameRegisteredOperations(t *testing.T) {
 	_, api := New(Deps{})
 	served := map[string]bool{}
 	for _, item := range api.OpenAPI().Paths {
@@ -19,13 +19,15 @@ func TestRevealReadsNameRegisteredOperations(t *testing.T) {
 			}
 		}
 	}
-	for id := range revealReads {
-		if !served[id] {
-			t.Errorf("revealReads names %q, which the Admin API does not serve", id)
+	for name, ids := range map[string]map[string]bool{"revealReads": revealReads, "unconditionalReads": unconditionalReads} {
+		if len(ids) == 0 {
+			t.Errorf("%s is empty: nothing guards those reads", name)
 		}
-	}
-	if len(revealReads) == 0 {
-		t.Error("revealReads is empty: nothing guards the reveal reads")
+		for id := range ids {
+			if !served[id] {
+				t.Errorf("%s names %q, which the Admin API does not serve", name, id)
+			}
+		}
 	}
 }
 
@@ -60,5 +62,15 @@ func TestReadOnlyPostSuffixesNameKnownDiagnostics(t *testing.T) {
 	}
 	for id := range want {
 		t.Errorf("%q no longer matches any read-only suffix: the classification silently changed", id)
+	}
+
+	// The classification runs on the RESOLVED path, so a POST whose last segment is a path parameter could
+	// be exonerated by its own data — an exact route named "check" would leave neither an audit row nor a
+	// config-change event. No such route exists; this keeps it that way.
+	for path, item := range api.OpenAPI().Paths {
+		if item.Post != nil && strings.HasSuffix(path, "}") {
+			t.Errorf("POST %s ends with a path parameter: its value could end in a read-only suffix and "+
+				"exonerate a write from the audit trail", path)
+		}
 	}
 }

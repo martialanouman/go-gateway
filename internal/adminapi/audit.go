@@ -40,10 +40,15 @@ var revealReads = map[string]bool{
 // unmasked, and cdr:export_bulk alone opens it.
 var unconditionalReads = map[string]bool{
 	"get-message-export": true,
+	// The MNP override table is a list of subscriber numbers, returned in clear under admin:read alone —
+	// the widest subscriber-data read the Admin API serves, and no scope marks it as such.
+	"list-exact-routes": true,
 }
 
 // auditMiddleware writes the audit row of every audited request before its handler runs, and its HTTP
-// status after. It must run AFTER auth.Middleware: the principal it records is the one that middleware put
+// status after. It must be the LAST middleware registered: it reads the status from the huma context it
+// passed on, and a middleware added after it that derived a new context (huma.WithValue does) would leave
+// this one reading 0. It must also run AFTER auth.Middleware: the principal it records is the one that middleware put
 // on the context, and a request that middleware refused never reaches here — an unauthenticated caller
 // cannot make Postgres write.
 //
@@ -79,7 +84,9 @@ func auditMiddleware(api huma.API, store AuditLogStore, logger *slog.Logger) fun
 				level = slog.LevelDebug // the client hung up; nothing is wrong with the trail
 			}
 			logger.Log(ctx.Context(), level, "audit intent not recorded; request refused",
-				"operation", operationID, "operator", operatorSubject(ctx.Context()), "target", target, "err", err)
+				// The target is deliberately absent: an exact-route path IS a subscriber number, and no
+				// access log carries it today.
+				"operation", operationID, "operator", operatorSubject(ctx.Context()), "err", err)
 			status, ok := errs.HTTPStatus(errs.ErrServiceUnavailable)
 			if !ok {
 				status = http.StatusServiceUnavailable
@@ -93,7 +100,8 @@ func auditMiddleware(api huma.API, store AuditLogStore, logger *slog.Logger) fun
 			if status == 0 {
 				// Nothing was written: the handler panicked, and the recoverer upstream answers 500. Reading
 				// the status rather than a "did it panic" flag keeps the row honest when a response was
-				// already sent before the panic.
+				// already sent before the panic. A streaming handler also leaves 0 (huma never sets a status
+				// on that path) — none is audited today, and one entering the trail would need its own rule.
 				status = http.StatusInternalServerError
 			}
 			finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx.Context()), auditTimeout)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -33,10 +34,17 @@ func (r *AuditLogRepo) Begin(ctx context.Context, in cp.AuditIntent) (uuid.UUID,
 		// Bounded and made valid UTF-8: a header carrying a raw byte would otherwise make the INSERT fail,
 		// and a failed intent refuses the request (503).
 		id := strings.ToValidUTF8(in.RequestID, "")
+		// Bound the bytes before converting to runes: a 1 MiB header would otherwise allocate 4 MiB per
+		// request. Cutting mid-rune is harmless — the conversion below replaces the remnant.
+		if len(id) > maxRequestIDLen*utf8.UTFMax {
+			id = id[:maxRequestIDLen*utf8.UTFMax]
+		}
 		if runes := []rune(id); len(runes) > maxRequestIDLen {
 			id = string(runes[:maxRequestIDLen])
 		}
-		reqID = &id
+		if id != "" { // a header made only of invalid bytes sanitises to nothing: that is no id at all
+			reqID = &id
+		}
 	}
 	id, err := r.q.InsertAuditIntent(ctx, sqlcgen.InsertAuditIntentParams{
 		Operator:    in.Operator,

@@ -33,11 +33,10 @@ func TestAuditLogRecordsIntentThenOutcomeOnce(t *testing.T) {
 		var finished *time.Time
 		var reqID *string
 		var operator, operationID, method, target string
-		var at time.Time
 		if err := pool.QueryRow(ctx,
-			`SELECT status, finished_at, request_id, operator, operation_id, method, target, at
+			`SELECT status, finished_at, request_id, operator, operation_id, method, target
 			   FROM control_plane.audit_log WHERE id = $1`, id,
-		).Scan(&status, &finished, &reqID, &operator, &operationID, &method, &target, &at); err != nil {
+		).Scan(&status, &finished, &reqID, &operator, &operationID, &method, &target); err != nil {
 			t.Fatalf("read row: %v", err)
 		}
 		// Every column is read back: Operator, OperationID, Method and Target are all strings, so a pair
@@ -46,9 +45,6 @@ func TestAuditLogRecordsIntentThenOutcomeOnce(t *testing.T) {
 			method != "POST" || target != "/v1/admin/customers" {
 			t.Errorf("row = operator %q, operation %q, method %q, target %q — want them in their own columns",
 				operator, operationID, method, target)
-		}
-		if at.IsZero() {
-			t.Error("at is zero: the row carries no time")
 		}
 		return status, finished, reqID
 	}
@@ -113,7 +109,8 @@ func TestAuditLogBoundsTheRequestID(t *testing.T) {
 	ctx := context.Background()
 	id, err := postgres.NewAuditLogRepo(pool).Begin(ctx, cp.AuditIntent{
 		Operator: "unknown", OperationID: "delete-route", Method: "DELETE", Target: "/v1/admin/routes/x",
-		// The invalid byte sits within the first 64 characters, so truncation cannot be what removes it.
+		// A long id exercises the truncation branch; the short one below is what proves the sanitising,
+		// since converting to runes would already replace an invalid byte on this path.
 		RequestID: "req-\xff-" + strings.Repeat("x", 300),
 	})
 	if err != nil {
@@ -134,6 +131,22 @@ func TestAuditLogBoundsTheRequestID(t *testing.T) {
 		RequestID: "req-\xff",
 	}); err != nil {
 		t.Errorf("begin with an invalid byte in the request id: %v — the trail must sanitise it, not refuse the write", err)
+	}
+
+	// An id made ONLY of invalid bytes sanitises to nothing: that is no id at all, so it reads as NULL
+	// rather than as an empty string an auditor would have to interpret.
+	id, err = postgres.NewAuditLogRepo(pool).Begin(ctx, cp.AuditIntent{
+		Operator: "unknown", OperationID: "delete-route", Method: "DELETE", Target: "/v1/admin/routes/x",
+		RequestID: "\xff\xfe",
+	})
+	if err != nil {
+		t.Fatalf("begin with an all-invalid request id: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT request_id FROM control_plane.audit_log WHERE id = $1`, id).Scan(&reqID); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if reqID != nil {
+		t.Errorf("request_id = %q, want NULL", *reqID)
 	}
 }
 

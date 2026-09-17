@@ -3,6 +3,7 @@ package adminapi_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -41,9 +42,17 @@ func (f *fakeAuditLog) Begin(_ context.Context, in cp.AuditIntent) (uuid.UUID, e
 	return id, nil
 }
 
+// Finish models the repository's contract, not a convenient map write: the real one writes once (WHERE
+// status IS NULL) and refuses anything that is not an HTTP status.
 func (f *fakeAuditLog) Finish(_ context.Context, id uuid.UUID, status int) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if status < 100 || status > 599 {
+		return fmt.Errorf("record audit outcome: %d is not an HTTP status", status)
+	}
+	if _, done := f.finished[id]; done {
+		return nil
+	}
 	f.finished[id] = status
 	return nil
 }
@@ -190,6 +199,24 @@ func TestAuditRecordsRevealReadsOnly(t *testing.T) {
 	intents, _, _ := revealed.snapshot()
 	if len(intents) != 1 || intents[0].OperationID != "search-messages" || intents[0].Target != "/v1/admin/messages/search" {
 		t.Errorf("revealing search recorded %+v, want one search-messages row on the bare path", intents)
+	}
+}
+
+// TestAuditRecordsAnExactRouteListing: the MNP override table is a list of subscriber numbers returned in
+// clear under admin:read alone — no scope marks it, so the trail records it whatever the caller holds.
+func TestAuditRecordsAnExactRouteListing(t *testing.T) {
+	audit := newFakeAuditLog()
+	h := newTestAPIWithScopes(t, adminapi.Deps{ExactRoutes: newFakeExactRouteStore(), AuditLog: audit}, "admin:read")
+	req := httptest.NewRequest(http.MethodGet, "/v1/admin/exact-routes", http.NoBody)
+	req.Header.Set("Authorization", "Bearer "+operatorToken)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body)
+	}
+	intents, _, _ := audit.snapshot()
+	if len(intents) != 1 || intents[0].OperationID != "list-exact-routes" {
+		t.Errorf("recorded %+v, want one list-exact-routes row", intents)
 	}
 }
 
