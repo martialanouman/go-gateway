@@ -164,6 +164,28 @@ l'utilisateur.
 - **Aucun endpoint de lecture dans cette step.** `GET /audit-log` et le scope `audit:read` appartiennent
   au BFF du tableau de bord et à l'auth réelle (step-310). Aucun contrat ne bouge. Une fiche de suite est
   ouverte, et le runbook donne la requête SQL de lecture.
+- **Détail validé le 2026-09-17, avant le code :**
+  - **Refus d'audit : 503 non déclaré (arbitrage Fable).** Le contrat ne déclare aucune panne
+    d'infrastructure opération par opération, pas même le 500 d'une panne Postgres. `humaspec.Prune`
+    retire le 500/default de huma, et `recordGranted` renvoie déjà un 503 non déclaré. **Ne pas** ajouter
+    503 aux `Errors` des opérations : `contract_test.go` compare l'ensemble exact des codes et
+    échouerait. Le message est fixe ; le détail va dans un log `Error`.
+  - **Migration :** `0015_audit_log`. `FinishAudit` n'écrit que si `status IS NULL` : une issue ne
+    s'écrase pas. Dépôt `postgres.AuditLogRepo` avec `Begin(ctx, cp.AuditIntent) (uuid.UUID, error)` et
+    `Finish(ctx, id, status)`. La requête de lecture est donnée dans le commentaire de schéma, puisque le
+    dépôt n'a pas de runbook.
+  - **Lectures sensibles :** `search-messages` et `get-message-trace` forment un ensemble local
+    d'identifiants d'opération, et un test vérifie qu'ils existent dans la spec générée. Leur filtre
+    vit dans la query string, qui n'est jamais stockée : la ligne dit qui a révélé et quand, pas quel
+    numéro.
+  - **Issue et panique :** l'issue est écrite dans un `defer`, sous `context.WithoutCancel` et 5 s. Une
+    panique du handler est enregistrée comme 500, puis relancée.
+  - **Rejets d'authentification :** `auth.Middleware` reçoit un `*slog.Logger` et logge 401 et 403 en
+    `Warn`, jamais le jeton.
+  - **Suffixes de lecture :** `readOnlyRequest` ajoute `/test-connection` et `/check` ;
+    `/exact-routes/import` reste exclu de la publication, mais il est audité.
+  - **Test de câblage :** une requête à travers `newAdminApp` doit produire une ligne dans `audit_log`.
+  - **Fiche de suite (`GET /audit-log`, immuabilité en base) :** elle est ouverte en 290d.
 
 **290d — Constats hérités et secrets restants.**
 1. **Cible `connector` lue depuis Redis.** On écrit la posture en addendum à ADR-0015 : Redis est dans la
