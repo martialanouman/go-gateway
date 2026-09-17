@@ -68,8 +68,10 @@ type connectorEnv struct {
 	MaxMessageAge time.Duration `env:"CONNECTOR_MAX_MESSAGE_AGE" envDefault:"0"`
 }
 
-// defaultConnectorPassword is the bind password of the in-repo fake SMSC, and the envDefault above. It
-// is named here so the guard and the default cannot drift apart.
+// defaultConnectorPassword is the bind password of the in-repo fake SMSC. It repeats the envDefault of
+// the field above, because a struct tag cannot hold a constant — so the two CAN drift, and a drift would
+// disarm the guard in silence. TestTheDeclaredDefaultIsTheOneTheGuardRefuses parses the block with an
+// empty environment and compares the two.
 const defaultConnectorPassword = "gateway"
 
 // validateConnectorEnv enforces this service's own bind policy, at the point of use rather than in the

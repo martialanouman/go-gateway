@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/caarlos0/env/v11"
 	"github.com/google/uuid"
 
 	"github.com/martialanouman/go-gateway/internal/config"
@@ -246,5 +247,23 @@ func TestNewPoolAppRefusesTheDefaultPasswordInProduction(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "CONNECTOR_PASSWORD") {
 		t.Errorf("error = %v, want the bind-password refusal before any store is opened", err)
+	}
+}
+
+// TestTheDeclaredDefaultIsTheOneTheGuardRefuses closes the only way the production guard can be disarmed
+// without touching it: the `envDefault:"gateway"` tag and defaultConnectorPassword are two literals, and
+// a struct tag cannot hold a constant. Change the tag alone and a production pod binds with the new
+// default, refused by nothing.
+//
+// The environment is supplied empty rather than read from the process, so the test asserts what the tag
+// declares and not what the developer's shell happens to export.
+func TestTheDeclaredDefaultIsTheOneTheGuardRefuses(t *testing.T) {
+	var parsed connectorEnv
+	if err := env.ParseWithOptions(&parsed, env.Options{Environment: map[string]string{}}); err != nil {
+		t.Fatalf("env.ParseWithOptions() error = %v", err)
+	}
+	if parsed.Password != defaultConnectorPassword {
+		t.Fatalf("CONNECTOR_PASSWORD defaults to %q, but the production guard refuses %q: the guard is "+
+			"disarmed", parsed.Password, defaultConnectorPassword)
 	}
 }

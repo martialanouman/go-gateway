@@ -46,7 +46,8 @@ type LookupMeter interface {
 	Observe(outcome string)
 }
 
-// CorruptionMeter counts cached values that could not be decoded. Deliberately NOT an outcome label:
+// CorruptionMeter counts cache entries the resolver could not use: a value it could not decode, or a key
+// holding another Redis type. Deliberately NOT an outcome label:
 // corruption is an anomaly of the cache leg, while the outcome says how the resolution ended on the
 // durable leg. Folding one into the other loses the pair — a corrupt key healed from the table and a
 // corrupt key over an unreachable Postgres would read alike — and inflates the ratios above.
@@ -77,7 +78,7 @@ type Option func(*Resolver)
 // WithLookupMeter attaches the outcome counter.
 func WithLookupMeter(m LookupMeter) Option { return func(r *Resolver) { r.meter = m } }
 
-// WithCorruptionMeter attaches the undecodable-value counter.
+// WithCorruptionMeter attaches the unusable-cache-entry counter.
 func WithCorruptionMeter(m CorruptionMeter) Option { return func(r *Resolver) { r.corrupt = m } }
 
 // The outcome labels. Constants rather than literals: the resolver and the boot seeding both name
@@ -186,8 +187,11 @@ func (r *Resolver) Resolve(ctx context.Context, msisdn string) (Target, bool, er
 	case goredis.HasErrorPrefix(err, wrongTypePrefix):
 		// A key of the wrong type takes the illegible-value path, for the same reason and with more
 		// force: returning it would send the message back to this key on every redelivery, and unlike a
-		// bad string it does not even expire — the partition stays wedged until a manual DEL. The heal
-		// is complete because SET replaces a key whatever its type.
+		// bad string it does not even expire — the partition stays wedged until a manual DEL. SET
+		// replaces a key whatever its type, so the durable read overwrites it — unless the table has no
+		// row (a Bloom false positive), which writes nothing: the bad key then survives, and every
+		// message for that number counts here again. Routing stays correct throughout; what is lost is
+		// the heal.
 		r.corrupt.Inc()
 	case !errors.Is(err, goredis.Nil):
 		// Wrapped, not stripped: a go-redis error carries no platform code, so the chain is safe to

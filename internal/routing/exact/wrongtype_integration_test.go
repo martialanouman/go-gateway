@@ -91,4 +91,11 @@ func TestResolveHealsAKeyOfTheWrongType(t *testing.T) {
 		t.Errorf("key type after Resolve = %q (err=%v), want \"string\": the read-through must have "+
 			"replaced the bad key, not merely stepped around it", kind, err)
 	}
+	// And it carries an expiry. A key of the wrong type has none — that is what made the old behaviour
+	// unbounded — so a heal that replaced the value but lost the TTL would trade one permanent key for
+	// another.
+	if ttl, err := rdb.TTL(ctx, cacheKey).Result(); err != nil || ttl <= 0 {
+		t.Errorf("TTL after Resolve = %v (err=%v), want a positive expiry: the replaced key must not "+
+			"outlive the cache policy", ttl, err)
+	}
 }
