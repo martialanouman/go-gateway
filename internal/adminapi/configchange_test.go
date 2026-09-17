@@ -83,11 +83,16 @@ func TestPublishErrorDoesNotFailRequest(t *testing.T) {
 	}
 }
 
-// TestNoPublishOnReadOnlyPost: a POST to a read-only diagnostic (validate/test) must NOT publish a
-// config-change event, even though it is a POST — otherwise an operator iterating fires spurious
+// TestNoPublishOnReadOnlyPost: a POST to a read-only diagnostic (validate/test/test-connection/check)
+// must NOT publish a config-change event, even though it is a POST — otherwise an operator iterating fires spurious
 // data-plane rebuilds.
 func TestNoPublishOnReadOnlyPost(t *testing.T) {
-	for _, path := range []string{"/admin/routing-scripts/x/validate", "/admin/routing-scripts/x/test"} {
+	for _, path := range []string{
+		"/admin/routing-scripts/x/validate",
+		"/admin/routing-scripts/x/test",
+		"/admin/billing-providers/x/test-connection",
+		"/admin/suppressions/check",
+	} {
 		pub := &fakeChangePublisher{}
 		h := adminapi.PublishConfigChanges(handlerReturning(http.StatusOK), pub, "config:changed", nil)
 		w := httptest.NewRecorder()
