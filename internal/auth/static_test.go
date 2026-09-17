@@ -63,6 +63,23 @@ func TestStaticVerifierRejectsMalformedConfig(t *testing.T) {
 	}
 }
 
+// TestStaticVerifierErrorsNeverEchoAnEntry: the error lands in the boot log, and an entry written in the
+// wrong order ("admin:read:<token>") puts the token where a scope is expected — so neither a scope nor a
+// token is ever quoted, only the entry number and the position.
+func TestStaticVerifierErrorsNeverEchoAnEntry(t *testing.T) {
+	const secret = "s3cret-operator-token-0123456789"
+	_, err := auth.NewStaticVerifier([]string{"admin:read:" + secret})
+	if err == nil {
+		t.Fatal("NewStaticVerifier() succeeded on a misordered entry, want an error")
+	}
+	if strings.Contains(err.Error(), "s3cret") {
+		t.Errorf("error %q echoes the token", err)
+	}
+	if !strings.Contains(err.Error(), "entry 0") {
+		t.Errorf("error %q should name the entry", err)
+	}
+}
+
 // TestStaticVerifierSkipsBlankEntries: a trailing empty entry from a comma-split env value is
 // ignored, not treated as a malformed token.
 func TestStaticVerifierSkipsBlankEntries(t *testing.T) {

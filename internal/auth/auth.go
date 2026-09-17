@@ -9,6 +9,8 @@ package auth
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 )
 
 // Scope is an OAuth2 scope from the OperatorBearer scheme of api/openapi-admin.yaml.
@@ -30,6 +32,21 @@ const (
 	// admin:write because the right to export follows an investigation role, not a provisioning one.
 	ScopeCDRExportBulk Scope = "cdr:export_bulk"
 )
+
+// fingerprintBytes is how much of the SHA-256 digest the fingerprint keeps: 8 octets, 16 hex characters,
+// 64 bits. Production refuses a token under 32 bytes (cmd/admin-api-svc), so the prefix identifies
+// an operator without offering a digest worth brute-forcing.
+const fingerprintBytes = 8
+
+// Fingerprint is the identity recorded for an operator token wherever a principal is written down —
+// audit rows, job rows, logs. It is "tok_" and a truncated SHA-256 of the token, never the token: those
+// records outlive the token and are read by people who must not be able to replay it. Migration
+// 0014_operator_fingerprint computes the same value in SQL for the rows written before it existed, and
+// those rows keep this format after the static verifier is replaced (step-310).
+func Fingerprint(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return "tok_" + hex.EncodeToString(sum[:fingerprintBytes])
+}
 
 // Principal is the authenticated operator behind a request.
 type Principal struct {

@@ -2,9 +2,7 @@ package auth
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/hex"
 	"fmt"
 	"strings"
 
@@ -16,20 +14,6 @@ import (
 // replaced wholesale at M12. Tokens are compared in constant time.
 type StaticVerifier struct {
 	entries []staticEntry
-}
-
-// fingerprintBytes is how much of the SHA-256 digest the fingerprint keeps: 8 octets, 16 hex characters,
-// 64 bits. Production refuses a token under 32 characters (cmd/admin-api-svc), so the prefix identifies
-// an operator without offering a digest worth brute-forcing.
-const fingerprintBytes = 8
-
-// Fingerprint is the identity recorded for an operator token wherever a principal is written down —
-// audit rows, job rows, logs. It is "tok_" and a truncated SHA-256 of the token, never the token: those
-// records outlive the token and are read by people who must not be able to replay it. Migration
-// 0014_operator_fingerprint computes the same value in SQL for the rows written before it existed.
-func Fingerprint(token string) string {
-	sum := sha256.Sum256([]byte(token))
-	return "tok_" + hex.EncodeToString(sum[:fingerprintBytes])
 }
 
 type staticEntry struct {
@@ -54,14 +38,16 @@ func NewStaticVerifier(entries []string) (*StaticVerifier, error) {
 		}
 
 		var scopes []Scope
-		for _, s := range strings.Split(scopeSpec, "|") {
+		for pos, s := range strings.Split(scopeSpec, "|") {
 			s = strings.TrimSpace(s)
 			if s == "" {
 				continue
 			}
 			scope := Scope(s)
 			if !knownScope(scope) {
-				return nil, fmt.Errorf("admin token entry %d: unknown scope %q", i, s)
+				// The value is not echoed: an entry written in the wrong order puts the token here, and this
+				// error lands in the boot log.
+				return nil, fmt.Errorf("admin token entry %d: unknown scope at position %d", i, pos+1)
 			}
 			scopes = append(scopes, scope)
 		}
