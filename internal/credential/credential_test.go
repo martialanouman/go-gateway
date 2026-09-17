@@ -143,3 +143,51 @@ func TestVerifyBindPasswordRejectsAMalformedHash(t *testing.T) {
 		}
 	}
 }
+
+// TestVerifyBindPasswordAcceptsTheReferenceImplementationVectors pins argon2id against hashes this
+// repository did not produce. Every other test here hashes and verifies with the same code, so a
+// future golang.org/x/crypto bump that changed the derivation would leave them ALL green while every
+// bind password and API key already in the database became unverifiable — a total authentication
+// outage, announced by nothing. Verified at the v0.53→v0.56 bump: the argon2 code was identical, so
+// the risk had not materialised. It was not guarded either.
+//
+// The vectors come from the reference C implementation's own test suite, P-H-C/phc-winner-argon2,
+// src/test.c at commit f57e61e19229e23c4445b85494dbf7c07de721cb (the hashtest lines for Argon2_id).
+// Two of the eight, chosen for what they exercise rather than for coverage: the first carries the
+// production parameters (t=1, m=64 MiB), the second is the only Argon2id vector upstream with p > 1,
+// which is the lane-parallel derivation the production p=4 uses. The 256 MiB vector is deliberately
+// left out: it would make every test run allocate a quarter of a gigabyte.
+//
+// They go through VerifyBindPassword — the path the stored hashes take — and not through argon2.IDKey
+// directly, so the PHC parsing is pinned along with the derivation.
+func TestVerifyBindPasswordAcceptsTheReferenceImplementationVectors(t *testing.T) {
+	vectors := []struct {
+		name     string
+		password string
+		encoded  string
+	}{
+		{
+			name:     "t=1,m=65536,p=1 (the production time and memory)",
+			password: "password",
+			encoded:  "$argon2id$v=19$m=65536,t=1,p=1$c29tZXNhbHQ$9qWtwbpyPd3vm1rB1GThgPzZ3/ydHL92zKL+15XZypg",
+		},
+		{
+			name:     "t=2,m=256,p=2 (the lane-parallel derivation, as production p=4)",
+			password: "password",
+			encoded:  "$argon2id$v=19$m=256,t=2,p=2$c29tZXNhbHQ$bQk8UB/VmZZF4Oo79iDXuL5/0ttZwg2f/5U52iv1cDc",
+		},
+	}
+
+	for _, v := range vectors {
+		t.Run(v.name, func(t *testing.T) {
+			ok, err := credential.VerifyBindPassword(v.password, v.encoded)
+			if err != nil {
+				t.Fatalf("VerifyBindPassword() error = %v", err)
+			}
+			if !ok {
+				t.Errorf("VerifyBindPassword rejects the reference vector %q: this Go argon2id no longer "+
+					"agrees with phc-winner-argon2, so every hash already stored is unverifiable", v.encoded)
+			}
+		})
+	}
+}

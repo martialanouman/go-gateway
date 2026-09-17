@@ -232,10 +232,13 @@ l'utilisateur.
     traitée comme un miss » gagne une phrase pour le `WRONGTYPE` du point 3.
   - **Vecteur argon2id :** deux vecteurs, pas un. Celui de `src/test.c` de `phc-winner-argon2` est en
     `p=1`, or la production hache en `p=4` (`argonThreads`) et le chemin parallèle d'`argon2.IDKey` est
-    un code distinct ; le second vient de l'exemple de CLI du `README` amont (`-t 2 -m 16 -p 4`). Les deux
-    sont cités par permalien dans le test et passés à `VerifyBindPassword`. Le binaire `argon2` n'étant pas
-    installé, la source est le dépôt amont ; à défaut, `brew install argon2` avec la commande consignée.
-    Mutation qui doit le faire tomber : `argon2.IDKey` remplacé par `argon2.Key` (argon2i).
+    un code distinct. **Corrigé à l'écriture :** le vecteur `p=4` du `README` amont est un `argon2i`,
+    que `parsePHC` refuse — le second vecteur est donc celui de `src/test.c` en `m=256,t=2,p=2`, seul
+    Argon2id amont avec `p > 1`. Le premier porte les paramètres de production (`t=1`, `m=64 Mio`) ;
+    celui à 256 Mio est écarté, il ferait allouer un quart de gigaoctet à chaque run. Les deux sont
+    cités par commit dans le test et passés à `VerifyBindPassword`, donc le décodage PHC est épinglé
+    avec la dérivation. Mutation : `argon2.IDKey` remplacé par `argon2.Key` **aux deux sites** — l'aller-
+    retour reste vert, seuls les vecteurs tombent, ce qui est exactement ce que ce test ajoute.
   - **`WRONGTYPE` :** `goredis.HasErrorPrefix` existe en v9.21.0 (`error.go:37`). Le test est un test
     d'intégration sur un vrai Redis (`redistest.Client`) : le texte `WRONGTYPE` vient du serveur, et un
     faux qui le fabrique testerait notre propre littéral.
