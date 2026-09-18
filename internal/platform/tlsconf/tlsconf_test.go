@@ -5,11 +5,11 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
-	"errors"
 	"io"
 	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -70,7 +70,7 @@ func TestMutualHandshakeSucceedsBetweenPeersOfTheSameCA(t *testing.T) {
 	serverCert, serverKey := ca.Issue(t, "server", "content-key-svc")
 	clientCert, clientKey := ca.Issue(t, "client", "router-svc")
 
-	serverCfg, err := tlsconf.Files{Cert: serverCert, Key: serverKey, ClientCA: ca.CAFile}.ServerConfig(nil)
+	serverCfg, err := tlsconf.Files{Cert: serverCert, Key: serverKey, ClientCA: ca.CAFile}.ServerConfig(tlsconf.ServerOptions{})
 	if err != nil {
 		t.Fatalf("ServerConfig: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestServerRefusesAClientWithoutACertificate(t *testing.T) {
 	ca := tlstest.NewCA(t)
 	serverCert, serverKey := ca.Issue(t, "server", "content-key-svc")
 
-	serverCfg, err := tlsconf.Files{Cert: serverCert, Key: serverKey, ClientCA: ca.CAFile}.ServerConfig(nil)
+	serverCfg, err := tlsconf.Files{Cert: serverCert, Key: serverKey, ClientCA: ca.CAFile}.ServerConfig(tlsconf.ServerOptions{})
 	if err != nil {
 		t.Fatalf("ServerConfig: %v", err)
 	}
@@ -107,8 +107,13 @@ func TestServerRefusesAClientWithoutACertificate(t *testing.T) {
 	}
 	bare := &tls.Config{RootCAs: pool.RootCAs, ServerName: "content-key-svc", MinVersion: tls.VersionTLS13}
 
-	if _, err := exchange(serve(t, serverCfg), bare); err == nil {
+	_, err = exchange(serve(t, serverCfg), bare)
+	if err == nil {
 		t.Fatal("a client presenting no certificate was served")
+	}
+	// Without naming the reason, a crashed server or a plain EOF would pass for a refusal.
+	if !strings.Contains(err.Error(), "certificate required") {
+		t.Errorf("error = %v, want the TLS 1.3 \"certificate required\" alert", err)
 	}
 }
 
@@ -119,7 +124,7 @@ func TestServerRefusesAClientFromAnotherCA(t *testing.T) {
 	serverCert, serverKey := ours.Issue(t, "server", "content-key-svc")
 	intruderCert, intruderKey := theirs.Issue(t, "intruder", "router-svc")
 
-	serverCfg, err := tlsconf.Files{Cert: serverCert, Key: serverKey, ClientCA: ours.CAFile}.ServerConfig(nil)
+	serverCfg, err := tlsconf.Files{Cert: serverCert, Key: serverKey, ClientCA: ours.CAFile}.ServerConfig(tlsconf.ServerOptions{})
 	if err != nil {
 		t.Fatalf("ServerConfig: %v", err)
 	}
@@ -134,9 +139,11 @@ func TestServerRefusesAClientFromAnotherCA(t *testing.T) {
 	if err == nil {
 		t.Fatal("a client signed by another CA was served")
 	}
-	var alert tls.AlertError
-	if !errors.As(err, &alert) && !strings.Contains(err.Error(), "certificate") {
-		t.Errorf("error = %v, want a certificate rejection", err)
+	// "a TLS alert" would also cover handshake failure or internal error; the alert that says the chain
+	// did not verify is the one this test is about.
+	if !strings.Contains(err.Error(), "unknown certificate authority") &&
+		!strings.Contains(err.Error(), "bad certificate") {
+		t.Errorf("error = %v, want the alert of a chain that does not verify", err)
 	}
 }
 
@@ -149,7 +156,7 @@ func TestServerRefusesAClientOutsideTheAllowlist(t *testing.T) {
 	strangerCert, strangerKey := ca.Issue(t, "stranger", "config-sync")
 
 	serverCfg, err := tlsconf.Files{Cert: serverCert, Key: serverKey, ClientCA: ca.CAFile}.
-		ServerConfig([]string{"router-svc", "admin-api-svc"})
+		ServerConfig(tlsconf.ServerOptions{AllowedClients: []string{"router-svc", "admin-api-svc"}})
 	if err != nil {
 		t.Fatalf("ServerConfig: %v", err)
 	}
@@ -172,7 +179,7 @@ func TestServerServesAClientOnTheAllowlist(t *testing.T) {
 	clientCert, clientKey := ca.Issue(t, "client", "router-svc")
 
 	serverCfg, err := tlsconf.Files{Cert: serverCert, Key: serverKey, ClientCA: ca.CAFile}.
-		ServerConfig([]string{"router-svc", "admin-api-svc"})
+		ServerConfig(tlsconf.ServerOptions{AllowedClients: []string{"router-svc", "admin-api-svc"}})
 	if err != nil {
 		t.Fatalf("ServerConfig: %v", err)
 	}
@@ -195,7 +202,7 @@ func TestTheAllowlistRefusalNamesThePresentedSAN(t *testing.T) {
 	certFile, keyFile := ca.Issue(t, "peer", "config-sync")
 
 	cfg, err := tlsconf.Files{Cert: certFile, Key: keyFile, ClientCA: ca.CAFile}.
-		ServerConfig([]string{"router-svc"})
+		ServerConfig(tlsconf.ServerOptions{AllowedClients: []string{"router-svc"}})
 	if err != nil {
 		t.Fatalf("ServerConfig: %v", err)
 	}
@@ -242,7 +249,7 @@ func TestTheAllowlistReadsTheSANAndNotTheCommonName(t *testing.T) {
 	certFile, keyFile := ca.Issue(t, "router-svc", "config-sync")
 
 	cfg, err := tlsconf.Files{Cert: certFile, Key: keyFile, ClientCA: ca.CAFile}.
-		ServerConfig([]string{"router-svc"})
+		ServerConfig(tlsconf.ServerOptions{AllowedClients: []string{"router-svc"}})
 	if err != nil {
 		t.Fatalf("ServerConfig: %v", err)
 	}
@@ -310,7 +317,7 @@ func TestTheServerServesARotatedCertificateWithoutRestarting(t *testing.T) {
 	certFile, keyFile := ca.Issue(t, "server", "content-key-svc")
 	clientCert, clientKey := ca.Issue(t, "client", "router-svc")
 
-	serverCfg, err := tlsconf.Files{Cert: certFile, Key: keyFile, ClientCA: ca.CAFile}.ServerConfig(nil)
+	serverCfg, err := tlsconf.Files{Cert: certFile, Key: keyFile, ClientCA: ca.CAFile}.ServerConfig(tlsconf.ServerOptions{})
 	if err != nil {
 		t.Fatalf("ServerConfig: %v", err)
 	}
@@ -383,5 +390,360 @@ func TestAChangedCAIsAnnouncedBecauseItNeedsARestart(t *testing.T) {
 	}
 	if !strings.Contains(logged.String(), "restart") {
 		t.Errorf("logs = %q, want a warning naming the restart a CA change requires", logged.String())
+	}
+}
+
+// TestTheClientRefusesAServerFromAnotherCA is the half nothing covered: every other test here aims at
+// what the SERVER accepts, so the client's own verification was exercised by nothing. Adding
+// InsecureSkipVerify to ClientConfig used to leave the whole suite green — which is precisely what the
+// design forbids, and an attacker on the path is all it takes.
+func TestTheClientRefusesAServerFromAnotherCA(t *testing.T) {
+	ours, theirs := tlstest.NewCA(t), tlstest.NewCA(t)
+	clientCert, clientKey := ours.Issue(t, "client", "router-svc")
+	// An impostor: it serves content-key-svc's name, signed by an authority we do not trust.
+	impostorCert, impostorKey := theirs.Issue(t, "impostor", "content-key-svc")
+
+	serverCfg, err := tlsconf.Files{Cert: impostorCert, Key: impostorKey, ClientCA: theirs.CAFile}.
+		ServerConfig(tlsconf.ServerOptions{})
+	if err != nil {
+		t.Fatalf("ServerConfig: %v", err)
+	}
+	clientCfg, err := tlsconf.Files{Cert: clientCert, Key: clientKey, ClientCA: ours.CAFile}.ClientConfig()
+	if err != nil {
+		t.Fatalf("ClientConfig: %v", err)
+	}
+	clientCfg.ServerName = "content-key-svc"
+
+	_, err = exchange(serve(t, serverCfg), clientCfg)
+	if err == nil {
+		t.Fatal("the client accepted a server signed by an authority it does not trust")
+	}
+	if !strings.Contains(err.Error(), "unknown authority") &&
+		!strings.Contains(err.Error(), "certificate signed by") {
+		t.Errorf("error = %v, want the client's own chain verification to refuse it", err)
+	}
+}
+
+// TestTheServerAcceptsAClientOfARotatedCA is the reason ServerConfig goes through GetConfigForClient at
+// all. ClientCAs is read once at the start of a handshake and no callback refreshes it, so a pool built
+// at boot would never move — and a CA rotation would then need every server restarted, which the design
+// says it does not.
+func TestTheServerAcceptsAClientOfARotatedCA(t *testing.T) {
+	first, second := tlstest.NewCA(t), tlstest.NewCA(t)
+	serverCert, serverKey := first.Issue(t, "server", "content-key-svc")
+	newClientCert, newClientKey := second.Issue(t, "client", "router-svc")
+
+	// The client keeps its own copy of the first authority: the server's leaf is not rotated here, so
+	// the client must still be able to verify it after the server's ca.crt has moved on.
+	firstCAForClient := filepath.Join(t.TempDir(), "old-ca.crt")
+	original, err := os.ReadFile(first.CAFile)
+	if err != nil {
+		t.Fatalf("read the first CA: %v", err)
+	}
+	if err := os.WriteFile(firstCAForClient, original, 0o600); err != nil {
+		t.Fatalf("copy the first CA: %v", err)
+	}
+
+	caFile := first.CAFile
+	serverCfg, err := tlsconf.Files{Cert: serverCert, Key: serverKey, ClientCA: caFile}.
+		ServerConfig(tlsconf.ServerOptions{})
+	if err != nil {
+		t.Fatalf("ServerConfig: %v", err)
+	}
+	addr := serveForever(t, serverCfg)
+
+	// The rotation: the authority file now holds the SECOND CA. The server's own leaf is untouched.
+	raw, err := os.ReadFile(second.CAFile)
+	if err != nil {
+		t.Fatalf("read the second CA: %v", err)
+	}
+	if err := os.WriteFile(caFile, raw, 0o600); err != nil {
+		t.Fatalf("overwrite the CA: %v", err)
+	}
+	future := time.Now().Add(time.Second)
+	if err := os.Chtimes(caFile, future, future); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	// This client could not have been accepted a moment ago: its authority did not exist in the pool.
+	clientCfg, err := tlsconf.Files{Cert: newClientCert, Key: newClientKey, ClientCA: firstCAForClient}.
+		ClientConfig()
+	if err != nil {
+		t.Fatalf("ClientConfig: %v", err)
+	}
+	clientCfg.ServerName = "content-key-svc"
+	if _, err := exchange(addr, clientCfg); err != nil {
+		t.Fatalf("exchange: %v, want the listener to verify against the rotated authority", err)
+	}
+}
+
+// TestTheCacheNoticesAChangeThatKeepsTheTimestamp covers the half of the cache key the rotation tests
+// cannot reach: they force the modification time, so a cache keyed on the time alone would pass them.
+// Two writes inside one clock tick are the case this guards, and the size is what catches them.
+func TestTheCacheNoticesAChangeThatKeepsTheTimestamp(t *testing.T) {
+	ca := tlstest.NewCA(t)
+	certFile, keyFile := ca.Issue(t, "server", "content-key-svc")
+	clientCert, clientKey := ca.Issue(t, "client", "router-svc")
+
+	// Each file keeps ITS OWN timestamp: restoring the certificate's onto the key would move the key's,
+	// and the cache would then notice the change through the key rather than through the size.
+	stamps := map[string]os.FileInfo{}
+	for _, f := range []string{certFile, keyFile} {
+		fi, err := os.Stat(f)
+		if err != nil {
+			t.Fatalf("stat %s: %v", f, err)
+		}
+		stamps[f] = fi
+	}
+	before := stamps[certFile]
+
+	serverCfg, err := tlsconf.Files{Cert: certFile, Key: keyFile, ClientCA: ca.CAFile}.
+		ServerConfig(tlsconf.ServerOptions{})
+	if err != nil {
+		t.Fatalf("ServerConfig: %v", err)
+	}
+	clientCfg, err := tlsconf.Files{Cert: clientCert, Key: clientKey, ClientCA: ca.CAFile}.ClientConfig()
+	if err != nil {
+		t.Fatalf("ClientConfig: %v", err)
+	}
+	clientCfg.ServerName = "content-key-svc"
+
+	addr := serveForever(t, serverCfg)
+	first := peerSerial(t, addr, clientCfg)
+
+	// A longer SAN list makes a longer certificate, then the timestamps are put back exactly where they
+	// were: only the size differs.
+	ca.IssueInto(t, certFile, keyFile, "content-key-svc", "content-key-svc.gateway.svc.cluster.local")
+	for f, fi := range stamps {
+		if err := os.Chtimes(f, fi.ModTime(), fi.ModTime()); err != nil {
+			t.Fatalf("chtimes %s: %v", f, err)
+		}
+	}
+	after, err := os.Stat(certFile)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if after.Size() == before.Size() {
+		t.Fatalf("the reissued certificate has the same size (%d): this test can prove nothing", after.Size())
+	}
+	if !after.ModTime().Equal(before.ModTime()) {
+		t.Fatalf("modification time moved (%s -> %s): the test is no longer about the size alone",
+			before.ModTime(), after.ModTime())
+	}
+
+	if got := peerSerial(t, addr, clientCfg); got == first {
+		t.Error("the listener kept serving the old certificate: a change that preserves the timestamp " +
+			"is invisible to a cache keyed on the time alone")
+	}
+}
+
+// TestTheHandshakeFloorIsTLS13 pins the internal floor. Everything this package configures today is
+// pod-to-pod, where there is no old client to spare; the public REST API of step-300c is the exception
+// and will say so in its own constructor.
+func TestTheHandshakeFloorIsTLS13(t *testing.T) {
+	ca := tlstest.NewCA(t)
+	serverCert, serverKey := ca.Issue(t, "server", "content-key-svc")
+	clientCert, clientKey := ca.Issue(t, "client", "router-svc")
+
+	serverCfg, err := tlsconf.Files{Cert: serverCert, Key: serverKey, ClientCA: ca.CAFile}.
+		ServerConfig(tlsconf.ServerOptions{})
+	if err != nil {
+		t.Fatalf("ServerConfig: %v", err)
+	}
+	// Built by hand, not through ClientConfig: that one has a 1.3 floor of its own, and the handshake
+	// would then fail on the CLIENT before the server ever had to refuse anything.
+	pair, err := tls.LoadX509KeyPair(clientCert, clientKey)
+	if err != nil {
+		t.Fatalf("load the client pair: %v", err)
+	}
+	caPEM, err := os.ReadFile(ca.CAFile)
+	if err != nil {
+		t.Fatalf("read the CA: %v", err)
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(caPEM) {
+		t.Fatal("the CA file holds no certificate")
+	}
+	legacy := &tls.Config{
+		ServerName:   "content-key-svc",
+		Certificates: []tls.Certificate{pair},
+		RootCAs:      roots,
+		MinVersion:   tls.VersionTLS12,
+		MaxVersion:   tls.VersionTLS12,
+	}
+
+	if _, err := exchange(serve(t, serverCfg), legacy); err == nil {
+		t.Fatal("a TLS 1.2 client was served: the internal floor is not 1.3")
+	}
+}
+
+// TestALPNReachesThePerHandshakeConfig covers a downgrade that announces itself with nothing. Neither
+// net/http nor gRPC lets the outer config reach GetConfigForClient — both pass a clone — so a protocol
+// list set outside is lost, negotiateALPN then returns an empty protocol WITHOUT an error, and HTTP/2 is
+// simply off.
+func TestALPNReachesThePerHandshakeConfig(t *testing.T) {
+	ca := tlstest.NewCA(t)
+	serverCert, serverKey := ca.Issue(t, "server", "content-key-svc")
+	clientCert, clientKey := ca.Issue(t, "client", "router-svc")
+
+	serverCfg, err := tlsconf.Files{Cert: serverCert, Key: serverKey, ClientCA: ca.CAFile}.
+		ServerConfig(tlsconf.ServerOptions{NextProtos: []string{"h2"}})
+	if err != nil {
+		t.Fatalf("ServerConfig: %v", err)
+	}
+	clientCfg, err := tlsconf.Files{Cert: clientCert, Key: clientKey, ClientCA: ca.CAFile}.ClientConfig()
+	if err != nil {
+		t.Fatalf("ClientConfig: %v", err)
+	}
+	clientCfg.ServerName = "content-key-svc"
+	clientCfg.NextProtos = []string{"h2"}
+
+	conn, err := tls.Dial("tcp", serveForever(t, serverCfg).String(), clientCfg)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if got := conn.ConnectionState().NegotiatedProtocol; got != "h2" {
+		t.Errorf("negotiated protocol = %q, want \"h2\": the per-handshake config dropped the ALPN list", got)
+	}
+}
+
+// TestTheIdentityCheckSurvivesSessionResumption pins the hook itself. On a resumed TLS 1.3 session
+// VerifyPeerCertificate is never called again, so a caller dropped from the allowlist would keep its
+// access for as long as its ticket lives; VerifyConnection runs on both paths.
+//
+// The assertion is structural because the behavioural version cannot be written from outside: a client
+// refused by the allowlist never gets a ticket in the first place, so there is no resumed handshake to
+// observe it on. What IS observable is that resumption happens at all, and that a session resumed this
+// way is still served — the second half of the same guarantee.
+func TestTheIdentityCheckSurvivesSessionResumption(t *testing.T) {
+	ca := tlstest.NewCA(t)
+	serverCert, serverKey := ca.Issue(t, "server", "content-key-svc")
+	clientCert, clientKey := ca.Issue(t, "client", "router-svc")
+
+	serverCfg, err := tlsconf.Files{Cert: serverCert, Key: serverKey, ClientCA: ca.CAFile}.
+		ServerConfig(tlsconf.ServerOptions{AllowedClients: []string{"router-svc"}})
+	if err != nil {
+		t.Fatalf("ServerConfig: %v", err)
+	}
+	perHandshake, err := serverCfg.GetConfigForClient(&tls.ClientHelloInfo{})
+	if err != nil {
+		t.Fatalf("GetConfigForClient: %v", err)
+	}
+	if perHandshake.VerifyConnection == nil {
+		t.Error("VerifyConnection is nil: the identity check would be skipped on every resumed session")
+	}
+	if perHandshake.VerifyPeerCertificate != nil {
+		t.Error("VerifyPeerCertificate is set: it is not called on a resumed session, so an allowlist " +
+			"enforced there would lapse with the ticket rather than with the certificate")
+	}
+
+	clientCfg, err := tlsconf.Files{Cert: clientCert, Key: clientKey, ClientCA: ca.CAFile}.ClientConfig()
+	if err != nil {
+		t.Fatalf("ClientConfig: %v", err)
+	}
+	clientCfg.ServerName = "content-key-svc"
+	clientCfg.ClientSessionCache = tls.NewLRUClientSessionCache(4)
+
+	addr := serveForever(t, serverCfg)
+	// The first handshake collects the ticket; TLS 1.3 sends it after the handshake, so the connection
+	// has to be read from before it is closed.
+	for range 2 {
+		conn, err := tls.Dial("tcp", addr.String(), clientCfg)
+		if err != nil {
+			t.Fatalf("dial: %v", err)
+		}
+		if _, err := conn.Write([]byte("ping")); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		buf := make([]byte, 4)
+		if _, err := io.ReadFull(conn, buf); err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		state := conn.ConnectionState()
+		_ = conn.Close()
+		if state.DidResume {
+			return // resumed, and served: the allowlist did not lapse with the ticket
+		}
+	}
+	t.Skip("no session was resumed; this Go runtime issues no usable ticket here")
+}
+
+// TestTheCAWarningIsEmittedOnce: the loader reads the files at EVERY handshake, so a warning without a
+// latch is a warning per handshake — on a busy service that is the log drowning the thing it warns about.
+func TestTheCAWarningIsEmittedOnce(t *testing.T) {
+	ca := tlstest.NewCA(t)
+	certFile, keyFile := ca.Issue(t, "client", "router-svc")
+
+	var logged bytes.Buffer
+	files := tlsconf.Files{
+		Cert: certFile, Key: keyFile, ClientCA: ca.CAFile,
+		Logger: slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelWarn})),
+	}
+	cfg, err := files.ClientConfig()
+	if err != nil {
+		t.Fatalf("ClientConfig: %v", err)
+	}
+
+	other := tlstest.NewCA(t)
+	raw, err := os.ReadFile(other.CAFile)
+	if err != nil {
+		t.Fatalf("read the other CA: %v", err)
+	}
+	if err := os.WriteFile(ca.CAFile, raw, 0o600); err != nil {
+		t.Fatalf("overwrite the CA: %v", err)
+	}
+	future := time.Now().Add(time.Second)
+	if err := os.Chtimes(ca.CAFile, future, future); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	if _, err := cfg.GetClientCertificate(&tls.CertificateRequestInfo{}); err != nil {
+		t.Fatalf("GetClientCertificate: %v", err)
+	}
+
+	// A SECOND rotation. Repeated handshakes alone would not test the latch — the cache answers them
+	// without reloading — so the file has to move again for the warning to be reachable a second time.
+	third := tlstest.NewCA(t)
+	raw, err = os.ReadFile(third.CAFile)
+	if err != nil {
+		t.Fatalf("read the third CA: %v", err)
+	}
+	if err := os.WriteFile(ca.CAFile, raw, 0o600); err != nil {
+		t.Fatalf("overwrite the CA again: %v", err)
+	}
+	later := time.Now().Add(2 * time.Second)
+	if err := os.Chtimes(ca.CAFile, later, later); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	if _, err := cfg.GetClientCertificate(&tls.CertificateRequestInfo{}); err != nil {
+		t.Fatalf("GetClientCertificate after the second rotation: %v", err)
+	}
+
+	if got := strings.Count(logged.String(), "authority changed"); got != 1 {
+		t.Errorf("the authority warning was logged %d times over two rotations, want 1 — the restart it "+
+			"asks for is the same one either way:\n%s", got, logged.String())
+	}
+}
+
+// TestAnExpiredCertificateIsAnnouncedAtLoad: tls.LoadX509KeyPair parses the leaf and checks that the key
+// matches it — it never looks at NotAfter. Without this, a pod boots green, passes readiness, and every
+// peer gets "certificate has expired" while this side logs a handshake failure with no cause.
+func TestAnExpiredCertificateIsAnnouncedAtLoad(t *testing.T) {
+	ca := tlstest.NewCA(t)
+	certFile, keyFile := ca.IssueExpired(t, "server", "content-key-svc")
+
+	var logged bytes.Buffer
+	files := tlsconf.Files{
+		Cert: certFile, Key: keyFile, ClientCA: ca.CAFile,
+		Logger: slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelWarn})),
+	}
+	// Loading still succeeds: refusing the boot would turn a partial outage into a CrashLoopBackOff,
+	// and cert-manager may be renewing the file at that very moment.
+	if _, err := files.ServerConfig(tlsconf.ServerOptions{}); err != nil {
+		t.Fatalf("ServerConfig: %v", err)
+	}
+	if !strings.Contains(logged.String(), "EXPIRED") {
+		t.Errorf("logs = %q, want the expiry called out at load", logged.String())
 	}
 }

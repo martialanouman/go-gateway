@@ -96,7 +96,7 @@ func (a *Authority) Issue(commonName string, dnsNames []string) (certPEM, keyPEM
 		SerialNumber: sn,
 		Subject:      pkix.Name{CommonName: commonName},
 		DNSNames:     dnsNames,
-		NotBefore:    time.Now().Add(-time.Hour),
+		NotBefore:    time.Now().Add(-2 * time.Hour),
 		NotAfter:     time.Now().Add(a.Expiry),
 		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
@@ -128,10 +128,22 @@ type CA struct {
 	CAFile string
 }
 
+// IssueExpired signs a leaf that expired an hour ago, for the tests that check what this repository does
+// with one. It is the only way to get there: nothing else here issues a certificate in the past.
+func (ca *CA) IssueExpired(t *testing.T, name string, dnsNames ...string) (certFile, keyFile string) {
+	t.Helper()
+	saved := ca.auth.Expiry
+	ca.auth.Expiry = -time.Hour
+	defer func() { ca.auth.Expiry = saved }()
+	return ca.Issue(t, name, dnsNames...)
+}
+
 // NewCA issues a throwaway authority under t.TempDir() and writes its ca.crt.
 func NewCA(t *testing.T) *CA {
 	t.Helper()
-	auth, err := NewAuthority("tlstest-ca", time.Hour)
+	// DefaultLifetime, not an hour: tlsconf warns about a certificate expiring within a week, and a
+	// fixture that tripped that warning would make every test read its own noise.
+	auth, err := NewAuthority("tlstest-ca", DefaultLifetime)
 	if err != nil {
 		t.Fatalf("new authority: %v", err)
 	}

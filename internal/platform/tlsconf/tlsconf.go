@@ -20,11 +20,13 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"log/slog"
 	"os"
 	"slices"
 	"sync"
+	"time"
 )
 
 // Files are the three PEM paths that carry a pod's TLS identity: its certificate, its private key, and
@@ -38,9 +40,23 @@ type Files struct {
 	Logger *slog.Logger
 }
 
+// ServerOptions are the per-surface choices a listener makes. They travel through this signature and
+// not through the outer config, because neither net/http nor gRPC lets the outer config reach
+// GetConfigForClient: both hand the callback a clone, so a field set outside is simply lost.
+type ServerOptions struct {
+	// AllowedClients is the identity check on top of the chain check. See ServerConfig.
+	AllowedClients []string
+
+	// NextProtos is the ALPN list. Leaving it empty is not a default, it is a silent downgrade:
+	// negotiateALPN returns an empty protocol without an error, net/http then never dispatches to
+	// TLSNextProto["h2"], and HTTP/2 is off with nothing in the logs. gRPC survives it only because
+	// grpc-go re-applies "h2" to whatever this callback returns.
+	NextProtos []string
+}
+
 // ServerConfig builds the listening side: mutual TLS, verified against ClientCA.
 //
-// allowedClients is the identity check on top of the chain check, and the two answer different
+// opts.AllowedClients is the identity check on top of the chain check, and the two answer different
 // questions: a certificate from our CA proves the peer is one of our pods, never WHICH one. A server
 // that hands out something only some callers may have — content-key-svc hands out a customer's data key
 // — names them here. An empty list admits every holder of a certificate from our CA, which is what the
@@ -48,13 +64,19 @@ type Files struct {
 //
 // It fails now if the files cannot be read, so a bad path is a boot error and not a handshake that
 // starts failing at three in the morning.
-func (f Files) ServerConfig(allowedClients []string) (*tls.Config, error) {
+func (f Files) ServerConfig(opts ServerOptions) (*tls.Config, error) {
 	ld := &loader{files: f}
 	if _, err := ld.load(); err != nil {
 		return nil, err
 	}
+	// Captured by value: an allowlist a caller mutates after this returns would change the policy in
+	// silence.
+	allowed := slices.Clone(opts.AllowedClients)
+	protos := slices.Clone(opts.NextProtos)
+
 	return &tls.Config{
 		MinVersion: tls.VersionTLS13,
+		NextProtos: protos,
 		// Everything of substance is decided per handshake, so a rotation needs no restart. The outer
 		// config exists only to carry this callback.
 		GetConfigForClient: func(*tls.ClientHelloInfo) (*tls.Config, error) {
@@ -64,6 +86,7 @@ func (f Files) ServerConfig(allowedClients []string) (*tls.Config, error) {
 			}
 			return &tls.Config{
 				MinVersion:   tls.VersionTLS13,
+				NextProtos:   protos,
 				Certificates: []tls.Certificate{*st.cert},
 				ClientCAs:    st.pool,
 				ClientAuth:   tls.RequireAndVerifyClientCert,
@@ -71,7 +94,7 @@ func (f Files) ServerConfig(allowedClients []string) (*tls.Config, error) {
 				// called again, so a caller dropped from the allowlist would keep its access for as long
 				// as its ticket lives (gosec G123). VerifyConnection runs on both paths, and the state it
 				// receives carries the chains the CA vouched for either way.
-				VerifyConnection: allowlist(allowedClients),
+				VerifyConnection: allowlist(allowed),
 			}, nil
 		},
 	}, nil
@@ -145,15 +168,23 @@ func (l *loader) load() (*state, error) {
 	if err != nil {
 		return nil, fmt.Errorf("tlsconf: load the key pair: %w", err)
 	}
-	pem, err := os.ReadFile(l.files.ClientCA)
+	caPEM, err := os.ReadFile(l.files.ClientCA)
 	if err != nil {
 		return nil, fmt.Errorf("tlsconf: read the CA: %w", err)
 	}
 	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(pem) {
+	if !pool.AppendCertsFromPEM(caPEM) {
 		return nil, fmt.Errorf("tlsconf: %s holds no certificate", l.files.ClientCA)
 	}
-	l.announceCAChange(sha256.Sum256(pem))
+	// AppendCertsFromPEM returns true as soon as ONE block parses, and drops the rest without a word.
+	// During a two-authority rotation that silently amputates the trust store, and the resulting
+	// failure reads as "unknown authority" on a peer while the loader reported success.
+	if got, want := len(pool.Subjects()), countPEMBlocks(caPEM); got != want { //nolint:staticcheck // SA1019: Subjects() is deprecated for system pools; this one is ours, and counting is exactly what it is wanted for.
+		l.logger().Warn("tls: the authority file holds certificates this process could not parse",
+			"ca_file", l.files.ClientCA, "accepted", got, "blocks", want)
+	}
+	l.announceCAChange(sha256.Sum256(caPEM))
+	l.warnIfExpiring(&cert)
 
 	l.cur = &state{cert: &cert, pool: pool}
 	l.stamp = stamp
@@ -205,6 +236,49 @@ func allowlist(allowed []string) func(tls.ConnectionState) error {
 // refresh RootCAs (see the package doc), so a rotated CA makes new handshakes fail with
 // "x509: unknown authority" on a pod nobody deployed. The server side does pick the new pool up, which
 // makes the asymmetry worse — half the mesh moves, half does not.
+// countPEMBlocks counts the PEM blocks in raw, whatever their type.
+func countPEMBlocks(raw []byte) int {
+	n := 0
+	for {
+		block, rest := pem.Decode(raw)
+		if block == nil {
+			return n
+		}
+		n, raw = n+1, rest
+	}
+}
+
+// warnIfExpiring says so when the certificate just loaded is already expired, or about to be.
+//
+// tls.LoadX509KeyPair parses the leaf and checks that the key matches it — it never looks at NotAfter.
+// Without this, a pod boots green, passes its readiness probe, and every peer gets
+// "x509: certificate has expired" while this side logs a handshake failure with no cause. That is the
+// three-in-the-morning failure the per-handshake reload exists to avoid, arriving by another door.
+func (l *loader) warnIfExpiring(cert *tls.Certificate) {
+	if cert.Leaf == nil {
+		return
+	}
+	switch left := time.Until(cert.Leaf.NotAfter); {
+	case left <= 0:
+		l.logger().Error("tls: this service's certificate has EXPIRED; every handshake will fail",
+			"cert_file", l.files.Cert, "not_after", cert.Leaf.NotAfter)
+	case left < expiryWarning:
+		l.logger().Warn("tls: this service's certificate expires soon and nothing here renews it",
+			"cert_file", l.files.Cert, "not_after", cert.Leaf.NotAfter, "in", left.Truncate(time.Hour))
+	}
+}
+
+// expiryWarning is how far ahead an expiry is worth saying out loud. cert-manager renews at two thirds
+// of a lifetime, so a certificate still inside this window is one nothing is renewing.
+const expiryWarning = 7 * 24 * time.Hour
+
+func (l *loader) logger() *slog.Logger {
+	if l.files.Logger != nil {
+		return l.files.Logger
+	}
+	return slog.Default()
+}
+
 func (l *loader) announceCAChange(sum [sha256.Size]byte) {
 	if !l.haveSum {
 		l.caSum, l.haveSum = sum, true
@@ -214,10 +288,6 @@ func (l *loader) announceCAChange(sum [sha256.Size]byte) {
 		return
 	}
 	l.warned = true
-	log := l.files.Logger
-	if log == nil {
-		log = slog.Default()
-	}
-	log.Warn("tls: the certificate authority changed on disk; restart this service to dial with it",
+	l.logger().Warn("tls: the certificate authority changed on disk; restart this service to dial with it",
 		"ca_file", l.files.ClientCA)
 }

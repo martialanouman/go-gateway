@@ -30,7 +30,7 @@ func TestGeneratedFilesCompleteAMutualHandshake(t *testing.T) {
 	}
 
 	// The server names its caller, so the SANs the tool writes are load-bearing rather than decorative.
-	serverCfg, err := files("content-key-svc").ServerConfig([]string{"router-svc"})
+	serverCfg, err := files("content-key-svc").ServerConfig(tlsconf.ServerOptions{AllowedClients: []string{"router-svc"}})
 	if err != nil {
 		t.Fatalf("ServerConfig: %v", err)
 	}
