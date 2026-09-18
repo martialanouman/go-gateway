@@ -20,7 +20,6 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/pem"
 	"fmt"
 	"log/slog"
 	"os"
@@ -47,7 +46,12 @@ type ServerOptions struct {
 	// AllowedClients is the identity check on top of the chain check. See ServerConfig.
 	AllowedClients []string
 
-	// NextProtos is the ALPN list. Leaving it empty is not a default, it is a silent downgrade:
+	// NextProtos is the ALPN list, and it REPLACES whatever the outer config carried: http.Server adds
+	// "http/1.1" and http2.ConfigureServer adds "h2" to a config this callback never sees. A caller must
+	// therefore pass the COMPLETE list — passing just "h2" makes negotiateALPN answer "no application
+	// protocol" to an HTTP/1.1 client instead of falling back.
+	//
+	// Leaving it empty is not a default either, it is a silent downgrade:
 	// negotiateALPN returns an empty protocol without an error, net/http then never dispatches to
 	// TLSNextProto["h2"], and HTTP/2 is off with nothing in the logs. gRPC survives it only because
 	// grpc-go re-applies "h2" to whatever this callback returns.
@@ -142,6 +146,10 @@ type loader struct {
 	caSum   [sha256.Size]byte
 	haveSum bool
 	warned  bool
+	// expirySaid is how far the expiry warning has already gone for the loaded generation: the files are
+	// read at every handshake, so an unlatched warning is a warning per handshake. A level rather than a
+	// flag, because the Error of an expired certificate must still follow the Warn that preceded it.
+	expirySaid expiryLevel
 }
 
 func (l *loader) load() (*state, error) {
@@ -152,8 +160,23 @@ func (l *loader) load() (*state, error) {
 
 	l.mu.RLock()
 	if l.cur != nil && l.stamp == stamp {
-		defer l.mu.RUnlock()
-		return l.cur, nil
+		cur := l.cur
+		// Two guards, and they answer different questions. warnIfExpiring holds the latch that makes an
+		// announcement happen once — it has to, since the reload path calls it too. This one only avoids
+		// taking the write lock on every handshake of a healthy service, which would serialise the hot
+		// path for nothing. Removing either alone changes no behaviour; removing both makes the warning
+		// repeat per handshake.
+		stale := l.expirySaid < levelFor(l.cur.cert)
+		l.mu.RUnlock()
+		// The failure this warns about is the one where the files do NOT change: cert-manager stops
+		// renewing, the stamp stays put, and a reload never happens again. Checking only on reload would
+		// keep silent through exactly that.
+		if stale {
+			l.mu.Lock()
+			l.warnIfExpiring(cur.cert)
+			l.mu.Unlock()
+		}
+		return cur, nil
 	}
 	l.mu.RUnlock()
 
@@ -176,18 +199,12 @@ func (l *loader) load() (*state, error) {
 	if !pool.AppendCertsFromPEM(caPEM) {
 		return nil, fmt.Errorf("tlsconf: %s holds no certificate", l.files.ClientCA)
 	}
-	// AppendCertsFromPEM returns true as soon as ONE block parses, and drops the rest without a word.
-	// During a two-authority rotation that silently amputates the trust store, and the resulting
-	// failure reads as "unknown authority" on a peer while the loader reported success.
-	if got, want := len(pool.Subjects()), countPEMBlocks(caPEM); got != want { //nolint:staticcheck // SA1019: Subjects() is deprecated for system pools; this one is ours, and counting is exactly what it is wanted for.
-		l.logger().Warn("tls: the authority file holds certificates this process could not parse",
-			"ca_file", l.files.ClientCA, "accepted", got, "blocks", want)
-	}
 	l.announceCAChange(sha256.Sum256(caPEM))
-	l.warnIfExpiring(&cert)
+	l.expirySaid = expiryQuiet // a new generation earns its warnings again
 
 	l.cur = &state{cert: &cert, pool: pool}
 	l.stamp = stamp
+	l.warnIfExpiring(l.cur.cert)
 	return l.cur, nil
 }
 
@@ -236,18 +253,6 @@ func allowlist(allowed []string) func(tls.ConnectionState) error {
 // refresh RootCAs (see the package doc), so a rotated CA makes new handshakes fail with
 // "x509: unknown authority" on a pod nobody deployed. The server side does pick the new pool up, which
 // makes the asymmetry worse — half the mesh moves, half does not.
-// countPEMBlocks counts the PEM blocks in raw, whatever their type.
-func countPEMBlocks(raw []byte) int {
-	n := 0
-	for {
-		block, rest := pem.Decode(raw)
-		if block == nil {
-			return n
-		}
-		n, raw = n+1, rest
-	}
-}
-
 // warnIfExpiring says so when the certificate just loaded is already expired, or about to be.
 //
 // tls.LoadX509KeyPair parses the leaf and checks that the key matches it — it never looks at NotAfter.
@@ -255,16 +260,46 @@ func countPEMBlocks(raw []byte) int {
 // "x509: certificate has expired" while this side logs a handshake failure with no cause. That is the
 // three-in-the-morning failure the per-handshake reload exists to avoid, arriving by another door.
 func (l *loader) warnIfExpiring(cert *tls.Certificate) {
-	if cert.Leaf == nil {
+	level := levelFor(cert)
+	if level <= l.expirySaid {
 		return
+	}
+	l.expirySaid = level
+	switch level {
+	case expiryGone:
+		l.logger().Error("tls: this service's certificate has EXPIRED; every handshake will fail",
+			"cert_file", l.files.Cert, "not_after", cert.Leaf.NotAfter)
+	case expirySoon:
+		// Truncated to the minute, not the hour: an hour is the whole margin at the end, and "in=0s"
+		// would read the same for fifty-nine minutes left as for a certificate already dead.
+		l.logger().Warn("tls: this service's certificate expires soon and nothing here renews it",
+			"cert_file", l.files.Cert, "not_after", cert.Leaf.NotAfter,
+			"in", time.Until(cert.Leaf.NotAfter).Truncate(time.Minute))
+	case expiryQuiet:
+	}
+}
+
+// expiryLevel orders what there is to say about a certificate's remaining life, so that a warning is
+// said once and an escalation still gets through.
+type expiryLevel int
+
+const (
+	expiryQuiet expiryLevel = iota
+	expirySoon
+	expiryGone
+)
+
+func levelFor(cert *tls.Certificate) expiryLevel {
+	if cert == nil || cert.Leaf == nil {
+		return expiryQuiet
 	}
 	switch left := time.Until(cert.Leaf.NotAfter); {
 	case left <= 0:
-		l.logger().Error("tls: this service's certificate has EXPIRED; every handshake will fail",
-			"cert_file", l.files.Cert, "not_after", cert.Leaf.NotAfter)
+		return expiryGone
 	case left < expiryWarning:
-		l.logger().Warn("tls: this service's certificate expires soon and nothing here renews it",
-			"cert_file", l.files.Cert, "not_after", cert.Leaf.NotAfter, "in", left.Truncate(time.Hour))
+		return expirySoon
+	default:
+		return expiryQuiet
 	}
 }
 

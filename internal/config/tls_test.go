@@ -53,10 +53,13 @@ func TestTLSIsMandatoryInProduction(t *testing.T) {
 			// setEnv rather than t.Setenv: it makes the variables it does not name genuinely ABSENT, and
 			// "set but empty" is a different input to env.Parse. Without it the developer's own
 			// TLS_ENABLED would decide the verdict.
-			env := map[string]string{"ENVIRONMENT": "production"}
+			env := map[string]string{}
 			for k, v := range tt.env {
 				env[k] = v
 			}
+			// Posed last: a table case that named ENVIRONMENT would otherwise move itself out of this
+			// test's subject without its name changing.
+			env["ENVIRONMENT"] = "production"
 			setEnv(t, env)
 
 			_, err := config.Load("svc", config.SectionTLS)

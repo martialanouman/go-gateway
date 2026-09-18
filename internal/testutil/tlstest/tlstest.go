@@ -81,6 +81,12 @@ func NewAuthority(commonName string, expiry time.Duration) (*Authority, error) {
 // commonName is deliberately NOT one of the DNS names: identity is read from the SANs, the CN being
 // deprecated for that, and a certificate where the two agree cannot tell one check from the other.
 func (a *Authority) Issue(commonName string, dnsNames []string) (certPEM, keyPEM []byte, err error) {
+	return a.IssueFor(commonName, dnsNames, a.Expiry)
+}
+
+// IssueFor signs a leaf with an explicit lifetime. A negative one yields an already-expired certificate,
+// which is the only way a test can exercise what this repository does with one.
+func (a *Authority) IssueFor(commonName string, dnsNames []string, life time.Duration) (certPEM, keyPEM []byte, err error) {
 	if len(dnsNames) == 0 {
 		return nil, nil, fmt.Errorf("issue %q: a certificate with no SAN identifies nothing", commonName)
 	}
@@ -96,10 +102,13 @@ func (a *Authority) Issue(commonName string, dnsNames []string) (certPEM, keyPEM
 		SerialNumber: sn,
 		Subject:      pkix.Name{CommonName: commonName},
 		DNSNames:     dnsNames,
-		NotBefore:    time.Now().Add(-2 * time.Hour),
-		NotAfter:     time.Now().Add(a.Expiry),
-		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
+		// Two hours back, not one: IssueFor takes a NEGATIVE life to produce an expired certificate, and
+		// a NotBefore of -1h would then equal NotAfter — a validity window of zero, which reads as
+		// malformed rather than as expired.
+		NotBefore:   time.Now().Add(-2 * time.Hour),
+		NotAfter:    time.Now().Add(life),
+		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, a.cert, &key.PublicKey, a.key)
 	if err != nil {
@@ -128,14 +137,19 @@ type CA struct {
 	CAFile string
 }
 
-// IssueExpired signs a leaf that expired an hour ago, for the tests that check what this repository does
-// with one. It is the only way to get there: nothing else here issues a certificate in the past.
-func (ca *CA) IssueExpired(t *testing.T, name string, dnsNames ...string) (certFile, keyFile string) {
+// IssueFor signs a leaf with a lifetime of its own — negative for one that already expired, short for
+// one about to. It takes the duration as an argument rather than moving the authority's own Expiry,
+// which would be a data race the day two parallel subtests shared a CA.
+func (ca *CA) IssueFor(t *testing.T, life time.Duration, name string, dnsNames ...string) (certFile, keyFile string) {
 	t.Helper()
-	saved := ca.auth.Expiry
-	ca.auth.Expiry = -time.Hour
-	defer func() { ca.auth.Expiry = saved }()
-	return ca.Issue(t, name, dnsNames...)
+	certFile = filepath.Join(ca.dir, name+".crt")
+	keyFile = filepath.Join(ca.dir, name+".key")
+	certPEM, keyPEM, err := ca.auth.IssueFor(name, dnsNames, life)
+	if err != nil {
+		t.Fatalf("issue %s: %v", name, err)
+	}
+	writeBoth(t, certFile, keyFile, certPEM, keyPEM)
+	return certFile, keyFile
 }
 
 // NewCA issues a throwaway authority under t.TempDir() and writes its ca.crt.
@@ -178,6 +192,11 @@ func (ca *CA) issue(t *testing.T, name, certFile, keyFile string, dnsNames []str
 	if err != nil {
 		t.Fatalf("issue %s: %v", name, err)
 	}
+	writeBoth(t, certFile, keyFile, certPEM, keyPEM)
+}
+
+func writeBoth(t *testing.T, certFile, keyFile string, certPEM, keyPEM []byte) {
+	t.Helper()
 	if err := os.WriteFile(certFile, certPEM, 0o600); err != nil {
 		t.Fatalf("write %s: %v", certFile, err)
 	}

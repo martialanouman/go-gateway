@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -572,8 +573,12 @@ func TestTheHandshakeFloorIsTLS13(t *testing.T) {
 		MaxVersion:   tls.VersionTLS12,
 	}
 
-	if _, err := exchange(serve(t, serverCfg), legacy); err == nil {
+	_, err = exchange(serve(t, serverCfg), legacy)
+	if err == nil {
 		t.Fatal("a TLS 1.2 client was served: the internal floor is not 1.3")
+	}
+	if !strings.Contains(err.Error(), "protocol version") {
+		t.Errorf("error = %v, want the version alert — a panicking listener would also return an error", err)
 	}
 }
 
@@ -605,6 +610,15 @@ func TestALPNReachesThePerHandshakeConfig(t *testing.T) {
 	defer func() { _ = conn.Close() }()
 	if got := conn.ConnectionState().NegotiatedProtocol; got != "h2" {
 		t.Errorf("negotiated protocol = %q, want \"h2\": the per-handshake config dropped the ALPN list", got)
+	}
+
+	// The outer config carries them too. It is the one a caller inspects, and the one net/http reads
+	// before deciding whether to set up HTTP/2 at all.
+	if !slices.Equal(serverCfg.NextProtos, []string{"h2"}) {
+		t.Errorf("outer NextProtos = %v, want [h2]", serverCfg.NextProtos)
+	}
+	if serverCfg.MinVersion != tls.VersionTLS13 {
+		t.Errorf("outer MinVersion = %#x, want TLS 1.3", serverCfg.MinVersion)
 	}
 }
 
@@ -666,7 +680,8 @@ func TestTheIdentityCheckSurvivesSessionResumption(t *testing.T) {
 			return // resumed, and served: the allowlist did not lapse with the ticket
 		}
 	}
-	t.Skip("no session was resumed; this Go runtime issues no usable ticket here")
+	t.Fatal("no session was resumed in two handshakes: the resumption half of this test stopped " +
+		"exercising anything, and a t.Skip here would have hidden it")
 }
 
 // TestTheCAWarningIsEmittedOnce: the loader reads the files at EVERY handshake, so a warning without a
@@ -731,7 +746,7 @@ func TestTheCAWarningIsEmittedOnce(t *testing.T) {
 // peer gets "certificate has expired" while this side logs a handshake failure with no cause.
 func TestAnExpiredCertificateIsAnnouncedAtLoad(t *testing.T) {
 	ca := tlstest.NewCA(t)
-	certFile, keyFile := ca.IssueExpired(t, "server", "content-key-svc")
+	certFile, keyFile := ca.IssueFor(t, -time.Hour, "server", "content-key-svc")
 
 	var logged bytes.Buffer
 	files := tlsconf.Files{
@@ -745,5 +760,50 @@ func TestAnExpiredCertificateIsAnnouncedAtLoad(t *testing.T) {
 	}
 	if !strings.Contains(logged.String(), "EXPIRED") {
 		t.Errorf("logs = %q, want the expiry called out at load", logged.String())
+	}
+}
+
+// TestAnExpiryIsNoticedWithoutTheFilesChanging covers the failure the load-time check cannot see, and it
+// is the one that happens: cert-manager stops renewing, so the files never change, the cache stays warm,
+// and a check that only ran on reload would keep quiet right through the expiry.
+//
+// It also pins the escalation. A single latch would say "expires soon" once and then never mention that
+// the certificate actually died.
+func TestAnExpiryIsNoticedWithoutTheFilesChanging(t *testing.T) {
+	ca := tlstest.NewCA(t)
+	// Alive at load, dead a moment later — the compressed version of sixty days. Two seconds, not less:
+	// x509 records NotAfter to the second, so a shorter life can already be in the past at load.
+	certFile, keyFile := ca.IssueFor(t, 2*time.Second, "server", "content-key-svc")
+
+	var logged bytes.Buffer
+	files := tlsconf.Files{
+		Cert: certFile, Key: keyFile, ClientCA: ca.CAFile,
+		Logger: slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelWarn})),
+	}
+	cfg, err := files.ClientConfig()
+	if err != nil {
+		t.Fatalf("ClientConfig: %v", err)
+	}
+	if !strings.Contains(logged.String(), "expires soon") {
+		t.Fatalf("logs = %q, want the imminent expiry announced at load", logged.String())
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for !strings.Contains(logged.String(), "EXPIRED") && time.Now().Before(deadline) {
+		if _, err := cfg.GetClientCertificate(&tls.CertificateRequestInfo{}); err != nil {
+			t.Fatalf("GetClientCertificate: %v", err)
+		}
+	}
+	if !strings.Contains(logged.String(), "EXPIRED") {
+		t.Fatalf("logs = %q, want the expiry announced although the files never changed", logged.String())
+	}
+	// Four more handshakes AFTER the first announcement: without a latch each one would say it again.
+	for range 4 {
+		if _, err := cfg.GetClientCertificate(&tls.CertificateRequestInfo{}); err != nil {
+			t.Fatalf("GetClientCertificate: %v", err)
+		}
+	}
+	if got := strings.Count(logged.String(), "EXPIRED"); got != 1 {
+		t.Errorf("the expiry was announced %d times, want 1: the files are read at every handshake", got)
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/martialanouman/go-gateway/internal/platform/tlsconf"
+	"github.com/martialanouman/go-gateway/internal/testutil/tlstest"
 )
 
 // TestGeneratedFilesCompleteAMutualHandshake is the only assertion this tool needs, and the one an
@@ -19,7 +20,7 @@ import (
 // cluster with a handshake error that names neither.
 func TestGeneratedFilesCompleteAMutualHandshake(t *testing.T) {
 	dir := t.TempDir()
-	if err := run(dir, "gateway", "content-key-svc, router-svc", time.Hour); err != nil {
+	if err := run(dir, "gateway", "content-key-svc, router-svc", tlstest.DefaultLifetime); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 
