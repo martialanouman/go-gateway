@@ -153,6 +153,27 @@ décide de la rotation : `ClientCAs` est lu au début du handshake et aucun call
 un pool de CA posé une fois ne bouge plus. `GetConfigForClient` rend une `*tls.Config` neuve à chaque
 handshake, si bien que la CA et le certificat tournent ensemble.
 
+**Côté client, la CA ne tourne pas — arbitrage Fable du 2026-09-18.** `GetClientCertificate` couvre le
+certificat feuille, mais `RootCAs` est lu dans la `*tls.Config` remise une fois pour toutes au transport,
+et `crypto/tls` n'offre aucun équivalent client de `GetConfigForClient`. On accepte la limite : **un
+changement de CA exige un redémarrage des clients**, documenté dans le runbook.
+
+Les deux contournements sont écartés pour la même raison : ni l'un ni l'autre ne re-vérifie les
+connexions **déjà établies**. Une CA compromise a des connexions ouvertes ; relire le pool à chaque
+handshake ne les ferme pas, seul un redémarrage le fait — et il est plus rapide (le drain est déjà
+contractualisé) et plus auditable. Ils n'achètent donc que de la disponibilité pendant une rotation de CA
+*planifiée*, événement rare et de toute façon multi-phase. `InsecureSkipVerify: true` avec vérification
+manuelle (ce que fait `grpc/security/advancedtls`) coûterait une justification à chaque revue et à chaque
+scan gosec ; une `credentials.TransportCredentials` maison coûterait deux implémentations par transport.
+
+**Ce que la limite impose en échange**, parce que son mode de panne est silencieux — CA tournée sans
+redémarrage, les nouveaux handshakes échouent en `x509: unknown authority`, sans lien évident : le
+chargeur compare le SHA-256 de `ca.crt` à celui lu au démarrage et journalise un `WARN` nommant le
+redémarrage requis. Il lit déjà le disque à chaque handshake ; la garde ne coûte que la comparaison.
+
+Si une rotation de CA sans redémarrage devient un jour exigée, l'escalade est la
+`credentials.TransportCredentials` côté gRPC seulement — jamais `InsecureSkipVerify`.
+
 **Le cache est clé sur `(mtime, taille)` des deux fichiers**, sous `RWMutex` : un `stat` par handshake,
 et aucune dépendance neuve — pas de `fsnotify`. La paire plutôt que la seule `mtime`, parce que deux
 écritures dans le même tick d'horloge existent et qu'un test qui les enchaîne verrait une rotation
@@ -212,13 +233,15 @@ qu'une `*tls.Config` et gRPC est le sujet de 300b :
 2. client **sans** certificat : refusé ;
 3. client d'une **autre** CA : refusé ;
 4. client dont le SAN n'est pas dans la liste : refusé, et le message nomme le SAN présenté ;
-5. **rotation** : les fichiers changent, le handshake suivant sert le nouveau certificat, sans
-   redémarrage ;
-6. en production, `TLS_ENABLED=false` refuse le démarrage.
+5. **rotation de la feuille** : les fichiers changent, le handshake suivant sert le nouveau certificat,
+   sans redémarrage ;
+6. **rotation de la CA** : le `ca.crt` change sur disque, un `WARN` nomme le redémarrage requis — la
+   panne silencieuse devient bruyante ;
+7. en production, `TLS_ENABLED=false` refuse le démarrage.
 
 Mutations qui doivent faire tomber quelque chose : retirer `ClientAuth: RequireAndVerifyClientCert` fait
 tomber 2 ; retirer la comparaison de SAN fait tomber 4 ; figer le cache au premier chargement fait tomber
-5 ; retirer la garde fait tomber 6.
+5 ; retirer la comparaison d'empreinte de CA fait tomber 6 ; retirer la garde fait tomber 7.
 
 **Ce que 300a ne prouve pas :** qu'un seul service s'en serve. Aucun câblage, donc aucune régression
 possible sur les dix binaires — et c'est aussi pourquoi cette PR ne peut pas être « presque tout le
