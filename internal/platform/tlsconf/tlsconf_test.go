@@ -2,9 +2,12 @@ package tlsconf_test
 
 import (
 	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"testing"
 
@@ -131,5 +134,127 @@ func TestServerRefusesAClientFromAnotherCA(t *testing.T) {
 	var alert tls.AlertError
 	if !errors.As(err, &alert) && !strings.Contains(err.Error(), "certificate") {
 		t.Errorf("error = %v, want a certificate rejection", err)
+	}
+}
+
+// TestServerRefusesAClientOutsideTheAllowlist covers the half that a tunnel alone does not: a
+// certificate from our CA proves the peer is one of our pods, never WHICH one. content-key-svc hands
+// out the data key of a customer; without this check, any pod of the cluster could ask for any key.
+func TestServerRefusesAClientOutsideTheAllowlist(t *testing.T) {
+	ca := tlstest.NewCA(t)
+	serverCert, serverKey := ca.Issue(t, "server", "content-key-svc")
+	strangerCert, strangerKey := ca.Issue(t, "stranger", "config-sync")
+
+	serverCfg, err := tlsconf.Files{Cert: serverCert, Key: serverKey, ClientCA: ca.CAFile}.
+		ServerConfig([]string{"router-svc", "admin-api-svc"})
+	if err != nil {
+		t.Fatalf("ServerConfig: %v", err)
+	}
+	clientCfg, err := tlsconf.Files{Cert: strangerCert, Key: strangerKey, ClientCA: ca.CAFile}.ClientConfig()
+	if err != nil {
+		t.Fatalf("ClientConfig: %v", err)
+	}
+	clientCfg.ServerName = "content-key-svc"
+
+	if _, err := exchange(serve(t, serverCfg), clientCfg); err == nil {
+		t.Fatal("a client of our CA was served although its SAN is not on the allowlist")
+	}
+}
+
+// TestServerServesAClientOnTheAllowlist is the other half, and it is what makes the test above mean
+// something: a guard that refuses everyone would pass it.
+func TestServerServesAClientOnTheAllowlist(t *testing.T) {
+	ca := tlstest.NewCA(t)
+	serverCert, serverKey := ca.Issue(t, "server", "content-key-svc")
+	clientCert, clientKey := ca.Issue(t, "client", "router-svc")
+
+	serverCfg, err := tlsconf.Files{Cert: serverCert, Key: serverKey, ClientCA: ca.CAFile}.
+		ServerConfig([]string{"router-svc", "admin-api-svc"})
+	if err != nil {
+		t.Fatalf("ServerConfig: %v", err)
+	}
+	clientCfg, err := tlsconf.Files{Cert: clientCert, Key: clientKey, ClientCA: ca.CAFile}.ClientConfig()
+	if err != nil {
+		t.Fatalf("ClientConfig: %v", err)
+	}
+	clientCfg.ServerName = "content-key-svc"
+
+	if _, err := exchange(serve(t, serverCfg), clientCfg); err != nil {
+		t.Fatalf("exchange: %v, want the allowlisted client to be served", err)
+	}
+}
+
+// TestTheAllowlistRefusalNamesThePresentedSAN: a refused mTLS handshake is otherwise undebuggable. The
+// client is told nothing useful (TLS says "bad certificate" and stops), so the server side must say
+// which identity it saw and which it expected. None of it is a secret.
+func TestTheAllowlistRefusalNamesThePresentedSAN(t *testing.T) {
+	ca := tlstest.NewCA(t)
+	certFile, keyFile := ca.Issue(t, "peer", "config-sync")
+
+	cfg, err := tlsconf.Files{Cert: certFile, Key: keyFile, ClientCA: ca.CAFile}.
+		ServerConfig([]string{"router-svc"})
+	if err != nil {
+		t.Fatalf("ServerConfig: %v", err)
+	}
+	// Reach the verifier the way a handshake does, without a socket: the config it hands out per
+	// handshake carries the callback under test.
+	perHandshake, err := cfg.GetConfigForClient(&tls.ClientHelloInfo{})
+	if err != nil {
+		t.Fatalf("GetConfigForClient: %v", err)
+	}
+	leaf := readLeaf(t, certFile)
+	err = perHandshake.VerifyConnection(tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{leaf}}})
+	if err == nil {
+		t.Fatal("VerifyConnection accepted a SAN outside the allowlist")
+	}
+	if !strings.Contains(err.Error(), "config-sync") || !strings.Contains(err.Error(), "router-svc") {
+		t.Errorf("error = %q, want it to name the presented SAN and the allowed ones", err)
+	}
+}
+
+// readLeaf parses a PEM certificate file into the x509 form a verified chain carries.
+func readLeaf(t *testing.T, path string) *x509.Certificate {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	block, _ := pem.Decode(raw)
+	if block == nil {
+		t.Fatalf("%s holds no PEM block", path)
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	return cert
+}
+
+// TestTheAllowlistReadsTheSANAndNotTheCommonName pins which field carries the identity. The CN is
+// deprecated for that, cert-manager fills dnsNames from a Certificate's spec, and a check that read the
+// CN instead would admit a certificate whose SANs say something else entirely.
+func TestTheAllowlistReadsTheSANAndNotTheCommonName(t *testing.T) {
+	ca := tlstest.NewCA(t)
+	// CN says router-svc, the SAN says config-sync. The allowlist admits router-svc.
+	certFile, keyFile := ca.Issue(t, "router-svc", "config-sync")
+
+	cfg, err := tlsconf.Files{Cert: certFile, Key: keyFile, ClientCA: ca.CAFile}.
+		ServerConfig([]string{"router-svc"})
+	if err != nil {
+		t.Fatalf("ServerConfig: %v", err)
+	}
+	perHandshake, err := cfg.GetConfigForClient(&tls.ClientHelloInfo{})
+	if err != nil {
+		t.Fatalf("GetConfigForClient: %v", err)
+	}
+
+	leaf := readLeaf(t, certFile)
+	if leaf.Subject.CommonName != "router-svc" {
+		t.Fatalf("fixture CN = %q, want router-svc: the test cannot tell CN from SAN otherwise",
+			leaf.Subject.CommonName)
+	}
+	err = perHandshake.VerifyConnection(tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{leaf}}})
+	if err == nil {
+		t.Fatal("a certificate whose COMMON NAME is allowed, but whose SAN is not, was accepted")
 	}
 }

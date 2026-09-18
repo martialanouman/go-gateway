@@ -216,9 +216,14 @@ func (f Files) ServerConfig(allowedClients []string) (*tls.Config, error)
 func (f Files) ClientConfig() (*tls.Config, error)
 ```
 
-L'autorisation passe par `VerifyPeerCertificate`, appelé **après** la vérification de chaîne : on y
-compare les SAN DNS du certificat vérifié à la liste. L'erreur nomme le SAN présenté — ce n'est pas un
-secret, et sans lui un refus mTLS est indébogable.
+L'autorisation compare les SAN DNS du certificat vérifié à la liste. L'erreur nomme le SAN présenté et
+les SAN admis — ce n'est pas un secret, et sans eux un refus mTLS est indébogable.
+
+**Corrigé à l'écriture : le hook est `VerifyConnection`, pas `VerifyPeerCertificate`.** Sur une
+**reprise de session** TLS 1.3, `VerifyPeerCertificate` n'est jamais rappelé : un appelant retiré de
+l'allowlist garderait son accès tant que vit son ticket. `VerifyConnection` est appelé sur les deux
+chemins, et l'état qu'il reçoit porte les chaînes vérifiées dans les deux cas. gosec le signale
+(G123), donc le lint garde ce choix.
 
 `internal/config` gagne `SectionTLS` — trois endroits à toucher en même temps, la garde AST qui l'exige
 existe déjà. `internal/testutil/tlstest` fabrique une CA ECDSA et les feuilles demandées en mémoire, les

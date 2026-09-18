@@ -21,6 +21,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"os"
+	"slices"
 	"sync"
 )
 
@@ -30,6 +31,12 @@ import (
 type Files struct{ Cert, Key, ClientCA string }
 
 // ServerConfig builds the listening side: mutual TLS, verified against ClientCA.
+//
+// allowedClients is the identity check on top of the chain check, and the two answer different
+// questions: a certificate from our CA proves the peer is one of our pods, never WHICH one. A server
+// that hands out something only some callers may have — content-key-svc hands out a customer's data key
+// — names them here. An empty list admits every holder of a certificate from our CA, which is what the
+// servers with no named callers want.
 //
 // It fails now if the files cannot be read, so a bad path is a boot error and not a handshake that
 // starts failing at three in the morning.
@@ -52,6 +59,11 @@ func (f Files) ServerConfig(allowedClients []string) (*tls.Config, error) {
 				Certificates: []tls.Certificate{*st.cert},
 				ClientCAs:    st.pool,
 				ClientAuth:   tls.RequireAndVerifyClientCert,
+				// VerifyConnection, not VerifyPeerCertificate: on a RESUMED session the latter is never
+				// called again, so a caller dropped from the allowlist would keep its access for as long
+				// as its ticket lives (gosec G123). VerifyConnection runs on both paths, and the state it
+				// receives carries the chains the CA vouched for either way.
+				VerifyConnection: allowlist(allowedClients),
 			}, nil
 		},
 	}, nil
@@ -145,4 +157,30 @@ func (l *loader) stamp3() (string, error) {
 		b = fmt.Appendf(b, "%d/%d;", fi.Size(), fi.ModTime().UnixNano())
 	}
 	return string(b), nil
+}
+
+// allowlist returns the peer check for the named clients, or nil when none are named — nil being what
+// crypto/tls expects for "no extra check", and what an empty list means here.
+//
+// It matches DNS SANs, never the Common Name: the CN is deprecated as an identity, and cert-manager
+// fills dnsNames naturally from a Certificate's spec.
+func allowlist(allowed []string) func(tls.ConnectionState) error {
+	if len(allowed) == 0 {
+		return nil
+	}
+	return func(cs tls.ConnectionState) error {
+		if len(cs.VerifiedChains) == 0 || len(cs.VerifiedChains[0]) == 0 {
+			return fmt.Errorf("tlsconf: no verified chain to read an identity from")
+		}
+		leaf := cs.VerifiedChains[0][0]
+		for _, san := range leaf.DNSNames {
+			if slices.Contains(allowed, san) {
+				return nil
+			}
+		}
+		// Both halves are named on purpose. The client is told nothing useful — TLS answers "bad
+		// certificate" and stops — so a refusal that did not say which identity it saw, and which it
+		// expected, would be undebuggable. Neither is a secret.
+		return fmt.Errorf("tlsconf: client identity %v is not an allowed caller %v", leaf.DNSNames, allowed)
+	}
 }

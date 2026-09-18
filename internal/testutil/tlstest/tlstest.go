@@ -68,13 +68,17 @@ func (ca *CA) Issue(t *testing.T, name string, dnsNames ...string) (certFile, ke
 	t.Helper()
 	certFile = filepath.Join(ca.dir, name+".crt")
 	keyFile = filepath.Join(ca.dir, name+".key")
-	ca.IssueInto(t, certFile, keyFile, dnsNames...)
+	ca.issue(t, name, certFile, keyFile, dnsNames...)
 	return certFile, keyFile
 }
 
 // IssueInto signs a leaf into the given paths, overwriting them. A rotation is exactly that: the same
 // paths, new bytes, which is what the kubelet does when the Secret changes.
 func (ca *CA) IssueInto(t *testing.T, certFile, keyFile string, dnsNames ...string) {
+	ca.issue(t, filepath.Base(certFile), certFile, keyFile, dnsNames...)
+}
+
+func (ca *CA) issue(t *testing.T, name, certFile, keyFile string, dnsNames ...string) {
 	t.Helper()
 
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -83,12 +87,14 @@ func (ca *CA) IssueInto(t *testing.T, certFile, keyFile string, dnsNames ...stri
 	}
 	tmpl := &x509.Certificate{
 		SerialNumber: serial(t),
-		Subject:      pkix.Name{CommonName: dnsNames[0]},
-		DNSNames:     dnsNames,
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(24 * time.Hour),
-		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
+		// The CN is deliberately NOT one of the DNS names: tlsconf matches SANs, and a fixture where the
+		// two agree could not tell a SAN check from a CN check.
+		Subject:     pkix.Name{CommonName: name},
+		DNSNames:    dnsNames,
+		NotBefore:   time.Now().Add(-time.Hour),
+		NotAfter:    time.Now().Add(24 * time.Hour),
+		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca.cert, &key.PublicKey, ca.key)
 	if err != nil {
