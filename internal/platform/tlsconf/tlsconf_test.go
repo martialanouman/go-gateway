@@ -1,15 +1,18 @@
 package tlsconf_test
 
 import (
+	"bytes"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/martialanouman/go-gateway/internal/platform/tlsconf"
 	"github.com/martialanouman/go-gateway/internal/testutil/tlstest"
@@ -256,5 +259,129 @@ func TestTheAllowlistReadsTheSANAndNotTheCommonName(t *testing.T) {
 	err = perHandshake.VerifyConnection(tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{leaf}}})
 	if err == nil {
 		t.Fatal("a certificate whose COMMON NAME is allowed, but whose SAN is not, was accepted")
+	}
+}
+
+// peerSerial dials and returns the serial of the certificate the server presented. The serial is what
+// distinguishes two generations of the same identity: a rotation keeps the paths and the SANs.
+func peerSerial(t *testing.T, addr net.Addr, cfg *tls.Config) string {
+	t.Helper()
+	conn, err := tls.Dial("tcp", addr.String(), cfg)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if err := conn.Handshake(); err != nil {
+		t.Fatalf("handshake: %v", err)
+	}
+	return conn.ConnectionState().PeerCertificates[0].SerialNumber.String()
+}
+
+// serveForever accepts connections until the test ends, so a rotation can be observed across two
+// handshakes against one listener — which is the case that matters: the process does not restart.
+func serveForever(t *testing.T, cfg *tls.Config) net.Addr {
+	t.Helper()
+	lis, err := tls.Listen("tcp", "127.0.0.1:0", cfg)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = lis.Close() })
+
+	go func() {
+		for {
+			conn, err := lis.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer func() { _ = conn.Close() }()
+				_, _ = io.Copy(conn, conn)
+			}()
+		}
+	}()
+	return lis.Addr()
+}
+
+// TestTheServerServesARotatedCertificateWithoutRestarting is the whole reason the files are read per
+// handshake. cert-manager renews a leaf about every sixty days and the kubelet rewrites the volume in
+// place; a process that cached its certificate at boot would serve an expired one until someone noticed.
+func TestTheServerServesARotatedCertificateWithoutRestarting(t *testing.T) {
+	ca := tlstest.NewCA(t)
+	certFile, keyFile := ca.Issue(t, "server", "content-key-svc")
+	clientCert, clientKey := ca.Issue(t, "client", "router-svc")
+
+	serverCfg, err := tlsconf.Files{Cert: certFile, Key: keyFile, ClientCA: ca.CAFile}.ServerConfig(nil)
+	if err != nil {
+		t.Fatalf("ServerConfig: %v", err)
+	}
+	clientCfg, err := tlsconf.Files{Cert: clientCert, Key: clientKey, ClientCA: ca.CAFile}.ClientConfig()
+	if err != nil {
+		t.Fatalf("ClientConfig: %v", err)
+	}
+	clientCfg.ServerName = "content-key-svc"
+	// A resumed session skips the certificate exchange, which would hide the rotation behind a ticket.
+	clientCfg.ClientSessionCache = nil
+
+	addr := serveForever(t, serverCfg)
+	before := peerSerial(t, addr, clientCfg)
+
+	// The rotation: same paths, new bytes. The timestamps are set explicitly because two writes can land
+	// in the same clock tick, and a cache that missed the change would then look correct here.
+	ca.IssueInto(t, certFile, keyFile, "content-key-svc")
+	future := time.Now().Add(time.Second)
+	for _, p := range []string{certFile, keyFile} {
+		if err := os.Chtimes(p, future, future); err != nil {
+			t.Fatalf("chtimes %s: %v", p, err)
+		}
+	}
+
+	if after := peerSerial(t, addr, clientCfg); after == before {
+		t.Errorf("serial after rotation = %s, want a different certificate: the listener is still "+
+			"serving the one it read at boot", after)
+	}
+}
+
+// TestAChangedCAIsAnnouncedBecauseItNeedsARestart covers the failure mode of the limit step-300 accepts:
+// the dialling side cannot rotate its root pool, so a CA change needs the clients restarted. Left
+// unsaid, that shows up as x509: unknown authority on a pod nobody touched. The loader already reads the
+// file at every handshake, so the whole guard is one comparison.
+func TestAChangedCAIsAnnouncedBecauseItNeedsARestart(t *testing.T) {
+	ca := tlstest.NewCA(t)
+	certFile, keyFile := ca.Issue(t, "client", "router-svc")
+
+	var logged bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	files := tlsconf.Files{Cert: certFile, Key: keyFile, ClientCA: ca.CAFile, Logger: logger}
+	cfg, err := files.ClientConfig()
+	if err != nil {
+		t.Fatalf("ClientConfig: %v", err)
+	}
+	if _, err := cfg.GetClientCertificate(&tls.CertificateRequestInfo{}); err != nil {
+		t.Fatalf("GetClientCertificate: %v", err)
+	}
+	if logged.Len() != 0 {
+		t.Fatalf("a steady CA logged %q", logged.String())
+	}
+
+	// A second authority overwrites the ca.crt the loader read at boot.
+	other := tlstest.NewCA(t)
+	raw, err := os.ReadFile(other.CAFile)
+	if err != nil {
+		t.Fatalf("read the other CA: %v", err)
+	}
+	if err := os.WriteFile(ca.CAFile, raw, 0o600); err != nil {
+		t.Fatalf("overwrite the CA: %v", err)
+	}
+	future := time.Now().Add(time.Second)
+	if err := os.Chtimes(ca.CAFile, future, future); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	if _, err := cfg.GetClientCertificate(&tls.CertificateRequestInfo{}); err != nil {
+		t.Fatalf("GetClientCertificate after the CA change: %v", err)
+	}
+	if !strings.Contains(logged.String(), "restart") {
+		t.Errorf("logs = %q, want a warning naming the restart a CA change requires", logged.String())
 	}
 }

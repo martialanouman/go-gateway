@@ -17,9 +17,11 @@
 package tlsconf
 
 import (
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"log/slog"
 	"os"
 	"slices"
 	"sync"
@@ -28,7 +30,13 @@ import (
 // Files are the three PEM paths that carry a pod's TLS identity: its certificate, its private key, and
 // the authority it verifies its peers against. One identity per pod, not one per surface — a service
 // listens and calls with the same certificate.
-type Files struct{ Cert, Key, ClientCA string }
+type Files struct {
+	Cert, Key, ClientCA string
+
+	// Logger receives the one warning this package emits, when ClientCA changes under a running
+	// process. Nil falls back to slog.Default().
+	Logger *slog.Logger
+}
 
 // ServerConfig builds the listening side: mutual TLS, verified against ClientCA.
 //
@@ -106,6 +114,11 @@ type loader struct {
 	mu    sync.RWMutex
 	stamp string
 	cur   *state
+	// caSum is the digest of the CA read the first time, and warned whether the change has been
+	// announced — once, not at every handshake.
+	caSum   [sha256.Size]byte
+	haveSum bool
+	warned  bool
 }
 
 func (l *loader) load() (*state, error) {
@@ -140,6 +153,7 @@ func (l *loader) load() (*state, error) {
 	if !pool.AppendCertsFromPEM(pem) {
 		return nil, fmt.Errorf("tlsconf: %s holds no certificate", l.files.ClientCA)
 	}
+	l.announceCAChange(sha256.Sum256(pem))
 
 	l.cur = &state{cert: &cert, pool: pool}
 	l.stamp = stamp
@@ -183,4 +197,27 @@ func allowlist(allowed []string) func(tls.ConnectionState) error {
 		// expected, would be undebuggable. Neither is a secret.
 		return fmt.Errorf("tlsconf: client identity %v is not an allowed caller %v", leaf.DNSNames, allowed)
 	}
+}
+
+// announceCAChange warns the first time the authority file differs from the one read at startup.
+//
+// It exists because the failure it precedes is silent and misattributed: the dialling side cannot
+// refresh RootCAs (see the package doc), so a rotated CA makes new handshakes fail with
+// "x509: unknown authority" on a pod nobody deployed. The server side does pick the new pool up, which
+// makes the asymmetry worse — half the mesh moves, half does not.
+func (l *loader) announceCAChange(sum [sha256.Size]byte) {
+	if !l.haveSum {
+		l.caSum, l.haveSum = sum, true
+		return
+	}
+	if sum == l.caSum || l.warned {
+		return
+	}
+	l.warned = true
+	log := l.files.Logger
+	if log == nil {
+		log = slog.Default()
+	}
+	log.Warn("tls: the certificate authority changed on disk; restart this service to dial with it",
+		"ca_file", l.files.ClientCA)
 }
