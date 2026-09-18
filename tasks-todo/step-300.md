@@ -116,7 +116,8 @@ go-live (step-410) qui vérifie qu'un émetteur existe.
 **Deux pièges de montage :**
 - **`subPath` annule la propagation.** Un volume monté avec `subPath` ne reçoit jamais les mises à jour
   du `Secret` : la rotation deviendrait silencieusement inopérante jusqu'au prochain redémarrage.
-  Interdit ici, et la garde `internal/deploy` le refuse.
+  Interdit ici, et écrit dans le README de `deploy/k8s/tls/`. **Aucune garde ne le refuse aujourd'hui** :
+  quand 300b montera le premier volume, elle sera à ajouter à `internal/deploy`.
 - **L'identité est un SAN DNS, pas un `CN`.** Le `CN` est déprécié comme identité, et cert-manager
   remplit `dnsNames` naturellement. L'allowlist compare les SAN DNS du certificat client vérifié.
 
@@ -226,11 +227,12 @@ l'allowlist garderait son accès tant que vit son ticket. `VerifyConnection` est
 chemins, et l'état qu'il reçoit porte les chaînes vérifiées dans les deux cas. gosec le signale
 (G123), donc le lint garde ce choix.
 
-`internal/config` gagne `SectionTLS` — trois endroits à toucher en même temps, la garde AST qui l'exige
-existe déjà. `internal/testutil/tlstest` fabrique une CA ECDSA et les feuilles demandées en mémoire, les
+`internal/config` gagne `SectionTLS` — **cinq** endroits à toucher en même temps, et non trois : la
+constante, `SectionAll`, la branche de validation, le champ de `Config`, et le registre `knownVars` des
+tests. La garde AST se dérive du code, donc elle couvre la section neuve sans modification. `internal/testutil/tlstest` fabrique une CA ECDSA et les feuilles demandées en mémoire, les
 écrit dans `t.TempDir()`, rend les chemins. `test/tlsgen` est le même code en ligne de commande, **sous
-`test/` et non `cmd/`**, où la garde `internal/deploy` exigerait d'un binaire neuf qu'il ait son image
-publiée et sa ligne GoReleaser. `deploy/k8s/tls/README.md` porte le contrat du `Secret` et l'exemple.
+`test/` et non `cmd/`**, parce que c'est un outil et non un service — la même place que
+`test/load/bindgen`. `deploy/k8s/tls/README.md` porte le contrat du `Secret` et l'exemple.
 
 **Preuves**, sur un serveur jetable en TLS brut et un `http.Server` — pas de gRPC, le paquet ne rend
 qu'une `*tls.Config` et gRPC est le sujet de 300b :
@@ -248,6 +250,28 @@ qu'une `*tls.Config` et gRPC est le sujet de 300b :
 Mutations qui doivent faire tomber quelque chose : retirer `ClientAuth: RequireAndVerifyClientCert` fait
 tomber 2 ; retirer la comparaison de SAN fait tomber 4 ; figer le cache au premier chargement fait tomber
 5 ; retirer la comparaison d'empreinte de CA fait tomber 6 ; retirer la garde fait tomber 7.
+
+**Corrigé en revue (2026-09-18).** Trois revues en lecture seule ont trouvé un bloquant et cinq
+décisions du design que rien ne tenait :
+
+- **`InsecureSkipVerify: true` dans `ClientConfig` laissait les douze tests verts.** Aucun ne mettait un
+  client face à un serveur d'une autre autorité — dans le test d'intrusion, l'intrus fait justement
+  confiance à la nôtre comme racine. Le seul chemin client → serveur non vérifié n'était exercé nulle
+  part, alors que le design s'interdit `InsecureSkipVerify`.
+- **L'ALPN entre par la signature** (`ServerOptions`), parce qu'il ne peut pas entrer autrement : ni
+  `net/http` ni gRPC ne laissent la config externe atteindre `GetConfigForClient`, tous deux passent un
+  clone. Une liste vide n'est pas un défaut mais une rétrogradation muette — `negotiateALPN` rend un
+  protocole vide **sans erreur**, et HTTP/2 s'éteint sans une ligne de log. C'est donc 300a, pas 300c.
+  Le `MinVersion` public à 1.2 attendra son propre constructeur en 300c, plutôt qu'un levier qui
+  abaisserait aussi le plancher interne.
+- **`tls.LoadX509KeyPair` ne regarde jamais `NotAfter`** : un certificat expiré démarrait vert et passait
+  sa sonde. Annoncé au chargement, sans refuser le démarrage — qui transformerait une panne partielle en
+  CrashLoopBackOff pendant que cert-manager renouvelle.
+- Preuves ajoutées, chacune avec sa mutation : vérification du serveur côté client, rotation de la **CA**
+  côté serveur, plancher TLS 1.3, moitié « taille » de la clé de cache, unicité de l'avertissement,
+  identité conservée sur une session reprise, SAN in-cluster du générateur, garde de configuration hors
+  production. Deux tests de refus qui ne regardaient pas le motif l'exigent désormais : un EOF les
+  rendait verts.
 
 **Ce que 300a ne prouve pas :** qu'un seul service s'en serve. Aucun câblage, donc aucune régression
 possible sur les dix binaires — et c'est aussi pourquoi cette PR ne peut pas être « presque tout le

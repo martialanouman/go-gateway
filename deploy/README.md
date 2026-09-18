@@ -37,9 +37,10 @@ Deux gardes les tiennent, et elles ne se recouvrent pas :
   nœud — `LimitNOFILE` de l'unit systemd de containerd — et ni l'image, ni un `securityContext`, ni
   un initContainer ne le changent. Le défaut de containerd (1048576) est très au-dessus de 16384 ;
   **step-280 le vérifie sur environnement représentatif** plutôt que de le supposer.
-- **Aucun `Secret`.** Les manifests ne font que référencer `gateway-secrets` ; step-300 (TLS, certs)
-  et step-310 (auth opérateur) le provisionnent. Un secret dans ce dépôt serait un secret dans
-  l'historique git.
+- **Aucun `Secret`.** Les manifests ne font que référencer `gateway-secrets`. Un secret dans ce dépôt
+  serait un secret dans l'historique git, donc **rien ici ne le provisionne** : step-300 livre le
+  *contrat* du `Secret` TLS — ses clés, son montage, ses pièges — dans `k8s/tls/README.md`, et
+  l'exploitant le remplit (cert-manager, une PKI interne, ou le générateur `test/tlsgen`).
 - **Aucune règle Alertmanager, aucun collecteur OTel, aucun Ingress.** Ils vivent côté
   infrastructure (guide d'ingénierie §13) ; §15 vérifie au go-live qu'ils ont bien été posés.
 

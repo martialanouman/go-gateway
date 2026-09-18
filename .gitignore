@@ -28,6 +28,10 @@ coverage.*
 .env
 .env.*
 
+# Certificats de développement : `go run ./test/tlsgen -out .tls` y dépose une CA et des clés privées.
+# Une clé privée commitée reste dans l'historique après sa suppression.
+/.tls/
+
 # OS / editor cruft.
 .DS_Store
 *.swp

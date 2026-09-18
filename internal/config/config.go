@@ -526,9 +526,10 @@ type TLS struct {
 	// certificates. Production refuses the default (step-300).
 	Enabled bool `env:"ENABLED" envDefault:"false"`
 
-	// CertFile, KeyFile and ClientCAFile are the three files of a kubernetes.io/tls Secret mounted as a
-	// volume: tls.crt, tls.key and ca.crt. They are re-read at every handshake, so cert-manager can
-	// rotate them under a running process.
+	// CertFile, KeyFile and ClientCAFile are the three files of a mounted Secret: tls.crt, tls.key and
+	// ca.crt. Only the first two are keys of a kubernetes.io/tls Secret — ca.crt is cert-manager's
+	// addition, and the manual route produces an Opaque Secret anyway. Nothing here reads the type. They
+	// are re-read at every handshake, so cert-manager can rotate them under a running process.
 	CertFile     string `env:"CERT_FILE"`
 	KeyFile      string `env:"KEY_FILE"`
 	ClientCAFile string `env:"CLIENT_CA_FILE"`

@@ -9,7 +9,9 @@ agent Vault, un `kubectl` — ne le regarde pas.
 
 ## Le contrat
 
-Un `Secret` par service, aux clés standard d'un `kubernetes.io/tls`, plus l'autorité :
+Un `Secret` par service, aux deux clés d'un `kubernetes.io/tls`, plus l'autorité — que ce type ne
+connaît pas : `ca.crt` est un ajout de cert-manager, et la voie manuelle produit de toute façon un
+`Secret` de type `Opaque`. Le code ne regarde que les chemins, pas le type.
 
 | Clé | Contenu |
 |---|---|
@@ -31,8 +33,13 @@ Le `Deployment` le monte en volume et ne reçoit que des chemins :
         - name: tls
           secret:
             secretName: content-key-svc-tls
-            defaultMode: 0400
+            defaultMode: 0444
 ```
+
+`0444`, et pas `0400` : les fichiers d'un volume `Secret` appartiennent à l'uid 0 tant qu'aucun `fsGroup`
+n'est posé, or les images tournent en `USER 65532` et `deploy/k8s` ne pose aucun `securityContext`. Avec
+`0400`, le process prend un `EACCES` sur `tls.key` au premier handshake. L'alternative est `0440` avec
+`fsGroup: 65532` — un choix à faire le jour où ces manifests gagneront un `securityContext`.
 
 **Jamais de `subPath`.** Le kubelet met à jour un volume de `Secret` par bascule atomique d'un lien
 symbolique ; un montage en `subPath` ne suit pas. La rotation deviendrait silencieusement inopérante
@@ -77,12 +84,14 @@ metadata: {name: content-key-svc-tls, namespace: gateway}
 spec:
   secretName: content-key-svc-tls          # le secretName que monte le Deployment
   dnsNames: [content-key-svc, content-key-svc.gateway.svc]
-  usages: [server auth, client auth]
+  usages: [digital signature, key encipherment, server auth, client auth]
   issuerRef: {name: gateway-ca, kind: Issuer}
 ```
 
 `server auth` **et** `client auth`, parce que la plupart des services sont les deux :
-`smpp-server-svc` sert son `SessionRegistry` et appelle `session-manager-svc`.
+`smpp-server-svc` sert son `SessionRegistry` et appelle `session-manager-svc`. Les deux premiers usages
+sont là parce que `usages` **remplace** le défaut de cert-manager au lieu de s'y ajouter : sans eux, le
+certificat n'aurait pas de `digitalSignature`, que `crypto/tls` exige.
 
 cert-manager renouvelle aux deux tiers de la durée de vie, le kubelet réécrit les fichiers, et le process
 relit au handshake suivant. Rien à redémarrer.
@@ -95,6 +104,7 @@ go-live (step-410) vérifie qu'un émetteur existe.
 
 ```
 go run ./test/tlsgen -out .tls -ns gateway -services content-key-svc,router-svc,admin-api-svc
+# .tls/ est ignoré par git : ce sont des clés privées.
 
 kubectl -n gateway create secret generic content-key-svc-tls \
   --from-file=tls.crt=.tls/content-key-svc.crt \
