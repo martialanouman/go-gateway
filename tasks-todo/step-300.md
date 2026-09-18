@@ -209,12 +209,14 @@ step-305 et déplace cette fiche en `tasks-done/`.
 
 ### 300a — détail validé le 2026-09-17, avant le code
 
-L'API du paquet tient en trois déclarations :
+L'API du paquet tient en quatre déclarations — `ServerOptions` et le champ `Logger` sont arrivés en
+revue, pour les raisons dites plus bas :
 
 ```go
-type Files struct{ Cert, Key, ClientCA string }
+type Files struct{ Cert, Key, ClientCA string; Logger *slog.Logger }
+type ServerOptions struct{ AllowedClients, NextProtos []string }
 
-func (f Files) ServerConfig(allowedClients []string) (*tls.Config, error)
+func (f Files) ServerConfig(opts ServerOptions) (*tls.Config, error)
 func (f Files) ClientConfig() (*tls.Config, error)
 ```
 
@@ -254,8 +256,9 @@ tomber 2 ; retirer la comparaison de SAN fait tomber 4 ; figer le cache au premi
 **Corrigé en revue (2026-09-18).** Trois revues en lecture seule ont trouvé un bloquant et cinq
 décisions du design que rien ne tenait :
 
-- **`InsecureSkipVerify: true` dans `ClientConfig` laissait les douze tests verts.** Aucun ne mettait un
-  client face à un serveur d'une autre autorité — dans le test d'intrusion, l'intrus fait justement
+- **Une mutation restait invisible : ajouter `InsecureSkipVerify: true` à `ClientConfig` laissait toute
+  la suite verte.** Le code ne l'a jamais contenu — c'est la preuve qui manquait, pas le correctif.
+  Aucun test ne mettait un client face à un serveur d'une autre autorité — dans le test d'intrusion, l'intrus fait justement
   confiance à la nôtre comme racine. Le seul chemin client → serveur non vérifié n'était exercé nulle
   part, alors que le design s'interdit `InsecureSkipVerify`.
 - **L'ALPN entre par la signature** (`ServerOptions`), parce qu'il ne peut pas entrer autrement : ni
@@ -267,6 +270,11 @@ décisions du design que rien ne tenait :
 - **`tls.LoadX509KeyPair` ne regarde jamais `NotAfter`** : un certificat expiré démarrait vert et passait
   sa sonde. Annoncé au chargement, sans refuser le démarrage — qui transformerait une panne partielle en
   CrashLoopBackOff pendant que cert-manager renouvelle.
+- **Tour 2 :** le contrôle d'expiration ne tournait qu'au rechargement, donc jamais dans le cas qu'il
+  documente — quand cert-manager cesse de renouveler, les fichiers ne changent pas. Il passe par le
+  chemin chaud, avec un niveau plutôt qu'un drapeau pour que l'Error suive le Warn. Le contrôle de blocs
+  PEM est supprimé : il comparait deux populations différentes et criait sur un bundle valide au milieu
+  d'une rotation.
 - Preuves ajoutées, chacune avec sa mutation : vérification du serveur côté client, rotation de la **CA**
   côté serveur, plancher TLS 1.3, moitié « taille » de la clé de cache, unicité de l'avertissement,
   identité conservée sur une session reprise, SAN in-cluster du générateur, garde de configuration hors

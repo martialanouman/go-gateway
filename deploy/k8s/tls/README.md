@@ -84,14 +84,16 @@ metadata: {name: content-key-svc-tls, namespace: gateway}
 spec:
   secretName: content-key-svc-tls          # le secretName que monte le Deployment
   dnsNames: [content-key-svc, content-key-svc.gateway.svc]
-  usages: [digital signature, key encipherment, server auth, client auth]
+  usages: [digital signature, server auth, client auth]
   issuerRef: {name: gateway-ca, kind: Issuer}
 ```
 
 `server auth` **et** `client auth`, parce que la plupart des services sont les deux :
-`smpp-server-svc` sert son `SessionRegistry` et appelle `session-manager-svc`. Les deux premiers usages
-sont là parce que `usages` **remplace** le défaut de cert-manager au lieu de s'y ajouter : sans eux, le
-certificat n'aurait pas de `digitalSignature`, que `crypto/tls` exige.
+`smpp-server-svc` sert son `SessionRegistry` et appelle `session-manager-svc`. Ce sont **ces deux-là** que
+la vérification de Go contrôle (`checkChainForKeyUsage`) ; `digital signature` est ajouté parce que
+`usages` **remplace** le défaut de cert-manager au lieu de s'y ajouter, et qu'une pile TLS autre que Go
+peut, elle, regarder le Key Usage. `crypto/x509` ne le regarde pas : « KeyUsage status flags are
+ignored ».
 
 cert-manager renouvelle aux deux tiers de la durée de vie, le kubelet réécrit les fichiers, et le process
 relit au handshake suivant. Rien à redémarrer.
