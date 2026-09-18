@@ -1,8 +1,8 @@
 // Command tlsgen issues a throwaway certificate authority and one leaf per service, for a test cluster
 // that has no cert-manager. With cert-manager, use deploy/k8s/tls/ instead and let it rotate them.
 //
-// It lives under test/ rather than cmd/, where a new binary would owe the guard in internal/deploy a
-// published image and a GoReleaser entry. It is a tool, not a service.
+// It lives under test/ rather than cmd/ because it is a tool, not a service — the same place as
+// test/load/bindgen and test/load/stub, which are run with go run and ship in no image.
 //
 // What it does that an openssl invocation forgets: the SANs. Identity is read from the DNS SANs, never
 // the Common Name, so a certificate with the right CN and no SAN is refused by a handshake that will
@@ -51,6 +51,17 @@ func main() {
 	}
 }
 
+// writeSecret writes a PEM file and enforces its mode, which WriteFile does not do on an existing file.
+func writeSecret(path string, content []byte) error {
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return fmt.Errorf("tighten %s: %w", path, err)
+	}
+	return nil
+}
+
 func run(out, ns, services string, lifetime time.Duration) error {
 	names := splitNames(services)
 	if len(names) == 0 {
@@ -59,13 +70,20 @@ func run(out, ns, services string, lifetime time.Duration) error {
 	if err := os.MkdirAll(out, 0o700); err != nil {
 		return fmt.Errorf("create %s: %w", out, err)
 	}
+	// MkdirAll leaves an existing directory's mode alone, and WriteFile keeps an existing file's — so a
+	// second run into a directory someone created by hand would silently keep 0755.
+	//nolint:gosec // G302: 0700 is the tightest mode a DIRECTORY can have and still be entered; the rule
+	// reads it as a file mode. The keys inside are written 0600.
+	if err := os.Chmod(out, 0o700); err != nil {
+		return fmt.Errorf("tighten %s: %w", out, err)
+	}
 
 	auth, err := tlstest.NewAuthority("gateway-ca", lifetime)
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(out, "ca.crt"), auth.CAPEM, 0o600); err != nil {
-		return fmt.Errorf("write the CA: %w", err)
+	if err := writeSecret(filepath.Join(out, "ca.crt"), auth.CAPEM); err != nil {
+		return err
 	}
 
 	for _, name := range names {
@@ -75,11 +93,11 @@ func run(out, ns, services string, lifetime time.Duration) error {
 		if err != nil {
 			return err
 		}
-		if err := os.WriteFile(filepath.Join(out, name+".crt"), certPEM, 0o600); err != nil {
-			return fmt.Errorf("write %s.crt: %w", name, err)
+		if err := writeSecret(filepath.Join(out, name+".crt"), certPEM); err != nil {
+			return err
 		}
-		if err := os.WriteFile(filepath.Join(out, name+".key"), keyPEM, 0o600); err != nil {
-			return fmt.Errorf("write %s.key: %w", name, err)
+		if err := writeSecret(filepath.Join(out, name+".key"), keyPEM); err != nil {
+			return err
 		}
 		fmt.Printf("%s: %s.crt %s.key\n", name, name, name)
 	}

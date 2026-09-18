@@ -4,7 +4,9 @@ import (
 	"crypto/tls"
 	"io"
 	"net"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -46,12 +48,16 @@ func TestGeneratedFilesCompleteAMutualHandshake(t *testing.T) {
 	}
 	defer func() { _ = lis.Close() }()
 	go func() {
-		conn, err := lis.Accept()
-		if err != nil {
-			return
+		for {
+			conn, err := lis.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer func() { _ = conn.Close() }()
+				_, _ = io.Copy(conn, conn)
+			}()
 		}
-		defer func() { _ = conn.Close() }()
-		_, _ = io.Copy(conn, conn)
 	}()
 
 	conn, err := tls.Dial("tcp", lis.Addr().(*net.TCPAddr).String(), clientCfg)
@@ -66,11 +72,31 @@ func TestGeneratedFilesCompleteAMutualHandshake(t *testing.T) {
 	if _, err := io.ReadFull(conn, buf); err != nil {
 		t.Fatalf("read: %v", err)
 	}
+
+	// The in-cluster name too, which is what a caller in another namespace dials. A certificate carrying
+	// only the bare name would refuse it, and -ns would be a flag that changes nothing.
+	crossNamespace := clientCfg.Clone()
+	crossNamespace.ServerName = "content-key-svc.gateway.svc"
+	conn2, err := tls.Dial("tcp", lis.Addr().(*net.TCPAddr).String(), crossNamespace)
+	if err != nil {
+		t.Fatalf("dial by the in-cluster name: %v", err)
+	}
+	_ = conn2.Close()
 }
 
 // TestServicesIsRequired: writing a CA and nothing else looks like success and is not.
 func TestServicesIsRequired(t *testing.T) {
-	if err := run(t.TempDir(), "gateway", "  ,  ", time.Hour); err == nil {
+	dir := t.TempDir()
+	err := run(dir, "gateway", "  ,  ", time.Hour)
+	if err == nil {
 		t.Fatal("run() accepted an empty service list")
+	}
+	if !strings.Contains(err.Error(), "-services") {
+		t.Errorf("error = %v, want it to name the missing flag", err)
+	}
+	// And it stopped before writing anything: a directory holding a lone authority invites a second run
+	// that reuses it, which is not what happened here.
+	if _, err := os.Stat(filepath.Join(dir, "ca.crt")); !os.IsNotExist(err) {
+		t.Error("an authority was written although the run failed")
 	}
 }

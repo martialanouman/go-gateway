@@ -22,6 +22,11 @@ func TestTLSIsMandatoryInProduction(t *testing.T) {
 			want: "TLS_ENABLED",
 		},
 		{
+			// The real operator failure: nobody writes TLS_ENABLED=false, they just never set it.
+			name: "production with TLS_ENABLED unset",
+			want: "TLS_ENABLED",
+		},
+		{
 			name: "production with TLS but no certificate",
 			env:  map[string]string{"TLS_ENABLED": "true", "TLS_KEY_FILE": "/k", "TLS_CLIENT_CA_FILE": "/ca"},
 			want: "TLS_CERT_FILE",
@@ -45,10 +50,14 @@ func TestTLSIsMandatoryInProduction(t *testing.T) {
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
+			// setEnv rather than t.Setenv: it makes the variables it does not name genuinely ABSENT, and
+			// "set but empty" is a different input to env.Parse. Without it the developer's own
+			// TLS_ENABLED would decide the verdict.
+			env := map[string]string{"ENVIRONMENT": "production"}
 			for k, v := range tt.env {
-				t.Setenv(k, v)
+				env[k] = v
 			}
-			t.Setenv("ENVIRONMENT", "production")
+			setEnv(t, env)
 
 			_, err := config.Load("svc", config.SectionTLS)
 			switch {
@@ -68,10 +77,29 @@ func TestTLSIsMandatoryInProduction(t *testing.T) {
 func TestTLSStaysOptionalOutsideProduction(t *testing.T) {
 	for _, env := range []string{"development", "staging"} {
 		t.Run(env, func(t *testing.T) {
-			t.Setenv("ENVIRONMENT", env)
+			setEnv(t, map[string]string{"ENVIRONMENT": env})
 			if _, err := config.Load("svc", config.SectionTLS); err != nil {
 				t.Errorf("Load() = %v, want TLS to stay optional in %s", err, env)
 			}
 		})
+	}
+}
+
+// TestAHalfConfiguredIdentityIsRefusedOutsideProductionToo pins where the second half of the guard sits.
+// Enabling TLS without the files is not a production-only mistake: it fails at the first handshake, in a
+// service that booted and passed its readiness probe, whatever the tier.
+func TestAHalfConfiguredIdentityIsRefusedOutsideProductionToo(t *testing.T) {
+	setEnv(t, map[string]string{
+		"ENVIRONMENT":   "development",
+		"TLS_ENABLED":   "true",
+		"TLS_CERT_FILE": "/c",
+	})
+
+	_, err := config.Load("svc", config.SectionTLS)
+	if err == nil {
+		t.Fatal("Load() = nil, want the missing key and authority refused outside production too")
+	}
+	if !strings.Contains(err.Error(), "TLS_KEY_FILE") || !strings.Contains(err.Error(), "TLS_CLIENT_CA_FILE") {
+		t.Errorf("Load() = %v, want both missing files named", err)
 	}
 }
