@@ -108,9 +108,10 @@ bonne réponse pour un parc mûr et une infrastructure entière que `deploy/` n'
 **cert-manager n'est pas déployé par ce dépôt** : c'est un opérateur cluster-wide, avec ses CRD et son
 webhook d'admission. Même frontière que Postgres, Kafka, ClickHouse, Redis, les règles Alertmanager, le
 collecteur OTel et l'Ingress — `deploy/README.md` la pose déjà. Ce que la step livre : le contrat du
-`Secret`, un exemple de `Certificate` sous `deploy/k8s/tls/` (**hors** du répertoire que `kubeconform`
-valide, qui ne connaît pas ces CRD), le générateur pour les clusters sans cert-manager, et une ligne de
-la checklist de go-live (step-410) qui vérifie qu'un émetteur existe.
+`Secret`, un exemple de `Certificate` **dans le README** de `deploy/k8s/tls/` et non en fichier YAML —
+`make manifests` passe kubeconform sur `deploy/k8s` en entier, et il ne sait pas valider une CRD
+cert-manager —, le générateur pour les clusters sans cert-manager, et une ligne de la checklist de
+go-live (step-410) qui vérifie qu'un émetteur existe.
 
 **Deux pièges de montage :**
 - **`subPath` annule la propagation.** Un volume monté avec `subPath` ne reçoit jamais les mises à jour
