@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	"github.com/martialanouman/go-gateway/internal/modlrrouter"
@@ -74,7 +75,7 @@ func TestReturnLegDeliversViaLiveBind(t *testing.T) {
 	smppAddr, listener := startListenerRef(t, pool, registry)
 	deliverAddr := startDeliverServer(t, listener)
 
-	pods := modlrrouter.NewPodClients(stubResolver{addr: deliverAddr})
+	pods := modlrrouter.NewPodClients(stubResolver{addr: deliverAddr}, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	defer pods.Close()
 	prod := &capturingProducer{}
 	deliverer := modlrrouter.NewDeliverer(modlrrouter.DelivererDeps{
@@ -122,7 +123,7 @@ func TestReturnLegDeadLettersWithoutBindOrWebhook(t *testing.T) {
 	_, listener := startListenerRef(t, pool, registry)
 	deliverAddr := startDeliverServer(t, listener)
 
-	pods := modlrrouter.NewPodClients(stubResolver{addr: deliverAddr})
+	pods := modlrrouter.NewPodClients(stubResolver{addr: deliverAddr}, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	defer pods.Close()
 	prod := &capturingProducer{}
 	deliverer := modlrrouter.NewDeliverer(modlrrouter.DelivererDeps{

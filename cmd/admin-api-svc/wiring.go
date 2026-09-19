@@ -12,13 +12,13 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	goredis "github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/martialanouman/go-gateway/internal/adminapi"
 	"github.com/martialanouman/go-gateway/internal/auth"
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/connector/status"
 	contentkeypb "github.com/martialanouman/go-gateway/internal/contentkeys/pb"
+	"github.com/martialanouman/go-gateway/internal/grpctls"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/platform/async"
 	"github.com/martialanouman/go-gateway/internal/realtime"
@@ -119,7 +119,7 @@ func newAdminApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (_
 		return nil, fmt.Errorf("build operator token verifier: %w", err)
 	}
 
-	clients, err := newControlPlaneClients(cfg)
+	clients, err := newControlPlaneClients(cfg, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -266,9 +266,9 @@ func newRunners(ctx context.Context, cfg config.Config, logger *slog.Logger) *ru
 // connection until the first call, so a peer that is briefly down does not block startup.
 type controlPlaneClients struct {
 	// registry fans a force-disconnect out to the smpp-server pods when a credential is
-	// revoked/disabled or an account/customer suspended (step-032). Transport security terminates at
-	// the mesh (insecure). A Disconnect during a session-manager outage fails best-effort, without
-	// failing the control-plane mutation.
+	// revoked/disabled or an account/customer suspended (step-032), over mutual TLS (step-300b). A
+	// Disconnect during a session-manager outage fails best-effort, without failing the control-plane
+	// mutation.
 	registry *grpc.ClientConn
 
 	// contentKey delegates content-key rotation, the guarded read and the crypto-shred to
@@ -285,7 +285,7 @@ func (c *controlPlaneClients) close() {
 	}
 }
 
-func newControlPlaneClients(cfg config.Config) (_ *controlPlaneClients, err error) {
+func newControlPlaneClients(cfg config.Config, logger *slog.Logger) (_ *controlPlaneClients, err error) {
 	c := &controlPlaneClients{}
 	defer func() {
 		if err != nil {
@@ -293,12 +293,20 @@ func newControlPlaneClients(cfg config.Config) (_ *controlPlaneClients, err erro
 		}
 	}()
 
-	c.registry, err = grpc.NewClient(cfg.SMPP.SessionManagerAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	// One identity for both calls: it is the pod that is authenticated, not the surface it reaches.
+	// content-key-svc names this service in its own allowlist — holding a certificate of our authority
+	// proves a peer is one of our pods, never which one.
+	creds, err := grpctls.DialOption(cfg.TLS, logger)
+	if err != nil {
+		return nil, err
+	}
+
+	c.registry, err = grpc.NewClient(cfg.SMPP.SessionManagerAddr, creds)
 	if err != nil {
 		return nil, fmt.Errorf("dial session manager at %q: %w", cfg.SMPP.SessionManagerAddr, err)
 	}
 
-	c.contentKey, err = grpc.NewClient(cfg.ContentKey.Addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	c.contentKey, err = grpc.NewClient(cfg.ContentKey.Addr, creds)
 	if err != nil {
 		return nil, fmt.Errorf("dial content key service at %q: %w", cfg.ContentKey.Addr, err)
 	}

@@ -40,7 +40,7 @@ const serviceName = "billing-svc"
 var requiredSections = []config.Section{
 	config.SectionOTel, config.SectionRedis, config.SectionPostgres,
 	config.SectionGRPC, config.SectionKafka, config.SectionClickHouse,
-	config.SectionBillingReaper,
+	config.SectionBillingReaper, config.SectionTLS,
 }
 
 // configRefreshInterval is how often billing-svc rebuilds its per-customer billing-config snapshot from

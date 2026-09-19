@@ -11,11 +11,11 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	goredis "github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/martialanouman/go-gateway/internal/bindthrottle"
 	"github.com/martialanouman/go-gateway/internal/cancel"
 	"github.com/martialanouman/go-gateway/internal/config"
+	"github.com/martialanouman/go-gateway/internal/grpctls"
 	"github.com/martialanouman/go-gateway/internal/ingest"
 	"github.com/martialanouman/go-gateway/internal/metricstream"
 	"github.com/martialanouman/go-gateway/internal/observability"
@@ -82,7 +82,7 @@ func newSMPPApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (_ 
 		}
 	}()
 
-	st, err := openStores(ctx, cfg)
+	st, err := openStores(ctx, cfg, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -99,7 +99,11 @@ func newSMPPApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (_ 
 	// The pod-local Deliver gRPC surface: step-048 dials this pod (after a Lookup) to push a deliver_sm
 	// to a bind this pod owns. It shares cfg.GRPC.Port (reserved for the SMPP server's registry surface);
 	// only Deliver is served here, the rest of SessionRegistry lives in session-manager.
-	a.grpc = grpc.NewServer()
+	creds, err := grpctls.ServerOption(cfg.TLS, logger)
+	if err != nil {
+		return nil, err
+	}
+	a.grpc = grpc.NewServer(creds)
 	registrypb.RegisterSessionRegistryServer(a.grpc, smppserver.NewDeliverServer(stack.listener, logger))
 
 	a.ops, err = newOpsServer(cfg, logger, st, stack)
@@ -122,7 +126,7 @@ type stores struct {
 
 // openStores opens them in the order a degraded dependency must surface, releasing what it already
 // holds if a later one fails.
-func openStores(ctx context.Context, cfg config.Config) (_ *stores, err error) {
+func openStores(ctx context.Context, cfg config.Config, logger *slog.Logger) (_ *stores, err error) {
 	s := &stores{}
 	defer func() {
 		if err != nil {
@@ -145,11 +149,15 @@ func openStores(ctx context.Context, cfg config.Config) (_ *stores, err error) {
 		return nil, fmt.Errorf("kafka producer: %w", err)
 	}
 
-	// The SessionRegistry client is a pod-to-pod internal call, so transport security is terminated at
-	// the mesh, not here (insecure credentials). NewClient is lazy: it opens no connection until the
-	// first bind, so a session-manager that is briefly down does not block startup — a bind during that
-	// window simply fails with ESME_RSYSERR.
-	s.registry, err = grpc.NewClient(cfg.SMPP.SessionManagerAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	// The SessionRegistry client carries this pod's own certificate and verifies the peer against our
+	// authority (step-300b). NewClient is lazy: it opens no connection until the first bind, so a
+	// session-manager that is briefly down does not block startup — a bind during that window simply
+	// fails with ESME_RSYSERR.
+	creds, err := grpctls.DialOption(cfg.TLS, logger)
+	if err != nil {
+		return nil, err
+	}
+	s.registry, err = grpc.NewClient(cfg.SMPP.SessionManagerAddr, creds)
 	if err != nil {
 		return nil, fmt.Errorf("dial session manager at %q: %w", cfg.SMPP.SessionManagerAddr, err)
 	}

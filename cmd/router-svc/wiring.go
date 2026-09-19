@@ -12,7 +12,6 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/martialanouman/go-gateway/internal/billing/pb"
 	"github.com/martialanouman/go-gateway/internal/config"
@@ -20,6 +19,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/connector/status"
 	"github.com/martialanouman/go-gateway/internal/content"
 	contentkeypb "github.com/martialanouman/go-gateway/internal/contentkeys/pb"
+	"github.com/martialanouman/go-gateway/internal/grpctls"
 	"github.com/martialanouman/go-gateway/internal/ingest"
 	"github.com/martialanouman/go-gateway/internal/metricstream"
 	"github.com/martialanouman/go-gateway/internal/observability"
@@ -414,7 +414,11 @@ func newPipelineStack(
 	}
 	p.creditHolder = &credit.Holder{}
 	p.creditHolder.Store(creditSnap)
-	p.billingConn, err = grpc.NewClient(cfg.Billing.Addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	billingCreds, err := grpctls.DialOption(cfg.TLS, logger)
+	if err != nil {
+		return nil, err
+	}
+	p.billingConn, err = grpc.NewClient(cfg.Billing.Addr, billingCreds)
 	if err != nil {
 		return nil, fmt.Errorf("dial billing at %q: %w", cfg.Billing.Addr, err)
 	}
@@ -481,7 +485,11 @@ func newAcceptedProjector(ctx context.Context, cfg config.Config, pool *pgxpool.
 
 	// The data key comes from content-key-svc (the sole KMS holder), on its own connection: the body is
 	// sealed here and never reaches that service (step-162/167). Lazy dial, like the billing one.
-	p.conn, err = grpc.NewClient(cfg.ContentKey.Addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	keyCreds, err := grpctls.DialOption(cfg.TLS, logger)
+	if err != nil {
+		return nil, err
+	}
+	p.conn, err = grpc.NewClient(cfg.ContentKey.Addr, keyCreds)
 	if err != nil {
 		return nil, fmt.Errorf("dial content key service at %q: %w", cfg.ContentKey.Addr, err)
 	}

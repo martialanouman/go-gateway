@@ -11,10 +11,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	goredis "github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/dlrmap"
+	"github.com/martialanouman/go-gateway/internal/grpctls"
 	"github.com/martialanouman/go-gateway/internal/modlrrouter"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/pipeline/antispam"
@@ -349,6 +349,12 @@ func (d *deliveryLeg) close() {
 	}
 }
 
+// smppServerIdentity is the name the return path verifies on a smpp-server pod. It is the name of the
+// Deployment, fixed by deploy/k8s, and therefore a constant and not a knob: the certificate is issued
+// once for every replica, so no other name is attestable. If it is ever renamed, the handshake says so
+// in full — "x509: certificate is valid for smpp-server-svc, not …".
+const smppServerIdentity = "smpp-server-svc"
+
 func newDeliveryLeg(cfg config.Config, st *stores, mo *moLeg, logger *slog.Logger) (_ *deliveryLeg, err error) {
 	d := &deliveryLeg{}
 	defer func() {
@@ -357,11 +363,23 @@ func newDeliveryLeg(cfg config.Config, st *stores, mo *moLeg, logger *slog.Logge
 		}
 	}()
 
-	d.registry, err = grpc.NewClient(cfg.SMPP.SessionManagerAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	creds, err := grpctls.DialOption(cfg.TLS, logger)
+	if err != nil {
+		return nil, err
+	}
+	d.registry, err = grpc.NewClient(cfg.SMPP.SessionManagerAddr, creds)
 	if err != nil {
 		return nil, fmt.Errorf("dial session registry: %w", err)
 	}
-	d.pods = modlrrouter.NewPodClients(modlrrouter.NewTemplateResolver(cfg.SMPP.PodAddrTemplate))
+
+	// The pod leg verifies smppServerIdentity and not the address it composes: the certificate is issued
+	// per Deployment, so "a pod of smpp-server-svc" is the only identity it can attest. Demanding a
+	// per-pod SAN would claim an identity this authority does not issue (step-300b).
+	podCreds, err := grpctls.DialOptionTo(cfg.TLS, logger, smppServerIdentity)
+	if err != nil {
+		return nil, err
+	}
+	d.pods = modlrrouter.NewPodClients(modlrrouter.NewTemplateResolver(cfg.SMPP.PodAddrTemplate), podCreds)
 
 	// The webhook sender owns its retries and parks an exhausted event on webhook.dead-letter (step-047
 	// interface, wired here). The deliverer never parks a webhook event itself.

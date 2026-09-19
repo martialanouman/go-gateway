@@ -39,7 +39,8 @@ func run() error {
 
 	// The session manager talks only to Redis and serves gRPC; it has no Postgres, Kafka or HTTP
 	// surface, so it declares just the sections it uses.
-	cfg, err := config.Load(serviceName, config.SectionOTel, config.SectionRedis, config.SectionGRPC)
+	cfg, err := config.Load(serviceName, config.SectionOTel, config.SectionRedis, config.SectionGRPC,
+		config.SectionTLS)
 	if err != nil {
 		return err
 	}

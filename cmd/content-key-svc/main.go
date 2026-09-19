@@ -46,7 +46,8 @@ func run() error {
 	// Postgres (content_keys) and gRPC, nothing else: the key custodian declares the smallest possible set
 	// of sections. The plan assigns it port 7002; the deploy sets GRPC_PORT=7002 (the shared config default
 	// 7000 is session-manager-svc's, §1.4), which is what CONTENT_KEY_ADDR's default points at.
-	cfg, err := config.Load(serviceName, config.SectionOTel, config.SectionPostgres, config.SectionGRPC)
+	cfg, err := config.Load(serviceName, config.SectionOTel, config.SectionPostgres, config.SectionGRPC,
+		config.SectionTLS)
 	if err != nil {
 		return err
 	}

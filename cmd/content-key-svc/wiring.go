@@ -11,6 +11,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/contentkeys"
 	"github.com/martialanouman/go-gateway/internal/contentkeys/pb"
+	"github.com/martialanouman/go-gateway/internal/grpctls"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/storage/postgres"
 )
@@ -77,7 +78,11 @@ func newContentKeyApp(ctx context.Context, cfg config.Config, logger *slog.Logge
 		return nil, err
 	}
 
-	a.grpc = grpc.NewServer()
+	creds, err := grpctls.ServerOption(cfg.TLS, logger)
+	if err != nil {
+		return nil, err
+	}
+	a.grpc = grpc.NewServer(creds)
 	pb.RegisterContentKeysServer(a.grpc,
 		contentkeys.NewContentKeyServer(kms, postgres.NewContentKeyRepo(st.pg)))
 
