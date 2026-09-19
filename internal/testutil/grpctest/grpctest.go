@@ -1,11 +1,5 @@
-// Package grpctest serves a gRPC server on a real socket and reports what a call to it answers at the
-// TRANSPORT level, which is what a TLS test needs and what a mock cannot give: a handshake only happens
-// over a connection.
-//
-// The probe deliberately calls a method no server implements. A completed handshake answers
-// Unimplemented, a refused one answers Unavailable — so the probe reads the transport without knowing
-// anything about the services registered above it, and the same two lines serve every binary's wiring
-// test whatever it registered.
+// Package grpctest serves a gRPC server on a real socket and probes it, for tests about the transport
+// rather than the services above it.
 package grpctest
 
 import (
@@ -20,7 +14,8 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
-// probeMethod is implemented by nothing, on purpose. See the package doc.
+// probeMethod is implemented by nothing, so a completed handshake answers Unimplemented and a refused
+// one Unavailable.
 const probeMethod = "/grpctest.Probe/Ping"
 
 // Serve starts srv on a loopback port and returns its address, stopping it when the test ends.
@@ -35,11 +30,8 @@ func Serve(t *testing.T, srv *grpc.Server) string {
 	return lis.Addr().String()
 }
 
-// Probe runs one RPC over conn and returns its status, which carries the transport's verdict.
-//
-// It returns the whole error and not just its code because a refusal has to be read for its REASON: a
-// connection that was reset, a peer whose certificate was refused and a peer that refused ours all
-// answer Unavailable, and a test that stopped at the code would stay green on any of them.
+// Probe runs one RPC over conn. It returns the whole error and not just the code because a reset
+// connection and a refused certificate both answer Unavailable, and only the message tells them apart.
 func Probe(t *testing.T, conn *grpc.ClientConn) (codes.Code, error) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

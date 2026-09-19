@@ -349,20 +349,14 @@ func (d *deliveryLeg) close() {
 	}
 }
 
-// smppServerIdentity is the name the return path verifies on a smpp-server pod. It is the name of the
-// Deployment, fixed by deploy/k8s, and therefore a constant and not a knob: the certificate is issued
-// once for every replica, so no other name is attestable. If it is ever renamed, the handshake says so
-// in full — "x509: certificate is valid for smpp-server-svc, not …".
+// smppServerIdentity is the name the return path verifies on a smpp-server pod: the Deployment's, fixed
+// by deploy/k8s. A constant and not a knob — one certificate serves every replica, so no other name is
+// attestable, and a rename shows up in full in the handshake error.
 const smppServerIdentity = "smpp-server-svc"
 
-// newPodClients builds the leg that pushes a deliver_sm to the smpp-server pod owning the bind.
-//
-// It verifies smppServerIdentity and NOT the address it composes: the certificate is issued per
-// Deployment, so "a pod of smpp-server-svc" is the only identity it can attest. Demanding a per-pod SAN
-// would claim an identity this authority does not issue (step-300b).
-//
-// It is a function of its own so that this choice can be tested without the rest of the delivery leg,
-// which needs Kafka and ClickHouse to exist.
+// newPodClients builds the leg that pushes a deliver_sm to the pod owning the bind. It verifies
+// smppServerIdentity and not the address it composes, and stands alone so that choice can be tested
+// without the rest of the delivery leg, which needs Kafka and ClickHouse.
 func newPodClients(cfg config.Config, logger *slog.Logger) (*modlrrouter.PodClients, error) {
 	creds, err := grpctls.DialOptionTo(cfg.TLS, logger, smppServerIdentity)
 	if err != nil {

@@ -69,14 +69,11 @@ func TestAMutuallyAuthenticatedCallReachesTheServer(t *testing.T) {
 		t.Fatalf("DialOption: %v", err)
 	}
 
-	// Unimplemented and not Unavailable: the handshake completed and the server answered that it serves
-	// no such method. That is the whole proof — nothing below the transport could have produced it.
 	if code, err := grpctest.Probe(t, dial(t, addr, dialOpt)); code != codes.Unimplemented {
 		t.Fatalf("mutually authenticated call answered %s (%v), want Unimplemented", code, err)
 	}
 
-	// And the success above is TLS, not a server that never enabled it: a plaintext client would reach a
-	// plaintext server exactly the same way, so without this half the whole test passes on no TLS at all.
+	// Without this half the test passes on a server serving no TLS at all.
 	plain := dial(t, addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if code, err := grpctest.Probe(t, plain); code == codes.Unimplemented {
 		t.Fatalf("an insecure client reached the server (%s, %v): it is not serving TLS", code, err)
@@ -93,10 +90,9 @@ func TestTheNameDialledIsTheNameVerified(t *testing.T) {
 	}
 	addr := serveWith(t, opt)
 
-	// Seven of the eight clients of this repository dial a Service by its name and declare no identity to
-	// verify: grpc-go fills ServerName from the authority of the address. The dialer below sends the bytes
-	// to the loopback listener whatever the name, so the name is all that is under test. passthrough
-	// keeps the resolver from looking the name up — there is no such host, and that is the point.
+	// Seven of the eight clients dial a Service by name and declare no identity. The dialer sends the
+	// bytes to the loopback listener whatever the name, so the name is all that is under test, and
+	// passthrough keeps the resolver from looking up a host that does not exist.
 	dialOpt, err := grpctls.DialOption(tlsConfig(t, ca, "router-svc"), discardLogger())
 	if err != nil {
 		t.Fatalf("DialOption: %v", err)
@@ -115,8 +111,7 @@ func TestTheNameDialledIsTheNameVerified(t *testing.T) {
 		t.Fatalf("the name the certificate carries answered %s (%v), want Unimplemented", code, err)
 	}
 
-	// The same bytes, the same listener, another name: refused. Without this half the test would pass on a
-	// client that verified nothing at all.
+	// Without this half the test would pass on a client that verified nothing.
 	wrong, err := grpc.NewClient("passthrough:///session-manager-svc:7000", dialOpt, redirect)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
@@ -141,15 +136,13 @@ func TestAClientWithoutACertificateIsRefused(t *testing.T) {
 	}
 	addr := serveWith(t, opt)
 
-	// A client that trusts our CA but presents nothing of its own — the shape of any pod in the cluster
-	// that did not get a certificate.
+	// Trusts our CA, presents nothing of its own.
 	naked := credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS13, RootCAs: poolOf(t, ca), ServerName: "billing-svc"})
 	code, err := grpctest.Probe(t, dial(t, addr, grpc.WithTransportCredentials(naked)))
 	if code == codes.Unimplemented {
 		t.Fatal("a client with no certificate reached the server")
 	}
-	// The reason, not just the refusal: a server that never started, a reset connection and a refused
-	// certificate all answer Unavailable, and asserting the code alone stays green on all three.
+	// The reason, not just the code: a reset connection answers Unavailable too.
 	if err == nil || !strings.Contains(err.Error(), "certificate required") {
 		t.Fatalf("refusal not attributed to the missing certificate: %v", err)
 	}
@@ -165,7 +158,7 @@ func TestAClientFromAnotherAuthorityIsRefused(t *testing.T) {
 	}
 	addr := serveWith(t, opt)
 
-	// Signed by a CA of its own, and trusting only that one: an intruder, not a misconfigured pod.
+	// Signed by a CA of its own, and trusting only that one.
 	dialOpt, err := grpctls.DialOptionTo(tlsConfig(t, theirs, "router-svc"), discardLogger(), "billing-svc")
 	if err != nil {
 		t.Fatalf("DialOption: %v", err)
@@ -183,8 +176,7 @@ func TestTheAllowlistRefusesACallerItDoesNotName(t *testing.T) {
 	t.Parallel()
 	ca := tlstest.NewCA(t)
 
-	// content-key-svc hands out a customer's data key: holding a certificate of our CA proves a peer is
-	// one of our pods, never WHICH one.
+	// A certificate of our CA proves a peer is one of our pods, never WHICH one.
 	opt, err := grpctls.ServerOption(tlsConfig(t, ca, "content-key-svc", "router-svc", "admin-api-svc"), discardLogger())
 	if err != nil {
 		t.Fatalf("ServerOption: %v", err)
@@ -199,8 +191,7 @@ func TestTheAllowlistRefusesACallerItDoesNotName(t *testing.T) {
 		t.Fatalf("named caller answered %s (%v), want Unimplemented", code, err)
 	}
 
-	// Same CA, same shape, a name the server does not list. Without the allowlist this one passes, which
-	// is exactly the hole a tunnel without authorisation leaves.
+	// Same CA, a name the server does not list. Without the allowlist this one passes.
 	stranger, err := grpctls.DialOptionTo(tlsConfig(t, ca, "connector-pool-svc"), discardLogger(), "content-key-svc")
 	if err != nil {
 		t.Fatalf("DialOption: %v", err)
@@ -217,8 +208,7 @@ func TestTheAllowlistRefusesACallerItDoesNotName(t *testing.T) {
 func TestDisabledTLSLeavesBothSidesInPlaintext(t *testing.T) {
 	t.Parallel()
 
-	// Off is what keeps the unit suites and the integration suites running without certificates. It has
-	// to be the SAME switch on both sides, or half the repository would stop talking to the other half.
+	// Off keeps the test suites running without certificates, on both sides of the same switch.
 	opt, err := grpctls.ServerOption(config.TLS{}, discardLogger())
 	if err != nil {
 		t.Fatalf("ServerOption: %v", err)
@@ -233,7 +223,7 @@ func TestDisabledTLSLeavesBothSidesInPlaintext(t *testing.T) {
 		t.Fatalf("plaintext call answered %s (%v), want Unimplemented", code, err)
 	}
 
-	// And it really is plaintext, not TLS that happens to work: an insecure client reaches it.
+	// And it really is plaintext.
 	plain := dial(t, addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if code, err := grpctest.Probe(t, plain); code != codes.Unimplemented {
 		t.Fatalf("insecure client answered %s (%v) on a disabled server, want Unimplemented", code, err)
@@ -247,8 +237,7 @@ func TestAnUnreadableIdentityFailsAtBoot(t *testing.T) {
 	cfg := tlsConfig(t, ca, "billing-svc")
 	cfg.CertFile = cfg.CertFile + ".missing"
 
-	// A boot error, not a handshake that starts failing at three in the morning. Both sides, because
-	// both read the same three files.
+	// A boot error, not a handshake failing later.
 	if _, err := grpctls.ServerOption(cfg, discardLogger()); err == nil {
 		t.Error("ServerOption accepted a certificate path that does not exist")
 	}

@@ -15,8 +15,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/testutil/tlstest"
 )
 
-// deliverStub answers as if it owned the bind. What is under test is the handshake that precedes the
-// call, so the answer only has to be distinguishable from a transport failure.
+// deliverStub answers as if it owned the bind; only the handshake preceding the call is under test.
 type deliverStub struct {
 	registrypb.UnimplementedSessionRegistryServer
 }
@@ -25,19 +24,15 @@ func (deliverStub) Deliver(context.Context, *registrypb.DeliverRequest) (*regist
 	return &registrypb.DeliverResponse{Delivered: true}, nil
 }
 
-// TestThePodLegVerifiesTheDeploymentAndNotTheAddressDialled is the wiring half of the arbitration: the
-// return path composes a PER-POD address, and the certificate it meets is issued PER DEPLOYMENT.
-//
-// The pod id is the address itself here, through a "%s" template, so the authority grpc-go derives on
-// its own is a host:port no certificate of ours carries. Only the pinned name gets through — and the
-// second half is what proves the fixture is not what makes the first one pass.
+// The return path composes a per-pod address while the certificate it meets is issued per Deployment.
+// Through a "%s" template the pod id IS the address, so the authority grpc-go would derive on its own
+// is a host:port no certificate of ours carries.
 func TestThePodLegVerifiesTheDeploymentAndNotTheAddressDialled(t *testing.T) {
 	t.Parallel()
 	ca := tlstest.NewCA(t)
 
-	// The literal, deliberately NOT smppServerIdentity: this is the name deploy/k8s gives the Deployment,
-	// and what its certificate will therefore carry. Deriving it from the constant would make the test
-	// follow the constant wherever it drifted, and a wrong pin would stay green.
+	// A literal, deliberately not smppServerIdentity: deriving it from the constant would make the test
+	// follow it wherever it drifted, and a wrong pin would stay green.
 	const deploymentName = "smpp-server-svc"
 	certFile, keyFile := ca.Issue(t, deploymentName, deploymentName)
 	podIdentity := config.TLS{Enabled: true, CertFile: certFile, KeyFile: keyFile, ClientCAFile: ca.CAFile}
@@ -63,8 +58,7 @@ func TestThePodLegVerifiesTheDeploymentAndNotTheAddressDialled(t *testing.T) {
 		t.Fatalf("delivery to a pod of %s was refused: %v", deploymentName, err)
 	}
 
-	// The same server at the same address, verified under the name grpc-go would have derived by itself.
-	// That is what the return path does without the pin, and it reaches no pod at all.
+	// The same server verified under the name grpc-go derives by itself: what the pin replaces.
 	unpinnedCreds, err := grpctls.DialOption(cfg.TLS, silentLogger())
 	if err != nil {
 		t.Fatalf("DialOption: %v", err)

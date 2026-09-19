@@ -293,9 +293,8 @@ func newControlPlaneClients(cfg config.Config, logger *slog.Logger) (_ *controlP
 		}
 	}()
 
-	// One identity for both calls: it is the pod that is authenticated, not the surface it reaches.
-	// content-key-svc names this service in its own allowlist — holding a certificate of our authority
-	// proves a peer is one of our pods, never which one.
+	// One identity for both calls: the pod is authenticated, not the surface it reaches. content-key-svc
+	// names this service in its own allowlist.
 	creds, err := grpctls.DialOption(cfg.TLS, logger)
 	if err != nil {
 		return nil, err

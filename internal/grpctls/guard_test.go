@@ -10,10 +10,8 @@ import (
 	"testing"
 )
 
-// The guard below is what keeps the wiring honest across ten binaries. Proving grpctls itself says
-// nothing about whether a service uses it, and proving each of twelve call sites by hand would mean a
-// dozen container-backed tests that still would not catch the thirteenth. What actually goes wrong is
-// a future step adding one more plaintext dial without thinking about it — so that is what is checked.
+// Proving grpctls says nothing about whether a service uses it, and what goes wrong in practice is a
+// future step adding one more plaintext dial without thinking about it. That is what these two check.
 
 // scanRoots are the trees holding production code. test/ is tooling run with go run, never shipped.
 var scanRoots = []string{"../../cmd", "../../internal"}
@@ -72,16 +70,13 @@ func TestEveryGRPCServerIsBuiltWithItsCredentials(t *testing.T) {
 		})
 	})
 
-	// An option count, not an option identity: what this catches is a server built with nothing at all,
-	// which is how all four of them looked before step-300b. Which option it carries is the business of
-	// the tests that dial it.
+	// A count, not an identity: which option a server carries is the business of the tests that dial it.
 	for _, b := range bare {
 		t.Errorf("%s builds a gRPC server with no options — it needs grpctls.ServerOption (step-300b)", b)
 	}
 }
 
 // walkProduction parses every non-test Go file under the scan roots and returns how many it read.
-// internal/testutil holds helpers compiled only into tests; they are free to dial in plaintext.
 func walkProduction(t *testing.T, visit func(path string, file *ast.File, fset *token.FileSet)) int {
 	t.Helper()
 	fset := token.NewFileSet()
@@ -97,8 +92,7 @@ func walkProduction(t *testing.T, visit func(path string, file *ast.File, fset *
 				return nil
 			case strings.Contains(filepath.ToSlash(path), "/testutil/"):
 				return nil
-			// This package builds the plaintext path — it is the one place allowed to, and the whole point
-			// of the guard is that it stays the only one.
+			// The one place allowed to build the plaintext path.
 			case strings.Contains(filepath.ToSlash(path), "/internal/grpctls/"):
 				return nil
 			}

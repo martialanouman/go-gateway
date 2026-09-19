@@ -252,7 +252,7 @@ func allowlist(allowed []string) func(tls.ConnectionState) error {
 // It exists because the failure it precedes is silent and misattributed: the dialling side cannot
 // refresh RootCAs (see the package doc), so a rotated CA makes new handshakes fail with
 // "x509: unknown authority" on a pod nobody deployed. The server side does pick the new pool up, which
-// makes the asymmetry worse — half the mesh moves, half does not.
+// makes the asymmetry worse — half the services move, half do not.
 // warnIfExpiring says so when the certificate just loaded is already expired, or about to be.
 //
 // tls.LoadX509KeyPair parses the leaf and checks that the key matches it — it never looks at NotAfter.

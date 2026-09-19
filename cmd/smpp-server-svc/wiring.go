@@ -149,10 +149,8 @@ func openStores(ctx context.Context, cfg config.Config, logger *slog.Logger) (_ 
 		return nil, fmt.Errorf("kafka producer: %w", err)
 	}
 
-	// The SessionRegistry client carries this pod's own certificate and verifies the peer against our
-	// authority (step-300b). NewClient is lazy: it opens no connection until the first bind, so a
-	// session-manager that is briefly down does not block startup — a bind during that window simply
-	// fails with ESME_RSYSERR.
+	// NewClient is lazy: it opens no connection until the first bind, so a session-manager that is
+	// briefly down does not block startup — a bind during that window simply fails with ESME_RSYSERR.
 	creds, err := grpctls.DialOption(cfg.TLS, logger)
 	if err != nil {
 		return nil, err

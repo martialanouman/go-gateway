@@ -16,13 +16,9 @@ import (
 	"github.com/martialanouman/go-gateway/internal/testutil/tlstest"
 )
 
-// TestTheWiredServerAdmitsOnlyTheCallersItNames is about the WIRING, not the mechanism: grpctls proves
-// an allowlist refuses a stranger, and proves nothing about whether this service passes one.
-//
-// It is the link that matters most in the repository. This service is the sole holder of the KMS
-// (ADR-0011), and GetContentEncryptionKey returns a customer's plaintext data key. A tunnel without
-// authorisation lets any pod of the cluster ask for any key: holding a certificate of our authority
-// proves a peer is one of our pods, never WHICH one.
+// The wiring, not the mechanism: grpctls proves an allowlist refuses a stranger and proves nothing
+// about whether this service passes one. Sole holder of the KMS (ADR-0011), it returns a customer's
+// plaintext data key — a tunnel without authorisation lets any pod of the cluster ask for any key.
 func TestTheWiredServerAdmitsOnlyTheCallersItNames(t *testing.T) {
 	ca := tlstest.NewCA(t)
 	certFile, keyFile := ca.Issue(t, serviceName, serviceName)
@@ -48,14 +44,12 @@ func TestTheWiredServerAdmitsOnlyTheCallersItNames(t *testing.T) {
 
 	addr := grpctest.Serve(t, app.grpc)
 
-	// router-svc is one of the two callers the configuration names: it reaches the server, and the
-	// Unimplemented is the probe's own method, not a refusal.
+	// Named by the configuration: the Unimplemented is the probe's own method, not a refusal.
 	if code, err := grpctest.Probe(t, dialAs(t, ca, addr, "router-svc")); code != codes.Unimplemented {
 		t.Fatalf("a named caller answered %s (%v), want Unimplemented", code, err)
 	}
 
-	// connector-pool-svc holds a certificate of the same authority and is not named. Without the
-	// allowlist reaching the server, this call succeeds exactly like the one above.
+	// Same authority, not named. Without the allowlist reaching the server this call succeeds too.
 	code, err := grpctest.Probe(t, dialAs(t, ca, addr, "connector-pool-svc"))
 	if code == codes.Unimplemented {
 		t.Fatal("a caller the configuration does not name reached the key service")
@@ -65,8 +59,8 @@ func TestTheWiredServerAdmitsOnlyTheCallersItNames(t *testing.T) {
 	}
 }
 
-// dialAs builds a client holding a certificate issued to name, verifying the key service under its own
-// identity — the address is a loopback port, which no certificate of ours carries.
+// dialAs builds a client holding a certificate issued to name. The identity verified is pinned because
+// the address is a loopback port, which no certificate of ours carries.
 func dialAs(t *testing.T, ca *tlstest.CA, addr, name string) *grpc.ClientConn {
 	t.Helper()
 	certFile, keyFile := ca.Issue(t, name, name)

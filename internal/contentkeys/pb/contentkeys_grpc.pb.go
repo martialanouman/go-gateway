@@ -16,7 +16,6 @@ package pb
 
 import (
 	context "context"
-
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
@@ -41,8 +40,9 @@ const (
 //
 // ContentKeys manages the per-customer content-encryption keys. Metadata responses carry key METADATA
 // only — never the plaintext data key nor the wrapped bytes; the two RPCs that DO return usable key
-// material (GetContentEncryptionKey, GetContentKey) are the guarded encrypt and decrypt paths, ride the
-// intra-mesh mTLS, and their data key must never be logged nor persisted.
+// material (GetContentEncryptionKey, GetContentKey) are the guarded encrypt and decrypt paths, served
+// over mutual TLS restricted to the callers this service names (step-300b), and their data key must
+// never be logged nor persisted.
 type ContentKeysClient interface {
 	// GetOrCreateContentKey returns the customer's active content key, creating one (a fresh data key sealed
 	// by the KMS) if none exists yet. Idempotent: concurrent callers converge on a single active key.
@@ -52,8 +52,9 @@ type ContentKeysClient interface {
 	RotateContentKey(ctx context.Context, in *RotateContentKeyRequest, opts ...grpc.CallOption) (*ContentKeyResponse, error)
 	// GetContentEncryptionKey returns the customer's active key id AND its UNWRAPPED (plaintext) data key, so
 	// the data plane can encrypt a body at CDR write without the body ever reaching the key service (§14). This is
-	// the ONLY RPC that returns plaintext key material: it exists solely for the guarded encrypt path, rides
-	// the intra-mesh mTLS, and the DEK must never be logged nor written to a CDR. Callers cache it briefly.
+	// the ONLY RPC that returns plaintext key material: it exists solely for the guarded encrypt path, is
+	// served over mutual TLS to named callers only, and the DEK must never be logged nor written to a CDR.
+	// Callers cache it briefly.
 	GetContentEncryptionKey(ctx context.Context, in *GetContentEncryptionKeyRequest, opts ...grpc.CallOption) (*ContentEncryptionKeyResponse, error)
 	// GetContentKey unwraps a SPECIFIC content key by id — the guarded DECRYPT path (get-message-content,
 	// step-163). A CDR body may be sealed under a retired key (an old row after rotation), so the reader asks by
@@ -131,8 +132,9 @@ func (c *contentKeysClient) DestroyContentKeys(ctx context.Context, in *DestroyC
 //
 // ContentKeys manages the per-customer content-encryption keys. Metadata responses carry key METADATA
 // only — never the plaintext data key nor the wrapped bytes; the two RPCs that DO return usable key
-// material (GetContentEncryptionKey, GetContentKey) are the guarded encrypt and decrypt paths, ride the
-// intra-mesh mTLS, and their data key must never be logged nor persisted.
+// material (GetContentEncryptionKey, GetContentKey) are the guarded encrypt and decrypt paths, served
+// over mutual TLS restricted to the callers this service names (step-300b), and their data key must
+// never be logged nor persisted.
 type ContentKeysServer interface {
 	// GetOrCreateContentKey returns the customer's active content key, creating one (a fresh data key sealed
 	// by the KMS) if none exists yet. Idempotent: concurrent callers converge on a single active key.
@@ -142,8 +144,9 @@ type ContentKeysServer interface {
 	RotateContentKey(context.Context, *RotateContentKeyRequest) (*ContentKeyResponse, error)
 	// GetContentEncryptionKey returns the customer's active key id AND its UNWRAPPED (plaintext) data key, so
 	// the data plane can encrypt a body at CDR write without the body ever reaching the key service (§14). This is
-	// the ONLY RPC that returns plaintext key material: it exists solely for the guarded encrypt path, rides
-	// the intra-mesh mTLS, and the DEK must never be logged nor written to a CDR. Callers cache it briefly.
+	// the ONLY RPC that returns plaintext key material: it exists solely for the guarded encrypt path, is
+	// served over mutual TLS to named callers only, and the DEK must never be logged nor written to a CDR.
+	// Callers cache it briefly.
 	GetContentEncryptionKey(context.Context, *GetContentEncryptionKeyRequest) (*ContentEncryptionKeyResponse, error)
 	// GetContentKey unwraps a SPECIFIC content key by id — the guarded DECRYPT path (get-message-content,
 	// step-163). A CDR body may be sealed under a retired key (an old row after rotation), so the reader asks by

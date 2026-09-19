@@ -3,7 +3,7 @@
 # secrets-by-reference (POSTGRES_URL literal, and the Secret below), required-override (no HTTP_PORT,
 # no ENVIRONMENT), known-env-name (POSTGRE_URL), image-convention (nginx),
 # pool-covers-lanes twice (minReplicas 2 over 6 partitions is 3 lanes per pod against POSTGRES_MAX_CONNS
-# 2; and the not-a-service HPA below omits minReplicas entirely).
+# 2; and the not-a-service HPA below omits minReplicas entirely), no-subpath (the tls mount below).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -37,6 +37,10 @@ spec:
               value: "2"
             - name: POSTGRE_URL
               value: typo
+          volumeMounts:
+            - name: tls
+              mountPath: /etc/gateway/tls/tls.crt
+              subPath: tls.crt
           livenessProbe:
             httpGet:
               path: /readyz

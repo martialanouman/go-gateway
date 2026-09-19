@@ -51,13 +51,9 @@ type PodClients struct {
 	conns map[string]*grpc.ClientConn
 }
 
-// NewPodClients builds the pod delivery client over a pod-address resolver, dialling each pod with
-// creds.
-//
-// creds carries the identity to VERIFY, which is not the address dialled: the certificate of a
-// smpp-server pod is issued per Deployment, so the one thing it attests is that the peer is a pod of
-// that Deployment (step-300b). Whether it is the RIGHT pod is answered above the transport — Deliver
-// returns delivered:false when it does not own the bind.
+// NewPodClients builds the pod delivery client over a pod-address resolver. creds carries the identity
+// to verify, which is not the address dialled: a pod's certificate is issued per Deployment, so it can
+// only attest that the peer belongs to it. Whether it is the RIGHT pod is Deliver's answer.
 func NewPodClients(resolver AddrResolver, creds grpc.DialOption) *PodClients {
 	return &PodClients{
 		resolver: resolver,

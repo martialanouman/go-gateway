@@ -99,6 +99,7 @@ func TestTheGuardCatchesWhatItClaimsTo(t *testing.T) {
 		"deployment-per-service", "probe-endpoints", "probe-timeout", "grace-period",
 		"ops-port-not-exposed", "pdb-per-deployment", "secrets-by-reference",
 		"required-override", "known-env-name", "hpa-max-replicas", "pool-covers-lanes", "image-convention",
+		"no-subpath",
 	} {
 		if !got[rule] {
 			t.Errorf("rule %q reported nothing on testdata/broken, so nothing proves it can fail — "+
@@ -192,6 +193,7 @@ func inspect(t *testing.T, dir string) []violation {
 			// asking it for probes or a grace period would be asking for the wrong thing.
 			for _, c := range m.Spec.Template.Spec.Containers {
 				out = append(out, inspectContainerEnv(m, c, env, configMaps)...)
+				out = append(out, inspectVolumeMounts(m, c)...)
 				out = append(out, inspectImage(m, c)...)
 			}
 		case "Service":
@@ -280,6 +282,7 @@ func inspectDeployment(m deploy.Manifest, env map[string]string, configMaps map[
 
 		out = append(out, inspectImage(m, c)...)
 		out = append(out, inspectContainerEnv(m, c, env, configMaps)...)
+		out = append(out, inspectVolumeMounts(m, c)...)
 		out = append(out, inspectRequiredOverrides(m, c, svc, env, configMaps)...)
 	}
 
@@ -315,6 +318,31 @@ func inspectImage(m deploy.Manifest, c deploy.Container) []violation {
 		msg: fmt.Sprintf("%s: container %q image %q does not start with %q",
 			m.Source, c.Name, c.Image, imagePrefix),
 	}}
+}
+
+// inspectVolumeMounts refuses a subPath mount, on every container the tree holds. The kubelet updates a
+// Secret volume by swapping a symlink; a subPath mount resolves the path once and never follows it, so
+// a rotated certificate stops reaching the process with nothing logged — weeks before the handshakes
+// start expiring.
+func inspectVolumeMounts(m deploy.Manifest, c deploy.Container) []violation {
+	var out []violation
+	for _, v := range c.VolumeMounts {
+		// subPathExpr is the same mechanism with variable expansion.
+		field, value := "subPath", v.SubPath
+		if value == "" && v.SubPathExpr != "" {
+			field, value = "subPathExpr", v.SubPathExpr
+		}
+		if value == "" {
+			continue
+		}
+		out = append(out, violation{
+			rule: "no-subpath",
+			msg: fmt.Sprintf("%s: container %q mounts %q with %s %q — a subPath mount never receives a Secret update, "+
+				"so a rotated certificate would silently stop reaching the process until the next restart",
+				m.Source, c.Name, v.Name, field, value),
+		})
+	}
+	return out
 }
 
 // inspectContainerEnv checks the variables a container sets: known to config, and secrets by
