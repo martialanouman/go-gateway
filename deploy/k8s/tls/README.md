@@ -19,9 +19,11 @@ connaît pas : `ca.crt` est un ajout de cert-manager, et la voie manuelle produi
 | `tls.key` | sa clé privée |
 | `ca.crt`  | l'autorité qui valide ses pairs |
 
-**Ce que `TLS_ENABLED` couvre à ce jour : le gRPC interne, et lui seul.** Les APIs HTTP (step-300c) et
-les binds SMPP (step-300d) restent en clair tant que ces steps ne sont pas livrées, sur un pod qui pose
-pourtant `TLS_ENABLED=true`.
+**Ce que `TLS_ENABLED` couvre à ce jour : le gRPC interne et les deux APIs HTTP.** Les binds SMPP
+(step-300d) restent en clair tant que cette step n'est pas livrée, sur un pod qui pose pourtant
+`TLS_ENABLED=true`. Les deux surfaces HTTP ne se ressemblent pas : `rest-api-svc` est **publique** —
+elle prouve son identité, plancher TLS 1.2, et ne demande aucun certificat ; `admin-api-svc` est
+**mutuelle**, plancher 1.3, et refuse un appelant sans certificat de notre CA.
 
 **Les `Deployment` montent déjà ce volume** (step-300b) : les trois chemins sont dans `configmap.yaml`,
 identiques partout, et chaque service pose `TLS_ENABLED` à côté du volume qui le rend vrai. Il ne reste
@@ -66,6 +68,11 @@ dans le namespace ». La liste compare des **SAN DNS**, jamais un `CN`.
 | `billing-svc` | `router-svc`, `connector-pool-svc` |
 | `session-manager-svc` | `smpp-server-svc`, `mo-dlr-router-svc`, `admin-api-svc` |
 | `smpp-server-svc` | `mo-dlr-router-svc` |
+
+Les deux surfaces HTTP n'y figurent pas, et pour deux raisons opposées : `rest-api-svc` est **publique**
+et ne demande aucun certificat à ses intégrateurs ; `admin-api-svc` exige le certificat mais ne peut
+nommer personne — aucun pod de ce dépôt ne l'appelle, et son autorisation réelle reste le bearer
+opérateur.
 
 Ajouter un appelant à un de ces services, c'est ajouter son nom ici **avant** de déployer : sinon le
 premier handshake est refusé, et le client ne lit qu'un « bad certificate » qui ne dit pas pourquoi.
@@ -129,7 +136,7 @@ go-live (step-410) vérifie qu'un émetteur existe.
 ## Sans cert-manager
 
 ```sh
-SVCS=billing-svc,content-key-svc,session-manager-svc,smpp-server-svc,mo-dlr-router-svc,admin-api-svc,router-svc,connector-pool-svc
+SVCS=billing-svc,content-key-svc,session-manager-svc,smpp-server-svc,mo-dlr-router-svc,admin-api-svc,router-svc,connector-pool-svc,rest-api-svc
 
 # Sur une seule ligne : une continuation « \ » suivie d'une ligne indentée coupe la liste en deux, et
 # tlsgen sort 0 après n'avoir émis que la première moitié.
@@ -146,7 +153,7 @@ echo "$SVCS" | tr ',' '\n' | while read -r svc; do
 done
 ```
 
-**Les huit, pas un.** Un `Secret` manquant ne se voit nulle part avant `kubectl describe pod`.
+**Les neuf, pas un.** Un `Secret` manquant ne se voit nulle part avant `kubectl describe pod`.
 
 `create secret tls` ne prend que le couple certificat/clé, jamais un `ca.crt` : d'où la forme `generic`
 avec les trois noms standard, pour que le `Deployment` se lise pareil dans les deux voies.

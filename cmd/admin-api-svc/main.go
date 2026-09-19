@@ -107,6 +107,10 @@ func runHTTP(ctx context.Context, srv *http.Server, timeout time.Duration, logge
 	serveErr := make(chan error, 1)
 	go func() {
 		logger.Info("admin api listening", "addr", srv.Addr)
+		if srv.TLSConfig != nil {
+			serveErr <- srv.ListenAndServeTLS("", "")
+			return
+		}
 		serveErr <- srv.ListenAndServe()
 	}()
 

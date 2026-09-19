@@ -104,6 +104,37 @@ func (f Files) ServerConfig(opts ServerOptions) (*tls.Config, error) {
 	}, nil
 }
 
+// PublicServerConfig builds the listening side of a surface open to the internet: it proves this
+// server's identity and asks the caller for nothing, on a 1.2 floor because its clients are
+// integrators this repository does not control. Rotation behaves exactly as it does for ServerConfig.
+//
+// nextProtos is the COMPLETE ALPN list, with the caveat ServerOptions.NextProtos spells out: net/http
+// never reaches this callback's answer, so an incomplete list is a silent downgrade and an empty one
+// turns HTTP/2 off without a word. A transport with no ALPN at all — SMPP — passes nil.
+func (f Files) PublicServerConfig(nextProtos []string) (*tls.Config, error) {
+	ld := &loader{files: f}
+	if _, err := ld.load(); err != nil {
+		return nil, err
+	}
+	protos := slices.Clone(nextProtos)
+
+	return &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		NextProtos: protos,
+		GetConfigForClient: func(*tls.ClientHelloInfo) (*tls.Config, error) {
+			st, err := ld.load()
+			if err != nil {
+				return nil, err
+			}
+			return &tls.Config{
+				MinVersion:   tls.VersionTLS12,
+				NextProtos:   protos,
+				Certificates: []tls.Certificate{*st.cert},
+			}, nil
+		},
+	}, nil
+}
+
 // ClientConfig builds the dialling side. The caller sets ServerName, which is the peer it means to
 // reach; nothing here can know it.
 func (f Files) ClientConfig() (*tls.Config, error) {

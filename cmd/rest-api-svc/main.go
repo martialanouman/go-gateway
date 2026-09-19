@@ -37,7 +37,7 @@ func run() error {
 	// (plan §1.4); the shared default is 8081.
 	cfg, err := config.Load(serviceName,
 		config.SectionOTel, config.SectionPostgres, config.SectionKafka, config.SectionClickHouse,
-		config.SectionRedis, config.SectionHTTP)
+		config.SectionRedis, config.SectionHTTP, config.SectionTLS)
 	if err != nil {
 		return err
 	}
@@ -83,6 +83,10 @@ func runHTTP(ctx context.Context, srv *http.Server, timeout time.Duration, logge
 	serveErr := make(chan error, 1)
 	go func() {
 		logger.Info("rest api listening", "addr", srv.Addr)
+		if srv.TLSConfig != nil {
+			serveErr <- srv.ListenAndServeTLS("", "")
+			return
+		}
 		serveErr <- srv.ListenAndServe()
 	}()
 
