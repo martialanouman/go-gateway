@@ -15,6 +15,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/ingest"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/platform/buildinfo"
+	"github.com/martialanouman/go-gateway/internal/platform/tlsconf"
 	"github.com/martialanouman/go-gateway/internal/restapi"
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
@@ -81,7 +82,10 @@ func newRestAPIApp(ctx context.Context, cfg config.Config, logger *slog.Logger) 
 	//nolint:contextcheck // The boot context has no business inside a request handler: the API-key
 	// middleware authenticates on the REQUEST context (ctx.Context()), which is the only correct one —
 	// a lookup must be cancelled when its client hangs up, not when the process shuts down.
-	a.http = newHTTPServer(cfg, st, logger)
+	a.http, err = newHTTPServer(cfg, st, logger)
+	if err != nil {
+		return nil, err
+	}
 
 	a.ops, err = newOpsServer(cfg, logger, st)
 	if err != nil {
@@ -152,7 +156,7 @@ func (s *stores) close() {
 
 // newHTTPServer assembles the public API surface over the stores. It binds nothing: the listener opens
 // in runHTTP.
-func newHTTPServer(cfg config.Config, st *stores, logger *slog.Logger) *http.Server {
+func newHTTPServer(cfg config.Config, st *stores, logger *slog.Logger) (*http.Server, error) {
 	// The second return is the huma API handle, which nothing here needs: the routes are already
 	// registered on the mux by then.
 	handler, _ := restapi.New(restapi.Deps{
@@ -168,11 +172,24 @@ func newHTTPServer(cfg config.Config, st *stores, logger *slog.Logger) *http.Ser
 		Version:     buildinfo.Version,
 	})
 
-	return &http.Server{
+	srv := &http.Server{
 		Addr:              ":" + strconv.Itoa(cfg.HTTP.Port),
 		Handler:           handler,
 		ReadHeaderTimeout: cfg.HTTP.ReadHeaderTimeout,
 	}
+	if cfg.TLS.Enabled {
+		conf, err := tlsconf.Files{
+			Cert:     cfg.TLS.CertFile,
+			Key:      cfg.TLS.KeyFile,
+			ClientCA: cfg.TLS.ClientCAFile,
+			Logger:   logger,
+		}.PublicServerConfig([]string{"http/1.1"})
+		if err != nil {
+			return nil, err
+		}
+		srv.TLSConfig = conf
+	}
+	return srv, nil
 }
 
 // newOpsServer builds the ops port.

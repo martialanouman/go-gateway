@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -9,6 +11,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
@@ -21,8 +25,11 @@ import (
 
 	"github.com/martialanouman/go-gateway/internal/auth"
 	"github.com/martialanouman/go-gateway/internal/config"
+	"github.com/martialanouman/go-gateway/internal/realtime"
+	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
 	"github.com/martialanouman/go-gateway/internal/testutil/pgtest"
 	"github.com/martialanouman/go-gateway/internal/testutil/redistest"
+	"github.com/martialanouman/go-gateway/internal/testutil/tlstest"
 )
 
 // The wiring must fail as a VALUE, never as a process exit: a constructor that log.Fatals cannot be
@@ -125,7 +132,7 @@ func releaseOrder(a *adminApp) []string {
 // ClickHouse, session-manager and content-key-svc are deliberately pointed at a closed port: none of
 // them may be touched while the graph is being built, so a boot that reaches them is a regression.
 func TestNewAdminAppBuildsTheWholeGraph(t *testing.T) {
-	cfg := testConfig()
+	cfg, _ := tlsTestConfig(t)
 	cfg.Postgres = pgtest.Config(t)
 	cfg.Redis = redistest.Config(t)
 
@@ -148,6 +155,9 @@ func TestNewAdminAppBuildsTheWholeGraph(t *testing.T) {
 		if component == nil || reflect.ValueOf(component).IsNil() {
 			t.Errorf("component %q was not wired", name)
 		}
+	}
+	if app.http.TLSConfig == nil {
+		t.Error("TLS_ENABLED is true and the wired server carries no TLS configuration")
 	}
 
 	// Building the graph must not start serving: both ports are bound by their Run, which only the
@@ -286,5 +296,155 @@ func TestNewAdminAppAuditsAMutation(t *testing.T) {
 	}
 	if status == nil || *status != http.StatusCreated {
 		t.Errorf("audit status = %v, want 201", status)
+	}
+}
+
+func emptyHTTPDeps() (*stores, *runners, *controlPlaneClients, *realtimeFeed) {
+	return &stores{ch: &clickhouse.Conn{}},
+		&runners{},
+		&controlPlaneClients{},
+		&realtimeFeed{hub: realtime.NewHub(realtime.Config{}), quit: make(chan struct{})}
+}
+
+func tlsTestConfig(t *testing.T) (config.Config, *tlstest.CA) {
+	t.Helper()
+	ca := tlstest.NewCA(t)
+	cert, key := ca.Issue(t, "admin-api-svc", "admin-api-svc")
+	cfg := testConfig()
+	cfg.TLS = config.TLS{Enabled: true, CertFile: cert, KeyFile: key, ClientCAFile: ca.CAFile}
+	return cfg, ca
+}
+
+func adminHTTPServer(t *testing.T, cfg config.Config) *http.Server {
+	t.Helper()
+	st, runners, clients, feed := emptyHTTPDeps()
+	srv, err := newHTTPServer(cfg, silentLogger(), st, nil, runners, clients, feed, nil)
+	if err != nil {
+		t.Fatalf("newHTTPServer: %v", err)
+	}
+	return srv
+}
+
+func mutualClient(t *testing.T, ca *tlstest.CA, present bool) *http.Client {
+	t.Helper()
+	caPEM, err := os.ReadFile(ca.CAFile)
+	if err != nil {
+		t.Fatalf("read the CA: %v", err)
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(caPEM) {
+		t.Fatal("the CA file holds no certificate")
+	}
+	conf := &tls.Config{
+		RootCAs:    roots,
+		ServerName: "admin-api-svc",
+		MinVersion: tls.VersionTLS13,
+		NextProtos: []string{"h2", "http/1.1"},
+	}
+	if present {
+		certFile, keyFile := ca.Issue(t, "operator", "operator")
+		pair, err := tls.LoadX509KeyPair(certFile, keyFile)
+		if err != nil {
+			t.Fatalf("load the client pair: %v", err)
+		}
+		conf.Certificates = []tls.Certificate{pair}
+	}
+	return &http.Client{
+		Timeout:   5 * time.Second,
+		Transport: &http.Transport{ForceAttemptHTTP2: true, TLSClientConfig: conf},
+	}
+}
+
+func serveAdmin(t *testing.T, srv *http.Server, client *http.Client) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- runHTTP(ctx, srv, time.Second, silentLogger()) }()
+	t.Cleanup(func() {
+		client.CloseIdleConnections()
+		cancel()
+		if err := <-done; err != nil {
+			t.Errorf("runHTTP: %v", err)
+		}
+	})
+}
+
+func adminGet(client *http.Client, srv *http.Server, scheme string) (*http.Response, error) {
+	url := scheme + "://127.0.0.1" + srv.Addr + "/nothing-here"
+	var resp *http.Response
+	var err error
+	for range 50 {
+		resp, err = client.Get(url)
+		if err == nil || !strings.Contains(err.Error(), "connection refused") {
+			return resp, err
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return resp, err
+}
+
+func TestTheAdminAPIServesAPeerOfTheCAOverHTTP11(t *testing.T) {
+	cfg, ca := tlsTestConfig(t)
+	srv := adminHTTPServer(t, cfg)
+	client := mutualClient(t, ca, true)
+	serveAdmin(t, srv, client)
+
+	resp, err := adminGet(client, srv, "https")
+	if err != nil {
+		t.Fatalf("a peer of our CA was refused: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.TLS == nil {
+		t.Fatal("the Admin API answered in plaintext")
+	}
+	if got := resp.TLS.NegotiatedProtocol; got != "http/1.1" {
+		t.Errorf("ALPN = %q, want http/1.1 — under h2 the realtime WebSocket cannot be hijacked", got)
+	}
+}
+
+func TestTheAdminAPIRefusesAClientWithoutACertificate(t *testing.T) {
+	cfg, ca := tlsTestConfig(t)
+	srv := adminHTTPServer(t, cfg)
+	control := mutualClient(t, ca, true)
+	serveAdmin(t, srv, control)
+
+	resp, err := adminGet(control, srv, "https")
+	if err != nil {
+		t.Fatalf("the control client was refused, so the refusal below would prove nothing: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	bare := mutualClient(t, ca, false)
+	t.Cleanup(bare.CloseIdleConnections)
+	resp, err = adminGet(bare, srv, "https")
+	if err == nil {
+		_ = resp.Body.Close()
+		t.Fatal("a client with no certificate reached the Admin API")
+	}
+}
+
+func TestTheAdminAPIServesPlaintextWhenTLSIsOff(t *testing.T) {
+	srv := adminHTTPServer(t, testConfig())
+	if srv.TLSConfig != nil {
+		t.Fatal("TLS_ENABLED is false and the server still carries a TLS configuration")
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	serveAdmin(t, srv, client)
+
+	resp, err := adminGet(client, srv, "http")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	_ = resp.Body.Close()
+}
+
+func TestTheAdminAPIRefusesToBootOnAnUnreadableCertificate(t *testing.T) {
+	cfg, _ := tlsTestConfig(t)
+	cfg.TLS.CertFile = filepath.Join(t.TempDir(), "absent.crt")
+
+	st, runners, clients, feed := emptyHTTPDeps()
+	if _, err := newHTTPServer(cfg, silentLogger(), st, nil, runners, clients, feed, nil); err == nil {
+		t.Fatal("a missing certificate booted: the failure must be a value, not a handshake at 3am")
 	}
 }
