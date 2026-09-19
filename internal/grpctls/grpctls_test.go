@@ -136,15 +136,25 @@ func TestAClientWithoutACertificateIsRefused(t *testing.T) {
 	}
 	addr := serveWith(t, opt)
 
-	// Trusts our CA, presents nothing of its own.
-	naked := credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS13, RootCAs: poolOf(t, ca), ServerName: "billing-svc"})
-	code, err := grpctest.Probe(t, dial(t, addr, grpc.WithTransportCredentials(naked)))
-	if code == codes.Unimplemented {
-		t.Fatal("a client with no certificate reached the server")
+	// The control: the same server, same instant, answers a peer holding a certificate. Without it a
+	// refusal proves nothing — a server that never started refuses everything too.
+	proper, err := grpctls.DialOptionTo(tlsConfig(t, ca, "router-svc"), discardLogger(), "billing-svc")
+	if err != nil {
+		t.Fatalf("DialOption: %v", err)
 	}
-	// The reason, not just the code: a reset connection answers Unavailable too.
-	if err == nil || !strings.Contains(err.Error(), "certificate required") {
-		t.Fatalf("refusal not attributed to the missing certificate: %v", err)
+	if code, err := grpctest.Probe(t, dial(t, addr, proper)); code != codes.Unimplemented {
+		t.Fatalf("the control call answered %s (%v), want Unimplemented", code, err)
+	}
+
+	// Trusts our CA, presents nothing of its own.
+	//
+	// The message is NOT asserted, deliberately: under TLS 1.3 the client sends its certificate after
+	// the server's Finished, so it considers the handshake done and learns of the rejection later. It
+	// reads either the alert or a broken pipe depending on which wins, and pinning one of the two is a
+	// flake. The control above is what makes this refusal attributable.
+	naked := credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS13, RootCAs: poolOf(t, ca), ServerName: "billing-svc"})
+	if code, err := grpctest.Probe(t, dial(t, addr, grpc.WithTransportCredentials(naked))); code == codes.Unimplemented {
+		t.Fatalf("a client with no certificate reached the server (%s, %v)", code, err)
 	}
 }
 
@@ -196,12 +206,10 @@ func TestTheAllowlistRefusesACallerItDoesNotName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DialOption: %v", err)
 	}
-	code, err := grpctest.Probe(t, dial(t, addr, stranger))
-	if code == codes.Unimplemented {
-		t.Fatal("a caller the allowlist does not name reached the server")
-	}
-	if err == nil || !strings.Contains(err.Error(), "bad certificate") {
-		t.Fatalf("refusal not attributed to the certificate: %v", err)
+	// The named caller above is the control; the rejection message is not asserted for the same reason
+	// as in TestAClientWithoutACertificateIsRefused.
+	if code, err := grpctest.Probe(t, dial(t, addr, stranger)); code == codes.Unimplemented {
+		t.Fatalf("a caller the allowlist does not name reached the server (%s, %v)", code, err)
 	}
 }
 
@@ -235,7 +243,7 @@ func TestAnUnreadableIdentityFailsAtBoot(t *testing.T) {
 	ca := tlstest.NewCA(t)
 
 	cfg := tlsConfig(t, ca, "billing-svc")
-	cfg.CertFile = cfg.CertFile + ".missing"
+	cfg.CertFile += ".missing"
 
 	// A boot error, not a handshake failing later.
 	if _, err := grpctls.ServerOption(cfg, discardLogger()); err == nil {

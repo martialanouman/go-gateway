@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
@@ -50,12 +49,12 @@ func TestTheWiredServerAdmitsOnlyTheCallersItNames(t *testing.T) {
 	}
 
 	// Same authority, not named. Without the allowlist reaching the server this call succeeds too.
-	code, err := grpctest.Probe(t, dialAs(t, ca, addr, "connector-pool-svc"))
-	if code == codes.Unimplemented {
-		t.Fatal("a caller the configuration does not name reached the key service")
-	}
-	if err == nil || !strings.Contains(err.Error(), "bad certificate") {
-		t.Fatalf("refusal not attributed to the certificate: %v", err)
+	//
+	// The named caller above is the control, and the message is not asserted: under TLS 1.3 the client
+	// finishes its handshake before the server validates its certificate, so it reads either the alert
+	// or a broken pipe depending on which wins.
+	if code, err := grpctest.Probe(t, dialAs(t, ca, addr, "connector-pool-svc")); code == codes.Unimplemented {
+		t.Fatalf("a caller the configuration does not name reached the key service (%s, %v)", code, err)
 	}
 }
 

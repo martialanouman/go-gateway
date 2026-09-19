@@ -21,7 +21,8 @@ const probeMethod = "/grpctest.Probe/Ping"
 // Serve starts srv on a loopback port and returns its address, stopping it when the test ends.
 func Serve(t *testing.T, srv *grpc.Server) string {
 	t.Helper()
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	var lc net.ListenConfig
+	lis, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
