@@ -570,6 +570,129 @@ Trois revues en lecture seule (mécanisme · tests · code en trop), aucun const
 - **HTTP/2 sur l'API publique**, avec le `ReadTimeout` que sa deadline de flux exige — à décider sur une
   mesure, pas sur une intention.
 
+### 300d — détail validé le 2026-09-19, avant le code
+
+#### Ce que la lecture a trouvé
+
+- **L'enveloppe TLS va à l'intérieur de celle du PROXY, et le code l'écrit déjà dans cet ordre.**
+  `(*Listener).Run` possède toute la chaîne — écouter, décorer, accepter, servir — et
+  `wrapProxyProtocol` décore le **listener**, pas la connexion (`internal/smppserver/listener.go:33`).
+  Poser `tls.NewListener` juste après, sur le `lis` déjà réassigné, donne le seul ordre que le fil
+  permet : l'en-tête PROXY précède le ClientHello. L'inverse se compilerait et échouerait à chaque
+  handshake.
+- **`Options` est la seule couture.** `Options.Addr` est une chaîne ; il n'existe aucun point
+  d'injection d'un `net.Listener`. D'où un champ `TLSConfig *tls.Config`, construit au câblage —
+  l'échec d'un chemin illisible reste une **valeur** rendue au boot, jamais un handshake à 3 h.
+- **Les échéances survivent, et ce n'était pas acquis.** `session.New` prend un `io.ReadWriteCloser`
+  et découvre le support des échéances par **assertion de type**
+  (`internal/smpp/session/dispatch.go:18-20`). Un habillage maison sans `SetReadDeadline` aurait
+  désarmé le drop d'inactivité **et** l'écriture bornée de l'`unbind`, sans erreur de compilation ni
+  ligne de journal. `*tls.Conn` expose les deux : c'est la raison de prendre `tls.NewListener` du
+  standard plutôt que d'écrire le wrapper.
+- **Le handshake hérite de la garde anti-slowloris.** `armReadDeadline` court avant **chaque**
+  `ReadPDU`, donc avant le premier : un pair qui ouvre une socket et n'envoie jamais de ClientHello
+  tombe à `SMPP_IDLE_TIMEOUT`. C'est le miroir exact du piège h2 de 300c — la deadline armée ailleurs
+  que là où on la cherche — et ici elle est déjà armée. Rien à ajouter, mais il fallait le vérifier
+  avant de ne rien ajouter.
+- **Sortant : un seul dial**, `internal/connectorpool/bind.go:94`, sans aucun habillage de la
+  connexion ; le codec prend `io.Reader`/`io.Writer`, donc un `*tls.Conn` s'y glisse inchangé.
+- **`TLS_ENABLED` est déjà pris sur `connector-pool-svc`** : 300b en a fait l'interrupteur mTLS **du
+  pod** (ses clients gRPC vers `billing-svc` et `content-key-svc`). Le lien SMSC est un autre pair et
+  une autre décision ; réutiliser le nom aurait lié deux bascules que rien ne lie.
+- **La configuration du bind sortant vient de l'environnement**, pas de la base : `connectorEnv`
+  (`cmd/connector-pool-svc/main.go:36`) miroite onze colonnes de `smsc_connectors` avec la même note
+  (« M3+ sources these from the control plane »). `tls_enabled` et `tls_config_json` existent en base
+  depuis la migration initiale et sont servies par l'Admin API, mais **aucune ligne du pool ne les
+  lit** — comme `bind_timeout_ms` ou `throughput_limit_per_sec`. Le douzième champ suit le même
+  chemin que les onze autres ; inventer une lecture de base pour lui seul créerait deux sources de
+  vérité là où il y en a une.
+
+#### Trois prémisses vérifiées dans les sources de Go, pas de mémoire
+
+`crypto/tls/tls.go`, fonction `dial` :
+- `netDialer.Timeout` enveloppe le `ctx` **avant** le connect (`:134-138`) et
+  `conn.HandshakeContext(ctx)` le consomme (`:170`) : `CONNECTOR_DIAL_TIMEOUT` borne donc le TCP
+  **et** le handshake. Avec `net.Dialer` seul, il ne bornait que le TCP.
+- `ServerName` vide est déduit de l'hôte de l'adresse composée (`:162-166`), **sur un `Clone()`** :
+  la `*tls.Config` que `tlsconf.ClientConfig()` rend est partagée entre les binds d'un pool et n'est
+  pas polluée. C'est ce qui permet de ne pas écrire de `ServerName` du tout.
+- Conséquence à écrire dans le README : le certificat du pair sortant doit porter l'hôte de
+  `CONNECTOR_ADDR` en SAN — `localhost` pour un sidecar.
+
+#### Entrant : public, pas mutuel
+
+`PublicServerConfig(nil)` — plancher **1.2**, aucune ALPN, aucun certificat client. Le constructeur a
+été écrit en 300c pour exactement ce cas (« A transport with no ALPN at all — SMPP — passes nil »).
+
+Le mutuel est écarté, et ce n'est pas une facilité : un ESME est un **client**, déjà authentifié par
+son `bind_transmitter` (system_id + mot de passe argon2id, step-026). Exiger un certificat de notre CA
+supposerait d'en émettre un par client et de nommer chacun dans `TLS_ALLOWED_CLIENTS` — une offre de
+PKI que ce dépôt ne vend pas, et un second facteur qui remplacerait le premier au lieu de s'y ajouter.
+Même raison que pour l'API REST publique, mêmes clients : des intégrateurs qu'on ne contrôle pas.
+
+#### Sortant : notre CA — arbitrage Fable du 2026-09-19
+
+Le lien réutilise `tlsconf.ClientConfig()` : plancher 1.3, `RootCAs` = notre CA, et notre certificat
+de pod présenté — donc **mTLS**, ce que la spec appelle « mTLS optionnel pour les liens SMSC ». Zéro
+variable d'identité neuve : le pod monte déjà ses trois fichiers.
+
+Écarté : des racines **système** avec un plancher 1.2 et un `CONNECTOR_TLS_CA_FILE`. Cela joindrait un
+opérateur réel — qui n'existe pas —, au prix d'une variable pour une valeur qui ne varie pas, et
+sans qu'aucun test puisse exister (le simulateur du dépôt est signé par une CA jetable).
+
+**Ce que ce choix rend impossible, et qui part en fiche de dette :** joindre **directement depuis le
+pod** un SMSC signé par une CA publique ou par la PKI de l'opérateur, ou qui n'accepte que TLS 1.2.
+Ce cas passe par un sidecar — la forme de production que le code nomme déjà
+(`cmd/connector-pool-svc/main.go:81`). `tls_config_json` est la colonne prévue pour le traiter un
+jour ; personne ne la lit, et cette PR ne commence pas à la lire.
+
+**La question du barreau 1, posée par l'arbitre et qui mérite sa réponse :** si la forme de production
+est le sidecar, le pod n'a besoin d'aucun TLS sortant. Elle est écartée parce que le sidecar est *une*
+forme et non la seule, que le périmètre de la step la demande explicitement, et que la colonne
+`tls_enabled` attend un lecteur depuis la migration initiale. Elle reste vraie pour le **plancher** :
+rien de plus que le drapeau n'est livré.
+
+#### Pas de paquet pour la projection `config.TLS` → `tlsconf.Files`
+
+300c annonçait qu'« à la quatrième copie l'extraction se poserait d'elle-même ». Elle se pose, et la
+réponse ne change pas : quatre littéraux de cinq lignes coûtent moins qu'un paquet et son test.
+`tlsconf` ne peut pas l'héberger sans importer `internal/config`, ce que son en-tête refuse (« It
+knows nothing about who writes them ») ; `internal/grpctls` le refuse aussi, pour ne pas imposer gRPC
+à qui sert du SMPP — son propre en-tête le dit déjà de la couche SMPP.
+
+#### Les deux bascules, et la garde qui les relie
+
+`SMPP_TLS` n'existe pas : l'entrant suit `TLS_ENABLED`, qui gouverne le pod. Le sortant prend
+`CONNECTOR_TLS_ENABLED`, faux par défaut, parce qu'il décrit un **pair** et non ce pod.
+
+`CONNECTOR_TLS_ENABLED=true` avec `TLS_ENABLED=false` est refusé au démarrage, dans
+`validateConnectorEnv` : sans lui, l'échec est un `stat` sur une chaîne vide, et le message accuse un
+fichier absent au lieu de la variable qui manque.
+
+#### Preuves, et la mutation qui fait tomber chacune
+
+| # | Preuve | Mutation |
+|---|---|---|
+| 1 | entrant : un ESME **sans** certificat, plafonné à TLS 1.2, bind et soumet | `ClientAuth: RequireAndVerifyClientCert` ; plancher 1.3 |
+| 2 | entrant : un ESME **en clair** sur un listener TLS échoue | servir `lis` sans l'envelopper |
+| 3 | entrant : l'ordre PROXY→TLS — un en-tête PROXY suivi d'un ClientHello donne l'IP réelle **et** un bind | inverser les deux décorations |
+| 4 | entrant : `TLS_ENABLED=false` ⇒ `Options.TLSConfig == nil`, l'ESME en clair passe | poser la config inconditionnellement |
+| 5 | entrant : un chemin illisible ⇒ erreur de boot **rendue** par `newListener` | journaliser au lieu de rendre |
+| 6 | sortant : le bind s'établit vers un faux SMSC **en TLS**, et échoue en clair contre lui | `cfg.TLS` ignoré dans `dialAndBind` |
+| 7 | sortant : `CONNECTOR_TLS_ENABLED=false` ⇒ dial en clair | composer en TLS inconditionnellement |
+| 8 | sortant : `CONNECTOR_TLS_ENABLED=true` + `TLS_ENABLED=false` ⇒ refus au démarrage nommant la variable | supprimer la garde |
+
+La preuve 3 est la seule qui prouve l'**ordre** ; 1 et 2 laisseraient les deux décorations inversées
+passer, l'en-tête PROXY étant simplement absent de leurs connexions.
+
+#### Ce que 300d ne fait pas
+
+Le TLS client vers Kafka et ClickHouse — **step-305, créée par cette PR**, ce qui paie la dette qui
+n'avait de fiche que pour dire que la step manquait. Aucune lecture de `tls_config_json`. Aucun test
+d'intégration du simulateur en TLS : son image sait le faire (`tls: enabled:` dans sa configuration)
+mais il faudrait lui monter des certificats dans le conteneur, et le faux SMSC en processus prouve la
+même chose sans Docker.
+
 ## Tests (écrits dans la même PR)
 - Handshake TLS/mTLS réussi ; un client sans cert client est rejeté sur les endpoints mTLS.
 - SMPP-TLS : bind chiffré établi (faux SMSC/simulateur).
