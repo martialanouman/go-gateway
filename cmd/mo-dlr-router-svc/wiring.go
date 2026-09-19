@@ -355,6 +355,22 @@ func (d *deliveryLeg) close() {
 // in full — "x509: certificate is valid for smpp-server-svc, not …".
 const smppServerIdentity = "smpp-server-svc"
 
+// newPodClients builds the leg that pushes a deliver_sm to the smpp-server pod owning the bind.
+//
+// It verifies smppServerIdentity and NOT the address it composes: the certificate is issued per
+// Deployment, so "a pod of smpp-server-svc" is the only identity it can attest. Demanding a per-pod SAN
+// would claim an identity this authority does not issue (step-300b).
+//
+// It is a function of its own so that this choice can be tested without the rest of the delivery leg,
+// which needs Kafka and ClickHouse to exist.
+func newPodClients(cfg config.Config, logger *slog.Logger) (*modlrrouter.PodClients, error) {
+	creds, err := grpctls.DialOptionTo(cfg.TLS, logger, smppServerIdentity)
+	if err != nil {
+		return nil, err
+	}
+	return modlrrouter.NewPodClients(modlrrouter.NewTemplateResolver(cfg.SMPP.PodAddrTemplate), creds), nil
+}
+
 func newDeliveryLeg(cfg config.Config, st *stores, mo *moLeg, logger *slog.Logger) (_ *deliveryLeg, err error) {
 	d := &deliveryLeg{}
 	defer func() {
@@ -372,14 +388,10 @@ func newDeliveryLeg(cfg config.Config, st *stores, mo *moLeg, logger *slog.Logge
 		return nil, fmt.Errorf("dial session registry: %w", err)
 	}
 
-	// The pod leg verifies smppServerIdentity and not the address it composes: the certificate is issued
-	// per Deployment, so "a pod of smpp-server-svc" is the only identity it can attest. Demanding a
-	// per-pod SAN would claim an identity this authority does not issue (step-300b).
-	podCreds, err := grpctls.DialOptionTo(cfg.TLS, logger, smppServerIdentity)
+	d.pods, err = newPodClients(cfg, logger)
 	if err != nil {
 		return nil, err
 	}
-	d.pods = modlrrouter.NewPodClients(modlrrouter.NewTemplateResolver(cfg.SMPP.PodAddrTemplate), podCreds)
 
 	// The webhook sender owns its retries and parks an exhausted event on webhook.dead-letter (step-047
 	// interface, wired here). The deliverer never parks a webhook event itself.
