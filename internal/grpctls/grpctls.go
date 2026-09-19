@@ -33,7 +33,7 @@ func ServerOption(cfg config.TLS, logger *slog.Logger) (grpc.ServerOption, error
 }
 
 // DialOption is the transport credentials of a gRPC client. The name verified is the authority of the
-// address dialled, grpc-go filling ServerName from it when the config leaves it empty.
+// address dialled: with ServerName empty, grpc-go's ClientHandshake fills it from that authority.
 func DialOption(cfg config.TLS, logger *slog.Logger) (grpc.DialOption, error) {
 	return DialOptionTo(cfg, logger, "")
 }
@@ -41,6 +41,10 @@ func DialOption(cfg config.TLS, logger *slog.Logger) (grpc.DialOption, error) {
 // DialOptionTo is DialOption for a peer whose verified identity is not the address dialled — the return
 // path, which reaches an individual pod while the certificate is issued per Deployment. An empty
 // serverName is DialOption.
+//
+// A pinned option must NOT be shared between two dial targets: grpc-go reads the name off the
+// credentials to set a connection's authority, so both would be verified — and addressed — as the one
+// name. Sharing an unpinned option is safe, and admin-api-svc does it.
 func DialOptionTo(cfg config.TLS, logger *slog.Logger, serverName string) (grpc.DialOption, error) {
 	if !cfg.Enabled {
 		return grpc.WithTransportCredentials(insecure.NewCredentials()), nil

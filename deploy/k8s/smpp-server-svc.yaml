@@ -50,6 +50,10 @@ spec:
           env:
             - name: TLS_ENABLED
               value: "true"
+            # Deliver pousse une PDU dans le bind d'un client. Sans liste, tout pod y injecte un MO ou un DLR
+              # forgé, que l'ESME reçoit comme authentique.
+            - name: TLS_ALLOWED_CLIENTS
+              value: mo-dlr-router-svc
             - name: SMPP_PORT
               value: "2775"
             - name: GRPC_PORT

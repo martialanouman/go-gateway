@@ -330,9 +330,13 @@ dépôt ne déploie pas.
 Le nom reste une **constante dans le câblage**, pas une variable d'environnement : c'est le nom du
 `Deployment`, fixé par `deploy/k8s`, et la configurer serait de la configuration pour une valeur qui ne
 change pas. Le jour où quelqu'un le renomme, l'erreur le dit en toutes lettres
-(`x509: certificate is valid for smpp-server-svc, not …`). L'épinglage est posé **dans `PodClients`**,
-pas dans le câblage, et par `tls.Config.ServerName` plutôt que `grpc.WithAuthority` — ce dernier
-réécrirait aussi l'en-tête `:authority` de chaque RPC, sans rien acheter.
+(`x509: certificate is valid for smpp-server-svc, not …`). L'épinglage est posé par
+`tls.Config.ServerName`. **Corrigé en revue :** la fiche justifiait ce choix contre `grpc.WithAuthority`
+en disant que celui-ci « réécrirait aussi l'en-tête `:authority` » — c'est faux, et dans les deux sens.
+`ClientConn.initAuthority` lit le `ServerName` des credentials et le promeut en autorité de la
+connexion, laquelle EST l'en-tête `:authority` : les deux voies ont exactement le même effet, et
+grpc-go refuse même le dial si les deux sont posées et divergent. Le choix tient toujours — une seule
+chose à poser plutôt que deux à garder d'accord — mais pas pour la raison écrite.
 
 #### Où vit la colle
 
@@ -363,10 +367,10 @@ correct ici — et seulement ici : `net/http` ne fait pas ce service, d'où le c
 |---|---|---|
 | 1 | handshake mTLS gRPC réussi entre deux pairs de la CA | — |
 | 2 | client **sans** certificat : refusé | retirer `ClientAuth` |
-| 3 | client d'une **autre** CA : refusé | — |
+| 3 | pair d'une **autre** CA refusé, **dans les deux sens** | `ClientCAs: nil` ; `RequireAnyClientCert` |
 | 4 | `TLS_ENABLED=false` : les deux côtés parlent en clair | inverser la branche |
 | 5 | `content-key-svc` **câblé** refuse un SAN hors liste, par son `app.grpc` | retirer `cfg.TLS.AllowedClients` du câblage |
-| 6 | `PodClients` : épinglé → `Deliver` passe ; non épinglé → l'erreur nomme `pod-a.smpp-server-headless` | supprimer la ligne `ServerName` |
+| 6 | `PodClients` : épinglé → `Deliver` passe ; non épinglé → l'erreur nomme l'adresse composée | supprimer la ligne `ServerName` ; changer la constante |
 | 7 | garde de source : aucun fichier de production n'appelle `insecure.NewCredentials()` | remettre un neuvième dial en clair |
 | 8 | garde manifeste `no-subpath` (et `subPathExpr`) | retirer la règle |
 
@@ -375,6 +379,36 @@ le neuvième appel en clair qu'une step future ajouterait sans y penser. La 5 ex
 prouve rien d'une **allowlist** — seule une liste effectivement transmise le prouve, et c'est le lien de
 la DEK. La moitié « non épinglé » de la 6 est ce qui empêche la fixture d'être creuse : sans elle, c'est
 le dialer de test, et non l'épinglage, qui pourrait faire passer la moitié verte.
+
+**Corrigé en revue (2026-09-19).** Trois revues en lecture seule ont trouvé deux défauts qui laissaient
+passer du clair, et une liste de défauts d'attribution :
+
+- **La garde des serveurs comptait les arguments sans les lire.** `grpc.NewServer(grpc.EmptyServerOption{})`
+  sur `billing-svc` sert en clair et laissait **tout le dépôt vert**, cette garde comprise. Elle remonte
+  désormais l'argument jusqu'à `grpctls.ServerOption`, appelée en ligne ou par la variable qui la reçoit.
+  Même classe pour la garde des clients : un import aliasé (`noTLS "…/credentials/insecure"`) passait,
+  parce qu'elle comparait un identifiant au lieu de résoudre le chemin d'import du fichier.
+- **Trois serveurs sur quatre ne nommaient aucun appelant**, alors que chacun en a un ou deux. La fiche
+  disait « ce que veulent les serveurs sans appelants nommés » ; la lecture du graphe d'appel montre
+  qu'il n'y en a aucun. Sans liste, tout pod obtenant un certificat dans le namespace peut appeler
+  `Release` pour rembourser un crédit jamais réservé, `Disconnect` pour tomber les binds vivants, ou
+  `Deliver` pour injecter un DLR forgé dans le bind d'un client. Les trois manifests nomment maintenant
+  leurs appelants ; c'est le seul changement de fond par rapport au design validé.
+- **`TestAClientFromAnotherAuthorityIsRefused` prouvait le refus du CLIENT.** Sous TLS 1.3 le certificat
+  du serveur arrive en premier : un appelant qui ne fait confiance qu'à sa propre CA abandonne avant
+  d'avoir rien présenté, et le `ClientCAs` du serveur n'entre jamais en jeu. Le test est renommé pour ce
+  qu'il prouve, et la direction manquante — celle sur laquelle reposent entièrement les serveurs — a
+  désormais la sienne.
+- La règle `no-subpath` ne prouvait ni son point d'appel sur les `Job`, ni sa moitié `subPathExpr` : la
+  fixture ne violait qu'un `subPath` sur un `Deployment`. Le `Job` cassé en porte un.
+- **La commande `tlsgen` du README n'émettait que 4 certificats sur 8, en sortant 0** — une continuation
+  `\` suivie d'une ligne indentée coupe la liste. Et la boucle qui la remplace ne pouvait pas s'écrire
+  `for svc in ${SVCS//,/ }` : zsh ne découpe pas une expansion non quotée.
+- `router-svc` construisait deux chargeurs de fichiers pour une seule identité, donc disait deux fois
+  « la CA a changé, redémarrez » pendant une rotation. Un seul, comme `admin-api-svc`.
+- Deux tests étaient creux sans être faux : la moitié « vraiment en clair » rejouait les mêmes
+  credentials trois lignes plus haut (supprimée), et le nom du `Deployment` dérivé de la constante
+  suivait celle-ci partout où elle dérivait (littéral).
 
 `internal/deploy` ne **voit** pas `volumeMounts` aujourd'hui — décodage non strict sur des structures
 typées, donc toute clé sans champ correspondant est jetée en silence. Il faut ajouter le champ avant la

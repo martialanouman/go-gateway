@@ -42,7 +42,10 @@ Deux gardes les tiennent, et elles ne se recouvrent pas :
   variables d'environnement par les dix services (mots de passe de base, URL), que step-310 complétera
   pour l'auth opérateur ; et **un `Secret` TLS par service**, monté en volume, dont step-300 livre le
   *contrat* — ses clés, son montage, ses pièges — dans `k8s/tls/README.md`. L'exploitant remplit ce
-  dernier avec cert-manager, une PKI interne, ou le générateur `test/tlsgen`.
+  dernier avec cert-manager, une PKI interne, ou le générateur `test/tlsgen`. **Les huit `Secret` TLS
+  doivent exister avant l'`apply`** : huit des dix pods montent le leur en volume, et un volume qui ne se
+  monte pas laisse le pod en `ContainerCreating` sans limite de temps — sans une ligne dans les journaux
+  du service, et sans jamais devenir un `CrashLoopBackOff` qu'on remarquerait.
 - **Aucune règle Alertmanager, aucun collecteur OTel, aucun Ingress.** Ils vivent côté
   infrastructure (guide d'ingénierie §13) ; §15 vérifie au go-live qu'ils ont bien été posés.
 

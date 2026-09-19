@@ -159,6 +159,13 @@ spec:
               value: postgres://gateway:gateway@db:5432/gateway
             - name: POSTGRE_MAX_CONNS
               value: "10"
+          # no-subpath on a Job, and through subPathExpr: the Deployment above covers subPath on a
+          # Deployment, so without this one both the Job call site and the subPathExpr branch could be
+          # deleted with the suite still green.
+          volumeMounts:
+            - name: tls
+              mountPath: /etc/gateway/tls/tls.crt
+              subPathExpr: $(POD_NAME).crt
 ---
 # Violates, on purpose: known-env-name (POSTGRE_MAX_CONNS). A shared ConfigMap is where a typo hurts
 # most — envFrom hands it to every service at once, and caarlos0/env drops an unknown name in silence.

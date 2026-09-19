@@ -54,6 +54,7 @@ func TestThePodLegVerifiesTheDeploymentAndNotTheAddressDialled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newPodClients: %v", err)
 	}
+	defer pods.Close()
 	if err := pods.Deliver(t.Context(), addr, "bind-1", []byte{0x01}); err != nil {
 		t.Fatalf("delivery to a pod of %s was refused: %v", deploymentName, err)
 	}
@@ -64,6 +65,7 @@ func TestThePodLegVerifiesTheDeploymentAndNotTheAddressDialled(t *testing.T) {
 		t.Fatalf("DialOption: %v", err)
 	}
 	unpinned := modlrrouter.NewPodClients(modlrrouter.NewTemplateResolver(cfg.SMPP.PodAddrTemplate), unpinnedCreds)
+	defer unpinned.Close()
 	err = unpinned.Deliver(t.Context(), addr, "bind-1", []byte{0x01})
 	if err == nil {
 		t.Fatal("an unpinned pod leg reached the server: the test proves nothing about the pin")

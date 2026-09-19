@@ -19,6 +19,10 @@ connaît pas : `ca.crt` est un ajout de cert-manager, et la voie manuelle produi
 | `tls.key` | sa clé privée |
 | `ca.crt`  | l'autorité qui valide ses pairs |
 
+**Ce que `TLS_ENABLED` couvre à ce jour : le gRPC interne, et lui seul.** Les APIs HTTP (step-300c) et
+les binds SMPP (step-300d) restent en clair tant que ces steps ne sont pas livrées, sur un pod qui pose
+pourtant `TLS_ENABLED=true`.
+
 **Les `Deployment` montent déjà ce volume** (step-300b) : les trois chemins sont dans `configmap.yaml`,
 identiques partout, et chaque service pose `TLS_ENABLED` à côté du volume qui le rend vrai. Il ne reste
 donc à fournir que le `Secret`, nommé `<service>-tls`. La forme, pour mémoire :
@@ -41,7 +45,9 @@ journaux du service.
 
 `0444`, et pas `0400` : les fichiers d'un volume `Secret` appartiennent à l'uid 0 tant qu'aucun `fsGroup`
 n'est posé, or les images tournent en `USER 65532` et `deploy/k8s` ne pose aucun `securityContext`. Avec
-`0400`, le process prend un `EACCES` sur `tls.key` au premier handshake. L'alternative est `0440` avec
+`0400`, le process prend un `EACCES` sur `tls.key` **au démarrage** — `tlsconf` charge les trois
+fichiers avant de rendre sa configuration, donc c'est un `CrashLoopBackOff`, pas un handshake qui casse
+plus tard. L'alternative est `0440` avec
 `fsGroup: 65532` — un choix à faire le jour où ces manifests gagneront un `securityContext`.
 
 **Jamais de `subPath`.** Le kubelet met à jour un volume de `Secret` par bascule atomique d'un lien
@@ -112,17 +118,25 @@ go-live (step-410) vérifie qu'un émetteur existe.
 
 ## Sans cert-manager
 
-```
-go run ./test/tlsgen -out .tls -ns gateway -services \
-  billing-svc,content-key-svc,session-manager-svc,smpp-server-svc,\
-  mo-dlr-router-svc,admin-api-svc,router-svc,connector-pool-svc
+```sh
+SVCS=billing-svc,content-key-svc,session-manager-svc,smpp-server-svc,mo-dlr-router-svc,admin-api-svc,router-svc,connector-pool-svc
+
+# Sur une seule ligne : une continuation « \ » suivie d'une ligne indentée coupe la liste en deux, et
+# tlsgen sort 0 après n'avoir émis que la première moitié.
+go run ./test/tlsgen -out .tls -ns gateway -services "$SVCS"
 # .tls/ est ignoré par git : ce sont des clés privées.
 
-kubectl -n gateway create secret generic content-key-svc-tls \
-  --from-file=tls.crt=.tls/content-key-svc.crt \
-  --from-file=tls.key=.tls/content-key-svc.key \
-  --from-file=ca.crt=.tls/ca.crt
+# tr + read, et non « for svc in ${SVCS//,/ } » : zsh ne découpe pas une expansion non quotée, la
+# boucle ne tournerait qu'une fois avec les huit noms collés.
+echo "$SVCS" | tr ',' '\n' | while read -r svc; do
+  kubectl -n gateway create secret generic "$svc-tls" \
+    --from-file=tls.crt=".tls/$svc.crt" \
+    --from-file=tls.key=".tls/$svc.key" \
+    --from-file=ca.crt=.tls/ca.crt
+done
 ```
+
+**Les huit, pas un.** Un `Secret` manquant ne se voit nulle part avant `kubectl describe pod`.
 
 `create secret tls` ne prend que le couple certificat/clé, jamais un `ca.crt` : d'où la forme `generic`
 avec les trois noms standard, pour que le `Deployment` se lise pareil dans les deux voies.

@@ -50,6 +50,10 @@ spec:
           env:
             - name: TLS_ENABLED
               value: "true"
+            # Sans liste, tout pod peut Disconnect les binds vivants, ou Unbind des jetons qu'il ne détient pas
+              # — la comptabilité sur laquelle repose max_sessions (invariant d).
+            - name: TLS_ALLOWED_CLIENTS
+              value: smpp-server-svc,mo-dlr-router-svc,admin-api-svc
             - name: REDIS_URL
               valueFrom:
                 secretKeyRef:

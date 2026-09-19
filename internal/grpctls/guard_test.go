@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"io/fs"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -20,30 +21,27 @@ var scanRoots = []string{"../../cmd", "../../internal"}
 // scan nothing and report a clean repository.
 const minScanned = 200
 
+const (
+	insecurePkg = "google.golang.org/grpc/credentials/insecure"
+	grpcPkg     = "google.golang.org/grpc"
+	grpctlsPkg  = "github.com/martialanouman/go-gateway/internal/grpctls"
+)
+
 func TestNoProductionCodeDialsGRPCInPlaintext(t *testing.T) {
 	t.Parallel()
 
 	var offenders []string
 	scanned := walkProduction(t, func(path string, file *ast.File, fset *token.FileSet) {
+		imports := importNames(file)
 		ast.Inspect(file, func(n ast.Node) bool {
-			call, ok := n.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-			sel, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok || sel.Sel.Name != "NewCredentials" {
-				return true
-			}
-			if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "insecure" {
+			if call, ok := n.(*ast.CallExpr); ok && calls(imports, call, insecurePkg, "NewCredentials") {
 				offenders = append(offenders, position(path, fset, call.Pos()))
 			}
 			return true
 		})
 	})
 
-	if scanned < minScanned {
-		t.Fatalf("scanned only %d production files, expected at least %d: the roots stopped resolving", scanned, minScanned)
-	}
+	requireFloor(t, scanned)
 	for _, o := range offenders {
 		t.Errorf("%s dials gRPC in plaintext — every internal call goes through grpctls.DialOption (step-300b)", o)
 	}
@@ -53,26 +51,93 @@ func TestEveryGRPCServerIsBuiltWithItsCredentials(t *testing.T) {
 	t.Parallel()
 
 	var bare []string
-	walkProduction(t, func(path string, file *ast.File, fset *token.FileSet) {
+	scanned := walkProduction(t, func(path string, file *ast.File, fset *token.FileSet) {
+		imports := importNames(file)
+		// An argument count proves nothing: grpc.NewServer(grpc.EmptyServerOption{}) serves in plaintext
+		// and carries an option. So the argument has to be traced back to grpctls.ServerOption, either
+		// called inline or through the variable it was assigned to.
+		fromServerOption := map[string]bool{}
 		ast.Inspect(file, func(n ast.Node) bool {
-			call, ok := n.(*ast.CallExpr)
+			assign, ok := n.(*ast.AssignStmt)
 			if !ok {
 				return true
 			}
-			sel, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok || sel.Sel.Name != "NewServer" || len(call.Args) > 0 {
+			for i, rhs := range assign.Rhs {
+				call, ok := rhs.(*ast.CallExpr)
+				if !ok || !calls(imports, call, grpctlsPkg, "ServerOption") {
+					continue
+				}
+				// One call, several results: the option is the first.
+				if i < len(assign.Lhs) || len(assign.Rhs) == 1 {
+					if id, ok := assign.Lhs[0].(*ast.Ident); ok {
+						fromServerOption[id.Name] = true
+					}
+				}
+			}
+			return true
+		})
+
+		ast.Inspect(file, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok || !calls(imports, call, grpcPkg, "NewServer") {
 				return true
 			}
-			if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "grpc" {
-				bare = append(bare, position(path, fset, call.Pos()))
+			for _, arg := range call.Args {
+				switch a := arg.(type) {
+				case *ast.Ident:
+					if fromServerOption[a.Name] {
+						return true
+					}
+				case *ast.CallExpr:
+					if calls(imports, a, grpctlsPkg, "ServerOption") {
+						return true
+					}
+				}
 			}
+			bare = append(bare, position(path, fset, call.Pos()))
 			return true
 		})
 	})
 
-	// A count, not an identity: which option a server carries is the business of the tests that dial it.
+	requireFloor(t, scanned)
 	for _, b := range bare {
-		t.Errorf("%s builds a gRPC server with no options — it needs grpctls.ServerOption (step-300b)", b)
+		t.Errorf("%s builds a gRPC server without grpctls.ServerOption — it would serve in plaintext (step-300b)", b)
+	}
+}
+
+// calls reports whether call is pkgPath.name, resolving the package through the file's own imports so
+// that an alias — noTLS "…/credentials/insecure" — does not walk past the guard.
+func calls(imports map[string]string, call *ast.CallExpr, pkgPath, name string) bool {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != name {
+		return false
+	}
+	id, ok := sel.X.(*ast.Ident)
+	return ok && imports[id.Name] == pkgPath
+}
+
+// importNames maps the name a file uses for each import onto its path. A dot-import has no name and is
+// left out: it would make every bare identifier ambiguous, and this repository has none.
+func importNames(file *ast.File) map[string]string {
+	out := make(map[string]string, len(file.Imports))
+	for _, spec := range file.Imports {
+		path, err := strconv.Unquote(spec.Path.Value)
+		if err != nil {
+			continue
+		}
+		name := path[strings.LastIndex(path, "/")+1:]
+		if spec.Name != nil {
+			name = spec.Name.Name
+		}
+		out[name] = path
+	}
+	return out
+}
+
+func requireFloor(t *testing.T, scanned int) {
+	t.Helper()
+	if scanned < minScanned {
+		t.Fatalf("scanned only %d production files, expected at least %d: the roots stopped resolving", scanned, minScanned)
 	}
 }
 

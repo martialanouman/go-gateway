@@ -132,7 +132,7 @@ func TestJobsAreHeldToTheContainerRules(t *testing.T) {
 			t.Errorf("[%s] reported on a Job: %s — a Job exits, it has neither probes nor a drain", v.rule, v.msg)
 		}
 	}
-	for _, rule := range []string{"secrets-by-reference", "known-env-name", "image-convention"} {
+	for _, rule := range []string{"secrets-by-reference", "known-env-name", "image-convention", "no-subpath"} {
 		if !got[rule] {
 			t.Errorf("rule %q reported nothing on the broken fixture's Job — Jobs are escaping it", rule)
 		}

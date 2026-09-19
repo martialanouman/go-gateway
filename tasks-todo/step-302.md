@@ -68,6 +68,13 @@ peser, pas la taille du diff.
       **que le gabarit compose**, et non contre `127.0.0.1`.
 - [ ] `internal/deploy` tient le lien : le gabarit de `SMPP_POD_ADDR_TEMPLATE` et ce que les manifests
       rendent résoluble ne peuvent plus diverger en silence.
+- [ ] **Si la voie 1 est retenue, la garde doit suivre le changement de `kind`.** `inspect`
+      (`internal/deploy/manifests_test.go`) ne connaît que `Deployment`, `Job`, `Service`, `ConfigMap` et
+      les autres kinds déjà présents : un `StatefulSet` échapperait d'un coup à TOUTES les règles —
+      sondes, période de grâce, image, variables, `no-subpath`. La bascule ne serait pas muette
+      (`deployment-per-service` crierait qu'un binaire à superviseur n'a plus de `Deployment`), mais le
+      message désignerait le mauvais problème. `spec.initContainers` est un angle mort du même ordre, et
+      il l'est déjà : `deploy.PodSpec` ne le décode pas, donc un `subPath` y passerait.
 - [ ] gofmt/goimports · golangci-lint · `go test -race ./...` · `make manifests` verts
 
 ## Hors périmètre

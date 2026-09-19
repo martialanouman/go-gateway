@@ -50,6 +50,10 @@ spec:
           env:
             - name: TLS_ENABLED
               value: "true"
+            # Sans liste, tout pod porteur d'un certificat de la CA peut appeler Release avec un message_id
+              # choisi pour rembourser un crédit jamais réservé, ou énumérer les soldes par GetBalances.
+            - name: TLS_ALLOWED_CLIENTS
+              value: router-svc,connector-pool-svc
             # GRPC_PORT defaults to 7000, which is session-manager-svc's (plan §1.4).
             - name: GRPC_PORT
               value: "7001"

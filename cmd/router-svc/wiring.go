@@ -133,13 +133,20 @@ func newRouterApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 	a.catalog = metrics.NewCatalog()
 	tracer := observability.Tracer(nil, serviceName)
 
-	stack, err := newPipelineStack(ctx, cfg, st.pg, rdb, boot, a.catalog, tracer, logger)
+	// One dial option for the whole pod: each grpctls call builds its own file loader, and tlsconf latches
+	// the "CA changed, restart" warning per loader — two of them say it twice during a rotation.
+	creds, err := grpctls.DialOption(cfg.TLS, logger)
+	if err != nil {
+		return nil, err
+	}
+
+	stack, err := newPipelineStack(ctx, cfg, st.pg, rdb, boot, a.catalog, tracer, logger, creds)
 	if err != nil {
 		return nil, err
 	}
 	a.onClose("pipeline", stack.close)
 
-	proj, err := newAcceptedProjector(ctx, cfg, st.pg, st.ch, logger)
+	proj, err := newAcceptedProjector(ctx, cfg, st.pg, st.ch, logger, creds)
 	if err != nil {
 		return nil, err
 	}
@@ -318,6 +325,7 @@ func newPipelineStack(
 	catalog *metrics.Catalog,
 	tracer trace.Tracer,
 	logger *slog.Logger,
+	creds grpc.DialOption,
 ) (_ *pipelineStack, err error) {
 	p := &pipelineStack{}
 	defer func() {
@@ -414,11 +422,7 @@ func newPipelineStack(
 	}
 	p.creditHolder = &credit.Holder{}
 	p.creditHolder.Store(creditSnap)
-	billingCreds, err := grpctls.DialOption(cfg.TLS, logger)
-	if err != nil {
-		return nil, err
-	}
-	p.billingConn, err = grpc.NewClient(cfg.Billing.Addr, billingCreds)
+	p.billingConn, err = grpc.NewClient(cfg.Billing.Addr, creds)
 	if err != nil {
 		return nil, fmt.Errorf("dial billing at %q: %w", cfg.Billing.Addr, err)
 	}
@@ -468,7 +472,7 @@ func (p *acceptedProjector) close() {
 // newAcceptedProjector wires the projection. A fresh group starts at the LATEST offset — replaying
 // the whole retained topic would re-insert every historical accepted row and storm billing for DEKs —
 // so the deploy pins the start offset (runbook).
-func newAcceptedProjector(ctx context.Context, cfg config.Config, pool *pgxpool.Pool, ch *clickhouse.Conn, logger *slog.Logger) (_ *acceptedProjector, err error) {
+func newAcceptedProjector(ctx context.Context, cfg config.Config, pool *pgxpool.Pool, ch *clickhouse.Conn, logger *slog.Logger, creds grpc.DialOption) (_ *acceptedProjector, err error) {
 	p := &acceptedProjector{}
 	defer func() {
 		if err != nil {
@@ -485,11 +489,7 @@ func newAcceptedProjector(ctx context.Context, cfg config.Config, pool *pgxpool.
 
 	// The data key comes from content-key-svc (the sole KMS holder), on its own connection: the body is
 	// sealed here and never reaches that service (step-162/167). Lazy dial, like the billing one.
-	keyCreds, err := grpctls.DialOption(cfg.TLS, logger)
-	if err != nil {
-		return nil, err
-	}
-	p.conn, err = grpc.NewClient(cfg.ContentKey.Addr, keyCreds)
+	p.conn, err = grpc.NewClient(cfg.ContentKey.Addr, creds)
 	if err != nil {
 		return nil, fmt.Errorf("dial content key service at %q: %w", cfg.ContentKey.Addr, err)
 	}

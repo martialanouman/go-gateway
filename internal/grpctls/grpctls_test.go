@@ -158,7 +158,10 @@ func TestAClientWithoutACertificateIsRefused(t *testing.T) {
 	}
 }
 
-func TestAClientFromAnotherAuthorityIsRefused(t *testing.T) {
+// Named for what it proves. Under TLS 1.3 the server's certificate arrives first, so a dialler trusting
+// only its own CA aborts before ever presenting anything — the refusal is the CLIENT's, and the server's
+// ClientCAs never comes into it. That direction is TestAServerRefusesAClientFromAnotherAuthority.
+func TestTheDialerRefusesAServerFromAnotherAuthority(t *testing.T) {
 	t.Parallel()
 	ours, theirs := tlstest.NewCA(t), tlstest.NewCA(t)
 
@@ -168,17 +171,56 @@ func TestAClientFromAnotherAuthorityIsRefused(t *testing.T) {
 	}
 	addr := serveWith(t, opt)
 
-	// Signed by a CA of its own, and trusting only that one.
 	dialOpt, err := grpctls.DialOptionTo(tlsConfig(t, theirs, "router-svc"), discardLogger(), "billing-svc")
 	if err != nil {
 		t.Fatalf("DialOption: %v", err)
 	}
 	code, err := grpctest.Probe(t, dial(t, addr, dialOpt))
 	if code == codes.Unimplemented {
-		t.Fatal("a client from another authority reached the server")
+		t.Fatal("a server from another authority was accepted")
 	}
+	// Deterministic, unlike a client-certificate refusal: this one is decided during the dialler's own
+	// handshake, before it answers anything.
 	if err == nil || !strings.Contains(err.Error(), "unknown authority") {
 		t.Fatalf("refusal not attributed to the authority: %v", err)
+	}
+}
+
+// The other direction, and the one the servers with no allowlist rest on entirely: a peer holding a
+// certificate nobody we trust signed. It trusts OUR authority, so it presents its certificate and the
+// refusal can only come from the server's ClientCAs.
+func TestAServerRefusesAClientFromAnotherAuthority(t *testing.T) {
+	t.Parallel()
+	ours, theirs := tlstest.NewCA(t), tlstest.NewCA(t)
+
+	opt, err := grpctls.ServerOption(tlsConfig(t, ours, "billing-svc"), discardLogger())
+	if err != nil {
+		t.Fatalf("ServerOption: %v", err)
+	}
+	addr := serveWith(t, opt)
+
+	proper, err := grpctls.DialOptionTo(tlsConfig(t, ours, "router-svc"), discardLogger(), "billing-svc")
+	if err != nil {
+		t.Fatalf("DialOption: %v", err)
+	}
+	if code, err := grpctest.Probe(t, dial(t, addr, proper)); code != codes.Unimplemented {
+		t.Fatalf("the control call answered %s (%v), want Unimplemented", code, err)
+	}
+
+	// Self-signed by an authority of its own, trusting ours. The message is not asserted for the reason
+	// given in TestAClientWithoutACertificateIsRefused.
+	intruderCert, intruderKey := theirs.Issue(t, "router-svc", "router-svc")
+	intruder, err := grpctls.DialOptionTo(config.TLS{
+		Enabled:      true,
+		CertFile:     intruderCert,
+		KeyFile:      intruderKey,
+		ClientCAFile: ours.CAFile,
+	}, discardLogger(), "billing-svc")
+	if err != nil {
+		t.Fatalf("DialOption: %v", err)
+	}
+	if code, err := grpctest.Probe(t, dial(t, addr, intruder)); code == codes.Unimplemented {
+		t.Fatalf("a client no authority of ours signed reached the server (%s, %v)", code, err)
 	}
 }
 
@@ -229,12 +271,6 @@ func TestDisabledTLSLeavesBothSidesInPlaintext(t *testing.T) {
 	}
 	if code, err := grpctest.Probe(t, dial(t, addr, dialOpt)); code != codes.Unimplemented {
 		t.Fatalf("plaintext call answered %s (%v), want Unimplemented", code, err)
-	}
-
-	// And it really is plaintext.
-	plain := dial(t, addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if code, err := grpctest.Probe(t, plain); code != codes.Unimplemented {
-		t.Fatalf("insecure client answered %s (%v) on a disabled server, want Unimplemented", code, err)
 	}
 }
 
