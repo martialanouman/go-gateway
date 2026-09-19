@@ -330,6 +330,9 @@ Indépendantes de la chaîne de charge : parallélisables si deux mains travaill
       dans le log d'attestation — ouverte par step-290d
 - [ ] step-300 — TLS / SMPP-TLS / mTLS sur les transports, **dont la DEK qui circule en clair sur un
       gRPC non authentifié** (`content-key-svc`) — ce dernier point ajouté par step-290d
+- [ ] step-302 — La remise MO/DLR par pod n'a pas de nom DNS à joindre : un `Deployment` ne fabrique pas
+      d'enregistrement A par pod, la voie retour SMPP bascule donc en webhook sans le dire — ouverte par
+      step-300b
 - [ ] step-310 — Auth opérateur réelle (OIDC/mTLS) remplaçant le stub M1 ⛓ step-300
 - [ ] step-315 — Le journal d'audit se lit, et la base le rend immuable ⛓ step-310 — ouverte par step-290d
 
@@ -345,7 +348,7 @@ qui a au passage montré que deux POST de diagnostic publiaient un changement de
 secret qu'on doit rejouer ne peut pas être haché, un rejeu de dead-letter n'a pas de nom d'auteur, et une
 exclusion d'effacement sans durée est une conservation indéfinie. Une cinquième dette n'a pas de fiche
 propre : la DEK en clair sur gRPC non authentifié rejoint step-300, dont c'est le sujet. **Numérotation :**
-295, 296, 297 et 315 sont des unités faute de multiple de dix libre à leur place dans l'ordre — la règle
+295, 296, 297, 302 et 315 sont des unités faute de multiple de dix libre à leur place dans l'ordre — la règle
 `.claude/rules/tasks-steps.md` en veut un, et les seuls précédents en unités sont step-395 et
 step-396 (step-270b et step-390b sont des suffixes de lettre, autre chose). L'ordre reste l'ordre d'exécution, qui est ce que la règle protège.
 
