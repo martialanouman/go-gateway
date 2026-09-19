@@ -366,7 +366,7 @@ func adminGet(client *http.Client, srv *http.Server, scheme string) (*http.Respo
 	var resp *http.Response
 	var err error
 	for range 50 {
-		resp, err = client.Get(url) //nolint:noctx // the client carries its own timeout
+		resp, err = client.Get(url)
 		if err == nil || !strings.Contains(err.Error(), "connection refused") {
 			return resp, err
 		}

@@ -218,7 +218,7 @@ func serveAndGet(t *testing.T, srv *http.Server, client *http.Client, scheme str
 	var resp *http.Response
 	var err error
 	for range 50 {
-		resp, err = client.Get(url) //nolint:noctx // the client carries its own timeout
+		resp, err = client.Get(url)
 		if err == nil {
 			return resp
 		}

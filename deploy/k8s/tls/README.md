@@ -67,6 +67,11 @@ dans le namespace ». La liste compare des **SAN DNS**, jamais un `CN`.
 | `session-manager-svc` | `smpp-server-svc`, `mo-dlr-router-svc`, `admin-api-svc` |
 | `smpp-server-svc` | `mo-dlr-router-svc` |
 
+Les deux surfaces HTTP n'y figurent pas, et pour deux raisons opposées : `rest-api-svc` est **publique**
+et ne demande aucun certificat à ses intégrateurs ; `admin-api-svc` exige le certificat mais ne peut
+nommer personne — aucun pod de ce dépôt ne l'appelle, et son autorisation réelle reste le bearer
+opérateur.
+
 Ajouter un appelant à un de ces services, c'est ajouter son nom ici **avant** de déployer : sinon le
 premier handshake est refusé, et le client ne lit qu'un « bad certificate » qui ne dit pas pourquoi.
 
@@ -129,7 +134,7 @@ go-live (step-410) vérifie qu'un émetteur existe.
 ## Sans cert-manager
 
 ```sh
-SVCS=billing-svc,content-key-svc,session-manager-svc,smpp-server-svc,mo-dlr-router-svc,admin-api-svc,router-svc,connector-pool-svc
+SVCS=billing-svc,content-key-svc,session-manager-svc,smpp-server-svc,mo-dlr-router-svc,admin-api-svc,router-svc,connector-pool-svc,rest-api-svc
 
 # Sur une seule ligne : une continuation « \ » suivie d'une ligne indentée coupe la liste en deux, et
 # tlsgen sort 0 après n'avoir émis que la première moitié.
@@ -146,7 +151,7 @@ echo "$SVCS" | tr ',' '\n' | while read -r svc; do
 done
 ```
 
-**Les huit, pas un.** Un `Secret` manquant ne se voit nulle part avant `kubectl describe pod`.
+**Les neuf, pas un.** Un `Secret` manquant ne se voit nulle part avant `kubectl describe pod`.
 
 `create secret tls` ne prend que le couple certificat/clé, jamais un `ca.crt` : d'où la forme `generic`
 avec les trois noms standard, pour que le `Deployment` se lise pareil dans les deux voies.
