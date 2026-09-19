@@ -19,9 +19,11 @@ connaît pas : `ca.crt` est un ajout de cert-manager, et la voie manuelle produi
 | `tls.key` | sa clé privée |
 | `ca.crt`  | l'autorité qui valide ses pairs |
 
-**Ce que `TLS_ENABLED` couvre à ce jour : le gRPC interne, et lui seul.** Les APIs HTTP (step-300c) et
-les binds SMPP (step-300d) restent en clair tant que ces steps ne sont pas livrées, sur un pod qui pose
-pourtant `TLS_ENABLED=true`.
+**Ce que `TLS_ENABLED` couvre à ce jour : le gRPC interne et les deux APIs HTTP.** Les binds SMPP
+(step-300d) restent en clair tant que cette step n'est pas livrée, sur un pod qui pose pourtant
+`TLS_ENABLED=true`. Les deux surfaces HTTP ne se ressemblent pas : `rest-api-svc` est **publique** —
+elle prouve son identité, plancher TLS 1.2, et ne demande aucun certificat ; `admin-api-svc` est
+**mutuelle**, plancher 1.3, et refuse un appelant sans certificat de notre CA.
 
 **Les `Deployment` montent déjà ce volume** (step-300b) : les trois chemins sont dans `configmap.yaml`,
 identiques partout, et chaque service pose `TLS_ENABLED` à côté du volume qui le rend vrai. Il ne reste

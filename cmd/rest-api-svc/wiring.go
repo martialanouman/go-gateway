@@ -183,7 +183,7 @@ func newHTTPServer(cfg config.Config, st *stores, logger *slog.Logger) (*http.Se
 			Key:      cfg.TLS.KeyFile,
 			ClientCA: cfg.TLS.ClientCAFile,
 			Logger:   logger,
-		}.PublicServerConfig([]string{"h2", "http/1.1"})
+		}.PublicServerConfig([]string{"http/1.1"})
 		if err != nil {
 			return nil, err
 		}

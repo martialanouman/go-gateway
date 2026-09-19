@@ -808,7 +808,7 @@ func TestAnExpiryIsNoticedWithoutTheFilesChanging(t *testing.T) {
 	}
 }
 
-func publicClient(t *testing.T, caFile, serverName string, maxVersion uint16, nextProtos []string) *tls.Config {
+func publicClient(t *testing.T, caFile string, maxVersion uint16, nextProtos []string) *tls.Config {
 	t.Helper()
 	caPEM, err := os.ReadFile(caFile)
 	if err != nil {
@@ -819,7 +819,7 @@ func publicClient(t *testing.T, caFile, serverName string, maxVersion uint16, ne
 		t.Fatal("the CA file holds no certificate")
 	}
 	return &tls.Config{
-		ServerName: serverName,
+		ServerName: "rest-api-svc",
 		RootCAs:    roots,
 		MinVersion: tls.VersionTLS12,
 		MaxVersion: maxVersion,
@@ -837,7 +837,7 @@ func negotiated(t *testing.T, addr net.Addr, cfg *tls.Config) string {
 	return conn.ConnectionState().NegotiatedProtocol
 }
 
-func TestThePublicServerServesAClientWithoutACertificate(t *testing.T) {
+func TestThePublicServerServesACertlessClientCappedAtTLS12(t *testing.T) {
 	ca := tlstest.NewCA(t)
 	cert, key := ca.Issue(t, "server", "rest-api-svc")
 
@@ -846,27 +846,9 @@ func TestThePublicServerServesAClientWithoutACertificate(t *testing.T) {
 		t.Fatalf("PublicServerConfig: %v", err)
 	}
 
-	got, err := exchange(serve(t, serverCfg), publicClient(t, ca.CAFile, "rest-api-svc", tls.VersionTLS13, nil))
+	got, err := exchange(serve(t, serverCfg), publicClient(t, ca.CAFile, tls.VersionTLS12, nil))
 	if err != nil {
-		t.Fatalf("a client without a certificate was refused by a public surface: %v", err)
-	}
-	if got != "ping" {
-		t.Errorf("echo = %q, want %q", got, "ping")
-	}
-}
-
-func TestThePublicHandshakeFloorIsTLS12(t *testing.T) {
-	ca := tlstest.NewCA(t)
-	cert, key := ca.Issue(t, "server", "rest-api-svc")
-
-	serverCfg, err := tlsconf.Files{Cert: cert, Key: key, ClientCA: ca.CAFile}.PublicServerConfig(nil)
-	if err != nil {
-		t.Fatalf("PublicServerConfig: %v", err)
-	}
-
-	got, err := exchange(serve(t, serverCfg), publicClient(t, ca.CAFile, "rest-api-svc", tls.VersionTLS12, nil))
-	if err != nil {
-		t.Fatalf("a TLS 1.2 integrator was refused: the public floor is above 1.2: %v", err)
+		t.Fatalf("a TLS 1.2 integrator with no certificate was refused: %v", err)
 	}
 	if got != "ping" {
 		t.Errorf("echo = %q, want %q", got, "ping")
@@ -893,7 +875,7 @@ func TestThePublicServerNegotiatesTheProtocolItAdvertises(t *testing.T) {
 		{"a client that speaks only HTTP/1.1", []string{"http/1.1"}, "http/1.1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := negotiated(t, addr, publicClient(t, ca.CAFile, "rest-api-svc", tls.VersionTLS13, tc.offered)); got != tc.want {
+			if got := negotiated(t, addr, publicClient(t, ca.CAFile, tls.VersionTLS13, tc.offered)); got != tc.want {
 				t.Errorf("negotiated %q, want %q", got, tc.want)
 			}
 		})

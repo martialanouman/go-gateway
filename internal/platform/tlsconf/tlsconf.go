@@ -107,6 +107,10 @@ func (f Files) ServerConfig(opts ServerOptions) (*tls.Config, error) {
 // PublicServerConfig builds the listening side of a surface open to the internet: it proves this
 // server's identity and asks the caller for nothing, on a 1.2 floor because its clients are
 // integrators this repository does not control. Rotation behaves exactly as it does for ServerConfig.
+//
+// nextProtos is the COMPLETE ALPN list, with the caveat ServerOptions.NextProtos spells out: net/http
+// never reaches this callback's answer, so an incomplete list is a silent downgrade and an empty one
+// turns HTTP/2 off without a word. A transport with no ALPN at all — SMPP — passes nil.
 func (f Files) PublicServerConfig(nextProtos []string) (*tls.Config, error) {
 	ld := &loader{files: f}
 	if _, err := ld.load(); err != nil {

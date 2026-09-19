@@ -455,9 +455,17 @@ joker dans `test/tlsgen` — l'arbitrage n'en demande aucun.
 Le contrat inverse de 300b s'applique : **`net/http` n'ajoute rien** à la liste que rend
 `GetConfigForClient`. Une liste vide n'est pas un défaut, c'est HTTP/2 éteint sans une ligne de journal.
 
-- **`rest-api-svc` → `["h2", "http/1.1"]`.** La spec le demande nommément : « Connexions API REST
-  simultanées : 10 000+ (HTTP/2 ou keep-alive avec pool) » (`specification-technique` §93, repris au
-  guide §82).
+- **`rest-api-svc` → `["http/1.1"]`, et non `["h2", "http/1.1"]` — corrigé en revue.** La spec offre
+  deux voies pour les 10 000+ connexions simultanées, « HTTP/2 **ou** keep-alive avec pool »
+  (`specification-technique` §93, guide §82), et c'est la seconde qui est déjà implémentée. Annoncer
+  `h2` ici **supprimait la garde anti-slowloris de la surface publique** : le serveur HTTP/2 de Go ne
+  lit jamais `ReadHeaderTimeout`, il arme sa deadline de flux depuis `ReadTimeout`
+  (`net/http/h2_bundle.go:6099`, dont le commentaire dit « technically more like the http1 Server's
+  ReadHeaderTimeout »), et `IdleTimeout` s'en déduit à son tour (`:4239`). Or ce dépôt ne pose que
+  `ReadHeaderTimeout` (`internal/config/config.go`, défaut 5 s, exigé par gosec G112) : les deux autres
+  valent zéro, donc aucune deadline n'aurait été armée. HTTP/2 est un levier de **débit**, il se paie
+  d'un `ReadTimeout` à mesurer ; il n'a rien à faire dans une PR de chiffrement. Reporté, avec sa
+  raison, à une step qui mesure.
 - **`admin-api-svc` → `["http/1.1"]` seul.** `internal/adminapi/stream.go` appelle `websocket.Accept`,
   qui **hijacke** la connexion ; `net/http` ne sert pas le CONNECT étendu (RFC 8441). Sous h2, le flux
   temps réel de l'Admin API est mort. `negotiateALPN` (vérifié) parcourt la liste **du serveur** en
@@ -506,9 +514,10 @@ Le serveur d'ops ne bouge pas, définitivement — la raison est écrite plus ha
 | # | Preuve | Mutation |
 |---|---|---|
 | 1 | `rest-api-svc` : un client **sans** certificat, plafonné à TLS 1.2, est servi | `ClientAuth: RequireAndVerifyClientCert` ; `MinVersion: VersionTLS13` |
-| 2 | `rest-api-svc` : l'ALPN négocie `h2`, et un client `http/1.1` seul reste servi | `NextProtos: nil` |
+| 1b | `rest-api-svc` : les **trois** fichiers sont exigés au boot, `ca.crt` compris | un `loader` qui tolère une CA absente |
+| 2 | `rest-api-svc` : l'ALPN **négociée** vaut `http/1.1` face à un client qui offre `h2` en tête | `NextProtos: nil` |
 | 3 | `admin-api-svc` : le pair de la CA passe, le client **sans** certificat est refusé | `NoClientCert` |
-| 4 | `admin-api-svc` : l'ALPN négocie `http/1.1` face à un client qui offre `h2` en tête | ajouter `"h2"` en tête |
+| 4 | `admin-api-svc` : l'ALPN **négociée** vaut `http/1.1` face à un client qui offre `h2` en tête | ajouter `"h2"` en tête ; `NextProtos: nil` |
 | 5 | les deux wirings : `TLS_ENABLED=true` ⇒ `app.http.TLSConfig != nil` ; un chemin illisible ⇒ erreur de boot **rendue** | supprimer l'affectation ; journaliser au lieu de rendre |
 | 6 | `runHTTP` sert bien en TLS quand `TLSConfig` est posé, dans les deux services | forcer `ListenAndServe` |
 
@@ -522,8 +531,44 @@ l'oubli symétrique sans qu'on ajoute quoi que ce soit.
 #### Ce que 300c ne fait pas
 
 Le TLS **client** vers les quatre magasins (step-305), le SMPP-TLS (300d), l'ingress. Pas de règle
-« `TLS_ENABLED=true` exige un volume monté » — même raison qu'en 300b : l'interrupteur est posé à côté du
-volume dans chaque manifeste.
+« `TLS_ENABLED=true` exige un volume monté » — même raison qu'en 300b.
+
+#### Corrigé en revue (2026-09-19)
+
+Trois revues en lecture seule (mécanisme · tests · code en trop), aucun constat bloquant.
+
+- **Le défaut de fond était HTTP/2**, et aucun des deux autres axes ne l'a vu : il ne se lit ni dans le
+  diff ni dans les tests, seulement dans les sources de `net/http`. Voir l'ALPN ci-dessus.
+- **Deux assertions d'ALPN étaient creuses** dès lors que `h2` disparaissait : `resp.Proto` vaut
+  `HTTP/1.1` aussi bien quand la liste est annoncée que quand elle est **vide** — `negotiateALPN` rend
+  alors une chaîne vide *sans erreur*. Les deux tests portent désormais sur
+  `resp.TLS.NegotiatedProtocol`, qui distingue les deux, et la mutation `NextProtos: nil` tombe des deux
+  côtés.
+- **L'offre `h2` du client était une prémisse implicite**, posée par `ForceAttemptHTTP2` dans les
+  entrailles de `net/http`. Elle est maintenant écrite dans le test.
+- **Le refus sans certificat n'avait pas de contrôle positif** sur le même serveur : un serveur jamais
+  lié l'aurait satisfait. Le test fait d'abord passer un client porteur d'un certificat.
+- **Le plancher 1.2 n'était prouvé qu'en `tlsconf`** : le client du test de câblage n'avait pas de
+  `MaxVersion` et négociait 1.3.
+- **La CA exigée de `rest-api-svc` n'était prouvée par rien** — la simplification « la surface publique
+  n'en a pas besoin » laissait toute la suite verte. Le test de boot couvre les trois fichiers.
+- **Rejeté : remplacer les clients de test par `tlsconf.ClientConfig()`** (−27 lignes). Cette
+  configuration pose `GetClientCertificate` : le client présenterait un certificat, et la mutation
+  « exiger un certificat client » ne ferait plus tomber le test qui prouve précisément qu'aucun n'est
+  demandé. Une coupe qui rend une preuve creuse n'est pas une coupe.
+- Coupé, en revanche : un test public entièrement couvert par son voisin, et un paramètre qu'aucun
+  appelant ne faisait varier.
+
+#### Dettes ouvertes par 300c
+
+- **`srv.ErrorLog` n'est posé nulle part** (`grep ErrorLog cmd/` : zéro). Les erreurs de handshake —
+  « tls: client didn't provide a certificate », le diagnostic n° 1 du nouveau port mTLS — partent sur
+  stderr par le logger de la bibliothèque standard, hors `slog`, non structurées. Une ligne par serveur,
+  plus sa preuve.
+- **`announceCAChange` parle de « dial »** (`tlsconf.go`) : sur `rest-api-svc`, le chargeur n'est que
+  serveur, et le message annonce une conséquence qui n'existe pas.
+- **HTTP/2 sur l'API publique**, avec le `ReadTimeout` que sa deadline de flux exige — à décider sur une
+  mesure, pas sur une intention.
 
 ## Tests (écrits dans la même PR)
 - Handshake TLS/mTLS réussi ; un client sans cert client est rejeté sur les endpoints mTLS.

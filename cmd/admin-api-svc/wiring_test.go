@@ -132,7 +132,7 @@ func releaseOrder(a *adminApp) []string {
 // ClickHouse, session-manager and content-key-svc are deliberately pointed at a closed port: none of
 // them may be touched while the graph is being built, so a boot that reaches them is a regression.
 func TestNewAdminAppBuildsTheWholeGraph(t *testing.T) {
-	cfg := testConfig()
+	cfg, _ := tlsTestConfig(t)
 	cfg.Postgres = pgtest.Config(t)
 	cfg.Redis = redistest.Config(t)
 
@@ -155,6 +155,9 @@ func TestNewAdminAppBuildsTheWholeGraph(t *testing.T) {
 		if component == nil || reflect.ValueOf(component).IsNil() {
 			t.Errorf("component %q was not wired", name)
 		}
+	}
+	if app.http.TLSConfig == nil {
+		t.Error("TLS_ENABLED is true and the wired server carries no TLS configuration")
 	}
 
 	// Building the graph must not start serving: both ports are bound by their Run, which only the
@@ -332,7 +335,12 @@ func mutualClient(t *testing.T, ca *tlstest.CA, present bool) *http.Client {
 	if !roots.AppendCertsFromPEM(caPEM) {
 		t.Fatal("the CA file holds no certificate")
 	}
-	conf := &tls.Config{RootCAs: roots, ServerName: "admin-api-svc", MinVersion: tls.VersionTLS13}
+	conf := &tls.Config{
+		RootCAs:    roots,
+		ServerName: "admin-api-svc",
+		MinVersion: tls.VersionTLS13,
+		NextProtos: []string{"h2", "http/1.1"},
+	}
 	if present {
 		certFile, keyFile := ca.Issue(t, "operator", "operator")
 		pair, err := tls.LoadX509KeyPair(certFile, keyFile)
@@ -390,18 +398,26 @@ func TestTheAdminAPIServesAPeerOfTheCAOverHTTP11(t *testing.T) {
 	if resp.TLS == nil {
 		t.Fatal("the Admin API answered in plaintext")
 	}
-	if resp.Proto != "HTTP/1.1" {
-		t.Errorf("proto = %q, want HTTP/1.1 — under h2 the realtime WebSocket cannot be hijacked", resp.Proto)
+	if got := resp.TLS.NegotiatedProtocol; got != "http/1.1" {
+		t.Errorf("ALPN = %q, want http/1.1 — under h2 the realtime WebSocket cannot be hijacked", got)
 	}
 }
 
 func TestTheAdminAPIRefusesAClientWithoutACertificate(t *testing.T) {
 	cfg, ca := tlsTestConfig(t)
 	srv := adminHTTPServer(t, cfg)
-	client := mutualClient(t, ca, false)
-	serveAdmin(t, srv, client)
+	control := mutualClient(t, ca, true)
+	serveAdmin(t, srv, control)
 
-	resp, err := adminGet(client, srv, "https")
+	resp, err := adminGet(control, srv, "https")
+	if err != nil {
+		t.Fatalf("the control client was refused, so the refusal below would prove nothing: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	bare := mutualClient(t, ca, false)
+	t.Cleanup(bare.CloseIdleConnections)
+	resp, err = adminGet(bare, srv, "https")
 	if err == nil {
 		_ = resp.Body.Close()
 		t.Fatal("a client with no certificate reached the Admin API")

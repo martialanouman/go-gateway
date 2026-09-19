@@ -105,7 +105,7 @@ func releaseOrder(a *restAPIApp) []string {
 // ClickHouse are deliberately pointed at a closed port: neither may be touched while the graph is being
 // built, so a boot that reaches them is a regression.
 func TestNewRestAPIAppBuildsTheWholeGraph(t *testing.T) {
-	cfg := testConfig()
+	cfg := tlsTestConfig(t)
 	cfg.Postgres = pgtest.Config(t)
 	cfg.Redis = redistest.Config(t)
 
@@ -122,6 +122,9 @@ func TestNewRestAPIAppBuildsTheWholeGraph(t *testing.T) {
 		if component == nil || reflect.ValueOf(component).IsNil() {
 			t.Errorf("component %q was not wired", name)
 		}
+	}
+	if app.http.TLSConfig == nil {
+		t.Error("TLS_ENABLED is true and the wired server carries no TLS configuration")
 	}
 
 	// Building the graph must not start serving: both ports are bound by their Run, which only the
@@ -196,7 +199,13 @@ func httpsClient(t *testing.T, caFile string) *http.Client {
 		Timeout: 5 * time.Second,
 		Transport: &http.Transport{
 			ForceAttemptHTTP2: true,
-			TLSClientConfig:   &tls.Config{RootCAs: roots, ServerName: "rest-api-svc", MinVersion: tls.VersionTLS12},
+			TLSClientConfig: &tls.Config{
+				RootCAs:    roots,
+				ServerName: "rest-api-svc",
+				MinVersion: tls.VersionTLS12,
+				MaxVersion: tls.VersionTLS12,
+				NextProtos: []string{"h2", "http/1.1"},
+			},
 		},
 	}
 }
@@ -219,7 +228,10 @@ func serveAndGet(t *testing.T, srv *http.Server, client *http.Client, scheme str
 	var err error
 	for range 50 {
 		resp, err = client.Get(url)
-		if err == nil {
+		if err == nil || !strings.Contains(err.Error(), "connection refused") {
+			if err != nil {
+				t.Fatalf("GET %s: %v", url, err)
+			}
 			return resp
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -241,8 +253,8 @@ func TestTheRestAPIServesHTTPSToAClientWithoutACertificate(t *testing.T) {
 	if resp.TLS == nil {
 		t.Fatal("the public API answered in plaintext")
 	}
-	if resp.Proto != "HTTP/2.0" {
-		t.Errorf("proto = %q, want HTTP/2.0 — the ALPN list never reached the handshake", resp.Proto)
+	if got := resp.TLS.NegotiatedProtocol; got != "http/1.1" {
+		t.Errorf("ALPN = %q, want http/1.1 — the list never reached the handshake", got)
 	}
 }
 
@@ -259,11 +271,19 @@ func TestTheRestAPIServesPlaintextWhenTLSIsOff(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 }
 
-func TestTheRestAPIRefusesToBootOnAnUnreadableCertificate(t *testing.T) {
-	cfg := tlsTestConfig(t)
-	cfg.TLS.CertFile = filepath.Join(t.TempDir(), "absent.crt")
-
-	if _, err := newHTTPServer(cfg, emptyStores(), silentLogger()); err == nil {
-		t.Fatal("a missing certificate booted: the failure must be a value, not a handshake at 3am")
+func TestTheRestAPIRefusesToBootOnAnUnreadableIdentity(t *testing.T) {
+	absent := filepath.Join(t.TempDir(), "absent.pem")
+	for name, breakIt := range map[string]func(*config.TLS){
+		"certificate": func(c *config.TLS) { c.CertFile = absent },
+		"key":         func(c *config.TLS) { c.KeyFile = absent },
+		"CA":          func(c *config.TLS) { c.ClientCAFile = absent },
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := tlsTestConfig(t)
+			breakIt(&cfg.TLS)
+			if _, err := newHTTPServer(cfg, emptyStores(), silentLogger()); err == nil {
+				t.Fatal("a missing file booted: the failure must be a value, not a handshake at 3am")
+			}
+		})
 	}
 }
