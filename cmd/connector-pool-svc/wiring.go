@@ -369,11 +369,7 @@ func newSettler(cfg config.Config, logger *slog.Logger) (_ *settler, err error) 
 		}
 	}()
 
-	creds, err := grpctls.DialOption(cfg.TLS, logger)
-	if err != nil {
-		return nil, err
-	}
-	s.conn, err = grpc.NewClient(cfg.Billing.Addr, creds)
+	s.conn, err = grpctls.NewClient(cfg.TLS, logger, cfg.Billing.Addr)
 	if err != nil {
 		return nil, fmt.Errorf("dial billing at %q: %w", cfg.Billing.Addr, err)
 	}

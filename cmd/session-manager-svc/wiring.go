@@ -72,11 +72,10 @@ func newSessionManagerApp(ctx context.Context, cfg config.Config, logger *slog.L
 	}
 	a.onClose("stores", st.close)
 
-	creds, err := grpctls.ServerOption(cfg.TLS, logger)
+	a.grpc, err = grpctls.NewServer(cfg.TLS, logger)
 	if err != nil {
 		return nil, err
 	}
-	a.grpc = grpc.NewServer(creds)
 	pb.RegisterSessionRegistryServer(a.grpc,
 		session.NewServer(session.NewRegistry(st.rdb), redisstore.NewPubSubPublisher(st.rdb)))
 

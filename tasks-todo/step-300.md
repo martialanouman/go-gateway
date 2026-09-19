@@ -342,16 +342,23 @@ chose à poser plutôt que deux à garder d'accord — mais pas pour la raison �
 
 `tlsconf` reste sans dépendance hors bibliothèque standard : 300c et 300d s'en servent pour HTTP et pour
 SMPP, et lui faire importer gRPC pour deux fonctions le rendrait faux pour eux. Un paquet neuf,
-**`internal/grpctls`** — voisin d'`internal/storage`, qui importe `config` comme lui —, porte les deux
-seules déclarations, branche désactivée comprise :
+**`internal/grpctls`** — voisin d'`internal/storage`, qui importe `config` comme lui — porte la
+construction elle-même, branche désactivée comprise :
 
 ```go
-func ServerOption(cfg config.TLS, logger *slog.Logger) (grpc.ServerOption, error)
-func DialOption(cfg config.TLS, logger *slog.Logger) (grpc.DialOption, error)
+func NewServer(cfg config.TLS, logger *slog.Logger) (*grpc.Server, error)
+func NewClient(cfg config.TLS, logger *slog.Logger, addr string) (*grpc.ClientConn, error)
+func Dialer(cfg config.TLS, logger *slog.Logger, serverName string) (Dial, error)
 ```
 
-`Enabled=false` rend `grpc.EmptyServerOption{}` et `insecure.NewCredentials()`, si bien que chaque
-câblage tient en une ligne et que la bascule ne se décide qu'à un seul endroit.
+**Corrigé en revue :** le design rendait des *options* (`ServerOption`, `DialOption`), que le câblage
+passait ensuite à `grpc.NewServer`/`grpc.NewClient`. La garde devait alors remonter un argument jusqu'à
+son origine — donc résoudre un nom de variable —, et deux mutations ont montré que ça ne tient pas : une
+réaffectation après la bonne ligne, ou le même nom dans une autre fonction du fichier, laissaient partir
+un serveur en clair au vert. Le paquet construit donc le serveur et la connexion, et la garde porte sur
+**quelle fonction est appelée** : aucun nom à résoudre, aucune portée à suivre, et
+`grpc.WithInsecure()` — l'autre évasion trouvée — tombe avec, alors qu'une règle sur
+`insecure.NewCredentials` ne la voyait pas.
 
 **`runGRPC` n'est pas touché**, et ses quatre copies restent dupliquées : des credentials sont une
 `grpc.ServerOption`, elles entrent au `grpc.NewServer` dans `wiring.go`. Ce sont quatre fichiers, pas

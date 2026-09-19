@@ -78,11 +78,10 @@ func newContentKeyApp(ctx context.Context, cfg config.Config, logger *slog.Logge
 		return nil, err
 	}
 
-	creds, err := grpctls.ServerOption(cfg.TLS, logger)
+	a.grpc, err = grpctls.NewServer(cfg.TLS, logger)
 	if err != nil {
 		return nil, err
 	}
-	a.grpc = grpc.NewServer(creds)
 	pb.RegisterContentKeysServer(a.grpc,
 		contentkeys.NewContentKeyServer(kms, postgres.NewContentKeyRepo(st.pg)))
 

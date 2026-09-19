@@ -295,17 +295,12 @@ func newControlPlaneClients(cfg config.Config, logger *slog.Logger) (_ *controlP
 
 	// One identity for both calls: the pod is authenticated, not the surface it reaches. content-key-svc
 	// names this service in its own allowlist.
-	creds, err := grpctls.DialOption(cfg.TLS, logger)
-	if err != nil {
-		return nil, err
-	}
-
-	c.registry, err = grpc.NewClient(cfg.SMPP.SessionManagerAddr, creds)
+	c.registry, err = grpctls.NewClient(cfg.TLS, logger, cfg.SMPP.SessionManagerAddr)
 	if err != nil {
 		return nil, fmt.Errorf("dial session manager at %q: %w", cfg.SMPP.SessionManagerAddr, err)
 	}
 
-	c.contentKey, err = grpc.NewClient(cfg.ContentKey.Addr, creds)
+	c.contentKey, err = grpctls.NewClient(cfg.TLS, logger, cfg.ContentKey.Addr)
 	if err != nil {
 		return nil, fmt.Errorf("dial content key service at %q: %w", cfg.ContentKey.Addr, err)
 	}

@@ -5,8 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"google.golang.org/grpc"
-
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/grpctls"
 	"github.com/martialanouman/go-gateway/internal/modlrrouter"
@@ -36,11 +34,10 @@ func TestThePodLegVerifiesTheDeploymentAndNotTheAddressDialled(t *testing.T) {
 	const deploymentName = "smpp-server-svc"
 	certFile, keyFile := ca.Issue(t, deploymentName, deploymentName)
 	podIdentity := config.TLS{Enabled: true, CertFile: certFile, KeyFile: keyFile, ClientCAFile: ca.CAFile}
-	serverCreds, err := grpctls.ServerOption(podIdentity, silentLogger())
+	srv, err := grpctls.NewServer(podIdentity, silentLogger())
 	if err != nil {
-		t.Fatalf("ServerOption: %v", err)
+		t.Fatalf("NewServer: %v", err)
 	}
-	srv := grpc.NewServer(serverCreds)
 	registrypb.RegisterSessionRegistryServer(srv, deliverStub{})
 	addr := grpctest.Serve(t, srv)
 
@@ -60,11 +57,11 @@ func TestThePodLegVerifiesTheDeploymentAndNotTheAddressDialled(t *testing.T) {
 	}
 
 	// The same server verified under the name grpc-go derives by itself: what the pin replaces.
-	unpinnedCreds, err := grpctls.DialOption(cfg.TLS, silentLogger())
+	unpinnedDial, err := grpctls.Dialer(cfg.TLS, silentLogger(), "")
 	if err != nil {
-		t.Fatalf("DialOption: %v", err)
+		t.Fatalf("Dialer: %v", err)
 	}
-	unpinned := modlrrouter.NewPodClients(modlrrouter.NewTemplateResolver(cfg.SMPP.PodAddrTemplate), unpinnedCreds)
+	unpinned := modlrrouter.NewPodClients(modlrrouter.NewTemplateResolver(cfg.SMPP.PodAddrTemplate), unpinnedDial)
 	defer unpinned.Close()
 	err = unpinned.Deliver(t.Context(), addr, "bind-1", []byte{0x01})
 	if err == nil {

@@ -358,11 +358,11 @@ const smppServerIdentity = "smpp-server-svc"
 // smppServerIdentity and not the address it composes, and stands alone so that choice can be tested
 // without the rest of the delivery leg, which needs Kafka and ClickHouse.
 func newPodClients(cfg config.Config, logger *slog.Logger) (*modlrrouter.PodClients, error) {
-	creds, err := grpctls.DialOptionTo(cfg.TLS, logger, smppServerIdentity)
+	dial, err := grpctls.Dialer(cfg.TLS, logger, smppServerIdentity)
 	if err != nil {
 		return nil, err
 	}
-	return modlrrouter.NewPodClients(modlrrouter.NewTemplateResolver(cfg.SMPP.PodAddrTemplate), creds), nil
+	return modlrrouter.NewPodClients(modlrrouter.NewTemplateResolver(cfg.SMPP.PodAddrTemplate), dial), nil
 }
 
 func newDeliveryLeg(cfg config.Config, st *stores, mo *moLeg, logger *slog.Logger) (_ *deliveryLeg, err error) {
@@ -373,11 +373,11 @@ func newDeliveryLeg(cfg config.Config, st *stores, mo *moLeg, logger *slog.Logge
 		}
 	}()
 
-	creds, err := grpctls.DialOption(cfg.TLS, logger)
-	if err != nil {
-		return nil, err
-	}
-	d.registry, err = grpc.NewClient(cfg.SMPP.SessionManagerAddr, creds)
+	// Two TLS loaders on this pod, and they cannot be merged: the pod leg below pins a name and this one
+	// must not (grpc-go reads the pinned name off the credentials to set every connection's authority).
+	// The cost is that tlsconf's "the CA changed, restart" warning, latched per loader, is said twice
+	// during a rotation of the authority. Noise, not a wrong verdict.
+	d.registry, err = grpctls.NewClient(cfg.TLS, logger, cfg.SMPP.SessionManagerAddr)
 	if err != nil {
 		return nil, fmt.Errorf("dial session registry: %w", err)
 	}

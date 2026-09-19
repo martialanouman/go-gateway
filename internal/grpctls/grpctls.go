@@ -1,11 +1,14 @@
-// Package grpctls turns a pod's TLS configuration into the two gRPC options a binary needs: one for
-// what it serves, one for what it dials. It is the only place the on/off switch is read.
+// Package grpctls builds every gRPC server and every gRPC client of this repository, so that the pod's
+// TLS identity cannot be forgotten at a call site. Production code never calls grpc.NewServer or
+// grpc.NewClient itself, and a guard in this package's tests holds that — a rule about which function is
+// called, which no reassignment, import alias or deprecated spelling walks around.
 //
 // It is not in internal/platform/tlsconf because that package knows nothing beyond the standard
 // library, and the HTTP and SMPP sides must not pull gRPC in to get a tls.Config.
 package grpctls
 
 import (
+	"fmt"
 	"log/slog"
 
 	"google.golang.org/grpc"
@@ -16,45 +19,61 @@ import (
 	"github.com/martialanouman/go-gateway/internal/platform/tlsconf"
 )
 
-// ServerOption is the transport credentials of a gRPC surface: mutual TLS against the configured
+// Dial opens one connection. It is what Dialer returns, named so the callers that pass it around do not
+// each spell the signature.
+type Dial func(addr string) (*grpc.ClientConn, error)
+
+// NewServer builds a gRPC server carrying the pod's identity: mutual TLS against the configured
 // authority, restricted to cfg.AllowedClients when it names any.
 //
 // The ALPN list is left empty, and gRPC is the one transport where that is right: credentials.NewTLS
 // appends "h2" to whatever GetConfigForClient returns. net/http does not.
-func ServerOption(cfg config.TLS, logger *slog.Logger) (grpc.ServerOption, error) {
+func NewServer(cfg config.TLS, logger *slog.Logger) (*grpc.Server, error) {
 	if !cfg.Enabled {
-		return grpc.EmptyServerOption{}, nil
+		return grpc.NewServer(), nil
 	}
 	conf, err := files(cfg, logger).ServerConfig(tlsconf.ServerOptions{AllowedClients: cfg.AllowedClients})
 	if err != nil {
 		return nil, err
 	}
-	return grpc.Creds(credentials.NewTLS(conf)), nil
+	return grpc.NewServer(grpc.Creds(credentials.NewTLS(conf))), nil
 }
 
-// DialOption is the transport credentials of a gRPC client. The name verified is the authority of the
-// address dialled: with ServerName empty, grpc-go's ClientHandshake fills it from that authority.
-func DialOption(cfg config.TLS, logger *slog.Logger) (grpc.DialOption, error) {
-	return DialOptionTo(cfg, logger, "")
-}
-
-// DialOptionTo is DialOption for a peer whose verified identity is not the address dialled — the return
-// path, which reaches an individual pod while the certificate is issued per Deployment. An empty
-// serverName is DialOption.
-//
-// A pinned option must NOT be shared between two dial targets: grpc-go reads the name off the
-// credentials to set a connection's authority, so both would be verified — and addressed — as the one
-// name. Sharing an unpinned option is safe, and admin-api-svc does it.
-func DialOptionTo(cfg config.TLS, logger *slog.Logger, serverName string) (grpc.DialOption, error) {
-	if !cfg.Enabled {
-		return grpc.WithTransportCredentials(insecure.NewCredentials()), nil
-	}
-	conf, err := files(cfg, logger).ClientConfig()
+// NewClient dials addr with the pod's identity, verifying the peer under the name addr carries. It opens
+// no connection: gRPC connects on the first call.
+func NewClient(cfg config.TLS, logger *slog.Logger, addr string) (*grpc.ClientConn, error) {
+	dial, err := Dialer(cfg, logger, "")
 	if err != nil {
 		return nil, err
 	}
-	conf.ServerName = serverName
-	return grpc.WithTransportCredentials(credentials.NewTLS(conf)), nil
+	return dial(addr)
+}
+
+// Dialer returns a dial function, for a caller that opens one connection per peer — PodClients, which
+// holds one per smpp-server pod.
+//
+// serverName is the identity to verify when it is NOT the address dialled: the return path reaches an
+// individual pod while the certificate is issued per Deployment, so the one thing that certificate can
+// attest is that the peer belongs to it. Empty verifies the address, which is what every other caller
+// wants. A dialer built WITH a serverName must serve one peer only: grpc-go reads that name off the
+// credentials to set each connection's authority, so a second target would be addressed as the first.
+func Dialer(cfg config.TLS, logger *slog.Logger, serverName string) (Dial, error) {
+	creds := grpc.WithTransportCredentials(insecure.NewCredentials())
+	if cfg.Enabled {
+		conf, err := files(cfg, logger).ClientConfig()
+		if err != nil {
+			return nil, err
+		}
+		conf.ServerName = serverName
+		creds = grpc.WithTransportCredentials(credentials.NewTLS(conf))
+	}
+	return func(addr string) (*grpc.ClientConn, error) {
+		conn, err := grpc.NewClient(addr, creds)
+		if err != nil {
+			return nil, fmt.Errorf("dial %s: %w", addr, err)
+		}
+		return conn, nil
+	}, nil
 }
 
 // files projects the configuration onto the three paths tlsconf reads.

@@ -108,11 +108,10 @@ func newBillingApp(ctx context.Context, cfg config.Config, logger *slog.Logger) 
 	a.onClose("reaper", reap.close)
 	a.reaper = reap.reaper
 
-	creds, err := grpctls.ServerOption(cfg.TLS, logger)
+	a.grpc, err = grpctls.NewServer(cfg.TLS, logger)
 	if err != nil {
 		return nil, err
 	}
-	a.grpc = grpc.NewServer(creds)
 
 	feed, err := newAlertFeed(cfg)
 	if err != nil {

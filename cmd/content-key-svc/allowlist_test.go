@@ -63,16 +63,16 @@ func TestTheWiredServerAdmitsOnlyTheCallersItNames(t *testing.T) {
 func dialAs(t *testing.T, ca *tlstest.CA, addr, name string) *grpc.ClientConn {
 	t.Helper()
 	certFile, keyFile := ca.Issue(t, name, name)
-	creds, err := grpctls.DialOptionTo(config.TLS{
+	dial, err := grpctls.Dialer(config.TLS{
 		Enabled:      true,
 		CertFile:     certFile,
 		KeyFile:      keyFile,
 		ClientCAFile: ca.CAFile,
 	}, discardLogger(), serviceName)
 	if err != nil {
-		t.Fatalf("DialOptionTo: %v", err)
+		t.Fatalf("Dialer: %v", err)
 	}
-	conn, err := grpc.NewClient(addr, creds)
+	conn, err := dial(addr)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}

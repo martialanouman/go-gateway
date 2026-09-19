@@ -51,17 +51,12 @@ type PodClients struct {
 	conns map[string]*grpc.ClientConn
 }
 
-// NewPodClients builds the pod delivery client over a pod-address resolver. creds carries the identity
-// to verify, which is not the address dialled: a pod's certificate is issued per Deployment, so it can
-// only attest that the peer belongs to it. Whether it is the RIGHT pod is Deliver's answer.
-func NewPodClients(resolver AddrResolver, creds grpc.DialOption) *PodClients {
-	return &PodClients{
-		resolver: resolver,
-		dial: func(addr string) (*grpc.ClientConn, error) {
-			// NewClient is lazy — it opens no socket until the first Deliver.
-			return grpc.NewClient(addr, creds)
-		},
-	}
+// NewPodClients builds the pod delivery client over a pod-address resolver. dial carries the pod's TLS
+// identity and the name it verifies, which is not the address dialled: a pod's certificate is issued per
+// Deployment, so it can only attest that the peer belongs to it. Whether it is the RIGHT pod is
+// Deliver's answer. It is lazy — no socket opens until the first Deliver.
+func NewPodClients(resolver AddrResolver, dial func(addr string) (*grpc.ClientConn, error)) *PodClients {
+	return &PodClients{resolver: resolver, dial: dial}
 }
 
 // Deliver pushes pdu to bindID on podID, returning the gRPC status of SessionRegistry.Deliver. A pod

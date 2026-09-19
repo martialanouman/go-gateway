@@ -99,11 +99,10 @@ func newSMPPApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (_ 
 	// The pod-local Deliver gRPC surface: step-048 dials this pod (after a Lookup) to push a deliver_sm
 	// to a bind this pod owns. It shares cfg.GRPC.Port (reserved for the SMPP server's registry surface);
 	// only Deliver is served here, the rest of SessionRegistry lives in session-manager.
-	creds, err := grpctls.ServerOption(cfg.TLS, logger)
+	a.grpc, err = grpctls.NewServer(cfg.TLS, logger)
 	if err != nil {
 		return nil, err
 	}
-	a.grpc = grpc.NewServer(creds)
 	registrypb.RegisterSessionRegistryServer(a.grpc, smppserver.NewDeliverServer(stack.listener, logger))
 
 	a.ops, err = newOpsServer(cfg, logger, st, stack)
@@ -151,11 +150,7 @@ func openStores(ctx context.Context, cfg config.Config, logger *slog.Logger) (_ 
 
 	// NewClient is lazy: it opens no connection until the first bind, so a session-manager that is
 	// briefly down does not block startup — a bind during that window simply fails with ESME_RSYSERR.
-	creds, err := grpctls.DialOption(cfg.TLS, logger)
-	if err != nil {
-		return nil, err
-	}
-	s.registry, err = grpc.NewClient(cfg.SMPP.SessionManagerAddr, creds)
+	s.registry, err = grpctls.NewClient(cfg.TLS, logger, cfg.SMPP.SessionManagerAddr)
 	if err != nil {
 		return nil, fmt.Errorf("dial session manager at %q: %w", cfg.SMPP.SessionManagerAddr, err)
 	}

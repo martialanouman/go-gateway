@@ -55,10 +55,20 @@ symbolique ; un montage en `subPath` ne suit pas. La rotation deviendrait silenc
 jusqu'au prochain redémarrage — et comme les certificats se renouvellent tous les deux mois environ, la
 panne arriverait longtemps après la faute.
 
-**`TLS_ALLOWED_CLIENTS` restreint les appelants**, et un seul service le pose : `content-key-svc`, qui
-rend une clé de données en clair. Vide — le cas des autres — admet tout porteur d'un certificat de la CA,
-ce qui prouve qu'un pair est un de nos pods, jamais LEQUEL. La liste compare des **SAN DNS**, jamais un
-`CN`.
+**`TLS_ALLOWED_CLIENTS` restreint les appelants**, et les quatre serveurs gRPC le posent — chacun n'en a
+qu'un ou deux. Vide, la variable admet tout porteur d'un certificat de la CA : cela prouve qu'un pair est
+un de nos pods, jamais LEQUEL, et la frontière de confiance devient « tout ce qui obtient un certificat
+dans le namespace ». La liste compare des **SAN DNS**, jamais un `CN`.
+
+| service | appelants |
+|---|---|
+| `content-key-svc` | `router-svc`, `admin-api-svc` |
+| `billing-svc` | `router-svc`, `connector-pool-svc` |
+| `session-manager-svc` | `smpp-server-svc`, `mo-dlr-router-svc`, `admin-api-svc` |
+| `smpp-server-svc` | `mo-dlr-router-svc` |
+
+Ajouter un appelant à un de ces services, c'est ajouter son nom ici **avant** de déployer : sinon le
+premier handshake est refusé, et le client ne lit qu'un « bad certificate » qui ne dit pas pourquoi.
 
 **Aucun secret ne passe par l'environnement.** Une clé privée en variable d'environnement est lisible
 dans `/proc`, et part avec tout ce qui journalise sa configuration au démarrage — ce que font les

@@ -3,7 +3,8 @@
 # secrets-by-reference (POSTGRES_URL literal, and the Secret below), required-override (no HTTP_PORT,
 # no ENVIRONMENT), known-env-name (POSTGRE_URL), image-convention (nginx),
 # pool-covers-lanes twice (minReplicas 2 over 6 partitions is 3 lanes per pod against POSTGRES_MAX_CONNS
-# 2; and the not-a-service HPA below omits minReplicas entirely), no-subpath (the tls mount below).
+# 2; and the not-a-service HPA below omits minReplicas entirely), no-subpath (the subPath mount below —
+# the Job further down violates it too, through subPathExpr, which is what pins the Job call site).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -142,7 +143,9 @@ spec:
               queue: mt.inbound
 ---
 # Violates, on purpose: job-container-rules (a literal secret, an unknown variable name, an image off
-# the release registry). A Job has no ops port and exits, so probes and grace period do NOT apply.
+# the release registry) and no-subpath, through subPathExpr — the Deployment above covers subPath on a
+# Deployment, so this one is what pins the Job call site AND the subPathExpr branch. A Job has no ops
+# port and exits, so probes and grace period do NOT apply.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -159,9 +162,6 @@ spec:
               value: postgres://gateway:gateway@db:5432/gateway
             - name: POSTGRE_MAX_CONNS
               value: "10"
-          # no-subpath on a Job, and through subPathExpr: the Deployment above covers subPath on a
-          # Deployment, so without this one both the Job call site and the subPathExpr branch could be
-          # deleted with the suite still green.
           volumeMounts:
             - name: tls
               mountPath: /etc/gateway/tls/tls.crt
