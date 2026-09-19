@@ -914,30 +914,20 @@ func TestLoadReadsYmlAsWellAsYaml(t *testing.T) {
 func TestEveryDownwardAPIFieldIsPinnedByTheFixture(t *testing.T) {
 	t.Parallel()
 
-	var reported []violation
+	var reported string
 	for _, v := range inspect(t, filepath.Join("testdata", "broken")) {
 		if v.rule == "downward-api-fields" {
-			reported = append(reported, v)
+			reported += v.msg
 		}
 	}
 
 	// Spelled out, NOT derived from downwardAPIFields: ranging over the table would delete the
 	// assertion along with the entry, which is the very mutation this test exists to catch.
-	for _, want := range []struct{ svc, field string }{
-		{"smpp-server-svc", "SMPP_POD_ADDR"},
-		{"smpp-server-svc", "SMPP_POD_ID"},
-	} {
-		found := false
-		for _, v := range reported {
-			if strings.Contains(v.msg, want.svc) && strings.Contains(v.msg, want.field) {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("no downward-api-fields violation names %s/%s on testdata/broken — either the "+
-				"table stopped requiring it or the fixture stopped breaking it, and dropping it from "+
-				"the table would pass every other test", want.svc, want.field)
+	for _, field := range []string{"SMPP_POD_ADDR", "SMPP_POD_ID"} {
+		if !strings.Contains(reported, field) {
+			t.Errorf("no downward-api-fields violation names smpp-server-svc/%s on testdata/broken — "+
+				"either the table stopped requiring it or the fixture stopped breaking it, and dropping "+
+				"it from the table would pass every other test", field)
 		}
 	}
 }

@@ -122,7 +122,7 @@ func TestExpiryFreesSlot(t *testing.T) {
 	}
 }
 
-func TestTouchRefreshesTTL(t *testing.T) {
+func TestRebindRefreshesTTL(t *testing.T) {
 	rdb := redistest.Client(t)
 	clk := &clock{t: time.Unix(1_700_000_000, 0)}
 	reg := session.NewRegistry(rdb, session.WithSessionTTL(30*time.Second), session.WithClock(clk.now))
@@ -134,31 +134,31 @@ func TestTouchRefreshesTTL(t *testing.T) {
 		t.Fatalf("bind: %v", err)
 	}
 
-	// Refresh just before expiry, then advance again: the session survives because Touch pushed the
-	// expiry forward.
+	// Refresh just before expiry, then advance again: the session survives because the re-Bind pushed
+	// the expiry forward. max_sessions is 1 and this is the second Bind of the same member, which must
+	// therefore NOT count twice — the rebind rule of bind.lua, on the path production actually uses.
 	clk.advance(20 * time.Second)
-	refreshed, err := reg.Touch(ctx, held)
-	if err != nil || !refreshed {
-		t.Fatalf("touch: refreshed=%v err=%v, want refreshed=true err=nil", refreshed, err)
+	if _, err := reg.Bind(ctx, held, 1); err != nil {
+		t.Fatalf("rebind: %v — a refresh of a held session must not count against its own quota", err)
 	}
 
-	clk.advance(20 * time.Second) // 40s since bind, but only 20s since touch
+	clk.advance(20 * time.Second) // 40s since the first bind, but only 20s since the refresh
 	live, err := reg.Lookup(ctx, account)
 	if err != nil {
 		t.Fatalf("lookup: %v", err)
 	}
 	if len(live) != 1 {
-		t.Fatalf("lookup after touch: %d live sessions, want 1", len(live))
+		t.Fatalf("lookup after refresh: %d live sessions, want 1", len(live))
 	}
 
-	// Touch on a lapsed session does not resurrect it.
+	// Once lapsed, the slot is genuinely free: the sweep drops it and Lookup reports nothing.
 	clk.advance(31 * time.Second)
-	refreshed, err = reg.Touch(ctx, held)
+	live, err = reg.Lookup(ctx, account)
 	if err != nil {
-		t.Fatalf("touch lapsed: %v", err)
+		t.Fatalf("lookup after expiry: %v", err)
 	}
-	if refreshed {
-		t.Fatal("touch lapsed: refreshed=true, want false")
+	if len(live) != 0 {
+		t.Fatalf("lookup after expiry: %d live sessions, want 0", len(live))
 	}
 }
 
@@ -315,14 +315,13 @@ func TestLookupToleratesAPodWithNoAddress(t *testing.T) {
 	}
 }
 
-// TestTouchRenewsThePodAddress pins what made Touch a trap. The address expires on the session TTL, so
-// a refresh path that renews the token without renewing the address keeps a bind live while the return
-// path loses the way to reach it — an SMPP channel that stops delivering a minute after the bind, with
-// nothing to see. Production refreshes by re-Bind today, which is precisely why Touch must not be left
-// as a hole for whoever wires it next.
+// TestRebindRenewsThePodAddress pins the half of the refresh that is easy to lose. The address expires
+// on the session TTL, so a refresh that renews the token without renewing the address keeps a bind live
+// while the return path loses the way to reach it — an SMPP channel that stops delivering a minute
+// after the bind, with nothing to see. refreshLoop re-Binds, so the renewal has to live in Bind.
 //
 // The address key is deleted directly rather than waited out: its TTL is 61 s.
-func TestTouchRenewsThePodAddress(t *testing.T) {
+func TestRebindRenewsThePodAddress(t *testing.T) {
 	rdb := redistest.Client(t)
 	reg := session.NewRegistry(rdb)
 	ctx := context.Background()
@@ -337,12 +336,8 @@ func TestTouchRenewsThePodAddress(t *testing.T) {
 		t.Fatalf("drop the published address: %v", err)
 	}
 
-	refreshed, err := reg.Touch(ctx, b)
-	if err != nil {
-		t.Fatalf("touch: %v", err)
-	}
-	if !refreshed {
-		t.Fatal("touch reported the session gone, want still present")
+	if _, err := reg.Bind(ctx, b, 5); err != nil {
+		t.Fatalf("rebind: %v", err)
 	}
 
 	live, err := reg.Lookup(ctx, account)
@@ -350,7 +345,7 @@ func TestTouchRenewsThePodAddress(t *testing.T) {
 		t.Fatalf("lookup: %v", err)
 	}
 	if len(live) != 1 || live[0].Addr != b.Addr {
-		t.Errorf("after touch, lookup = %+v, want one session carrying addr %q — a refresh that renews "+
+		t.Errorf("after the refresh, lookup = %+v, want one session carrying addr %q — a refresh that renews "+
 			"the token but not the address lets the return path go dark under a live bind", live, b.Addr)
 	}
 }

@@ -27,16 +27,13 @@ var bindScriptSrc string
 //go:embed lua/unbind.lua
 var unbindScriptSrc string
 
-//go:embed lua/touch.lua
-var touchScriptSrc string
-
 //go:embed lua/lookup.lua
 var lookupScriptSrc string
 
 // DefaultSessionTTL is the lifetime of a session token without a refresh, and of the owning pod's
-// published address with it. A bind must be kept alive by a refresh — in production a re-Bind, driven
-// by the listener's refreshLoop; Touch does the same for a caller that wires it. Once the TTL lapses
-// the token is swept, the slot is freed, and the pod's address goes with it.
+// published address with it. A bind is kept alive by re-Binding it (the listener's refreshLoop), which
+// pushes the expiry forward without counting twice against the quota. Once the TTL lapses the token is
+// swept, the slot is freed, and the pod's address goes with it.
 const DefaultSessionTTL = 60 * time.Second
 
 // memberSep joins pod_id and bind_id into a sorted-set member. pod names and bind ids (UUIDs) never
@@ -66,7 +63,6 @@ type Registry struct {
 
 	bind   *redis.Script
 	unbind *redis.Script
-	touch  *redis.Script
 	lookup *redis.Script
 }
 
@@ -101,7 +97,6 @@ func NewRegistry(rdb *redis.Client, opts ...Option) *Registry {
 		now:    time.Now,
 		bind:   redis.NewScript(bindScriptSrc),
 		unbind: redis.NewScript(unbindScriptSrc),
-		touch:  redis.NewScript(touchScriptSrc),
 		lookup: redis.NewScript(lookupScriptSrc),
 	}
 	for _, o := range opts {
@@ -115,12 +110,9 @@ func NewRegistry(rdb *redis.Client, opts ...Option) *Registry {
 // operation for an account on one slot.
 func key(accountID string) string { return "sess:{" + accountID + "}" }
 
-// podKey holds one pod's dialable gRPC address, published by the pod at bind time and read back by
-// Lookup (step-302). It is a key of its own, written by its own command, for two reasons that both
-// forbid folding it into bind.lua as a second KEYS entry: the braces make pod_id a Cluster hash tag, so
-// the two keys land on different slots and a script spanning them would be a CROSSSLOT error the day
-// this runs on a cluster (it does not today — see podAddrs); and bind.lua carries invariant (d), which
-// nothing about an address needs to share.
+// podKey holds one pod's dialable gRPC address (step-302). It is written by its own command rather than
+// as a second KEYS entry of bind.lua, because bind.lua carries invariant (d) and an address needs none
+// of its atomicity — and because the two keys hash-tag to different slots (see podAddrs).
 func podKey(podID string) string { return "sess:pod:{" + podID + "}" }
 
 // keyTTLSeconds is the whole-key EXPIRE: the newest member's lifetime plus a second, so an idle
@@ -163,29 +155,6 @@ func (r *Registry) Unbind(ctx context.Context, b Bind) (bool, error) {
 		return false, fmt.Errorf("session: unbind %s: %w", b.AccountID, err)
 	}
 	return removed > 0, nil
-}
-
-// Touch refreshes b's TTL (called on enquire_link) and reports whether the session was still present.
-// A session that already lapsed is not resurrected.
-//
-// It renews the pod's published address alongside the token, for the same reason Bind publishes it: the
-// address expires on the session TTL, so anything that keeps a session alive without renewing it would
-// keep a bind live while the return path loses the way to reach it — silently, an SMPP channel that
-// stops delivering a minute in. Nothing calls Touch in production today (refreshLoop re-Binds instead),
-// which is exactly why this must not be left as a trap for whoever wires it.
-func (r *Registry) Touch(ctx context.Context, b Bind) (bool, error) {
-	now := r.now()
-	if b.Addr != "" {
-		if err := r.rdb.Set(ctx, podKey(b.PodID), b.Addr, r.ttl+time.Second).Err(); err != nil {
-			return false, fmt.Errorf("session: refresh address of pod %s: %w", b.PodID, err)
-		}
-	}
-	refreshed, err := r.touch.Run(ctx, r.rdb, []string{key(b.AccountID)},
-		b.member(), now.Unix(), now.Add(r.ttl).Unix(), r.keyTTLSeconds()).Int64()
-	if err != nil {
-		return false, fmt.Errorf("session: touch %s: %w", b.AccountID, err)
-	}
-	return refreshed > 0, nil
 }
 
 // Lookup returns the account's live sessions, having swept any whose TTL has lapsed.
@@ -238,9 +207,9 @@ func (r *Registry) podAddrs(ctx context.Context, binds []Bind) (map[string]strin
 		}
 		cmds[b.PodID] = pipe.Get(ctx, podKey(b.PodID))
 	}
-	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, redis.Nil) {
-		return nil, err
-	}
+	// The aggregate error is ignored on purpose: go-redis sets it on every command, and the loop below
+	// reads each one — including the redis.Nil that simply means "this pod published no address".
+	_, _ = pipe.Exec(ctx)
 	out := make(map[string]string, len(cmds))
 	for pod, cmd := range cmds {
 		switch v, err := cmd.Result(); {

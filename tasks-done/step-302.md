@@ -263,5 +263,9 @@ Le **contrôleur** : `smpp-server-svc` reste un `Deployment`, et c'est un choix,
 motifs sont sous `## Design arrêté` (recréation immédiate sur perte de nœud, rollout parallèle, et un
 drain qui ne dépend d'aucun `EndpointSlice`). Ne pas rouvrir sans un fait neuf.
 
-`Registry.Touch` et `touch.lua`, morts en production depuis que `refreshLoop` rafraîchit par `Bind` :
-constaté ici, pas traité — une suppression sans rapport avec l'adressage.
+*(Levé après la revue.)* `Registry.Touch` et `touch.lua` étaient morts en production depuis que
+`refreshLoop` rafraîchit par `Bind`. Cette step les avait d'abord laissés en place en leur ajoutant le
+renouvellement d'adresse, pour qu'ils ne deviennent pas un piège — c'est-à-dire du code ajouté à du code
+mort. Ils sont **supprimés**, et leurs deux tests basculés sur le chemin réel (`TestRebindRefreshesTTL`,
+`TestRebindRenewsThePodAddress`) : le rafraîchissement par re-`Bind` n'était couvert par **aucun** test
+jusque-là, alors que c'est le seul que la production emprunte.

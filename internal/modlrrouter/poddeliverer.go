@@ -47,16 +47,15 @@ func NewPodClients(dial func(addr string) (*grpc.ClientConn, error)) *PodClients
 // Unavailable so the caller simply skips it — the state a replica from before step-302 is in, for the
 // length of one rollout.
 func (p *PodClients) Deliver(ctx context.Context, bind LiveBind, pdu []byte) error {
-	podID, bindID := bind.PodID, bind.BindID
 	if bind.Addr == "" {
-		return status.Errorf(codes.Unavailable, "modlrrouter: pod %s published no dial address", podID)
+		return status.Errorf(codes.Unavailable, "modlrrouter: pod %s published no dial address", bind.PodID)
 	}
-	conn, err := p.conn(podID, bind.Addr)
+	conn, err := p.conn(bind)
 	if err != nil {
 		return status.Error(codes.Unavailable, err.Error())
 	}
 	resp, err := registrypb.NewSessionRegistryClient(conn).Deliver(ctx,
-		&registrypb.DeliverRequest{BindId: bindID, Pdu: pdu})
+		&registrypb.DeliverRequest{BindId: bind.BindID, Pdu: pdu})
 	if err != nil {
 		return err
 	}
@@ -66,7 +65,7 @@ func (p *PodClients) Deliver(ctx context.Context, bind LiveBind, pdu []byte) err
 	return nil
 }
 
-func (p *PodClients) conn(podID, addr string) (*grpc.ClientConn, error) {
+func (p *PodClients) conn(bind LiveBind) (*grpc.ClientConn, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	// A Deliver still in flight when the service shuts down would otherwise dial a fresh connection
@@ -74,17 +73,17 @@ func (p *PodClients) conn(podID, addr string) (*grpc.ClientConn, error) {
 	if p.closed {
 		return nil, fmt.Errorf("pod clients closed")
 	}
-	if c, ok := p.conns[addr]; ok {
+	if c, ok := p.conns[bind.Addr]; ok {
 		return c, nil
 	}
-	c, err := p.dial(addr)
+	c, err := p.dial(bind.Addr)
 	if err != nil {
-		return nil, fmt.Errorf("dial pod %s at %s: %w", podID, addr, err)
+		return nil, fmt.Errorf("dial pod %s at %s: %w", bind.PodID, bind.Addr, err)
 	}
 	if p.conns == nil {
 		p.conns = make(map[string]*grpc.ClientConn)
 	}
-	p.conns[addr] = c
+	p.conns[bind.Addr] = c
 	return c, nil
 }
 
