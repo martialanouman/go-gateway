@@ -66,6 +66,12 @@ message Session {
   string pod_id = 3;
   string bind_id = 4;
   BindType bind_type = 5;
+  // pod_addr is the owning pod's dialable gRPC address (host:port), published by the pod itself at
+  // bind time and returned by Lookup so the return path dials it directly (step-302). It is an
+  // address, not an identity: pod_id stays the stable name the pod is traced by. Empty on a Lookup
+  // means the pod has not published one — the caller skips that bind and falls back to the webhook,
+  // which is the only state a rollout can briefly produce.
+  string pod_addr = 6;
 }
 
 // BindRequest carries the session to register plus the account's max_sessions ceiling, so the registry

@@ -122,7 +122,7 @@ func TestExpiryFreesSlot(t *testing.T) {
 	}
 }
 
-func TestTouchRefreshesTTL(t *testing.T) {
+func TestRebindRefreshesTTL(t *testing.T) {
 	rdb := redistest.Client(t)
 	clk := &clock{t: time.Unix(1_700_000_000, 0)}
 	reg := session.NewRegistry(rdb, session.WithSessionTTL(30*time.Second), session.WithClock(clk.now))
@@ -134,31 +134,31 @@ func TestTouchRefreshesTTL(t *testing.T) {
 		t.Fatalf("bind: %v", err)
 	}
 
-	// Refresh just before expiry, then advance again: the session survives because Touch pushed the
-	// expiry forward.
+	// Refresh just before expiry, then advance again: the session survives because the re-Bind pushed
+	// the expiry forward. max_sessions is 1 and this is the second Bind of the same member, which must
+	// therefore NOT count twice — the rebind rule of bind.lua, on the path production actually uses.
 	clk.advance(20 * time.Second)
-	refreshed, err := reg.Touch(ctx, held)
-	if err != nil || !refreshed {
-		t.Fatalf("touch: refreshed=%v err=%v, want refreshed=true err=nil", refreshed, err)
+	if _, err := reg.Bind(ctx, held, 1); err != nil {
+		t.Fatalf("rebind: %v — a refresh of a held session must not count against its own quota", err)
 	}
 
-	clk.advance(20 * time.Second) // 40s since bind, but only 20s since touch
+	clk.advance(20 * time.Second) // 40s since the first bind, but only 20s since the refresh
 	live, err := reg.Lookup(ctx, account)
 	if err != nil {
 		t.Fatalf("lookup: %v", err)
 	}
 	if len(live) != 1 {
-		t.Fatalf("lookup after touch: %d live sessions, want 1", len(live))
+		t.Fatalf("lookup after refresh: %d live sessions, want 1", len(live))
 	}
 
-	// Touch on a lapsed session does not resurrect it.
+	// Once lapsed, the slot is genuinely free: the sweep drops it and Lookup reports nothing.
 	clk.advance(31 * time.Second)
-	refreshed, err = reg.Touch(ctx, held)
+	live, err = reg.Lookup(ctx, account)
 	if err != nil {
-		t.Fatalf("touch lapsed: %v", err)
+		t.Fatalf("lookup after expiry: %v", err)
 	}
-	if refreshed {
-		t.Fatal("touch lapsed: refreshed=true, want false")
+	if len(live) != 0 {
+		t.Fatalf("lookup after expiry: %d live sessions, want 0", len(live))
 	}
 }
 
@@ -227,5 +227,125 @@ func TestConcurrentBindsRespectQuota(t *testing.T) {
 
 	if got := successes.Load(); got != 1 {
 		t.Fatalf("concurrent binds on max_sessions=1: %d succeeded, want exactly 1", got)
+	}
+}
+
+// TestLookupCarriesEachPodsDialAddress is step-302's core: the return path dials the address the
+// registry hands it, never a name it composes itself. Each pod publishes its own address at bind time,
+// and Lookup must give it back per pod — an empty one is a bind mo-dlr-router-svc skips, which is
+// exactly how the SMPP return channel went silently dark before this step.
+//
+// The IPv6 address is not decoration: the registry's member separator is ':', so an address is the one
+// thing that must never be folded into pod_id.
+func TestLookupCarriesEachPodsDialAddress(t *testing.T) {
+	rdb := redistest.Client(t)
+	reg := session.NewRegistry(rdb)
+	ctx := context.Background()
+	account := uuid.NewString()
+
+	// Pod ids are unique per run, like account ids: redistest shares one Redis across the package, the
+	// address key is keyed on pod_id, and it outlives the test by its 61 s TTL. Literal ids would let a
+	// second run (-count=2) read the first run's address and stay green with the write removed.
+	want := map[string]string{
+		"pod-" + uuid.NewString(): "10.1.2.3:7000",
+		"pod-" + uuid.NewString(): "[fd00::2]:7000",
+	}
+	for pod, addr := range want {
+		b := session.Bind{AccountID: account, PodID: pod, BindID: "bind-" + uuid.NewString(), Addr: addr}
+		if _, err := reg.Bind(ctx, b, 5); err != nil {
+			t.Fatalf("bind on %s: %v", pod, err)
+		}
+	}
+
+	live, err := reg.Lookup(ctx, account)
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if len(live) != len(want) {
+		t.Fatalf("lookup: %d sessions, want %d", len(live), len(want))
+	}
+	for _, b := range live {
+		// Assert the pod is one we bound BEFORE comparing addresses: without this, a mutation that
+		// emptied PodID would compare want[""] == "" against an empty Addr and pass on both binds.
+		expected, known := want[b.PodID]
+		if !known {
+			t.Fatalf("lookup returned a session on unknown pod %q", b.PodID)
+		}
+		if b.Addr != expected {
+			t.Errorf("session %s on %s: addr %q, want %q — the return path dials what Lookup returns",
+				b.BindID, b.PodID, b.Addr, expected)
+		}
+	}
+}
+
+// TestLookupToleratesAPodWithNoAddress is the degradation the rollout relies on, and the reason
+// podAddrs inspects each command instead of the pipeline's aggregate error: a pod that published
+// nothing yields "" for its own binds WITHOUT failing the lookup, so the other pods' binds still carry
+// their address and stay deliverable.
+func TestLookupToleratesAPodWithNoAddress(t *testing.T) {
+	rdb := redistest.Client(t)
+	reg := session.NewRegistry(rdb)
+	ctx := context.Background()
+	account := uuid.NewString()
+
+	withAddr := session.Bind{AccountID: account, PodID: "pod-" + uuid.NewString(),
+		BindID: "bind-" + uuid.NewString(), Addr: "10.1.2.3:7000"}
+	silent := session.Bind{AccountID: account, PodID: "pod-" + uuid.NewString(),
+		BindID: "bind-" + uuid.NewString()} // a replica from before step-302
+	for _, b := range []session.Bind{withAddr, silent} {
+		if _, err := reg.Bind(ctx, b, 5); err != nil {
+			t.Fatalf("bind on %s: %v", b.PodID, err)
+		}
+	}
+
+	live, err := reg.Lookup(ctx, account)
+	if err != nil {
+		t.Fatalf("lookup: %v — a pod without an address must degrade, not fail the whole account", err)
+	}
+	got := map[string]string{}
+	for _, b := range live {
+		got[b.PodID] = b.Addr
+	}
+	if got[withAddr.PodID] != withAddr.Addr {
+		t.Errorf("pod with an address: got %q, want %q — one silent pod must not blind the others",
+			got[withAddr.PodID], withAddr.Addr)
+	}
+	if got[silent.PodID] != "" {
+		t.Errorf("pod with no address: got %q, want empty", got[silent.PodID])
+	}
+}
+
+// TestRebindRenewsThePodAddress pins the half of the refresh that is easy to lose. The address expires
+// on the session TTL, so a refresh that renews the token without renewing the address keeps a bind live
+// while the return path loses the way to reach it — an SMPP channel that stops delivering a minute
+// after the bind, with nothing to see. refreshLoop re-Binds, so the renewal has to live in Bind.
+//
+// The address key is deleted directly rather than waited out: its TTL is 61 s.
+func TestRebindRenewsThePodAddress(t *testing.T) {
+	rdb := redistest.Client(t)
+	reg := session.NewRegistry(rdb)
+	ctx := context.Background()
+	account := uuid.NewString()
+
+	b := session.Bind{AccountID: account, PodID: "pod-" + uuid.NewString(),
+		BindID: "bind-" + uuid.NewString(), Addr: "10.5.6.7:7000"}
+	if _, err := reg.Bind(ctx, b, 5); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	if err := rdb.Del(ctx, "sess:pod:{"+b.PodID+"}").Err(); err != nil {
+		t.Fatalf("drop the published address: %v", err)
+	}
+
+	if _, err := reg.Bind(ctx, b, 5); err != nil {
+		t.Fatalf("rebind: %v", err)
+	}
+
+	live, err := reg.Lookup(ctx, account)
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if len(live) != 1 || live[0].Addr != b.Addr {
+		t.Errorf("after the refresh, lookup = %+v, want one session carrying addr %q — a refresh that renews "+
+			"the token but not the address lets the return path go dark under a live bind", live, b.Addr)
 	}
 }

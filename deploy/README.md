@@ -143,9 +143,14 @@ l'infrastructure.
 
 ## Deux singularités de topologie
 
-- **`smpp-server-headless`** : le Service headless doit porter **ce nom** et exposer 7000. C'est le
-  défaut de `SMPP_POD_ADDR_TEMPLATE` (`%s.smpp-server-headless:7000`), par lequel `mo-dlr-router-svc`
-  remet un `deliver_sm` au pod qui détient le bind. Le renommer coupe la voie retour SMPP.
+La première est une **absence** : elle dit ce qui ne passe par aucun `Service`, et pourquoi.
+
+- **La voie retour SMPP ne passe par aucun `Service`** : `mo-dlr-router-svc` remet un `deliver_sm` au
+  pod qui détient le bind en dialant l'adresse que ce pod a lui-même publiée dans le registre de
+  sessions (`SMPP_POD_ADDR` ← `status.podIP`, port `GRPC_PORT`). Il n'y a rien à nommer, donc rien à
+  renommer. Un `Service` headless a occupé cette place jusqu'à step-302 et ne pouvait pas marcher :
+  un `Deployment` ne donne pas d'enregistrement DNS par pod, `spec.hostname` étant une chaîne unique
+  pour toutes ses répliques. La garde `downward-api-fields` (`internal/deploy`) tient le lien.
 - **`connector-pool-svc` est un gabarit d'instance** : un connecteur par pod, un groupe de
   consommation `connector-pool-svc-<CONNECTOR_ID>` par connecteur. On copie le fichier par
   connecteur, avec `replicas` = `bind_pool_size` — `mt.routed` est shardé une partition par bind.

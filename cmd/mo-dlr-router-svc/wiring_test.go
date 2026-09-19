@@ -152,7 +152,7 @@ func testConfig() config.Config {
 		Kafka:           config.Kafka{Brokers: []string{closed}, Timeout: time.Second},
 		ClickHouse:      config.ClickHouse{Addr: []string{closed}, Database: "gateway", Timeout: time.Second},
 		Redis:           config.Redis{URL: "redis://" + closed, Timeout: 500 * time.Millisecond},
-		SMPP:            config.SMPP{SessionManagerAddr: closed, PodAddrTemplate: "%s:7000"},
+		SMPP:            config.SMPP{SessionManagerAddr: closed},
 		OTel:            config.OTel{Disabled: true},
 	}
 }

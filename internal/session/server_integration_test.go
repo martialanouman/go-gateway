@@ -154,3 +154,31 @@ func TestDeliverIsUnimplemented(t *testing.T) {
 		t.Fatalf("Deliver code = %s, want Unimplemented (err=%v)", status.Code(err), err)
 	}
 }
+
+// TestBindLookupCarriesPodAddrAcrossGRPC is step-302 across the wire: the address a pod publishes at
+// bind time must come back on Lookup, because that is the only thing mo-dlr-router-svc has left to
+// dial — there is no template to compose a name from any more.
+func TestBindLookupCarriesPodAddrAcrossGRPC(t *testing.T) {
+	client := newTestClient(t)
+	ctx := context.Background()
+	account := uuid.NewString()
+	sess := newSession(account)
+	sess.PodAddr = "10.4.5.6:7000"
+
+	if _, err := client.Bind(ctx, &pb.BindRequest{Session: sess, MaxSessions: 2}); err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+
+	lookupResp, err := client.Lookup(ctx, &pb.LookupRequest{AccountId: account})
+	if err != nil {
+		t.Fatalf("Lookup: %v", err)
+	}
+	got := lookupResp.GetSessions()
+	if len(got) != 1 {
+		t.Fatalf("Lookup = %d sessions, want 1", len(got))
+	}
+	if got[0].GetPodAddr() != sess.GetPodAddr() {
+		t.Errorf("Lookup pod_addr = %q, want %q — without it the router has no address to dial and "+
+			"every MO falls through to the webhook", got[0].GetPodAddr(), sess.GetPodAddr())
+	}
+}

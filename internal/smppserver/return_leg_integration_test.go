@@ -22,11 +22,6 @@ import (
 	"github.com/martialanouman/go-gateway/internal/webhook"
 )
 
-// stubResolver maps any pod_id to one fixed address — the in-process DeliverServer under test.
-type stubResolver struct{ addr string }
-
-func (r stubResolver) Resolve(string) (string, error) { return r.addr, nil }
-
 // stubWebhookMiss reports no webhook, so the deliverer must land on the bind (or dead-letter).
 type stubWebhookMiss struct{}
 
@@ -47,19 +42,31 @@ func (p *capturingProducer) Produce(_ context.Context, rec kafka.Record) error {
 	return nil
 }
 
-// startDeliverServer serves the pod-local DeliverServer over the listener on an ephemeral gRPC port
-// and returns its address — the address the return-path router dials after a Lookup.
-func startDeliverServer(t *testing.T, l *smppserver.Listener) string {
+// reservePodAddr opens the port the pod-local Deliver server will serve on, BEFORE the Listener
+// exists. The order matters and is the whole point of step-302: the pod publishes this exact address
+// to the session registry at bind time, and the return path has nothing else to dial — no template, no
+// name. So the address must be known before the pod binds anything.
+func reservePodAddr(t *testing.T) (net.Listener, string) {
 	t.Helper()
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen deliver server: %v", err)
 	}
+	return lis, lis.Addr().String()
+}
+
+// servePodDeliver serves the pod-local DeliverServer on the port reserved for it.
+func servePodDeliver(t *testing.T, lis net.Listener, l *smppserver.Listener) {
+	t.Helper()
 	srv := grpc.NewServer()
 	registrypb.RegisterSessionRegistryServer(srv, smppserver.NewDeliverServer(l, discardLogger()))
 	go func() { _ = srv.Serve(lis) }()
 	t.Cleanup(srv.Stop)
-	return lis.Addr().String()
+}
+
+// withPodAddr is what a pod's SMPP_POD_ADDR becomes in production wiring.
+func withPodAddr(addr string) listenerOpt {
+	return func(o *smppserver.Options) { o.PodAddr = addr }
 }
 
 // TestReturnLegDeliversViaLiveBind is step-048's return leg end to end through the delivery
@@ -72,10 +79,14 @@ func TestReturnLegDeliversViaLiveBind(t *testing.T) {
 	registry := startRegistry(t, rdb)
 
 	sid, pw, accountID := seedBind(t, pool, seedOpts{maxSessions: 1, bindType: cp.BindTRX})
-	smppAddr, listener := startListenerRef(t, pool, registry)
-	deliverAddr := startDeliverServer(t, listener)
+	podLis, podAddr := reservePodAddr(t)
+	smppAddr, listener := startListenerRef(t, pool, registry, withPodAddr(podAddr))
+	servePodDeliver(t, podLis, listener)
 
-	pods := modlrrouter.NewPodClients(stubResolver{addr: deliverAddr}, plainDial)
+	// No address is configured on the router: the ONLY way it can reach the pod is the address the
+	// pod published to the registry at bind time. Before step-302 this dialled a composed name that
+	// resolved nowhere, and every MO fell silently through to the webhook.
+	pods := modlrrouter.NewPodClients(plainDial)
 	defer pods.Close()
 	prod := &capturingProducer{}
 	deliverer := modlrrouter.NewDeliverer(modlrrouter.DelivererDeps{
@@ -120,10 +131,11 @@ func TestReturnLegDeadLettersWithoutBindOrWebhook(t *testing.T) {
 	pool := pgtest.Pool(t)
 	rdb := redistest.Client(t)
 	registry := startRegistry(t, rdb)
-	_, listener := startListenerRef(t, pool, registry)
-	deliverAddr := startDeliverServer(t, listener)
+	podLis, podAddr := reservePodAddr(t)
+	_, listener := startListenerRef(t, pool, registry, withPodAddr(podAddr))
+	servePodDeliver(t, podLis, listener)
 
-	pods := modlrrouter.NewPodClients(stubResolver{addr: deliverAddr}, plainDial)
+	pods := modlrrouter.NewPodClients(plainDial)
 	defer pods.Close()
 	prod := &capturingProducer{}
 	deliverer := modlrrouter.NewDeliverer(modlrrouter.DelivererDeps{

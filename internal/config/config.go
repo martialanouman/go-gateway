@@ -551,12 +551,14 @@ type SMPP struct {
 	// :7000). The bind path calls it to reserve and release a session token, the socle of invariant d.
 	SessionManagerAddr string `env:"SESSION_MANAGER_ADDR" envDefault:"localhost:7000"`
 
-	// PodAddrTemplate formats a smpp-server pod_id into a dialable gRPC address for the return-path
-	// delivery (step-048): the return router Looks up an account's live binds, then dials the owning
-	// pod's Deliver server. A single "%s" is replaced by the pod_id (its hostname). The K8s form is a
-	// per-pod headless-service address; real at-scale pod discovery is M12. Empty disables bind
-	// delivery (webhook only).
-	PodAddrTemplate string `env:"POD_ADDR_TEMPLATE" envDefault:"%s.smpp-server-headless:7000"`
+	// PodAddr is this pod's own IP, published to the session registry with every bind so the return
+	// path can dial this pod's Deliver server directly (step-302). In Kubernetes it comes from
+	// status.podIP; the port is GRPCPort, joined at wiring. Empty leaves this pod's binds without an
+	// address, so MO/DLR for them fall back to the webhook.
+	//
+	// It replaces a name template that composed <pod_id>.smpp-server-headless — a name that never
+	// resolved, because a Deployment cannot give its pods per-pod DNS records.
+	PodAddr string `env:"POD_ADDR"`
 
 	// PodID identifies this pod in the session registry, so a token can be traced to the pod owning
 	// the connection and released when that pod drains. Empty falls back to the OS hostname at startup.

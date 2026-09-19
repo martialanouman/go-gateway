@@ -15,11 +15,16 @@ import (
 	"github.com/martialanouman/go-gateway/internal/webhook"
 )
 
-// LiveBind is one of an account's live binds, as SessionRegistry.Lookup reports it: the owning pod and
-// the bind id. The bind role is not carried — a transmitter is discovered only when Deliver refuses it
-// (FailedPrecondition), which the round-robin skips.
+// LiveBind is one of an account's live binds, as SessionRegistry.Lookup reports it: the owning pod,
+// the address that pod published for itself, and the bind id. The bind role is not carried — a
+// transmitter is discovered only when Deliver refuses it (FailedPrecondition), which the round-robin
+// skips.
+//
+// Addr is what gets dialled; PodID only names who is being dialled, in logs. An empty Addr is a pod
+// that has published none (a replica from before step-302, during a rollout): its binds are skipped.
 type LiveBind struct {
 	PodID  string
+	Addr   string
 	BindID string
 }
 
@@ -29,10 +34,10 @@ type SessionLookup interface {
 }
 
 // PodDeliverer pushes an encoded deliver_sm to a bind on a pod, returning the gRPC status error the
-// round-robin classifies. The concrete implementation dials the owning pod (a cached connection,
-// address resolved from pod_id) and calls SessionRegistry.Deliver.
+// round-robin classifies. The concrete implementation dials the address the bind carries (a connection
+// cached per address) and calls SessionRegistry.Deliver.
 type PodDeliverer interface {
-	Deliver(ctx context.Context, podID, bindID string, pdu []byte) error
+	Deliver(ctx context.Context, bind LiveBind, pdu []byte) error
 }
 
 // WebhookResolver fetches an account's webhook for an event type. *postgres.WebhookRepo satisfies it.
@@ -182,7 +187,7 @@ func (dv *Deliverer) tryBinds(ctx context.Context, accountID uuid.UUID, pdu []by
 	start := int(dv.rr.Add(1) % uint64(len(binds)))
 	for i := range binds {
 		b := binds[(start+i)%len(binds)]
-		derr := dv.pods.Deliver(ctx, b.PodID, b.BindID, pdu)
+		derr := dv.pods.Deliver(ctx, b, pdu)
 		switch status.Code(derr) {
 		case codes.OK:
 			return true, true, nil
@@ -194,7 +199,12 @@ func (dv *Deliverer) tryBinds(ctx context.Context, accountID uuid.UUID, pdu []by
 			return false, true, nil
 		default:
 			// FailedPrecondition (transmitter), NotFound / Unavailable (bind gone), or a transport error:
-			// try the next bind.
+			// try the next bind. Logged at Debug and not Warn because a dead bind among several is the
+			// ordinary case and a Warn per bind per MO would be pure noise — but it IS logged: step-302
+			// was a return path that had been dark for every bind, and nothing anywhere named the cause.
+			dv.logger.DebugContext(ctx, "modlrrouter: bind refused delivery, trying the next",
+				"account_id", accountID, "pod_id", b.PodID, "pod_addr", b.Addr, "bind_id", b.BindID,
+				"code", status.Code(derr).String(), "err", derr)
 			continue
 		}
 	}

@@ -43,8 +43,7 @@ func TestThePodLegVerifiesTheDeploymentAndNotTheAddressDialled(t *testing.T) {
 
 	routerCert, routerKey := ca.Issue(t, "mo-dlr-router-svc", "mo-dlr-router-svc")
 	cfg := config.Config{
-		SMPP: config.SMPP{PodAddrTemplate: "%s"},
-		TLS:  config.TLS{Enabled: true, CertFile: routerCert, KeyFile: routerKey, ClientCAFile: ca.CAFile},
+		TLS: config.TLS{Enabled: true, CertFile: routerCert, KeyFile: routerKey, ClientCAFile: ca.CAFile},
 	}
 
 	pods, err := newPodClients(cfg, silentLogger())
@@ -52,7 +51,7 @@ func TestThePodLegVerifiesTheDeploymentAndNotTheAddressDialled(t *testing.T) {
 		t.Fatalf("newPodClients: %v", err)
 	}
 	defer pods.Close()
-	if err := pods.Deliver(t.Context(), addr, "bind-1", []byte{0x01}); err != nil {
+	if err := pods.Deliver(t.Context(), modlrrouter.LiveBind{PodID: "smpp-server-svc-7f9c", Addr: addr, BindID: "bind-1"}, []byte{0x01}); err != nil {
 		t.Fatalf("delivery to a pod of %s was refused: %v", deploymentName, err)
 	}
 
@@ -61,9 +60,9 @@ func TestThePodLegVerifiesTheDeploymentAndNotTheAddressDialled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dialer: %v", err)
 	}
-	unpinned := modlrrouter.NewPodClients(modlrrouter.NewTemplateResolver(cfg.SMPP.PodAddrTemplate), unpinnedDial)
+	unpinned := modlrrouter.NewPodClients(unpinnedDial)
 	defer unpinned.Close()
-	err = unpinned.Deliver(t.Context(), addr, "bind-1", []byte{0x01})
+	err = unpinned.Deliver(t.Context(), modlrrouter.LiveBind{PodID: "smpp-server-svc-7f9c", Addr: addr, BindID: "bind-1"}, []byte{0x01})
 	if err == nil {
 		t.Fatal("an unpinned pod leg reached the server: the test proves nothing about the pin")
 	}

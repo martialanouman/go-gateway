@@ -102,6 +102,11 @@ type Options struct {
 	// PodID identifies this pod in the session registry, so a token can be traced to the pod that owns
 	// the connection and released when that pod drains.
 	PodID string
+	// PodAddr is this pod's own dialable gRPC address (host:port), published to the session registry
+	// with every bind so mo-dlr-router-svc can dial the pod holding a bind without resolving a name
+	// (step-302). Empty leaves the return path with no address for this pod's binds: they fall back to
+	// the webhook.
+	PodAddr string
 	// SystemID is the server system_id echoed in a bind_resp.
 	SystemID string
 	// IdleTimeout drops a bind whose peer has gone silent, releasing its registry token. Zero leaves

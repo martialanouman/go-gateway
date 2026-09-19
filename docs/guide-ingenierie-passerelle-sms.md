@@ -95,7 +95,7 @@ Consomme `mo.inbound`/`dlr.events`. Pour un MO : normalisation E.164 → détect
 
 ### 3.6 `session-manager-svc` — registre de sessions
 
-Registre faisant autorité (Redis) de tous les binds, dans les deux sens. Expose une API gRPC pour bind/unbind/lookup, applique `max_sessions` **au bind** contre le registre inter-pods (pas best-effort par pod), pilote la supervision `enquire_link`, et maintient la table `account → {pod_id, bind_id}[]` qui permet la remise MO/DLR au bon pod.
+Registre faisant autorité (Redis) de tous les binds, dans les deux sens. Expose une API gRPC pour bind/unbind/lookup, applique `max_sessions` **au bind** contre le registre inter-pods (pas best-effort par pod), pilote la supervision `enquire_link`, et maintient la table `account → {pod_id, pod_addr, bind_id}[]` qui permet la remise MO/DLR au bon pod — `pod_addr` étant l'adresse que chaque pod y publie à son bind, et que `mo-dlr-router-svc` dial directement (step-302).
 
 ### 3.7 `billing-svc` — moteur de crédit (déployé si activé)
 

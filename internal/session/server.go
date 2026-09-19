@@ -58,6 +58,7 @@ func (s *Server) Bind(ctx context.Context, req *pb.BindRequest) (*pb.BindRespons
 		AccountID: sess.GetAccountId(),
 		PodID:     sess.GetPodId(),
 		BindID:    sess.GetBindId(),
+		Addr:      sess.GetPodAddr(),
 	}
 	active, err := s.reg.Bind(ctx, b, int(req.GetMaxSessions()))
 	if err != nil {
@@ -94,9 +95,10 @@ func (s *Server) Unbind(ctx context.Context, req *pb.UnbindRequest) (*pb.UnbindR
 }
 
 // Lookup returns the account's live sessions, used to route return traffic to the pod owning a bind.
-// The Redis registry persists only account/pod/bind, so the returned Sessions carry those three
-// fields; system_id and bind_type are left unset (the registry does not store them, and pod_id +
-// bind_id are all that return-routing needs).
+// The Redis registry persists account/pod/bind plus the pod's published address, so the returned
+// Sessions carry those four fields; system_id and bind_type are left unset (the registry does not
+// store them, and the other four are all that return-routing needs — pod_addr being the one it
+// actually dials, step-302).
 func (s *Server) Lookup(ctx context.Context, req *pb.LookupRequest) (*pb.LookupResponse, error) {
 	binds, err := s.reg.Lookup(ctx, req.GetAccountId())
 	if err != nil {
@@ -109,6 +111,7 @@ func (s *Server) Lookup(ctx context.Context, req *pb.LookupRequest) (*pb.LookupR
 			AccountId: b.AccountID,
 			PodId:     b.PodID,
 			BindId:    b.BindID,
+			PodAddr:   b.Addr,
 		})
 	}
 	return &pb.LookupResponse{Sessions: sessions}, nil
