@@ -244,12 +244,18 @@ func (x *DisconnectResponse) GetPublished() bool {
 // Session identifies one live bind. account_id/system_id come from the control plane (account_id is a
 // UUID carried as a string); pod_id/bind_id are operational Redis-registry identifiers.
 type Session struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	AccountId     string                 `protobuf:"bytes,1,opt,name=account_id,json=accountId,proto3" json:"account_id,omitempty"`
-	SystemId      string                 `protobuf:"bytes,2,opt,name=system_id,json=systemId,proto3" json:"system_id,omitempty"`
-	PodId         string                 `protobuf:"bytes,3,opt,name=pod_id,json=podId,proto3" json:"pod_id,omitempty"`
-	BindId        string                 `protobuf:"bytes,4,opt,name=bind_id,json=bindId,proto3" json:"bind_id,omitempty"`
-	BindType      BindType               `protobuf:"varint,5,opt,name=bind_type,json=bindType,proto3,enum=session.BindType" json:"bind_type,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	AccountId string                 `protobuf:"bytes,1,opt,name=account_id,json=accountId,proto3" json:"account_id,omitempty"`
+	SystemId  string                 `protobuf:"bytes,2,opt,name=system_id,json=systemId,proto3" json:"system_id,omitempty"`
+	PodId     string                 `protobuf:"bytes,3,opt,name=pod_id,json=podId,proto3" json:"pod_id,omitempty"`
+	BindId    string                 `protobuf:"bytes,4,opt,name=bind_id,json=bindId,proto3" json:"bind_id,omitempty"`
+	BindType  BindType               `protobuf:"varint,5,opt,name=bind_type,json=bindType,proto3,enum=session.BindType" json:"bind_type,omitempty"`
+	// pod_addr is the owning pod's dialable gRPC address (host:port), published by the pod itself at
+	// bind time and returned by Lookup so the return path dials it directly (step-302). It is an
+	// address, not an identity: pod_id stays the stable name the pod is traced by. Empty on a Lookup
+	// means the pod has not published one — the caller skips that bind and falls back to the webhook,
+	// which is the only state a rollout can briefly produce.
+	PodAddr       string `protobuf:"bytes,6,opt,name=pod_addr,json=podAddr,proto3" json:"pod_addr,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -317,6 +323,13 @@ func (x *Session) GetBindType() BindType {
 		return x.BindType
 	}
 	return BindType_BIND_TYPE_UNSPECIFIED
+}
+
+func (x *Session) GetPodAddr() string {
+	if x != nil {
+		return x.PodAddr
+	}
+	return ""
 }
 
 // BindRequest carries the session to register plus the account's max_sessions ceiling, so the registry
@@ -723,14 +736,15 @@ const file_session_proto_rawDesc = "" +
 	"\x02id\x18\x02 \x01(\tR\x02id\x12\x16\n" +
 	"\x06reason\x18\x03 \x01(\tR\x06reason\"2\n" +
 	"\x12DisconnectResponse\x12\x1c\n" +
-	"\tpublished\x18\x01 \x01(\bR\tpublished\"\xa5\x01\n" +
+	"\tpublished\x18\x01 \x01(\bR\tpublished\"\xc0\x01\n" +
 	"\aSession\x12\x1d\n" +
 	"\n" +
 	"account_id\x18\x01 \x01(\tR\taccountId\x12\x1b\n" +
 	"\tsystem_id\x18\x02 \x01(\tR\bsystemId\x12\x15\n" +
 	"\x06pod_id\x18\x03 \x01(\tR\x05podId\x12\x17\n" +
 	"\abind_id\x18\x04 \x01(\tR\x06bindId\x12.\n" +
-	"\tbind_type\x18\x05 \x01(\x0e2\x11.session.BindTypeR\bbindType\"\\\n" +
+	"\tbind_type\x18\x05 \x01(\x0e2\x11.session.BindTypeR\bbindType\x12\x19\n" +
+	"\bpod_addr\x18\x06 \x01(\tR\apodAddr\"\\\n" +
 	"\vBindRequest\x12*\n" +
 	"\asession\x18\x01 \x01(\v2\x10.session.SessionR\asession\x12!\n" +
 	"\fmax_sessions\x18\x02 \x01(\x05R\vmaxSessions\"S\n" +
