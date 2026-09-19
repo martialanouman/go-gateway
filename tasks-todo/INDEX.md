@@ -336,6 +336,9 @@ Indépendantes de la chaîne de charge : parallélisables si deux mains travaill
 - [ ] step-303 — Le cache de connexions par pod de `mo-dlr-router-svc` ne s'évince jamais : une
       `ClientConn` par pod retiré, qui retente indéfiniment — dette antérieure, rendue observable par
       step-302
+- [ ] step-304 — La voie retour raconte mal ses échecs (`bind_exhausted` pour une annulation qui est la
+      nôtre) et republie l'adresse du pod à chaque rafraîchissement de bind — deux dettes antérieures,
+      mises en production par step-302
 - [ ] step-310 — Auth opérateur réelle (OIDC/mTLS) remplaçant le stub M1 ⛓ step-300
 - [ ] step-315 — Le journal d'audit se lit, et la base le rend immuable ⛓ step-310 — ouverte par step-290d
 

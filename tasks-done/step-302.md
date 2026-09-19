@@ -240,12 +240,12 @@ Ce qui part en fiche plutôt qu'ici :
   un seul pod lent consomme le deadline de l'appelant, les binds suivants échouent instantanément, et
   la marche conclut `bind_exhausted` alors qu'un bind vivant existait et que la cause était notre propre
   échéance. Antérieur à cette step, mais c'est elle qui met ce chemin en production pour la première
-  fois. **Non traité ici**, faute de fiche : à arbitrer avant le go-live.
+  fois. → **step-304**.
 - **Amplification d'écriture** : le `SET` d'adresse part à chaque bind ET à chaque refresh, soit
   ~170–670 SET/s supplémentaires à la cible de charge, tous écrivant la même valeur sur la même clé —
   et il double les aller-retours Redis sur le chemin chaud du bind. Un seul écrivain par pod suffirait.
-  **Non traité ici** : mesurable, non bloquant, et le regrouper avec le script demande un pipeline dont
-  l'ordre d'échec est moins clair que la séquence actuelle.
+  → **step-304**, avec le premier : mesurable, non bloquant, et à trancher avant la mise en charge de
+  step-280.
 - **Le cadencement refresh/TTL tient par une constante, pas par un contrat** : le refresh dérive d'une
   constante compilée dans `smpp-server`, le TTL vit côté `session-manager` et est réglable
   (`WithSessionTTL`). L'alignement 30/60/61 est juste aujourd'hui et non câblé, donc rien ne le
