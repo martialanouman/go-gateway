@@ -228,11 +228,11 @@ func serveAndGet(t *testing.T, srv *http.Server, client *http.Client, scheme str
 	var err error
 	for range 50 {
 		resp, err = client.Get(url)
-		if err == nil || !strings.Contains(err.Error(), "connection refused") {
-			if err != nil {
-				t.Fatalf("GET %s: %v", url, err)
-			}
+		if err == nil {
 			return resp
+		}
+		if !strings.Contains(err.Error(), "connection refused") {
+			break
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
