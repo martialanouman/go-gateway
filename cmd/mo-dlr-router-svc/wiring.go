@@ -362,7 +362,7 @@ func newPodClients(cfg config.Config, logger *slog.Logger) (*modlrrouter.PodClie
 	if err != nil {
 		return nil, err
 	}
-	return modlrrouter.NewPodClients(modlrrouter.NewTemplateResolver(cfg.SMPP.PodAddrTemplate), dial), nil
+	return modlrrouter.NewPodClients(dial), nil
 }
 
 func newDeliveryLeg(cfg config.Config, st *stores, mo *moLeg, logger *slog.Logger) (_ *deliveryLeg, err error) {

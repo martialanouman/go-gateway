@@ -36,7 +36,8 @@ type fakePod struct {
 	tried   []string
 }
 
-func (f *fakePod) Deliver(_ context.Context, _ string, bindID string, _ []byte) error {
+func (f *fakePod) Deliver(_ context.Context, bind modlrrouter.LiveBind, _ []byte) error {
+	bindID := bind.BindID
 	f.tried = append(f.tried, bindID)
 	return f.results[bindID]
 }

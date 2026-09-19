@@ -75,7 +75,7 @@ func TestReturnLegDeliversViaLiveBind(t *testing.T) {
 	smppAddr, listener := startListenerRef(t, pool, registry)
 	deliverAddr := startDeliverServer(t, listener)
 
-	pods := modlrrouter.NewPodClients(stubResolver{addr: deliverAddr}, plainDial)
+	pods := modlrrouter.NewPodClients(plainDial)
 	defer pods.Close()
 	prod := &capturingProducer{}
 	deliverer := modlrrouter.NewDeliverer(modlrrouter.DelivererDeps{

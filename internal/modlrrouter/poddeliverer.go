@@ -13,57 +13,38 @@ import (
 	registrypb "github.com/martialanouman/go-gateway/internal/session/pb"
 )
 
-// AddrResolver maps a smpp-server pod_id to a dialable gRPC address. The template form is the M4
-// mechanism; M12 swaps the resolver for real pod discovery behind this same interface.
-type AddrResolver interface {
-	Resolve(podID string) (string, error)
-}
-
-// templateResolver formats pod_id into an address via a single-"%s" template (e.g.
-// "%s.smpp-server-headless:7000"). An empty template disables bind delivery.
-type templateResolver struct {
-	template string
-}
-
-// NewTemplateResolver builds a pod-address resolver from a "%s" template.
-func NewTemplateResolver(template string) AddrResolver {
-	return templateResolver{template: template}
-}
-
-func (r templateResolver) Resolve(podID string) (string, error) {
-	if r.template == "" {
-		return "", fmt.Errorf("modlrrouter: bind delivery disabled (empty pod address template)")
-	}
-	if podID == "" {
-		return "", fmt.Errorf("modlrrouter: empty pod_id")
-	}
-	return fmt.Sprintf(r.template, podID), nil
-}
-
-// PodClients is the PodDeliverer: it dials the owning pod (a connection cached per pod_id) and calls
-// its SessionRegistry.Deliver. gRPC NewClient is lazy, so an unreachable pod surfaces only when the RPC
-// runs, as a status the round-robin classifies. Safe for concurrent use.
+// PodClients is the PodDeliverer: it dials the address the owning pod published for itself (a
+// connection cached per address) and calls its SessionRegistry.Deliver. gRPC NewClient is lazy, so an
+// unreachable pod surfaces only when the RPC runs, as a status the round-robin classifies. Safe for
+// concurrent use.
+//
+// The connection is cached per ADDRESS, not per pod_id: the address is what identifies a transport,
+// and a pod_id that outlived its address would otherwise pin a connection to somewhere the pod is not.
 type PodClients struct {
-	resolver AddrResolver
-	dial     func(addr string) (*grpc.ClientConn, error)
+	dial func(addr string) (*grpc.ClientConn, error)
 
 	mu    sync.Mutex
 	conns map[string]*grpc.ClientConn
 }
 
-// NewPodClients builds the pod delivery client over a pod-address resolver. dial carries the pod's TLS
+// NewPodClients builds the pod delivery client. dial carries the pod's TLS
 // identity and the name it verifies, which is not the address dialled: a pod's certificate is issued per
 // Deployment, so it can only attest that the peer belongs to it. Whether it is the RIGHT pod is
 // Deliver's answer. It is lazy — no socket opens until the first Deliver.
-func NewPodClients(resolver AddrResolver, dial func(addr string) (*grpc.ClientConn, error)) *PodClients {
-	return &PodClients{resolver: resolver, dial: dial}
+func NewPodClients(dial func(addr string) (*grpc.ClientConn, error)) *PodClients {
+	return &PodClients{dial: dial}
 }
 
-// Deliver pushes pdu to bindID on podID, returning the gRPC status of SessionRegistry.Deliver. A pod
-// whose address cannot be resolved (bind delivery disabled, or empty id) is reported Unavailable so the
-// caller simply skips that bind.
-func (p *PodClients) Deliver(ctx context.Context, podID, bindID string, pdu []byte) error {
-	conn, err := p.conn(podID)
+// Deliver pushes pdu to the bind, dialling the address the registry carries for its pod and returning
+// the gRPC status of SessionRegistry.Deliver. A bind whose pod published no address is reported
+// Unavailable so the caller simply skips it — the state a replica from before step-302 is in, for the
+// length of one rollout.
+func (p *PodClients) Deliver(ctx context.Context, bind LiveBind, pdu []byte) error {
+	podID, bindID := bind.PodID, bind.BindID
+	if bind.Addr == "" {
+		return status.Errorf(codes.Unavailable, "modlrrouter: pod %s published no dial address", podID)
+	}
+	conn, err := p.conn(podID, bind.Addr)
 	if err != nil {
 		return status.Error(codes.Unavailable, err.Error())
 	}
@@ -78,15 +59,11 @@ func (p *PodClients) Deliver(ctx context.Context, podID, bindID string, pdu []by
 	return nil
 }
 
-func (p *PodClients) conn(podID string) (*grpc.ClientConn, error) {
+func (p *PodClients) conn(podID, addr string) (*grpc.ClientConn, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if c, ok := p.conns[podID]; ok {
+	if c, ok := p.conns[addr]; ok {
 		return c, nil
-	}
-	addr, err := p.resolver.Resolve(podID)
-	if err != nil {
-		return nil, err
 	}
 	c, err := p.dial(addr)
 	if err != nil {
@@ -95,7 +72,7 @@ func (p *PodClients) conn(podID string) (*grpc.ClientConn, error) {
 	if p.conns == nil {
 		p.conns = make(map[string]*grpc.ClientConn)
 	}
-	p.conns[podID] = c
+	p.conns[addr] = c
 	return c, nil
 }
 
@@ -119,8 +96,8 @@ func NewRegistryLookup(client registrypb.SessionRegistryClient) *RegistryLookup 
 	return &RegistryLookup{client: client}
 }
 
-// Lookup returns the account's live binds (pod_id, bind_id). The bind role is not stored by the
-// registry; a transmitter is skipped later when Deliver refuses it.
+// Lookup returns the account's live binds (pod_id, its published address, bind_id). The bind role is
+// not stored by the registry; a transmitter is skipped later when Deliver refuses it.
 func (r *RegistryLookup) Lookup(ctx context.Context, accountID uuid.UUID) ([]LiveBind, error) {
 	resp, err := r.client.Lookup(ctx, &registrypb.LookupRequest{AccountId: accountID.String()})
 	if err != nil {
@@ -128,7 +105,7 @@ func (r *RegistryLookup) Lookup(ctx context.Context, accountID uuid.UUID) ([]Liv
 	}
 	out := make([]LiveBind, 0, len(resp.GetSessions()))
 	for _, s := range resp.GetSessions() {
-		out = append(out, LiveBind{PodID: s.GetPodId(), BindID: s.GetBindId()})
+		out = append(out, LiveBind{PodID: s.GetPodId(), Addr: s.GetPodAddr(), BindID: s.GetBindId()})
 	}
 	return out, nil
 }
