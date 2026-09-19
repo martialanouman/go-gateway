@@ -21,6 +21,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/grpctls"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/platform/async"
+	"github.com/martialanouman/go-gateway/internal/platform/tlsconf"
 	"github.com/martialanouman/go-gateway/internal/realtime"
 	"github.com/martialanouman/go-gateway/internal/routing/exact"
 	registrypb "github.com/martialanouman/go-gateway/internal/session/pb"
@@ -136,7 +137,10 @@ func newAdminApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (_
 	//nolint:contextcheck // The boot context has no business inside a request handler: the config-change
 	// middleware deliberately detaches the REQUEST context (see PublishConfigChanges) so the announcement
 	// outlives the response.
-	a.http = newHTTPServer(cfg, logger, st, rdb, runners, clients, feed, verifier)
+	a.http, err = newHTTPServer(cfg, logger, st, rdb, runners, clients, feed, verifier)
+	if err != nil {
+		return nil, err
+	}
 
 	// Postgres is vital: without it the Admin API can neither read nor write the control plane, so a
 	// pod that cannot reach it must leave the load balancer (plan §1.5). The ping probes the pool,
@@ -344,7 +348,7 @@ func newHTTPServer(
 	clients *controlPlaneClients,
 	feed *realtimeFeed,
 	verifier *auth.StaticVerifier,
-) *http.Server {
+) (*http.Server, error) {
 	router, _ := adminapi.New(adminapi.Deps{
 		StreamHub:        feed.hub,
 		Trace:            clickhouse.NewCDRReader(st.ch),
@@ -401,7 +405,23 @@ func newHTTPServer(
 	// Hijacked connections leave net/http's active set, so Shutdown neither waits for nor closes a
 	// WebSocket. This hook is the only thing that ends them.
 	srv.RegisterOnShutdown(func() { close(feed.quit) })
-	return srv
+
+	if cfg.TLS.Enabled {
+		conf, err := tlsconf.Files{
+			Cert:     cfg.TLS.CertFile,
+			Key:      cfg.TLS.KeyFile,
+			ClientCA: cfg.TLS.ClientCAFile,
+			Logger:   logger,
+		}.ServerConfig(tlsconf.ServerOptions{
+			AllowedClients: cfg.TLS.AllowedClients,
+			NextProtos:     []string{"http/1.1"},
+		})
+		if err != nil {
+			return nil, err
+		}
+		srv.TLSConfig = conf
+	}
+	return srv, nil
 }
 
 // exportSink is the destination asynchronous exports write to, or nil when the deployment configures
