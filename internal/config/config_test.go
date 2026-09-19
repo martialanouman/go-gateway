@@ -41,6 +41,7 @@ var knownVars = []string{
 	"BILLING_REAPER_MIN_AGE", "BILLING_REAPER_INTERVAL",
 	"CONTENT_KEY_ADDR",
 	"EXACT_CACHE_TTL",
+	"TLS_ENABLED", "TLS_CERT_FILE", "TLS_KEY_FILE", "TLS_CLIENT_CA_FILE", "TLS_ALLOWED_CLIENTS",
 }
 
 // setEnv installs a clean environment holding exactly kv. Each variable goes through t.Setenv
@@ -168,6 +169,11 @@ func TestLoadFromEnvironment(t *testing.T) {
 		"CONTENT_KEY_ADDR":            "content-key:7002",
 		"BILLING_RESERVE_TIMEOUT":     "350ms",
 		"BILLING_SETTLE_TIMEOUT":      "150ms",
+		"TLS_ENABLED":                 "true",
+		"TLS_CERT_FILE":               "/etc/gateway/tls/tls.crt",
+		"TLS_KEY_FILE":                "/etc/gateway/tls/tls.key",
+		"TLS_CLIENT_CA_FILE":          "/etc/gateway/tls/ca.crt",
+		"TLS_ALLOWED_CLIENTS":         "router-svc,admin-api-svc",
 	})
 
 	cfg, err := config.Load("rest-api-svc")
@@ -175,6 +181,15 @@ func TestLoadFromEnvironment(t *testing.T) {
 		t.Fatalf("Load() error = %v", err)
 	}
 
+	// The TLS section carries paths and an allowlist, never PEM: a private key in the environment is
+	// readable in /proc and travels with the configuration this repository logs at startup.
+	if !cfg.TLS.Enabled || cfg.TLS.CertFile != "/etc/gateway/tls/tls.crt" ||
+		cfg.TLS.KeyFile != "/etc/gateway/tls/tls.key" || cfg.TLS.ClientCAFile != "/etc/gateway/tls/ca.crt" {
+		t.Errorf("TLS = %+v, want the three mounted paths", cfg.TLS)
+	}
+	if got, want := cfg.TLS.AllowedClients, []string{"router-svc", "admin-api-svc"}; !slices.Equal(got, want) {
+		t.Errorf("TLS.AllowedClients = %v, want %v", got, want)
+	}
 	if cfg.HTTP.Port != 8090 {
 		t.Errorf("HTTP.Port = %d, want 8090", cfg.HTTP.Port)
 	}
@@ -577,6 +592,10 @@ func TestDisabledOTelSkipsExporterValidation(t *testing.T) {
 		"SMPP_SESSION_MANAGER_ADDR":   "sessionmgr:7000",
 		"BILLING_ADDR":                "billing:7001",
 		"CONTENT_KEY_ADDR":            "content-key:7002",
+		"TLS_ENABLED":                 "true",
+		"TLS_CERT_FILE":               "/etc/gateway/tls/tls.crt",
+		"TLS_KEY_FILE":                "/etc/gateway/tls/tls.key",
+		"TLS_CLIENT_CA_FILE":          "/etc/gateway/tls/ca.crt",
 	})
 
 	cfg, err := config.Load("router-svc")

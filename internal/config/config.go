@@ -106,6 +106,7 @@ type Config struct {
 	// the two roles stop sharing a section.
 	BillingReaper BillingReaper `envPrefix:"BILLING_REAPER_"`
 	Exact         Exact         `envPrefix:"EXACT_"`
+	TLS           TLS           `envPrefix:"TLS_"`
 }
 
 // OTel configures tracing export. The variable names follow the OpenTelemetry specification so
@@ -516,6 +517,29 @@ type ContentKey struct {
 	Addr string `env:"ADDR" envDefault:"localhost:7002"`
 }
 
+// TLS is the pod's transport identity: one certificate for every surface it serves and every service it
+// calls, because a service both listens and dials — smpp-server-svc serves its SessionRegistry and calls
+// session-manager-svc. The values are PATHS, never PEM: a private key in the environment is readable in
+// /proc and travels with anything that logs the configuration at startup, which this repository does.
+type TLS struct {
+	// Enabled is off by default so unit tests, the integration suites and a laptop keep working without
+	// certificates. Production refuses the default (step-300).
+	Enabled bool `env:"ENABLED" envDefault:"false"`
+
+	// CertFile, KeyFile and ClientCAFile are the three files of a mounted Secret: tls.crt, tls.key and
+	// ca.crt. Only the first two are keys of a kubernetes.io/tls Secret — ca.crt is cert-manager's
+	// addition, and the manual route produces an Opaque Secret anyway. Nothing here reads the type. They
+	// are re-read at every handshake, so cert-manager can rotate them under a running process.
+	CertFile     string `env:"CERT_FILE"`
+	KeyFile      string `env:"KEY_FILE"`
+	ClientCAFile string `env:"CLIENT_CA_FILE"`
+
+	// AllowedClients are the DNS SANs this service accepts as callers. Empty admits every holder of a
+	// certificate from our CA, which is what a server with no named callers wants; a server handing out
+	// something only some callers may have names them.
+	AllowedClients []string `env:"ALLOWED_CLIENTS" envSeparator:","`
+}
+
 // SMPP configures smpp-server-svc: its client-facing SMPP listener and the session-manager it calls
 // to enforce max_sessions. Only smpp-server-svc declares SectionSMPP.
 type SMPP struct {
@@ -607,13 +631,14 @@ const (
 	SectionContentKey
 	SectionBillingReaper
 	SectionExact
+	SectionTLS
 
 	// SectionAll is what a caller declaring nothing gets. It must include every section, or
 	// Validate() — which runs validate(SectionAll) — would quietly stop being a full check. The
 	// cost of a section a binary does not use is nil: its fields carry valid defaults.
 	SectionAll = SectionOTel | SectionPostgres | SectionKafka | SectionClickHouse | SectionHTTP |
 		SectionRedis | SectionGRPC | SectionSMPP | SectionBilling | SectionContentKey |
-		SectionBillingReaper | SectionExact
+		SectionBillingReaper | SectionExact | SectionTLS
 )
 
 // Load reads the configuration for serviceName from the environment and validates the sections it
@@ -719,6 +744,9 @@ func (c Config) validate(sections Section) error {
 	}
 	if sections&SectionExact != 0 {
 		problems = append(problems, c.exactProblems()...)
+	}
+	if sections&SectionTLS != 0 {
+		problems = append(problems, c.tlsProblems()...)
 	}
 
 	if len(problems) == 0 {
@@ -1277,4 +1305,33 @@ func (c Config) LogValue() slog.Value {
 		slog.Duration("smpp_bind_backoff_max", c.SMPP.BindBackoffMax),
 		slog.Int("smpp_max_conns", c.SMPP.MaxConns),
 	)
+}
+
+// tlsProblems refuses plaintext in production, and an incomplete identity anywhere.
+//
+// The production rule is the same tier as the dev-default guards of Postgres, Redis and ClickHouse, and
+// it exists for the same reason: the safe value is the one an operator forgets to set. Off by default is
+// what keeps the test suites running; without this, off by default would also be what ships.
+func (c Config) tlsProblems() []string {
+	var problems []string
+
+	if c.Environment.IsProduction() && !c.TLS.Enabled {
+		problems = append(problems, "TLS_ENABLED is false: production traffic must not run in plaintext")
+	}
+	if !c.TLS.Enabled {
+		return problems
+	}
+
+	// A half-configured identity is worse than none: it fails at the first handshake, in a service that
+	// booted and passed its readiness probe.
+	for _, f := range []struct{ name, value string }{
+		{"TLS_CERT_FILE", c.TLS.CertFile},
+		{"TLS_KEY_FILE", c.TLS.KeyFile},
+		{"TLS_CLIENT_CA_FILE", c.TLS.ClientCAFile},
+	} {
+		if strings.TrimSpace(f.value) == "" {
+			problems = append(problems, f.name+" is empty while TLS_ENABLED is true")
+		}
+	}
+	return problems
 }
