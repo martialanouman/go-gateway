@@ -20,6 +20,12 @@ import (
 //
 // The connection is cached per ADDRESS, not per pod_id: the address is what identifies a transport,
 // and a pod_id that outlived its address would otherwise pin a connection to somewhere the pod is not.
+//
+// Known ceiling: the cache is never evicted, only closed wholesale by Close. It is bounded by the
+// addresses SEEN over the process's life, not by the pods alive now, so every rolling deploy leaves
+// behind one ClientConn per retired pod, each reconnecting on its own backoff forever. This predates
+// the address switch — pod names of a Deployment were just as short-lived — and was invisible only
+// because the return path never dialled successfully at all. Eviction is step-303.
 type PodClients struct {
 	dial func(addr string) (*grpc.ClientConn, error)
 

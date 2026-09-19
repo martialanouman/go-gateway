@@ -1,6 +1,6 @@
 # step-302 — La remise MO/DLR par pod n'a pas de nom DNS à joindre
 
-> **Jalon :** Dette ouverte par step-300b · **Statut :** À FAIRE
+> **Jalon :** Dette ouverte par step-300b · **Statut :** FAIT
 > **Dépend de :** — · **Bloque :** step-410 (go-live)
 
 ## Pourquoi cette fiche existe
@@ -161,19 +161,53 @@ pods) ; un `Service` par pod (incompatible HPA) ; la remise par pub/sub Redis à
 d'un gabarit qui n'existe plus et l'autre d'un `kind` qui ne change pas.*
 
 - [x] Une voie tranchée et écrite sous `## Design arrêté`, avec ce qu'elle coûte au drain et à l'HPA.
-- [ ] Un test qui échouerait sur le code actuel : la remise par pod exercée **contre l'adresse lue dans
+- [x] Un test qui échouerait sur le code actuel : la remise par pod exercée **contre l'adresse lue dans
       le registre**, un pod qui s'y est enregistré avec la sienne — et aucune adresse configurée côté
       routeur. Le `stubResolver` vers `127.0.0.1` de `internal/smppserver/return_leg_integration_test.go`
       disparaît avec lui.
-- [ ] `internal/deploy` tient le lien à sa nouvelle place : plus de gabarit à tenir d'accord avec le DNS,
+- [x] `internal/deploy` tient le lien à sa nouvelle place : plus de gabarit à tenir d'accord avec le DNS,
       mais une assertion que `smpp-server-svc` injecte bien `SMPP_POD_ADDR` depuis `status.podIP` et
       `SMPP_POD_ID` depuis `metadata.name`. `EnvVarSource.FieldRef` est déjà décodé par `deploy.go`.
       La règle neuve doit figurer dans `TestTheGuardCatchesWhatItClaimsTo` et mordre sur
       `testdata/broken`, sans quoi rien ne prouve qu'elle puisse échouer.
-- [ ] Le gabarit est parti **partout** : `config.SMPP.PodAddrTemplate`, `AddrResolver`,
+- [x] Le gabarit est parti **partout** : `config.SMPP.PodAddrTemplate`, `AddrResolver`,
       `templateResolver`, `NewTemplateResolver`, le `Service` `smpp-server-headless`, et les deux
       paragraphes de `deploy/README.md` qui en font une singularité de topologie.
-- [ ] gofmt/goimports · golangci-lint · `go test -race ./...` · `make manifests` · `buf generate` verts
+- [x] gofmt/goimports · golangci-lint (0 issue) · `go test -race ./...` (exit 0) · `make manifests`
+      (35 ressources, 0 invalide) · `buf generate` verts
+
+## Ce que la revue a trouvé
+
+**La revue par sous-agents n'a pas pu avoir lieu** : les trois relecteurs lancés sur des axes disjoints
+(mécanisme · valeur probante des tests · manifests & contrats) ont été interrompus par une limite de
+dépense de l'API, sans produire un seul constat. La relecture a donc été faite par l'auteur, ce qui est
+un affaiblissement de la porte nº 4 et doit être relu par l'humain à la PR.
+
+Ce qu'elle a trouvé, et qui est corrigé ici :
+
+- **Une violation parasite dans la fixture.** L'objet ajouté à `internal/deploy/testdata/broken/`
+  déclenchait aussi `pdb-per-deployment`, son pod template n'ayant pas le label que `coveredByPDB`
+  cherche — un futur rouge sur cet objet n'aurait pas été attribuable à une règle. Corrigé : il ne viole
+  plus que `downward-api-fields`, sur ses deux variables.
+
+Ce qu'elle a vérifié et trouvé sain :
+
+- `pipe.Exec` sur un pipeline vide rend `nil, nil` (go-redis v9.21, `pipeline.go:104`) : un compte sans
+  bind ne produit pas d'erreur, et `TestReturnLegDeadLettersWithoutBindOrWebhook` couvre ce chemin.
+- Le rafraîchissement (30 s, `defaultRefreshInterval` = TTL/2) renouvelle l'adresse à la moitié de son
+  TTL (61 s) : pas de fenêtre où une session vivante perd son adresse.
+- `NewDeliverer` remplace un logger nil par `slog.Default` : le log ajouté à `tryBinds` ne peut pas
+  paniquer.
+- Aucune référence résiduelle au gabarit ni au `Service` headless hors commentaires historiques, qui
+  portent le *pourquoi* et sont gardés à dessein.
+- `.claude/rules/contracts-api.md` ne vise que `api/openapi-*.yaml` : un `.proto`, non publié en npm,
+  n'entraîne pas de bump de `api/package.json`.
+
+Ce qu'elle a trouvé et qui part en fiche plutôt qu'ici :
+
+- **Le cache de connexions de `PodClients` ne s'évince jamais** → **step-303**. Dette antérieure au
+  choix de la clé (les `pod_id` d'un `Deployment` sont tout aussi éphémères qu'une IP), invisible
+  jusqu'ici parce que la voie retour ne dialait jamais avec succès. Le plafond est nommé dans le code.
 
 ## Hors périmètre
 

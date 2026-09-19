@@ -236,7 +236,15 @@ metadata:
   labels:
     app: smpp-server-svc
 spec:
+  selector:
+    matchLabels:
+      app: smpp-server-svc
   template:
+    # The pod template carries the label the PDB below selects on: without it pdb-per-deployment also
+    # fires here, and a future red on this object could not be attributed to one rule.
+    metadata:
+      labels:
+        app: smpp-server-svc
     spec:
       terminationGracePeriodSeconds: 150
       containers:

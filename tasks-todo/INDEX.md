@@ -330,9 +330,12 @@ Indépendantes de la chaîne de charge : parallélisables si deux mains travaill
       dans le log d'attestation — ouverte par step-290d
 - [ ] step-300 — TLS / SMPP-TLS / mTLS sur les transports, **dont la DEK qui circule en clair sur un
       gRPC non authentifié** (`content-key-svc`) — ce dernier point ajouté par step-290d
-- [ ] step-302 — La remise MO/DLR par pod n'a pas de nom DNS à joindre : un `Deployment` ne fabrique pas
+- [x] step-302 — La remise MO/DLR par pod n'a pas de nom DNS à joindre : un `Deployment` ne fabrique pas
       d'enregistrement A par pod, la voie retour SMPP bascule donc en webhook sans le dire — ouverte par
       step-300b
+- [ ] step-303 — Le cache de connexions par pod de `mo-dlr-router-svc` ne s'évince jamais : une
+      `ClientConn` par pod retiré, qui retente indéfiniment — dette antérieure, rendue observable par
+      step-302
 - [ ] step-310 — Auth opérateur réelle (OIDC/mTLS) remplaçant le stub M1 ⛓ step-300
 - [ ] step-315 — Le journal d'audit se lit, et la base le rend immuable ⛓ step-310 — ouverte par step-290d
 
