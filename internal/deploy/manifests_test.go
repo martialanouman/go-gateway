@@ -54,6 +54,22 @@ var envExceptions = []string{
 	"CONTENT_KMS_MASTER_KEY", // cmd/content-key-svc/main.go, via os.Getenv
 }
 
+// downwardAPIFields are the variables a service MUST take from the pod's own downward API, with the
+// fieldPath each one must read. They cannot be defaults, literals or ConfigMap keys: their value is
+// the pod's, and only Kubernetes knows it.
+//
+// SMPP_POD_ADDR is the one step-302 exists for. mo-dlr-router-svc dials a bind's owning pod at the
+// address that pod published to the session registry; the pod can only learn it from status.podIP.
+// A literal, or nothing at all, and every MO/DLR for a live SMPP bind falls silently through to the
+// webhook — the exact failure this rule replaces, where a name template and the manifests could drift
+// apart with nothing to notice.
+var downwardAPIFields = map[string]map[string]string{
+	"smpp-server-svc": {
+		"SMPP_POD_ADDR": "status.podIP",
+		"SMPP_POD_ID":   "metadata.name",
+	},
+}
+
 // requiredOverrides are the variables whose shared default is WRONG for a given service. Each one is a
 // port collision waiting to happen: HTTP_PORT defaults to 8081, so rest-api-svc without this override
 // serves the public API on the admin port; GRPC_PORT defaults to 7000, which is session-manager's.
@@ -99,7 +115,7 @@ func TestTheGuardCatchesWhatItClaimsTo(t *testing.T) {
 		"deployment-per-service", "probe-endpoints", "probe-timeout", "grace-period",
 		"ops-port-not-exposed", "pdb-per-deployment", "secrets-by-reference",
 		"required-override", "known-env-name", "hpa-max-replicas", "pool-covers-lanes", "image-convention",
-		"no-subpath",
+		"no-subpath", "downward-api-fields",
 	} {
 		if !got[rule] {
 			t.Errorf("rule %q reported nothing on testdata/broken, so nothing proves it can fail — "+
@@ -284,6 +300,7 @@ func inspectDeployment(m deploy.Manifest, env map[string]string, configMaps map[
 		out = append(out, inspectContainerEnv(m, c, env, configMaps)...)
 		out = append(out, inspectVolumeMounts(m, c)...)
 		out = append(out, inspectRequiredOverrides(m, c, svc, env, configMaps)...)
+		out = append(out, inspectDownwardAPIFields(m, c, svc)...)
 	}
 
 	// The grace period must clear the whole drain, in sequence: DRAIN_DELAY waiting for the load
@@ -395,6 +412,32 @@ func inspectRequiredOverrides(m deploy.Manifest, c deploy.Container, svc string,
 			m.Source, svc)
 	}
 
+	return out
+}
+
+// inspectDownwardAPIFields holds a container to the pod fields it must read from the downward API.
+// Nothing else can supply them: a pod's name and its IP are assigned at scheduling time, so a value
+// written in a manifest is either wrong or, worse, right for exactly one replica.
+func inspectDownwardAPIFields(m deploy.Manifest, c deploy.Container, svc string) []violation {
+	var out []violation
+	for name, wantPath := range downwardAPIFields[svc] {
+		var got string
+		for _, e := range c.Env {
+			if e.Name != name {
+				continue
+			}
+			if e.ValueFrom != nil && e.ValueFrom.FieldRef != nil {
+				got = e.ValueFrom.FieldRef.FieldPath
+			}
+			break
+		}
+		if got != wantPath {
+			out = append(out, violation{rule: "downward-api-fields", msg: fmt.Sprintf(
+				"%s: %s container %q must set %s from fieldRef %s (got %q) — that value is the pod's own "+
+					"and nothing but the downward API knows it",
+				m.Source, svc, c.Name, name, wantPath, got)})
+		}
+	}
 	return out
 }
 

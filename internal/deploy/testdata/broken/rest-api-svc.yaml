@@ -224,3 +224,51 @@ spec:
         target:
           type: AverageValue
           averageValue: "10000"
+---
+# Violates, on purpose, exactly one rule: downward-api-fields. SMPP_POD_ADDR is a literal (an operator
+# guessing a pod IP, which is right for at most one replica and wrong the moment it is rescheduled) and
+# SMPP_POD_ID reads the wrong fieldPath. Everything else here is deliberately correct, so the rule this
+# object pins cannot be confused with another one firing on the same file.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: smpp-server-svc
+  labels:
+    app: smpp-server-svc
+spec:
+  template:
+    spec:
+      terminationGracePeriodSeconds: 150
+      containers:
+        - name: smpp-server-svc
+          image: ghcr.io/martialanouman/go-gateway/smpp-server-svc:v0.0.0
+          env:
+            - name: ENVIRONMENT
+              value: production
+            - name: SMPP_POD_ADDR
+              value: 10.42.0.7
+            - name: SMPP_POD_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 9090
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 9090
+            timeoutSeconds: 4
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: smpp-server-svc
+  labels:
+    app: smpp-server-svc
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: smpp-server-svc
