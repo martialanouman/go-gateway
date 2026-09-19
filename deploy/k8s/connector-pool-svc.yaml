@@ -56,6 +56,9 @@ spec:
               value: "00000000-0000-0000-0000-000000000001"
             - name: CONNECTOR_ADDR
               value: "smsc.example.net:2775"
+            # Off: this operator's SMSC is not in our PKI. See deploy/k8s/tls/README.md.
+            - name: CONNECTOR_TLS_ENABLED
+              value: "false"
             - name: CONNECTOR_BIND_POOL_SIZE
               value: "2"
             - name: CONNECTOR_AUTO_RECONNECT

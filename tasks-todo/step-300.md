@@ -1,6 +1,6 @@
 # step-300 — TLS / SMPP-TLS / mTLS sur les transports
 
-> **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
+> **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** LIVRÉE (300a→300d)
 > **Dépend de :** — (step-193c livrée) · **Bloque :** step-310
 
 ## But
@@ -684,6 +684,12 @@ fichier absent au lieu de la variable qui manque.
 
 La preuve 3 est la seule qui prouve l'**ordre** ; 1 et 2 laisseraient les deux décorations inversées
 passer, l'en-tête PROXY étant simplement absent de leurs connexions.
+
+#### Dettes ouvertes par 300d
+
+- **L'ancre de confiance du lien sortant est notre CA**, donc un SMSC tiers signé par une autorité
+  publique n'est pas joignable depuis le pod, et `tls_config_json` n'a toujours aucun lecteur alors que
+  l'Admin API l'accepte et le stocke : `debts/ancre-de-confiance-par-connecteur.md`.
 
 #### Ce que 300d ne fait pas
 

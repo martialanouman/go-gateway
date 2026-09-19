@@ -19,11 +19,22 @@ connaît pas : `ca.crt` est un ajout de cert-manager, et la voie manuelle produi
 | `tls.key` | sa clé privée |
 | `ca.crt`  | l'autorité qui valide ses pairs |
 
-**Ce que `TLS_ENABLED` couvre à ce jour : le gRPC interne et les deux APIs HTTP.** Les binds SMPP
-(step-300d) restent en clair tant que cette step n'est pas livrée, sur un pod qui pose pourtant
-`TLS_ENABLED=true`. Les deux surfaces HTTP ne se ressemblent pas : `rest-api-svc` est **publique** —
-elle prouve son identité, plancher TLS 1.2, et ne demande aucun certificat ; `admin-api-svc` est
-**mutuelle**, plancher 1.3, et refuse un appelant sans certificat de notre CA.
+**Ce que `TLS_ENABLED` couvre : le gRPC interne, les deux APIs HTTP et le port SMPP entrant.** Les
+surfaces ne se ressemblent pas. Sont **publiques** — elles prouvent leur identité, plancher TLS 1.2,
+et ne demandent aucun certificat : `rest-api-svc` et le port SMPP de `smpp-server-svc`, dont les
+clients sont des intégrateurs et des ESME qu'on ne contrôle pas et qui s'authentifient autrement (clé
+d'API, `bind_transmitter`). Sont **mutuelles**, plancher 1.3, et refusent un appelant sans certificat
+de notre CA : l'Admin API et les quatre serveurs gRPC.
+
+**Le bind SMPP sortant ne suit pas `TLS_ENABLED`**, parce qu'il décrit un **pair** et non ce pod :
+il a son propre `CONNECTOR_TLS_ENABLED`, faux par défaut, qui miroite `smsc_connectors.tls_enabled`.
+Posé à vrai, `connector-pool-svc` compose l'SMSC en **mTLS avec notre CA** — donc utilisable pour un
+sidecar ou un SMSC dont nous tenons la PKI, pas pour un opérateur signé par une autorité publique
+(voir `debts/ancre-de-confiance-par-connecteur.md`). Il exige `TLS_ENABLED=true`, sans quoi le pod
+refuse de démarrer : sans identité montée, il n'aurait aucun certificat à présenter.
+
+**Le certificat du pair sortant doit porter l'hôte de `CONNECTOR_ADDR` en SAN** — `localhost` pour un
+sidecar. `crypto/tls` déduit le `ServerName` de l'adresse composée ; aucun code ici ne le force.
 
 **Les `Deployment` montent déjà ce volume** (step-300b) : les trois chemins sont dans `configmap.yaml`,
 identiques partout, et chaque service pose `TLS_ENABLED` à côté du volume qui le rend vrai. Il ne reste
@@ -69,10 +80,10 @@ dans le namespace ». La liste compare des **SAN DNS**, jamais un `CN`.
 | `session-manager-svc` | `smpp-server-svc`, `mo-dlr-router-svc`, `admin-api-svc` |
 | `smpp-server-svc` | `mo-dlr-router-svc` |
 
-Les deux surfaces HTTP n'y figurent pas, et pour deux raisons opposées : `rest-api-svc` est **publique**
-et ne demande aucun certificat à ses intégrateurs ; `admin-api-svc` exige le certificat mais ne peut
-nommer personne — aucun pod de ce dépôt ne l'appelle, et son autorisation réelle reste le bearer
-opérateur.
+Les surfaces publiques n'y figurent pas, faute de pouvoir nommer qui que ce soit : `rest-api-svc` et le
+port SMPP entrant ne demandent aucun certificat à leurs intégrateurs et à leurs ESME. `admin-api-svc`
+exige le certificat mais ne nomme personne non plus — aucun pod de ce dépôt ne l'appelle, et son
+autorisation réelle reste le bearer opérateur.
 
 Ajouter un appelant à un de ces services, c'est ajouter son nom ici **avant** de déployer : sinon le
 premier handshake est refusé, et le client ne lit qu'un « bad certificate » qui ne dit pas pourquoi.
