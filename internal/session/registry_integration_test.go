@@ -229,3 +229,39 @@ func TestConcurrentBindsRespectQuota(t *testing.T) {
 		t.Fatalf("concurrent binds on max_sessions=1: %d succeeded, want exactly 1", got)
 	}
 }
+
+// TestLookupCarriesEachPodsDialAddress is step-302's core: the return path dials the address the
+// registry hands it, never a name it composes itself. Each pod publishes its own address at bind time,
+// and Lookup must give it back per pod — an empty one is a bind mo-dlr-router-svc skips, which is
+// exactly how the SMPP return channel went silently dark before this step.
+//
+// The IPv6 address is not decoration: the registry's member separator is ':', so an address is the one
+// thing that must never be folded into pod_id.
+func TestLookupCarriesEachPodsDialAddress(t *testing.T) {
+	rdb := redistest.Client(t)
+	reg := session.NewRegistry(rdb)
+	ctx := context.Background()
+	account := uuid.NewString()
+
+	want := map[string]string{"pod-a": "10.1.2.3:7000", "pod-b": "[fd00::2]:7000"}
+	for pod, addr := range want {
+		b := session.Bind{AccountID: account, PodID: pod, BindID: "bind-" + uuid.NewString(), Addr: addr}
+		if _, err := reg.Bind(ctx, b, 5); err != nil {
+			t.Fatalf("bind on %s: %v", pod, err)
+		}
+	}
+
+	live, err := reg.Lookup(ctx, account)
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if len(live) != len(want) {
+		t.Fatalf("lookup: %d sessions, want %d", len(live), len(want))
+	}
+	for _, b := range live {
+		if b.Addr != want[b.PodID] {
+			t.Errorf("session %s on %s: addr %q, want %q — the return path dials what Lookup returns",
+				b.BindID, b.PodID, b.Addr, want[b.PodID])
+		}
+	}
+}
