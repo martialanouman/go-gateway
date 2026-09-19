@@ -27,6 +27,22 @@ connexion sur son propre backoff, indéfiniment, avec la goroutine qui va avec.
 Ce n'était pas visible avant step-302 parce que la voie retour ne dialait jamais avec succès — le
 défaut était masqué par un défaut plus grave.
 
+## Le second symptôme, trouvé en revue : la péremption sur réutilisation d'adresse
+
+Le plafond mémoire n'est pas le pire. Le cache survit **bien au-delà** du TTL de session, donc une
+adresse réattribuée est servie depuis la connexion de son ancien occupant :
+
+- t=0 — le pod A (10.0.1.5) sert le compte X ; le routeur met en cache la `ClientConn` de `10.0.1.5:7000`.
+- t=100 s — le pod A meurt sans `Unbind` (perte de nœud). La connexion passe `TRANSIENT_FAILURE`,
+  backoff gRPC jusqu'à 120 s.
+- t=300 s — Kubernetes réattribue 10.0.1.5 au pod C, qui bind le compte X et publie `10.0.1.5:7000`.
+- `Lookup` rend cette adresse → **cache hit** → la connexion de l'ancien occupant, encore en backoff.
+  Sans `wait-for-ready`, l'RPC échoue aussitôt en `Unavailable` → bind sauté → webhook/dead-letter,
+  pendant ~2 min, **alors que le pod est joignable et le bind vivant**.
+
+L'analyse de rollout de step-302 ne couvrait que le TTL de 60 s et concluait « sémantiquement identique
+à un bind disparu » : vrai pour le routage, faux pour la disponibilité.
+
 ## Ce qu'il faut trancher
 
 Quelle discipline d'éviction, sachant qu'aucune des deux évidentes n'est bonne telle quelle :
@@ -47,6 +63,8 @@ correspondre à un bind vivant. C'est l'information que le registre porte déjà
       pas N. Il doit constater la **fermeture** de la connexion évincée, pas seulement son retrait de la
       map — une `ClientConn` retirée mais non fermée continue de retenter.
 - [ ] Aucune éviction d'une connexion dont un bind vivant dépend encore.
+- [ ] Le scénario de l'adresse réattribuée est exercé : une connexion en échec pour une adresse donnée
+      ne doit pas condamner la remise vers le pod qui occupe désormais cette adresse.
 - [ ] gofmt/goimports · golangci-lint · `go test -race ./...` verts
 
 ## Hors périmètre

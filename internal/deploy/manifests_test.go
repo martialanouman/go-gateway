@@ -906,3 +906,38 @@ func TestLoadReadsYmlAsWellAsYaml(t *testing.T) {
 	t.Error("nothing reported for the Deployment in stray.yml — Load skipped the file for its " +
 		"extension, so a .yml manifest escapes every rule")
 }
+
+// TestEveryDownwardAPIFieldIsPinnedByTheFixture closes a hole the rule shipped with: the broken tree
+// only had to trip "downward-api-fields" ONCE for TestTheGuardCatchesWhatItClaimsTo to be satisfied,
+// so dropping SMPP_POD_ID from the table left every test green — the deployed manifest being correct,
+// nothing else would have noticed. Each entry of the table must be violated by the fixture on its own.
+func TestEveryDownwardAPIFieldIsPinnedByTheFixture(t *testing.T) {
+	t.Parallel()
+
+	var reported []violation
+	for _, v := range inspect(t, filepath.Join("testdata", "broken")) {
+		if v.rule == "downward-api-fields" {
+			reported = append(reported, v)
+		}
+	}
+
+	// Spelled out, NOT derived from downwardAPIFields: ranging over the table would delete the
+	// assertion along with the entry, which is the very mutation this test exists to catch.
+	for _, want := range []struct{ svc, field string }{
+		{"smpp-server-svc", "SMPP_POD_ADDR"},
+		{"smpp-server-svc", "SMPP_POD_ID"},
+	} {
+		found := false
+		for _, v := range reported {
+			if strings.Contains(v.msg, want.svc) && strings.Contains(v.msg, want.field) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("no downward-api-fields violation names %s/%s on testdata/broken — either the "+
+				"table stopped requiring it or the fixture stopped breaking it, and dropping it from "+
+				"the table would pass every other test", want.svc, want.field)
+		}
+	}
+}

@@ -310,8 +310,14 @@ Trois défauts **préexistants**, que la cartographie des points d'insertion a s
 
 Sept des huit clients composent un nom de `Service` (`billing-svc:7000`) : grpc-go prend l'autorité de
 la cible comme `ServerName` quand `tls.Config.ServerName` est vide, le SAN correspond, il n'y a rien à
-faire. Le huitième, `internal/modlrrouter/poddeliverer.go`, compose `<pod-id>.smpp-server-headless`
-alors que le certificat est **par `Deployment`**, de SAN `smpp-server-svc`.
+faire. Le huitième, `internal/modlrrouter/poddeliverer.go`, joint une adresse **de pod** alors que le
+certificat est **par `Deployment`**, de SAN `smpp-server-svc`.
+
+> **Depuis, step-302 est livrée** (voir `tasks-done/step-302.md`) : ce huitième client ne compose plus
+> `<pod-id>.smpp-server-headless` — ce nom ne résolvait pas —, il dial l'adresse IP que le pod publie
+> dans le registre de sessions. **L'arbitrage ci-dessous ne change pas, et se trouve renforcé** : une
+> cible IP rend l'épinglage de `ServerName` non pas préférable mais obligatoire, un SAN joker ne
+> s'appliquant jamais à une adresse IP. Ne pas relire ce qui suit comme une carte du code actuel.
 
 **Retenu : épingler `ServerName = "smpp-server-svc"` sur ce seul appelant.** Le certificat est partagé
 par toutes les répliques : la seule identité qu'il puisse attester est « un pod du `Deployment`
@@ -322,8 +328,8 @@ bon est déjà contrôlé ailleurs — `Deliver` répond `delivered:false` quand
 Écarté : le **SAN joker** (`*.smpp-server-headless`), qui ferait vérifier une identité *par pod* que la
 PKI ne délivre pas, et souderait le certificat à un schéma d'adressage que `poddeliverer.go` annonce
 lui-même comme temporaire. Il casserait au renommage du service headless — une deuxième vérité à tenir
-en accord avec `SMPP_POD_ADDR_TEMPLATE`, dans deux systèmes — et il ne pourrait pas exister du tout si
-step-302 se résout par `status.podIP`, un joker ne s'appliquant jamais à une adresse IP. Écarté aussi :
+en accord avec le gabarit d'adresse, dans deux systèmes — et il ne peut pas exister du tout maintenant
+que step-302 est résolue par `status.podIP`, un joker ne s'appliquant jamais à une adresse IP. Écarté aussi :
 les **certificats par pod** (csi-driver cert-manager, SPIFFE), qui demandent une infrastructure que ce
 dépôt ne déploie pas.
 

@@ -7,7 +7,9 @@ import (
 	"testing"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 
 	"github.com/martialanouman/go-gateway/internal/modlrrouter"
 	registrypb "github.com/martialanouman/go-gateway/internal/session/pb"
@@ -85,7 +87,47 @@ func TestPodClientsSkipABindWithNoAddress(t *testing.T) {
 	if err == nil {
 		t.Fatal("Deliver with no address returned nil, want an Unavailable status")
 	}
+	// The CODE is the point, not merely that it failed. tryBinds classifies: Unavailable moves to the
+	// next bind, InvalidArgument is a terminal fault that stops the walk for the WHOLE account. Get this
+	// wrong and one address-less replica during a rollout takes down delivery to every other live bind
+	// of that account — the class of silence this step exists to remove.
+	if got := status.Code(err); got != codes.Unavailable {
+		t.Errorf("Deliver with no address = %s, want Unavailable — any terminal code here stops the "+
+			"round-robin for every other bind of the account, not just this one", got)
+	}
 	if dialled != 0 {
 		t.Errorf("dial called %d times for a bind with no address, want 0", dialled)
+	}
+}
+
+// TestPodClientsCacheConnectionsPerAddressNotPerPod pins the cache key. A pod_id can outlive the
+// address it was last seen at (a replica replaced between two Lookups, its name reused in logs while
+// its IP is not): keying the cache on pod_id would then pin the connection to where the pod no longer
+// is, and every delivery would go to a stale address that nothing can correct short of a restart.
+func TestPodClientsCacheConnectionsPerAddressNotPerPod(t *testing.T) {
+	reached := make(chan string, 2)
+	addrA := startPod(t, "pod-a", reached)
+	addrB := startPod(t, "pod-b", reached)
+
+	pods := modlrrouter.NewPodClients(func(addr string) (*grpc.ClientConn, error) {
+		return grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	})
+	defer pods.Close()
+
+	// The SAME pod_id, twice, at two different addresses: the second delivery must follow the address.
+	const samePod = "smpp-server-svc-7f9c"
+	for _, tc := range []struct{ addr, want string }{{addrA, "pod-a"}, {addrB, "pod-b"}} {
+		bind := modlrrouter.LiveBind{PodID: samePod, Addr: tc.addr, BindID: "b1"}
+		if err := pods.Deliver(context.Background(), bind, []byte{0x01}); err != nil {
+			t.Fatalf("Deliver to %s: %v", tc.want, err)
+		}
+		select {
+		case got := <-reached:
+			if got != tc.want {
+				t.Fatalf("delivery reached %s, want %s — the cache followed pod_id, not the address", got, tc.want)
+			}
+		default:
+			t.Fatalf("no pod reached for %s", tc.want)
+		}
 	}
 }

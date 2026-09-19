@@ -33,8 +33,10 @@ var touchScriptSrc string
 //go:embed lua/lookup.lua
 var lookupScriptSrc string
 
-// DefaultSessionTTL is the lifetime of a session token without a refresh. A bind must be kept alive by
-// Touch (driven by enquire_link); once the TTL lapses the token is swept and the slot is freed.
+// DefaultSessionTTL is the lifetime of a session token without a refresh, and of the owning pod's
+// published address with it. A bind must be kept alive by a refresh — in production a re-Bind, driven
+// by the listener's refreshLoop; Touch does the same for a caller that wires it. Once the TTL lapses
+// the token is swept, the slot is freed, and the pod's address goes with it.
 const DefaultSessionTTL = 60 * time.Second
 
 // memberSep joins pod_id and bind_id into a sorted-set member. pod names and bind ids (UUIDs) never
@@ -115,9 +117,10 @@ func key(accountID string) string { return "sess:{" + accountID + "}" }
 
 // podKey holds one pod's dialable gRPC address, published by the pod at bind time and read back by
 // Lookup (step-302). It is a key of its own, written by its own command, for two reasons that both
-// forbid folding it into bind.lua as a second KEYS entry: the braces make pod_id a Cluster hash tag,
-// so the two keys land on different slots and a script spanning them is a CROSSSLOT error; and
-// bind.lua carries invariant (d), which nothing about an address needs to share.
+// forbid folding it into bind.lua as a second KEYS entry: the braces make pod_id a Cluster hash tag, so
+// the two keys land on different slots and a script spanning them would be a CROSSSLOT error the day
+// this runs on a cluster (it does not today — see podAddrs); and bind.lua carries invariant (d), which
+// nothing about an address needs to share.
 func podKey(podID string) string { return "sess:pod:{" + podID + "}" }
 
 // keyTTLSeconds is the whole-key EXPIRE: the newest member's lifetime plus a second, so an idle
@@ -164,8 +167,19 @@ func (r *Registry) Unbind(ctx context.Context, b Bind) (bool, error) {
 
 // Touch refreshes b's TTL (called on enquire_link) and reports whether the session was still present.
 // A session that already lapsed is not resurrected.
+//
+// It renews the pod's published address alongside the token, for the same reason Bind publishes it: the
+// address expires on the session TTL, so anything that keeps a session alive without renewing it would
+// keep a bind live while the return path loses the way to reach it — silently, an SMPP channel that
+// stops delivering a minute in. Nothing calls Touch in production today (refreshLoop re-Binds instead),
+// which is exactly why this must not be left as a trap for whoever wires it.
 func (r *Registry) Touch(ctx context.Context, b Bind) (bool, error) {
 	now := r.now()
+	if b.Addr != "" {
+		if err := r.rdb.Set(ctx, podKey(b.PodID), b.Addr, r.ttl+time.Second).Err(); err != nil {
+			return false, fmt.Errorf("session: refresh address of pod %s: %w", b.PodID, err)
+		}
+	}
 	refreshed, err := r.touch.Run(ctx, r.rdb, []string{key(b.AccountID)},
 		b.member(), now.Unix(), now.Add(r.ttl).Unix(), r.keyTTLSeconds()).Int64()
 	if err != nil {
@@ -199,12 +213,22 @@ func (r *Registry) Lookup(ctx context.Context, accountID string) ([]Bind, error)
 }
 
 // podAddrs reads the dial address of each DISTINCT pod owning one of binds, in a single pipeline.
-// A pipeline and not MGET: podKey hash-tags on pod_id, so the keys span slots, and Redis Cluster
-// refuses a multi-slot MGET while a pipeline routes each GET on its own. An account holds at most
-// max_sessions binds, so this is a handful of GETs, never a scan.
+// An account holds at most max_sessions binds, so this is a handful of GETs, never a scan.
 //
 // A pod whose address has lapsed yields "" rather than an error: the return path reads that as a bind
-// to skip and falls back to the webhook, which is what it already does for a pod that has gone.
+// to skip and falls back to the webhook, which is what it already does for a pod that has gone. Any
+// OTHER error is returned, and that distinction is the whole point — a partial Redis failure must not
+// be indistinguable from the intended degradation, or the return path goes quiet again with nothing
+// naming the cause.
+//
+// Hence the per-command inspection rather than the pipeline's aggregate error: Exec returns the FIRST
+// command error (go-redis cmdsFirstErr), so one lapsed pod's redis.Nil would mask a transport error on
+// the next pod's GET, and that pod would be read as simply having no address.
+//
+// A pipeline and not MGET because podKey hash-tags on pod_id, so the keys span slots and a multi-slot
+// MGET is refused under Redis Cluster. Note this buys nothing TODAY: r.rdb is a *redis.Client, which
+// speaks to one node, and a pipeline would earn its per-slot routing only under a *redis.ClusterClient.
+// It is the form that stays correct if this repo's hash tags ever mean what they promise.
 func (r *Registry) podAddrs(ctx context.Context, binds []Bind) (map[string]string, error) {
 	cmds := make(map[string]*redis.StringCmd, len(binds))
 	pipe := r.rdb.Pipeline()
@@ -214,14 +238,16 @@ func (r *Registry) podAddrs(ctx context.Context, binds []Bind) (map[string]strin
 		}
 		cmds[b.PodID] = pipe.Get(ctx, podKey(b.PodID))
 	}
-	// redis.Nil is what a missing address looks like, and Exec reports it as the pipeline's error; it
-	// is the lapsed-pod case, not a failure.
 	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, redis.Nil) {
 		return nil, err
 	}
 	out := make(map[string]string, len(cmds))
 	for pod, cmd := range cmds {
-		if v, err := cmd.Result(); err == nil {
+		switch v, err := cmd.Result(); {
+		case errors.Is(err, redis.Nil): // the pod published no address, or it lapsed
+		case err != nil:
+			return nil, fmt.Errorf("read address of pod %s: %w", pod, err)
+		default:
 			out[pod] = v
 		}
 	}

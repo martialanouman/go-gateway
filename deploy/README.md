@@ -143,6 +143,8 @@ l'infrastructure.
 
 ## Deux singularités de topologie
 
+La première est une **absence** : elle dit ce qui ne passe par aucun `Service`, et pourquoi.
+
 - **La voie retour SMPP ne passe par aucun `Service`** : `mo-dlr-router-svc` remet un `deliver_sm` au
   pod qui détient le bind en dialant l'adresse que ce pod a lui-même publiée dans le registre de
   sessions (`SMPP_POD_ADDR` ← `status.podIP`, port `GRPC_PORT`). Il n'y a rien à nommer, donc rien à

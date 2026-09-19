@@ -178,12 +178,13 @@ d'un gabarit qui n'existe plus et l'autre d'un `kind` qui ne change pas.*
 
 ## Ce que la revue a trouvé
 
-**La revue par sous-agents n'a pas pu avoir lieu** : les trois relecteurs lancés sur des axes disjoints
-(mécanisme · valeur probante des tests · manifests & contrats) ont été interrompus par une limite de
-dépense de l'API, sans produire un seul constat. La relecture a donc été faite par l'auteur, ce qui est
-un affaiblissement de la porte nº 4 et doit être relu par l'humain à la PR.
+**Premier tour : la revue par sous-agents n'a pas pu avoir lieu** — les trois relecteurs lancés sur des
+axes disjoints (mécanisme · valeur probante des tests · manifests & contrats) ont été interrompus par
+une limite de dépense de l'API, sans produire un seul constat. La relecture a d'abord été celle de
+l'auteur. **Second tour, une fois le quota revenu : les trois relecteurs ont tourné et rendu leurs
+constats**, repris plus bas. Aucun bloquant sur aucun des trois axes.
 
-Ce qu'elle a trouvé, et qui est corrigé ici :
+Ce que l'auto-relecture avait trouvé, et qui est corrigé ici :
 
 - **Une violation parasite dans la fixture.** L'objet ajouté à `internal/deploy/testdata/broken/`
   déclenchait aussi `pdb-per-deployment`, son pod template n'ayant pas le label que `coveredByPDB`
@@ -203,9 +204,52 @@ Ce qu'elle a vérifié et trouvé sain :
 - `.claude/rules/contracts-api.md` ne vise que `api/openapi-*.yaml` : un `.proto`, non publié en npm,
   n'entraîne pas de bump de `api/package.json`.
 
-Ce qu'elle a trouvé et qui part en fiche plutôt qu'ici :
+Ce que la reprise de la revue (les trois relecteurs, une fois le quota revenu) a trouvé et **corrigé
+ici** — aucun bloquant sur les trois axes :
 
-- **Le cache de connexions de `PodClients` ne s'évince jamais** → **step-303**. Dette antérieure au
+- **`podAddrs` masquait une panne Redis derrière une dégradation normale.** `Pipeline.Exec` rend la
+  PREMIÈRE erreur (`cmdsFirstErr`), donc le `redis.Nil` d'un pod sans adresse couvrait une erreur de
+  transport sur le `GET` du pod suivant, lu ensuite comme « pas d'adresse ». Les erreurs sont désormais
+  inspectées **par commande**.
+- **Un commentaire porteur affirmait une sûreté que le code n'a pas.** `r.rdb` est un `*redis.Client` :
+  seul un `*redis.ClusterClient` route un pipeline slot par slot. Le choix du pipeline reste bon comme
+  forme qui survivra au cluster, mais le commentaire le disait déjà acquis ([[invented-mechanism-in-comments]]).
+- **`Touch` était devenu un piège.** La doc du paquet invite à le câbler ; il rafraîchissait le jeton
+  sans renouveler l'adresse, donc il aurait gardé un bind vivant pendant que la voie retour perdait le
+  chemin — la mort silencieuse que cette fiche corrige. Il renouvelle les deux, et un test le pin.
+- **`SMPP_POD_ADDR` n'était ni validé ni journalisé.** Une valeur portant déjà un port donnait
+  `[1.2.3.4:9000]:7000`, cible acceptée par `grpc.NewClient` puis échouant à chaque RPC. Elle est
+  refusée au démarrage, et l'adresse composée est loggée — pour une step dont le sujet est une voie
+  retour muette, ce bouton n'avait pas le droit d'être sans garde.
+- **Trous de test comblés** : le *code* de statut d'un bind sans adresse (un `InvalidArgument` y aurait
+  coupé la remise vers **tous** les binds du compte, pas seulement le sien) ; la clé de cache par
+  adresse, qu'aucun test n'atteignait ; `podAddr` et ses crochets IPv6, seule ligne du dépôt à les
+  poser alors que les tests du registre les écrivaient à la main ; l'isolation des `pod_id` littéraux
+  sous `-count=2` ; et les deux entrées de `downwardAPIFields`, dont une seule était pinnée.
+- **Mineurs** : `Close()` laissait le client re-dialer et fuir une connexion ; la doc de
+  `grpctls.Dialer` contredisait son unique appelant ; `tasks-todo/step-300.md` — une fiche **à faire** —
+  décrivait au présent le code que cette step vient de supprimer ; trois docs décrivaient la table du
+  registre sans `pod_addr`.
+
+Ce qui part en fiche plutôt qu'ici :
+
+- **Le cache de connexions de `PodClients` ne s'évince jamais** → **step-303**, enrichie en revue d'un
+  second symptôme plus grave que le plafond mémoire : une IP réattribuée est servie depuis la connexion
+  en backoff de son ancien occupant, soit ~2 min de webhook pour un pod joignable et un bind vivant.
+- **`Canceled`/`DeadlineExceeded` sont classés « bind mort » par `tryBinds`**, sans timeout par bind :
+  un seul pod lent consomme le deadline de l'appelant, les binds suivants échouent instantanément, et
+  la marche conclut `bind_exhausted` alors qu'un bind vivant existait et que la cause était notre propre
+  échéance. Antérieur à cette step, mais c'est elle qui met ce chemin en production pour la première
+  fois. **Non traité ici**, faute de fiche : à arbitrer avant le go-live.
+- **Amplification d'écriture** : le `SET` d'adresse part à chaque bind ET à chaque refresh, soit
+  ~170–670 SET/s supplémentaires à la cible de charge, tous écrivant la même valeur sur la même clé —
+  et il double les aller-retours Redis sur le chemin chaud du bind. Un seul écrivain par pod suffirait.
+  **Non traité ici** : mesurable, non bloquant, et le regrouper avec le script demande un pipeline dont
+  l'ordre d'échec est moins clair que la séquence actuelle.
+- **Le cadencement refresh/TTL tient par une constante, pas par un contrat** : le refresh dérive d'une
+  constante compilée dans `smpp-server`, le TTL vit côté `session-manager` et est réglable
+  (`WithSessionTTL`). L'alignement 30/60/61 est juste aujourd'hui et non câblé, donc rien ne le
+  rattraperait s'il divergeait. Dette antérieure au
   choix de la clé (les `pod_id` d'un `Deployment` sont tout aussi éphémères qu'une IP), invisible
   jusqu'ici parce que la voie retour ne dialait jamais avec succès. Le plafond est nommé dans le code.
 

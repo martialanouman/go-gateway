@@ -29,8 +29,9 @@ import (
 type PodClients struct {
 	dial func(addr string) (*grpc.ClientConn, error)
 
-	mu    sync.Mutex
-	conns map[string]*grpc.ClientConn
+	mu     sync.Mutex
+	conns  map[string]*grpc.ClientConn
+	closed bool
 }
 
 // NewPodClients builds the pod delivery client. dial carries the pod's TLS
@@ -68,6 +69,11 @@ func (p *PodClients) Deliver(ctx context.Context, bind LiveBind, pdu []byte) err
 func (p *PodClients) conn(podID, addr string) (*grpc.ClientConn, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	// A Deliver still in flight when the service shuts down would otherwise dial a fresh connection
+	// after Close has already swept the map, and leak it.
+	if p.closed {
+		return nil, fmt.Errorf("pod clients closed")
+	}
 	if c, ok := p.conns[addr]; ok {
 		return c, nil
 	}
@@ -90,6 +96,7 @@ func (p *PodClients) Close() {
 		_ = c.Close()
 	}
 	p.conns = nil
+	p.closed = true
 }
 
 // RegistryLookup resolves an account's live binds via the SessionRegistry client.

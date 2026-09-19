@@ -55,8 +55,12 @@ func NewClient(cfg config.TLS, logger *slog.Logger, addr string) (*grpc.ClientCo
 // serverName is the identity to verify when it is NOT the address dialled: the return path reaches an
 // individual pod while the certificate is issued per Deployment, so the one thing that certificate can
 // attest is that the peer belongs to it. Empty verifies the address, which is what every other caller
-// wants. A dialer built WITH a serverName must serve one peer only: grpc-go reads that name off the
-// credentials to set each connection's authority, so a second target would be addressed as the first.
+// wants. A dialer built WITH a serverName addresses EVERY target it dials as that name: grpc-go reads
+// it off the credentials to set each connection's authority. That is correct only for peers sharing one
+// identity — the replicas of a Deployment, which share a certificate — and it is how the return path
+// uses it, dialling one address per smpp-server pod while verifying the one name they all present
+// (step-302). Pointing such a dialer at peers with DIFFERENT identities would address them all as the
+// first, and verify the wrong one.
 func Dialer(cfg config.TLS, logger *slog.Logger, serverName string) (Dial, error) {
 	creds := grpc.WithTransportCredentials(insecure.NewCredentials())
 	if cfg.Enabled {

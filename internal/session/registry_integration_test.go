@@ -243,7 +243,13 @@ func TestLookupCarriesEachPodsDialAddress(t *testing.T) {
 	ctx := context.Background()
 	account := uuid.NewString()
 
-	want := map[string]string{"pod-a": "10.1.2.3:7000", "pod-b": "[fd00::2]:7000"}
+	// Pod ids are unique per run, like account ids: redistest shares one Redis across the package, the
+	// address key is keyed on pod_id, and it outlives the test by its 61 s TTL. Literal ids would let a
+	// second run (-count=2) read the first run's address and stay green with the write removed.
+	want := map[string]string{
+		"pod-" + uuid.NewString(): "10.1.2.3:7000",
+		"pod-" + uuid.NewString(): "[fd00::2]:7000",
+	}
 	for pod, addr := range want {
 		b := session.Bind{AccountID: account, PodID: pod, BindID: "bind-" + uuid.NewString(), Addr: addr}
 		if _, err := reg.Bind(ctx, b, 5); err != nil {
@@ -259,9 +265,92 @@ func TestLookupCarriesEachPodsDialAddress(t *testing.T) {
 		t.Fatalf("lookup: %d sessions, want %d", len(live), len(want))
 	}
 	for _, b := range live {
-		if b.Addr != want[b.PodID] {
-			t.Errorf("session %s on %s: addr %q, want %q — the return path dials what Lookup returns",
-				b.BindID, b.PodID, b.Addr, want[b.PodID])
+		// Assert the pod is one we bound BEFORE comparing addresses: without this, a mutation that
+		// emptied PodID would compare want[""] == "" against an empty Addr and pass on both binds.
+		expected, known := want[b.PodID]
+		if !known {
+			t.Fatalf("lookup returned a session on unknown pod %q", b.PodID)
 		}
+		if b.Addr != expected {
+			t.Errorf("session %s on %s: addr %q, want %q — the return path dials what Lookup returns",
+				b.BindID, b.PodID, b.Addr, expected)
+		}
+	}
+}
+
+// TestLookupToleratesAPodWithNoAddress is the degradation the rollout relies on, and the reason
+// podAddrs inspects each command instead of the pipeline's aggregate error: a pod that published
+// nothing yields "" for its own binds WITHOUT failing the lookup, so the other pods' binds still carry
+// their address and stay deliverable.
+func TestLookupToleratesAPodWithNoAddress(t *testing.T) {
+	rdb := redistest.Client(t)
+	reg := session.NewRegistry(rdb)
+	ctx := context.Background()
+	account := uuid.NewString()
+
+	withAddr := session.Bind{AccountID: account, PodID: "pod-" + uuid.NewString(),
+		BindID: "bind-" + uuid.NewString(), Addr: "10.1.2.3:7000"}
+	silent := session.Bind{AccountID: account, PodID: "pod-" + uuid.NewString(),
+		BindID: "bind-" + uuid.NewString()} // a replica from before step-302
+	for _, b := range []session.Bind{withAddr, silent} {
+		if _, err := reg.Bind(ctx, b, 5); err != nil {
+			t.Fatalf("bind on %s: %v", b.PodID, err)
+		}
+	}
+
+	live, err := reg.Lookup(ctx, account)
+	if err != nil {
+		t.Fatalf("lookup: %v — a pod without an address must degrade, not fail the whole account", err)
+	}
+	got := map[string]string{}
+	for _, b := range live {
+		got[b.PodID] = b.Addr
+	}
+	if got[withAddr.PodID] != withAddr.Addr {
+		t.Errorf("pod with an address: got %q, want %q — one silent pod must not blind the others",
+			got[withAddr.PodID], withAddr.Addr)
+	}
+	if got[silent.PodID] != "" {
+		t.Errorf("pod with no address: got %q, want empty", got[silent.PodID])
+	}
+}
+
+// TestTouchRenewsThePodAddress pins what made Touch a trap. The address expires on the session TTL, so
+// a refresh path that renews the token without renewing the address keeps a bind live while the return
+// path loses the way to reach it — an SMPP channel that stops delivering a minute after the bind, with
+// nothing to see. Production refreshes by re-Bind today, which is precisely why Touch must not be left
+// as a hole for whoever wires it next.
+//
+// The address key is deleted directly rather than waited out: its TTL is 61 s.
+func TestTouchRenewsThePodAddress(t *testing.T) {
+	rdb := redistest.Client(t)
+	reg := session.NewRegistry(rdb)
+	ctx := context.Background()
+	account := uuid.NewString()
+
+	b := session.Bind{AccountID: account, PodID: "pod-" + uuid.NewString(),
+		BindID: "bind-" + uuid.NewString(), Addr: "10.5.6.7:7000"}
+	if _, err := reg.Bind(ctx, b, 5); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	if err := rdb.Del(ctx, "sess:pod:{"+b.PodID+"}").Err(); err != nil {
+		t.Fatalf("drop the published address: %v", err)
+	}
+
+	refreshed, err := reg.Touch(ctx, b)
+	if err != nil {
+		t.Fatalf("touch: %v", err)
+	}
+	if !refreshed {
+		t.Fatal("touch reported the session gone, want still present")
+	}
+
+	live, err := reg.Lookup(ctx, account)
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if len(live) != 1 || live[0].Addr != b.Addr {
+		t.Errorf("after touch, lookup = %+v, want one session carrying addr %q — a refresh that renews "+
+			"the token but not the address lets the return path go dark under a live bind", live, b.Addr)
 	}
 }

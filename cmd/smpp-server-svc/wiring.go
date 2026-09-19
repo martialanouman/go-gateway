@@ -265,6 +265,11 @@ func newListener(cfg config.Config, st *stores, logger *slog.Logger) (_ *listene
 	}
 	l.streamEvents = metricstream.NewEventPublisher(serviceName, l.streamProducer)
 
+	announcedAddr, err := podAddr(cfg, logger)
+	if err != nil {
+		return nil, fmt.Errorf("smpp pod address: %w", err)
+	}
+
 	l.listener = smppserver.New(
 		postgres.NewBindRepo(st.pg),
 		registrypb.NewSessionRegistryClient(st.registry),
@@ -272,7 +277,7 @@ func newListener(cfg config.Config, st *stores, logger *slog.Logger) (_ *listene
 		smppserver.Options{
 			Addr:            fmt.Sprintf(":%d", cfg.SMPP.Port),
 			PodID:           podID(cfg, logger),
-			PodAddr:         podAddr(cfg, logger),
+			PodAddr:         announcedAddr,
 			SystemID:        serviceName,
 			SessionEvents:   l.streamEvents,
 			IdleTimeout:     cfg.SMPP.IdleTimeout,
@@ -350,16 +355,28 @@ func podID(cfg config.Config, logger *slog.Logger) string {
 // Kubernetes) joined with the gRPC port its Deliver server listens on. JoinHostPort and not "ip:port"
 // because an IPv6 address needs its brackets, and a dual-stack cluster hands out one.
 //
-// Empty when unset, which is not fatal: binds still succeed, and their MO/DLR fall back to the webhook
-// instead of reaching the live SMPP session. That is worth a warning, because the symptom downstream
-// is silence, not an error.
-func podAddr(cfg config.Config, logger *slog.Logger) string {
+// SMPP_POD_ADDR must be a bare IP, which neither its name nor its type says. A value that already
+// carries a port yields "[1.2.3.4:9000]:7000" — a target grpc.NewClient accepts (it is lazy) and then
+// fails on every RPC, putting all of this pod's binds on webhook-only. For a step whose whole subject
+// is a return path that went quiet, this knob does not get to be unguarded: a malformed value is
+// refused here rather than published.
+//
+// Empty is not fatal, and is the one degradation that stays: binds still succeed and their MO/DLR fall
+// back to the webhook. It is logged, as is the composed address — an operator diagnosing a silent
+// return path otherwise has no trace of what the pod actually published.
+func podAddr(cfg config.Config, logger *slog.Logger) (string, error) {
 	if cfg.SMPP.PodAddr == "" {
 		logger.Warn("smpp: no pod address configured (SMPP_POD_ADDR); MO/DLR for this pod's binds " +
 			"will fall back to webhooks instead of the live SMPP session")
-		return ""
+		return "", nil
 	}
-	return net.JoinHostPort(cfg.SMPP.PodAddr, strconv.Itoa(cfg.GRPC.Port))
+	if net.ParseIP(cfg.SMPP.PodAddr) == nil {
+		return "", fmt.Errorf("SMPP_POD_ADDR %q is not a bare IP address: it is this pod's own IP "+
+			"(status.podIP), and the gRPC port is appended to it", cfg.SMPP.PodAddr)
+	}
+	addr := net.JoinHostPort(cfg.SMPP.PodAddr, strconv.Itoa(cfg.GRPC.Port))
+	logger.Info("smpp: publishing pod address for MO/DLR return delivery", "pod_addr", addr)
+	return addr, nil
 }
 
 // queryRateLimiter adapts the step-084 token-bucket limiter to smppserver.QueryLimiter: it consumes
