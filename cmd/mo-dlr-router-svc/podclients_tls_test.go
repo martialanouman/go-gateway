@@ -43,7 +43,7 @@ func TestThePodLegVerifiesTheDeploymentAndNotTheAddressDialled(t *testing.T) {
 
 	routerCert, routerKey := ca.Issue(t, "mo-dlr-router-svc", "mo-dlr-router-svc")
 	cfg := config.Config{
-		TLS:  config.TLS{Enabled: true, CertFile: routerCert, KeyFile: routerKey, ClientCAFile: ca.CAFile},
+		TLS: config.TLS{Enabled: true, CertFile: routerCert, KeyFile: routerKey, ClientCAFile: ca.CAFile},
 	}
 
 	pods, err := newPodClients(cfg, silentLogger())
