@@ -27,15 +27,18 @@ les étapes de conformité ; c) la facturation est idempotente sous double livra
 
 Méthode de test et jalon de chacun : `strategie-de-test-passerelle.md` §3.
 
-## Les trois couplages qu'on oublie
+## Les quatre couplages qu'on oublie
 
 Une règle `.claude/rules/` ne se charge qu'à la **lecture** d'un fichier de son territoire — créer un
-fichier neuf n'en déclenche aucune. D'où ces trois déclencheurs, qui doivent se savoir d'avance :
+fichier neuf n'en déclenche aucune. D'où ces quatre déclencheurs, qui doivent se savoir d'avance :
 
 - **Ajouter un code d'erreur** → 3 endroits en même temps. `.claude/rules/errors.md`
 - **Toucher un contrat API** (`api/openapi-*.yaml`, un endpoint Admin neuf compris) → bump de
   `api/package.json`, contrat déclaré **avant** l'implémentation. `.claude/rules/contracts-api.md`
 - **Changer le schéma** → `db/schema_passerelle_sms.sql` **et** une migration. `.claude/rules/db-schema.md`
+- **Différer quelque chose** (« hors périmètre », « pour l'instant », « deferred ») → une fiche dans
+  `debts/`, dans la même PR. Une dette qui ne vit que dans un commentaire est perdue au go-live.
+  `.claude/rules/debts.md`
 
 ## `make check`
 
