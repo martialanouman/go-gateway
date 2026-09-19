@@ -2,9 +2,14 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
@@ -13,8 +18,10 @@ import (
 	"time"
 
 	"github.com/martialanouman/go-gateway/internal/config"
+	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
 	"github.com/martialanouman/go-gateway/internal/testutil/pgtest"
 	"github.com/martialanouman/go-gateway/internal/testutil/redistest"
+	"github.com/martialanouman/go-gateway/internal/testutil/tlstest"
 )
 
 // The wiring must fail as a VALUE, never as a process exit: a constructor that log.Fatals cannot be
@@ -160,4 +167,103 @@ func freePort() int {
 
 func silentLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+func emptyStores() *stores {
+	return &stores{ch: &clickhouse.Conn{}}
+}
+
+func tlsTestConfig(t *testing.T) config.Config {
+	t.Helper()
+	ca := tlstest.NewCA(t)
+	cert, key := ca.Issue(t, "rest-api-svc", "rest-api-svc")
+	cfg := testConfig()
+	cfg.TLS = config.TLS{Enabled: true, CertFile: cert, KeyFile: key, ClientCAFile: ca.CAFile}
+	return cfg
+}
+
+func httpsClient(t *testing.T, caFile string) *http.Client {
+	t.Helper()
+	caPEM, err := os.ReadFile(caFile)
+	if err != nil {
+		t.Fatalf("read the CA: %v", err)
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(caPEM) {
+		t.Fatal("the CA file holds no certificate")
+	}
+	return &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			ForceAttemptHTTP2: true,
+			TLSClientConfig:   &tls.Config{RootCAs: roots, ServerName: "rest-api-svc", MinVersion: tls.VersionTLS12},
+		},
+	}
+}
+
+func serveAndGet(t *testing.T, srv *http.Server, client *http.Client, scheme string) *http.Response {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- runHTTP(ctx, srv, time.Second, silentLogger()) }()
+	t.Cleanup(func() {
+		client.CloseIdleConnections()
+		cancel()
+		if err := <-done; err != nil {
+			t.Errorf("runHTTP: %v", err)
+		}
+	})
+
+	url := scheme + "://127.0.0.1" + srv.Addr + "/nothing-here"
+	var resp *http.Response
+	var err error
+	for range 50 {
+		resp, err = client.Get(url) //nolint:noctx // the client carries its own timeout
+		if err == nil {
+			return resp
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("GET %s: %v", url, err)
+	return nil
+}
+
+func TestTheRestAPIServesHTTPSToAClientWithoutACertificate(t *testing.T) {
+	cfg := tlsTestConfig(t)
+	srv, err := newHTTPServer(cfg, emptyStores(), silentLogger())
+	if err != nil {
+		t.Fatalf("newHTTPServer: %v", err)
+	}
+
+	resp := serveAndGet(t, srv, httpsClient(t, cfg.TLS.ClientCAFile), "https")
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.TLS == nil {
+		t.Fatal("the public API answered in plaintext")
+	}
+	if resp.Proto != "HTTP/2.0" {
+		t.Errorf("proto = %q, want HTTP/2.0 — the ALPN list never reached the handshake", resp.Proto)
+	}
+}
+
+func TestTheRestAPIServesPlaintextWhenTLSIsOff(t *testing.T) {
+	srv, err := newHTTPServer(testConfig(), emptyStores(), silentLogger())
+	if err != nil {
+		t.Fatalf("newHTTPServer: %v", err)
+	}
+	if srv.TLSConfig != nil {
+		t.Fatal("TLS_ENABLED is false and the server still carries a TLS configuration")
+	}
+
+	resp := serveAndGet(t, srv, &http.Client{Timeout: 5 * time.Second}, "http")
+	defer func() { _ = resp.Body.Close() }()
+}
+
+func TestTheRestAPIRefusesToBootOnAnUnreadableCertificate(t *testing.T) {
+	cfg := tlsTestConfig(t)
+	cfg.TLS.CertFile = filepath.Join(t.TempDir(), "absent.crt")
+
+	if _, err := newHTTPServer(cfg, emptyStores(), silentLogger()); err == nil {
+		t.Fatal("a missing certificate booted: the failure must be a value, not a handshake at 3am")
+	}
 }
