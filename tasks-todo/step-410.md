@@ -18,9 +18,14 @@ chaque item et matérialiser la porte de go-live.
 - **Les dettes de sécurité que step-290 a ouvertes sans les fermer sont à statuer ici, pas à
   découvrir :** secrets stockés sous une forme inutilisable (step-295), rejeu de dead-letter sans trace, et l'audit d'une sonde
   de facturation que step-296 ne peut que rappeler (step-296), rétention et base légale de ce qui survit à un effacement attesté (step-297),
-  lecture et immuabilité du journal d'audit (step-315) — plus la cinquième, sans fiche propre : la DEK
-  en clair sur gRPC non authentifié, portée par step-300. Aucune n'est un prérequis dur ; chacune doit
+  lecture et immuabilité du journal d'audit (step-315). Aucune n'est un prérequis dur ; chacune doit
   être cochée « faite » ou « acceptée, avec qui l'accepte ».
+- **La cinquième est déjà payée — ne pas la rouvrir ici.** La DEK en clair sur gRPC non authentifié
+  n'avait pas de fiche propre et avait rejoint step-300 : **step-300b l'a fermée** (PR #198).
+  `content-key-svc` sert en mTLS avec une allowlist par SAN (`router-svc`, `admin-api-svc`), plus aucun
+  appel de production ne construit `insecure.NewCredentials()`, et les cinq commentaires qui invoquaient
+  un maillage inexistant ont disparu. Elle se coche **faite**, avec cette preuve. Une dette réglée qui
+  reste à la checklist se fait cocher « acceptée » par habitude.
 - **Le verdict NFR vient de step-280, pas de step-201.** step-201 a livré les leviers, les instruments
   de mesure et un run de référence à la borne basse du modèle par-worker (§2.5) ; le débit soutenu
   8 000 SMS/s **traversant** ne peut se prononcer que sur un environnement représentatif. Ne pas cocher

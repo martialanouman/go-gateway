@@ -328,8 +328,9 @@ Indépendantes de la chaîne de charge : parallélisables si deux mains travaill
       pouvoir le clore, l'audit de `test-billing-provider` — ouverte par step-290d
 - [ ] step-297 — Ce qui survit à un effacement attesté : rétention d'`audit_log`, base légale, MSISDN
       dans le log d'attestation — ouverte par step-290d
-- [ ] step-300 — TLS / SMPP-TLS / mTLS sur les transports, **dont la DEK qui circule en clair sur un
-      gRPC non authentifié** (`content-key-svc`) — ce dernier point ajouté par step-290d
+- [ ] step-300 — TLS / SMPP-TLS / mTLS sur les transports, **dont la DEK qui circulait en clair sur un
+      gRPC non authentifié** (`content-key-svc`) — ce dernier point ajouté par step-290d, **payé par
+      300b** (mTLS + allowlist par SAN) ; restent 300c (HTTP) et 300d (SMPP-TLS)
 - [x] step-302 — La remise MO/DLR par pod n'a pas de nom DNS à joindre : un `Deployment` ne fabrique pas
       d'enregistrement A par pod, la voie retour SMPP bascule donc en webhook sans le dire — ouverte par
       step-300b
@@ -352,8 +353,9 @@ opérations « audit-logged » : d'où `control_plane.audit_log` et la règle «
 qui a au passage montré que deux POST de diagnostic publiaient un changement de configuration pour rien
 (290c). Les quatre fiches ci-dessus sont ce que 290d n'a **pas** fermé, et qui n'avait aucun porteur : un
 secret qu'on doit rejouer ne peut pas être haché, un rejeu de dead-letter n'a pas de nom d'auteur, et une
-exclusion d'effacement sans durée est une conservation indéfinie. Une cinquième dette n'a pas de fiche
-propre : la DEK en clair sur gRPC non authentifié rejoint step-300, dont c'est le sujet. **Numérotation :**
+exclusion d'effacement sans durée est une conservation indéfinie. Une cinquième dette n'avait pas de
+fiche propre : la DEK en clair sur gRPC non authentifié, rejointe à step-300 dont c'était le sujet — et
+**payée depuis par 300b**. **Numérotation :**
 295, 296, 297, 302 et 315 sont des unités faute de multiple de dix libre à leur place dans l'ordre — la règle
 `.claude/rules/tasks-steps.md` en veut un, et les seuls précédents en unités sont step-395 et
 step-396 (step-270b et step-390b sont des suffixes de lettre, autre chose). L'ordre reste l'ordre d'exécution, qui est ce que la règle protège.
