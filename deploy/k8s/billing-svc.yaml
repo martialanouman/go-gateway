@@ -32,6 +32,15 @@ spec:
       # 60 s TTL. DRAIN_BUDGET is deliberately above SHUTDOWN_TIMEOUT — one component may spend the
       # whole shutdown window, and smpp-server-svc drains four of them in sequence.
       terminationGracePeriodSeconds: 150
+      volumes:
+        # No subPath: the kubelet updates a Secret volume by swapping a symlink, which a subPath mount
+        # never follows — the rotation would silently stop reaching the process. internal/deploy refuses
+        # it. 0444 and not 0400: the files belong to uid 0 while the image runs USER 65532, and nothing
+        # here sets an fsGroup.
+        - name: tls
+          secret:
+            secretName: billing-svc-tls
+            defaultMode: 0444
       containers:
         - name: billing-svc
           image: ghcr.io/martialanouman/go-gateway/billing-svc:v0.0.0
@@ -39,6 +48,8 @@ spec:
             - configMapRef:
                 name: gateway-config
           env:
+            - name: TLS_ENABLED
+              value: "true"
             # GRPC_PORT defaults to 7000, which is session-manager-svc's (plan §1.4).
             - name: GRPC_PORT
               value: "7001"
@@ -62,6 +73,10 @@ spec:
               containerPort: 9090
             - name: grpc
               containerPort: 7001
+          volumeMounts:
+            - name: tls
+              mountPath: /etc/gateway/tls
+              readOnly: true
           resources:
             # Starting point, not a measurement. The sizing verdict belongs to step-280, on a
             # representative environment; do not extrapolate it from the step-201e figures.

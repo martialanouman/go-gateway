@@ -17,6 +17,11 @@ data:
   # under 2 and the default ClickHouse password — in every binary that declares the section.
   ENVIRONMENT: production
   LOG_LEVEL: info
+  # The three files of the mounted Secret. Inert without TLS_ENABLED, which each Deployment sets beside
+  # the volume that carries them.
+  TLS_CERT_FILE: /etc/gateway/tls/tls.crt
+  TLS_KEY_FILE: /etc/gateway/tls/tls.key
+  TLS_CLIENT_CA_FILE: /etc/gateway/tls/ca.crt
   OPS_PORT: "9090"
   # SHUTDOWN_TIMEOUT bounds ONE component's teardown; DRAIN_BUDGET bounds the whole drain and must
   # stay above it — a component spending its full window would otherwise trip the ceiling, and on the

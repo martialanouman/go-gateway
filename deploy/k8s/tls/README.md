@@ -19,14 +19,13 @@ connaît pas : `ca.crt` est un ajout de cert-manager, et la voie manuelle produi
 | `tls.key` | sa clé privée |
 | `ca.crt`  | l'autorité qui valide ses pairs |
 
-Le `Deployment` le monte en volume et ne reçoit que des chemins :
+**Les `Deployment` montent déjà ce volume** (step-300b) : les trois chemins sont dans `configmap.yaml`,
+identiques partout, et chaque service pose `TLS_ENABLED` à côté du volume qui le rend vrai. Il ne reste
+donc à fournir que le `Secret`, nommé `<service>-tls`. La forme, pour mémoire :
 
 ```yaml
           env:
             - {name: TLS_ENABLED, value: "true"}
-            - {name: TLS_CERT_FILE, value: /etc/gateway/tls/tls.crt}
-            - {name: TLS_KEY_FILE, value: /etc/gateway/tls/tls.key}
-            - {name: TLS_CLIENT_CA_FILE, value: /etc/gateway/tls/ca.crt}
           volumeMounts:
             - {name: tls, mountPath: /etc/gateway/tls, readOnly: true}
       volumes:
@@ -35,6 +34,10 @@ Le `Deployment` le monte en volume et ne reçoit que des chemins :
             secretName: content-key-svc-tls
             defaultMode: 0444
 ```
+
+**Un `Secret` manquant laisse le pod en `ContainerCreating`**, pas en `CrashLoopBackOff` : le kubelet ne
+démarre pas un conteneur dont un volume ne se monte pas. C'est `kubectl describe pod` qui le dit, pas les
+journaux du service.
 
 `0444`, et pas `0400` : les fichiers d'un volume `Secret` appartiennent à l'uid 0 tant qu'aucun `fsGroup`
 n'est posé, or les images tournent en `USER 65532` et `deploy/k8s` ne pose aucun `securityContext`. Avec
@@ -45,6 +48,11 @@ n'est posé, or les images tournent en `USER 65532` et `deploy/k8s` ne pose aucu
 symbolique ; un montage en `subPath` ne suit pas. La rotation deviendrait silencieusement inopérante
 jusqu'au prochain redémarrage — et comme les certificats se renouvellent tous les deux mois environ, la
 panne arriverait longtemps après la faute.
+
+**`TLS_ALLOWED_CLIENTS` restreint les appelants**, et un seul service le pose : `content-key-svc`, qui
+rend une clé de données en clair. Vide — le cas des autres — admet tout porteur d'un certificat de la CA,
+ce qui prouve qu'un pair est un de nos pods, jamais LEQUEL. La liste compare des **SAN DNS**, jamais un
+`CN`.
 
 **Aucun secret ne passe par l'environnement.** Une clé privée en variable d'environnement est lisible
 dans `/proc`, et part avec tout ce qui journalise sa configuration au démarrage — ce que font les
@@ -105,7 +113,9 @@ go-live (step-410) vérifie qu'un émetteur existe.
 ## Sans cert-manager
 
 ```
-go run ./test/tlsgen -out .tls -ns gateway -services content-key-svc,router-svc,admin-api-svc
+go run ./test/tlsgen -out .tls -ns gateway -services \
+  billing-svc,content-key-svc,session-manager-svc,smpp-server-svc,\
+  mo-dlr-router-svc,admin-api-svc,router-svc,connector-pool-svc
 # .tls/ est ignoré par git : ce sont des clés privées.
 
 kubectl -n gateway create secret generic content-key-svc-tls \
