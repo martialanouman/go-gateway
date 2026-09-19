@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	"github.com/martialanouman/go-gateway/internal/modlrrouter"
@@ -74,7 +75,7 @@ func TestReturnLegDeliversViaLiveBind(t *testing.T) {
 	smppAddr, listener := startListenerRef(t, pool, registry)
 	deliverAddr := startDeliverServer(t, listener)
 
-	pods := modlrrouter.NewPodClients(stubResolver{addr: deliverAddr})
+	pods := modlrrouter.NewPodClients(stubResolver{addr: deliverAddr}, plainDial)
 	defer pods.Close()
 	prod := &capturingProducer{}
 	deliverer := modlrrouter.NewDeliverer(modlrrouter.DelivererDeps{
@@ -122,7 +123,7 @@ func TestReturnLegDeadLettersWithoutBindOrWebhook(t *testing.T) {
 	_, listener := startListenerRef(t, pool, registry)
 	deliverAddr := startDeliverServer(t, listener)
 
-	pods := modlrrouter.NewPodClients(stubResolver{addr: deliverAddr})
+	pods := modlrrouter.NewPodClients(stubResolver{addr: deliverAddr}, plainDial)
 	defer pods.Close()
 	prod := &capturingProducer{}
 	deliverer := modlrrouter.NewDeliverer(modlrrouter.DelivererDeps{
@@ -147,4 +148,9 @@ func TestReturnLegDeadLettersWithoutBindOrWebhook(t *testing.T) {
 	if len(prod.records) != 1 || prod.records[0].Topic != kafka.TopicMODeadLetter {
 		t.Fatalf("expected one dead-letter to %s, got %v", kafka.TopicMODeadLetter, prod.records)
 	}
+}
+
+// plainDial is the return leg without TLS, which is what the integration suites run.
+func plainDial(addr string) (*grpc.ClientConn, error) {
+	return grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 }

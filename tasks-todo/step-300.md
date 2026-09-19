@@ -285,6 +285,149 @@ décisions du design que rien ne tenait :
 possible sur les dix binaires — et c'est aussi pourquoi cette PR ne peut pas être « presque tout le
 travail ».
 
+### 300b — détail validé le 2026-09-19, avant le code
+
+#### Ce que la lecture a trouvé, et qui change la PR
+
+Trois défauts **préexistants**, que la cartographie des points d'insertion a sortis :
+
+- **Aucun binaire ne déclare `config.SectionTLS`.** La garde de production livrée en 300a — en
+  production, `TLS_ENABLED=false` est refusé — ne tourne donc dans aucun des dix services : `Load` ne
+  valide que les sections déclarées, et 300a a ajouté la section sans l'inscrire nulle part. 300a a
+  livré une garde morte. Les huit services de 300b la déclarent.
+- **`deploy/k8s/configmap.yaml` porte `ENVIRONMENT: production` et aucun `TLS_*`.** Le point précédent
+  corrigé, les huit pods refusent de démarrer. Les manifests bougent donc **dans cette PR** ; ce n'est
+  pas un supplément qu'on pourrait reporter.
+- **`<pod-id>.smpp-server-headless` ne résout pas.** Un enregistrement A par pod n'existe que si le pod
+  porte `spec.hostname` *et* un `spec.subdomain` égal au nom du service headless ; le contrôleur
+  d'endpoints ne recopie que `spec.hostname`, qu'un `Deployment` ne peut fixer qu'en une seule chaîne
+  statique pour toutes ses répliques. Seul un `StatefulSet` donne un nom par pod. La remise MO/DLR par
+  pod échoue donc sur la résolution DNS, **avant** tout handshake — un défaut antérieur à cette step et
+  indépendant d'elle. → **step-302**, ouverte par cette PR ; l'arbitrage ci-dessous fait que 300b n'en
+  dépend pas.
+
+#### Arbitrage : l'identité vérifiée du dial pod-à-pod (Fable, 2026-09-19)
+
+Sept des huit clients composent un nom de `Service` (`billing-svc:7000`) : grpc-go prend l'autorité de
+la cible comme `ServerName` quand `tls.Config.ServerName` est vide, le SAN correspond, il n'y a rien à
+faire. Le huitième, `internal/modlrrouter/poddeliverer.go`, compose `<pod-id>.smpp-server-headless`
+alors que le certificat est **par `Deployment`**, de SAN `smpp-server-svc`.
+
+**Retenu : épingler `ServerName = "smpp-server-svc"` sur ce seul appelant.** Le certificat est partagé
+par toutes les répliques : la seule identité qu'il puisse attester est « un pod du `Deployment`
+`smpp-server-svc` », et c'est exactement ce que cette vérification demande. Que le pod joint soit le
+bon est déjà contrôlé ailleurs — `Deliver` répond `delivered:false` quand le pod ne détient pas le bind
+—, et ce n'est pas à TLS de le dire.
+
+Écarté : le **SAN joker** (`*.smpp-server-headless`), qui ferait vérifier une identité *par pod* que la
+PKI ne délivre pas, et souderait le certificat à un schéma d'adressage que `poddeliverer.go` annonce
+lui-même comme temporaire. Il casserait au renommage du service headless — une deuxième vérité à tenir
+en accord avec `SMPP_POD_ADDR_TEMPLATE`, dans deux systèmes — et il ne pourrait pas exister du tout si
+step-302 se résout par `status.podIP`, un joker ne s'appliquant jamais à une adresse IP. Écarté aussi :
+les **certificats par pod** (csi-driver cert-manager, SPIFFE), qui demandent une infrastructure que ce
+dépôt ne déploie pas.
+
+Le nom reste une **constante dans le câblage**, pas une variable d'environnement : c'est le nom du
+`Deployment`, fixé par `deploy/k8s`, et la configurer serait de la configuration pour une valeur qui ne
+change pas. Le jour où quelqu'un le renomme, l'erreur le dit en toutes lettres
+(`x509: certificate is valid for smpp-server-svc, not …`). L'épinglage est posé par
+`tls.Config.ServerName`. **Corrigé en revue :** la fiche justifiait ce choix contre `grpc.WithAuthority`
+en disant que celui-ci « réécrirait aussi l'en-tête `:authority` » — c'est faux, et dans les deux sens.
+`ClientConn.initAuthority` lit le `ServerName` des credentials et le promeut en autorité de la
+connexion, laquelle EST l'en-tête `:authority` : les deux voies ont exactement le même effet, et
+grpc-go refuse même le dial si les deux sont posées et divergent. Le choix tient toujours — une seule
+chose à poser plutôt que deux à garder d'accord — mais pas pour la raison écrite.
+
+#### Où vit la colle
+
+`tlsconf` reste sans dépendance hors bibliothèque standard : 300c et 300d s'en servent pour HTTP et pour
+SMPP, et lui faire importer gRPC pour deux fonctions le rendrait faux pour eux. Un paquet neuf,
+**`internal/grpctls`** — voisin d'`internal/storage`, qui importe `config` comme lui — porte la
+construction elle-même, branche désactivée comprise :
+
+```go
+func NewServer(cfg config.TLS, logger *slog.Logger) (*grpc.Server, error)
+func NewClient(cfg config.TLS, logger *slog.Logger, addr string) (*grpc.ClientConn, error)
+func Dialer(cfg config.TLS, logger *slog.Logger, serverName string) (Dial, error)
+```
+
+**Corrigé en revue :** le design rendait des *options* (`ServerOption`, `DialOption`), que le câblage
+passait ensuite à `grpc.NewServer`/`grpc.NewClient`. La garde devait alors remonter un argument jusqu'à
+son origine — donc résoudre un nom de variable —, et deux mutations ont montré que ça ne tient pas : une
+réaffectation après la bonne ligne, ou le même nom dans une autre fonction du fichier, laissaient partir
+un serveur en clair au vert. Le paquet construit donc le serveur et la connexion, et la garde porte sur
+**quelle fonction est appelée** : aucun nom à résoudre, aucune portée à suivre, et
+`grpc.WithInsecure()` — l'autre évasion trouvée — tombe avec, alors qu'une règle sur
+`insecure.NewCredentials` ne la voyait pas.
+
+**`runGRPC` n'est pas touché**, et ses quatre copies restent dupliquées : des credentials sont une
+`grpc.ServerOption`, elles entrent au `grpc.NewServer` dans `wiring.go`. Ce sont quatre fichiers, pas
+huit, et le dédoublonnage de `runGRPC` n'est pas le sujet de cette PR.
+
+**Vérifié chez grpc-go (v1.83) :** `credentials.NewTLS` *enveloppe* `GetConfigForClient` et ajoute `h2`
+à `NextProtos` sur la config que le rappel a rendue. C'est pourquoi `ServerOptions{NextProtos: nil}` est
+correct ici — et seulement ici : `net/http` ne fait pas ce service, d'où le contrat inverse en 300c.
+
+#### Preuves, et la mutation qui fait tomber chacune
+
+| # | Preuve | Mutation |
+|---|---|---|
+| 1 | handshake mTLS gRPC réussi entre deux pairs de la CA | — |
+| 2 | client **sans** certificat : refusé | retirer `ClientAuth` |
+| 3 | pair d'une **autre** CA refusé, **dans les deux sens** | `ClientCAs: nil` ; `RequireAnyClientCert` |
+| 4 | `TLS_ENABLED=false` : les deux côtés parlent en clair | inverser la branche |
+| 5 | `content-key-svc` **câblé** refuse un SAN hors liste, par son `app.grpc` | retirer `cfg.TLS.AllowedClients` du câblage |
+| 6 | `PodClients` : épinglé → `Deliver` passe ; non épinglé → l'erreur nomme l'adresse composée | supprimer la ligne `ServerName` ; changer la constante |
+| 7 | garde de source : aucun fichier de production n'appelle `insecure.NewCredentials()` | remettre un neuvième dial en clair |
+| 8 | garde manifeste `no-subpath` (et `subPathExpr`) | retirer la règle |
+
+La preuve 7 remplace douze tests de câblage à conteneur par la garde qui attrape la régression réelle :
+le neuvième appel en clair qu'une step future ajouterait sans y penser. La 5 existe parce que 7 ne
+prouve rien d'une **allowlist** — seule une liste effectivement transmise le prouve, et c'est le lien de
+la DEK. La moitié « non épinglé » de la 6 est ce qui empêche la fixture d'être creuse : sans elle, c'est
+le dialer de test, et non l'épinglage, qui pourrait faire passer la moitié verte.
+
+**Corrigé en revue (2026-09-19).** Trois revues en lecture seule ont trouvé deux défauts qui laissaient
+passer du clair, et une liste de défauts d'attribution :
+
+- **La garde des serveurs comptait les arguments sans les lire.** `grpc.NewServer(grpc.EmptyServerOption{})`
+  sur `billing-svc` sert en clair et laissait **tout le dépôt vert**, cette garde comprise. Elle remonte
+  désormais l'argument jusqu'à `grpctls.ServerOption`, appelée en ligne ou par la variable qui la reçoit.
+  Même classe pour la garde des clients : un import aliasé (`noTLS "…/credentials/insecure"`) passait,
+  parce qu'elle comparait un identifiant au lieu de résoudre le chemin d'import du fichier.
+- **Trois serveurs sur quatre ne nommaient aucun appelant**, alors que chacun en a un ou deux. La fiche
+  disait « ce que veulent les serveurs sans appelants nommés » ; la lecture du graphe d'appel montre
+  qu'il n'y en a aucun. Sans liste, tout pod obtenant un certificat dans le namespace peut appeler
+  `Release` pour rembourser un crédit jamais réservé, `Disconnect` pour tomber les binds vivants, ou
+  `Deliver` pour injecter un DLR forgé dans le bind d'un client. Les trois manifests nomment maintenant
+  leurs appelants ; c'est le seul changement de fond par rapport au design validé.
+- **`TestAClientFromAnotherAuthorityIsRefused` prouvait le refus du CLIENT.** Sous TLS 1.3 le certificat
+  du serveur arrive en premier : un appelant qui ne fait confiance qu'à sa propre CA abandonne avant
+  d'avoir rien présenté, et le `ClientCAs` du serveur n'entre jamais en jeu. Le test est renommé pour ce
+  qu'il prouve, et la direction manquante — celle sur laquelle reposent entièrement les serveurs — a
+  désormais la sienne.
+- La règle `no-subpath` ne prouvait ni son point d'appel sur les `Job`, ni sa moitié `subPathExpr` : la
+  fixture ne violait qu'un `subPath` sur un `Deployment`. Le `Job` cassé en porte un.
+- **La commande `tlsgen` du README n'émettait que 4 certificats sur 8, en sortant 0** — une continuation
+  `\` suivie d'une ligne indentée coupe la liste. Et la boucle qui la remplace ne pouvait pas s'écrire
+  `for svc in ${SVCS//,/ }` : zsh ne découpe pas une expansion non quotée.
+- `router-svc` construisait deux chargeurs de fichiers pour une seule identité, donc disait deux fois
+  « la CA a changé, redémarrez » pendant une rotation. Un seul, comme `admin-api-svc`.
+- Deux tests étaient creux sans être faux : la moitié « vraiment en clair » rejouait les mêmes
+  credentials trois lignes plus haut (supprimée), et le nom du `Deployment` dérivé de la constante
+  suivait celle-ci partout où elle dérivait (littéral).
+
+`internal/deploy` ne **voit** pas `volumeMounts` aujourd'hui — décodage non strict sur des structures
+typées, donc toute clé sans champ correspondant est jetée en silence. Il faut ajouter le champ avant la
+règle, sans quoi elle passerait au vert sur une population vide.
+
+#### Ce que 300b ne fait pas
+
+`rest-api-svc` reste sans `SectionTLS` (c'est 300c) et `config-sync` n'en aura jamais : il n'écoute ni
+n'appelle aucun transport de ce dépôt. Pas de règle « `TLS_ENABLED=true` exige un volume monté » :
+l'interrupteur est posé **à côté** du volume dans chaque manifeste, ce qui les lie sans garde. Et pas de
+joker dans `test/tlsgen` — l'arbitrage n'en demande aucun.
+
 ## Tests (écrits dans la même PR)
 - Handshake TLS/mTLS réussi ; un client sans cert client est rejeté sur les endpoints mTLS.
 - SMPP-TLS : bind chiffré établi (faux SMSC/simulateur).

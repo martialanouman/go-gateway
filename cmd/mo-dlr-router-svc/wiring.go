@@ -11,10 +11,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	goredis "github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/dlrmap"
+	"github.com/martialanouman/go-gateway/internal/grpctls"
 	"github.com/martialanouman/go-gateway/internal/modlrrouter"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/pipeline/antispam"
@@ -349,6 +349,22 @@ func (d *deliveryLeg) close() {
 	}
 }
 
+// smppServerIdentity is the name the return path verifies on a smpp-server pod: the Deployment's, fixed
+// by deploy/k8s. A constant and not a knob — one certificate serves every replica, so no other name is
+// attestable, and a rename shows up in full in the handshake error.
+const smppServerIdentity = "smpp-server-svc"
+
+// newPodClients builds the leg that pushes a deliver_sm to the pod owning the bind. It verifies
+// smppServerIdentity and not the address it composes, and stands alone so that choice can be tested
+// without the rest of the delivery leg, which needs Kafka and ClickHouse.
+func newPodClients(cfg config.Config, logger *slog.Logger) (*modlrrouter.PodClients, error) {
+	dial, err := grpctls.Dialer(cfg.TLS, logger, smppServerIdentity)
+	if err != nil {
+		return nil, err
+	}
+	return modlrrouter.NewPodClients(modlrrouter.NewTemplateResolver(cfg.SMPP.PodAddrTemplate), dial), nil
+}
+
 func newDeliveryLeg(cfg config.Config, st *stores, mo *moLeg, logger *slog.Logger) (_ *deliveryLeg, err error) {
 	d := &deliveryLeg{}
 	defer func() {
@@ -357,11 +373,19 @@ func newDeliveryLeg(cfg config.Config, st *stores, mo *moLeg, logger *slog.Logge
 		}
 	}()
 
-	d.registry, err = grpc.NewClient(cfg.SMPP.SessionManagerAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	// Two TLS loaders on this pod, and they cannot be merged: the pod leg below pins a name and this one
+	// must not (grpc-go reads the pinned name off the credentials to set every connection's authority).
+	// The cost is that tlsconf's "the CA changed, restart" warning, latched per loader, is said twice
+	// during a rotation of the authority. Noise, not a wrong verdict.
+	d.registry, err = grpctls.NewClient(cfg.TLS, logger, cfg.SMPP.SessionManagerAddr)
 	if err != nil {
 		return nil, fmt.Errorf("dial session registry: %w", err)
 	}
-	d.pods = modlrrouter.NewPodClients(modlrrouter.NewTemplateResolver(cfg.SMPP.PodAddrTemplate))
+
+	d.pods, err = newPodClients(cfg, logger)
+	if err != nil {
+		return nil, err
+	}
 
 	// The webhook sender owns its retries and parks an exhausted event on webhook.dead-letter (step-047
 	// interface, wired here). The deliverer never parks a webhook event itself.

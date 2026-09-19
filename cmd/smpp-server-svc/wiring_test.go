@@ -26,7 +26,7 @@ func TestOpenStoresRejectsAnUnparsableDatabaseURL(t *testing.T) {
 	cfg := testConfig()
 	cfg.Postgres.URL = "postgres://gateway:hunter2@:::/gateway"
 
-	st, err := openStores(t.Context(), cfg)
+	st, err := openStores(t.Context(), cfg, silentLogger())
 	if err == nil {
 		st.close()
 		t.Fatal("openStores accepted an unparsable postgres url")

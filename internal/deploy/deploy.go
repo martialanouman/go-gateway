@@ -127,6 +127,15 @@ type Container struct {
 	EnvFrom        []EnvFromSource `yaml:"envFrom"`
 	LivenessProbe  *Probe          `yaml:"livenessProbe"`
 	ReadinessProbe *Probe          `yaml:"readinessProbe"`
+	VolumeMounts   []VolumeMount   `yaml:"volumeMounts"`
+}
+
+// VolumeMount is one entry of a container's volumeMounts. SubPath and SubPathExpr are decoded only to
+// be refused (step-300b).
+type VolumeMount struct {
+	Name        string `yaml:"name"`
+	SubPath     string `yaml:"subPath"`
+	SubPathExpr string `yaml:"subPathExpr"`
 }
 
 // ContainerPort is one entry of a container's ports.

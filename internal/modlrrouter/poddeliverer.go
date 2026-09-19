@@ -8,7 +8,6 @@ import (
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 
 	registrypb "github.com/martialanouman/go-gateway/internal/session/pb"
@@ -52,16 +51,12 @@ type PodClients struct {
 	conns map[string]*grpc.ClientConn
 }
 
-// NewPodClients builds the pod delivery client over a pod-address resolver.
-func NewPodClients(resolver AddrResolver) *PodClients {
-	return &PodClients{
-		resolver: resolver,
-		dial: func(addr string) (*grpc.ClientConn, error) {
-			// Pod-to-pod internal call; transport security terminates at the mesh (insecure). NewClient is
-			// lazy — it opens no socket until the first Deliver.
-			return grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-		},
-	}
+// NewPodClients builds the pod delivery client over a pod-address resolver. dial carries the pod's TLS
+// identity and the name it verifies, which is not the address dialled: a pod's certificate is issued per
+// Deployment, so it can only attest that the peer belongs to it. Whether it is the RIGHT pod is
+// Deliver's answer. It is lazy — no socket opens until the first Deliver.
+func NewPodClients(resolver AddrResolver, dial func(addr string) (*grpc.ClientConn, error)) *PodClients {
+	return &PodClients{resolver: resolver, dial: dial}
 }
 
 // Deliver pushes pdu to bindID on podID, returning the gRPC status of SessionRegistry.Deliver. A pod

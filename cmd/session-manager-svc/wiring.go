@@ -9,6 +9,7 @@ import (
 	"google.golang.org/grpc"
 
 	"github.com/martialanouman/go-gateway/internal/config"
+	"github.com/martialanouman/go-gateway/internal/grpctls"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/session"
 	"github.com/martialanouman/go-gateway/internal/session/pb"
@@ -71,7 +72,10 @@ func newSessionManagerApp(ctx context.Context, cfg config.Config, logger *slog.L
 	}
 	a.onClose("stores", st.close)
 
-	a.grpc = grpc.NewServer()
+	a.grpc, err = grpctls.NewServer(cfg.TLS, logger)
+	if err != nil {
+		return nil, err
+	}
 	pb.RegisterSessionRegistryServer(a.grpc,
 		session.NewServer(session.NewRegistry(st.rdb), redisstore.NewPubSubPublisher(st.rdb)))
 

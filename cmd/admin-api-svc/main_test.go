@@ -27,6 +27,13 @@ func TestRunRequiresAdminTokensInProduction(t *testing.T) {
 	t.Setenv("CONTENT_KEY_ADDR", "content-key.internal:7002")
 	t.Setenv("REDIS_URL", "redis://redis.internal:6379")
 	t.Setenv("KAFKA_BROKERS", "kafka.internal:9092")
+	// Production refuses plaintext too (step-300b), and config reports every problem at once — without
+	// these the boot fails on TLS before it ever reaches the token check this test is about. The paths
+	// are never opened: the check fires first.
+	t.Setenv("TLS_ENABLED", "true")
+	t.Setenv("TLS_CERT_FILE", "/etc/gateway/tls/tls.crt")
+	t.Setenv("TLS_KEY_FILE", "/etc/gateway/tls/tls.key")
+	t.Setenv("TLS_CLIENT_CA_FILE", "/etc/gateway/tls/ca.crt")
 	// HTTP_ADMIN_TOKENS deliberately unset.
 
 	err := run()

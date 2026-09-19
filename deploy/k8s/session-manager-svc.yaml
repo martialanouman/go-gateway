@@ -32,6 +32,12 @@ spec:
       # 60 s TTL. DRAIN_BUDGET is deliberately above SHUTDOWN_TIMEOUT — one component may spend the
       # whole shutdown window, and smpp-server-svc drains four of them in sequence.
       terminationGracePeriodSeconds: 150
+      volumes:
+        # No subPath, and defaultMode 0444: see deploy/k8s/tls/README.md.
+        - name: tls
+          secret:
+            secretName: session-manager-svc-tls
+            defaultMode: 0444
       containers:
         - name: session-manager-svc
           image: ghcr.io/martialanouman/go-gateway/session-manager-svc:v0.0.0
@@ -39,6 +45,12 @@ spec:
             - configMapRef:
                 name: gateway-config
           env:
+            - name: TLS_ENABLED
+              value: "true"
+            # Sans liste, tout pod peut Disconnect les binds vivants, ou Unbind des jetons qu'il ne détient pas
+              # — la comptabilité sur laquelle repose max_sessions (invariant d).
+            - name: TLS_ALLOWED_CLIENTS
+              value: smpp-server-svc,mo-dlr-router-svc,admin-api-svc
             - name: REDIS_URL
               valueFrom:
                 secretKeyRef:
@@ -49,6 +61,10 @@ spec:
               containerPort: 9090
             - name: grpc
               containerPort: 7000
+          volumeMounts:
+            - name: tls
+              mountPath: /etc/gateway/tls
+              readOnly: true
           resources:
             # Starting point, not a measurement. The sizing verdict belongs to step-280, on a
             # representative environment; do not extrapolate it from the step-201e figures.

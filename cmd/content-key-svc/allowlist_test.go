@@ -1,0 +1,81 @@
+package main
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+
+	"github.com/martialanouman/go-gateway/internal/config"
+	"github.com/martialanouman/go-gateway/internal/grpctls"
+	"github.com/martialanouman/go-gateway/internal/testutil/grpctest"
+	"github.com/martialanouman/go-gateway/internal/testutil/pgtest"
+	"github.com/martialanouman/go-gateway/internal/testutil/tlstest"
+)
+
+// The wiring, not the mechanism: grpctls proves an allowlist refuses a stranger and proves nothing
+// about whether this service passes one. Sole holder of the KMS (ADR-0011), it returns a customer's
+// plaintext data key — a tunnel without authorisation lets any pod of the cluster ask for any key.
+func TestTheWiredServerAdmitsOnlyTheCallersItNames(t *testing.T) {
+	ca := tlstest.NewCA(t)
+	certFile, keyFile := ca.Issue(t, serviceName, serviceName)
+
+	cfg := testConfig()
+	cfg.Postgres = pgtest.Config(t)
+	cfg.TLS = config.TLS{
+		Enabled:        true,
+		CertFile:       certFile,
+		KeyFile:        keyFile,
+		ClientCAFile:   ca.CAFile,
+		AllowedClients: []string{"router-svc", "admin-api-svc"},
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	app, err := newContentKeyApp(ctx, cfg, discardLogger())
+	if err != nil {
+		t.Fatalf("newContentKeyApp: %v", err)
+	}
+	defer app.close()
+
+	addr := grpctest.Serve(t, app.grpc)
+
+	// Named by the configuration: the Unimplemented is the probe's own method, not a refusal.
+	if code, err := grpctest.Probe(t, dialAs(t, ca, addr, "router-svc")); code != codes.Unimplemented {
+		t.Fatalf("a named caller answered %s (%v), want Unimplemented", code, err)
+	}
+
+	// Same authority, not named. Without the allowlist reaching the server this call succeeds too.
+	//
+	// The named caller above is the control, and the message is not asserted: under TLS 1.3 the client
+	// finishes its handshake before the server validates its certificate, so it reads either the alert
+	// or a broken pipe depending on which wins.
+	if code, err := grpctest.Probe(t, dialAs(t, ca, addr, "connector-pool-svc")); code == codes.Unimplemented {
+		t.Fatalf("a caller the configuration does not name reached the key service (%s, %v)", code, err)
+	}
+}
+
+// dialAs builds a client holding a certificate issued to name. The identity verified is pinned because
+// the address is a loopback port, which no certificate of ours carries.
+func dialAs(t *testing.T, ca *tlstest.CA, addr, name string) *grpc.ClientConn {
+	t.Helper()
+	certFile, keyFile := ca.Issue(t, name, name)
+	dial, err := grpctls.Dialer(config.TLS{
+		Enabled:      true,
+		CertFile:     certFile,
+		KeyFile:      keyFile,
+		ClientCAFile: ca.CAFile,
+	}, discardLogger(), serviceName)
+	if err != nil {
+		t.Fatalf("Dialer: %v", err)
+	}
+	conn, err := dial(addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	return conn
+}

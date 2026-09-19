@@ -43,7 +43,7 @@ func run() error {
 	// force-disconnect the affected live binds via session-manager's SessionRegistry (step-032), and the
 	// address of that service is the same env var every session-manager client already uses.
 	cfg, err := config.Load(serviceName,
-		config.SectionOTel, config.SectionPostgres, config.SectionHTTP, config.SectionSMPP, config.SectionRedis, config.SectionClickHouse, config.SectionContentKey, config.SectionKafka)
+		config.SectionOTel, config.SectionPostgres, config.SectionHTTP, config.SectionSMPP, config.SectionRedis, config.SectionClickHouse, config.SectionContentKey, config.SectionKafka, config.SectionTLS)
 	if err != nil {
 		return err
 	}

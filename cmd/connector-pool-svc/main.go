@@ -101,7 +101,7 @@ func run() error {
 	defer stop()
 
 	cfg, err := config.Load(serviceName,
-		config.SectionOTel, config.SectionKafka, config.SectionClickHouse, config.SectionRedis, config.SectionPostgres, config.SectionBilling)
+		config.SectionOTel, config.SectionKafka, config.SectionClickHouse, config.SectionRedis, config.SectionPostgres, config.SectionBilling, config.SectionTLS)
 	if err != nil {
 		return err
 	}

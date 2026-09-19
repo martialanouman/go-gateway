@@ -14,6 +14,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/billing"
 	"github.com/martialanouman/go-gateway/internal/billing/pb"
 	"github.com/martialanouman/go-gateway/internal/config"
+	"github.com/martialanouman/go-gateway/internal/grpctls"
 	"github.com/martialanouman/go-gateway/internal/metricstream"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/observability/metrics"
@@ -107,7 +108,10 @@ func newBillingApp(ctx context.Context, cfg config.Config, logger *slog.Logger) 
 	a.onClose("reaper", reap.close)
 	a.reaper = reap.reaper
 
-	a.grpc = grpc.NewServer()
+	a.grpc, err = grpctls.NewServer(cfg.TLS, logger)
+	if err != nil {
+		return nil, err
+	}
 
 	feed, err := newAlertFeed(cfg)
 	if err != nil {

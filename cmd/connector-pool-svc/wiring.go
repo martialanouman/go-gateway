@@ -14,7 +14,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	goredis "github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/martialanouman/go-gateway/internal/billing/pb"
 	"github.com/martialanouman/go-gateway/internal/cancel"
@@ -25,6 +24,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/connectorpool"
 	"github.com/martialanouman/go-gateway/internal/connectorpool/settle"
 	"github.com/martialanouman/go-gateway/internal/dlrmap"
+	"github.com/martialanouman/go-gateway/internal/grpctls"
 	"github.com/martialanouman/go-gateway/internal/metricstream"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/observability/metrics"
@@ -369,7 +369,7 @@ func newSettler(cfg config.Config, logger *slog.Logger) (_ *settler, err error) 
 		}
 	}()
 
-	s.conn, err = grpc.NewClient(cfg.Billing.Addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	s.conn, err = grpctls.NewClient(cfg.TLS, logger, cfg.Billing.Addr)
 	if err != nil {
 		return nil, fmt.Errorf("dial billing at %q: %w", cfg.Billing.Addr, err)
 	}
