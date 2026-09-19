@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"net"
@@ -23,6 +24,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/observability/metrics"
 	"github.com/martialanouman/go-gateway/internal/pipeline/ratelimit"
+	"github.com/martialanouman/go-gateway/internal/platform/tlsconf"
 	registrypb "github.com/martialanouman/go-gateway/internal/session/pb"
 	"github.com/martialanouman/go-gateway/internal/smppserver"
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
@@ -217,6 +219,18 @@ func newListener(cfg config.Config, st *stores, logger *slog.Logger) (_ *listene
 		}
 	}()
 
+	var smppTLS *tls.Config
+	if cfg.TLS.Enabled {
+		if smppTLS, err = (tlsconf.Files{
+			Cert:     cfg.TLS.CertFile,
+			Key:      cfg.TLS.KeyFile,
+			ClientCA: cfg.TLS.ClientCAFile,
+			Logger:   logger,
+		}).PublicServerConfig(nil); err != nil {
+			return nil, err
+		}
+	}
+
 	ingestor := ingest.NewIngestor(st.producer, logger)
 
 	throttle := bindthrottle.New(st.rdb, bindthrottle.Config{
@@ -292,6 +306,7 @@ func newListener(cfg config.Config, st *stores, logger *slog.Logger) (_ *listene
 			// Empty behind an L7-terminated or direct deployment; the balancer's ranges behind an L4 one,
 			// without which the per-IP bind throttle degenerates into a global one (step-191).
 			TrustedProxyCIDRs: cfg.SMPP.TrustedProxyCIDRs,
+			TLSConfig:         smppTLS,
 		},
 		logger,
 	)
