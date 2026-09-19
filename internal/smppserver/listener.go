@@ -207,13 +207,7 @@ func (l *Listener) onBind(ctx context.Context, st *connState, clientIP string, o
 			return session.BindResult{Status: cmdStatus}
 		}
 
-		sess := &registrypb.Session{
-			AccountId: cred.AccountID.String(),
-			SystemId:  req.SystemID,
-			PodId:     l.opts.PodID,
-			BindId:    st.bindID,
-			BindType:  pbBindType(req.Mode),
-		}
+		sess := l.session(cred.AccountID.String(), req.SystemID, st.bindID, req.Mode)
 		resp, err := l.registry.Bind(bctx, &registrypb.BindRequest{Session: sess, MaxSessions: cred.MaxSessions})
 		if err != nil {
 			cmdStatus := registryBindStatus(err)
@@ -460,6 +454,22 @@ func (l *Listener) startRefresh(ctx context.Context, st *connState, mode session
 	go l.refreshLoop(rctx, st, mode, st.refreshDone)
 }
 
+// session builds the registry Session for a bind. The initial bind and refreshLoop's re-Bind both go
+// through it, so this pod's published address cannot be filled on one path and forgotten on the other:
+// the registry expires an address with the session TTL, and the re-Bind is the only thing that renews
+// it. A refresh without it would let the address lapse under a live session, turning the SMPP return
+// channel silently into webhook-only a minute after the bind (step-302).
+func (l *Listener) session(accountID, systemID, bindID string, mode session.BindMode) *registrypb.Session {
+	return &registrypb.Session{
+		AccountId: accountID,
+		SystemId:  systemID,
+		PodId:     l.opts.PodID,
+		PodAddr:   l.opts.PodAddr,
+		BindId:    bindID,
+		BindType:  pbBindType(mode),
+	}
+}
+
 // refreshLoop re-Binds the session's member on a fixed interval to refresh its registry TTL, so the
 // token never lapses under a live bind (a re-Bind of an existing member refreshes the TTL and never
 // double-counts). It stops when its context is cancelled — by st.refreshStop after the session ends, or
@@ -478,12 +488,7 @@ func (l *Listener) refreshLoop(ctx context.Context, st *connState, mode session.
 		case <-ticker.C:
 			rctx, cancel := context.WithTimeout(ctx, registryCallTimeout)
 			_, err := l.registry.Bind(rctx, &registrypb.BindRequest{
-				Session: &registrypb.Session{
-					AccountId: st.accountID.String(),
-					PodId:     l.opts.PodID,
-					BindId:    st.bindID,
-					BindType:  pbBindType(mode),
-				},
+				Session:     l.session(st.accountID.String(), st.systemID, st.bindID, mode),
 				MaxSessions: st.maxSessions,
 			})
 			cancel()
