@@ -12,6 +12,7 @@ package fakesmsc
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
@@ -40,6 +41,8 @@ type Config struct {
 	// RejectBind, when non-zero, rejects every bind_transceiver with this command_status (e.g.
 	// ESME_RINVPASWD) and closes the connection — for testing the reconnect loop's stop/retry paths.
 	RejectBind uint32
+	// TLSConfig serves SMPP-over-TLS. Nil listens in plaintext.
+	TLSConfig *tls.Config
 }
 
 // Submit is one recorded submit_sm with the connection (bind) it arrived on. ConnID is stable per TCP
@@ -107,6 +110,9 @@ func New(cfg Config) (*Server, error) {
 	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("fakesmsc: listen on %q: %w", addr, err)
+	}
+	if cfg.TLSConfig != nil {
+		ln = tls.NewListener(ln, cfg.TLSConfig)
 	}
 	s := &Server{
 		ln:    ln,

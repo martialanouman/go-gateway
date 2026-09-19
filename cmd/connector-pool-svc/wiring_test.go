@@ -2,9 +2,13 @@ package main
 
 import (
 	"context"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"log/slog"
 	"net"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
@@ -19,6 +23,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
 	"github.com/martialanouman/go-gateway/internal/testutil/pgtest"
 	"github.com/martialanouman/go-gateway/internal/testutil/redistest"
+	"github.com/martialanouman/go-gateway/internal/testutil/tlstest"
 )
 
 // The wiring must fail as a VALUE, never as a process exit: a constructor that log.Fatals cannot be
@@ -216,7 +221,7 @@ func TestValidateConnectorEnvRefusesTheDevelopmentPasswordInProduction(t *testin
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateConnectorEnv(tt.bind, tt.env)
+			err := validateConnectorEnv(tt.bind, tt.env, config.TLS{})
 			if tt.wantErr != (err != nil) {
 				t.Fatalf("validateConnectorEnv() error = %v, want error: %v", err, tt.wantErr)
 			}
@@ -265,5 +270,93 @@ func TestTheDeclaredDefaultIsTheOneTheGuardRefuses(t *testing.T) {
 	if parsed.Password != defaultConnectorPassword {
 		t.Fatalf("CONNECTOR_PASSWORD defaults to %q, but the production guard refuses %q: the guard is "+
 			"disarmed", parsed.Password, defaultConnectorPassword)
+	}
+}
+
+func TestTheOutboundTLSFlagRequiresThePodIdentity(t *testing.T) {
+	bind := testBindEnv()
+	bind.TLSEnabled = true
+
+	err := validateConnectorEnv(bind, config.EnvDevelopment, config.TLS{Enabled: false})
+	if err == nil {
+		t.Fatal("CONNECTOR_TLS_ENABLED was accepted without TLS_ENABLED: the bind has no certificate to present")
+	}
+	if !strings.Contains(err.Error(), "CONNECTOR_TLS_ENABLED") || !strings.Contains(err.Error(), "TLS_ENABLED") {
+		t.Errorf("error = %q, must name both variables an operator has to reconcile", err)
+	}
+
+	if err := validateConnectorEnv(bind, config.EnvDevelopment, config.TLS{Enabled: true}); err != nil {
+		t.Errorf("both set and still refused: %v", err)
+	}
+}
+
+func TestNewPoolAppRefusesAnUnreadableOutboundIdentity(t *testing.T) {
+	ca := tlstest.NewCA(t)
+	cert, key := ca.Issue(t, serviceName, serviceName)
+	absent := filepath.Join(t.TempDir(), "absent.pem")
+
+	for name, breakIt := range map[string]func(*config.TLS){
+		"certificate": func(c *config.TLS) { c.CertFile = absent },
+		"key":         func(c *config.TLS) { c.KeyFile = absent },
+		"CA":          func(c *config.TLS) { c.ClientCAFile = absent },
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := testConfig()
+			cfg.TLS = config.TLS{Enabled: true, CertFile: cert, KeyFile: key, ClientCAFile: ca.CAFile}
+			breakIt(&cfg.TLS)
+			bind := testBindEnv()
+			bind.TLSEnabled = true
+
+			// The error must be ATTRIBUTED, not merely present: every store in testConfig points at a
+			// closed port, so a boot that reached them would fail anyway and a bare non-nil check would
+			// pass on a TLS failure that was swallowed.
+			_, err := newPoolApp(t.Context(), cfg, bind, silentLogger())
+			if err == nil {
+				t.Fatal("a missing file booted: the failure must be a value, not a handshake at 3am")
+			}
+			if !strings.Contains(err.Error(), "tlsconf") {
+				t.Fatalf("boot error = %v, want it attributed to the unreadable identity", err)
+			}
+		})
+	}
+}
+
+// TestTheWiredBindConfigCarriesTheTLSField guards the one mistake the tests above cannot see: a
+// *tls.Config built at boot and never handed to the bind. Proving it by running the pool is not
+// available — the consumer tears the bind down as soon as Kafka fails, so the observation races.
+func TestTheWiredBindConfigCarriesTheTLSField(t *testing.T) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "wiring.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse wiring.go: %v", err)
+	}
+
+	var seen []string
+	ast.Inspect(f, func(n ast.Node) bool {
+		lit, ok := n.(*ast.CompositeLit)
+		if !ok {
+			return true
+		}
+		sel, ok := lit.Type.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "BindConfig" {
+			return true
+		}
+		for _, e := range lit.Elts {
+			kv, ok := e.(*ast.KeyValueExpr)
+			if !ok {
+				continue
+			}
+			if k, ok := kv.Key.(*ast.Ident); ok {
+				seen = append(seen, k.Name)
+			}
+		}
+		return true
+	})
+
+	if len(seen) == 0 {
+		t.Fatal("no connectorpool.BindConfig literal found in wiring.go: this guard is watching nothing")
+	}
+	if !slices.Contains(seen, "TLS") {
+		t.Errorf("the wired BindConfig names %v: without TLS the config is built at boot and never dialled with", seen)
 	}
 }
