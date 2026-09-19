@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
+	"strconv"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -270,6 +272,7 @@ func newListener(cfg config.Config, st *stores, logger *slog.Logger) (_ *listene
 		smppserver.Options{
 			Addr:            fmt.Sprintf(":%d", cfg.SMPP.Port),
 			PodID:           podID(cfg, logger),
+			PodAddr:         podAddr(cfg, logger),
 			SystemID:        serviceName,
 			SessionEvents:   l.streamEvents,
 			IdleTimeout:     cfg.SMPP.IdleTimeout,
@@ -341,6 +344,22 @@ func podID(cfg config.Config, logger *slog.Logger) string {
 		return ""
 	}
 	return host
+}
+
+// podAddr is the address this pod publishes for the return path to dial: its own IP (status.podIP in
+// Kubernetes) joined with the gRPC port its Deliver server listens on. JoinHostPort and not "ip:port"
+// because an IPv6 address needs its brackets, and a dual-stack cluster hands out one.
+//
+// Empty when unset, which is not fatal: binds still succeed, and their MO/DLR fall back to the webhook
+// instead of reaching the live SMPP session. That is worth a warning, because the symptom downstream
+// is silence, not an error.
+func podAddr(cfg config.Config, logger *slog.Logger) string {
+	if cfg.SMPP.PodAddr == "" {
+		logger.Warn("smpp: no pod address configured (SMPP_POD_ADDR); MO/DLR for this pod's binds " +
+			"will fall back to webhooks instead of the live SMPP session")
+		return ""
+	}
+	return net.JoinHostPort(cfg.SMPP.PodAddr, strconv.Itoa(cfg.GRPC.Port))
 }
 
 // queryRateLimiter adapts the step-084 token-bucket limiter to smppserver.QueryLimiter: it consumes
