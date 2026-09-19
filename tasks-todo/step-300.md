@@ -434,6 +434,97 @@ n'appelle aucun transport de ce dépôt. Pas de règle « `TLS_ENABLED=true` exi
 l'interrupteur est posé **à côté** du volume dans chaque manifeste, ce qui les lie sans garde. Et pas de
 joker dans `test/tlsgen` — l'arbitrage n'en demande aucun.
 
+### 300c — détail validé le 2026-09-19, avant le code
+
+#### Ce que la lecture a trouvé
+
+- **Les deux surfaces sont au même endroit.** Chaque service construit son `http.Server` dans
+  `newHTTPServer` (wiring) et le sert dans une copie quasi identique de `runHTTP` (main). `newHTTPServer`
+  ne rend aujourd'hui **aucune erreur** : TLS lui en donne une — trois chemins illisibles au boot —, donc
+  sa signature en gagne une et `newRestAPIApp` / `newAdminApp` la propagent. C'est l'accroche que la
+  fiche réclamait : un échec TLS remonte **en valeur**, jamais en `log.Fatal`.
+- **`admin-api-svc` est déjà à moitié câblé.** 300b lui a donné `TLS_ENABLED=true`, le volume et le
+  montage, parce qu'il est client gRPC de `session-manager-svc` et de `content-key-svc`. Seule son
+  **écoute** HTTP est en clair. `rest-api-svc` n'a rien : ni `SectionTLS`, ni volume, ni variable.
+- **`ListenAndServeTLS("", "")` suffit** (vérifié dans Go 1.26, `net/http/server.go` : `configHasCert`
+  teste `GetConfigForClient != nil`). Aucun chemin de fichier ne repasse par `net/http`, la rotation
+  reste entièrement dans `tlsconf`.
+
+#### ALPN : asymétrique, et c'est la spec qui tranche
+
+Le contrat inverse de 300b s'applique : **`net/http` n'ajoute rien** à la liste que rend
+`GetConfigForClient`. Une liste vide n'est pas un défaut, c'est HTTP/2 éteint sans une ligne de journal.
+
+- **`rest-api-svc` → `["h2", "http/1.1"]`.** La spec le demande nommément : « Connexions API REST
+  simultanées : 10 000+ (HTTP/2 ou keep-alive avec pool) » (`specification-technique` §93, repris au
+  guide §82).
+- **`admin-api-svc` → `["http/1.1"]` seul.** `internal/adminapi/stream.go` appelle `websocket.Accept`,
+  qui **hijacke** la connexion ; `net/http` ne sert pas le CONNECT étendu (RFC 8441). Sous h2, le flux
+  temps réel de l'Admin API est mort. `negotiateALPN` (vérifié) parcourt la liste **du serveur** en
+  premier : ne pas nommer `h2` est ce qui garantit qu'il ne sera jamais choisi. Un client qui n'offrirait
+  *que* h2 se verrait refusé — aucun n'existe pour une API JSON.
+
+Planchers déjà arrêtés plus haut : **1.2** côté public (des intégrateurs qu'on ne contrôle pas), **1.3**
+côté interne.
+
+#### Le constructeur public
+
+```go
+func (f Files) PublicServerConfig(nextProtos []string) (*tls.Config, error)
+```
+
+Plancher 1.2, aucun certificat demandé au pair, et **le même `GetConfigForClient`** que le constructeur
+mutuel : la rotation se comporte identiquement sur les neuf pods.
+
+Écarté : un booléen de plus sur `ServerOptions`. `AllowedClients` n'a aucun sens sans certificat client,
+et un champ silencieusement ignoré est exactement le piège que 300b a payé deux fois. Le paramètre
+`nextProtos` plutôt qu'une liste en dur, parce que 300d sert du SMPP, qui n'a pas d'ALPN, et passera
+`nil`.
+
+**Le fichier de CA reste exigé des neuf services**, `rest-api-svc` compris, qui ne s'en sert pour rien :
+`tlsProblems` valide les trois chemins ensemble, le `Secret` monté porte `ca.crt` de toute façon, et une
+identité de pod qui change de forme selon la surface coûterait plus que le `stat` qu'elle épargne.
+
+#### Pas de paquet `httptls`
+
+La projection `config.TLS` → `tlsconf.Files` reste écrite au point d'appel, deux fois cinq lignes.
+`internal/config` n'importe aucun paquet interne et doit le rester ; `internal/grpctls` ne peut pas
+l'héberger pour HTTP sans imposer gRPC à qui sert du HTTP. Un paquet pour deux littéraux coûte plus
+qu'il ne rend. À la quatrième copie — 300d, entrant et sortant — l'extraction se posera d'elle-même.
+
+#### L'allowlist de l'Admin API est vide, et c'est un choix
+
+Aucun pod de ce dépôt n'appelle l'Admin API : la liste ne peut nommer personne. Vide admet donc tout
+porteur d'un certificat de notre CA, et l'autorisation réelle reste le **second facteur** déjà en place,
+le bearer opérateur (`HTTP_ADMIN_TOKENS`, schéma « mTLS + operator bearer » d'`internal/adminapi/api.go`).
+Nommer l'ingress serait de la configuration pour une valeur que `deploy/` ne déploie pas.
+
+Le serveur d'ops ne bouge pas, définitivement — la raison est écrite plus haut.
+
+#### Preuves, et la mutation qui fait tomber chacune
+
+| # | Preuve | Mutation |
+|---|---|---|
+| 1 | `rest-api-svc` : un client **sans** certificat, plafonné à TLS 1.2, est servi | `ClientAuth: RequireAndVerifyClientCert` ; `MinVersion: VersionTLS13` |
+| 2 | `rest-api-svc` : l'ALPN négocie `h2`, et un client `http/1.1` seul reste servi | `NextProtos: nil` |
+| 3 | `admin-api-svc` : le pair de la CA passe, le client **sans** certificat est refusé | `NoClientCert` |
+| 4 | `admin-api-svc` : l'ALPN négocie `http/1.1` face à un client qui offre `h2` en tête | ajouter `"h2"` en tête |
+| 5 | les deux wirings : `TLS_ENABLED=true` ⇒ `app.http.TLSConfig != nil` ; un chemin illisible ⇒ erreur de boot **rendue** | supprimer l'affectation ; journaliser au lieu de rendre |
+| 6 | `runHTTP` sert bien en TLS quand `TLSConfig` est posé, dans les deux services | forcer `ListenAndServe` |
+
+La preuve 6 est ce qui empêche la 5 d'être creuse : une `*tls.Config` posée sur le serveur et jamais
+servie laisserait toute la colonne verte. La 1 et la 3 sont la même assertion dans les deux sens — c'est
+la seule façon de prouver qu'une surface publique n'a pas hérité du mutuel, et l'inverse.
+
+`rest-api-svc` déclarant `SectionTLS`, la garde AST de `internal/config/sections_guard_test.go` couvre
+l'oubli symétrique sans qu'on ajoute quoi que ce soit.
+
+#### Ce que 300c ne fait pas
+
+Le TLS **client** vers les quatre magasins (step-305), le SMPP-TLS (300d), l'ingress. Pas de règle
+« `TLS_ENABLED=true` exige un volume monté » — même raison qu'en 300b : l'interrupteur est posé à côté du
+volume dans chaque manifeste.
+
 ## Tests (écrits dans la même PR)
 - Handshake TLS/mTLS réussi ; un client sans cert client est rejeté sur les endpoints mTLS.
 - SMPP-TLS : bind chiffré établi (faux SMSC/simulateur).
