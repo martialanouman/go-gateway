@@ -33,10 +33,7 @@ spec:
       # whole shutdown window, and smpp-server-svc drains four of them in sequence.
       terminationGracePeriodSeconds: 150
       volumes:
-        # No subPath: the kubelet updates a Secret volume by swapping a symlink, which a subPath mount
-        # never follows — the rotation would silently stop reaching the process. internal/deploy refuses
-        # it. 0444 and not 0400: the files belong to uid 0 while the image runs USER 65532, and nothing
-        # here sets an fsGroup.
+        # No subPath, and defaultMode 0444: see deploy/k8s/tls/README.md.
         - name: tls
           secret:
             secretName: router-svc-tls

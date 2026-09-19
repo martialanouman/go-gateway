@@ -134,10 +134,8 @@ type Container struct {
 // be refused (step-300b).
 type VolumeMount struct {
 	Name        string `yaml:"name"`
-	MountPath   string `yaml:"mountPath"`
 	SubPath     string `yaml:"subPath"`
 	SubPathExpr string `yaml:"subPathExpr"`
-	ReadOnly    bool   `yaml:"readOnly"`
 }
 
 // ContainerPort is one entry of a container's ports.
