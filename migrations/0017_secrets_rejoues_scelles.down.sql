@@ -1,12 +1,7 @@
--- step-295: NOT reversible without loss, and the down migration says so rather than pretending.
---
--- Going back restores columns that cannot be filled: password_hash wants an argon2id hash of a password
--- this schema no longer holds in any recoverable form for a caller without the KMS, and auth_config_json
--- wants the credentials in clear. Re-creating them with a placeholder would be worse than failing — a
--- connector would look configured and bind with a password nobody chose.
---
--- So the down refuses on a populated table, exactly as the up does, and is a plain rollback on an empty
--- one (the only state in which the up could have run at all).
+-- step-295: NOT reversible without loss, and this says so rather than pretending. password_hash wants an
+-- argon2id hash nothing here can produce, and auth_config_json wants the credentials back in clear. So the
+-- down refuses a populated table exactly as the up does, and is a plain rollback on an empty one — the only
+-- state in which the up could have run.
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM control_plane.smsc_connectors) THEN

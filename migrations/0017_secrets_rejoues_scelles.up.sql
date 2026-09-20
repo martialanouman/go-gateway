@@ -1,26 +1,14 @@
--- step-295 / ADR-0016: two secrets were stored in a form that cannot serve their purpose.
+-- step-295 / ADR-0016: the two secrets the gateway REPLAYS to a third party move from a form that cannot
+-- serve them — an argon2id hash for an outbound bind password, clear jsonb for the provider credentials —
+-- to a sealed one, with the master-key reference beside it as content_keys.kms_key_ref does. The secrets
+-- the gateway VERIFIES (credentials.password_hash, credentials.api_key_hash) are untouched and stay hashed.
 --
--- smsc_connectors.password_hash held an argon2id hash of the password of an OUTBOUND bind. SMPP v3.4
--- §4.1.1 puts that password in clear in the bind_transceiver PDU, and a hash does not un-hash: the
--- column could never serve the one thing it existed for. That is why connector-pool-svc reads
--- CONNECTOR_PASSWORD from the environment instead, and why a rotation through the Admin API answered
--- 200 while the bind knew nothing about it.
+-- NOT A CONVERSION. A hash does not decrypt, so there is nothing to carry over. The guards below refuse a
+-- populated table rather than letting ADD COLUMN ... NOT NULL fail with a message naming a constraint
+-- instead of the cause. The repository has never been deployed; a development database is recreated.
 --
--- external_billing_providers.auth_config_json held the third-party credentials in CLEAR jsonb — so in
--- every backup and every replica. The Admin API masks it on read, which protects the HTTP response and
--- nothing else.
---
--- Both are now SEALED by content-key-svc (ConfigSecrets.Seal), and the key reference is stored beside
--- the ciphertext so an operator can tell which master key a row belongs to and a future KEK rotation
--- knows what it has to re-seal — exactly as content_keys.kms_key_ref does.
---
--- The secrets the gateway VERIFIES rather than replays are untouched and stay hashed:
--- credentials.password_hash (inbound bind) and credentials.api_key_hash are correct as they are.
---
--- NOT A CONVERSION. An argon2id hash cannot be decrypted, so there is nothing to carry over: a stored
--- connector password is simply gone. The guards below refuse to run on a populated table instead of
--- letting ADD COLUMN ... NOT NULL fail with a message that names a constraint rather than the cause.
--- The repository has never been deployed; a development database is recreated, not migrated.
+-- A failure here leaves the schema intact but schema_migrations dirty at 17: recover with
+-- `go run ./cmd/migrate -store postgres force 16` after emptying the tables.
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM control_plane.smsc_connectors) THEN
