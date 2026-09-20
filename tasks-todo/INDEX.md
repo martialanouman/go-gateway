@@ -374,7 +374,7 @@ fait désormais échouer la suite. Les sept steps suivantes construisent les sur
 voudra sauf là où une dépendance le fixe ; **chacune retire ses lignes de `deferred`** — l'exclusion
 mutuelle l'y force, la suite ne peut pas rester verte sur une ligne qui différerait une opération servie.
 - [x] step-320 — La garde contrat ↔ implémentation, et le triage des 30 ⛓ bloque step-410 et step-330→390
-- [ ] step-330 — Groupes de clients (§6.17) : la table existe, rien ne la remplit ⛓ step-320
+- [x] step-330 — Groupes de clients (§6.17) : la table existe, rien ne la remplit ⛓ step-320
 - [ ] step-340 — Webhooks : le repo est livré depuis M4, l'admin n'a jamais été écrite ⛓ step-320
 - [ ] step-350 — Réécriture de sender ID (§6.16) : ni l'admin, ni l'évaluation dans le pool ⛓ step-320 ;
       **sa PR2 doit merger après step-280**, sinon elle ajoute un étage au chemin d'envoi entre la

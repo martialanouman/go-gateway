@@ -140,14 +140,14 @@ attendant step-310.
 
 ## Definition of Done
 
-- [ ] `make check` vert (lint · `test -race` · govulncheck · contrats)
-- [ ] les 7 opérations servies, conformes au contrat — **contrat corrigé**, `security` et codes
+- [x] `make check` vert (lint · `test -race` · govulncheck · contrats)
+- [x] les 7 opérations servies, conformes au contrat — **contrat corrigé**, `security` et codes
       d'échec d'auth ajoutés aux 7, bump **mineur** `api/package.json` 4.2.1 → 4.3.0. La prédiction
       « aucun changement de contrat attendu » de cette fiche était fausse : voir `## Design arrêté`
       et le précédent step-149
-- [ ] une opération générée sans `security` fait échouer la suite (la garde pour steps 340→390)
-- [ ] `api/collections/admin-api.yaml` synchronisée (test bloquant) et le compte de son `README.md`
-- [ ] les 7 lignes retirées de la liste `deferred` posée par step-320 (elle vit dans le test de
+- [x] une opération générée sans `security` fait échouer la suite (la garde pour steps 340→390)
+- [x] `api/collections/admin-api.yaml` synchronisée (test bloquant) et le compte de son `README.md`
+- [x] les 7 lignes retirées de la liste `deferred` posée par step-320 (elle vit dans le test de
       contrat, pas dans la fiche)
 
 ## Hors périmètre
