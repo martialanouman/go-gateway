@@ -98,8 +98,7 @@ compare déjà les codes et les schémas, **50 opérations déjà livrées** ont
 fait échouer la suite : elles exigent un scope dans le code sans le déclarer au contrat (exact-routes,
 suppressions, routing scripts, rate plans, billing providers, inbound numbers…). C'est le mensonge de
 step-149 à l'échelle de la moitié de l'Admin API, et c'est trop large pour cette step : la garde reste
-donc sur le **côté servi**, et l'écart part en fiche —
-`debts/contrat-ne-declare-pas-les-scopes-qu-il-exige.md`.
+donc sur le **côté servi**, et l'écart devient **step-397**, qui bloque le go-live.
 
 ### Ce qui s'écrit
 

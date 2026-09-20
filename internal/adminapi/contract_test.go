@@ -863,7 +863,7 @@ const operatorSchemeName = "OperatorBearer"
 // suite green and the audit trail recording its mutations against no principal.
 //
 // It checks the SERVED side only. Comparing it to the published contract would be the stronger
-// guard, and it is what debts/contrat-ne-declare-pas-les-scopes-qu-il-exige.md is about: 50 of the
+// guard, and it is what step-397 is about: 50 of the
 // operations already shipped declare no security: in the YAML while requiring a scope in code.
 func TestEveryGeneratedOperationRequiresAScope(t *testing.T) {
 	generated := loadGenerated(t)

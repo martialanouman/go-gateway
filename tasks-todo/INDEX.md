@@ -385,16 +385,19 @@ mutuelle l'y force, la suite ne peut pas rester verte sur une ligne qui différe
 - [ ] step-390 — Réglages de compte créables mais non modifiables, et trois opérations orphelines ⛓ step-320
 - [ ] step-390b — `query_sm` résout l'état du message contre le CDR au lieu de répondre UNKNOWN (§6.22) — ouverte par step-260g, sans dépendance
 
-## Les dettes ouvertes par step-260c, la dette du tableau de bord, puis la porte
+## Les dettes ouvertes par step-260c, les dettes du tableau de bord, puis la porte
 Les deux premières sont nées de step-260c. **step-395 est un défaut de production** — une config
 périmée sans borne — et se solde avant le go-live ; **step-396** est une question de mesure, pas une
-politique manquante, et ne bloque rien.
+politique manquante, et ne bloque rien. **step-397** est née de step-330 : le contrat publié ment sur
+l'autorisation de la moitié des opérations, et le tableau de bord génère ses clients depuis lui.
 - [ ] step-395 — Le watcher de config ne rejoue jamais un rebuild échoué (correctif + métrique)
 - [ ] step-396 — Le Postgres *lent* : mesurer l'équivalence « lent ≡ coupé » (et trancher d'abord
       l'atteignabilité de la branche `ErrConflict`)
+- [ ] step-397 — 50 opérations Admin exigent un scope que le contrat ne déclare pas ⛓ step-390 —
+      ouverte par step-330
 - [ ] step-400 — `billing.events` durable : le BFF doit pouvoir détecter, pas seulement afficher
 - [ ] step-410 — **GO-LIVE** : dérouler la checklist de mise en production
-      ⛓ step-260, step-270, step-280, step-290, step-310, step-320
+      ⛓ step-260, step-270, step-280, step-290, step-310, step-320, step-397
 
 ---
 
