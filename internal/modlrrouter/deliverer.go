@@ -40,11 +40,9 @@ type PodDeliverer interface {
 	Deliver(ctx context.Context, bind LiveBind, pdu []byte) error
 }
 
-// WebhookResolver fetches the webhook an account's event of this type should be delivered to — active
-// ones only, which is why a disabled webhook reads as an absent one here. *postgres.WebhookRepo
-// satisfies it.
+// WebhookResolver fetches an account's webhook for an event type. *postgres.WebhookRepo satisfies it.
 type WebhookResolver interface {
-	GetActive(ctx context.Context, accountID uuid.UUID, eventType cp.WebhookEventType) (cp.Webhook, bool, error)
+	Get(ctx context.Context, accountID uuid.UUID, eventType cp.WebhookEventType) (cp.Webhook, bool, error)
 }
 
 // WebhookSender delivers a webhook event. *webhook.Sender satisfies it.
@@ -133,11 +131,11 @@ func (dv *Deliverer) Deliver(ctx context.Context, d Delivery) error {
 		return nil
 	}
 
-	wh, found, err := dv.webhooks.GetActive(ctx, d.AccountID, d.EventType)
+	wh, found, err := dv.webhooks.Get(ctx, d.AccountID, d.EventType)
 	if err != nil {
 		return fmt.Errorf("modlrrouter: resolve webhook for %s: %w", d.AccountID, err)
 	}
-	if found {
+	if found && wh.Status == cp.WebhookActive {
 		// The webhook sender owns retries and its own dead-letter; we never park a webhook event here.
 		return dv.sender.Send(ctx, wh, d.WebhookEvent)
 	}

@@ -36,39 +36,23 @@ func toWebhookDTO(wh cp.Webhook) webhookDTO {
 		AccountID:   idString(wh.AccountID),
 		EventType:   string(wh.EventType),
 		URL:         wh.URL,
-		RetryPolicy: decodePolicy(wh.RetryPolicyJSON),
+		RetryPolicy: rawToMap(wh.RetryPolicyJSON),
 		Status:      string(wh.Status),
 		CreatedAt:   wh.CreatedAt,
 		UpdatedAt:   wh.UpdatedAt,
 	}
 }
 
-// decodePolicy renders the stored jsonb as the object the contract declares. A column that somehow
-// holds something other than an object is reported as absent rather than as a 500: the policy is a
-// setting, and one bad row must not make an account's webhooks unreadable.
-func decodePolicy(raw json.RawMessage) map[string]any {
-	if len(raw) == 0 {
-		return nil
-	}
-	var m map[string]any
-	if err := json.Unmarshal(raw, &m); err != nil {
-		return nil
-	}
-	return m
-}
-
 // encodePolicy turns a supplied policy back into the jsonb the column holds. A nil map means the field
-// was omitted, which leaves the stored policy alone.
-func encodePolicy(m map[string]any) (json.RawMessage, error) {
+// was omitted, which leaves the stored policy alone; an empty object is a supplied value and clears it.
+// json.Marshal cannot fail on a map decoded from the request body — every value in it is a JSON
+// primitive — so there is no error to propagate.
+func encodePolicy(m map[string]any) json.RawMessage {
 	if m == nil {
-		return nil, nil
+		return nil
 	}
-	raw, err := json.Marshal(m)
-	if err != nil {
-		return nil, humaerr.FailValidation("invalid retry policy",
-			humaerr.FieldError{Field: "retry_policy_json", Message: "not a JSON object"})
-	}
-	return raw, nil
+	raw, _ := json.Marshal(m)
+	return raw
 }
 
 // webhookCreateBody is the contract schema WebhookCreate. secret is write-only and required: it is the
@@ -76,7 +60,7 @@ func encodePolicy(m map[string]any) (json.RawMessage, error) {
 // computable by anyone who knows the scheme.
 type webhookCreateBody struct {
 	EventType   string         `json:"event_type" enum:"mo,dlr"`
-	URL         string         `json:"url" format:"uri" minLength:"1"`
+	URL         string         `json:"url" format:"uri" pattern:"^https?://"`
 	Secret      string         `json:"secret" minLength:"16" doc:"Write-only HMAC-SHA256 signing secret."`
 	RetryPolicy map[string]any `json:"retry_policy_json,omitempty" doc:"Retry bounds. Only max_attempts applies to deferred retries; the back-off fields pace the in-band sender, which the deferred retry path replaces in production."`
 }
@@ -84,7 +68,7 @@ type webhookCreateBody struct {
 // webhookUpdateBody is the contract schema WebhookUpdate: every field optional. event_type is absent
 // on purpose — it is the identity of the subscription, not a setting.
 type webhookUpdateBody struct {
-	URL         *string        `json:"url,omitempty" format:"uri" minLength:"1"`
+	URL         *string        `json:"url,omitempty" format:"uri" pattern:"^https?://"`
 	Secret      *string        `json:"secret,omitempty" minLength:"16" doc:"Write-only; rotates the signing secret."`
 	RetryPolicy map[string]any `json:"retry_policy_json,omitempty" doc:"Retry bounds. Only max_attempts applies to deferred retries; the back-off fields pace the in-band sender, which the deferred retry path replaces in production."`
 	Status      *string        `json:"status,omitempty" enum:"active,disabled"`
@@ -185,16 +169,12 @@ func (h *webhookHandlers) create(ctx context.Context, in *createWebhookInput) (*
 	if err != nil {
 		return nil, err
 	}
-	policy, err := encodePolicy(in.Body.RetryPolicy)
-	if err != nil {
-		return nil, err
-	}
 	wh, err := h.hooks.Create(ctx, cp.NewWebhook{
 		AccountID:       accountID,
 		EventType:       cp.WebhookEventType(in.Body.EventType),
 		URL:             in.Body.URL,
 		Secret:          in.Body.Secret,
-		RetryPolicyJSON: policy,
+		RetryPolicyJSON: encodePolicy(in.Body.RetryPolicy),
 	})
 	if err != nil {
 		return nil, humaerr.FromError(err)
@@ -202,9 +182,6 @@ func (h *webhookHandlers) create(ctx context.Context, in *createWebhookInput) (*
 	return &webhookOutput{Body: toWebhookDTO(wh)}, nil
 }
 
-// webhookIDInput carries both path segments. They are used together in every store call: the webhook
-// id is a UUID the caller chooses, and the account it belongs to is the only thing that keeps one
-// account's operator from rewriting another's delivery URL.
 type webhookIDInput struct {
 	ID        string `path:"id" format:"uuid"`
 	WebhookID string `path:"webhookId" format:"uuid"`
@@ -225,14 +202,10 @@ func (h *webhookHandlers) update(ctx context.Context, in *updateWebhookInput) (*
 	if err != nil {
 		return nil, notFound("webhook")
 	}
-	policy, err := encodePolicy(in.Body.RetryPolicy)
-	if err != nil {
-		return nil, err
-	}
 	wh, err := h.hooks.Update(ctx, accountID, id, cp.WebhookPatch{
 		URL:             in.Body.URL,
 		Secret:          in.Body.Secret,
-		RetryPolicyJSON: policy,
+		RetryPolicyJSON: encodePolicy(in.Body.RetryPolicy),
 		Status:          enumPtr[cp.WebhookStatus](in.Body.Status),
 	})
 	if err != nil {

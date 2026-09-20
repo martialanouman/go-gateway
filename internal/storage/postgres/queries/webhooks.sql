@@ -1,26 +1,19 @@
--- name: GetActiveWebhook :one
--- The webhook a MO or DLR should be delivered to. One row per (account_id, event_type) — the unique
--- key — so this returns at most one; no rows means the account has no webhook for that event, or has
--- switched it off.
+-- name: GetWebhook :one
+-- The account's webhook for an event type (mo|dlr). One row per (account_id, event_type) — the unique
+-- key — so this returns at most one; no rows means the account has no webhook for that event.
 --
--- The status filter lives HERE rather than in the callers: both delivery paths ask this same question
--- and one of them had forgotten to, so a disabled webhook kept being retried off the retry topic for
--- as long as its attempt budget allowed. The Admin CRUD below reads by account and by id instead, and
--- does see disabled rows — which is the whole point of being able to switch one back on.
+-- Disabled rows are returned, NOT filtered out here: the two delivery paths both have to know the
+-- difference. A first delivery dead-letters either way, but the deferred retry runner drops a deleted
+-- webhook's event and parks a disabled one's — switching a webhook off is a pause, not an order to
+-- destroy the backlog, and a query that hid the status would take that decision away from it.
 SELECT * FROM control_plane.webhooks
-WHERE account_id = @account_id AND event_type = @event_type AND status = 'active';
+WHERE account_id = @account_id AND event_type = @event_type;
 
 -- name: ListWebhooksByAccount :many
 -- Not paginated: at most two rows per account (one per event type), bounded by webhooks_uq.
 SELECT * FROM control_plane.webhooks
 WHERE account_id = @account_id
 ORDER BY event_type;
-
--- name: GetWebhookByID :one
--- Scoped by account as well as by id: the path carries both, and a webhookId belonging to another
--- account must read as absent rather than as someone else's row.
-SELECT * FROM control_plane.webhooks
-WHERE id = @id AND account_id = @account_id;
 
 -- name: CreateWebhook :one
 -- status falls back to the DDL default ('active'), retry_policy_json to '{}'. A second webhook for an

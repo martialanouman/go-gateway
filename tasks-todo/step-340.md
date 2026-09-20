@@ -80,11 +80,13 @@ mise à jour ne peut heurter `webhooks_uq`.
 Ces ajouts-là sont additifs (`api-security-added`, `response-non-success-status-added` : INFO). Ce qui
 coûte, c'est la validation.
 
-**`secret` et `url` n'avaient aucune contrainte de longueur** : `POST {"secret":""}` créait un webhook
-dont les signatures HMAC sont calculables par n'importe qui, et `url: ""` un webhook qui ne pointe
-nulle part. `minLength: 16` sur `secret` et `minLength: 1` sur `url`, dans `WebhookCreate` **et**
-`WebhookUpdate`. Les deux schémas existent déjà sur `main` (les opérations y sont `deferred`), donc
-`oasdiff` classe les quatre restrictions `request-property-min-length-increased` en **ERR** : bump
+**`secret` et `url` n'avaient aucune contrainte** : `POST {"secret":""}` créait un webhook dont les
+signatures HMAC sont calculables par n'importe qui, et `url: "acme.test/mo"` — sans schéma — un webhook
+que `webhook.Sender` ne peut pas composer, qui brûle son budget d'essais et met en dead-letter **chaque**
+MO et DLR du compte sans que rien n'ait signalé la faute de frappe. `minLength: 16` sur `secret` et
+`pattern: ^https?://` sur `url`, dans `WebhookCreate` **et** `WebhookUpdate` — `format: uri` ne suffit
+pas, la validation de huma est un `url.Parse` qui accepte les deux. Les deux schémas existent déjà sur
+`main` (les opérations y sont `deferred`), donc `oasdiff` classe les restrictions en **ERR** : bump
 **majeur** `api/package.json` 5.0.0 → **6.0.0**. La rupture est formelle — `deferred` veut dire 404,
 aucun consommateur ne pouvait appeler ces opérations — et c'est le seul moment où le prix se négocie :
 durcir après coup coûterait un second majeur. Même constat qu'en step-330, pour la même raison.
@@ -102,13 +104,26 @@ le **même** `WebhookRepo.Get`, et un seul filtre :
 Conséquence : désactiver un webhook n'arrête pas les événements déjà déférés ; ils continuent d'être
 poussés vers une URL que l'opérateur croit coupée, jusqu'au budget d'essais (8) ou aux 6 h d'âge.
 
-Le correctif va **dans la requête SQL**, pas dans le runner : `GetWebhook` devient `GetActiveWebhook`
-(`AND status = 'active'`), `WebhookRepo.Get` devient `GetActive`, et le test Go du `Deliverer` — devenu
-mort — disparaît. Les deux appelants posaient la même question et l'un avait oublié la règle : c'est
-une garde à mettre dans la fonction partagée, pas dans chaque appelant. Le nom force tout appelant
-futur à savoir ce qu'il reçoit ; un webhook désactivé devient `found = false` des deux côtés, ce que le
-commentaire du runner promettait déjà. L'API Admin, elle, lit par compte et par id — elle voit les
-`disabled`, et c'est tout son intérêt.
+**Premier arbitrage, abandonné.** Faire porter la règle par la requête partagée (`GetActiveWebhook`,
+`AND status = 'active'`) et supprimer le test de statut du `Deliverer` : un seul endroit, le nom force
+tout appelant futur. C'est ce qui a été écrit d'abord, et la revue l'a renversé. La prémisse était
+fausse — **les deux appelants ne posent pas la même question.** Ils traitent l'absence différemment :
+le `Deliverer` met en dead-letter (l'événement survit), le runner **jette** (`Handled("dropped")`, un
+log `Info`, l'offset commité). Filtrer dans la requête faisait donc de « désactiver » un ordre de
+**destruction** du backlog déjà déféré — jusqu'à six heures de MO et de DLR d'un compte — alors qu'on
+voulait exactement l'inverse. Un opérateur qui coupe son endpoint le temps d'une maintenance n'a pas
+demandé ça.
+
+**Le correctif retenu** laisse la requête rendre les lignes `disabled` et met la décision là où elle se
+prend :
+
+- `Deliverer` : inchangé. `found && Status == active` → envoi, sinon dead-letter. Il avait raison.
+- `WebhookRetryRunner` : `!found` (supprimé) → drop, comme le voulait step-192 — le compte a demandé
+  que ces événements cessent. `found && !active` (désactivé) → **`Sender.Park`**, le dead-letter que le
+  `Deliverer` utilise déjà pour la même situation. Métrique `parked`.
+
+`webhook.Sender` expose `Park` pour cela : le runner n'a ni producteur ni sink, et le dead-letter a
+besoin de la ligne — l'URL comprise — que le filtre SQL jetait.
 
 ### `retry_policy_json` : ce qui est honoré, et ce qui ne l'est pas
 
@@ -129,10 +144,10 @@ choix rendu ici et de son déclencheur.
 | Fichier | Rôle |
 |---|---|
 | `internal/controlplane/webhook.go` | `CreatedAt`/`UpdatedAt` sur `Webhook`, `NewWebhook`, `WebhookPatch` |
-| `internal/storage/postgres/queries/webhooks.sql` | `GetActiveWebhook` (renommée, filtrée) · list par compte · create · get par id · update (COALESCE partiel) · delete (`:execrows`) |
-| `internal/storage/postgres/webhooks.go` | `GetActive` + le CRUD, **sans pool** (aucune transaction) |
+| `internal/storage/postgres/queries/webhooks.sql` | list par compte · create · update (COALESCE partiel) · delete (`:execrows`) ; `GetWebhook` inchangée |
+| `internal/storage/postgres/webhooks.go` | le CRUD, **sans pool** (aucune transaction) |
 | `internal/adminapi/webhooks.go` | DTO + les 4 opérations |
-| `internal/modlrrouter/deliverer.go` · `webhook_retry_runner.go` | l'appel renommé ; la condition morte retirée |
+| `internal/webhook/retry.go` · `internal/modlrrouter/webhook_retry_runner.go` | `Sender.Park` exporté ; la branche « désactivé » du runner |
 | `deps.go` · `api.go` · `wiring.go` | une ligne chacun |
 
 **Décisions.** Le chemin est `/admin/smpp-accounts/{id}/webhooks/{webhookId}` alors que la clé
@@ -145,9 +160,15 @@ masquée, le contrat a déjà tranché. `created_at`/`updated_at` manquent à `c
 schéma `Webhook` les déclare **non requis** : les champs du DTO portent `omitempty`, ce qui les laisse
 hors du `required` généré sans toucher au contrat, tout en étant toujours sérialisés. `event_type` est
 immuable (`WebhookUpdate` ne le porte pas). Le doublon `(account_id, event_type)` remonte en 409 par
-`pgerr.translate` — **aucun pré-contrôle**, donc aucune fenêtre de course. La mise à jour partielle est
-un `COALESCE`, donc `retry_policy_json` ne peut pas être remis à `{}` par cette voie
-(`debts/patch-null-ne-peut-pas-effacer-un-champ.md`, déjà ouverte).
+`pgerr.translate` — **aucun pré-contrôle du doublon**, donc aucune fenêtre de course sur le 409. (La
+garde d'existence du compte, elle, en laisse une : un compte supprimé entre le `Get` et l'`INSERT`
+donne un 422 de clé étrangère là où le contrat veut un 404. Fenêtre de quelques millisecondes, coût du
+correctif supérieur au défaut.) La mise à jour partielle est
+un `COALESCE` sur une valeur NULL, et le distinguo « absent / fourni » passe par une `json.RawMessage`
+nil ou non : `{"retry_policy_json":{}}` **remet donc bien** la politique à l'objet vide, et
+`retry_policy_json: null` est refusé en 422 par huma avant d'atteindre le handler. La dette
+`debts/patch-null-ne-peut-pas-effacer-un-champ.md` ne s'applique pas à ce champ — vérifié, contre la
+première rédaction de cette fiche qui affirmait le contraire.
 
 **Ce qui ne s'écrit pas.** Aucune migration : la table existe depuis `0001_init`. Aucun code d'audit :
 `audited()` couvre déjà toute requête non lecture-seule.
@@ -168,7 +189,8 @@ dette est ouverte dans la même PR.
 - Le doublon `(account_id, event_type)` produit le code d'erreur du contrat, pas un 500.
 - Un webhook `disabled` n'est pas remis : test au niveau du consommateur de remise, seul endroit où la
   propriété est vraie ou fausse. La muter au niveau du handler ne prouverait rien. **Les deux chemins**
-  sont à couvrir — première remise *et* retry différé, puisque le second ne coupait pas.
+  sont à couvrir — première remise *et* retry différé, puisque le second ne coupait pas — et le second
+  doit prouver en plus que l'événement est **parqué**, pas perdu.
 - Un `webhookId` d'un autre compte répond 404 et n'écrit rien.
 
 ## Definition of Done
@@ -176,8 +198,9 @@ dette est ouverte dans la même PR.
 - [ ] `make check` vert (lint · `test -race` · govulncheck · contrats)
 - [ ] les 4 opérations servies ; secret jamais relu ; unicité et `disabled` vérifiés côté remise
 - [ ] contrat corrigé : `security` et les codes d'échec d'auth ajoutés aux 4, `minLength` sur `secret`
-      et `url`, description de `retry_policy_json` rendue honnête — bump **majeur**
+      et `pattern` sur `url`, description de `retry_policy_json` rendue honnête — bump **majeur**
       `api/package.json` 5.0.0 → 6.0.0
+- [ ] désactiver un webhook coupe la remise **sans perdre** les événements déjà déférés
 - [ ] `api/collections/admin-api.yaml` synchronisée
 - [ ] les 4 lignes retirées de la liste `deferred` posée par step-320 (elle vit dans le test de
       contrat, pas dans la fiche)

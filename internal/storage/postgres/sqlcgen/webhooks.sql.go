@@ -69,55 +69,25 @@ func (q *Queries) DeleteWebhook(ctx context.Context, arg DeleteWebhookParams) (i
 	return result.RowsAffected(), nil
 }
 
-const getActiveWebhook = `-- name: GetActiveWebhook :one
+const getWebhook = `-- name: GetWebhook :one
 SELECT id, account_id, event_type, url, secret, retry_policy_json, status, created_at, updated_at FROM control_plane.webhooks
-WHERE account_id = $1 AND event_type = $2 AND status = 'active'
+WHERE account_id = $1 AND event_type = $2
 `
 
-type GetActiveWebhookParams struct {
+type GetWebhookParams struct {
 	AccountID uuid.UUID
 	EventType string
 }
 
-// The webhook a MO or DLR should be delivered to. One row per (account_id, event_type) — the unique
-// key — so this returns at most one; no rows means the account has no webhook for that event, or has
-// switched it off.
+// The account's webhook for an event type (mo|dlr). One row per (account_id, event_type) — the unique
+// key — so this returns at most one; no rows means the account has no webhook for that event.
 //
-// The status filter lives HERE rather than in the callers: both delivery paths ask this same question
-// and one of them had forgotten to, so a disabled webhook kept being retried off the retry topic for
-// as long as its attempt budget allowed. The Admin CRUD below reads by account and by id instead, and
-// does see disabled rows — which is the whole point of being able to switch one back on.
-func (q *Queries) GetActiveWebhook(ctx context.Context, arg GetActiveWebhookParams) (ControlPlaneWebhook, error) {
-	row := q.db.QueryRow(ctx, getActiveWebhook, arg.AccountID, arg.EventType)
-	var i ControlPlaneWebhook
-	err := row.Scan(
-		&i.ID,
-		&i.AccountID,
-		&i.EventType,
-		&i.Url,
-		&i.Secret,
-		&i.RetryPolicyJson,
-		&i.Status,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
-const getWebhookByID = `-- name: GetWebhookByID :one
-SELECT id, account_id, event_type, url, secret, retry_policy_json, status, created_at, updated_at FROM control_plane.webhooks
-WHERE id = $1 AND account_id = $2
-`
-
-type GetWebhookByIDParams struct {
-	ID        uuid.UUID
-	AccountID uuid.UUID
-}
-
-// Scoped by account as well as by id: the path carries both, and a webhookId belonging to another
-// account must read as absent rather than as someone else's row.
-func (q *Queries) GetWebhookByID(ctx context.Context, arg GetWebhookByIDParams) (ControlPlaneWebhook, error) {
-	row := q.db.QueryRow(ctx, getWebhookByID, arg.ID, arg.AccountID)
+// Disabled rows are returned, NOT filtered out here: the two delivery paths both have to know the
+// difference. A first delivery dead-letters either way, but the deferred retry runner drops a deleted
+// webhook's event and parks a disabled one's — switching a webhook off is a pause, not an order to
+// destroy the backlog, and a query that hid the status would take that decision away from it.
+func (q *Queries) GetWebhook(ctx context.Context, arg GetWebhookParams) (ControlPlaneWebhook, error) {
+	row := q.db.QueryRow(ctx, getWebhook, arg.AccountID, arg.EventType)
 	var i ControlPlaneWebhook
 	err := row.Scan(
 		&i.ID,

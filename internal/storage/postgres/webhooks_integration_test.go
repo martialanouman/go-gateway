@@ -14,84 +14,58 @@ import (
 	"github.com/martialanouman/go-gateway/internal/testutil/pgtest"
 )
 
-// TestWebhookRepoGetActive proves GetActive returns a configured webhook and reports a clean absence (found=false)
-// for an event type the account has not subscribed to.
-func TestWebhookRepoGetActive(t *testing.T) {
+// TestWebhookRepoGet proves Get returns a configured webhook and reports a clean absence (found=false)
+// for an event type the account has not subscribed to. It also pins the property both delivery paths
+// depend on: a DISABLED webhook is returned, not hidden. Filtering it here would look tidier and would
+// take from the deferred retry runner the one thing it needs to tell "switched off" from "deleted".
+func TestWebhookRepoGet(t *testing.T) {
 	pool := pgtest.Pool(t)
 	ctx := context.Background()
-
-	customer, err := postgres.NewCustomerRepo(pool).Create(ctx, cp.NewCustomer{Name: "WebhookCo"})
-	if err != nil {
-		t.Fatalf("create customer: %v", err)
-	}
-	account, err := postgres.NewAccountRepo(pool).Create(ctx, cp.NewAccount{CustomerID: customer.ID, Name: "webhook-app"})
-	if err != nil {
-		t.Fatalf("create account: %v", err)
-	}
-	// The Admin CRUD for webhooks is out of this step's scope, so seed the row directly.
-	if _, err := pool.Exec(ctx,
-		`INSERT INTO control_plane.webhooks (account_id, event_type, url, secret, retry_policy_json)
-		 VALUES ($1, 'mo', 'https://example.test/hook', 'topsecret', '{"max_attempts":4}')`,
-		account.ID); err != nil {
-		t.Fatalf("seed webhook: %v", err)
-	}
-
 	repo := postgres.NewWebhookRepo(pool)
+	accountID := seedWebhookAccount(t, pool, "WebhookCo", "webhook-app")
 
-	got, found, err := repo.GetActive(ctx, account.ID, cp.WebhookEventMO)
+	seeded, err := repo.Create(ctx, cp.NewWebhook{
+		AccountID: accountID, EventType: cp.WebhookEventMO,
+		URL: "https://example.test/hook", Secret: "topsecret-long-enough",
+		RetryPolicyJSON: []byte(`{"max_attempts":4}`),
+	})
 	if err != nil {
-		t.Fatalf("GetActive(mo): %v", err)
+		t.Fatalf("Create: %v", err)
+	}
+
+	got, found, err := repo.Get(ctx, accountID, cp.WebhookEventMO)
+	if err != nil {
+		t.Fatalf("Get(mo): %v", err)
 	}
 	if !found {
-		t.Fatal("GetActive(mo) found=false, want the seeded webhook")
+		t.Fatal("Get(mo) found=false, want the seeded webhook")
 	}
-	if got.URL != "https://example.test/hook" || got.Secret != "topsecret" || got.Status != cp.WebhookActive {
+	if got.URL != "https://example.test/hook" || got.Secret != "topsecret-long-enough" || got.Status != cp.WebhookActive {
 		t.Errorf("webhook = %+v, want the seeded url/secret/active", got)
 	}
-	if string(got.RetryPolicyJSON) == "" {
-		t.Error("retry_policy_json should carry the seeded policy")
+	if string(got.RetryPolicyJSON) != `{"max_attempts": 4}` {
+		t.Errorf("retry_policy_json = %s, want the seeded policy", got.RetryPolicyJSON)
 	}
 
-	if _, found, err := repo.GetActive(ctx, account.ID, cp.WebhookEventDLR); err != nil || found {
-		t.Errorf("GetActive(dlr) = found %v err %v, want no webhook (found=false, nil err)", found, err)
-	}
-}
-
-// TestWebhookRepoGetActiveSkipsADisabledWebhook proves disabling is what an operator thinks it is: the
-// delivery paths stop resolving the webhook at all. The rule lives in the query rather than in each
-// caller because there are two of them and one had forgotten it — the deferred retry runner kept
-// pushing to a URL the operator had switched off, for as long as its attempt budget and its six-hour
-// age bound allowed.
-func TestWebhookRepoGetActiveSkipsADisabledWebhook(t *testing.T) {
-	pool := pgtest.Pool(t)
-	ctx := context.Background()
-
-	customer, err := postgres.NewCustomerRepo(pool).Create(ctx, cp.NewCustomer{Name: "DisabledHookCo"})
-	if err != nil {
-		t.Fatalf("create customer: %v", err)
-	}
-	account, err := postgres.NewAccountRepo(pool).Create(ctx, cp.NewAccount{CustomerID: customer.ID, Name: "disabled-app"})
-	if err != nil {
-		t.Fatalf("create account: %v", err)
-	}
-	if _, err := pool.Exec(ctx,
-		`INSERT INTO control_plane.webhooks (account_id, event_type, url, secret, status)
-		 VALUES ($1, 'mo', 'https://example.test/off', 'topsecret', 'disabled')`,
-		account.ID); err != nil {
-		t.Fatalf("seed disabled webhook: %v", err)
+	if _, found, err := repo.Get(ctx, accountID, cp.WebhookEventDLR); err != nil || found {
+		t.Errorf("Get(dlr) = found %v err %v, want no webhook (found=false, nil err)", found, err)
 	}
 
-	got, found, err := postgres.NewWebhookRepo(pool).GetActive(ctx, account.ID, cp.WebhookEventMO)
-	if err != nil {
-		t.Fatalf("GetActive(mo): %v", err)
+	disabled := cp.WebhookDisabled
+	if _, err := repo.Update(ctx, accountID, seeded.ID, cp.WebhookPatch{Status: &disabled}); err != nil {
+		t.Fatalf("Update(disabled): %v", err)
 	}
-	if found {
-		t.Errorf("a disabled webhook was resolved for delivery: %+v", got)
+	off, found, err := repo.Get(ctx, accountID, cp.WebhookEventMO)
+	if err != nil || !found {
+		t.Fatalf("Get after disabling = found %v err %v, want the row", found, err)
+	}
+	if off.Status != cp.WebhookDisabled {
+		t.Errorf("status = %q, want disabled — the caller cannot decide what it cannot see", off.Status)
 	}
 }
 
 // TestWebhookRepoCRUD walks the Admin surface's round trip on a real database: what the create
-// defaults, what a partial update leaves alone, and what the delete makes the list forget.
+// defaults, what a partial update writes and leaves alone, and what the delete makes the list forget.
 func TestWebhookRepoCRUD(t *testing.T) {
 	pool := pgtest.Pool(t)
 	ctx := context.Background()
@@ -124,16 +98,35 @@ func TestWebhookRepoCRUD(t *testing.T) {
 		t.Errorf("duplicate (account, event_type) = %v, want ErrConflict", err)
 	}
 
-	status := cp.WebhookDisabled
-	updated, err := repo.Update(ctx, accountID, created.ID, cp.WebhookPatch{Status: &status})
+	// Every writable field at once, so a url/secret swap in the parameter mapping cannot hide behind a
+	// patch that only ever carries one of them.
+	url, secret, status := "https://acme.test/mo/v2", "a-rotated-secret-long-enough", cp.WebhookDisabled
+	updated, err := repo.Update(ctx, accountID, created.ID, cp.WebhookPatch{
+		URL: &url, Secret: &secret, Status: &status, RetryPolicyJSON: []byte(`{"max_attempts":9}`),
+	})
 	if err != nil {
 		t.Fatalf("Update: %v", err)
 	}
-	if updated.Status != cp.WebhookDisabled {
-		t.Errorf("status = %q, want disabled", updated.Status)
+	if updated.URL != url || updated.Secret != secret || updated.Status != cp.WebhookDisabled {
+		t.Errorf("updated = %+v, want the patched url, secret and status", updated)
 	}
-	if updated.URL != created.URL || updated.Secret != created.Secret {
-		t.Errorf("a status-only patch changed url or secret: %+v", updated)
+	if string(updated.RetryPolicyJSON) != `{"max_attempts": 9}` {
+		t.Errorf("retry_policy_json = %s, want the patched policy", updated.RetryPolicyJSON)
+	}
+	if !updated.UpdatedAt.After(created.UpdatedAt) {
+		t.Errorf("updated_at = %v, not after %v — the webhooks_touch trigger did not fire",
+			updated.UpdatedAt, created.UpdatedAt)
+	}
+
+	// A patch that carries nothing must leave every column alone: that is what COALESCE is there for,
+	// and it is the failure mode of a mapping that passes a zero value where it means "unchanged".
+	untouched, err := repo.Update(ctx, accountID, created.ID, cp.WebhookPatch{})
+	if err != nil {
+		t.Fatalf("Update(empty): %v", err)
+	}
+	if untouched.URL != url || untouched.Secret != secret || untouched.Status != cp.WebhookDisabled ||
+		string(untouched.RetryPolicyJSON) != `{"max_attempts": 9}` {
+		t.Errorf("an empty patch changed something: %+v", untouched)
 	}
 
 	// Disabled or not, the administration surface still lists it — that is how it gets switched back on.
@@ -158,8 +151,8 @@ func TestWebhookRepoCRUD(t *testing.T) {
 
 // TestWebhookRepoIsScopedToItsAccount is the guard that keeps a webhook id from being a key to another
 // account's row. The id is a UUID on a path whose account segment the caller also chooses, so account
-// and id are ONE key — a read or write that trusted the id alone would let an operator scoped to one
-// account read, rewrite or delete another's delivery URL, secret included.
+// and id are ONE key — a write that trusted the id alone would let an operator scoped to one account
+// rewrite or delete another's delivery URL.
 func TestWebhookRepoIsScopedToItsAccount(t *testing.T) {
 	pool := pgtest.Pool(t)
 	ctx := context.Background()
@@ -176,9 +169,6 @@ func TestWebhookRepoIsScopedToItsAccount(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	if _, err := repo.Get(ctx, mine, wh.ID); !errors.Is(err, errs.ErrNotFound) {
-		t.Errorf("Get across accounts = %v, want ErrNotFound", err)
-	}
 	stolen := "https://attacker.test/mo"
 	if _, err := repo.Update(ctx, mine, wh.ID, cp.WebhookPatch{URL: &stolen}); !errors.Is(err, errs.ErrNotFound) {
 		t.Errorf("Update across accounts = %v, want ErrNotFound", err)
@@ -186,15 +176,20 @@ func TestWebhookRepoIsScopedToItsAccount(t *testing.T) {
 	if err := repo.Delete(ctx, mine, wh.ID); !errors.Is(err, errs.ErrNotFound) {
 		t.Errorf("Delete across accounts = %v, want ErrNotFound", err)
 	}
+	// List is asserted EMPTY rather than "not containing theirs": a WHERE dropped from the list query
+	// would otherwise pass here on whatever rows this account happens not to own.
+	if list, err := repo.List(ctx, mine); err != nil || len(list) != 0 {
+		t.Errorf("List(mine) = %+v (err %v), want empty", list, err)
+	}
 
 	// The row is untouched, not merely unreported: a failed scope check that still wrote would leave
 	// the other account's traffic pointing at the attacker's URL while answering 404.
-	after, err := repo.Get(ctx, theirs, wh.ID)
+	after, err := repo.List(ctx, theirs)
 	if err != nil {
-		t.Fatalf("Get(theirs): %v", err)
+		t.Fatalf("List(theirs): %v", err)
 	}
-	if after.URL != "https://theirs.test/mo" {
-		t.Errorf("url = %q, want the owner's own url", after.URL)
+	if len(after) != 1 || after[0].URL != "https://theirs.test/mo" {
+		t.Errorf("owner's webhooks = %+v, want the single untouched row", after)
 	}
 }
 

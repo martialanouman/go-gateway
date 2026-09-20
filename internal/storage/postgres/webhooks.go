@@ -14,9 +14,8 @@ import (
 	"github.com/martialanouman/go-gateway/internal/storage/postgres/sqlcgen"
 )
 
-// WebhookRepo is the webhooks repository. It serves two kinds of reader that must not be confused:
-// the delivery paths, which want the webhook to push to (GetActive, active rows only), and the Admin
-// surface, which administers the configuration and therefore sees disabled rows too.
+// WebhookRepo is the webhooks repository: the delivery paths read one webhook by event type, the Admin
+// surface administers them by account and id.
 type WebhookRepo struct {
 	q *sqlcgen.Queries
 }
@@ -26,11 +25,11 @@ func NewWebhookRepo(pool *pgxpool.Pool) *WebhookRepo {
 	return &WebhookRepo{q: sqlcgen.New(pool)}
 }
 
-// GetActive returns the webhook an event of this type should be delivered to. found is false (with a
-// nil error) when the account has no webhook for that event or has disabled it — both are a normal
-// absence of a delivery target, not a failure.
-func (r *WebhookRepo) GetActive(ctx context.Context, accountID uuid.UUID, eventType cp.WebhookEventType) (cp.Webhook, bool, error) {
-	row, err := r.q.GetActiveWebhook(ctx, sqlcgen.GetActiveWebhookParams{
+// Get returns the account's webhook for an event type, disabled ones included — the caller decides what
+// an inactive target means for it. found is false (with a nil error) when the account has no webhook for
+// that event: a normal absence, not a failure.
+func (r *WebhookRepo) Get(ctx context.Context, accountID uuid.UUID, eventType cp.WebhookEventType) (cp.Webhook, bool, error) {
+	row, err := r.q.GetWebhook(ctx, sqlcgen.GetWebhookParams{
 		AccountID: accountID,
 		EventType: string(eventType),
 	})
@@ -38,7 +37,7 @@ func (r *WebhookRepo) GetActive(ctx context.Context, accountID uuid.UUID, eventT
 		if errors.Is(err, pgx.ErrNoRows) {
 			return cp.Webhook{}, false, nil
 		}
-		return cp.Webhook{}, false, translate("get active webhook", err)
+		return cp.Webhook{}, false, translate("get webhook", err)
 	}
 	return webhookFromRow(row), true, nil
 }
@@ -54,16 +53,6 @@ func (r *WebhookRepo) List(ctx context.Context, accountID uuid.UUID) ([]cp.Webho
 		out = append(out, webhookFromRow(row))
 	}
 	return out, nil
-}
-
-// Get returns one webhook of this account by id, or ErrNotFound. An id belonging to another account
-// is ErrNotFound as well: the account is part of the key, not a decoration on the path.
-func (r *WebhookRepo) Get(ctx context.Context, accountID, id uuid.UUID) (cp.Webhook, error) {
-	row, err := r.q.GetWebhookByID(ctx, sqlcgen.GetWebhookByIDParams{ID: id, AccountID: accountID})
-	if err != nil {
-		return cp.Webhook{}, translate("get webhook", err)
-	}
-	return webhookFromRow(row), nil
 }
 
 // Create inserts a webhook. A second one for an event type the account already subscribes to hits

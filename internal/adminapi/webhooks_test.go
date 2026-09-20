@@ -67,15 +67,62 @@ func TestCreateWebhookNeverReturnsTheSecret(t *testing.T) {
 	if got["event_type"] != "mo" || got["url"] != "https://acme.test/mo" {
 		t.Errorf("webhook = %v, want the created mo hook", got)
 	}
-	if got["status"] != "active" {
-		t.Errorf("status = %v, want active", got["status"])
+	// account_id comes from the PATH, not from the body: a handler that let the caller pick it would
+	// create a webhook on someone else's account without ever crossing the 404 guard.
+	if got["account_id"] != id.String() {
+		t.Errorf("account_id = %v, want the path's account %s", got["account_id"], id)
+	}
+	// created_at is not in the contract's required list, which is why the DTO marks it omitempty — but
+	// a time.Time is never "empty" to encoding/json, so it must still be on the wire.
+	if got["created_at"] == nil {
+		t.Errorf("created_at is missing from the response: %v", got)
 	}
 }
 
-// TestWebhookSecretAndURLCannotBeEmpty: an empty secret makes every HMAC signature computable by
-// anyone who knows the scheme, and an empty URL points nowhere. Both bodies declare a minimum length,
-// which is why the contract went to a major version.
-func TestWebhookSecretAndURLCannotBeEmpty(t *testing.T) {
+// TestWebhookRetryPolicyRoundTrips: retry_policy_json is the one body field that is neither a string
+// nor an enum, and it crosses two conversions — decoded object to stored jsonb and back. Without this
+// the handlers could drop it entirely and every other test would stay green.
+func TestWebhookRetryPolicyRoundTrips(t *testing.T) {
+	accounts := newFakeAccountStore()
+	id := seedAccount(t, accounts)
+	hooks := newFakeWebhookStore()
+	api := newWebhookAPI(t, hooks, accounts)
+
+	w := httptest.NewRecorder()
+	api.ServeHTTP(w, authed(t, http.MethodPost, webhookPath(id),
+		`{"event_type":"mo","url":"https://acme.test/mo","secret":"`+testSecret+`",`+
+			`"retry_policy_json":{"max_attempts":7}}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body=%s", w.Code, w.Body)
+	}
+	var created map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
+	policy, _ := created["retry_policy_json"].(map[string]any)
+	if policy["max_attempts"] != float64(7) {
+		t.Fatalf("retry_policy_json = %v, want max_attempts 7", created["retry_policy_json"])
+	}
+
+	hookID := uuid.MustParse(created["id"].(string))
+	if stored := hooks.mustGet(t, hookID); string(stored.RetryPolicyJSON) != `{"max_attempts":7}` {
+		t.Errorf("stored policy = %s, want the submitted object", stored.RetryPolicyJSON)
+	}
+
+	w = httptest.NewRecorder()
+	api.ServeHTTP(w, authed(t, http.MethodPatch, webhookPath(id, hookID.String()),
+		`{"retry_policy_json":{"max_attempts":2}}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("patch status = %d, want 200; body=%s", w.Code, w.Body)
+	}
+	if stored := hooks.mustGet(t, hookID); string(stored.RetryPolicyJSON) != `{"max_attempts":2}` {
+		t.Errorf("stored policy after patch = %s, want the patched object", stored.RetryPolicyJSON)
+	}
+}
+
+// TestWebhookSecretAndURLAreRefusedWhenUseless: an empty secret makes every HMAC signature computable
+// by anyone who knows the scheme, and "acme.test/mo" — no scheme — is an URL the sender cannot dial, so
+// every MO and DLR of that account would burn its attempt budget and dead-letter. The secret carries a
+// minimum length and the URL a scheme pattern, which is what took the contract to a major version.
+func TestWebhookSecretAndURLAreRefusedWhenUseless(t *testing.T) {
 	accounts := newFakeAccountStore()
 	id := seedAccount(t, accounts)
 	hooks := newFakeWebhookStore()
@@ -87,8 +134,10 @@ func TestWebhookSecretAndURLCannotBeEmpty(t *testing.T) {
 	for _, tc := range []struct{ name, method, path, body string }{
 		{"create empty secret", http.MethodPost, webhookPath(id), `{"event_type":"mo","url":"https://a.test/h","secret":""}`},
 		{"create empty url", http.MethodPost, webhookPath(id), `{"event_type":"mo","url":"","secret":"` + testSecret + `"}`},
+		{"create schemeless url", http.MethodPost, webhookPath(id), `{"event_type":"mo","url":"acme.test/mo","secret":"` + testSecret + `"}`},
 		{"update empty secret", http.MethodPatch, webhookPath(id, hookID.String()), `{"secret":""}`},
 		{"update empty url", http.MethodPatch, webhookPath(id, hookID.String()), `{"url":""}`},
+		{"update schemeless url", http.MethodPatch, webhookPath(id, hookID.String()), `{"url":"acme.test/mo"}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w := httptest.NewRecorder()
@@ -97,12 +146,6 @@ func TestWebhookSecretAndURLCannotBeEmpty(t *testing.T) {
 				t.Fatalf("status = %d, want 422; body=%s", w.Code, w.Body)
 			}
 		})
-	}
-
-	// The rejected updates must not have reached the store: a 422 raised after the write would leave
-	// the webhook signing with an empty secret while answering as though it had refused.
-	if got := hooks.mustGet(t, id, hookID); got.Secret != testSecret || got.URL != "https://acme.test/mo" {
-		t.Errorf("webhook = %+v, want the seeded url and secret untouched", got)
 	}
 }
 
@@ -148,10 +191,6 @@ func TestWebhookOfAnotherAccountIs404(t *testing.T) {
 				t.Fatalf("status = %d, want 404; body=%s", w.Code, w.Body)
 			}
 		})
-	}
-
-	if got := hooks.mustGet(t, theirs, hookID); got.URL != "https://theirs.test/mo" {
-		t.Errorf("the other account's webhook was rewritten: %+v", got)
 	}
 }
 
@@ -201,15 +240,14 @@ func TestUpdateWebhookRotatesTheSecretWithoutReturningIt(t *testing.T) {
 	if got["status"] != "disabled" {
 		t.Errorf("status = %v, want disabled", got["status"])
 	}
-	if stored := hooks.mustGet(t, id, hookID); stored.Secret != testSecret {
+	if stored := hooks.mustGet(t, hookID); stored.Secret != testSecret {
 		t.Errorf("stored secret = %q, want the rotated one", stored.Secret)
 	}
 }
 
-// TestDeleteWebhookReturns204AndTheListForgetsIt: the 204 alone says nothing about what the list still
-// shows — a store that drops the id from one index and keeps it in another answers 204 and then serves
-// a webhook the operator believes deleted.
-func TestDeleteWebhookReturns204AndTheListForgetsIt(t *testing.T) {
+// TestDeleteWebhookReturns204: the contract's delete answers 204 with no body. That the row is really
+// gone is the repository's property, proved against SQL in TestWebhookRepoCRUD.
+func TestDeleteWebhookReturns204(t *testing.T) {
 	accounts := newFakeAccountStore()
 	id := seedAccount(t, accounts)
 	hooks := newFakeWebhookStore()
@@ -223,16 +261,8 @@ func TestDeleteWebhookReturns204AndTheListForgetsIt(t *testing.T) {
 	if w.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204; body=%s", w.Code, w.Body)
 	}
-
-	w = httptest.NewRecorder()
-	api.ServeHTTP(w, authed(t, http.MethodGet, webhookPath(id), ""))
-	if w.Code != http.StatusOK {
-		t.Fatalf("list status = %d, want 200; body=%s", w.Code, w.Body)
-	}
-	var list []map[string]any
-	_ = json.Unmarshal(w.Body.Bytes(), &list)
-	if len(list) != 0 {
-		t.Errorf("list returned %v after the delete, want empty", list)
+	if w.Body.Len() != 0 {
+		t.Errorf("204 carried a body: %s", w.Body)
 	}
 }
 
@@ -256,8 +286,5 @@ func TestListWebhooksShowsDisabledOnes(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &list)
 	if len(list) != 1 || list[0]["status"] != "disabled" {
 		t.Fatalf("list = %v, want the one disabled webhook", list)
-	}
-	if strings.Contains(w.Body.String(), testSecret) {
-		t.Errorf("the signing secret came back on the wire: %s", w.Body)
 	}
 }

@@ -2,6 +2,7 @@ package adminapi_test
 
 import (
 	"context"
+	"encoding/json"
 	"slices"
 	"sync"
 	"testing"
@@ -983,7 +984,9 @@ func (s *fakeConnectorStore) setPassword(id uuid.UUID, secret cp.SealedSecret) {
 
 // fakeWebhookStore is an in-memory WebhookStore for handler unit tests. It is keyed by id but every
 // read and write also takes the account, because that is the store's real contract: the Admin path
-// carries both, and an id alone must never reach another account's row.
+// carries both, and an id alone must never reach another account's row. It models the repository's
+// create defaults too — an active status, an empty policy object and set timestamps — so a handler
+// test sees the shape a response really carries.
 type fakeWebhookStore struct {
 	mu        sync.Mutex
 	byID      map[uuid.UUID]cp.Webhook
@@ -1003,12 +1006,14 @@ func (s *fakeWebhookStore) seed(wh cp.Webhook) {
 	s.order = append(s.order, wh.ID)
 }
 
-// mustGet reads a row past the handlers, to assert what a request did or did not write.
-func (s *fakeWebhookStore) mustGet(t *testing.T, accountID, id uuid.UUID) cp.Webhook {
+// mustGet reads a row past the handlers, to assert what a request wrote.
+func (s *fakeWebhookStore) mustGet(t *testing.T, id uuid.UUID) cp.Webhook {
 	t.Helper()
-	wh, err := s.Get(context.Background(), accountID, id)
-	if err != nil {
-		t.Fatalf("webhook %s of account %s: %v", id, accountID, err)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	wh, ok := s.byID[id]
+	if !ok {
+		t.Fatalf("webhook %s is not in the store", id)
 	}
 	return wh
 }
@@ -1025,30 +1030,27 @@ func (s *fakeWebhookStore) List(_ context.Context, accountID uuid.UUID) ([]cp.We
 	return out, nil
 }
 
-func (s *fakeWebhookStore) Get(_ context.Context, accountID, id uuid.UUID) (cp.Webhook, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	wh, ok := s.byID[id]
-	if !ok || wh.AccountID != accountID {
-		return cp.Webhook{}, errs.ErrNotFound
-	}
-	return wh, nil
-}
-
 func (s *fakeWebhookStore) Create(_ context.Context, in cp.NewWebhook) (cp.Webhook, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.createErr != nil {
 		return cp.Webhook{}, s.createErr
 	}
+	policy := in.RetryPolicyJSON
+	if policy == nil {
+		policy = json.RawMessage("{}") // the CreateWebhook query's COALESCE default
+	}
+	now := time.Now()
 	wh := cp.Webhook{
 		ID:              uuid.New(),
 		AccountID:       in.AccountID,
 		EventType:       in.EventType,
 		URL:             in.URL,
 		Secret:          in.Secret,
-		RetryPolicyJSON: in.RetryPolicyJSON,
+		RetryPolicyJSON: policy,
 		Status:          cp.WebhookActive,
+		CreatedAt:       now,
+		UpdatedAt:       now,
 	}
 	s.byID[wh.ID] = wh
 	s.order = append(s.order, wh.ID)
@@ -1074,6 +1076,7 @@ func (s *fakeWebhookStore) Update(_ context.Context, accountID, id uuid.UUID, p 
 	if p.Status != nil {
 		wh.Status = *p.Status
 	}
+	wh.UpdatedAt = time.Now() // the webhooks_touch trigger
 	s.byID[id] = wh
 	return wh, nil
 }
