@@ -230,6 +230,48 @@ func (q *Queries) ListCustomers(ctx context.Context, arg ListCustomersParams) ([
 	return items, nil
 }
 
+const setCustomerGroup = `-- name: SetCustomerGroup :one
+UPDATE control_plane.customers SET group_id = $1::uuid
+WHERE id = $2
+RETURNING id, name, status, group_id, rate_plan_id, billing_enabled, billing_mode, overdraft_enabled, overdraft_limit, balance_scope, mo_billing_floor, content_storage, content_retention_days, content_key_id, created_at, updated_at, credit_limit, credit_limit_is_hard, external_billing_provider_id
+`
+
+type SetCustomerGroupParams struct {
+	GroupID *uuid.UUID
+	ID      uuid.UUID
+}
+
+// Group membership has its own path on purpose: UpdateCustomer omits group_id, and COALESCE could
+// not express this write anyway — the whole point is that a NULL argument CLEARS the column rather
+// than leaving it alone. An unknown group_id violates the FK to customer_groups, which pgerr
+// translates to a validation error (422), the code set-customer-group declares.
+func (q *Queries) SetCustomerGroup(ctx context.Context, arg SetCustomerGroupParams) (ControlPlaneCustomer, error) {
+	row := q.db.QueryRow(ctx, setCustomerGroup, arg.GroupID, arg.ID)
+	var i ControlPlaneCustomer
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Status,
+		&i.GroupID,
+		&i.RatePlanID,
+		&i.BillingEnabled,
+		&i.BillingMode,
+		&i.OverdraftEnabled,
+		&i.OverdraftLimit,
+		&i.BalanceScope,
+		&i.MoBillingFloor,
+		&i.ContentStorage,
+		&i.ContentRetentionDays,
+		&i.ContentKeyID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.CreditLimit,
+		&i.CreditLimitIsHard,
+		&i.ExternalBillingProviderID,
+	)
+	return i, err
+}
+
 const suspendCustomer = `-- name: SuspendCustomer :one
 UPDATE control_plane.customers SET status = 'suspended' WHERE id = $1 RETURNING id, name, status, group_id, rate_plan_id, billing_enabled, billing_mode, overdraft_enabled, overdraft_limit, balance_scope, mo_billing_floor, content_storage, content_retention_days, content_key_id, created_at, updated_at, credit_limit, credit_limit_is_hard, external_billing_provider_id
 `

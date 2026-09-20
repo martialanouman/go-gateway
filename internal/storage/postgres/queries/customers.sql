@@ -68,3 +68,12 @@ UPDATE control_plane.smpp_accounts SET status = 'suspended' WHERE customer_id = 
 -- name: ListContentStorage :many
 -- Every customer's content_storage, for the data-plane content-policy snapshot (loaded once at boot).
 SELECT id, content_storage FROM control_plane.customers;
+
+-- name: SetCustomerGroup :one
+-- Group membership has its own path on purpose: UpdateCustomer omits group_id, and COALESCE could
+-- not express this write anyway — the whole point is that a NULL argument CLEARS the column rather
+-- than leaving it alone. An unknown group_id violates the FK to customer_groups, which pgerr
+-- translates to a validation error (422), the code set-customer-group declares.
+UPDATE control_plane.customers SET group_id = sqlc.narg('group_id')::uuid
+WHERE id = @id
+RETURNING *;

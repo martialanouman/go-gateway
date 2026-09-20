@@ -175,3 +175,19 @@ func (r *CustomerRepo) ListContentStorage(ctx context.Context) ([]cp.CustomerCon
 	}
 	return out, nil
 }
+
+// SetGroup sets or clears a customer's group membership (set-customer-group, §6.17). It is a path
+// of its own because Update deliberately omits group_id, and because a nil groupID here CLEARS the
+// column rather than leaving it unchanged, which the COALESCE patch could not express.
+//
+// Both ways this can fail carry a code the contract declares: no row updated is an unknown customer
+// (ErrNotFound, 404), and an unknown group violates the FK, which translate maps to ErrValidation
+// (422). Nothing checks the group's existence first — that check could only be stale by the time the
+// UPDATE runs, and the constraint is the authority either way.
+func (r *CustomerRepo) SetGroup(ctx context.Context, id uuid.UUID, groupID *uuid.UUID) (cp.Customer, error) {
+	row, err := r.q.SetCustomerGroup(ctx, sqlcgen.SetCustomerGroupParams{ID: id, GroupID: groupID})
+	if err != nil {
+		return cp.Customer{}, translate("set customer group", err)
+	}
+	return customerFromRow(row), nil
+}

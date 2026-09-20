@@ -531,3 +531,25 @@ func (s OptOutKeywordStatus) Valid() bool {
 		return false
 	}
 }
+
+// CustomerGroupStatus is the state of a customer group (control_plane.customer_groups.status).
+// Unlike CustomerStatus and AccountStatus it has no Rank: it restricts nothing. Archiving a group
+// takes it out of the operator's pickers; it never touches the traffic of the customers in it, which
+// is the §6.17 rule that a group is organisational and never an inheritance level.
+type CustomerGroupStatus string
+
+// The customer-group states.
+const (
+	CustomerGroupActive   CustomerGroupStatus = "active"
+	CustomerGroupArchived CustomerGroupStatus = "archived"
+)
+
+// Valid reports whether s is a published customer-group status.
+func (s CustomerGroupStatus) Valid() bool {
+	switch s {
+	case CustomerGroupActive, CustomerGroupArchived:
+		return true
+	default:
+		return false
+	}
+}
