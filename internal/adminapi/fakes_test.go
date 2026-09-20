@@ -238,6 +238,10 @@ type fakeAccountStore struct {
 	mu        sync.Mutex
 	byID      map[uuid.UUID]cp.Account
 	createErr error
+	// customers resolves the group filter, which is a property of the OWNING customer: the real
+	// query filters on customer_id IN (SELECT id FROM customers WHERE group_id = ...). Left nil when
+	// a test does not exercise ?groupId=.
+	customers *fakeCustomerStore
 }
 
 func newFakeAccountStore() *fakeAccountStore {
@@ -277,14 +281,31 @@ func (s *fakeAccountStore) Get(_ context.Context, id uuid.UUID) (cp.Account, err
 	return a, nil
 }
 
-func (s *fakeAccountStore) List(_ context.Context, _ cp.AccountFilter) (cp.Page[cp.Account], error) {
+func (s *fakeAccountStore) List(ctx context.Context, f cp.AccountFilter) (cp.Page[cp.Account], error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	items := make([]cp.Account, 0, len(s.byID))
 	for _, a := range s.byID {
+		if f.CustomerID != nil && a.CustomerID != *f.CustomerID {
+			continue
+		}
+		if f.GroupID != nil && !s.customerIsInGroup(ctx, a.CustomerID, *f.GroupID) {
+			continue
+		}
 		items = append(items, a)
 	}
 	return cp.Page[cp.Account]{Items: items}, nil
+}
+
+// customerIsInGroup mirrors the sub-select the real query runs. Without a customer store there is
+// no membership to resolve, so nothing matches — a silent "everything matches" would make a handler
+// that dropped the filter look correct.
+func (s *fakeAccountStore) customerIsInGroup(ctx context.Context, customerID, groupID uuid.UUID) bool {
+	if s.customers == nil {
+		return false
+	}
+	c, err := s.customers.Get(ctx, customerID)
+	return err == nil && c.GroupID != nil && *c.GroupID == groupID
 }
 
 func (s *fakeAccountStore) Update(_ context.Context, id uuid.UUID, p cp.AccountPatch) (cp.Account, error) {

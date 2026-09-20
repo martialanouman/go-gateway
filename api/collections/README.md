@@ -2,10 +2,7 @@
 
 `admin-api.yaml` is an [OpenCollection](https://opencollection.dev) covering the
 Admin API endpoints **currently implemented** by `admin-api-svc` (`internal/adminapi`)
-— 110 requests across Customer Groups, Customers, Sender IDs, SMPP Accounts, Credentials,
-Connectors, Routes, Inbound Numbers, Suppression, Opt-out Keywords, Anti-spam, Exact Routes,
-Routing Scripts, Billing, Rate Plans, Billing Providers, and Content & RGPD, grouped by tag.
-Import it into Bruno (or any OpenCollection-compatible client).
+— 110 requests, grouped by tag. Import it into Bruno (or any OpenCollection-compatible client).
 As more operations from `api/openapi-admin.yaml` are implemented, add them here.
 
 ## Run the service

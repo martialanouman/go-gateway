@@ -13,8 +13,6 @@ import (
 
 // CustomerGroupRepo is the customer_groups repository (§6.17). It satisfies adminapi's group store
 // structurally; the interface is declared consumer-side, so this package never imports adminapi.
-// It holds no pool: every operation here is a single statement, and nothing about a group spans two
-// of them — the detach on delete is the schema's, not this code's.
 type CustomerGroupRepo struct {
 	q *sqlcgen.Queries
 }
@@ -24,8 +22,7 @@ func NewCustomerGroupRepo(pool *pgxpool.Pool) *CustomerGroupRepo {
 	return &CustomerGroupRepo{q: sqlcgen.New(pool)}
 }
 
-// List returns the groups matching f, ordered by name. It is not paginated: the contract returns a
-// bare array.
+// List returns the groups matching f, ordered by name.
 func (r *CustomerGroupRepo) List(ctx context.Context, f cp.CustomerGroupFilter) ([]cp.CustomerGroup, error) {
 	rows, err := r.q.ListCustomerGroups(ctx, strPtr(f.Status))
 	if err != nil {
@@ -74,9 +71,8 @@ func (r *CustomerGroupRepo) Update(ctx context.Context, id uuid.UUID, p cp.Custo
 	return customerGroupFromRow(row), nil
 }
 
-// Delete removes a group. customers.group_id references it ON DELETE SET NULL, so this detaches its
-// customers and deletes none of them (§6.17) — there is no application-side cascade here, on
-// purpose. A delete matching no row is ErrNotFound.
+// Delete removes a group; its customers are detached by the schema, never by code here (§6.17).
+// A delete matching no row is ErrNotFound.
 func (r *CustomerGroupRepo) Delete(ctx context.Context, id uuid.UUID) error {
 	n, err := r.q.DeleteCustomerGroup(ctx, id)
 	if err != nil {

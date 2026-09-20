@@ -14,8 +14,7 @@ import (
 )
 
 // customerGroupDTO is the wire form of a CustomerGroup (contract schema CustomerGroup). created_by
-// is read-only and stays null until real operator auth lands (step-310), as for sender IDs and
-// routing scripts — the column exists to satisfy the FK to the dashboard.operators stub.
+// is read-only and stays null until real operator auth lands (step-310).
 type customerGroupDTO struct {
 	ID          string    `json:"id" format:"uuid"`
 	Name        string    `json:"name"`
@@ -59,8 +58,6 @@ func (b customerGroupUpdateBody) toPatch() cp.CustomerGroupPatch {
 	}
 }
 
-// customerGroupHandlers holds the two stores the group surface needs: its own, and the customers
-// one, which list-group-customers resolves membership through.
 type customerGroupHandlers struct {
 	groups    CustomerGroupStore
 	customers CustomerStore
@@ -124,8 +121,7 @@ type listCustomerGroupsInput struct {
 	Status string `query:"status" doc:"Filter by status."`
 }
 
-// listCustomerGroupsOutput is a bare array, not a page: the contract says so, and a group count is
-// an operator-scale number — one row per commercial segment — so there is nothing to paginate.
+// listCustomerGroupsOutput is a bare array, not a page: the contract says so.
 type listCustomerGroupsOutput struct{ Body []customerGroupDTO }
 
 func (h *customerGroupHandlers) list(ctx context.Context, in *listCustomerGroupsInput) (*listCustomerGroupsOutput, error) {
@@ -197,8 +193,6 @@ func (h *customerGroupHandlers) update(ctx context.Context, in *updateCustomerGr
 	return &customerGroupOutput{Body: toCustomerGroupDTO(g)}, nil
 }
 
-// delete removes the group. Its customers are detached by the schema's ON DELETE SET NULL, and
-// there is deliberately no application-side cascade here to contradict it (§6.17).
 func (h *customerGroupHandlers) delete(ctx context.Context, in *customerGroupIDInput) (*deleteOutput, error) {
 	id, err := uuid.Parse(in.ID)
 	if err != nil {
@@ -239,12 +233,5 @@ func (h *customerGroupHandlers) listCustomers(ctx context.Context, in *listGroup
 		return nil, humaerr.FromError(err)
 	}
 
-	out := &listCustomersOutput{}
-	out.Body.NextCursor = cursorString(string(page.NextCursor))
-	out.Body.HasMore = page.HasMore
-	out.Body.Data = make([]customerDTO, 0, len(page.Items))
-	for _, c := range page.Items {
-		out.Body.Data = append(out.Body.Data, toCustomerDTO(c))
-	}
-	return out, nil
+	return customersPage(page), nil
 }

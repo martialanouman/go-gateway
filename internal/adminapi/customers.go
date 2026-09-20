@@ -254,6 +254,12 @@ func (h *customerHandlers) list(ctx context.Context, in *listCustomersInput) (*l
 		return nil, humaerr.FromError(err)
 	}
 
+	return customersPage(page), nil
+}
+
+// customersPage wraps a page of customers in the contract's CustomerPage envelope. Both
+// list-customers and list-group-customers answer with it.
+func customersPage(page cp.Page[cp.Customer]) *listCustomersOutput {
 	out := &listCustomersOutput{}
 	out.Body.NextCursor = cursorString(string(page.NextCursor))
 	out.Body.HasMore = page.HasMore
@@ -261,7 +267,7 @@ func (h *customerHandlers) list(ctx context.Context, in *listCustomersInput) (*l
 	for _, c := range page.Items {
 		out.Body.Data = append(out.Body.Data, toCustomerDTO(c))
 	}
-	return out, nil
+	return out
 }
 
 type createCustomerInput struct{ Body customerCreateBody }

@@ -39,8 +39,6 @@ func (s fakeBillingCustomerStore) Suspend(context.Context, uuid.UUID) (cp.Custom
 	return s.c, nil
 }
 
-// SetGroup is part of CustomerStore but means nothing to the billing surface: no billing endpoint
-// reads or writes group membership, and §6.17 is explicit that a group carries no balance.
 func (s fakeBillingCustomerStore) SetGroup(context.Context, uuid.UUID, *uuid.UUID) (cp.Customer, error) {
 	return s.c, nil
 }

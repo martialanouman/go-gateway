@@ -16,10 +16,8 @@ plan de contrôle. Le contrat OpenAPI marque pourtant ces champs `nullable`.
 **À quoi on reconnaîtra qu'il faut la payer.** Le premier exploitant qui doit annuler un plafond
 qu'il vient de poser.
 
-**Elle s'étend à chaque surface neuve.** step-330 l'a rencontrée sans la créer :
-`update-customer-group` déclare `description` nullable au contrat et ne peut pas la vider, pour la
-même raison. Une surface Admin de plus reprend le `COALESCE`, une ligne de plus à défaire le jour où
-le tri-state arrive — c'est le coût qui monte pendant que la fiche reste ouverte.
+**Elle s'étend à chaque surface neuve.** step-330 : `update-customer-group` déclare `description`
+nullable au contrat et ne peut pas la vider, pour la même raison.
 
 Sources : `internal/controlplane/doc.go:15` ·
 `internal/storage/postgres/queries/customer_groups.sql` (`UpdateCustomerGroup`)

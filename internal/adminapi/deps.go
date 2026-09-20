@@ -21,21 +21,17 @@ type CustomerStore interface {
 	Delete(ctx context.Context, id uuid.UUID) error
 	// Suspend sets the customer and every one of its accounts to suspended, in one transaction.
 	Suspend(ctx context.Context, id uuid.UUID) (cp.Customer, error)
-	// SetGroup sets or clears group membership (set-customer-group). It is not part of Update on
-	// purpose: CustomerPatch omits group_id, and a nil here CLEARS the column rather than leaving it
-	// unchanged, which a patch field could not say.
+	// SetGroup sets or clears group membership. Not part of Update: a nil here CLEARS the column
+	// rather than leaving it unchanged, which a patch field could not say.
 	SetGroup(ctx context.Context, id uuid.UUID, groupID *uuid.UUID) (cp.Customer, error)
 }
 
-// CustomerGroupStore is the persistence the customer-group handlers need (§6.17). List returns a
-// plain slice: the contract's listing is a bare array, not a page.
+// CustomerGroupStore is the persistence the customer-group handlers need (§6.17).
 type CustomerGroupStore interface {
 	Create(ctx context.Context, in cp.NewCustomerGroup) (cp.CustomerGroup, error)
 	Get(ctx context.Context, id uuid.UUID) (cp.CustomerGroup, error)
 	List(ctx context.Context, f cp.CustomerGroupFilter) ([]cp.CustomerGroup, error)
 	Update(ctx context.Context, id uuid.UUID, p cp.CustomerGroupPatch) (cp.CustomerGroup, error)
-	// Delete removes the group. Detaching its customers is the schema's ON DELETE SET NULL, never an
-	// application-side cascade (§6.17).
 	Delete(ctx context.Context, id uuid.UUID) error
 }
 

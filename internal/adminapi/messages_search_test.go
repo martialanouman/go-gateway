@@ -58,9 +58,6 @@ func (f *fakeSearchCustomers) Suspend(context.Context, uuid.UUID) (cp.Customer, 
 	return cp.Customer{}, nil
 }
 
-// SetGroup is part of CustomerStore but unused by search: the group filter resolves membership
-// through List, and the CDR carries customer_id rather than group_id precisely because membership
-// changes (§6.17).
 func (f *fakeSearchCustomers) SetGroup(context.Context, uuid.UUID, *uuid.UUID) (cp.Customer, error) {
 	return cp.Customer{}, nil
 }

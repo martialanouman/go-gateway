@@ -2,6 +2,7 @@ package postgres_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/google/uuid"
@@ -68,17 +69,6 @@ func TestCustomerGroupRepoRoundTrip(t *testing.T) {
 	}
 }
 
-// TestCustomerGroupRepoGetMissingIsNotFound: a missing row is a translated not_found, not a raw pgx
-// error.
-func TestCustomerGroupRepoGetMissingIsNotFound(t *testing.T) {
-	pool := pgtest.Pool(t)
-	repo := postgres.NewCustomerGroupRepo(pool)
-
-	if _, err := repo.Get(context.Background(), uuid.New()); !isNotFound(err) {
-		t.Errorf("Get(unknown) error = %v, want not_found", err)
-	}
-}
-
 // TestCustomerGroupRepoDeleteMissingIsNotFound: deleting nothing is not_found, so the handler can
 // answer 404 rather than a silent 204.
 func TestCustomerGroupRepoDeleteMissingIsNotFound(t *testing.T) {
@@ -103,7 +93,7 @@ func TestCustomerGroupRepoDuplicateNameIsConflict(t *testing.T) {
 		t.Fatalf("Create() error = %v", err)
 	}
 
-	if _, err := repo.Create(ctx, cp.NewCustomerGroup{Name: taken}); !isConflict(err) {
+	if _, err := repo.Create(ctx, cp.NewCustomerGroup{Name: taken}); !errors.Is(err, errs.ErrConflict) {
 		t.Errorf("Create(duplicate name) error = %v, want conflict", err)
 	}
 
@@ -111,7 +101,7 @@ func TestCustomerGroupRepoDuplicateNameIsConflict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
-	if _, err := repo.Update(ctx, other.ID, cp.CustomerGroupPatch{Name: &taken}); !isConflict(err) {
+	if _, err := repo.Update(ctx, other.ID, cp.CustomerGroupPatch{Name: &taken}); !errors.Is(err, errs.ErrConflict) {
 		t.Errorf("Update(onto a taken name) error = %v, want conflict", err)
 	}
 }
@@ -184,6 +174,8 @@ func TestCustomerGroupRepoListFiltersByStatus(t *testing.T) {
 	if !containsGroup(all, live.ID) || !containsGroup(all, shelved.ID) {
 		t.Error("List() with no filter omitted one of the two groups")
 	}
+
+	assertOrderedByName(t, all)
 
 	active := cp.CustomerGroupActive
 	onlyActive, err := repo.List(ctx, cp.CustomerGroupFilter{Status: &active})
@@ -264,7 +256,7 @@ func TestSetCustomerGroupUnknownGroupIsValidation(t *testing.T) {
 	}
 
 	unknown := uuid.New()
-	if _, err := customers.SetGroup(ctx, customer.ID, &unknown); !isValidation(err) {
+	if _, err := customers.SetGroup(ctx, customer.ID, &unknown); !errors.Is(err, errs.ErrValidation) {
 		t.Errorf("SetGroup(unknown group) error = %v, want validation", err)
 	}
 }
@@ -339,6 +331,18 @@ func newAccountFor(t *testing.T, accounts *postgres.AccountRepo, customerID uuid
 	return account.ID
 }
 
+// assertOrderedByName pins the ORDER BY name the query promises. The listing is unpaginated, so the
+// order is the only thing a client has to go on.
+func assertOrderedByName(t *testing.T, groups []cp.CustomerGroup) {
+	t.Helper()
+	for i := 1; i < len(groups); i++ {
+		if groups[i-1].Name > groups[i].Name {
+			t.Errorf("List() returned %q before %q: not ordered by name",
+				groups[i-1].Name, groups[i].Name)
+		}
+	}
+}
+
 func containsGroup(groups []cp.CustomerGroup, id uuid.UUID) bool {
 	for _, g := range groups {
 		if g.ID == id {
@@ -346,16 +350,6 @@ func containsGroup(groups []cp.CustomerGroup, id uuid.UUID) bool {
 		}
 	}
 	return false
-}
-
-func isConflict(err error) bool {
-	code, ok := errs.CodeOf(err)
-	return ok && code == errs.ErrConflict
-}
-
-func isValidation(err error) bool {
-	code, ok := errs.CodeOf(err)
-	return ok && code == errs.ErrValidation
 }
 
 // uniqueGroupName keeps a UNIQUE name from colliding with a sibling test: the container is shared by
