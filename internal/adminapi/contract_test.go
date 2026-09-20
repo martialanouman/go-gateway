@@ -25,6 +25,14 @@ type opRef struct {
 // end of the milestone. An operation absent here is one nothing asserts, so the list is kept honest
 // by TestGeneratedSpecRegistersNoOperationOutsideTheM1Surface once every resource is in.
 var m1Operations = []opRef{
+	{"list-customer-groups", "get", "/admin/customer-groups"},
+	{"create-customer-group", "post", "/admin/customer-groups"},
+	{"get-customer-group", "get", "/admin/customer-groups/{id}"},
+	{"update-customer-group", "patch", "/admin/customer-groups/{id}"},
+	{"delete-customer-group", "delete", "/admin/customer-groups/{id}"},
+	{"list-group-customers", "get", "/admin/customer-groups/{id}/customers"},
+	{"set-customer-group", "patch", "/admin/customers/{id}/group"},
+
 	{"list-customers", "get", "/admin/customers"},
 	{"create-customer", "post", "/admin/customers"},
 	{"get-customer", "get", "/admin/customers/{id}"},
@@ -159,14 +167,6 @@ type deferredOp struct{ reason, step string }
 // unclassified entry here is a typed client calling a 404. Kept honest by
 // TestEveryContractOperationIsServedOrDeferred, which also forbids overlapping with m1Operations.
 var deferred = map[string]deferredOp{
-	// Customer groups (§6.17): the table, the FK and two read filters exist.
-	"list-customer-groups":  {"no admin surface: no group is creatable", "step-330"},
-	"create-customer-group": {"no admin surface: no group is creatable", "step-330"},
-	"get-customer-group":    {"no admin surface: no group is creatable", "step-330"},
-	"update-customer-group": {"no admin surface: no group is creatable", "step-330"},
-	"delete-customer-group": {"no admin surface: no group is creatable", "step-330"},
-	"list-group-customers":  {"no admin surface: no group is creatable", "step-330"},
-	"set-customer-group":    {"membership is set at create, never after", "step-330"},
 
 	// Webhooks: internal/storage/postgres/webhooks.go shipped in M4.
 	"list-webhooks":  {"repo shipped in M4, admin never written", "step-340"},

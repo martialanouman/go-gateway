@@ -52,6 +52,88 @@ request:
       value: 00000000-0000-0000-0000-000000000000
 items:
   - info:
+      name: Customer Groups
+      type: folder
+    items:
+      - info:
+          name: list-customer-groups
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/customer-groups'
+          params:
+            - name: status
+              value: active
+              type: query
+              disabled: true
+        docs: List customer groups (scope admin:read).
+      - info:
+          name: create-customer-group
+          type: http
+        http:
+          method: POST
+          url: '{{baseUrl}}/admin/customer-groups'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "name": "West-African carriers",
+                "description": "Segmentation only — a group carries no balance or quota."
+              }
+        docs: Create a customer group (scope admin:write). A duplicate name is 409.
+      - info:
+          name: get-customer-group
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/customer-groups/{{groupId}}'
+        docs: Get a customer group (scope admin:read).
+      - info:
+          name: update-customer-group
+          type: http
+        http:
+          method: PATCH
+          url: '{{baseUrl}}/admin/customer-groups/{{groupId}}'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "name": "West-African carriers",
+                "status": "active"
+              }
+        docs: Update a customer group (scope admin:write). Renaming onto a taken name is 409.
+      - info:
+          name: delete-customer-group
+          type: http
+        http:
+          method: DELETE
+          url: '{{baseUrl}}/admin/customer-groups/{{groupId}}'
+        docs: >-
+          Delete a customer group (scope admin:write). Non-destructive: its customers are detached
+          (group_id -> null), never deleted.
+      - info:
+          name: list-group-customers
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/customer-groups/{{groupId}}/customers'
+          params:
+            - name: cursor
+              value: ''
+              type: query
+              disabled: true
+            - name: limit
+              value: '50'
+              type: query
+              disabled: true
+        docs: List the customers in a group (scope admin:read).
+  - info:
       name: Customers
       type: folder
     items:
@@ -131,6 +213,24 @@ items:
           method: DELETE
           url: '{{baseUrl}}/admin/customers/{{customerId}}'
         docs: Delete a customer (scope admin:write).
+      - info:
+          name: set-customer-group
+          type: http
+        http:
+          method: PATCH
+          url: '{{baseUrl}}/admin/customers/{{customerId}}/group'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "group_id": "{{groupId}}"
+              }
+        docs: >-
+          Set or clear a customer's group (scope admin:write). group_id is required; send null to
+          detach. An unknown group is 422.
       - info:
           name: suspend-customer
           type: http

@@ -19,8 +19,9 @@ import (
 type fakeCustomerStore struct {
 	mu        sync.Mutex
 	byID      map[uuid.UUID]cp.Customer
-	order     []uuid.UUID
-	createErr error // when set, Create returns it (to drive 409/422 paths)
+	order       []uuid.UUID
+	createErr   error // when set, Create returns it (to drive 409/422 paths)
+	setGroupErr error // when set, SetGroup returns it (the FK rejection behind set-customer-group's 422)
 }
 
 func newFakeCustomerStore() *fakeCustomerStore {
@@ -74,6 +75,12 @@ func (s *fakeCustomerStore) List(_ context.Context, f cp.CustomerFilter) (cp.Pag
 		if f.Status != nil && c.Status != *f.Status {
 			continue
 		}
+		// The group filter is modelled here because list-group-customers resolves membership through
+		// it: a double that ignored it would return every customer and let a handler that forgot the
+		// filter pass.
+		if f.GroupID != nil && (c.GroupID == nil || *c.GroupID != *f.GroupID) {
+			continue
+		}
 		items = append(items, c)
 	}
 	return cp.Page[cp.Customer]{Items: items}, nil
@@ -116,6 +123,114 @@ func (s *fakeCustomerStore) Suspend(_ context.Context, id uuid.UUID) (cp.Custome
 	c.Status = cp.CustomerSuspended
 	s.byID[id] = c
 	return c, nil
+}
+
+// SetGroup mirrors the repository: a nil groupID CLEARS the membership rather than leaving it
+// alone, and an unknown group is the FK rejection the caller injects through setGroupErr.
+func (s *fakeCustomerStore) SetGroup(_ context.Context, id uuid.UUID, groupID *uuid.UUID) (cp.Customer, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.setGroupErr != nil {
+		return cp.Customer{}, s.setGroupErr
+	}
+	c, ok := s.byID[id]
+	if !ok {
+		return cp.Customer{}, errs.ErrNotFound
+	}
+	c.GroupID = groupID
+	s.byID[id] = c
+	return c, nil
+}
+
+// fakeCustomerGroupStore is an in-memory CustomerGroupStore for handler unit tests.
+type fakeCustomerGroupStore struct {
+	mu        sync.Mutex
+	byID      map[uuid.UUID]cp.CustomerGroup
+	order     []uuid.UUID
+	createErr error // when set, Create returns it (to drive the 409 path)
+}
+
+func newFakeCustomerGroupStore() *fakeCustomerGroupStore {
+	return &fakeCustomerGroupStore{byID: map[uuid.UUID]cp.CustomerGroup{}}
+}
+
+// seed inserts a group directly, for the tests that need one to already exist.
+func (s *fakeCustomerGroupStore) seed(g cp.CustomerGroup) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.byID[g.ID] = g
+	s.order = append(s.order, g.ID)
+}
+
+func (s *fakeCustomerGroupStore) Create(_ context.Context, in cp.NewCustomerGroup) (cp.CustomerGroup, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.createErr != nil {
+		return cp.CustomerGroup{}, s.createErr
+	}
+	g := cp.CustomerGroup{
+		ID:          uuid.New(),
+		Name:        in.Name,
+		Description: in.Description,
+		Status:      cp.CustomerGroupActive,
+	}
+	s.byID[g.ID] = g
+	s.order = append(s.order, g.ID)
+	return g, nil
+}
+
+func (s *fakeCustomerGroupStore) Get(_ context.Context, id uuid.UUID) (cp.CustomerGroup, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	g, ok := s.byID[id]
+	if !ok {
+		return cp.CustomerGroup{}, errs.ErrNotFound
+	}
+	return g, nil
+}
+
+func (s *fakeCustomerGroupStore) List(_ context.Context, f cp.CustomerGroupFilter) ([]cp.CustomerGroup, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]cp.CustomerGroup, 0, len(s.order))
+	for _, id := range s.order {
+		g := s.byID[id]
+		if f.Status != nil && g.Status != *f.Status {
+			continue
+		}
+		out = append(out, g)
+	}
+	return out, nil
+}
+
+func (s *fakeCustomerGroupStore) Update(_ context.Context, id uuid.UUID, p cp.CustomerGroupPatch) (cp.CustomerGroup, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	g, ok := s.byID[id]
+	if !ok {
+		return cp.CustomerGroup{}, errs.ErrNotFound
+	}
+	if p.Name != nil {
+		g.Name = *p.Name
+	}
+	if p.Description != nil {
+		g.Description = p.Description
+	}
+	if p.Status != nil {
+		g.Status = *p.Status
+	}
+	s.byID[id] = g
+	return g, nil
+}
+
+func (s *fakeCustomerGroupStore) Delete(_ context.Context, id uuid.UUID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.byID[id]; !ok {
+		return errs.ErrNotFound
+	}
+	delete(s.byID, id)
+	return nil
 }
 
 // fakeAccountStore is an in-memory AccountStore for handler unit tests.

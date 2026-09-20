@@ -355,6 +355,7 @@ func newHTTPServer(
 		Trace:            clickhouse.NewCDRReader(st.ch),
 		Quit:             feed.quit,
 		Customers:        postgres.NewCustomerRepo(st.pg),
+		CustomerGroups:   postgres.NewCustomerGroupRepo(st.pg),
 		Accounts:         postgres.NewAccountRepo(st.pg),
 		Credentials:      postgres.NewCredentialRepo(st.pg),
 		Connectors:       postgres.NewConnectorRepo(st.pg),

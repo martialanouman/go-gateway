@@ -200,6 +200,14 @@ func registerCustomers(api huma.API, store CustomerStore, disc Disconnector, log
 	}, h.delete)
 
 	register(api, huma.Operation{
+		OperationID: "set-customer-group", Method: http.MethodPatch, Path: "/admin/customers/{id}/group",
+		Summary: "Set (or clear) a customer's group", Tags: []string{"Customers"},
+		Security: scopeSecurity(auth.ScopeAdminWrite),
+		Errors: []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound,
+			http.StatusUnprocessableEntity},
+	}, h.setGroup)
+
+	register(api, huma.Operation{
 		OperationID: "suspend-customer", Method: http.MethodPost, Path: "/admin/customers/{id}/suspend",
 		Summary: "Suspend a customer (cascades to its accounts)", Tags: []string{"Customers"},
 		Security: scopeSecurity(auth.ScopeAdminWrite),
@@ -343,3 +351,35 @@ func (h *customerHandlers) suspend(ctx context.Context, in *customerIDInput) (*c
 
 // deref returns the pointed-to bool, or false when nil.
 func deref(p *bool) bool { return p != nil && *p }
+
+// setCustomerGroupBody is the inline body of set-customer-group. GroupID is a bare pointer with no
+// omitempty on purpose: that is what makes huma emit `type: [string, "null"]` AND keep the field
+// required, which is the contract's shape. It is also what removes the absent-versus-null question
+// this endpoint would otherwise have to answer — the field is always there, and null means detach.
+type setCustomerGroupBody struct {
+	GroupID *string `json:"group_id" format:"uuid"`
+}
+
+type setCustomerGroupInput struct {
+	ID   string `path:"id" format:"uuid"`
+	Body setCustomerGroupBody
+}
+
+// setGroup changes a customer's group membership after creation — the half of the segmentation that
+// did not exist. It is its own endpoint rather than a field on update-customer: a second assignment
+// path would leave two ways to write the same column (§6.17).
+func (h *customerHandlers) setGroup(ctx context.Context, in *setCustomerGroupInput) (*customerOutput, error) {
+	id, err := uuid.Parse(in.ID)
+	if err != nil {
+		return nil, notFound("customer")
+	}
+	groupID, err := parseIDPtr("group_id", in.Body.GroupID)
+	if err != nil {
+		return nil, err
+	}
+	c, err := h.store.SetGroup(ctx, id, groupID)
+	if err != nil {
+		return nil, humaerr.FromError(err)
+	}
+	return &customerOutput{Body: toCustomerDTO(c)}, nil
+}
