@@ -64,17 +64,22 @@ paths:
       summary: List customer groups
       operationId: list-customer-groups
       parameters: [ { $ref: '#/components/parameters/Status' } ]
+      security: [ { OperatorBearer: [ admin:read ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/CustomerGroup' } } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
     post:
       tags: [Customer Groups]
       summary: Create a customer group
       operationId: create-customer-group
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CustomerGroupCreate' } } } }
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/CustomerGroup' } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/ValidationError' }
   /admin/customer-groups/{id}:
@@ -83,25 +88,37 @@ paths:
       tags: [Customer Groups]
       summary: Get a customer group
       operationId: get-customer-group
+      security: [ { OperatorBearer: [ admin:read ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/CustomerGroup' } } } }
         '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
     patch:
       tags: [Customer Groups]
       summary: Update a customer group
       operationId: update-customer-group
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CustomerGroupUpdate' } } } }
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/CustomerGroup' } } } }
         '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/ValidationError' }
     delete:
       tags: [Customer Groups]
       summary: Delete a group (non-destructive — detaches customers, group_id -> null)
       operationId: delete-customer-group
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '204': { description: Deleted. }
         '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
   /admin/customer-groups/{id}/customers:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
     get:
@@ -109,10 +126,13 @@ paths:
       summary: List customers in a group
       operationId: list-group-customers
       parameters: [ { $ref: '#/components/parameters/Cursor' }, { $ref: '#/components/parameters/Limit' } ]
+      security: [ { OperatorBearer: [ admin:read ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/CustomerPage' } } } }
         '404': { $ref: '#/components/responses/NotFound' }
-
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
   # ============================ CUSTOMERS (§6.18) ============================
   /admin/customers:
     get:
@@ -185,9 +205,13 @@ paths:
       summary: Set (or clear) a customer's group
       operationId: set-customer-group
       requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { group_id: { type: [string, "null"], format: uuid } }, required: [group_id] } } } }
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Customer' } } } }
         '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
   /admin/customers/{id}/suspend:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
     post:
