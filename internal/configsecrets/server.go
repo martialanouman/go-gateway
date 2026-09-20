@@ -3,8 +3,10 @@
 // hashed — an outbound bind puts its password in clear in the bind_transceiver PDU (SMPP v3.4 §4.1.1) —
 // so their stored form has to be reversible. ADR-0016.
 //
-// It is stateless on purpose: no store, no customer, no key lifecycle. That is what separates it from
-// internal/contentkeys, which shares the same KMS and the same binary but is none of those things.
+// It is stateless on purpose: no store, no customer, no key lifecycle — unlike internal/contentkeys,
+// with which it shares a binary AND a master key. What actually keeps the two apart is the domain tag
+// below plus the per-method authorisation in cmd/content-key-svc; being a separate service only makes
+// that legible.
 package configsecrets
 
 import (

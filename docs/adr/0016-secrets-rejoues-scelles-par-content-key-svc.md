@@ -39,8 +39,26 @@ détenteur de la clé maître (ADR-0011) — est ce qui le scelle et le descelle
   `Seal(plaintext) → {kms_key_ref, sealed}` · `Open(kms_key_ref, sealed) → plaintext`.
 - **Pas une extension de `ContentKeys`.** Celui-ci est scopé client et *stocké* (cycle de vie
   `active`/`retired`/`destroyed`, crypto-shred) ; `ConfigSecrets` n'a ni store, ni `customer_id`, ni
-  rotation. La séparation est ce qui permettra d'autoriser un appelant sur `ConfigSecrets/Open` **sans**
-  lui ouvrir `ContentKeys/GetContentEncryptionKey`.
+  rotation.
+- **Deux séparations sont nécessaires, et un service distinct n'en fournit AUCUNE par lui-même.** La
+  revue de conception de cette step l'a établi en exhibant les deux trous ; ils sont refermés ici, et la
+  formulation initiale de cet ADR — « la séparation est ce qui permettra d'autoriser un appelant sur
+  `Open` sans lui ouvrir les clés de contenu » — était fausse telle quelle :
+  - **Séparation cryptographique.** Les deux services partagent la même KMS, et `LocalKMS` ne lie que son
+    `KeyRef` en AAD : tout ce qui est scellé sous la clé maître vit dans un seul espace. Sans discriminant,
+    `Open` rendait la DEK d'un client à qui lui passait un `content_keys.wrapped_key`, et `Seal`
+    fabriquait un `wrapped_key` valide à partir d'octets choisis. **Un tag de domaine** est préfixé au
+    clair avant scellement et exigé au déballage ; il fait exactement 32 octets — la taille d'une DEK — et
+    `Seal` refuse un secret vide, donc ce service ne peut pas produire une clé de données. `contentkeys`
+    refuse symétriquement toute clé déballée qui n'en a pas la taille.
+  - **Séparation d'autorisation.** L'allowlist mTLS est vérifiée au **handshake** : elle admet un binaire
+    et ne voit jamais la méthode. Enregistrer `ConfigSecrets` sur ce listener donnait donc immédiatement à
+    `router-svc` de quoi ouvrir tous les mots de passe de bind. **Un intercepteur** autorise par méthode.
+    Sa liste d'appelants n'est pas de la configuration : quel service peut sceller un secret du plan de
+    contrôle est une propriété de ce service, et une variable d'environnement l'élargirait par accident.
+
+  Le service distinct garde sa valeur — il rend le filtrage lisible et la cohésion juste — mais c'est
+  l'intercepteur qui autorise, et le tag qui sépare.
 - **`WrapDataKey` directement sur les octets du secret**, sans enveloppe par secret. Un mot de passe SMPP
   fait au plus 8 octets, une DEK en ferait 32 : l'enveloppe coûterait quatre fois le secret sans rien
   protéger de plus. La borne de nonce GCM (~2³² scellements par clé) qui justifie le HKDF-par-message de
@@ -75,8 +93,9 @@ fil — jamais la clé maître.
 **Pros :** aucune seconde clé maître ; aucune dépendance nouvelle pour le dépositaire ; le précédent
 existe et il est documenté (`GetContentEncryptionKey` rend déjà du matériel de clé en clair sur ce canal,
 sous mTLS et allowlist par SAN) ; le plan de contrôle reste la source de vérité du connecteur.
-**Cons :** le cercle des appelants du détenteur de la KEK s'élargit ; il faudra un filtrage par méthode,
-et pas seulement par binaire, quand un pod du plan de données entrera dans l'allowlist.
+**Cons :** le cercle des appelants du détenteur de la KEK s'élargit. Et — c'est le coût que cette
+décision a d'abord sous-estimé — partager la KMS exige de séparer explicitement les deux domaines, dans
+les deux sens, parce que rien dans le chiffrement ne les distingue autrement.
 
 ### Option B : référence à un secret externe (`Secret` Kubernetes, coffre)
 La colonne ne porte qu'un nom, le pod monte la valeur ; aucun secret ne touche Postgres.
@@ -99,9 +118,9 @@ une dans un process large, ce n'est pas « moins de process », c'est le double.
 - **Plus facile :** faire tourner un mot de passe de connecteur par l'Admin API et que ça veuille dire
   quelque chose ; répondre « aucun secret rejouable n'est en clair au repos » sans exception à énoncer.
 - **Plus difficile / limites :**
-  - Le jour où `connector-pool-svc` descellera son mot de passe, l'allowlist doit devenir **SAN × méthode**
-    et non plus SAN seul (`config.TLS.AllowedClients` est par binaire) : le pool a besoin de
-    `ConfigSecrets/Open`, jamais de `ContentKeys`.
+  - Le jour où `connector-pool-svc` descellera son mot de passe, il rejoint `configSecretsCallers`
+    (`cmd/content-key-svc/authz.go`) et **rien d'autre** : l'allowlist TLS reste par binaire, c'est
+    l'intercepteur qui distingue les méthodes.
   - `admin-api-svc` ne peut plus créer ni modifier un connecteur si `content-key-svc` est indisponible.
     C'est une opération de configuration, pas un chemin chaud ; l'indisponibilité est visible et bornée.
   - Une rotation de clé maître doit desceller et resceller les lignes existantes. `kms_key_ref` rend

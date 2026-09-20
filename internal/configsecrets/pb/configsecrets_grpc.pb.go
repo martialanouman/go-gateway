@@ -40,12 +40,18 @@ const (
 //
 // ConfigSecrets is DELIBERATELY not part of ContentKeys, which is customer-scoped and stateful (a key
 // store, an active/retired/destroyed lifecycle, crypto-shred). This one is stateless: no store, no
-// customer, no rotation. Keeping them apart is what will let a data-plane caller be allowed on
-// ConfigSecrets/Open without being allowed on ContentKeys/GetContentEncryptionKey the day it needs its
-// bind password from the control plane.
+// customer, no rotation.
 //
-// Both RPCs handle plaintext secrets and are served over mutual TLS to the callers this service names
-// (step-300b). A plaintext must never be logged nor persisted — only the sealed form is stored.
+// Being a separate service does NOT by itself keep the two apart — the mTLS allowlist is checked at the
+// handshake, so it admits a binary and never sees the method, and both services share one master key
+// whose ciphertexts are indistinguishable. Two mechanisms do the keeping apart, and the separate service
+// only makes them legible:
+//   - cmd/content-key-svc/authz.go authorises these RPCs per METHOD, to callers it names.
+//   - internal/configsecrets prefixes a domain tag inside the ciphertext, so a content key cannot be
+//     opened here and nothing sealed here can pass for a content key.
+//
+// Both RPCs handle plaintext secrets. A plaintext must never be logged nor persisted — only the sealed
+// form is stored.
 type ConfigSecretsClient interface {
 	// Seal encrypts a secret under the KMS master key and returns the form to persist, plus the
 	// reference of the key that sealed it. The plaintext is not retained.
@@ -88,12 +94,18 @@ func (c *configSecretsClient) Open(ctx context.Context, in *OpenRequest, opts ..
 //
 // ConfigSecrets is DELIBERATELY not part of ContentKeys, which is customer-scoped and stateful (a key
 // store, an active/retired/destroyed lifecycle, crypto-shred). This one is stateless: no store, no
-// customer, no rotation. Keeping them apart is what will let a data-plane caller be allowed on
-// ConfigSecrets/Open without being allowed on ContentKeys/GetContentEncryptionKey the day it needs its
-// bind password from the control plane.
+// customer, no rotation.
 //
-// Both RPCs handle plaintext secrets and are served over mutual TLS to the callers this service names
-// (step-300b). A plaintext must never be logged nor persisted — only the sealed form is stored.
+// Being a separate service does NOT by itself keep the two apart — the mTLS allowlist is checked at the
+// handshake, so it admits a binary and never sees the method, and both services share one master key
+// whose ciphertexts are indistinguishable. Two mechanisms do the keeping apart, and the separate service
+// only makes them legible:
+//   - cmd/content-key-svc/authz.go authorises these RPCs per METHOD, to callers it names.
+//   - internal/configsecrets prefixes a domain tag inside the ciphertext, so a content key cannot be
+//     opened here and nothing sealed here can pass for a content key.
+//
+// Both RPCs handle plaintext secrets. A plaintext must never be logged nor persisted — only the sealed
+// form is stored.
 type ConfigSecretsServer interface {
 	// Seal encrypts a secret under the KMS master key and returns the form to persist, plus the
 	// reference of the key that sealed it. The plaintext is not retained.
