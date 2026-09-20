@@ -171,6 +171,49 @@ func TestDeleteCustomerGroupReturns204(t *testing.T) {
 	if w.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204; body=%s", w.Code, w.Body)
 	}
+
+	// The 204 alone says nothing about what the list still shows: a store that forgets the id in
+	// one index and keeps it in another answers 204 and then serves a nameless ghost.
+	w = httptest.NewRecorder()
+	api.ServeHTTP(w, authed(t, http.MethodGet, "/v1/admin/customer-groups", ""))
+	var got []map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &got)
+	if len(got) != 0 {
+		t.Errorf("list returned %v after the delete, want empty", got)
+	}
+}
+
+// TestCustomerGroupNameCannotBeEmpty: name is the group's only human label, and it is UNIQUE. An
+// empty one blanks the row in every operator picker and squats the unique index for good — so both
+// bodies declare minLength 1, and the pointer on PATCH makes "absent" the only way to leave the
+// name alone.
+func TestCustomerGroupNameCannotBeEmpty(t *testing.T) {
+	groups := newFakeCustomerGroupStore()
+	id := uuid.New()
+	groups.seed(cp.CustomerGroup{ID: id, Name: "Alpha", Status: cp.CustomerGroupActive})
+	api := newGroupAPI(t, groups, newFakeCustomerStore())
+
+	for _, tc := range []struct{ name, method, path string }{
+		{"create", http.MethodPost, "/v1/admin/customer-groups"},
+		{"update", http.MethodPatch, "/v1/admin/customer-groups/" + id.String()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			api.ServeHTTP(w, authed(t, tc.method, tc.path, `{"name":""}`))
+
+			if w.Code != http.StatusUnprocessableEntity {
+				t.Fatalf("status = %d, want 422; body=%s", w.Code, w.Body)
+			}
+		})
+	}
+
+	w := httptest.NewRecorder()
+	api.ServeHTTP(w, authed(t, http.MethodGet, "/v1/admin/customer-groups/"+id.String(), ""))
+	var got map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &got)
+	if got["name"] != "Alpha" {
+		t.Errorf("name = %v, want Alpha — the rejected PATCH still reached the store", got["name"])
+	}
 }
 
 func TestDeleteMissingCustomerGroupIs404(t *testing.T) {

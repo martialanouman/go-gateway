@@ -81,6 +81,13 @@ Additif : `oasdiff breaking` sur cette révision complète sort **0 ERR** (règl
 `api-security-added`, `response-non-success-status-added`, toutes INFO). Donc **bump mineur**
 `api/package.json` 4.2.1 → 4.3.0, comme 2.0.0 → 2.1.0 en step-149.
 
+**Révisé après revue** : `minLength: 1` sur `name` dans `CustomerGroupCreate` et
+`CustomerGroupUpdate` — sans elle, `PATCH {"name":""}` répondait 200 et effaçait le seul libellé
+humain du groupe, sur une colonne `UNIQUE`. Les deux schémas existaient déjà sur `main` (les
+opérations y étaient `deferred`), donc `oasdiff` classe la restriction
+`request-property-min-length-increased` en **ERR** : bump **majeur** 4.2.1 → **5.0.0**. La rupture
+est formelle — `deferred` veut dire 404, aucun consommateur ne pouvait appeler ces opérations.
+
 Pas de 409 sur `delete` : le `ON DELETE SET NULL` ne bloque rien. Le 422 de `set-customer-group`
 tranche « groupe inexistant ? » : `internal/storage/postgres/pgerr.go:37-40` traduit déjà une
 violation de FK en 422 et l'assume en commentaire — donc **aucun pré-contrôle d'existence du groupe**,
@@ -141,7 +148,8 @@ attendant step-310.
 
 - [x] `make check` vert (lint · `test -race` · govulncheck · contrats)
 - [x] les 7 opérations servies, conformes au contrat — **contrat corrigé**, `security` et codes
-      d'échec d'auth ajoutés aux 7, bump **mineur** `api/package.json` 4.2.1 → 4.3.0. La prédiction
+      d'échec d'auth ajoutés aux 7, puis `minLength: 1` sur `name` après revue — bump **majeur**
+      `api/package.json` 4.2.1 → 5.0.0. La prédiction
       « aucun changement de contrat attendu » de cette fiche était fausse : voir `## Design arrêté`
       et le précédent step-149
 - [x] une opération générée sans `security` fait échouer la suite (la garde pour steps 340→390)

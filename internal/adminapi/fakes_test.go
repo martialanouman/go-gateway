@@ -2,6 +2,7 @@ package adminapi_test
 
 import (
 	"context"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -110,6 +111,7 @@ func (s *fakeCustomerStore) Delete(_ context.Context, id uuid.UUID) error {
 		return errs.ErrNotFound
 	}
 	delete(s.byID, id)
+	s.order = slices.DeleteFunc(s.order, func(o uuid.UUID) bool { return o == id })
 	return nil
 }
 
@@ -230,6 +232,7 @@ func (s *fakeCustomerGroupStore) Delete(_ context.Context, id uuid.UUID) error {
 		return errs.ErrNotFound
 	}
 	delete(s.byID, id)
+	s.order = slices.DeleteFunc(s.order, func(o uuid.UUID) bool { return o == id })
 	return nil
 }
 

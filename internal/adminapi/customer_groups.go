@@ -39,13 +39,13 @@ func toCustomerGroupDTO(g cp.CustomerGroup) customerGroupDTO {
 
 // customerGroupCreateBody is the contract schema CustomerGroupCreate: only name is required.
 type customerGroupCreateBody struct {
-	Name        string  `json:"name"`
+	Name        string  `json:"name" minLength:"1"`
 	Description *string `json:"description,omitempty" nullable:"true"`
 }
 
 // customerGroupUpdateBody is the contract schema CustomerGroupUpdate: every field optional.
 type customerGroupUpdateBody struct {
-	Name        *string `json:"name,omitempty"`
+	Name        *string `json:"name,omitempty" minLength:"1" doc:"Omit to leave the name unchanged; the empty string is not a way to clear it."`
 	Description *string `json:"description,omitempty" nullable:"true"`
 	Status      *string `json:"status,omitempty" enum:"active,archived"`
 }
