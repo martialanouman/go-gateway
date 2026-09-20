@@ -17,8 +17,8 @@ import (
 // (guide-codage-go §6), not a mock framework: the handlers drive real branches — including a store
 // returning ErrConflict — in milliseconds, without Docker.
 type fakeCustomerStore struct {
-	mu        sync.Mutex
-	byID      map[uuid.UUID]cp.Customer
+	mu          sync.Mutex
+	byID        map[uuid.UUID]cp.Customer
 	order       []uuid.UUID
 	createErr   error // when set, Create returns it (to drive 409/422 paths)
 	setGroupErr error // when set, SetGroup returns it (the FK rejection behind set-customer-group's 422)

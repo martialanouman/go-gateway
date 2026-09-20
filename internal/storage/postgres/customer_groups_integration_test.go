@@ -225,14 +225,14 @@ func TestSetCustomerGroupDrivesBothGroupFilters(t *testing.T) {
 	insideAccount := newAccountFor(t, accounts, inside.ID)
 	outsideAccount := newAccountFor(t, accounts, outside.ID)
 
-	assertGroupFilters(t, ctx, customers, accounts, group.ID,
+	assertGroupFilters(ctx, t, customers, accounts, group.ID,
 		[]uuid.UUID{inside.ID}, []uuid.UUID{insideAccount})
 
 	// Joining the group moves the customer AND its account into both filters.
 	if _, err := customers.SetGroup(ctx, outside.ID, &group.ID); err != nil {
 		t.Fatalf("SetGroup(outside -> group) error = %v", err)
 	}
-	assertGroupFilters(t, ctx, customers, accounts, group.ID,
+	assertGroupFilters(ctx, t, customers, accounts, group.ID,
 		[]uuid.UUID{inside.ID, outside.ID}, []uuid.UUID{insideAccount, outsideAccount})
 
 	// Clearing it detaches without deleting: the customer survives, outside every group filter.
@@ -246,7 +246,7 @@ func TestSetCustomerGroupDrivesBothGroupFilters(t *testing.T) {
 	if detached.GroupID != nil {
 		t.Errorf("group_id = %v after SetGroup(nil), want NULL", *detached.GroupID)
 	}
-	assertGroupFilters(t, ctx, customers, accounts, group.ID,
+	assertGroupFilters(ctx, t, customers, accounts, group.ID,
 		[]uuid.UUID{outside.ID}, []uuid.UUID{outsideAccount})
 }
 
@@ -282,7 +282,7 @@ func TestSetCustomerGroupUnknownCustomerIsNotFound(t *testing.T) {
 
 // assertGroupFilters checks both ?groupId= filters at once: list-customers and list-smpp-accounts
 // resolve the same membership, and a change must move both or neither.
-func assertGroupFilters(t *testing.T, ctx context.Context, customers *postgres.CustomerRepo,
+func assertGroupFilters(ctx context.Context, t *testing.T, customers *postgres.CustomerRepo,
 	accounts *postgres.AccountRepo, groupID uuid.UUID, wantCustomers, wantAccounts []uuid.UUID,
 ) {
 	t.Helper()
