@@ -70,8 +70,8 @@ func (s *Server) Seal(ctx context.Context, req *pb.SealRequest) (*pb.SealRespons
 	// empty reference would store a secret that opens today and that a future KEK rotation cannot place.
 	// content.KMS does not promise a non-empty KeyRef — only LocalKMS happens to refuse one, and it is the
 	// implementation a real provider replaces.
-	keyRef := s.kms.KeyRef()
-	if keyRef == "" {
+	keyRef, keyRefErr := content.KeyRefOf(s.kms)
+	if keyRefErr != nil {
 		return nil, status.Error(codes.Internal, string(errs.ErrInternal))
 	}
 	sealed, err := s.kms.WrapDataKey(ctx, append(slices.Clone(domainTag), req.GetPlaintext()...))

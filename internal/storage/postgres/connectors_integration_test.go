@@ -180,3 +180,36 @@ func TestConnectorRepoRotatesTheSealedPasswordAndItsKeyRefTogether(t *testing.T)
 		t.Errorf("an unrelated patch disturbed the sealed password: %x / %q", got.Password.Sealed, got.Password.KMSKeyRef)
 	}
 }
+
+// A half-filled SealedSecret must write NEITHER column. The two are separate COALESCE arguments, and they
+// were asymmetric: a nil ciphertext becomes NULL and COALESCE keeps the stored one, while an empty key
+// reference becomes ” — not NULL — and COALESCE overwrites. Such a patch therefore kept the old
+// ciphertext and erased the reference naming its key, leaving a row that opens today and that a later KEK
+// rotation cannot place.
+func TestConnectorRepoIgnoresAHalfFilledSealedPassword(t *testing.T) {
+	pool := pgtest.Pool(t)
+	repo := postgres.NewConnectorRepo(pool)
+	ctx := context.Background()
+
+	stored := cp.SealedSecret{Sealed: []byte{0xde, 0xad}, KMSKeyRef: "kek-before"}
+	c, err := repo.Create(ctx, cp.NewConnector{
+		Name: "smsc-halfpatch", Host: "h", Port: 2775, BindType: cp.BindTRX, SystemID: "s", Password: stored,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	for name, half := range map[string]cp.SealedSecret{
+		"no ciphertext":    {KMSKeyRef: "kek-after"},
+		"no key reference": {Sealed: []byte{0xbe, 0xef}},
+	} {
+		got, err := repo.Update(ctx, c.ID, cp.ConnectorPatch{Password: &half})
+		if err != nil {
+			t.Fatalf("Update (%s): %v", name, err)
+		}
+		if !bytes.Equal(got.Password.Sealed, stored.Sealed) || got.Password.KMSKeyRef != stored.KMSKeyRef {
+			t.Errorf("%s: the row became %x / %q, want the stored pair %x / %q untouched",
+				name, got.Password.Sealed, got.Password.KMSKeyRef, stored.Sealed, stored.KMSKeyRef)
+		}
+	}
+}

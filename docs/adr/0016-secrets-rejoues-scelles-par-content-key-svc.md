@@ -65,7 +65,15 @@ détenteur de la clé maître (ADR-0011) — est ce qui le scelle et le descelle
   `SealBody` est hors d'atteinte pour des écritures de configuration. Le nonce étant tiré à chaque appel,
   deux connecteurs au même mot de passe ne produisent pas le même chiffré.
 - **`kms_key_ref` est persisté à côté du chiffré**, comme `content_keys.kms_key_ref`, pour qu'une
-  rotation de clé maître reste possible sans deviner sous quelle KEK une ligne a été scellée.
+  rotation de clé maître reste possible sans deviner sous quelle KEK une ligne a été scellée. Il est
+  refusé vide à l'écriture (`content.KeyRefOf`) : la colonne est `NOT NULL`, mais `''` la satisfait, et
+  une ligne sans domicile n'échoue qu'au moment où la clé qu'il fallait a disparu.
+- **L'identifiant de ligne n'est PAS lié en données additionnelles.** La question se pose — permuter deux
+  chiffrés entre lignes rendrait un connecteur joignable avec le mot de passe d'un autre — et la réponse
+  est qu'une telle permutation exige d'écrire en base, et que qui écrit en base peut tout aussi bien
+  changer le `host` du connecteur. L'AAD n'achèterait rien contre un attaquant qui a déjà cette main. Ce
+  qui EST lié, et qui compte, c'est le domaine (voir ci-dessus) : là, l'attaque ne demandait aucune
+  écriture.
 - **Les colonnes sont renommées**, parce que l'ancien nom mentait :
 
   | Table | Avant | Après |

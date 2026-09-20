@@ -65,12 +65,13 @@ func (r *ExternalBillingProviderRepo) Create(ctx context.Context, in cp.NewExter
 
 // Update applies a partial change and returns the updated provider, or ErrNotFound.
 func (r *ExternalBillingProviderRepo) Update(ctx context.Context, id uuid.UUID, p cp.ExternalBillingProviderPatch) (cp.ExternalBillingProvider, error) {
+	acSealed, acKeyRef := sealedPair(p.AuthConfig)
 	row, err := r.q.UpdateExternalProvider(ctx, sqlcgen.UpdateExternalProviderParams{
 		ID:                  id,
 		Name:                p.Name,
 		BaseUrl:             p.BaseURL,
-		AuthConfigSealed:    sealedBytes(p.AuthConfig),
-		AuthConfigKmsKeyRef: sealedKeyRef(p.AuthConfig),
+		AuthConfigSealed:    acSealed,
+		AuthConfigKmsKeyRef: acKeyRef,
 		Mode:                p.Mode,
 		CacheTtlMs:          i32ptr(p.CacheTTLMs),
 		SyncCallTimeoutMs:   i32ptr(p.SyncCallTimeoutMs),

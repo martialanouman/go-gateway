@@ -164,11 +164,16 @@ func (s *ContentKeyServer) newWrappedDataKey(ctx context.Context) ([]byte, strin
 	if err != nil {
 		return nil, "", err
 	}
+	// Before the wrap, so a KMS that names no key writes nothing at all.
+	keyRef, err := content.KeyRefOf(s.kms)
+	if err != nil {
+		return nil, "", err
+	}
 	wrapped, err := s.kms.WrapDataKey(ctx, dek)
 	if err != nil {
 		return nil, "", err
 	}
-	return wrapped, s.kms.KeyRef(), nil
+	return wrapped, keyRef, nil
 }
 
 // contentKeyResponse maps a domain key to its gRPC metadata — never wrapped_key or any plaintext.

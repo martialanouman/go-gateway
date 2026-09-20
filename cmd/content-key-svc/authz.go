@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"maps"
-	"slices"
 	"strings"
 
 	"google.golang.org/grpc"
@@ -17,8 +15,10 @@ import (
 // service may seal a control-plane secret is a property of this service, and a deployment that could widen
 // it by an environment variable would widen it by accident.
 //
-// connector-pool-svc joins this list the day it reads its bind password from the control plane rather than
-// from CONNECTOR_PASSWORD — on Open alone. See debts/ancre-de-confiance-par-connecteur.md.
+// It authorises a SERVICE, not a service/method pair: a name here gets Seal as well as Open. That is
+// enough while admin-api-svc is the only caller and needs both. connector-pool-svc joins the day it reads
+// its bind password from the control plane — it will need Open alone, and if that distinction matters then,
+// this map has to carry methods. See debts/ancre-de-confiance-par-connecteur.md.
 var configSecretsCallers = map[string]bool{"admin-api-svc": true}
 
 // authorizeConfigSecrets refuses ConfigSecrets to callers that are admitted to this port for ContentKeys.
@@ -45,10 +45,10 @@ func authorizeConfigSecrets(ctx context.Context, fullMethod string) error {
 			return nil
 		}
 	}
-	// Both halves are named, as tlsconf's own allowlist does: neither the identity presented nor the one
-	// expected is a secret, and a refusal that said neither would be undebuggable.
-	return status.Errorf(codes.PermissionDenied, "client identity %v is not allowed to call config secrets %v",
-		names, slices.Sorted(maps.Keys(configSecretsCallers)))
+	// Only the identity presented, which the caller already knows. tlsconf's allowlist names both halves,
+	// but its message never reaches anyone — TLS answers "bad certificate" and cuts. This one travels the
+	// wire, so the list of who IS allowed stays on this side.
+	return status.Errorf(codes.PermissionDenied, "client identity %v is not allowed to call config secrets", names)
 }
 
 // peerDNSNames returns the DNS SANs of the caller's verified certificate — ALL of them, matching what

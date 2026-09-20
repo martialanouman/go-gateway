@@ -488,8 +488,10 @@ func TestNewAdminAppWiresTheSecretSealer(t *testing.T) {
 	w := httptest.NewRecorder()
 	app.http.Handler.ServeHTTP(w, req)
 
-	if strings.Contains(w.Body.String(), "no secret sealer configured") {
-		t.Errorf("newAdminApp built its Deps without a SecretSealer: %s", w.Body)
+	// The positive half matters as much: asserting only an ABSENCE would stay green if the route vanished,
+	// or if the message were renamed while the Deps line was dropped.
+	if !strings.Contains(w.Body.String(), "seal connector password") {
+		t.Errorf("want the failure of a WIRED sealer that cannot reach the key service, got %d: %s", w.Code, w.Body)
 	}
 	// The password must not come back in the failure either, whichever failure it is.
 	if strings.Contains(w.Body.String(), "s3cr3t") {

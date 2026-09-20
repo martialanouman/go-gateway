@@ -3,6 +3,7 @@ package adminapi_test
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -197,6 +198,12 @@ func TestPatchConnectorSealsTheRotatedPassword(t *testing.T) {
 	}
 }
 
+// The canaries a read response must never carry, in any encoding.
+const (
+	sealedCanary = "SEALED-CANARY"
+	keyRefCanary = "KEYREF-CANARY"
+)
+
 // step-295 ADDED a leak surface that did not exist before: cp.Connector now carries the sealed password,
 // where the type previously had no password field at all ("write-only: it is hashed on the way in and never
 // read back, so it has no field here"). Nothing but toConnectorDTO's shape keeps it off the wire, and a
@@ -218,7 +225,7 @@ func TestReadingAConnectorNeverReturnsTheSealedPassword(t *testing.T) {
 	id := created["id"].(string)
 
 	// A recognisable stored value, as Postgres would hand it back.
-	store.setPassword(uuid.MustParse(id), cp.SealedSecret{Sealed: []byte("SEALED-CANARY"), KMSKeyRef: "KEYREF-CANARY"})
+	store.setPassword(uuid.MustParse(id), cp.SealedSecret{Sealed: []byte(sealedCanary), KMSKeyRef: keyRefCanary})
 
 	for _, path := range []string{"/v1/admin/connectors", "/v1/admin/connectors/" + id} {
 		w := httptest.NewRecorder()
@@ -226,7 +233,14 @@ func TestReadingAConnectorNeverReturnsTheSealedPassword(t *testing.T) {
 		if w.Code != http.StatusOK {
 			t.Fatalf("GET %s: status = %d; body=%s", path, w.Code, w.Body)
 		}
-		for _, canary := range []string{"SEALED-CANARY", "KEYREF-CANARY", "password"} {
+		// The base64 form is the one that would actually appear: encoding/json renders a []byte that way,
+		// so a DTO field carrying the sealed bytes publishes "U0VBTEVELUNBTkFSWQ==" and never the literal
+		// canary. Derived from the canary rather than written out, so the two cannot drift apart.
+		for _, canary := range []string{
+			sealedCanary, base64.StdEncoding.EncodeToString([]byte(sealedCanary)),
+			keyRefCanary, base64.StdEncoding.EncodeToString([]byte(keyRefCanary)),
+			"password",
+		} {
 			if strings.Contains(w.Body.String(), canary) {
 				t.Errorf("GET %s leaks %q: %s", path, canary, w.Body)
 			}

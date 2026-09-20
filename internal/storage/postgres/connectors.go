@@ -113,6 +113,7 @@ func (r *ConnectorRepo) List(ctx context.Context) ([]cp.Connector, error) {
 
 // Update applies a partial change and returns the connector, or ErrNotFound.
 func (r *ConnectorRepo) Update(ctx context.Context, id uuid.UUID, p cp.ConnectorPatch) (cp.Connector, error) {
+	pwSealed, pwKeyRef := sealedPair(p.Password)
 	tls, err := jsonbBytes(p.TLSConfigJSON)
 	if err != nil {
 		return cp.Connector{}, fmt.Errorf("update connector: encode tls config: %w", errs.ErrValidation)
@@ -124,8 +125,8 @@ func (r *ConnectorRepo) Update(ctx context.Context, id uuid.UUID, p cp.Connector
 		Port:                  i32ptr(p.Port),
 		BindType:              strPtr(p.BindType),
 		SystemID:              p.SystemID,
-		PasswordSealed:        sealedBytes(p.Password),
-		PasswordKmsKeyRef:     sealedKeyRef(p.Password),
+		PasswordSealed:        pwSealed,
+		PasswordKmsKeyRef:     pwKeyRef,
 		VendorProfile:         p.VendorProfile,
 		DataCodingDefault:     i16ptr(p.DataCodingDefault),
 		WindowSize:            i32ptr(p.WindowSize),

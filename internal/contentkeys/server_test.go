@@ -326,3 +326,26 @@ func TestUnwrappingRefusesKeyMaterialThatIsNotADataKey(t *testing.T) {
 		t.Errorf("GetContentKey returned %d bytes of planted key material, want an error", len(resp.GetDek()))
 	}
 }
+
+// The same guard as ConfigSecrets.Seal, on the other writer of the same columns. A KMS that wraps without
+// naming its master key would otherwise store content_keys.kms_key_ref = ” — NOT NULL is satisfied, the
+// key opens today, and a future KEK rotation cannot place the row. The guard was first put on the
+// ConfigSecrets side alone, which made its absence here quieter, not smaller.
+func TestCreatingAContentKeyRefusesAKMSThatNamesNoMasterKey(t *testing.T) {
+	store := &fakeContentKeyStore{}
+	srv := contentkeys.NewContentKeyServer(keyRefLessKMS{content.NewDevKMS()}, store)
+
+	if _, err := srv.GetOrCreateContentKey(context.Background(),
+		&pb.GetOrCreateContentKeyRequest{CustomerId: uuid.NewString()}); err == nil {
+		t.Error("a content key was created with no master-key reference")
+	}
+	if store.createCalls != 0 {
+		t.Errorf("the store was written %d time(s) despite the missing key reference", store.createCalls)
+	}
+}
+
+// keyRefLessKMS wraps normally but names no key — what a provider implementation may legitimately do, and
+// what LocalKMS happens never to do.
+type keyRefLessKMS struct{ content.KMS }
+
+func (keyRefLessKMS) KeyRef() string { return "" }
