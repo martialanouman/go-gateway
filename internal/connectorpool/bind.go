@@ -2,6 +2,7 @@ package connectorpool
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -51,6 +52,8 @@ type BindConfig struct {
 	// §6.8). The pool shards mt.routed by hash(message_id) % BindPoolSize so every segment of a message
 	// lands on one bind, in order (step-124). Zero or one means a single bind (the M2 behaviour).
 	BindPoolSize int
+	// TLS dials the SMSC over TLS, presenting this pod's identity. Nil dials in plaintext.
+	TLS *tls.Config
 }
 
 // bind owns one SMPP connection. Its concurrency model (guide §5/§9): a single writer goroutine is
@@ -91,8 +94,13 @@ type bind struct {
 // returns a ready bind or an error; on any handshake failure it tears the connection down before
 // returning.
 func dialAndBind(ctx context.Context, cfg BindConfig, logger *slog.Logger, onDeliver func(context.Context, *smpp.DeliverSM) error) (*bind, error) {
-	d := net.Dialer{Timeout: cfg.DialTimeout}
-	conn, err := d.DialContext(ctx, "tcp", cfg.Addr)
+	d := &net.Dialer{Timeout: cfg.DialTimeout}
+	dial := d.DialContext
+	if cfg.TLS != nil {
+		// tls.Dialer carries DialTimeout over the handshake too; net.Dialer alone bounds only the connect.
+		dial = (&tls.Dialer{NetDialer: d, Config: cfg.TLS}).DialContext
+	}
+	conn, err := dial(ctx, "tcp", cfg.Addr)
 	if err != nil {
 		return nil, fmt.Errorf("connectorpool: dial %s: %w", cfg.Addr, err)
 	}

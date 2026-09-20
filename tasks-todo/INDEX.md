@@ -328,9 +328,10 @@ Indépendantes de la chaîne de charge : parallélisables si deux mains travaill
       pouvoir le clore, l'audit de `test-billing-provider` — ouverte par step-290d
 - [ ] step-297 — Ce qui survit à un effacement attesté : rétention d'`audit_log`, base légale, MSISDN
       dans le log d'attestation — ouverte par step-290d
-- [ ] step-300 — TLS / SMPP-TLS / mTLS sur les transports, **dont la DEK qui circulait en clair sur un
+- [x] step-300 — TLS / SMPP-TLS / mTLS sur les transports, **dont la DEK qui circulait en clair sur un
       gRPC non authentifié** (`content-key-svc`) — ce dernier point ajouté par step-290d, **payé par
-      300b** (mTLS + allowlist par SAN) ; restent 300c (HTTP) et 300d (SMPP-TLS)
+      300b** (mTLS + allowlist par SAN). Quatre PR : 300a la brique, 300b le gRPC, 300c le HTTP,
+      300d le SMPP entrant et sortant. Ouvre step-305
 - [x] step-302 — La remise MO/DLR par pod n'a pas de nom DNS à joindre : un `Deployment` ne fabrique pas
       d'enregistrement A par pod, la voie retour SMPP bascule donc en webhook sans le dire — ouverte par
       step-300b
@@ -340,6 +341,8 @@ Indépendantes de la chaîne de charge : parallélisables si deux mains travaill
 - [ ] step-304 — La voie retour raconte mal ses échecs (`bind_exhausted` pour une annulation qui est la
       nôtre) et republie l'adresse du pod à chaque rafraîchissement de bind — deux dettes antérieures,
       mises en production par step-302
+- [ ] step-305 — Le TLS client vers les quatre magasins : Kafka et ClickHouse sont du code, Postgres et
+      Redis une ligne de checklist — ouverte par step-300d, qui a laissé le fork de l'ancre de confiance
 - [ ] step-310 — Auth opérateur réelle (OIDC/mTLS) remplaçant le stub M1 ⛓ step-300
 - [ ] step-315 — Le journal d'audit se lit, et la base le rend immuable ⛓ step-310 — ouverte par step-290d
 

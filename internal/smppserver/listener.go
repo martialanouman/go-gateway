@@ -2,6 +2,7 @@ package smppserver
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
@@ -32,6 +33,12 @@ func (l *Listener) Run(ctx context.Context) error {
 	// throttle. No configured range leaves lis untouched.
 	if lis, err = wrapProxyProtocol(lis, l.opts.TrustedProxyCIDRs); err != nil {
 		return err
+	}
+
+	// After the PROXY decoration, never before: the header travels in clear ahead of the ClientHello, so
+	// the TLS envelope is the inner one.
+	if l.opts.TLSConfig != nil {
+		lis = tls.NewListener(lis, l.opts.TLSConfig)
 	}
 
 	// Closing the listener when ctx ends unblocks Accept; the connections drain on the same ctx, which

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -29,6 +30,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/observability/metrics"
 	"github.com/martialanouman/go-gateway/internal/pipeline/ratelimit"
+	"github.com/martialanouman/go-gateway/internal/platform/tlsconf"
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
 	"github.com/martialanouman/go-gateway/internal/storage/postgres"
@@ -87,8 +89,20 @@ func (a *poolApp) close() {
 func newPoolApp(ctx context.Context, cfg config.Config, bindEnv connectorEnv, logger *slog.Logger) (_ *poolApp, err error) {
 	// Before anything is opened: a refused bind policy must not leave a Kafka client and a ClickHouse
 	// connection to unwind.
-	if err := validateConnectorEnv(bindEnv, cfg.Environment); err != nil {
+	if err := validateConnectorEnv(bindEnv, cfg.Environment, cfg.TLS); err != nil {
 		return nil, err
+	}
+
+	var smscTLS *tls.Config
+	if bindEnv.TLSEnabled {
+		if smscTLS, err = (tlsconf.Files{
+			Cert:     cfg.TLS.CertFile,
+			Key:      cfg.TLS.KeyFile,
+			ClientCA: cfg.TLS.ClientCAFile,
+			Logger:   logger,
+		}).ClientConfig(); err != nil {
+			return nil, err
+		}
 	}
 
 	a := &poolApp{}
@@ -179,6 +193,7 @@ func newPoolApp(ctx context.Context, cfg config.Config, bindEnv connectorEnv, lo
 			EnquireLinkMaxMissed: bindEnv.EnquireLinkMaxMissed,
 			WindowSize:           bindEnv.WindowSize,
 			BindPoolSize:         bindEnv.BindPoolSize,
+			TLS:                  smscTLS,
 		},
 		MaxSendRate:   bindEnv.MaxSendRate,
 		Throttle:      throttleMetric{rate: throttle.sendRate, throttled: throttle.throttledTotal},

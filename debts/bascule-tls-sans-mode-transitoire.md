@@ -15,4 +15,4 @@ d'indisponibilité, ou le double port qu'on n'aura pas construit ».
 c'est-à-dire un ordre de déploiement qu'on n'a pas prévu. La procédure se documente ; elle ne se code
 pas aujourd'hui.
 
-Source : `tasks-todo/step-300.md` (§ « Bascule : dure, sans mode transitoire »)
+Source : `tasks-done/step-300.md` (§ « Bascule : dure, sans mode transitoire »)

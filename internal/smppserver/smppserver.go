@@ -13,6 +13,7 @@ package smppserver
 
 import (
 	"context"
+	"crypto/tls"
 	"log/slog"
 	"sync"
 	"time"
@@ -157,6 +158,9 @@ type Options struct {
 	// ranges: a peer that is not a trusted balancer is dropped rather than served raw, because sharing
 	// one port between PROXY and non-PROXY traffic is what lets a client forge its source address.
 	TrustedProxyCIDRs []string
+
+	// TLSConfig serves the port as SMPP-over-TLS. Nil listens in plaintext.
+	TLSConfig *tls.Config
 }
 
 // QueryLimiter reports whether an account may issue another query_sm now, consuming one from its

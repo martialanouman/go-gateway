@@ -66,6 +66,9 @@ type connectorEnv struct {
 	// source them from the control plane's validity policy.
 	RetryWindow   time.Duration `env:"CONNECTOR_RETRY_WINDOW" envDefault:"0"`
 	MaxMessageAge time.Duration `env:"CONNECTOR_MAX_MESSAGE_AGE" envDefault:"0"`
+	// TLSEnabled dials this SMSC over TLS, mirroring smsc_connectors.tls_enabled. It is separate from
+	// TLS_ENABLED, which describes THIS pod's internal surfaces: the SMSC is somebody else's peer.
+	TLSEnabled bool `env:"CONNECTOR_TLS_ENABLED" envDefault:"false"`
 }
 
 // defaultConnectorPassword is the bind password of the in-repo fake SMSC. It repeats the envDefault of
@@ -82,10 +85,16 @@ const defaultConnectorPassword = "gateway"
 // CONNECTOR_SYSTEM_ID is an identity the far SMSC rejects by itself. A default password has an outcome
 // neither of those has: the SMSC accepts it, and the outbound leg is then held by a secret anyone can
 // read in this repository. The error names the variable, never the value — it lands in the boot log.
-func validateConnectorEnv(bind connectorEnv, environment config.Environment) error {
+func validateConnectorEnv(bind connectorEnv, environment config.Environment, tls config.TLS) error {
 	if environment.IsProduction() && bind.Password == defaultConnectorPassword {
 		return fmt.Errorf("CONNECTOR_PASSWORD is the development default (the in-repo fake SMSC): " +
 			"set it explicitly in production")
+	}
+	// Without this the failure is a stat on an empty path, which accuses a missing file instead of the
+	// variable that was never set.
+	if bind.TLSEnabled && !tls.Enabled {
+		return fmt.Errorf("CONNECTOR_TLS_ENABLED is true while TLS_ENABLED is false: " +
+			"the outbound bind has no identity to present")
 	}
 	return nil
 }

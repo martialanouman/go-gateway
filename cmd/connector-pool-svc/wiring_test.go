@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
@@ -16,9 +17,12 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/martialanouman/go-gateway/internal/config"
+	"github.com/martialanouman/go-gateway/internal/platform/tlsconf"
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
+	"github.com/martialanouman/go-gateway/internal/testutil/fakesmsc"
 	"github.com/martialanouman/go-gateway/internal/testutil/pgtest"
 	"github.com/martialanouman/go-gateway/internal/testutil/redistest"
+	"github.com/martialanouman/go-gateway/internal/testutil/tlstest"
 )
 
 // The wiring must fail as a VALUE, never as a process exit: a constructor that log.Fatals cannot be
@@ -216,7 +220,7 @@ func TestValidateConnectorEnvRefusesTheDevelopmentPasswordInProduction(t *testin
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateConnectorEnv(tt.bind, tt.env)
+			err := validateConnectorEnv(tt.bind, tt.env, config.TLS{})
 			if tt.wantErr != (err != nil) {
 				t.Fatalf("validateConnectorEnv() error = %v, want error: %v", err, tt.wantErr)
 			}
@@ -265,5 +269,120 @@ func TestTheDeclaredDefaultIsTheOneTheGuardRefuses(t *testing.T) {
 	if parsed.Password != defaultConnectorPassword {
 		t.Fatalf("CONNECTOR_PASSWORD defaults to %q, but the production guard refuses %q: the guard is "+
 			"disarmed", parsed.Password, defaultConnectorPassword)
+	}
+}
+
+func TestTheOutboundTLSFlagRequiresThePodIdentity(t *testing.T) {
+	bind := testBindEnv()
+	bind.TLSEnabled = true
+
+	err := validateConnectorEnv(bind, config.EnvDevelopment, config.TLS{Enabled: false})
+	if err == nil {
+		t.Fatal("CONNECTOR_TLS_ENABLED was accepted without TLS_ENABLED: the bind has no certificate to present")
+	}
+	if !strings.Contains(err.Error(), "CONNECTOR_TLS_ENABLED") || !strings.Contains(err.Error(), "TLS_ENABLED") {
+		t.Errorf("error = %q, must name both variables an operator has to reconcile", err)
+	}
+
+	if err := validateConnectorEnv(bind, config.EnvDevelopment, config.TLS{Enabled: true}); err != nil {
+		t.Errorf("both set and still refused: %v", err)
+	}
+}
+
+func TestNewPoolAppRefusesAnUnreadableOutboundIdentity(t *testing.T) {
+	ca := tlstest.NewCA(t)
+	cert, key := ca.Issue(t, serviceName, serviceName)
+	absent := filepath.Join(t.TempDir(), "absent.pem")
+
+	for name, breakIt := range map[string]func(*config.TLS){
+		"certificate": func(c *config.TLS) { c.CertFile = absent },
+		"key":         func(c *config.TLS) { c.KeyFile = absent },
+		"CA":          func(c *config.TLS) { c.ClientCAFile = absent },
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := testConfig()
+			cfg.TLS = config.TLS{Enabled: true, CertFile: cert, KeyFile: key, ClientCAFile: ca.CAFile}
+			breakIt(&cfg.TLS)
+			bind := testBindEnv()
+			bind.TLSEnabled = true
+
+			// The error must be ATTRIBUTED, not merely present: every store in testConfig points at a
+			// closed port, so a boot that reached them would fail anyway and a bare non-nil check would
+			// pass on a TLS failure that was swallowed.
+			_, err := newPoolApp(t.Context(), cfg, bind, silentLogger())
+			if err == nil {
+				t.Fatal("a missing file booted: the failure must be a value, not a handshake at 3am")
+			}
+			if !strings.Contains(err.Error(), "tlsconf") {
+				t.Fatalf("boot error = %v, want it attributed to the unreadable identity", err)
+			}
+		})
+	}
+}
+
+// TestTheWiredPoolDialsItsSMSCInTLS runs the pool the graph actually built against an SMSC that speaks
+// only TLS. Asserting on the wiring's source or on the BindConfig would prove nothing: the config can
+// be built at boot and never handed to the bind, and neither a key named TLS nor a non-nil local
+// variable rules that out.
+func TestTheWiredPoolDialsItsSMSCInTLS(t *testing.T) {
+	ca := tlstest.NewCA(t)
+	smscCert, smscKey := ca.Issue(t, "localhost", "localhost")
+	serverConf, err := tlsconf.Files{Cert: smscCert, Key: smscKey, ClientCA: ca.CAFile}.
+		ServerConfig(tlsconf.ServerOptions{})
+	if err != nil {
+		t.Fatalf("smsc ServerConfig: %v", err)
+	}
+	smsc := fakesmsc.Start(t, fakesmsc.Config{TLSConfig: serverConf})
+
+	poolCert, poolKey := ca.Issue(t, serviceName, serviceName)
+	cfg := testConfig()
+	cfg.TLS = config.TLS{Enabled: true, CertFile: poolCert, KeyFile: poolKey, ClientCAFile: ca.CAFile}
+	cfg.Postgres = pgtest.Config(t)
+	cfg.Redis = redistest.Config(t)
+
+	bind := testBindEnv()
+	bind.TLSEnabled = true
+	_, port, err := net.SplitHostPort(smsc.Addr())
+	if err != nil {
+		t.Fatalf("split the smsc address: %v", err)
+	}
+	// Not 127.0.0.1: crypto/tls infers ServerName from the dial address, and the peer's certificate has
+	// to name it. This is the rule deploy/k8s/tls/README.md states for CONNECTOR_ADDR.
+	bind.Addr = net.JoinHostPort("localhost", port)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
+	defer cancel()
+
+	app, err := newPoolApp(ctx, cfg, bind, silentLogger())
+	if err != nil {
+		t.Fatalf("newPoolApp: %v", err)
+	}
+	defer app.close()
+
+	runCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	go func() { _ = app.pool.Run(runCtx) }()
+
+	deadline := time.Now().Add(30 * time.Second)
+	for smsc.Binds() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the wired pool never completed a bind over TLS")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func TestNewPoolAppRefusesTheOutboundTLSFlagWithoutThePodIdentity(t *testing.T) {
+	cfg := testConfig()
+	cfg.TLS = config.TLS{Enabled: false}
+	bind := testBindEnv()
+	bind.TLSEnabled = true
+
+	_, err := newPoolApp(t.Context(), cfg, bind, silentLogger())
+	if err == nil {
+		t.Fatal("the mismatch booted: the guard is written but not wired")
+	}
+	if !strings.Contains(err.Error(), "CONNECTOR_TLS_ENABLED") {
+		t.Fatalf("boot error = %v, want the guard's refusal, not a store failure", err)
 	}
 }

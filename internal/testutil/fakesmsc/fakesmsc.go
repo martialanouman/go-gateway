@@ -12,6 +12,7 @@ package fakesmsc
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
@@ -40,6 +41,8 @@ type Config struct {
 	// RejectBind, when non-zero, rejects every bind_transceiver with this command_status (e.g.
 	// ESME_RINVPASWD) and closes the connection — for testing the reconnect loop's stop/retry paths.
 	RejectBind uint32
+	// TLSConfig serves SMPP-over-TLS. Nil listens in plaintext.
+	TLSConfig *tls.Config
 }
 
 // Submit is one recorded submit_sm with the connection (bind) it arrived on. ConnID is stable per TCP
@@ -63,6 +66,10 @@ type Server struct {
 	// unbinds counts the unbind PDUs received. It is what lets a drain test tell an orderly leave-taking
 	// apart from a socket that simply died: ConnCount falls to zero either way.
 	unbinds atomic.Int64
+
+	// binds counts the bind_transceiver PDUs accepted. ConnCount cannot stand in for it: a TCP
+	// connection exists whether or not a bind was ever decoded off it.
+	binds atomic.Int64
 
 	mu      sync.Mutex
 	conns   map[*conn]struct{}
@@ -108,6 +115,9 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("fakesmsc: listen on %q: %w", addr, err)
 	}
+	if cfg.TLSConfig != nil {
+		ln = tls.NewListener(ln, cfg.TLSConfig)
+	}
 	s := &Server{
 		ln:    ln,
 		cfg:   cfg,
@@ -129,6 +139,9 @@ func (s *Server) Submits() []Submit {
 	defer s.mu.Unlock()
 	return append([]Submit(nil), s.submits...)
 }
+
+// Binds reports how many bind_transceiver PDUs this SMSC has accepted.
+func (s *Server) Binds() int64 { return s.binds.Load() }
 
 // Unbinds reports how many unbind PDUs this SMSC has received. A peer that closes its socket without
 // one has not drained gracefully, and only this counter distinguishes the two.
@@ -239,6 +252,7 @@ func (s *Server) handle(c *conn, pdu smpp.PDU) bool {
 			s.reply(c, smpp.PDU{Status: st, Sequence: pdu.Sequence, Body: &smpp.BindTransceiverResp{}})
 			return true
 		}
+		s.binds.Add(1)
 		s.markReceiver(c)
 		s.reply(c, smpp.PDU{Sequence: pdu.Sequence, Body: &smpp.BindTransceiverResp{
 			BindRespFields: smpp.BindRespFields{SystemID: systemID},

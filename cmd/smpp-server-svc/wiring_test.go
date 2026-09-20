@@ -2,9 +2,13 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"io"
 	"log/slog"
 	"net"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
@@ -15,6 +19,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/testutil/pgtest"
 	"github.com/martialanouman/go-gateway/internal/testutil/redistest"
+	"github.com/martialanouman/go-gateway/internal/testutil/tlstest"
 )
 
 // The wiring must fail as a VALUE, never as a process exit: a constructor that log.Fatals cannot be
@@ -176,4 +181,77 @@ func freePort() int {
 
 func silentLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+func tlsTestConfig(t *testing.T) config.Config {
+	t.Helper()
+	ca := tlstest.NewCA(t)
+	cert, key := ca.Issue(t, serviceName, serviceName)
+	cfg := testConfig()
+	cfg.TLS = config.TLS{Enabled: true, CertFile: cert, KeyFile: key, ClientCAFile: ca.CAFile}
+	return cfg
+}
+
+// TestTheWiredSMPPPortSpeaksTLS runs the listener the graph actually built and completes a handshake
+// against it. Asserting on the Options would prove nothing: the field can be built and never passed.
+func TestTheWiredSMPPPortSpeaksTLS(t *testing.T) {
+	cfg := tlsTestConfig(t)
+	cfg.Postgres = pgtest.Config(t)
+	cfg.Redis = redistest.Config(t)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	app, err := newSMPPApp(ctx, cfg, silentLogger())
+	if err != nil {
+		t.Fatalf("newSMPPApp: %v", err)
+	}
+	defer app.close()
+
+	runCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	go func() { _ = app.listener.Run(runCtx) }()
+	if _, err := app.listener.Addr(ctx); err != nil {
+		t.Fatalf("listener addr: %v", err)
+	}
+
+	caPEM, err := os.ReadFile(cfg.TLS.ClientCAFile)
+	if err != nil {
+		t.Fatalf("read the CA: %v", err)
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(caPEM) {
+		t.Fatal("the CA file holds no certificate")
+	}
+	conn, err := tls.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(cfg.SMPP.Port)), &tls.Config{
+		RootCAs:    roots,
+		ServerName: serviceName,
+		MinVersion: tls.VersionTLS12,
+		MaxVersion: tls.VersionTLS12,
+	})
+	if err != nil {
+		t.Fatalf("the wired SMPP port did not complete a TLS handshake: %v", err)
+	}
+	_ = conn.Close()
+}
+
+func TestTheSMPPServerRefusesToBootOnAnUnreadableIdentity(t *testing.T) {
+	absent := filepath.Join(t.TempDir(), "absent.pem")
+	for name, breakIt := range map[string]func(*config.TLS){
+		"certificate": func(c *config.TLS) { c.CertFile = absent },
+		"key":         func(c *config.TLS) { c.KeyFile = absent },
+		"CA":          func(c *config.TLS) { c.ClientCAFile = absent },
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := tlsTestConfig(t)
+			breakIt(&cfg.TLS)
+			_, err := newListener(cfg, &stores{}, silentLogger())
+			if err == nil {
+				t.Fatal("a missing file booted: the failure must be a value, not a handshake at 3am")
+			}
+			if !strings.Contains(err.Error(), "tlsconf") {
+				t.Fatalf("boot error = %v, want it attributed to the unreadable identity", err)
+			}
+		})
+	}
 }
