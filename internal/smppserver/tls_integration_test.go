@@ -49,8 +49,6 @@ func esmeTLSConfig(t *testing.T, caFile string) *tls.Config {
 	}
 }
 
-// dialTLSESME opens an SMPP session over TLS, writing proxyHeader before the handshake when it is not
-// empty — the order the wire imposes, and the one this test exists to pin.
 func dialTLSESME(t *testing.T, addr, proxyHeader string, conf *tls.Config) (*esme, *tls.Conn) {
 	t.Helper()
 	raw, err := net.DialTimeout("tcp", addr, 5*time.Second)
@@ -88,6 +86,7 @@ func TestAnESMEBindsOverTLSWithoutPresentingACertificate(t *testing.T) {
 	if got := e.bind(t, smppsession.BindTransceiver, sid, pw); got != smpp.StatusOK {
 		t.Fatalf("bind status = %#x, want ESME_ROK", got)
 	}
+	e.unbind(t)
 }
 
 func TestAPlaintextESMEIsRefusedOnATLSPort(t *testing.T) {
@@ -111,7 +110,7 @@ func TestAPlaintextESMEIsRefusedOnATLSPort(t *testing.T) {
 		SystemID: sid, Password: pw, InterfaceVersion: smpp.InterfaceVersion34,
 	}}
 	if err := smpp.WritePDU(conn, smpp.PDU{Sequence: 1, Body: body}); err != nil {
-		return
+		return // the peer reset the socket before the write landed: refused, which is the point
 	}
 	if _, err := smpp.ReadPDU(conn); err == nil {
 		t.Fatal("a plaintext bind was answered on a TLS listener")
@@ -132,20 +131,6 @@ func TestTheProxyHeaderIsReadBeforeTheTLSHandshake(t *testing.T) {
 	e, _ := dialTLSESME(t, addr, "PROXY TCP4 203.0.113.7 198.51.100.1 51000 2775\r\n", esmeTLSConfig(t, caFile))
 	defer e.close()
 
-	if got := e.bind(t, smppsession.BindTransceiver, sid, pw); got != smpp.StatusOK {
-		t.Fatalf("bind status = %#x, want ESME_ROK", got)
-	}
-}
-
-func TestTheSMPPPortStaysPlaintextWhenNoTLSConfigIsWired(t *testing.T) {
-	pool := pgtest.Pool(t)
-	registry := startRegistry(t, redistest.Client(t))
-
-	sid, pw, _ := seedBind(t, pool, seedOpts{maxSessions: 1, bindType: cp.BindTRX})
-	addr := startListener(t, pool, registry)
-
-	e := dialESME(t, addr)
-	defer e.close()
 	if got := e.bind(t, smppsession.BindTransceiver, sid, pw); got != smpp.StatusOK {
 		t.Fatalf("bind status = %#x, want ESME_ROK", got)
 	}

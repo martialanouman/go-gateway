@@ -2,9 +2,6 @@ package main
 
 import (
 	"context"
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"io"
 	"log/slog"
 	"net"
@@ -20,7 +17,9 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/martialanouman/go-gateway/internal/config"
+	"github.com/martialanouman/go-gateway/internal/platform/tlsconf"
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
+	"github.com/martialanouman/go-gateway/internal/testutil/fakesmsc"
 	"github.com/martialanouman/go-gateway/internal/testutil/pgtest"
 	"github.com/martialanouman/go-gateway/internal/testutil/redistest"
 	"github.com/martialanouman/go-gateway/internal/testutil/tlstest"
@@ -321,42 +320,69 @@ func TestNewPoolAppRefusesAnUnreadableOutboundIdentity(t *testing.T) {
 	}
 }
 
-// TestTheWiredBindConfigCarriesTheTLSField guards the one mistake the tests above cannot see: a
-// *tls.Config built at boot and never handed to the bind. Proving it by running the pool is not
-// available — the consumer tears the bind down as soon as Kafka fails, so the observation races.
-func TestTheWiredBindConfigCarriesTheTLSField(t *testing.T) {
-	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, "wiring.go", nil, 0)
+// TestTheWiredPoolDialsItsSMSCInTLS runs the pool the graph actually built against an SMSC that speaks
+// only TLS. Asserting on the wiring's source or on the BindConfig would prove nothing: the config can
+// be built at boot and never handed to the bind, and neither a key named TLS nor a non-nil local
+// variable rules that out.
+func TestTheWiredPoolDialsItsSMSCInTLS(t *testing.T) {
+	ca := tlstest.NewCA(t)
+	smscCert, smscKey := ca.Issue(t, "localhost", "localhost")
+	serverConf, err := tlsconf.Files{Cert: smscCert, Key: smscKey, ClientCA: ca.CAFile}.
+		ServerConfig(tlsconf.ServerOptions{})
 	if err != nil {
-		t.Fatalf("parse wiring.go: %v", err)
+		t.Fatalf("smsc ServerConfig: %v", err)
 	}
+	smsc := fakesmsc.Start(t, fakesmsc.Config{TLSConfig: serverConf})
 
-	var seen []string
-	ast.Inspect(f, func(n ast.Node) bool {
-		lit, ok := n.(*ast.CompositeLit)
-		if !ok {
-			return true
-		}
-		sel, ok := lit.Type.(*ast.SelectorExpr)
-		if !ok || sel.Sel.Name != "BindConfig" {
-			return true
-		}
-		for _, e := range lit.Elts {
-			kv, ok := e.(*ast.KeyValueExpr)
-			if !ok {
-				continue
-			}
-			if k, ok := kv.Key.(*ast.Ident); ok {
-				seen = append(seen, k.Name)
-			}
-		}
-		return true
-	})
+	poolCert, poolKey := ca.Issue(t, serviceName, serviceName)
+	cfg := testConfig()
+	cfg.TLS = config.TLS{Enabled: true, CertFile: poolCert, KeyFile: poolKey, ClientCAFile: ca.CAFile}
+	cfg.Postgres = pgtest.Config(t)
+	cfg.Redis = redistest.Config(t)
 
-	if len(seen) == 0 {
-		t.Fatal("no connectorpool.BindConfig literal found in wiring.go: this guard is watching nothing")
+	bind := testBindEnv()
+	bind.TLSEnabled = true
+	_, port, err := net.SplitHostPort(smsc.Addr())
+	if err != nil {
+		t.Fatalf("split the smsc address: %v", err)
 	}
-	if !slices.Contains(seen, "TLS") {
-		t.Errorf("the wired BindConfig names %v: without TLS the config is built at boot and never dialled with", seen)
+	// Not 127.0.0.1: crypto/tls infers ServerName from the dial address, and the peer's certificate has
+	// to name it. This is the rule deploy/k8s/tls/README.md states for CONNECTOR_ADDR.
+	bind.Addr = net.JoinHostPort("localhost", port)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
+	defer cancel()
+
+	app, err := newPoolApp(ctx, cfg, bind, silentLogger())
+	if err != nil {
+		t.Fatalf("newPoolApp: %v", err)
+	}
+	defer app.close()
+
+	runCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	go func() { _ = app.pool.Run(runCtx) }()
+
+	deadline := time.Now().Add(30 * time.Second)
+	for smsc.Binds() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the wired pool never completed a bind over TLS")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func TestNewPoolAppRefusesTheOutboundTLSFlagWithoutThePodIdentity(t *testing.T) {
+	cfg := testConfig()
+	cfg.TLS = config.TLS{Enabled: false}
+	bind := testBindEnv()
+	bind.TLSEnabled = true
+
+	_, err := newPoolApp(t.Context(), cfg, bind, silentLogger())
+	if err == nil {
+		t.Fatal("the mismatch booted: the guard is written but not wired")
+	}
+	if !strings.Contains(err.Error(), "CONNECTOR_TLS_ENABLED") {
+		t.Fatalf("boot error = %v, want the guard's refusal, not a store failure", err)
 	}
 }

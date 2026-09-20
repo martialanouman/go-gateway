@@ -67,6 +67,10 @@ type Server struct {
 	// apart from a socket that simply died: ConnCount falls to zero either way.
 	unbinds atomic.Int64
 
+	// binds counts the bind_transceiver PDUs accepted. ConnCount cannot stand in for it: a TCP
+	// connection exists whether or not a bind was ever decoded off it.
+	binds atomic.Int64
+
 	mu      sync.Mutex
 	conns   map[*conn]struct{}
 	submits []Submit // recorded submit_sm, when cfg.RecordSubmits
@@ -135,6 +139,9 @@ func (s *Server) Submits() []Submit {
 	defer s.mu.Unlock()
 	return append([]Submit(nil), s.submits...)
 }
+
+// Binds reports how many bind_transceiver PDUs this SMSC has accepted.
+func (s *Server) Binds() int64 { return s.binds.Load() }
 
 // Unbinds reports how many unbind PDUs this SMSC has received. A peer that closes its socket without
 // one has not drained gracefully, and only this counter distinguishes the two.
@@ -245,6 +252,7 @@ func (s *Server) handle(c *conn, pdu smpp.PDU) bool {
 			s.reply(c, smpp.PDU{Status: st, Sequence: pdu.Sequence, Body: &smpp.BindTransceiverResp{}})
 			return true
 		}
+		s.binds.Add(1)
 		s.markReceiver(c)
 		s.reply(c, smpp.PDU{Sequence: pdu.Sequence, Body: &smpp.BindTransceiverResp{
 			BindRespFields: smpp.BindRespFields{SystemID: systemID},

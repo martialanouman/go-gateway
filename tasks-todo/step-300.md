@@ -673,17 +673,57 @@ fichier absent au lieu de la variable qui manque.
 
 | # | Preuve | Mutation |
 |---|---|---|
-| 1 | entrant : un ESME **sans** certificat, plafonné à TLS 1.2, bind et soumet | `ClientAuth: RequireAndVerifyClientCert` ; plancher 1.3 |
+| 1 | entrant : un ESME **sans** certificat, plafonné à TLS 1.2, bind **puis unbind** — un second PDU, donc une seconde frontière d'enregistrement TLS | `ClientAuth: RequireAndVerifyClientCert` ; plancher 1.3 |
 | 2 | entrant : un ESME **en clair** sur un listener TLS échoue | servir `lis` sans l'envelopper |
 | 3 | entrant : l'ordre PROXY→TLS — un en-tête PROXY suivi d'un ClientHello donne l'IP réelle **et** un bind | inverser les deux décorations |
-| 4 | entrant : `TLS_ENABLED=false` ⇒ `Options.TLSConfig == nil`, l'ESME en clair passe | poser la config inconditionnellement |
+| 4 | entrant : `TLS_ENABLED=false` ⇒ l'ESME en clair passe — preuve faite par `TestBindValidAndRejections`, **préexistant**, vérifié en le voyant tomber | poser la config inconditionnellement |
 | 5 | entrant : un chemin illisible ⇒ erreur de boot **rendue** par `newListener` | journaliser au lieu de rendre |
-| 6 | sortant : le bind s'établit vers un faux SMSC **en TLS**, et échoue en clair contre lui | `cfg.TLS` ignoré dans `dialAndBind` |
+| 6 | sortant : le bind s'établit vers un faux SMSC **en TLS**, et échoue en clair contre lui ; le SMSC **exige** un certificat client, donc c'est le mutuel qui est prouvé | `cfg.TLS` ignoré dans `dialAndBind` ; `GetClientCertificate` supprimé de `ClientConfig` |
 | 7 | sortant : `CONNECTOR_TLS_ENABLED=false` ⇒ dial en clair | composer en TLS inconditionnellement |
-| 8 | sortant : `CONNECTOR_TLS_ENABLED=true` + `TLS_ENABLED=false` ⇒ refus au démarrage nommant la variable | supprimer la garde |
+| 8 | sortant : `CONNECTOR_TLS_ENABLED=true` + `TLS_ENABLED=false` ⇒ **`newPoolApp`** refuse en nommant la variable | supprimer la garde ; lui passer un `config.TLS{Enabled: true}` en dur |
+| 9 | sortant : le pool **que le câblage construit** compose un SMSC qui ne parle que TLS, et son bind est compté côté SMSC | `TLS: nil` dans le littéral `BindConfig` |
 
 La preuve 3 est la seule qui prouve l'**ordre** ; 1 et 2 laisseraient les deux décorations inversées
 passer, l'en-tête PROXY étant simplement absent de leurs connexions.
+
+La preuve 9 est née **en revue**, et elle remplace une garde AST qui lisait la source du câblage pour
+y chercher une clé `TLS:`. Cette garde était creuse exactement là où elle prétendait voir : elle
+constatait la **présence de la clé**, jamais sa **valeur**, si bien que `TLS: nil` la laissait verte —
+le même défaut, d'un cran déplacé, que l'assertion de boot corrigée plus haut. La remplacer a coûté
+un compteur de binds au faux SMSC (`ConnCount` ne peut pas en tenir lieu : une connexion TCP existe
+qu'un bind ait été décodé ou non) et elle exige que le certificat du pair nomme l'hôte de
+`CONNECTOR_ADDR` — le test dial `localhost`, pas `127.0.0.1`, ce qui met la règle du README à
+l'épreuve.
+
+#### Corrigé en revue (2026-09-20)
+
+Trois revues en lecture seule (mécanisme · preuves · code en trop). **Un constat bloquant**, et il
+portait sur une preuve, pas sur le mécanisme.
+
+- **La garde AST du câblage sortant était creuse** — voir la preuve 9 ci-dessus. C'est la deuxième
+  fois sur cette PR qu'une assertion « verte pour une autre raison » est trouvée : la première, une
+  erreur de boot qui passait parce que `newPoolApp` échouait de toute façon sur Postgres, exige
+  désormais que le message soit **attribué** à `tlsconf`.
+- **Le garde-fou `CONNECTOR_TLS_ENABLED` sans `TLS_ENABLED` n'était testé qu'en direct**, jamais par
+  `newPoolApp` : le figer sur `config.TLS{Enabled: true}` au point d'appel laissait toute la suite
+  verte. Le mot de passe de bind, lui, avait déjà son test de bout en bout ; celui-ci l'a maintenant.
+- **La preuve 1 annonçait « bind et soumet »** et ne faisait qu'un bind : un seul PDU ne franchit
+  jamais deux fois une frontière d'enregistrement TLS. Un `unbind` a été ajouté, et la table corrigée.
+- **Le mécanisme n'a rien rendu.** Vérifié dans les sources : la chaîne `tls.Listener` délègue `Addr`
+  et `Close`, `*tls.Conn` porte les deux `SetDeadline` dont dépendent l'idle-drop et l'`unbind`
+  borné, `proxyproto` restaure la deadline de l'appelant après avoir lu son en-tête, et les clés de
+  ticket de session retombent sur la config **externe** — la reprise n'est donc pas cassée par un
+  `GetConfigForClient` qui rend une config neuve à chaque handshake. Ce dernier point n'avait pas été
+  vérifié en écrivant le code.
+- **Coupé** : un test en clair entièrement couvert par `TestBindValidAndRejections` (vérifié en le
+  voyant tomber sous la mutation), et deux commentaires qui redisaient le code sous eux.
+
+**Trois remarques non bloquantes, gardées telles quelles** : un échec de handshake TLS sortant est
+classé « pas un link drop » et ne reçoit donc aucun backoff, alors que TLS ajoute une classe de pannes
+intrinsèquement transitoires (rotation, dérive d'horloge) ; un `CONNECTOR_ADDR` littéral IPv6 donnerait
+un `ServerName` entre crochets ; les échecs de handshake entrants sont journalisés en DEBUG, au même
+niveau qu'une déconnexion ordinaire. Les trois relèvent de la mesure ou de l'exploitation, pas de cette
+PR.
 
 #### Dettes ouvertes par 300d
 

@@ -14,10 +14,6 @@ import (
 	"github.com/martialanouman/go-gateway/internal/testutil/tlstest"
 )
 
-// smscTLS issues one authority and returns the two sides of a mutual link: the config the fake SMSC
-// listens with, and the one the pool dials with. The SMSC DEMANDS a client certificate, so a dial that
-// presented none would fail the handshake — which is what makes this a proof of mTLS and not of a
-// tunnel.
 func smscTLS(t *testing.T) (server, client *tls.Config) {
 	t.Helper()
 	ca := tlstest.NewCA(t)
