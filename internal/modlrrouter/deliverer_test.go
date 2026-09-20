@@ -274,6 +274,9 @@ func TestDelivererDeadLettersWhenBindsExhausted(t *testing.T) {
 	}
 }
 
+// TestDelivererDeadLettersWhenWebhookDisabled: on a FIRST delivery a switched-off webhook is simply no
+// delivery path, and the event is parked rather than lost — the same answer as having no webhook at all.
+// The deferred retry path answers differently, and deliberately: see TestRetryRunnerParksADisabledWebhooksEvent.
 func TestDelivererDeadLettersWhenWebhookDisabled(t *testing.T) {
 	wh := activeWebhook()
 	wh.Status = cp.WebhookDisabled

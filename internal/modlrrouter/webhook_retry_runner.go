@@ -20,8 +20,9 @@ const (
 	retryPaceMax  = 10 * time.Minute
 )
 
-// WebhookGetter resolves an account's active webhook for an event type. *postgres.WebhookRepo satisfies
-// it; declared consumer-side.
+// WebhookGetter resolves an account's webhook for an event type, disabled ones included — the runner
+// treats "switched off" and "deleted" differently and needs to see which it has. *postgres.WebhookRepo
+// satisfies it; declared consumer-side.
 type WebhookGetter interface {
 	Get(ctx context.Context, accountID uuid.UUID, eventType cp.WebhookEventType) (cp.Webhook, bool, error)
 }
@@ -29,10 +30,11 @@ type WebhookGetter interface {
 // RetrySender makes one further delivery attempt at a deferred event. *webhook.Sender satisfies it.
 type RetrySender interface {
 	Retry(ctx context.Context, wh cp.Webhook, ev webhook.Event, attempt int, firstAt time.Time) error
+	Park(ctx context.Context, wh cp.Webhook, ev webhook.Event, reason string) error
 }
 
-// RetryMetric observes the drain. Handled is labelled by outcome (a bounded label — "retried", "dropped"
-// or "skipped", never an account or event id). Age is how long an event has been in retry, counted from
+// RetryMetric observes the drain. Handled is labelled by outcome (a bounded label — "retried",
+// "parked", "dropped" or "skipped", never an account or event id). Age is how long an event has been in retry, counted from
 // its first attempt: a rising age is the signal that an account's endpoint is durably unreachable, and it
 // shows up well before the dead-letter starts growing.
 type RetryMetric interface {
@@ -139,10 +141,21 @@ func (r *WebhookRetryRunner) Handle(ctx context.Context, rec kafka.Record) error
 		return err // a store outage is transient: redeliver rather than drop the event
 	}
 	if !found {
-		// The webhook was deleted or disabled while the event waited. There is nothing left to deliver to.
+		// The webhook was deleted while the event waited: the account asked for these events to stop
+		// being delivered anywhere, so there is nothing left to deliver to and nothing to keep.
 		r.metric.Handled("dropped")
 		r.logger.InfoContext(ctx, "webhook retry: webhook no longer resolvable, event dropped",
 			"event_id", msg.EventID, "account_id", msg.AccountID, "event_type", msg.EventType)
+		return nil
+	}
+	if wh.Status != cp.WebhookActive {
+		// Switched off while the event waited. Disabling is a pause, not a deletion — it must stop the
+		// pushing without destroying the backlog, which for a six-hour age bound can be a lot of an
+		// account's return traffic. The dead-letter keeps it recoverable, as it does on first delivery.
+		if err := r.sender.Park(ctx, wh, webhook.Event{ID: msg.EventID, Payload: msg.Payload}, "webhook_disabled"); err != nil {
+			return err // the park itself failed: redeliver rather than lose the event
+		}
+		r.metric.Handled("parked")
 		return nil
 	}
 

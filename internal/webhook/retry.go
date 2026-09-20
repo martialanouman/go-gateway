@@ -64,6 +64,14 @@ func (s *Sender) Retry(ctx context.Context, wh cp.Webhook, ev Event, attempt int
 	return s.deliverOnce(ctx, wh, ev, attempt, firstAt)
 }
 
+// Park dead-letters an event whose delivery is abandoned by the CALLER rather than by an attempt — the
+// retry runner uses it for an event whose webhook has been switched off while it waited. Disabling is
+// not deleting: the operator wants the pushing to stop, not the backlog destroyed, and the dead-letter
+// is where the Deliverer already puts an event it has no active webhook for.
+func (s *Sender) Park(ctx context.Context, wh cp.Webhook, ev Event, reason string) error {
+	return s.park(ctx, wh, ev, reason)
+}
+
 // deliverOnce performs a single attempt and routes the outcome: delivered ends it, a permanent rejection
 // dead-letters, and a transient failure is deferred unless a termination bound has been reached.
 func (s *Sender) deliverOnce(ctx context.Context, wh cp.Webhook, ev Event, spent int, firstAt time.Time) error {

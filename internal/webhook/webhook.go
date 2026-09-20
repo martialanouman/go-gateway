@@ -121,7 +121,8 @@ func NewSender(client *http.Client, deadLetter DeadLetterSink, logger *slog.Logg
 // exhausted retry budget. It returns an error only when the work could not be completed and should be
 // retried later: the context ended, or the dead-letter sink itself failed. The payload is never
 // logged. The caller is responsible for having resolved an active webhook — Send does not consult
-// wh.Status (whether a disabled webhook suppresses delivery is the resolver's decision, step-048).
+// wh.Status. The resolver returns disabled rows on purpose, and each delivery path decides for itself
+// what to do with one: a first delivery dead-letters it, the deferred retry runner parks it.
 func (s *Sender) Send(ctx context.Context, wh cp.Webhook, ev Event) error {
 	// With a retry sink wired, the hot path spends exactly one attempt and defers a transient failure
 	// (step-192) rather than sleeping through a backoff on the caller's serial consumer goroutine.
