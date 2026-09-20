@@ -72,8 +72,10 @@ func TestCreateWebhookNeverReturnsTheSecret(t *testing.T) {
 	if got["account_id"] != id.String() {
 		t.Errorf("account_id = %v, want the path's account %s", got["account_id"], id)
 	}
-	// created_at is not in the contract's required list, which is why the DTO marks it omitempty — but
-	// a time.Time is never "empty" to encoding/json, so it must still be on the wire.
+	// created_at is omitempty so it stays out of the generated schema's required list, which is how the
+	// DTO matches the contract without touching it. What omitempty must NOT do is drop it from the
+	// response — and it does not, a struct never being "empty" to encoding/json. That is the whole of
+	// what this asserts: the key is on the wire.
 	if got["created_at"] == nil {
 		t.Errorf("created_at is missing from the response: %v", got)
 	}
@@ -121,7 +123,9 @@ func TestWebhookRetryPolicyRoundTrips(t *testing.T) {
 // TestWebhookSecretAndURLAreRefusedWhenUseless: an empty secret makes every HMAC signature computable
 // by anyone who knows the scheme, and "acme.test/mo" — no scheme — is an URL the sender cannot dial, so
 // every MO and DLR of that account would burn its attempt budget and dead-letter. The secret carries a
-// minimum length and the URL a scheme pattern, which is what took the contract to a major version.
+// minimum length and the URL a pattern that wants a scheme AND a host, which is what took the contract
+// to a major version. The pattern is case-sensitive on the scheme: `(?i)` is not ECMA-262, and the
+// dashboard generates its validators from this contract.
 func TestWebhookSecretAndURLAreRefusedWhenUseless(t *testing.T) {
 	accounts := newFakeAccountStore()
 	id := seedAccount(t, accounts)
@@ -135,6 +139,7 @@ func TestWebhookSecretAndURLAreRefusedWhenUseless(t *testing.T) {
 		{"create empty secret", http.MethodPost, webhookPath(id), `{"event_type":"mo","url":"https://a.test/h","secret":""}`},
 		{"create empty url", http.MethodPost, webhookPath(id), `{"event_type":"mo","url":"","secret":"` + testSecret + `"}`},
 		{"create schemeless url", http.MethodPost, webhookPath(id), `{"event_type":"mo","url":"acme.test/mo","secret":"` + testSecret + `"}`},
+		{"create hostless url", http.MethodPost, webhookPath(id), `{"event_type":"mo","url":"https://","secret":"` + testSecret + `"}`},
 		{"update empty secret", http.MethodPatch, webhookPath(id, hookID.String()), `{"secret":""}`},
 		{"update empty url", http.MethodPatch, webhookPath(id, hookID.String()), `{"url":""}`},
 		{"update schemeless url", http.MethodPatch, webhookPath(id, hookID.String()), `{"url":"acme.test/mo"}`},
@@ -286,5 +291,9 @@ func TestListWebhooksShowsDisabledOnes(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &list)
 	if len(list) != 1 || list[0]["status"] != "disabled" {
 		t.Fatalf("list = %v, want the one disabled webhook", list)
+	}
+	// The list builds its DTOs on a loop of its own, so it is its own chance to leak the secret.
+	if strings.Contains(w.Body.String(), testSecret) {
+		t.Errorf("the signing secret came back on the wire: %s", w.Body)
 	}
 }

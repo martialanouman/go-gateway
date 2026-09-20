@@ -2005,7 +2005,7 @@ components:
       additionalProperties: false
       properties:
         event_type: { type: string, enum: [mo, dlr] }
-        url: { type: string, format: uri, pattern: '^https?://' }
+        url: { type: string, format: uri, pattern: '^https?://[^/]' }
         secret: { type: string, minLength: 16, description: Write-only HMAC-SHA256 signing secret. }
         retry_policy_json: { type: object, additionalProperties: true, description: 'Retry bounds. Only max_attempts applies to deferred retries; the back-off fields pace the in-band sender, which the deferred retry path replaces in production.' }
       required: [event_type, url, secret]
@@ -2013,7 +2013,7 @@ components:
       type: object
       additionalProperties: false
       properties:
-        url: { type: string, format: uri, pattern: '^https?://' }
+        url: { type: string, format: uri, pattern: '^https?://[^/]' }
         secret: { type: string, minLength: 16, description: Write-only; rotates the signing secret. }
         retry_policy_json: { type: object, additionalProperties: true, description: 'Retry bounds. Only max_attempts applies to deferred retries; the back-off fields pace the in-band sender, which the deferred retry path replaces in production.' }
         status: { type: string, enum: [active, disabled] }

@@ -33,8 +33,8 @@ type RetrySender interface {
 	Park(ctx context.Context, wh cp.Webhook, ev webhook.Event, reason string) error
 }
 
-// RetryMetric observes the drain. Handled is labelled by outcome (a bounded label — "retried", "dropped"
-// or "skipped", never an account or event id). Age is how long an event has been in retry, counted from
+// RetryMetric observes the drain. Handled is labelled by outcome (a bounded label — "retried",
+// "parked", "dropped" or "skipped", never an account or event id). Age is how long an event has been in retry, counted from
 // its first attempt: a rising age is the signal that an account's endpoint is durably unreachable, and it
 // shows up well before the dead-letter starts growing.
 type RetryMetric interface {

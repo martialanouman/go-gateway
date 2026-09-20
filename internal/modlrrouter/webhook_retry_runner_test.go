@@ -141,8 +141,7 @@ func TestRetryRunnerBacksOffFurtherEachPass(t *testing.T) {
 // TestRetryRunnerDropsAnUnresolvableWebhook proves a DELETED webhook ends the cycle instead of erroring
 // forever. Returning an error would block the partition on a record that can never succeed — the very
 // head-of-line blocking this topic exists to remove. Dropping is right here and only here: the account
-// asked for the webhook to be gone. A webhook merely switched off is the neighbouring test. Returning an error would block the partition on a record that can never succeed — the
-// very head-of-line blocking this topic exists to remove.
+// asked for the webhook to be gone. A webhook merely switched off is the neighbouring test.
 func TestRetryRunnerDropsAnUnresolvableWebhook(t *testing.T) {
 	sender := &fakeRetrySender{}
 	runner := modlrrouter.NewWebhookRetryRunner(&fakeWebhookGetter{found: false}, sender, modlrrouter.WithRetryPace(noPace))
@@ -204,7 +203,22 @@ func TestRetryRunnerParksADisabledWebhooksEvent(t *testing.T) {
 	if len(sender.parked) != 1 {
 		t.Fatalf("parked %d events, want 1 — a disabled webhook must not lose the event", len(sender.parked))
 	}
-	if sender.parked[0].eventID != "ev-off" || sender.parked[0].whURL != wh.URL {
-		t.Errorf("parked = %+v, want the event and its webhook url", sender.parked[0])
+	if got := sender.parked[0]; got.eventID != "ev-off" || got.whURL != wh.URL || got.reason != "webhook_disabled" {
+		t.Errorf("parked = %+v, want the event, its webhook url and reason webhook_disabled", got)
+	}
+}
+
+// TestRetryRunnerRedeliversWhenTheParkFails is the other half of not losing the event: if the
+// dead-letter itself is unreachable, the runner must return the error so the offset stays uncommitted
+// and Kafka redelivers. Swallowing it would commit the offset on an event that reached nowhere — the
+// silent loss this whole branch exists to prevent, one layer down.
+func TestRetryRunnerRedeliversWhenTheParkFails(t *testing.T) {
+	wh := cp.Webhook{ID: uuid.New(), URL: "https://off.test/mo", Status: cp.WebhookDisabled}
+	sender := &fakeRetrySender{parkErr: errors.New("kafka down")}
+	runner := modlrrouter.NewWebhookRetryRunner(&fakeWebhookGetter{wh: wh, found: true}, sender,
+		modlrrouter.WithRetryPace(noPace))
+
+	if err := runner.Handle(context.Background(), retryRecord(t, uuid.New(), "ev-off", 1, time.Now())); err == nil {
+		t.Fatal("Handle = nil, want the park failure surfaced: a committed offset would lose the event")
 	}
 }

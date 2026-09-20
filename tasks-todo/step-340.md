@@ -1,6 +1,6 @@
 # step-340 — Webhooks : le repo est livré depuis M4, l'admin n'a jamais été écrite
 
-> **Jalon :** Surfaces Admin déclarées au contrat, jamais construites (§6.18 `docs/specification-technique-passerelle-sms.md`) · **Statut :** À FAIRE
+> **Jalon :** Surfaces Admin déclarées au contrat, jamais construites (§6.18 `docs/specification-technique-passerelle-sms.md`) · **Statut :** FAITE
 > **Dépend de :** step-320 (triage) · **Bloque :** —
 
 ## But
@@ -84,8 +84,11 @@ coûte, c'est la validation.
 signatures HMAC sont calculables par n'importe qui, et `url: "acme.test/mo"` — sans schéma — un webhook
 que `webhook.Sender` ne peut pas composer, qui brûle son budget d'essais et met en dead-letter **chaque**
 MO et DLR du compte sans que rien n'ait signalé la faute de frappe. `minLength: 16` sur `secret` et
-`pattern: ^https?://` sur `url`, dans `WebhookCreate` **et** `WebhookUpdate` — `format: uri` ne suffit
-pas, la validation de huma est un `url.Parse` qui accepte les deux. Les deux schémas existent déjà sur
+`pattern: ^https?://[^/]` sur `url`, dans `WebhookCreate` **et** `WebhookUpdate` — `format: uri` ne
+suffit pas, la validation de huma est un `url.Parse` qui accepte les deux, et le `[^/]` final exige un
+hôte, `https://` seul produisant exactement la même panne. Le motif est sensible à la casse et le
+reste : `(?i)` n'existe pas en ECMA-262, et le tableau de bord génère ses validateurs depuis ce
+contrat. Les deux schémas existent déjà sur
 `main` (les opérations y sont `deferred`), donc `oasdiff` classe les restrictions en **ERR** : bump
 **majeur** `api/package.json` 5.0.0 → **6.0.0**. La rupture est formelle — `deferred` veut dire 404,
 aucun consommateur ne pouvait appeler ces opérations — et c'est le seul moment où le prix se négocie :
@@ -195,14 +198,14 @@ dette est ouverte dans la même PR.
 
 ## Definition of Done
 
-- [ ] `make check` vert (lint · `test -race` · govulncheck · contrats)
-- [ ] les 4 opérations servies ; secret jamais relu ; unicité et `disabled` vérifiés côté remise
-- [ ] contrat corrigé : `security` et les codes d'échec d'auth ajoutés aux 4, `minLength` sur `secret`
+- [x] `make check` vert (lint · `test -race` · govulncheck · contrats)
+- [x] les 4 opérations servies ; secret jamais relu ; unicité et `disabled` vérifiés côté remise
+- [x] contrat corrigé : `security` et les codes d'échec d'auth ajoutés aux 4, `minLength` sur `secret`
       et `pattern` sur `url`, description de `retry_policy_json` rendue honnête — bump **majeur**
       `api/package.json` 5.0.0 → 6.0.0
-- [ ] désactiver un webhook coupe la remise **sans perdre** les événements déjà déférés
-- [ ] `api/collections/admin-api.yaml` synchronisée
-- [ ] les 4 lignes retirées de la liste `deferred` posée par step-320 (elle vit dans le test de
+- [x] désactiver un webhook coupe la remise **sans perdre** les événements déjà déférés
+- [x] `api/collections/admin-api.yaml` synchronisée
+- [x] les 4 lignes retirées de la liste `deferred` posée par step-320 (elle vit dans le test de
       contrat, pas dans la fiche)
 
 ## Hors périmètre

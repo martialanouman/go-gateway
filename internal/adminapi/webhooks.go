@@ -60,7 +60,7 @@ func encodePolicy(m map[string]any) json.RawMessage {
 // computable by anyone who knows the scheme.
 type webhookCreateBody struct {
 	EventType   string         `json:"event_type" enum:"mo,dlr"`
-	URL         string         `json:"url" format:"uri" pattern:"^https?://"`
+	URL         string         `json:"url" format:"uri" pattern:"^https?://[^/]"`
 	Secret      string         `json:"secret" minLength:"16" doc:"Write-only HMAC-SHA256 signing secret."`
 	RetryPolicy map[string]any `json:"retry_policy_json,omitempty" doc:"Retry bounds. Only max_attempts applies to deferred retries; the back-off fields pace the in-band sender, which the deferred retry path replaces in production."`
 }
@@ -68,7 +68,7 @@ type webhookCreateBody struct {
 // webhookUpdateBody is the contract schema WebhookUpdate: every field optional. event_type is absent
 // on purpose — it is the identity of the subscription, not a setting.
 type webhookUpdateBody struct {
-	URL         *string        `json:"url,omitempty" format:"uri" pattern:"^https?://"`
+	URL         *string        `json:"url,omitempty" format:"uri" pattern:"^https?://[^/]"`
 	Secret      *string        `json:"secret,omitempty" minLength:"16" doc:"Write-only; rotates the signing secret."`
 	RetryPolicy map[string]any `json:"retry_policy_json,omitempty" doc:"Retry bounds. Only max_attempts applies to deferred retries; the back-off fields pace the in-band sender, which the deferred retry path replaces in production."`
 	Status      *string        `json:"status,omitempty" enum:"active,disabled"`

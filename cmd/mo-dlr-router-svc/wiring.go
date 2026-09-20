@@ -460,7 +460,7 @@ type webhookRetry struct {
 	consumer *kafka.Consumer
 	runner   *modlrrouter.WebhookRetryRunner
 
-	// handled carries a bounded label (retried|dropped|skipped). The age histogram is the operational
+	// handled carries a bounded label (retried|parked|dropped|skipped). The age histogram is the operational
 	// signal that matters: an account whose endpoint is durably unreachable shows up as a rising retry
 	// age WELL BEFORE its events start landing in the dead-letter, which is the only other symptom and
 	// arrives hours later.

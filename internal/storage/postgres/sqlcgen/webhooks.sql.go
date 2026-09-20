@@ -161,8 +161,9 @@ type UpdateWebhookParams struct {
 
 // Partial update: a NULL argument leaves its column unchanged (COALESCE). event_type is absent on
 // purpose — it is the identity of the subscription, not a setting. updated_at is set by the
-// webhooks_touch trigger. Consequence of COALESCE: retry_policy_json cannot be reset to '{}' through
-// this path (debts/patch-null-ne-peut-pas-effacer-un-champ.md).
+// webhooks_touch trigger. retry_policy_json IS resettable here, unlike the nullable columns of
+// debts/patch-null-ne-peut-pas-effacer-un-champ.md: an omitted field arrives as a nil RawMessage (SQL
+// NULL, COALESCE keeps the column) and a supplied {} arrives as two non-nil bytes, which COALESCE takes.
 func (q *Queries) UpdateWebhook(ctx context.Context, arg UpdateWebhookParams) (ControlPlaneWebhook, error) {
 	row := q.db.QueryRow(ctx, updateWebhook,
 		arg.Url,
