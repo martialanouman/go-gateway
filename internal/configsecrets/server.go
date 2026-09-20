@@ -64,11 +64,19 @@ func (s *Server) Seal(ctx context.Context, req *pb.SealRequest) (*pb.SealRespons
 	// GCM nonce bound (~2^32 seals per key) that justifies the per-message HKDF of content.SealBody is out
 	// of reach for configuration writes. The nonce is drawn per call, so two connectors sharing a password
 	// do not share a ciphertext.
+	// The pair travels or nothing does. The *_kms_key_ref column is NOT NULL, but '' satisfies that: an
+	// empty reference would store a secret that opens today and that a future KEK rotation cannot place.
+	// content.KMS does not promise a non-empty KeyRef — only LocalKMS happens to refuse one, and it is the
+	// implementation a real provider replaces.
+	keyRef := s.kms.KeyRef()
+	if keyRef == "" {
+		return nil, status.Error(codes.Internal, string(errs.ErrInternal))
+	}
 	sealed, err := s.kms.WrapDataKey(ctx, append(slices.Clone(domainTag), req.GetPlaintext()...))
 	if err != nil {
 		return nil, grpcerr.Status(err)
 	}
-	return &pb.SealResponse{Sealed: sealed, KmsKeyRef: s.kms.KeyRef()}, nil
+	return &pb.SealResponse{Sealed: sealed, KmsKeyRef: keyRef}, nil
 }
 
 // Open reverses Seal. A tampered ciphertext, or one sealed under a different master key, fails cleanly

@@ -2,6 +2,7 @@ package configsecrets_test
 
 import (
 	"bytes"
+	"context"
 	"testing"
 
 	"google.golang.org/grpc/codes"
@@ -15,7 +16,8 @@ import (
 // The whole point of step-295: the stored form of a REPLAYED secret must come back usable. A hash cannot,
 // which is why smsc_connectors.password_hash could never serve the outbound bind it existed for.
 func TestSealedSecretComesBackByteForByte(t *testing.T) {
-	srv := configsecrets.NewServer(content.NewDevKMS())
+	kms := content.NewDevKMS()
+	srv := configsecrets.NewServer(kms)
 	secret := []byte("s3cr3t!") // an SMPP bind password: <= 8 bytes, not 32
 
 	sealed, err := srv.Seal(t.Context(), &pb.SealRequest{Plaintext: secret})
@@ -25,8 +27,10 @@ func TestSealedSecretComesBackByteForByte(t *testing.T) {
 	if bytes.Contains(sealed.GetSealed(), secret) {
 		t.Errorf("the sealed bytes contain the plaintext, so nothing was encrypted")
 	}
-	if sealed.GetKmsKeyRef() == "" {
-		t.Error("kms_key_ref is empty: nothing says which master key sealed this row")
+	// Compared to the KMS, not merely non-empty: a hard-coded constant would satisfy "not empty" and lie
+	// about which master key the row belongs to, which is the one thing this field is for.
+	if got, want := sealed.GetKmsKeyRef(), kms.KeyRef(); got != want {
+		t.Errorf("kms_key_ref = %q, want %q — the row does not name the key that sealed it", got, want)
 	}
 
 	opened, err := srv.Open(t.Context(), &pb.OpenRequest{Sealed: sealed.GetSealed()})
@@ -141,4 +145,29 @@ func TestNothingSealedCanPassForADataKey(t *testing.T) {
 			t.Errorf("a %d-byte secret seals to exactly a data key's length; contentkeys would accept it as one", n)
 		}
 	}
+}
+
+// A KMS that answers with no key reference must not produce a storable secret. The column is NOT NULL, but
+// ” is not NULL: an empty reference passes the constraint and leaves a row that opens today and that a
+// future KEK rotation cannot place. The only thing standing in the way otherwise is NewLocalKMS refusing an
+// empty keyRef — a property of the DEVELOPMENT KMS, not of the content.KMS contract that a real AWS/GCP
+// provider will implement.
+func TestSealRefusesToProduceASecretWithNoKeyReference(t *testing.T) {
+	_, err := configsecrets.NewServer(keyRefLessKMS{}).Seal(t.Context(), &pb.SealRequest{Plaintext: []byte("s3cr3t")})
+	if err == nil {
+		t.Fatal("Seal produced a secret whose key reference is empty")
+	}
+	if code := status.Code(err); code != codes.Internal {
+		t.Errorf("status code = %s, want %s", code, codes.Internal)
+	}
+}
+
+// keyRefLessKMS wraps normally but names no key — what a provider implementation may legitimately do, and
+// what LocalKMS happens never to do.
+type keyRefLessKMS struct{ content.KMS }
+
+func (keyRefLessKMS) KeyRef() string { return "" }
+
+func (keyRefLessKMS) WrapDataKey(_ context.Context, b []byte) ([]byte, error) {
+	return append([]byte("wrapped:"), b...), nil
 }

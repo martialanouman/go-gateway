@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
+
 	"github.com/martialanouman/go-gateway/internal/adminapi"
 	"github.com/martialanouman/go-gateway/internal/content"
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
@@ -192,5 +194,42 @@ func TestPatchConnectorSealsTheRotatedPassword(t *testing.T) {
 	}
 	if opened := sealer.open(t, *got); string(opened) != rotated {
 		t.Errorf("the rotated password opens to %q, want %q", opened, rotated)
+	}
+}
+
+// step-295 ADDED a leak surface that did not exist before: cp.Connector now carries the sealed password,
+// where the type previously had no password field at all ("write-only: it is hashed on the way in and never
+// read back, so it has no field here"). Nothing but toConnectorDTO's shape keeps it off the wire, and a
+// field added there later would publish it without a single test rougissant.
+//
+// The fake must therefore HOLD the secret on the read path, or this asserts the double's omission.
+func TestReadingAConnectorNeverReturnsTheSealedPassword(t *testing.T) {
+	store := newFakeConnectorStore()
+	api := newTestAPIWith(t, adminapi.Deps{Connectors: store})
+
+	w := httptest.NewRecorder()
+	api.ServeHTTP(w, authed(t, http.MethodPost, "/v1/admin/connectors",
+		`{"name":"smsc-read","host":"h","port":2775,"bind_type":"trx","system_id":"s","password":"s3cr3t"}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: status = %d; body=%s", w.Code, w.Body)
+	}
+	var created map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
+	id := created["id"].(string)
+
+	// A recognisable stored value, as Postgres would hand it back.
+	store.setPassword(uuid.MustParse(id), cp.SealedSecret{Sealed: []byte("SEALED-CANARY"), KMSKeyRef: "KEYREF-CANARY"})
+
+	for _, path := range []string{"/v1/admin/connectors", "/v1/admin/connectors/" + id} {
+		w := httptest.NewRecorder()
+		api.ServeHTTP(w, authed(t, http.MethodGet, path, ""))
+		if w.Code != http.StatusOK {
+			t.Fatalf("GET %s: status = %d; body=%s", path, w.Code, w.Body)
+		}
+		for _, canary := range []string{"SEALED-CANARY", "KEYREF-CANARY", "password"} {
+			if strings.Contains(w.Body.String(), canary) {
+				t.Errorf("GET %s leaks %q: %s", path, canary, w.Body)
+			}
+		}
 	}
 }

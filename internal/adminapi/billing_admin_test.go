@@ -225,8 +225,13 @@ func TestProviderAuthConfigMaskedOnRead(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d; body=%s", w.Code, w.Body.String())
 	}
-	if strings.Contains(w.Body.String(), "SUPER-SECRET") {
-		t.Fatalf("secret leaked in list response: %s", w.Body.String())
+	// The canaries are what the fixture actually holds. Asserting the absence of a string that is in no
+	// input proves nothing, and that is what this test had become once the stored form turned sealed: the
+	// sealed bytes and the key reference are the new leak surface, so they are what is checked.
+	for _, canary := range []string{"sealed-api-key-bytes", "c2VhbGVkLWFwaS1rZXktYnl0ZXM=", "local/v1"} {
+		if strings.Contains(w.Body.String(), canary) {
+			t.Fatalf("the read response carries %q: %s", canary, w.Body.String())
+		}
 	}
 	var out []map[string]any
 	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {

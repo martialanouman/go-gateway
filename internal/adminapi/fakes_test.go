@@ -832,3 +832,13 @@ func (s *fakeUnroutedMOStore) List(_ context.Context, limit int, after *cp.Unrou
 
 // DeleteByMSISDN is the RGPD erasure hook (step-166); the listing tests do not exercise it.
 func (s *fakeUnroutedMOStore) DeleteByMSISDN(context.Context, string) (int, error) { return 0, nil }
+
+// setPassword puts a sealed password on a stored connector, so a read-path test sees what Postgres would
+// actually return. Without it the field is always its zero value and a leak assertion proves nothing.
+func (s *fakeConnectorStore) setPassword(id uuid.UUID, secret cp.SealedSecret) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c := s.byID[id]
+	c.Password = secret
+	s.byID[id] = c
+}
