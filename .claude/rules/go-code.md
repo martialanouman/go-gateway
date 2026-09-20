@@ -17,11 +17,20 @@ Ce que le linter fait échouer n'est pas répété ici. Détail des patterns :
   Jamais un read-modify-write côté Go. Réf : guide de codage §7.2.
 - **Facturation idempotente par `message_id`** *(invariant c)* ; désactivée = zéro
   appel réseau (contrôle booléen en cache). Réf : guide de codage §7.4.
-- **Secrets** (mots de passe bind, clés API) stockés en hash, révélés une seule
-  fois à la création/rotation. Comparaison en temps constant — **sauf la clé
-  API**, cherchée par son hash, donc comparée par PostgreSQL et non en Go. Réf :
-  guide de codage §11 ; le *pourquoi* du choix argon2id/SHA-256 et de cette
-  exception : plan d'exécution §1.9.
+- **Secrets : d'abord se demander si on le VÉRIFIE ou si on le REJOUE.** La
+  réponse décide de la forme de stockage, et confondre les deux a produit deux
+  défauts (step-295, ADR-0016).
+  - **Vérifié** (mot de passe de bind *entrant*, clé API) → **hash**, révélé une
+    seule fois à la création/rotation. Comparaison en temps constant — **sauf la
+    clé API**, cherchée par son hash, donc comparée par PostgreSQL et non en Go.
+    Réf : guide de codage §11 ; le *pourquoi* argon2id/SHA-256 et cette
+    exception : plan d'exécution §1.9.
+  - **Rejoué vers un tiers** (mot de passe de bind *sortant*, identifiants d'un
+    fournisseur externe) → **scellé** par `ConfigSecrets` (`content-key-svc`),
+    jamais haché : un hash ne se dé-hache pas, et un bind sortant met son mot de
+    passe en clair dans la PDU. Colonne `*_sealed bytea` + `*_kms_key_ref`.
+  - Dans les deux cas le secret **ne ressort pas** de l'API. Masquer n'est pas
+    déchiffrer : la sentinelle de lecture est une constante.
 - **Modèle d'erreur plat** `{ code, message, errors[] }` en `application/json`
   (surcharge `huma.NewError`). Réf : guide d'ingénierie §11.
 - Tout le code métier vit sous `internal/` ; `cmd/<service>/main.go` ne fait que

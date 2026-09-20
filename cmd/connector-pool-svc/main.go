@@ -3,9 +3,16 @@
 // service lifecycle, adding a Kafka consumer, a ClickHouse connection and the SMPP bind. The service
 // graph itself is built by wiring.go.
 //
-// The bind endpoint is read from the environment here rather than from the connectors control plane:
-// the outbound password cannot be recovered from its stored hash, and M2 has no config-sync. This
-// env block is the M2 stopgap; M3+ sources connectors from the control plane.
+// The bind endpoint is read from the environment here rather than from the connectors control plane.
+// Both reasons this comment used to give are now stale: config-sync has existed since step-105, and
+// since step-295 the stored password IS recoverable — it is sealed, not hashed (ADR-0016).
+//
+// What remains is a different reason, and it is deliberate: this service reads NO bind column of
+// smsc_connectors — not the address, not tls_enabled, not tls_config_json — and holds no Postgres
+// client at all. Wiring only the password would add that dependency for one column and produce a
+// HYBRID bind: address and system_id from the environment, password from the database, two sources of
+// truth for one session. The twelve fields migrate together or not at all; the password is the
+// thirteenth. See debts/ancre-de-confiance-par-connecteur.md.
 package main
 
 import (
