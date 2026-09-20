@@ -322,7 +322,7 @@ l'ordre des numéros évite tout conflit sur `cmd/router-svc/wiring.go` et `inte
 ## Sécurité et authentification
 Indépendantes de la chaîne de charge : parallélisables si deux mains travaillent.
 - [x] step-290 — Sécurité : gosec, govulncheck, secrets, piste d'audit
-- [ ] step-295 — Deux secrets stockés sous une forme qui ne sert pas leur usage (bind sortant, fournisseur
+- [x] step-295 — Deux secrets stockés sous une forme qui ne sert pas leur usage (bind sortant, fournisseur
       de facturation) — ouverte par step-290d
 - [ ] step-296 — `mt-replay` rejoue des messages sans laisser de trace ; la fiche porte aussi, sans
       pouvoir le clore, l'audit de `test-billing-provider` — ouverte par step-290d
