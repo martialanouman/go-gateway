@@ -42,6 +42,8 @@ request:
       value: 00000000-0000-0000-0000-000000000000
     - name: credId
       value: 00000000-0000-0000-0000-000000000000
+    - name: webhookId
+      value: 00000000-0000-0000-0000-000000000000
     - name: connectorId
       value: 00000000-0000-0000-0000-000000000000
     - name: routeId
@@ -474,6 +476,54 @@ items:
                 "grace_period_sec": 3600
               }
         docs: Rotate a credential (optional grace window); new secret once.
+      - info:
+          name: list-webhooks
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/smpp-accounts/{{accountId}}/webhooks'
+        docs: List an account's webhooks, disabled ones included.
+      - info:
+          name: create-webhook
+          type: http
+        http:
+          method: POST
+          url: '{{baseUrl}}/admin/smpp-accounts/{{accountId}}/webhooks'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "event_type": "mo",
+                "url": "https://acme.example/hooks/mo",
+                "secret": "replace-with-a-real-signing-secret"
+              }
+        docs: Create a webhook — one per event_type; the secret is never returned.
+      - info:
+          name: update-webhook
+          type: http
+        http:
+          method: PATCH
+          url: '{{baseUrl}}/admin/smpp-accounts/{{accountId}}/webhooks/{{webhookId}}'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "status": "disabled"
+              }
+        docs: Update a webhook; a secret sent here rotates the signing key.
+      - info:
+          name: delete-webhook
+          type: http
+        http:
+          method: DELETE
+          url: '{{baseUrl}}/admin/smpp-accounts/{{accountId}}/webhooks/{{webhookId}}'
+        docs: Delete a webhook.
   - info:
       name: Connectors
       type: folder

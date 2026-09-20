@@ -54,6 +54,11 @@ var m1Operations = []opRef{
 	{"revoke-credential", "delete", "/admin/smpp-accounts/{id}/credentials/{credId}"},
 	{"rotate-credential", "post", "/admin/smpp-accounts/{id}/credentials/{credId}/rotate"},
 
+	{"list-webhooks", "get", "/admin/smpp-accounts/{id}/webhooks"},
+	{"create-webhook", "post", "/admin/smpp-accounts/{id}/webhooks"},
+	{"update-webhook", "patch", "/admin/smpp-accounts/{id}/webhooks/{webhookId}"},
+	{"delete-webhook", "delete", "/admin/smpp-accounts/{id}/webhooks/{webhookId}"},
+
 	{"list-connectors", "get", "/admin/connectors"},
 	{"create-connector", "post", "/admin/connectors"},
 	{"get-connector", "get", "/admin/connectors/{id}"},
@@ -167,12 +172,6 @@ type deferredOp struct{ reason, step string }
 // unclassified entry here is a typed client calling a 404. Kept honest by
 // TestEveryContractOperationIsServedOrDeferred, which also forbids overlapping with m1Operations.
 var deferred = map[string]deferredOp{
-
-	// Webhooks: internal/storage/postgres/webhooks.go shipped in M4.
-	"list-webhooks":  {"repo shipped in M4, admin never written", "step-340"},
-	"create-webhook": {"repo shipped in M4, admin never written", "step-340"},
-	"update-webhook": {"repo shipped in M4, admin never written", "step-340"},
-	"delete-webhook": {"repo shipped in M4, admin never written", "step-340"},
 
 	// Sender-ID rewrite (§6.16): sender_id_rewrite_rules has a generated sqlc model
 	// (ControlPlaneSenderIDRewriteRule) and nothing else — no repo, no evaluation, no admin.

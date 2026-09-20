@@ -26,6 +26,19 @@ type CustomerStore interface {
 	SetGroup(ctx context.Context, id uuid.UUID, groupID *uuid.UUID) (cp.Customer, error)
 }
 
+// WebhookStore is the persistence the webhook handlers need. Every read and write is keyed by the
+// account as well as by the webhook id: both are path segments the caller chooses, and the account is
+// what keeps one operator from reaching another account's row. It deliberately has no active-only
+// read — that one belongs to the delivery paths, and this surface exists to administer the disabled
+// webhooks too.
+type WebhookStore interface {
+	List(ctx context.Context, accountID uuid.UUID) ([]cp.Webhook, error)
+	Get(ctx context.Context, accountID, id uuid.UUID) (cp.Webhook, error)
+	Create(ctx context.Context, in cp.NewWebhook) (cp.Webhook, error)
+	Update(ctx context.Context, accountID, id uuid.UUID, p cp.WebhookPatch) (cp.Webhook, error)
+	Delete(ctx context.Context, accountID, id uuid.UUID) error
+}
+
 // CustomerGroupStore is the persistence the customer-group handlers need (§6.17).
 type CustomerGroupStore interface {
 	Create(ctx context.Context, in cp.NewCustomerGroup) (cp.CustomerGroup, error)
@@ -179,6 +192,7 @@ type Deps struct {
 
 	Customers      CustomerStore
 	CustomerGroups CustomerGroupStore
+	Webhooks       WebhookStore
 	Accounts       AccountStore
 	Credentials    CredentialStore
 	Connectors     ConnectorStore

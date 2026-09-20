@@ -152,6 +152,15 @@ un `COALESCE`, donc `retry_policy_json` ne peut pas être remis à `{}` par cett
 **Ce qui ne s'écrit pas.** Aucune migration : la table existe depuis `0001_init`. Aucun code d'audit :
 `audited()` couvre déjà toute requête non lecture-seule.
 
+**Ce qui est différé, et pourquoi.** `control_plane.webhooks.secret` est un `text` en clair. C'est la
+forme qu'impose son usage — `webhook.Sign` le rejoue à chaque remise, un hash ne se dé-hache pas — mais
+c'est précisément la classe de secret que step-295 a **scellée** (`ConfigSecrets`, `content-key-svc`)
+pour le mot de passe de bind sortant et la configuration d'auth d'un fournisseur. L'inventaire de
+step-295 n'en avait recensé que deux ; celui-ci est le troisième, et cette step est la première à
+l'écrire par l'API. Le sceller demande une migration, la KMS câblée dans `admin-api-svc` **et** dans
+`mo-dlr-router-svc` qui doit l'ouvrir à chaque remise : c'est une step, pas une ligne. Une fiche de
+dette est ouverte dans la même PR.
+
 ## Tests
 
 - CRUD sur repo réel ; le secret **n'apparaît dans aucune réponse** après création (assertion sur le
