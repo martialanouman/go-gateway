@@ -8,8 +8,10 @@ import (
 
 // Connector is an outbound SMSC link (control_plane.smsc_connectors). The domain type uses plain
 // Go types — int, float64, map[string]any — where the DDL uses smallint, numeric and jsonb; the
-// storage layer converts across that gap so nothing above it ever sees a pgtype. The bind password
-// is write-only: it is hashed on the way in and never read back, so it has no field here.
+// storage layer converts across that gap so nothing above it ever sees a pgtype. Password is the bind
+// password SEALED (ADR-0016): it cannot be hashed, because an outbound bind puts it in clear in the
+// bind_transceiver PDU. Carrying it here is safe — sealed bytes are not the secret — and the Admin API
+// still never returns it.
 type Connector struct {
 	ID            uuid.UUID
 	Name          string
@@ -17,6 +19,7 @@ type Connector struct {
 	Port          int
 	BindType      BindType
 	SystemID      string
+	Password      SealedSecret
 	VendorProfile *string
 
 	SystemType                  string
@@ -64,14 +67,14 @@ type Connector struct {
 // NewConnector is the input to create a connector. It exposes only the fields the contract's
 // ConnectorCreate settles at creation; the SMPP wire-parameter block and the reconnect tuning
 // knobs take their DDL defaults (or a vendor profile) and are adjusted later through their own
-// endpoints. PasswordHash is the argon2id hash of the write-only password.
+// endpoints. Password is the write-only bind password, already sealed by ConfigSecrets.
 type NewConnector struct {
 	Name                  string
 	Host                  string
 	Port                  int
 	BindType              BindType
 	SystemID              string
-	PasswordHash          string
+	Password              SealedSecret
 	VendorProfile         *string
 	InterfaceVersion      *int
 	DataCodingDefault     *int
@@ -86,14 +89,14 @@ type NewConnector struct {
 
 // ConnectorPatch is a partial update of a connector, limited to the fields the contract's
 // ConnectorUpdate lists (which is narrower than that schema's own prose description). A nil field
-// is left unchanged. PasswordHash, when non-nil, replaces the stored hash.
+// is left unchanged. Password, when non-nil, replaces the stored sealed password.
 type ConnectorPatch struct {
 	Name                  *string
 	Host                  *string
 	Port                  *int
 	BindType              *BindType
 	SystemID              *string
-	PasswordHash          *string
+	Password              *SealedSecret
 	VendorProfile         *string
 	DataCodingDefault     *int
 	WindowSize            *int

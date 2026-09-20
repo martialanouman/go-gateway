@@ -1,6 +1,7 @@
 package postgres_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -96,11 +97,21 @@ func TestExternalProviderRepoCRUD(t *testing.T) {
 	ctx := context.Background()
 	repo := postgres.NewExternalBillingProviderRepo(pool)
 
+	sealed := cp.SealedSecret{Sealed: []byte{0x01, 0x00, 0xff, 0x7f, 0x00}, KMSKeyRef: "test/v1"}
 	created, err := repo.Create(ctx, cp.NewExternalBillingProvider{
-		Name: "prov-crud", BaseURL: "https://ext.example", AuthConfig: []byte(`{"key":"secret"}`), Mode: string(cp.ExternalModeBalanceCheck),
+		Name: "prov-crud", BaseURL: "https://ext.example", AuthConfig: sealed, Mode: string(cp.ExternalModeBalanceCheck),
 	})
 	if err != nil {
 		t.Fatalf("create: %v", err)
+	}
+	// The sealed bytes must survive Postgres unchanged, embedded NULs and high bytes included: a bytea
+	// round trip that mangled one byte would leave a ciphertext that no longer opens, and the failure
+	// would only surface at the far SMSC. The key reference travels with it or a rotation loses the row.
+	if !bytes.Equal(created.AuthConfig.Sealed, sealed.Sealed) {
+		t.Errorf("auth_config_sealed came back %x, want %x", created.AuthConfig.Sealed, sealed.Sealed)
+	}
+	if created.AuthConfig.KMSKeyRef != sealed.KMSKeyRef {
+		t.Errorf("auth_config_kms_key_ref = %q, want %q", created.AuthConfig.KMSKeyRef, sealed.KMSKeyRef)
 	}
 	if created.CacheTTLMs != 1000 || created.FailurePolicy != string(cp.FailOpen) {
 		t.Errorf("defaults = cache %d / policy %q, want 1000 / fail_open", created.CacheTTLMs, created.FailurePolicy)

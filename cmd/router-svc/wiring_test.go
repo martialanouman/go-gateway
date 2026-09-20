@@ -354,7 +354,7 @@ func TestNewRouterAppRoutesLeastLoadedOnThePublishedGauge(t *testing.T) {
 	newConnector := func(name string) cp.Connector {
 		t.Helper()
 		c, err := connectors.Create(ctx, cp.NewConnector{Name: name + "-" + uuid.NewString(), Host: "h", Port: 2775,
-			BindType: cp.BindTRX, SystemID: name, PasswordHash: "h"})
+			BindType: cp.BindTRX, SystemID: name, Password: cp.SealedSecret{Sealed: []byte("h"), KMSKeyRef: "test/v1"}})
 		if err != nil {
 			t.Fatalf("create connector %s: %v", name, err)
 		}

@@ -100,14 +100,14 @@ func TestBillingRepoListExternalBillingConfigs(t *testing.T) {
 
 	var activeProvider, disabledProvider uuid.UUID
 	if err := pool.QueryRow(ctx,
-		`INSERT INTO control_plane.external_billing_providers (name, base_url, mode, sync_call_timeout_ms, failure_policy)
-		 VALUES ('active-prov', 'https://ext.example', 'consume_delegate_sync', 120, 'fail_closed') RETURNING id`).
+		`INSERT INTO control_plane.external_billing_providers (name, base_url, mode, sync_call_timeout_ms, failure_policy, auth_config_sealed, auth_config_kms_key_ref)
+		 VALUES ('active-prov', 'https://ext.example', 'consume_delegate_sync', 120, 'fail_closed', '\x00', 'test/v1') RETURNING id`).
 		Scan(&activeProvider); err != nil {
 		t.Fatalf("seed active provider: %v", err)
 	}
 	if err := pool.QueryRow(ctx,
-		`INSERT INTO control_plane.external_billing_providers (name, base_url, mode, status)
-		 VALUES ('disabled-prov', 'https://ext.example', 'balance_check', 'disabled') RETURNING id`).
+		`INSERT INTO control_plane.external_billing_providers (name, base_url, mode, status, auth_config_sealed, auth_config_kms_key_ref)
+		 VALUES ('disabled-prov', 'https://ext.example', 'balance_check', 'disabled', '\x00', 'test/v1') RETURNING id`).
 		Scan(&disabledProvider); err != nil {
 		t.Fatalf("seed disabled provider: %v", err)
 	}

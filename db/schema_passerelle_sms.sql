@@ -104,7 +104,12 @@ CREATE TABLE control_plane.external_billing_providers (
   id                 uuid PRIMARY KEY DEFAULT uuidv7(),
   name               text NOT NULL,
   base_url           text NOT NULL,
-  auth_config_json   jsonb NOT NULL DEFAULT '{}'::jsonb,
+  -- Credentials for calling the provider, SEALED by content-key-svc (ConfigSecrets, ADR-0016): they are
+  -- replayed to a third party, so they must be reversible — a hash could not serve them. The key
+  -- reference says which master key sealed the row, as content_keys.kms_key_ref does. No DEFAULT: the
+  -- sealed form of '{}' is not a constant (per-call nonce); the Admin API seals it when none is given.
+  auth_config_sealed      bytea NOT NULL,
+  auth_config_kms_key_ref text  NOT NULL,
   mode               text NOT NULL
                        CHECK (mode IN ('balance_check','consume_delegate_async','consume_delegate_sync','both')),
   cache_ttl_ms       integer NOT NULL DEFAULT 1000 CHECK (cache_ttl_ms >= 0),
@@ -345,7 +350,12 @@ CREATE TABLE control_plane.smsc_connectors (
   port                            integer NOT NULL CHECK (port BETWEEN 1 AND 65535),
   bind_type                       text NOT NULL DEFAULT 'trx' CHECK (bind_type IN ('tx','rx','trx')),
   system_id                       text NOT NULL,
-  password_hash                   text NOT NULL,
+  -- The OUTBOUND bind password, SEALED by content-key-svc (ConfigSecrets, ADR-0016). It cannot be hashed:
+  -- SMPP v3.4 §4.1.1 sends it in clear in the bind_transceiver PDU, so the stored form has to be
+  -- reversible. Contrast credentials.password_hash, which is an INBOUND password the gateway verifies and
+  -- never replays — that one is, correctly, an argon2id hash.
+  password_sealed                 bytea NOT NULL,
+  password_kms_key_ref            text  NOT NULL,
   vendor_profile                  text,     -- optional preset pre-filling the fields below; explicit values override
 
   system_type                     text NOT NULL DEFAULT '',

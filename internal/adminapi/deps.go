@@ -45,6 +45,17 @@ type CredentialStore interface {
 	Rotate(ctx context.Context, accountID, credID uuid.UUID, rot cp.CredentialRotation) (cp.Credential, error)
 }
 
+// SecretSealer seals a control-plane secret the gateway will REPLAY to a third party — an outbound bind
+// password, an external provider's credentials. Those cannot be hashed (a bind_transceiver PDU carries
+// the password in clear, SMPP v3.4 §4.1.1), so the Admin API seals them before they reach a column and
+// never stores a plaintext. Backed by content-key-svc, the sole holder of the master key (ADR-0016).
+//
+// There is no Open counterpart here on purpose: the Admin API writes these secrets and never reads them
+// back — masking a credential on read is a constant, not a decryption.
+type SecretSealer interface {
+	Seal(ctx context.Context, plaintext []byte) (cp.SealedSecret, error)
+}
+
 // ConnectorStore is the persistence the connector handlers need. List returns a bare slice: the
 // contract does not paginate connectors.
 type ConnectorStore interface {
@@ -154,10 +165,13 @@ type Deps struct {
 	ExportJobs ExportJobStore
 	ExportSink ExportSink
 
-	Customers        CustomerStore
-	Accounts         AccountStore
-	Credentials      CredentialStore
-	Connectors       ConnectorStore
+	Customers   CustomerStore
+	Accounts    AccountStore
+	Credentials CredentialStore
+	Connectors  ConnectorStore
+	// SecretSealer is required by the two handlers that write a replayed secret (connectors, billing
+	// providers): without it they refuse rather than store something unusable.
+	SecretSealer     SecretSealer
 	ConnectorControl ConnectorControl
 	Routes           RouteStore
 	SenderIDs        SenderIDStore

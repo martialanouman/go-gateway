@@ -7,14 +7,15 @@ import (
 )
 
 // ExternalBillingProvider is an external billing system's connection config (control_plane.
-// external_billing_providers, §6.10). AuthConfig holds credentials as opaque JSON — MASKED on read, never
-// returned to a client. mode/failure_policy reuse the ExternalBillingMode / BillingFailurePolicy enums.
+// external_billing_providers, §6.10). AuthConfig holds the provider credentials SEALED (ADR-0016) — they
+// are replayed to the provider, so they cannot be hashed; the Admin API still never returns them.
+// mode/failure_policy reuse the ExternalBillingMode / BillingFailurePolicy enums.
 type ExternalBillingProvider struct {
 	ID                uuid.UUID
 	Name              string
 	BaseURL           string
-	AuthConfig        []byte // jsonb credentials — masked on read
-	Mode              string // balance_check | consume_delegate_async | consume_delegate_sync | both
+	AuthConfig        SealedSecret // sealed credentials — never unsealed on a read path
+	Mode              string       // balance_check | consume_delegate_async | consume_delegate_sync | both
 	CacheTTLMs        int
 	SyncCallTimeoutMs *int
 	FailurePolicy     string // fail_open | fail_closed
@@ -28,7 +29,7 @@ type ExternalBillingProvider struct {
 type NewExternalBillingProvider struct {
 	Name              string
 	BaseURL           string
-	AuthConfig        []byte
+	AuthConfig        SealedSecret
 	Mode              string
 	CacheTTLMs        *int
 	SyncCallTimeoutMs *int
@@ -39,7 +40,7 @@ type NewExternalBillingProvider struct {
 type ExternalBillingProviderPatch struct {
 	Name              *string
 	BaseURL           *string
-	AuthConfig        []byte
+	AuthConfig        *SealedSecret
 	Mode              *string
 	CacheTTLMs        *int
 	SyncCallTimeoutMs *int

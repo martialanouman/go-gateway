@@ -7,6 +7,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
+
+	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 )
 
 // This file is the single place the storage layer bridges the small type gaps between the
@@ -146,4 +148,21 @@ func floatNumeric(p *float64) pgtype.Numeric {
 		return pgtype.Numeric{}
 	}
 	return n
+}
+
+// sealedBytes and sealedKeyRef split an optional SealedSecret into the two nullable columns a partial
+// update writes. They must move together: a row whose ciphertext came from one master key and whose
+// reference names another would be openable but mislabelled, and a later key rotation would skip it.
+func sealedBytes(s *cp.SealedSecret) []byte {
+	if s == nil {
+		return nil
+	}
+	return s.Sealed
+}
+
+func sealedKeyRef(s *cp.SealedSecret) *string {
+	if s == nil {
+		return nil
+	}
+	return &s.KMSKeyRef
 }

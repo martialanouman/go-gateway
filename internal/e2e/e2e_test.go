@@ -262,7 +262,7 @@ func seedControlPlane(t *testing.T, pool *pgxpool.Pool) string {
 
 	connector, err := connectors.Create(ctx, cp.NewConnector{
 		Name: "e2e-connector", Host: "127.0.0.1", Port: 2775,
-		BindType: cp.BindTRX, SystemID: "gateway", PasswordHash: "unused-in-m2",
+		BindType: cp.BindTRX, SystemID: "gateway", Password: cp.SealedSecret{Sealed: []byte("unused-in-m2"), KMSKeyRef: "test/v1"},
 	})
 	if err != nil {
 		t.Fatalf("create connector: %v", err)

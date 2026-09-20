@@ -351,6 +351,11 @@ type fakeConnectorStore struct {
 	byID      map[uuid.UUID]cp.Connector
 	rateLimit map[uuid.UUID]cp.RateLimit // a connector's operational limit, for the throughput validation
 	createErr error
+
+	// created/createCount record what Create was ACTUALLY handed, so a test can assert on the value that
+	// would reach the column rather than on the handler having been called.
+	created     cp.NewConnector
+	createCount int
 }
 
 func newFakeConnectorStore() *fakeConnectorStore {
@@ -370,6 +375,8 @@ func (s *fakeConnectorStore) Create(_ context.Context, in cp.NewConnector) (cp.C
 	if s.createErr != nil {
 		return cp.Connector{}, s.createErr
 	}
+	s.created = in
+	s.createCount++
 	c := cp.Connector{
 		ID: uuid.New(), Name: in.Name, Host: in.Host, Port: in.Port,
 		BindType: in.BindType, SystemID: in.SystemID, Status: cp.ConnectorActive,

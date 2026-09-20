@@ -10,6 +10,7 @@ import (
 
 	"github.com/martialanouman/go-gateway/internal/auth"
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
+	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 	humaerr "github.com/martialanouman/go-gateway/internal/platform/errors/humaerr"
 	"github.com/martialanouman/go-gateway/internal/platform/keyset"
 )
@@ -21,10 +22,11 @@ type billingAdminHandlers struct {
 	billing   BillingStore
 	ratePlans RatePlanStore
 	providers BillingProviderStore
+	sealer    SecretSealer
 }
 
-func registerBillingAdmin(api huma.API, customers CustomerStore, billing BillingStore, ratePlans RatePlanStore, providers BillingProviderStore) {
-	h := &billingAdminHandlers{customers: customers, billing: billing, ratePlans: ratePlans, providers: providers}
+func registerBillingAdmin(api huma.API, customers CustomerStore, billing BillingStore, ratePlans RatePlanStore, providers BillingProviderStore, sealer SecretSealer) {
+	h := &billingAdminHandlers{customers: customers, billing: billing, ratePlans: ratePlans, providers: providers, sealer: sealer}
 	// Every op is secured, so 401/403 are always possible — documented on all ten to stay consistent with the
 	// rest of the Admin contract (a secured endpoint that hides its auth failures publishes a lie). The extra
 	// codes track exactly what each handler can return: a path/customer 404, a body/query 422, a delete 409.
@@ -322,8 +324,38 @@ func (h *billingAdminHandlers) listProviders(ctx context.Context, _ *struct{}) (
 	return &providersOutput{Body: out}, nil
 }
 
+// sealAuthConfig turns the credentials that came in over HTTP into the only form they are ever stored
+// in: sealed by content-key-svc (ADR-0016). They used to land in a clear jsonb column, which put them in
+// every backup and every replica — masking them on read never touched that.
+//
+// The whole document is sealed as one blob rather than field by field: per-field encryption would need a
+// "which keys are secret" policy per provider flavour (bearer, basic, HMAC…) to maintain, and nothing
+// queries inside this JSON — the Admin API is its only reader, and only to mask it.
+//
+// A nil map seals "{}" rather than skipping: auth_config_sealed is NOT NULL and the sealed form of an
+// empty document is not a constant (the nonce is drawn per call), so no DDL default could stand in.
+func (h *billingAdminHandlers) sealAuthConfig(ctx context.Context, m map[string]any) (cp.SealedSecret, error) {
+	doc := []byte("{}")
+	if m != nil {
+		marshalled, err := marshalJSONMap("auth_config_json", m)
+		if err != nil {
+			return cp.SealedSecret{}, err
+		}
+		doc = marshalled
+	}
+	if h.sealer == nil {
+		return cp.SealedSecret{}, humaerr.Fail(errs.ErrInternal, "no secret sealer configured")
+	}
+	sealed, err := h.sealer.Seal(ctx, doc)
+	if err != nil {
+		// Opaque on purpose: the error is logged, and it must carry no fragment of the credentials.
+		return cp.SealedSecret{}, humaerr.Fail(errs.ErrInternal, "seal provider credentials")
+	}
+	return sealed, nil
+}
+
 func (h *billingAdminHandlers) createProvider(ctx context.Context, in *createProviderInput) (*providerOutput, error) {
-	auth, err := marshalOptionalJSONMap("auth_config_json", in.Body.AuthConfig)
+	auth, err := h.sealAuthConfig(ctx, in.Body.AuthConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -350,9 +382,11 @@ func (h *billingAdminHandlers) updateProvider(ctx context.Context, in *updatePro
 	// masked as {"masked":true}) and PATCHes the whole object back would otherwise overwrite the real
 	// credentials with the mask sentinel. Treat the sentinel as "unchanged" so the secret survives.
 	if in.Body.AuthConfig != nil && !isMaskedSentinel(in.Body.AuthConfig) {
-		if patch.AuthConfig, err = marshalOptionalJSONMap("auth_config_json", in.Body.AuthConfig); err != nil {
+		sealed, err := h.sealAuthConfig(ctx, in.Body.AuthConfig)
+		if err != nil {
 			return nil, err
 		}
+		patch.AuthConfig = &sealed
 	}
 	p, err := h.providers.Update(ctx, id, patch)
 	if err != nil {
@@ -402,13 +436,6 @@ func marshalJSONMap(field string, m map[string]any) ([]byte, error) {
 		return nil, humaerr.FailValidation("invalid "+field, humaerr.FieldError{Field: field, Message: "must be a JSON object"})
 	}
 	return b, nil
-}
-
-func marshalOptionalJSONMap(field string, m map[string]any) ([]byte, error) {
-	if m == nil {
-		return nil, nil
-	}
-	return marshalJSONMap(field, m)
 }
 
 func unmarshalJSONMap(b []byte) map[string]any {

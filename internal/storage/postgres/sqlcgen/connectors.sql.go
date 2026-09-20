@@ -14,22 +14,22 @@ import (
 
 const createConnector = `-- name: CreateConnector :one
 INSERT INTO control_plane.smsc_connectors (
-    name, host, port, bind_type, system_id, password_hash, vendor_profile,
+    name, host, port, bind_type, system_id, password_sealed, password_kms_key_ref, vendor_profile,
     interface_version, data_coding_default, window_size, bind_pool_size,
     throughput_limit_per_sec, tls_enabled, tls_config_json, priority_tier, auto_reconnect_enabled
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7,
-    COALESCE($8::smallint, 52),
-    $9,
-    COALESCE($10::integer, 10),
-    COALESCE($11::integer, 1),
-    $12,
-    COALESCE($13::boolean, false),
-    $14,
-    COALESCE($15::integer, 0),
-    COALESCE($16::boolean, false)
+    $1, $2, $3, $4, $5, $6, $7, $8,
+    COALESCE($9::smallint, 52),
+    $10,
+    COALESCE($11::integer, 10),
+    COALESCE($12::integer, 1),
+    $13,
+    COALESCE($14::boolean, false),
+    $15,
+    COALESCE($16::integer, 0),
+    COALESCE($17::boolean, false)
 )
-RETURNING id, name, host, port, bind_type, system_id, password_hash, vendor_profile, system_type, interface_version, addr_ton, addr_npi, address_range, source_addr_ton, source_addr_npi, dest_addr_ton, dest_addr_npi, data_coding_default, registered_delivery_default, replace_if_present_flag_default, esm_class_default, priority_flag_default, validity_period_default, sm_default_msg_id, enquire_link_interval_sec, enquire_link_max_missed, bind_timeout_ms, response_timeout_ms, window_size, bind_pool_size, throughput_limit_per_sec, tls_enabled, tls_config_json, priority_tier, status, auto_reconnect_enabled, reconnect_initial_delay_ms, reconnect_multiplier, reconnect_max_delay_ms, reconnect_jitter_pct, reconnect_max_attempts, created_at, updated_at
+RETURNING id, name, host, port, bind_type, system_id, vendor_profile, system_type, interface_version, addr_ton, addr_npi, address_range, source_addr_ton, source_addr_npi, dest_addr_ton, dest_addr_npi, data_coding_default, registered_delivery_default, replace_if_present_flag_default, esm_class_default, priority_flag_default, validity_period_default, sm_default_msg_id, enquire_link_interval_sec, enquire_link_max_missed, bind_timeout_ms, response_timeout_ms, window_size, bind_pool_size, throughput_limit_per_sec, tls_enabled, tls_config_json, priority_tier, status, auto_reconnect_enabled, reconnect_initial_delay_ms, reconnect_multiplier, reconnect_max_delay_ms, reconnect_jitter_pct, reconnect_max_attempts, created_at, updated_at, password_sealed, password_kms_key_ref
 `
 
 type CreateConnectorParams struct {
@@ -38,7 +38,8 @@ type CreateConnectorParams struct {
 	Port                  int32
 	BindType              string
 	SystemID              string
-	PasswordHash          string
+	PasswordSealed        []byte
+	PasswordKmsKeyRef     string
 	VendorProfile         *string
 	InterfaceVersion      *int16
 	DataCodingDefault     *int16
@@ -61,7 +62,8 @@ func (q *Queries) CreateConnector(ctx context.Context, arg CreateConnectorParams
 		arg.Port,
 		arg.BindType,
 		arg.SystemID,
-		arg.PasswordHash,
+		arg.PasswordSealed,
+		arg.PasswordKmsKeyRef,
 		arg.VendorProfile,
 		arg.InterfaceVersion,
 		arg.DataCodingDefault,
@@ -81,7 +83,6 @@ func (q *Queries) CreateConnector(ctx context.Context, arg CreateConnectorParams
 		&i.Port,
 		&i.BindType,
 		&i.SystemID,
-		&i.PasswordHash,
 		&i.VendorProfile,
 		&i.SystemType,
 		&i.InterfaceVersion,
@@ -118,6 +119,8 @@ func (q *Queries) CreateConnector(ctx context.Context, arg CreateConnectorParams
 		&i.ReconnectMaxAttempts,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.PasswordSealed,
+		&i.PasswordKmsKeyRef,
 	)
 	return i, err
 }
@@ -135,7 +138,7 @@ func (q *Queries) DeleteConnector(ctx context.Context, id uuid.UUID) (int64, err
 }
 
 const getConnector = `-- name: GetConnector :one
-SELECT id, name, host, port, bind_type, system_id, password_hash, vendor_profile, system_type, interface_version, addr_ton, addr_npi, address_range, source_addr_ton, source_addr_npi, dest_addr_ton, dest_addr_npi, data_coding_default, registered_delivery_default, replace_if_present_flag_default, esm_class_default, priority_flag_default, validity_period_default, sm_default_msg_id, enquire_link_interval_sec, enquire_link_max_missed, bind_timeout_ms, response_timeout_ms, window_size, bind_pool_size, throughput_limit_per_sec, tls_enabled, tls_config_json, priority_tier, status, auto_reconnect_enabled, reconnect_initial_delay_ms, reconnect_multiplier, reconnect_max_delay_ms, reconnect_jitter_pct, reconnect_max_attempts, created_at, updated_at FROM control_plane.smsc_connectors WHERE id = $1
+SELECT id, name, host, port, bind_type, system_id, vendor_profile, system_type, interface_version, addr_ton, addr_npi, address_range, source_addr_ton, source_addr_npi, dest_addr_ton, dest_addr_npi, data_coding_default, registered_delivery_default, replace_if_present_flag_default, esm_class_default, priority_flag_default, validity_period_default, sm_default_msg_id, enquire_link_interval_sec, enquire_link_max_missed, bind_timeout_ms, response_timeout_ms, window_size, bind_pool_size, throughput_limit_per_sec, tls_enabled, tls_config_json, priority_tier, status, auto_reconnect_enabled, reconnect_initial_delay_ms, reconnect_multiplier, reconnect_max_delay_ms, reconnect_jitter_pct, reconnect_max_attempts, created_at, updated_at, password_sealed, password_kms_key_ref FROM control_plane.smsc_connectors WHERE id = $1
 `
 
 func (q *Queries) GetConnector(ctx context.Context, id uuid.UUID) (ControlPlaneSmscConnector, error) {
@@ -148,7 +151,6 @@ func (q *Queries) GetConnector(ctx context.Context, id uuid.UUID) (ControlPlaneS
 		&i.Port,
 		&i.BindType,
 		&i.SystemID,
-		&i.PasswordHash,
 		&i.VendorProfile,
 		&i.SystemType,
 		&i.InterfaceVersion,
@@ -185,12 +187,14 @@ func (q *Queries) GetConnector(ctx context.Context, id uuid.UUID) (ControlPlaneS
 		&i.ReconnectMaxAttempts,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.PasswordSealed,
+		&i.PasswordKmsKeyRef,
 	)
 	return i, err
 }
 
 const listConnectors = `-- name: ListConnectors :many
-SELECT id, name, host, port, bind_type, system_id, password_hash, vendor_profile, system_type, interface_version, addr_ton, addr_npi, address_range, source_addr_ton, source_addr_npi, dest_addr_ton, dest_addr_npi, data_coding_default, registered_delivery_default, replace_if_present_flag_default, esm_class_default, priority_flag_default, validity_period_default, sm_default_msg_id, enquire_link_interval_sec, enquire_link_max_missed, bind_timeout_ms, response_timeout_ms, window_size, bind_pool_size, throughput_limit_per_sec, tls_enabled, tls_config_json, priority_tier, status, auto_reconnect_enabled, reconnect_initial_delay_ms, reconnect_multiplier, reconnect_max_delay_ms, reconnect_jitter_pct, reconnect_max_attempts, created_at, updated_at FROM control_plane.smsc_connectors ORDER BY name
+SELECT id, name, host, port, bind_type, system_id, vendor_profile, system_type, interface_version, addr_ton, addr_npi, address_range, source_addr_ton, source_addr_npi, dest_addr_ton, dest_addr_npi, data_coding_default, registered_delivery_default, replace_if_present_flag_default, esm_class_default, priority_flag_default, validity_period_default, sm_default_msg_id, enquire_link_interval_sec, enquire_link_max_missed, bind_timeout_ms, response_timeout_ms, window_size, bind_pool_size, throughput_limit_per_sec, tls_enabled, tls_config_json, priority_tier, status, auto_reconnect_enabled, reconnect_initial_delay_ms, reconnect_multiplier, reconnect_max_delay_ms, reconnect_jitter_pct, reconnect_max_attempts, created_at, updated_at, password_sealed, password_kms_key_ref FROM control_plane.smsc_connectors ORDER BY name
 `
 
 func (q *Queries) ListConnectors(ctx context.Context) ([]ControlPlaneSmscConnector, error) {
@@ -209,7 +213,6 @@ func (q *Queries) ListConnectors(ctx context.Context) ([]ControlPlaneSmscConnect
 			&i.Port,
 			&i.BindType,
 			&i.SystemID,
-			&i.PasswordHash,
 			&i.VendorProfile,
 			&i.SystemType,
 			&i.InterfaceVersion,
@@ -246,6 +249,8 @@ func (q *Queries) ListConnectors(ctx context.Context) ([]ControlPlaneSmscConnect
 			&i.ReconnectMaxAttempts,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.PasswordSealed,
+			&i.PasswordKmsKeyRef,
 		); err != nil {
 			return nil, err
 		}
@@ -264,17 +269,18 @@ UPDATE control_plane.smsc_connectors SET
     port                     = COALESCE($3, port),
     bind_type                = COALESCE($4, bind_type),
     system_id                = COALESCE($5, system_id),
-    password_hash            = COALESCE($6, password_hash),
-    vendor_profile           = COALESCE($7, vendor_profile),
-    data_coding_default      = COALESCE($8, data_coding_default),
-    window_size              = COALESCE($9, window_size),
-    throughput_limit_per_sec = COALESCE($10, throughput_limit_per_sec),
-    tls_enabled              = COALESCE($11, tls_enabled),
-    tls_config_json          = COALESCE($12, tls_config_json),
-    priority_tier            = COALESCE($13, priority_tier),
-    status                   = COALESCE($14, status)
-WHERE id = $15
-RETURNING id, name, host, port, bind_type, system_id, password_hash, vendor_profile, system_type, interface_version, addr_ton, addr_npi, address_range, source_addr_ton, source_addr_npi, dest_addr_ton, dest_addr_npi, data_coding_default, registered_delivery_default, replace_if_present_flag_default, esm_class_default, priority_flag_default, validity_period_default, sm_default_msg_id, enquire_link_interval_sec, enquire_link_max_missed, bind_timeout_ms, response_timeout_ms, window_size, bind_pool_size, throughput_limit_per_sec, tls_enabled, tls_config_json, priority_tier, status, auto_reconnect_enabled, reconnect_initial_delay_ms, reconnect_multiplier, reconnect_max_delay_ms, reconnect_jitter_pct, reconnect_max_attempts, created_at, updated_at
+    password_sealed          = COALESCE($6, password_sealed),
+    password_kms_key_ref     = COALESCE($7, password_kms_key_ref),
+    vendor_profile           = COALESCE($8, vendor_profile),
+    data_coding_default      = COALESCE($9, data_coding_default),
+    window_size              = COALESCE($10, window_size),
+    throughput_limit_per_sec = COALESCE($11, throughput_limit_per_sec),
+    tls_enabled              = COALESCE($12, tls_enabled),
+    tls_config_json          = COALESCE($13, tls_config_json),
+    priority_tier            = COALESCE($14, priority_tier),
+    status                   = COALESCE($15, status)
+WHERE id = $16
+RETURNING id, name, host, port, bind_type, system_id, vendor_profile, system_type, interface_version, addr_ton, addr_npi, address_range, source_addr_ton, source_addr_npi, dest_addr_ton, dest_addr_npi, data_coding_default, registered_delivery_default, replace_if_present_flag_default, esm_class_default, priority_flag_default, validity_period_default, sm_default_msg_id, enquire_link_interval_sec, enquire_link_max_missed, bind_timeout_ms, response_timeout_ms, window_size, bind_pool_size, throughput_limit_per_sec, tls_enabled, tls_config_json, priority_tier, status, auto_reconnect_enabled, reconnect_initial_delay_ms, reconnect_multiplier, reconnect_max_delay_ms, reconnect_jitter_pct, reconnect_max_attempts, created_at, updated_at, password_sealed, password_kms_key_ref
 `
 
 type UpdateConnectorParams struct {
@@ -283,7 +289,8 @@ type UpdateConnectorParams struct {
 	Port                  *int32
 	BindType              *string
 	SystemID              *string
-	PasswordHash          *string
+	PasswordSealed        []byte
+	PasswordKmsKeyRef     *string
 	VendorProfile         *string
 	DataCodingDefault     *int16
 	WindowSize            *int32
@@ -302,7 +309,8 @@ func (q *Queries) UpdateConnector(ctx context.Context, arg UpdateConnectorParams
 		arg.Port,
 		arg.BindType,
 		arg.SystemID,
-		arg.PasswordHash,
+		arg.PasswordSealed,
+		arg.PasswordKmsKeyRef,
 		arg.VendorProfile,
 		arg.DataCodingDefault,
 		arg.WindowSize,
@@ -321,7 +329,6 @@ func (q *Queries) UpdateConnector(ctx context.Context, arg UpdateConnectorParams
 		&i.Port,
 		&i.BindType,
 		&i.SystemID,
-		&i.PasswordHash,
 		&i.VendorProfile,
 		&i.SystemType,
 		&i.InterfaceVersion,
@@ -358,13 +365,15 @@ func (q *Queries) UpdateConnector(ctx context.Context, arg UpdateConnectorParams
 		&i.ReconnectMaxAttempts,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.PasswordSealed,
+		&i.PasswordKmsKeyRef,
 	)
 	return i, err
 }
 
 const updateConnectorBindPool = `-- name: UpdateConnectorBindPool :one
 UPDATE control_plane.smsc_connectors SET bind_pool_size = $1 WHERE id = $2
-RETURNING id, name, host, port, bind_type, system_id, password_hash, vendor_profile, system_type, interface_version, addr_ton, addr_npi, address_range, source_addr_ton, source_addr_npi, dest_addr_ton, dest_addr_npi, data_coding_default, registered_delivery_default, replace_if_present_flag_default, esm_class_default, priority_flag_default, validity_period_default, sm_default_msg_id, enquire_link_interval_sec, enquire_link_max_missed, bind_timeout_ms, response_timeout_ms, window_size, bind_pool_size, throughput_limit_per_sec, tls_enabled, tls_config_json, priority_tier, status, auto_reconnect_enabled, reconnect_initial_delay_ms, reconnect_multiplier, reconnect_max_delay_ms, reconnect_jitter_pct, reconnect_max_attempts, created_at, updated_at
+RETURNING id, name, host, port, bind_type, system_id, vendor_profile, system_type, interface_version, addr_ton, addr_npi, address_range, source_addr_ton, source_addr_npi, dest_addr_ton, dest_addr_npi, data_coding_default, registered_delivery_default, replace_if_present_flag_default, esm_class_default, priority_flag_default, validity_period_default, sm_default_msg_id, enquire_link_interval_sec, enquire_link_max_missed, bind_timeout_ms, response_timeout_ms, window_size, bind_pool_size, throughput_limit_per_sec, tls_enabled, tls_config_json, priority_tier, status, auto_reconnect_enabled, reconnect_initial_delay_ms, reconnect_multiplier, reconnect_max_delay_ms, reconnect_jitter_pct, reconnect_max_attempts, created_at, updated_at, password_sealed, password_kms_key_ref
 `
 
 type UpdateConnectorBindPoolParams struct {
@@ -382,7 +391,6 @@ func (q *Queries) UpdateConnectorBindPool(ctx context.Context, arg UpdateConnect
 		&i.Port,
 		&i.BindType,
 		&i.SystemID,
-		&i.PasswordHash,
 		&i.VendorProfile,
 		&i.SystemType,
 		&i.InterfaceVersion,
@@ -419,6 +427,8 @@ func (q *Queries) UpdateConnectorBindPool(ctx context.Context, arg UpdateConnect
 		&i.ReconnectMaxAttempts,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.PasswordSealed,
+		&i.PasswordKmsKeyRef,
 	)
 	return i, err
 }
@@ -432,7 +442,7 @@ UPDATE control_plane.smsc_connectors SET
     reconnect_jitter_pct       = COALESCE($5, reconnect_jitter_pct),
     reconnect_max_attempts     = COALESCE($6, reconnect_max_attempts)
 WHERE id = $7
-RETURNING id, name, host, port, bind_type, system_id, password_hash, vendor_profile, system_type, interface_version, addr_ton, addr_npi, address_range, source_addr_ton, source_addr_npi, dest_addr_ton, dest_addr_npi, data_coding_default, registered_delivery_default, replace_if_present_flag_default, esm_class_default, priority_flag_default, validity_period_default, sm_default_msg_id, enquire_link_interval_sec, enquire_link_max_missed, bind_timeout_ms, response_timeout_ms, window_size, bind_pool_size, throughput_limit_per_sec, tls_enabled, tls_config_json, priority_tier, status, auto_reconnect_enabled, reconnect_initial_delay_ms, reconnect_multiplier, reconnect_max_delay_ms, reconnect_jitter_pct, reconnect_max_attempts, created_at, updated_at
+RETURNING id, name, host, port, bind_type, system_id, vendor_profile, system_type, interface_version, addr_ton, addr_npi, address_range, source_addr_ton, source_addr_npi, dest_addr_ton, dest_addr_npi, data_coding_default, registered_delivery_default, replace_if_present_flag_default, esm_class_default, priority_flag_default, validity_period_default, sm_default_msg_id, enquire_link_interval_sec, enquire_link_max_missed, bind_timeout_ms, response_timeout_ms, window_size, bind_pool_size, throughput_limit_per_sec, tls_enabled, tls_config_json, priority_tier, status, auto_reconnect_enabled, reconnect_initial_delay_ms, reconnect_multiplier, reconnect_max_delay_ms, reconnect_jitter_pct, reconnect_max_attempts, created_at, updated_at, password_sealed, password_kms_key_ref
 `
 
 type UpdateConnectorReconnectPolicyParams struct {
@@ -463,7 +473,6 @@ func (q *Queries) UpdateConnectorReconnectPolicy(ctx context.Context, arg Update
 		&i.Port,
 		&i.BindType,
 		&i.SystemID,
-		&i.PasswordHash,
 		&i.VendorProfile,
 		&i.SystemType,
 		&i.InterfaceVersion,
@@ -500,6 +509,8 @@ func (q *Queries) UpdateConnectorReconnectPolicy(ctx context.Context, arg Update
 		&i.ReconnectMaxAttempts,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.PasswordSealed,
+		&i.PasswordKmsKeyRef,
 	)
 	return i, err
 }

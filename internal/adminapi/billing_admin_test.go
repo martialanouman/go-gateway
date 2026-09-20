@@ -216,7 +216,7 @@ func TestDeleteRatePlanInUseReturns409(t *testing.T) {
 // never appear in a read response — auth_config_json comes back masked, and the secret value is absent.
 func TestProviderAuthConfigMaskedOnRead(t *testing.T) {
 	prov := cp.ExternalBillingProvider{
-		ID: uuid.New(), Name: "acme", BaseURL: "https://acme.example", AuthConfig: []byte(`{"api_key":"SUPER-SECRET"}`),
+		ID: uuid.New(), Name: "acme", BaseURL: "https://acme.example", AuthConfig: cp.SealedSecret{Sealed: []byte(`sealed-api-key-bytes`), KMSKeyRef: "local/v1"},
 		Mode: "balance_check", CacheTTLMs: 1000, FailurePolicy: "fail_open", Status: "active",
 	}
 	api := newTestAPIWith(t, adminapi.Deps{BillingProviders: &fakeProviderStore{providers: []cp.ExternalBillingProvider{prov}}})
@@ -281,19 +281,27 @@ func TestUpdateProviderIgnoresMaskedSentinel(t *testing.T) {
 }
 
 // TestUpdateProviderPersistsRealAuthConfig: a genuine auth object IS persisted (the sentinel guard must not
-// swallow real credential updates).
+// swallow real credential updates) — and since step-295 it is persisted SEALED. The assertion used to be
+// that the patch CONTAINED the secret, which is now exactly the thing that must never happen.
 func TestUpdateProviderPersistsRealAuthConfig(t *testing.T) {
 	var gotPatch cp.ExternalBillingProviderPatch
 	store := &captureProviderStore{onUpdate: func(p cp.ExternalBillingProviderPatch) { gotPatch = p }}
-	api := newTestAPIWith(t, adminapi.Deps{BillingProviders: store})
+	sealer := newKMSSealer()
+	api := newTestAPIWith(t, adminapi.Deps{BillingProviders: store, SecretSealer: sealer})
 	body := `{"auth_config_json":{"api_key":"new-secret"}}`
 	w := httptest.NewRecorder()
 	api.ServeHTTP(w, authed(t, http.MethodPatch, "/v1/admin/billing-providers/"+uuid.NewString(), body))
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(string(gotPatch.AuthConfig), "new-secret") {
-		t.Errorf("AuthConfig patch = %s, want it to carry the real secret", gotPatch.AuthConfig)
+	if gotPatch.AuthConfig == nil {
+		t.Fatal("AuthConfig patch is nil: the real credential update was swallowed")
+	}
+	if strings.Contains(string(gotPatch.AuthConfig.Sealed), "new-secret") {
+		t.Error("the patch carries the credentials in clear")
+	}
+	if got := sealer.open(t, *gotPatch.AuthConfig); !strings.Contains(string(got), "new-secret") {
+		t.Errorf("what would be persisted opens to %q, want it to carry the real secret", got)
 	}
 }
 

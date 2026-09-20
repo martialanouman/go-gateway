@@ -1,6 +1,7 @@
 package postgres_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -27,11 +28,21 @@ func TestConnectorRepoRoundTripAcrossTypeGaps(t *testing.T) {
 		Port:          2775,
 		BindType:      cp.BindTRX,
 		SystemID:      "sys",
-		PasswordHash:  "hash",
+		Password:      cp.SealedSecret{Sealed: []byte{0x01, 0x00, 0xff, 0x7f, 0x00}, KMSKeyRef: "test/v1"},
 		TLSConfigJSON: map[string]any{"verify": true, "min_version": "1.2"},
 	})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
+	}
+	// step-295: the column used to hold an argon2id hash, which no bind_transceiver PDU can carry. What
+	// goes in now must come back byte for byte — embedded NULs and high bytes included, since a bytea
+	// round trip that mangled one byte would leave a ciphertext that no longer opens.
+	want := cp.SealedSecret{Sealed: []byte{0x01, 0x00, 0xff, 0x7f, 0x00}, KMSKeyRef: "test/v1"}
+	if !bytes.Equal(created.Password.Sealed, want.Sealed) {
+		t.Errorf("password_sealed came back %x, want %x", created.Password.Sealed, want.Sealed)
+	}
+	if created.Password.KMSKeyRef != want.KMSKeyRef {
+		t.Errorf("password_kms_key_ref = %q, want %q", created.Password.KMSKeyRef, want.KMSKeyRef)
 	}
 
 	// The DDL smallint defaults arrive as int, not int16.
@@ -62,7 +73,7 @@ func TestConnectorRepoDuplicateNameConflicts(t *testing.T) {
 	repo := postgres.NewConnectorRepo(pool)
 	ctx := context.Background()
 
-	base := cp.NewConnector{Name: "smsc-dup", Host: "h", Port: 2775, BindType: cp.BindTRX, SystemID: "s", PasswordHash: "hash"}
+	base := cp.NewConnector{Name: "smsc-dup", Host: "h", Port: 2775, BindType: cp.BindTRX, SystemID: "s", Password: cp.SealedSecret{Sealed: []byte("hash"), KMSKeyRef: "test/v1"}}
 	if _, err := repo.Create(ctx, base); err != nil {
 		t.Fatalf("first Create: %v", err)
 	}
@@ -81,7 +92,7 @@ func TestConnectorRepoUpdateReconnectPolicyAndBindPool(t *testing.T) {
 	ctx := context.Background()
 
 	c, err := repo.Create(ctx, cp.NewConnector{
-		Name: "smsc-reconf", Host: "h", Port: 2775, BindType: cp.BindTRX, SystemID: "s", PasswordHash: "hash",
+		Name: "smsc-reconf", Host: "h", Port: 2775, BindType: cp.BindTRX, SystemID: "s", Password: cp.SealedSecret{Sealed: []byte("hash"), KMSKeyRef: "test/v1"},
 	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
