@@ -18,7 +18,8 @@ VALUES
   ($1, $2, $3, $4, $5,
    COALESCE($6, 1000), $7,
    COALESCE($8, 'fail_open'))
-RETURNING id, name, base_url, mode, cache_ttl_ms, sync_call_timeout_ms, failure_policy, status, created_at, updated_at, auth_config_sealed, auth_config_kms_key_ref
+RETURNING id, name, base_url, mode, cache_ttl_ms, sync_call_timeout_ms, failure_policy, status,
+          created_at, updated_at, auth_config_sealed, auth_config_kms_key_ref
 `
 
 type CreateExternalProviderParams struct {
@@ -79,7 +80,9 @@ func (q *Queries) DeleteExternalProvider(ctx context.Context, id uuid.UUID) (int
 }
 
 const getExternalProvider = `-- name: GetExternalProvider :one
-SELECT id, name, base_url, mode, cache_ttl_ms, sync_call_timeout_ms, failure_policy, status, created_at, updated_at, auth_config_sealed, auth_config_kms_key_ref FROM control_plane.external_billing_providers
+SELECT id, name, base_url, mode, cache_ttl_ms, sync_call_timeout_ms, failure_policy, status,
+       created_at, updated_at, auth_config_sealed, auth_config_kms_key_ref
+FROM control_plane.external_billing_providers
 WHERE id = $1
 `
 
@@ -105,7 +108,9 @@ func (q *Queries) GetExternalProvider(ctx context.Context, id uuid.UUID) (Contro
 }
 
 const listExternalProviders = `-- name: ListExternalProviders :many
-SELECT id, name, base_url, mode, cache_ttl_ms, sync_call_timeout_ms, failure_policy, status, created_at, updated_at, auth_config_sealed, auth_config_kms_key_ref FROM control_plane.external_billing_providers
+SELECT id, name, base_url, mode, cache_ttl_ms, sync_call_timeout_ms, failure_policy, status,
+       created_at, updated_at, auth_config_sealed, auth_config_kms_key_ref
+FROM control_plane.external_billing_providers
 ORDER BY name
 `
 
@@ -157,7 +162,8 @@ UPDATE control_plane.external_billing_providers SET
     status               = COALESCE($9, status),
     updated_at           = now()
 WHERE id = $10
-RETURNING id, name, base_url, mode, cache_ttl_ms, sync_call_timeout_ms, failure_policy, status, created_at, updated_at, auth_config_sealed, auth_config_kms_key_ref
+RETURNING id, name, base_url, mode, cache_ttl_ms, sync_call_timeout_ms, failure_policy, status,
+          created_at, updated_at, auth_config_sealed, auth_config_kms_key_ref
 `
 
 type UpdateExternalProviderParams struct {

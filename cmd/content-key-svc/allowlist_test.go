@@ -9,6 +9,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/martialanouman/go-gateway/internal/config"
 	configsecretspb "github.com/martialanouman/go-gateway/internal/configsecrets/pb"
@@ -187,5 +188,57 @@ func TestAuthorisationReadsEverySANLikeTheHandshakeAllowlistDoes(t *testing.T) {
 	if _, err := configsecretspb.NewConfigSecretsClient(conn).Seal(ctx,
 		&configsecretspb.SealRequest{Plaintext: []byte("x")}); err != nil {
 		t.Errorf("a caller the handshake admitted was refused here: %v", err)
+	}
+}
+
+// The stream interceptor is wired for a future this service does not have yet: it serves no streaming RPC,
+// so removing grpc.StreamInterceptor from the wiring breaks nothing today and every test stays green. That
+// is exactly the shape of hole the guard exists to prevent, so a streaming method is registered here and
+// called — the service name is what the interceptor matches on, and the handler is never reached.
+func TestTheStreamGateIsWiredTooAlthoughNoRPCStreamsYet(t *testing.T) {
+	ca := tlstest.NewCA(t)
+	certFile, keyFile := ca.Issue(t, serviceName, serviceName)
+
+	cfg := testConfig()
+	cfg.Postgres = pgtest.Config(t)
+	cfg.TLS = config.TLS{
+		Enabled: true, CertFile: certFile, KeyFile: keyFile, ClientCAFile: ca.CAFile,
+		AllowedClients: []string{"router-svc", "admin-api-svc"},
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	app, err := newContentKeyApp(ctx, cfg, discardLogger())
+	if err != nil {
+		t.Fatalf("newContentKeyApp: %v", err)
+	}
+	defer app.close()
+
+	// Registered before serving, under the package the interceptor gates. Reaching the handler would mean
+	// the gate let the call through.
+	reached := false
+	app.grpc.RegisterService(&grpc.ServiceDesc{
+		ServiceName: "configsecrets.Probe",
+		HandlerType: (*any)(nil),
+		Streams: []grpc.StreamDesc{{
+			StreamName:    "Ping",
+			ServerStreams: true,
+			Handler:       func(any, grpc.ServerStream) error { reached = true; return nil },
+		}},
+		Metadata: "configsecrets.proto",
+	}, nil)
+
+	addr := grpctest.Serve(t, app.grpc)
+	stream, err := dialAs(t, ca, addr, "router-svc").NewStream(ctx,
+		&grpc.StreamDesc{ServerStreams: true}, "/configsecrets.Probe/Ping")
+	if err == nil {
+		err = stream.RecvMsg(new(emptypb.Empty))
+	}
+	if code := status.Code(err); code != codes.PermissionDenied {
+		t.Errorf("streaming call from router-svc = %s (%v), want PermissionDenied", code, err)
+	}
+	if reached {
+		t.Error("the stream handler ran: the gate does not cover streaming RPCs")
 	}
 }

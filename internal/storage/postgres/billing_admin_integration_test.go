@@ -131,3 +131,40 @@ func TestExternalProviderRepoCRUD(t *testing.T) {
 		t.Errorf("get after delete = %v, want not_found", err)
 	}
 }
+
+// The same two-column patch as the connector, on the other entity: UpdateExternalProvider writes
+// auth_config_sealed and auth_config_kms_key_ref through separate COALESCE arguments, so nothing in the
+// SQL couples them. The risk is symmetric; the coverage was not.
+func TestExternalProviderRepoRotatesCredentialsAndKeyRefTogether(t *testing.T) {
+	pool := pgtest.Pool(t)
+	ctx := context.Background()
+	repo := postgres.NewExternalBillingProviderRepo(pool)
+
+	before := cp.SealedSecret{Sealed: []byte{0x01, 0x02}, KMSKeyRef: "kek-before"}
+	p, err := repo.Create(ctx, cp.NewExternalBillingProvider{
+		Name: "prov-rotate", BaseURL: "https://ext.example", AuthConfig: before,
+		Mode: string(cp.ExternalModeBalanceCheck),
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	after := cp.SealedSecret{Sealed: []byte{0x03, 0x00, 0x04}, KMSKeyRef: "kek-after"}
+	got, err := repo.Update(ctx, p.ID, cp.ExternalBillingProviderPatch{AuthConfig: &after})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if !bytes.Equal(got.AuthConfig.Sealed, after.Sealed) || got.AuthConfig.KMSKeyRef != after.KMSKeyRef {
+		t.Errorf("rotated to %x / %q, want %x / %q", got.AuthConfig.Sealed, got.AuthConfig.KMSKeyRef, after.Sealed, after.KMSKeyRef)
+	}
+
+	// A half-filled patch writes neither column.
+	half := cp.SealedSecret{KMSKeyRef: "kek-orphan"}
+	got, err = repo.Update(ctx, p.ID, cp.ExternalBillingProviderPatch{AuthConfig: &half})
+	if err != nil {
+		t.Fatalf("update (half): %v", err)
+	}
+	if !bytes.Equal(got.AuthConfig.Sealed, after.Sealed) || got.AuthConfig.KMSKeyRef != after.KMSKeyRef {
+		t.Errorf("a half-filled patch disturbed the row: %x / %q", got.AuthConfig.Sealed, got.AuthConfig.KMSKeyRef)
+	}
+}
