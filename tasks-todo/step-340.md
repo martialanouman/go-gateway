@@ -77,8 +77,17 @@ refuse le pré-contrôle : là le groupe est une **valeur de corps** (422), ici 
 Pas de 409 sur `update-webhook` : `WebhookUpdate` ne porte pas `event_type`, donc aucun chemin de
 mise à jour ne peut heurter `webhooks_uq`.
 
-Additif dans les deux cas (`api-security-added`, `response-non-success-status-added` : INFO), plus une
-description (voir plus bas) : bump **mineur** `api/package.json` 5.0.0 → 5.1.0.
+Ces ajouts-là sont additifs (`api-security-added`, `response-non-success-status-added` : INFO). Ce qui
+coûte, c'est la validation.
+
+**`secret` et `url` n'avaient aucune contrainte de longueur** : `POST {"secret":""}` créait un webhook
+dont les signatures HMAC sont calculables par n'importe qui, et `url: ""` un webhook qui ne pointe
+nulle part. `minLength: 16` sur `secret` et `minLength: 1` sur `url`, dans `WebhookCreate` **et**
+`WebhookUpdate`. Les deux schémas existent déjà sur `main` (les opérations y sont `deferred`), donc
+`oasdiff` classe les quatre restrictions `request-property-min-length-increased` en **ERR** : bump
+**majeur** `api/package.json` 5.0.0 → **6.0.0**. La rupture est formelle — `deferred` veut dire 404,
+aucun consommateur ne pouvait appeler ces opérations — et c'est le seul moment où le prix se négocie :
+durcir après coup coûterait un second majeur. Même constat qu'en step-330, pour la même raison.
 
 ### `status = disabled` ne coupait que la moitié de la remise
 
@@ -157,8 +166,9 @@ un `COALESCE`, donc `retry_policy_json` ne peut pas être remis à `{}` par cett
 
 - [ ] `make check` vert (lint · `test -race` · govulncheck · contrats)
 - [ ] les 4 opérations servies ; secret jamais relu ; unicité et `disabled` vérifiés côté remise
-- [ ] contrat corrigé : `security` et les codes d'échec d'auth ajoutés aux 4, description de
-      `retry_policy_json` rendue honnête — bump **mineur** `api/package.json` 5.0.0 → 5.1.0
+- [ ] contrat corrigé : `security` et les codes d'échec d'auth ajoutés aux 4, `minLength` sur `secret`
+      et `url`, description de `retry_policy_json` rendue honnête — bump **majeur**
+      `api/package.json` 5.0.0 → 6.0.0
 - [ ] `api/collections/admin-api.yaml` synchronisée
 - [ ] les 4 lignes retirées de la liste `deferred` posée par step-320 (elle vit dans le test de
       contrat, pas dans la fiche)
