@@ -144,3 +144,48 @@ func TestConfigSecretsIsRefusedToCallersThatOnlyNeedContentKeys(t *testing.T) {
 		t.Errorf("Seal from admin-api-svc was refused: %v", err)
 	}
 }
+
+// A certificate normally carries several DNS SANs — cert-manager fills them from a Certificate's spec,
+// and the service name is rarely the first. This gate and the handshake allowlist must read the same
+// identity from the same certificate: reading only DNSNames[0] made them disagree, admitting a caller at
+// the handshake and then refusing it here, or the reverse.
+func TestAuthorisationReadsEverySANLikeTheHandshakeAllowlistDoes(t *testing.T) {
+	ca := tlstest.NewCA(t)
+	certFile, keyFile := ca.Issue(t, serviceName, serviceName)
+
+	cfg := testConfig()
+	cfg.Postgres = pgtest.Config(t)
+	cfg.TLS = config.TLS{
+		Enabled: true, CertFile: certFile, KeyFile: keyFile, ClientCAFile: ca.CAFile,
+		AllowedClients: []string{"admin-api-svc"},
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	app, err := newContentKeyApp(ctx, cfg, discardLogger())
+	if err != nil {
+		t.Fatalf("newContentKeyApp: %v", err)
+	}
+	defer app.close()
+	addr := grpctest.Serve(t, app.grpc)
+
+	// The pod's own DNS name first, the service identity after — the shape a Certificate produces.
+	clientCert, clientKey := ca.Issue(t, "admin-api-svc", "admin-api-svc-7d9f.ns.svc", "admin-api-svc")
+	dial, err := grpctls.Dialer(config.TLS{
+		Enabled: true, CertFile: clientCert, KeyFile: clientKey, ClientCAFile: ca.CAFile,
+	}, discardLogger(), serviceName)
+	if err != nil {
+		t.Fatalf("Dialer: %v", err)
+	}
+	conn, err := dial(addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	if _, err := configsecretspb.NewConfigSecretsClient(conn).Seal(ctx,
+		&configsecretspb.SealRequest{Plaintext: []byte("x")}); err != nil {
+		t.Errorf("a caller the handshake admitted was refused here: %v", err)
+	}
+}

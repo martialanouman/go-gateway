@@ -2,7 +2,8 @@ package main
 
 import (
 	"context"
-	"crypto/x509"
+	"maps"
+	"slices"
 	"strings"
 
 	"google.golang.org/grpc"
@@ -35,41 +36,44 @@ func authorizeConfigSecrets(ctx context.Context, fullMethod string) error {
 	if !strings.HasPrefix(fullMethod, "/configsecrets.") {
 		return nil
 	}
-	name, ok := peerServiceName(ctx)
-	if !ok {
+	names, identified := peerDNSNames(ctx)
+	if !identified {
 		return nil
 	}
-	if !configSecretsCallers[name] {
-		return status.Errorf(codes.PermissionDenied, "%s is not allowed to call config secrets", name)
+	for _, name := range names {
+		if configSecretsCallers[name] {
+			return nil
+		}
 	}
-	return nil
+	// Both halves are named, as tlsconf's own allowlist does: neither the identity presented nor the one
+	// expected is a secret, and a refusal that said neither would be undebuggable.
+	return status.Errorf(codes.PermissionDenied, "client identity %v is not allowed to call config secrets %v",
+		names, slices.Sorted(maps.Keys(configSecretsCallers)))
 }
 
-// peerServiceName returns the DNS SAN the caller's certificate carries, matching what tlsconf's allowlist
-// matches on. ok is false when the connection carries no verified peer certificate — no TLS, or no client
-// certificate — in which case there is no identity to decide on.
-func peerServiceName(ctx context.Context) (string, bool) {
+// peerDNSNames returns the DNS SANs of the caller's verified certificate — ALL of them, matching what
+// tlsconf.allowlist matches on. Reading only the first would make this gate and the handshake allowlist
+// disagree about the same certificate, and a multi-SAN certificate is the normal shape under cert-manager.
+//
+// identified is false when the connection carries no verified peer certificate — TLS disabled, or no
+// client certificate. There is then no identity to decide on, which is the same posture as the allowlist
+// itself: it only applies when TLS is on, and a deployment without mTLS has no authorisation story that
+// this interceptor could rescue.
+func peerDNSNames(ctx context.Context) ([]string, bool) {
 	p, ok := peer.FromContext(ctx)
 	if !ok {
-		return "", false
+		return nil, false
 	}
 	tlsInfo, ok := p.AuthInfo.(credentials.TLSInfo)
 	if !ok {
-		return "", false
+		return nil, false
 	}
 	for _, chain := range tlsInfo.State.VerifiedChains {
-		if len(chain) > 0 {
-			return firstDNSName(chain[0]), chain[0] != nil
+		if len(chain) > 0 && chain[0] != nil {
+			return chain[0].DNSNames, true
 		}
 	}
-	return "", false
-}
-
-func firstDNSName(cert *x509.Certificate) string {
-	if cert == nil || len(cert.DNSNames) == 0 {
-		return ""
-	}
-	return cert.DNSNames[0]
+	return nil, false
 }
 
 // configSecretsUnaryInterceptor applies authorizeConfigSecrets before any handler runs.
@@ -78,4 +82,14 @@ func configSecretsUnaryInterceptor(ctx context.Context, req any, info *grpc.Unar
 		return nil, err
 	}
 	return handler(ctx, req)
+}
+
+// configSecretsStreamInterceptor is the same gate for streaming RPCs. This service has none today, and
+// that is exactly why it is here: a stream added to ConfigSecrets later would otherwise be served to
+// everyone the TLS allowlist admits, and nothing would say so.
+func configSecretsStreamInterceptor(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+	if err := authorizeConfigSecrets(ss.Context(), info.FullMethod); err != nil {
+		return err
+	}
+	return handler(srv, ss)
 }
