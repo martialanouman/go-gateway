@@ -175,3 +175,14 @@ func (r *CustomerRepo) ListContentStorage(ctx context.Context) ([]cp.CustomerCon
 	}
 	return out, nil
 }
+
+// SetGroup sets or clears a customer's group membership (set-customer-group, §6.17). An unknown
+// customer is ErrNotFound; an unknown group violates the FK and becomes ErrValidation. Nothing
+// checks the group first: that check could only be stale by the time the UPDATE runs.
+func (r *CustomerRepo) SetGroup(ctx context.Context, id uuid.UUID, groupID *uuid.UUID) (cp.Customer, error) {
+	row, err := r.q.SetCustomerGroup(ctx, sqlcgen.SetCustomerGroupParams{ID: id, GroupID: groupID})
+	if err != nil {
+		return cp.Customer{}, translate("set customer group", err)
+	}
+	return customerFromRow(row), nil
+}

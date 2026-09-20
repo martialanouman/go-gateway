@@ -16,4 +16,8 @@ plan de contrôle. Le contrat OpenAPI marque pourtant ces champs `nullable`.
 **À quoi on reconnaîtra qu'il faut la payer.** Le premier exploitant qui doit annuler un plafond
 qu'il vient de poser.
 
-Source : `internal/controlplane/doc.go:15`
+**Elle s'étend à chaque surface neuve.** step-330 : `update-customer-group` déclare `description`
+nullable au contrat et ne peut pas la vider, pour la même raison.
+
+Sources : `internal/controlplane/doc.go:15` ·
+`internal/storage/postgres/queries/customer_groups.sql` (`UpdateCustomerGroup`)

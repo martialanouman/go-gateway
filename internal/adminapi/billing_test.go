@@ -39,6 +39,10 @@ func (s fakeBillingCustomerStore) Suspend(context.Context, uuid.UUID) (cp.Custom
 	return s.c, nil
 }
 
+func (s fakeBillingCustomerStore) SetGroup(context.Context, uuid.UUID, *uuid.UUID) (cp.Customer, error) {
+	return s.c, nil
+}
+
 type fakeBillingStore struct {
 	topupRow    cp.LedgerRow
 	transferRow []cp.LedgerRow

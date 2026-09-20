@@ -2,6 +2,7 @@ package adminapi_test
 
 import (
 	"context"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -17,10 +18,11 @@ import (
 // (guide-codage-go §6), not a mock framework: the handlers drive real branches — including a store
 // returning ErrConflict — in milliseconds, without Docker.
 type fakeCustomerStore struct {
-	mu        sync.Mutex
-	byID      map[uuid.UUID]cp.Customer
-	order     []uuid.UUID
-	createErr error // when set, Create returns it (to drive 409/422 paths)
+	mu          sync.Mutex
+	byID        map[uuid.UUID]cp.Customer
+	order       []uuid.UUID
+	createErr   error // when set, Create returns it (to drive 409/422 paths)
+	setGroupErr error // when set, SetGroup returns it (the FK rejection behind set-customer-group's 422)
 }
 
 func newFakeCustomerStore() *fakeCustomerStore {
@@ -74,6 +76,12 @@ func (s *fakeCustomerStore) List(_ context.Context, f cp.CustomerFilter) (cp.Pag
 		if f.Status != nil && c.Status != *f.Status {
 			continue
 		}
+		// The group filter is modelled here because list-group-customers resolves membership through
+		// it: a double that ignored it would return every customer and let a handler that forgot the
+		// filter pass.
+		if f.GroupID != nil && (c.GroupID == nil || *c.GroupID != *f.GroupID) {
+			continue
+		}
 		items = append(items, c)
 	}
 	return cp.Page[cp.Customer]{Items: items}, nil
@@ -103,6 +111,7 @@ func (s *fakeCustomerStore) Delete(_ context.Context, id uuid.UUID) error {
 		return errs.ErrNotFound
 	}
 	delete(s.byID, id)
+	s.order = slices.DeleteFunc(s.order, func(o uuid.UUID) bool { return o == id })
 	return nil
 }
 
@@ -118,11 +127,124 @@ func (s *fakeCustomerStore) Suspend(_ context.Context, id uuid.UUID) (cp.Custome
 	return c, nil
 }
 
+// SetGroup mirrors the repository: a nil groupID CLEARS the membership rather than leaving it
+// alone, and an unknown group is the FK rejection the caller injects through setGroupErr.
+func (s *fakeCustomerStore) SetGroup(_ context.Context, id uuid.UUID, groupID *uuid.UUID) (cp.Customer, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.setGroupErr != nil {
+		return cp.Customer{}, s.setGroupErr
+	}
+	c, ok := s.byID[id]
+	if !ok {
+		return cp.Customer{}, errs.ErrNotFound
+	}
+	c.GroupID = groupID
+	s.byID[id] = c
+	return c, nil
+}
+
+// fakeCustomerGroupStore is an in-memory CustomerGroupStore for handler unit tests.
+type fakeCustomerGroupStore struct {
+	mu        sync.Mutex
+	byID      map[uuid.UUID]cp.CustomerGroup
+	order     []uuid.UUID
+	createErr error // when set, Create returns it (to drive the 409 path)
+}
+
+func newFakeCustomerGroupStore() *fakeCustomerGroupStore {
+	return &fakeCustomerGroupStore{byID: map[uuid.UUID]cp.CustomerGroup{}}
+}
+
+// seed inserts a group directly, for the tests that need one to already exist.
+func (s *fakeCustomerGroupStore) seed(g cp.CustomerGroup) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.byID[g.ID] = g
+	s.order = append(s.order, g.ID)
+}
+
+func (s *fakeCustomerGroupStore) Create(_ context.Context, in cp.NewCustomerGroup) (cp.CustomerGroup, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.createErr != nil {
+		return cp.CustomerGroup{}, s.createErr
+	}
+	g := cp.CustomerGroup{
+		ID:          uuid.New(),
+		Name:        in.Name,
+		Description: in.Description,
+		Status:      cp.CustomerGroupActive,
+	}
+	s.byID[g.ID] = g
+	s.order = append(s.order, g.ID)
+	return g, nil
+}
+
+func (s *fakeCustomerGroupStore) Get(_ context.Context, id uuid.UUID) (cp.CustomerGroup, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	g, ok := s.byID[id]
+	if !ok {
+		return cp.CustomerGroup{}, errs.ErrNotFound
+	}
+	return g, nil
+}
+
+func (s *fakeCustomerGroupStore) List(_ context.Context, f cp.CustomerGroupFilter) ([]cp.CustomerGroup, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]cp.CustomerGroup, 0, len(s.order))
+	for _, id := range s.order {
+		g := s.byID[id]
+		if f.Status != nil && g.Status != *f.Status {
+			continue
+		}
+		out = append(out, g)
+	}
+	return out, nil
+}
+
+func (s *fakeCustomerGroupStore) Update(_ context.Context, id uuid.UUID, p cp.CustomerGroupPatch) (cp.CustomerGroup, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	g, ok := s.byID[id]
+	if !ok {
+		return cp.CustomerGroup{}, errs.ErrNotFound
+	}
+	if p.Name != nil {
+		g.Name = *p.Name
+	}
+	if p.Description != nil {
+		g.Description = p.Description
+	}
+	if p.Status != nil {
+		g.Status = *p.Status
+	}
+	s.byID[id] = g
+	return g, nil
+}
+
+func (s *fakeCustomerGroupStore) Delete(_ context.Context, id uuid.UUID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.byID[id]; !ok {
+		return errs.ErrNotFound
+	}
+	delete(s.byID, id)
+	s.order = slices.DeleteFunc(s.order, func(o uuid.UUID) bool { return o == id })
+	return nil
+}
+
 // fakeAccountStore is an in-memory AccountStore for handler unit tests.
 type fakeAccountStore struct {
 	mu        sync.Mutex
 	byID      map[uuid.UUID]cp.Account
 	createErr error
+	// customers resolves the group filter, which is a property of the OWNING customer: the real
+	// query filters on customer_id IN (SELECT id FROM customers WHERE group_id = ...). Left nil when
+	// a test does not exercise ?groupId=.
+	customers *fakeCustomerStore
 }
 
 func newFakeAccountStore() *fakeAccountStore {
@@ -162,14 +284,30 @@ func (s *fakeAccountStore) Get(_ context.Context, id uuid.UUID) (cp.Account, err
 	return a, nil
 }
 
-func (s *fakeAccountStore) List(_ context.Context, _ cp.AccountFilter) (cp.Page[cp.Account], error) {
+func (s *fakeAccountStore) List(ctx context.Context, f cp.AccountFilter) (cp.Page[cp.Account], error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	items := make([]cp.Account, 0, len(s.byID))
 	for _, a := range s.byID {
+		if f.GroupID != nil && !s.customerIsInGroup(ctx, a.CustomerID, *f.GroupID) {
+			continue
+		}
 		items = append(items, a)
 	}
 	return cp.Page[cp.Account]{Items: items}, nil
+}
+
+// customerIsInGroup mirrors the sub-select the real query runs. Without a customer store there is
+// no membership to resolve, so nothing matches — a silent "everything matches" would make a handler
+// that dropped the filter look correct.
+func (s *fakeAccountStore) customerIsInGroup(ctx context.Context, customerID, groupID uuid.UUID) bool {
+	if s.customers == nil {
+		// Returning false would answer an empty page, making any "no member" assertion pass without
+		// the filter ever being exercised.
+		panic("fakeAccountStore: ?groupId= needs .customers wired to resolve membership")
+	}
+	c, err := s.customers.Get(ctx, customerID)
+	return err == nil && c.GroupID != nil && *c.GroupID == groupID
 }
 
 func (s *fakeAccountStore) Update(_ context.Context, id uuid.UUID, p cp.AccountPatch) (cp.Account, error) {

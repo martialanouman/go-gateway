@@ -58,6 +58,10 @@ func (f *fakeSearchCustomers) Suspend(context.Context, uuid.UUID) (cp.Customer, 
 	return cp.Customer{}, nil
 }
 
+func (f *fakeSearchCustomers) SetGroup(context.Context, uuid.UUID, *uuid.UUID) (cp.Customer, error) {
+	return cp.Customer{}, nil
+}
+
 // --- harness ---
 
 type messageSummaryBody struct {

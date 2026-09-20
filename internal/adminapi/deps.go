@@ -21,6 +21,18 @@ type CustomerStore interface {
 	Delete(ctx context.Context, id uuid.UUID) error
 	// Suspend sets the customer and every one of its accounts to suspended, in one transaction.
 	Suspend(ctx context.Context, id uuid.UUID) (cp.Customer, error)
+	// SetGroup sets or clears group membership. Not part of Update: a nil here CLEARS the column
+	// rather than leaving it unchanged, which a patch field could not say.
+	SetGroup(ctx context.Context, id uuid.UUID, groupID *uuid.UUID) (cp.Customer, error)
+}
+
+// CustomerGroupStore is the persistence the customer-group handlers need (§6.17).
+type CustomerGroupStore interface {
+	Create(ctx context.Context, in cp.NewCustomerGroup) (cp.CustomerGroup, error)
+	Get(ctx context.Context, id uuid.UUID) (cp.CustomerGroup, error)
+	List(ctx context.Context, f cp.CustomerGroupFilter) ([]cp.CustomerGroup, error)
+	Update(ctx context.Context, id uuid.UUID, p cp.CustomerGroupPatch) (cp.CustomerGroup, error)
+	Delete(ctx context.Context, id uuid.UUID) error
 }
 
 // AccountStore is the persistence the SMPP-account handlers need.
@@ -165,10 +177,11 @@ type Deps struct {
 	ExportJobs ExportJobStore
 	ExportSink ExportSink
 
-	Customers   CustomerStore
-	Accounts    AccountStore
-	Credentials CredentialStore
-	Connectors  ConnectorStore
+	Customers      CustomerStore
+	CustomerGroups CustomerGroupStore
+	Accounts       AccountStore
+	Credentials    CredentialStore
+	Connectors     ConnectorStore
 	// SecretSealer is required by the two handlers that write a replayed secret (connectors, billing
 	// providers): without it they refuse rather than store something unusable.
 	SecretSealer     SecretSealer

@@ -27,6 +27,7 @@ func TestEveryEnumValueMatchesTheDDLCheckConstraint(t *testing.T) {
 		column string
 		got    []string
 	}{
+		{"customer_groups", "status", stringify(cp.CustomerGroupActive, cp.CustomerGroupArchived)},
 		{"customers", "status", stringify(cp.CustomerActive, cp.CustomerSuspended, cp.CustomerClosed)},
 		{"customers", "billing_mode", stringify(cp.BillingPrepaid, cp.BillingPostpaid)},
 		{"customers", "balance_scope", stringify(cp.BalanceScopeCustomer, cp.BalanceScopeSMPPAccount)},
