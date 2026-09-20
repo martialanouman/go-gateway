@@ -10,11 +10,13 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
+	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 	"github.com/martialanouman/go-gateway/internal/storage/postgres/sqlcgen"
 )
 
-// WebhookRepo reads the return-path webhook configuration. It satisfies the webhook sender's resolver
-// structurally.
+// WebhookRepo is the webhooks repository. It serves two kinds of reader that must not be confused:
+// the delivery paths, which want the webhook to push to (GetActive, active rows only), and the Admin
+// surface, which administers the configuration and therefore sees disabled rows too.
 type WebhookRepo struct {
 	q *sqlcgen.Queries
 }
@@ -24,10 +26,11 @@ func NewWebhookRepo(pool *pgxpool.Pool) *WebhookRepo {
 	return &WebhookRepo{q: sqlcgen.New(pool)}
 }
 
-// Get returns the account's webhook for an event type. found is false (with a nil error) when the
-// account has no webhook for that event — a normal absence, not a failure.
-func (r *WebhookRepo) Get(ctx context.Context, accountID uuid.UUID, eventType cp.WebhookEventType) (cp.Webhook, bool, error) {
-	row, err := r.q.GetWebhook(ctx, sqlcgen.GetWebhookParams{
+// GetActive returns the webhook an event of this type should be delivered to. found is false (with a
+// nil error) when the account has no webhook for that event or has disabled it — both are a normal
+// absence of a delivery target, not a failure.
+func (r *WebhookRepo) GetActive(ctx context.Context, accountID uuid.UUID, eventType cp.WebhookEventType) (cp.Webhook, bool, error) {
+	row, err := r.q.GetActiveWebhook(ctx, sqlcgen.GetActiveWebhookParams{
 		AccountID: accountID,
 		EventType: string(eventType),
 	})
@@ -35,9 +38,76 @@ func (r *WebhookRepo) Get(ctx context.Context, accountID uuid.UUID, eventType cp
 		if errors.Is(err, pgx.ErrNoRows) {
 			return cp.Webhook{}, false, nil
 		}
-		return cp.Webhook{}, false, translate("get webhook", err)
+		return cp.Webhook{}, false, translate("get active webhook", err)
 	}
 	return webhookFromRow(row), true, nil
+}
+
+// List returns the account's webhooks, disabled ones included, ordered by event type.
+func (r *WebhookRepo) List(ctx context.Context, accountID uuid.UUID) ([]cp.Webhook, error) {
+	rows, err := r.q.ListWebhooksByAccount(ctx, accountID)
+	if err != nil {
+		return nil, translate("list webhooks", err)
+	}
+	out := make([]cp.Webhook, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, webhookFromRow(row))
+	}
+	return out, nil
+}
+
+// Get returns one webhook of this account by id, or ErrNotFound. An id belonging to another account
+// is ErrNotFound as well: the account is part of the key, not a decoration on the path.
+func (r *WebhookRepo) Get(ctx context.Context, accountID, id uuid.UUID) (cp.Webhook, error) {
+	row, err := r.q.GetWebhookByID(ctx, sqlcgen.GetWebhookByIDParams{ID: id, AccountID: accountID})
+	if err != nil {
+		return cp.Webhook{}, translate("get webhook", err)
+	}
+	return webhookFromRow(row), nil
+}
+
+// Create inserts a webhook. A second one for an event type the account already subscribes to hits
+// webhooks_uq and comes back as ErrConflict.
+func (r *WebhookRepo) Create(ctx context.Context, in cp.NewWebhook) (cp.Webhook, error) {
+	row, err := r.q.CreateWebhook(ctx, sqlcgen.CreateWebhookParams{
+		AccountID:       in.AccountID,
+		EventType:       string(in.EventType),
+		Url:             in.URL,
+		Secret:          in.Secret,
+		RetryPolicyJson: in.RetryPolicyJSON,
+	})
+	if err != nil {
+		return cp.Webhook{}, translate("create webhook", err)
+	}
+	return webhookFromRow(row), nil
+}
+
+// Update applies a partial change and returns the updated webhook, or ErrNotFound.
+func (r *WebhookRepo) Update(ctx context.Context, accountID, id uuid.UUID, p cp.WebhookPatch) (cp.Webhook, error) {
+	row, err := r.q.UpdateWebhook(ctx, sqlcgen.UpdateWebhookParams{
+		ID:              id,
+		AccountID:       accountID,
+		Url:             p.URL,
+		Secret:          p.Secret,
+		RetryPolicyJson: p.RetryPolicyJSON,
+		Status:          strPtr(p.Status),
+	})
+	if err != nil {
+		return cp.Webhook{}, translate("update webhook", err)
+	}
+	return webhookFromRow(row), nil
+}
+
+// Delete removes a webhook, or reports ErrNotFound when nothing matched.
+func (r *WebhookRepo) Delete(ctx context.Context, accountID, id uuid.UUID) error {
+	n, err := r.q.DeleteWebhook(ctx, sqlcgen.DeleteWebhookParams{ID: id, AccountID: accountID})
+	if err != nil {
+		return translate("delete webhook", err)
+	}
+	if n == 0 {
+		return errs.ErrNotFound
+	}
+	return nil
 }
 
 func webhookFromRow(row sqlcgen.ControlPlaneWebhook) cp.Webhook {
@@ -49,5 +119,7 @@ func webhookFromRow(row sqlcgen.ControlPlaneWebhook) cp.Webhook {
 		Secret:          row.Secret,
 		RetryPolicyJSON: json.RawMessage(row.RetryPolicyJson),
 		Status:          cp.WebhookStatus(row.Status),
+		CreatedAt:       tsVal(row.CreatedAt),
+		UpdatedAt:       tsVal(row.UpdatedAt),
 	}
 }

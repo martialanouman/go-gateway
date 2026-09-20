@@ -48,7 +48,7 @@ type fakeWebhookResolver struct {
 	err   error
 }
 
-func (f fakeWebhookResolver) Get(context.Context, uuid.UUID, cp.WebhookEventType) (cp.Webhook, bool, error) {
+func (f fakeWebhookResolver) GetActive(context.Context, uuid.UUID, cp.WebhookEventType) (cp.Webhook, bool, error) {
 	return f.wh, f.found, f.err
 }
 
@@ -271,31 +271,6 @@ func TestDelivererDeadLettersWhenBindsExhausted(t *testing.T) {
 	}
 	if want := "mo/bind_exhausted"; len(metric.calls) != 1 || metric.calls[0] != want {
 		t.Fatalf("metric = %v, want [%s]", metric.calls, want)
-	}
-}
-
-func TestDelivererDeadLettersWhenWebhookDisabled(t *testing.T) {
-	wh := activeWebhook()
-	wh.Status = cp.WebhookDisabled
-	prod := &fakeProducer{}
-	sender := &fakeSender{}
-	dv := modlrrouter.NewDeliverer(modlrrouter.DelivererDeps{
-		Lookup:   fakeLookup{},
-		Pods:     &fakePod{},
-		Webhooks: fakeWebhookResolver{wh: wh, found: true},
-		Sender:   sender,
-		Producer: prod,
-		Metric:   &fakeDeliveryMetric{},
-	})
-
-	if err := dv.Deliver(context.Background(), testDelivery()); err != nil {
-		t.Fatalf("Deliver: %v", err)
-	}
-	if len(sender.sent) != 0 {
-		t.Fatal("disabled webhook must not be sent to")
-	}
-	if len(prod.recs) != 1 {
-		t.Fatalf("disabled webhook must dead-letter, got %d parked", len(prod.recs))
 	}
 }
 

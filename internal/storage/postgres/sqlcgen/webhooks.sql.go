@@ -11,20 +11,197 @@ import (
 	uuid "github.com/google/uuid"
 )
 
-const getWebhook = `-- name: GetWebhook :one
-SELECT id, account_id, event_type, url, secret, retry_policy_json, status, created_at, updated_at FROM control_plane.webhooks
-WHERE account_id = $1 AND event_type = $2
+const createWebhook = `-- name: CreateWebhook :one
+INSERT INTO control_plane.webhooks (account_id, event_type, url, secret, retry_policy_json)
+VALUES ($1, $2, $3, $4, COALESCE($5::jsonb, '{}'::jsonb))
+RETURNING id, account_id, event_type, url, secret, retry_policy_json, status, created_at, updated_at
 `
 
-type GetWebhookParams struct {
+type CreateWebhookParams struct {
+	AccountID       uuid.UUID
+	EventType       string
+	Url             string
+	Secret          string
+	RetryPolicyJson []byte
+}
+
+// status falls back to the DDL default ('active'), retry_policy_json to '{}'. A second webhook for an
+// event type the account already subscribes to hits webhooks_uq and comes back as a conflict.
+func (q *Queries) CreateWebhook(ctx context.Context, arg CreateWebhookParams) (ControlPlaneWebhook, error) {
+	row := q.db.QueryRow(ctx, createWebhook,
+		arg.AccountID,
+		arg.EventType,
+		arg.Url,
+		arg.Secret,
+		arg.RetryPolicyJson,
+	)
+	var i ControlPlaneWebhook
+	err := row.Scan(
+		&i.ID,
+		&i.AccountID,
+		&i.EventType,
+		&i.Url,
+		&i.Secret,
+		&i.RetryPolicyJson,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const deleteWebhook = `-- name: DeleteWebhook :execrows
+DELETE FROM control_plane.webhooks WHERE id = $1 AND account_id = $2
+`
+
+type DeleteWebhookParams struct {
+	ID        uuid.UUID
+	AccountID uuid.UUID
+}
+
+// Deleting the configuration stops future deliveries; it never touches the events already delivered
+// or parked. 0 rows means the id is unknown to this account.
+func (q *Queries) DeleteWebhook(ctx context.Context, arg DeleteWebhookParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteWebhook, arg.ID, arg.AccountID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const getActiveWebhook = `-- name: GetActiveWebhook :one
+SELECT id, account_id, event_type, url, secret, retry_policy_json, status, created_at, updated_at FROM control_plane.webhooks
+WHERE account_id = $1 AND event_type = $2 AND status = 'active'
+`
+
+type GetActiveWebhookParams struct {
 	AccountID uuid.UUID
 	EventType string
 }
 
-// The account's webhook for an event type (mo|dlr). One row per (account_id, event_type) — the unique
-// key — so this returns at most one; no rows means the account has no webhook for that event.
-func (q *Queries) GetWebhook(ctx context.Context, arg GetWebhookParams) (ControlPlaneWebhook, error) {
-	row := q.db.QueryRow(ctx, getWebhook, arg.AccountID, arg.EventType)
+// The webhook a MO or DLR should be delivered to. One row per (account_id, event_type) — the unique
+// key — so this returns at most one; no rows means the account has no webhook for that event, or has
+// switched it off.
+//
+// The status filter lives HERE rather than in the callers: both delivery paths ask this same question
+// and one of them had forgotten to, so a disabled webhook kept being retried off the retry topic for
+// as long as its attempt budget allowed. The Admin CRUD below reads by account and by id instead, and
+// does see disabled rows — which is the whole point of being able to switch one back on.
+func (q *Queries) GetActiveWebhook(ctx context.Context, arg GetActiveWebhookParams) (ControlPlaneWebhook, error) {
+	row := q.db.QueryRow(ctx, getActiveWebhook, arg.AccountID, arg.EventType)
+	var i ControlPlaneWebhook
+	err := row.Scan(
+		&i.ID,
+		&i.AccountID,
+		&i.EventType,
+		&i.Url,
+		&i.Secret,
+		&i.RetryPolicyJson,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getWebhookByID = `-- name: GetWebhookByID :one
+SELECT id, account_id, event_type, url, secret, retry_policy_json, status, created_at, updated_at FROM control_plane.webhooks
+WHERE id = $1 AND account_id = $2
+`
+
+type GetWebhookByIDParams struct {
+	ID        uuid.UUID
+	AccountID uuid.UUID
+}
+
+// Scoped by account as well as by id: the path carries both, and a webhookId belonging to another
+// account must read as absent rather than as someone else's row.
+func (q *Queries) GetWebhookByID(ctx context.Context, arg GetWebhookByIDParams) (ControlPlaneWebhook, error) {
+	row := q.db.QueryRow(ctx, getWebhookByID, arg.ID, arg.AccountID)
+	var i ControlPlaneWebhook
+	err := row.Scan(
+		&i.ID,
+		&i.AccountID,
+		&i.EventType,
+		&i.Url,
+		&i.Secret,
+		&i.RetryPolicyJson,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const listWebhooksByAccount = `-- name: ListWebhooksByAccount :many
+SELECT id, account_id, event_type, url, secret, retry_policy_json, status, created_at, updated_at FROM control_plane.webhooks
+WHERE account_id = $1
+ORDER BY event_type
+`
+
+// Not paginated: at most two rows per account (one per event type), bounded by webhooks_uq.
+func (q *Queries) ListWebhooksByAccount(ctx context.Context, accountID uuid.UUID) ([]ControlPlaneWebhook, error) {
+	rows, err := q.db.Query(ctx, listWebhooksByAccount, accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ControlPlaneWebhook{}
+	for rows.Next() {
+		var i ControlPlaneWebhook
+		if err := rows.Scan(
+			&i.ID,
+			&i.AccountID,
+			&i.EventType,
+			&i.Url,
+			&i.Secret,
+			&i.RetryPolicyJson,
+			&i.Status,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const updateWebhook = `-- name: UpdateWebhook :one
+UPDATE control_plane.webhooks SET
+    url               = COALESCE($1, url),
+    secret            = COALESCE($2, secret),
+    retry_policy_json = COALESCE($3, retry_policy_json),
+    status            = COALESCE($4, status)
+WHERE id = $5 AND account_id = $6
+RETURNING id, account_id, event_type, url, secret, retry_policy_json, status, created_at, updated_at
+`
+
+type UpdateWebhookParams struct {
+	Url             *string
+	Secret          *string
+	RetryPolicyJson []byte
+	Status          *string
+	ID              uuid.UUID
+	AccountID       uuid.UUID
+}
+
+// Partial update: a NULL argument leaves its column unchanged (COALESCE). event_type is absent on
+// purpose — it is the identity of the subscription, not a setting. updated_at is set by the
+// webhooks_touch trigger. Consequence of COALESCE: retry_policy_json cannot be reset to '{}' through
+// this path (debts/patch-null-ne-peut-pas-effacer-un-champ.md).
+func (q *Queries) UpdateWebhook(ctx context.Context, arg UpdateWebhookParams) (ControlPlaneWebhook, error) {
+	row := q.db.QueryRow(ctx, updateWebhook,
+		arg.Url,
+		arg.Secret,
+		arg.RetryPolicyJson,
+		arg.Status,
+		arg.ID,
+		arg.AccountID,
+	)
 	var i ControlPlaneWebhook
 	err := row.Scan(
 		&i.ID,

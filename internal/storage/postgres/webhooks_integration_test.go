@@ -9,9 +9,9 @@ import (
 	"github.com/martialanouman/go-gateway/internal/testutil/pgtest"
 )
 
-// TestWebhookRepoGet proves Get returns a configured webhook and reports a clean absence (found=false)
+// TestWebhookRepoGetActive proves GetActive returns a configured webhook and reports a clean absence (found=false)
 // for an event type the account has not subscribed to.
-func TestWebhookRepoGet(t *testing.T) {
+func TestWebhookRepoGetActive(t *testing.T) {
 	pool := pgtest.Pool(t)
 	ctx := context.Background()
 
@@ -33,12 +33,12 @@ func TestWebhookRepoGet(t *testing.T) {
 
 	repo := postgres.NewWebhookRepo(pool)
 
-	got, found, err := repo.Get(ctx, account.ID, cp.WebhookEventMO)
+	got, found, err := repo.GetActive(ctx, account.ID, cp.WebhookEventMO)
 	if err != nil {
-		t.Fatalf("Get(mo): %v", err)
+		t.Fatalf("GetActive(mo): %v", err)
 	}
 	if !found {
-		t.Fatal("Get(mo) found=false, want the seeded webhook")
+		t.Fatal("GetActive(mo) found=false, want the seeded webhook")
 	}
 	if got.URL != "https://example.test/hook" || got.Secret != "topsecret" || got.Status != cp.WebhookActive {
 		t.Errorf("webhook = %+v, want the seeded url/secret/active", got)
@@ -47,7 +47,40 @@ func TestWebhookRepoGet(t *testing.T) {
 		t.Error("retry_policy_json should carry the seeded policy")
 	}
 
-	if _, found, err := repo.Get(ctx, account.ID, cp.WebhookEventDLR); err != nil || found {
-		t.Errorf("Get(dlr) = found %v err %v, want no webhook (found=false, nil err)", found, err)
+	if _, found, err := repo.GetActive(ctx, account.ID, cp.WebhookEventDLR); err != nil || found {
+		t.Errorf("GetActive(dlr) = found %v err %v, want no webhook (found=false, nil err)", found, err)
+	}
+}
+
+// TestWebhookRepoGetActiveSkipsADisabledWebhook proves disabling is what an operator thinks it is: the
+// delivery paths stop resolving the webhook at all. The rule lives in the query rather than in each
+// caller because there are two of them and one had forgotten it — the deferred retry runner kept
+// pushing to a URL the operator had switched off, for as long as its attempt budget and its six-hour
+// age bound allowed.
+func TestWebhookRepoGetActiveSkipsADisabledWebhook(t *testing.T) {
+	pool := pgtest.Pool(t)
+	ctx := context.Background()
+
+	customer, err := postgres.NewCustomerRepo(pool).Create(ctx, cp.NewCustomer{Name: "DisabledHookCo"})
+	if err != nil {
+		t.Fatalf("create customer: %v", err)
+	}
+	account, err := postgres.NewAccountRepo(pool).Create(ctx, cp.NewAccount{CustomerID: customer.ID, Name: "disabled-app"})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO control_plane.webhooks (account_id, event_type, url, secret, status)
+		 VALUES ($1, 'mo', 'https://example.test/off', 'topsecret', 'disabled')`,
+		account.ID); err != nil {
+		t.Fatalf("seed disabled webhook: %v", err)
+	}
+
+	got, found, err := postgres.NewWebhookRepo(pool).GetActive(ctx, account.ID, cp.WebhookEventMO)
+	if err != nil {
+		t.Fatalf("GetActive(mo): %v", err)
+	}
+	if found {
+		t.Errorf("a disabled webhook was resolved for delivery: %+v", got)
 	}
 }

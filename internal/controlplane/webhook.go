@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"encoding/json"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -57,4 +58,27 @@ type Webhook struct {
 	Secret          string
 	RetryPolicyJSON json.RawMessage
 	Status          WebhookStatus
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+// NewWebhook is a webhook subscription to create. Secret is required: it is the HMAC key the receiver
+// verifies each delivery with, and it is supplied by the operator rather than generated here — the
+// contract makes it write-only, never returned.
+type NewWebhook struct {
+	AccountID       uuid.UUID
+	EventType       WebhookEventType
+	URL             string
+	Secret          string
+	RetryPolicyJSON json.RawMessage
+}
+
+// WebhookPatch is a partial change; a nil field leaves its column alone. EventType is absent on
+// purpose — it is the identity of the subscription (one per account and event type), not a setting,
+// and changing it would be a different subscription under the same id.
+type WebhookPatch struct {
+	URL             *string
+	Secret          *string
+	RetryPolicyJSON json.RawMessage
+	Status          *WebhookStatus
 }

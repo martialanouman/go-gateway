@@ -23,7 +23,7 @@ const (
 // WebhookGetter resolves an account's active webhook for an event type. *postgres.WebhookRepo satisfies
 // it; declared consumer-side.
 type WebhookGetter interface {
-	Get(ctx context.Context, accountID uuid.UUID, eventType cp.WebhookEventType) (cp.Webhook, bool, error)
+	GetActive(ctx context.Context, accountID uuid.UUID, eventType cp.WebhookEventType) (cp.Webhook, bool, error)
 }
 
 // RetrySender makes one further delivery attempt at a deferred event. *webhook.Sender satisfies it.
@@ -134,7 +134,7 @@ func (r *WebhookRetryRunner) Handle(ctx context.Context, rec kafka.Record) error
 		return err // context ended: leave the offset uncommitted, the record is redelivered
 	}
 
-	wh, found, err := r.webhooks.Get(ctx, accountID, msg.EventType)
+	wh, found, err := r.webhooks.GetActive(ctx, accountID, msg.EventType)
 	if err != nil {
 		return err // a store outage is transient: redeliver rather than drop the event
 	}

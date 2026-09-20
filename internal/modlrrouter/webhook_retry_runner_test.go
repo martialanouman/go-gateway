@@ -38,7 +38,7 @@ type fakeWebhookGetter struct {
 	err   error
 }
 
-func (f *fakeWebhookGetter) Get(context.Context, uuid.UUID, cp.WebhookEventType) (cp.Webhook, bool, error) {
+func (f *fakeWebhookGetter) GetActive(context.Context, uuid.UUID, cp.WebhookEventType) (cp.Webhook, bool, error) {
 	return f.wh, f.found, f.err
 }
 
@@ -125,8 +125,9 @@ func TestRetryRunnerBacksOffFurtherEachPass(t *testing.T) {
 	}
 }
 
-// TestRetryRunnerDropsAnUnresolvableWebhook proves a deleted or disabled webhook ends the cycle instead of
-// erroring forever. Returning an error would block the partition on a record that can never succeed — the
+// TestRetryRunnerDropsAnUnresolvableWebhook proves a webhook that no longer resolves ends the cycle
+// instead of erroring forever. Deleted and disabled both land here: the resolver returns active
+// webhooks only, so switching one off stops the events already in flight, not just the next ones. Returning an error would block the partition on a record that can never succeed — the
 // very head-of-line blocking this topic exists to remove.
 func TestRetryRunnerDropsAnUnresolvableWebhook(t *testing.T) {
 	sender := &fakeRetrySender{}

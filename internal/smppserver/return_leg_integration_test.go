@@ -25,7 +25,7 @@ import (
 // stubWebhookMiss reports no webhook, so the deliverer must land on the bind (or dead-letter).
 type stubWebhookMiss struct{}
 
-func (stubWebhookMiss) Get(context.Context, uuid.UUID, cp.WebhookEventType) (cp.Webhook, bool, error) {
+func (stubWebhookMiss) GetActive(context.Context, uuid.UUID, cp.WebhookEventType) (cp.Webhook, bool, error) {
 	return cp.Webhook{}, false, nil
 }
 
