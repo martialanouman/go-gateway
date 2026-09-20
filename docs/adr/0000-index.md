@@ -19,6 +19,7 @@ Les décisions structurantes de la passerelle, une par fichier, au format ADR st
 | [0013](0013-annulation-jeton-vainqueur-unique.md) | `cancelled` signifie « jamais parti » ; arbitrage par jeton à vainqueur unique | Accepted |
 | [0014](0014-duplication-au-routeur.md) | La duplication a **deux** causes ; la seconde est au routeur, bornée par la même grandeur | Accepted |
 | [0015](0015-exactroute-cache-read-through.md) | `exactroute:{msisdn}` est un cache read-through, pas une projection (étend 0004) | Accepted |
+| [0016](0016-secrets-rejoues-scelles-par-content-key-svc.md) | Les secrets qu'on **rejoue** sont scellés par `content-key-svc`, pas hachés (étend 0011) | Accepted |
 
 ## Convention
 
