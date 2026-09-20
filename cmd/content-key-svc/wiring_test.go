@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"net"
 	"reflect"
 	"slices"
@@ -10,7 +12,13 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+
 	"github.com/martialanouman/go-gateway/internal/config"
+	configsecretspb "github.com/martialanouman/go-gateway/internal/configsecrets/pb"
+	"github.com/martialanouman/go-gateway/internal/content"
+	"github.com/martialanouman/go-gateway/internal/testutil/grpctest"
 	"github.com/martialanouman/go-gateway/internal/testutil/pgtest"
 )
 
@@ -116,6 +124,70 @@ func TestNewContentKeyAppBuildsTheWholeGraph(t *testing.T) {
 			_ = c.Close()
 			t.Errorf("%s port %d is listening after wiring alone", name, port)
 		}
+	}
+}
+
+// The wiring, not the mechanism: internal/configsecrets proves a secret survives its own round trip, and
+// proves nothing about whether this binary serves it. Registering ConfigSecrets beside ContentKeys
+// (ADR-0016) is what makes the sealed columns writable at all — unregistered, the Admin API cannot store
+// a connector password, and nothing else in the suite would say so.
+//
+// It seals through the socket and opens with a KMS built OUTSIDE the app, from the same environment,
+// because the two services must also share the ONE master key the deployment is configured with. Handing
+// ConfigSecrets a KMS of its own would keep a round trip inside the process perfectly green while sealing
+// every row under an ephemeral key — unreadable the moment the pod restarts, and silent about it.
+func TestTheWiredServerServesConfigSecrets(t *testing.T) {
+	master, err := content.GenerateDataKey()
+	if err != nil {
+		t.Fatalf("GenerateDataKey: %v", err)
+	}
+	t.Setenv(contentKMSMasterKeyEnv, base64.StdEncoding.EncodeToString(master))
+
+	cfg := testConfig()
+	cfg.Postgres = pgtest.Config(t)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	app, err := newContentKeyApp(ctx, cfg, discardLogger())
+	if err != nil {
+		t.Fatalf("newContentKeyApp: %v", err)
+	}
+	defer app.close()
+
+	conn, err := grpc.NewClient(grpctest.Serve(t, app.grpc), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	client := configsecretspb.NewConfigSecretsClient(conn)
+	secret := []byte("s3cr3t!")
+
+	sealed, err := client.Seal(ctx, &configsecretspb.SealRequest{Plaintext: secret})
+	if err != nil {
+		t.Fatalf("Seal through the wired server: %v", err)
+	}
+	opened, err := client.Open(ctx, &configsecretspb.OpenRequest{Sealed: sealed.GetSealed()})
+	if err != nil {
+		t.Fatalf("Open through the wired server: %v", err)
+	}
+	if !bytes.Equal(opened.GetPlaintext(), secret) {
+		t.Errorf("Open returned %q, want %q", opened.GetPlaintext(), secret)
+	}
+
+	// The master key, not just the round trip. loadContentKMS is called again rather than rebuilt from a
+	// literal so the key reference cannot drift from the one the service used.
+	kms, err := loadContentKMS(cfg.Environment, discardLogger())
+	if err != nil {
+		t.Fatalf("loadContentKMS: %v", err)
+	}
+	outside, err := kms.UnwrapDataKey(ctx, sealed.GetSealed())
+	if err != nil {
+		t.Fatalf("the configured master key cannot open what the service sealed — it sealed under another KMS: %v", err)
+	}
+	if !bytes.Equal(outside, secret) {
+		t.Errorf("unwrapped %q outside the service, want %q", outside, secret)
 	}
 }
 
