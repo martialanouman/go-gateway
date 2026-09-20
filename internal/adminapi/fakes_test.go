@@ -286,9 +286,6 @@ func (s *fakeAccountStore) List(ctx context.Context, f cp.AccountFilter) (cp.Pag
 	defer s.mu.Unlock()
 	items := make([]cp.Account, 0, len(s.byID))
 	for _, a := range s.byID {
-		if f.CustomerID != nil && a.CustomerID != *f.CustomerID {
-			continue
-		}
 		if f.GroupID != nil && !s.customerIsInGroup(ctx, a.CustomerID, *f.GroupID) {
 			continue
 		}
@@ -302,7 +299,9 @@ func (s *fakeAccountStore) List(ctx context.Context, f cp.AccountFilter) (cp.Pag
 // that dropped the filter look correct.
 func (s *fakeAccountStore) customerIsInGroup(ctx context.Context, customerID, groupID uuid.UUID) bool {
 	if s.customers == nil {
-		return false
+		// Returning false would answer an empty page, making any "no member" assertion pass without
+		// the filter ever being exercised.
+		panic("fakeAccountStore: ?groupId= needs .customers wired to resolve membership")
 	}
 	c, err := s.customers.Get(ctx, customerID)
 	return err == nil && c.GroupID != nil && *c.GroupID == groupID

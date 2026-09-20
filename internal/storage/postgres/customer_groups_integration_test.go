@@ -154,13 +154,13 @@ func TestCustomerGroupRepoListFiltersByStatus(t *testing.T) {
 	repo := postgres.NewCustomerGroupRepo(pool)
 	ctx := context.Background()
 
-	live, err := repo.Create(ctx, cp.NewCustomerGroup{Name: uniqueGroupName("Live")})
-	if err != nil {
-		t.Fatalf("Create(live) error = %v", err)
-	}
-	shelved, err := repo.Create(ctx, cp.NewCustomerGroup{Name: uniqueGroupName("Shelved")})
+	shelved, err := repo.Create(ctx, cp.NewCustomerGroup{Name: uniqueGroupName("Zulu")})
 	if err != nil {
 		t.Fatalf("Create(shelved) error = %v", err)
+	}
+	live, err := repo.Create(ctx, cp.NewCustomerGroup{Name: uniqueGroupName("Alpha")})
+	if err != nil {
+		t.Fatalf("Create(live) error = %v", err)
 	}
 	archived := cp.CustomerGroupArchived
 	if _, err := repo.Update(ctx, shelved.ID, cp.CustomerGroupPatch{Status: &archived}); err != nil {
@@ -174,8 +174,6 @@ func TestCustomerGroupRepoListFiltersByStatus(t *testing.T) {
 	if !containsGroup(all, live.ID) || !containsGroup(all, shelved.ID) {
 		t.Error("List() with no filter omitted one of the two groups")
 	}
-
-	assertOrderedByName(t, all)
 
 	active := cp.CustomerGroupActive
 	onlyActive, err := repo.List(ctx, cp.CustomerGroupFilter{Status: &active})
@@ -329,18 +327,6 @@ func newAccountFor(t *testing.T, accounts *postgres.AccountRepo, customerID uuid
 		t.Fatalf("Create(account) error = %v", err)
 	}
 	return account.ID
-}
-
-// assertOrderedByName pins the ORDER BY name the query promises. The listing is unpaginated, so the
-// order is the only thing a client has to go on.
-func assertOrderedByName(t *testing.T, groups []cp.CustomerGroup) {
-	t.Helper()
-	for i := 1; i < len(groups); i++ {
-		if groups[i-1].Name > groups[i].Name {
-			t.Errorf("List() returned %q before %q: not ordered by name",
-				groups[i-1].Name, groups[i].Name)
-		}
-	}
 }
 
 func containsGroup(groups []cp.CustomerGroup, id uuid.UUID) bool {

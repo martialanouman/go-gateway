@@ -4,9 +4,9 @@
 > **Née de :** step-330 (`tasks-done/step-330.md`, `## Design arrêté`) · **Portée par :** —
 
 step-330 a ajouté `security:` aux 7 opérations de groupes, en suivant le précédent de step-149 : *un
-endpoint sécurisé qui cache ses échecs d'auth publie un mensonge.* En repliant la garde dans le test
-qui compare le contrat au spec généré, la comparaison `security` a été tentée — et **50 opérations
-sur 110 l'ont fait échouer**. Elles n'ont aucun bloc `security:` dans `api/openapi-admin.yaml`
+endpoint sécurisé qui cache ses échecs d'auth publie un mensonge.* En tentant d'ajouter la
+comparaison `security` contrat ↔ servi au test qui compare déjà les codes et les schémas,
+**50 opérations sur 110 l'ont fait échouer**. Elles n'ont aucun bloc `security:` dans `api/openapi-admin.yaml`
 pendant que le code exige un scope via `scopeSecurity(...)`.
 
 Familles entières concernées : exact-routes, suppressions, opt-out keywords, inbound numbers &
@@ -31,9 +31,10 @@ est exigé.
 
 **À quoi on reconnaîtra qu'il faut la payer.** Le premier opérateur à scope partiel, ou la première
 fois que le tableau de bord doit distinguer « pas le droit » de « pas connecté ». La réparation :
-ajouter `security:` et les `401`/`403` aux 50, puis remplacer la garde ci-dessus par la comparaison
-`reflect.DeepEqual(cOp["security"], gOp["security"])` dans
-`TestGeneratedSpecMatchesTheContractForEveryM1Operation` — le repli qui a révélé l'écart.
+ajouter `security:` et les `401`/`403` aux 50, puis ajouter
+`reflect.DeepEqual(cOp["security"], gOp["security"])` à
+`TestGeneratedSpecMatchesTheContractForEveryM1Operation` — la comparaison qui a révélé l'écart, et
+qui ne peut pas y vivre tant que les 50 sont muettes.
 
 Sources : `internal/adminapi/contract_test.go` (`TestEveryGeneratedOperationRequiresAScope`) ·
 `internal/auth/middleware.go` (l'application) · `api/openapi-admin.yaml` (les 50 blocs muets)

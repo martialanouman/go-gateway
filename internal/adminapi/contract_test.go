@@ -874,23 +874,31 @@ func TestEveryGeneratedOperationRequiresAScope(t *testing.T) {
 
 	for _, id := range sortedRefs(refs) {
 		ref := refs[id]
-		if scopeCount(operationNode(generated, ref.path, ref.method)) == 0 {
-			t.Errorf("%s %s (%s) requires no operator scope: auth.Middleware serves it to anyone — "+
-				"register it with scopeSecurity(...)", ref.method, ref.path, id)
+		where := ref.method + " " + ref.path + " (" + id + ")"
+		requirements, _ := operationNode(generated, ref.path, ref.method)["security"].([]any)
+		if len(requirements) == 0 {
+			t.Errorf("%s declares no security: auth.Middleware serves it to anyone — "+
+				"register it with scopeSecurity(...)", where)
+			continue
+		}
+		// Each requirement is an ALTERNATIVE: the middleware accepts as soon as ONE is satisfied, and
+		// one naming no scope is satisfied by any operator token. So the weakest decides, and every
+		// one of them has to be checked — summing the scopes would let a strong alternative hide an
+		// empty one.
+		for _, requirement := range requirements {
+			schemes, _ := requirement.(map[string]any)
+			scopes, named := schemes[operatorSchemeName].([]any)
+			if !named {
+				t.Errorf("%s has an alternative that does not name %q: the middleware enforces none "+
+					"of it, so it grants free passage", where, operatorSchemeName)
+				continue
+			}
+			if len(scopes) == 0 {
+				t.Errorf("%s has an alternative requiring no scope: any operator token satisfies it, "+
+					"including one holding none of the admin scopes", where)
+			}
 		}
 	}
-}
-
-// scopeCount totals the scopes an operation requires under the operator scheme.
-func scopeCount(op map[string]any) int {
-	requirements, _ := op["security"].([]any)
-	n := 0
-	for _, requirement := range requirements {
-		schemes, _ := requirement.(map[string]any)
-		scopes, _ := schemes[operatorSchemeName].([]any)
-		n += len(scopes)
-	}
-	return n
 }
 
 // declaresUpgrade reports whether a contract operation answers with a protocol switch.

@@ -89,9 +89,17 @@ donc aucune fenêtre de course entre le contrôle et l'écriture.
 ### La garde : « pas de `security:` » ne doit plus vouloir dire « public »
 
 Les steps 340→390 héritent du même bloc pré-déclaré sans `security:` — le piège se retendrait six
-fois. Un test dans `contract_test.go` exige que **toute opération générée porte un `security` non
-vide**. Le middleware n'est pas touché : le passer en fail-closed change un comportement global et
-mérite sa propre justification, hors du périmètre de cette step.
+fois. `TestEveryGeneratedOperationRequiresAScope` (`contract_test.go`) exige que **toute opération
+générée requière au moins un scope**. Le middleware n'est pas touché : le passer en fail-closed
+change un comportement global et mérite sa propre justification, hors du périmètre de cette step.
+
+**Ce que la garde a révélé.** En essayant d'ajouter la comparaison des deux `security` au test qui
+compare déjà les codes et les schémas, **50 opérations déjà livrées** ont
+fait échouer la suite : elles exigent un scope dans le code sans le déclarer au contrat (exact-routes,
+suppressions, routing scripts, rate plans, billing providers, inbound numbers…). C'est le mensonge de
+step-149 à l'échelle de la moitié de l'Admin API, et c'est trop large pour cette step : la garde reste
+donc sur le **côté servi**, et l'écart part en fiche —
+`debts/contrat-ne-declare-pas-les-scopes-qu-il-exige.md`.
 
 ### Ce qui s'écrit
 
