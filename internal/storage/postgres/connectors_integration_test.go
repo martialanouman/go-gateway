@@ -139,3 +139,44 @@ func TestConnectorRepoPilotingUpdatesUnknownAreNotFound(t *testing.T) {
 		t.Errorf("UpdateReconnectPolicy(unknown) error = %v, want ErrNotFound", err)
 	}
 }
+
+// A rotation must move the ciphertext and its key reference TOGETHER. The two columns are written through
+// separate COALESCE arguments, so nothing in the SQL couples them: leave one behind and the row holds a
+// ciphertext from one master key beside a reference naming another — it still opens today, and a future
+// KEK rotation skips it, which is the failure that never surfaces until the key it needs is gone.
+func TestConnectorRepoRotatesTheSealedPasswordAndItsKeyRefTogether(t *testing.T) {
+	pool := pgtest.Pool(t)
+	repo := postgres.NewConnectorRepo(pool)
+	ctx := context.Background()
+
+	c, err := repo.Create(ctx, cp.NewConnector{
+		Name: "smsc-rotate", Host: "h", Port: 2775, BindType: cp.BindTRX, SystemID: "s",
+		Password: cp.SealedSecret{Sealed: []byte{0xde, 0xad}, KMSKeyRef: "kek-before"},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	rotated := cp.SealedSecret{Sealed: []byte{0xbe, 0xef, 0x00, 0xff}, KMSKeyRef: "kek-after"}
+	got, err := repo.Update(ctx, c.ID, cp.ConnectorPatch{Password: &rotated})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if !bytes.Equal(got.Password.Sealed, rotated.Sealed) {
+		t.Errorf("password_sealed = %x, want %x", got.Password.Sealed, rotated.Sealed)
+	}
+	if got.Password.KMSKeyRef != rotated.KMSKeyRef {
+		t.Errorf("password_kms_key_ref = %q, want %q — the ciphertext moved without its key reference",
+			got.Password.KMSKeyRef, rotated.KMSKeyRef)
+	}
+
+	// A patch that does not carry a password leaves BOTH columns alone.
+	name := "smsc-rotate-renamed"
+	got, err = repo.Update(ctx, c.ID, cp.ConnectorPatch{Name: &name})
+	if err != nil {
+		t.Fatalf("Update (name only): %v", err)
+	}
+	if !bytes.Equal(got.Password.Sealed, rotated.Sealed) || got.Password.KMSKeyRef != rotated.KMSKeyRef {
+		t.Errorf("an unrelated patch disturbed the sealed password: %x / %q", got.Password.Sealed, got.Password.KMSKeyRef)
+	}
+}

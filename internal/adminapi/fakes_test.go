@@ -356,6 +356,7 @@ type fakeConnectorStore struct {
 	// would reach the column rather than on the handler having been called.
 	created     cp.NewConnector
 	createCount int
+	patched     cp.ConnectorPatch
 }
 
 func newFakeConnectorStore() *fakeConnectorStore {
@@ -419,6 +420,12 @@ func (s *fakeConnectorStore) Update(_ context.Context, id uuid.UUID, p cp.Connec
 	if p.Status != nil {
 		c.Status = *p.Status
 	}
+	// The sealed password moves the way the real repository moves it, and the whole patch is kept: a test
+	// asserting on a rotation would otherwise be asserting on this double's omission.
+	if p.Password != nil {
+		c.Password = *p.Password
+	}
+	s.patched = p
 	s.byID[id] = c
 	return c, nil
 }

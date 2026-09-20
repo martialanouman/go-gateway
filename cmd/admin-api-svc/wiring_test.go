@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -22,11 +23,16 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
+	"google.golang.org/grpc"
 
 	"github.com/martialanouman/go-gateway/internal/auth"
 	"github.com/martialanouman/go-gateway/internal/config"
+	"github.com/martialanouman/go-gateway/internal/configsecrets"
+	configsecretspb "github.com/martialanouman/go-gateway/internal/configsecrets/pb"
+	"github.com/martialanouman/go-gateway/internal/content"
 	"github.com/martialanouman/go-gateway/internal/realtime"
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
+	"github.com/martialanouman/go-gateway/internal/testutil/grpctest"
 	"github.com/martialanouman/go-gateway/internal/testutil/pgtest"
 	"github.com/martialanouman/go-gateway/internal/testutil/redistest"
 	"github.com/martialanouman/go-gateway/internal/testutil/tlstest"
@@ -446,5 +452,124 @@ func TestTheAdminAPIRefusesToBootOnAnUnreadableCertificate(t *testing.T) {
 	st, runners, clients, feed := emptyHTTPDeps()
 	if _, err := newHTTPServer(cfg, silentLogger(), st, nil, runners, clients, feed, nil); err == nil {
 		t.Fatal("a missing certificate booted: the failure must be a value, not a handshake at 3am")
+	}
+}
+
+// TestNewAdminAppWiresTheSecretSealer proves, on the graph newAdminApp actually builds, that the Deps
+// literal carries a SecretSealer. Since step-295 every connector and billing-provider write seals its
+// secret first, and the handlers answer 500 "no secret sealer configured" without one — so a Deps that
+// forgot the line boots, passes its probes, serves the rest of the Admin API, and fails only the four
+// routes that write a secret, discovered at the first connector creation in production.
+//
+// The handler tests cannot see that hole: their harness supplies a sealer of its own. Only the booted
+// service can, which is the same shape as TestNewAdminAppInvalidatesTheExactRouteCache above.
+//
+// ContentKey.Addr points at a closed port here, so the call fails either way — what is asserted is WHICH
+// failure. "seal connector password" means the sealer is wired and could not reach the key service;
+// "no secret sealer configured" means the wiring forgot it.
+func TestNewAdminAppWiresTheSecretSealer(t *testing.T) {
+	cfg := testConfig()
+	cfg.Postgres = pgtest.Config(t)
+	cfg.Redis = redistest.Config(t)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	app, err := newAdminApp(ctx, cfg, silentLogger())
+	if err != nil {
+		t.Fatalf("newAdminApp: %v", err)
+	}
+	defer app.close()
+
+	body := `{"name":"smsc-wiring","host":"h","port":2775,"bind_type":"trx","system_id":"s","password":"s3cr3t"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/connectors", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-token")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	app.http.Handler.ServeHTTP(w, req)
+
+	if strings.Contains(w.Body.String(), "no secret sealer configured") {
+		t.Errorf("newAdminApp built its Deps without a SecretSealer: %s", w.Body)
+	}
+	// The password must not come back in the failure either, whichever failure it is.
+	if strings.Contains(w.Body.String(), "s3cr3t") {
+		t.Errorf("the response echoes the password: %s", w.Body)
+	}
+}
+
+// TestAConnectorPasswordWrittenByTheAdminAPIOpensAgainFromPostgres is the Definition of Done of step-295,
+// end to end and in one test: written through the HTTP surface, read back from the column, and OPENED.
+//
+// It exists because the property was covered in two halves that never met. One half proved the handler
+// hands the store something that opens, with an in-memory store. The other proved bytea preserves bytes,
+// using a hand-written literal no KMS ever produced and nobody ever opened. Neither says that what the
+// Admin API actually stores is recoverable, which is the one thing password_hash could not do and the
+// whole reason this step exists.
+//
+// The key service is served here rather than injected: the Admin API must reach ConfigSecrets over its
+// real gRPC client, through cfg.ContentKey.Addr, or the chain is not the chain.
+func TestAConnectorPasswordWrittenByTheAdminAPIOpensAgainFromPostgres(t *testing.T) {
+	master, err := content.GenerateDataKey()
+	if err != nil {
+		t.Fatalf("GenerateDataKey: %v", err)
+	}
+	kms, err := content.NewLocalKMS(master, "e2e/v1")
+	if err != nil {
+		t.Fatalf("NewLocalKMS: %v", err)
+	}
+	keySvc := grpc.NewServer()
+	configsecretspb.RegisterConfigSecretsServer(keySvc, configsecrets.NewServer(kms))
+
+	cfg := testConfig()
+	cfg.Postgres = pgtest.Config(t)
+	cfg.Redis = redistest.Config(t)
+	cfg.ContentKey = config.ContentKey{Addr: grpctest.Serve(t, keySvc)}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	app, err := newAdminApp(ctx, cfg, silentLogger())
+	if err != nil {
+		t.Fatalf("newAdminApp: %v", err)
+	}
+	defer app.close()
+
+	const password = "s3cr3t-e2e"
+	name := "smsc-e2e-" + uuid.NewString()[:8]
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/connectors",
+		strings.NewReader(`{"name":"`+name+`","host":"smsc.example","port":2775,"bind_type":"trx","system_id":"sys","password":"`+password+`"}`))
+	req.Header.Set("Authorization", "Bearer test-token")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	app.http.Handler.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create connector: status = %d; body=%s", w.Code, w.Body)
+	}
+	if strings.Contains(w.Body.String(), password) {
+		t.Errorf("the 201 body echoes the password: %s", w.Body)
+	}
+
+	// Straight from the column, not from the handler's return value.
+	var sealed []byte
+	var keyRef string
+	if err := pgtest.Pool(t).QueryRow(ctx,
+		`SELECT password_sealed, password_kms_key_ref FROM control_plane.smsc_connectors WHERE name = $1`, name).
+		Scan(&sealed, &keyRef); err != nil {
+		t.Fatalf("read the stored row: %v", err)
+	}
+	if bytes.Contains(sealed, []byte(password)) {
+		t.Fatal("the password sits in clear in password_sealed")
+	}
+	if keyRef != kms.KeyRef() {
+		t.Errorf("password_kms_key_ref = %q, want %q", keyRef, kms.KeyRef())
+	}
+
+	// What connector-pool-svc will do the day it reads its bind password from the control plane.
+	opened, err := configsecrets.NewServer(kms).Open(ctx, &configsecretspb.OpenRequest{Sealed: sealed})
+	if err != nil {
+		t.Fatalf("the stored password does not open — the column is as unusable as password_hash was: %v", err)
+	}
+	if string(opened.GetPlaintext()) != password {
+		t.Errorf("the stored password opens to %q, want %q", opened.GetPlaintext(), password)
 	}
 }

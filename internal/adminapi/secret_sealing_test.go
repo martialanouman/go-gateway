@@ -152,3 +152,45 @@ func TestCreateProviderWithoutCredentialsSealsAnEmptyDocument(t *testing.T) {
 		t.Errorf("the stored document opens to %q, want %q", got, "{}")
 	}
 }
+
+// Rotating a connector password through PATCH. Untested, this branch could be deleted outright and a
+// rotation would answer 200 without changing anything — the exact "a surface that answers 200 to a setting
+// with no effect" this step was opened to remove, one layer earlier than the debt describes it.
+func TestPatchConnectorSealsTheRotatedPassword(t *testing.T) {
+	store := newFakeConnectorStore()
+	sealer := newKMSSealer()
+	api := newTestAPIWith(t, adminapi.Deps{Connectors: store, SecretSealer: sealer})
+
+	w := httptest.NewRecorder()
+	api.ServeHTTP(w, authed(t, http.MethodPost, "/v1/admin/connectors",
+		`{"name":"smsc-1","host":"h","port":2775,"bind_type":"trx","system_id":"s","password":"first"}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: status = %d; body=%s", w.Code, w.Body)
+	}
+	var created map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
+
+	const rotated = "second-s3cr3t"
+	w = httptest.NewRecorder()
+	api.ServeHTTP(w, authed(t, http.MethodPatch, "/v1/admin/connectors/"+created["id"].(string),
+		`{"password":"`+rotated+`"}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("patch: status = %d; body=%s", w.Code, w.Body)
+	}
+
+	got := store.patched.Password
+	if got == nil {
+		t.Fatal("the rotation reached the store with no password: it answered 200 and changed nothing")
+	}
+	if bytes.Contains(got.Sealed, []byte(rotated)) {
+		t.Error("the rotated password went to the store in clear")
+	}
+	// Both halves or neither: a ciphertext from one master key beside a reference naming another is a row
+	// that opens today and that a key rotation would skip.
+	if got.KMSKeyRef == "" {
+		t.Error("password_kms_key_ref was not part of the rotation")
+	}
+	if opened := sealer.open(t, *got); string(opened) != rotated {
+		t.Errorf("the rotated password opens to %q, want %q", opened, rotated)
+	}
+}

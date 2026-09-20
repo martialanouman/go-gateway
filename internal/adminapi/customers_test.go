@@ -39,8 +39,11 @@ func newTestAPIWithScopes(t *testing.T, deps adminapi.Deps, scopes string) http.
 	deps.Verifier = verifier
 	// Every write of a connector or a billing provider now goes through a sealer (step-295), so the
 	// harness supplies a working one unless the test brought its own — otherwise each of those tests
-	// would fail on the sealing step for reasons that have nothing to do with what it asserts. That a
-	// real deployment is given a sealer at all is a WIRING property, proved in cmd/admin-api-svc.
+	// would fail on the sealing step for reasons that have nothing to do with what it asserts.
+	//
+	// This default is also a blind spot, and it is covered elsewhere on purpose: no test in this package
+	// can see a deployment whose Deps forgot the sealer, because this line always fills it.
+	// TestNewAdminAppWiresTheSecretSealer (cmd/admin-api-svc) boots the real service and asserts it.
 	if deps.SecretSealer == nil {
 		deps.SecretSealer = newKMSSealer()
 	}
