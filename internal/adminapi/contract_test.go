@@ -948,3 +948,64 @@ func sortedDeferred() []string {
 	sort.Strings(out)
 	return out
 }
+
+// operatorSchemeName is the security scheme both the contract and the middleware name. It is spelled
+// out here rather than read from the package: this test is the outside view, and the scheme name is a
+// term of the published contract (api/openapi-admin.yaml, components.securitySchemes), not an
+// implementation detail the test should inherit from the code it checks.
+const operatorSchemeName = "OperatorBearer"
+
+// TestEveryGeneratedOperationDeclaresItsSecurity closes the class of bug step-330 found: the Admin
+// API's authorisation is derived from what each operation declares, and an operation that declares
+// nothing is not "secured by default" — it is PUBLIC. auth.Middleware reads ctx.Operation().Security
+// and passes a request straight through when no requirement names the operator scheme; the document's
+// global `security:` block never reaches it, because huma keeps the two fields apart and never merges
+// one into the other.
+//
+// Nothing caught this. The contract test above compares operationIds, response codes and schemas —
+// not security. So an operation whose contract block predates the per-operation `security:` convention
+// could be served wide open, with the suite green, and the audit trail recording its mutations against
+// no principal at all.
+//
+// It is a guard and not a fix in seven places because steps 340→390 inherit the same pre-declared
+// blocks: six more chances to register a handler for an operation that forgot to ask for a scope.
+func TestEveryGeneratedOperationDeclaresItsSecurity(t *testing.T) {
+	generated := loadGenerated(t)
+	refs := operationRefs(t, generated)
+	// A guard that reads nothing passes everything: if the spec ever stops being generated, or paths:
+	// moves, every loop below iterates zero times and reports success.
+	if len(refs) == 0 {
+		t.Fatal("generated spec exposes no operation: the spec went unread, or paths: moved")
+	}
+
+	for _, id := range sortedRefs(refs) {
+		ref := refs[id]
+		op := operationNode(generated, ref.path, ref.method)
+		requirements, _ := op["security"].([]any)
+		if len(requirements) == 0 {
+			t.Errorf("%s %s (%s) declares no security: auth.Middleware serves it to anyone — "+
+				"register it with scopeSecurity(...) and declare the scope in the contract",
+				ref.method, ref.path, id)
+			continue
+		}
+
+		for _, requirement := range requirements {
+			schemes, _ := requirement.(map[string]any)
+			scopes, ok := schemes[operatorSchemeName]
+			if !ok {
+				t.Errorf("%s (%s) has a security requirement that does not name %q: the middleware "+
+					"only enforces requirements naming that scheme, so this one grants free passage",
+					id, ref.method+" "+ref.path, operatorSchemeName)
+				continue
+			}
+			// An empty scope list authenticates but authorises nothing: any valid operator token, whatever
+			// it may do, passes. That is the document's global block, and it is not what an admin
+			// mutation means to require.
+			if list, _ := scopes.([]any); len(list) == 0 {
+				t.Errorf("%s (%s) requires %q with no scope: any operator token passes, "+
+					"including one holding none of the admin scopes",
+					id, ref.method+" "+ref.path, operatorSchemeName)
+			}
+		}
+	}
+}
