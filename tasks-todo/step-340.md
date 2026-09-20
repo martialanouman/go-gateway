@@ -48,18 +48,117 @@ manque est la seule chose qu'un opérateur touche.
   laisse configurer `initial_backoff_ms` sans que le retry différé s'en serve promet un réglage inerte :
   soit le runner l'honore, soit la fiche le documente comme non honoré sur le chemin différé.
 
+## Design arrêté
+
+### Le contrat change — les 4 opérations sont publiques
+
+Comme les 7 de step-330, les 4 opérations webhooks ne portent **aucun bloc `security:`**
+(`api/openapi-admin.yaml:421-454`). Le document en a un global (`:31-32`, `OperatorBearer: []`), mais
+`auth.Middleware` ne lit que `ctx.Operation().Security` et huma ne fusionne jamais le global dans
+l'opération : les servir sans `scopeSecurity(...)` les rendrait ouvertes — créer, réécrire et
+supprimer l'URL de remise d'un client sans token, c'est-à-dire **détourner son trafic retour**.
+`TestEveryGeneratedOperationRequiresAScope` (posée par step-330 pour cette série) le refuserait ; le
+contrat doit donc dire la même chose que le code, précédent step-149.
+
+| Opération | `security` | Codes ajoutés | Pourquoi ce code |
+|---|---|---|---|
+| `list-webhooks` | `admin:read` | 401, 403, 404, 422 | compte inconnu ; `Id` est `format: uuid` → 422 avant le handler |
+| `create-webhook` | `admin:write` | 401, 403, 404, 422 | compte inconnu ; uuid malformé, corps invalide |
+| `update-webhook` | `admin:write` | 401, 403, 422 | uuid malformé (le 404 est déjà déclaré) |
+| `delete-webhook` | `admin:write` | 401, 403, 422 | uuid malformé (le 404 est déjà déclaré) |
+
+**Le 404 de `list-webhooks` et `create-webhook`** vient d'une garde `accounts.Get`, exactement comme
+`list-credentials` (`internal/adminapi/credentials.go:113-127`) — même forme de chemin, même règle :
+sans elle, un compte inconnu répondrait 200 avec un tableau vide, et une création pointerait sur une
+violation de clé étrangère traduite en 422. Ce n'est pas contradictoire avec `set-customer-group`, qui
+refuse le pré-contrôle : là le groupe est une **valeur de corps** (422), ici le compte est un
+**segment de chemin** — un chemin vers une ressource qui n'existe pas est un 404.
+
+Pas de 409 sur `update-webhook` : `WebhookUpdate` ne porte pas `event_type`, donc aucun chemin de
+mise à jour ne peut heurter `webhooks_uq`.
+
+Additif dans les deux cas (`api-security-added`, `response-non-success-status-added` : INFO), plus une
+description (voir plus bas) : bump **mineur** `api/package.json` 5.0.0 → 5.1.0.
+
+### `status = disabled` ne coupait que la moitié de la remise
+
+Constat, à la demande de la fiche. Deux chemins résolvent le webhook par `(account_id, event_type)` via
+le **même** `WebhookRepo.Get`, et un seul filtre :
+
+- première remise MO/DLR — `internal/modlrrouter/deliverer.go:138` filtre en Go
+  (`found && wh.Status == cp.WebhookActive`) ;
+- retry différé — `internal/modlrrouter/webhook_retry_runner.go:141` ne teste que `!found`, alors que
+  son propre commentaire affirme « The webhook was deleted **or disabled** while the event waited ».
+
+Conséquence : désactiver un webhook n'arrête pas les événements déjà déférés ; ils continuent d'être
+poussés vers une URL que l'opérateur croit coupée, jusqu'au budget d'essais (8) ou aux 6 h d'âge.
+
+Le correctif va **dans la requête SQL**, pas dans le runner : `GetWebhook` devient `GetActiveWebhook`
+(`AND status = 'active'`), `WebhookRepo.Get` devient `GetActive`, et le test Go du `Deliverer` — devenu
+mort — disparaît. Les deux appelants posaient la même question et l'un avait oublié la règle : c'est
+une garde à mettre dans la fonction partagée, pas dans chaque appelant. Le nom force tout appelant
+futur à savoir ce qu'il reçoit ; un webhook désactivé devient `found = false` des deux côtés, ce que le
+commentaire du runner promettait déjà. L'API Admin, elle, lit par compte et par id — elle voit les
+`disabled`, et c'est tout son intérêt.
+
+### `retry_policy_json` : ce qui est honoré, et ce qui ne l'est pas
+
+Seul `max_attempts` traverse le chemin différé (`webhook.retriesExhausted`). Le rythme vient des
+constantes du runner (`retryPaceBase = 30s`, doublement, `retryPaceMax = 10 min`).
+
+**On ne l'honore pas, on l'écrit.** Honorer la politique aujourd'hui casserait le budget d'essais :
+avec ses défauts publiés (`initial_backoff_ms = 1000`, `max_backoff_ms = 30000`), les 8 essais
+brûleraient en ~1 minute au lieu de ~40 — ces défauts dimensionnaient la boucle en bande, qui n'est
+plus prise en production depuis step-192. Les re-dimensionner est un choix produit, pas un effet de
+bord d'une step CRUD. La description de `retry_policy_json` dit donc, dans les trois schémas, que les
+champs de back-off ne valent que pour l'envoi en bande et que seul `max_attempts` borne les retries
+différés. `debts/retry-differe-n-honore-pas-la-politique-de-back-off.md` reste **OUVERTE**, enrichie du
+choix rendu ici et de son déclencheur.
+
+### Ce qui s'écrit
+
+| Fichier | Rôle |
+|---|---|
+| `internal/controlplane/webhook.go` | `CreatedAt`/`UpdatedAt` sur `Webhook`, `NewWebhook`, `WebhookPatch` |
+| `internal/storage/postgres/queries/webhooks.sql` | `GetActiveWebhook` (renommée, filtrée) · list par compte · create · get par id · update (COALESCE partiel) · delete (`:execrows`) |
+| `internal/storage/postgres/webhooks.go` | `GetActive` + le CRUD, **sans pool** (aucune transaction) |
+| `internal/adminapi/webhooks.go` | DTO + les 4 opérations |
+| `internal/modlrrouter/deliverer.go` · `webhook_retry_runner.go` | l'appel renommé ; la condition morte retirée |
+| `deps.go` · `api.go` · `wiring.go` | une ligne chacun |
+
+**Décisions.** Le chemin est `/admin/smpp-accounts/{id}/webhooks/{webhookId}` alors que la clé
+naturelle est `(account_id, event_type)` : get, update et delete portent donc **les deux** identifiants
+en clause `WHERE`. Un `webhookId` appartenant à un autre compte est un 404, jamais une écriture
+inter-comptes — c'est la seule protection, le `webhookId` étant devinable par énumération d'UUID.
+`secret` n'entre dans aucun DTO de sortie : il est requis à la création, optionnel à la mise à jour (il
+la rotate), et jamais relu — pas de hash (`webhook.Sign` en a besoin en clair), pas de sentinelle
+masquée, le contrat a déjà tranché. `created_at`/`updated_at` manquent à `cp.Webhook` alors que le
+schéma `Webhook` les déclare **non requis** : les champs du DTO portent `omitempty`, ce qui les laisse
+hors du `required` généré sans toucher au contrat, tout en étant toujours sérialisés. `event_type` est
+immuable (`WebhookUpdate` ne le porte pas). Le doublon `(account_id, event_type)` remonte en 409 par
+`pgerr.translate` — **aucun pré-contrôle**, donc aucune fenêtre de course. La mise à jour partielle est
+un `COALESCE`, donc `retry_policy_json` ne peut pas être remis à `{}` par cette voie
+(`debts/patch-null-ne-peut-pas-effacer-un-champ.md`, déjà ouverte).
+
+**Ce qui ne s'écrit pas.** Aucune migration : la table existe depuis `0001_init`. Aucun code d'audit :
+`audited()` couvre déjà toute requête non lecture-seule.
+
 ## Tests
 
 - CRUD sur repo réel ; le secret **n'apparaît dans aucune réponse** après création (assertion sur le
   corps sérialisé, pas sur la struct — c'est la sérialisation qui fuit).
 - Le doublon `(account_id, event_type)` produit le code d'erreur du contrat, pas un 500.
 - Un webhook `disabled` n'est pas remis : test au niveau du consommateur de remise, seul endroit où la
-  propriété est vraie ou fausse. La muter au niveau du handler ne prouverait rien.
+  propriété est vraie ou fausse. La muter au niveau du handler ne prouverait rien. **Les deux chemins**
+  sont à couvrir — première remise *et* retry différé, puisque le second ne coupait pas.
+- Un `webhookId` d'un autre compte répond 404 et n'écrit rien.
 
 ## Definition of Done
 
 - [ ] `make check` vert (lint · `test -race` · govulncheck · contrats)
 - [ ] les 4 opérations servies ; secret jamais relu ; unicité et `disabled` vérifiés côté remise
+- [ ] contrat corrigé : `security` et les codes d'échec d'auth ajoutés aux 4, description de
+      `retry_policy_json` rendue honnête — bump **mineur** `api/package.json` 5.0.0 → 5.1.0
 - [ ] `api/collections/admin-api.yaml` synchronisée
 - [ ] les 4 lignes retirées de la liste `deferred` posée par step-320 (elle vit dans le test de
       contrat, pas dans la fiche)
