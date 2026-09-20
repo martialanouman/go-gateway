@@ -181,5 +181,5 @@ plus longtemps rejoue les deux commandes.
 Un renouvellement de **certificat** ne demande rien. Un changement d'**autorité** demande un
 `kubectl rollout restart` des clients : `crypto/tls` n'offre aucun moyen de rafraîchir les racines de
 confiance d'un client déjà construit, et ce dépôt a choisi d'assumer la limite plutôt que de la
-contourner — voir `tasks-todo/step-300.md`. Le service journalise un avertissement nommant le
+contourner — voir `tasks-done/step-300.md`. Le service journalise un avertissement nommant le
 redémarrage dès qu'il voit son `ca.crt` changer sur disque, pour que la panne ne soit pas muette.

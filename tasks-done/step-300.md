@@ -743,10 +743,14 @@ même chose sans Docker.
 - Handshake TLS/mTLS réussi ; un client sans cert client est rejeté sur les endpoints mTLS.
 - SMPP-TLS : bind chiffré établi (faux SMSC/simulateur).
 
+Livrés en 300a→300d. Le refus d'un client sans certificat est prouvé génériquement sur
+`tlsconf.ServerConfig` (`internal/platform/tlsconf/tlsconf_test.go`) et par surface en 300b/300c ; le
+lien SMSC de 300d l'exerce à l'envers, son faux SMSC **exigeant** le certificat que le pool présente.
+
 ## Definition of Done
-- [ ] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts
-- [ ] critères couverts par tests · godoc sur l'exporté · aucun invariant (a/b/c/d) violé
-- [ ] TLS/SMPP-TLS/mTLS activables par config ; aucun secret en dur
+- [x] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts
+- [x] critères couverts par tests · godoc sur l'exporté · aucun invariant (a/b/c/d) violé
+- [x] TLS/SMPP-TLS/mTLS activables par config ; aucun secret en dur
 
 ## Hors périmètre
 Auth opérateur réelle (OIDC) → step-310. Manifests k8s → step-270.
