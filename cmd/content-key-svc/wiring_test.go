@@ -186,8 +186,10 @@ func TestTheWiredServerServesConfigSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the configured master key cannot open what the service sealed — it sealed under another KMS: %v", err)
 	}
-	if !bytes.Equal(outside, secret) {
-		t.Errorf("unwrapped %q outside the service, want %q", outside, secret)
+	// Suffix, not equality: what is wrapped is the domain tag followed by the secret (ADR-0016), and that
+	// tag is internal to ConfigSecrets. What this asserts is the master key, not the format.
+	if !bytes.HasSuffix(outside, secret) {
+		t.Errorf("unwrapped %q outside the service, want it to end in %q", outside, secret)
 	}
 }
 
