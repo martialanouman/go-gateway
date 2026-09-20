@@ -1,6 +1,6 @@
 # step-295 — Deux secrets stockés sous une forme qui ne sert pas leur usage
 
-> **Jalon :** Dette ouverte par step-290d · **Statut :** À FAIRE
+> **Jalon :** Dette ouverte par step-290d · **Statut :** FAITE
 > **Dépend de :** — · **Bloque :** —
 
 ## Pourquoi cette fiche existe
@@ -115,11 +115,26 @@ ADR-0016 a été amendé en conséquence.
 
 ## Definition of Done
 
-- [ ] La voie est tranchée et écrite dans un ADR (ou un addendum à ADR-0011 si la KMS est retenue).
-- [ ] Les deux secrets suivent cette voie, migration comprise, avec le renommage de colonne qu'elle impose.
-- [ ] `connector-pool-svc` lit le mot de passe du plan de contrôle, ou la fiche dit explicitement pourquoi
-      l'environnement reste la source jusqu'à M3+.
-- [ ] Un test prouve qu'un secret écrit est relu **utilisable**, et qu'il n'est jamais rendu par l'API.
+- [x] La voie est tranchée et écrite dans un ADR — **ADR-0016**, qui étend ADR-0011 plutôt que de le
+      contredire : la surface de *dépendances* de `content-key-svc` ne change pas, celle de ses *appelants*
+      oui, et c'est gardé par méthode.
+- [x] Les deux secrets suivent cette voie, migration `0017` comprise, avec le renommage :
+      `password_hash` → `password_sealed` + `password_kms_key_ref`, `auth_config_json` →
+      `auth_config_sealed` + `auth_config_kms_key_ref`. `up`/`down`/`up` vérifié sur PostgreSQL 18.
+- [x] `connector-pool-svc` garde `CONNECTOR_PASSWORD`, et la raison est écrite — ici (§Périmètre), dans
+      son propre commentaire de paquet, et dans `debts/ancre-de-confiance-par-connecteur.md` : il ne lit
+      **aucune** colonne de bind et n'a pas de client Postgres ; câbler le seul mot de passe ferait un
+      bind à deux sources de vérité.
+- [x] Un test prouve les deux moitiés, et sur la chaîne entière :
+      `TestAConnectorPasswordWrittenByTheAdminAPIOpensAgainFromPostgres` écrit par l'API HTTP, relit la
+      colonne et l'**ouvre** ; `TestReadingAConnectorNeverReturnsTheSealedPassword` et
+      `TestProviderAuthConfigMaskedOnRead` prouvent qu'il n'est jamais rendu — ni en clair, ni scellé, ni
+      en base64, ni sa référence de clé.
+
+**Ce que la step a fermé en plus, parce que la revue l'a trouvé :** `ConfigSecrets.Open` rendait la clé de
+contenu d'un client en clair, et `Seal` permettait d'en forger une — les deux domaines partageaient un
+espace de chiffrés indistinguables. Et enregistrer le service sur le listener partagé avait donné à
+`router-svc` de quoi ouvrir tous les mots de passe de bind. Aucun des deux n'était dans la fiche.
 
 ## Hors périmètre
 
