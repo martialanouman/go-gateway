@@ -13,32 +13,35 @@ import (
 
 const createExternalProvider = `-- name: CreateExternalProvider :one
 INSERT INTO control_plane.external_billing_providers
-  (name, base_url, auth_config_json, mode, cache_ttl_ms, sync_call_timeout_ms, failure_policy)
+  (name, base_url, auth_config_sealed, auth_config_kms_key_ref, mode, cache_ttl_ms, sync_call_timeout_ms, failure_policy)
 VALUES
-  ($1, $2, COALESCE($3, '{}'::jsonb), $4,
-   COALESCE($5, 1000), $6,
-   COALESCE($7, 'fail_open'))
-RETURNING id, name, base_url, auth_config_json, mode, cache_ttl_ms, sync_call_timeout_ms, failure_policy, status,
-          created_at, updated_at
+  ($1, $2, $3, $4, $5,
+   COALESCE($6, 1000), $7,
+   COALESCE($8, 'fail_open'))
+RETURNING id, name, base_url, mode, cache_ttl_ms, sync_call_timeout_ms, failure_policy, status,
+          created_at, updated_at, auth_config_sealed, auth_config_kms_key_ref
 `
 
 type CreateExternalProviderParams struct {
-	Name              string
-	BaseUrl           string
-	AuthConfigJson    interface{}
-	Mode              string
-	CacheTtlMs        interface{}
-	SyncCallTimeoutMs *int32
-	FailurePolicy     interface{}
+	Name                string
+	BaseUrl             string
+	AuthConfigSealed    []byte
+	AuthConfigKmsKeyRef string
+	Mode                string
+	CacheTtlMs          interface{}
+	SyncCallTimeoutMs   *int32
+	FailurePolicy       interface{}
 }
 
-// Insert a provider; nil cache_ttl_ms/failure_policy apply the schema defaults (1000 / fail_open); a nil
-// auth_config_json defaults to an empty object.
+// Insert a provider; nil cache_ttl_ms/failure_policy apply the schema defaults (1000 / fail_open). The
+// sealed credentials are NOT optional: the handler seals '{}' when none are given, because the sealed
+// form of an empty document is not a constant the DDL could default to.
 func (q *Queries) CreateExternalProvider(ctx context.Context, arg CreateExternalProviderParams) (ControlPlaneExternalBillingProvider, error) {
 	row := q.db.QueryRow(ctx, createExternalProvider,
 		arg.Name,
 		arg.BaseUrl,
-		arg.AuthConfigJson,
+		arg.AuthConfigSealed,
+		arg.AuthConfigKmsKeyRef,
 		arg.Mode,
 		arg.CacheTtlMs,
 		arg.SyncCallTimeoutMs,
@@ -49,7 +52,6 @@ func (q *Queries) CreateExternalProvider(ctx context.Context, arg CreateExternal
 		&i.ID,
 		&i.Name,
 		&i.BaseUrl,
-		&i.AuthConfigJson,
 		&i.Mode,
 		&i.CacheTtlMs,
 		&i.SyncCallTimeoutMs,
@@ -57,6 +59,8 @@ func (q *Queries) CreateExternalProvider(ctx context.Context, arg CreateExternal
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.AuthConfigSealed,
+		&i.AuthConfigKmsKeyRef,
 	)
 	return i, err
 }
@@ -76,8 +80,8 @@ func (q *Queries) DeleteExternalProvider(ctx context.Context, id uuid.UUID) (int
 }
 
 const getExternalProvider = `-- name: GetExternalProvider :one
-SELECT id, name, base_url, auth_config_json, mode, cache_ttl_ms, sync_call_timeout_ms, failure_policy, status,
-       created_at, updated_at
+SELECT id, name, base_url, mode, cache_ttl_ms, sync_call_timeout_ms, failure_policy, status,
+       created_at, updated_at, auth_config_sealed, auth_config_kms_key_ref
 FROM control_plane.external_billing_providers
 WHERE id = $1
 `
@@ -90,7 +94,6 @@ func (q *Queries) GetExternalProvider(ctx context.Context, id uuid.UUID) (Contro
 		&i.ID,
 		&i.Name,
 		&i.BaseUrl,
-		&i.AuthConfigJson,
 		&i.Mode,
 		&i.CacheTtlMs,
 		&i.SyncCallTimeoutMs,
@@ -98,19 +101,21 @@ func (q *Queries) GetExternalProvider(ctx context.Context, id uuid.UUID) (Contro
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.AuthConfigSealed,
+		&i.AuthConfigKmsKeyRef,
 	)
 	return i, err
 }
 
 const listExternalProviders = `-- name: ListExternalProviders :many
-SELECT id, name, base_url, auth_config_json, mode, cache_ttl_ms, sync_call_timeout_ms, failure_policy, status,
-       created_at, updated_at
+SELECT id, name, base_url, mode, cache_ttl_ms, sync_call_timeout_ms, failure_policy, status,
+       created_at, updated_at, auth_config_sealed, auth_config_kms_key_ref
 FROM control_plane.external_billing_providers
 ORDER BY name
 `
 
-// Every external billing provider, ordered by name (§6.10). auth_config_json is returned raw; the handler
-// masks it before it reaches a client.
+// Every external billing provider, ordered by name (§6.10). auth_config_sealed is returned as stored — sealed
+// (ADR-0016); the handler never unseals it, it returns a constant mask.
 func (q *Queries) ListExternalProviders(ctx context.Context) ([]ControlPlaneExternalBillingProvider, error) {
 	rows, err := q.db.Query(ctx, listExternalProviders)
 	if err != nil {
@@ -124,7 +129,6 @@ func (q *Queries) ListExternalProviders(ctx context.Context) ([]ControlPlaneExte
 			&i.ID,
 			&i.Name,
 			&i.BaseUrl,
-			&i.AuthConfigJson,
 			&i.Mode,
 			&i.CacheTtlMs,
 			&i.SyncCallTimeoutMs,
@@ -132,6 +136,8 @@ func (q *Queries) ListExternalProviders(ctx context.Context) ([]ControlPlaneExte
 			&i.Status,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.AuthConfigSealed,
+			&i.AuthConfigKmsKeyRef,
 		); err != nil {
 			return nil, err
 		}
@@ -147,28 +153,30 @@ const updateExternalProvider = `-- name: UpdateExternalProvider :one
 UPDATE control_plane.external_billing_providers SET
     name                 = COALESCE($1, name),
     base_url             = COALESCE($2, base_url),
-    auth_config_json     = COALESCE($3, auth_config_json),
-    mode                 = COALESCE($4, mode),
-    cache_ttl_ms         = COALESCE($5, cache_ttl_ms),
-    sync_call_timeout_ms = COALESCE($6, sync_call_timeout_ms),
-    failure_policy       = COALESCE($7, failure_policy),
-    status               = COALESCE($8, status),
+    auth_config_sealed   = COALESCE($3, auth_config_sealed),
+    auth_config_kms_key_ref = COALESCE($4, auth_config_kms_key_ref),
+    mode                 = COALESCE($5, mode),
+    cache_ttl_ms         = COALESCE($6, cache_ttl_ms),
+    sync_call_timeout_ms = COALESCE($7, sync_call_timeout_ms),
+    failure_policy       = COALESCE($8, failure_policy),
+    status               = COALESCE($9, status),
     updated_at           = now()
-WHERE id = $9
-RETURNING id, name, base_url, auth_config_json, mode, cache_ttl_ms, sync_call_timeout_ms, failure_policy, status,
-          created_at, updated_at
+WHERE id = $10
+RETURNING id, name, base_url, mode, cache_ttl_ms, sync_call_timeout_ms, failure_policy, status,
+          created_at, updated_at, auth_config_sealed, auth_config_kms_key_ref
 `
 
 type UpdateExternalProviderParams struct {
-	Name              *string
-	BaseUrl           *string
-	AuthConfigJson    []byte
-	Mode              *string
-	CacheTtlMs        *int32
-	SyncCallTimeoutMs *int32
-	FailurePolicy     *string
-	Status            *string
-	ID                uuid.UUID
+	Name                *string
+	BaseUrl             *string
+	AuthConfigSealed    []byte
+	AuthConfigKmsKeyRef *string
+	Mode                *string
+	CacheTtlMs          *int32
+	SyncCallTimeoutMs   *int32
+	FailurePolicy       *string
+	Status              *string
+	ID                  uuid.UUID
 }
 
 // Partial update: a NULL argument leaves its column unchanged (COALESCE). sync_call_timeout_ms cannot be
@@ -177,7 +185,8 @@ func (q *Queries) UpdateExternalProvider(ctx context.Context, arg UpdateExternal
 	row := q.db.QueryRow(ctx, updateExternalProvider,
 		arg.Name,
 		arg.BaseUrl,
-		arg.AuthConfigJson,
+		arg.AuthConfigSealed,
+		arg.AuthConfigKmsKeyRef,
 		arg.Mode,
 		arg.CacheTtlMs,
 		arg.SyncCallTimeoutMs,
@@ -190,7 +199,6 @@ func (q *Queries) UpdateExternalProvider(ctx context.Context, arg UpdateExternal
 		&i.ID,
 		&i.Name,
 		&i.BaseUrl,
-		&i.AuthConfigJson,
 		&i.Mode,
 		&i.CacheTtlMs,
 		&i.SyncCallTimeoutMs,
@@ -198,6 +206,8 @@ func (q *Queries) UpdateExternalProvider(ctx context.Context, arg UpdateExternal
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.AuthConfigSealed,
+		&i.AuthConfigKmsKeyRef,
 	)
 	return i, err
 }

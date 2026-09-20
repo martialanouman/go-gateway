@@ -5,10 +5,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/martialanouman/go-gateway/internal/config"
+	configsecretspb "github.com/martialanouman/go-gateway/internal/configsecrets/pb"
+	contentkeypb "github.com/martialanouman/go-gateway/internal/contentkeys/pb"
 	"github.com/martialanouman/go-gateway/internal/grpctls"
 	"github.com/martialanouman/go-gateway/internal/testutil/grpctest"
 	"github.com/martialanouman/go-gateway/internal/testutil/pgtest"
@@ -78,4 +83,162 @@ func dialAs(t *testing.T, ca *tlstest.CA, addr, name string) *grpc.ClientConn {
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 	return conn
+}
+
+// The TLS allowlist admits a BINARY, not a method: it is checked during the handshake (tlsconf.ServerConfig)
+// and nothing below it looks at what is being called. Registering ConfigSecrets on this listener therefore
+// handed router-svc — a hot-path service that also holds POSTGRES_URL — the ability to read
+// smsc_connectors.password_sealed and open every outbound bind password. That capability existed nowhere
+// before step-295, since the column held argon2id hashes.
+//
+// router-svc needs ContentKeys and only ContentKeys. This asserts the two answers differ for it.
+func TestConfigSecretsIsRefusedToCallersThatOnlyNeedContentKeys(t *testing.T) {
+	ca := tlstest.NewCA(t)
+	certFile, keyFile := ca.Issue(t, serviceName, serviceName)
+
+	cfg := testConfig()
+	cfg.Postgres = pgtest.Config(t)
+	cfg.TLS = config.TLS{
+		Enabled:        true,
+		CertFile:       certFile,
+		KeyFile:        keyFile,
+		ClientCAFile:   ca.CAFile,
+		AllowedClients: []string{"router-svc", "admin-api-svc"},
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	app, err := newContentKeyApp(ctx, cfg, discardLogger())
+	if err != nil {
+		t.Fatalf("newContentKeyApp: %v", err)
+	}
+	defer app.close()
+
+	addr := grpctest.Serve(t, app.grpc)
+
+	// The data plane keeps what it came for: a real ContentKeys call, refused for its own reasons (no such
+	// customer) and not for authorisation.
+	routerConn := dialAs(t, ca, addr, "router-svc")
+	_, err = contentkeypb.NewContentKeysClient(routerConn).GetOrCreateContentKey(ctx,
+		&contentkeypb.GetOrCreateContentKeyRequest{CustomerId: uuid.NewString()})
+	if code := status.Code(err); code == codes.PermissionDenied {
+		t.Errorf("router-svc was refused ContentKeys, which it legitimately needs: %v", err)
+	}
+
+	// The secrets it has no business with.
+	_, err = configsecretspb.NewConfigSecretsClient(routerConn).Seal(ctx,
+		&configsecretspb.SealRequest{Plaintext: []byte("x")})
+	if code := status.Code(err); code != codes.PermissionDenied {
+		t.Errorf("Seal from router-svc = %s (%v), want PermissionDenied", code, err)
+	}
+	_, err = configsecretspb.NewConfigSecretsClient(routerConn).Open(ctx,
+		&configsecretspb.OpenRequest{Sealed: []byte("x")})
+	if code := status.Code(err); code != codes.PermissionDenied {
+		t.Errorf("Open from router-svc = %s (%v), want PermissionDenied", code, err)
+	}
+
+	// admin-api-svc writes these secrets, so it must still be served.
+	adminConn := dialAs(t, ca, addr, "admin-api-svc")
+	if _, err := configsecretspb.NewConfigSecretsClient(adminConn).Seal(ctx,
+		&configsecretspb.SealRequest{Plaintext: []byte("x")}); err != nil {
+		t.Errorf("Seal from admin-api-svc was refused: %v", err)
+	}
+}
+
+// A certificate normally carries several DNS SANs — cert-manager fills them from a Certificate's spec,
+// and the service name is rarely the first. This gate and the handshake allowlist must read the same
+// identity from the same certificate: reading only DNSNames[0] made them disagree, admitting a caller at
+// the handshake and then refusing it here, or the reverse.
+func TestAuthorisationReadsEverySANLikeTheHandshakeAllowlistDoes(t *testing.T) {
+	ca := tlstest.NewCA(t)
+	certFile, keyFile := ca.Issue(t, serviceName, serviceName)
+
+	cfg := testConfig()
+	cfg.Postgres = pgtest.Config(t)
+	cfg.TLS = config.TLS{
+		Enabled: true, CertFile: certFile, KeyFile: keyFile, ClientCAFile: ca.CAFile,
+		AllowedClients: []string{"admin-api-svc"},
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	app, err := newContentKeyApp(ctx, cfg, discardLogger())
+	if err != nil {
+		t.Fatalf("newContentKeyApp: %v", err)
+	}
+	defer app.close()
+	addr := grpctest.Serve(t, app.grpc)
+
+	// The pod's own DNS name first, the service identity after — the shape a Certificate produces.
+	clientCert, clientKey := ca.Issue(t, "admin-api-svc", "admin-api-svc-7d9f.ns.svc", "admin-api-svc")
+	dial, err := grpctls.Dialer(config.TLS{
+		Enabled: true, CertFile: clientCert, KeyFile: clientKey, ClientCAFile: ca.CAFile,
+	}, discardLogger(), serviceName)
+	if err != nil {
+		t.Fatalf("Dialer: %v", err)
+	}
+	conn, err := dial(addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	if _, err := configsecretspb.NewConfigSecretsClient(conn).Seal(ctx,
+		&configsecretspb.SealRequest{Plaintext: []byte("x")}); err != nil {
+		t.Errorf("a caller the handshake admitted was refused here: %v", err)
+	}
+}
+
+// The stream interceptor is wired for a future this service does not have yet: it serves no streaming RPC,
+// so removing grpc.StreamInterceptor from the wiring breaks nothing today and every test stays green. That
+// is exactly the shape of hole the guard exists to prevent, so a streaming method is registered here and
+// called — the service name is what the interceptor matches on, and the handler is never reached.
+func TestTheStreamGateIsWiredTooAlthoughNoRPCStreamsYet(t *testing.T) {
+	ca := tlstest.NewCA(t)
+	certFile, keyFile := ca.Issue(t, serviceName, serviceName)
+
+	cfg := testConfig()
+	cfg.Postgres = pgtest.Config(t)
+	cfg.TLS = config.TLS{
+		Enabled: true, CertFile: certFile, KeyFile: keyFile, ClientCAFile: ca.CAFile,
+		AllowedClients: []string{"router-svc", "admin-api-svc"},
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	app, err := newContentKeyApp(ctx, cfg, discardLogger())
+	if err != nil {
+		t.Fatalf("newContentKeyApp: %v", err)
+	}
+	defer app.close()
+
+	// Registered before serving, under the package the interceptor gates. Reaching the handler would mean
+	// the gate let the call through.
+	reached := false
+	app.grpc.RegisterService(&grpc.ServiceDesc{
+		ServiceName: "configsecrets.Probe",
+		HandlerType: (*any)(nil),
+		Streams: []grpc.StreamDesc{{
+			StreamName:    "Ping",
+			ServerStreams: true,
+			Handler:       func(any, grpc.ServerStream) error { reached = true; return nil },
+		}},
+		Metadata: "configsecrets.proto",
+	}, nil)
+
+	addr := grpctest.Serve(t, app.grpc)
+	stream, err := dialAs(t, ca, addr, "router-svc").NewStream(ctx,
+		&grpc.StreamDesc{ServerStreams: true}, "/configsecrets.Probe/Ping")
+	if err == nil {
+		err = stream.RecvMsg(new(emptypb.Empty))
+	}
+	if code := status.Code(err); code != codes.PermissionDenied {
+		t.Errorf("streaming call from router-svc = %s (%v), want PermissionDenied", code, err)
+	}
+	if reached {
+		t.Error("the stream handler ran: the gate does not cover streaming RPCs")
+	}
 }

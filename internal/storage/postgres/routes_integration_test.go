@@ -17,11 +17,11 @@ func TestRouteRepoWritesTargetsInOneTransaction(t *testing.T) {
 	connectors := postgres.NewConnectorRepo(pool)
 	routes := postgres.NewRouteRepo(pool)
 
-	c1, err := connectors.Create(ctx, cp.NewConnector{Name: "route-c1", Host: "h", Port: 2775, BindType: cp.BindTRX, SystemID: "s1", PasswordHash: "h"})
+	c1, err := connectors.Create(ctx, cp.NewConnector{Name: "route-c1", Host: "h", Port: 2775, BindType: cp.BindTRX, SystemID: "s1", Password: cp.SealedSecret{Sealed: []byte("h"), KMSKeyRef: "test/v1"}})
 	if err != nil {
 		t.Fatalf("create connector 1: %v", err)
 	}
-	c2, err := connectors.Create(ctx, cp.NewConnector{Name: "route-c2", Host: "h", Port: 2775, BindType: cp.BindTRX, SystemID: "s2", PasswordHash: "h"})
+	c2, err := connectors.Create(ctx, cp.NewConnector{Name: "route-c2", Host: "h", Port: 2775, BindType: cp.BindTRX, SystemID: "s2", Password: cp.SealedSecret{Sealed: []byte("h"), KMSKeyRef: "test/v1"}})
 	if err != nil {
 		t.Fatalf("create connector 2: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestRouteRepoStaticRouteRoundTrips(t *testing.T) {
 	connectors := postgres.NewConnectorRepo(pool)
 	routes := postgres.NewRouteRepo(pool)
 
-	c, err := connectors.Create(ctx, cp.NewConnector{Name: "route-static-c", Host: "h", Port: 2775, BindType: cp.BindTRX, SystemID: "s", PasswordHash: "h"})
+	c, err := connectors.Create(ctx, cp.NewConnector{Name: "route-static-c", Host: "h", Port: 2775, BindType: cp.BindTRX, SystemID: "s", Password: cp.SealedSecret{Sealed: []byte("h"), KMSKeyRef: "test/v1"}})
 	if err != nil {
 		t.Fatalf("create connector: %v", err)
 	}

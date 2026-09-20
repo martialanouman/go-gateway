@@ -104,7 +104,10 @@ CREATE TABLE control_plane.external_billing_providers (
   id                 uuid PRIMARY KEY DEFAULT uuidv7(),
   name               text NOT NULL,
   base_url           text NOT NULL,
-  auth_config_json   jsonb NOT NULL DEFAULT '{}'::jsonb,
+  -- Provider credentials, SEALED (ADR-0016) — replayed to a third party, so never hashed. No DEFAULT: the
+  -- sealed form of '{}' is not a constant, so the Admin API seals it when none is given.
+  auth_config_sealed      bytea NOT NULL,
+  auth_config_kms_key_ref text  NOT NULL,
   mode               text NOT NULL
                        CHECK (mode IN ('balance_check','consume_delegate_async','consume_delegate_sync','both')),
   cache_ttl_ms       integer NOT NULL DEFAULT 1000 CHECK (cache_ttl_ms >= 0),
@@ -345,7 +348,10 @@ CREATE TABLE control_plane.smsc_connectors (
   port                            integer NOT NULL CHECK (port BETWEEN 1 AND 65535),
   bind_type                       text NOT NULL DEFAULT 'trx' CHECK (bind_type IN ('tx','rx','trx')),
   system_id                       text NOT NULL,
-  password_hash                   text NOT NULL,
+  -- The OUTBOUND bind password, SEALED (ADR-0016) — sent in clear in the bind_transceiver PDU, so it
+  -- cannot be hashed. Contrast credentials.password_hash, an INBOUND password that IS correctly hashed.
+  password_sealed                 bytea NOT NULL,
+  password_kms_key_ref            text  NOT NULL,
   vendor_profile                  text,     -- optional preset pre-filling the fields below; explicit values override
 
   system_type                     text NOT NULL DEFAULT '',

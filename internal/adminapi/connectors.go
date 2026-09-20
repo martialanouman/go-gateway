@@ -12,19 +12,26 @@ import (
 	"github.com/martialanouman/go-gateway/internal/auth"
 	"github.com/martialanouman/go-gateway/internal/connector/status"
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
-	"github.com/martialanouman/go-gateway/internal/credential"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 	humaerr "github.com/martialanouman/go-gateway/internal/platform/errors/humaerr"
 )
 
-// hashConnectorPassword hashes the write-only SMSC bind password with argon2id (the outbound bind is
-// authenticated rarely, so a slow hash is correct — the same scheme as an inbound bind password).
-func hashConnectorPassword(password string) (string, error) {
-	hash, err := credential.HashBindPassword(password)
-	if err != nil {
-		return "", humaerr.Fail(errs.ErrInternal, "hash connector password")
+// sealConnectorPassword seals the write-only SMSC bind password. It is NOT hashed, unlike an inbound
+// bind password: this one is replayed in clear inside the bind_transceiver PDU (SMPP v3.4 §4.1.1), so a
+// hash could never serve it — which is exactly the defect step-295 removed (ADR-0016).
+//
+// A sealing failure aborts the write. Storing the connector regardless would leave a row whose password
+// column holds nothing usable, re-creating at runtime the very state this step exists to end.
+func sealConnectorPassword(ctx context.Context, sealer SecretSealer, password string) (cp.SealedSecret, error) {
+	if sealer == nil {
+		return cp.SealedSecret{}, humaerr.Fail(errs.ErrInternal, "no secret sealer configured")
 	}
-	return hash, nil
+	sealed, err := sealer.Seal(ctx, []byte(password))
+	if err != nil {
+		// The error is deliberately opaque and carries no fragment of the password: it is logged.
+		return cp.SealedSecret{}, humaerr.Fail(errs.ErrInternal, "seal connector password")
+	}
+	return sealed, nil
 }
 
 // connectorDTO is the wire form of a Connector (contract schema Connector). Only ten fields are
@@ -130,7 +137,7 @@ type connectorCreateBody struct {
 	Port                  int            `json:"port" minimum:"1" maximum:"65535"`
 	BindType              string         `json:"bind_type" enum:"tx,rx,trx"`
 	SystemID              string         `json:"system_id"`
-	Password              string         `json:"password" minLength:"1" doc:"Write-only; stored hashed, never returned."`
+	Password              string         `json:"password" minLength:"1" doc:"Write-only; stored sealed, never returned."`
 	VendorProfile         *string        `json:"vendor_profile,omitempty" nullable:"true"`
 	InterfaceVersion      *int           `json:"interface_version,omitempty"`
 	DataCodingDefault     *int           `json:"data_coding_default,omitempty" nullable:"true"`
@@ -163,10 +170,11 @@ type connectorUpdateBody struct {
 type connectorHandlers struct {
 	store   ConnectorStore
 	control ConnectorControl
+	sealer  SecretSealer
 }
 
-func registerConnectors(api huma.API, store ConnectorStore, control ConnectorControl) {
-	h := &connectorHandlers{store: store, control: control}
+func registerConnectors(api huma.API, store ConnectorStore, control ConnectorControl, sealer SecretSealer) {
+	h := &connectorHandlers{store: store, control: control, sealer: sealer}
 
 	register(api, huma.Operation{
 		OperationID: "list-connectors", Method: http.MethodGet, Path: "/admin/connectors",
@@ -256,7 +264,7 @@ type createConnectorInput struct{ Body connectorCreateBody }
 type connectorOutput struct{ Body connectorDTO }
 
 func (h *connectorHandlers) create(ctx context.Context, in *createConnectorInput) (*connectorOutput, error) {
-	hash, err := hashConnectorPassword(in.Body.Password)
+	sealed, err := sealConnectorPassword(ctx, h.sealer, in.Body.Password)
 	if err != nil {
 		return nil, err
 	}
@@ -266,7 +274,7 @@ func (h *connectorHandlers) create(ctx context.Context, in *createConnectorInput
 		Port:                  in.Body.Port,
 		BindType:              cp.BindType(in.Body.BindType),
 		SystemID:              in.Body.SystemID,
-		PasswordHash:          hash,
+		Password:              sealed,
 		VendorProfile:         in.Body.VendorProfile,
 		InterfaceVersion:      in.Body.InterfaceVersion,
 		DataCodingDefault:     in.Body.DataCodingDefault,
@@ -332,11 +340,11 @@ func (h *connectorHandlers) update(ctx context.Context, in *updateConnectorInput
 		Status:                enumPtr[cp.ConnectorStatus](in.Body.Status),
 	}
 	if in.Body.Password != nil {
-		hash, err := hashConnectorPassword(*in.Body.Password)
+		sealed, err := sealConnectorPassword(ctx, h.sealer, *in.Body.Password)
 		if err != nil {
 			return nil, err
 		}
-		patch.PasswordHash = &hash
+		patch.Password = &sealed
 	}
 	c, err := h.store.Update(ctx, id, patch)
 	if err != nil {

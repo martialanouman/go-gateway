@@ -7,6 +7,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
+
+	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 )
 
 // This file is the single place the storage layer bridges the small type gaps between the
@@ -146,4 +148,19 @@ func floatNumeric(p *float64) pgtype.Numeric {
 		return pgtype.Numeric{}
 	}
 	return n
+}
+
+// sealedPair splits an optional SealedSecret into the two nullable columns a partial update writes, and
+// returns BOTH so they cannot be produced apart.
+//
+// Two independent helpers could not hold that, and were asymmetric where it mattered: a nil ciphertext
+// becomes NULL and COALESCE keeps the stored one, while an empty key reference becomes ” — not NULL —
+// and COALESCE overwrites. A patch carrying a half-filled SealedSecret therefore kept the old ciphertext
+// and erased the reference naming its key: a row that opens today and that a later KEK rotation cannot
+// place. Returning a pair makes the split total — either both columns are written, or neither is.
+func sealedPair(s *cp.SealedSecret) (sealed []byte, keyRef *string) {
+	if s == nil || len(s.Sealed) == 0 || s.KMSKeyRef == "" {
+		return nil, nil
+	}
+	return s.Sealed, &s.KMSKeyRef
 }

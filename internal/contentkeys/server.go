@@ -16,6 +16,11 @@ import (
 	"github.com/martialanouman/go-gateway/internal/platform/errors/grpcerr"
 )
 
+// contentDataKeySize is the AES-256 data-key length every content key must have. It repeats what
+// content.GenerateDataKey produces, because the unwrap guard below needs the number and the crypto package
+// keeps it unexported.
+const contentDataKeySize = 32
+
 // ContentKeyStore is the durable content-key surface the server drives (control_plane.content_keys, §6.14).
 // *postgres.ContentKeyRepo satisfies it; declared consumer-side. It persists only the KMS-wrapped data key —
 // no plaintext key material passes through it.
@@ -70,7 +75,7 @@ func (s *ContentKeyServer) GetContentEncryptionKey(ctx context.Context, req *pb.
 	if err != nil {
 		return nil, grpcerr.Status(err)
 	}
-	dek, err := s.kms.UnwrapDataKey(ctx, key.WrappedKey)
+	dek, err := s.unwrapDataKey(ctx, key.WrappedKey)
 	if err != nil {
 		// An unwrap failure is a KMS/key integrity fault, not a client error — opaque Internal, no key material.
 		return nil, grpcerr.Status(err)
@@ -93,7 +98,7 @@ func (s *ContentKeyServer) GetContentKey(ctx context.Context, req *pb.GetContent
 	if key.Status == cp.ContentKeyDestroyed {
 		return &pb.GetContentKeyResponse{Destroyed: true}, nil
 	}
-	dek, err := s.kms.UnwrapDataKey(ctx, key.WrappedKey)
+	dek, err := s.unwrapDataKey(ctx, key.WrappedKey)
 	if err != nil {
 		return nil, grpcerr.Status(err)
 	}
@@ -159,11 +164,16 @@ func (s *ContentKeyServer) newWrappedDataKey(ctx context.Context) ([]byte, strin
 	if err != nil {
 		return nil, "", err
 	}
+	// Before the wrap, so a KMS that names no key writes nothing at all.
+	keyRef, err := content.KeyRefOf(s.kms)
+	if err != nil {
+		return nil, "", err
+	}
 	wrapped, err := s.kms.WrapDataKey(ctx, dek)
 	if err != nil {
 		return nil, "", err
 	}
-	return wrapped, s.kms.KeyRef(), nil
+	return wrapped, keyRef, nil
 }
 
 // contentKeyResponse maps a domain key to its gRPC metadata — never wrapped_key or any plaintext.
@@ -175,4 +185,24 @@ func contentKeyResponse(k cp.ContentKey) *pb.ContentKeyResponse {
 		Status:     string(k.Status),
 		CreatedAt:  k.CreatedAt.UTC().Format(time.RFC3339Nano),
 	}
+}
+
+// unwrapDataKey is the single door both read paths go through, and it checks that what came back IS a data
+// key — an AES-256 one, 32 bytes.
+//
+// The KMS alone no longer settles that. Since step-295 the same master key also seals control-plane secrets
+// (ConfigSecrets, ADR-0016), so a successful unwrap proves only that the blob was wrapped under this
+// deployment's key, not that it is a content key. Without this check, a caller able to both have a secret
+// sealed and write content_keys.wrapped_key could plant key material it chose and read everything that
+// customer sends afterwards — the KEK never leaving this service the whole time.
+func (s *ContentKeyServer) unwrapDataKey(ctx context.Context, wrapped []byte) ([]byte, error) {
+	dek, err := s.kms.UnwrapDataKey(ctx, wrapped)
+	if err != nil {
+		return nil, err
+	}
+	if len(dek) != contentDataKeySize {
+		// Opaque, and no fragment of what it turned out to be: it is a key-integrity fault either way.
+		return nil, errs.ErrInternal
+	}
+	return dek, nil
 }

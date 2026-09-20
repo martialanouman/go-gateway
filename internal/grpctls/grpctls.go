@@ -28,15 +28,18 @@ type Dial func(addr string) (*grpc.ClientConn, error)
 //
 // The ALPN list is left empty, and gRPC is the one transport where that is right: credentials.NewTLS
 // appends "h2" to whatever GetConfigForClient returns. net/http does not.
-func NewServer(cfg config.TLS, logger *slog.Logger) (*grpc.Server, error) {
+// opts are appended to whatever this function builds, for a service that needs more than transport
+// security — an interceptor, say. The TLS allowlist admits a BINARY, decided during the handshake; a
+// service whose port serves more than one audience needs its own say on top, and content-key-svc does.
+func NewServer(cfg config.TLS, logger *slog.Logger, opts ...grpc.ServerOption) (*grpc.Server, error) {
 	if !cfg.Enabled {
-		return grpc.NewServer(), nil
+		return grpc.NewServer(opts...), nil
 	}
 	conf, err := files(cfg, logger).ServerConfig(tlsconf.ServerOptions{AllowedClients: cfg.AllowedClients})
 	if err != nil {
 		return nil, err
 	}
-	return grpc.NewServer(grpc.Creds(credentials.NewTLS(conf))), nil
+	return grpc.NewServer(append(opts, grpc.Creds(credentials.NewTLS(conf)))...), nil
 }
 
 // NewClient dials addr with the pod's identity, verifying the peer under the name addr carries. It opens

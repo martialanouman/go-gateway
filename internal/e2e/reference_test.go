@@ -1004,7 +1004,7 @@ func seedRefControlPlane(t *testing.T, pool *pgxpool.Pool, accounts int) ([]stri
 	}
 	connector, err := connectors.Create(ctx, cp.NewConnector{
 		Name: "loadref-connector", Host: "127.0.0.1", Port: 2775,
-		BindType: cp.BindTRX, SystemID: "gateway", PasswordHash: "unused-in-loadref",
+		BindType: cp.BindTRX, SystemID: "gateway", Password: cp.SealedSecret{Sealed: []byte("unused-in-loadref"), KMSKeyRef: "test/v1"},
 	})
 	if err != nil {
 		t.Fatalf("create connector: %v", err)

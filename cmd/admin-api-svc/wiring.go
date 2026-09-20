@@ -16,6 +16,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/adminapi"
 	"github.com/martialanouman/go-gateway/internal/auth"
 	"github.com/martialanouman/go-gateway/internal/config"
+	configsecretspb "github.com/martialanouman/go-gateway/internal/configsecrets/pb"
 	"github.com/martialanouman/go-gateway/internal/connector/status"
 	contentkeypb "github.com/martialanouman/go-gateway/internal/contentkeys/pb"
 	"github.com/martialanouman/go-gateway/internal/grpctls"
@@ -380,17 +381,20 @@ func newHTTPServer(
 		ContentKeys:      adminapi.NewGRPCContentKeyRotator(contentkeypb.NewContentKeysClient(clients.contentKey)),
 		ContentKeyReader: adminapi.NewGRPCContentKeyReader(contentkeypb.NewContentKeysClient(clients.contentKey)),
 		ContentKeyEraser: adminapi.NewGRPCContentKeyEraser(contentkeypb.NewContentKeysClient(clients.contentKey)),
-		Messages:         clickhouse.NewCDRReader(st.ch),
-		MessageSearch:    clickhouse.NewCDRReader(st.ch),
-		ExportJobs:       postgres.NewMessageExportJobRepo(st.pg),
-		ExportSink:       exportSink(cfg),
-		ContentAudit:     postgres.NewContentAccessAuditRepo(st.pg),
-		AuditLog:         postgres.NewAuditLogRepo(st.pg),
-		GDPRJobs:         postgres.NewGDPREraseJobRepo(st.pg),
-		GDPRRunner:       runners.gdpr,
-		CDREraser:        clickhouse.NewCDREraser(st.ch),
-		Verifier:         verifier,
-		Logger:           logger,
+		// Same connection as the content keys: content-key-svc serves ConfigSecrets beside ContentKeys,
+		// because the master key that seals a connector password is the one it already holds (ADR-0016).
+		SecretSealer:  adminapi.NewGRPCSecretSealer(configsecretspb.NewConfigSecretsClient(clients.contentKey)),
+		Messages:      clickhouse.NewCDRReader(st.ch),
+		MessageSearch: clickhouse.NewCDRReader(st.ch),
+		ExportJobs:    postgres.NewMessageExportJobRepo(st.pg),
+		ExportSink:    exportSink(cfg),
+		ContentAudit:  postgres.NewContentAccessAuditRepo(st.pg),
+		AuditLog:      postgres.NewAuditLogRepo(st.pg),
+		GDPRJobs:      postgres.NewGDPREraseJobRepo(st.pg),
+		GDPRRunner:    runners.gdpr,
+		CDREraser:     clickhouse.NewCDREraser(st.ch),
+		Verifier:      verifier,
+		Logger:        logger,
 	})
 
 	// A single seam announces every control-plane mutation on config:changed; config-sync coalesces

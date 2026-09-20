@@ -216,7 +216,7 @@ func TestDeleteRatePlanInUseReturns409(t *testing.T) {
 // never appear in a read response — auth_config_json comes back masked, and the secret value is absent.
 func TestProviderAuthConfigMaskedOnRead(t *testing.T) {
 	prov := cp.ExternalBillingProvider{
-		ID: uuid.New(), Name: "acme", BaseURL: "https://acme.example", AuthConfig: []byte(`{"api_key":"SUPER-SECRET"}`),
+		ID: uuid.New(), Name: "acme", BaseURL: "https://acme.example", AuthConfig: cp.SealedSecret{Sealed: []byte(`sealed-api-key-bytes`), KMSKeyRef: "local/v1"},
 		Mode: "balance_check", CacheTTLMs: 1000, FailurePolicy: "fail_open", Status: "active",
 	}
 	api := newTestAPIWith(t, adminapi.Deps{BillingProviders: &fakeProviderStore{providers: []cp.ExternalBillingProvider{prov}}})
@@ -225,8 +225,13 @@ func TestProviderAuthConfigMaskedOnRead(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d; body=%s", w.Code, w.Body.String())
 	}
-	if strings.Contains(w.Body.String(), "SUPER-SECRET") {
-		t.Fatalf("secret leaked in list response: %s", w.Body.String())
+	// The canaries are what the fixture actually holds. Asserting the absence of a string that is in no
+	// input proves nothing, and that is what this test had become once the stored form turned sealed: the
+	// sealed bytes and the key reference are the new leak surface, so they are what is checked.
+	for _, canary := range []string{"sealed-api-key-bytes", "c2VhbGVkLWFwaS1rZXktYnl0ZXM=", "local/v1"} {
+		if strings.Contains(w.Body.String(), canary) {
+			t.Fatalf("the read response carries %q: %s", canary, w.Body.String())
+		}
 	}
 	var out []map[string]any
 	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
@@ -281,19 +286,27 @@ func TestUpdateProviderIgnoresMaskedSentinel(t *testing.T) {
 }
 
 // TestUpdateProviderPersistsRealAuthConfig: a genuine auth object IS persisted (the sentinel guard must not
-// swallow real credential updates).
+// swallow real credential updates) — and since step-295 it is persisted SEALED. The assertion used to be
+// that the patch CONTAINED the secret, which is now exactly the thing that must never happen.
 func TestUpdateProviderPersistsRealAuthConfig(t *testing.T) {
 	var gotPatch cp.ExternalBillingProviderPatch
 	store := &captureProviderStore{onUpdate: func(p cp.ExternalBillingProviderPatch) { gotPatch = p }}
-	api := newTestAPIWith(t, adminapi.Deps{BillingProviders: store})
+	sealer := newKMSSealer()
+	api := newTestAPIWith(t, adminapi.Deps{BillingProviders: store, SecretSealer: sealer})
 	body := `{"auth_config_json":{"api_key":"new-secret"}}`
 	w := httptest.NewRecorder()
 	api.ServeHTTP(w, authed(t, http.MethodPatch, "/v1/admin/billing-providers/"+uuid.NewString(), body))
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(string(gotPatch.AuthConfig), "new-secret") {
-		t.Errorf("AuthConfig patch = %s, want it to carry the real secret", gotPatch.AuthConfig)
+	if gotPatch.AuthConfig == nil {
+		t.Fatal("AuthConfig patch is nil: the real credential update was swallowed")
+	}
+	if strings.Contains(string(gotPatch.AuthConfig.Sealed), "new-secret") {
+		t.Error("the patch carries the credentials in clear")
+	}
+	if got := sealer.open(t, *gotPatch.AuthConfig); !strings.Contains(string(got), "new-secret") {
+		t.Errorf("what would be persisted opens to %q, want it to carry the real secret", got)
 	}
 }
 

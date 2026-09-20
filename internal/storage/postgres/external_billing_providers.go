@@ -48,13 +48,14 @@ func (r *ExternalBillingProviderRepo) Get(ctx context.Context, id uuid.UUID) (cp
 // Create inserts a provider.
 func (r *ExternalBillingProviderRepo) Create(ctx context.Context, in cp.NewExternalBillingProvider) (cp.ExternalBillingProvider, error) {
 	row, err := r.q.CreateExternalProvider(ctx, sqlcgen.CreateExternalProviderParams{
-		Name:              in.Name,
-		BaseUrl:           in.BaseURL,
-		AuthConfigJson:    in.AuthConfig,
-		Mode:              in.Mode,
-		CacheTtlMs:        i32ptr(in.CacheTTLMs),
-		SyncCallTimeoutMs: i32ptr(in.SyncCallTimeoutMs),
-		FailurePolicy:     strPtr(in.FailurePolicy),
+		Name:                in.Name,
+		BaseUrl:             in.BaseURL,
+		AuthConfigSealed:    in.AuthConfig.Sealed,
+		AuthConfigKmsKeyRef: in.AuthConfig.KMSKeyRef,
+		Mode:                in.Mode,
+		CacheTtlMs:          i32ptr(in.CacheTTLMs),
+		SyncCallTimeoutMs:   i32ptr(in.SyncCallTimeoutMs),
+		FailurePolicy:       strPtr(in.FailurePolicy),
 	})
 	if err != nil {
 		return cp.ExternalBillingProvider{}, translate("create external provider", err)
@@ -64,16 +65,18 @@ func (r *ExternalBillingProviderRepo) Create(ctx context.Context, in cp.NewExter
 
 // Update applies a partial change and returns the updated provider, or ErrNotFound.
 func (r *ExternalBillingProviderRepo) Update(ctx context.Context, id uuid.UUID, p cp.ExternalBillingProviderPatch) (cp.ExternalBillingProvider, error) {
+	acSealed, acKeyRef := sealedPair(p.AuthConfig)
 	row, err := r.q.UpdateExternalProvider(ctx, sqlcgen.UpdateExternalProviderParams{
-		ID:                id,
-		Name:              p.Name,
-		BaseUrl:           p.BaseURL,
-		AuthConfigJson:    p.AuthConfig,
-		Mode:              p.Mode,
-		CacheTtlMs:        i32ptr(p.CacheTTLMs),
-		SyncCallTimeoutMs: i32ptr(p.SyncCallTimeoutMs),
-		FailurePolicy:     p.FailurePolicy,
-		Status:            p.Status,
+		ID:                  id,
+		Name:                p.Name,
+		BaseUrl:             p.BaseURL,
+		AuthConfigSealed:    acSealed,
+		AuthConfigKmsKeyRef: acKeyRef,
+		Mode:                p.Mode,
+		CacheTtlMs:          i32ptr(p.CacheTTLMs),
+		SyncCallTimeoutMs:   i32ptr(p.SyncCallTimeoutMs),
+		FailurePolicy:       p.FailurePolicy,
+		Status:              p.Status,
 	})
 	if err != nil {
 		return cp.ExternalBillingProvider{}, translate("update external provider", err)
@@ -99,7 +102,7 @@ func providerFromRow(row sqlcgen.ControlPlaneExternalBillingProvider) cp.Externa
 		ID:                row.ID,
 		Name:              row.Name,
 		BaseURL:           row.BaseUrl,
-		AuthConfig:        row.AuthConfigJson,
+		AuthConfig:        cp.SealedSecret{Sealed: row.AuthConfigSealed, KMSKeyRef: row.AuthConfigKmsKeyRef},
 		Mode:              row.Mode,
 		CacheTTLMs:        int(row.CacheTtlMs),
 		SyncCallTimeoutMs: intptr(row.SyncCallTimeoutMs),

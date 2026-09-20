@@ -154,17 +154,18 @@ type ControlPlaneExactRoute struct {
 }
 
 type ControlPlaneExternalBillingProvider struct {
-	ID                uuid.UUID
-	Name              string
-	BaseUrl           string
-	AuthConfigJson    []byte
-	Mode              string
-	CacheTtlMs        int32
-	SyncCallTimeoutMs *int32
-	FailurePolicy     string
-	Status            string
-	CreatedAt         pgtype.Timestamptz
-	UpdatedAt         pgtype.Timestamptz
+	ID                  uuid.UUID
+	Name                string
+	BaseUrl             string
+	Mode                string
+	CacheTtlMs          int32
+	SyncCallTimeoutMs   *int32
+	FailurePolicy       string
+	Status              string
+	CreatedAt           pgtype.Timestamptz
+	UpdatedAt           pgtype.Timestamptz
+	AuthConfigSealed    []byte
+	AuthConfigKmsKeyRef string
 }
 
 type ControlPlaneGdprEraseJob struct {
@@ -348,7 +349,6 @@ type ControlPlaneSmscConnector struct {
 	Port                        int32
 	BindType                    string
 	SystemID                    string
-	PasswordHash                string
 	VendorProfile               *string
 	SystemType                  string
 	InterfaceVersion            int16
@@ -385,6 +385,8 @@ type ControlPlaneSmscConnector struct {
 	ReconnectMaxAttempts        int32
 	CreatedAt                   pgtype.Timestamptz
 	UpdatedAt                   pgtype.Timestamptz
+	PasswordSealed              []byte
+	PasswordKmsKeyRef           string
 }
 
 type ControlPlaneSuppression struct {

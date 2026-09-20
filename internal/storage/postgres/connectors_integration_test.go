@@ -1,6 +1,7 @@
 package postgres_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -27,11 +28,21 @@ func TestConnectorRepoRoundTripAcrossTypeGaps(t *testing.T) {
 		Port:          2775,
 		BindType:      cp.BindTRX,
 		SystemID:      "sys",
-		PasswordHash:  "hash",
+		Password:      cp.SealedSecret{Sealed: []byte{0x01, 0x00, 0xff, 0x7f, 0x00}, KMSKeyRef: "test/v1"},
 		TLSConfigJSON: map[string]any{"verify": true, "min_version": "1.2"},
 	})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
+	}
+	// step-295: the column used to hold an argon2id hash, which no bind_transceiver PDU can carry. What
+	// goes in now must come back byte for byte — embedded NULs and high bytes included, since a bytea
+	// round trip that mangled one byte would leave a ciphertext that no longer opens.
+	want := cp.SealedSecret{Sealed: []byte{0x01, 0x00, 0xff, 0x7f, 0x00}, KMSKeyRef: "test/v1"}
+	if !bytes.Equal(created.Password.Sealed, want.Sealed) {
+		t.Errorf("password_sealed came back %x, want %x", created.Password.Sealed, want.Sealed)
+	}
+	if created.Password.KMSKeyRef != want.KMSKeyRef {
+		t.Errorf("password_kms_key_ref = %q, want %q", created.Password.KMSKeyRef, want.KMSKeyRef)
 	}
 
 	// The DDL smallint defaults arrive as int, not int16.
@@ -62,7 +73,7 @@ func TestConnectorRepoDuplicateNameConflicts(t *testing.T) {
 	repo := postgres.NewConnectorRepo(pool)
 	ctx := context.Background()
 
-	base := cp.NewConnector{Name: "smsc-dup", Host: "h", Port: 2775, BindType: cp.BindTRX, SystemID: "s", PasswordHash: "hash"}
+	base := cp.NewConnector{Name: "smsc-dup", Host: "h", Port: 2775, BindType: cp.BindTRX, SystemID: "s", Password: cp.SealedSecret{Sealed: []byte("hash"), KMSKeyRef: "test/v1"}}
 	if _, err := repo.Create(ctx, base); err != nil {
 		t.Fatalf("first Create: %v", err)
 	}
@@ -81,7 +92,7 @@ func TestConnectorRepoUpdateReconnectPolicyAndBindPool(t *testing.T) {
 	ctx := context.Background()
 
 	c, err := repo.Create(ctx, cp.NewConnector{
-		Name: "smsc-reconf", Host: "h", Port: 2775, BindType: cp.BindTRX, SystemID: "s", PasswordHash: "hash",
+		Name: "smsc-reconf", Host: "h", Port: 2775, BindType: cp.BindTRX, SystemID: "s", Password: cp.SealedSecret{Sealed: []byte("hash"), KMSKeyRef: "test/v1"},
 	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -126,5 +137,79 @@ func TestConnectorRepoPilotingUpdatesUnknownAreNotFound(t *testing.T) {
 	}
 	if _, err := repo.UpdateReconnectPolicy(ctx, uuid.New(), cp.ReconnectPolicy{AutoReconnectEnabled: true}); !errors.Is(err, errs.ErrNotFound) {
 		t.Errorf("UpdateReconnectPolicy(unknown) error = %v, want ErrNotFound", err)
+	}
+}
+
+// A rotation must move the ciphertext and its key reference TOGETHER. The two columns are written through
+// separate COALESCE arguments, so nothing in the SQL couples them: leave one behind and the row holds a
+// ciphertext from one master key beside a reference naming another — it still opens today, and a future
+// KEK rotation skips it, which is the failure that never surfaces until the key it needs is gone.
+func TestConnectorRepoRotatesTheSealedPasswordAndItsKeyRefTogether(t *testing.T) {
+	pool := pgtest.Pool(t)
+	repo := postgres.NewConnectorRepo(pool)
+	ctx := context.Background()
+
+	c, err := repo.Create(ctx, cp.NewConnector{
+		Name: "smsc-rotate", Host: "h", Port: 2775, BindType: cp.BindTRX, SystemID: "s",
+		Password: cp.SealedSecret{Sealed: []byte{0xde, 0xad}, KMSKeyRef: "kek-before"},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	rotated := cp.SealedSecret{Sealed: []byte{0xbe, 0xef, 0x00, 0xff}, KMSKeyRef: "kek-after"}
+	got, err := repo.Update(ctx, c.ID, cp.ConnectorPatch{Password: &rotated})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if !bytes.Equal(got.Password.Sealed, rotated.Sealed) {
+		t.Errorf("password_sealed = %x, want %x", got.Password.Sealed, rotated.Sealed)
+	}
+	if got.Password.KMSKeyRef != rotated.KMSKeyRef {
+		t.Errorf("password_kms_key_ref = %q, want %q — the ciphertext moved without its key reference",
+			got.Password.KMSKeyRef, rotated.KMSKeyRef)
+	}
+
+	// A patch that does not carry a password leaves BOTH columns alone.
+	name := "smsc-rotate-renamed"
+	got, err = repo.Update(ctx, c.ID, cp.ConnectorPatch{Name: &name})
+	if err != nil {
+		t.Fatalf("Update (name only): %v", err)
+	}
+	if !bytes.Equal(got.Password.Sealed, rotated.Sealed) || got.Password.KMSKeyRef != rotated.KMSKeyRef {
+		t.Errorf("an unrelated patch disturbed the sealed password: %x / %q", got.Password.Sealed, got.Password.KMSKeyRef)
+	}
+}
+
+// A half-filled SealedSecret must write NEITHER column. The two are separate COALESCE arguments, and they
+// were asymmetric: a nil ciphertext becomes NULL and COALESCE keeps the stored one, while an empty key
+// reference becomes ” — not NULL — and COALESCE overwrites. Such a patch therefore kept the old
+// ciphertext and erased the reference naming its key, leaving a row that opens today and that a later KEK
+// rotation cannot place.
+func TestConnectorRepoIgnoresAHalfFilledSealedPassword(t *testing.T) {
+	pool := pgtest.Pool(t)
+	repo := postgres.NewConnectorRepo(pool)
+	ctx := context.Background()
+
+	stored := cp.SealedSecret{Sealed: []byte{0xde, 0xad}, KMSKeyRef: "kek-before"}
+	c, err := repo.Create(ctx, cp.NewConnector{
+		Name: "smsc-halfpatch", Host: "h", Port: 2775, BindType: cp.BindTRX, SystemID: "s", Password: stored,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	for name, half := range map[string]cp.SealedSecret{
+		"no ciphertext":    {KMSKeyRef: "kek-after"},
+		"no key reference": {Sealed: []byte{0xbe, 0xef}},
+	} {
+		got, err := repo.Update(ctx, c.ID, cp.ConnectorPatch{Password: &half})
+		if err != nil {
+			t.Fatalf("Update (%s): %v", name, err)
+		}
+		if !bytes.Equal(got.Password.Sealed, stored.Sealed) || got.Password.KMSKeyRef != stored.KMSKeyRef {
+			t.Errorf("%s: the row became %x / %q, want the stored pair %x / %q untouched",
+				name, got.Password.Sealed, got.Password.KMSKeyRef, stored.Sealed, stored.KMSKeyRef)
+		}
 	}
 }

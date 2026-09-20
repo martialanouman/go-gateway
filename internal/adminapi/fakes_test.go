@@ -351,6 +351,12 @@ type fakeConnectorStore struct {
 	byID      map[uuid.UUID]cp.Connector
 	rateLimit map[uuid.UUID]cp.RateLimit // a connector's operational limit, for the throughput validation
 	createErr error
+
+	// created/createCount record what Create was ACTUALLY handed, so a test can assert on the value that
+	// would reach the column rather than on the handler having been called.
+	created     cp.NewConnector
+	createCount int
+	patched     cp.ConnectorPatch
 }
 
 func newFakeConnectorStore() *fakeConnectorStore {
@@ -370,6 +376,8 @@ func (s *fakeConnectorStore) Create(_ context.Context, in cp.NewConnector) (cp.C
 	if s.createErr != nil {
 		return cp.Connector{}, s.createErr
 	}
+	s.created = in
+	s.createCount++
 	c := cp.Connector{
 		ID: uuid.New(), Name: in.Name, Host: in.Host, Port: in.Port,
 		BindType: in.BindType, SystemID: in.SystemID, Status: cp.ConnectorActive,
@@ -412,6 +420,12 @@ func (s *fakeConnectorStore) Update(_ context.Context, id uuid.UUID, p cp.Connec
 	if p.Status != nil {
 		c.Status = *p.Status
 	}
+	// The sealed password moves the way the real repository moves it, and the whole patch is kept: a test
+	// asserting on a rotation would otherwise be asserting on this double's omission.
+	if p.Password != nil {
+		c.Password = *p.Password
+	}
+	s.patched = p
 	s.byID[id] = c
 	return c, nil
 }
@@ -818,3 +832,13 @@ func (s *fakeUnroutedMOStore) List(_ context.Context, limit int, after *cp.Unrou
 
 // DeleteByMSISDN is the RGPD erasure hook (step-166); the listing tests do not exercise it.
 func (s *fakeUnroutedMOStore) DeleteByMSISDN(context.Context, string) (int, error) { return 0, nil }
+
+// setPassword puts a sealed password on a stored connector, so a read-path test sees what Postgres would
+// actually return. Without it the field is always its zero value and a leak assertion proves nothing.
+func (s *fakeConnectorStore) setPassword(id uuid.UUID, secret cp.SealedSecret) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c := s.byID[id]
+	c.Password = secret
+	s.byID[id] = c
+}

@@ -3,11 +3,11 @@
 -- reconnect tuning knobs take their DDL defaults. A duplicate name violates the inline UNIQUE on
 -- name -> 409.
 INSERT INTO control_plane.smsc_connectors (
-    name, host, port, bind_type, system_id, password_hash, vendor_profile,
+    name, host, port, bind_type, system_id, password_sealed, password_kms_key_ref, vendor_profile,
     interface_version, data_coding_default, window_size, bind_pool_size,
     throughput_limit_per_sec, tls_enabled, tls_config_json, priority_tier, auto_reconnect_enabled
 ) VALUES (
-    @name, @host, @port, @bind_type, @system_id, @password_hash, sqlc.narg('vendor_profile'),
+    @name, @host, @port, @bind_type, @system_id, @password_sealed, @password_kms_key_ref, sqlc.narg('vendor_profile'),
     COALESCE(sqlc.narg('interface_version')::smallint, 52),
     sqlc.narg('data_coding_default'),
     COALESCE(sqlc.narg('window_size')::integer, 10),
@@ -33,7 +33,8 @@ UPDATE control_plane.smsc_connectors SET
     port                     = COALESCE(sqlc.narg('port'), port),
     bind_type                = COALESCE(sqlc.narg('bind_type'), bind_type),
     system_id                = COALESCE(sqlc.narg('system_id'), system_id),
-    password_hash            = COALESCE(sqlc.narg('password_hash'), password_hash),
+    password_sealed          = COALESCE(sqlc.narg('password_sealed'), password_sealed),
+    password_kms_key_ref     = COALESCE(sqlc.narg('password_kms_key_ref'), password_kms_key_ref),
     vendor_profile           = COALESCE(sqlc.narg('vendor_profile'), vendor_profile),
     data_coding_default      = COALESCE(sqlc.narg('data_coding_default'), data_coding_default),
     window_size              = COALESCE(sqlc.narg('window_size'), window_size),

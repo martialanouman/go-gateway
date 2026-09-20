@@ -538,7 +538,8 @@ func newDrainer(cfg config.Config, st *stores, limiter *ratelimit.Enforcer, conn
 
 // connectorConfigSource re-reads a connector's live bind_pool_size + reconnect policy from Postgres so an
 // Admin resize / policy change takes effect on the next re-dial (step-128b). The bind endpoint
-// (addr/password) still comes from env — the outbound password cannot be recovered from its hash.
+// (addr/password) still comes from env — not because the password is unreadable (since step-295 it is
+// sealed, not hashed), but because this service reads no bind column at all; see main.go.
 type connectorConfigSource struct{ repo *postgres.ConnectorRepo }
 
 func (c connectorConfigSource) Load(ctx context.Context, connectorID uuid.UUID) (int, reconnect.Config, error) {

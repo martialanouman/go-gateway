@@ -9,6 +9,8 @@ import (
 	"google.golang.org/grpc"
 
 	"github.com/martialanouman/go-gateway/internal/config"
+	"github.com/martialanouman/go-gateway/internal/configsecrets"
+	configsecretspb "github.com/martialanouman/go-gateway/internal/configsecrets/pb"
 	"github.com/martialanouman/go-gateway/internal/contentkeys"
 	"github.com/martialanouman/go-gateway/internal/contentkeys/pb"
 	"github.com/martialanouman/go-gateway/internal/grpctls"
@@ -78,12 +80,18 @@ func newContentKeyApp(ctx context.Context, cfg config.Config, logger *slog.Logge
 		return nil, err
 	}
 
-	a.grpc, err = grpctls.NewServer(cfg.TLS, logger)
+	// The interceptor, not the allowlist: the allowlist admits a binary at handshake time and never sees
+	// the method. This port serves ContentKeys to the data plane AND ConfigSecrets to the control plane.
+	a.grpc, err = grpctls.NewServer(cfg.TLS, logger, grpc.UnaryInterceptor(configSecretsUnaryInterceptor), grpc.StreamInterceptor(configSecretsStreamInterceptor))
 	if err != nil {
 		return nil, err
 	}
 	pb.RegisterContentKeysServer(a.grpc,
 		contentkeys.NewContentKeyServer(kms, postgres.NewContentKeyRepo(st.pg)))
+	// The same kms, deliberately: one deployment, one master key, whatever it seals. ConfigSecrets stays a
+	// SEPARATE service rather than more RPCs on ContentKeys, so a caller can later be allowed to open a
+	// bind password without being allowed to fetch a customer's content key (ADR-0016).
+	configsecretspb.RegisterConfigSecretsServer(a.grpc, configsecrets.NewServer(kms))
 
 	a.ops, err = newOpsServer(cfg, logger, st.pg)
 	if err != nil {

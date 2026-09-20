@@ -66,7 +66,8 @@ func (r *ConnectorRepo) Create(ctx context.Context, in cp.NewConnector) (cp.Conn
 		Port:                  int32(in.Port), //nolint:gosec // G115: port is validated 1..65535 by the API.
 		BindType:              string(in.BindType),
 		SystemID:              in.SystemID,
-		PasswordHash:          in.PasswordHash,
+		PasswordSealed:        in.Password.Sealed,
+		PasswordKmsKeyRef:     in.Password.KMSKeyRef,
 		VendorProfile:         in.VendorProfile,
 		InterfaceVersion:      i16ptr(in.InterfaceVersion),
 		DataCodingDefault:     i16ptr(in.DataCodingDefault),
@@ -112,6 +113,7 @@ func (r *ConnectorRepo) List(ctx context.Context) ([]cp.Connector, error) {
 
 // Update applies a partial change and returns the connector, or ErrNotFound.
 func (r *ConnectorRepo) Update(ctx context.Context, id uuid.UUID, p cp.ConnectorPatch) (cp.Connector, error) {
+	pwSealed, pwKeyRef := sealedPair(p.Password)
 	tls, err := jsonbBytes(p.TLSConfigJSON)
 	if err != nil {
 		return cp.Connector{}, fmt.Errorf("update connector: encode tls config: %w", errs.ErrValidation)
@@ -123,7 +125,8 @@ func (r *ConnectorRepo) Update(ctx context.Context, id uuid.UUID, p cp.Connector
 		Port:                  i32ptr(p.Port),
 		BindType:              strPtr(p.BindType),
 		SystemID:              p.SystemID,
-		PasswordHash:          p.PasswordHash,
+		PasswordSealed:        pwSealed,
+		PasswordKmsKeyRef:     pwKeyRef,
 		VendorProfile:         p.VendorProfile,
 		DataCodingDefault:     i16ptr(p.DataCodingDefault),
 		WindowSize:            i32ptr(p.WindowSize),
@@ -195,6 +198,7 @@ func connectorFromRow(row sqlcgen.ControlPlaneSmscConnector) (cp.Connector, erro
 		Port:                        int(row.Port),
 		BindType:                    cp.BindType(row.BindType),
 		SystemID:                    row.SystemID,
+		Password:                    cp.SealedSecret{Sealed: row.PasswordSealed, KMSKeyRef: row.PasswordKmsKeyRef},
 		VendorProfile:               row.VendorProfile,
 		SystemType:                  row.SystemType,
 		InterfaceVersion:            int(row.InterfaceVersion),

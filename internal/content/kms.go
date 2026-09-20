@@ -1,6 +1,9 @@
 package content
 
-import "context"
+import (
+	"context"
+	"errors"
+)
 
 // KMS seals and unseals a data key with a master key (KEK) it holds — envelope encryption. The plaintext
 // DEK never leaves the caller; the KMS only ever sees it to wrap it, and returns the wrapped form to
@@ -19,4 +22,26 @@ type KMS interface {
 	// UnwrapDataKey reverses WrapDataKey. Tampering or the wrong master key fails cleanly (ErrDecrypt) and
 	// returns no key material.
 	UnwrapDataKey(ctx context.Context, wrapped []byte) ([]byte, error)
+}
+
+// ErrNoKeyRef is returned when a KMS wraps without naming the master key it used. It carries no key
+// material.
+var ErrNoKeyRef = errors.New("content: KMS returned no key reference")
+
+// KeyRefOf reads the reference to persist beside a wrapped key, refusing an empty one.
+//
+// Nothing in the KMS contract promises a non-empty KeyRef — only LocalKMS refuses one at construction
+// (ErrEmptyKeyRef), and LocalKMS is the development implementation a real AWS/GCP/Vault provider
+// replaces. An empty reference is not caught downstream either: the *_kms_key_ref columns are NOT NULL,
+// and ” satisfies that. The row then opens today and a future master-key rotation cannot place it —
+// a failure that surfaces only once the key it needed is gone.
+//
+// Every caller that persists a wrapped key goes through here rather than calling KeyRef directly, so the
+// check cannot be present on one write path and missing on its neighbour.
+func KeyRefOf(kms KMS) (string, error) {
+	ref := kms.KeyRef()
+	if ref == "" {
+		return "", ErrNoKeyRef
+	}
+	return ref, nil
 }

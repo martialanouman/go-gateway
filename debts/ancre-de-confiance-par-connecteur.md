@@ -34,5 +34,33 @@ pour la même raison — voir `mot-de-passe-de-bind-en-argv.md` et `deux-tables-
 Le jour où le pool lira sa configuration de connecteur dans la base, les douze champs migreront
 ensemble, `tls_config_json` compris.
 
+## Addendum step-295 (2026-09-20) — le mot de passe est le treizième champ
+
+step-295 a retiré **une** des deux raisons pour lesquelles le mot de passe vivait dans l'environnement :
+`smsc_connectors.password_sealed` est désormais **réversible** (scellé par `content-key-svc`, ADR-0016),
+là où `password_hash` ne pouvait structurellement pas servir un bind sortant. La seconde raison — celle
+que cette fiche porte — reste entière : **le pool ne lit aucune colonne de bind et n'a aucun client
+Postgres.** Ne câbler que le mot de passe produirait un bind hybride, à deux sources de vérité pour une
+même session. Il rejoint donc les douze autres.
+
+Deux choses que le jour du câblage devra savoir, et qui n'étaient écrites nulle part :
+
+- **Le symptôme de cette fiche vaut aussi pour le mot de passe, et il vaut toujours.** Un exploitant qui
+  fait tourner le mot de passe par l'Admin API reçoit 200, la ligne change, et le bind n'en sait rien.
+  C'est « une surface qui répond 200 à un réglage sans effet », cette fois sur un secret. step-295 a
+  rendu la colonne utilisable ; elle n'a pas rendu la rotation effective.
+- **`connector-pool-svc` devra pouvoir ouvrir son mot de passe sans pouvoir lire les clés de contenu.**
+  Le filtrage par méthode que cette fiche annonçait comme restant à faire **existe** : step-295 l'a livré
+  (`cmd/content-key-svc/authz.go`), parce qu'enregistrer `ConfigSecrets` sur le listener partagé l'avait
+  rendu nécessaire tout de suite — `router-svc` y avait gagné de quoi ouvrir tous les mots de passe de
+  bind. `config.TLS.AllowedClients` reste par binaire ; c'est un intercepteur qui distingue les méthodes.
+
+  Le jour venu, le pool rejoint donc `configSecretsCallers` et **rien d'autre**. Deux tests l'encadrent et
+  doivent évoluer sciemment, pas disparaître : `TestTheWiredServerAdmitsOnlyTheCallersItNames` le nomme
+  comme appelant refusé du port, et `TestConfigSecretsIsRefusedToCallersThatOnlyNeedContentKeys` fixe la
+  distinction. Noter que `configSecretsCallers` autorise un **service**, pas un couple service/méthode :
+  y inscrire le pool lui donnera `Seal` autant qu'`Open`. Si cette distinction-là compte à ce moment, la
+  structure devra porter les méthodes — elle ne le fait pas aujourd'hui, faute d'un second appelant.
+
 Sources : `cmd/connector-pool-svc/wiring.go` (projection `ClientConfig`) ·
 `cmd/connector-pool-svc/main.go:36` (`connectorEnv`) · `migrations/0001_init.up.sql:277-278`

@@ -50,7 +50,7 @@ func TestAnOperatorCanProvisionEverythingNeededToSend(t *testing.T) {
 
 	// 4. Connector.
 	connector, err := connectors.Create(ctx, cp.NewConnector{
-		Name: "carrier-a", Host: "smsc.carrier", Port: 2775, BindType: cp.BindTRX, SystemID: "esme", PasswordHash: "hash",
+		Name: "carrier-a", Host: "smsc.carrier", Port: 2775, BindType: cp.BindTRX, SystemID: "esme", Password: cp.SealedSecret{Sealed: []byte("hash"), KMSKeyRef: "test/v1"},
 	})
 	if err != nil {
 		t.Fatalf("create connector: %v", err)
