@@ -160,21 +160,39 @@ le code, et le premier est un défaut que cette step avait elle-même créé.
    `GetContentEncryptionKey`, la clé de contenu en clair d'un client, et `DestroyContentKeys`, un
    crypto-shred irréversible — parce que l'intercepteur ne gardait que le préfixe `/configsecrets.` et que
    cette allowlist mTLS était la seule autorisation de `ContentKeys`. Le raisonnement du §5 sur `Seal`
-   s'appliquait mot pour mot à ces cinq RPC, et ne leur avait pas été appliqué. `authorizeKeyService` garde
-   désormais les deux services : ConfigSecrets par méthode, ContentKeys par appelant.
+   s'appliquait mot pour mot à ces cinq RPC, et ne leur avait pas été appliqué.
+
+   **Et le premier correctif s'est arrêté à mi-chemin sur le même axe**, ce qu'un second tour de revue a
+   trouvé : il gardait `ConfigSecrets` par méthode et `ContentKeys` par *appelant*, donc `router-svc` — un
+   pod du plan de données — conservait `DestroyContentKeys`, et `admin-api-svc` `GetContentEncryptionKey`,
+   les deux RPC que le constat nomme. Une **carte unique** garde désormais les deux services, par appelant
+   et par méthode complète, et chaque liste est exactement ce que le code de son appelant invoque. Tout ce
+   qui n'y figure pas est refusé, y compris `GetOrCreateContentKey`, qu'aucun appelant de production
+   n'invoque.
 2. **La classification était fausse sur son axe.** `PermissionDenied` n'est pas une propriété de la ligne
    mais du **déploiement** : un rollout qui met à jour une image avant l'autre viderait tout le backlog
    différé dans le dead-letter, avec le conseil de récupération du §3 — rescelle et rejoue — inapplicable
-   puisque les lignes sont saines. Et `grpcerr.CodeFor` n'avait aucun cas pour `ErrServiceUnavailable`,
-   donc une panne serveur transitoire arrivait en `codes.Internal` et se faisait garer : le classificateur
-   était structurellement incapable de voir un échec d'ouverture transitoire. La liste d'autorisation
-   devient une **liste de refus** — seuls `InvalidArgument` et `Internal` restent déterministes — parce que
-   les deux erreurs ne coûtent pas la même chose : trop de transitoire bloque une partition, qu'un
-   opérateur voit ; trop de déterministe détruit un backlog, que personne ne voit.
+   puisque les lignes sont saines. La liste d'autorisation devient une **liste de refus** : seul un verdict
+   sur le chiffré est permanent, parce que les deux erreurs ne coûtent pas la même chose — trop de
+   transitoire bloque une partition, qu'un opérateur voit ; trop de déterministe détruit un backlog, que
+   personne ne voit.
+
+   **`codes.Internal` ne pouvait pas rester dans cette liste**, et le second tour l'a montré : grpc-go
+   l'émet aussi **côté client** pour une panne de transport — un flux fermé sans trailers, une réponse non
+   gRPC — donc un `content-key-svc` tué par OOM aurait garé définitivement toutes les remises en vol. Le
+   chiffré indéchiffrable a reçu son propre code côté serveur, `DataLoss`, et la liste de refus ne contient
+   plus que `InvalidArgument` et lui. Le test de step-295 qui attendait `Internal` a été adapté en
+   conservant sa raison — ce n'est pas une erreur du client, et `DataLoss` ne l'est pas davantage.
+
+   Un correctif de ce tour a été **supprimé** : j'avais ajouté à `grpcerr.CodeFor` un cas
+   `ErrServiceUnavailable` → `codes.Unavailable` en le justifiant par une panne serveur mal classée. Aucun
+   serveur gRPC du dépôt n'émet ce code : le mécanisme que le commentaire décrivait n'avait aucune
+   instance. Le cas et sa justification sont partis.
 
 Le reste : le saut vers `content-key-svc` porte une échéance (la même raison que le client HTTP du webhook,
-dix lignes plus bas) ; un clair vide est refusé des deux côtés ; la carte est clavetée sur la méthode
-complète ; et `noOpener` a été **supprimé** — les seize sites d'appel de `NewSender` passent tous un opener,
+dix lignes plus bas) ; un clair vide est refusé à l'entrée du sender, ce qui couvre tous les openers ;
+la carte est clavetée sur la méthode
+complète ; et `noOpener` a été **supprimé** — les quinze sites d'appel de `NewSender` passent tous un opener,
 donc le commentaire que la coupe avait gardé comme « absolument nécessaire » défendait du code inatteignable.
 
 Un correctif a été **annulé** : faire échouer une paire scellée incomplète renverse une décision écrite de

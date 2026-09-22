@@ -56,8 +56,6 @@ func (s *fakeSink) count() int {
 	return len(s.rows)
 }
 
-// testSender builds a sender whose backoff never waits and whose jitter is deterministic, so retry
-// tests run instantly.
 func sealedFor(plaintext string) cp.SealedSecret {
 	return cp.SealedSecret{Sealed: []byte("sealed:" + plaintext), KMSKeyRef: "local/test-kek"}
 }
@@ -68,6 +66,8 @@ func (stubOpener) Open(_ context.Context, sealed cp.SealedSecret) ([]byte, error
 	return bytes.TrimPrefix(sealed.Sealed, []byte("sealed:")), nil
 }
 
+// testSender builds a sender whose backoff never waits and whose jitter is deterministic, so retry tests
+// run instantly.
 func testSender(sink webhook.DeadLetterSink, logger *slog.Logger, opts ...webhook.Option) *webhook.Sender {
 	return senderWith(sink, stubOpener{}, logger, opts...)
 }

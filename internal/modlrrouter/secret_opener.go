@@ -36,30 +36,16 @@ func (o *GRPCSecretOpener) Open(ctx context.Context, sealed cp.SealedSecret) ([]
 
 	resp, err := o.client.Open(ctx, &pb.OpenRequest{Sealed: sealed.Sealed})
 	if err != nil {
-		if deterministicOpenFailure(status.Code(err)) {
+		// Only a verdict on the CIPHERTEXT is permanent: a wrong domain tag, or a blob the KMS cannot unwrap.
+		// Everything else is a deny-list mistake waiting to happen, and the two errors do not cost the same —
+		// treating a permanent fault as transient stalls a partition, which an operator sees, while treating a
+		// transient one as permanent destroys a backlog, which nobody sees. PermissionDenied in particular is
+		// a property of the deployment, and Internal is what grpc-go reports for a transport fault.
+		switch status.Code(err) {
+		case codes.InvalidArgument, codes.DataLoss:
 			return nil, fmt.Errorf("open config secret: %w", err)
 		}
 		return nil, fmt.Errorf("open config secret: %w: %w", errs.ErrServiceUnavailable, err)
 	}
-	if len(resp.GetPlaintext()) == 0 {
-		return nil, fmt.Errorf("open config secret: empty plaintext: %w", errs.ErrInternal)
-	}
 	return resp.GetPlaintext(), nil
-}
-
-// deterministicOpenFailure names the codes that belong to the CIPHERTEXT, so the sender dead-letters them.
-// It is a deny-list because the enum is open-ended and the two mistakes do not cost the same: treating a
-// permanent fault as transient stalls a partition, which an operator sees, while treating a transient one
-// as permanent destroys a backlog, which nobody sees. PermissionDenied in particular is a property of the
-// deployment — a rollout that updates one image before the other — and an operator fixes it without
-// touching a single row.
-func deterministicOpenFailure(code codes.Code) bool {
-	switch code {
-	case codes.InvalidArgument: // sealed for another domain: these bytes are not a config secret
-		return true
-	case codes.Internal: // the KMS refused to unwrap: tampered, truncated, or sealed under a lost key
-		return true
-	default:
-		return false
-	}
 }

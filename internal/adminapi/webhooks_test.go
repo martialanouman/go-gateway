@@ -221,8 +221,8 @@ func TestWebhooksOfAnUnknownAccountIs404(t *testing.T) {
 	}
 }
 
-// TestUpdateWebhookRotatesTheSecretWithoutReturningIt covers the write-only field's other half: the
-// value goes in and changes the stored one, and still never comes back out.
+// That a rotation really re-seals the stored value is TestRotatingAWebhookSecretResealsIt, against a real
+// KMS. This one covers the wire: neither the new nor the old secret comes back out.
 func TestUpdateWebhookRotatesTheSecretWithoutReturningIt(t *testing.T) {
 	accounts := newFakeAccountStore()
 	id := seedAccount(t, accounts)

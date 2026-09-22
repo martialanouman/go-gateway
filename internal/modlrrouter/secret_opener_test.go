@@ -52,18 +52,6 @@ func TestGRPCSecretOpenerBoundsTheKeyServiceHop(t *testing.T) {
 	}
 }
 
-func TestGRPCSecretOpenerRefusesAnEmptyPlaintext(t *testing.T) {
-	opener := modlrrouter.NewGRPCSecretOpener(&fakeConfigSecretsClient{plaintext: nil})
-
-	got, err := opener.Open(context.Background(), cp.SealedSecret{Sealed: []byte("c")})
-	if err == nil {
-		t.Fatalf("Open returned %q and no error: every delivery would be signed with an empty HMAC key", got)
-	}
-	if errors.Is(err, errs.ErrServiceUnavailable) {
-		t.Error("an empty plaintext was reported transient: redelivering cannot make it non-empty")
-	}
-}
-
 func TestGRPCSecretOpenerReturnsThePlaintext(t *testing.T) {
 	client := &fakeConfigSecretsClient{plaintext: []byte("the-signing-key")}
 	opener := modlrrouter.NewGRPCSecretOpener(client)
@@ -80,7 +68,7 @@ func TestGRPCSecretOpenerReturnsThePlaintext(t *testing.T) {
 	}
 }
 
-func TestGRPCSecretOpenerTreatsEverythingButTheCiphertextAsTransient(t *testing.T) {
+func TestGRPCSecretOpenerTreatsEverythingButAVerdictOnTheCiphertextAsTransient(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		code      codes.Code
@@ -93,8 +81,9 @@ func TestGRPCSecretOpenerTreatsEverythingButTheCiphertextAsTransient(t *testing.
 		{"caller not identified", codes.Unauthenticated, true},
 		{"throttled or overloaded hop", codes.ResourceExhausted, true},
 		{"status-less failure through a proxy", codes.Unknown, true},
+		{"transport fault or OOMKilled server", codes.Internal, true},
 		{"wrong domain tag", codes.InvalidArgument, false},
-		{"unwrap failed", codes.Internal, false},
+		{"ciphertext the KMS cannot unwrap", codes.DataLoss, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			opener := modlrrouter.NewGRPCSecretOpener(&fakeConfigSecretsClient{err: status.Error(tc.code, "nope")})

@@ -76,8 +76,13 @@ func TestOpeningUnderAnotherMasterKeyFailsAndReturnsNothing(t *testing.T) {
 	if opened != nil {
 		t.Errorf("Open returned a response alongside its error: %v", opened)
 	}
-	if code := status.Code(err); code != codes.Internal {
-		t.Errorf("status code = %s, want %s: a bad ciphertext is a key-integrity fault, not a client error", code, codes.Internal)
+	// Still not a client error — that is step-295's decision and it stands. The code moved from Internal to
+	// DataLoss because step-295b gave this failure its first consumer: the webhook sender dead-letters a
+	// verdict on the ciphertext and redelivers everything else, and grpc-go emits Internal client-side for
+	// transport faults, so Internal could not tell a corrupt blob from an OOMKilled server.
+	if code := status.Code(err); code != codes.DataLoss {
+		t.Errorf("status code = %s, want %s: a bad ciphertext must be distinguishable from a transport fault",
+			code, codes.DataLoss)
 	}
 }
 

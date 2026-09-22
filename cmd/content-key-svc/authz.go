@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"slices"
-	"strings"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -12,25 +11,31 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// configSecretsCallers and contentKeysCallers are NOT configuration: an environment variable would widen
-// them by accident. Both fail closed — a caller or method not named here is refused.
+// keyServiceCallers is the complete authorisation of this port, by caller and by FULL method. It is NOT
+// configuration: an environment variable would widen it by accident. Everything absent is refused —
+// including an RPC nobody has claimed yet, and including a third service registered here later.
 //
-// Seal would be an escalation for mo-dlr-router-svc, not a convenience: it holds POSTGRES_URL with write
-// access, so it could seal a password of its choosing, write it into smsc_connectors.password_sealed and
-// take over an outbound operator bind.
-var configSecretsCallers = map[string][]string{
-	"admin-api-svc":     {"/configsecrets.ConfigSecrets/Seal"},
-	"mo-dlr-router-svc": {"/configsecrets.ConfigSecrets/Open"},
+// The mTLS allowlist cannot do this: it is checked at the handshake, so it admits a BINARY and never sees
+// the method. Before this gate, admitting a caller for one service handed it the other's — which is how
+// step-295b's own first cut gave the return path GetContentEncryptionKey, a customer's plaintext data key,
+// and DestroyContentKeys, an irreversible crypto-shred.
+//
+// Each list is what its caller's code actually calls, and nothing more. GetOrCreateContentKey appears
+// nowhere because no production caller invokes it.
+var keyServiceCallers = map[string][]string{
+	"router-svc": {
+		"/contentkeys.ContentKeys/GetContentEncryptionKey",
+	},
+	"admin-api-svc": {
+		"/configsecrets.ConfigSecrets/Seal",
+		"/contentkeys.ContentKeys/RotateContentKey",
+		"/contentkeys.ContentKeys/GetContentKey",
+		"/contentkeys.ContentKeys/DestroyContentKeys",
+	},
+	"mo-dlr-router-svc": {
+		"/configsecrets.ConfigSecrets/Open",
+	},
 }
-
-// contentKeysCallers gates the OTHER service on this port. The mTLS allowlist used to be its only
-// authorisation, so admitting a caller for ConfigSecrets alone also handed it GetContentEncryptionKey — a
-// customer's plaintext data key — and DestroyContentKeys, an irreversible crypto-shred. mo-dlr-router-svc
-// needs no ContentKeys method at all.
-//
-// By service and not by method: narrowing the two callers that legitimately use ContentKeys is a separate
-// decision, and getting it wrong breaks the data plane's ability to encrypt a body.
-var contentKeysCallers = map[string]bool{"router-svc": true, "admin-api-svc": true}
 
 // authorizeKeyService decides both services on this port: ConfigSecrets by method, ContentKeys by caller.
 //
@@ -44,20 +49,12 @@ var contentKeysCallers = map[string]bool{"router-svc": true, "admin-api-svc": tr
 // allowlist itself, which only applies when TLS is on. A deployment without mTLS has no authorisation
 // story at all, which is what the production config validator is for.
 func authorizeKeyService(ctx context.Context, fullMethod string) error {
-	configSecrets := strings.HasPrefix(fullMethod, "/configsecrets.")
-	contentKeys := strings.HasPrefix(fullMethod, "/contentkeys.")
-	if !configSecrets && !contentKeys {
-		return nil
-	}
 	names, identified := peerDNSNames(ctx)
 	if !identified {
 		return nil
 	}
 	for _, name := range names {
-		if configSecrets && slices.Contains(configSecretsCallers[name], fullMethod) {
-			return nil
-		}
-		if contentKeys && contentKeysCallers[name] {
+		if slices.Contains(keyServiceCallers[name], fullMethod) {
 			return nil
 		}
 	}

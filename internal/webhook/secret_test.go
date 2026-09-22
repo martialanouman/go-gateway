@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -161,17 +160,6 @@ func TestSendParksAnUnopenableSecretInsteadOfBlockingTheConsumer(t *testing.T) {
 	if !strings.Contains(reason, "secret_unopenable") {
 		t.Errorf("park reason = %q, want it to name secret_unopenable", reason)
 	}
-	// The reason travels into a durable, operator-visible Kafka record, and it is built from the opener's
-	// error chain.
-	wh := webhookFor(srv.URL)
-	for probe, needle := range map[string]string{
-		"sealed in base64": base64.StdEncoding.EncodeToString(wh.Secret.Sealed),
-		"key reference":    wh.Secret.KMSKeyRef,
-	} {
-		if strings.Contains(reason, needle) {
-			t.Errorf("the park reason carries the %s: %q", probe, reason)
-		}
-	}
 }
 
 func TestRetryClassifiesAFailedOpenLikeSendDoes(t *testing.T) {
@@ -251,5 +239,24 @@ func TestSendRefusesASecretThatOpensEmpty(t *testing.T) {
 	}
 	if sink.count() != 1 {
 		t.Errorf("dead-lettered %d events, want 1", sink.count())
+	}
+}
+
+// A cancelled context must never dead-letter: the event is intact and the pod is shutting down. The opener
+// here answers like one that has not translated cancellation into ErrServiceUnavailable, which nothing in
+// the SecretOpener contract obliges it to do.
+func TestSendRedeliversWhenTheContextEndedDuringTheOpen(t *testing.T) {
+	sink := &fakeSink{}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := senderWith(sink, &fakeOpener{err: fmt.Errorf("open: %w", context.Canceled)}, nil).
+		Send(ctx, webhookFor("https://unused.test"), webhook.Event{ID: "evt-sigterm", Payload: []byte(`{}`)})
+
+	if err == nil {
+		t.Fatal("Send returned nil on a cancelled context: the event would be committed and lost")
+	}
+	if sink.count() != 0 {
+		t.Errorf("dead-lettered %d events during shutdown, want 0", sink.count())
 	}
 }

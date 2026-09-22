@@ -3,8 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -668,7 +671,13 @@ func TestAWebhookSecretWrittenByTheAdminAPISignsADeliveryTheReceiverVerifies(t *
 	if err := sender.Send(ctx, wh, ev); err != nil {
 		t.Fatalf("Send: %v — the return path cannot deliver with the secret the Admin API stored", err)
 	}
-	if want := "sha256=" + webhook.Sign(secret, gotTS, gotBody); gotSig != want {
+	// Recomputed here rather than through webhook.Sign: this is the DoD's "a receiver verifies it", and a
+	// receiver implements the scheme, it does not call our function. Every other signature assertion in the
+	// repo goes through Sign, so Sign agreeing with itself proves nothing about the wire format.
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(gotTS + "."))
+	mac.Write(gotBody)
+	if want := "sha256=" + hex.EncodeToString(mac.Sum(nil)); gotSig != want {
 		t.Errorf("signature = %q, want %q — a receiver holding the operator's secret would reject it", gotSig, want)
 	}
 }

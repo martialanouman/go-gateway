@@ -117,13 +117,20 @@ func TestConfigSecretsIsRefusedToCallersThatOnlyNeedContentKeys(t *testing.T) {
 
 	addr := grpctest.Serve(t, app.grpc)
 
-	// The data plane keeps what it came for: a real ContentKeys call, refused for its own reasons (no such
-	// customer) and not for authorisation.
+	// The data plane keeps what it came for: the ONE ContentKeys call its code makes, refused for its own
+	// reasons (no such customer) and not for authorisation. The probe moved off GetOrCreateContentKey when
+	// the gate went per-method: no production caller invokes that RPC, so it is now served to nobody.
 	routerConn := dialAs(t, ca, addr, "router-svc")
-	_, err = contentkeypb.NewContentKeysClient(routerConn).GetOrCreateContentKey(ctx,
-		&contentkeypb.GetOrCreateContentKeyRequest{CustomerId: uuid.NewString()})
+	_, err = contentkeypb.NewContentKeysClient(routerConn).GetContentEncryptionKey(ctx,
+		&contentkeypb.GetContentEncryptionKeyRequest{CustomerId: uuid.NewString()})
 	if code := status.Code(err); code == codes.PermissionDenied {
 		t.Errorf("router-svc was refused ContentKeys, which it legitimately needs: %v", err)
+	}
+	// And nothing else: a data-plane pod has no business destroying a customer's keys.
+	_, err = contentkeypb.NewContentKeysClient(routerConn).DestroyContentKeys(ctx,
+		&contentkeypb.DestroyContentKeysRequest{CustomerId: uuid.NewString()})
+	if code := status.Code(err); code != codes.PermissionDenied {
+		t.Errorf("DestroyContentKeys from router-svc = %s, want PermissionDenied", code)
 	}
 
 	// The secrets it has no business with.
@@ -138,11 +145,23 @@ func TestConfigSecretsIsRefusedToCallersThatOnlyNeedContentKeys(t *testing.T) {
 		t.Errorf("Open from router-svc = %s (%v), want PermissionDenied", code, err)
 	}
 
-	// admin-api-svc writes these secrets, so it must still be served.
+	// admin-api-svc writes these secrets, so it must still be served — and it never reads one back, so Open
+	// is refused to it too.
 	adminConn := dialAs(t, ca, addr, "admin-api-svc")
 	if _, err := configsecretspb.NewConfigSecretsClient(adminConn).Seal(ctx,
 		&configsecretspb.SealRequest{Plaintext: []byte("x")}); err != nil {
 		t.Errorf("Seal from admin-api-svc was refused: %v", err)
+	}
+	_, err = configsecretspb.NewConfigSecretsClient(adminConn).Open(ctx,
+		&configsecretspb.OpenRequest{Sealed: []byte("x")})
+	if code := status.Code(err); code != codes.PermissionDenied {
+		t.Errorf("Open from admin-api-svc = %s, want PermissionDenied: it writes secrets and never reads them", code)
+	}
+	// Nor the one content-key RPC it has no code for.
+	_, err = contentkeypb.NewContentKeysClient(adminConn).GetContentEncryptionKey(ctx,
+		&contentkeypb.GetContentEncryptionKeyRequest{CustomerId: uuid.NewString()})
+	if code := status.Code(err); code != codes.PermissionDenied {
+		t.Errorf("GetContentEncryptionKey from admin-api-svc = %s, want PermissionDenied", code)
 	}
 }
 

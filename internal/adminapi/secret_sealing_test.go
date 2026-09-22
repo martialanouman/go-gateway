@@ -316,9 +316,6 @@ func TestRotatingAWebhookSecretResealsIt(t *testing.T) {
 	// A ciphertext stored beside the reference of the key that sealed the PREVIOUS one is a row that opens
 	// today and that a master-key rotation cannot place. The same omission let a mutation survive one layer
 	// down, in the repository's own test.
-	if after.KMSKeyRef == "" {
-		t.Error("the rotation stored no key reference")
-	}
 	if after.KMSKeyRef != sealer.kms.KeyRef() {
 		t.Errorf("key reference = %q, want the sealing key's %q", after.KMSKeyRef, sealer.kms.KeyRef())
 	}
