@@ -62,7 +62,8 @@ func (r *WebhookRepo) Create(ctx context.Context, in cp.NewWebhook) (cp.Webhook,
 		AccountID:       in.AccountID,
 		EventType:       string(in.EventType),
 		Url:             in.URL,
-		Secret:          in.Secret,
+		SecretSealed:    in.Secret.Sealed,
+		SecretKmsKeyRef: in.Secret.KMSKeyRef,
 		RetryPolicyJson: in.RetryPolicyJSON,
 	})
 	if err != nil {
@@ -73,11 +74,13 @@ func (r *WebhookRepo) Create(ctx context.Context, in cp.NewWebhook) (cp.Webhook,
 
 // Update applies a partial change and returns the updated webhook, or ErrNotFound.
 func (r *WebhookRepo) Update(ctx context.Context, accountID, id uuid.UUID, p cp.WebhookPatch) (cp.Webhook, error) {
+	sealed, keyRef := sealedPair(p.Secret)
 	row, err := r.q.UpdateWebhook(ctx, sqlcgen.UpdateWebhookParams{
 		ID:              id,
 		AccountID:       accountID,
 		Url:             p.URL,
-		Secret:          p.Secret,
+		SecretSealed:    sealed,
+		SecretKmsKeyRef: keyRef,
 		RetryPolicyJson: p.RetryPolicyJSON,
 		Status:          strPtr(p.Status),
 	})
@@ -105,7 +108,7 @@ func webhookFromRow(row sqlcgen.ControlPlaneWebhook) cp.Webhook {
 		AccountID:       row.AccountID,
 		EventType:       cp.WebhookEventType(row.EventType),
 		URL:             row.Url,
-		Secret:          row.Secret,
+		Secret:          cp.SealedSecret{Sealed: row.SecretSealed, KMSKeyRef: row.SecretKmsKeyRef},
 		RetryPolicyJSON: json.RawMessage(row.RetryPolicyJson),
 		Status:          cp.WebhookStatus(row.Status),
 		CreatedAt:       tsVal(row.CreatedAt),

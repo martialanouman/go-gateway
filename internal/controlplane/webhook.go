@@ -50,12 +50,16 @@ func (s WebhookStatus) Valid() bool {
 // MO or DLR to URL, signed with Secret. RetryPolicyJSON is the raw retry_policy_json; the webhook
 // sender parses it (the control plane stays free of delivery semantics). One webhook per (account,
 // event_type) — the unique key.
+//
+// Secret is SEALED, not hashed (ADR-0016): it is a secret the gateway REPLAYS — webhook.Sign needs it in
+// clear on every delivery — so the sender opens it just before signing. It is never in clear at rest and
+// never leaves the Admin API.
 type Webhook struct {
 	ID              uuid.UUID
 	AccountID       uuid.UUID
 	EventType       WebhookEventType
 	URL             string
-	Secret          string
+	Secret          SealedSecret
 	RetryPolicyJSON json.RawMessage
 	Status          WebhookStatus
 	CreatedAt       time.Time
@@ -64,12 +68,13 @@ type Webhook struct {
 
 // NewWebhook is a webhook subscription to create. Secret is required: it is the HMAC key the receiver
 // verifies each delivery with, and it is supplied by the operator rather than generated here — the
-// contract makes it write-only, never returned.
+// contract makes it write-only, never returned. It arrives already sealed: the Admin API seals it, and
+// nothing below that boundary ever holds the clear value.
 type NewWebhook struct {
 	AccountID       uuid.UUID
 	EventType       WebhookEventType
 	URL             string
-	Secret          string
+	Secret          SealedSecret
 	RetryPolicyJSON json.RawMessage
 }
 
@@ -78,7 +83,7 @@ type NewWebhook struct {
 // and changing it would be a different subscription under the same id.
 type WebhookPatch struct {
 	URL             *string
-	Secret          *string
+	Secret          *SealedSecret
 	RetryPolicyJSON json.RawMessage
 	Status          *WebhookStatus
 }

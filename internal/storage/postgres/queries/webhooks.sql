@@ -18,8 +18,9 @@ ORDER BY event_type;
 -- name: CreateWebhook :one
 -- status falls back to the DDL default ('active'), retry_policy_json to '{}'. A second webhook for an
 -- event type the account already subscribes to hits webhooks_uq and comes back as a conflict.
-INSERT INTO control_plane.webhooks (account_id, event_type, url, secret, retry_policy_json)
-VALUES (@account_id, @event_type, @url, @secret, COALESCE(sqlc.narg('retry_policy_json')::jsonb, '{}'::jsonb))
+INSERT INTO control_plane.webhooks (account_id, event_type, url, secret_sealed, secret_kms_key_ref, retry_policy_json)
+VALUES (@account_id, @event_type, @url, @secret_sealed, @secret_kms_key_ref,
+        COALESCE(sqlc.narg('retry_policy_json')::jsonb, '{}'::jsonb))
 RETURNING *;
 
 -- name: UpdateWebhook :one
@@ -28,11 +29,16 @@ RETURNING *;
 -- webhooks_touch trigger. retry_policy_json IS resettable here, unlike the nullable columns of
 -- debts/patch-null-ne-peut-pas-effacer-un-champ.md: an omitted field arrives as a nil RawMessage (SQL
 -- NULL, COALESCE keeps the column) and a supplied {} arrives as two non-nil bytes, which COALESCE takes.
+--
+-- The two halves of the sealed secret are COALESCE'd on the SAME argument being present or absent, so a
+-- rotation cannot write the ciphertext while keeping the reference of the key that sealed the previous one
+-- — a row that opens today and stops opening at the first master-key rotation.
 UPDATE control_plane.webhooks SET
-    url               = COALESCE(sqlc.narg('url'), url),
-    secret            = COALESCE(sqlc.narg('secret'), secret),
-    retry_policy_json = COALESCE(sqlc.narg('retry_policy_json'), retry_policy_json),
-    status            = COALESCE(sqlc.narg('status'), status)
+    url                = COALESCE(sqlc.narg('url'), url),
+    secret_sealed      = COALESCE(sqlc.narg('secret_sealed'), secret_sealed),
+    secret_kms_key_ref = COALESCE(sqlc.narg('secret_kms_key_ref'), secret_kms_key_ref),
+    retry_policy_json  = COALESCE(sqlc.narg('retry_policy_json'), retry_policy_json),
+    status             = COALESCE(sqlc.narg('status'), status)
 WHERE id = @id AND account_id = @account_id
 RETURNING *;
 
