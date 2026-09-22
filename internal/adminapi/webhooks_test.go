@@ -1,6 +1,7 @@
 package adminapi_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,13 @@ import (
 )
 
 const testSecret = "a-signing-secret-long-enough"
+
+// sealedStub is what a seeded row holds now that the column is sealed (ADR-0016). It keeps the plaintext
+// inside the bytes on purpose: a DTO that leaked the ciphertext would then trip the same "the secret came
+// back on the wire" assertions, instead of passing them because the leak was unreadable.
+func sealedStub(plaintext string) cp.SealedSecret {
+	return cp.SealedSecret{Sealed: []byte("sealed:" + plaintext), KMSKeyRef: "local/test-kek"}
+}
 
 // newWebhookAPI wires the Admin API with both stores the webhook surface needs: the account is read
 // first to honour the 404 its path promises, then the webhooks themselves.
@@ -132,7 +140,7 @@ func TestWebhookSecretAndURLAreRefusedWhenUseless(t *testing.T) {
 	hooks := newFakeWebhookStore()
 	hookID := uuid.New()
 	hooks.seed(cp.Webhook{ID: hookID, AccountID: id, EventType: cp.WebhookEventMO,
-		URL: "https://acme.test/mo", Secret: testSecret, Status: cp.WebhookActive})
+		URL: "https://acme.test/mo", Secret: sealedStub(testSecret), Status: cp.WebhookActive})
 	api := newWebhookAPI(t, hooks, accounts)
 
 	for _, tc := range []struct{ name, method, path, body string }{
@@ -182,7 +190,7 @@ func TestWebhookOfAnotherAccountIs404(t *testing.T) {
 	hooks := newFakeWebhookStore()
 	hookID := uuid.New()
 	hooks.seed(cp.Webhook{ID: hookID, AccountID: theirs, EventType: cp.WebhookEventMO,
-		URL: "https://theirs.test/mo", Secret: testSecret, Status: cp.WebhookActive})
+		URL: "https://theirs.test/mo", Secret: sealedStub(testSecret), Status: cp.WebhookActive})
 	api := newWebhookAPI(t, hooks, accounts)
 
 	for _, tc := range []struct{ name, method, body string }{
@@ -227,7 +235,7 @@ func TestUpdateWebhookRotatesTheSecretWithoutReturningIt(t *testing.T) {
 	hooks := newFakeWebhookStore()
 	hookID := uuid.New()
 	hooks.seed(cp.Webhook{ID: hookID, AccountID: id, EventType: cp.WebhookEventDLR,
-		URL: "https://acme.test/dlr", Secret: "old-signing-secret-here", Status: cp.WebhookActive})
+		URL: "https://acme.test/dlr", Secret: sealedStub("old-signing-secret-here"), Status: cp.WebhookActive})
 	api := newWebhookAPI(t, hooks, accounts)
 
 	w := httptest.NewRecorder()
@@ -245,8 +253,15 @@ func TestUpdateWebhookRotatesTheSecretWithoutReturningIt(t *testing.T) {
 	if got["status"] != "disabled" {
 		t.Errorf("status = %v, want disabled", got["status"])
 	}
-	if stored := hooks.mustGet(t, hookID); stored.Secret != testSecret {
-		t.Errorf("stored secret = %q, want the rotated one", stored.Secret)
+	// The rotation must have re-sealed: a stored secret still equal to the seeded one means the branch
+	// answered 200 and changed nothing, and one that carries the plaintext means it never sealed at all.
+	// That the sealed bytes actually OPEN to the new secret is TestRotatingAWebhookSecretResealsIt.
+	stored := hooks.mustGet(t, hookID).Secret
+	if bytes.Equal(stored.Sealed, sealedStub("old-signing-secret-here").Sealed) {
+		t.Error("the stored secret is still the seeded one: the rotation changed nothing")
+	}
+	if bytes.Contains(stored.Sealed, []byte(testSecret)) {
+		t.Errorf("the rotated secret reached the store in clear: %q", stored.Sealed)
 	}
 }
 
@@ -258,7 +273,7 @@ func TestDeleteWebhookReturns204(t *testing.T) {
 	hooks := newFakeWebhookStore()
 	hookID := uuid.New()
 	hooks.seed(cp.Webhook{ID: hookID, AccountID: id, EventType: cp.WebhookEventMO,
-		URL: "https://acme.test/mo", Secret: testSecret, Status: cp.WebhookActive})
+		URL: "https://acme.test/mo", Secret: sealedStub(testSecret), Status: cp.WebhookActive})
 	api := newWebhookAPI(t, hooks, accounts)
 
 	w := httptest.NewRecorder()
@@ -279,7 +294,7 @@ func TestListWebhooksShowsDisabledOnes(t *testing.T) {
 	id := seedAccount(t, accounts)
 	hooks := newFakeWebhookStore()
 	hooks.seed(cp.Webhook{ID: uuid.New(), AccountID: id, EventType: cp.WebhookEventMO,
-		URL: "https://acme.test/mo", Secret: testSecret, Status: cp.WebhookDisabled})
+		URL: "https://acme.test/mo", Secret: sealedStub(testSecret), Status: cp.WebhookDisabled})
 	api := newWebhookAPI(t, hooks, accounts)
 
 	w := httptest.NewRecorder()

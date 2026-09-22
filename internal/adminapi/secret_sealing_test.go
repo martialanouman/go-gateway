@@ -247,3 +247,130 @@ func TestReadingAConnectorNeverReturnsTheSealedPassword(t *testing.T) {
 		}
 	}
 }
+
+// The THIRD replayed secret, the one step-295's inventory missed. Unlike the two above, this one is
+// actually OPENED in production — the webhook sender needs it in clear to sign every MO and DLR — so the
+// round trip is not a rehearsal here: if what lands in the column does not open, the return path stops.
+func TestCreateWebhookStoresASecretThatOpensAgain(t *testing.T) {
+	accounts := newFakeAccountStore()
+	id := seedAccount(t, accounts)
+	store := newFakeWebhookStore()
+	sealer := newKMSSealer()
+	api := newTestAPIWith(t, adminapi.Deps{Webhooks: store, Accounts: accounts, SecretSealer: sealer})
+
+	const secret = "whsec-canary-long-enough"
+	w := httptest.NewRecorder()
+	api.ServeHTTP(w, authed(t, http.MethodPost, webhookPath(id),
+		`{"event_type":"mo","url":"https://acme.test/mo","secret":"`+secret+`"}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body=%s", w.Code, w.Body)
+	}
+	var created map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
+
+	stored := store.mustGet(t, uuid.MustParse(created["id"].(string)))
+	if bytes.Contains(stored.Secret.Sealed, []byte(secret)) {
+		t.Error("the signing secret reached the store in clear")
+	}
+	if stored.Secret.KMSKeyRef == "" {
+		t.Error("no key reference stored: the row opens today and cannot be placed after a key rotation")
+	}
+	if got := sealer.open(t, stored.Secret); string(got) != secret {
+		t.Errorf("the stored secret opens to %q, want %q", got, secret)
+	}
+}
+
+// Rotation through PATCH. Untested, this branch could be deleted and a rotation would answer 200 while the
+// receiver kept verifying against the old key — a surface that reports a change it did not make.
+func TestRotatingAWebhookSecretResealsIt(t *testing.T) {
+	accounts := newFakeAccountStore()
+	id := seedAccount(t, accounts)
+	store := newFakeWebhookStore()
+	sealer := newKMSSealer()
+	api := newTestAPIWith(t, adminapi.Deps{Webhooks: store, Accounts: accounts, SecretSealer: sealer})
+
+	w := httptest.NewRecorder()
+	api.ServeHTTP(w, authed(t, http.MethodPost, webhookPath(id),
+		`{"event_type":"mo","url":"https://acme.test/mo","secret":"first-secret-long-enough"}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: status = %d; body=%s", w.Code, w.Body)
+	}
+	var created map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
+	whID := uuid.MustParse(created["id"].(string))
+	before := store.mustGet(t, whID).Secret
+
+	const rotated = "second-secret-long-enough"
+	w = httptest.NewRecorder()
+	api.ServeHTTP(w, authed(t, http.MethodPatch, webhookPath(id, whID.String()),
+		`{"secret":"`+rotated+`"}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("patch: status = %d; body=%s", w.Code, w.Body)
+	}
+
+	after := store.mustGet(t, whID).Secret
+	if bytes.Equal(after.Sealed, before.Sealed) {
+		t.Fatal("the rotation left the stored ciphertext untouched: it answered 200 and changed nothing")
+	}
+	if bytes.Contains(after.Sealed, []byte(rotated)) {
+		t.Error("the rotated secret went to the store in clear")
+	}
+	if got := sealer.open(t, after); string(got) != rotated {
+		t.Errorf("the rotated secret opens to %q, want %q", got, rotated)
+	}
+}
+
+// A sealing failure must abort the write, as it does for a connector: a webhook stored with a secret that
+// is not the operator's would sign every delivery with something the receiver rejects.
+func TestCreateWebhookRefusesWhenSealingFails(t *testing.T) {
+	accounts := newFakeAccountStore()
+	id := seedAccount(t, accounts)
+	store := newFakeWebhookStore()
+	sealer := newKMSSealer()
+	sealer.fail = context.DeadlineExceeded
+	api := newTestAPIWith(t, adminapi.Deps{Webhooks: store, Accounts: accounts, SecretSealer: sealer})
+
+	w := httptest.NewRecorder()
+	api.ServeHTTP(w, authed(t, http.MethodPost, webhookPath(id),
+		`{"event_type":"mo","url":"https://acme.test/mo","secret":"whsec-canary-long-enough"}`))
+
+	if w.Code < 500 {
+		t.Errorf("status = %d, want a 5xx when the secret cannot be sealed; body=%s", w.Code, w.Body)
+	}
+	if len(store.byID) != 0 {
+		t.Error("the webhook was stored although its secret could not be sealed")
+	}
+}
+
+// Neither half of the sealed pair may reach the wire — not the ciphertext, not its base64, not the key
+// reference. The plaintext's absence is asserted next door; this is what a row echoed field by field, or a
+// DTO grown a field, would leak instead.
+func TestReadingAWebhookNeverReturnsItsSealedSecret(t *testing.T) {
+	accounts := newFakeAccountStore()
+	id := seedAccount(t, accounts)
+	store := newFakeWebhookStore()
+	sealer := newKMSSealer()
+	api := newTestAPIWith(t, adminapi.Deps{Webhooks: store, Accounts: accounts, SecretSealer: sealer})
+
+	w := httptest.NewRecorder()
+	api.ServeHTTP(w, authed(t, http.MethodPost, webhookPath(id),
+		`{"event_type":"mo","url":"https://acme.test/mo","secret":"whsec-canary-long-enough"}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: status = %d; body=%s", w.Code, w.Body)
+	}
+	var created map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
+	stored := store.mustGet(t, uuid.MustParse(created["id"].(string)))
+
+	for _, probe := range []struct{ name, needle string }{
+		{"sealed bytes", string(stored.Secret.Sealed)},
+		{"sealed bytes in base64", base64.StdEncoding.EncodeToString(stored.Secret.Sealed)},
+		{"key reference", stored.Secret.KMSKeyRef},
+	} {
+		w = httptest.NewRecorder()
+		api.ServeHTTP(w, authed(t, http.MethodGet, webhookPath(id), ""))
+		if strings.Contains(w.Body.String(), probe.needle) {
+			t.Errorf("list leaks the %s: %s", probe.name, w.Body)
+		}
+	}
+}

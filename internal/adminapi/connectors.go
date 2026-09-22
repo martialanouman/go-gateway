@@ -16,20 +16,22 @@ import (
 	humaerr "github.com/martialanouman/go-gateway/internal/platform/errors/humaerr"
 )
 
-// sealConnectorPassword seals the write-only SMSC bind password. It is NOT hashed, unlike an inbound
-// bind password: this one is replayed in clear inside the bind_transceiver PDU (SMPP v3.4 §4.1.1), so a
-// hash could never serve it — which is exactly the defect step-295 removed (ADR-0016).
+// sealSecret seals a write-only secret the gateway REPLAYS to a third party — an SMSC bind password, an
+// external provider's credentials, a webhook signing key. None of the three may be hashed: each one goes
+// back out in clear (a bind_transceiver PDU, an HTTP call, an HMAC), so a hash could never serve it, which
+// is exactly the defect step-295 removed (ADR-0016). subject names the secret in the error and nowhere
+// else.
 //
-// A sealing failure aborts the write. Storing the connector regardless would leave a row whose password
-// column holds nothing usable, re-creating at runtime the very state this step exists to end.
-func sealConnectorPassword(ctx context.Context, sealer SecretSealer, password string) (cp.SealedSecret, error) {
+// A sealing failure aborts the write. Storing the row regardless would leave a secret column holding
+// nothing usable, re-creating at runtime the very state that step exists to end.
+func sealSecret(ctx context.Context, sealer SecretSealer, subject, plaintext string) (cp.SealedSecret, error) {
 	if sealer == nil {
 		return cp.SealedSecret{}, humaerr.Fail(errs.ErrInternal, "no secret sealer configured")
 	}
-	sealed, err := sealer.Seal(ctx, []byte(password))
+	sealed, err := sealer.Seal(ctx, []byte(plaintext))
 	if err != nil {
-		// The error is deliberately opaque and carries no fragment of the password: it is logged.
-		return cp.SealedSecret{}, humaerr.Fail(errs.ErrInternal, "seal connector password")
+		// The error is deliberately opaque and carries no fragment of the secret: it is logged.
+		return cp.SealedSecret{}, humaerr.Fail(errs.ErrInternal, "seal %s", subject)
 	}
 	return sealed, nil
 }
@@ -264,7 +266,7 @@ type createConnectorInput struct{ Body connectorCreateBody }
 type connectorOutput struct{ Body connectorDTO }
 
 func (h *connectorHandlers) create(ctx context.Context, in *createConnectorInput) (*connectorOutput, error) {
-	sealed, err := sealConnectorPassword(ctx, h.sealer, in.Body.Password)
+	sealed, err := sealSecret(ctx, h.sealer, "connector password", in.Body.Password)
 	if err != nil {
 		return nil, err
 	}
@@ -340,7 +342,7 @@ func (h *connectorHandlers) update(ctx context.Context, in *updateConnectorInput
 		Status:                enumPtr[cp.ConnectorStatus](in.Body.Status),
 	}
 	if in.Body.Password != nil {
-		sealed, err := sealConnectorPassword(ctx, h.sealer, *in.Body.Password)
+		sealed, err := sealSecret(ctx, h.sealer, "connector password", *in.Body.Password)
 		if err != nil {
 			return nil, err
 		}
