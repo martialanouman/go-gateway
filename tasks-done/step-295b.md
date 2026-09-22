@@ -1,6 +1,6 @@
 # step-295b — Le troisième secret rejoué : la clé de signature des webhooks
 
-> **Jalon :** Dette ouverte par step-295, relevée par step-340 · **Statut :** À FAIRE
+> **Jalon :** Dette ouverte par step-295, relevée par step-340 · **Statut :** FAITE
 > **Dépend de :** step-295 · **Bloque :** step-410 (go-live)
 
 ## Pourquoi cette fiche existe
@@ -79,6 +79,11 @@ survit à la requête, donc il ne porte jamais la clé — reste vraie mot pour 
 
 ### 3. La classification de l'erreur d'ouverture — ce que la première formulation manquait
 
+> **Ce paragraphe a été infirmé par la revue et reste ici tel quel**, parce qu'il dit sur quelle prémisse
+> fausse l'arbitrage a été rendu. `PermissionDenied` n'est pas déterministe pour la ligne. La décision qui
+> vaut est celle du §« Ce que la revue a changé au design », constat 2.
+
+
 Faire simplement remonter l'erreur de `Open` était juste **pour une panne**, et faux pour tout le reste. Le
 serveur répond `Internal` sur une altération, une troncature ou une mauvaise clé maîtresse,
 `InvalidArgument` sur un mauvais tag de domaine, et l'intercepteur répond `PermissionDenied`. Ces trois cas
@@ -145,36 +150,72 @@ prouvent. La description ne mentait pas non plus — contrairement au `password`
 « stored hashed » et avait coûté un bump correctif. Aucune ligne d'`api/openapi-admin.yaml` ne change,
 donc **pas de bump** de `api/package.json`.
 
-## Plan
+## Ce que la revue a changé au design
 
-1. Schéma + migration 0018 + `db/schema_passerelle_sms.sql`.
-2. Domaine `cp.Webhook.Secret cp.SealedSecret`, requêtes sqlc et `WebhookRepo`.
-3. L'Admin API scelle à l'écriture (création et rotation), par le `SecretSealer` déjà câblé.
-4. `SecretOpener` + adaptateur gRPC, hors de `internal/adminapi` pour que `mo-dlr-router-svc` l'importe
-   sans tirer le paquet de l'Admin API.
-5. Le sender ouvre, classe l'échec, et gare l'inouvrable.
-6. `configSecretsCallers` par méthode, ses deux tests-gardes, et l'allowlist TLS de `content-key-svc`.
-7. Câblage de `mo-dlr-router-svc` : section de config, dial, closer.
-8. `debts/secret-de-webhook-en-clair-en-base.md` passe à `PAYÉE`.
+Trois axes en lecture seule ont tourné sur le diff. Deux constats ont modifié la conception, pas seulement
+le code, et le premier est un défaut que cette step avait elle-même créé.
+
+1. **La porte ouverte était plus large que celle qu'on fermait.** Admettre `mo-dlr-router-svc` dans
+   `TLS_ALLOWED_CLIENTS` de `content-key-svc` lui donnait les **cinq** RPC de `ContentKeys` — dont
+   `GetContentEncryptionKey`, la clé de contenu en clair d'un client, et `DestroyContentKeys`, un
+   crypto-shred irréversible — parce que l'intercepteur ne gardait que le préfixe `/configsecrets.` et que
+   cette allowlist mTLS était la seule autorisation de `ContentKeys`. Le raisonnement du §5 sur `Seal`
+   s'appliquait mot pour mot à ces cinq RPC, et ne leur avait pas été appliqué. `authorizeKeyService` garde
+   désormais les deux services : ConfigSecrets par méthode, ContentKeys par appelant.
+2. **La classification était fausse sur son axe.** `PermissionDenied` n'est pas une propriété de la ligne
+   mais du **déploiement** : un rollout qui met à jour une image avant l'autre viderait tout le backlog
+   différé dans le dead-letter, avec le conseil de récupération du §3 — rescelle et rejoue — inapplicable
+   puisque les lignes sont saines. Et `grpcerr.CodeFor` n'avait aucun cas pour `ErrServiceUnavailable`,
+   donc une panne serveur transitoire arrivait en `codes.Internal` et se faisait garer : le classificateur
+   était structurellement incapable de voir un échec d'ouverture transitoire. La liste d'autorisation
+   devient une **liste de refus** — seuls `InvalidArgument` et `Internal` restent déterministes — parce que
+   les deux erreurs ne coûtent pas la même chose : trop de transitoire bloque une partition, qu'un
+   opérateur voit ; trop de déterministe détruit un backlog, que personne ne voit.
+
+Le reste : le saut vers `content-key-svc` porte une échéance (la même raison que le client HTTP du webhook,
+dix lignes plus bas) ; un clair vide est refusé des deux côtés ; la carte est clavetée sur la méthode
+complète ; et `noOpener` a été **supprimé** — les seize sites d'appel de `NewSender` passent tous un opener,
+donc le commentaire que la coupe avait gardé comme « absolument nécessaire » défendait du code inatteignable.
+
+Un correctif a été **annulé** : faire échouer une paire scellée incomplète renverse une décision écrite de
+step-295 (`TestConnectorRepoIgnoresAHalfFilledSealedPassword`), hors du sujet de cette step et sans
+arbitrage. Il est devenu `debts/rotation-de-secret-a-moitie-remplie-repond-200-sans-rien-changer.md`.
+
+### Ce que la revue a trouvé dans les tests
+
+Le défaut le plus instructif est une **récidive de la mienne** : la rotation n'assertionnait pas
+`KMSKeyRef`, exactement la mutation qui avait survécu une couche plus bas dans `sealedTestSecret`. Et le
+test de non-fuite émettait trois fois la même requête sans vérifier le statut ni ancrer sur la ligne, avec
+une sonde sur les octets bruts qui ne pouvait pas tirer — `encoding/json` rend un `[]byte` en base64.
 
 ## Definition of Done
 
-- [ ] `webhooks.secret` n'existe plus : `secret_sealed` + `secret_kms_key_ref`, dans le fichier de schéma
-      **et** dans la migration 0018, `up`/`down`/`up` vérifié.
-- [ ] Un test prouve l'aller-retour **de bout en bout** : écrit par l'API HTTP → relu de la colonne →
-      ouvert → égal à l'entrée, et la signature produite avec le secret ouvert est celle qu'un récepteur
-      vérifie.
-- [ ] Un test prouve qu'aucune surface ne rend le secret — ni en clair, ni scellé, ni en base64, ni sa
-      référence de clé — en création, en rotation, en lecture unitaire et en liste.
-- [ ] Un test prouve les **deux** branches de l'échec d'ouverture : service injoignable → erreur rendue,
-      aucun essai consommé, rien de garé ; chiffré inouvrable → dead-letter `secret_unopenable` et retour
-      `nil`, pour que la partition ne se bloque pas.
-- [ ] `mo-dlr-router-svc` obtient `Open` et **se voit refuser `Seal`**, prouvé par un test à côté de
-      `TestConfigSecretsIsRefusedToCallersThatOnlyNeedContentKeys`.
-- [ ] Les deux tests-gardes de l'allowlist et le manifeste de `content-key-svc` ont évolué sciemment, pas
-      disparu ; le commentaire de `configSecretsCallers` et l'addendum de
-      `debts/ancre-de-confiance-par-connecteur.md` disent que la forme par méthode existe désormais.
-- [ ] `debts/secret-de-webhook-en-clair-en-base.md` est `PAYÉE`, avec la date et la PR.
+- [x] `webhooks.secret` n'existe plus : `secret_sealed` + `secret_kms_key_ref`, dans le fichier de schéma
+      **et** dans la migration 0018. `up`/`down`/`up` exécuté sur PostgreSQL 18, et la garde vérifiée sur
+      une table peuplée : elle refuse, nomme la cause, et la note de reprise du `down` a été corrigée —
+      l'échec y laisse `schema_migrations` sale à **17** et non à 18, donc `force 18`.
+- [x] L'aller-retour est prouvé **de bout en bout** sans maillon factice : écrit par l'API HTTP réelle,
+      scellé par le vrai serveur ConfigSecrets, relu de la colonne, ouvert par le vrai `GRPCSecretOpener`
+      de la voie retour, puis signé — et la signature est vérifiée contre un HMAC recalculé **à la main**,
+      pas par `webhook.Sign`, qui rendait toutes les attentes du dépôt circulaires.
+- [x] Aucune des deux moitiés de la paire ne sort sur le fil, sur les **trois** surfaces qui répondent —
+      création, liste, rotation — chacune ancrée sur l'identifiant du webhook pour qu'une réponse vide ou
+      un document d'erreur ne satisfasse pas l'assertion. Sondes : clair, base64 du chiffré, référence de
+      clé. *La DoD d'origine exigeait aussi une « lecture unitaire » : elle n'a pas de cible, les webhooks
+      n'exposant pas de GET par identifiant (§6.16 déclare quatre opérations, pas cinq).*
+- [x] Les deux branches de l'échec d'ouverture sont prouvées, sur `Send` **et** sur `Retry`, et avec un
+      puits de retry câblé comme en production : service injoignable → erreur rendue, aucun essai consommé,
+      rien de différé ni garé ; chiffré inouvrable → dead-letter `secret_unopenable`, retour `nil`, et la
+      raison ne porte aucune forme du secret.
+- [x] `mo-dlr-router-svc` obtient `Open`, se voit refuser `Seal`, **et n'atteint aucune méthode de
+      `ContentKeys`** — ce dernier point ajouté par la revue, avec son test : sans la garde, les cinq RPC
+      répondent `NotFound`, c'est-à-dire que le handler tourne.
+- [x] Les gardes d'allowlist ont évolué sciemment : `TestConfigSecretsIsRefusedToCallersThatOnlyNeedContentKeys`
+      est intact, `TestConfigSecretsGivesTheReturnPathOpenButNotSeal` et
+      `TestTheReturnPathReachesNoContentKeysMethod` sont neufs, et l'addendum de
+      `debts/ancre-de-confiance-par-connecteur.md` dit que la forme par méthode existe désormais.
+- [x] `debts/secret-de-webhook-en-clair-en-base.md` est `PAYÉE` — la première du dépôt, elle fixe donc le
+      format. Trois dettes neuves sont nées de cette step, toutes relevées par la revue.
 
 ## Hors périmètre
 
