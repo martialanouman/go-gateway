@@ -4,18 +4,6 @@ Ce que ce dépôt ne dit pas de lui-même : les invariants, les couplages invisi
 peut pas deviner. Les commandes : `make help`. Les services : `ls cmd/`. Les docs : `ls docs/`. Les
 règles `.claude/rules/` se chargent seules à la lecture d'un fichier de leur territoire.
 
-## Le code s'explique tout seul ; les commentaires : aucun, sauf absolument nécessaire
-
-**Toujours écrire du code auto-explicatif.** Ce qui se lit dans le nom n'a pas à s'écrire à côté :
-nommer par l'intention, extraire une fonction nommée plutôt qu'annoter un bloc, et laisser le type dire
-ce qu'un commentaire répéterait.
-
-Le défaut est donc **zéro commentaire**, dans le code comme dans les tests. N'en survit un que s'il porte
-un *pourquoi* indéductible du code et dont l'ignorance coûte cher — une classification contre-intuitive,
-une garde de migration irréversible, une autorisation dont l'élargissement est une escalade. Pas de
-narration, pas de paraphrase de la ligne suivante. Les commentaires déjà en place ne se réécrivent pas au
-passage.
-
 ## Ce qu'on construit
 
 Une **passerelle SMS** en Go : elle reçoit des SMS (SMPP entrant + REST), les route vers des SMSC
@@ -57,6 +45,15 @@ fichier neuf n'en déclenche aucune. D'où ces quatre déclencheurs, qui doivent
 Il agrège ce que la CI vérifie, et exige Docker et l'image du simulateur (`make smsc-sim`) : un test
 d'intégration qui ne peut pas démarrer sa dépendance y **échoue** au lieu de sauter. Ce qu'il laisse
 dehors est nommé dans le `Makefile`.
+
+## Style de Code & Documentation
+- **Code auto-documenté** : Écris du code clair et lisible. Préfère des noms de variables et fonctions explicites plutôt que d'ajouter des commentaires.
+- **Zéro commentaire évident** : Ne commente jamais le code standard, le boilerplate ou la logique triviale (ex: pas de `// incrémente i` ou `// récupère les données`).
+- **Commentaires autorisés** : Limite les commentaires au "Pourquoi" (décisions d'architecture complexes, hacks temporaires ou optimisations non intuitives), jamais au "Quoi".
+- **Format compact** : Pas de longs blocs d'explications avant ou après le code. Rends les réponses directes et purement techniques.
+- **Ne réécris pas les commentaires en place** : ils ne sont pas à toi. Et une suppression qui laisse une ligne vide entre un commentaire et sa déclaration le détache — Go le lit comme absent.
+- **Sauf ce que `revive` exige** : tout symbole exporté porte une ligne de doc, sinon `make lint` échoue. Une ligne, pas un paragraphe.
+
 
 ## Contrats (source de vérité, référencés par le code)
 

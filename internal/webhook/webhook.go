@@ -85,7 +85,7 @@ func WithMaxAttempts(n int) Option { return func(s *Sender) { s.maxAttempts = n 
 
 // NewSender builds a sender. A nil client defaults to one with a strict per-request timeout; a nil
 // logger to slog.Default; a nil dead-letter sink to a no-op (the event is dropped after exhaustion —
-// wire a real sink in production). A nil opener refuses every delivery as unavailable: see noOpener.
+// wire a real sink in production).
 func NewSender(client *http.Client, deadLetter DeadLetterSink, opener SecretOpener, logger *slog.Logger, opts ...Option) *Sender {
 	if client == nil {
 		client = &http.Client{
@@ -101,9 +101,6 @@ func NewSender(client *http.Client, deadLetter DeadLetterSink, opener SecretOpen
 	}
 	if deadLetter == nil {
 		deadLetter = noopSink{}
-	}
-	if opener == nil {
-		opener = noOpener{}
 	}
 	s := &Sender{
 		client:      client,

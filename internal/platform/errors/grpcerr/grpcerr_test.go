@@ -25,6 +25,7 @@ func TestStatusMapsTheSharedVocabulary(t *testing.T) {
 		{errs.ErrNotFound, codes.NotFound, errs.ErrNotFound},
 		{errs.ErrInsufficientCredit, codes.FailedPrecondition, errs.ErrInsufficientCredit},
 		{errs.ErrExternalBillingUnavailable, codes.Unavailable, errs.ErrExternalBillingUnavailable},
+		{errs.ErrServiceUnavailable, codes.Unavailable, errs.ErrServiceUnavailable},
 		{errs.ErrInternal, codes.Internal, errs.ErrInternal},
 		// A wrapped sentinel still maps: callers wrap with context on the way out.
 		{fmt.Errorf("rotate content key: %w", errs.ErrNotFound), codes.NotFound, errs.ErrNotFound},

@@ -35,6 +35,11 @@ func CodeFor(c errs.Code) codes.Code {
 		return codes.NotFound
 	case errs.ErrInsufficientCredit:
 		return codes.FailedPrecondition
+	case errs.ErrServiceUnavailable:
+		// Without this case a fault whose whole meaning is "transient, retry" reached the caller as
+		// Internal, which the webhook sender's classifier reads as "this row will never open" and
+		// dead-letters (step-295b).
+		return codes.Unavailable
 	case errs.ErrExternalBillingUnavailable:
 		// A provider outage under fail_closed is transient: gRPC Unavailable tells the caller to retry
 		// (the router treats it as a retryable fault), so a billed message is held, never sent unconfirmed

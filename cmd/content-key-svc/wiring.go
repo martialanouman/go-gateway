@@ -82,7 +82,7 @@ func newContentKeyApp(ctx context.Context, cfg config.Config, logger *slog.Logge
 
 	// The interceptor, not the allowlist: the allowlist admits a binary at handshake time and never sees
 	// the method. This port serves ContentKeys to the data plane AND ConfigSecrets to the control plane.
-	a.grpc, err = grpctls.NewServer(cfg.TLS, logger, grpc.UnaryInterceptor(configSecretsUnaryInterceptor), grpc.StreamInterceptor(configSecretsStreamInterceptor))
+	a.grpc, err = grpctls.NewServer(cfg.TLS, logger, grpc.UnaryInterceptor(keyServiceUnaryInterceptor), grpc.StreamInterceptor(keyServiceStreamInterceptor))
 	if err != nil {
 		return nil, err
 	}

@@ -280,3 +280,58 @@ func TestConfigSecretsGivesTheReturnPathOpenButNotSeal(t *testing.T) {
 		t.Errorf("Seal from mo-dlr-router-svc = %s (%v), want PermissionDenied", code, err)
 	}
 }
+
+func TestTheReturnPathReachesNoContentKeysMethod(t *testing.T) {
+	ca := tlstest.NewCA(t)
+	certFile, keyFile := ca.Issue(t, serviceName, serviceName)
+
+	cfg := testConfig()
+	cfg.Postgres = pgtest.Config(t)
+	cfg.TLS = config.TLS{
+		Enabled:        true,
+		CertFile:       certFile,
+		KeyFile:        keyFile,
+		ClientCAFile:   ca.CAFile,
+		AllowedClients: []string{"admin-api-svc", "mo-dlr-router-svc"},
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	app, err := newContentKeyApp(ctx, cfg, discardLogger())
+	if err != nil {
+		t.Fatalf("newContentKeyApp: %v", err)
+	}
+	defer app.close()
+
+	conn := dialAs(t, ca, grpctest.Serve(t, app.grpc), "mo-dlr-router-svc")
+	keys := contentkeypb.NewContentKeysClient(conn)
+	customer := uuid.NewString()
+
+	for name, call := range map[string]func() error{
+		"GetOrCreateContentKey": func() error {
+			_, err := keys.GetOrCreateContentKey(ctx, &contentkeypb.GetOrCreateContentKeyRequest{CustomerId: customer})
+			return err
+		},
+		"GetContentEncryptionKey": func() error {
+			_, err := keys.GetContentEncryptionKey(ctx, &contentkeypb.GetContentEncryptionKeyRequest{CustomerId: customer})
+			return err
+		},
+		"GetContentKey": func() error {
+			_, err := keys.GetContentKey(ctx, &contentkeypb.GetContentKeyRequest{KeyId: customer})
+			return err
+		},
+		"RotateContentKey": func() error {
+			_, err := keys.RotateContentKey(ctx, &contentkeypb.RotateContentKeyRequest{CustomerId: customer})
+			return err
+		},
+		"DestroyContentKeys": func() error {
+			_, err := keys.DestroyContentKeys(ctx, &contentkeypb.DestroyContentKeysRequest{CustomerId: customer})
+			return err
+		},
+	} {
+		if code := status.Code(call()); code != codes.PermissionDenied {
+			t.Errorf("%s from mo-dlr-router-svc = %s, want PermissionDenied", name, code)
+		}
+	}
+}
