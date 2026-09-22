@@ -40,6 +40,18 @@ func (s *fakeSink) Park(_ context.Context, _ cp.Webhook, ev webhook.Event, reaso
 	return nil
 }
 
+// reasons returns the park reasons in order, so a test can assert WHY an event was dead-lettered and not
+// merely that it was.
+func (s *fakeSink) reasons() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, 0, len(s.rows))
+	for _, r := range s.rows {
+		out = append(out, r.reason)
+	}
+	return out
+}
+
 func (s *fakeSink) count() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -48,11 +60,25 @@ func (s *fakeSink) count() int {
 
 // testSender builds a sender whose backoff never waits and whose jitter is deterministic, so retry
 // tests run instantly.
+// sealedFor is the stored form of a signing secret now that the column is sealed (ADR-0016), and
+// stubOpener is what the sender uses to get it back. The pair is deliberately reversible in the test: what
+// these tests exercise is the signing and the retry machinery, not the crypto — TestCreateWebhookStores-
+// ASecretThatOpensAgain does that against a real KMS.
+func sealedFor(plaintext string) cp.SealedSecret {
+	return cp.SealedSecret{Sealed: []byte("sealed:" + plaintext), KMSKeyRef: "local/test-kek"}
+}
+
+type stubOpener struct{}
+
+func (stubOpener) Open(_ context.Context, sealed cp.SealedSecret) ([]byte, error) {
+	return bytes.TrimPrefix(sealed.Sealed, []byte("sealed:")), nil
+}
+
 func testSender(sink webhook.DeadLetterSink, logger *slog.Logger) *webhook.Sender {
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
-	return webhook.NewSender(nil, sink, logger,
+	return webhook.NewSender(nil, sink, stubOpener{}, logger,
 		webhook.WithSleep(func(context.Context, time.Duration) error { return nil }),
 		webhook.WithJitter(func() float64 { return 0 }))
 }
@@ -73,7 +99,7 @@ func TestSendMaxAttemptsCapsPolicy(t *testing.T) {
 	wh.RetryPolicyJSON = []byte(`{"max_attempts":10,"initial_backoff_ms":1}`)
 
 	sink := &fakeSink{}
-	sender := webhook.NewSender(nil, sink, slog.New(slog.NewTextHandler(io.Discard, nil)),
+	sender := webhook.NewSender(nil, sink, stubOpener{}, slog.New(slog.NewTextHandler(io.Discard, nil)),
 		webhook.WithSleep(func(context.Context, time.Duration) error { return nil }),
 		webhook.WithJitter(func() float64 { return 0 }),
 		webhook.WithMaxAttempts(2))
@@ -92,7 +118,7 @@ func TestSendMaxAttemptsCapsPolicy(t *testing.T) {
 func webhookFor(url string) cp.Webhook {
 	return cp.Webhook{
 		ID: uuid.New(), AccountID: uuid.New(), EventType: cp.WebhookEventMO,
-		URL: url, Secret: "s3cr3t", Status: cp.WebhookActive,
+		URL: url, Secret: sealedFor("s3cr3t"), Status: cp.WebhookActive,
 		RetryPolicyJSON: []byte(`{"max_attempts":3,"initial_backoff_ms":1}`),
 	}
 }
@@ -252,7 +278,7 @@ func TestSendContextCancelDuringBackoff(t *testing.T) {
 	sink := &fakeSink{}
 	ctx, cancel := context.WithCancel(context.Background())
 	// The backoff sleep cancels the context, simulating shutdown mid-retry.
-	sender := webhook.NewSender(nil, sink, slog.New(slog.NewTextHandler(io.Discard, nil)),
+	sender := webhook.NewSender(nil, sink, stubOpener{}, slog.New(slog.NewTextHandler(io.Discard, nil)),
 		webhook.WithSleep(func(context.Context, time.Duration) error { cancel(); return ctx.Err() }),
 		webhook.WithJitter(func() float64 { return 0 }))
 	if err := sender.Send(ctx, webhookFor(srv.URL), webhook.Event{ID: "e", Payload: []byte("x")}); err == nil {
