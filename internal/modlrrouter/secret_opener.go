@@ -12,14 +12,17 @@ import (
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 )
 
+// GRPCSecretOpener opens a sealed webhook signing secret through content-key-svc.
 type GRPCSecretOpener struct {
 	client pb.ConfigSecretsClient
 }
 
+// NewGRPCSecretOpener returns the opener the webhook sender signs with.
 func NewGRPCSecretOpener(client pb.ConfigSecretsClient) *GRPCSecretOpener {
 	return &GRPCSecretOpener{client: client}
 }
 
+// Open returns the clear signing key, marking only reachability failures as ErrServiceUnavailable.
 func (o *GRPCSecretOpener) Open(ctx context.Context, sealed cp.SealedSecret) ([]byte, error) {
 	resp, err := o.client.Open(ctx, &pb.OpenRequest{Sealed: sealed.Sealed})
 	if err != nil {

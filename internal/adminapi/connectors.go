@@ -16,12 +16,20 @@ import (
 	humaerr "github.com/martialanouman/go-gateway/internal/platform/errors/humaerr"
 )
 
+// sealSecret seals a write-only secret the gateway REPLAYS to a third party. It is NOT hashed, unlike an
+// inbound bind password: an outbound bind puts its password in clear in the bind_transceiver PDU (SMPP
+// v3.4 §4.1.1), an external provider is called with its credentials, a webhook is signed with its key — a
+// hash could never serve any of them, which is the defect step-295 removed (ADR-0016).
+//
+// A sealing failure aborts the write. Storing the row regardless would leave a secret column holding
+// nothing usable, re-creating at runtime the very state that step exists to end.
 func sealSecret(ctx context.Context, sealer SecretSealer, subject, plaintext string) (cp.SealedSecret, error) {
 	if sealer == nil {
 		return cp.SealedSecret{}, humaerr.Fail(errs.ErrInternal, "no secret sealer configured")
 	}
 	sealed, err := sealer.Seal(ctx, []byte(plaintext))
 	if err != nil {
+		// Opaque on purpose: no fragment of the secret, nor of why the key service refused, reaches a client.
 		return cp.SealedSecret{}, humaerr.Fail(errs.ErrInternal, "seal %s", subject)
 	}
 	return sealed, nil
@@ -379,7 +387,6 @@ func (h *connectorHandlers) delete(ctx context.Context, in *connectorIDInput) (*
 }
 
 // --- Connector piloting (step-128) ---
-
 type bindStatusDTO struct {
 	BindIndex    int    `json:"bind_index"`
 	PodID        string `json:"pod_id,omitempty"`

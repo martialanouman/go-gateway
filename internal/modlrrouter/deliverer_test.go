@@ -19,7 +19,6 @@ import (
 )
 
 // --- fakes ---
-
 type fakeLookup struct {
 	binds []modlrrouter.LiveBind
 	err   error
@@ -83,7 +82,6 @@ func activeWebhook() cp.Webhook {
 }
 
 // --- tests ---
-
 func TestDelivererDeliversToALiveBind(t *testing.T) {
 	pod := &fakePod{}
 	prod := &fakeProducer{}

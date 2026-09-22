@@ -44,13 +44,11 @@ import (
 
 // The wiring must fail as a VALUE, never as a process exit: a constructor that log.Fatals cannot be
 // tested, and a boot failure that kills the process cannot be reported by the caller either.
-
 func TestOpenStoresRejectsAnUnparsableDatabaseURL(t *testing.T) {
 	t.Parallel()
 
 	cfg := testConfig()
 	cfg.Postgres.URL = "postgres://gateway:hunter2@:::/gateway"
-
 	st, err := openStores(t.Context(), cfg)
 	if err == nil {
 		st.close()
@@ -555,6 +553,7 @@ func TestAConnectorPasswordWrittenByTheAdminAPIOpensAgainFromPostgres(t *testing
 		t.Errorf("the 201 body echoes the password: %s", w.Body)
 	}
 
+	// Straight from the column, not from the handler's return value.
 	var sealed []byte
 	var keyRef string
 	if err := pgtest.Pool(t).QueryRow(ctx,

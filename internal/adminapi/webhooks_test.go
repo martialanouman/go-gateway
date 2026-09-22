@@ -57,7 +57,6 @@ func TestCreateWebhookNeverReturnsTheSecret(t *testing.T) {
 	w := httptest.NewRecorder()
 	api.ServeHTTP(w, authed(t, http.MethodPost, webhookPath(id),
 		`{"event_type":"mo","url":"https://acme.test/mo","secret":"`+testSecret+`"}`))
-
 	if w.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want 201; body=%s", w.Code, w.Body)
 	}
@@ -171,7 +170,6 @@ func TestCreateWebhookDuplicateBecomes409(t *testing.T) {
 	w := httptest.NewRecorder()
 	api.ServeHTTP(w, authed(t, http.MethodPost, webhookPath(id),
 		`{"event_type":"mo","url":"https://acme.test/mo","secret":"`+testSecret+`"}`))
-
 	if w.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want 409; body=%s", w.Code, w.Body)
 	}

@@ -9,6 +9,7 @@ import (
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 )
 
+// SecretOpener opens a webhook's sealed signing secret (ADR-0016).
 type SecretOpener interface {
 	Open(ctx context.Context, sealed cp.SealedSecret) ([]byte, error)
 }

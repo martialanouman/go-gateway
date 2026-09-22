@@ -326,7 +326,6 @@ func TestCreateWebhookRefusesWhenSealingFails(t *testing.T) {
 	w := httptest.NewRecorder()
 	api.ServeHTTP(w, authed(t, http.MethodPost, webhookPath(id),
 		`{"event_type":"mo","url":"https://acme.test/mo","secret":"whsec-canary-long-enough"}`))
-
 	if w.Code < 500 {
 		t.Errorf("status = %d, want a 5xx when the secret cannot be sealed; body=%s", w.Code, w.Body)
 	}
