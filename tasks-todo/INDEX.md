@@ -324,6 +324,9 @@ Indépendantes de la chaîne de charge : parallélisables si deux mains travaill
 - [x] step-290 — Sécurité : gosec, govulncheck, secrets, piste d'audit
 - [x] step-295 — Deux secrets stockés sous une forme qui ne sert pas leur usage (bind sortant, fournisseur
       de facturation) — ouverte par step-290d
+- [ ] step-295b — Le troisième secret rejoué, que l'inventaire de step-295 avait manqué : la clé de
+      signature des webhooks, en clair en base. Premier appelant de `ConfigSecrets.Open` du dépôt —
+      ouverte par step-295, relevée par step-340
 - [ ] step-296 — `mt-replay` rejoue des messages sans laisser de trace ; la fiche porte aussi, sans
       pouvoir le clore, l'audit de `test-billing-provider` — ouverte par step-290d
 - [ ] step-297 — Ce qui survit à un effacement attesté : rétention d'`audit_log`, base légale, MSISDN

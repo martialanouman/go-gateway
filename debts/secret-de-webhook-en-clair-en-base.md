@@ -1,7 +1,7 @@
 # Le secret de signature des webhooks est le troisième secret rejoué, et il est resté en clair
 
 > **Statut :** OUVERTE · **Nature :** technique
-> **Née de :** step-295 (inventaire incomplet), relevée par step-340 · **Portée par :** —
+> **Née de :** step-295 (inventaire incomplet), relevée par step-340 · **Portée par :** step-295b
 
 `control_plane.webhooks.secret` est un `text` en clair. C'est bien un secret **rejoué** et non
 vérifié : `webhook.Sign` en a besoin en clair à chaque remise, donc le hacher le rendrait inutilisable
