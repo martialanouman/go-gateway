@@ -64,3 +64,9 @@ Deux choses que le jour du câblage devra savoir, et qui n'étaient écrites nul
 
 Sources : `cmd/connector-pool-svc/wiring.go` (projection `ClientConfig`) ·
 `cmd/connector-pool-svc/main.go:36` (`connectorEnv`) · `migrations/0001_init.up.sql:277-278`
+
+**Addendum step-295b (2026-09-22).** `configSecretsCallers` porte désormais des **méthodes** :
+`mo-dlr-router-svc` y est entré avec `Open` seul pour desceller la clé de signature des webhooks. La
+question posée ici — le pool aura besoin d'`Open` sans `Seal` — a donc déjà sa réponse et sa forme : une
+ligne `"connector-pool-svc": {"Open"}`. Le garde correspondant est
+`TestConfigSecretsGivesTheReturnPathOpenButNotSeal`.

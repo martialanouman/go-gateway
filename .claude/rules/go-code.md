@@ -26,9 +26,14 @@ Ce que le linter fait échouer n'est pas répété ici. Détail des patterns :
     Réf : guide de codage §11 ; le *pourquoi* argon2id/SHA-256 et cette
     exception : plan d'exécution §1.9.
   - **Rejoué vers un tiers** (mot de passe de bind *sortant*, identifiants d'un
-    fournisseur externe) → **scellé** par `ConfigSecrets` (`content-key-svc`),
-    jamais haché : un hash ne se dé-hache pas, et un bind sortant met son mot de
-    passe en clair dans la PDU. Colonne `*_sealed bytea` + `*_kms_key_ref`.
+    fournisseur externe, clé de signature d'un webhook) → **scellé** par
+    `ConfigSecrets` (`content-key-svc`), jamais haché : un hash ne se dé-hache
+    pas, et un bind sortant met son mot de passe en clair dans la PDU. Colonne
+    `*_sealed bytea` + `*_kms_key_ref`.
+  - **Descellé sur un chemin chaud, l'échec se classe** (step-295b) : un service
+    injoignable est transitoire et l'enregistrement se redélivre ; un chiffré
+    inouvrable est déterministe et part au dead-letter. Les confondre bloque une
+    partition entière sur une seule ligne.
   - Dans les deux cas le secret **ne ressort pas** de l'API. Masquer n'est pas
     déchiffrer : la sentinelle de lecture est une constante.
 - **Modèle d'erreur plat** `{ code, message, errors[] }` en `application/json`

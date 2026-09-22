@@ -1,9 +1,21 @@
 # Le secret de signature des webhooks est le troisième secret rejoué, et il est resté en clair
 
-> **Statut :** OUVERTE · **Nature :** technique
-> **Née de :** step-295 (inventaire incomplet), relevée par step-340 · **Portée par :** step-295b
+> **Statut :** PAYÉE le 2026-09-22 · **Nature :** technique
+> **Née de :** step-295 (inventaire incomplet), relevée par step-340 · **Payée par :** step-295b
 
-`control_plane.webhooks.secret` est un `text` en clair. C'est bien un secret **rejoué** et non
+**Payée.** `control_plane.webhooks.secret` est devenu `secret_sealed bytea` + `secret_kms_key_ref text`
+(migration 0018). L'Admin API scelle à la création et à la rotation ; `mo-dlr-router-svc` descelle à chaque
+remise et devient le **premier appelant de `ConfigSecrets.Open`** du dépôt. Ce que la fiche n'avait pas
+anticipé et qui a coûté le plus : un descellement sur le chemin chaud a besoin d'une classification de
+l'échec. Un chiffré inouvrable échoue à l'identique à chaque redélivrance, donc le rendre au consommateur
+bloquerait la partition — les MO et DLR de tous les autres comptes derrière une seule ligne. Seul
+l'injoignable remonte ; le reste part au dead-letter `secret_unopenable`. `configSecretsCallers` est passée
+par méthode au passage : la voie retour obtient `Open` et se voit refuser `Seal`, qui lui aurait permis de
+forger le mot de passe scellé d'un bind sortant.
+
+Ce qui suit est l'état des lieux d'origine, gardé parce qu'il dit pourquoi on avait choisi autrement.
+
+`control_plane.webhooks.secret` était un `text` en clair. C'est bien un secret **rejoué** et non
 vérifié : `webhook.Sign` en a besoin en clair à chaque remise, donc le hacher le rendrait inutilisable
 — la règle de `.claude/rules/go-code.md` le dit, et step-340 le redit. Mais cette même règle donne la
 forme qui convient à un secret rejoué, et ce n'est pas le clair : c'est le **scellement** par

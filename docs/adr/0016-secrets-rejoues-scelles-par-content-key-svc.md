@@ -145,3 +145,24 @@ une dans un process large, ce n'est pas « moins de process », c'est le double.
 - **Traçabilité :** `tasks-done/step-295.md` ; `.claude/rules/go-code.md` amendée pour distinguer un
   secret qu'on **vérifie** d'un secret qu'on **rejoue** — c'est l'absence de cette distinction qui a
   produit les deux défauts.
+
+## Addendum step-295b (2026-09-22) — un troisième secret, et le premier `Open`
+
+`control_plane.webhooks.secret` était le troisième secret rejoué ; l'inventaire de step-295, parti d'une
+chasse aux mots de passe et aux clés d'API, ne l'avait pas vu. Il suit cette décision sans la modifier :
+`secret_sealed bytea` + `secret_kms_key_ref text`, migration 0018, scellé par l'Admin API à l'écriture.
+
+Deux points de cet ADR passent de l'intention au fait :
+
+- **L'intercepteur autorise réellement par méthode.** `configSecretsCallers` portait un service ;
+  `mo-dlr-router-svc` est le premier appelant à n'avoir besoin que d'`Open`, et lui donner `Seal` aurait
+  été une escalade — ce pod détient `POSTGRES_URL` en écriture, donc il aurait pu sceller un mot de passe
+  choisi, l'écrire dans `smsc_connectors.password_sealed` et prendre la main sur un bind sortant. La carte
+  porte des méthodes ; `connector-pool-svc` y entrera avec `Open` seul, comme cet ADR l'annonçait.
+- **`Open` a un appelant, et il est sur un chemin chaud** — ce que cet ADR n'avait pas à traiter, les deux
+  premiers secrets n'étant jamais descellés. Un descellement par remise impose de **classer l'échec** :
+  injoignable ou échéance dépassée est transitoire et l'événement se redélivre ; tout le reste (chiffré
+  altéré, mauvais tag de domaine, autorisation refusée) est déterministe pour la ligne et part au
+  dead-letter. Les confondre bloquerait la partition, donc la voie retour de tous les comptes, sur une
+  seule ligne inouvrable. Pas de cache du clair : la branche fait déjà une lecture Postgres par événement,
+  et un cache sans invalidation ferait d'une rotation par l'Admin API un mensonge pendant son TTL.
