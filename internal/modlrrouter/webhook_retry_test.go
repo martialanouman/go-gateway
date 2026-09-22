@@ -38,7 +38,7 @@ func TestWebhookRetrySinkNeverPersistsTheSecret(t *testing.T) {
 	const secret = "super-secret-signing-key"
 	wh := cp.Webhook{
 		ID: uuid.New(), AccountID: uuid.New(), EventType: cp.WebhookEventMO,
-		URL: "https://example.test/hook", Secret: secret, Status: cp.WebhookActive,
+		URL: "https://example.test/hook", Secret: sealedFor(secret), Status: cp.WebhookActive,
 	}
 	ev := webhook.Event{ID: "ev-1", Payload: []byte(`{"msg":"hello"}`)}
 
@@ -65,7 +65,7 @@ func TestWebhookRetrySinkCarriesTheRetryState(t *testing.T) {
 	firstAt := time.Now().Add(-12 * time.Minute).UTC().Truncate(time.Second)
 	wh := cp.Webhook{
 		ID: webhookID, AccountID: accountID, EventType: cp.WebhookEventDLR,
-		URL: "https://example.test/hook", Secret: "s", Status: cp.WebhookActive,
+		URL: "https://example.test/hook", Secret: sealedFor("s"), Status: cp.WebhookActive,
 	}
 	ev := webhook.Event{ID: "ev-2", Payload: []byte(`{"a":1}`)}
 
