@@ -13,6 +13,7 @@ import (
 	"google.golang.org/grpc"
 
 	"github.com/martialanouman/go-gateway/internal/config"
+	configsecretspb "github.com/martialanouman/go-gateway/internal/configsecrets/pb"
 	"github.com/martialanouman/go-gateway/internal/dlrmap"
 	"github.com/martialanouman/go-gateway/internal/grpctls"
 	"github.com/martialanouman/go-gateway/internal/modlrrouter"
@@ -329,6 +330,7 @@ type deliveryLeg struct {
 	mappingMiss prometheus.Counter
 
 	registry    *grpc.ClientConn
+	contentKey  *grpc.ClientConn
 	pods        *modlrrouter.PodClients
 	moConsumer  *kafka.Consumer
 	dlrConsumer *kafka.Consumer
@@ -346,6 +348,9 @@ func (d *deliveryLeg) close() {
 	}
 	if d.registry != nil {
 		_ = d.registry.Close()
+	}
+	if d.contentKey != nil {
+		_ = d.contentKey.Close()
 	}
 }
 
@@ -373,13 +378,22 @@ func newDeliveryLeg(cfg config.Config, st *stores, mo *moLeg, logger *slog.Logge
 		}
 	}()
 
-	// Two TLS loaders on this pod, and they cannot be merged: the pod leg below pins a name and this one
-	// must not (grpc-go reads the pinned name off the credentials to set every connection's authority).
-	// The cost is that tlsconf's "the CA changed, restart" warning, latched per loader, is said twice
-	// during a rotation of the authority. Noise, not a wrong verdict.
+	// Three TLS loaders on this pod, and they cannot be merged: the pod leg below pins a name and the two
+	// others must not (grpc-go reads the pinned name off the credentials to set every connection's
+	// authority). The cost is that tlsconf's "the CA changed, restart" warning, latched per loader, is said
+	// once per loader during a rotation of the authority. Noise, not a wrong verdict.
 	d.registry, err = grpctls.NewClient(cfg.TLS, logger, cfg.SMPP.SessionManagerAddr)
 	if err != nil {
 		return nil, fmt.Errorf("dial session registry: %w", err)
+	}
+
+	// content-key-svc holds the master key that opens a webhook's signing secret, and this is the only
+	// service that opens one: the sender needs the clear key to compute each delivery's HMAC (ADR-0016).
+	// The pod is admitted to that port by TLS_ALLOWED_CLIENTS and restricted to Open — never Seal — by
+	// configSecretsCallers in content-key-svc itself.
+	d.contentKey, err = grpctls.NewClient(cfg.TLS, logger, cfg.ContentKey.Addr)
+	if err != nil {
+		return nil, fmt.Errorf("dial content key service at %q: %w", cfg.ContentKey.Addr, err)
 	}
 
 	d.pods, err = newPodClients(cfg, logger)
@@ -399,7 +413,8 @@ func newDeliveryLeg(cfg config.Config, st *stores, mo *moLeg, logger *slog.Logge
 		Timeout:       webhookHotPathTimeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
-	d.sender = webhook.NewSender(webhookClient, modlrrouter.NewWebhookDeadLetterSink(mo.producer), logger,
+	d.sender = webhook.NewSender(webhookClient, modlrrouter.NewWebhookDeadLetterSink(mo.producer),
+		modlrrouter.NewGRPCSecretOpener(configsecretspb.NewConfigSecretsClient(d.contentKey)), logger,
 		webhook.WithRetrySink(modlrrouter.NewWebhookRetrySink(mo.producer)),
 		webhook.WithMaxAttempts(webhookMaxAttempts))
 
