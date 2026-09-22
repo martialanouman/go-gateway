@@ -54,7 +54,6 @@ dehors est nommé dans le `Makefile`.
 - **Ne réécris pas les commentaires en place** : ils ne sont pas à toi. Et une suppression qui laisse une ligne vide entre un commentaire et sa déclaration le détache — Go le lit comme absent.
 - **Sauf ce que `revive` exige** : tout symbole exporté porte une ligne de doc, sinon `make lint` échoue. Une ligne, pas un paragraphe.
 
-
 ## Contrats (source de vérité, référencés par le code)
 
 `db/schema_passerelle_sms.sql` · `api/openapi-public.yaml` · `api/openapi-admin.yaml`
