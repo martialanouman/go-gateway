@@ -51,9 +51,11 @@ spec:
             - name: TLS_ENABLED
               value: "true"
             # The only server naming its callers: it returns a customer's plaintext data key, and a
-            # certificate of our authority proves a peer is one of our pods, never which one.
+            # certificate of our authority proves a peer is one of our pods, never which one. This admits a
+            # BINARY to the port; which METHOD each one may call is configSecretsCallers, in the service's
+            # own code (mo-dlr-router-svc gets Open, never Seal).
             - name: TLS_ALLOWED_CLIENTS
-              value: router-svc,admin-api-svc
+              value: router-svc,admin-api-svc,mo-dlr-router-svc
             - name: GRPC_PORT
               value: "7002"
             - name: POSTGRES_URL

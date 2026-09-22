@@ -242,3 +242,49 @@ func TestTheStreamGateIsWiredTooAlthoughNoRPCStreamsYet(t *testing.T) {
 		t.Error("the stream handler ran: the gate does not cover streaming RPCs")
 	}
 }
+
+// step-295b: the first caller that needs Open and must NOT get Seal. mo-dlr-router-svc opens a webhook's
+// signing secret on every return-path delivery; it also holds POSTGRES_URL with write access to the control
+// plane. With Seal it could seal a password of its choosing, write it into smsc_connectors.password_sealed
+// and take over an outbound operator bind — without Seal it cannot produce a ciphertext the domain tag
+// accepts. So the caller map carries methods, which is what ADR-0016 decided ("un intercepteur autorise par
+// méthode") and what authz.go's own comment named as the trigger.
+func TestConfigSecretsGivesTheReturnPathOpenButNotSeal(t *testing.T) {
+	ca := tlstest.NewCA(t)
+	certFile, keyFile := ca.Issue(t, serviceName, serviceName)
+
+	cfg := testConfig()
+	cfg.Postgres = pgtest.Config(t)
+	cfg.TLS = config.TLS{
+		Enabled:        true,
+		CertFile:       certFile,
+		KeyFile:        keyFile,
+		ClientCAFile:   ca.CAFile,
+		AllowedClients: []string{"admin-api-svc", "mo-dlr-router-svc"},
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	app, err := newContentKeyApp(ctx, cfg, discardLogger())
+	if err != nil {
+		t.Fatalf("newContentKeyApp: %v", err)
+	}
+	defer app.close()
+
+	addr := grpctest.Serve(t, app.grpc)
+	conn := dialAs(t, ca, addr, "mo-dlr-router-svc")
+	client := configsecretspb.NewConfigSecretsClient(conn)
+
+	// Open is served: refused for its own reasons (these bytes are not a ciphertext), never for authorisation.
+	_, err = client.Open(ctx, &configsecretspb.OpenRequest{Sealed: []byte("not a ciphertext")})
+	if code := status.Code(err); code == codes.PermissionDenied {
+		t.Errorf("Open from mo-dlr-router-svc was refused, and no webhook could then be signed: %v", err)
+	}
+
+	// Seal is not. This is the escalation the per-method split exists to close.
+	_, err = client.Seal(ctx, &configsecretspb.SealRequest{Plaintext: []byte("a password I chose")})
+	if code := status.Code(err); code != codes.PermissionDenied {
+		t.Errorf("Seal from mo-dlr-router-svc = %s (%v), want PermissionDenied", code, err)
+	}
+}

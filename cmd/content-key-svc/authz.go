@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"slices"
 	"strings"
 
 	"google.golang.org/grpc"
@@ -11,15 +12,24 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// configSecretsCallers are the services allowed to call ConfigSecrets. It is NOT configuration: which
+// configSecretsCallers are the ConfigSecrets methods each service may call. It is NOT configuration: which
 // service may seal a control-plane secret is a property of this service, and a deployment that could widen
 // it by an environment variable would widen it by accident.
 //
-// It authorises a SERVICE, not a service/method pair: a name here gets Seal as well as Open. That is
-// enough while admin-api-svc is the only caller and needs both. connector-pool-svc joins the day it reads
-// its bind password from the control plane — it will need Open alone, and if that distinction matters then,
-// this map has to carry methods. See debts/ancre-de-confiance-par-connecteur.md.
-var configSecretsCallers = map[string]bool{"admin-api-svc": true}
+// It carries METHODS since step-295b, which brought the first caller needing Open alone (ADR-0016 decided
+// authorisation "par méthode" from the start; the service-wide form was the interim). Giving
+// mo-dlr-router-svc Seal would be an escalation, not a convenience: it holds POSTGRES_URL with write access
+// to the control plane, so Seal would let it seal a password of its choosing, write it into
+// smsc_connectors.password_sealed and take over an outbound operator bind. Without Seal it cannot produce a
+// ciphertext the domain tag accepts.
+//
+// A method absent from a service's list is refused, so an RPC added to ConfigSecrets later is served to
+// nobody until someone writes it down here. connector-pool-svc joins with Open alone the day it reads its
+// bind password from the control plane. See debts/ancre-de-confiance-par-connecteur.md.
+var configSecretsCallers = map[string][]string{
+	"admin-api-svc":     {"Seal", "Open"}, // writes every sealed secret; never reads one back
+	"mo-dlr-router-svc": {"Open"},         // signs each webhook delivery, and writes no secret at all
+}
 
 // authorizeConfigSecrets refuses ConfigSecrets to callers that are admitted to this port for ContentKeys.
 //
@@ -40,15 +50,16 @@ func authorizeConfigSecrets(ctx context.Context, fullMethod string) error {
 	if !identified {
 		return nil
 	}
+	method := fullMethod[strings.LastIndex(fullMethod, "/")+1:]
 	for _, name := range names {
-		if configSecretsCallers[name] {
+		if slices.Contains(configSecretsCallers[name], method) {
 			return nil
 		}
 	}
 	// Only the identity presented, which the caller already knows. tlsconf's allowlist names both halves,
 	// but its message never reaches anyone — TLS answers "bad certificate" and cuts. This one travels the
 	// wire, so the list of who IS allowed stays on this side.
-	return status.Errorf(codes.PermissionDenied, "client identity %v is not allowed to call config secrets", names)
+	return status.Errorf(codes.PermissionDenied, "client identity %v is not allowed to call %s on config secrets", names, method)
 }
 
 // peerDNSNames returns the DNS SANs of the caller's verified certificate — ALL of them, matching what
