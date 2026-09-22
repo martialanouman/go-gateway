@@ -387,10 +387,6 @@ func newDeliveryLeg(cfg config.Config, st *stores, mo *moLeg, logger *slog.Logge
 		return nil, fmt.Errorf("dial session registry: %w", err)
 	}
 
-	// content-key-svc holds the master key that opens a webhook's signing secret, and this is the only
-	// service that opens one: the sender needs the clear key to compute each delivery's HMAC (ADR-0016).
-	// The pod is admitted to that port by TLS_ALLOWED_CLIENTS and restricted to Open — never Seal — by
-	// configSecretsCallers in content-key-svc itself.
 	d.contentKey, err = grpctls.NewClient(cfg.TLS, logger, cfg.ContentKey.Addr)
 	if err != nil {
 		return nil, fmt.Errorf("dial content key service at %q: %w", cfg.ContentKey.Addr, err)

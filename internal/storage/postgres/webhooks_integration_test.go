@@ -44,8 +44,6 @@ func TestWebhookRepoGet(t *testing.T) {
 	if got.URL != "https://example.test/hook" || got.Status != cp.WebhookActive {
 		t.Errorf("webhook = %+v, want the seeded url and active", got)
 	}
-	// The sealed bytes and the key reference are ONE value: a row carrying the ciphertext without the
-	// reference of the key that sealed it opens today and stops opening at the first master-key rotation.
 	if want := sealedTestSecret("topsecret-long-enough", "local/test-kek"); !bytes.Equal(got.Secret.Sealed, want.Sealed) ||
 		got.Secret.KMSKeyRef != want.KMSKeyRef {
 		t.Errorf("secret = %+v, want %+v", got.Secret, want)
@@ -205,12 +203,6 @@ func TestWebhookRepoIsScopedToItsAccount(t *testing.T) {
 	}
 }
 
-// sealedTestSecret stands in for what ConfigSecrets.Seal returns. The repository never seals — the Admin
-// API does, before it gets here — so the bytes only have to be distinguishable, not authentic.
-//
-// keyRef is a parameter rather than a constant because a rotation has to be able to change it: with one
-// shared reference, a query that wrote the ciphertext and kept the OLD reference passed every assertion
-// here. That mutation survived until this helper could tell two keys apart.
 func sealedTestSecret(plaintext, keyRef string) cp.SealedSecret {
 	return cp.SealedSecret{Sealed: []byte("sealed:" + plaintext), KMSKeyRef: keyRef}
 }

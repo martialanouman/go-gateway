@@ -508,8 +508,7 @@ CREATE TABLE control_plane.webhooks (
   account_id        uuid NOT NULL REFERENCES control_plane.smpp_accounts(id) ON DELETE CASCADE,
   event_type        text NOT NULL CHECK (event_type IN ('mo','dlr')),
   url               text NOT NULL,
-  -- The HMAC-SHA256 signing key, SEALED (ADR-0016) — replayed on every delivery, so never hashed. It is
-  -- the third replayed secret; step-295's inventory missed it and step-295b sealed it.
+  -- The HMAC-SHA256 signing key, SEALED (ADR-0016) — replayed on every delivery, so never hashed.
   secret_sealed       bytea NOT NULL,
   secret_kms_key_ref  text  NOT NULL,
   retry_policy_json jsonb NOT NULL DEFAULT '{}'::jsonb,

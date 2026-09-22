@@ -17,9 +17,6 @@ import (
 
 const testSecret = "a-signing-secret-long-enough"
 
-// sealedStub is what a seeded row holds now that the column is sealed (ADR-0016). It keeps the plaintext
-// inside the bytes on purpose: a DTO that leaked the ciphertext would then trip the same "the secret came
-// back on the wire" assertions, instead of passing them because the leak was unreadable.
 func sealedStub(plaintext string) cp.SealedSecret {
 	return cp.SealedSecret{Sealed: []byte("sealed:" + plaintext), KMSKeyRef: "local/test-kek"}
 }
@@ -253,9 +250,6 @@ func TestUpdateWebhookRotatesTheSecretWithoutReturningIt(t *testing.T) {
 	if got["status"] != "disabled" {
 		t.Errorf("status = %v, want disabled", got["status"])
 	}
-	// The rotation must have re-sealed: a stored secret still equal to the seeded one means the branch
-	// answered 200 and changed nothing, and one that carries the plaintext means it never sealed at all.
-	// That the sealed bytes actually OPEN to the new secret is TestRotatingAWebhookSecretResealsIt.
 	stored := hooks.mustGet(t, hookID).Secret
 	if bytes.Equal(stored.Sealed, sealedStub("old-signing-secret-here").Sealed) {
 		t.Error("the stored secret is still the seeded one: the rotation changed nothing")

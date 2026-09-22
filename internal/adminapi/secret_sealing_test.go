@@ -248,9 +248,6 @@ func TestReadingAConnectorNeverReturnsTheSealedPassword(t *testing.T) {
 	}
 }
 
-// The THIRD replayed secret, the one step-295's inventory missed. Unlike the two above, this one is
-// actually OPENED in production — the webhook sender needs it in clear to sign every MO and DLR — so the
-// round trip is not a rehearsal here: if what lands in the column does not open, the return path stops.
 func TestCreateWebhookStoresASecretThatOpensAgain(t *testing.T) {
 	accounts := newFakeAccountStore()
 	id := seedAccount(t, accounts)
@@ -280,8 +277,6 @@ func TestCreateWebhookStoresASecretThatOpensAgain(t *testing.T) {
 	}
 }
 
-// Rotation through PATCH. Untested, this branch could be deleted and a rotation would answer 200 while the
-// receiver kept verifying against the old key — a surface that reports a change it did not make.
 func TestRotatingAWebhookSecretResealsIt(t *testing.T) {
 	accounts := newFakeAccountStore()
 	id := seedAccount(t, accounts)
@@ -320,8 +315,6 @@ func TestRotatingAWebhookSecretResealsIt(t *testing.T) {
 	}
 }
 
-// A sealing failure must abort the write, as it does for a connector: a webhook stored with a secret that
-// is not the operator's would sign every delivery with something the receiver rejects.
 func TestCreateWebhookRefusesWhenSealingFails(t *testing.T) {
 	accounts := newFakeAccountStore()
 	id := seedAccount(t, accounts)
@@ -342,9 +335,6 @@ func TestCreateWebhookRefusesWhenSealingFails(t *testing.T) {
 	}
 }
 
-// Neither half of the sealed pair may reach the wire — not the ciphertext, not its base64, not the key
-// reference. The plaintext's absence is asserted next door; this is what a row echoed field by field, or a
-// DTO grown a field, would leak instead.
 func TestReadingAWebhookNeverReturnsItsSealedSecret(t *testing.T) {
 	accounts := newFakeAccountStore()
 	id := seedAccount(t, accounts)

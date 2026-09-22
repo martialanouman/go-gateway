@@ -16,21 +16,12 @@ import (
 	humaerr "github.com/martialanouman/go-gateway/internal/platform/errors/humaerr"
 )
 
-// sealSecret seals a write-only secret the gateway REPLAYS to a third party — an SMSC bind password, an
-// external provider's credentials, a webhook signing key. None of the three may be hashed: each one goes
-// back out in clear (a bind_transceiver PDU, an HTTP call, an HMAC), so a hash could never serve it, which
-// is exactly the defect step-295 removed (ADR-0016). subject names the secret in the error and nowhere
-// else.
-//
-// A sealing failure aborts the write. Storing the row regardless would leave a secret column holding
-// nothing usable, re-creating at runtime the very state that step exists to end.
 func sealSecret(ctx context.Context, sealer SecretSealer, subject, plaintext string) (cp.SealedSecret, error) {
 	if sealer == nil {
 		return cp.SealedSecret{}, humaerr.Fail(errs.ErrInternal, "no secret sealer configured")
 	}
 	sealed, err := sealer.Seal(ctx, []byte(plaintext))
 	if err != nil {
-		// The error is deliberately opaque and carries no fragment of the secret: it is logged.
 		return cp.SealedSecret{}, humaerr.Fail(errs.ErrInternal, "seal %s", subject)
 	}
 	return sealed, nil

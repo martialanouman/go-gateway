@@ -4,6 +4,18 @@ Ce que ce dépôt ne dit pas de lui-même : les invariants, les couplages invisi
 peut pas deviner. Les commandes : `make help`. Les services : `ls cmd/`. Les docs : `ls docs/`. Les
 règles `.claude/rules/` se chargent seules à la lecture d'un fichier de leur territoire.
 
+## Le code s'explique tout seul ; les commentaires : aucun, sauf absolument nécessaire
+
+**Toujours écrire du code auto-explicatif.** Ce qui se lit dans le nom n'a pas à s'écrire à côté :
+nommer par l'intention, extraire une fonction nommée plutôt qu'annoter un bloc, et laisser le type dire
+ce qu'un commentaire répéterait.
+
+Le défaut est donc **zéro commentaire**, dans le code comme dans les tests. N'en survit un que s'il porte
+un *pourquoi* indéductible du code et dont l'ignorance coûte cher — une classification contre-intuitive,
+une garde de migration irréversible, une autorisation dont l'élargissement est une escalade. Pas de
+narration, pas de paraphrase de la ligne suivante. Les commentaires déjà en place ne se réécrivent pas au
+passage.
+
 ## Ce qu'on construit
 
 Une **passerelle SMS** en Go : elle reçoit des SMS (SMPP entrant + REST), les route vers des SMSC

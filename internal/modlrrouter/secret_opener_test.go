@@ -47,9 +47,6 @@ func TestGRPCSecretOpenerReturnsThePlaintext(t *testing.T) {
 	}
 }
 
-// This table is the other half of the sender's decision: the sender dead-letters unless the error carries
-// ErrServiceUnavailable, so getting a code into the wrong column here either wedges a partition on a
-// corrupt row or quietly dead-letters a whole backlog during a content-key-svc restart.
 func TestGRPCSecretOpenerMarksOnlyTheReachabilityFailuresTransient(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -59,7 +56,6 @@ func TestGRPCSecretOpenerMarksOnlyTheReachabilityFailuresTransient(t *testing.T)
 		{"service down", codes.Unavailable, true},
 		{"deadline", codes.DeadlineExceeded, true},
 		{"cancelled", codes.Canceled, true},
-		// Deterministic for this row, whatever the deployment does next: retrying cannot change the answer.
 		{"wrong domain tag", codes.InvalidArgument, false},
 		{"caller not allowed", codes.PermissionDenied, false},
 		{"unwrap failed", codes.Internal, false},
@@ -77,8 +73,6 @@ func TestGRPCSecretOpenerMarksOnlyTheReachabilityFailuresTransient(t *testing.T)
 	}
 }
 
-// sealedFor is the stored form of a signing secret (ADR-0016), and sealedForOpener turns it back — the
-// reversible stand-in these delivery tests need, since what they exercise is routing, not crypto.
 func sealedFor(plaintext string) cp.SealedSecret {
 	return cp.SealedSecret{Sealed: []byte("sealed:" + plaintext), KMSKeyRef: "local/test-kek"}
 }

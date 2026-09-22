@@ -40,8 +40,6 @@ func (s *fakeSink) Park(_ context.Context, _ cp.Webhook, ev webhook.Event, reaso
 	return nil
 }
 
-// reasons returns the park reasons in order, so a test can assert WHY an event was dead-lettered and not
-// merely that it was.
 func (s *fakeSink) reasons() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -60,10 +58,6 @@ func (s *fakeSink) count() int {
 
 // testSender builds a sender whose backoff never waits and whose jitter is deterministic, so retry
 // tests run instantly.
-// sealedFor is the stored form of a signing secret now that the column is sealed (ADR-0016), and
-// stubOpener is what the sender uses to get it back. The pair is deliberately reversible in the test: what
-// these tests exercise is the signing and the retry machinery, not the crypto — TestCreateWebhookStores-
-// ASecretThatOpensAgain does that against a real KMS.
 func sealedFor(plaintext string) cp.SealedSecret {
 	return cp.SealedSecret{Sealed: []byte("sealed:" + plaintext), KMSKeyRef: "local/test-kek"}
 }

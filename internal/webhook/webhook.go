@@ -60,8 +60,7 @@ type Sender struct {
 	// original inline loop, so an un-migrated call site behaves exactly as before.
 	retry       RetrySink
 	maxRetryAge time.Duration
-	// opener turns the stored sealed secret into the HMAC key, once per delivery (ADR-0016).
-	opener SecretOpener
+	opener      SecretOpener
 }
 
 // Option overrides a Sender default (the clock, the backoff sleep, the jitter source) for tests.
@@ -87,9 +86,7 @@ func WithMaxAttempts(n int) Option { return func(s *Sender) { s.maxAttempts = n 
 // NewSender builds a sender. A nil client defaults to one with a strict per-request timeout; a nil
 // logger to slog.Default; a nil dead-letter sink to a no-op (the event is dropped after exhaustion —
 // wire a real sink in production). A nil opener refuses every delivery as unavailable: see noOpener.
-//
-// opener is positional rather than an Option because no delivery can be signed without it. A sender built
-// without one delivers nothing, and that has to be a compile-time conversation at every call site.
+
 func NewSender(client *http.Client, deadLetter DeadLetterSink, opener SecretOpener, logger *slog.Logger, opts ...Option) *Sender {
 	if client == nil {
 		client = &http.Client{

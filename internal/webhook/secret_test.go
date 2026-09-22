@@ -18,8 +18,6 @@ import (
 	"github.com/martialanouman/go-gateway/internal/webhook"
 )
 
-// fakeOpener stands in for ConfigSecrets.Open. It counts calls, because opening ONCE per delivery rather
-// than once per HTTP attempt is part of what the sender promises.
 type fakeOpener struct {
 	plaintext string
 	err       error
@@ -36,7 +34,6 @@ func (o *fakeOpener) Open(_ context.Context, sealed cp.SealedSecret) ([]byte, er
 
 func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
-// senderWithOpener builds a sender whose in-band retries neither sleep nor jitter, over opener.
 func senderWithOpener(sink webhook.DeadLetterSink, opener webhook.SecretOpener, opts ...webhook.Option) *webhook.Sender {
 	return webhook.NewSender(nil, sink, opener, discardLogger(),
 		append([]webhook.Option{
@@ -45,9 +42,6 @@ func senderWithOpener(sink webhook.DeadLetterSink, opener webhook.SecretOpener, 
 		}, opts...)...)
 }
 
-// The signature must be computed with the OPENED secret, never with the stored bytes. Both are asserted:
-// equality alone would also hold for a sender that signed with the ciphertext if the test computed its
-// expectation the same wrong way.
 func TestSendSignsWithTheOpenedSecretAndNotTheStoredBytes(t *testing.T) {
 	const plaintext = "the-real-signing-key"
 	var gotSig, gotTS string
@@ -78,9 +72,6 @@ func TestSendSignsWithTheOpenedSecretAndNotTheStoredBytes(t *testing.T) {
 	}
 }
 
-// A key service that cannot be reached is transient, and the event must survive it untouched: the caller
-// reprocesses its record. Spending an attempt or dead-lettering here would make a content-key-svc restart
-// eat a retry budget — or a backlog — for a fault that has nothing to do with the receiver.
 func TestSendReturnsTheErrorWhenTheKeyServiceIsUnreachable(t *testing.T) {
 	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -108,10 +99,6 @@ func TestSendReturnsTheErrorWhenTheKeyServiceIsUnreachable(t *testing.T) {
 	}
 }
 
-// The case that would wedge a partition. A ciphertext that does not open — tampered, sealed under a
-// retired master key, or refused by the authorisation interceptor — fails IDENTICALLY on every
-// redelivery. Returning an error would stop the whole topic, and with it every other account's MO and DLR,
-// on one unopenable row. So it is dead-lettered, which keeps the event recoverable, and the offset moves.
 func TestSendParksAnUnopenableSecretInsteadOfBlockingTheConsumer(t *testing.T) {
 	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -137,8 +124,6 @@ func TestSendParksAnUnopenableSecretInsteadOfBlockingTheConsumer(t *testing.T) {
 	}
 }
 
-// The same two branches on the DEFERRED path, which is the one with a partition to wedge and a six-hour
-// backlog to lose. Retry is what the webhook.retry consumer calls.
 func TestRetryClassifiesAFailedOpenLikeSendDoes(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)

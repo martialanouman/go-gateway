@@ -555,7 +555,6 @@ func TestAConnectorPasswordWrittenByTheAdminAPIOpensAgainFromPostgres(t *testing
 		t.Errorf("the 201 body echoes the password: %s", w.Body)
 	}
 
-	// Straight from the column, not from the handler's return value.
 	var sealed []byte
 	var keyRef string
 	if err := pgtest.Pool(t).QueryRow(ctx,
@@ -580,13 +579,6 @@ func TestAConnectorPasswordWrittenByTheAdminAPIOpensAgainFromPostgres(t *testing
 	}
 }
 
-// TestAWebhookSecretWrittenByTheAdminAPISignsADeliveryTheReceiverVerifies is step-295b's Definition of
-// Done, and it goes one layer further than the connector's e2e above, because this secret is the first the
-// gateway actually OPENS in production: written through the HTTP surface, read back from the column, opened
-// by the return path's real gRPC opener, and used to sign a delivery a receiver then verifies.
-//
-// Every link is the real one. A stub anywhere would let the chain pass while the return path stayed broken:
-// that is precisely how the webhook secret survived step-295 — each layer was plausible on its own.
 func TestAWebhookSecretWrittenByTheAdminAPISignsADeliveryTheReceiverVerifies(t *testing.T) {
 	master, err := content.GenerateDataKey()
 	if err != nil {
@@ -614,8 +606,6 @@ func TestAWebhookSecretWrittenByTheAdminAPISignsADeliveryTheReceiverVerifies(t *
 	}
 	defer app.close()
 
-	// An account to hang the webhook on: seeded in SQL because what is under test is the secret, not the
-	// account surface.
 	pool := pgtest.Pool(t)
 	var accountID uuid.UUID
 	if err := pool.QueryRow(ctx, `
@@ -639,7 +629,6 @@ func TestAWebhookSecretWrittenByTheAdminAPISignsADeliveryTheReceiverVerifies(t *
 		t.Errorf("the 201 body echoes the signing secret: %s", w.Body)
 	}
 
-	// Straight from the column, not from the handler's return value.
 	var sealed []byte
 	var keyRef string
 	if err := pool.QueryRow(ctx,
@@ -654,8 +643,6 @@ func TestAWebhookSecretWrittenByTheAdminAPISignsADeliveryTheReceiverVerifies(t *
 		t.Errorf("secret_kms_key_ref = %q, want %q", keyRef, kms.KeyRef())
 	}
 
-	// Now the return path's half, with its real opener over the real key service. The receiver verifies the
-	// signature with the secret the OPERATOR typed, which is the only thing that makes any of this useful.
 	var gotSig, gotTS string
 	var gotBody []byte
 	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

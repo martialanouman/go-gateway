@@ -29,10 +29,6 @@ RETURNING *;
 -- webhooks_touch trigger. retry_policy_json IS resettable here, unlike the nullable columns of
 -- debts/patch-null-ne-peut-pas-effacer-un-champ.md: an omitted field arrives as a nil RawMessage (SQL
 -- NULL, COALESCE keeps the column) and a supplied {} arrives as two non-nil bytes, which COALESCE takes.
---
--- The two halves of the sealed secret are COALESCE'd on the SAME argument being present or absent, so a
--- rotation cannot write the ciphertext while keeping the reference of the key that sealed the previous one
--- — a row that opens today and stops opening at the first master-key rotation.
 UPDATE control_plane.webhooks SET
     url                = COALESCE(sqlc.narg('url'), url),
     secret_sealed      = COALESCE(sqlc.narg('secret_sealed'), secret_sealed),

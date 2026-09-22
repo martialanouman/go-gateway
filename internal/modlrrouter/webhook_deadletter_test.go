@@ -45,8 +45,6 @@ func TestWebhookDeadLetterParksWithoutSecret(t *testing.T) {
 	if string(rec.Key) != "ev-42" {
 		t.Errorf("key = %q, want ev-42", rec.Key)
 	}
-	// Neither form of the secret: the clear key is inside the stubbed ciphertext, so a record that grew a
-	// sealed field would trip this too. A parked record is operator-visible and outlives the request.
 	if bytes.Contains(rec.Value, []byte("whsec_super_secret")) || bytes.Contains(rec.Value, []byte("local/test-kek")) {
 		t.Fatal("dead-letter record must not carry the webhook secret, sealed or not")
 	}

@@ -12,23 +12,15 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// configSecretsCallers are the ConfigSecrets methods each service may call. It is NOT configuration: which
-// service may seal a control-plane secret is a property of this service, and a deployment that could widen
-// it by an environment variable would widen it by accident.
+// configSecretsCallers is NOT configuration: an environment variable would widen it by accident. A method
+// absent from a service's list is refused, so an RPC added later is served to nobody until named here.
 //
-// It carries METHODS since step-295b, which brought the first caller needing Open alone (ADR-0016 decided
-// authorisation "par méthode" from the start; the service-wide form was the interim). Giving
-// mo-dlr-router-svc Seal would be an escalation, not a convenience: it holds POSTGRES_URL with write access
-// to the control plane, so Seal would let it seal a password of its choosing, write it into
-// smsc_connectors.password_sealed and take over an outbound operator bind. Without Seal it cannot produce a
-// ciphertext the domain tag accepts.
-//
-// A method absent from a service's list is refused, so an RPC added to ConfigSecrets later is served to
-// nobody until someone writes it down here. connector-pool-svc joins with Open alone the day it reads its
-// bind password from the control plane. See debts/ancre-de-confiance-par-connecteur.md.
+// Seal would be an escalation for mo-dlr-router-svc, not a convenience: it holds POSTGRES_URL with write
+// access, so it could seal a password of its choosing, write it into smsc_connectors.password_sealed and
+// take over an outbound operator bind.
 var configSecretsCallers = map[string][]string{
-	"admin-api-svc":     {"Seal", "Open"}, // writes every sealed secret; never reads one back
-	"mo-dlr-router-svc": {"Open"},         // signs each webhook delivery, and writes no secret at all
+	"admin-api-svc":     {"Seal", "Open"},
+	"mo-dlr-router-svc": {"Open"},
 }
 
 // authorizeConfigSecrets refuses ConfigSecrets to callers that are admitted to this port for ContentKeys.
