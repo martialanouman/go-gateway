@@ -193,8 +193,8 @@ type Deps struct {
 	Accounts       AccountStore
 	Credentials    CredentialStore
 	Connectors     ConnectorStore
-	// SecretSealer is required by the two handlers that write a replayed secret (connectors, billing
-	// providers): without it they refuse rather than store something unusable.
+	// SecretSealer is required by the three handlers that write a replayed secret (connectors, billing
+	// providers, webhooks): without it they refuse rather than store something unusable.
 	SecretSealer     SecretSealer
 	ConnectorControl ConnectorControl
 	Routes           RouteStore

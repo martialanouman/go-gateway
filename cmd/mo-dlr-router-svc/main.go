@@ -33,7 +33,7 @@ func run() error {
 
 	cfg, err := config.Load(serviceName,
 		config.SectionOTel, config.SectionKafka, config.SectionClickHouse, config.SectionRedis,
-		config.SectionPostgres, config.SectionSMPP, config.SectionTLS)
+		config.SectionPostgres, config.SectionSMPP, config.SectionTLS, config.SectionContentKey)
 	if err != nil {
 		return err
 	}

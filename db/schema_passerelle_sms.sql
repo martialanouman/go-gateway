@@ -508,7 +508,9 @@ CREATE TABLE control_plane.webhooks (
   account_id        uuid NOT NULL REFERENCES control_plane.smpp_accounts(id) ON DELETE CASCADE,
   event_type        text NOT NULL CHECK (event_type IN ('mo','dlr')),
   url               text NOT NULL,
-  secret            text NOT NULL,        -- HMAC-SHA256 signing secret
+  -- The HMAC-SHA256 signing key, SEALED (ADR-0016) — replayed on every delivery, so never hashed.
+  secret_sealed       bytea NOT NULL,
+  secret_kms_key_ref  text  NOT NULL,
   retry_policy_json jsonb NOT NULL DEFAULT '{}'::jsonb,
   status            text NOT NULL DEFAULT 'active' CHECK (status IN ('active','disabled')),
   created_at        timestamptz NOT NULL DEFAULT now(),

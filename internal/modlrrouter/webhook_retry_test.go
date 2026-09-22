@@ -2,6 +2,7 @@ package modlrrouter_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -38,7 +39,7 @@ func TestWebhookRetrySinkNeverPersistsTheSecret(t *testing.T) {
 	const secret = "super-secret-signing-key"
 	wh := cp.Webhook{
 		ID: uuid.New(), AccountID: uuid.New(), EventType: cp.WebhookEventMO,
-		URL: "https://example.test/hook", Secret: secret, Status: cp.WebhookActive,
+		URL: "https://example.test/hook", Secret: sealedFor(secret), Status: cp.WebhookActive,
 	}
 	ev := webhook.Event{ID: "ev-1", Payload: []byte(`{"msg":"hello"}`)}
 
@@ -48,8 +49,16 @@ func TestWebhookRetrySinkNeverPersistsTheSecret(t *testing.T) {
 	if len(producer.records) != 1 {
 		t.Fatalf("produced %d records, want 1", len(producer.records))
 	}
-	if strings.Contains(string(producer.records[0].Value), secret) {
-		t.Fatal("the webhook secret was written to webhook.retry — a leaked signing key lets anyone forge deliveries")
+	// Every form of it: the clear key, the stored ciphertext's base64 (encoding/json renders a []byte that
+	// way) and the key reference. A record on this topic is operator-visible and outlives the request.
+	for probe, needle := range map[string]string{
+		"clear key":        secret,
+		"sealed in base64": base64.StdEncoding.EncodeToString(wh.Secret.Sealed),
+		"key reference":    wh.Secret.KMSKeyRef,
+	} {
+		if strings.Contains(string(producer.records[0].Value), needle) {
+			t.Fatalf("webhook.retry carries the %s — a leaked signing key lets anyone forge deliveries", probe)
+		}
 	}
 }
 
@@ -65,7 +74,7 @@ func TestWebhookRetrySinkCarriesTheRetryState(t *testing.T) {
 	firstAt := time.Now().Add(-12 * time.Minute).UTC().Truncate(time.Second)
 	wh := cp.Webhook{
 		ID: webhookID, AccountID: accountID, EventType: cp.WebhookEventDLR,
-		URL: "https://example.test/hook", Secret: "s", Status: cp.WebhookActive,
+		URL: "https://example.test/hook", Secret: sealedFor("s"), Status: cp.WebhookActive,
 	}
 	ev := webhook.Event{ID: "ev-2", Payload: []byte(`{"a":1}`)}
 

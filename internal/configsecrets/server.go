@@ -86,9 +86,11 @@ func (s *Server) Seal(ctx context.Context, req *pb.SealRequest) (*pb.SealRespons
 func (s *Server) Open(ctx context.Context, req *pb.OpenRequest) (*pb.OpenResponse, error) {
 	tagged, err := s.kms.UnwrapDataKey(ctx, req.GetSealed())
 	if err != nil {
-		// Tampering, truncation or the wrong master key all land here. It is a key-integrity fault, not a
-		// client error: opaque Internal, and no fragment of the secret in the message.
-		return nil, grpcerr.Status(err)
+		// Tampering, truncation or the wrong master key all land here, and the code has to say so: grpc-go
+		// also emits Internal client-side for transport faults (a stream closed without trailers, a non-gRPC
+		// response), so a caller cannot tell a corrupt ciphertext from an OOMKilled server. DataLoss is only
+		// ever this. No fragment of the secret in the message.
+		return nil, status.Error(codes.DataLoss, string(errs.ErrInternal))
 	}
 	// Authentic under the master key, but sealed for something else — a content key, most plausibly. It
 	// opens no further here, and the error says nothing about what it turned out to be.

@@ -1,6 +1,7 @@
 package postgres_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -26,7 +27,7 @@ func TestWebhookRepoGet(t *testing.T) {
 
 	seeded, err := repo.Create(ctx, cp.NewWebhook{
 		AccountID: accountID, EventType: cp.WebhookEventMO,
-		URL: "https://example.test/hook", Secret: "topsecret-long-enough",
+		URL: "https://example.test/hook", Secret: sealedTestSecret("topsecret-long-enough", "local/test-kek"),
 		RetryPolicyJSON: []byte(`{"max_attempts":4}`),
 	})
 	if err != nil {
@@ -40,8 +41,12 @@ func TestWebhookRepoGet(t *testing.T) {
 	if !found {
 		t.Fatal("Get(mo) found=false, want the seeded webhook")
 	}
-	if got.URL != "https://example.test/hook" || got.Secret != "topsecret-long-enough" || got.Status != cp.WebhookActive {
-		t.Errorf("webhook = %+v, want the seeded url/secret/active", got)
+	if got.URL != "https://example.test/hook" || got.Status != cp.WebhookActive {
+		t.Errorf("webhook = %+v, want the seeded url and active", got)
+	}
+	if want := sealedTestSecret("topsecret-long-enough", "local/test-kek"); !bytes.Equal(got.Secret.Sealed, want.Sealed) ||
+		got.Secret.KMSKeyRef != want.KMSKeyRef {
+		t.Errorf("secret = %+v, want %+v", got.Secret, want)
 	}
 	if string(got.RetryPolicyJSON) != `{"max_attempts": 4}` {
 		t.Errorf("retry_policy_json = %s, want the seeded policy", got.RetryPolicyJSON)
@@ -74,7 +79,7 @@ func TestWebhookRepoCRUD(t *testing.T) {
 
 	created, err := repo.Create(ctx, cp.NewWebhook{
 		AccountID: accountID, EventType: cp.WebhookEventMO,
-		URL: "https://acme.test/mo", Secret: "a-signing-secret-long-enough",
+		URL: "https://acme.test/mo", Secret: sealedTestSecret("a-signing-secret-long-enough", "local/test-kek"),
 	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -93,22 +98,26 @@ func TestWebhookRepoCRUD(t *testing.T) {
 	// repository must turn it into a conflict rather than let a driver error reach the handler as a 500.
 	if _, err := repo.Create(ctx, cp.NewWebhook{
 		AccountID: accountID, EventType: cp.WebhookEventMO,
-		URL: "https://acme.test/other", Secret: "another-secret-long-enough",
+		URL: "https://acme.test/other", Secret: sealedTestSecret("another-secret-long-enough", "local/test-kek"),
 	}); !errors.Is(err, errs.ErrConflict) {
 		t.Errorf("duplicate (account, event_type) = %v, want ErrConflict", err)
 	}
 
 	// Every writable field at once, so a url/secret swap in the parameter mapping cannot hide behind a
 	// patch that only ever carries one of them.
-	url, secret, status := "https://acme.test/mo/v2", "a-rotated-secret-long-enough", cp.WebhookDisabled
+	url, status := "https://acme.test/mo/v2", cp.WebhookDisabled
+	secret := sealedTestSecret("a-rotated-secret-long-enough", "local/test-kek-v2")
 	updated, err := repo.Update(ctx, accountID, created.ID, cp.WebhookPatch{
 		URL: &url, Secret: &secret, Status: &status, RetryPolicyJSON: []byte(`{"max_attempts":9}`),
 	})
 	if err != nil {
 		t.Fatalf("Update: %v", err)
 	}
-	if updated.URL != url || updated.Secret != secret || updated.Status != cp.WebhookDisabled {
-		t.Errorf("updated = %+v, want the patched url, secret and status", updated)
+	if updated.URL != url || updated.Status != cp.WebhookDisabled {
+		t.Errorf("updated = %+v, want the patched url and status", updated)
+	}
+	if !bytes.Equal(updated.Secret.Sealed, secret.Sealed) || updated.Secret.KMSKeyRef != secret.KMSKeyRef {
+		t.Errorf("rotated secret = %+v, want %+v — both halves or neither", updated.Secret, secret)
 	}
 	if string(updated.RetryPolicyJSON) != `{"max_attempts": 9}` {
 		t.Errorf("retry_policy_json = %s, want the patched policy", updated.RetryPolicyJSON)
@@ -124,7 +133,8 @@ func TestWebhookRepoCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Update(empty): %v", err)
 	}
-	if untouched.URL != url || untouched.Secret != secret || untouched.Status != cp.WebhookDisabled ||
+	if untouched.URL != url || untouched.Status != cp.WebhookDisabled ||
+		!bytes.Equal(untouched.Secret.Sealed, secret.Sealed) || untouched.Secret.KMSKeyRef != secret.KMSKeyRef ||
 		string(untouched.RetryPolicyJSON) != `{"max_attempts": 9}` {
 		t.Errorf("an empty patch changed something: %+v", untouched)
 	}
@@ -163,7 +173,7 @@ func TestWebhookRepoIsScopedToItsAccount(t *testing.T) {
 
 	wh, err := repo.Create(ctx, cp.NewWebhook{
 		AccountID: theirs, EventType: cp.WebhookEventMO,
-		URL: "https://theirs.test/mo", Secret: "their-secret-long-enough",
+		URL: "https://theirs.test/mo", Secret: sealedTestSecret("their-secret-long-enough", "local/test-kek"),
 	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -191,6 +201,10 @@ func TestWebhookRepoIsScopedToItsAccount(t *testing.T) {
 	if len(after) != 1 || after[0].URL != "https://theirs.test/mo" {
 		t.Errorf("owner's webhooks = %+v, want the single untouched row", after)
 	}
+}
+
+func sealedTestSecret(plaintext, keyRef string) cp.SealedSecret {
+	return cp.SealedSecret{Sealed: []byte("sealed:" + plaintext), KMSKeyRef: keyRef}
 }
 
 func seedWebhookAccount(t *testing.T, pool *pgxpool.Pool, customerName, accountName string) uuid.UUID {

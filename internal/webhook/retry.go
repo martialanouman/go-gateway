@@ -61,7 +61,11 @@ func WithMaxRetryAge(d time.Duration) Option {
 // not be completed and must be retried by redelivering the record: the retry sink or the dead-letter sink
 // itself failed. The caller must not commit its offset in that case, or the event is lost.
 func (s *Sender) Retry(ctx context.Context, wh cp.Webhook, ev Event, attempt int, firstAt time.Time) error {
-	return s.deliverOnce(ctx, wh, ev, attempt, firstAt)
+	secret, err := s.openSecret(ctx, wh)
+	if err != nil {
+		return s.onOpenFailure(ctx, wh, ev, err)
+	}
+	return s.deliverOnce(ctx, wh, ev, secret, attempt, firstAt)
 }
 
 // Park dead-letters an event whose delivery is abandoned by the CALLER rather than by an attempt — the
@@ -74,8 +78,8 @@ func (s *Sender) Park(ctx context.Context, wh cp.Webhook, ev Event, reason strin
 
 // deliverOnce performs a single attempt and routes the outcome: delivered ends it, a permanent rejection
 // dead-letters, and a transient failure is deferred unless a termination bound has been reached.
-func (s *Sender) deliverOnce(ctx context.Context, wh cp.Webhook, ev Event, spent int, firstAt time.Time) error {
-	outcome, reason := s.attempt(ctx, wh, ev)
+func (s *Sender) deliverOnce(ctx context.Context, wh cp.Webhook, ev Event, secret string, spent int, firstAt time.Time) error {
+	outcome, reason := s.attempt(ctx, wh, ev, secret)
 	switch outcome {
 	case outcomeDelivered:
 		return nil

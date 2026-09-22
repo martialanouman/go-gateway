@@ -19,7 +19,6 @@ import (
 )
 
 // --- fakes ---
-
 type fakeLookup struct {
 	binds []modlrrouter.LiveBind
 	err   error
@@ -83,7 +82,6 @@ func activeWebhook() cp.Webhook {
 }
 
 // --- tests ---
-
 func TestDelivererDeliversToALiveBind(t *testing.T) {
 	pod := &fakePod{}
 	prod := &fakeProducer{}
@@ -322,12 +320,12 @@ func TestDelivererWebhookFallbackIsSigned(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	wh := cp.Webhook{ID: uuid.New(), URL: srv.URL, Secret: secret, EventType: cp.WebhookEventMO, Status: cp.WebhookActive}
+	wh := cp.Webhook{ID: uuid.New(), URL: srv.URL, Secret: sealedFor(secret), EventType: cp.WebhookEventMO, Status: cp.WebhookActive}
 	dv := modlrrouter.NewDeliverer(modlrrouter.DelivererDeps{
 		Lookup:   fakeLookup{}, // no bind → webhook branch
 		Pods:     &fakePod{},
 		Webhooks: fakeWebhookResolver{wh: wh, found: true},
-		Sender:   webhook.NewSender(srv.Client(), nil, nil),
+		Sender:   webhook.NewSender(srv.Client(), nil, stubOpener{}, nil),
 		Producer: &fakeProducer{},
 		Metric:   &fakeDeliveryMetric{},
 	})

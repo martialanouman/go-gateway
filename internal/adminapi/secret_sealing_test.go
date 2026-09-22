@@ -247,3 +247,155 @@ func TestReadingAConnectorNeverReturnsTheSealedPassword(t *testing.T) {
 		}
 	}
 }
+
+func TestCreateWebhookStoresASecretThatOpensAgain(t *testing.T) {
+	accounts := newFakeAccountStore()
+	id := seedAccount(t, accounts)
+	store := newFakeWebhookStore()
+	sealer := newKMSSealer()
+	api := newTestAPIWith(t, adminapi.Deps{Webhooks: store, Accounts: accounts, SecretSealer: sealer})
+
+	const secret = "whsec-canary-long-enough"
+	w := httptest.NewRecorder()
+	api.ServeHTTP(w, authed(t, http.MethodPost, webhookPath(id),
+		`{"event_type":"mo","url":"https://acme.test/mo","secret":"`+secret+`"}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body=%s", w.Code, w.Body)
+	}
+	var created map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
+
+	stored := store.mustGet(t, uuid.MustParse(created["id"].(string)))
+	if bytes.Contains(stored.Secret.Sealed, []byte(secret)) {
+		t.Error("the signing secret reached the store in clear")
+	}
+	if stored.Secret.KMSKeyRef == "" {
+		t.Error("no key reference stored: the row opens today and cannot be placed after a key rotation")
+	}
+	if got := sealer.open(t, stored.Secret); string(got) != secret {
+		t.Errorf("the stored secret opens to %q, want %q", got, secret)
+	}
+}
+
+func TestRotatingAWebhookSecretResealsIt(t *testing.T) {
+	accounts := newFakeAccountStore()
+	id := seedAccount(t, accounts)
+	store := newFakeWebhookStore()
+	sealer := newKMSSealer()
+	api := newTestAPIWith(t, adminapi.Deps{Webhooks: store, Accounts: accounts, SecretSealer: sealer})
+
+	w := httptest.NewRecorder()
+	api.ServeHTTP(w, authed(t, http.MethodPost, webhookPath(id),
+		`{"event_type":"mo","url":"https://acme.test/mo","secret":"first-secret-long-enough"}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: status = %d; body=%s", w.Code, w.Body)
+	}
+	var created map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
+	whID := uuid.MustParse(created["id"].(string))
+	before := store.mustGet(t, whID).Secret
+
+	const rotated = "second-secret-long-enough"
+	w = httptest.NewRecorder()
+	api.ServeHTTP(w, authed(t, http.MethodPatch, webhookPath(id, whID.String()),
+		`{"secret":"`+rotated+`"}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("patch: status = %d; body=%s", w.Code, w.Body)
+	}
+
+	after := store.mustGet(t, whID).Secret
+	if bytes.Equal(after.Sealed, before.Sealed) {
+		t.Fatal("the rotation left the stored ciphertext untouched: it answered 200 and changed nothing")
+	}
+	if bytes.Contains(after.Sealed, []byte(rotated)) {
+		t.Error("the rotated secret went to the store in clear")
+	}
+	if got := sealer.open(t, after); string(got) != rotated {
+		t.Errorf("the rotated secret opens to %q, want %q", got, rotated)
+	}
+	// A ciphertext stored beside the reference of the key that sealed the PREVIOUS one is a row that opens
+	// today and that a master-key rotation cannot place. The same omission let a mutation survive one layer
+	// down, in the repository's own test.
+	if after.KMSKeyRef != sealer.kms.KeyRef() {
+		t.Errorf("key reference = %q, want the sealing key's %q", after.KMSKeyRef, sealer.kms.KeyRef())
+	}
+}
+
+func TestCreateWebhookRefusesWhenSealingFails(t *testing.T) {
+	accounts := newFakeAccountStore()
+	id := seedAccount(t, accounts)
+	store := newFakeWebhookStore()
+	sealer := newKMSSealer()
+	sealer.fail = context.DeadlineExceeded
+	api := newTestAPIWith(t, adminapi.Deps{Webhooks: store, Accounts: accounts, SecretSealer: sealer})
+
+	w := httptest.NewRecorder()
+	api.ServeHTTP(w, authed(t, http.MethodPost, webhookPath(id),
+		`{"event_type":"mo","url":"https://acme.test/mo","secret":"whsec-canary-long-enough"}`))
+	if w.Code < 500 {
+		t.Errorf("status = %d, want a 5xx when the secret cannot be sealed; body=%s", w.Code, w.Body)
+	}
+	if len(store.byID) != 0 {
+		t.Error("the webhook was stored although its secret could not be sealed")
+	}
+}
+
+func TestReadingAWebhookNeverReturnsItsSealedSecret(t *testing.T) {
+	accounts := newFakeAccountStore()
+	id := seedAccount(t, accounts)
+	store := newFakeWebhookStore()
+	sealer := newKMSSealer()
+	api := newTestAPIWith(t, adminapi.Deps{Webhooks: store, Accounts: accounts, SecretSealer: sealer})
+
+	const secret = "whsec-canary-long-enough"
+	create := httptest.NewRecorder()
+	api.ServeHTTP(create, authed(t, http.MethodPost, webhookPath(id),
+		`{"event_type":"mo","url":"https://acme.test/mo","secret":"`+secret+`"}`))
+	if create.Code != http.StatusCreated {
+		t.Fatalf("create: status = %d; body=%s", create.Code, create.Body)
+	}
+	var created map[string]any
+	_ = json.Unmarshal(create.Body.Bytes(), &created)
+	whID := created["id"].(string)
+	stored := store.mustGet(t, uuid.MustParse(whID)).Secret
+
+	list := httptest.NewRecorder()
+	api.ServeHTTP(list, authed(t, http.MethodGet, webhookPath(id), ""))
+	if list.Code != http.StatusOK {
+		t.Fatalf("list: status = %d; body=%s", list.Code, list.Body)
+	}
+	rotate := httptest.NewRecorder()
+	api.ServeHTTP(rotate, authed(t, http.MethodPatch, webhookPath(id, whID),
+		`{"secret":"rotated-secret-long-enough"}`))
+	if rotate.Code != http.StatusOK {
+		t.Fatalf("patch: status = %d; body=%s", rotate.Code, rotate.Body)
+	}
+	rotated := store.mustGet(t, uuid.MustParse(whID)).Secret
+
+	for _, surface := range []struct {
+		name string
+		body string
+		held cp.SealedSecret
+	}{
+		{"create", create.Body.String(), stored},
+		{"list", list.Body.String(), stored},
+		{"rotate", rotate.Body.String(), rotated},
+	} {
+		// Anchored first: a surface that returned an error document, or an empty list, would satisfy every
+		// "does not contain" below while proving nothing.
+		if !strings.Contains(surface.body, whID) {
+			t.Errorf("%s does not carry the webhook at all, so it proves no absence: %s", surface.name, surface.body)
+			continue
+		}
+		// The raw bytes are not probed: encoding/json renders a []byte as base64, so a DTO field carrying
+		// the ciphertext publishes its base64 and never the bytes themselves.
+		for probe, needle := range map[string]string{
+			"sealed secret in base64": base64.StdEncoding.EncodeToString(surface.held.Sealed),
+			"key reference":           surface.held.KMSKeyRef,
+		} {
+			if strings.Contains(surface.body, needle) {
+				t.Errorf("%s leaks the %s: %s", surface.name, probe, surface.body)
+			}
+		}
+	}
+}

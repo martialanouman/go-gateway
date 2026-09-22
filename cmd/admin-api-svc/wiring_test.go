@@ -3,8 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -24,29 +27,31 @@ import (
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/martialanouman/go-gateway/internal/auth"
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/configsecrets"
 	configsecretspb "github.com/martialanouman/go-gateway/internal/configsecrets/pb"
 	"github.com/martialanouman/go-gateway/internal/content"
+	cp "github.com/martialanouman/go-gateway/internal/controlplane"
+	"github.com/martialanouman/go-gateway/internal/modlrrouter"
 	"github.com/martialanouman/go-gateway/internal/realtime"
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
 	"github.com/martialanouman/go-gateway/internal/testutil/grpctest"
 	"github.com/martialanouman/go-gateway/internal/testutil/pgtest"
 	"github.com/martialanouman/go-gateway/internal/testutil/redistest"
 	"github.com/martialanouman/go-gateway/internal/testutil/tlstest"
+	"github.com/martialanouman/go-gateway/internal/webhook"
 )
 
 // The wiring must fail as a VALUE, never as a process exit: a constructor that log.Fatals cannot be
 // tested, and a boot failure that kills the process cannot be reported by the caller either.
-
 func TestOpenStoresRejectsAnUnparsableDatabaseURL(t *testing.T) {
 	t.Parallel()
 
 	cfg := testConfig()
 	cfg.Postgres.URL = "postgres://gateway:hunter2@:::/gateway"
-
 	st, err := openStores(t.Context(), cfg)
 	if err == nil {
 		st.close()
@@ -573,5 +578,106 @@ func TestAConnectorPasswordWrittenByTheAdminAPIOpensAgainFromPostgres(t *testing
 	}
 	if string(opened.GetPlaintext()) != password {
 		t.Errorf("the stored password opens to %q, want %q", opened.GetPlaintext(), password)
+	}
+}
+
+func TestAWebhookSecretWrittenByTheAdminAPISignsADeliveryTheReceiverVerifies(t *testing.T) {
+	master, err := content.GenerateDataKey()
+	if err != nil {
+		t.Fatalf("GenerateDataKey: %v", err)
+	}
+	kms, err := content.NewLocalKMS(master, "webhook-e2e/v1")
+	if err != nil {
+		t.Fatalf("NewLocalKMS: %v", err)
+	}
+	keySvc := grpc.NewServer()
+	configsecretspb.RegisterConfigSecretsServer(keySvc, configsecrets.NewServer(kms))
+	keyAddr := grpctest.Serve(t, keySvc)
+
+	cfg := testConfig()
+	cfg.Postgres = pgtest.Config(t)
+	cfg.Redis = redistest.Config(t)
+	cfg.ContentKey = config.ContentKey{Addr: keyAddr}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	app, err := newAdminApp(ctx, cfg, silentLogger())
+	if err != nil {
+		t.Fatalf("newAdminApp: %v", err)
+	}
+	defer app.close()
+
+	pool := pgtest.Pool(t)
+	var accountID uuid.UUID
+	if err := pool.QueryRow(ctx, `
+		WITH c AS (INSERT INTO control_plane.customers (name) VALUES ($1) RETURNING id)
+		INSERT INTO control_plane.smpp_accounts (customer_id, name) SELECT id, $2 FROM c RETURNING id`,
+		"webhook-e2e-"+uuid.NewString()[:8], "hook-app").Scan(&accountID); err != nil {
+		t.Fatalf("seed account: %v", err)
+	}
+
+	const secret = "whsec-e2e-long-enough"
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/smpp-accounts/"+accountID.String()+"/webhooks",
+		strings.NewReader(`{"event_type":"mo","url":"https://receiver.example/hook","secret":"`+secret+`"}`))
+	req.Header.Set("Authorization", "Bearer test-token")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	app.http.Handler.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create webhook: status = %d; body=%s", w.Code, w.Body)
+	}
+	if strings.Contains(w.Body.String(), secret) {
+		t.Errorf("the 201 body echoes the signing secret: %s", w.Body)
+	}
+
+	var sealed []byte
+	var keyRef string
+	if err := pool.QueryRow(ctx,
+		`SELECT secret_sealed, secret_kms_key_ref FROM control_plane.webhooks WHERE account_id = $1`, accountID).
+		Scan(&sealed, &keyRef); err != nil {
+		t.Fatalf("read the stored row: %v", err)
+	}
+	if bytes.Contains(sealed, []byte(secret)) {
+		t.Fatal("the signing secret sits in clear in secret_sealed")
+	}
+	if keyRef != kms.KeyRef() {
+		t.Errorf("secret_kms_key_ref = %q, want %q", keyRef, kms.KeyRef())
+	}
+
+	var gotSig, gotTS string
+	var gotBody []byte
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		gotSig = r.Header.Get(webhook.HeaderSignature)
+		gotTS = r.Header.Get(webhook.HeaderTimestamp)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer receiver.Close()
+
+	keyConn, err := grpc.NewClient(keyAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("dial key service: %v", err)
+	}
+	defer func() { _ = keyConn.Close() }()
+
+	sender := webhook.NewSender(receiver.Client(), nil,
+		modlrrouter.NewGRPCSecretOpener(configsecretspb.NewConfigSecretsClient(keyConn)), silentLogger())
+	wh := cp.Webhook{
+		ID: uuid.New(), AccountID: accountID, EventType: cp.WebhookEventMO, URL: receiver.URL,
+		Secret: cp.SealedSecret{Sealed: sealed, KMSKeyRef: keyRef}, Status: cp.WebhookActive,
+	}
+	ev := webhook.Event{ID: "evt-e2e", Payload: []byte(`{"mo":"hello"}`)}
+	if err := sender.Send(ctx, wh, ev); err != nil {
+		t.Fatalf("Send: %v — the return path cannot deliver with the secret the Admin API stored", err)
+	}
+	// Recomputed here rather than through webhook.Sign: this is the DoD's "a receiver verifies it", and a
+	// receiver implements the scheme, it does not call our function. Every other signature assertion in the
+	// repo goes through Sign, so Sign agreeing with itself proves nothing about the wire format.
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(gotTS + "."))
+	mac.Write(gotBody)
+	if want := "sha256=" + hex.EncodeToString(mac.Sum(nil)); gotSig != want {
+		t.Errorf("signature = %q, want %q — a receiver holding the operator's secret would reject it", gotSig, want)
 	}
 }

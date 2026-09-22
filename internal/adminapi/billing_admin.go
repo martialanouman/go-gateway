@@ -10,7 +10,6 @@ import (
 
 	"github.com/martialanouman/go-gateway/internal/auth"
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
-	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 	humaerr "github.com/martialanouman/go-gateway/internal/platform/errors/humaerr"
 	"github.com/martialanouman/go-gateway/internal/platform/keyset"
 )
@@ -343,15 +342,7 @@ func (h *billingAdminHandlers) sealAuthConfig(ctx context.Context, m map[string]
 		}
 		doc = marshalled
 	}
-	if h.sealer == nil {
-		return cp.SealedSecret{}, humaerr.Fail(errs.ErrInternal, "no secret sealer configured")
-	}
-	sealed, err := h.sealer.Seal(ctx, doc)
-	if err != nil {
-		// Opaque on purpose: the error is logged, and it must carry no fragment of the credentials.
-		return cp.SealedSecret{}, humaerr.Fail(errs.ErrInternal, "seal provider credentials")
-	}
-	return sealed, nil
+	return sealSecret(ctx, h.sealer, "provider credentials", string(doc))
 }
 
 func (h *billingAdminHandlers) createProvider(ctx context.Context, in *createProviderInput) (*providerOutput, error) {

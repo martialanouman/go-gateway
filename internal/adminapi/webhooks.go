@@ -77,10 +77,11 @@ type webhookUpdateBody struct {
 type webhookHandlers struct {
 	hooks    WebhookStore
 	accounts AccountStore
+	sealer   SecretSealer
 }
 
-func registerWebhooks(api huma.API, hooks WebhookStore, accounts AccountStore) {
-	h := &webhookHandlers{hooks: hooks, accounts: accounts}
+func registerWebhooks(api huma.API, hooks WebhookStore, accounts AccountStore, sealer SecretSealer) {
+	h := &webhookHandlers{hooks: hooks, accounts: accounts, sealer: sealer}
 
 	register(api, huma.Operation{
 		OperationID: "list-webhooks", Method: http.MethodGet, Path: "/admin/smpp-accounts/{id}/webhooks",
@@ -169,11 +170,15 @@ func (h *webhookHandlers) create(ctx context.Context, in *createWebhookInput) (*
 	if err != nil {
 		return nil, err
 	}
+	sealed, err := sealSecret(ctx, h.sealer, "webhook signing secret", in.Body.Secret)
+	if err != nil {
+		return nil, err
+	}
 	wh, err := h.hooks.Create(ctx, cp.NewWebhook{
 		AccountID:       accountID,
 		EventType:       cp.WebhookEventType(in.Body.EventType),
 		URL:             in.Body.URL,
-		Secret:          in.Body.Secret,
+		Secret:          sealed,
 		RetryPolicyJSON: encodePolicy(in.Body.RetryPolicy),
 	})
 	if err != nil {
@@ -202,12 +207,19 @@ func (h *webhookHandlers) update(ctx context.Context, in *updateWebhookInput) (*
 	if err != nil {
 		return nil, notFound("webhook")
 	}
-	wh, err := h.hooks.Update(ctx, accountID, id, cp.WebhookPatch{
+	patch := cp.WebhookPatch{
 		URL:             in.Body.URL,
-		Secret:          in.Body.Secret,
 		RetryPolicyJSON: encodePolicy(in.Body.RetryPolicy),
 		Status:          enumPtr[cp.WebhookStatus](in.Body.Status),
-	})
+	}
+	if in.Body.Secret != nil {
+		sealed, err := sealSecret(ctx, h.sealer, "webhook signing secret", *in.Body.Secret)
+		if err != nil {
+			return nil, err
+		}
+		patch.Secret = &sealed
+	}
+	wh, err := h.hooks.Update(ctx, accountID, id, patch)
 	if err != nil {
 		return nil, humaerr.FromError(err)
 	}

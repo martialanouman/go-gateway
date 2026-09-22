@@ -53,7 +53,7 @@ func testWebhook(t *testing.T, url string) cp.Webhook {
 	t.Helper()
 	return cp.Webhook{
 		ID: uuid.New(), AccountID: uuid.New(), EventType: cp.WebhookEventMO,
-		URL: url, Secret: "shhh", Status: cp.WebhookActive,
+		URL: url, Secret: sealedFor("shhh"), Status: cp.WebhookActive,
 	}
 }
 
@@ -79,7 +79,7 @@ func TestSendDefersInsteadOfBlocking(t *testing.T) {
 	park := &fakeParkSink{}
 
 	slept := false
-	s := webhook.NewSender(srv.Client(), park, nil,
+	s := webhook.NewSender(srv.Client(), park, stubOpener{}, nil,
 		webhook.WithRetrySink(retry),
 		webhook.WithSleep(func(context.Context, time.Duration) error { slept = true; return nil }))
 
@@ -112,7 +112,7 @@ func TestSendDeadLettersPermanentWithoutDeferring(t *testing.T) {
 	retry := &fakeRetrySink{}
 	park := &fakeParkSink{}
 
-	s := webhook.NewSender(srv.Client(), park, nil, webhook.WithRetrySink(retry))
+	s := webhook.NewSender(srv.Client(), park, stubOpener{}, nil, webhook.WithRetrySink(retry))
 	if err := s.Send(context.Background(), testWebhook(t, srv.URL), webhook.Event{ID: "ev-2", Payload: []byte(`{}`)}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestSendWithoutRetrySinkKeepsInlineBehaviour(t *testing.T) {
 	srv, hits := countingServer(t, http.StatusInternalServerError)
 	park := &fakeParkSink{}
 
-	s := webhook.NewSender(srv.Client(), park, nil,
+	s := webhook.NewSender(srv.Client(), park, stubOpener{}, nil,
 		webhook.WithMaxAttempts(3),
 		webhook.WithSleep(func(context.Context, time.Duration) error { return nil }))
 
@@ -156,7 +156,7 @@ func TestRetrySucceedsOnLaterAttempt(t *testing.T) {
 	retry := &fakeRetrySink{}
 	park := &fakeParkSink{}
 
-	s := webhook.NewSender(srv.Client(), park, nil, webhook.WithRetrySink(retry))
+	s := webhook.NewSender(srv.Client(), park, stubOpener{}, nil, webhook.WithRetrySink(retry))
 	err := s.Retry(context.Background(), testWebhook(t, srv.URL), webhook.Event{ID: "ev-4", Payload: []byte(`{}`)},
 		2, time.Now().Add(-time.Minute))
 	if err != nil {
@@ -179,7 +179,7 @@ func TestRetryRedefersWithIncrementedAttempt(t *testing.T) {
 	retry := &fakeRetrySink{}
 	firstAt := time.Now().Add(-time.Minute)
 
-	s := webhook.NewSender(srv.Client(), &fakeParkSink{}, nil, webhook.WithRetrySink(retry))
+	s := webhook.NewSender(srv.Client(), &fakeParkSink{}, stubOpener{}, nil, webhook.WithRetrySink(retry))
 	if err := s.Retry(context.Background(), testWebhook(t, srv.URL), webhook.Event{ID: "ev-5", Payload: []byte(`{}`)}, 2, firstAt); err != nil {
 		t.Fatalf("Retry: %v", err)
 	}
@@ -202,7 +202,7 @@ func TestRetryParksWhenTooOld(t *testing.T) {
 	retry := &fakeRetrySink{}
 	park := &fakeParkSink{}
 
-	s := webhook.NewSender(srv.Client(), park, nil,
+	s := webhook.NewSender(srv.Client(), park, stubOpener{}, nil,
 		webhook.WithRetrySink(retry), webhook.WithMaxRetryAge(30*time.Minute))
 	err := s.Retry(context.Background(), testWebhook(t, srv.URL), webhook.Event{ID: "ev-6", Payload: []byte(`{}`)},
 		2, time.Now().Add(-time.Hour))
@@ -225,7 +225,7 @@ func TestRetryParksWhenAttemptsExhausted(t *testing.T) {
 	retry := &fakeRetrySink{}
 	park := &fakeParkSink{}
 
-	s := webhook.NewSender(srv.Client(), park, nil,
+	s := webhook.NewSender(srv.Client(), park, stubOpener{}, nil,
 		webhook.WithRetrySink(retry), webhook.WithMaxAttempts(3))
 	if err := s.Retry(context.Background(), testWebhook(t, srv.URL), webhook.Event{ID: "ev-7", Payload: []byte(`{}`)}, 3, time.Now()); err != nil {
 		t.Fatalf("Retry: %v", err)
@@ -246,7 +246,7 @@ func TestDeferFailureSurfaces(t *testing.T) {
 	srv, _ := countingServer(t, http.StatusInternalServerError)
 	retry := &fakeRetrySink{err: errors.New("kafka down")}
 
-	s := webhook.NewSender(srv.Client(), &fakeParkSink{}, nil, webhook.WithRetrySink(retry))
+	s := webhook.NewSender(srv.Client(), &fakeParkSink{}, stubOpener{}, nil, webhook.WithRetrySink(retry))
 	if err := s.Send(context.Background(), testWebhook(t, srv.URL), webhook.Event{ID: "ev-8", Payload: []byte(`{}`)}); err == nil {
 		t.Fatal("Send = nil although the retry topic rejected the event — the caller would commit and lose it")
 	}
@@ -267,7 +267,7 @@ func TestDeferredRetryIsSignedFreshly(t *testing.T) {
 	wh := testWebhook(t, srv.URL)
 	payload := []byte(`{"id":"ev-9"}`)
 
-	s := webhook.NewSender(srv.Client(), &fakeParkSink{}, nil,
+	s := webhook.NewSender(srv.Client(), &fakeParkSink{}, stubOpener{}, nil,
 		webhook.WithRetrySink(&fakeRetrySink{}), webhook.WithClock(func() time.Time { return now }))
 	// An event first attempted an hour ago, retried now.
 	if err := s.Retry(context.Background(), wh, webhook.Event{ID: "ev-9", Payload: payload}, 2, now.Add(-time.Hour)); err != nil {
@@ -277,7 +277,7 @@ func TestDeferredRetryIsSignedFreshly(t *testing.T) {
 	if want := strconv.FormatInt(now.Unix(), 10); gotTS != want {
 		t.Errorf("timestamp = %q, want the send-time %q, not the original attempt's", gotTS, want)
 	}
-	if want := "sha256=" + webhook.Sign(wh.Secret, gotTS, payload); gotSig != want {
+	if want := "sha256=" + webhook.Sign("shhh", gotTS, payload); gotSig != want {
 		t.Errorf("signature = %q, want %q — a receiver would reject the retry", gotSig, want)
 	}
 }

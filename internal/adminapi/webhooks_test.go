@@ -16,6 +16,10 @@ import (
 
 const testSecret = "a-signing-secret-long-enough"
 
+func sealedFor(plaintext string) cp.SealedSecret {
+	return cp.SealedSecret{Sealed: []byte("sealed:" + plaintext), KMSKeyRef: "local/test-kek"}
+}
+
 // newWebhookAPI wires the Admin API with both stores the webhook surface needs: the account is read
 // first to honour the 404 its path promises, then the webhooks themselves.
 func newWebhookAPI(t *testing.T, hooks adminapi.WebhookStore, accounts adminapi.AccountStore) http.Handler {
@@ -52,7 +56,6 @@ func TestCreateWebhookNeverReturnsTheSecret(t *testing.T) {
 	w := httptest.NewRecorder()
 	api.ServeHTTP(w, authed(t, http.MethodPost, webhookPath(id),
 		`{"event_type":"mo","url":"https://acme.test/mo","secret":"`+testSecret+`"}`))
-
 	if w.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want 201; body=%s", w.Code, w.Body)
 	}
@@ -132,7 +135,7 @@ func TestWebhookSecretAndURLAreRefusedWhenUseless(t *testing.T) {
 	hooks := newFakeWebhookStore()
 	hookID := uuid.New()
 	hooks.seed(cp.Webhook{ID: hookID, AccountID: id, EventType: cp.WebhookEventMO,
-		URL: "https://acme.test/mo", Secret: testSecret, Status: cp.WebhookActive})
+		URL: "https://acme.test/mo", Secret: sealedFor(testSecret), Status: cp.WebhookActive})
 	api := newWebhookAPI(t, hooks, accounts)
 
 	for _, tc := range []struct{ name, method, path, body string }{
@@ -166,7 +169,6 @@ func TestCreateWebhookDuplicateBecomes409(t *testing.T) {
 	w := httptest.NewRecorder()
 	api.ServeHTTP(w, authed(t, http.MethodPost, webhookPath(id),
 		`{"event_type":"mo","url":"https://acme.test/mo","secret":"`+testSecret+`"}`))
-
 	if w.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want 409; body=%s", w.Code, w.Body)
 	}
@@ -182,7 +184,7 @@ func TestWebhookOfAnotherAccountIs404(t *testing.T) {
 	hooks := newFakeWebhookStore()
 	hookID := uuid.New()
 	hooks.seed(cp.Webhook{ID: hookID, AccountID: theirs, EventType: cp.WebhookEventMO,
-		URL: "https://theirs.test/mo", Secret: testSecret, Status: cp.WebhookActive})
+		URL: "https://theirs.test/mo", Secret: sealedFor(testSecret), Status: cp.WebhookActive})
 	api := newWebhookAPI(t, hooks, accounts)
 
 	for _, tc := range []struct{ name, method, body string }{
@@ -219,15 +221,15 @@ func TestWebhooksOfAnUnknownAccountIs404(t *testing.T) {
 	}
 }
 
-// TestUpdateWebhookRotatesTheSecretWithoutReturningIt covers the write-only field's other half: the
-// value goes in and changes the stored one, and still never comes back out.
+// That a rotation really re-seals the stored value is TestRotatingAWebhookSecretResealsIt, against a real
+// KMS. This one covers the wire: neither the new nor the old secret comes back out.
 func TestUpdateWebhookRotatesTheSecretWithoutReturningIt(t *testing.T) {
 	accounts := newFakeAccountStore()
 	id := seedAccount(t, accounts)
 	hooks := newFakeWebhookStore()
 	hookID := uuid.New()
 	hooks.seed(cp.Webhook{ID: hookID, AccountID: id, EventType: cp.WebhookEventDLR,
-		URL: "https://acme.test/dlr", Secret: "old-signing-secret-here", Status: cp.WebhookActive})
+		URL: "https://acme.test/dlr", Secret: sealedFor("old-signing-secret-here"), Status: cp.WebhookActive})
 	api := newWebhookAPI(t, hooks, accounts)
 
 	w := httptest.NewRecorder()
@@ -245,9 +247,6 @@ func TestUpdateWebhookRotatesTheSecretWithoutReturningIt(t *testing.T) {
 	if got["status"] != "disabled" {
 		t.Errorf("status = %v, want disabled", got["status"])
 	}
-	if stored := hooks.mustGet(t, hookID); stored.Secret != testSecret {
-		t.Errorf("stored secret = %q, want the rotated one", stored.Secret)
-	}
 }
 
 // TestDeleteWebhookReturns204: the contract's delete answers 204 with no body. That the row is really
@@ -258,7 +257,7 @@ func TestDeleteWebhookReturns204(t *testing.T) {
 	hooks := newFakeWebhookStore()
 	hookID := uuid.New()
 	hooks.seed(cp.Webhook{ID: hookID, AccountID: id, EventType: cp.WebhookEventMO,
-		URL: "https://acme.test/mo", Secret: testSecret, Status: cp.WebhookActive})
+		URL: "https://acme.test/mo", Secret: sealedFor(testSecret), Status: cp.WebhookActive})
 	api := newWebhookAPI(t, hooks, accounts)
 
 	w := httptest.NewRecorder()
@@ -279,7 +278,7 @@ func TestListWebhooksShowsDisabledOnes(t *testing.T) {
 	id := seedAccount(t, accounts)
 	hooks := newFakeWebhookStore()
 	hooks.seed(cp.Webhook{ID: uuid.New(), AccountID: id, EventType: cp.WebhookEventMO,
-		URL: "https://acme.test/mo", Secret: testSecret, Status: cp.WebhookDisabled})
+		URL: "https://acme.test/mo", Secret: sealedFor(testSecret), Status: cp.WebhookDisabled})
 	api := newWebhookAPI(t, hooks, accounts)
 
 	w := httptest.NewRecorder()

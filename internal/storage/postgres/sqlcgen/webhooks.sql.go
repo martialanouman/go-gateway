@@ -12,16 +12,18 @@ import (
 )
 
 const createWebhook = `-- name: CreateWebhook :one
-INSERT INTO control_plane.webhooks (account_id, event_type, url, secret, retry_policy_json)
-VALUES ($1, $2, $3, $4, COALESCE($5::jsonb, '{}'::jsonb))
-RETURNING id, account_id, event_type, url, secret, retry_policy_json, status, created_at, updated_at
+INSERT INTO control_plane.webhooks (account_id, event_type, url, secret_sealed, secret_kms_key_ref, retry_policy_json)
+VALUES ($1, $2, $3, $4, $5,
+        COALESCE($6::jsonb, '{}'::jsonb))
+RETURNING id, account_id, event_type, url, retry_policy_json, status, created_at, updated_at, secret_sealed, secret_kms_key_ref
 `
 
 type CreateWebhookParams struct {
 	AccountID       uuid.UUID
 	EventType       string
 	Url             string
-	Secret          string
+	SecretSealed    []byte
+	SecretKmsKeyRef string
 	RetryPolicyJson []byte
 }
 
@@ -32,7 +34,8 @@ func (q *Queries) CreateWebhook(ctx context.Context, arg CreateWebhookParams) (C
 		arg.AccountID,
 		arg.EventType,
 		arg.Url,
-		arg.Secret,
+		arg.SecretSealed,
+		arg.SecretKmsKeyRef,
 		arg.RetryPolicyJson,
 	)
 	var i ControlPlaneWebhook
@@ -41,11 +44,12 @@ func (q *Queries) CreateWebhook(ctx context.Context, arg CreateWebhookParams) (C
 		&i.AccountID,
 		&i.EventType,
 		&i.Url,
-		&i.Secret,
 		&i.RetryPolicyJson,
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SecretSealed,
+		&i.SecretKmsKeyRef,
 	)
 	return i, err
 }
@@ -70,7 +74,7 @@ func (q *Queries) DeleteWebhook(ctx context.Context, arg DeleteWebhookParams) (i
 }
 
 const getWebhook = `-- name: GetWebhook :one
-SELECT id, account_id, event_type, url, secret, retry_policy_json, status, created_at, updated_at FROM control_plane.webhooks
+SELECT id, account_id, event_type, url, retry_policy_json, status, created_at, updated_at, secret_sealed, secret_kms_key_ref FROM control_plane.webhooks
 WHERE account_id = $1 AND event_type = $2
 `
 
@@ -94,17 +98,18 @@ func (q *Queries) GetWebhook(ctx context.Context, arg GetWebhookParams) (Control
 		&i.AccountID,
 		&i.EventType,
 		&i.Url,
-		&i.Secret,
 		&i.RetryPolicyJson,
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SecretSealed,
+		&i.SecretKmsKeyRef,
 	)
 	return i, err
 }
 
 const listWebhooksByAccount = `-- name: ListWebhooksByAccount :many
-SELECT id, account_id, event_type, url, secret, retry_policy_json, status, created_at, updated_at FROM control_plane.webhooks
+SELECT id, account_id, event_type, url, retry_policy_json, status, created_at, updated_at, secret_sealed, secret_kms_key_ref FROM control_plane.webhooks
 WHERE account_id = $1
 ORDER BY event_type
 `
@@ -124,11 +129,12 @@ func (q *Queries) ListWebhooksByAccount(ctx context.Context, accountID uuid.UUID
 			&i.AccountID,
 			&i.EventType,
 			&i.Url,
-			&i.Secret,
 			&i.RetryPolicyJson,
 			&i.Status,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.SecretSealed,
+			&i.SecretKmsKeyRef,
 		); err != nil {
 			return nil, err
 		}
@@ -142,17 +148,19 @@ func (q *Queries) ListWebhooksByAccount(ctx context.Context, accountID uuid.UUID
 
 const updateWebhook = `-- name: UpdateWebhook :one
 UPDATE control_plane.webhooks SET
-    url               = COALESCE($1, url),
-    secret            = COALESCE($2, secret),
-    retry_policy_json = COALESCE($3, retry_policy_json),
-    status            = COALESCE($4, status)
-WHERE id = $5 AND account_id = $6
-RETURNING id, account_id, event_type, url, secret, retry_policy_json, status, created_at, updated_at
+    url                = COALESCE($1, url),
+    secret_sealed      = COALESCE($2, secret_sealed),
+    secret_kms_key_ref = COALESCE($3, secret_kms_key_ref),
+    retry_policy_json  = COALESCE($4, retry_policy_json),
+    status             = COALESCE($5, status)
+WHERE id = $6 AND account_id = $7
+RETURNING id, account_id, event_type, url, retry_policy_json, status, created_at, updated_at, secret_sealed, secret_kms_key_ref
 `
 
 type UpdateWebhookParams struct {
 	Url             *string
-	Secret          *string
+	SecretSealed    []byte
+	SecretKmsKeyRef *string
 	RetryPolicyJson []byte
 	Status          *string
 	ID              uuid.UUID
@@ -164,10 +172,15 @@ type UpdateWebhookParams struct {
 // webhooks_touch trigger. retry_policy_json IS resettable here, unlike the nullable columns of
 // debts/patch-null-ne-peut-pas-effacer-un-champ.md: an omitted field arrives as a nil RawMessage (SQL
 // NULL, COALESCE keeps the column) and a supplied {} arrives as two non-nil bytes, which COALESCE takes.
+//
+// The two halves of the sealed secret are COALESCE'd on the SAME argument being present or absent, so a
+// rotation cannot write the ciphertext while keeping the reference of the key that sealed the previous one
+// — a row that opens today and stops opening at the first master-key rotation.
 func (q *Queries) UpdateWebhook(ctx context.Context, arg UpdateWebhookParams) (ControlPlaneWebhook, error) {
 	row := q.db.QueryRow(ctx, updateWebhook,
 		arg.Url,
-		arg.Secret,
+		arg.SecretSealed,
+		arg.SecretKmsKeyRef,
 		arg.RetryPolicyJson,
 		arg.Status,
 		arg.ID,
@@ -179,11 +192,12 @@ func (q *Queries) UpdateWebhook(ctx context.Context, arg UpdateWebhookParams) (C
 		&i.AccountID,
 		&i.EventType,
 		&i.Url,
-		&i.Secret,
 		&i.RetryPolicyJson,
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SecretSealed,
+		&i.SecretKmsKeyRef,
 	)
 	return i, err
 }

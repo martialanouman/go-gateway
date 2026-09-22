@@ -28,7 +28,7 @@ func TestWebhookDeadLetterParksWithoutSecret(t *testing.T) {
 
 	wh := cp.Webhook{
 		ID: uuid.New(), AccountID: uuid.New(), EventType: cp.WebhookEventMO,
-		URL: "https://acct.test/hook", Secret: "whsec_super_secret",
+		URL: "https://acct.test/hook", Secret: cp.SealedSecret{Sealed: []byte("sealed:whsec_super_secret"), KMSKeyRef: "local/test-kek"},
 	}
 	ev := webhook.Event{ID: "ev-42", Payload: []byte(`{"from":"22507000001"}`)}
 
@@ -45,8 +45,8 @@ func TestWebhookDeadLetterParksWithoutSecret(t *testing.T) {
 	if string(rec.Key) != "ev-42" {
 		t.Errorf("key = %q, want ev-42", rec.Key)
 	}
-	if bytes.Contains(rec.Value, []byte("whsec_super_secret")) {
-		t.Fatal("dead-letter record must not carry the webhook secret")
+	if bytes.Contains(rec.Value, []byte("whsec_super_secret")) || bytes.Contains(rec.Value, []byte("local/test-kek")) {
+		t.Fatal("dead-letter record must not carry the webhook secret, sealed or not")
 	}
 
 	var got webhookDeadLetter

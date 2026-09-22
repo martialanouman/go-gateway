@@ -55,7 +55,7 @@ type Webhook struct {
 	AccountID       uuid.UUID
 	EventType       WebhookEventType
 	URL             string
-	Secret          string
+	Secret          SealedSecret
 	RetryPolicyJSON json.RawMessage
 	Status          WebhookStatus
 	CreatedAt       time.Time
@@ -69,7 +69,7 @@ type NewWebhook struct {
 	AccountID       uuid.UUID
 	EventType       WebhookEventType
 	URL             string
-	Secret          string
+	Secret          SealedSecret
 	RetryPolicyJSON json.RawMessage
 }
 
@@ -78,7 +78,7 @@ type NewWebhook struct {
 // and changing it would be a different subscription under the same id.
 type WebhookPatch struct {
 	URL             *string
-	Secret          *string
+	Secret          *SealedSecret
 	RetryPolicyJSON json.RawMessage
 	Status          *WebhookStatus
 }

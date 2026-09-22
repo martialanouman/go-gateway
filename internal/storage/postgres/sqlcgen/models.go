@@ -416,11 +416,12 @@ type ControlPlaneWebhook struct {
 	AccountID       uuid.UUID
 	EventType       string
 	Url             string
-	Secret          string
 	RetryPolicyJson []byte
 	Status          string
 	CreatedAt       pgtype.Timestamptz
 	UpdatedAt       pgtype.Timestamptz
+	SecretSealed    []byte
+	SecretKmsKeyRef string
 }
 
 // STUB — canonical definition lives in the Admin Dashboard spec. Present only to satisfy created_by FKs.

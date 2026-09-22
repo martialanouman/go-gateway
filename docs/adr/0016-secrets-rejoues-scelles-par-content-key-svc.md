@@ -145,3 +145,32 @@ une dans un process large, ce n'est pas « moins de process », c'est le double.
 - **Traçabilité :** `tasks-done/step-295.md` ; `.claude/rules/go-code.md` amendée pour distinguer un
   secret qu'on **vérifie** d'un secret qu'on **rejoue** — c'est l'absence de cette distinction qui a
   produit les deux défauts.
+
+## Addendum step-295b (2026-09-22) — un troisième secret, et le premier `Open`
+
+`control_plane.webhooks.secret` était le troisième secret rejoué ; l'inventaire de step-295, parti d'une
+chasse aux mots de passe et aux clés d'API, ne l'avait pas vu. Il suit cette décision sans la modifier :
+`secret_sealed bytea` + `secret_kms_key_ref text`, migration 0018, scellé par l'Admin API à l'écriture.
+
+Deux points de cet ADR passent de l'intention au fait :
+
+- **L'intercepteur autorise réellement par méthode.** `configSecretsCallers` portait un service ;
+  `mo-dlr-router-svc` est le premier appelant à n'avoir besoin que d'`Open`, et lui donner `Seal` aurait
+  été une escalade — ce pod détient `POSTGRES_URL` en écriture, donc il aurait pu sceller un mot de passe
+  choisi, l'écrire dans `smsc_connectors.password_sealed` et prendre la main sur un bind sortant. La carte
+  porte des méthodes ; `connector-pool-svc` y entrera avec `Open` seul, comme cet ADR l'annonçait. La revue
+  a montré que la première version du correctif s'arrêtait à mi-chemin : elle gardait `ConfigSecrets` par
+  méthode et laissait `ContentKeys` derrière la seule allowlist mTLS, donc `router-svc` conservait
+  `DestroyContentKeys` et `admin-api-svc` `GetContentEncryptionKey`. Une **carte unique** garde désormais
+  les deux services, par appelant et par méthode complète, et tout ce qui n'y figure pas est refusé.
+- **`Open` a un appelant, et il est sur un chemin chaud** — ce que cet ADR n'avait pas à traiter, les deux
+  premiers secrets n'étant jamais descellés. Un descellement par remise impose de **classer l'échec** :
+  la classification est une **liste de refus**. Seul un verdict sur le
+  chiffré lui-même est permanent et part au dead-letter — un mauvais tag de domaine (`InvalidArgument`) ou
+  un blob que la KMS ne descelle pas (`DataLoss`, code donné pour qu'il soit distinguable) ; tout le reste
+  se redélivre. `PermissionDenied` est une propriété du **déploiement** et non de la ligne : un rollout qui
+  met à jour une image avant l'autre viderait sinon tout le backlog différé au dead-letter. `Internal` est
+  ce que grpc-go rapporte pour une panne de transport. Les deux erreurs ne coûtent pas la même chose : trop
+  de transitoire bloque une partition, qu'un opérateur voit ; trop de déterministe détruit un backlog, que
+  personne ne voit. Pas de cache du clair : la branche fait déjà une lecture Postgres par événement,
+  et un cache sans invalidation ferait d'une rotation par l'Admin API un mensonge pendant son TTL.

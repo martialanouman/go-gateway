@@ -75,7 +75,7 @@ func retryRecord(t *testing.T, accountID uuid.UUID, eventID string, attempt int,
 func TestRetryRunnerReResolvesTheWebhook(t *testing.T) {
 	accountID := uuid.New()
 	getter := &fakeWebhookGetter{
-		wh:    cp.Webhook{ID: uuid.New(), AccountID: accountID, URL: "https://current.test/hook", Secret: "rotated", Status: cp.WebhookActive},
+		wh:    cp.Webhook{ID: uuid.New(), AccountID: accountID, URL: "https://current.test/hook", Secret: sealedFor("rotated"), Status: cp.WebhookActive},
 		found: true,
 	}
 	sender := &fakeRetrySender{}

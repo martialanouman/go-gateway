@@ -60,6 +60,7 @@ type Sender struct {
 	// original inline loop, so an un-migrated call site behaves exactly as before.
 	retry       RetrySink
 	maxRetryAge time.Duration
+	opener      SecretOpener
 }
 
 // Option overrides a Sender default (the clock, the backoff sleep, the jitter source) for tests.
@@ -85,7 +86,7 @@ func WithMaxAttempts(n int) Option { return func(s *Sender) { s.maxAttempts = n 
 // NewSender builds a sender. A nil client defaults to one with a strict per-request timeout; a nil
 // logger to slog.Default; a nil dead-letter sink to a no-op (the event is dropped after exhaustion —
 // wire a real sink in production).
-func NewSender(client *http.Client, deadLetter DeadLetterSink, logger *slog.Logger, opts ...Option) *Sender {
+func NewSender(client *http.Client, deadLetter DeadLetterSink, opener SecretOpener, logger *slog.Logger, opts ...Option) *Sender {
 	if client == nil {
 		client = &http.Client{
 			Timeout: 10 * time.Second,
@@ -104,6 +105,7 @@ func NewSender(client *http.Client, deadLetter DeadLetterSink, logger *slog.Logg
 	s := &Sender{
 		client:      client,
 		deadLetter:  deadLetter,
+		opener:      opener,
 		logger:      logger,
 		now:         time.Now,
 		sleep:       sleepCtx,
@@ -124,10 +126,14 @@ func NewSender(client *http.Client, deadLetter DeadLetterSink, logger *slog.Logg
 // wh.Status. The resolver returns disabled rows on purpose, and each delivery path decides for itself
 // what to do with one: a first delivery dead-letters it, the deferred retry runner parks it.
 func (s *Sender) Send(ctx context.Context, wh cp.Webhook, ev Event) error {
+	secret, err := s.openSecret(ctx, wh)
+	if err != nil {
+		return s.onOpenFailure(ctx, wh, ev, err)
+	}
 	// With a retry sink wired, the hot path spends exactly one attempt and defers a transient failure
 	// (step-192) rather than sleeping through a backoff on the caller's serial consumer goroutine.
 	if s.retry != nil {
-		return s.deliverOnce(ctx, wh, ev, 0, s.now())
+		return s.deliverOnce(ctx, wh, ev, secret, 0, s.now())
 	}
 	policy := parseRetryPolicy(wh.RetryPolicyJSON)
 	maxAttempts := policy.MaxAttempts
@@ -137,7 +143,7 @@ func (s *Sender) Send(ctx context.Context, wh cp.Webhook, ev Event) error {
 	backoff := policy.InitialBackoff
 
 	for attempt := 1; ; attempt++ {
-		outcome, reason := s.attempt(ctx, wh, ev)
+		outcome, reason := s.attempt(ctx, wh, ev, secret)
 		switch outcome {
 		case outcomeDelivered:
 			return nil
@@ -168,8 +174,8 @@ const (
 // attempt performs one signed POST and classifies the result. A 2xx is delivered; a 429 or 5xx is
 // retryable (transient); any other 4xx is permanent (retrying will not help); a transport error is
 // retryable. The reason string never contains the payload.
-func (s *Sender) attempt(ctx context.Context, wh cp.Webhook, ev Event) (outcome, string) {
-	req, err := s.buildRequest(ctx, wh, ev)
+func (s *Sender) attempt(ctx context.Context, wh cp.Webhook, ev Event, secret string) (outcome, string) {
+	req, err := s.buildRequest(ctx, wh, ev, secret)
 	if err != nil {
 		// A malformed URL cannot be fixed by retrying.
 		return outcomePermanent, "build request: " + err.Error()
@@ -197,7 +203,7 @@ func (s *Sender) attempt(ctx context.Context, wh cp.Webhook, ev Event) (outcome,
 
 // buildRequest builds the signed POST. The signature covers timestamp "." payload, so a captured
 // request cannot be replayed with a new timestamp.
-func (s *Sender) buildRequest(ctx context.Context, wh cp.Webhook, ev Event) (*http.Request, error) {
+func (s *Sender) buildRequest(ctx context.Context, wh cp.Webhook, ev Event, secret string) (*http.Request, error) {
 	ts := strconv.FormatInt(s.now().Unix(), 10)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, wh.URL, bytes.NewReader(ev.Payload))
 	if err != nil {
@@ -206,7 +212,7 @@ func (s *Sender) buildRequest(ctx context.Context, wh cp.Webhook, ev Event) (*ht
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(HeaderEventID, ev.ID)
 	req.Header.Set(HeaderTimestamp, ts)
-	req.Header.Set(HeaderSignature, "sha256="+Sign(wh.Secret, ts, ev.Payload))
+	req.Header.Set(HeaderSignature, "sha256="+Sign(secret, ts, ev.Payload))
 	return req, nil
 }
 
