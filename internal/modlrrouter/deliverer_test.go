@@ -325,7 +325,7 @@ func TestDelivererWebhookFallbackIsSigned(t *testing.T) {
 		Lookup:   fakeLookup{}, // no bind → webhook branch
 		Pods:     &fakePod{},
 		Webhooks: fakeWebhookResolver{wh: wh, found: true},
-		Sender:   webhook.NewSender(srv.Client(), nil, sealedForOpener{}, nil),
+		Sender:   webhook.NewSender(srv.Client(), nil, stubOpener{}, nil),
 		Producer: &fakeProducer{},
 		Metric:   &fakeDeliveryMetric{},
 	})

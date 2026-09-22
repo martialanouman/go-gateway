@@ -68,13 +68,19 @@ func (stubOpener) Open(_ context.Context, sealed cp.SealedSecret) ([]byte, error
 	return bytes.TrimPrefix(sealed.Sealed, []byte("sealed:")), nil
 }
 
-func testSender(sink webhook.DeadLetterSink, logger *slog.Logger) *webhook.Sender {
+func testSender(sink webhook.DeadLetterSink, logger *slog.Logger, opts ...webhook.Option) *webhook.Sender {
+	return senderWith(sink, stubOpener{}, logger, opts...)
+}
+
+func senderWith(sink webhook.DeadLetterSink, opener webhook.SecretOpener, logger *slog.Logger, opts ...webhook.Option) *webhook.Sender {
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
-	return webhook.NewSender(nil, sink, stubOpener{}, logger,
-		webhook.WithSleep(func(context.Context, time.Duration) error { return nil }),
-		webhook.WithJitter(func() float64 { return 0 }))
+	return webhook.NewSender(nil, sink, opener, logger,
+		append([]webhook.Option{
+			webhook.WithSleep(func(context.Context, time.Duration) error { return nil }),
+			webhook.WithJitter(func() float64 { return 0 }),
+		}, opts...)...)
 }
 
 // TestSendMaxAttemptsCapsPolicy: WithMaxAttempts bounds the hot-path retries below the webhook's own

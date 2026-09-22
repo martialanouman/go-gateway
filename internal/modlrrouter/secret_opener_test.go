@@ -113,8 +113,8 @@ func sealedFor(plaintext string) cp.SealedSecret {
 	return cp.SealedSecret{Sealed: []byte("sealed:" + plaintext), KMSKeyRef: "local/test-kek"}
 }
 
-type sealedForOpener struct{}
+type stubOpener struct{}
 
-func (sealedForOpener) Open(_ context.Context, sealed cp.SealedSecret) ([]byte, error) {
+func (stubOpener) Open(_ context.Context, sealed cp.SealedSecret) ([]byte, error) {
 	return bytes.TrimPrefix(sealed.Sealed, []byte("sealed:")), nil
 }
