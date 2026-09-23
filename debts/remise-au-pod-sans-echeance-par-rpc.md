@@ -1,7 +1,7 @@
 # La remise d'un MO/DLR à un pod n'a pas d'échéance par RPC
 
-> **Statut :** OUVERTE · **Nature :** technique
-> **Née de :** step-303 · **Portée par :** —
+> **Statut :** PAYÉE le 2026-09-23 (step-304) · **Nature :** technique
+> **Née de :** step-303 · **Portée par :** step-304
 
 **Ce qu'on a fait à la place.** `PodClients.Deliver` (`internal/modlrrouter/poddeliverer.go`) appelle
 `SessionRegistry.Deliver` avec le ctx du consommateur Kafka, qui n'a pas d'échéance. Step-303 borne
