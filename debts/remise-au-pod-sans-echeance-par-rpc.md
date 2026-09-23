@@ -1,7 +1,11 @@
 # La remise d'un MO/DLR à un pod n'a pas d'échéance par RPC
 
 > **Statut :** PAYÉE le 2026-09-23 (step-304) · **Nature :** technique
-> **Née de :** step-303 · **Portée par :** step-304
+> **Née de :** step-303 · **Payée par :** step-304
+
+**Payée.** `tryBinds` borne chaque bind par `bindDeliverTimeout` (15 s,
+`internal/modlrrouter/deliverer.go`) : un pod muet coûte 15 s puis la marche passe au bind suivant, avec
+une échéance neuve. Au pire N × 15 s par record, N = binds vivants du compte.
 
 **Ce qu'on a fait à la place.** `PodClients.Deliver` (`internal/modlrrouter/poddeliverer.go`) appelle
 `SessionRegistry.Deliver` avec le ctx du consommateur Kafka, qui n'a pas d'échéance. Step-303 borne
