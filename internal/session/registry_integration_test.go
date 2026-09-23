@@ -357,9 +357,9 @@ func TestRebindRenewsThePodAddress(t *testing.T) {
 }
 
 // TestRefreshDoesNotRewriteAFreshAddress is step-304: every live bind re-Binds every 30 s, and each
-// re-Bind used to SET the same address on the same key — ~67 writes/s on one key for a pod holding
-// 2 000 binds. A freshly published address is skipped; one older than a quarter TTL is rewritten, which
-// keeps the key alive under any live bind (see the Design arrêté of step-304 for the bound).
+// re-Bind used to SET the same address on the same key. A freshly published address is skipped; one
+// older than a quarter TTL is rewritten, which keeps the key alive under any live bind (see the Design
+// arrêté of step-304 for the bound).
 func TestRefreshDoesNotRewriteAFreshAddress(t *testing.T) {
 	rdb := redistest.Client(t)
 	clk := &clock{t: time.Unix(1_700_000_000, 0)}
@@ -390,7 +390,9 @@ func TestRefreshDoesNotRewriteAFreshAddress(t *testing.T) {
 	}
 
 	// Deleting the key makes a skipped write observable: a rewrite would put it back.
-	rdb.Del(ctx, podKey)
+	if err := rdb.Del(ctx, podKey).Err(); err != nil {
+		t.Fatalf("drop the published address: %v", err)
+	}
 	clk.advance(session.DefaultSessionTTL/4 - time.Second)
 	for range 5 {
 		bind("10.0.0.1:7000")
@@ -404,7 +406,9 @@ func TestRefreshDoesNotRewriteAFreshAddress(t *testing.T) {
 		t.Errorf("a changed address = %q, want it published at once", got)
 	}
 
-	rdb.Del(ctx, podKey)
+	if err := rdb.Del(ctx, podKey).Err(); err != nil {
+		t.Fatalf("drop the published address: %v", err)
+	}
 	clk.advance(session.DefaultSessionTTL / 4)
 	bind("10.0.0.2:7000")
 	if got := published(); got != "10.0.0.2:7000" {

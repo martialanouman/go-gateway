@@ -1,6 +1,6 @@
 # La remise d'un MO/DLR à un pod n'a pas d'échéance par RPC
 
-> **Statut :** PAYÉE le 2026-09-23 (step-304) · **Nature :** technique
+> **Statut :** PAYÉE le 2026-09-23 · **Nature :** technique
 > **Née de :** step-303 · **Payée par :** step-304
 
 **Payée.** `tryBinds` borne chaque bind par `bindDeliverTimeout` (15 s,

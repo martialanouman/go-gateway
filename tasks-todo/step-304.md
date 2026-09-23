@@ -82,6 +82,9 @@ Arbitrage : Fable, le 2026-09-23. Deux écarts à la lettre de la fiche, dits ci
 - **Budget de latence** : au pire N × 15 s par record, N = binds vivants du compte (5 binds sourds =
   75 s de tête de ligne). Aujourd'hui : non borné. Couper la marche au premier `DeadlineExceeded` est
   refusé : c'est exactement un pod lent qui condamne ses voisins.
+- **Contrepartie : un doublon possible.** Un pod qui a déjà écrit le `deliver_sm` mais dont la
+  réponse arrive après 15 s voit le bind suivant recevoir le même MO/DLR. C'est la sémantique
+  at-least-once de la voie retour, déjà vraie pour un `Unavailable` après `ResponseTimeout`.
 - L'échéance est dans `tryBinds` et non dans `PodClients` : c'est une règle de routage, testable
   contre un faux `PodDeliverer`. Elle est réglable par `DelivererDeps.BindTimeout` (zéro = 15 s),
   pour le test seulement ; le câblage ne la fixe pas.
@@ -105,6 +108,12 @@ Arbitrage : Fable, le 2026-09-23. Deux écarts à la lettre de la fiche, dits ci
   sans adresse est sauté vers le webhook — la dégradation déjà prévue par `podAddrs`.
 - La mémoire n'est qu'une suppression d'écritures, jamais une source de vérité : élaguée des entrées
   de plus d'un TTL au moment d'une publication, pour ne pas grossir à chaque déploiement.
+- **Contrepartie : l'adresse n'est plus toujours aussi fraîche que le jeton.** Un refresh sauté
+  renouvelle le jeton sans l'adresse ; si le refresh suivant échoue (Redis injoignable), l'adresse
+  expire jusqu'à ~13 s avant le jeton, et le bind est sauté vers le webhook pendant ce temps.
+  Seuls les pods à peu de binds l'atteignent, et il faut un refresh raté.
+- La borne suppose un refresh à mi-TTL : `WithSessionTTL` ne la garde que si le pod rafraîchit à la
+  moitié de ce TTL-là. Aucun câblage ne l'appelle aujourd'hui.
 
 ## Definition of Done
 

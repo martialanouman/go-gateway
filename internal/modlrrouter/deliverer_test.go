@@ -401,7 +401,6 @@ func (f *stallingPod) Deliver(ctx context.Context, _ modlrrouter.LiveBind, _ []b
 			f.onStall()
 		}
 		<-ctx.Done()
-		return ctx.Err()
 	}
 	return ctx.Err()
 }
@@ -462,7 +461,7 @@ func TestDelivererCallerCancellationIsNotABindFailure(t *testing.T) {
 		t.Fatalf("Deliver = %v, want context.Canceled so the record is reprocessed", err)
 	}
 	if pod.tried != 1 {
-		t.Errorf("binds tried = %d, want 1 — the walk goes on after our own cancellation", pod.tried)
+		t.Errorf("binds tried = %d, want 1 — the walk must stop at our own cancellation", pod.tried)
 	}
 	if len(metric.calls) != 0 || len(prod.recs) != 0 || len(sender.sent) != 0 {
 		t.Errorf("metric = %v, dead-letters = %d, webhooks = %d; want none", metric.calls, len(prod.recs), len(sender.sent))
