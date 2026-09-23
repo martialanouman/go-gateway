@@ -38,11 +38,15 @@ func startPod(t *testing.T, name string, reached chan string) string {
 	if err != nil {
 		t.Fatalf("listen %s: %v", name, err)
 	}
+	t.Cleanup(servePod(lis, name, reached).Stop)
+	return lis.Addr().String()
+}
+
+func servePod(lis net.Listener, name string, reached chan string) *grpc.Server {
 	srv := grpc.NewServer()
 	registrypb.RegisterSessionRegistryServer(srv, &recordingDeliverServer{reached: reached, name: name})
 	go func() { _ = srv.Serve(lis) }()
-	t.Cleanup(srv.Stop)
-	return lis.Addr().String()
+	return srv
 }
 
 // TestPodClientsDialTheAddressTheBindCarries is step-302 at the dialling end: two pods on two real
@@ -166,10 +170,10 @@ func TestPodClientsEvictAndCloseAnAddressNoLongerServed(t *testing.T) {
 		now = now.Add(window / 2)
 	}
 	deliver(kept)
-	now = now.Add(window/2 + time.Nanosecond)
+	now = now.Add(window)
 	deliver(kept)
 
-	// dialled[1] is kept, served every half-window: it must survive. Every rolled pod was last served
+	// dialled[1] is kept, last served exactly one window ago: it must survive. Every rolled pod was last served
 	// more than a window ago and must be shut down.
 	for i, c := range dialled {
 		state := c.GetState()
@@ -195,12 +199,6 @@ func TestPodClientsReachThePodNowAtAFailedAddress(t *testing.T) {
 		t.Fatal(err)
 	}
 	addr := lis.Addr().String()
-	serve := func(lis net.Listener, name string) *grpc.Server {
-		srv := grpc.NewServer()
-		registrypb.RegisterSessionRegistryServer(srv, &recordingDeliverServer{reached: reached, name: name})
-		go func() { _ = srv.Serve(lis) }()
-		return srv
-	}
 
 	var conn *grpc.ClientConn
 	pods := modlrrouter.NewPodClients(func(addr string) (*grpc.ClientConn, error) {
@@ -212,7 +210,7 @@ func TestPodClientsReachThePodNowAtAFailedAddress(t *testing.T) {
 	defer pods.Close()
 	bind := modlrrouter.LiveBind{PodID: "p", Addr: addr, BindID: "b"}
 
-	old := serve(lis, "old")
+	old := servePod(lis, "old", reached)
 	if err := pods.Deliver(context.Background(), bind, []byte{0x01}); err != nil {
 		t.Fatalf("Deliver to the old occupant: %v", err)
 	}
@@ -235,7 +233,7 @@ func TestPodClientsReachThePodNowAtAFailedAddress(t *testing.T) {
 	if err != nil {
 		t.Fatalf("relisten on %s: %v", addr, err)
 	}
-	defer serve(lis, "new").Stop()
+	defer servePod(lis, "new", reached).Stop()
 
 	for pods.Deliver(ctx, bind, []byte{0x01}) != nil {
 		if ctx.Err() != nil {

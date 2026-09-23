@@ -55,8 +55,6 @@ type podConn struct {
 	lastUsed time.Time
 }
 
-// evictAfter must exceed the session TTL, or a bind still listed by the registry could lose its
-// connection between two of its own deliveries.
 const evictAfter = 2 * session.DefaultSessionTTL
 
 // PodClientsOption configures PodClients.
@@ -114,7 +112,7 @@ func (p *PodClients) conn(bind LiveBind) (*grpc.ClientConn, error) {
 	if c, ok := p.conns[bind.Addr]; ok {
 		c.lastUsed = now
 		// The address may have been handed to a new pod while the old occupant's connection sat in
-		// backoff (up to 120 s). Sticky TRANSIENT_FAILURE keeps this RPC failing fast either way; the
+		// backoff. Sticky TRANSIENT_FAILURE keeps this RPC failing fast either way; the
 		// reset only makes the next one find the new pod instead of waiting the backoff out.
 		if c.GetState() == connectivity.TransientFailure {
 			c.ResetConnectBackoff()

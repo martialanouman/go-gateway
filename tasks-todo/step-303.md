@@ -73,6 +73,8 @@ de la DoD 3.
   (bind suivant, webhook ou dead-letter), la remise n'est pas condamnée. Rejeté : redialer une conn
   neuve — une conn IDLE met l'RPC en attente jusqu'au connect timeout (~20 s) pour chaque message vers
   un pod réellement mort, en tête de ligne.
+  Contrepartie : tant que le registre liste un pod mort (≤ 60 s), chaque message vers lui relance
+  une tentative de connexion (jamais deux en parallèle), hors du chemin critique.
 - **Coût sur le chemin critique :** un parcours O(n) de la map et un `GetState()` par `Deliver` ; un
   redial (handshake TLS, quelques ms) pour un pod vivant resté W sans être servi.
 - **Écarts assumés à la lettre de la fiche :** (1) un pod vivant jamais servi pendant W voit sa
