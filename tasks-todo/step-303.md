@@ -55,6 +55,31 @@ Une piste à peser : évincer sur l'**absence**, pas sur l'échec — une entré
 apparue dans aucun `Lookup` depuis une fenêtre supérieure au TTL de session (60 s) ne peut plus
 correspondre à un bind vivant. C'est l'information que le registre porte déjà.
 
+## Design arrêté
+
+Arbitrage : Fable (A sur les quatre points), puis arbitrage humain le 2026-09-23 pour la reformulation
+de la DoD 3.
+
+- **Éviction sur l'absence, mesurée au dernier usage.** `conn()` horodate l'adresse servie ; une entrée
+  non servie depuis `W = 2 × session.DefaultSessionTTL` (120 s) est retirée **et fermée**. Un pod mort
+  est donc relâché au plus tard 60 s (registre) + 120 s après sa mort. `PodDeliverer` reste inchangée.
+- **Balayage paresseux dans `conn()`**, sous le mutex déjà pris (n ≈ pods vivants) ; les `Close()` se
+  font hors verrou. Plafond assumé : sans aucun trafic, les orphelines vivent jusqu'au prochain
+  `Deliver`. Aucune goroutine.
+- **Adresse réattribuée : sur un hit en `TransientFailure`, `ResetConnectBackoff()`.** Non bloquant :
+  `pick_first` garde un TF collant (A62), donc l'RPC en cours échoue vite comme aujourd'hui, et la
+  tentative de reconnexion part aussitôt au lieu d'attendre un backoff jusqu'à 120 s. La fenêtre de
+  péremption passe de ~2 min à la durée d'une reconnexion : **un** message peut encore être sauté
+  (bind suivant, webhook ou dead-letter), la remise n'est pas condamnée. Rejeté : redialer une conn
+  neuve — une conn IDLE met l'RPC en attente jusqu'au connect timeout (~20 s) pour chaque message vers
+  un pod réellement mort, en tête de ligne.
+- **Coût sur le chemin critique :** un parcours O(n) de la map et un `GetState()` par `Deliver` ; un
+  redial (handshake TLS, quelques ms) pour un pod vivant resté W sans être servi.
+- **Écarts assumés à la lettre de la fiche :** (1) un pod vivant jamais servi pendant W voit sa
+  connexion fermée puis rouverte au besoin ; (2) une RPC en vol depuis plus de W (ctx sans échéance,
+  pod muet) est annulée par la fermeture — `tryBinds` passe au bind suivant. L'échéance par RPC qui
+  supprimerait ce cas n'est pas l'objet de cette fiche.
+
 ## Definition of Done
 
 - [ ] Une discipline d'éviction tranchée et écrite sous `## Design arrêté`, avec ce qu'elle coûte au
@@ -62,7 +87,8 @@ correspondre à un bind vivant. C'est l'information que le registre porte déjà
 - [ ] Un test qui échouerait sur le code actuel : un cache qui a vu N adresses successives n'en retient
       pas N. Il doit constater la **fermeture** de la connexion évincée, pas seulement son retrait de la
       map — une `ClientConn` retirée mais non fermée continue de retenter.
-- [ ] Aucune éviction d'une connexion dont un bind vivant dépend encore.
+- [ ] Aucune éviction d'une connexion servie dans la fenêtre W (reformulé par arbitrage humain le
+      2026-09-23 : l'absence se mesure au dernier usage, cf. `## Design arrêté`).
 - [ ] Le scénario de l'adresse réattribuée est exercé : une connexion en échec pour une adresse donnée
       ne doit pas condamner la remise vers le pod qui occupe désormais cette adresse.
 - [ ] gofmt/goimports · golangci-lint · `go test -race ./...` verts
