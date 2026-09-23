@@ -1,6 +1,6 @@
 # step-304 — La voie retour raconte mal ses échecs, et écrit plus qu'il ne faut
 
-> **Jalon :** Dettes ouvertes par step-302 · **Statut :** À FAIRE
+> **Jalon :** Dettes ouvertes par step-302 · **Statut :** LIVRÉE
 > **Dépend de :** step-302 · **Bloque :** step-410 (go-live)
 
 ## Pourquoi cette fiche existe
@@ -117,16 +117,16 @@ Arbitrage : Fable, le 2026-09-23. Deux écarts à la lettre de la fiche, dits ci
 
 ## Definition of Done
 
-- [ ] Les deux voies tranchées et écrites sous `## Design arrêté`, celle du constat 2 avec le coût de
+- [x] Les deux voies tranchées et écrites sous `## Design arrêté`, celle du constat 2 avec le coût de
       la reprise après panne Redis.
-- [ ] Un test qui échouerait aujourd'hui pour le constat 1 : un premier bind qui consomme l'échéance ne
+- [x] Un test qui échouerait aujourd'hui pour le constat 1 : un premier bind qui consomme l'échéance ne
       doit pas faire compter les binds suivants comme morts, ni produire la raison `bind_exhausted`.
-- [ ] Un test qui échouerait aujourd'hui pour le constat 2 : N rafraîchissements d'un même pod ne
+- [x] Un test qui échouerait aujourd'hui pour le constat 2 : N rafraîchissements d'un même pod ne
       produisent pas N écritures de son adresse.
-- [ ] L'adresse reste publiée en continu sous un bind vivant — c'est l'invariant que step-302 a posé et
+- [x] L'adresse reste publiée en continu sous un bind vivant — c'est l'invariant que step-302 a posé et
       que ce constat ne doit pas défaire : un pod dont l'adresse expire sous une session vivante éteint
       la voie retour SMPP en silence.
-- [ ] gofmt/goimports · golangci-lint · `go test -race ./...` verts
+- [x] gofmt/goimports · golangci-lint · `go test -race ./...` verts
 
 ## Hors périmètre
 

@@ -341,7 +341,7 @@ Indépendantes de la chaîne de charge : parallélisables si deux mains travaill
 - [x] step-303 — Le cache de connexions par pod de `mo-dlr-router-svc` ne s'évince jamais : une
       `ClientConn` par pod retiré, qui retente indéfiniment — dette antérieure, rendue observable par
       step-302
-- [ ] step-304 — La voie retour raconte mal ses échecs (`bind_exhausted` pour une annulation qui est la
+- [x] step-304 — La voie retour raconte mal ses échecs (`bind_exhausted` pour une annulation qui est la
       nôtre) et republie l'adresse du pod à chaque rafraîchissement de bind — deux dettes antérieures,
       mises en production par step-302
 - [ ] step-305 — Le TLS client vers les quatre magasins : Kafka et ClickHouse sont du code, Postgres et
