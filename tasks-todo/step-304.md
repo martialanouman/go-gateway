@@ -60,6 +60,52 @@ tient l'échéance de sa dernière publication en mémoire et ne réécrit qu'à
 à une écriture par pod et par demi-TTL au lieu d'une par bind. Attention à ce que la reprise après une
 panne Redis ne laisse pas l'adresse absente jusqu'à la prochaine échéance locale.
 
+## Design arrêté
+
+Arbitrage : Fable, le 2026-09-23. Deux écarts à la lettre de la fiche, dits ci-dessous.
+
+**Constat 1 — une échéance par bind, et l'annulation de l'appelant arrête la marche.**
+
+- Le récit de la fiche suppose une échéance de l'appelant qui **n'existe pas** : le ctx vient du
+  consommateur Kafka, sans échéance, annulé seulement à l'arrêt. Le vrai défaut du chemin est l'inverse :
+  un pod qui accepte TCP sans répondre gèle la partition sans borne
+  (`debts/remise-au-pod-sans-echeance-par-rpc.md`, payée ici).
+- `tryBinds` borne chaque `pods.Deliver` par `bindDeliverTimeout` = 15 s. Un `DeadlineExceeded` du
+  ctx FILS est l'échec de CE bind : on passe au suivant, qui reçoit une échéance neuve.
+- Après un échec, si le ctx PARENT est mort, la marche s'arrête et rend l'erreur : le record est
+  retraité, sans `UndeliveredInc`, sans `bind_exhausted`, sans dead-letter. On lit `ctx.Err()` du
+  parent, jamais le code du status (un `context.Canceled` brut se lit `codes.Unknown`).
+- **15 s** : au-dessus du `ResponseTimeout` du pod (10 s), pour que le cas courant (ESME muet, fenêtre
+  libre) soit rendu `Unavailable` par le pod, qui journalise le bind ; seul un bind à fenêtre pleine
+  et ESME lent tombe sur notre échéance, et il étouffe déjà. L'échéance se propage au pod, dont `Send`
+  libère sur `ctx.Done()`.
+- **Budget de latence** : au pire N × 15 s par record, N = binds vivants du compte (5 binds sourds =
+  75 s de tête de ligne). Aujourd'hui : non borné. Couper la marche au premier `DeadlineExceeded` est
+  refusé : c'est exactement un pod lent qui condamne ses voisins.
+- L'échéance est dans `tryBinds` et non dans `PodClients` : c'est une règle de routage, testable
+  contre un faux `PodDeliverer`. Elle est réglable par `DelivererDeps.BindTimeout` (zéro = 15 s),
+  pour le test seulement ; le câblage ne la fixe pas.
+
+**Constat 2 — le `Registry` saute un `SET` d'adresse publié il y a moins de TTL/4.**
+
+- Le `SET` se fait dans `session-manager-svc`, pas dans le pod : la mémoire vit dans le `Registry`,
+  qui sait lequel des deux pas a échoué. Le protocole pod → registre ne change pas, et le pod envoie
+  toujours son adresse à chaque refresh (invariant step-302 intact).
+- Mémoire `podID → {addr, at}`. On saute si même adresse ET `now − at < TTL/4` (15 s). Adresse
+  différente ou entrée absente → `SET`. La mémoire n'est mise à jour **qu'après un `SET` réussi**,
+  avec le `now` pris avant lui (la clé est crue plus vieille qu'elle n'est).
+- **Pourquoi TTL/4 et pas la mi-TTL de la fiche** : un saut à 29,9 s suivi du refresh suivant à
+  59,9 s laisse 1 s avant l'expiration à 61 s. Avec TTL/4, quelle que soit la réplique qui sert le
+  Bind (mémoires indépendantes) : tout saut a lieu ≤ 15 s après un `SET`, un bind vivant se
+  rafraîchit ≤ 30 s + 5 s d'appel, donc l'âge de la clé reste ≤ 50 s < 61 s.
+- **Coût** : de ~67 `SET`/s sur la clé d'un pod à 2 000 binds, à au plus un par 15 s et par réplique.
+- **Reprise après panne Redis** : un `SET` en échec ne touche pas la mémoire, le Bind suivant réécrit.
+  Une perte de données sans erreur (Redis redémarré à vide) laisse l'adresse absente ≤ 15 s ; les
+  sessions elles-mêmes ne reviennent qu'à leur refresh (≤ 30 s). Pendant ce temps, un bind revenu
+  sans adresse est sauté vers le webhook — la dégradation déjà prévue par `podAddrs`.
+- La mémoire n'est qu'une suppression d'écritures, jamais une source de vérité : élaguée des entrées
+  de plus d'un TTL au moment d'une publication, pour ne pas grossir à chaque déploiement.
+
 ## Definition of Done
 
 - [ ] Les deux voies tranchées et écrites sous `## Design arrêté`, celle du constat 2 avec le coût de
