@@ -338,7 +338,7 @@ Indépendantes de la chaîne de charge : parallélisables si deux mains travaill
 - [x] step-302 — La remise MO/DLR par pod n'a pas de nom DNS à joindre : un `Deployment` ne fabrique pas
       d'enregistrement A par pod, la voie retour SMPP bascule donc en webhook sans le dire — ouverte par
       step-300b
-- [ ] step-303 — Le cache de connexions par pod de `mo-dlr-router-svc` ne s'évince jamais : une
+- [x] step-303 — Le cache de connexions par pod de `mo-dlr-router-svc` ne s'évince jamais : une
       `ClientConn` par pod retiré, qui retente indéfiniment — dette antérieure, rendue observable par
       step-302
 - [ ] step-304 — La voie retour raconte mal ses échecs (`bind_exhausted` pour une annulation qui est la
