@@ -5,13 +5,17 @@ import (
 	"fmt"
 	"net"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/backoff"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 
 	"github.com/martialanouman/go-gateway/internal/modlrrouter"
+	"github.com/martialanouman/go-gateway/internal/session"
 	registrypb "github.com/martialanouman/go-gateway/internal/session/pb"
 )
 
@@ -129,5 +133,117 @@ func TestPodClientsCacheConnectionsPerAddressNotPerPod(t *testing.T) {
 		default:
 			t.Fatalf("no pod reached for %s", tc.want)
 		}
+	}
+}
+
+// TestPodClientsEvictAndCloseAnAddressNoLongerServed is step-303: a cache that has seen N successive
+// addresses must not hold N. The evicted connection must be CLOSED, not merely forgotten — a ClientConn
+// dropped from the map but left open keeps reconnecting on its own backoff, forever.
+func TestPodClientsEvictAndCloseAnAddressNoLongerServed(t *testing.T) {
+	reached := make(chan string, 8)
+	now := time.Unix(0, 0)
+	var dialled []*grpc.ClientConn
+	pods := modlrrouter.NewPodClients(func(addr string) (*grpc.ClientConn, error) {
+		c, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		dialled = append(dialled, c)
+		return c, err
+	}, modlrrouter.WithPodClientsClock(func() time.Time { return now }))
+	defer pods.Close()
+
+	const window = 2 * session.DefaultSessionTTL
+	deliver := func(addr string) {
+		t.Helper()
+		if err := pods.Deliver(context.Background(), modlrrouter.LiveBind{PodID: "p", Addr: addr, BindID: "b"}, []byte{0x01}); err != nil {
+			t.Fatalf("Deliver to %s: %v", addr, err)
+		}
+		<-reached
+	}
+
+	kept := startPod(t, "kept", reached)
+	for i := range 4 {
+		deliver(startPod(t, fmt.Sprintf("rolled-%d", i), reached))
+		deliver(kept)
+		now = now.Add(window / 2)
+	}
+	deliver(kept)
+	now = now.Add(window/2 + time.Nanosecond)
+	deliver(kept)
+
+	// dialled[1] is kept, served every half-window: it must survive. Every rolled pod was last served
+	// more than a window ago and must be shut down.
+	for i, c := range dialled {
+		state := c.GetState()
+		if i == 1 {
+			if state == connectivity.Shutdown {
+				t.Errorf("connection to the pod served within the window was closed")
+			}
+			continue
+		}
+		if state != connectivity.Shutdown {
+			t.Errorf("connection %d to a pod not served for over %s is %s, want Shutdown", i, window, state)
+		}
+	}
+}
+
+// TestPodClientsReachThePodNowAtAFailedAddress is the reassigned address: the old occupant's connection
+// sits in TRANSIENT_FAILURE with a long backoff when a new pod takes the address. Delivery to the new pod
+// must not wait out that backoff.
+func TestPodClientsReachThePodNowAtAFailedAddress(t *testing.T) {
+	reached := make(chan string, 8)
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := lis.Addr().String()
+	serve := func(lis net.Listener, name string) *grpc.Server {
+		srv := grpc.NewServer()
+		registrypb.RegisterSessionRegistryServer(srv, &recordingDeliverServer{reached: reached, name: name})
+		go func() { _ = srv.Serve(lis) }()
+		return srv
+	}
+
+	var conn *grpc.ClientConn
+	pods := modlrrouter.NewPodClients(func(addr string) (*grpc.ClientConn, error) {
+		var err error
+		conn, err = grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithConnectParams(grpc.ConnectParams{Backoff: backoff.Config{BaseDelay: time.Hour, MaxDelay: time.Hour}}))
+		return conn, err
+	})
+	defer pods.Close()
+	bind := modlrrouter.LiveBind{PodID: "p", Addr: addr, BindID: "b"}
+
+	old := serve(lis, "old")
+	if err := pods.Deliver(context.Background(), bind, []byte{0x01}); err != nil {
+		t.Fatalf("Deliver to the old occupant: %v", err)
+	}
+	<-reached
+	old.Stop()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	// The first failure may only see the transport close (READY → IDLE); the next dial is refused.
+	for conn.GetState() != connectivity.TransientFailure {
+		if pods.Deliver(ctx, bind, []byte{0x01}) == nil {
+			t.Fatal("Deliver to a stopped pod succeeded")
+		}
+		if ctx.Err() != nil {
+			t.Fatalf("the old occupant's connection is %s, want TRANSIENT_FAILURE", conn.GetState())
+		}
+	}
+
+	lis, err = net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatalf("relisten on %s: %v", addr, err)
+	}
+	defer serve(lis, "new").Stop()
+
+	for pods.Deliver(ctx, bind, []byte{0x01}) != nil {
+		if ctx.Err() != nil {
+			t.Fatalf("the pod now at %s was never reached: the failed connection waited out its backoff", addr)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := <-reached; got != "new" {
+		t.Errorf("delivery reached %s, want new", got)
 	}
 }
