@@ -168,9 +168,12 @@ func TestLookupReturnsLiveSessions(t *testing.T) {
 	ctx := context.Background()
 	account := uuid.NewString()
 
+	// A unique pod: server_integration_test publishes an address for "pod-1" that outlives it by 61 s,
+	// and a second run (-count=2) would read it back on these binds.
+	pod := "pod-" + uuid.NewString()
 	want := map[string]session.Bind{}
 	for i := 0; i < 3; i++ {
-		b := session.Bind{AccountID: account, PodID: "pod-1", BindID: "bind-" + uuid.NewString()}
+		b := session.Bind{AccountID: account, PodID: pod, BindID: "bind-" + uuid.NewString()}
 		if _, err := reg.Bind(ctx, b, 5); err != nil {
 			t.Fatalf("bind %d: %v", i, err)
 		}
@@ -323,7 +326,8 @@ func TestLookupToleratesAPodWithNoAddress(t *testing.T) {
 // The address key is deleted directly rather than waited out: its TTL is 61 s.
 func TestRebindRenewsThePodAddress(t *testing.T) {
 	rdb := redistest.Client(t)
-	reg := session.NewRegistry(rdb)
+	clk := &clock{t: time.Unix(1_700_000_000, 0)}
+	reg := session.NewRegistry(rdb, session.WithClock(clk.now))
 	ctx := context.Background()
 	account := uuid.NewString()
 
@@ -336,6 +340,8 @@ func TestRebindRenewsThePodAddress(t *testing.T) {
 		t.Fatalf("drop the published address: %v", err)
 	}
 
+	// At refreshLoop's cadence: a rebind right after the bind skips the write on purpose (step-304).
+	clk.advance(session.DefaultSessionTTL / 2)
 	if _, err := reg.Bind(ctx, b, 5); err != nil {
 		t.Fatalf("rebind: %v", err)
 	}
@@ -347,5 +353,84 @@ func TestRebindRenewsThePodAddress(t *testing.T) {
 	if len(live) != 1 || live[0].Addr != b.Addr {
 		t.Errorf("after the refresh, lookup = %+v, want one session carrying addr %q — a refresh that renews "+
 			"the token but not the address lets the return path go dark under a live bind", live, b.Addr)
+	}
+}
+
+// TestRefreshDoesNotRewriteAFreshAddress is step-304: every live bind re-Binds every 30 s, and each
+// re-Bind used to SET the same address on the same key — ~67 writes/s on one key for a pod holding
+// 2 000 binds. A freshly published address is skipped; one older than a quarter TTL is rewritten, which
+// keeps the key alive under any live bind (see the Design arrêté of step-304 for the bound).
+func TestRefreshDoesNotRewriteAFreshAddress(t *testing.T) {
+	rdb := redistest.Client(t)
+	clk := &clock{t: time.Unix(1_700_000_000, 0)}
+	reg := session.NewRegistry(rdb, session.WithClock(clk.now))
+	ctx := context.Background()
+	account := uuid.NewString()
+	pod := "pod-" + uuid.NewString()
+	podKey := "sess:pod:{" + pod + "}"
+	bind := func(addr string) {
+		t.Helper()
+		b := session.Bind{AccountID: account, PodID: pod, BindID: "bind-" + uuid.NewString(), Addr: addr}
+		if _, err := reg.Bind(ctx, b, 100); err != nil {
+			t.Fatalf("Bind: %v", err)
+		}
+	}
+	published := func() string {
+		t.Helper()
+		v, err := rdb.Get(ctx, podKey).Result()
+		if err != nil {
+			return ""
+		}
+		return v
+	}
+
+	bind("10.0.0.1:7000")
+	if got := published(); got != "10.0.0.1:7000" {
+		t.Fatalf("address after the first bind = %q, want it published", got)
+	}
+
+	// Deleting the key makes a skipped write observable: a rewrite would put it back.
+	rdb.Del(ctx, podKey)
+	clk.advance(session.DefaultSessionTTL/4 - time.Second)
+	for range 5 {
+		bind("10.0.0.1:7000")
+	}
+	if got := published(); got != "" {
+		t.Errorf("address rewritten to %q within a quarter TTL of its publication, want the write skipped", got)
+	}
+
+	bind("10.0.0.2:7000")
+	if got := published(); got != "10.0.0.2:7000" {
+		t.Errorf("a changed address = %q, want it published at once", got)
+	}
+
+	rdb.Del(ctx, podKey)
+	clk.advance(session.DefaultSessionTTL / 4)
+	bind("10.0.0.2:7000")
+	if got := published(); got != "10.0.0.2:7000" {
+		t.Errorf("address = %q a quarter TTL after its publication, want it rewritten", got)
+	}
+}
+
+// TestAFailedAddressWriteIsRetriedOnTheNextBind: only a SET that landed may suppress the next one, or a
+// Redis blip would leave the address missing for a quarter TTL under live binds.
+func TestAFailedAddressWriteIsRetriedOnTheNextBind(t *testing.T) {
+	rdb := redistest.Client(t)
+	reg := session.NewRegistry(rdb)
+	account := uuid.NewString()
+	pod := "pod-" + uuid.NewString()
+	b := session.Bind{AccountID: account, PodID: pod, BindID: "bind-" + uuid.NewString(), Addr: "10.0.0.1:7000"}
+
+	dead, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := reg.Bind(dead, b, 100); err == nil {
+		t.Fatal("Bind on a cancelled context succeeded, want the address write to fail")
+	}
+	ctx := context.Background()
+	if _, err := reg.Bind(ctx, b, 100); err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+	if got, _ := rdb.Get(ctx, "sess:pod:{"+pod+"}").Result(); got != "10.0.0.1:7000" {
+		t.Errorf("address after a failed then a good Bind = %q, want it published", got)
 	}
 }
