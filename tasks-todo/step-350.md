@@ -1,6 +1,6 @@
 # step-350 — Réécriture de sender ID (§6.16) : ni l'admin, ni l'évaluation
 
-> **Jalon :** Surfaces Admin déclarées au contrat, jamais construites (§6.16 `docs/specification-technique-passerelle-sms.md`) · **Statut :** EN COURS (PR1 livrée, PR2 à faire)
+> **Jalon :** Surfaces Admin déclarées au contrat, jamais construites (§6.16 `docs/specification-technique-passerelle-sms.md`) · **Statut :** LIVRÉE (PR1 #210, PR2)
 > **Dépend de :** step-320 (triage), step-201f (PR2 seulement) · **Bloque :** —
 
 ## But
@@ -175,13 +175,21 @@ commentaire qui niait une course réelle — nommée depuis par un `ponytail:` (
 Ce que PR2 hérite : le charset est une liste littérale (`"A-Z"` garde trois caractères) ; `rewrite_to` et
 les entrées du pool ne sont pas bornés à la longueur d'un `source_addr` SMPP.
 
-**PR2**
-- [ ] `make check` vert
-- [ ] évaluation câblée dans connector-pool avec l'ordre §6.16 respecté ; `original_source_addr` renseigné
-- [ ] `test-sender-rewrite-rule` servi, et il répond ce que le pool ferait
-- [ ] aucun invariant (a/b/c/d) violé ; la 5ᵉ ligne retirée de `deferred`
-- [ ] l'effet sur le débit du pool est mesuré, ou la mesure de step-201f est explicitement déclarée à
-      relancer
+**PR2** — livrée (branche `step-350-pr2-rewrite-engine`)
+- [x] `make check` vert
+- [x] évaluation câblée dans connector-pool avec l'ordre §6.16 respecté ; `original_source_addr` renseigné
+- [x] `test-sender-rewrite-rule` servi, et il répond ce que le pool ferait
+- [x] aucun invariant (a/b/c/d) violé ; la 5ᵉ ligne retirée de `deferred`
+- [x] l'effet sur le débit du pool est mesuré, ou la mesure de step-201f est explicitement déclarée à
+      relancer — `BenchmarkRewrite` : ~8 ns sans règle, ~150 ns et 1 allocation au pire sur 5 règles ;
+      `TestPoolSubmitCeiling` déclaré à relancer (step-280, en-tête de step-201f)
+
+Revue : 3 axes puis un 2ᵉ tour sur les correctifs. Trois bloquants, tous corrigés et arbitrés par Fable
+(« Révisions de revue » ci-dessus) : l'API publique montrait l'adresse réécrite au client ; rien ne bornait
+une adresse réécrite aux 20 octets de `source_addr`, et une seule règle pouvait ouvrir le disjoncteur d'un
+connecteur ; la propriété §6.19 n'avait aucun test — elle est gardée par `go list -deps` sur les deux
+binaires. « N'écrit rien » est vérifié par un compteur d'écritures sur le store, pas par l'état d'une
+base : le handler ne voit que l'interface.
 
 ## Hors périmètre
 

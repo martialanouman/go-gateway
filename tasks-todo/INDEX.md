@@ -379,7 +379,7 @@ mutuelle l'y force, la suite ne peut pas rester verte sur une ligne qui différe
 - [x] step-320 — La garde contrat ↔ implémentation, et le triage des 30 ⛓ bloque step-410 et step-330→390
 - [x] step-330 — Groupes de clients (§6.17) : la table existe, rien ne la remplit ⛓ step-320
 - [x] step-340 — Webhooks : le repo est livré depuis M4, l'admin n'a jamais été écrite ⛓ step-320
-- [ ] step-350 — Réécriture de sender ID (§6.16) : ni l'admin, ni l'évaluation dans le pool ⛓ step-320 ;
+- [x] step-350 — Réécriture de sender ID (§6.16) : ni l'admin, ni l'évaluation dans le pool ⛓ step-320 ;
       **sa PR2 doit merger après step-280**, sinon elle ajoute un étage au chemin d'envoi entre la
       caractérisation du pool et la campagne, et périme le dimensionnement sans que personne ne le voie
 - [ ] step-360 — Sessions SMPP : le flux temps réel existe, la lecture REST non ⛓ step-320
