@@ -71,8 +71,8 @@ type senderRewriteRuleCreateBody struct {
 	MatchSenderPattern *string        `json:"match_sender_pattern,omitempty" nullable:"true" doc:"RE2 regex matched against the whole address, implicitly anchored; null matches any. Unlike a route match_dest_pattern, not a digit prefix."`
 	MatchDestPattern   *string        `json:"match_dest_pattern,omitempty" nullable:"true" doc:"RE2 regex matched against the whole address, implicitly anchored; null matches any. Unlike a route match_dest_pattern, not a digit prefix."`
 	RewriteType        string         `json:"rewrite_type" enum:"static,fallback_pool,truncate,sanitize"`
-	RewriteTo          *string        `json:"rewrite_to,omitempty" nullable:"true" doc:"Required when rewrite_type = static."`
-	FallbackPool       []string       `json:"fallback_pool_json,omitempty" nullable:"true" doc:"Required, non-empty, when rewrite_type = fallback_pool."`
+	RewriteTo          *string        `json:"rewrite_to,omitempty" nullable:"true" doc:"Required when rewrite_type = static; at most 20 octets, the SMPP source_addr."`
+	FallbackPool       []string       `json:"fallback_pool_json,omitempty" nullable:"true" doc:"Required, non-empty, when rewrite_type = fallback_pool; each entry at most 20 octets, the SMPP source_addr."`
 	MaxLength          *int32         `json:"max_length,omitempty" minimum:"1" nullable:"true" doc:"Required when rewrite_type = truncate."`
 	SanitizeCharset    map[string]any `json:"sanitize_charset_json,omitempty" nullable:"true" doc:"Read when rewrite_type is sanitize: an object whose single key allowed holds the characters kept, listed one by one (not ranges); every other character is removed. Null keeps ASCII letters and digits."`
 	Priority           *int32         `json:"priority,omitempty" default:"100" doc:"Lower is evaluated first, within a scope."`
@@ -340,6 +340,9 @@ func validateRewrite(r cp.SenderRewriteRule) error {
 		if r.RewriteTo == nil || strings.TrimSpace(*r.RewriteTo) == "" {
 			return missing("rewrite_to", "is required for a static rule")
 		}
+		if len(*r.RewriteTo) > senderrewrite.MaxSenderOctets {
+			return missing("rewrite_to", "must fit the 20 octets of an SMPP source_addr")
+		}
 	case cp.RewriteFallbackPool:
 		if len(r.FallbackPool) == 0 {
 			return missing("fallback_pool_json", "must list at least one sender ID")
@@ -347,6 +350,9 @@ func validateRewrite(r cp.SenderRewriteRule) error {
 		for _, s := range r.FallbackPool {
 			if strings.TrimSpace(s) == "" {
 				return missing("fallback_pool_json", "must not contain a blank sender ID")
+			}
+			if len(s) > senderrewrite.MaxSenderOctets {
+				return missing("fallback_pool_json", "every sender ID must fit the 20 octets of an SMPP source_addr")
 			}
 		}
 	case cp.RewriteTruncate:
@@ -386,7 +392,7 @@ type testSenderRewriteRuleInput struct {
 type testSenderRewriteRuleOutput struct {
 	Body struct {
 		Matched         bool    `json:"matched"`
-		RewrittenSource *string `json:"rewritten_source,omitempty" nullable:"true"`
+		RewrittenSource *string `json:"rewritten_source,omitempty" nullable:"true" doc:"The sender the pool would submit, before the SMPP typing: a leading + is stripped on the wire and the number typed international."`
 	}
 }
 

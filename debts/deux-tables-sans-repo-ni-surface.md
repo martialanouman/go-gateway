@@ -13,9 +13,5 @@ Ce que la fiche avait prévu et qui n'a pas eu lieu : l'index partiel
 la table en mémoire (quelques règles) et la relit à chaque invalidation, jamais par portée ; l'index reste
 entretenu pour personne, à un coût d'écriture négligeable sur une table admin.
 
-**Ce que la fiche disait avant d'être payée.** `customer_groups` et `sender_id_rewrite_rules` étaient
-complètes en base, modèles sqlc générés, sans repo, admin ni évaluation ; une FK morte et un index
-entretenu pour zéro lecteur.
-
 Sources : `db/schema_passerelle_sms.sql:72` (`customer_groups`) · `:526` (`sender_id_rewrite_rules`) ·
 `:549` (l'index) · `cmd/connector-pool-svc/wiring.go` (chargement des règles)

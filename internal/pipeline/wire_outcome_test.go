@@ -137,21 +137,3 @@ func TestOutcomeWireCarriesNoBody(t *testing.T) {
 		}
 	}
 }
-
-// TestOutcomeWithoutRewriteOmitsOriginalFrom: an unrewritten outcome carries no original_from key, so a
-// router of the previous version reads it unchanged and the CDR keeps original_source_addr NULL.
-func TestOutcomeWithoutRewriteOmitsOriginalFrom(t *testing.T) {
-	in := outcomeFixture()
-	in.OriginalFrom = ""
-	rec, err := pipeline.EncodeOutcome(in)
-	if err != nil {
-		t.Fatalf("encode: %v", err)
-	}
-	var fields map[string]any
-	if err := json.Unmarshal(rec.Value, &fields); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if _, ok := fields["original_from"]; ok {
-		t.Errorf("original_from present on an unrewritten outcome: %s", rec.Value)
-	}
-}

@@ -143,8 +143,8 @@ func (p *Projector) handleBatch(ctx context.Context, recs []kafka.Record) []erro
 // before step-201c, field for field.
 //
 // The nil fields are nil on purpose, not by omission: routing_script_id belongs to the router's rows,
-// delivered_at and latency_ms to the DLR path, and the content columns to the accepted row alone (the outcome carries no body — invariant a). `version` is left unset: the writer
-// derives it from Status.
+// delivered_at and latency_ms to the DLR path, and the content columns to the accepted row alone (the
+// outcome carries no body — invariant a). `version` is left unset: the writer derives it from Status.
 //
 // The segment coordinates are copied verbatim. The producer already clamps them to >= 1 (it is the only
 // party that knows a connector row is always a dispatched segment), and segment_seq joins the CDR

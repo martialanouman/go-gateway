@@ -194,10 +194,8 @@ type Deps struct {
 	CDR         CDRWriter
 	CancelFlags CancelFlags
 	DLRMap      DLRMap
-	// Rewriter applies the sender-ID rewrite rules just before the submit_sm (§6.16). New defaults a nil
-	// one to rewriting nothing.
-	Rewriter Rewriter
-	Producer Producer
+	Rewriter    Rewriter
+	Producer    Producer
 	// ConnectorID identifies the SMSC link this pool binds, stamped onto every mo.inbound / dlr.events
 	// record so the return-path router can correlate a receipt (step-044). At M2 it is injected from
 	// env; M3+ sources it from the connectors control plane.

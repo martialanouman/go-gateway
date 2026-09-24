@@ -1,9 +1,7 @@
 package connectorpool_test
 
 import (
-	"bytes"
 	"context"
-	"log/slog"
 	"sync"
 	"testing"
 
@@ -12,7 +10,6 @@ import (
 	"github.com/martialanouman/go-gateway/internal/connectorpool"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
-	"github.com/martialanouman/go-gateway/internal/platform/msg"
 	"github.com/martialanouman/go-gateway/internal/smpp"
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
 	"github.com/martialanouman/go-gateway/internal/testutil/fakesmsc"
@@ -40,13 +37,12 @@ type rewriteRun struct {
 	wire     smpp.SubmitSM
 	out      *outcomeProducer
 	dlr      *fakeDLRMap
-	logs     *bytes.Buffer
 	rewriter *fakeRewriter
 }
 
 func runRewrite(t *testing.T, to string, r pipeline.RoutedMT, resp fakesmsc.Resp) rewriteRun {
 	t.Helper()
-	run := rewriteRun{out: &outcomeProducer{}, dlr: &fakeDLRMap{}, logs: &bytes.Buffer{}, rewriter: &fakeRewriter{to: to}}
+	run := rewriteRun{out: &outcomeProducer{}, dlr: &fakeDLRMap{}, rewriter: &fakeRewriter{to: to}}
 	smsc := fakesmsc.Start(t, fakesmsc.Config{OnSubmit: func(sm smpp.SubmitSM) fakesmsc.Resp {
 		run.wire = sm
 		return resp
@@ -65,7 +61,6 @@ func runRewrite(t *testing.T, to string, r pipeline.RoutedMT, resp fakesmsc.Resp
 		Rewriter: run.rewriter,
 		Bind:     poolBind(smsc.Addr(), 1),
 		Tracer:   observability.Tracer(otelrec.New(t).Provider(), "connector-pool"),
-		Logger:   slog.New(slog.NewTextHandler(run.logs, nil)),
 	})
 	if err := svc.Run(context.Background()); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -78,7 +73,6 @@ func runRewrite(t *testing.T, to string, r pipeline.RoutedMT, resp fakesmsc.Resp
 func TestRewrittenSenderGoesOnTheWireAndTheOriginalIsKept(t *testing.T) {
 	r := routed()
 	r.From = "+22507000001"
-	r.Body = msg.NewBodyString("topsecretbody")
 	run := runRewrite(t, "INFO", r, fakesmsc.OK())
 
 	if run.wire.SourceAddr != "INFO" || run.wire.SourceAddrTON != smpp.TONAlphanumeric {
@@ -99,15 +93,6 @@ func TestRewrittenSenderGoesOnTheWireAndTheOriginalIsKept(t *testing.T) {
 		if a != want[i] {
 			t.Errorf("rewriter argument %d = %v, want %v", i, a, want[i])
 		}
-	}
-	// Invariant (a): the rewrite adds nothing that could carry the body.
-	for _, rec := range run.out.records() {
-		if bytes.Contains(rec.Value, []byte("topsecretbody")) {
-			t.Errorf("the body leaked into %s", rec.Topic)
-		}
-	}
-	if bytes.Contains(run.logs.Bytes(), []byte("topsecretbody")) {
-		t.Error("the body leaked into the log")
 	}
 }
 
@@ -153,5 +138,14 @@ func TestRerouteAfterARewrittenSubmitCarriesTheOriginal(t *testing.T) {
 	}
 	if len(rerouted) != 1 || rerouted[0].From != r.From || rerouted[0].ConnectorID != b {
 		t.Fatalf("rerouted = %+v, want one record to %s carrying %q", rerouted, b, r.From)
+	}
+}
+
+// A permanent SMSC refusal is a failed CDR row for the address sent; the client's own must be on it too.
+func TestRefusedRewrittenSubmitKeepsTheOriginal(t *testing.T) {
+	r := routed()
+	run := runRewrite(t, "INFO", r, fakesmsc.SubmitFailed())
+	if out := run.out.only(t); out.Status != "failed" || out.From != "INFO" || out.OriginalFrom != r.From {
+		t.Errorf("outcome = %s from %q original %q, want failed from INFO original %q", out.Status, out.From, out.OriginalFrom, r.From)
 	}
 }

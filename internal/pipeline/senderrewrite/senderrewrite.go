@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"cmp"
 	"encoding/json"
+	"fmt"
 	"hash/fnv"
 	"log/slog"
 	"regexp"
@@ -24,7 +25,7 @@ import (
 type rule struct {
 	cp.SenderRewriteRule
 	sender, dest *regexp.Regexp
-	allowed      string // sanitize charset; empty keeps ASCII letters and digits
+	allowed      string
 }
 
 // Snapshot is an immutable, precedence-ordered set of the active mt rules, read lock-free.
@@ -47,13 +48,13 @@ func Build(rules []cp.SenderRewriteRule, logger *slog.Logger) *Snapshot {
 		byCustomer:  map[uuid.UUID][]rule{},
 	}
 	for _, r := range rules {
-		if r.Status != "active" || r.Direction != "mt" {
+		if r.Status != "active" || r.Direction != "mt" || r.Scope != cp.RewriteScopePlatform && r.ScopeID == nil {
 			continue
 		}
 		c, err := compile(r)
 		if err != nil {
 			if logger != nil {
-				logger.Warn("sender rewrite rule skipped: pattern does not compile", "rule_id", r.ID, "err", err)
+				logger.Warn("sender rewrite rule skipped", "rule_id", r.ID, "err", err)
 			}
 			continue
 		}
@@ -100,9 +101,24 @@ func EvalRule(r cp.SenderRewriteRule, from, to string, messageID uuid.UUID) (str
 	return c.apply(from, messageID), true, nil
 }
 
-// compile anchors each pattern: a rule matches the WHOLE address, never a substring of it.
+// MaxSenderOctets is the longest source_addr SMPP carries: a 21-octet C-Octet String, NUL included.
+const MaxSenderOctets = 20
+
+// compile anchors each pattern — a rule matches the WHOLE address, never a substring of it — and refuses
+// a sender the wire cannot carry: an over-long source_addr is a PDU the SMSC may answer by dropping the
+// bind, which would open the breaker for all of the connector's traffic.
 func compile(r cp.SenderRewriteRule) (rule, error) {
 	c := rule{SenderRewriteRule: r}
+	if r.RewriteType == cp.RewriteStatic && r.RewriteTo != nil && len(*r.RewriteTo) > MaxSenderOctets {
+		return rule{}, fmt.Errorf("rewrite_to is %d octets, over the %d source_addr carries", len(*r.RewriteTo), MaxSenderOctets)
+	}
+	if r.RewriteType == cp.RewriteFallbackPool {
+		for _, s := range r.FallbackPool {
+			if len(s) > MaxSenderOctets {
+				return rule{}, fmt.Errorf("fallback pool entry %q is over the %d octets source_addr carries", s, MaxSenderOctets)
+			}
+		}
+	}
 	var set struct{ Allowed string }
 	if len(r.SanitizeCharset) > 0 && json.Unmarshal(r.SanitizeCharset, &set) == nil {
 		c.allowed = set.Allowed

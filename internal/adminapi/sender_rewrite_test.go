@@ -162,6 +162,8 @@ func TestCreateSenderRewriteRuleRefusesWhatNoEngineEvaluates(t *testing.T) {
 		"charset not a string":   `{"scope":"platform","rewrite_type":"sanitize","sanitize_charset_json":{"allowed":3}}`,
 		"bad sender pattern":     `{"scope":"platform","rewrite_type":"truncate","max_length":11,"match_sender_pattern":"[A-Z"}`,
 		"bad dest pattern":       `{"scope":"platform","rewrite_type":"truncate","max_length":11,"match_dest_pattern":"(225"}`,
+		"static over 20 octets":  `{"scope":"platform","rewrite_type":"static","rewrite_to":"ÉÉÉÉÉÉÉÉÉÉÉ"}`,
+		"pool entry over 20":     `{"scope":"platform","rewrite_type":"fallback_pool","fallback_pool_json":["A","XXXXXXXXXXXXXXXXXXXXX"]}`,
 		"platform with scope_id": `{"scope":"platform","scope_id":"` + uuid.NewString() + `","rewrite_type":"truncate","max_length":11}`,
 		"customer without id":    `{"scope":"customer","rewrite_type":"truncate","max_length":11}`,
 	} {
@@ -351,5 +353,14 @@ func TestTestSenderRewriteRuleFollowsTheMessageID(t *testing.T) {
 func TestTestSenderRewriteRuleUnknownIDIs404(t *testing.T) {
 	if code, _ := testRewrite(t, newFakeRewriteStore(), uuid.New(), `{"source_addr":"ACME","dest_addr":"225"}`); code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", code)
+	}
+}
+
+// A stored pattern that no longer compiles (a hand-written row) is reported, not answered as a miss.
+func TestTestSenderRewriteRuleReportsAnUncompilableStoredRule(t *testing.T) {
+	store := newFakeRewriteStore()
+	r := seedRewrite(store, cp.NewSenderRewriteRule{Scope: cp.RewriteScopePlatform, RewriteType: cp.RewriteSanitize, MatchSenderPattern: ptr("[A-Z")})
+	if code, _ := testRewrite(t, store, r.ID, `{"source_addr":"ACME","dest_addr":"225"}`); code != http.StatusUnprocessableEntity {
+		t.Errorf("status = %d, want 422", code)
 	}
 }

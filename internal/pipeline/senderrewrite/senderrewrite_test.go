@@ -206,3 +206,38 @@ func TestHolderBeforeTheFirstStoreKeepsTheOriginal(t *testing.T) {
 		t.Fatalf("%q, want INFO", got)
 	}
 }
+
+// Equal priority within a scope falls back to the id, the order the Admin list shows.
+func TestRewriteEqualPriorityFallsBackToTheID(t *testing.T) {
+	low, high := static(cp.RewriteScopeConnector, &connectorID, 5, "LOW"), static(cp.RewriteScopeConnector, &connectorID, 5, "HIGH")
+	low.ID, high.ID = uuid.MustParse("00000000-0000-0000-0000-000000000001"), uuid.MustParse("ffffffff-ffff-ffff-ffff-ffffffffffff")
+	if got := rewrite(senderrewrite.Build([]cp.SenderRewriteRule{high, low}, nil), "ACME"); got != "LOW" {
+		t.Fatalf("%q, want LOW", got)
+	}
+}
+
+// A scoped rule without its scope id cannot come from the Admin API (a CHECK forbids it); a hand-written
+// row must not bring the pool down.
+func TestRewriteSkipsAScopedRuleWithoutItsID(t *testing.T) {
+	orphan := static(cp.RewriteScopeAccount, nil, 1, "ORPHAN")
+	if got := rewrite(senderrewrite.Build([]cp.SenderRewriteRule{orphan}, nil), "ACME"); got != "ACME" {
+		t.Fatalf("%q, want the original", got)
+	}
+}
+
+// source_addr is a 21-octet C-Octet String on the wire: a longer sender is a PDU the SMSC may answer by
+// dropping the bind. A stored rule that would send one is skipped, like one whose pattern does not compile.
+func TestRewriteSkipsARuleWhoseSenderDoesNotFitTheWire(t *testing.T) {
+	tooLong := static(cp.RewriteScopeConnector, &connectorID, 1, strings.Repeat("É", 11)) // 22 octets
+	pool := cp.SenderRewriteRule{
+		ID: uuid.New(), Scope: cp.RewriteScopeAccount, ScopeID: &accountID, Direction: "mt", Status: "active",
+		RewriteType: cp.RewriteFallbackPool, FallbackPool: []string{"OK", strings.Repeat("X", 21)},
+	}
+	fits := static(cp.RewriteScopePlatform, nil, 1, strings.Repeat("X", 20))
+	if got := rewrite(senderrewrite.Build([]cp.SenderRewriteRule{tooLong, pool, fits}, nil), "ACME"); got != *fits.RewriteTo {
+		t.Fatalf("%q, want the 20-octet platform rule", got)
+	}
+	if _, _, err := senderrewrite.EvalRule(tooLong, "ACME", "225", messageID); err == nil {
+		t.Fatal("EvalRule accepted a sender longer than the wire allows")
+	}
+}

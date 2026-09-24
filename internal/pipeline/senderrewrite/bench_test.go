@@ -7,7 +7,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/pipeline/senderrewrite"
 )
 
-// BenchmarkRewrite is the per-segment cost the pool adds before each submit_sm (step-350 PR2). "typical"
+// BenchmarkRewrite is the per-segment cost the pool adds before each submit_sm (step-350 PR2). "worst"
 // walks every scope and misses on patterns before the platform rule matches — the worst case of a
 // small rule set.
 func BenchmarkRewrite(b *testing.B) {
@@ -25,8 +25,8 @@ func BenchmarkRewrite(b *testing.B) {
 		RewriteType: cp.RewriteTruncate, MaxLength: ptr[int32](11), MatchSenderPattern: ptr("[A-Z]{12,}"),
 	}
 	for name, rules := range map[string][]cp.SenderRewriteRule{
-		"none":    nil,
-		"typical": {missConnector, missAccount, pool, truncate, sanitize},
+		"none":  nil,
+		"worst": {missConnector, missAccount, pool, truncate, sanitize},
 	} {
 		s := senderrewrite.Build(rules, nil)
 		b.Run(name, func(b *testing.B) {

@@ -318,7 +318,8 @@ const cdrDispatched = `status NOT IN ('accepted', 'rejected')`
 // them lives one level up (cdrAggOuterCols), over these as ordinary columns. dispatched_total is taken
 // from the dispatched segments only, never the placeholder row whose segment_count is a provisional 1.
 // source_addr likewise prefers a dispatched segment: once the pool rewrites the sender (§6.16) the
-// placeholder holds the client's address and the segments the one sent.
+// placeholder holds the client's address and a submitted segment the one sent. A segment the pool
+// dead-lettered without submitting keeps the client's, with no original beside it.
 const cdrAggMessageCols = `message_id, submitted_at,
 	any(trace_id) AS trace_id, any(account_id) AS account_id, any(customer_id) AS customer_id,
 	any(direction) AS direction, argMax(source_addr, ` + cdrDispatched + `) AS source_addr, any(dest_addr) AS dest_addr,
@@ -621,15 +622,17 @@ func (r *CDRReader) Search(ctx context.Context, f CDRSearchFilter, limit int) ([
 	// names of argMax(...) aliases, and ClickHouse resolves an alias before a column in WHERE — which
 	// it then rejects ("aggregate function is found in WHERE"). Qualifying binds them to the raw
 	// column, which is also what allows the predicate to prune early. The match is therefore against
-	// ANY version of the message's rows: a sender ID rewritten mid-flight (original_source_addr) is
-	// findable under either value, which is what an operator investigating a message wants.
+	// ANY version of the message's rows, and a sender the pool rewrote (§6.16) must match them all: the
+	// placeholder holds the client's sender in source_addr, the dispatched rows hold it in
+	// original_source_addr — without that column a search by it keeps the placeholder alone, and
+	// reports an accepted message.
 	if f.TraceID != nil {
 		inner += ` AND cdr.trace_id = ?`
 		args = append(args, *f.TraceID)
 	}
 	if f.MSISDN != nil {
-		inner += ` AND (cdr.source_addr = ? OR cdr.dest_addr = ?)`
-		args = append(args, *f.MSISDN, *f.MSISDN)
+		inner += ` AND (cdr.source_addr = ? OR cdr.dest_addr = ? OR cdr.original_source_addr = ?)`
+		args = append(args, *f.MSISDN, *f.MSISDN, *f.MSISDN)
 	}
 	if f.Direction != nil {
 		inner += ` AND direction = ?`

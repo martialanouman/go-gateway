@@ -101,7 +101,8 @@ Arbitrages : la spec (§6.16) fixe l'emplacement et la précédence, rien d'autr
 (deux corrections, un défaut évité), validés par l'humain le 2026-09-24.
 
 1. **Moteur partagé** `internal/pipeline/senderrewrite` : instantané immuable des règles **actives**,
-   chargé par la requête de PR1 (déjà triée portée → priority → id, filtre `status` en Go). Évaluation
+   chargé par la requête de PR1 (filtre `status` en Go ; le moteur trie lui-même chaque portée par
+   priority puis id, sans dépendre de l'ordre de son appelant). Évaluation
    `connector` (celui de `routed.ConnectorID`, jamais `deps.ConnectorID` qui vaut `uuid.Nil` sur un pool
    non filtrant) → `smpp_account` → `customer` → `platform` ; la première règle dont les motifs
    correspondent gagne, même si sa sortie est identique. Regex stockée invalide → règle ignorée + WARN au
@@ -120,10 +121,11 @@ Arbitrages : la spec (§6.16) fixe l'emplacement et la précédence, rien d'autr
 5. **Traçabilité** : `OutcomeMT`/`outcomeWire` gagnent `original_from,omitempty`, renseigné seulement si
    l'adresse a changé ; la projection remplit `original_source_addr` (commentaire `outcome.go:145`
    corrigé). **Voie retour** : `dlrmap` garde aussi `original_source_addr,omitempty` ; `modlrrouter`
-   l'utilise pour l'adresse client du reçu DLR et du webhook (§6.16 : « sans que le client le sache ») et
+   l'utilise pour l'adresse client du reçu DLR (§6.16 : « sans que le client le sache » ; le webhook DLR
+   ne porte aucune adresse) et
    le recopie sur la ligne `delivered`. Niveau message du CDR : `any(source_addr)` →
-   `argMax(source_addr, status NOT IN ('accepted','rejected'))`. Tout ajout est `omitempty` :
-   rétrocompatible dans les deux sens pendant un déploiement progressif.
+   `argMax(source_addr, status NOT IN ('accepted','rejected'))`. Compatible dans les deux sens pendant un
+   déploiement progressif : aucun décodeur ne refuse une clé inconnue, et un champ absent se lit vide.
 6. **`test-sender-rewrite-rule`** : la règle `{id}` seule, même `disabled`, même code que le pool, sans
    écriture. Corps : `message_id` **optionnel** (absent ⇒ `uuid.Nil`) pour reproduire le choix du pool.
    `security: admin:read`, 401/403/404/422, bump mineur 6.2.0.
@@ -131,6 +133,21 @@ Arbitrages : la spec (§6.16) fixe l'emplacement et la précédence, rien d'autr
    (`TestPoolSubmitCeiling`) est **déclarée à relancer** — ligne dans step-280 et dans l'en-tête de
    step-201f. Pas de campagne A/B maintenant (bruit ±30 % sur cet hôte).
 8. `mo` reste refusé (dette existante). Aucune métrique neuve : le CDR trace chaque réécriture.
+
+**Révisions de revue (arbitrées par Fable, 2026-09-24)** :
+- **B1 — l'API publique rend l'expéditeur soumis.** Le niveau message du CDR porte l'adresse envoyée ;
+  `GET /messages` rend `original_source_addr` s'il existe. §6.16 fait foi contre la description « actually
+  used on the wire » du contrat public, écrite avant toute réécriture et corrigée (description seule).
+- **B2 — 20 octets au plus** pour `rewrite_to` et chaque entrée du pool (`source_addr` SMPP) : 422 au
+  bord, sur l'état fusionné ; une règle stockée qui dépasse est ignorée au build avec un WARN, comme une
+  regex invalide — jamais par message. Aucun `maxLength` au schéma (rupture). `truncate` inchangé : il ne
+  fait que raccourcir.
+- **B3 — « un sender refusé à l'ingestion part quand même »** est une propriété de l'ordre des paquets :
+  une garde d'imports (le routeur n'atteint pas `senderrewrite`, le pool n'atteint pas `senderid`).
+- **M1 — la recherche par expéditeur** filtre aussi `original_source_addr`, sinon chercher l'original
+  d'un message réécrit ne garde que la ligne `accepted` et rend un statut faux.
+- Connu, non corrigé : les segments d'un message rerouté un à un, ou envoyés de part et d'autre d'un
+  rechargement des règles, peuvent partir sous deux expéditeurs ; le reroute par segment existait déjà.
 
 ## Tests
 

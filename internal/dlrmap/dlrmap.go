@@ -266,12 +266,3 @@ func clamp(d, lo, hi time.Duration) time.Duration {
 	}
 	return d
 }
-
-// ClientSourceAddr is the address the client submitted: what its delivery receipt goes back to, whatever
-// the pool rewrote it to on the wire (§6.16).
-func (m Mapping) ClientSourceAddr() string {
-	if m.OriginalSourceAddr != "" {
-		return m.OriginalSourceAddr
-	}
-	return m.SourceAddr
-}

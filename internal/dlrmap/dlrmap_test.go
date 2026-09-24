@@ -65,14 +65,3 @@ func TestKeyFormat(t *testing.T) {
 		t.Errorf("key = %q, want %q", got, want)
 	}
 }
-
-// TestClientSourceAddrIsTheAddressTheClientSent: a rewritten sender is the provider's business (§6.16);
-// what goes back to the client is the address it submitted.
-func TestClientSourceAddrIsTheAddressTheClientSent(t *testing.T) {
-	if got := (Mapping{SourceAddr: "INFO", OriginalSourceAddr: "ACME"}).ClientSourceAddr(); got != "ACME" {
-		t.Errorf("rewritten: %q, want ACME", got)
-	}
-	if got := (Mapping{SourceAddr: "ACME"}).ClientSourceAddr(); got != "ACME" {
-		t.Errorf("not rewritten: %q, want ACME", got)
-	}
-}

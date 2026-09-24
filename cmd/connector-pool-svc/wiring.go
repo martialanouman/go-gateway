@@ -162,16 +162,10 @@ func newPoolApp(ctx context.Context, cfg config.Config, bindEnv connectorEnv, lo
 
 	// Sender-ID rewrite (§6.16): loaded before the pool serves — a pod that sent without its rules would
 	// put senders on the wire that the SMSC is known to refuse — then swapped whole on each config-sync
-	// invalidation. A failed reload keeps the rules in force.
+	// invalidation.
 	a.rewriter = &senderrewrite.Holder{}
-	reloadRewrites := func(ctx context.Context) error {
-		rules, err := postgres.NewSenderRewriteRuleRepo(st.pg).List(ctx, cp.SenderRewriteFilter{})
-		if err != nil {
-			return fmt.Errorf("load sender rewrite rules: %w", err)
-		}
-		a.rewriter.Store(senderrewrite.Build(rules, logger))
-		return nil
-	}
+	rules := postgres.NewSenderRewriteRuleRepo(st.pg)
+	reloadRewrites := func(ctx context.Context) error { return loadRewrites(ctx, rules, a.rewriter, logger) }
 	if err := reloadRewrites(ctx); err != nil {
 		return nil, err
 	}
@@ -621,4 +615,19 @@ func (b breakerStateReader) IsOpen(ctx context.Context, connectorID uuid.UUID) (
 	}
 	st, ok := breaker.ParseState(token)
 	return ok && st == breaker.Open, nil
+}
+
+// rewriteRuleLister is the read loadRewrites needs; *postgres.SenderRewriteRuleRepo satisfies it.
+type rewriteRuleLister interface {
+	List(ctx context.Context, f cp.SenderRewriteFilter) ([]cp.SenderRewriteRule, error)
+}
+
+// loadRewrites swaps a snapshot of every rule into h. On a read failure h keeps the rules it had.
+func loadRewrites(ctx context.Context, lister rewriteRuleLister, h *senderrewrite.Holder, logger *slog.Logger) error {
+	rules, err := lister.List(ctx, cp.SenderRewriteFilter{})
+	if err != nil {
+		return fmt.Errorf("load sender rewrite rules: %w", err)
+	}
+	h.Store(senderrewrite.Build(rules, logger))
+	return nil
 }
