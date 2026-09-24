@@ -37,7 +37,7 @@ func dlrDeliverSM(m dlrmap.Mapping, dlr pipeline.DLREvent) ([]byte, error) {
 	// A receipt's source is the MSISDN the original MT was sent to; its destination is the original
 	// sender id.
 	ds.SourceAddr = m.DestAddr
-	ds.DestinationAddr = m.SourceAddr
+	ds.DestinationAddr = m.ClientSourceAddr()
 	ds.ShortMessage = []byte(fmt.Sprintf("id:%s stat:%s err:%s", m.MessageID, dlr.Stat, dlr.ErrorCode))
 	ds.TLVs.Set(smpp.TagReceiptedMessageID, []byte(m.MessageID.String()))
 	ds.TLVs.Set(smpp.TagMessageState, []byte{dlr.State})

@@ -317,9 +317,11 @@ const cdrDispatched = `status NOT IN ('accepted', 'rejected')`
 // decision matters — ClickHouse forbids nesting one aggregate inside another, so the multiIf that reads
 // them lives one level up (cdrAggOuterCols), over these as ordinary columns. dispatched_total is taken
 // from the dispatched segments only, never the placeholder row whose segment_count is a provisional 1.
+// source_addr likewise prefers a dispatched segment: once the pool rewrites the sender (§6.16) the
+// placeholder holds the client's address and the segments the one sent.
 const cdrAggMessageCols = `message_id, submitted_at,
 	any(trace_id) AS trace_id, any(account_id) AS account_id, any(customer_id) AS customer_id,
-	any(direction) AS direction, any(source_addr) AS source_addr, any(dest_addr) AS dest_addr,
+	any(direction) AS direction, argMax(source_addr, ` + cdrDispatched + `) AS source_addr, any(dest_addr) AS dest_addr,
 	any(original_source_addr) AS original_source_addr,
 	anyIf(connector_id, ` + cdrDispatched + `) AS connector_id,
 	anyIf(route_id, ` + cdrDispatched + `) AS route_id,

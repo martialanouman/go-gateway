@@ -349,7 +349,7 @@ func (s *Service) recordDLRMapping(ctx context.Context, r pipeline.RoutedMT, res
 	if !ok || body.MessageID == "" {
 		return
 	}
-	if err := s.deps.DLRMap.Put(ctx, body.MessageID, r); err != nil {
+	if err := s.deps.DLRMap.Put(ctx, body.MessageID, r, ""); err != nil {
 		s.deps.Logger.WarnContext(ctx, "connector: dlr mapping write failed, a later receipt will be uncorrelated",
 			"message_id", r.MessageID, "connector_id", r.ConnectorID, "err", err)
 	}

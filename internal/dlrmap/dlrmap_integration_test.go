@@ -44,7 +44,7 @@ func TestRedisMapPutGetRoundTrip(t *testing.T) {
 	vp := "000001000000000R" // 1 day, relative
 	r := routedFixture(connectorID, &vp)
 
-	if err := store.Put(ctx, smscID, r); err != nil {
+	if err := store.Put(ctx, smscID, r, "ACME-ORIGINAL"); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 
@@ -60,6 +60,9 @@ func TestRedisMapPutGetRoundTrip(t *testing.T) {
 		got.SourceAddr != r.From || got.DestAddr != r.To || got.SegmentCount != r.SegmentCount ||
 		got.Encoding != r.Encoding || !got.SubmittedAt.Equal(r.SubmittedAt) {
 		t.Errorf("mapping = %+v, want projection of %+v", got, r)
+	}
+	if got.OriginalSourceAddr != "ACME-ORIGINAL" {
+		t.Errorf("original source = %q, want ACME-ORIGINAL", got.OriginalSourceAddr)
 	}
 
 	// The stored value never contains the body plaintext.
@@ -104,10 +107,10 @@ func TestRedisMapPutScopesByConnector(t *testing.T) {
 	rA := routedFixture(connA, nil)
 	rB := routedFixture(connB, nil)
 
-	if err := store.Put(ctx, smscID, rA); err != nil {
+	if err := store.Put(ctx, smscID, rA, ""); err != nil {
 		t.Fatalf("Put A: %v", err)
 	}
-	if err := store.Put(ctx, smscID, rB); err != nil {
+	if err := store.Put(ctx, smscID, rB, ""); err != nil {
 		t.Fatalf("Put B: %v", err)
 	}
 

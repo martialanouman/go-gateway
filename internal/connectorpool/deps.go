@@ -71,14 +71,14 @@ func (noopCancelFlags) Peek(context.Context, uuid.UUID) (cancel.Holder, error) {
 // satisfies it. New defaults a nil DLRMap to a no-op, so the hot path never branches on nil and a
 // missing wiring is explicit rather than a silent panic.
 type DLRMap interface {
-	Put(ctx context.Context, smscMsgID string, r pipeline.RoutedMT) error
+	Put(ctx context.Context, smscMsgID string, r pipeline.RoutedMT, originalFrom string) error
 }
 
 // noopDLRMap is the New default when no DLR map is wired: it records nothing. Tests that do not
 // exercise DLR correlation rely on it.
 type noopDLRMap struct{}
 
-func (noopDLRMap) Put(context.Context, string, pipeline.RoutedMT) error { return nil }
+func (noopDLRMap) Put(context.Context, string, pipeline.RoutedMT, string) error { return nil }
 
 // ThrottleMetric observes the adaptive throttle (step-086): the connector's current send rate after
 // each submit and each ESME_RTHROTTLED event. A wrapper over Prometheus satisfies it; New defaults a

@@ -202,6 +202,10 @@ func buildCDRRow(dlr pipeline.DLREvent, m dlrmap.Mapping, status clickhouse.Stat
 		Encoding:     clickhouse.EncodingOf(m.Encoding),
 		Billed:       false,
 	}
+	if m.OriginalSourceAddr != "" {
+		original := m.OriginalSourceAddr
+		row.OriginalSourceAddr = &original
+	}
 	if status == clickhouse.StatusDelivered {
 		// delivered_at is the time the connector read the receipt, not the SMSC's own DoneDate: DoneDate
 		// is a raw SMPP time string on the SMSC clock (skew, parsing), and at the connector's read latency

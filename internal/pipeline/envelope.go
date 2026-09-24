@@ -115,13 +115,16 @@ type RoutedMT struct {
 // ReplacingMergeTree keyed by the row's identity and versioned by the status rank, so a replayed
 // outcome collapses onto the same row.
 type OutcomeMT struct {
-	MessageID    uuid.UUID
-	TraceID      uuid.UUID
-	AccountID    uuid.UUID
-	CustomerID   uuid.UUID
-	ConnectorID  uuid.UUID
-	RouteID      *uuid.UUID
-	From         string
+	MessageID   uuid.UUID
+	TraceID     uuid.UUID
+	AccountID   uuid.UUID
+	CustomerID  uuid.UUID
+	ConnectorID uuid.UUID
+	RouteID     *uuid.UUID
+	From        string
+	// OriginalFrom is the sender the client submitted when a rewrite rule changed it before the submit
+	// (§6.16), empty otherwise; From is then the address actually sent.
+	OriginalFrom string
 	To           string
 	Encoding     string // resolved: gsm7|ucs2|binary
 	SegmentSeq   int

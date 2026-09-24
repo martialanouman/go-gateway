@@ -26,6 +26,7 @@ func outcomeFixture() pipeline.OutcomeMT {
 		ConnectorID:    uuid.New(),
 		RouteID:        &routeID,
 		From:           "GATEWAY",
+		OriginalFrom:   "+22507000001",
 		To:             "+22507000000",
 		Encoding:       "ucs2",
 		SegmentSeq:     2,
@@ -68,6 +69,9 @@ func TestOutcomeRoundTrip(t *testing.T) {
 	}
 	if out.ConnectorID != in.ConnectorID || out.RouteID == nil || *out.RouteID != *in.RouteID {
 		t.Errorf("routing = (%v, %v), want (%v, %v)", out.ConnectorID, out.RouteID, in.ConnectorID, in.RouteID)
+	}
+	if out.OriginalFrom != in.OriginalFrom {
+		t.Errorf("original_from = %q, want %q", out.OriginalFrom, in.OriginalFrom)
 	}
 	if out.From != in.From || out.To != in.To || out.Encoding != in.Encoding {
 		t.Errorf("addressing = (%q, %q, %q), want (%q, %q, %q)",
@@ -131,5 +135,23 @@ func TestOutcomeWireCarriesNoBody(t *testing.T) {
 		case "body", "content", "short_message", "message_payload", "text":
 			t.Errorf("mt.outcome carries a %q field: the CDR outcome row stores no content (invariant a)", name)
 		}
+	}
+}
+
+// TestOutcomeWithoutRewriteOmitsOriginalFrom: an unrewritten outcome carries no original_from key, so a
+// router of the previous version reads it unchanged and the CDR keeps original_source_addr NULL.
+func TestOutcomeWithoutRewriteOmitsOriginalFrom(t *testing.T) {
+	in := outcomeFixture()
+	in.OriginalFrom = ""
+	rec, err := pipeline.EncodeOutcome(in)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(rec.Value, &fields); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, ok := fields["original_from"]; ok {
+		t.Errorf("original_from present on an unrewritten outcome: %s", rec.Value)
 	}
 }

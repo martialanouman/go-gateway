@@ -757,3 +757,51 @@ func TestCancelledOutranksFailedInTheAggregate(t *testing.T) {
 			"or the replay would put a cancelled message back on the wire", got.Status)
 	}
 }
+
+// TestCDRRewrittenSenderReadsTheSentAddress: the placeholder row holds the address the client sent, the
+// dispatched segments the one the pool rewrote it to (§6.16). Every message reads the sent address, and
+// keeps the client's in original_source_addr even under a later row that does not repeat it. Many
+// messages, because the message-level fold picks among its rows: one message can pass by luck.
+func TestCDRRewrittenSenderReadsTheSentAddress(t *testing.T) {
+	conn, err := clickhouse.NewConn(chtest.Config(t))
+	if err != nil {
+		t.Fatalf("new conn: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	writer, reader := clickhouse.NewCDRWriter(conn), clickhouse.NewCDRReader(conn)
+	ctx := context.Background()
+	customerID, accountID := uuid.New(), uuid.New()
+	at := time.Now().UTC().Truncate(time.Millisecond)
+	original := "ACME"
+	ids := make([]uuid.UUID, 0, 30)
+	rows := make([]clickhouse.CDRRow, 0, 120)
+	for range 30 {
+		id := uuid.New()
+		ids = append(ids, id)
+		row := func(status clickhouse.Status, seq uint16, source string, orig *string) clickhouse.CDRRow {
+			return clickhouse.CDRRow{
+				MessageID: id, TraceID: uuid.New(), AccountID: accountID, CustomerID: customerID,
+				Direction: clickhouse.DirectionMT, SourceAddr: source, OriginalSourceAddr: orig, DestAddr: "2250700000000",
+				SubmittedAt: at, Status: status, SegmentCount: 2, SegmentSeq: seq, Encoding: clickhouse.EncodingGSM7,
+			}
+		}
+		rows = append(rows,
+			row(clickhouse.StatusAccepted, 0, original, nil),
+			row(clickhouse.StatusEnroute, 1, "INFO", &original),
+			row(clickhouse.StatusEnroute, 2, "INFO", &original),
+			row(clickhouse.StatusFailed, 2, "INFO", nil),
+		)
+	}
+	if err := writer.InsertBatch(ctx, rows); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	for _, id := range ids {
+		got, found, err := reader.Current(ctx, customerID, accountID, id)
+		if err != nil || !found {
+			t.Fatalf("read: found=%v err=%v", found, err)
+		}
+		if got.SourceAddr != "INFO" || got.OriginalSourceAddr == nil || *got.OriginalSourceAddr != original {
+			t.Fatalf("message %s: source = %q, original = %v; want INFO and ACME", id, got.SourceAddr, got.OriginalSourceAddr)
+		}
+	}
+}

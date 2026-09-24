@@ -48,36 +48,39 @@ func NewRedisMap(rdb *redis.Client) *RedisMap {
 // descriptive columns source/dest/connector/route/segment/encoding), else the delivered snapshot would
 // blank them. It NEVER carries the message body (invariant a): only descriptive metadata.
 type mapping struct {
-	MessageID    string    `json:"message_id"`
-	TraceID      string    `json:"trace_id"`
-	AccountID    string    `json:"account_id"`
-	CustomerID   string    `json:"customer_id"`
-	SourceAddr   string    `json:"source_addr"`
-	DestAddr     string    `json:"dest_addr"`
-	ConnectorID  string    `json:"connector_id"`
-	RouteID      *string   `json:"route_id,omitempty"`
-	SegmentCount int       `json:"segment_count"`
-	SegmentSeq   int       `json:"segment_seq"`
-	Encoding     string    `json:"encoding"`
-	SubmittedAt  time.Time `json:"submitted_at"`
+	MessageID  string `json:"message_id"`
+	TraceID    string `json:"trace_id"`
+	AccountID  string `json:"account_id"`
+	CustomerID string `json:"customer_id"`
+	SourceAddr string `json:"source_addr"`
+	// OriginalSourceAddr is the sender the client submitted when the pool rewrote it (§6.16).
+	OriginalSourceAddr string    `json:"original_source_addr,omitempty"`
+	DestAddr           string    `json:"dest_addr"`
+	ConnectorID        string    `json:"connector_id"`
+	RouteID            *string   `json:"route_id,omitempty"`
+	SegmentCount       int       `json:"segment_count"`
+	SegmentSeq         int       `json:"segment_seq"`
+	Encoding           string    `json:"encoding"`
+	SubmittedAt        time.Time `json:"submitted_at"`
 }
 
 // Mapping is the resolved DLR correlation the return-path router reads back (step-044): the full CDR
 // projection of the submitted message, so it can write a collapsing delivered/failed/expired row and
 // compute latency without a ClickHouse read. It never carries the message body.
 type Mapping struct {
-	MessageID    uuid.UUID
-	TraceID      uuid.UUID
-	AccountID    uuid.UUID
-	CustomerID   uuid.UUID
-	SourceAddr   string
-	DestAddr     string
-	ConnectorID  uuid.UUID
-	RouteID      *uuid.UUID
-	SegmentCount int
-	SegmentSeq   int
-	Encoding     string
-	SubmittedAt  time.Time
+	MessageID          uuid.UUID
+	TraceID            uuid.UUID
+	AccountID          uuid.UUID
+	CustomerID         uuid.UUID
+	SourceAddr         string
+	OriginalSourceAddr string
+	DestAddr           string
+	ConnectorID        uuid.UUID
+	RouteID            *uuid.UUID
+	SegmentCount       int
+	SegmentSeq         int
+	Encoding           string
+	SubmittedAt        time.Time
 }
 
 // key scopes an entry by (connector_id, smsc_msg_id): connector_id disambiguates the same
@@ -93,25 +96,29 @@ func key(connectorID uuid.UUID, smscMsgID string) string {
 // (the message is already enroute). It takes the routed envelope because that is what the caller holds
 // and it carries every projected field; the message body it also carries is deliberately ignored (it
 // is never read here, so invariant (a) holds — nothing but metadata reaches Redis).
-func (m *RedisMap) Put(ctx context.Context, smscMsgID string, r pipeline.RoutedMT) error {
+//
+// r carries the sender actually sent; originalFrom is the client's when a rewrite rule changed it, empty
+// otherwise.
+func (m *RedisMap) Put(ctx context.Context, smscMsgID string, r pipeline.RoutedMT, originalFrom string) error {
 	var routeID *string
 	if r.RouteID != nil {
 		s := r.RouteID.String()
 		routeID = &s
 	}
 	value, err := json.Marshal(mapping{
-		MessageID:    r.MessageID.String(),
-		TraceID:      r.TraceID.String(),
-		AccountID:    r.AccountID.String(),
-		CustomerID:   r.CustomerID.String(),
-		SourceAddr:   r.From,
-		DestAddr:     r.To,
-		ConnectorID:  r.ConnectorID.String(),
-		RouteID:      routeID,
-		SegmentCount: r.SegmentCount,
-		SegmentSeq:   r.SegmentSeq,
-		Encoding:     r.Encoding,
-		SubmittedAt:  r.SubmittedAt,
+		MessageID:          r.MessageID.String(),
+		TraceID:            r.TraceID.String(),
+		AccountID:          r.AccountID.String(),
+		CustomerID:         r.CustomerID.String(),
+		SourceAddr:         r.From,
+		OriginalSourceAddr: originalFrom,
+		DestAddr:           r.To,
+		ConnectorID:        r.ConnectorID.String(),
+		RouteID:            routeID,
+		SegmentCount:       r.SegmentCount,
+		SegmentSeq:         r.SegmentSeq,
+		Encoding:           r.Encoding,
+		SubmittedAt:        r.SubmittedAt,
 	})
 	if err != nil {
 		return fmt.Errorf("dlrmap: marshal %s: %w", r.MessageID, err)
@@ -175,18 +182,19 @@ func (w mapping) resolve() (Mapping, error) {
 		routeID = &id
 	}
 	return Mapping{
-		MessageID:    messageID,
-		TraceID:      traceID,
-		AccountID:    accountID,
-		CustomerID:   customerID,
-		SourceAddr:   w.SourceAddr,
-		DestAddr:     w.DestAddr,
-		ConnectorID:  connectorID,
-		RouteID:      routeID,
-		SegmentCount: w.SegmentCount,
-		SegmentSeq:   w.SegmentSeq,
-		Encoding:     w.Encoding,
-		SubmittedAt:  w.SubmittedAt,
+		MessageID:          messageID,
+		TraceID:            traceID,
+		AccountID:          accountID,
+		CustomerID:         customerID,
+		SourceAddr:         w.SourceAddr,
+		OriginalSourceAddr: w.OriginalSourceAddr,
+		DestAddr:           w.DestAddr,
+		ConnectorID:        connectorID,
+		RouteID:            routeID,
+		SegmentCount:       w.SegmentCount,
+		SegmentSeq:         w.SegmentSeq,
+		Encoding:           w.Encoding,
+		SubmittedAt:        w.SubmittedAt,
 	}, nil
 }
 
@@ -257,4 +265,13 @@ func clamp(d, lo, hi time.Duration) time.Duration {
 		return hi
 	}
 	return d
+}
+
+// ClientSourceAddr is the address the client submitted: what its delivery receipt goes back to, whatever
+// the pool rewrote it to on the wire (§6.16).
+func (m Mapping) ClientSourceAddr() string {
+	if m.OriginalSourceAddr != "" {
+		return m.OriginalSourceAddr
+	}
+	return m.SourceAddr
 }
