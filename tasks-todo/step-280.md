@@ -49,6 +49,14 @@ l'avoir levé mesurerait ce goulot, pas la passerelle.
 Les manifests existent depuis step-270, mais **aucune image ne les accompagne** : ils nomment des
 images GHCR que rien ne construit encore. Un environnement représentatif ne se monte pas sans elles.
 
+## Prérequis logiciel : relancer le plafond du pool (step-350 PR2)
+step-350 PR2 a ajouté un étage au chemin d'envoi — la réécriture de sender ID, juste avant chaque
+`submit_sm` — **après** la mesure de step-201f. Le plafond du pool que step-201f a caractérisé est donc
+celui d'un pipeline qui n'existe plus : relancer `make load-reference RUN=TestPoolSubmitCeiling` avant de
+lire la campagne. Le coût isolé est petit (`BenchmarkRewrite` : ~8 ns sans règle, ~150 ns et 1
+allocation au pire sur 5 règles, par segment), mais il n'a pas été mesuré sur le banc, dont le bruit
+(±30 % sur l'hôte de développement) l'aurait noyé.
+
 ## Prérequis matériel (à provisionner — ce n'est pas du code)
 - Environnement représentatif : workers dédiés, Kafka **répliqué 3**, ClickHouse et Postgres séparés
   des workers, simulateur SMSC sur sa propre machine (sinon il concourt pour le CPU qu'il mesure).

@@ -3,6 +3,8 @@
 > **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** LIVRÉE (PR1 #156, PR2)
 > **Dépend de :** step-201e (livrée) · **Bloque :** step-201b, step-216 PR2 (elle ajoute un étage au
 > chemin d'envoi et ne doit pas s'insérer entre cette mesure et step-201b)
+> **Mesure périmée par :** step-350 PR2 (réécriture de sender ID avant chaque `submit_sm`) — à relancer
+> avant step-280, qui le note dans ses prérequis.
 
 ## But
 
