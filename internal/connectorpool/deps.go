@@ -74,6 +74,16 @@ type DLRMap interface {
 	Put(ctx context.Context, smscMsgID string, r pipeline.RoutedMT, originalFrom string) error
 }
 
+// Rewriter returns the source address to send for a routed segment. *senderrewrite.Holder satisfies it.
+type Rewriter interface {
+	Rewrite(connectorID, accountID, customerID uuid.UUID, from, to string, messageID uuid.UUID) string
+}
+
+// noRewrite is the New default when no Rewriter is wired: every sender goes out as submitted.
+type noRewrite struct{}
+
+func (noRewrite) Rewrite(_, _, _ uuid.UUID, from, _ string, _ uuid.UUID) string { return from }
+
 // noopDLRMap is the New default when no DLR map is wired: it records nothing. Tests that do not
 // exercise DLR correlation rely on it.
 type noopDLRMap struct{}
@@ -184,7 +194,10 @@ type Deps struct {
 	CDR         CDRWriter
 	CancelFlags CancelFlags
 	DLRMap      DLRMap
-	Producer    Producer
+	// Rewriter applies the sender-ID rewrite rules just before the submit_sm (§6.16). New defaults a nil
+	// one to rewriting nothing.
+	Rewriter Rewriter
+	Producer Producer
 	// ConnectorID identifies the SMSC link this pool binds, stamped onto every mo.inbound / dlr.events
 	// record so the return-path router can correlate a receipt (step-044). At M2 it is injected from
 	// env; M3+ sources it from the connectors control plane.

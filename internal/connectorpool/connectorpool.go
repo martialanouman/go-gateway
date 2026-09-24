@@ -95,6 +95,9 @@ func New(deps Deps) *Service {
 	if deps.DLRMap == nil {
 		deps.DLRMap = noopDLRMap{}
 	}
+	if deps.Rewriter == nil {
+		deps.Rewriter = noRewrite{}
+	}
 	// Required, not defaulted: since step-201c the outcome publish is the only record that a message
 	// left for the SMSC, and billing.Reaper settles orphan reservations against that record. A no-op
 	// here would let a pool send SMS it never accounts for — and refusing the publish instead would be
