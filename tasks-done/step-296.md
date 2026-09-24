@@ -1,6 +1,6 @@
 # step-296 — Deux actions d'opérateur qui échappent à la piste d'audit
 
-> **Jalon :** Dette ouverte par step-290d · **Statut :** À FAIRE
+> **Jalon :** Dette ouverte par step-290d · **Statut :** LIVRÉE
 > **Dépend de :** — · **Bloque :** —
 
 ## Pourquoi cette fiche existe
@@ -80,7 +80,7 @@ modèle Fable, qui a tranché les quatre points sans contredire la spec.
 
 Cette PR ne porte que le constat 1 — le constat 2 n'a pas de déclencheur qu'elle contrôle.
 
-- [ ] Un rejeu de dead-letter laisse une trace nominative, ou la fiche écrit pourquoi ce n'est pas
+- [x] Un rejeu de dead-letter laisse une trace nominative, ou la fiche écrit pourquoi ce n'est pas
       possible et ce qui le remplace.
 
 **À honorer hors de cette PR, par celle qui livrera la sonde réelle :** `test-billing-provider` sort des
