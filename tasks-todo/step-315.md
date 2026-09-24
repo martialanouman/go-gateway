@@ -37,6 +37,11 @@ propriété pour exclure `audit_log` de l'effacement RGPD. Or le rôle applicati
 purge doit en être le **seul** titulaire. Celle des deux qui merge en second respecte ce que la première
 a posé.
 
+**Hérité de step-296 : toutes les lignes ne viennent pas de HTTP.** `mt-replay` écrit `method = REPLAY`,
+`target = mt.dead-letter`, `operation_id = mt-replay` (absent du contrat) et `operator = declared:<nom>`.
+Le schéma de réponse doit les accepter : une enum de verbes HTTP ou un motif `tok_…` ferait échouer la
+réponse sur une ligne de rejeu, et durcir le champ après publication serait un bump MAJEUR.
+
 ## Constat 3 — deux tables s'appellent `audit_log`
 
 `docs/specification-technique-tableau-de-bord.md` déclare un `audit_log` dans le schéma `dashboard`, de

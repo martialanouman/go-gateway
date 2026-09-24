@@ -28,6 +28,10 @@ existants.
 - Scopes opérateur inchangés (mêmes `Scope`) ; mapping depuis les claims du fournisseur d'identité.
 - Comparaisons/erreurs sans fuite ; adossé au mTLS de step-300.
 
+- **Hérité de step-296.** `audit_log.operator` a un **troisième** format : `declared:<nom>`, écrit par
+  `mt-replay`, qui n'a pas de principal. Cette step ne l'authentifie pas ; la dette vit dans
+  `debts/rejeu-impute-a-une-identite-declaree.md`.
+
 ## Tests (écrits dans la même PR)
 - Jeton OIDC valide → `Principal` + scopes ; jeton invalide/expiré → refusé.
 - Mapping claims → scopes ; les endpoints Admin restent gardés comme avant (middleware inchangé).

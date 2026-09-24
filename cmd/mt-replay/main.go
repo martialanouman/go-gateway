@@ -17,8 +17,9 @@
 // A replay puts real SMS back on the wire, so it leaves a row in control_plane.audit_log before it
 // consumes anything, and cannot start without one (step-296). The operator is DECLARED, not
 // authenticated: the tool has no principal, and whoever holds the Kafka credentials can produce on
-// mt.routed without it. Real accountability needs per-operator credentials (step-310). The run id is
-// logged at start too, so a row a kill -9 left without an outcome still finds its logs.
+// mt.routed without it. Real accountability needs per-operator credentials, which nothing plans yet
+// (debts/rejeu-impute-a-une-identite-declaree.md). The run id is logged at start too, so a row a kill -9
+// left without an outcome still finds its logs.
 //
 // Usage:
 //
@@ -101,8 +102,7 @@ func run() error {
 	})
 	runID := uuid.NewString()
 	err = auditedReplay(ctx, postgres.NewAuditLogRepo(pg), operator, runID, func(ctx context.Context) error {
-		// Created only once the row exists: the client joins the group on construction, and a refused run
-		// must not rebalance partitions away from a replay already running.
+		// Only once the row exists: the client joins the group on construction, rebalancing a running replay.
 		// AtStart: the parked dead-letters are durable and must all be drained. A dedicated, fixed group so
 		// a re-run resumes where a previous drain left off rather than re-replaying the whole topic.
 		consumer, err := kafka.NewConsumer(cfg.Kafka, serviceName, kafka.TopicMTDeadLetter)

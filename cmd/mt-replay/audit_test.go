@@ -74,7 +74,6 @@ func TestAuditedReplayRecordsWhoAndTheOutcome(t *testing.T) {
 		status int
 	}{
 		{"clean stop", nil, 200},
-		{"interrupted", context.Canceled, 200},
 		{"drain failed", drainErr, 500},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

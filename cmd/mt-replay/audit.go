@@ -60,7 +60,7 @@ func auditedReplay(ctx context.Context, trail auditTrail, operator, runID string
 
 	err = drain(ctx)
 	status := http.StatusOK
-	if err != nil && !errors.Is(err, context.Canceled) {
+	if err != nil {
 		status = http.StatusInternalServerError
 	}
 	// ctx is already cancelled by the signal that stopped the drain.
