@@ -81,6 +81,7 @@ func New(deps Deps) (*chi.Mux, huma.API) {
 	registerSuppressions(api, deps.Suppressions, deps.Accounts, deps.InboundNumbers)
 	registerOptOutKeywords(api, deps.OptOutKeywords)
 	registerAntispamRules(api, deps.AntispamRules)
+	registerSenderRewriteRules(api, deps.SenderRewriteRules)
 	registerExactRoutes(api, deps.ExactRoutes, deps.ExactRouteCache, deps.ConfigChanges,
 		deps.ConfigChannel, deps.Imports, deps.Logger)
 	registerRoutingScripts(api, deps.RoutingScripts)

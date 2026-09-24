@@ -52,6 +52,8 @@ request:
       value: 00000000-0000-0000-0000-000000000000
     - name: keywordId
       value: 00000000-0000-0000-0000-000000000000
+    - name: rewriteRuleId
+      value: 00000000-0000-0000-0000-000000000000
 items:
   - info:
       name: Customer Groups
@@ -1004,6 +1006,70 @@ items:
           method: DELETE
           url: '{{baseUrl}}/admin/antispam-rules/{{antispamRuleId}}'
         docs: Delete an anti-spam rule (scope admin:write).
+  - info:
+      name: Sender Rewrite
+      type: folder
+    items:
+      - info:
+          name: list-sender-rewrite-rules
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/sender-rewrite-rules'
+          params:
+            - name: scope
+              value: connector
+              type: query
+              disabled: true
+            - name: scopeId
+              value: '{{connectorId}}'
+              type: query
+              disabled: true
+        docs: List sender-ID rewrite rules in evaluation order (scope admin:read).
+      - info:
+          name: create-sender-rewrite-rule
+          type: http
+        http:
+          method: POST
+          url: '{{baseUrl}}/admin/sender-rewrite-rules'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "scope": "connector",
+                "scope_id": "{{connectorId}}",
+                "match_sender_pattern": "[0-9]+",
+                "rewrite_type": "static",
+                "rewrite_to": "INFO",
+                "reason": "this SMSC refuses numeric senders"
+              }
+        docs: Create a sender-ID rewrite rule (scope admin:write). Only mt rules are accepted.
+      - info:
+          name: update-sender-rewrite-rule
+          type: http
+        http:
+          method: PATCH
+          url: '{{baseUrl}}/admin/sender-rewrite-rules/{{rewriteRuleId}}'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "status": "disabled"
+              }
+        docs: Update a sender-ID rewrite rule (scope admin:write).
+      - info:
+          name: delete-sender-rewrite-rule
+          type: http
+        http:
+          method: DELETE
+          url: '{{baseUrl}}/admin/sender-rewrite-rules/{{rewriteRuleId}}'
+        docs: Delete a sender-ID rewrite rule (scope admin:write).
   - info:
       name: Exact Routes
       type: folder

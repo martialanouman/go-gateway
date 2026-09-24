@@ -195,18 +195,19 @@ type Deps struct {
 	Connectors     ConnectorStore
 	// SecretSealer is required by the three handlers that write a replayed secret (connectors, billing
 	// providers, webhooks): without it they refuse rather than store something unusable.
-	SecretSealer     SecretSealer
-	ConnectorControl ConnectorControl
-	Routes           RouteStore
-	SenderIDs        SenderIDStore
-	InboundNumbers   InboundNumberStore
-	InboundKeywords  InboundKeywordStore
-	UnroutedMO       UnroutedMOStore
-	Suppressions     SuppressionAdminStore
-	OptOutKeywords   OptOutKeywordStore
-	AntispamRules    AntispamRuleStore
-	ExactRoutes      ExactRouteAdminStore
-	ExactRouteCache  ExactRouteCacheInvalidator
+	SecretSealer       SecretSealer
+	ConnectorControl   ConnectorControl
+	Routes             RouteStore
+	SenderIDs          SenderIDStore
+	InboundNumbers     InboundNumberStore
+	InboundKeywords    InboundKeywordStore
+	UnroutedMO         UnroutedMOStore
+	Suppressions       SuppressionAdminStore
+	OptOutKeywords     OptOutKeywordStore
+	AntispamRules      AntispamRuleStore
+	SenderRewriteRules SenderRewriteRuleStore
+	ExactRoutes        ExactRouteAdminStore
+	ExactRouteCache    ExactRouteCacheInvalidator
 	// ConfigChanges and ConfigChannel let a mutation whose durable write lands AFTER its HTTP response
 	// — today, the background bulk import of exact routes (step-250e) — publish its own config-change
 	// announcement once committed. Synchronous handlers are covered by the PublishConfigChanges

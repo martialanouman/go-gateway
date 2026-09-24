@@ -310,6 +310,31 @@ func TestNewAdminAppAuditsAMutation(t *testing.T) {
 	}
 }
 
+// TestNewAdminAppServesSenderRewriteRules: nothing else checks that the booted service hands the
+// handlers a store — a nil one only shows as a 500 on the first request.
+func TestNewAdminAppServesSenderRewriteRules(t *testing.T) {
+	cfg := testConfig()
+	cfg.Postgres = pgtest.Config(t)
+	cfg.Redis = redistest.Config(t)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	app, err := newAdminApp(ctx, cfg, silentLogger())
+	if err != nil {
+		t.Fatalf("newAdminApp: %v", err)
+	}
+	defer app.close()
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/admin/sender-rewrite-rules", nil)
+	req.Header.Set("Authorization", "Bearer test-token")
+	rec := httptest.NewRecorder()
+	app.http.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list sender rewrite rules = %d, want 200; body=%s", rec.Code, rec.Body)
+	}
+}
+
 func emptyHTTPDeps() (*stores, *runners, *controlPlaneClients, *realtimeFeed) {
 	return &stores{ch: &clickhouse.Conn{}},
 		&runners{},

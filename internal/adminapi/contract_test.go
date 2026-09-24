@@ -109,6 +109,11 @@ var m1Operations = []opRef{
 	{"update-antispam-rule", "patch", "/admin/antispam-rules/{id}"},
 	{"delete-antispam-rule", "delete", "/admin/antispam-rules/{id}"},
 
+	{"list-sender-rewrite-rules", "get", "/admin/sender-rewrite-rules"},
+	{"create-sender-rewrite-rule", "post", "/admin/sender-rewrite-rules"},
+	{"update-sender-rewrite-rule", "patch", "/admin/sender-rewrite-rules/{id}"},
+	{"delete-sender-rewrite-rule", "delete", "/admin/sender-rewrite-rules/{id}"},
+
 	{"list-exact-routes", "get", "/admin/exact-routes"},
 	{"create-exact-route", "post", "/admin/exact-routes"},
 	{"import-exact-routes", "post", "/admin/exact-routes/import"},
@@ -173,13 +178,8 @@ type deferredOp struct{ reason, step string }
 // TestEveryContractOperationIsServedOrDeferred, which also forbids overlapping with m1Operations.
 var deferred = map[string]deferredOp{
 
-	// Sender-ID rewrite (§6.16): sender_id_rewrite_rules has a generated sqlc model
-	// (ControlPlaneSenderIDRewriteRule) and nothing else — no repo, no evaluation, no admin.
-	"list-sender-rewrite-rules":  {"table and sqlc model only: no repo", "step-350"},
-	"create-sender-rewrite-rule": {"table and sqlc model only: no repo", "step-350"},
-	"update-sender-rewrite-rule": {"table and sqlc model only: no repo", "step-350"},
-	"delete-sender-rewrite-rule": {"table and sqlc model only: no repo", "step-350"},
-	"test-sender-rewrite-rule":   {"needs the evaluation engine (PR2)", "step-350"},
+	// Sender-ID rewrite (§6.16): the CRUD is served; testing a rule against a sample is not.
+	"test-sender-rewrite-rule": {"waits for the evaluation engine of step-350 PR2", "step-350"},
 
 	// SMPP sessions: stream-sessions is served; the two REST reads and the per-session DELETE are not.
 	"list-sessions":         {"only stream-sessions exists, no REST read", "step-360"},
