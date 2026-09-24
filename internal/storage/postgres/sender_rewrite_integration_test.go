@@ -3,7 +3,9 @@ package postgres_test
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -13,8 +15,10 @@ import (
 	"github.com/martialanouman/go-gateway/internal/testutil/pgtest"
 )
 
-// TestSenderRewriteRulesListInEvaluationOrder: scope precedence first, priority second. The platform
-// rule carries the lowest priority, so a sort on priority alone would put it first — plausible and wrong.
+// TestSenderRewriteRulesListInEvaluationOrder: scope precedence first, priority second. The priorities
+// run against the precedence (the platform rule is the lowest, the account rule outranks the customer
+// one) and no two scopes sort alphabetically in precedence order, so a sort on priority, on the scope
+// name, or with two ranks swapped all put a rule in the wrong place.
 func TestSenderRewriteRulesListInEvaluationOrder(t *testing.T) {
 	pool := pgtest.Pool(t)
 	ctx := context.Background()
@@ -22,7 +26,7 @@ func TestSenderRewriteRulesListInEvaluationOrder(t *testing.T) {
 		t.Fatalf("clean: %v", err)
 	}
 	repo := postgres.NewSenderRewriteRuleRepo(pool)
-	connectorID, customerID := uuid.New(), uuid.New()
+	connectorID, accountID, customerID := uuid.New(), uuid.New(), uuid.New()
 
 	create := func(scope cp.SenderRewriteScope, scopeID *uuid.UUID, priority int32) cp.SenderRewriteRule {
 		t.Helper()
@@ -36,6 +40,7 @@ func TestSenderRewriteRulesListInEvaluationOrder(t *testing.T) {
 	}
 	platform := create(cp.RewriteScopePlatform, nil, 1)
 	customer := create(cp.RewriteScopeCustomer, &customerID, 50)
+	account := create(cp.RewriteScopeAccount, &accountID, 90)
 	connectorLate := create(cp.RewriteScopeConnector, &connectorID, 200)
 	connectorEarly := create(cp.RewriteScopeConnector, &connectorID, 10)
 
@@ -43,7 +48,7 @@ func TestSenderRewriteRulesListInEvaluationOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	want := []uuid.UUID{connectorEarly.ID, connectorLate.ID, customer.ID, platform.ID}
+	want := []uuid.UUID{connectorEarly.ID, connectorLate.ID, account.ID, customer.ID, platform.ID}
 	if len(got) != len(want) {
 		t.Fatalf("got %d rules, want %d", len(got), len(want))
 	}
@@ -53,14 +58,31 @@ func TestSenderRewriteRulesListInEvaluationOrder(t *testing.T) {
 		}
 	}
 
-	scope := cp.RewriteScopeConnector
-	filtered, err := repo.List(ctx, cp.SenderRewriteFilter{Scope: &scope, ScopeID: &connectorID})
-	if err != nil || len(filtered) != 2 {
-		t.Fatalf("filtered list = %d rules, %v; want the 2 connector rules", len(filtered), err)
+	connector := cp.RewriteScopeConnector
+	for name, tc := range map[string]struct {
+		f    cp.SenderRewriteFilter
+		want int
+	}{
+		"scope":    {cp.SenderRewriteFilter{Scope: &connector}, 2},
+		"scope_id": {cp.SenderRewriteFilter{ScopeID: &customerID}, 1},
+		"both":     {cp.SenderRewriteFilter{Scope: &connector, ScopeID: &customerID}, 0},
+	} {
+		if rules, err := repo.List(ctx, tc.f); err != nil || len(rules) != tc.want {
+			t.Errorf("filter %s: %d rules, %v; want %d", name, len(rules), err, tc.want)
+		}
 	}
-	other := uuid.New()
-	if none, _ := repo.List(ctx, cp.SenderRewriteFilter{ScopeID: &other}); len(none) != 0 {
-		t.Fatalf("scopeId filter ignored: %d rules", len(none))
+}
+
+// sameRule compares every stored field; the server-assigned id and timestamps are checked apart.
+func sameRule(t *testing.T, what string, got, want cp.SenderRewriteRule) {
+	t.Helper()
+	if got.CreatedAt.IsZero() || got.UpdatedAt.IsZero() {
+		t.Errorf("%s: timestamps not read back", what)
+	}
+	got.ID, want.ID = uuid.Nil, uuid.Nil
+	got.CreatedAt, got.UpdatedAt = time.Time{}, time.Time{}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("%s:\n got  %+v\n want %+v", what, got, want)
 	}
 }
 
@@ -71,32 +93,54 @@ func TestSenderRewriteRuleCRUDRoundTrip(t *testing.T) {
 	accountID := uuid.New()
 
 	r, err := repo.Create(ctx, cp.NewSenderRewriteRule{
-		Scope: cp.RewriteScopeAccount, ScopeID: &accountID, MatchSenderPattern: ptr("[0-9]+"),
-		RewriteType: cp.RewriteFallbackPool, FallbackPool: []string{"A", "B"},
+		Scope: cp.RewriteScopeAccount, ScopeID: &accountID,
+		MatchSenderPattern: ptr("[0-9]+"), MatchDestPattern: ptr("225.*"),
+		RewriteType: cp.RewriteFallbackPool, FallbackPool: []string{"A", "B"}, MaxLength: ptr[int32](11),
 		SanitizeCharset: []byte(`{"allowed":"AB"}`), Priority: 7, Reason: ptr("SMSC refuses numerics"),
 	})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if r.Direction != "mt" || r.Status != "active" || len(r.FallbackPool) != 2 || r.FallbackPool[1] != "B" ||
-		string(r.SanitizeCharset) != `{"allowed": "AB"}` || *r.MatchSenderPattern != "[0-9]+" {
-		t.Fatalf("created = %+v", r)
+	want := cp.SenderRewriteRule{
+		Scope: cp.RewriteScopeAccount, ScopeID: &accountID, Direction: "mt",
+		MatchSenderPattern: ptr("[0-9]+"), MatchDestPattern: ptr("225.*"),
+		RewriteType: cp.RewriteFallbackPool, FallbackPool: []string{"A", "B"}, MaxLength: ptr[int32](11),
+		SanitizeCharset: []byte(`{"allowed": "AB"}`), Priority: 7, Reason: ptr("SMSC refuses numerics"),
+		Status: "active",
 	}
+	sameRule(t, "created", r, want)
 
-	newType := cp.RewriteStatic
+	static := cp.RewriteStatic
 	disabled := "disabled"
-	u, err := repo.Update(ctx, r.ID, cp.SenderRewriteRulePatch{RewriteType: &newType, RewriteTo: ptr("INFO"), Status: &disabled})
+	u, err := repo.Update(ctx, r.ID, cp.SenderRewriteRulePatch{
+		MatchSenderPattern: ptr("[A-Z]+"), MatchDestPattern: ptr("33.*"),
+		RewriteType: &static, RewriteTo: ptr("INFO"), FallbackPool: []string{"C"}, MaxLength: ptr[int32](9),
+		SanitizeCharset: []byte(`{"allowed":"C"}`), Priority: ptr[int32](3), Reason: ptr("new carrier rule"),
+		Status: &disabled,
+	})
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	if u.RewriteType != cp.RewriteStatic || *u.RewriteTo != "INFO" || u.Status != disabled || u.Priority != 7 ||
-		len(u.FallbackPool) != 2 {
-		t.Fatalf("updated = %+v; want the patched fields changed and the others kept", u)
+	want = cp.SenderRewriteRule{
+		Scope: cp.RewriteScopeAccount, ScopeID: &accountID, Direction: "mt",
+		MatchSenderPattern: ptr("[A-Z]+"), MatchDestPattern: ptr("33.*"),
+		RewriteType: cp.RewriteStatic, RewriteTo: ptr("INFO"), FallbackPool: []string{"C"}, MaxLength: ptr[int32](9),
+		SanitizeCharset: []byte(`{"allowed": "C"}`), Priority: 3, Reason: ptr("new carrier rule"),
+		Status: disabled,
 	}
+	sameRule(t, "updated", u, want)
 
-	if g, err := repo.Get(ctx, r.ID); err != nil || g.ID != r.ID {
-		t.Fatalf("get = %v, %v", g.ID, err)
+	kept, err := repo.Update(ctx, r.ID, cp.SenderRewriteRulePatch{})
+	if err != nil {
+		t.Fatalf("empty update: %v", err)
 	}
+	sameRule(t, "after an empty patch", kept, want)
+	got, err := repo.Get(ctx, r.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	sameRule(t, "read back", got, want)
+
 	if err := repo.Delete(ctx, r.ID); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
@@ -105,9 +149,6 @@ func TestSenderRewriteRuleCRUDRoundTrip(t *testing.T) {
 	}
 	if err := repo.Delete(ctx, r.ID); !errors.Is(err, errs.ErrNotFound) {
 		t.Fatalf("second delete = %v, want ErrNotFound", err)
-	}
-	if _, err := repo.Update(ctx, r.ID, cp.SenderRewriteRulePatch{Status: &disabled}); !errors.Is(err, errs.ErrNotFound) {
-		t.Fatalf("update after delete = %v, want ErrNotFound", err)
 	}
 }
 

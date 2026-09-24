@@ -18,5 +18,5 @@ Un opérateur qui en a besoin n'a aucun levier.
 **À quoi on reconnaîtra qu'il faut la payer.** Le premier client dont l'adresse de réponse MO doit être
 normalisée avant d'atteindre son webhook.
 
-Sources : `internal/adminapi/sender_rewrite.go:179` (refus de `mo`) ·
+Sources : `internal/adminapi/sender_rewrite.go:180` (refus de `mo`) ·
 `docs/specification-technique-passerelle-sms.md:941` (cas d'usage)

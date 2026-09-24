@@ -22,7 +22,7 @@ func NewSenderRewriteRuleRepo(pool *pgxpool.Pool) *SenderRewriteRuleRepo {
 	return &SenderRewriteRuleRepo{q: sqlcgen.New(pool)}
 }
 
-// List returns the rules matching f, active and disabled, in the order connector-pool evaluates them.
+// List returns the rules matching f, active and disabled, in evaluation order (§6.16).
 func (r *SenderRewriteRuleRepo) List(ctx context.Context, f cp.SenderRewriteFilter) ([]cp.SenderRewriteRule, error) {
 	rows, err := r.q.ListSenderRewriteRules(ctx, sqlcgen.ListSenderRewriteRulesParams{
 		Scope: strPtr(f.Scope), ScopeID: f.ScopeID,

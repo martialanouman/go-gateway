@@ -72,8 +72,8 @@ type senderRewriteRuleCreateBody struct {
 	RewriteTo          *string        `json:"rewrite_to,omitempty" nullable:"true" doc:"Required when rewrite_type = static."`
 	FallbackPool       []string       `json:"fallback_pool_json,omitempty" nullable:"true" doc:"Required, non-empty, when rewrite_type = fallback_pool."`
 	MaxLength          *int32         `json:"max_length,omitempty" minimum:"1" nullable:"true" doc:"Required when rewrite_type = truncate."`
-	SanitizeCharset    map[string]any `json:"sanitize_charset_json,omitempty" nullable:"true" doc:"Read when rewrite_type is sanitize: an object whose single key allowed lists the characters kept; every other character is removed. Null keeps A-Z, a-z and 0-9."`
-	Priority           *int32         `json:"priority,omitempty" doc:"Lower is evaluated first, within a scope. Defaults to 100."`
+	SanitizeCharset    map[string]any `json:"sanitize_charset_json,omitempty" nullable:"true" doc:"Read when rewrite_type is sanitize: an object whose single key allowed holds the characters kept, listed one by one (not ranges); every other character is removed. Null keeps ASCII letters and digits."`
+	Priority           *int32         `json:"priority,omitempty" default:"100" doc:"Lower is evaluated first, within a scope."`
 	Reason             *string        `json:"reason,omitempty" nullable:"true"`
 }
 
@@ -84,7 +84,7 @@ type senderRewriteRuleUpdateBody struct {
 	RewriteTo          *string        `json:"rewrite_to,omitempty" nullable:"true"`
 	FallbackPool       []string       `json:"fallback_pool_json,omitempty" nullable:"true"`
 	MaxLength          *int32         `json:"max_length,omitempty" minimum:"1" nullable:"true"`
-	SanitizeCharset    map[string]any `json:"sanitize_charset_json,omitempty" nullable:"true" doc:"Read when rewrite_type is sanitize: an object whose single key allowed lists the characters kept; every other character is removed. Null keeps A-Z, a-z and 0-9."`
+	SanitizeCharset    map[string]any `json:"sanitize_charset_json,omitempty" nullable:"true" doc:"Read when rewrite_type is sanitize: an object whose single key allowed holds the characters kept, listed one by one (not ranges); every other character is removed. Null keeps ASCII letters and digits."`
 	Priority           *int32         `json:"priority,omitempty"`
 	Reason             *string        `json:"reason,omitempty" nullable:"true"`
 	Status             *string        `json:"status,omitempty" enum:"active,disabled"`
@@ -126,8 +126,9 @@ func registerSenderRewriteRules(api huma.API, store SenderRewriteRuleStore) {
 	register(api, huma.Operation{
 		OperationID: "update-sender-rewrite-rule", Method: http.MethodPatch, Path: "/admin/sender-rewrite-rules/{id}",
 		Summary: "Update a rewrite rule", Tags: []string{"Sender Rewrite"},
-		Security: scopeSecurity(auth.ScopeAdminWrite),
-		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity},
+		Description: "Validated on the rule the patch leaves behind, since rewrite_type is mutable.",
+		Security:    scopeSecurity(auth.ScopeAdminWrite),
+		Errors:      []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity},
 	}, h.update)
 
 	register(api, huma.Operation{
@@ -203,11 +204,8 @@ func (h *senderRewriteHandlers) create(ctx context.Context, in *createSenderRewr
 		FallbackPool:       b.FallbackPool,
 		MaxLength:          b.MaxLength,
 		SanitizeCharset:    charset,
-		Priority:           100,
+		Priority:           *b.Priority,
 		Reason:             b.Reason,
-	}
-	if b.Priority != nil {
-		rule.Priority = *b.Priority
 	}
 	if err := validateRewrite(cp.SenderRewriteRule{
 		MatchSenderPattern: rule.MatchSenderPattern, MatchDestPattern: rule.MatchDestPattern,
@@ -251,9 +249,6 @@ func (h *senderRewriteHandlers) update(ctx context.Context, in *updateSenderRewr
 		Status:             b.Status,
 	}
 
-	// rewrite_type is mutable, so a patch is judged on the rule it leaves behind. The read and the write
-	// need no transaction: the update never clears a field, so a field this check found cannot vanish
-	// before the write.
 	current, err := h.store.Get(ctx, id)
 	if err != nil {
 		return nil, humaerr.FromError(err)
@@ -313,14 +308,15 @@ func mergeRewrite(r cp.SenderRewriteRule, p cp.SenderRewriteRulePatch) cp.Sender
 // COALESCE update cannot clear them, so refusing them would forbid every change of type. A sanitize
 // rule needs nothing — encodeCharset has checked a supplied charset, and null keeps the default.
 func validateRewrite(r cp.SenderRewriteRule) error {
-	for field, p := range map[string]*string{
-		"match_sender_pattern": r.MatchSenderPattern, "match_dest_pattern": r.MatchDestPattern,
-	} {
-		if p == nil {
+	for _, f := range []struct {
+		name string
+		p    *string
+	}{{"match_sender_pattern", r.MatchSenderPattern}, {"match_dest_pattern", r.MatchDestPattern}} {
+		if f.p == nil {
 			continue
 		}
-		if _, err := regexp.Compile(*p); err != nil {
-			return humaerr.FailValidation("invalid pattern", humaerr.FieldError{Field: field, Message: err.Error()})
+		if _, err := regexp.Compile(*f.p); err != nil {
+			return humaerr.FailValidation("invalid pattern", humaerr.FieldError{Field: f.name, Message: err.Error()})
 		}
 	}
 	missing := func(field, msg string) error {

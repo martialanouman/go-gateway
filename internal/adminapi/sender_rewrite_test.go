@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"sync"
 	"testing"
 
@@ -67,11 +68,30 @@ func (s *fakeRewriteStore) Update(_ context.Context, id uuid.UUID, p cp.SenderRe
 	if !ok {
 		return cp.SenderRewriteRule{}, errs.ErrNotFound
 	}
+	// The repository's COALESCE: every non-nil field overwrites.
+	set := func(dst **string, v *string) {
+		if v != nil {
+			*dst = v
+		}
+	}
+	set(&r.MatchSenderPattern, p.MatchSenderPattern)
+	set(&r.MatchDestPattern, p.MatchDestPattern)
+	set(&r.RewriteTo, p.RewriteTo)
+	set(&r.Reason, p.Reason)
 	if p.RewriteType != nil {
 		r.RewriteType = *p.RewriteType
 	}
+	if p.FallbackPool != nil {
+		r.FallbackPool = p.FallbackPool
+	}
 	if p.MaxLength != nil {
 		r.MaxLength = p.MaxLength
+	}
+	if p.SanitizeCharset != nil {
+		r.SanitizeCharset = p.SanitizeCharset
+	}
+	if p.Priority != nil {
+		r.Priority = *p.Priority
 	}
 	if p.Status != nil {
 		r.Status = *p.Status
@@ -106,14 +126,16 @@ func TestCreateSenderRewriteRuleAcceptsEachTypeWithWhatItNeeds(t *testing.T) {
 		"fallback_pool": `{"scope":"platform","rewrite_type":"fallback_pool","fallback_pool_json":["A","B"]}`,
 		"truncate":      `{"scope":"platform","rewrite_type":"truncate","max_length":11}`,
 		"sanitize":      `{"scope":"platform","rewrite_type":"sanitize"}`,
-		"sanitize set":  `{"scope":"platform","rewrite_type":"sanitize","sanitize_charset_json":{"allowed":"ABC"}}`,
+		"sanitize set":  `{"scope":"platform","rewrite_type":"sanitize","sanitize_charset_json":{"allowed":"ABC"},"reason":"carrier"}`,
 		"patterns":      `{"scope":"platform","rewrite_type":"static","rewrite_to":"INFO","match_sender_pattern":"[A-Z]{3,11}","match_dest_pattern":"225.*"}`,
 		"scoped":        `{"scope":"connector","scope_id":"` + uuid.NewString() + `","rewrite_type":"truncate","max_length":11,"direction":"mt"}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			if w := serveRewrite(t, newFakeRewriteStore(), http.MethodPost, rewritePath, body); w.Code != http.StatusCreated {
+			w := serveRewrite(t, newFakeRewriteStore(), http.MethodPost, rewritePath, body)
+			if w.Code != http.StatusCreated {
 				t.Fatalf("status = %d, want 201; body=%s", w.Code, w.Body)
 			}
+			assertJSONFields(t, w.Body.Bytes(), body)
 		})
 	}
 }
@@ -127,7 +149,7 @@ func TestCreateSenderRewriteRuleRefusesWhatNoEngineEvaluates(t *testing.T) {
 		"static blank target":    `{"scope":"platform","rewrite_type":"static","rewrite_to":"  "}`,
 		"pool missing":           `{"scope":"platform","rewrite_type":"fallback_pool"}`,
 		"pool empty":             `{"scope":"platform","rewrite_type":"fallback_pool","fallback_pool_json":[]}`,
-		"pool blank entry":       `{"scope":"platform","rewrite_type":"fallback_pool","fallback_pool_json":["A",""]}`,
+		"pool blank entry":       `{"scope":"platform","rewrite_type":"fallback_pool","fallback_pool_json":["A","  "]}`,
 		"truncate without max":   `{"scope":"platform","rewrite_type":"truncate"}`,
 		"charset unknown key":    `{"scope":"platform","rewrite_type":"sanitize","sanitize_charset_json":{"allow":"ABC"}}`,
 		"charset extra key":      `{"scope":"platform","rewrite_type":"sanitize","sanitize_charset_json":{"allowed":"AB","replace":"_"}}`,
@@ -190,8 +212,43 @@ func TestUpdateSenderRewriteRuleValidatesTheMergedRule(t *testing.T) {
 	if w := serveRewrite(t, store, http.MethodPatch, path, `{"match_sender_pattern":"[bad"}`); w.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("bad pattern: status = %d, want 422; body=%s", w.Code, w.Body)
 	}
-	if w := serveRewrite(t, store, http.MethodPatch, path, `{"status":"disabled"}`); w.Code != http.StatusOK {
-		t.Fatalf("status only: status = %d, want 200; body=%s", w.Code, w.Body)
+	for name, body := range map[string]string{
+		"blank static target": `{"rewrite_type":"static","rewrite_to":"  "}`,
+		"bad charset":         `{"sanitize_charset_json":{}}`,
+		"direction":           `{"direction":"mo"}`,
+	} {
+		if w := serveRewrite(t, store, http.MethodPatch, path, body); w.Code != http.StatusUnprocessableEntity {
+			t.Errorf("%s: status = %d, want 422; body=%s", name, w.Code, w.Body)
+		}
+	}
+}
+
+// Every field of the update body reaches the store and comes back in the response.
+func TestUpdateSenderRewriteRuleWritesEveryField(t *testing.T) {
+	store := newFakeRewriteStore()
+	r := seedRewrite(store, cp.NewSenderRewriteRule{Scope: cp.RewriteScopePlatform, RewriteType: cp.RewriteSanitize})
+	body := `{"match_sender_pattern":"[A-Z]+","match_dest_pattern":"225.*","rewrite_type":"fallback_pool",` +
+		`"rewrite_to":"INFO","fallback_pool_json":["A"],"max_length":9,"sanitize_charset_json":{"allowed":"A"},` +
+		`"priority":3,"reason":"carrier","status":"disabled"}`
+	w := serveRewrite(t, store, http.MethodPatch, rewritePath+"/"+r.ID.String(), body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body)
+	}
+	assertJSONFields(t, w.Body.Bytes(), body)
+}
+
+// assertJSONFields checks that every field of sent comes back unchanged in got.
+func assertJSONFields(t *testing.T, got []byte, sent string) {
+	t.Helper()
+	var g, s map[string]any
+	if err := json.Unmarshal(got, &g); err != nil {
+		t.Fatalf("response: %v", err)
+	}
+	_ = json.Unmarshal([]byte(sent), &s)
+	for k, v := range s {
+		if !reflect.DeepEqual(g[k], v) {
+			t.Errorf("%s = %v, want %v", k, g[k], v)
+		}
 	}
 }
 

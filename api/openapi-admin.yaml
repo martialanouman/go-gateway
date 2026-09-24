@@ -2586,7 +2586,7 @@ components:
         rewrite_to: { type: [string, "null"], description: Required when rewrite_type = static. }
         fallback_pool_json: { type: [array, "null"], items: { type: string }, description: Required and non-empty when rewrite_type = fallback_pool. }
         max_length: { type: [integer, "null"], minimum: 1, description: Required when rewrite_type = truncate. }
-        sanitize_charset_json: { type: [object, "null"], additionalProperties: true, description: 'Read when rewrite_type = sanitize: {"allowed": "<characters kept>"}; every other character is removed. Null keeps [A-Za-z0-9].' }
+        sanitize_charset_json: { type: [object, "null"], additionalProperties: true, description: 'Read when rewrite_type = sanitize: {"allowed": "<characters kept>"}, listed one by one (not ranges); every other character is removed. Null keeps ASCII letters and digits.' }
         priority: { type: integer, default: 100, description: 'Lower is evaluated first within a scope; scopes are evaluated connector, smpp_account, customer, platform.' }
         reason: { type: [string, "null"] }
       required: [scope, rewrite_type]
@@ -2600,7 +2600,7 @@ components:
         rewrite_to: { type: [string, "null"] }
         fallback_pool_json: { type: [array, "null"], items: { type: string } }
         max_length: { type: [integer, "null"], minimum: 1 }
-        sanitize_charset_json: { type: [object, "null"], additionalProperties: true, description: 'Read when rewrite_type = sanitize: {"allowed": "<characters kept>"}; every other character is removed. Null keeps [A-Za-z0-9].' }
+        sanitize_charset_json: { type: [object, "null"], additionalProperties: true, description: 'Read when rewrite_type = sanitize: {"allowed": "<characters kept>"}, listed one by one (not ranges); every other character is removed. Null keeps ASCII letters and digits.' }
         priority: { type: integer }
         reason: { type: [string, "null"] }
         status: { type: string, enum: [active, disabled] }
