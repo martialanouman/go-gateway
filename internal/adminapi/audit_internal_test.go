@@ -38,10 +38,11 @@ func TestAuditedReadsNameRegisteredOperations(t *testing.T) {
 // of those suffixes fails here, and its author has to decide.
 func TestReadOnlyPostSuffixesNameKnownDiagnostics(t *testing.T) {
 	want := map[string]bool{
-		"validate-routing-script": true,
-		"test-routing-script":     true,
-		"test-billing-provider":   true,
-		"check-suppression":       true,
+		"validate-routing-script":  true,
+		"test-routing-script":      true,
+		"test-billing-provider":    true,
+		"check-suppression":        true,
+		"test-sender-rewrite-rule": true,
 	}
 
 	_, api := New(Deps{})

@@ -13,6 +13,8 @@ import (
 
 	"github.com/martialanouman/go-gateway/internal/auth"
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
+	"github.com/martialanouman/go-gateway/internal/pipeline/senderrewrite"
+	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 	humaerr "github.com/martialanouman/go-gateway/internal/platform/errors/humaerr"
 )
 
@@ -138,6 +140,14 @@ func registerSenderRewriteRules(api huma.API, store SenderRewriteRuleStore) {
 		Security: scopeSecurity(auth.ScopeAdminWrite),
 		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound},
 	}, h.delete)
+
+	register(api, huma.Operation{
+		OperationID: "test-sender-rewrite-rule", Method: http.MethodPost, Path: "/admin/sender-rewrite-rules/{id}/test",
+		Summary: "Test a rewrite rule against a sample", Tags: []string{"Sender Rewrite"},
+		Description: "Runs this rule alone — whatever its status, without the precedence of the others — through the code connector-pool applies before the submit_sm. Writes nothing.",
+		Security:    scopeSecurity(auth.ScopeAdminRead),
+		Errors:      []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity},
+	}, h.test)
 }
 
 type listSenderRewriteRulesInput struct {
@@ -362,4 +372,50 @@ func encodeCharset(m map[string]any) (json.RawMessage, error) {
 	}
 	raw, _ := json.Marshal(map[string]string{"allowed": allowed})
 	return raw, nil
+}
+
+type testSenderRewriteRuleInput struct {
+	ID   string `path:"id" format:"uuid"`
+	Body struct {
+		SourceAddr string  `json:"source_addr" doc:"The sender as the client submits it."`
+		DestAddr   string  `json:"dest_addr" doc:"The destination as the pool sees it: digits only, no +."`
+		MessageID  *string `json:"message_id,omitempty" format:"uuid" doc:"A fallback_pool rule picks its sender from the message id; give a CDR's to reproduce its choice. Absent means the nil UUID."`
+	}
+}
+
+type testSenderRewriteRuleOutput struct {
+	Body struct {
+		Matched         bool    `json:"matched"`
+		RewrittenSource *string `json:"rewritten_source,omitempty" nullable:"true"`
+	}
+}
+
+// test runs one rule through senderrewrite.EvalRule, the function the pool's snapshot applies, so the
+// answer is what the pool would send for that sample.
+func (h *senderRewriteHandlers) test(ctx context.Context, in *testSenderRewriteRuleInput) (*testSenderRewriteRuleOutput, error) {
+	id, err := uuid.Parse(in.ID)
+	if err != nil {
+		return nil, notFound("sender rewrite rule")
+	}
+	messageID, err := parseIDPtr("message_id", in.Body.MessageID)
+	if err != nil {
+		return nil, err
+	}
+	if messageID == nil {
+		messageID = &uuid.Nil
+	}
+	rule, err := h.store.Get(ctx, id)
+	if err != nil {
+		return nil, humaerr.FromError(err)
+	}
+	rewritten, matched, err := senderrewrite.EvalRule(rule, in.Body.SourceAddr, in.Body.DestAddr, *messageID)
+	if err != nil {
+		return nil, humaerr.Fail(errs.ErrValidation, "the stored rule has a pattern that does not compile: %v", err)
+	}
+	out := &testSenderRewriteRuleOutput{}
+	out.Body.Matched = matched
+	if matched {
+		out.Body.RewrittenSource = &rewritten
+	}
+	return out, nil
 }
