@@ -154,6 +154,7 @@ func run() error {
 	g.Add("ops server", func(c context.Context) error { return app.ops.Run(c, cfg.ShutdownTimeout) })
 	g.Add("connector pool", app.pool.Run)
 	g.Add("reroute-park drainer", app.drainer.Run)
+	g.Add("sender rewrite watcher", app.rewriteWatcher.Run)
 	g.Add("metric stream", func(c context.Context) error {
 		app.emitter.Run(c, metricStreamInterval)
 		return nil

@@ -24,12 +24,14 @@ import (
 	"github.com/martialanouman/go-gateway/internal/connector/status"
 	"github.com/martialanouman/go-gateway/internal/connectorpool"
 	"github.com/martialanouman/go-gateway/internal/connectorpool/settle"
+	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	"github.com/martialanouman/go-gateway/internal/dlrmap"
 	"github.com/martialanouman/go-gateway/internal/grpctls"
 	"github.com/martialanouman/go-gateway/internal/metricstream"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/observability/metrics"
 	"github.com/martialanouman/go-gateway/internal/pipeline/ratelimit"
+	"github.com/martialanouman/go-gateway/internal/pipeline/senderrewrite"
 	"github.com/martialanouman/go-gateway/internal/platform/tlsconf"
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
@@ -45,13 +47,15 @@ import (
 // Every step that can fail returns an error rather than ending the process, so a boot failure is a
 // value the caller (or a test) can inspect.
 type poolApp struct {
-	ops      *observability.OpsServer
-	pool     *connectorpool.Service
-	drainer  *connectorpool.Drainer
-	emitter  *metricstream.Emitter
-	consumer *kafka.Consumer
-	catalog  *metrics.Catalog
-	producer *kafka.Producer
+	ops            *observability.OpsServer
+	pool           *connectorpool.Service
+	drainer        *connectorpool.Drainer
+	emitter        *metricstream.Emitter
+	consumer       *kafka.Consumer
+	catalog        *metrics.Catalog
+	producer       *kafka.Producer
+	rewriter       *senderrewrite.Holder
+	rewriteWatcher *config.Watcher
 
 	// closers release what was opened, in reverse order of opening — the exact LIFO the deferred
 	// Closes in run() used to provide. They are named because that order is the property worth
@@ -156,6 +160,29 @@ func newPoolApp(ctx context.Context, cfg config.Config, bindEnv connectorEnv, lo
 	a.emitter = stream.emitter
 	a.catalog = metrics.NewCatalog()
 
+	// Sender-ID rewrite (§6.16): loaded before the pool serves — a pod that sent without its rules would
+	// put senders on the wire that the SMSC is known to refuse — then swapped whole on each config-sync
+	// invalidation. A failed reload keeps the rules in force.
+	a.rewriter = &senderrewrite.Holder{}
+	reloadRewrites := func(ctx context.Context) error {
+		rules, err := postgres.NewSenderRewriteRuleRepo(st.pg).List(ctx, cp.SenderRewriteFilter{})
+		if err != nil {
+			return fmt.Errorf("load sender rewrite rules: %w", err)
+		}
+		a.rewriter.Store(senderrewrite.Build(rules, logger))
+		return nil
+	}
+	if err := reloadRewrites(ctx); err != nil {
+		return nil, err
+	}
+	a.rewriteWatcher = config.NewWatcher(
+		func(ctx context.Context) (config.Stream, error) {
+			return redisstore.Subscribe(ctx, st.rdb, config.ChannelSnapshotInvalidation), nil
+		},
+		reloadRewrites,
+		config.WithLogger(logger),
+	)
+
 	a.pool = connectorpool.New(connectorpool.Deps{
 		Consumer:       st.consumer,
 		Stream:         stream.emitter,
@@ -164,6 +191,7 @@ func newPoolApp(ctx context.Context, cfg config.Config, bindEnv connectorEnv, lo
 		CDR:            clickhouse.NewCDRWriter(st.ch),
 		CancelFlags:    cancel.NewRedisFlags(st.rdb),
 		DLRMap:         dlrmap.NewRedisMap(st.rdb),
+		Rewriter:       a.rewriter,
 		Producer:       st.producer,
 		Breaker:        breakerAgg,
 		BreakerState:   breakerStateReader{rdb: st.rdb},
