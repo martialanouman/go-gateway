@@ -95,6 +95,43 @@ contredire la spec, validés par l'humain le 2026-09-24.
 6. **Ordre de la liste = ordre d'évaluation du pool** : portée (`connector`, `smpp_account`,
    `customer`, `platform`), puis `priority` (plus bas d'abord), puis `id`. PR2 réutilise la requête.
 
+## Design arrêté — PR2
+
+Arbitrages : la spec (§6.16) fixe l'emplacement et la précédence, rien d'autre ; Fable a tranché D1-D8
+(deux corrections, un défaut évité), validés par l'humain le 2026-09-24.
+
+1. **Moteur partagé** `internal/pipeline/senderrewrite` : instantané immuable des règles **actives**,
+   chargé par la requête de PR1 (déjà triée portée → priority → id, filtre `status` en Go). Évaluation
+   `connector` (celui de `routed.ConnectorID`, jamais `deps.ConnectorID` qui vaut `uuid.Nil` sur un pool
+   non filtrant) → `smpp_account` → `customer` → `platform` ; la première règle dont les motifs
+   correspondent gagne, même si sa sortie est identique. Regex stockée invalide → règle ignorée + WARN au
+   build. Sortie vide (sanitize qui retire tout) → l'original, la règle compte comme correspondue.
+2. **Forme des adresses** : motif sender contre `routed.From` **verbatim** (jamais normalisé ; c'est ce
+   que §6.19 compare) ; motif dest contre `routed.To`, **chiffres seuls, sans `+`** (`e164.Normalize`).
+   La sortie repasse par `sourceAddr()` pour le TON/NPI. Le contrat le dit.
+3. **`fallback_pool`** : `pool[fnv32a(message_id) % n]` — même sender pour tous les segments, stable sous
+   redélivrance et reroute, aucun état partagé. Distribution statistique, pas un tourniquet strict ; le
+   contrat le dit.
+4. **Pool** : réécriture après `preDispatch` (disjoncteur, reroute), juste avant `buildSubmit`.
+   `routed` n'est **jamais** muté (reroute, dead-letter, drainer le réencodent) : une copie `sent` porte
+   l'adresse réécrite vers la PDU, `submitOutcome` et `dlrmap`. `config.Watcher` sur
+   `config.ChannelSnapshotInvalidation`, `atomic.Pointer` ; rebuild en échec → instantané courant gardé ;
+   chargement en échec au boot → refus de démarrer.
+5. **Traçabilité** : `OutcomeMT`/`outcomeWire` gagnent `original_from,omitempty`, renseigné seulement si
+   l'adresse a changé ; la projection remplit `original_source_addr` (commentaire `outcome.go:145`
+   corrigé). **Voie retour** : `dlrmap` garde aussi `original_source_addr,omitempty` ; `modlrrouter`
+   l'utilise pour l'adresse client du reçu DLR et du webhook (§6.16 : « sans que le client le sache ») et
+   le recopie sur la ligne `delivered`. Niveau message du CDR : `any(source_addr)` →
+   `argMax(source_addr, status NOT IN ('accepted','rejected'))`. Tout ajout est `omitempty` :
+   rétrocompatible dans les deux sens pendant un déploiement progressif.
+6. **`test-sender-rewrite-rule`** : la règle `{id}` seule, même `disabled`, même code que le pool, sans
+   écriture. Corps : `message_id` **optionnel** (absent ⇒ `uuid.Nil`) pour reproduire le choix du pool.
+   `security: admin:read`, 401/403/404/422, bump mineur 6.2.0.
+7. **Débit** : `BenchmarkRewrite` (0 règle / 5 règles, ns/op). La mesure step-201f
+   (`TestPoolSubmitCeiling`) est **déclarée à relancer** — ligne dans step-280 et dans l'en-tête de
+   step-201f. Pas de campagne A/B maintenant (bruit ±30 % sur cet hôte).
+8. `mo` reste refusé (dette existante). Aucune métrique neuve : le CDR trace chaque réécriture.
+
 ## Tests
 
 - Précédence : deux règles de portées différentes correspondent au même message ; la plus spécifique
