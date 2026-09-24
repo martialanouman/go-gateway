@@ -244,7 +244,9 @@ func assertJSONFields(t *testing.T, got []byte, sent string) {
 	if err := json.Unmarshal(got, &g); err != nil {
 		t.Fatalf("response: %v", err)
 	}
-	_ = json.Unmarshal([]byte(sent), &s)
+	if err := json.Unmarshal([]byte(sent), &s); err != nil {
+		t.Fatalf("sent body: %v", err)
+	}
 	for k, v := range s {
 		if !reflect.DeepEqual(g[k], v) {
 			t.Errorf("%s = %v, want %v", k, g[k], v)

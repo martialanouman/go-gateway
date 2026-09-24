@@ -19,8 +19,9 @@ qu'il vient de poser.
 **Elle s'étend à chaque surface neuve.** step-330 : `update-customer-group` déclare `description`
 nullable au contrat et ne peut pas la vider, pour la même raison.
 step-350 : `update-sender-rewrite-rule` ne peut vider ni `rewrite_to`, ni `reason`, ni les motifs.
-Pour un motif, `.*` vaut NULL (pas `""`, qui ne correspond qu'à une adresse vide) ; pour les champs propres à un type, les laisser en place est sans effet
-(seuls ceux que lit le type courant sont évalués), et c'est ce qui rend un changement de type possible.
+Pour un motif, `.*` vaut NULL (pas `""`, qui ne correspond qu'à une adresse vide) ; pour les champs
+propres à un type, les laisser en place est sans effet (seuls ceux que lit le type courant sont
+évalués), et c'est ce qui rend un changement de type possible.
 
 Sources : `internal/controlplane/doc.go:15` ·
 `internal/storage/postgres/queries/customer_groups.sql` (`UpdateCustomerGroup`) ·

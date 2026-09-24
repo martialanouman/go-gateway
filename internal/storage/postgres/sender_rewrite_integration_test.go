@@ -150,6 +150,9 @@ func TestSenderRewriteRuleCRUDRoundTrip(t *testing.T) {
 	if err := repo.Delete(ctx, r.ID); !errors.Is(err, errs.ErrNotFound) {
 		t.Fatalf("second delete = %v, want ErrNotFound", err)
 	}
+	if _, err := repo.Update(ctx, r.ID, cp.SenderRewriteRulePatch{Status: &disabled}); !errors.Is(err, errs.ErrNotFound) {
+		t.Fatalf("update after delete = %v, want ErrNotFound", err)
+	}
 }
 
 func ptr[T any](v T) *T { return &v }

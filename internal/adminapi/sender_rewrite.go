@@ -249,6 +249,9 @@ func (h *senderRewriteHandlers) update(ctx context.Context, in *updateSenderRewr
 		Status:             b.Status,
 	}
 
+	// ponytail: Get then Update without a lock — two concurrent PATCHes can each pass alone and
+	// together leave a rule the engine cannot apply (a blank rewrite_to on a static rule). SELECT … FOR
+	// UPDATE in one transaction if concurrent edits of one rule become real.
 	current, err := h.store.Get(ctx, id)
 	if err != nil {
 		return nil, humaerr.FromError(err)
