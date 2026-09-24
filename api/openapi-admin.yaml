@@ -1178,34 +1178,50 @@ paths:
     get:
       tags: [Sender Rewrite]
       summary: List sender-ID rewrite rules
+      description: In evaluation order — scope (connector, smpp_account, customer, platform), then priority.
       operationId: list-sender-rewrite-rules
       parameters: [ { name: scope, in: query, schema: { $ref: '#/components/schemas/RewriteScope' } }, { name: scopeId, in: query, schema: { type: string, format: uuid } } ]
+      security: [ { OperatorBearer: [ admin:read ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/SenderRewriteRule' } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
     post:
       tags: [Sender Rewrite]
       summary: Create a rewrite rule
       operationId: create-sender-rewrite-rule
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/SenderRewriteRuleCreate' } } } }
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/SenderRewriteRule' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '422': { $ref: '#/components/responses/ValidationError' }
   /admin/sender-rewrite-rules/{id}:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
     patch:
       tags: [Sender Rewrite]
       summary: Update a rewrite rule
+      description: Validated on the rule the patch leaves behind, since rewrite_type is mutable.
       operationId: update-sender-rewrite-rule
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/SenderRewriteRuleUpdate' } } } }
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SenderRewriteRule' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
     delete:
       tags: [Sender Rewrite]
       summary: Delete a rewrite rule
       operationId: delete-sender-rewrite-rule
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '204': { description: Deleted. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
   /admin/sender-rewrite-rules/{id}/test:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
@@ -2563,28 +2579,28 @@ components:
       properties:
         scope: { $ref: '#/components/schemas/RewriteScope' }
         scope_id: { type: [string, "null"], format: uuid }
-        direction: { $ref: '#/components/schemas/Direction' }
-        match_sender_pattern: { type: [string, "null"] }
-        match_dest_pattern: { type: [string, "null"] }
+        direction: { $ref: '#/components/schemas/Direction', description: Only mt is accepted — no engine evaluates mo rules yet. }
+        match_sender_pattern: { type: [string, "null"], description: 'RE2 regex matched against the whole address (implicitly anchored); null matches any. Unlike a route''s match_dest_pattern, not a digit prefix.' }
+        match_dest_pattern: { type: [string, "null"], description: 'RE2 regex matched against the whole address (implicitly anchored); null matches any. Unlike a route''s match_dest_pattern, not a digit prefix.' }
         rewrite_type: { type: string, enum: [static, fallback_pool, truncate, sanitize] }
         rewrite_to: { type: [string, "null"], description: Required when rewrite_type = static. }
-        fallback_pool_json: { type: [array, "null"], items: { type: string } }
-        max_length: { type: [integer, "null"], minimum: 1 }
-        sanitize_charset_json: { type: [object, "null"], additionalProperties: true }
-        priority: { type: integer, default: 100 }
+        fallback_pool_json: { type: [array, "null"], items: { type: string }, description: Required and non-empty when rewrite_type = fallback_pool. }
+        max_length: { type: [integer, "null"], minimum: 1, description: Required when rewrite_type = truncate. }
+        sanitize_charset_json: { type: [object, "null"], additionalProperties: true, description: 'Read when rewrite_type = sanitize: {"allowed": "<characters kept>"}, listed one by one (not ranges); every other character is removed. Null keeps ASCII letters and digits.' }
+        priority: { type: integer, default: 100, description: 'Lower is evaluated first within a scope; scopes are evaluated connector, smpp_account, customer, platform.' }
         reason: { type: [string, "null"] }
       required: [scope, rewrite_type]
     SenderRewriteRuleUpdate:
       type: object
       additionalProperties: false
       properties:
-        match_sender_pattern: { type: [string, "null"] }
-        match_dest_pattern: { type: [string, "null"] }
+        match_sender_pattern: { type: [string, "null"], description: 'RE2 regex matched against the whole address (implicitly anchored); null matches any. Unlike a route''s match_dest_pattern, not a digit prefix.' }
+        match_dest_pattern: { type: [string, "null"], description: 'RE2 regex matched against the whole address (implicitly anchored); null matches any. Unlike a route''s match_dest_pattern, not a digit prefix.' }
         rewrite_type: { type: string, enum: [static, fallback_pool, truncate, sanitize] }
         rewrite_to: { type: [string, "null"] }
         fallback_pool_json: { type: [array, "null"], items: { type: string } }
         max_length: { type: [integer, "null"], minimum: 1 }
-        sanitize_charset_json: { type: [object, "null"], additionalProperties: true }
+        sanitize_charset_json: { type: [object, "null"], additionalProperties: true, description: 'Read when rewrite_type = sanitize: {"allowed": "<characters kept>"}, listed one by one (not ranges); every other character is removed. Null keeps ASCII letters and digits.' }
         priority: { type: integer }
         reason: { type: [string, "null"] }
         status: { type: string, enum: [active, disabled] }
