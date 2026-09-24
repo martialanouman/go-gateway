@@ -1,6 +1,6 @@
 # step-350 — Réécriture de sender ID (§6.16) : ni l'admin, ni l'évaluation
 
-> **Jalon :** Surfaces Admin déclarées au contrat, jamais construites (§6.16 `docs/specification-technique-passerelle-sms.md`) · **Statut :** À FAIRE
+> **Jalon :** Surfaces Admin déclarées au contrat, jamais construites (§6.16 `docs/specification-technique-passerelle-sms.md`) · **Statut :** EN COURS (PR1 livrée, PR2 à faire)
 > **Dépend de :** step-320 (triage), step-201f (PR2 seulement) · **Bloque :** —
 
 ## But
@@ -108,11 +108,18 @@ contredire la spec, validés par l'humain le 2026-09-24.
 
 Une DoD par PR — chacune doit être atteignable seule.
 
-**PR1**
-- [ ] `make check` vert (lint · `test -race` · govulncheck · contrats)
-- [ ] les 4 opérations de CRUD servies ; `test-sender-rewrite-rule` toujours en `deferred`, avec sa raison
-- [ ] `api/collections/admin-api.yaml` synchronisée ; les 4 lignes retirées de `deferred`
-- [ ] aucun changement du chemin d'envoi
+**PR1** — livrée (branche `step-350-sender-rewrite-crud`)
+- [x] `make check` vert (lint · `test -race` · govulncheck · contrats)
+- [x] les 4 opérations de CRUD servies ; `test-sender-rewrite-rule` toujours en `deferred`, avec sa raison
+- [x] `api/collections/admin-api.yaml` synchronisée ; les 4 lignes retirées de `deferred`
+- [x] aucun changement du chemin d'envoi
+
+Revue : 3 axes puis un 2ᵉ tour sur les correctifs. Deux bloquants, tous deux dans les tests : l'ordre
+d'évaluation n'était pas prouvé (sans règle `smpp_account`, un tri alphabétique passait), et le PATCH
+n'était vérifié que sur trois champs. Coupe : un test de câblage isolé, un défaut de priorité manuel, un
+commentaire qui niait une course réelle — nommée depuis par un `ponytail:` (Get puis Update sans verrou).
+Ce que PR2 hérite : le charset est une liste littérale (`"A-Z"` garde trois caractères) ; `rewrite_to` et
+les entrées du pool ne sont pas bornés à la longueur d'un `source_addr` SMPP.
 
 **PR2**
 - [ ] `make check` vert
