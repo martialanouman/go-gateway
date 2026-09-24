@@ -15,4 +15,8 @@ lecteur**, et la §6.16 de la spec n'existe pas au runtime.
 **À quoi on reconnaîtra qu'il faut la payer.** Les deux steps existent. Ce fichier note ce que le
 schéma coûte **d'ici là** : une FK morte et un index entretenu pour personne.
 
+**Où on en est.** step-350 PR1 a donné à `sender_id_rewrite_rules` un repo et son CRUD admin : les
+règles se créent, et rien ne les évalue encore. L'index n'a toujours aucun lecteur sur le chemin chaud
+tant que step-350 PR2 n'a pas câblé le moteur dans `connector-pool-svc`.
+
 Sources : `db/schema_passerelle_sms.sql:72` · `:516`
