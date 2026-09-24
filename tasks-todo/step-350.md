@@ -67,6 +67,34 @@ soit elle déclare invalider la mesure et fait relancer le banc.
   mesurer le coût ajouté avant de conclure quoi que ce soit sur le débit (step-201f mesure le pool).
 - La colonne `direction` autorise `mo` : décider si PR2 le couvre ou si `mt` seul est servi, et l'écrire.
 
+## Design arrêté — PR1
+
+Arbitrages : la spec (§6.16) ne tranche aucun des points ci-dessous ; Fable les a tranchés sans
+contredire la spec, validés par l'humain le 2026-09-24.
+
+1. **`direction='mo'` refusé à la création (422).** PR2 ne sert que `mt` ; une règle que personne
+   n'évalue ment à l'opérateur. `direction` est absent de `SenderRewriteRuleUpdate`, donc immuable.
+   La réécriture MO (normalisation reply-to, §6.16) devient une fiche `debts/`.
+2. **Motifs : regex RE2 en correspondance totale** (PR2 ancre en `^(?:p)$`), compilés au bord (422).
+   NULL = tout. Le préfixe de chiffres des routes (`internal/routing/snapshot.go:160`) ne couvre pas
+   un sender ID alphanumérique ; l'écart de lecture d'un champ homonyme est écrit dans la
+   `description` du contrat.
+3. **Requis par type, validés au bord sur l'état FUSIONNÉ** (Get + patch au PATCH, `rewrite_type`
+   étant modifiable) : `static` → `rewrite_to` non vide ; `fallback_pool` → tableau non vide de
+   chaînes non vides ; `truncate` → `max_length` ; `sanitize` → `sanitize_charset_json` NULL
+   (défaut `[A-Za-z0-9]`) ou `{"allowed": "<caractères conservés>"}` non vide, les autres caractères
+   étant supprimés. Les champs sans objet pour le type sont **ignorés**, pas rejetés : sous COALESCE,
+   les rejeter interdirait tout changement de type.
+4. **Contrat : schémas inchangés**, contraintes conditionnelles au bord et dans `description` ;
+   ajout de `security:` (`admin:read` / `admin:write`) et des 401/403/404/422 manquants → bump
+   **mineur** 6.0.0 → 6.1.0.
+5. **Précédents repris** : PATCH par COALESCE (la dette `patch-null-ne-peut-pas-effacer-un-champ`
+   est étendue ; pour un motif, `.*` ≡ NULL) ; `created_by` NULL (pas d'identité opérateur avant
+   step-310) ; `scope_id` non vérifié contre la table visée (précédent antispam) ; appariement
+   `platform ⇔ scope_id NULL` validé au bord (422).
+6. **Ordre de la liste = ordre d'évaluation du pool** : portée (`connector`, `smpp_account`,
+   `customer`, `platform`), puis `priority` (plus bas d'abord), puis `id`. PR2 réutilise la requête.
+
 ## Tests
 
 - Précédence : deux règles de portées différentes correspondent au même message ; la plus spécifique
