@@ -240,7 +240,8 @@ CREATE INDEX message_export_jobs_created_idx ON control_plane.message_export_job
 -- audit_log is the consolidated operator audit trail (step-290c): one row per audited Admin API request —
 -- every write, and the reads that reveal subscriber numbers — written BEFORE the handler runs (no row, no
 -- action) and completed with its HTTP status after. Never a body, a query string or a token: an admin
--- body carries the secrets revealed once (plan §1.9).
+-- body carries the secrets revealed once (plan §1.9). cmd/mt-replay writes here too (step-296): method
+-- 'REPLAY', operator 'declared:<name>', request_id its run id.
 -- status NULL = outcome not recorded, NOT success. No code path deletes a row. Read it with:
 --   SELECT at, operator, method, target, status FROM control_plane.audit_log
 --    WHERE at >= now() - interval '1 day' ORDER BY at DESC;

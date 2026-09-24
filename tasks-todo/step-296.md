@@ -64,7 +64,7 @@ modèle Fable, qui a tranché les quatre points sans contredire la spec.
   authentifiée `tok_…`. C'est **déclaratif** : l'imputabilité réelle viendra d'identifiants par opérateur
   (step-310). `$USER` écarté : implicite, `root` dans un pod.
 - **La ligne** : `operation_id = mt-replay`, `method = REPLAY` (pas de HTTP : `POST` mentirait),
-  `target = mt.dead-letter`, `request_id` = un UUID de run généré. `Begin` **avant** d'ouvrir le consumer :
+  `target = mt.dead-letter`, `request_id` = un UUID de run généré. `Begin` **avant** le premier poll du consumer :
   pas de ligne, pas de rejeu. `Finish` : 200 à l'arrêt propre, 500 si le drain rend une erreur, NULL sur
   kill -9 (« issue non enregistrée ») ; écrit sous `context.WithoutCancel` + 5 s, le contexte étant déjà
   annulé par le signal.

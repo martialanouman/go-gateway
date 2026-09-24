@@ -14,24 +14,34 @@
 // resumes exactly where it left off and nothing is lost. The final log line reports all three counts —
 // replayed, refused as cancelled, refused for want of a CDR row.
 //
+// A replay puts real SMS back on the wire, so it leaves a row in control_plane.audit_log before it
+// consumes anything, and cannot start without one (step-296). The operator is DECLARED, not
+// authenticated: the tool has no principal, and whoever holds the Kafka credentials can produce on
+// mt.routed without it. Real accountability needs per-operator credentials (step-310). The run id is
+// logged at start too, so a row a kill -9 left without an outcome still finds its logs.
+//
 // Usage:
 //
-//	mt-replay        drain mt.dead-letter into mt.routed until interrupted
+//	mt-replay -operator <name>   drain mt.dead-letter into mt.routed until interrupted
 package main
 
 import (
 	"context"
+	"flag"
 	"log"
 	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 
+	"github.com/google/uuid"
+
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/connectorpool"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
+	"github.com/martialanouman/go-gateway/internal/storage/postgres"
 )
 
 const serviceName = "mt-replay"
@@ -43,10 +53,17 @@ func main() {
 }
 
 func run() error {
+	name := flag.String("operator", "", "who runs this replay; recorded in the audit trail (required)")
+	flag.Parse()
+	operator, err := declaredOperator(*name)
+	if err != nil {
+		return err
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
 
-	cfg, err := config.Load(serviceName, config.SectionKafka, config.SectionClickHouse)
+	cfg, err := config.Load(serviceName, config.SectionKafka, config.SectionClickHouse, config.SectionPostgres)
 	if err != nil {
 		return err
 	}
@@ -56,19 +73,17 @@ func run() error {
 	}
 	slog.SetDefault(logger)
 
+	pg, err := postgres.NewPool(ctx, cfg.Postgres)
+	if err != nil {
+		return err
+	}
+	defer pg.Close()
+
 	producer, err := kafka.NewProducer(cfg.Kafka, kafka.ForFailClosedConsumer())
 	if err != nil {
 		return err
 	}
 	defer producer.Close()
-
-	// AtStart: the parked dead-letters are durable and must all be drained. A dedicated, fixed group so
-	// a re-run resumes where a previous drain left off rather than re-replaying the whole topic.
-	consumer, err := kafka.NewConsumer(cfg.Kafka, serviceName, kafka.TopicMTDeadLetter)
-	if err != nil {
-		return err
-	}
-	defer consumer.Close()
 
 	// The replay needs to know whether a parked message was cancelled before it was parked, and only the
 	// CDR is durable enough to answer: the cancel token expires after 72h, which is exactly the delay
@@ -84,11 +99,25 @@ func run() error {
 		CDR:      clickhouse.NewCDRReader(ch),
 		Logger:   logger,
 	})
-	logger.InfoContext(ctx, "replaying mt.dead-letter into mt.routed; interrupt to stop")
-	err = replayer.Run(ctx, consumer)
+	runID := uuid.NewString()
+	err = auditedReplay(ctx, postgres.NewAuditLogRepo(pg), operator, runID, func(ctx context.Context) error {
+		// Created only once the row exists: the client joins the group on construction, and a refused run
+		// must not rebalance partitions away from a replay already running.
+		// AtStart: the parked dead-letters are durable and must all be drained. A dedicated, fixed group so
+		// a re-run resumes where a previous drain left off rather than re-replaying the whole topic.
+		consumer, err := kafka.NewConsumer(cfg.Kafka, serviceName, kafka.TopicMTDeadLetter)
+		if err != nil {
+			return err
+		}
+		defer consumer.Close()
+		logger.InfoContext(ctx, "replaying mt.dead-letter into mt.routed; interrupt to stop",
+			"operator", operator, "run_id", runID)
+		return replayer.Run(ctx, consumer)
+	})
 	// The tool has no ops port, so this line IS the report: the refusals only exist here. An operator who
 	// drained a backlog needs to know what did not go back on the wire, and why.
 	logger.InfoContext(ctx, "mt-replay stopped",
+		"run_id", runID,
 		"replayed", replayer.Replayed(),
 		"refused_cancelled", replayer.Refused(),
 		"refused_absent", replayer.RefusedAbsent())
