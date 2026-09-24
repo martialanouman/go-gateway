@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -64,6 +65,16 @@ type Registry struct {
 	bind   *redis.Script
 	unbind *redis.Script
 	lookup *redis.Script
+
+	// published only suppresses writes, it is never read as the truth: a missing entry — a fresh
+	// replica, a pruned pod — costs one SET more, never an address less.
+	pubMu     sync.Mutex
+	published map[string]publication
+}
+
+type publication struct {
+	addr string
+	at   time.Time
 }
 
 // Option configures a Registry.
@@ -98,6 +109,8 @@ func NewRegistry(rdb *redis.Client, opts ...Option) *Registry {
 		bind:   redis.NewScript(bindScriptSrc),
 		unbind: redis.NewScript(unbindScriptSrc),
 		lookup: redis.NewScript(lookupScriptSrc),
+
+		published: make(map[string]publication),
 	}
 	for _, o := range opts {
 		o(r)
@@ -129,8 +142,8 @@ func (r *Registry) Bind(ctx context.Context, b Bind, maxSessions int) (int, erro
 	// Publishing for a bind the quota then refuses is harmless: a pod's address is true independently
 	// of any one bind, and it expires on its own.
 	if b.Addr != "" {
-		if err := r.rdb.Set(ctx, podKey(b.PodID), b.Addr, r.ttl+time.Second).Err(); err != nil {
-			return 0, fmt.Errorf("session: publish address of pod %s: %w", b.PodID, err)
+		if err := r.publishAddr(ctx, b, now); err != nil {
+			return 0, err
 		}
 	}
 	res, err := r.bind.Run(ctx, r.rdb, []string{key(b.AccountID)},
@@ -146,6 +159,31 @@ func (r *Registry) Bind(ctx context.Context, b Bind, maxSessions int) (int, erro
 		return active, fmt.Errorf("session: bind %s: %w", b.AccountID, errs.ErrMaxSessionsExceeded)
 	}
 	return active, nil
+}
+
+// publishAddr skips a SET this replica landed less than a quarter TTL ago: every live bind re-Binds
+// every half TTL, so the key is never older than a quarter plus a half TTL (plus the call) when a Bind
+// rewrites it, well inside its TTL + 1 s. At half a TTL that margin would be a single second. Replicas
+// keep separate memories, and the bound holds for each.
+func (r *Registry) publishAddr(ctx context.Context, b Bind, now time.Time) error {
+	r.pubMu.Lock()
+	last, ok := r.published[b.PodID]
+	r.pubMu.Unlock()
+	if ok && last.addr == b.Addr && now.Sub(last.at) < r.ttl/4 {
+		return nil
+	}
+	if err := r.rdb.Set(ctx, podKey(b.PodID), b.Addr, r.ttl+time.Second).Err(); err != nil {
+		return fmt.Errorf("session: publish address of pod %s: %w", b.PodID, err)
+	}
+	r.pubMu.Lock()
+	defer r.pubMu.Unlock()
+	for pod, p := range r.published {
+		if now.Sub(p.at) > r.ttl {
+			delete(r.published, pod)
+		}
+	}
+	r.published[b.PodID] = publication{addr: b.Addr, at: now}
+	return nil
 }
 
 // Unbind removes b's session token and reports whether a session was present.

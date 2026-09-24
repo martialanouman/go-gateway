@@ -2,8 +2,10 @@ package modlrrouter_test
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
+	"sync/atomic"
 	"testing"
 
 	"github.com/google/uuid"
@@ -15,12 +17,20 @@ import (
 	"github.com/martialanouman/go-gateway/internal/testutil/pgtest"
 )
 
+// moResolutionRuns numbers each run of TestMOResolutionAgainstPostgres: the Postgres container lives as
+// long as the test process, so a second run (-count=2) would collide with the first run's numbers on
+// inbound_numbers_uq, and could find the FIRST run's unknown MO in the unrouted queue and pass without
+// having persisted its own.
+var moResolutionRuns atomic.Int32
+
 // TestMOResolutionAgainstPostgres proves the router resolves against a real control plane: a dedicated
 // number routes to its account, a shared number routes by keyword, and an unknown number is persisted
 // to the unrouted queue.
 func TestMOResolutionAgainstPostgres(t *testing.T) {
 	pool := pgtest.Pool(t)
 	ctx := context.Background()
+	run := moResolutionRuns.Add(1)
+	unknownAddr := fmt.Sprintf("499%03d", run)
 
 	customers := postgres.NewCustomerRepo(pool)
 	accounts := postgres.NewAccountRepo(pool)
@@ -43,13 +53,13 @@ func TestMOResolutionAgainstPostgres(t *testing.T) {
 
 	// A dedicated number, and a shared number with a keyword.
 	dedicated, err := numbers.Create(ctx, cp.NewInboundNumber{
-		Address: "40100", NumberType: cp.NumberShortcode, CountryCode: "FR", AccountID: &dedicatedAcct.ID,
+		Address: fmt.Sprintf("401%03d", run), NumberType: cp.NumberShortcode, CountryCode: "FR", AccountID: &dedicatedAcct.ID,
 	})
 	if err != nil {
 		t.Fatalf("create dedicated number: %v", err)
 	}
 	shared, err := numbers.Create(ctx, cp.NewInboundNumber{
-		Address: "40200", NumberType: cp.NumberShortcode, CountryCode: "FR",
+		Address: fmt.Sprintf("402%03d", run), NumberType: cp.NumberShortcode, CountryCode: "FR",
 	})
 	if err != nil {
 		t.Fatalf("create shared number: %v", err)
@@ -96,7 +106,7 @@ func TestMOResolutionAgainstPostgres(t *testing.T) {
 	// Unknown number -> persisted to the unrouted queue.
 	prod = &fakeProducer{}
 	if _, err := runMO(t, modlrrouter.MODeps{Snapshot: snap, Producer: prod, Unrouted: unrouted, Metric: &fakeMetric{}},
-		moRecord(t, uuid.New(), "22507000001", "49999", "hello")); err != nil {
+		moRecord(t, uuid.New(), "22507000001", unknownAddr, "hello")); err != nil {
 		t.Fatalf("run unknown: %v", err)
 	}
 	if len(prod.recs) != 0 {
@@ -108,7 +118,7 @@ func TestMOResolutionAgainstPostgres(t *testing.T) {
 	}
 	var found bool
 	for _, u := range list {
-		if u.DestAddr == "49999" && u.Reason == cp.UnroutedUnknownNumber {
+		if u.DestAddr == unknownAddr && u.Reason == cp.UnroutedUnknownNumber {
 			found = true
 		}
 	}

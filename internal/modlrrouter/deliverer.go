@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync/atomic"
+	"time"
 
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
@@ -83,6 +84,8 @@ type Deliverer struct {
 	metric   DeliveryMetric
 	logger   *slog.Logger
 
+	bindTimeout time.Duration
+
 	// rr rotates the starting bind across deliveries so an account's return traffic spreads over its
 	// live binds instead of always hammering the first. Shared by both router goroutines, hence atomic.
 	rr atomic.Uint64
@@ -97,7 +100,15 @@ type DelivererDeps struct {
 	Producer Producer
 	Metric   DeliveryMetric
 	Logger   *slog.Logger
+
+	// BindTimeout bounds each bind's delivery; zero means bindDeliverTimeout.
+	BindTimeout time.Duration
 }
+
+// bindDeliverTimeout sits above the pod's own deliver_sm_resp wait (10 s), so an ESME that never
+// answers is reported Unavailable by the pod, which names the bind; only a pod that holds the call
+// longer — a full send window, or no reply at all — runs into this one.
+const bindDeliverTimeout = 15 * time.Second
 
 // NewDeliverer builds a deliverer. A nil metric defaults to a no-op, a nil logger to slog.Default.
 func NewDeliverer(deps DelivererDeps) *Deliverer {
@@ -107,14 +118,18 @@ func NewDeliverer(deps DelivererDeps) *Deliverer {
 	if deps.Logger == nil {
 		deps.Logger = slog.Default()
 	}
+	if deps.BindTimeout <= 0 {
+		deps.BindTimeout = bindDeliverTimeout
+	}
 	return &Deliverer{
-		lookup:   deps.Lookup,
-		pods:     deps.Pods,
-		webhooks: deps.Webhooks,
-		sender:   deps.Sender,
-		producer: deps.Producer,
-		metric:   deps.Metric,
-		logger:   deps.Logger,
+		bindTimeout: deps.BindTimeout,
+		lookup:      deps.Lookup,
+		pods:        deps.Pods,
+		webhooks:    deps.Webhooks,
+		sender:      deps.Sender,
+		producer:    deps.Producer,
+		metric:      deps.Metric,
+		logger:      deps.Logger,
 	}
 }
 
@@ -170,10 +185,10 @@ func (dv *Deliverer) DeadLetterRaw(ctx context.Context, rec kafka.Record, eventT
 // tryBinds attempts delivery to each of the account's live binds in round-robin order (a rotating
 // start offset), returning as soon as one accepts the PDU. hadBinds reports whether the account had any
 // live bind at all (to distinguish "no_bind" from "bind_exhausted" downstream). It returns an error
-// only for a transient failure worth reprocessing (the Lookup itself). A malformed PDU (InvalidArgument)
-// is our own bug: no bind will accept it and a redelivery cannot fix it, so we log it (ids only) and
-// stop the walk WITHOUT an error — the caller falls back to the webhook (built independently of the
-// PDU), else the dead-letter. Never wedge the consumer on a deterministic fault. Every other per-bind
+// only for a transient failure worth reprocessing (the Lookup, or our own cancellation). A malformed
+// PDU (InvalidArgument) is our own bug: no bind will accept it and a redelivery cannot fix it, so we
+// log it (ids only) and stop the walk WITHOUT an error — the caller falls back to the webhook (built
+// independently of the PDU), else the dead-letter. Never wedge the consumer on a deterministic fault. Every other per-bind
 // failure (a transmitter, a dead or moved bind, a transport error) just moves to the next bind.
 func (dv *Deliverer) tryBinds(ctx context.Context, accountID uuid.UUID, pdu []byte) (delivered, hadBinds bool, err error) {
 	binds, err := dv.lookup.Lookup(ctx, accountID)
@@ -187,7 +202,14 @@ func (dv *Deliverer) tryBinds(ctx context.Context, accountID uuid.UUID, pdu []by
 	start := int(dv.rr.Add(1) % uint64(len(binds)))
 	for i := range binds {
 		b := binds[(start+i)%len(binds)]
-		derr := dv.pods.Deliver(ctx, b, pdu)
+		bctx, cancel := context.WithTimeout(ctx, dv.bindTimeout)
+		derr := dv.pods.Deliver(bctx, b, pdu)
+		cancel()
+		// Our own cancellation fails every remaining bind instantly; counting them dead would blame the
+		// account's binds for the service stopping. The record is reprocessed instead.
+		if derr != nil && ctx.Err() != nil {
+			return false, true, ctx.Err()
+		}
 		switch status.Code(derr) {
 		case codes.OK:
 			return true, true, nil

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
@@ -383,5 +384,86 @@ func TestDelivererLookupErrorIsRetryable(t *testing.T) {
 	}
 	if len(prod.recs) != 0 {
 		t.Fatal("a transient lookup failure must not dead-letter")
+	}
+}
+
+// stallingPod never answers the first bind it is asked for: it holds until that call's ctx is done,
+// the pod that accepts TCP and never replies. Every later bind delivers if its own ctx is still alive.
+type stallingPod struct {
+	tried   int
+	onStall func()
+}
+
+func (f *stallingPod) Deliver(ctx context.Context, _ modlrrouter.LiveBind, _ []byte) error {
+	f.tried++
+	if f.tried == 1 {
+		if f.onStall != nil {
+			f.onStall()
+		}
+		<-ctx.Done()
+	}
+	return ctx.Err()
+}
+
+// TestDelivererASilentPodDoesNotCondemnTheNextBind is step-304: a first bind that eats its whole
+// deadline must not leave the next bind a dead context, nor the account a bind_exhausted it did not earn.
+func TestDelivererASilentPodDoesNotCondemnTheNextBind(t *testing.T) {
+	prod := &fakeProducer{}
+	metric := &fakeDeliveryMetric{}
+	pod := &stallingPod{}
+	dv := modlrrouter.NewDeliverer(modlrrouter.DelivererDeps{
+		Lookup:      fakeLookup{binds: []modlrrouter.LiveBind{{PodID: "p1", BindID: "b1"}, {PodID: "p2", BindID: "b2"}}},
+		Pods:        pod,
+		Webhooks:    fakeWebhookResolver{found: false},
+		Sender:      &fakeSender{},
+		Producer:    prod,
+		Metric:      metric,
+		BindTimeout: 50 * time.Millisecond,
+	})
+
+	done := make(chan error, 1)
+	go func() { done <- dv.Deliver(context.Background(), testDelivery()) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Deliver: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Deliver never returned: a silent pod froze the walk with no per-bind deadline")
+	}
+	if pod.tried != 2 {
+		t.Errorf("binds tried = %d, want 2", pod.tried)
+	}
+	if len(prod.recs) != 0 || len(metric.calls) != 0 {
+		t.Errorf("dead-letters = %d, metric = %v; want none — the second bind was alive", len(prod.recs), metric.calls)
+	}
+}
+
+// TestDelivererCallerCancellationIsNotABindFailure: our own cancellation (the service stopping) ends the
+// walk with an error so the record is reprocessed — never counted against the account's binds.
+func TestDelivererCallerCancellationIsNotABindFailure(t *testing.T) {
+	prod := &fakeProducer{}
+	metric := &fakeDeliveryMetric{}
+	sender := &fakeSender{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pod := &stallingPod{onStall: cancel}
+	dv := modlrrouter.NewDeliverer(modlrrouter.DelivererDeps{
+		Lookup:   fakeLookup{binds: []modlrrouter.LiveBind{{PodID: "p1", BindID: "b1"}, {PodID: "p2", BindID: "b2"}}},
+		Pods:     pod,
+		Webhooks: fakeWebhookResolver{wh: activeWebhook(), found: true},
+		Sender:   sender,
+		Producer: prod,
+		Metric:   metric,
+	})
+
+	if err := dv.Deliver(ctx, testDelivery()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Deliver = %v, want context.Canceled so the record is reprocessed", err)
+	}
+	if pod.tried != 1 {
+		t.Errorf("binds tried = %d, want 1 — the walk must stop at our own cancellation", pod.tried)
+	}
+	if len(metric.calls) != 0 || len(prod.recs) != 0 || len(sender.sent) != 0 {
+		t.Errorf("metric = %v, dead-letters = %d, webhooks = %d; want none", metric.calls, len(prod.recs), len(sender.sent))
 	}
 }
