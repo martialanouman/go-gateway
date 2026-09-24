@@ -60,8 +60,8 @@ func TestNewPoolAppRewritesWithTheRulesAndFollowsAnInvalidation(t *testing.T) {
 	}
 	// The pool must send through that very holder: nothing else shows a missing Rewriter in the wiring,
 	// which would only rewrite nothing.
-	wired := reflect.ValueOf(app.pool).Elem().FieldByName("deps").FieldByName("Rewriter").Elem().Pointer()
-	if wired != reflect.ValueOf(app.rewriter).Pointer() {
+	wired := reflect.ValueOf(app.pool).Elem().FieldByName("deps").FieldByName("Rewriter")
+	if !wired.IsValid() || wired.IsNil() || wired.Elem().Pointer() != reflect.ValueOf(app.rewriter).Pointer() {
 		t.Error("the pool is not wired to the holder the watcher swaps")
 	}
 

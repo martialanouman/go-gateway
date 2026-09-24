@@ -416,7 +416,7 @@ func (h *senderRewriteHandlers) test(ctx context.Context, in *testSenderRewriteR
 	}
 	rewritten, matched, err := senderrewrite.EvalRule(rule, in.Body.SourceAddr, in.Body.DestAddr, *messageID)
 	if err != nil {
-		return nil, humaerr.Fail(errs.ErrValidation, "the stored rule has a pattern that does not compile: %v", err)
+		return nil, humaerr.Fail(errs.ErrValidation, "the stored rule cannot be applied: %v", err)
 	}
 	out := &testSenderRewriteRuleOutput{}
 	out.Body.Matched = matched

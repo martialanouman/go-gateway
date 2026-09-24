@@ -48,10 +48,13 @@ func Build(rules []cp.SenderRewriteRule, logger *slog.Logger) *Snapshot {
 		byCustomer:  map[uuid.UUID][]rule{},
 	}
 	for _, r := range rules {
-		if r.Status != "active" || r.Direction != "mt" || r.Scope != cp.RewriteScopePlatform && r.ScopeID == nil {
+		if r.Status != "active" || r.Direction != "mt" {
 			continue
 		}
 		c, err := compile(r)
+		if err == nil && r.Scope != cp.RewriteScopePlatform && r.ScopeID == nil {
+			err = fmt.Errorf("a %s rule without its scope_id", r.Scope)
+		}
 		if err != nil {
 			if logger != nil {
 				logger.Warn("sender rewrite rule skipped", "rule_id", r.ID, "err", err)
