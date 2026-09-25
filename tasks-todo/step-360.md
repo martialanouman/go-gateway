@@ -90,3 +90,20 @@ Arbitré par Fable le 2026-09-25 (spec → Fable, aucun point remonté à l'huma
 6. **Sécurité** : `admin:read` sur les deux lectures, `admin:write` sur la déconnexion, 401/403 au
    contrat. Aucune contrainte de validation durcie → bump **mineur**. `list-account-sessions` :
    `max_sessions` lu en base (404 si compte inconnu), `active` = vivantes, **peut dépasser** max (§6.3).
+
+### Revue (tour 1) — ce qu'elle a changé au design
+
+- Un échec du `ZADD` d'index après admission **ne refuse plus le bind** : le slot est déjà pris, et le
+  refuser le laissait compté une TTL entière pour un client à qui l'on a dit non. Le refresh rejoue
+  l'écriture.
+- Un unbind dont le jeton a déjà expiré désindexe quand même le bind (`Registry.Unindex`) : l'index ne
+  grossit plus faute de lecteur. Reste une orpheline possible si le `ZREM` lui-même échoue — purgée à
+  la lecture suivante.
+- `bind_type` dérivé de l'enum généré (`session.BindTypeName`) : plus de table tenue à la main.
+- Pannes gRPC du registre (`Unavailable`, `DeadlineExceeded`) → 503 ; `limit` borné à 500 côté gRPC.
+- **Ordre de déploiement** : `session-manager-svc` et `smpp-server-svc` avant `admin-api-svc`. Un
+  session-manager d'avant la step répond `Unimplemented` à `ListSessions` et `InvalidArgument` au scope
+  session ; un pod d'avant la step ignore l'ordre de déconnexion (204 sans effet) ; un refresh servi
+  par l'ancien Lua ne renouvelle pas la meta, et la session sort de la liste jusqu'au refresh suivant.
+- Rejeté : prélude Lua commun (chaque script cesserait d'être lisible seul) ; revérifier le score avant
+  la purge (la course ne coûte qu'une absence jusqu'au refresh suivant, ≤ TTL/2).

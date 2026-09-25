@@ -3,6 +3,7 @@ package adminapi_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/martialanouman/go-gateway/internal/adminapi"
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
+	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 )
 
 // fakeSessions models the registry's contract: sessions in bind id order, a page strictly after the
@@ -24,6 +26,7 @@ type fakeSessions struct {
 	active       map[uuid.UUID]int
 	disconnected []string
 	reasons      []string
+	err          error
 }
 
 func (f *fakeSessions) sorted() []adminapi.LiveSession {
@@ -50,6 +53,9 @@ func (f *fakeSessions) ListAccountSessions(_ context.Context, accountID uuid.UUI
 func (f *fakeSessions) ListSessions(_ context.Context, after string, limit int) ([]adminapi.LiveSession, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.err != nil {
+		return nil, "", f.err
+	}
 	var out []adminapi.LiveSession
 	for _, s := range f.sorted() {
 		if s.BindID > after {
@@ -253,5 +259,12 @@ func TestDisconnectAnUnknownSessionIsNotFound(t *testing.T) {
 	api.ServeHTTP(w, authed(t, http.MethodDelete, "/v1/admin/sessions/"+uuid.NewString(), ""))
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404, never a silent 204", w.Code)
+	}
+}
+
+func TestListSessionsDuringARegistryOutageIs503(t *testing.T) {
+	api := newTestAPIWith(t, adminapi.Deps{Sessions: &fakeSessions{err: fmt.Errorf("list: %w", errs.ErrServiceUnavailable)}})
+	if code, _ := listSessions(t, api, ""); code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", code)
 	}
 }

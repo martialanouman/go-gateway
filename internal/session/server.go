@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"strings"
 
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
@@ -61,7 +62,7 @@ func (s *Server) Bind(ctx context.Context, req *pb.BindRequest) (*pb.BindRespons
 		Addr:      sess.GetPodAddr(),
 
 		SystemID:   sess.GetSystemId(),
-		BindType:   bindTypeName(sess.GetBindType()),
+		BindType:   BindTypeName(sess.GetBindType()),
 		RemoteAddr: sess.GetRemoteAddr(),
 		WindowSize: int(sess.GetWindowSize()),
 	}
@@ -95,6 +96,9 @@ func (s *Server) Unbind(ctx context.Context, req *pb.UnbindRequest) (*pb.UnbindR
 			return nil, status.Errorf(codes.Internal, "unbind: %v", err)
 		}
 		return &pb.UnbindResponse{Removed: removed}, nil
+	}
+	if err := s.reg.Unindex(ctx, req.GetBindId()); err != nil {
+		return nil, status.Errorf(codes.Internal, "unbind: %v", err)
 	}
 	return &pb.UnbindResponse{Removed: false}, nil
 }
@@ -135,7 +139,7 @@ func (s *Server) Deliver(_ context.Context, _ *pb.DeliverRequest) (*pb.DeliverRe
 // the shared Redis channel; the pods do the actual socket close asynchronously (step-032). The
 // registry itself is never mutated here — an unbind on the closed socket frees the max_sessions slot
 // on the pod's own path. Publishing is idempotent: a repeated order simply targets sessions that are
-// already gone. The scope must be a concrete account or customer; an unspecified scope or empty id
+// already gone. The scope must be a concrete account, customer or session; an unspecified scope or empty id
 // is rejected rather than fanned out to an over-broad set of sessions.
 // A session scope is resolved first: an order for a bind that is not live answers NotFound, never a
 // silent success (step-360).
@@ -148,7 +152,7 @@ func (s *Server) Disconnect(ctx context.Context, req *pb.DisconnectRequest) (*pb
 		return nil, status.Error(codes.InvalidArgument, "disconnect: id is required")
 	}
 	if scope == disconnect.ScopeSession {
-		_, found, err := s.reg.Resolve(ctx, req.GetId())
+		found, err := s.reg.Resolve(ctx, req.GetId())
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "disconnect: resolve: %v", err)
 		}
@@ -176,8 +180,8 @@ func (s *Server) ListSessions(ctx context.Context, req *pb.ListSessionsRequest) 
 		//nolint:gosec // G115: active is bounded by max_sessions, a small operator-set ceiling.
 		return &pb.ListSessionsResponse{Sessions: toPB(sessions), Active: int32(active)}, nil
 	}
-	if req.GetLimit() < 1 {
-		return nil, status.Error(codes.InvalidArgument, "list sessions: limit must be at least 1")
+	if req.GetLimit() < 1 || req.GetLimit() > maxListLimit {
+		return nil, status.Errorf(codes.InvalidArgument, "list sessions: limit must be within 1..%d", maxListLimit)
 	}
 	sessions, next, err := s.reg.List(ctx, req.GetCursor(), int(req.GetLimit()))
 	if err != nil {
@@ -191,7 +195,7 @@ func toPB(sessions []Session) []*pb.Session {
 	for i, s := range sessions {
 		out[i] = &pb.Session{
 			AccountId: s.AccountID, SystemId: s.SystemID, PodId: s.PodID, BindId: s.BindID,
-			BindType: pbBindTypes[s.BindType], RemoteAddr: s.RemoteAddr,
+			BindType: pb.BindType(pb.BindType_value["BIND_TYPE_"+strings.ToUpper(s.BindType)]), RemoteAddr: s.RemoteAddr,
 			//nolint:gosec // G115: a window is a small per-session setting.
 			WindowSize: int32(s.WindowSize), ConnectedAtUnixMs: s.ConnectedAt.UnixMilli(),
 		}
@@ -199,15 +203,14 @@ func toPB(sessions []Session) []*pb.Session {
 	return out
 }
 
-var pbBindTypes = map[string]pb.BindType{"tx": pb.BindType_BIND_TYPE_TX, "rx": pb.BindType_BIND_TYPE_RX, "trx": pb.BindType_BIND_TYPE_TRX}
+// maxListLimit is the Admin contract's page ceiling, held here too so a direct gRPC caller cannot pipeline
+// the whole index in one call.
+const maxListLimit = 500
 
-func bindTypeName(t pb.BindType) string {
-	for name, v := range pbBindTypes {
-		if v == t {
-			return name
-		}
-	}
-	return ""
+// BindTypeName is the contract's name for a bind type (tx, rx, trx), derived from the generated enum so
+// no hand-kept table can drift from it.
+func BindTypeName(t pb.BindType) string {
+	return strings.ToLower(strings.TrimPrefix(t.String(), "BIND_TYPE_"))
 }
 
 // disconnectScope maps the wire scope to the domain scope, rejecting the unspecified (zero) value so

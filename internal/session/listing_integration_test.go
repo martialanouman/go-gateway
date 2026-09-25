@@ -78,7 +78,7 @@ func TestARefusedBindLeavesNoTrace(t *testing.T) {
 	if n := indexEntries(t, rdb, refused.BindID); n != 0 {
 		t.Fatalf("index holds %d entries for a refused bind, want 0", n)
 	}
-	if _, found, err := reg.Resolve(ctx, refused.BindID); err != nil || found {
+	if found, err := reg.Resolve(ctx, refused.BindID); err != nil || found {
 		t.Fatalf("resolve refused bind: found=%v err=%v, want not found", found, err)
 	}
 	if n := rdb.HLen(ctx, "sess:{"+account+"}:meta").Val(); n != 1 {
@@ -99,11 +99,12 @@ func TestALapsedSessionVanishesFromEveryRead(t *testing.T) {
 	}
 	clk.advance(31 * time.Second)
 
-	if _, found, err := reg.Resolve(ctx, lapsed.BindID); err != nil || found {
-		t.Fatalf("resolve lapsed: found=%v err=%v, want not found", found, err)
-	}
-	if listedAfter(t, reg, "b-", lapsed.BindID) {
+	// List first: Resolve purges the entry, after which List could not return it even unchecked.
+	if listedAfter(t, reg, lapsed.BindID[:len(lapsed.BindID)-1], lapsed.BindID) {
 		t.Fatal("global list returned a lapsed session")
+	}
+	if found, err := reg.Resolve(ctx, lapsed.BindID); err != nil || found {
+		t.Fatalf("resolve lapsed: found=%v err=%v, want not found", found, err)
 	}
 	if n := indexEntries(t, rdb, lapsed.BindID); n != 0 {
 		t.Fatalf("index still holds the lapsed session after a read, want it purged")
@@ -133,7 +134,7 @@ func TestUnbindRemovesTheSessionFromEveryRead(t *testing.T) {
 	if _, err := reg.Bind(ctx, gone, 2); err != nil {
 		t.Fatalf("bind: %v", err)
 	}
-	if _, found, err := reg.Resolve(ctx, gone.BindID); err != nil || !found {
+	if found, err := reg.Resolve(ctx, gone.BindID); err != nil || !found {
 		t.Fatalf("resolve live: found=%v err=%v, want found", found, err)
 	}
 	if _, err := reg.Unbind(ctx, gone); err != nil {
@@ -143,7 +144,7 @@ func TestUnbindRemovesTheSessionFromEveryRead(t *testing.T) {
 	if n := indexEntries(t, rdb, gone.BindID); n != 0 {
 		t.Fatal("index still holds an unbound session")
 	}
-	if _, found, _ := reg.Resolve(ctx, gone.BindID); found {
+	if found, _ := reg.Resolve(ctx, gone.BindID); found {
 		t.Fatal("resolve after unbind: found, want not found")
 	}
 	if n := rdb.HLen(ctx, "sess:{"+account+"}:meta").Val(); n != 0 {
@@ -227,4 +228,20 @@ func indexEntries(t *testing.T, rdb *redis.Client, bindID string) int {
 		t.Fatalf("zlexcount: %v", err)
 	}
 	return int(n)
+}
+
+// TestAnUnindexedBindStillHoldsItsAdmission: the index is written after bind.lua has taken the slot, so
+// failing the bind on it would leave the caller refused while its slot stays counted for a whole TTL.
+func TestAnUnindexedBindStillHoldsItsAdmission(t *testing.T) {
+	rdb := redistest.Client(t)
+	reg := session.NewRegistry(rdb)
+	ctx := context.Background()
+	if err := rdb.Set(ctx, "sess:idx", "not-a-zset", 0).Err(); err != nil {
+		t.Fatalf("break the index: %v", err)
+	}
+	t.Cleanup(func() { rdb.Del(context.Background(), "sess:idx") })
+
+	if _, err := reg.Bind(ctx, describedBind(uuid.NewString(), "b-"+uuid.NewString()), 1); err != nil {
+		t.Fatalf("bind with an unwritable index: %v — the admission stands, the next refresh indexes it", err)
+	}
 }

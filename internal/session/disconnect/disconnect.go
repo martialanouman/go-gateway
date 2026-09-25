@@ -30,7 +30,7 @@ const (
 // valid reports whether s is a known scope. An unknown scope must never match sessions.
 func (s Scope) valid() bool { return s == ScopeAccount || s == ScopeCustomer || s == ScopeSession }
 
-// Event is one force-disconnect order. ID is the account or customer UUID (as a string) selected by
+// Event is one force-disconnect order. ID is the account, customer or bind id (as a string) selected by
 // Scope; Reason is a short machine label (e.g. "credential_revoked") logged on the close, never a
 // secret.
 type Event struct {

@@ -202,11 +202,10 @@ func (r *Registry) Bind(ctx context.Context, b Bind, maxSessions int) (int, erro
 	if accepted == 0 {
 		return active, fmt.Errorf("session: bind %s: %w", b.AccountID, errs.ErrMaxSessionsExceeded)
 	}
-	// After the admission, so a refused bind leaves no entry: a score-0 member never expires. Replayed by
-	// every refresh, which repairs an entry this write failed to land.
-	if err := r.rdb.ZAdd(ctx, idxKey, redis.Z{Member: b.idxMember()}).Err(); err != nil {
-		return active, fmt.Errorf("session: index bind %s: %w", b.BindID, err)
-	}
+	// After the admission, so a refused bind leaves no entry: a score-0 member never expires. Its failure
+	// is not the bind's: the slot is already taken, and refusing now would hold it a whole TTL for a
+	// caller told no. Every refresh replays the write.
+	_ = r.rdb.ZAdd(ctx, idxKey, redis.Z{Member: b.idxMember()}).Err()
 	return active, nil
 }
 
@@ -241,10 +240,19 @@ func (r *Registry) Unbind(ctx context.Context, b Bind) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("session: unbind %s: %w", b.AccountID, err)
 	}
-	if err := r.rdb.ZRem(ctx, idxKey, b.idxMember()).Err(); err != nil {
-		return false, fmt.Errorf("session: unindex %s: %w", b.BindID, err)
+	if err := r.Unindex(ctx, b.BindID); err != nil {
+		return false, err
 	}
 	return removed > 0, nil
+}
+
+// Unindex drops a bind's index entries, whatever account and pod they name — the unbind of a bind whose
+// token already lapsed has nothing else to remove.
+func (r *Registry) Unindex(ctx context.Context, bindID string) error {
+	if err := r.rdb.ZRemRangeByLex(ctx, idxKey, "["+bindID+idxSep, "("+bindID+idxSep+"\xff").Err(); err != nil {
+		return fmt.Errorf("session: unindex %s: %w", bindID, err)
+	}
+	return nil
 }
 
 // Lookup returns the account's live sessions, having swept any whose TTL has lapsed.
@@ -366,18 +374,15 @@ func (r *Registry) ListAccount(ctx context.Context, accountID string) ([]Session
 }
 
 // Resolve finds a live session by its bind id alone, which is all DELETE /admin/sessions/{id} carries.
-func (r *Registry) Resolve(ctx context.Context, bindID string) (Session, bool, error) {
+func (r *Registry) Resolve(ctx context.Context, bindID string) (bool, error) {
 	members, err := r.rdb.ZRangeArgs(ctx, redis.ZRangeArgs{
 		Key: idxKey, Start: "[" + bindID + idxSep, Stop: "(" + bindID + idxSep + "\xff", ByLex: true,
 	}).Result()
 	if err != nil {
-		return Session{}, false, fmt.Errorf("session: resolve %s: %w", bindID, err)
+		return false, fmt.Errorf("session: resolve %s: %w", bindID, err)
 	}
 	live, err := r.liveEntries(ctx, members)
-	if err != nil || len(live) == 0 {
-		return Session{}, false, err
-	}
-	return live[0], true, nil
+	return len(live) > 0, err
 }
 
 // List pages through every live session in bind_id order, starting strictly after the bind id after
@@ -417,9 +422,9 @@ func (r *Registry) List(ctx context.Context, after string, limit int) ([]Session
 // expiry — and purges the others.
 func (r *Registry) liveEntries(ctx context.Context, members []string) ([]Session, error) {
 	type probe struct {
-		bind, account string
-		meta          *redis.StringCmd
-		expiry        *redis.FloatCmd
+		b      Bind
+		meta   *redis.StringCmd
+		expiry *redis.FloatCmd
 	}
 	probes := make([]probe, 0, len(members))
 	pipe := r.rdb.Pipeline()
@@ -430,7 +435,7 @@ func (r *Registry) liveEntries(ctx context.Context, members []string) ([]Session
 		}
 		b := Bind{BindID: parts[0], AccountID: parts[1], PodID: parts[2]}
 		probes = append(probes, probe{
-			bind: b.BindID, account: b.AccountID,
+			b:      b,
 			meta:   pipe.HGet(ctx, metaKey(b.AccountID), b.BindID),
 			expiry: pipe.ZScore(ctx, key(b.AccountID), b.member()),
 		})
@@ -444,14 +449,14 @@ func (r *Registry) liveEntries(ctx context.Context, members []string) ([]Session
 		expiry, expErr := p.expiry.Result()
 		for _, err := range []error{metaErr, expErr} {
 			if err != nil && !errors.Is(err, redis.Nil) {
-				return nil, fmt.Errorf("session: check %s: %w", p.bind, err)
+				return nil, fmt.Errorf("session: check %s: %w", p.b.BindID, err)
 			}
 		}
 		if metaErr != nil || expErr != nil || expiry <= now {
 			dead = append(dead, members[i])
 			continue
 		}
-		sess, err := describe(p.account, p.bind, meta)
+		sess, err := describe(p.b.AccountID, p.b.BindID, meta)
 		if err != nil {
 			return nil, err
 		}

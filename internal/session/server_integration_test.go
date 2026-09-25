@@ -218,11 +218,34 @@ func TestListSessionsDescribesEachBindAcrossGRPC(t *testing.T) {
 	}
 }
 
-func TestListSessionsRefusesAPageWithoutALimit(t *testing.T) {
+func TestListSessionsRefusesALimitOutsideTheContract(t *testing.T) {
 	client := newTestClient(t)
-	_, err := client.ListSessions(context.Background(), &pb.ListSessionsRequest{})
-	if status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("list without limit: code=%v, want InvalidArgument", status.Code(err))
+	for _, limit := range []int32{0, 501} {
+		_, err := client.ListSessions(context.Background(), &pb.ListSessionsRequest{Limit: limit})
+		if status.Code(err) != codes.InvalidArgument {
+			t.Fatalf("list with limit %d: code=%v, want InvalidArgument", limit, status.Code(err))
+		}
+	}
+}
+
+// TestUnbindOfALapsedBindStillUnindexesIt: a bind whose token lapsed before its unbind is no longer in
+// the account key, and its index entry must not outlive it for want of a reader.
+func TestUnbindOfALapsedBindStillUnindexesIt(t *testing.T) {
+	rdb := redistest.Client(t)
+	clk := &clock{t: time.Unix(1_700_000_000, 0)}
+	srv := session.NewServer(session.NewRegistry(rdb, session.WithSessionTTL(30*time.Second), session.WithClock(clk.now)), nil)
+	ctx := context.Background()
+	sess := newSession(uuid.NewString())
+	if _, err := srv.Bind(ctx, &pb.BindRequest{Session: sess, MaxSessions: 1}); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	clk.advance(31 * time.Second)
+
+	if _, err := srv.Unbind(ctx, &pb.UnbindRequest{AccountId: sess.GetAccountId(), BindId: sess.GetBindId()}); err != nil {
+		t.Fatalf("unbind: %v", err)
+	}
+	if n := indexEntries(t, rdb, sess.GetBindId()); n != 0 {
+		t.Fatalf("index holds %d entries for an unbound bind, want 0", n)
 	}
 }
 

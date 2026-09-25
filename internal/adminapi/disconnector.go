@@ -10,6 +10,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
+	"github.com/martialanouman/go-gateway/internal/session"
 	registrypb "github.com/martialanouman/go-gateway/internal/session/pb"
 )
 
@@ -89,7 +91,7 @@ func NewGRPCSessions(client registrypb.SessionRegistryClient) *GRPCSessions {
 func (g *GRPCSessions) ListAccountSessions(ctx context.Context, accountID uuid.UUID) ([]LiveSession, int, error) {
 	resp, err := g.client.ListSessions(ctx, &registrypb.ListSessionsRequest{AccountId: accountID.String()})
 	if err != nil {
-		return nil, 0, fmt.Errorf("list account sessions: %w", err)
+		return nil, 0, fmt.Errorf("list account sessions: %w", mapRegistryErr(err))
 	}
 	sessions, err := fromPB(resp.GetSessions())
 	return sessions, int(resp.GetActive()), err
@@ -100,7 +102,7 @@ func (g *GRPCSessions) ListSessions(ctx context.Context, after string, limit int
 	//nolint:gosec // G115: limit is bounded to 500 by the contract.
 	resp, err := g.client.ListSessions(ctx, &registrypb.ListSessionsRequest{Cursor: after, Limit: int32(limit)})
 	if err != nil {
-		return nil, "", fmt.Errorf("list sessions: %w", err)
+		return nil, "", fmt.Errorf("list sessions: %w", mapRegistryErr(err))
 	}
 	sessions, err := fromPB(resp.GetSessions())
 	return sessions, resp.GetNextCursor(), err
@@ -115,13 +117,18 @@ func (g *GRPCSessions) DisconnectSession(ctx context.Context, bindID, reason str
 		return ErrSessionNotFound
 	}
 	if err != nil {
-		return fmt.Errorf("disconnect session: %w", err)
+		return fmt.Errorf("disconnect session: %w", mapRegistryErr(err))
 	}
 	return nil
 }
 
-var bindTypeNames = map[registrypb.BindType]string{
-	registrypb.BindType_BIND_TYPE_TX: "tx", registrypb.BindType_BIND_TYPE_RX: "rx", registrypb.BindType_BIND_TYPE_TRX: "trx",
+func mapRegistryErr(err error) error {
+	switch status.Code(err) {
+	case codes.Unavailable, codes.DeadlineExceeded:
+		return fmt.Errorf("session registry unavailable: %w", errs.ErrServiceUnavailable)
+	default:
+		return fmt.Errorf("session registry: %w", errs.ErrInternal)
+	}
 }
 
 func fromPB(in []*registrypb.Session) ([]LiveSession, error) {
@@ -133,7 +140,7 @@ func fromPB(in []*registrypb.Session) ([]LiveSession, error) {
 		}
 		out = append(out, LiveSession{
 			AccountID: account, BindID: s.GetBindId(), SystemID: s.GetSystemId(), PodID: s.GetPodId(),
-			BindType: bindTypeNames[s.GetBindType()], RemoteAddr: s.GetRemoteAddr(), WindowSize: int(s.GetWindowSize()),
+			BindType: session.BindTypeName(s.GetBindType()), RemoteAddr: s.GetRemoteAddr(), WindowSize: int(s.GetWindowSize()),
 			ConnectedAt: time.UnixMilli(s.GetConnectedAtUnixMs()).UTC(),
 		})
 	}

@@ -49,7 +49,7 @@ type sessionDTO struct {
 func toSessionDTO(s LiveSession) sessionDTO {
 	dto := sessionDTO{
 		ID: s.BindID, AccountID: ptr(s.AccountID.String()), BindID: s.BindID, BindType: s.BindType,
-		Direction: ptr("user"), PodID: s.PodID, WindowSize: ptr(s.WindowSize), ConnectedAt: s.ConnectedAt.UTC(),
+		Direction: ptr("user"), PodID: s.PodID, WindowSize: ptr(s.WindowSize), ConnectedAt: s.ConnectedAt,
 	}
 	if s.RemoteAddr != "" {
 		dto.RemoteAddr = &s.RemoteAddr
@@ -124,6 +124,9 @@ func (h *sessionHandlers) list(ctx context.Context, in *listSessionsInput) (*lis
 		sessions, next, err = h.accountPage(ctx, in)
 	} else {
 		sessions, next, err = h.sessions.ListSessions(ctx, in.Cursor, in.Limit)
+		if err != nil {
+			return nil, humaerr.FromError(err)
+		}
 	}
 	if err != nil {
 		return nil, err
