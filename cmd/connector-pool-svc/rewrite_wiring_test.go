@@ -115,7 +115,7 @@ func TestLoadRewritesKeepsTheRulesOnAReadFailure(t *testing.T) {
 func roleDeniedOn(t *testing.T, table string) string {
 	t.Helper()
 	pool := pgtest.Pool(t)
-	role := "pool_boot_" + strings.ReplaceAll(uuid.NewString()[:8], "-", "")
+	role := "pool_boot_" + uuid.NewString()[:8]
 	for _, stmt := range []string{
 		"CREATE ROLE " + role + " LOGIN PASSWORD 'pw'",
 		"GRANT USAGE ON SCHEMA control_plane TO " + role,

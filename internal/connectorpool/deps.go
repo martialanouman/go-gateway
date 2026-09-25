@@ -83,14 +83,14 @@ type Rewriter interface {
 // New defaults a nil one to pinning nothing.
 type SenderPins interface {
 	Get(ctx context.Context, messageID uuid.UUID) (sender string, found bool, err error)
-	Pin(ctx context.Context, messageID uuid.UUID, sender string, validityPeriod *string) error
+	Pin(ctx context.Context, messageID uuid.UUID, sender string) error
 }
 
 // noPins is the New default when no SenderPins is wired: every segment is evaluated on its own.
 type noPins struct{}
 
-func (noPins) Get(context.Context, uuid.UUID) (string, bool, error)  { return "", false, nil }
-func (noPins) Pin(context.Context, uuid.UUID, string, *string) error { return nil }
+func (noPins) Get(context.Context, uuid.UUID) (string, bool, error) { return "", false, nil }
+func (noPins) Pin(context.Context, uuid.UUID, string) error         { return nil }
 
 // noRewrite is the New default when no Rewriter is wired: every sender goes out as submitted.
 type noRewrite struct{}

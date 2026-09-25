@@ -128,7 +128,7 @@ func TestRedisMapPutScopesByConnector(t *testing.T) {
 }
 
 // TestSenderPinsKeepTheFirstSender: the first pin of a message wins — a second segment, even on another
-// connector, can only read it — and it lives as long as a receipt could.
+// connector, can only read it — and it lives for the longest window any segment could still be sent in.
 func TestSenderPinsKeepTheFirstSender(t *testing.T) {
 	rdb := redistest.Client(t)
 	pins := dlrmap.NewSenderPins(rdb)
@@ -138,18 +138,17 @@ func TestSenderPinsKeepTheFirstSender(t *testing.T) {
 	if _, found, err := pins.Get(ctx, id); err != nil || found {
 		t.Fatalf("unpinned message: found=%v err=%v", found, err)
 	}
-	vp := "000001000000000R"
-	if err := pins.Pin(ctx, id, "FIRST", &vp); err != nil {
+	if err := pins.Pin(ctx, id, "FIRST"); err != nil {
 		t.Fatalf("Pin: %v", err)
 	}
-	if err := pins.Pin(ctx, id, "SECOND", &vp); err != nil {
+	if err := pins.Pin(ctx, id, "SECOND"); err != nil {
 		t.Fatalf("second Pin: %v", err)
 	}
 	if got, found, err := pins.Get(ctx, id); err != nil || !found || got != "FIRST" {
 		t.Fatalf("Get = %q found=%v err=%v, want FIRST", got, found, err)
 	}
 	ttl, err := rdb.TTL(ctx, "rewrite:{"+id.String()+"}").Result()
-	if err != nil || ttl < 24*time.Hour || ttl > 26*time.Hour {
-		t.Errorf("TTL = %v (%v), want ~25h, the receipt window", ttl, err)
+	if err != nil || ttl < 71*time.Hour || ttl > 72*time.Hour {
+		t.Errorf("TTL = %v (%v), want the 72h ceiling", ttl, err)
 	}
 }

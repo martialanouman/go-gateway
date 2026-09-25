@@ -154,8 +154,11 @@ Arbitrages : la spec (§6.16) fixe l'emplacement et la précédence, rien d'autr
   au lieu de réévaluer. La cohérence du réassemblage l'emporte sur les règles du connecteur de secours :
   un segment qu'il refuse est un échec visible (CDR `failed`, DLR), un SMS illisible ne l'est pas. Un
   message d'un seul segment ne touche pas Redis. Redis injoignable : fail-open (règles locales + WARN),
-  comme la table DLR. Fenêtre résiduelle nommée : deux segments soumis au même instant sur deux
-  connecteurs peuvent tous deux lire « absent ».
+  comme la table DLR. L'épingle dure 72 h, la fenêtre maximale de la table DLR, quelle que soit la
+  validité : le pool ne cesse pas d'envoyer à la validité. Résiduels nommés : deux segments en vol sur deux
+  connecteurs lisent « absent » jusqu'au `submit_sm_resp` de l'un d'eux ; un crash entre ce
+  `submit_sm_resp` et l'écriture de l'épingle réévalue les règles à la redélivrance ; un client qui
+  segmente lui-même (un `message_id` par partie, UDH fourni) n'est pas couvert.
 - **Le refus de démarrer** sans règles (et sans limites de débit, même cas voisin) est prouvé par un rôle
   Postgres privé de la seule table en cause.
 

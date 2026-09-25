@@ -156,6 +156,7 @@ type fakePins struct {
 	mu     sync.Mutex
 	pins   map[uuid.UUID]string
 	gets   int
+	writes int
 	getErr error
 }
 
@@ -170,16 +171,17 @@ func (f *fakePins) Get(_ context.Context, messageID uuid.UUID) (string, bool, er
 	return s, ok, nil
 }
 
-func (f *fakePins) Pin(_ context.Context, messageID uuid.UUID, sender string, _ *string) error {
+func (f *fakePins) Pin(_ context.Context, messageID uuid.UUID, sender string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.writes++
 	if _, ok := f.pins[messageID]; !ok {
 		f.pins[messageID] = sender
 	}
 	return nil
 }
 
-func runPinned(t *testing.T, to string, pins *fakePins, r pipeline.RoutedMT, resp fakesmsc.Resp) (smpp.SubmitSM, *fakeRewriter) {
+func runPinned(t *testing.T, to string, pins *fakePins, r pipeline.RoutedMT, resp fakesmsc.Resp) (smpp.SubmitSM, *fakeRewriter, *outcomeProducer) {
 	t.Helper()
 	var wire smpp.SubmitSM
 	smsc := fakesmsc.Start(t, fakesmsc.Config{OnSubmit: func(sm smpp.SubmitSM) fakesmsc.Resp {
@@ -191,10 +193,11 @@ func runPinned(t *testing.T, to string, pins *fakePins, r pipeline.RoutedMT, res
 		t.Fatalf("encode routed: %v", err)
 	}
 	rw := &fakeRewriter{to: to}
+	out := &outcomeProducer{}
 	svc := connectorpool.New(connectorpool.Deps{
 		Consumer:   &fakeConsumer{records: []kafka.Record{rec}},
 		CDR:        &fakeCDR{},
-		Producer:   &outcomeProducer{},
+		Producer:   out,
 		Rewriter:   rw,
 		SenderPins: pins,
 		Bind:       poolBind(smsc.Addr(), 1),
@@ -203,7 +206,7 @@ func runPinned(t *testing.T, to string, pins *fakePins, r pipeline.RoutedMT, res
 	if err := svc.Run(context.Background()); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	return wire, rw
+	return wire, rw, out
 }
 
 func multipart(seq int) pipeline.RoutedMT {
@@ -217,12 +220,18 @@ func multipart(seq int) pipeline.RoutedMT {
 func TestLaterSegmentTakesTheSenderAlreadyOnTheWire(t *testing.T) {
 	r := multipart(2)
 	pins := &fakePins{pins: map[uuid.UUID]string{r.MessageID: "PINNED"}}
-	wire, rw := runPinned(t, "LOCAL", pins, r, fakesmsc.OK())
+	wire, rw, out := runPinned(t, "LOCAL", pins, r, fakesmsc.OK())
 	if wire.SourceAddr != "PINNED" {
 		t.Errorf("wire source = %q, want the pinned PINNED", wire.SourceAddr)
 	}
 	if rw.args != nil {
 		t.Error("the rules were evaluated for a message whose sender is already pinned")
+	}
+	if o := out.only(t); o.From != "PINNED" || o.OriginalFrom != r.From {
+		t.Errorf("outcome from %q original %q, want PINNED and the client's %q", o.From, o.OriginalFrom, r.From)
+	}
+	if pins.writes != 0 {
+		t.Errorf("a segment that read its sender from the pin wrote it %d times", pins.writes)
 	}
 }
 
@@ -231,7 +240,7 @@ func TestAcceptedSegmentPinsItsSender(t *testing.T) {
 	for _, to := range []string{"LOCAL", ""} {
 		r := multipart(1)
 		pins := &fakePins{pins: map[uuid.UUID]string{}}
-		wire, _ := runPinned(t, to, pins, r, fakesmsc.OK())
+		wire, _, _ := runPinned(t, to, pins, r, fakesmsc.OK())
 		if got := pins.pins[r.MessageID]; got != wire.SourceAddr || got == "" {
 			t.Errorf("rewrite %q: pinned %q, want the sender on the wire %q", to, got, wire.SourceAddr)
 		}
@@ -260,8 +269,11 @@ func TestSingleSegmentMessageSkipsThePins(t *testing.T) {
 // Redis down: the segment still leaves, under this connector's rules — never blocked, never doubled.
 func TestUnreadablePinFallsBackToTheRules(t *testing.T) {
 	pins := &fakePins{pins: map[uuid.UUID]string{}, getErr: errors.New("redis down")}
-	wire, _ := runPinned(t, "LOCAL", pins, multipart(2), fakesmsc.OK())
+	wire, _, _ := runPinned(t, "LOCAL", pins, multipart(2), fakesmsc.OK())
 	if wire.SourceAddr != "LOCAL" {
 		t.Errorf("wire source = %q, want the rules' LOCAL", wire.SourceAddr)
+	}
+	if pins.writes != 1 {
+		t.Errorf("%d pin writes after an unreadable pin, want the one that lets the next segment follow", pins.writes)
 	}
 }
