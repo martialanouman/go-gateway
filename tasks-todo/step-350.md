@@ -146,8 +146,18 @@ Arbitrages : la spec (§6.16) fixe l'emplacement et la précédence, rien d'autr
   une garde d'imports (le routeur n'atteint pas `senderrewrite`, le pool n'atteint pas `senderid`).
 - **M1 — la recherche par expéditeur** filtre aussi `original_source_addr`, sinon chercher l'original
   d'un message réécrit ne garde que la ligne `accepted` et rend un statut faux.
-- Connu, non corrigé : les segments d'un message rerouté un à un, ou envoyés de part et d'autre d'un
-  rechargement des règles, peuvent partir sous deux expéditeurs ; le reroute par segment existait déjà.
+- **Multipart — l'expéditeur est épinglé par message** (demande humaine, arbitrage Fable) : sans cela,
+  un segment rerouté seul vers un connecteur aux règles différentes, ou soumis après un rechargement,
+  part sous un autre expéditeur, et le combiné ne réassemble pas le SMS — livré, facturé, illisible.
+  Pour un message de plus d'un segment, le premier `submit_sm_resp` OK écrit `rewrite:{message_id}`
+  (`SET NX`, TTL de la table DLR) ; les segments suivants, sur ce connecteur ou un autre, lisent l'épingle
+  au lieu de réévaluer. La cohérence du réassemblage l'emporte sur les règles du connecteur de secours :
+  un segment qu'il refuse est un échec visible (CDR `failed`, DLR), un SMS illisible ne l'est pas. Un
+  message d'un seul segment ne touche pas Redis. Redis injoignable : fail-open (règles locales + WARN),
+  comme la table DLR. Fenêtre résiduelle nommée : deux segments soumis au même instant sur deux
+  connecteurs peuvent tous deux lire « absent ».
+- **Le refus de démarrer** sans règles (et sans limites de débit, même cas voisin) est prouvé par un rôle
+  Postgres privé de la seule table en cause.
 
 ## Tests
 
