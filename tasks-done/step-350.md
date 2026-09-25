@@ -1,6 +1,6 @@
 # step-350 — Réécriture de sender ID (§6.16) : ni l'admin, ni l'évaluation
 
-> **Jalon :** Surfaces Admin déclarées au contrat, jamais construites (§6.16 `docs/specification-technique-passerelle-sms.md`) · **Statut :** EN COURS (PR1 livrée, PR2 à faire)
+> **Jalon :** Surfaces Admin déclarées au contrat, jamais construites (§6.16 `docs/specification-technique-passerelle-sms.md`) · **Statut :** LIVRÉE (PR1 #210, PR2)
 > **Dépend de :** step-320 (triage), step-201f (PR2 seulement) · **Bloque :** —
 
 ## But
@@ -95,6 +95,73 @@ contredire la spec, validés par l'humain le 2026-09-24.
 6. **Ordre de la liste = ordre d'évaluation du pool** : portée (`connector`, `smpp_account`,
    `customer`, `platform`), puis `priority` (plus bas d'abord), puis `id`. PR2 réutilise la requête.
 
+## Design arrêté — PR2
+
+Arbitrages : la spec (§6.16) fixe l'emplacement et la précédence, rien d'autre ; Fable a tranché D1-D8
+(deux corrections, un défaut évité), validés par l'humain le 2026-09-24.
+
+1. **Moteur partagé** `internal/pipeline/senderrewrite` : instantané immuable des règles **actives**,
+   chargé par la requête de PR1 (filtre `status` en Go ; le moteur trie lui-même chaque portée par
+   priority puis id, sans dépendre de l'ordre de son appelant). Évaluation
+   `connector` (celui de `routed.ConnectorID`, jamais `deps.ConnectorID` qui vaut `uuid.Nil` sur un pool
+   non filtrant) → `smpp_account` → `customer` → `platform` ; la première règle dont les motifs
+   correspondent gagne, même si sa sortie est identique. Regex stockée invalide → règle ignorée + WARN au
+   build. Sortie vide (sanitize qui retire tout) → l'original, la règle compte comme correspondue.
+2. **Forme des adresses** : motif sender contre `routed.From` **verbatim** (jamais normalisé ; c'est ce
+   que §6.19 compare) ; motif dest contre `routed.To`, **chiffres seuls, sans `+`** (`e164.Normalize`).
+   La sortie repasse par `sourceAddr()` pour le TON/NPI. Le contrat le dit.
+3. **`fallback_pool`** : `pool[fnv32a(message_id) % n]` — même sender pour tous les segments, stable sous
+   redélivrance et reroute, aucun état partagé. Distribution statistique, pas un tourniquet strict ; le
+   contrat le dit.
+4. **Pool** : réécriture après `preDispatch` (disjoncteur, reroute), juste avant `buildSubmit`.
+   `routed` n'est **jamais** muté (reroute, dead-letter, drainer le réencodent) : une copie `sent` porte
+   l'adresse réécrite vers la PDU, `submitOutcome` et `dlrmap`. `config.Watcher` sur
+   `config.ChannelSnapshotInvalidation`, `atomic.Pointer` ; rebuild en échec → instantané courant gardé ;
+   chargement en échec au boot → refus de démarrer.
+5. **Traçabilité** : `OutcomeMT`/`outcomeWire` gagnent `original_from,omitempty`, renseigné seulement si
+   l'adresse a changé ; la projection remplit `original_source_addr` (commentaire `outcome.go:145`
+   corrigé). **Voie retour** : `dlrmap` garde aussi `original_source_addr,omitempty` ; `modlrrouter`
+   l'utilise pour l'adresse client du reçu DLR (§6.16 : « sans que le client le sache » ; le webhook DLR
+   ne porte aucune adresse) et
+   le recopie sur la ligne `delivered`. Niveau message du CDR : `any(source_addr)` →
+   `argMax(source_addr, status NOT IN ('accepted','rejected'))`. Compatible dans les deux sens pendant un
+   déploiement progressif : aucun décodeur ne refuse une clé inconnue, et un champ absent se lit vide.
+6. **`test-sender-rewrite-rule`** : la règle `{id}` seule, même `disabled`, même code que le pool, sans
+   écriture. Corps : `message_id` **optionnel** (absent ⇒ `uuid.Nil`) pour reproduire le choix du pool.
+   `security: admin:read`, 401/403/404/422, bump mineur 6.2.0.
+7. **Débit** : `BenchmarkRewrite` (0 règle / 5 règles, ns/op). La mesure step-201f
+   (`TestPoolSubmitCeiling`) est **déclarée à relancer** — ligne dans step-280 et dans l'en-tête de
+   step-201f. Pas de campagne A/B maintenant (bruit ±30 % sur cet hôte).
+8. `mo` reste refusé (dette existante). Aucune métrique neuve : le CDR trace chaque réécriture.
+
+**Révisions de revue (arbitrées par Fable, 2026-09-24)** :
+- **B1 — l'API publique rend l'expéditeur soumis.** Le niveau message du CDR porte l'adresse envoyée ;
+  `GET /messages` rend `original_source_addr` s'il existe. §6.16 fait foi contre la description « actually
+  used on the wire » du contrat public, écrite avant toute réécriture et corrigée (description seule).
+- **B2 — 20 octets au plus** pour `rewrite_to` et chaque entrée du pool (`source_addr` SMPP) : 422 au
+  bord, sur l'état fusionné ; une règle stockée qui dépasse est ignorée au build avec un WARN, comme une
+  regex invalide — jamais par message. Aucun `maxLength` au schéma (rupture). `truncate` inchangé : il ne
+  fait que raccourcir.
+- **B3 — « un sender refusé à l'ingestion part quand même »** est une propriété de l'ordre des paquets :
+  une garde d'imports (le routeur n'atteint pas `senderrewrite`, le pool n'atteint pas `senderid`).
+- **M1 — la recherche par expéditeur** filtre aussi `original_source_addr`, sinon chercher l'original
+  d'un message réécrit ne garde que la ligne `accepted` et rend un statut faux.
+- **Multipart — l'expéditeur est épinglé par message** (demande humaine, arbitrage Fable) : sans cela,
+  un segment rerouté seul vers un connecteur aux règles différentes, ou soumis après un rechargement,
+  part sous un autre expéditeur, et le combiné ne réassemble pas le SMS — livré, facturé, illisible.
+  Pour un message de plus d'un segment, le premier `submit_sm_resp` OK écrit `rewrite:{message_id}`
+  (`SET NX`, TTL de la table DLR) ; les segments suivants, sur ce connecteur ou un autre, lisent l'épingle
+  au lieu de réévaluer. La cohérence du réassemblage l'emporte sur les règles du connecteur de secours :
+  un segment qu'il refuse est un échec visible (CDR `failed`, DLR), un SMS illisible ne l'est pas. Un
+  message d'un seul segment ne touche pas Redis. Redis injoignable : fail-open (règles locales + WARN),
+  comme la table DLR. L'épingle dure 72 h, la fenêtre maximale de la table DLR, quelle que soit la
+  validité : le pool ne cesse pas d'envoyer à la validité. Résiduels nommés : deux segments en vol sur deux
+  connecteurs lisent « absent » jusqu'au `submit_sm_resp` de l'un d'eux ; un crash entre ce
+  `submit_sm_resp` et l'écriture de l'épingle réévalue les règles à la redélivrance ; un client qui
+  segmente lui-même (un `message_id` par partie, UDH fourni) n'est pas couvert.
+- **Le refus de démarrer** sans règles (et sans limites de débit, même cas voisin) est prouvé par un rôle
+  Postgres privé de la seule table en cause.
+
 ## Tests
 
 - Précédence : deux règles de portées différentes correspondent au même message ; la plus spécifique
@@ -121,13 +188,21 @@ commentaire qui niait une course réelle — nommée depuis par un `ponytail:` (
 Ce que PR2 hérite : le charset est une liste littérale (`"A-Z"` garde trois caractères) ; `rewrite_to` et
 les entrées du pool ne sont pas bornés à la longueur d'un `source_addr` SMPP.
 
-**PR2**
-- [ ] `make check` vert
-- [ ] évaluation câblée dans connector-pool avec l'ordre §6.16 respecté ; `original_source_addr` renseigné
-- [ ] `test-sender-rewrite-rule` servi, et il répond ce que le pool ferait
-- [ ] aucun invariant (a/b/c/d) violé ; la 5ᵉ ligne retirée de `deferred`
-- [ ] l'effet sur le débit du pool est mesuré, ou la mesure de step-201f est explicitement déclarée à
-      relancer
+**PR2** — livrée (branche `step-350-pr2-rewrite-engine`)
+- [x] `make check` vert
+- [x] évaluation câblée dans connector-pool avec l'ordre §6.16 respecté ; `original_source_addr` renseigné
+- [x] `test-sender-rewrite-rule` servi, et il répond ce que le pool ferait
+- [x] aucun invariant (a/b/c/d) violé ; la 5ᵉ ligne retirée de `deferred`
+- [x] l'effet sur le débit du pool est mesuré, ou la mesure de step-201f est explicitement déclarée à
+      relancer — `BenchmarkRewrite` : ~8 ns sans règle, ~150 ns et 1 allocation au pire sur 5 règles ;
+      `TestPoolSubmitCeiling` déclaré à relancer (step-280, en-tête de step-201f)
+
+Revue : 3 axes puis un 2ᵉ tour sur les correctifs. Trois bloquants, tous corrigés et arbitrés par Fable
+(« Révisions de revue » ci-dessus) : l'API publique montrait l'adresse réécrite au client ; rien ne bornait
+une adresse réécrite aux 20 octets de `source_addr`, et une seule règle pouvait ouvrir le disjoncteur d'un
+connecteur ; la propriété §6.19 n'avait aucun test — elle est gardée par `go list -deps` sur les deux
+binaires. « N'écrit rien » est vérifié par un compteur d'écritures sur le store, pas par l'état d'une
+base : le handler ne voit que l'interface.
 
 ## Hors périmètre
 

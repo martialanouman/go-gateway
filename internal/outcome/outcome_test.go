@@ -366,3 +366,19 @@ func TestProjectorTreatsACancelledContextAsAGracefulStop(t *testing.T) {
 		}
 	}
 }
+
+// TestProjectorCarriesTheOriginalSender: a rewritten sender lands in source_addr, the client's own in
+// original_source_addr (§6.16).
+func TestProjectorCarriesTheOriginalSender(t *testing.T) {
+	event := enrouteEvent()
+	event.From, event.OriginalFrom = "INFO", "ACME"
+	cdr := &fakeCDR{}
+	cons := &capturingConsumer{recs: []kafka.Record{outcomeRec(t, event)}}
+	if err := outcome.NewProjector(cons, cdr, nil, nil).Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	row := cdr.rows()[0]
+	if row.SourceAddr != "INFO" || row.OriginalSourceAddr == nil || *row.OriginalSourceAddr != "ACME" {
+		t.Errorf("source = %q, original = %v; want INFO and ACME", row.SourceAddr, row.OriginalSourceAddr)
+	}
+}

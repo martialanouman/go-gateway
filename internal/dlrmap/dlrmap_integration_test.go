@@ -44,7 +44,7 @@ func TestRedisMapPutGetRoundTrip(t *testing.T) {
 	vp := "000001000000000R" // 1 day, relative
 	r := routedFixture(connectorID, &vp)
 
-	if err := store.Put(ctx, smscID, r); err != nil {
+	if err := store.Put(ctx, smscID, r, "ACME-ORIGINAL"); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 
@@ -60,6 +60,9 @@ func TestRedisMapPutGetRoundTrip(t *testing.T) {
 		got.SourceAddr != r.From || got.DestAddr != r.To || got.SegmentCount != r.SegmentCount ||
 		got.Encoding != r.Encoding || !got.SubmittedAt.Equal(r.SubmittedAt) {
 		t.Errorf("mapping = %+v, want projection of %+v", got, r)
+	}
+	if got.OriginalSourceAddr != "ACME-ORIGINAL" {
+		t.Errorf("original source = %q, want ACME-ORIGINAL", got.OriginalSourceAddr)
 	}
 
 	// The stored value never contains the body plaintext.
@@ -104,10 +107,10 @@ func TestRedisMapPutScopesByConnector(t *testing.T) {
 	rA := routedFixture(connA, nil)
 	rB := routedFixture(connB, nil)
 
-	if err := store.Put(ctx, smscID, rA); err != nil {
+	if err := store.Put(ctx, smscID, rA, ""); err != nil {
 		t.Fatalf("Put A: %v", err)
 	}
-	if err := store.Put(ctx, smscID, rB); err != nil {
+	if err := store.Put(ctx, smscID, rB, ""); err != nil {
 		t.Fatalf("Put B: %v", err)
 	}
 
@@ -121,5 +124,31 @@ func TestRedisMapPutScopesByConnector(t *testing.T) {
 	}
 	if gotA.MessageID != rA.MessageID || gotB.MessageID != rB.MessageID {
 		t.Errorf("scoping wrong: A=%s (want %s), B=%s (want %s)", gotA.MessageID, rA.MessageID, gotB.MessageID, rB.MessageID)
+	}
+}
+
+// TestSenderPinsKeepTheFirstSender: the first pin of a message wins — a second segment, even on another
+// connector, can only read it — and it lives for the longest window any segment could still be sent in.
+func TestSenderPinsKeepTheFirstSender(t *testing.T) {
+	rdb := redistest.Client(t)
+	pins := dlrmap.NewSenderPins(rdb)
+	ctx := context.Background()
+	id := uuid.New()
+
+	if _, found, err := pins.Get(ctx, id); err != nil || found {
+		t.Fatalf("unpinned message: found=%v err=%v", found, err)
+	}
+	if err := pins.Pin(ctx, id, "FIRST"); err != nil {
+		t.Fatalf("Pin: %v", err)
+	}
+	if err := pins.Pin(ctx, id, "SECOND"); err != nil {
+		t.Fatalf("second Pin: %v", err)
+	}
+	if got, found, err := pins.Get(ctx, id); err != nil || !found || got != "FIRST" {
+		t.Fatalf("Get = %q found=%v err=%v, want FIRST", got, found, err)
+	}
+	ttl, err := rdb.TTL(ctx, "rewrite:{"+id.String()+"}").Result()
+	if err != nil || ttl < 71*time.Hour || ttl > 72*time.Hour {
+		t.Errorf("TTL = %v (%v), want the 72h ceiling", ttl, err)
 	}
 }

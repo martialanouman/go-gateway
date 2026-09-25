@@ -1228,10 +1228,16 @@ paths:
     post:
       tags: [Sender Rewrite]
       summary: Test a rewrite rule against a sample
+      description: Runs this rule alone — whatever its status, without the precedence of the others — through the code connector-pool applies before the submit_sm. Writes nothing.
       operationId: test-sender-rewrite-rule
-      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { source_addr: { type: string }, dest_addr: { type: string } }, required: [source_addr, dest_addr] } } } }
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { source_addr: { type: string, description: The sender as the client submits it. }, dest_addr: { type: string, description: 'The destination as the pool sees it: digits only, no +.' }, message_id: { type: string, format: uuid, description: 'A fallback_pool rule picks its sender from the message id; give a CDR''s to reproduce its choice. Absent means the nil UUID.' } }, required: [source_addr, dest_addr] } } } }
+      security: [ { OperatorBearer: [ admin:read ] } ]
       responses:
-        '200': { description: OK, content: { application/json: { schema: { type: object, properties: { matched: { type: boolean }, rewritten_source: { type: [string, "null"] } }, required: [matched] } } } }
+        '200': { description: OK, content: { application/json: { schema: { type: object, properties: { matched: { type: boolean }, rewritten_source: { type: [string, "null"], description: 'The sender the pool would submit, before the SMPP typing: a leading + is stripped on the wire and the number typed international.' } }, required: [matched] } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
 
   # ============================ BILLING (§6.9) ============================
   /admin/customers/{id}/billing:
@@ -2580,11 +2586,11 @@ components:
         scope: { $ref: '#/components/schemas/RewriteScope' }
         scope_id: { type: [string, "null"], format: uuid }
         direction: { $ref: '#/components/schemas/Direction', description: Only mt is accepted — no engine evaluates mo rules yet. }
-        match_sender_pattern: { type: [string, "null"], description: 'RE2 regex matched against the whole address (implicitly anchored); null matches any. Unlike a route''s match_dest_pattern, not a digit prefix.' }
-        match_dest_pattern: { type: [string, "null"], description: 'RE2 regex matched against the whole address (implicitly anchored); null matches any. Unlike a route''s match_dest_pattern, not a digit prefix.' }
+        match_sender_pattern: { type: [string, "null"], description: 'RE2 regex matched against the whole address (implicitly anchored) — the sender as the client submitted it, the destination as digits only with no +; null matches any. Unlike a route''s match_dest_pattern, not a digit prefix.' }
+        match_dest_pattern: { type: [string, "null"], description: 'RE2 regex matched against the whole address (implicitly anchored) — the sender as the client submitted it, the destination as digits only with no +; null matches any. Unlike a route''s match_dest_pattern, not a digit prefix.' }
         rewrite_type: { type: string, enum: [static, fallback_pool, truncate, sanitize] }
-        rewrite_to: { type: [string, "null"], description: Required when rewrite_type = static. }
-        fallback_pool_json: { type: [array, "null"], items: { type: string }, description: Required and non-empty when rewrite_type = fallback_pool. }
+        rewrite_to: { type: [string, "null"], description: 'Required when rewrite_type = static; at most 20 octets, the SMPP source_addr.' }
+        fallback_pool_json: { type: [array, "null"], items: { type: string }, description: 'Required and non-empty when rewrite_type = fallback_pool; each entry at most 20 octets, the SMPP source_addr. The sender is picked by hashing the message id: every segment of a message gets the same one, and the spread over messages is statistical, not a strict rotation.' }
         max_length: { type: [integer, "null"], minimum: 1, description: Required when rewrite_type = truncate. }
         sanitize_charset_json: { type: [object, "null"], additionalProperties: true, description: 'Read when rewrite_type = sanitize: {"allowed": "<characters kept>"}, listed one by one (not ranges); every other character is removed. Null keeps ASCII letters and digits.' }
         priority: { type: integer, default: 100, description: 'Lower is evaluated first within a scope; scopes are evaluated connector, smpp_account, customer, platform.' }
@@ -2594,8 +2600,8 @@ components:
       type: object
       additionalProperties: false
       properties:
-        match_sender_pattern: { type: [string, "null"], description: 'RE2 regex matched against the whole address (implicitly anchored); null matches any. Unlike a route''s match_dest_pattern, not a digit prefix.' }
-        match_dest_pattern: { type: [string, "null"], description: 'RE2 regex matched against the whole address (implicitly anchored); null matches any. Unlike a route''s match_dest_pattern, not a digit prefix.' }
+        match_sender_pattern: { type: [string, "null"], description: 'RE2 regex matched against the whole address (implicitly anchored) — the sender as the client submitted it, the destination as digits only with no +; null matches any. Unlike a route''s match_dest_pattern, not a digit prefix.' }
+        match_dest_pattern: { type: [string, "null"], description: 'RE2 regex matched against the whole address (implicitly anchored) — the sender as the client submitted it, the destination as digits only with no +; null matches any. Unlike a route''s match_dest_pattern, not a digit prefix.' }
         rewrite_type: { type: string, enum: [static, fallback_pool, truncate, sanitize] }
         rewrite_to: { type: [string, "null"] }
         fallback_pool_json: { type: [array, "null"], items: { type: string } }

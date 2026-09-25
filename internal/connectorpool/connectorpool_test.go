@@ -109,8 +109,9 @@ func (f *fakeFlags) calls() (claimed, peeked []uuid.UUID) {
 
 // dlrPut is one recorded DLRMap.Put call.
 type dlrPut struct {
-	smscMsgID string
-	routed    pipeline.RoutedMT
+	smscMsgID    string
+	routed       pipeline.RoutedMT
+	originalFrom string
 }
 
 // fakeDLRMap records the mappings the connector writes, so a test can assert a successful submit is
@@ -121,10 +122,10 @@ type fakeDLRMap struct {
 	err  error
 }
 
-func (f *fakeDLRMap) Put(_ context.Context, smscMsgID string, r pipeline.RoutedMT) error {
+func (f *fakeDLRMap) Put(_ context.Context, smscMsgID string, r pipeline.RoutedMT, originalFrom string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.puts = append(f.puts, dlrPut{smscMsgID, r})
+	f.puts = append(f.puts, dlrPut{smscMsgID, r, originalFrom})
 	return f.err
 }
 

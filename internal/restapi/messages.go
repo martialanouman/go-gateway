@@ -295,6 +295,10 @@ func messageFromRow(row clickhouse.CDRRow) Message {
 		SubmittedAt:  row.SubmittedAt,
 		DeliveredAt:  row.DeliveredAt,
 	}
+	// A sender the provider rewrote (§6.16) is not the client's business: it reads back what it sent.
+	if row.OriginalSourceAddr != nil {
+		out.From = *row.OriginalSourceAddr
+	}
 	if row.CreditsCharged != nil {
 		credits := int(*row.CreditsCharged)
 		out.CreditsCharged = &credits

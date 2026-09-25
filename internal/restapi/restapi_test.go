@@ -325,6 +325,26 @@ func TestGetMessageFoundAndNotFound(t *testing.T) {
 	}
 }
 
+// TestGetMessageShowsTheSenderAsSubmitted: a provider-side rewrite (§6.16) never reaches the client, who
+// reads back the sender it submitted — the one its delivery receipt names too.
+func TestGetMessageShowsTheSenderAsSubmitted(t *testing.T) {
+	id := uuid.New()
+	original := "ACME"
+	row := clickhouse.CDRRow{
+		MessageID: id, TraceID: uuid.New(), Direction: clickhouse.DirectionMT,
+		SourceAddr: "INFO", OriginalSourceAddr: &original, DestAddr: "2250700000000", Status: clickhouse.StatusEnroute,
+		SegmentCount: 1, Encoding: clickhouse.EncodingGSM7, SubmittedAt: time.Now().UTC(),
+	}
+	h := newHarness(t, fakePrincipals{principal: activePrincipal(), found: true}, &fakeCDRReader{row: row, found: true})
+	resp := h.do(t, http.MethodGet, "/v1/messages/"+id.String(), "sgw_key", nil)
+	defer func() { _ = resp.Body.Close() }()
+	var msg restapi.Message
+	decode(t, resp, &msg)
+	if msg.From != "ACME" {
+		t.Errorf("from = %q, want the submitted ACME", msg.From)
+	}
+}
+
 func decode(t *testing.T, resp *http.Response, v any) {
 	t.Helper()
 	if err := json.NewDecoder(resp.Body).Decode(v); err != nil {

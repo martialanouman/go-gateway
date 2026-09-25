@@ -13,6 +13,7 @@ import (
 
 	"github.com/martialanouman/go-gateway/internal/adminapi"
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
+	"github.com/martialanouman/go-gateway/internal/pipeline/senderrewrite"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 )
 
@@ -20,6 +21,7 @@ type fakeRewriteStore struct {
 	mu         sync.Mutex
 	rows       map[uuid.UUID]cp.SenderRewriteRule
 	lastFilter cp.SenderRewriteFilter
+	writes     int
 }
 
 func newFakeRewriteStore() *fakeRewriteStore {
@@ -50,6 +52,7 @@ func (s *fakeRewriteStore) Get(_ context.Context, id uuid.UUID) (cp.SenderRewrit
 func (s *fakeRewriteStore) Create(_ context.Context, in cp.NewSenderRewriteRule) (cp.SenderRewriteRule, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.writes++
 	r := cp.SenderRewriteRule{
 		ID: uuid.New(), Scope: in.Scope, ScopeID: in.ScopeID, Direction: "mt",
 		MatchSenderPattern: in.MatchSenderPattern, MatchDestPattern: in.MatchDestPattern,
@@ -64,6 +67,7 @@ func (s *fakeRewriteStore) Create(_ context.Context, in cp.NewSenderRewriteRule)
 func (s *fakeRewriteStore) Update(_ context.Context, id uuid.UUID, p cp.SenderRewriteRulePatch) (cp.SenderRewriteRule, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.writes++
 	r, ok := s.rows[id]
 	if !ok {
 		return cp.SenderRewriteRule{}, errs.ErrNotFound
@@ -103,6 +107,7 @@ func (s *fakeRewriteStore) Update(_ context.Context, id uuid.UUID, p cp.SenderRe
 func (s *fakeRewriteStore) Delete(_ context.Context, id uuid.UUID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.writes++
 	if _, ok := s.rows[id]; !ok {
 		return errs.ErrNotFound
 	}
@@ -157,6 +162,8 @@ func TestCreateSenderRewriteRuleRefusesWhatNoEngineEvaluates(t *testing.T) {
 		"charset not a string":   `{"scope":"platform","rewrite_type":"sanitize","sanitize_charset_json":{"allowed":3}}`,
 		"bad sender pattern":     `{"scope":"platform","rewrite_type":"truncate","max_length":11,"match_sender_pattern":"[A-Z"}`,
 		"bad dest pattern":       `{"scope":"platform","rewrite_type":"truncate","max_length":11,"match_dest_pattern":"(225"}`,
+		"static over 20 octets":  `{"scope":"platform","rewrite_type":"static","rewrite_to":"ÉÉÉÉÉÉÉÉÉÉÉ"}`,
+		"pool entry over 20":     `{"scope":"platform","rewrite_type":"fallback_pool","fallback_pool_json":["A","XXXXXXXXXXXXXXXXXXXXX"]}`,
 		"platform with scope_id": `{"scope":"platform","scope_id":"` + uuid.NewString() + `","rewrite_type":"truncate","max_length":11}`,
 		"customer without id":    `{"scope":"customer","rewrite_type":"truncate","max_length":11}`,
 	} {
@@ -285,5 +292,75 @@ func TestListSenderRewriteRulesPassesTheFilter(t *testing.T) {
 	f := store.lastFilter
 	if f.Scope == nil || *f.Scope != cp.RewriteScopeCustomer || f.ScopeID == nil || *f.ScopeID != id {
 		t.Fatalf("filter = %+v; want scope=customer scopeId=%s", f, id)
+	}
+}
+
+type testResult struct {
+	Matched         bool    `json:"matched"`
+	RewrittenSource *string `json:"rewritten_source"`
+}
+
+func testRewrite(t *testing.T, store *fakeRewriteStore, id uuid.UUID, body string) (int, testResult) {
+	t.Helper()
+	w := serveRewrite(t, store, http.MethodPost, rewritePath+"/"+id.String()+"/test", body)
+	var got testResult
+	_ = json.Unmarshal(w.Body.Bytes(), &got)
+	return w.Code, got
+}
+
+// The test runs the rule alone, disabled or not — it is how an operator checks one before enabling it —
+// and it writes nothing.
+func TestTestSenderRewriteRuleRunsTheRuleAloneAndWritesNothing(t *testing.T) {
+	store := newFakeRewriteStore()
+	r := seedRewrite(store, cp.NewSenderRewriteRule{
+		Scope: cp.RewriteScopePlatform, RewriteType: cp.RewriteStatic, RewriteTo: ptr("INFO"), MatchDestPattern: ptr("225.*"),
+	})
+	r.Status = "disabled"
+	store.rows[r.ID] = r
+	store.writes = 0
+
+	code, got := testRewrite(t, store, r.ID, `{"source_addr":"ACME","dest_addr":"2250700000001"}`)
+	if code != http.StatusOK || !got.Matched || got.RewrittenSource == nil || *got.RewrittenSource != "INFO" {
+		t.Errorf("matching sample: %d %+v, want 200 matched INFO", code, got)
+	}
+	code, got = testRewrite(t, store, r.ID, `{"source_addr":"ACME","dest_addr":"3312345"}`)
+	if code != http.StatusOK || got.Matched || got.RewrittenSource != nil {
+		t.Errorf("other sample: %d %+v, want 200 unmatched without a source", code, got)
+	}
+	if store.writes != 0 {
+		t.Errorf("the test wrote %d times", store.writes)
+	}
+}
+
+// A fallback_pool rule answers what the pool would send for that message id — the nil UUID when none
+// is given.
+func TestTestSenderRewriteRuleFollowsTheMessageID(t *testing.T) {
+	store := newFakeRewriteStore()
+	pool := []string{"A", "B", "C", "D", "E", "F", "G"}
+	r := seedRewrite(store, cp.NewSenderRewriteRule{Scope: cp.RewriteScopePlatform, RewriteType: cp.RewriteFallbackPool, FallbackPool: pool})
+	for _, id := range []uuid.UUID{uuid.Nil, uuid.New(), uuid.New(), uuid.New()} {
+		body := `{"source_addr":"ACME","dest_addr":"225","message_id":"` + id.String() + `"}`
+		if id == uuid.Nil {
+			body = `{"source_addr":"ACME","dest_addr":"225"}`
+		}
+		want, _, _ := senderrewrite.EvalRule(store.rows[r.ID], "ACME", "225", id)
+		if code, got := testRewrite(t, store, r.ID, body); code != http.StatusOK || got.RewrittenSource == nil || *got.RewrittenSource != want {
+			t.Errorf("message %s: %d %+v, want %s", id, code, got, want)
+		}
+	}
+}
+
+func TestTestSenderRewriteRuleUnknownIDIs404(t *testing.T) {
+	if code, _ := testRewrite(t, newFakeRewriteStore(), uuid.New(), `{"source_addr":"ACME","dest_addr":"225"}`); code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", code)
+	}
+}
+
+// A stored pattern that no longer compiles (a hand-written row) is reported, not answered as a miss.
+func TestTestSenderRewriteRuleReportsAnUncompilableStoredRule(t *testing.T) {
+	store := newFakeRewriteStore()
+	r := seedRewrite(store, cp.NewSenderRewriteRule{Scope: cp.RewriteScopePlatform, RewriteType: cp.RewriteSanitize, MatchSenderPattern: ptr("[A-Z")})
+	if code, _ := testRewrite(t, store, r.ID, `{"source_addr":"ACME","dest_addr":"225"}`); code != http.StatusUnprocessableEntity {
+		t.Errorf("status = %d, want 422", code)
 	}
 }

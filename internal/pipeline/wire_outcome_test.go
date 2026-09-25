@@ -26,6 +26,7 @@ func outcomeFixture() pipeline.OutcomeMT {
 		ConnectorID:    uuid.New(),
 		RouteID:        &routeID,
 		From:           "GATEWAY",
+		OriginalFrom:   "+22507000001",
 		To:             "+22507000000",
 		Encoding:       "ucs2",
 		SegmentSeq:     2,
@@ -68,6 +69,9 @@ func TestOutcomeRoundTrip(t *testing.T) {
 	}
 	if out.ConnectorID != in.ConnectorID || out.RouteID == nil || *out.RouteID != *in.RouteID {
 		t.Errorf("routing = (%v, %v), want (%v, %v)", out.ConnectorID, out.RouteID, in.ConnectorID, in.RouteID)
+	}
+	if out.OriginalFrom != in.OriginalFrom {
+		t.Errorf("original_from = %q, want %q", out.OriginalFrom, in.OriginalFrom)
 	}
 	if out.From != in.From || out.To != in.To || out.Encoding != in.Encoding {
 		t.Errorf("addressing = (%q, %q, %q), want (%q, %q, %q)",

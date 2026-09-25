@@ -71,14 +71,37 @@ func (noopCancelFlags) Peek(context.Context, uuid.UUID) (cancel.Holder, error) {
 // satisfies it. New defaults a nil DLRMap to a no-op, so the hot path never branches on nil and a
 // missing wiring is explicit rather than a silent panic.
 type DLRMap interface {
-	Put(ctx context.Context, smscMsgID string, r pipeline.RoutedMT) error
+	Put(ctx context.Context, smscMsgID string, r pipeline.RoutedMT, originalFrom string) error
 }
+
+// Rewriter returns the source address to send for a routed segment. *senderrewrite.Holder satisfies it.
+type Rewriter interface {
+	Rewrite(connectorID, accountID, customerID uuid.UUID, from, to string, messageID uuid.UUID) string
+}
+
+// SenderPins remembers the sender each multipart message went out under. *dlrmap.SenderPins satisfies it;
+// New defaults a nil one to pinning nothing.
+type SenderPins interface {
+	Get(ctx context.Context, messageID uuid.UUID) (sender string, found bool, err error)
+	Pin(ctx context.Context, messageID uuid.UUID, sender string) error
+}
+
+// noPins is the New default when no SenderPins is wired: every segment is evaluated on its own.
+type noPins struct{}
+
+func (noPins) Get(context.Context, uuid.UUID) (string, bool, error) { return "", false, nil }
+func (noPins) Pin(context.Context, uuid.UUID, string) error         { return nil }
+
+// noRewrite is the New default when no Rewriter is wired: every sender goes out as submitted.
+type noRewrite struct{}
+
+func (noRewrite) Rewrite(_, _, _ uuid.UUID, from, _ string, _ uuid.UUID) string { return from }
 
 // noopDLRMap is the New default when no DLR map is wired: it records nothing. Tests that do not
 // exercise DLR correlation rely on it.
 type noopDLRMap struct{}
 
-func (noopDLRMap) Put(context.Context, string, pipeline.RoutedMT) error { return nil }
+func (noopDLRMap) Put(context.Context, string, pipeline.RoutedMT, string) error { return nil }
 
 // ThrottleMetric observes the adaptive throttle (step-086): the connector's current send rate after
 // each submit and each ESME_RTHROTTLED event. A wrapper over Prometheus satisfies it; New defaults a
@@ -184,6 +207,8 @@ type Deps struct {
 	CDR         CDRWriter
 	CancelFlags CancelFlags
 	DLRMap      DLRMap
+	Rewriter    Rewriter
+	SenderPins  SenderPins
 	Producer    Producer
 	// ConnectorID identifies the SMSC link this pool binds, stamped onto every mo.inbound / dlr.events
 	// record so the return-path router can correlate a receipt (step-044). At M2 it is injected from

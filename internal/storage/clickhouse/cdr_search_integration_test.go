@@ -199,3 +199,37 @@ func TestSearchKeysetPagesThroughTiedTimestamps(t *testing.T) {
 			len(seen), seen, len(seeded))
 	}
 }
+
+// TestSearchByARewrittenSenderKeepsTheMessageStatus: a message whose sender the pool rewrote (§6.16) is
+// found under the sender its client submitted, with the status of ALL its rows — not the accepted
+// placeholder alone, which is the only row that still holds that sender in source_addr.
+func TestSearchByARewrittenSenderKeepsTheMessageStatus(t *testing.T) {
+	writer, reader := searchReader(t)
+	ctx := context.Background()
+	customerID, accountID := uuid.New(), uuid.New()
+	at := time.Now().UTC().Truncate(time.Millisecond).Add(-time.Hour)
+	original := searchMSISDN()
+
+	accepted := searchRow(customerID, accountID, at, searchMSISDN())
+	accepted.SourceAddr = original
+	delivered := accepted
+	delivered.SourceAddr, delivered.OriginalSourceAddr = "INFO", &original
+	delivered.Status, delivered.SegmentSeq = clickhouse.StatusDelivered, 1
+	deliveredAt := at.Add(time.Second)
+	delivered.DeliveredAt = &deliveredAt
+	if err := writer.InsertBatch(ctx, []clickhouse.CDRRow{accepted, delivered}); err != nil {
+		t.Fatalf("InsertBatch: %v", err)
+	}
+
+	for _, sender := range []string{original, "INFO"} {
+		rows, err := reader.Search(ctx, clickhouse.CDRSearchFilter{
+			FromDate: at.Add(-time.Hour), ToDate: at.Add(time.Hour), CustomerIDs: []uuid.UUID{customerID}, MSISDN: &sender,
+		}, 50)
+		if err != nil {
+			t.Fatalf("Search %s: %v", sender, err)
+		}
+		if len(rows) != 1 || rows[0].Status != clickhouse.StatusDelivered {
+			t.Errorf("search %s: %d rows %+v, want the delivered message", sender, len(rows), rows)
+		}
+	}
+}

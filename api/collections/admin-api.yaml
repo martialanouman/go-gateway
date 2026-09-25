@@ -1070,6 +1070,23 @@ items:
           method: DELETE
           url: '{{baseUrl}}/admin/sender-rewrite-rules/{{rewriteRuleId}}'
         docs: Delete a sender-ID rewrite rule (scope admin:write).
+      - info:
+          name: test-sender-rewrite-rule
+          type: http
+        http:
+          method: POST
+          url: '{{baseUrl}}/admin/sender-rewrite-rules/{{rewriteRuleId}}/test'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "source_addr": "22507000001",
+                "dest_addr": "2250700000002"
+              }
+        docs: Run one rewrite rule against a sample, whatever its status; writes nothing (scope admin:read).
   - info:
       name: Exact Routes
       type: folder

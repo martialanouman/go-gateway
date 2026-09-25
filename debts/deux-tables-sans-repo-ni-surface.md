@@ -1,22 +1,17 @@
 # Deux tables du schéma n'avaient qu'un modèle sqlc et rien d'autre
 
-> **Statut :** OUVERTE · **Nature :** technique
-> **Née de :** le schéma lui-même · **Portée par :** step-350 (PR2, évaluation de la réécriture)
+> **Statut :** PAYÉE le 2026-09-24 · **Nature :** technique
+> **Née de :** le schéma lui-même · **Payée par :** step-330 (#204, groupes) et step-350 (#210 puis PR2,
+> réécriture)
 
-`customer_groups` et `sender_id_rewrite_rules` étaient complètes en base, leurs modèles sqlc générés, et
-n'avaient **ni repo, ni admin, ni évaluation**.
+**Payée.** Les groupes sont servis depuis step-330 : `customers.group_id` n'est plus une FK que rien ne
+peut peupler. La réécriture a son CRUD depuis step-350 PR1, et depuis PR2 `connector-pool-svc` l'évalue
+juste avant chaque `submit_sm` : la §6.16 existe au runtime.
 
-**Où on en est.** Les groupes sont servis depuis step-330 (#204) : `customers.group_id` n'est plus une
-FK que rien ne peut peupler. La réécriture a son repo et son CRUD admin depuis step-350 PR1 : les règles
-se créent, se listent dans l'ordre d'évaluation, et **rien ne les évalue**.
-
-**Ce qu'il en coûte d'ici step-350 PR2.** L'index partiel `(scope, scope_id, priority) WHERE
-status='active'` est maintenu par PostgreSQL au profit de **zéro lecteur**, et une règle active ne
-change aucun envoi : la §6.16 n'existe pas au runtime, alors que l'Admin API laisse l'opérateur croire
-le contraire.
-
-**À quoi on reconnaîtra qu'il faut la payer.** Le premier opérateur qui crée une règle et voit partir
-le sender ID d'origine.
+Ce que la fiche avait prévu et qui n'a pas eu lieu : l'index partiel
+`(scope, scope_id, priority) WHERE status='active'` n'a toujours **aucun lecteur**. Le pool charge toute
+la table en mémoire (quelques règles) et la relit à chaque invalidation, jamais par portée ; l'index reste
+entretenu pour personne, à un coût d'écriture négligeable sur une table admin.
 
 Sources : `db/schema_passerelle_sms.sql:72` (`customer_groups`) · `:526` (`sender_id_rewrite_rules`) ·
-`:549` (l'index)
+`:549` (l'index) · `cmd/connector-pool-svc/wiring.go` (chargement des règles)

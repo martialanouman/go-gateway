@@ -48,36 +48,39 @@ func NewRedisMap(rdb *redis.Client) *RedisMap {
 // descriptive columns source/dest/connector/route/segment/encoding), else the delivered snapshot would
 // blank them. It NEVER carries the message body (invariant a): only descriptive metadata.
 type mapping struct {
-	MessageID    string    `json:"message_id"`
-	TraceID      string    `json:"trace_id"`
-	AccountID    string    `json:"account_id"`
-	CustomerID   string    `json:"customer_id"`
-	SourceAddr   string    `json:"source_addr"`
-	DestAddr     string    `json:"dest_addr"`
-	ConnectorID  string    `json:"connector_id"`
-	RouteID      *string   `json:"route_id,omitempty"`
-	SegmentCount int       `json:"segment_count"`
-	SegmentSeq   int       `json:"segment_seq"`
-	Encoding     string    `json:"encoding"`
-	SubmittedAt  time.Time `json:"submitted_at"`
+	MessageID  string `json:"message_id"`
+	TraceID    string `json:"trace_id"`
+	AccountID  string `json:"account_id"`
+	CustomerID string `json:"customer_id"`
+	SourceAddr string `json:"source_addr"`
+	// OriginalSourceAddr is the sender the client submitted when the pool rewrote it (§6.16).
+	OriginalSourceAddr string    `json:"original_source_addr,omitempty"`
+	DestAddr           string    `json:"dest_addr"`
+	ConnectorID        string    `json:"connector_id"`
+	RouteID            *string   `json:"route_id,omitempty"`
+	SegmentCount       int       `json:"segment_count"`
+	SegmentSeq         int       `json:"segment_seq"`
+	Encoding           string    `json:"encoding"`
+	SubmittedAt        time.Time `json:"submitted_at"`
 }
 
 // Mapping is the resolved DLR correlation the return-path router reads back (step-044): the full CDR
 // projection of the submitted message, so it can write a collapsing delivered/failed/expired row and
 // compute latency without a ClickHouse read. It never carries the message body.
 type Mapping struct {
-	MessageID    uuid.UUID
-	TraceID      uuid.UUID
-	AccountID    uuid.UUID
-	CustomerID   uuid.UUID
-	SourceAddr   string
-	DestAddr     string
-	ConnectorID  uuid.UUID
-	RouteID      *uuid.UUID
-	SegmentCount int
-	SegmentSeq   int
-	Encoding     string
-	SubmittedAt  time.Time
+	MessageID          uuid.UUID
+	TraceID            uuid.UUID
+	AccountID          uuid.UUID
+	CustomerID         uuid.UUID
+	SourceAddr         string
+	OriginalSourceAddr string
+	DestAddr           string
+	ConnectorID        uuid.UUID
+	RouteID            *uuid.UUID
+	SegmentCount       int
+	SegmentSeq         int
+	Encoding           string
+	SubmittedAt        time.Time
 }
 
 // key scopes an entry by (connector_id, smsc_msg_id): connector_id disambiguates the same
@@ -93,25 +96,29 @@ func key(connectorID uuid.UUID, smscMsgID string) string {
 // (the message is already enroute). It takes the routed envelope because that is what the caller holds
 // and it carries every projected field; the message body it also carries is deliberately ignored (it
 // is never read here, so invariant (a) holds — nothing but metadata reaches Redis).
-func (m *RedisMap) Put(ctx context.Context, smscMsgID string, r pipeline.RoutedMT) error {
+//
+// r carries the sender actually sent; originalFrom is the client's when a rewrite rule changed it, empty
+// otherwise.
+func (m *RedisMap) Put(ctx context.Context, smscMsgID string, r pipeline.RoutedMT, originalFrom string) error {
 	var routeID *string
 	if r.RouteID != nil {
 		s := r.RouteID.String()
 		routeID = &s
 	}
 	value, err := json.Marshal(mapping{
-		MessageID:    r.MessageID.String(),
-		TraceID:      r.TraceID.String(),
-		AccountID:    r.AccountID.String(),
-		CustomerID:   r.CustomerID.String(),
-		SourceAddr:   r.From,
-		DestAddr:     r.To,
-		ConnectorID:  r.ConnectorID.String(),
-		RouteID:      routeID,
-		SegmentCount: r.SegmentCount,
-		SegmentSeq:   r.SegmentSeq,
-		Encoding:     r.Encoding,
-		SubmittedAt:  r.SubmittedAt,
+		MessageID:          r.MessageID.String(),
+		TraceID:            r.TraceID.String(),
+		AccountID:          r.AccountID.String(),
+		CustomerID:         r.CustomerID.String(),
+		SourceAddr:         r.From,
+		OriginalSourceAddr: originalFrom,
+		DestAddr:           r.To,
+		ConnectorID:        r.ConnectorID.String(),
+		RouteID:            routeID,
+		SegmentCount:       r.SegmentCount,
+		SegmentSeq:         r.SegmentSeq,
+		Encoding:           r.Encoding,
+		SubmittedAt:        r.SubmittedAt,
 	})
 	if err != nil {
 		return fmt.Errorf("dlrmap: marshal %s: %w", r.MessageID, err)
@@ -175,18 +182,19 @@ func (w mapping) resolve() (Mapping, error) {
 		routeID = &id
 	}
 	return Mapping{
-		MessageID:    messageID,
-		TraceID:      traceID,
-		AccountID:    accountID,
-		CustomerID:   customerID,
-		SourceAddr:   w.SourceAddr,
-		DestAddr:     w.DestAddr,
-		ConnectorID:  connectorID,
-		RouteID:      routeID,
-		SegmentCount: w.SegmentCount,
-		SegmentSeq:   w.SegmentSeq,
-		Encoding:     w.Encoding,
-		SubmittedAt:  w.SubmittedAt,
+		MessageID:          messageID,
+		TraceID:            traceID,
+		AccountID:          accountID,
+		CustomerID:         customerID,
+		SourceAddr:         w.SourceAddr,
+		OriginalSourceAddr: w.OriginalSourceAddr,
+		DestAddr:           w.DestAddr,
+		ConnectorID:        connectorID,
+		RouteID:            routeID,
+		SegmentCount:       w.SegmentCount,
+		SegmentSeq:         w.SegmentSeq,
+		Encoding:           w.Encoding,
+		SubmittedAt:        w.SubmittedAt,
 	}, nil
 }
 
@@ -257,4 +265,37 @@ func clamp(d, lo, hi time.Duration) time.Duration {
 		return hi
 	}
 	return d
+}
+
+// SenderPins remembers, per multipart message, the sender its first accepted segment went out under
+// (§6.16, step-350). A handset reassembles a concatenated SMS only under one originator, so every later
+// segment — on this connector or one it is rerouted to, before or after a reload of the rules — reuses
+// it instead of evaluating the rules again. An entry lives for the longest receipt window whatever the
+// message's validity: the pool does not stop sending at the validity, and a segment redelivered past a
+// shorter TTL would go out under the rules again.
+type SenderPins struct{ rdb *redis.Client }
+
+// NewSenderPins returns the sender pins backed by rdb.
+func NewSenderPins(rdb *redis.Client) *SenderPins { return &SenderPins{rdb: rdb} }
+
+func pinKey(messageID uuid.UUID) string { return "rewrite:{" + messageID.String() + "}" }
+
+// Get returns the pinned sender of a message, found=false when none is.
+func (p *SenderPins) Get(ctx context.Context, messageID uuid.UUID) (string, bool, error) {
+	sender, err := p.rdb.Get(ctx, pinKey(messageID)).Result()
+	if errors.Is(err, redis.Nil) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("dlrmap: read sender pin %s: %w", messageID, err)
+	}
+	return sender, true, nil
+}
+
+// Pin records sender for the message unless one is already pinned: the first segment on the wire wins.
+func (p *SenderPins) Pin(ctx context.Context, messageID uuid.UUID, sender string) error {
+	if err := p.rdb.SetArgs(ctx, pinKey(messageID), sender, redis.SetArgs{Mode: "NX", TTL: maxTTL}).Err(); err != nil && !errors.Is(err, redis.Nil) {
+		return fmt.Errorf("dlrmap: pin sender %s: %w", messageID, err)
+	}
+	return nil
 }

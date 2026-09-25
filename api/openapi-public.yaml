@@ -517,7 +517,7 @@ components:
         trace_id: { type: string, format: uuid }
         direction: { type: string, enum: [mt, mo] }
         to: { type: string, description: Destination MSISDN (E.164). }
-        from: { type: string, description: Source address actually used on the wire. }
+        from: { type: string, description: 'The sender as submitted; a provider-side rewrite (§6.16) is never shown.' }
         status: { $ref: '#/components/schemas/MessageStatus' }
         segment_count: { type: [integer, "null"], minimum: 1 }
         encoding: { type: [string, "null"], enum: [gsm7, ucs2, binary, null] }

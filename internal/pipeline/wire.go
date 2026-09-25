@@ -213,6 +213,7 @@ type outcomeWire struct {
 	ConnectorID    uuid.UUID  `json:"connector_id"`
 	RouteID        *uuid.UUID `json:"route_id,omitempty"`
 	From           string     `json:"from"`
+	OriginalFrom   string     `json:"original_from,omitempty"`
 	To             string     `json:"to"`
 	Encoding       string     `json:"encoding"`
 	SegmentSeq     int        `json:"segment_seq"`

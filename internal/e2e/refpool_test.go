@@ -224,9 +224,9 @@ func newCountingDLRMap(inner connectorpool.DLRMap) *countingDLRMap {
 	return &countingDLRMap{inner: inner, buckets: make([]atomic.Uint64, len(produceBounds)+1)}
 }
 
-func (m *countingDLRMap) Put(ctx context.Context, smscMsgID string, r pipeline.RoutedMT) error {
+func (m *countingDLRMap) Put(ctx context.Context, smscMsgID string, r pipeline.RoutedMT, originalFrom string) error {
 	started := time.Now()
-	if err := m.inner.Put(ctx, smscMsgID, r); err != nil {
+	if err := m.inner.Put(ctx, smscMsgID, r, originalFrom); err != nil {
 		return err
 	}
 	took := time.Since(started)

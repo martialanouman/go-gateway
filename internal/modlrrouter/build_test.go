@@ -12,6 +12,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	"github.com/martialanouman/go-gateway/internal/platform/msg"
 	"github.com/martialanouman/go-gateway/internal/smpp"
+	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
 )
 
 func decodeDeliverSM(t *testing.T, raw []byte) *smpp.DeliverSM {
@@ -113,4 +114,31 @@ func mustMO(t *testing.T, mo pipeline.MORouted) []byte {
 		t.Fatalf("moDeliverSM: %v", err)
 	}
 	return raw
+}
+
+// TestDLRDeliverSMHidesTheRewrittenSender: the receipt goes back to the address the client sent, not the
+// one the provider rewrote it to (§6.16: the client does not know).
+func TestDLRDeliverSMHidesTheRewrittenSender(t *testing.T) {
+	m := dlrmap.Mapping{MessageID: uuid.New(), SourceAddr: "INFO", OriginalSourceAddr: "ACME", DestAddr: "22507000001"}
+	raw, err := dlrDeliverSM(m, pipeline.DLREvent{Stat: "DELIVRD", State: 2})
+	if err != nil {
+		t.Fatalf("dlrDeliverSM: %v", err)
+	}
+	if ds := decodeDeliverSM(t, raw); ds.DestinationAddr != "ACME" {
+		t.Errorf("receipt destination = %q, want the client's ACME", ds.DestinationAddr)
+	}
+}
+
+// TestDeliveredRowKeepsTheRewrite: the delivered row supersedes the enroute one whole, so it carries both
+// the address sent and the client's.
+func TestDeliveredRowKeepsTheRewrite(t *testing.T) {
+	m := dlrmap.Mapping{MessageID: uuid.New(), SourceAddr: "INFO", OriginalSourceAddr: "ACME", DestAddr: "22507000001"}
+	row := buildCDRRow(pipeline.DLREvent{Stat: "DELIVRD", State: 2}, m, clickhouse.StatusDelivered)
+	if row.SourceAddr != "INFO" || row.OriginalSourceAddr == nil || *row.OriginalSourceAddr != "ACME" {
+		t.Errorf("source = %q, original = %v; want INFO and ACME", row.SourceAddr, row.OriginalSourceAddr)
+	}
+	m.OriginalSourceAddr = ""
+	if row := buildCDRRow(pipeline.DLREvent{}, m, clickhouse.StatusDelivered); row.OriginalSourceAddr != nil {
+		t.Errorf("original = %q on an unrewritten message, want NULL", *row.OriginalSourceAddr)
+	}
 }

@@ -113,6 +113,7 @@ var m1Operations = []opRef{
 	{"create-sender-rewrite-rule", "post", "/admin/sender-rewrite-rules"},
 	{"update-sender-rewrite-rule", "patch", "/admin/sender-rewrite-rules/{id}"},
 	{"delete-sender-rewrite-rule", "delete", "/admin/sender-rewrite-rules/{id}"},
+	{"test-sender-rewrite-rule", "post", "/admin/sender-rewrite-rules/{id}/test"},
 
 	{"list-exact-routes", "get", "/admin/exact-routes"},
 	{"create-exact-route", "post", "/admin/exact-routes"},
@@ -177,9 +178,6 @@ type deferredOp struct{ reason, step string }
 // unclassified entry here is a typed client calling a 404. Kept honest by
 // TestEveryContractOperationIsServedOrDeferred, which also forbids overlapping with m1Operations.
 var deferred = map[string]deferredOp{
-
-	// Sender-ID rewrite (§6.16): the CRUD is served; testing a rule against a sample is not.
-	"test-sender-rewrite-rule": {"waits for the evaluation engine of step-350 PR2", "step-350"},
 
 	// SMPP sessions: stream-sessions is served; the two REST reads and the per-session DELETE are not.
 	"list-sessions":         {"only stream-sessions exists, no REST read", "step-360"},

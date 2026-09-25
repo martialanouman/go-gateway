@@ -142,10 +142,9 @@ func (p *Projector) handleBatch(ctx context.Context, recs []kafka.Record) []erro
 // row projects one outcome onto its CDR row — the exact row the connector pool wrote at the submit site
 // before step-201c, field for field.
 //
-// The nil fields are nil on purpose, not by omission: original_source_addr and routing_script_id belong
-// to the router's rows, delivered_at and latency_ms to the DLR path, and the content columns to the
-// accepted row alone (the outcome carries no body — invariant a). `version` is left unset: the writer
-// derives it from Status.
+// The nil fields are nil on purpose, not by omission: routing_script_id belongs to the router's rows,
+// delivered_at and latency_ms to the DLR path, and the content columns to the accepted row alone (the
+// outcome carries no body — invariant a). `version` is left unset: the writer derives it from Status.
 //
 // The segment coordinates are copied verbatim. The producer already clamps them to >= 1 (it is the only
 // party that knows a connector row is always a dispatched segment), and segment_seq joins the CDR
@@ -169,9 +168,18 @@ func row(env pipeline.OutcomeMT, status clickhouse.Status) clickhouse.CDRRow {
 		// reproduces the pre-step-201c conversion exactly.
 		SegmentCount: uint16(env.SegmentCount),
 		//nolint:gosec // idem.
-		SegmentSeq:     uint16(env.SegmentSeq),
-		Encoding:       clickhouse.EncodingOf(env.Encoding),
-		Billed:         env.Billed,
-		CreditsCharged: env.CreditsCharged,
+		SegmentSeq:         uint16(env.SegmentSeq),
+		Encoding:           clickhouse.EncodingOf(env.Encoding),
+		Billed:             env.Billed,
+		CreditsCharged:     env.CreditsCharged,
+		OriginalSourceAddr: nonEmpty(env.OriginalFrom),
 	}
+}
+
+// nonEmpty is nil for "", so a message nothing rewrote keeps original_source_addr NULL.
+func nonEmpty(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }

@@ -13,6 +13,8 @@ import (
 
 	"github.com/martialanouman/go-gateway/internal/auth"
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
+	"github.com/martialanouman/go-gateway/internal/pipeline/senderrewrite"
+	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 	humaerr "github.com/martialanouman/go-gateway/internal/platform/errors/humaerr"
 )
 
@@ -69,8 +71,8 @@ type senderRewriteRuleCreateBody struct {
 	MatchSenderPattern *string        `json:"match_sender_pattern,omitempty" nullable:"true" doc:"RE2 regex matched against the whole address, implicitly anchored; null matches any. Unlike a route match_dest_pattern, not a digit prefix."`
 	MatchDestPattern   *string        `json:"match_dest_pattern,omitempty" nullable:"true" doc:"RE2 regex matched against the whole address, implicitly anchored; null matches any. Unlike a route match_dest_pattern, not a digit prefix."`
 	RewriteType        string         `json:"rewrite_type" enum:"static,fallback_pool,truncate,sanitize"`
-	RewriteTo          *string        `json:"rewrite_to,omitempty" nullable:"true" doc:"Required when rewrite_type = static."`
-	FallbackPool       []string       `json:"fallback_pool_json,omitempty" nullable:"true" doc:"Required, non-empty, when rewrite_type = fallback_pool."`
+	RewriteTo          *string        `json:"rewrite_to,omitempty" nullable:"true" doc:"Required when rewrite_type = static; at most 20 octets, the SMPP source_addr."`
+	FallbackPool       []string       `json:"fallback_pool_json,omitempty" nullable:"true" doc:"Required, non-empty, when rewrite_type = fallback_pool; each entry at most 20 octets, the SMPP source_addr."`
 	MaxLength          *int32         `json:"max_length,omitempty" minimum:"1" nullable:"true" doc:"Required when rewrite_type = truncate."`
 	SanitizeCharset    map[string]any `json:"sanitize_charset_json,omitempty" nullable:"true" doc:"Read when rewrite_type is sanitize: an object whose single key allowed holds the characters kept, listed one by one (not ranges); every other character is removed. Null keeps ASCII letters and digits."`
 	Priority           *int32         `json:"priority,omitempty" default:"100" doc:"Lower is evaluated first, within a scope."`
@@ -138,6 +140,14 @@ func registerSenderRewriteRules(api huma.API, store SenderRewriteRuleStore) {
 		Security: scopeSecurity(auth.ScopeAdminWrite),
 		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound},
 	}, h.delete)
+
+	register(api, huma.Operation{
+		OperationID: "test-sender-rewrite-rule", Method: http.MethodPost, Path: "/admin/sender-rewrite-rules/{id}/test",
+		Summary: "Test a rewrite rule against a sample", Tags: []string{"Sender Rewrite"},
+		Description: "Runs this rule alone — whatever its status, without the precedence of the others — through the code connector-pool applies before the submit_sm. Writes nothing.",
+		Security:    scopeSecurity(auth.ScopeAdminRead),
+		Errors:      []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity},
+	}, h.test)
 }
 
 type listSenderRewriteRulesInput struct {
@@ -330,6 +340,9 @@ func validateRewrite(r cp.SenderRewriteRule) error {
 		if r.RewriteTo == nil || strings.TrimSpace(*r.RewriteTo) == "" {
 			return missing("rewrite_to", "is required for a static rule")
 		}
+		if len(*r.RewriteTo) > senderrewrite.MaxSenderOctets {
+			return missing("rewrite_to", "must fit the 20 octets of an SMPP source_addr")
+		}
 	case cp.RewriteFallbackPool:
 		if len(r.FallbackPool) == 0 {
 			return missing("fallback_pool_json", "must list at least one sender ID")
@@ -337,6 +350,9 @@ func validateRewrite(r cp.SenderRewriteRule) error {
 		for _, s := range r.FallbackPool {
 			if strings.TrimSpace(s) == "" {
 				return missing("fallback_pool_json", "must not contain a blank sender ID")
+			}
+			if len(s) > senderrewrite.MaxSenderOctets {
+				return missing("fallback_pool_json", "every sender ID must fit the 20 octets of an SMPP source_addr")
 			}
 		}
 	case cp.RewriteTruncate:
@@ -362,4 +378,50 @@ func encodeCharset(m map[string]any) (json.RawMessage, error) {
 	}
 	raw, _ := json.Marshal(map[string]string{"allowed": allowed})
 	return raw, nil
+}
+
+type testSenderRewriteRuleInput struct {
+	ID   string `path:"id" format:"uuid"`
+	Body struct {
+		SourceAddr string  `json:"source_addr" doc:"The sender as the client submits it."`
+		DestAddr   string  `json:"dest_addr" doc:"The destination as the pool sees it: digits only, no +."`
+		MessageID  *string `json:"message_id,omitempty" format:"uuid" doc:"A fallback_pool rule picks its sender from the message id; give a CDR's to reproduce its choice. Absent means the nil UUID."`
+	}
+}
+
+type testSenderRewriteRuleOutput struct {
+	Body struct {
+		Matched         bool    `json:"matched"`
+		RewrittenSource *string `json:"rewritten_source,omitempty" nullable:"true" doc:"The sender the pool would submit, before the SMPP typing: a leading + is stripped on the wire and the number typed international."`
+	}
+}
+
+// test runs one rule through senderrewrite.EvalRule, the function the pool's snapshot applies, so the
+// answer is what the pool would send for that sample.
+func (h *senderRewriteHandlers) test(ctx context.Context, in *testSenderRewriteRuleInput) (*testSenderRewriteRuleOutput, error) {
+	id, err := uuid.Parse(in.ID)
+	if err != nil {
+		return nil, notFound("sender rewrite rule")
+	}
+	messageID, err := parseIDPtr("message_id", in.Body.MessageID)
+	if err != nil {
+		return nil, err
+	}
+	if messageID == nil {
+		messageID = &uuid.Nil
+	}
+	rule, err := h.store.Get(ctx, id)
+	if err != nil {
+		return nil, humaerr.FromError(err)
+	}
+	rewritten, matched, err := senderrewrite.EvalRule(rule, in.Body.SourceAddr, in.Body.DestAddr, *messageID)
+	if err != nil {
+		return nil, humaerr.Fail(errs.ErrValidation, "the stored rule cannot be applied: %v", err)
+	}
+	out := &testSenderRewriteRuleOutput{}
+	out.Body.Matched = matched
+	if matched {
+		out.Body.RewrittenSource = &rewritten
+	}
+	return out, nil
 }

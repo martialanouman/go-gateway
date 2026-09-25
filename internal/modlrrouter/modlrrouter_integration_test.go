@@ -55,7 +55,7 @@ func TestDLRCorrelationUpdatesCDR(t *testing.T) {
 		SegmentCount: 1,
 		SubmittedAt:  submittedAt,
 	}
-	if err := store.Put(ctx, smscID, routed); err != nil {
+	if err := store.Put(ctx, smscID, routed, ""); err != nil {
 		t.Fatalf("dlrmap Put: %v", err)
 	}
 	enroute := clickhouse.CDRRow{

@@ -140,7 +140,14 @@ func (s *Service) processOne(ctx context.Context, b *bind, bindIndex int, rec ka
 		return err
 	}
 
-	resp, err := b.Submit(ctx, buildSubmit(routed))
+	// The rewrite comes after the breaker and any reroute, so it is this connector's rules that apply
+	// (§6.16). It changes a copy: routed stays the client's message, which is what a reroute, a
+	// redelivery or a dead-letter must carry on.
+	sent := routed
+	var pinned bool
+	sent.From, pinned = s.senderFor(ctx, routed)
+
+	resp, err := b.Submit(ctx, buildSubmit(sent))
 	if err != nil {
 		// A dead bind, a write failure or a timeout is transient and a connector-health failure for the
 		// breaker (no response came back). With a fallback chain, reroute to the next connector; without
@@ -156,7 +163,7 @@ func (s *Service) processOne(ctx context.Context, b *bind, bindIndex int, rec ka
 	// Read HERE, on the submit_sm_resp, before any bookkeeping.
 	e2e := e2eLatency(routed)
 
-	return s.settleOutcome(ctx, span, bindIndex, rec, routed, resp, e2e)
+	return s.settleOutcome(ctx, span, bindIndex, rec, routed, sent, pinned, resp, e2e)
 }
 
 // preDispatch settles everything that decides a record's fate WITHOUT putting it on the wire: the
@@ -247,7 +254,11 @@ func (s *Service) preDispatch(ctx context.Context, span trace.Span, bindIndex in
 // settleOutcome runs everything that follows a submit_sm_resp: the breaker and the throttle learn from
 // it, then the record is rerouted, redelivered, or settled as terminal — DLR mapping, billing, both
 // metric sinks, the mt.outcome publish.
-func (s *Service) settleOutcome(ctx context.Context, span trace.Span, bindIndex int, rec kafka.Record, routed pipeline.RoutedMT, resp smpp.PDU, e2e time.Duration) error {
+//
+// sent is routed with the source address actually submitted; it is what the receipt mapping and the
+// outcome record, while a reroute or a redelivery carries routed. pinned says that address came from the
+// message's sender pin, which needs no writing again.
+func (s *Service) settleOutcome(ctx context.Context, span trace.Span, bindIndex int, rec kafka.Record, routed, sent pipeline.RoutedMT, pinned bool, resp smpp.PDU, e2e time.Duration) error {
 	// Feed the outcome to this bind's circuit breaker (step-121): a system error / bind failure is a
 	// health failure, a throttle/queue-full is transient (ignored), a success clears it.
 	s.feedBreaker(bindIndex, resp.Status, false)
@@ -296,14 +307,22 @@ func (s *Service) settleOutcome(ctx context.Context, span trace.Span, bindIndex 
 	// succeed, and a receipt that arrives with no mapping is orphaned. It sat after the (fail-closed) CDR
 	// write until step-201c, which meant a storage fault also cost us the receipt of a message that really
 	// was delivered.
-	s.recordDLRMapping(ctx, routed, resp)
+	originalFrom := ""
+	if sent.From != routed.From {
+		originalFrom = routed.From
+	}
+	s.recordDLRMapping(ctx, sent, originalFrom, resp)
+	if !pinned {
+		s.pinSender(ctx, sent, resp)
+	}
 
 	// Settle the reservation on the terminal outcome (step-146): capture a sent message, release a
 	// permanently-failed one. Both FAIL OPEN — neither returns an error — so a billing fault can never turn
 	// this committed outcome into a redelivery that re-submits the message (a duplicate SMS). A
 	// billing-disabled message makes no call. Capture fills billed/credits_charged on the outcome; the
 	// failed path leaves them false/nil (the reserve refund happens durably in billing-svc, not here).
-	event := submitOutcome(routed, resp)
+	event := submitOutcome(sent, resp)
+	event.OriginalFrom = originalFrom
 	if resp.Status == smpp.StatusOK {
 		event.Billed, event.CreditsCharged = s.deps.Billing.Capture(ctx, routed)
 	} else {
@@ -341,7 +360,7 @@ func (s *Service) settleOutcome(ctx context.Context, span trace.Span, bindIndex 
 // carrying no smsc_msg_id — must never fail the record. A write error is logged and counted only by
 // the log; the consequence (a later receipt arriving uncorrelated) is handled in step-044. The log
 // carries the ids, never the body (invariant a).
-func (s *Service) recordDLRMapping(ctx context.Context, r pipeline.RoutedMT, resp smpp.PDU) {
+func (s *Service) recordDLRMapping(ctx context.Context, r pipeline.RoutedMT, originalFrom string, resp smpp.PDU) {
 	if resp.Status != smpp.StatusOK {
 		return
 	}
@@ -349,7 +368,7 @@ func (s *Service) recordDLRMapping(ctx context.Context, r pipeline.RoutedMT, res
 	if !ok || body.MessageID == "" {
 		return
 	}
-	if err := s.deps.DLRMap.Put(ctx, body.MessageID, r); err != nil {
+	if err := s.deps.DLRMap.Put(ctx, body.MessageID, r, originalFrom); err != nil {
 		s.deps.Logger.WarnContext(ctx, "connector: dlr mapping write failed, a later receipt will be uncorrelated",
 			"message_id", r.MessageID, "connector_id", r.ConnectorID, "err", err)
 	}
@@ -362,4 +381,38 @@ func (s *Service) stream(fn func(StreamEmitter)) {
 		return
 	}
 	fn(s.deps.Stream)
+}
+
+// senderFor is the sender a segment goes out under: the one its message is already on the wire with
+// when it spans several segments, the rules' answer otherwise. A handset reassembles a concatenated SMS
+// only under one originator, and that outweighs the rules of a connector a later segment was rerouted to:
+// a segment that connector refuses is a visible failure, an SMS split across two senders is not.
+func (s *Service) senderFor(ctx context.Context, r pipeline.RoutedMT) (sender string, pinned bool) {
+	if r.SegmentCount > 1 {
+		sender, found, err := s.deps.SenderPins.Get(ctx, r.MessageID)
+		if err != nil {
+			// Fail open, like the DLR mapping: a Redis fault must never block or double a send.
+			s.deps.Logger.WarnContext(ctx, "connector: sender pin unreadable, applying the rules",
+				"message_id", r.MessageID, "connector_id", r.ConnectorID, "err", err)
+		}
+		if found {
+			return sender, true
+		}
+	}
+	return s.deps.Rewriter.Rewrite(r.ConnectorID, r.AccountID, r.CustomerID, r.From, r.To, r.MessageID), false
+}
+
+// pinSender records the sender a multipart message's first accepted segment went out under. Only an
+// accepted one: a refused segment may send the whole message on under another connector's rules.
+// ponytail: two segments in flight on two connectors both read no pin until one of them gets its
+// submit_sm_resp — a window of one SMSC round trip, longer under throttling. Pinning before the submit
+// would close it, at the price of pinning a sender the SMSC then refuses.
+func (s *Service) pinSender(ctx context.Context, sent pipeline.RoutedMT, resp smpp.PDU) {
+	if sent.SegmentCount <= 1 || resp.Status != smpp.StatusOK {
+		return
+	}
+	if err := s.deps.SenderPins.Pin(ctx, sent.MessageID, sent.From); err != nil {
+		s.deps.Logger.WarnContext(ctx, "connector: sender pin write failed, a later segment may go out under another sender",
+			"message_id", sent.MessageID, "connector_id", sent.ConnectorID, "err", err)
+	}
 }
