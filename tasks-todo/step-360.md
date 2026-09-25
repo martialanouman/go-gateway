@@ -58,3 +58,35 @@ refuser un bind (invariant d).
 ## Hors périmètre
 
 Le flux `stream-sessions` (livré). La politique de reconnexion des connecteurs sortants (step-127/128).
+
+## Design arrêté
+
+Arbitré par Fable le 2026-09-25 (spec → Fable, aucun point remonté à l'humain). Six décisions :
+
+1. **Métadonnées dans le registre, même slot que le quota.** `sess:{acct}:meta` (hash, champ = bind_id →
+   JSON `{pod_id, system_id, bind_type, remote_addr, window_size, connected_at}`) est écrit par `bind.lua`
+   en `HSETNX` **dans la branche acceptée seulement** (un bind refusé ne laisse rien ; `connected_at`
+   survit au refresh), effacé par `unbind.lua`, et purgé au balayage (`ZRANGEBYSCORE` avant
+   `ZREMRANGEBYSCORE`, sinon une meta expirée vit tant que le compte a un bind vivant). Le registre
+   horodate `connected_at`. `last_enquire_link` = null : le suivre coûterait une écriture par
+   enquire_link. `connector_id` = null, `direction` = `user`.
+2. **Index global = pointeur, pas vérité.** `sess:idx` (zset lex, score 0, membre `bind_id|account_id`),
+   `ZADD` **après** acceptation à chaque Bind (le refresh le rejoue : auto-réparation), `ZREM` après
+   unbind. Seul un pod mort laisse une orpheline ; le lecteur vérifie chaque entrée contre
+   `sess:{acct}` + meta et purge paresseusement. Curseur = membre complet (opaque), `ZRANGE BYLEX (cursor`.
+   Une session fermée entre deux pages manque ; une ouverte sous le curseur aussi ; une page peut être
+   courte, `has_more` reste exact. **Écrit dans la description du contrat.** SCAN rejeté (COUNT n'est
+   qu'un indice, balaie le keyspace partagé). Filtre `accountId` : lecture directe du compte, triée et
+   paginée en mémoire (≤ max_sessions entrées).
+3. **Nouvelle RPC `ListSessions`** ; `Lookup` (chemin chaud MO/DLR) inchangée.
+4. **`disconnect-session`** : `id` = bind_id. `DISCONNECT_SCOPE_SESSION` (et `disconnect.ScopeSession`
+   dans `valid()`, sinon `Decode` le rejette au pod). `Server.Disconnect` résout le bind par `sess:idx`
+   → `NotFound` (404) s'il n'est pas vivant, sinon publie ; le pod détenteur matche `bindID` et
+   `forceClose` (unbind puis fermeture). Motif `operator_disconnect`, audité par `audited()`. 204 = ordre
+   publié. Deux fenêtres écrites, non corrigées : un pod d'avant la step ignore l'ordre pendant un
+   rollout ; un bind accepté répond 404 pendant ≤ 1 RTT avant son `ZADD`.
+5. **`connectorId`** : 422 explicite (renvoie vers `get-connector-status`) + 422 déclaré au contrat +
+   fiche de dette. Les binds sortants n'ont ni UUID de session ni registre ; une page vide mentirait.
+6. **Sécurité** : `admin:read` sur les deux lectures, `admin:write` sur la déconnexion, 401/403 au
+   contrat. Aucune contrainte de validation durcie → bump **mineur**. `list-account-sessions` :
+   `max_sessions` lu en base (404 si compte inconnu), `active` = vivantes, **peut dépasser** max (§6.3).
