@@ -167,6 +167,16 @@ type Disconnector interface {
 	DisconnectCustomer(ctx context.Context, customerID uuid.UUID, reason string) error
 }
 
+// SessionDirectory reads the live SMPP sessions and orders one closed (step-360). The registry in
+// session-manager is the source, never PostgreSQL. Sessions come in bind id order; ListSessions returns
+// the page strictly after the bind id after, with next "" on the last page. DisconnectSession answers
+// ErrSessionNotFound for a bind that is not live. *GRPCSessions satisfies it.
+type SessionDirectory interface {
+	ListAccountSessions(ctx context.Context, accountID uuid.UUID) (sessions []LiveSession, active int, err error)
+	ListSessions(ctx context.Context, after string, limit int) (sessions []LiveSession, next string, err error)
+	DisconnectSession(ctx context.Context, bindID, reason string) error
+}
+
 // Deps are the collaborators the Admin API needs. Later milestones add a store field per resource;
 // New tolerates a nil store (the contract test builds the API without any), but a running server
 // wires them all.
@@ -191,6 +201,7 @@ type Deps struct {
 	CustomerGroups CustomerGroupStore
 	Webhooks       WebhookStore
 	Accounts       AccountStore
+	Sessions       SessionDirectory
 	Credentials    CredentialStore
 	Connectors     ConnectorStore
 	// SecretSealer is required by the three handlers that write a replayed secret (connectors, billing

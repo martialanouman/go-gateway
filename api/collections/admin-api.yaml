@@ -54,6 +54,8 @@ request:
       value: 00000000-0000-0000-0000-000000000000
     - name: rewriteRuleId
       value: 00000000-0000-0000-0000-000000000000
+    - name: sessionId
+      value: 00000000-0000-0000-0000-000000000000
 items:
   - info:
       name: Customer Groups
@@ -411,6 +413,44 @@ items:
                 "allowed_bind_types": "trx"
               }
         docs: Set max_sessions and allowed bind types.
+      - info:
+          name: list-account-sessions
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/smpp-accounts/{{accountId}}/sessions'
+        docs: Live binds vs max_sessions; active can exceed the limit (scope admin:read).
+  - info:
+      name: Sessions
+      type: folder
+    items:
+      - info:
+          name: list-sessions
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/sessions'
+          params:
+            - name: accountId
+              value: '{{accountId}}'
+              type: query
+              disabled: true
+            - name: cursor
+              value: ''
+              type: query
+              disabled: true
+            - name: limit
+              value: '50'
+              type: query
+              disabled: true
+        docs: Live client binds in bind id order; no snapshot across pages (scope admin:read).
+      - info:
+          name: disconnect-session
+          type: http
+        http:
+          method: DELETE
+          url: '{{baseUrl}}/admin/sessions/{{sessionId}}'
+        docs: Order the owning pod to unbind and close the session, reason operator_disconnect (scope admin:write).
   - info:
       name: Credentials
       type: folder

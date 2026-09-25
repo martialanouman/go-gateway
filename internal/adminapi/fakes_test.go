@@ -271,6 +271,9 @@ func (s *fakeAccountStore) Create(_ context.Context, in cp.NewAccount) (cp.Accou
 		AllowedBindTypes: cp.BindTRX,
 		MaxSessions:      1,
 	}
+	if in.MaxSessions != nil {
+		a.MaxSessions = *in.MaxSessions
+	}
 	s.byID[a.ID] = a
 	return a, nil
 }

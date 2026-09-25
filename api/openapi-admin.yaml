@@ -396,9 +396,16 @@ paths:
       tags: [SMPP Accounts]
       summary: Live binds vs maxSessions for this account
       operationId: list-account-sessions
+      description: >-
+        `active` counts the live binds as the max_sessions quota sees them, and can exceed `max_sessions`:
+        lowering the limit cuts no live bind (§6.3). A bind admitted by a registry older than this
+        operation counts in `active` and is listed from its next refresh.
+      security: [ { OperatorBearer: [ admin:read ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { type: object, properties: { max_sessions: { type: integer }, active: { type: integer }, sessions: { type: array, items: { $ref: '#/components/schemas/Session' } } }, required: [max_sessions, active, sessions] } } } }
         '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /admin/smpp-accounts/{id}/sender-id-policy:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
     patch:
@@ -910,6 +917,13 @@ paths:
       tags: [Sessions]
       summary: List live SMPP sessions
       operationId: list-sessions
+      description: >-
+        Client (ESME) binds, in bind id order, read from the live session registry. The registry is
+        volatile and gives no snapshot: a session closed between two pages is missing from both, and one
+        opened below the cursor is not seen. A page can hold fewer than `limit` sessions while `has_more`
+        is true. `connectorId` is refused with 422: outbound connector binds are not in the registry, read
+        them with get-connector-status.
+      security: [ { OperatorBearer: [ admin:read ] } ]
       parameters:
         - { name: accountId, in: query, schema: { type: string, format: uuid } }
         - { name: connectorId, in: query, schema: { type: string, format: uuid } }
@@ -917,15 +931,25 @@ paths:
         - { $ref: '#/components/parameters/Limit' }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SessionPage' } } } }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /admin/sessions/{id}:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
     delete:
       tags: [Sessions]
       summary: Force-disconnect a session
       operationId: disconnect-session
+      description: >-
+        Orders the pod holding the bind to send an unbind and close the connection, with reason
+        `operator_disconnect`. The close is asynchronous: 204 means the order was published, and the
+        session leaves the list once its pod has closed it. An id that is not a live session is a 404.
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
-        '204': { description: Disconnected. }
+        '204': { description: Disconnect ordered. }
         '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
   # ============================ ANTI-SPAM (§6.5) ============================
   /admin/antispam-rules:

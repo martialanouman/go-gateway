@@ -377,6 +377,7 @@ func newHTTPServer(
 		RoutingScripts:     postgres.NewRoutingScriptRepo(st.pg),
 		Imports:            runners.imports,
 		Disconnector:       adminapi.NewGRPCDisconnector(registrypb.NewSessionRegistryClient(clients.registry)),
+		Sessions:           adminapi.NewGRPCSessions(registrypb.NewSessionRegistryClient(clients.registry)),
 		Billing:            postgres.NewBillingRepo(st.pg),
 		BalanceCache:       redisBalanceCache{rdb: rdb},
 		RatePlans:          postgres.NewRatePlanRepo(st.pg),
