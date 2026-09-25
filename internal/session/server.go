@@ -59,6 +59,11 @@ func (s *Server) Bind(ctx context.Context, req *pb.BindRequest) (*pb.BindRespons
 		PodID:     sess.GetPodId(),
 		BindID:    sess.GetBindId(),
 		Addr:      sess.GetPodAddr(),
+
+		SystemID:   sess.GetSystemId(),
+		BindType:   bindTypeName(sess.GetBindType()),
+		RemoteAddr: sess.GetRemoteAddr(),
+		WindowSize: int(sess.GetWindowSize()),
 	}
 	active, err := s.reg.Bind(ctx, b, int(req.GetMaxSessions()))
 	if err != nil {
@@ -132,6 +137,8 @@ func (s *Server) Deliver(_ context.Context, _ *pb.DeliverRequest) (*pb.DeliverRe
 // on the pod's own path. Publishing is idempotent: a repeated order simply targets sessions that are
 // already gone. The scope must be a concrete account or customer; an unspecified scope or empty id
 // is rejected rather than fanned out to an over-broad set of sessions.
+// A session scope is resolved first: an order for a bind that is not live answers NotFound, never a
+// silent success (step-360).
 func (s *Server) Disconnect(ctx context.Context, req *pb.DisconnectRequest) (*pb.DisconnectResponse, error) {
 	scope, err := disconnectScope(req.GetScope())
 	if err != nil {
@@ -139,6 +146,15 @@ func (s *Server) Disconnect(ctx context.Context, req *pb.DisconnectRequest) (*pb
 	}
 	if req.GetId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "disconnect: id is required")
+	}
+	if scope == disconnect.ScopeSession {
+		_, found, err := s.reg.Resolve(ctx, req.GetId())
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "disconnect: resolve: %v", err)
+		}
+		if !found {
+			return nil, status.Errorf(codes.NotFound, "disconnect: no live session %s", req.GetId())
+		}
 	}
 
 	// Reason is a machine label, never a secret; it is safe to carry and later log (§1.9).
@@ -149,6 +165,51 @@ func (s *Server) Disconnect(ctx context.Context, req *pb.DisconnectRequest) (*pb
 	return &pb.DisconnectResponse{Published: true}, nil
 }
 
+// ListSessions serves the operator's reads (step-360): every live session of one account with the count
+// its quota sees, or a page of all live sessions.
+func (s *Server) ListSessions(ctx context.Context, req *pb.ListSessionsRequest) (*pb.ListSessionsResponse, error) {
+	if req.GetAccountId() != "" {
+		sessions, active, err := s.reg.ListAccount(ctx, req.GetAccountId())
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "list sessions: %v", err)
+		}
+		//nolint:gosec // G115: active is bounded by max_sessions, a small operator-set ceiling.
+		return &pb.ListSessionsResponse{Sessions: toPB(sessions), Active: int32(active)}, nil
+	}
+	if req.GetLimit() < 1 {
+		return nil, status.Error(codes.InvalidArgument, "list sessions: limit must be at least 1")
+	}
+	sessions, next, err := s.reg.List(ctx, req.GetCursor(), int(req.GetLimit()))
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "list sessions: %v", err)
+	}
+	return &pb.ListSessionsResponse{Sessions: toPB(sessions), NextCursor: next}, nil
+}
+
+func toPB(sessions []Session) []*pb.Session {
+	out := make([]*pb.Session, len(sessions))
+	for i, s := range sessions {
+		out[i] = &pb.Session{
+			AccountId: s.AccountID, SystemId: s.SystemID, PodId: s.PodID, BindId: s.BindID,
+			BindType: pbBindTypes[s.BindType], RemoteAddr: s.RemoteAddr,
+			//nolint:gosec // G115: a window is a small per-session setting.
+			WindowSize: int32(s.WindowSize), ConnectedAtUnixMs: s.ConnectedAt.UnixMilli(),
+		}
+	}
+	return out
+}
+
+var pbBindTypes = map[string]pb.BindType{"tx": pb.BindType_BIND_TYPE_TX, "rx": pb.BindType_BIND_TYPE_RX, "trx": pb.BindType_BIND_TYPE_TRX}
+
+func bindTypeName(t pb.BindType) string {
+	for name, v := range pbBindTypes {
+		if v == t {
+			return name
+		}
+	}
+	return ""
+}
+
 // disconnectScope maps the wire scope to the domain scope, rejecting the unspecified (zero) value so
 // a malformed request can never fan out to every session.
 func disconnectScope(s pb.DisconnectScope) (disconnect.Scope, error) {
@@ -157,8 +218,10 @@ func disconnectScope(s pb.DisconnectScope) (disconnect.Scope, error) {
 		return disconnect.ScopeAccount, nil
 	case pb.DisconnectScope_DISCONNECT_SCOPE_CUSTOMER:
 		return disconnect.ScopeCustomer, nil
+	case pb.DisconnectScope_DISCONNECT_SCOPE_SESSION:
+		return disconnect.ScopeSession, nil
 	default:
-		return "", status.Errorf(codes.InvalidArgument, "disconnect: scope must be account or customer, got %v", s)
+		return "", status.Errorf(codes.InvalidArgument, "disconnect: scope must be account, customer or session, got %v", s)
 	}
 }
 

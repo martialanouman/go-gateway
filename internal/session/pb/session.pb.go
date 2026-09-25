@@ -36,6 +36,8 @@ const (
 	DisconnectScope_DISCONNECT_SCOPE_UNSPECIFIED DisconnectScope = 0
 	DisconnectScope_DISCONNECT_SCOPE_ACCOUNT     DisconnectScope = 1
 	DisconnectScope_DISCONNECT_SCOPE_CUSTOMER    DisconnectScope = 2
+	// SESSION targets one bind by its bind_id. Disconnect answers NotFound when no such bind is live.
+	DisconnectScope_DISCONNECT_SCOPE_SESSION DisconnectScope = 3
 )
 
 // Enum value maps for DisconnectScope.
@@ -44,11 +46,13 @@ var (
 		0: "DISCONNECT_SCOPE_UNSPECIFIED",
 		1: "DISCONNECT_SCOPE_ACCOUNT",
 		2: "DISCONNECT_SCOPE_CUSTOMER",
+		3: "DISCONNECT_SCOPE_SESSION",
 	}
 	DisconnectScope_value = map[string]int32{
 		"DISCONNECT_SCOPE_UNSPECIFIED": 0,
 		"DISCONNECT_SCOPE_ACCOUNT":     1,
 		"DISCONNECT_SCOPE_CUSTOMER":    2,
+		"DISCONNECT_SCOPE_SESSION":     3,
 	}
 )
 
@@ -255,9 +259,15 @@ type Session struct {
 	// address, not an identity: pod_id stays the stable name the pod is traced by. Empty on a Lookup
 	// means the pod has not published one — the caller skips that bind and falls back to the webhook,
 	// which is the only state a rollout can briefly produce.
-	PodAddr       string `protobuf:"bytes,6,opt,name=pod_addr,json=podAddr,proto3" json:"pod_addr,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	PodAddr string `protobuf:"bytes,6,opt,name=pod_addr,json=podAddr,proto3" json:"pod_addr,omitempty"`
+	// remote_addr, window_size and connected_at describe the bind to an operator (step-360). The pod sends
+	// the first two at bind time; the registry stamps connected_at on the first bind, never on a refresh.
+	// Lookup leaves them unset.
+	RemoteAddr        string `protobuf:"bytes,7,opt,name=remote_addr,json=remoteAddr,proto3" json:"remote_addr,omitempty"`
+	WindowSize        int32  `protobuf:"varint,8,opt,name=window_size,json=windowSize,proto3" json:"window_size,omitempty"`
+	ConnectedAtUnixMs int64  `protobuf:"varint,9,opt,name=connected_at_unix_ms,json=connectedAtUnixMs,proto3" json:"connected_at_unix_ms,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *Session) Reset() {
@@ -330,6 +340,27 @@ func (x *Session) GetPodAddr() string {
 		return x.PodAddr
 	}
 	return ""
+}
+
+func (x *Session) GetRemoteAddr() string {
+	if x != nil {
+		return x.RemoteAddr
+	}
+	return ""
+}
+
+func (x *Session) GetWindowSize() int32 {
+	if x != nil {
+		return x.WindowSize
+	}
+	return 0
+}
+
+func (x *Session) GetConnectedAtUnixMs() int64 {
+	if x != nil {
+		return x.ConnectedAtUnixMs
+	}
+	return 0
 }
 
 // BindRequest carries the session to register plus the account's max_sessions ceiling, so the registry
@@ -726,6 +757,130 @@ func (x *DeliverResponse) GetDelivered() bool {
 	return false
 }
 
+// ListSessionsRequest selects one account's sessions (account_id set: all of them, cursor and limit
+// ignored), or a page of every live session after cursor, a bind_id ("" = the first page).
+type ListSessionsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	AccountId     string                 `protobuf:"bytes,1,opt,name=account_id,json=accountId,proto3" json:"account_id,omitempty"`
+	Cursor        string                 `protobuf:"bytes,2,opt,name=cursor,proto3" json:"cursor,omitempty"`
+	Limit         int32                  `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListSessionsRequest) Reset() {
+	*x = ListSessionsRequest{}
+	mi := &file_session_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListSessionsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListSessionsRequest) ProtoMessage() {}
+
+func (x *ListSessionsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_session_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListSessionsRequest.ProtoReflect.Descriptor instead.
+func (*ListSessionsRequest) Descriptor() ([]byte, []int) {
+	return file_session_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *ListSessionsRequest) GetAccountId() string {
+	if x != nil {
+		return x.AccountId
+	}
+	return ""
+}
+
+func (x *ListSessionsRequest) GetCursor() string {
+	if x != nil {
+		return x.Cursor
+	}
+	return ""
+}
+
+func (x *ListSessionsRequest) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+// ListSessionsResponse carries the sessions in bind_id order. next_cursor is "" on the last page;
+// active is the account's live count as its max_sessions quota sees it (account_id requests only).
+type ListSessionsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Sessions      []*Session             `protobuf:"bytes,1,rep,name=sessions,proto3" json:"sessions,omitempty"`
+	NextCursor    string                 `protobuf:"bytes,2,opt,name=next_cursor,json=nextCursor,proto3" json:"next_cursor,omitempty"`
+	Active        int32                  `protobuf:"varint,3,opt,name=active,proto3" json:"active,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListSessionsResponse) Reset() {
+	*x = ListSessionsResponse{}
+	mi := &file_session_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListSessionsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListSessionsResponse) ProtoMessage() {}
+
+func (x *ListSessionsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_session_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListSessionsResponse.ProtoReflect.Descriptor instead.
+func (*ListSessionsResponse) Descriptor() ([]byte, []int) {
+	return file_session_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *ListSessionsResponse) GetSessions() []*Session {
+	if x != nil {
+		return x.Sessions
+	}
+	return nil
+}
+
+func (x *ListSessionsResponse) GetNextCursor() string {
+	if x != nil {
+		return x.NextCursor
+	}
+	return ""
+}
+
+func (x *ListSessionsResponse) GetActive() int32 {
+	if x != nil {
+		return x.Active
+	}
+	return 0
+}
+
 var File_session_proto protoreflect.FileDescriptor
 
 const file_session_proto_rawDesc = "" +
@@ -736,7 +891,7 @@ const file_session_proto_rawDesc = "" +
 	"\x02id\x18\x02 \x01(\tR\x02id\x12\x16\n" +
 	"\x06reason\x18\x03 \x01(\tR\x06reason\"2\n" +
 	"\x12DisconnectResponse\x12\x1c\n" +
-	"\tpublished\x18\x01 \x01(\bR\tpublished\"\xc0\x01\n" +
+	"\tpublished\x18\x01 \x01(\bR\tpublished\"\xb3\x02\n" +
 	"\aSession\x12\x1d\n" +
 	"\n" +
 	"account_id\x18\x01 \x01(\tR\taccountId\x12\x1b\n" +
@@ -744,7 +899,12 @@ const file_session_proto_rawDesc = "" +
 	"\x06pod_id\x18\x03 \x01(\tR\x05podId\x12\x17\n" +
 	"\abind_id\x18\x04 \x01(\tR\x06bindId\x12.\n" +
 	"\tbind_type\x18\x05 \x01(\x0e2\x11.session.BindTypeR\bbindType\x12\x19\n" +
-	"\bpod_addr\x18\x06 \x01(\tR\apodAddr\"\\\n" +
+	"\bpod_addr\x18\x06 \x01(\tR\apodAddr\x12\x1f\n" +
+	"\vremote_addr\x18\a \x01(\tR\n" +
+	"remoteAddr\x12\x1f\n" +
+	"\vwindow_size\x18\b \x01(\x05R\n" +
+	"windowSize\x12/\n" +
+	"\x14connected_at_unix_ms\x18\t \x01(\x03R\x11connectedAtUnixMs\"\\\n" +
 	"\vBindRequest\x12*\n" +
 	"\asession\x18\x01 \x01(\v2\x10.session.SessionR\asession\x12!\n" +
 	"\fmax_sessions\x18\x02 \x01(\x05R\vmaxSessions\"S\n" +
@@ -766,23 +926,35 @@ const file_session_proto_rawDesc = "" +
 	"\abind_id\x18\x01 \x01(\tR\x06bindId\x12\x10\n" +
 	"\x03pdu\x18\x02 \x01(\fR\x03pdu\"/\n" +
 	"\x0fDeliverResponse\x12\x1c\n" +
-	"\tdelivered\x18\x01 \x01(\bR\tdelivered*p\n" +
+	"\tdelivered\x18\x01 \x01(\bR\tdelivered\"b\n" +
+	"\x13ListSessionsRequest\x12\x1d\n" +
+	"\n" +
+	"account_id\x18\x01 \x01(\tR\taccountId\x12\x16\n" +
+	"\x06cursor\x18\x02 \x01(\tR\x06cursor\x12\x14\n" +
+	"\x05limit\x18\x03 \x01(\x05R\x05limit\"}\n" +
+	"\x14ListSessionsResponse\x12,\n" +
+	"\bsessions\x18\x01 \x03(\v2\x10.session.SessionR\bsessions\x12\x1f\n" +
+	"\vnext_cursor\x18\x02 \x01(\tR\n" +
+	"nextCursor\x12\x16\n" +
+	"\x06active\x18\x03 \x01(\x05R\x06active*\x8e\x01\n" +
 	"\x0fDisconnectScope\x12 \n" +
 	"\x1cDISCONNECT_SCOPE_UNSPECIFIED\x10\x00\x12\x1c\n" +
 	"\x18DISCONNECT_SCOPE_ACCOUNT\x10\x01\x12\x1d\n" +
-	"\x19DISCONNECT_SCOPE_CUSTOMER\x10\x02*\\\n" +
+	"\x19DISCONNECT_SCOPE_CUSTOMER\x10\x02\x12\x1c\n" +
+	"\x18DISCONNECT_SCOPE_SESSION\x10\x03*\\\n" +
 	"\bBindType\x12\x19\n" +
 	"\x15BIND_TYPE_UNSPECIFIED\x10\x00\x12\x10\n" +
 	"\fBIND_TYPE_TX\x10\x01\x12\x10\n" +
 	"\fBIND_TYPE_RX\x10\x02\x12\x11\n" +
-	"\rBIND_TYPE_TRX\x10\x032\xc1\x02\n" +
+	"\rBIND_TYPE_TRX\x10\x032\x8e\x03\n" +
 	"\x0fSessionRegistry\x123\n" +
 	"\x04Bind\x12\x14.session.BindRequest\x1a\x15.session.BindResponse\x129\n" +
 	"\x06Unbind\x12\x16.session.UnbindRequest\x1a\x17.session.UnbindResponse\x129\n" +
 	"\x06Lookup\x12\x16.session.LookupRequest\x1a\x17.session.LookupResponse\x12<\n" +
 	"\aDeliver\x12\x17.session.DeliverRequest\x1a\x18.session.DeliverResponse\x12E\n" +
 	"\n" +
-	"Disconnect\x12\x1a.session.DisconnectRequest\x1a\x1b.session.DisconnectResponseB=Z;github.com/martialanouman/go-gateway/internal/session/pb;pbb\x06proto3"
+	"Disconnect\x12\x1a.session.DisconnectRequest\x1a\x1b.session.DisconnectResponse\x12K\n" +
+	"\fListSessions\x12\x1c.session.ListSessionsRequest\x1a\x1d.session.ListSessionsResponseB=Z;github.com/martialanouman/go-gateway/internal/session/pb;pbb\x06proto3"
 
 var (
 	file_session_proto_rawDescOnce sync.Once
@@ -797,42 +969,47 @@ func file_session_proto_rawDescGZIP() []byte {
 }
 
 var file_session_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_session_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_session_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_session_proto_goTypes = []any{
-	(DisconnectScope)(0),       // 0: session.DisconnectScope
-	(BindType)(0),              // 1: session.BindType
-	(*DisconnectRequest)(nil),  // 2: session.DisconnectRequest
-	(*DisconnectResponse)(nil), // 3: session.DisconnectResponse
-	(*Session)(nil),            // 4: session.Session
-	(*BindRequest)(nil),        // 5: session.BindRequest
-	(*BindResponse)(nil),       // 6: session.BindResponse
-	(*UnbindRequest)(nil),      // 7: session.UnbindRequest
-	(*UnbindResponse)(nil),     // 8: session.UnbindResponse
-	(*LookupRequest)(nil),      // 9: session.LookupRequest
-	(*LookupResponse)(nil),     // 10: session.LookupResponse
-	(*DeliverRequest)(nil),     // 11: session.DeliverRequest
-	(*DeliverResponse)(nil),    // 12: session.DeliverResponse
+	(DisconnectScope)(0),         // 0: session.DisconnectScope
+	(BindType)(0),                // 1: session.BindType
+	(*DisconnectRequest)(nil),    // 2: session.DisconnectRequest
+	(*DisconnectResponse)(nil),   // 3: session.DisconnectResponse
+	(*Session)(nil),              // 4: session.Session
+	(*BindRequest)(nil),          // 5: session.BindRequest
+	(*BindResponse)(nil),         // 6: session.BindResponse
+	(*UnbindRequest)(nil),        // 7: session.UnbindRequest
+	(*UnbindResponse)(nil),       // 8: session.UnbindResponse
+	(*LookupRequest)(nil),        // 9: session.LookupRequest
+	(*LookupResponse)(nil),       // 10: session.LookupResponse
+	(*DeliverRequest)(nil),       // 11: session.DeliverRequest
+	(*DeliverResponse)(nil),      // 12: session.DeliverResponse
+	(*ListSessionsRequest)(nil),  // 13: session.ListSessionsRequest
+	(*ListSessionsResponse)(nil), // 14: session.ListSessionsResponse
 }
 var file_session_proto_depIdxs = []int32{
 	0,  // 0: session.DisconnectRequest.scope:type_name -> session.DisconnectScope
 	1,  // 1: session.Session.bind_type:type_name -> session.BindType
 	4,  // 2: session.BindRequest.session:type_name -> session.Session
 	4,  // 3: session.LookupResponse.sessions:type_name -> session.Session
-	5,  // 4: session.SessionRegistry.Bind:input_type -> session.BindRequest
-	7,  // 5: session.SessionRegistry.Unbind:input_type -> session.UnbindRequest
-	9,  // 6: session.SessionRegistry.Lookup:input_type -> session.LookupRequest
-	11, // 7: session.SessionRegistry.Deliver:input_type -> session.DeliverRequest
-	2,  // 8: session.SessionRegistry.Disconnect:input_type -> session.DisconnectRequest
-	6,  // 9: session.SessionRegistry.Bind:output_type -> session.BindResponse
-	8,  // 10: session.SessionRegistry.Unbind:output_type -> session.UnbindResponse
-	10, // 11: session.SessionRegistry.Lookup:output_type -> session.LookupResponse
-	12, // 12: session.SessionRegistry.Deliver:output_type -> session.DeliverResponse
-	3,  // 13: session.SessionRegistry.Disconnect:output_type -> session.DisconnectResponse
-	9,  // [9:14] is the sub-list for method output_type
-	4,  // [4:9] is the sub-list for method input_type
-	4,  // [4:4] is the sub-list for extension type_name
-	4,  // [4:4] is the sub-list for extension extendee
-	0,  // [0:4] is the sub-list for field type_name
+	4,  // 4: session.ListSessionsResponse.sessions:type_name -> session.Session
+	5,  // 5: session.SessionRegistry.Bind:input_type -> session.BindRequest
+	7,  // 6: session.SessionRegistry.Unbind:input_type -> session.UnbindRequest
+	9,  // 7: session.SessionRegistry.Lookup:input_type -> session.LookupRequest
+	11, // 8: session.SessionRegistry.Deliver:input_type -> session.DeliverRequest
+	2,  // 9: session.SessionRegistry.Disconnect:input_type -> session.DisconnectRequest
+	13, // 10: session.SessionRegistry.ListSessions:input_type -> session.ListSessionsRequest
+	6,  // 11: session.SessionRegistry.Bind:output_type -> session.BindResponse
+	8,  // 12: session.SessionRegistry.Unbind:output_type -> session.UnbindResponse
+	10, // 13: session.SessionRegistry.Lookup:output_type -> session.LookupResponse
+	12, // 14: session.SessionRegistry.Deliver:output_type -> session.DeliverResponse
+	3,  // 15: session.SessionRegistry.Disconnect:output_type -> session.DisconnectResponse
+	14, // 16: session.SessionRegistry.ListSessions:output_type -> session.ListSessionsResponse
+	11, // [11:17] is the sub-list for method output_type
+	5,  // [5:11] is the sub-list for method input_type
+	5,  // [5:5] is the sub-list for extension type_name
+	5,  // [5:5] is the sub-list for extension extendee
+	0,  // [0:5] is the sub-list for field type_name
 }
 
 func init() { file_session_proto_init() }
@@ -846,7 +1023,7 @@ func file_session_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_session_proto_rawDesc), len(file_session_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   11,
+			NumMessages:   13,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -6,12 +6,14 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	"github.com/martialanouman/go-gateway/internal/session"
 	"github.com/martialanouman/go-gateway/internal/session/disconnect"
 	"github.com/martialanouman/go-gateway/internal/session/pb"
+	"github.com/martialanouman/go-gateway/internal/testutil/redistest"
 )
 
 // fakePublisher records what a Server publishes, so a Disconnect test needs no Redis. The Disconnect
@@ -126,5 +128,33 @@ func TestServer_DisconnectPublishErrorIsInternal(t *testing.T) {
 	})
 	if status.Code(err) != codes.Internal {
 		t.Errorf("code = %v, want Internal", status.Code(err))
+	}
+}
+
+func TestServer_DisconnectPublishesSessionEventForALiveBind(t *testing.T) {
+	rdb := redistest.Client(t)
+	reg := session.NewRegistry(rdb)
+	ctx := context.Background()
+	b := session.Bind{AccountID: uuid.NewString(), PodID: "pod-1", BindID: "bind-" + uuid.NewString()}
+	if _, err := reg.Bind(ctx, b, 1); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	pub := &fakePublisher{}
+
+	if _, err := session.NewServer(reg, pub).Disconnect(ctx, &pb.DisconnectRequest{
+		Scope: pb.DisconnectScope_DISCONNECT_SCOPE_SESSION, Id: b.BindID, Reason: "operator_disconnect",
+	}); err != nil {
+		t.Fatalf("disconnect: %v", err)
+	}
+
+	if len(pub.payloads) != 1 {
+		t.Fatalf("published %d events, want 1", len(pub.payloads))
+	}
+	ev, err := disconnect.Decode(pub.payloads[0])
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if ev != (disconnect.Event{Scope: disconnect.ScopeSession, ID: b.BindID, Reason: "operator_disconnect"}) {
+		t.Fatalf("event = %+v, want a session-scoped order for %s", ev, b.BindID)
 	}
 }

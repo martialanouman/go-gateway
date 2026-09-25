@@ -25,6 +25,9 @@ service SessionRegistry {
   // ceased after the bind (grace lapse, revocation, suspension). The registry fans the order out to
   // every owning pod; the actual socket close happens asynchronously there (step-032).
   rpc Disconnect(DisconnectRequest) returns (DisconnectResponse);
+  // ListSessions pages through the live sessions, or returns every live session of one account, for the
+  // operator (step-360). It is not on the return path: Lookup stays the hot read.
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
 }
 
 // DisconnectScope names what a Disconnect targets. A customer-wide scope suspends every account of a
@@ -33,6 +36,8 @@ enum DisconnectScope {
   DISCONNECT_SCOPE_UNSPECIFIED = 0;
   DISCONNECT_SCOPE_ACCOUNT = 1;
   DISCONNECT_SCOPE_CUSTOMER = 2;
+  // SESSION targets one bind by its bind_id. Disconnect answers NotFound when no such bind is live.
+  DISCONNECT_SCOPE_SESSION = 3;
 }
 
 // DisconnectRequest names the account or customer whose sessions must be closed. id is the
@@ -72,6 +77,12 @@ message Session {
   // means the pod has not published one — the caller skips that bind and falls back to the webhook,
   // which is the only state a rollout can briefly produce.
   string pod_addr = 6;
+  // remote_addr, window_size and connected_at describe the bind to an operator (step-360). The pod sends
+  // the first two at bind time; the registry stamps connected_at on the first bind, never on a refresh.
+  // Lookup leaves them unset.
+  string remote_addr = 7;
+  int32 window_size = 8;
+  int64 connected_at_unix_ms = 9;
 }
 
 // BindRequest carries the session to register plus the account's max_sessions ceiling, so the registry
@@ -118,4 +129,20 @@ message DeliverRequest {
 // DeliverResponse reports whether the PDU reached the owning bind.
 message DeliverResponse {
   bool delivered = 1;
+}
+
+// ListSessionsRequest selects one account's sessions (account_id set: all of them, cursor and limit
+// ignored), or a page of every live session after cursor, a bind_id ("" = the first page).
+message ListSessionsRequest {
+  string account_id = 1;
+  string cursor = 2;
+  int32 limit = 3;
+}
+
+// ListSessionsResponse carries the sessions in bind_id order. next_cursor is "" on the last page;
+// active is the account's live count as its max_sessions quota sees it (account_id requests only).
+message ListSessionsResponse {
+  repeated Session sessions = 1;
+  string next_cursor = 2;
+  int32 active = 3;
 }

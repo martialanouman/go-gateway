@@ -182,3 +182,56 @@ func TestBindLookupCarriesPodAddrAcrossGRPC(t *testing.T) {
 			"every MO falls through to the webhook", got[0].GetPodAddr(), sess.GetPodAddr())
 	}
 }
+
+func TestListSessionsDescribesEachBindAcrossGRPC(t *testing.T) {
+	client := newTestClient(t)
+	ctx := context.Background()
+	account := uuid.NewString()
+
+	sess := newSession(account)
+	sess.RemoteAddr = "198.51.100.4"
+	sess.WindowSize = 12
+	if _, err := client.Bind(ctx, &pb.BindRequest{Session: sess, MaxSessions: 2}); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+
+	resp, err := client.ListSessions(ctx, &pb.ListSessionsRequest{AccountId: account})
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+	if resp.GetActive() != 1 || len(resp.GetSessions()) != 1 {
+		t.Fatalf("active=%d sessions=%d, want 1 and 1", resp.GetActive(), len(resp.GetSessions()))
+	}
+	got := resp.GetSessions()[0]
+	if got.GetBindId() != sess.GetBindId() || got.GetSystemId() != "sys-1" || got.GetPodId() != "pod-1" ||
+		got.GetBindType() != pb.BindType_BIND_TYPE_TRX || got.GetRemoteAddr() != "198.51.100.4" ||
+		got.GetWindowSize() != 12 || got.GetConnectedAtUnixMs() == 0 {
+		t.Fatalf("listed session = %+v, want the bind as declared, stamped", got)
+	}
+
+	page, err := client.ListSessions(ctx, &pb.ListSessionsRequest{Cursor: sess.GetBindId()[:len(sess.GetBindId())-1], Limit: 1})
+	if err != nil {
+		t.Fatalf("list page: %v", err)
+	}
+	if len(page.GetSessions()) != 1 || page.GetSessions()[0].GetBindId() != sess.GetBindId() {
+		t.Fatalf("page = %+v, want the bind just after the cursor", page.GetSessions())
+	}
+}
+
+func TestListSessionsRefusesAPageWithoutALimit(t *testing.T) {
+	client := newTestClient(t)
+	_, err := client.ListSessions(context.Background(), &pb.ListSessionsRequest{})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("list without limit: code=%v, want InvalidArgument", status.Code(err))
+	}
+}
+
+func TestDisconnectSessionAnswersNotFoundForAnUnknownBind(t *testing.T) {
+	client := newTestClient(t)
+	_, err := client.Disconnect(context.Background(), &pb.DisconnectRequest{
+		Scope: pb.DisconnectScope_DISCONNECT_SCOPE_SESSION, Id: "bind-" + uuid.NewString(), Reason: "operator_disconnect",
+	})
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("disconnect unknown session: code=%v, want NotFound", status.Code(err))
+	}
+}

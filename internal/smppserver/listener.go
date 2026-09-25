@@ -96,6 +96,7 @@ type connState struct {
 	customerID      uuid.UUID
 	systemID        string
 	bindID          string
+	clientIP        string
 	mode            session.BindMode
 	maxSessions     int32
 	querySMEnabled  bool
@@ -119,8 +120,8 @@ func (l *Listener) serve(ctx context.Context, nc net.Conn) {
 	defer l.wg.Done()
 	defer func() { _ = nc.Close() }()
 
-	st := &connState{bindID: uuid.NewString()}
 	clientIP := remoteIP(nc)
+	st := &connState{bindID: uuid.NewString(), clientIP: clientIP}
 
 	// onBound runs on a successful bind, inside Serve. It records the live session in the pod-local
 	// registry (so a force-disconnect can reach this socket) and, for a grace-authenticated bind, arms
@@ -214,7 +215,7 @@ func (l *Listener) onBind(ctx context.Context, st *connState, clientIP string, o
 			return session.BindResult{Status: cmdStatus}
 		}
 
-		sess := l.session(cred.AccountID.String(), req.SystemID, st.bindID, req.Mode)
+		sess := l.session(cred.AccountID.String(), req.SystemID, st, req.Mode)
 		resp, err := l.registry.Bind(bctx, &registrypb.BindRequest{Session: sess, MaxSessions: cred.MaxSessions})
 		if err != nil {
 			cmdStatus := registryBindStatus(err)
@@ -405,6 +406,8 @@ func scopeMatches(ls *liveSession, scope disconnect.Scope, id string) bool {
 		return ls.accountID.String() == id
 	case disconnect.ScopeCustomer:
 		return ls.customerID.String() == id
+	case disconnect.ScopeSession:
+		return ls.bindID == id
 	default:
 		return false
 	}
@@ -466,14 +469,17 @@ func (l *Listener) startRefresh(ctx context.Context, st *connState, mode session
 // the registry expires an address with the session TTL, and the re-Bind is the only thing that renews
 // it. A refresh without it would let the address lapse under a live session, turning the SMPP return
 // channel silently into webhook-only a minute after the bind (step-302).
-func (l *Listener) session(accountID, systemID, bindID string, mode session.BindMode) *registrypb.Session {
+func (l *Listener) session(accountID, systemID string, st *connState, mode session.BindMode) *registrypb.Session {
 	return &registrypb.Session{
-		AccountId: accountID,
-		SystemId:  systemID,
-		PodId:     l.opts.PodID,
-		PodAddr:   l.opts.PodAddr,
-		BindId:    bindID,
-		BindType:  pbBindType(mode),
+		AccountId:  accountID,
+		SystemId:   systemID,
+		PodId:      l.opts.PodID,
+		PodAddr:    l.opts.PodAddr,
+		BindId:     st.bindID,
+		BindType:   pbBindType(mode),
+		RemoteAddr: st.clientIP,
+		//nolint:gosec // G115: the inbound window is a small per-bind setting, never near int32.
+		WindowSize: int32(l.opts.InboundWindow),
 	}
 }
 
@@ -495,7 +501,7 @@ func (l *Listener) refreshLoop(ctx context.Context, st *connState, mode session.
 		case <-ticker.C:
 			rctx, cancel := context.WithTimeout(ctx, registryCallTimeout)
 			_, err := l.registry.Bind(rctx, &registrypb.BindRequest{
-				Session:     l.session(st.accountID.String(), st.systemID, st.bindID, mode),
+				Session:     l.session(st.accountID.String(), st.systemID, st, mode),
 				MaxSessions: st.maxSessions,
 			})
 			cancel()
