@@ -266,3 +266,35 @@ func clamp(d, lo, hi time.Duration) time.Duration {
 	}
 	return d
 }
+
+// SenderPins remembers, per multipart message, the sender its first accepted segment went out under
+// (§6.16, step-350). A handset reassembles a concatenated SMS only under one originator, so every later
+// segment — on this connector or one it is rerouted to, before or after a reload of the rules — reuses
+// it instead of evaluating the rules again. An entry lives as long as a receipt could: past the message's
+// validity no segment is sent any more.
+type SenderPins struct{ rdb *redis.Client }
+
+// NewSenderPins returns the sender pins backed by rdb.
+func NewSenderPins(rdb *redis.Client) *SenderPins { return &SenderPins{rdb: rdb} }
+
+func pinKey(messageID uuid.UUID) string { return "rewrite:{" + messageID.String() + "}" }
+
+// Get returns the pinned sender of a message, found=false when none is.
+func (p *SenderPins) Get(ctx context.Context, messageID uuid.UUID) (string, bool, error) {
+	sender, err := p.rdb.Get(ctx, pinKey(messageID)).Result()
+	if errors.Is(err, redis.Nil) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("dlrmap: read sender pin %s: %w", messageID, err)
+	}
+	return sender, true, nil
+}
+
+// Pin records sender for the message unless one is already pinned: the first segment on the wire wins.
+func (p *SenderPins) Pin(ctx context.Context, messageID uuid.UUID, sender string, validityPeriod *string) error {
+	if err := p.rdb.SetArgs(ctx, pinKey(messageID), sender, redis.SetArgs{Mode: "NX", TTL: ttlForValidity(validityPeriod)}).Err(); err != nil && !errors.Is(err, redis.Nil) {
+		return fmt.Errorf("dlrmap: pin sender %s: %w", messageID, err)
+	}
+	return nil
+}

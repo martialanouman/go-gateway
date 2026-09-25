@@ -144,7 +144,7 @@ func (s *Service) processOne(ctx context.Context, b *bind, bindIndex int, rec ka
 	// (§6.16). It changes a copy: routed stays the client's message, which is what a reroute, a
 	// redelivery or a dead-letter must carry on.
 	sent := routed
-	sent.From = s.deps.Rewriter.Rewrite(routed.ConnectorID, routed.AccountID, routed.CustomerID, routed.From, routed.To, routed.MessageID)
+	sent.From = s.senderFor(ctx, routed)
 
 	resp, err := b.Submit(ctx, buildSubmit(sent))
 	if err != nil {
@@ -310,6 +310,7 @@ func (s *Service) settleOutcome(ctx context.Context, span trace.Span, bindIndex 
 		originalFrom = routed.From
 	}
 	s.recordDLRMapping(ctx, sent, originalFrom, resp)
+	s.pinSender(ctx, sent, resp)
 
 	// Settle the reservation on the terminal outcome (step-146): capture a sent message, release a
 	// permanently-failed one. Both FAIL OPEN — neither returns an error — so a billing fault can never turn
@@ -376,4 +377,37 @@ func (s *Service) stream(fn func(StreamEmitter)) {
 		return
 	}
 	fn(s.deps.Stream)
+}
+
+// senderFor is the sender a segment goes out under: the one its message is already on the wire with
+// when it spans several segments, the rules' answer otherwise. A handset reassembles a concatenated SMS
+// only under one originator, and that outweighs the rules of a connector a later segment was rerouted to:
+// a segment that connector refuses is a visible failure, an SMS split across two senders is not.
+func (s *Service) senderFor(ctx context.Context, r pipeline.RoutedMT) string {
+	if r.SegmentCount > 1 {
+		pinned, found, err := s.deps.SenderPins.Get(ctx, r.MessageID)
+		if err != nil {
+			// Fail open, like the DLR mapping: a Redis fault must never block or double a send.
+			s.deps.Logger.WarnContext(ctx, "connector: sender pin unreadable, applying the rules",
+				"message_id", r.MessageID, "connector_id", r.ConnectorID, "err", err)
+		}
+		if found {
+			return pinned
+		}
+	}
+	return s.deps.Rewriter.Rewrite(r.ConnectorID, r.AccountID, r.CustomerID, r.From, r.To, r.MessageID)
+}
+
+// pinSender records the sender a multipart message's first accepted segment went out under. Only an
+// accepted one: a refused segment may send the whole message on under another connector's rules.
+// ponytail: two segments submitted at the same instant on two connectors can both read no pin; a
+// Lua read-or-set would close that window if it ever shows in the CDR.
+func (s *Service) pinSender(ctx context.Context, sent pipeline.RoutedMT, resp smpp.PDU) {
+	if sent.SegmentCount <= 1 || resp.Status != smpp.StatusOK {
+		return
+	}
+	if err := s.deps.SenderPins.Pin(ctx, sent.MessageID, sent.From, sent.ValidityPeriod); err != nil {
+		s.deps.Logger.WarnContext(ctx, "connector: sender pin write failed, a later segment may go out under another sender",
+			"message_id", sent.MessageID, "connector_id", sent.ConnectorID, "err", err)
+	}
 }

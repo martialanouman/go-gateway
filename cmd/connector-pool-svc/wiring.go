@@ -186,6 +186,7 @@ func newPoolApp(ctx context.Context, cfg config.Config, bindEnv connectorEnv, lo
 		CancelFlags:    cancel.NewRedisFlags(st.rdb),
 		DLRMap:         dlrmap.NewRedisMap(st.rdb),
 		Rewriter:       a.rewriter,
+		SenderPins:     dlrmap.NewSenderPins(st.rdb),
 		Producer:       st.producer,
 		Breaker:        breakerAgg,
 		BreakerState:   breakerStateReader{rdb: st.rdb},

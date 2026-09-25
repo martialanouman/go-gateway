@@ -2,6 +2,7 @@ package connectorpool_test
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 
@@ -147,5 +148,120 @@ func TestRefusedRewrittenSubmitKeepsTheOriginal(t *testing.T) {
 	run := runRewrite(t, "INFO", r, fakesmsc.SubmitFailed())
 	if out := run.out.only(t); out.Status != "failed" || out.From != "INFO" || out.OriginalFrom != r.From {
 		t.Errorf("outcome = %s from %q original %q, want failed from INFO original %q", out.Status, out.From, out.OriginalFrom, r.From)
+	}
+}
+
+// fakePins is an in-memory SenderPins; getErr drives the Redis-down path.
+type fakePins struct {
+	mu     sync.Mutex
+	pins   map[uuid.UUID]string
+	gets   int
+	getErr error
+}
+
+func (f *fakePins) Get(_ context.Context, messageID uuid.UUID) (string, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.gets++
+	if f.getErr != nil {
+		return "", false, f.getErr
+	}
+	s, ok := f.pins[messageID]
+	return s, ok, nil
+}
+
+func (f *fakePins) Pin(_ context.Context, messageID uuid.UUID, sender string, _ *string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.pins[messageID]; !ok {
+		f.pins[messageID] = sender
+	}
+	return nil
+}
+
+func runPinned(t *testing.T, to string, pins *fakePins, r pipeline.RoutedMT, resp fakesmsc.Resp) (smpp.SubmitSM, *fakeRewriter) {
+	t.Helper()
+	var wire smpp.SubmitSM
+	smsc := fakesmsc.Start(t, fakesmsc.Config{OnSubmit: func(sm smpp.SubmitSM) fakesmsc.Resp {
+		wire = sm
+		return resp
+	}})
+	rec, err := pipeline.EncodeRouted(r)
+	if err != nil {
+		t.Fatalf("encode routed: %v", err)
+	}
+	rw := &fakeRewriter{to: to}
+	svc := connectorpool.New(connectorpool.Deps{
+		Consumer:   &fakeConsumer{records: []kafka.Record{rec}},
+		CDR:        &fakeCDR{},
+		Producer:   &outcomeProducer{},
+		Rewriter:   rw,
+		SenderPins: pins,
+		Bind:       poolBind(smsc.Addr(), 1),
+		Tracer:     observability.Tracer(otelrec.New(t).Provider(), "connector-pool"),
+	})
+	if err := svc.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	return wire, rw
+}
+
+func multipart(seq int) pipeline.RoutedMT {
+	r := routed()
+	r.SegmentSeq, r.SegmentCount = seq, 2
+	return r
+}
+
+// A segment whose message already has a sender on the wire takes it, whatever this connector's rules
+// say: a handset reassembles a concatenated SMS only under one originator.
+func TestLaterSegmentTakesTheSenderAlreadyOnTheWire(t *testing.T) {
+	r := multipart(2)
+	pins := &fakePins{pins: map[uuid.UUID]string{r.MessageID: "PINNED"}}
+	wire, rw := runPinned(t, "LOCAL", pins, r, fakesmsc.OK())
+	if wire.SourceAddr != "PINNED" {
+		t.Errorf("wire source = %q, want the pinned PINNED", wire.SourceAddr)
+	}
+	if rw.args != nil {
+		t.Error("the rules were evaluated for a message whose sender is already pinned")
+	}
+}
+
+// The first segment accepted by the SMSC pins the sender it went out under — rewritten or not.
+func TestAcceptedSegmentPinsItsSender(t *testing.T) {
+	for _, to := range []string{"LOCAL", ""} {
+		r := multipart(1)
+		pins := &fakePins{pins: map[uuid.UUID]string{}}
+		wire, _ := runPinned(t, to, pins, r, fakesmsc.OK())
+		if got := pins.pins[r.MessageID]; got != wire.SourceAddr || got == "" {
+			t.Errorf("rewrite %q: pinned %q, want the sender on the wire %q", to, got, wire.SourceAddr)
+		}
+	}
+}
+
+// A refused segment pins nothing: the message may reroute whole, and the next connector's rules apply.
+func TestRefusedSegmentPinsNothing(t *testing.T) {
+	r := multipart(1)
+	pins := &fakePins{pins: map[uuid.UUID]string{}}
+	runPinned(t, "LOCAL", pins, r, fakesmsc.SubmitFailed())
+	if len(pins.pins) != 0 {
+		t.Errorf("a refused segment pinned %v", pins.pins)
+	}
+}
+
+// A single-segment message has nothing to reassemble: no Redis round trip on the bulk of the traffic.
+func TestSingleSegmentMessageSkipsThePins(t *testing.T) {
+	pins := &fakePins{pins: map[uuid.UUID]string{}}
+	runPinned(t, "LOCAL", pins, routed(), fakesmsc.OK())
+	if pins.gets != 0 || len(pins.pins) != 0 {
+		t.Errorf("single segment: %d reads, %d pins; want none", pins.gets, len(pins.pins))
+	}
+}
+
+// Redis down: the segment still leaves, under this connector's rules — never blocked, never doubled.
+func TestUnreadablePinFallsBackToTheRules(t *testing.T) {
+	pins := &fakePins{pins: map[uuid.UUID]string{}, getErr: errors.New("redis down")}
+	wire, _ := runPinned(t, "LOCAL", pins, multipart(2), fakesmsc.OK())
+	if wire.SourceAddr != "LOCAL" {
+		t.Errorf("wire source = %q, want the rules' LOCAL", wire.SourceAddr)
 	}
 }
