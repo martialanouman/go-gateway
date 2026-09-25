@@ -29,6 +29,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
+	"github.com/martialanouman/go-gateway/internal/adminapi"
 	"github.com/martialanouman/go-gateway/internal/auth"
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/configsecrets"
@@ -170,6 +171,7 @@ func TestNewAdminAppBuildsTheWholeGraph(t *testing.T) {
 	if app.http.TLSConfig == nil {
 		t.Error("TLS_ENABLED is true and the wired server carries no TLS configuration")
 	}
+	assertEveryDepWired(t, app.deps)
 
 	// Building the graph must not start serving: both ports are bound by their Run, which only the
 	// supervisor calls.
@@ -178,6 +180,41 @@ func TestNewAdminAppBuildsTheWholeGraph(t *testing.T) {
 			_ = c.Close()
 			t.Errorf("%s port %d is listening after wiring alone", name, port)
 		}
+	}
+}
+
+// optionalDeps are the adminapi.Deps fields a production graph may leave nil, each for a stated reason.
+// Everything else must be wired: a field added to Deps and forgotten here fails the test by default,
+// where it would otherwise surface as a panic on the first request to its route.
+var optionalDeps = map[string]string{
+	"ExportSink": "nil when HTTP_EXPORT_DIR is unset: create-message-export then answers 503 by design",
+}
+
+func assertEveryDepWired(t *testing.T, deps adminapi.Deps) {
+	t.Helper()
+	v := reflect.ValueOf(deps)
+	for i := range v.NumField() {
+		name, field := v.Type().Field(i).Name, v.Field(i)
+		if _, optional := optionalDeps[name]; optional {
+			continue
+		}
+		if unwired(field) {
+			t.Errorf("adminapi.Deps.%s is not wired: its routes would fail at request time", name)
+		}
+	}
+}
+
+// unwired also catches the typed nil — an interface holding a nil pointer — which a plain == nil passes.
+func unwired(v reflect.Value) bool {
+	switch v.Kind() {
+	case reflect.Interface:
+		return v.IsNil() || unwired(v.Elem())
+	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan:
+		return v.IsNil()
+	case reflect.String:
+		return v.Len() == 0
+	default:
+		return false
 	}
 }
 
@@ -329,7 +366,7 @@ func tlsTestConfig(t *testing.T) (config.Config, *tlstest.CA) {
 func adminHTTPServer(t *testing.T, cfg config.Config) *http.Server {
 	t.Helper()
 	st, runners, clients, feed := emptyHTTPDeps()
-	srv, err := newHTTPServer(cfg, silentLogger(), st, nil, runners, clients, feed, nil)
+	srv, err := newHTTPServer(cfg, adminDeps(silentLogger(), st, nil, runners, clients, feed, nil, nil), feed)
 	if err != nil {
 		t.Fatalf("newHTTPServer: %v", err)
 	}
@@ -455,7 +492,7 @@ func TestTheAdminAPIRefusesToBootOnAnUnreadableCertificate(t *testing.T) {
 	cfg.TLS.CertFile = filepath.Join(t.TempDir(), "absent.crt")
 
 	st, runners, clients, feed := emptyHTTPDeps()
-	if _, err := newHTTPServer(cfg, silentLogger(), st, nil, runners, clients, feed, nil); err == nil {
+	if _, err := newHTTPServer(cfg, adminDeps(silentLogger(), st, nil, runners, clients, feed, nil, nil), feed); err == nil {
 		t.Fatal("a missing certificate booted: the failure must be a value, not a handshake at 3am")
 	}
 }
