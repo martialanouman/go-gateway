@@ -1,6 +1,6 @@
 # step-360 — Sessions SMPP : le flux temps réel existe, la lecture REST non
 
-> **Jalon :** Surfaces Admin déclarées au contrat, jamais construites (§6.18 `docs/specification-technique-passerelle-sms.md`) · **Statut :** À FAIRE
+> **Jalon :** Surfaces Admin déclarées au contrat, jamais construites (§6.18 `docs/specification-technique-passerelle-sms.md`) · **Statut :** LIVRÉE
 > **Dépend de :** step-320 (triage) · **Bloque :** —
 
 ## But
@@ -51,9 +51,11 @@ refuser un bind (invariant d).
 
 ## Definition of Done
 
-- [ ] `make check` vert (lint · `test -race` · govulncheck · contrats)
-- [ ] les 3 opérations servies ; la déconnexion vérifiée côté pair, avec motif
-- [ ] `api/collections/admin-api.yaml` synchronisée ; lignes retirées de `deferred` (step-320)
+- [x] `make check` vert (lint · `test -race` · govulncheck · contrats) — 2026-09-25
+- [x] les 3 opérations servies ; la déconnexion vérifiée côté pair, avec motif
+  (`internal/smppserver/operator_disconnect_e2e_test.go` : DELETE HTTP → unbind puis EOF chez le pair
+  visé, le voisin du même compte répond encore)
+- [x] `api/collections/admin-api.yaml` synchronisée ; lignes retirées de `deferred` (step-320)
 
 ## Hors périmètre
 
