@@ -45,6 +45,9 @@ type adminApp struct {
 	retainer *clickhouse.Retainer
 	hub      *realtime.Hub
 	stream   *kafka.Consumer
+	// deps is what the Admin API was built from, held for the same reason as closers: that every field
+	// is wired is a property of this graph, asserted on it rather than on a copy.
+	deps adminapi.Deps
 
 	// closers release what was opened, in reverse order of opening — the exact LIFO the deferred
 	// Closes in run() used to provide. They are named because that order is the property worth
@@ -135,10 +138,12 @@ func newAdminApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (_
 	a.hub = feed.hub
 	a.stream = feed.reader
 
+	a.deps = adminDeps(logger, st, rdb, runners, clients, feed, verifier, exportSink(cfg))
+
 	//nolint:contextcheck // The boot context has no business inside a request handler: the config-change
 	// middleware deliberately detaches the REQUEST context (see PublishConfigChanges) so the announcement
 	// outlives the response.
-	a.http, err = newHTTPServer(cfg, logger, st, rdb, runners, clients, feed, verifier)
+	a.http, err = newHTTPServer(cfg, a.deps, feed)
 	if err != nil {
 		return nil, err
 	}
@@ -338,10 +343,8 @@ func newRealtimeFeed(cfg config.Config) (*realtimeFeed, error) {
 	return &realtimeFeed{hub: realtime.NewHub(realtime.Config{}), reader: reader, quit: make(chan struct{})}, nil
 }
 
-// newHTTPServer assembles the Admin API surface over the control-plane repositories. It binds
-// nothing: the listener opens in runHTTP.
-func newHTTPServer(
-	cfg config.Config,
+// adminDeps assembles the Admin API's collaborators over the control-plane repositories and clients.
+func adminDeps(
 	logger *slog.Logger,
 	st *stores,
 	rdb *goredis.Client,
@@ -349,8 +352,9 @@ func newHTTPServer(
 	clients *controlPlaneClients,
 	feed *realtimeFeed,
 	verifier *auth.StaticVerifier,
-) (*http.Server, error) {
-	router, _ := adminapi.New(adminapi.Deps{
+	sink adminapi.ExportSink,
+) adminapi.Deps {
+	return adminapi.Deps{
 		StreamHub:          feed.hub,
 		Trace:              clickhouse.NewCDRReader(st.ch),
 		Quit:               feed.quit,
@@ -391,7 +395,7 @@ func newHTTPServer(
 		Messages:      clickhouse.NewCDRReader(st.ch),
 		MessageSearch: clickhouse.NewCDRReader(st.ch),
 		ExportJobs:    postgres.NewMessageExportJobRepo(st.pg),
-		ExportSink:    exportSink(cfg),
+		ExportSink:    sink,
 		ContentAudit:  postgres.NewContentAccessAuditRepo(st.pg),
 		AuditLog:      postgres.NewAuditLogRepo(st.pg),
 		GDPRJobs:      postgres.NewGDPREraseJobRepo(st.pg),
@@ -399,11 +403,17 @@ func newHTTPServer(
 		CDREraser:     clickhouse.NewCDREraser(st.ch),
 		Verifier:      verifier,
 		Logger:        logger,
-	})
+	}
+}
+
+// newHTTPServer assembles the Admin API surface over deps. It binds nothing: the listener opens in
+// runHTTP.
+func newHTTPServer(cfg config.Config, deps adminapi.Deps, feed *realtimeFeed) (*http.Server, error) {
+	router, _ := adminapi.New(deps)
 
 	// A single seam announces every control-plane mutation on config:changed; config-sync coalesces
 	// those into a data-plane invalidation (step-105). A publish failure never fails the request.
-	handler := adminapi.PublishConfigChanges(router, redisstore.NewPubSubPublisher(rdb), config.ChannelConfigChanged, logger)
+	handler := adminapi.PublishConfigChanges(router, deps.ConfigChanges, deps.ConfigChannel, deps.Logger)
 
 	srv := &http.Server{
 		Addr:              ":" + strconv.Itoa(cfg.HTTP.Port),
@@ -419,7 +429,7 @@ func newHTTPServer(
 			Cert:     cfg.TLS.CertFile,
 			Key:      cfg.TLS.KeyFile,
 			ClientCA: cfg.TLS.ClientCAFile,
-			Logger:   logger,
+			Logger:   deps.Logger,
 		}.ServerConfig(tlsconf.ServerOptions{
 			AllowedClients: cfg.TLS.AllowedClients,
 			NextProtos:     []string{"http/1.1"},
