@@ -165,6 +165,10 @@ var m1Operations = []opRef{
 	{"stream-metrics", "get", "/admin/stream/metrics"},
 	{"stream-sessions", "get", "/admin/stream/sessions"},
 	{"stream-billing-alerts", "get", "/admin/stream/billing-alerts"},
+
+	{"list-sessions", "get", "/admin/sessions"},
+	{"disconnect-session", "delete", "/admin/sessions/{id}"},
+	{"list-account-sessions", "get", "/admin/smpp-accounts/{id}/sessions"},
 }
 
 // deferredOp annotates an operation the contract declares and nobody serves yet. Both fields are
@@ -178,11 +182,6 @@ type deferredOp struct{ reason, step string }
 // unclassified entry here is a typed client calling a 404. Kept honest by
 // TestEveryContractOperationIsServedOrDeferred, which also forbids overlapping with m1Operations.
 var deferred = map[string]deferredOp{
-
-	// SMPP sessions: stream-sessions is served; the two REST reads and the per-session DELETE are not.
-	"list-sessions":         {"only stream-sessions exists, no REST read", "step-360"},
-	"list-account-sessions": {"only stream-sessions exists, no REST read", "step-360"},
-	"disconnect-session":    {"disconnect is per account, not per session", "step-360"},
 
 	// Content policy (§6.23): customers.content_storage exists; the platform default does not.
 	"get-customer-content-policy":    {"get-customer returns it, no dedicated one", "step-370"},

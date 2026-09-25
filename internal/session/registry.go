@@ -11,8 +11,11 @@ package session
 import (
 	"context"
 	_ "embed"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -37,6 +40,16 @@ var lookupScriptSrc string
 // swept, the slot is freed, and the pod's address goes with it.
 const DefaultSessionTTL = 60 * time.Second
 
+// idxKey is the global index the operator listing pages through (step-360): one member per live bind,
+// all at score 0 so ZRANGE BYLEX orders them by bind_id. It is a pointer, never the truth — a pod that
+// dies leaves its entries behind, and every reader checks them against the account key and purges
+// the dead ones.
+const idxKey = "sess:idx"
+
+// idxSep sorts below every character a bind id holds, so the entries of one bind sit before those of
+// any id it prefixes, and the cursor bound in List skips exactly one bind.
+const idxSep = " "
+
 // memberSep joins pod_id and bind_id into a sorted-set member. pod names and bind ids (UUIDs) never
 // contain it.
 const memberSep = ":"
@@ -52,9 +65,31 @@ type Bind struct {
 	PodID     string
 	BindID    string
 	Addr      string
+
+	SystemID   string
+	BindType   string
+	RemoteAddr string
+	WindowSize int
+}
+
+// Session is a live bind as an operator reads it: the Bind it declared, and when it first bound.
+type Session struct {
+	Bind
+	ConnectedAt time.Time
 }
 
 func (b Bind) member() string { return b.PodID + memberSep + b.BindID }
+
+func (b Bind) idxMember() string { return b.BindID + idxSep + b.AccountID + idxSep + b.PodID }
+
+type bindMeta struct {
+	PodID       string    `json:"pod_id"`
+	SystemID    string    `json:"system_id"`
+	BindType    string    `json:"bind_type"`
+	RemoteAddr  string    `json:"remote_addr"`
+	WindowSize  int       `json:"window_size"`
+	ConnectedAt time.Time `json:"connected_at"`
+}
 
 // Registry is the Redis-backed session registry. Construct it with NewRegistry.
 type Registry struct {
@@ -123,6 +158,9 @@ func NewRegistry(rdb *redis.Client, opts ...Option) *Registry {
 // operation for an account on one slot.
 func key(accountID string) string { return "sess:{" + accountID + "}" }
 
+// metaKey shares key's hash tag, so bind.lua describes a bind in the same atomic step that admits it.
+func metaKey(accountID string) string { return key(accountID) + ":meta" }
+
 // podKey holds one pod's dialable gRPC address (step-302). It is written by its own command rather than
 // as a second KEYS entry of bind.lua, because bind.lua carries invariant (d) and an address needs none
 // of its atomicity — and because the two keys hash-tag to different slots (see podAddrs).
@@ -146,8 +184,15 @@ func (r *Registry) Bind(ctx context.Context, b Bind, maxSessions int) (int, erro
 			return 0, err
 		}
 	}
-	res, err := r.bind.Run(ctx, r.rdb, []string{key(b.AccountID)},
-		b.member(), maxSessions, now.Unix(), now.Add(r.ttl).Unix(), r.keyTTLSeconds()).Result()
+	meta, err := json.Marshal(bindMeta{
+		PodID: b.PodID, SystemID: b.SystemID, BindType: b.BindType,
+		RemoteAddr: b.RemoteAddr, WindowSize: b.WindowSize, ConnectedAt: now.UTC(),
+	})
+	if err != nil {
+		return 0, fmt.Errorf("session: bind %s: %w", b.AccountID, err)
+	}
+	res, err := r.bind.Run(ctx, r.rdb, []string{key(b.AccountID), metaKey(b.AccountID)},
+		b.member(), maxSessions, now.Unix(), now.Add(r.ttl).Unix(), r.keyTTLSeconds(), b.BindID, meta).Result()
 	if err != nil {
 		return 0, fmt.Errorf("session: bind %s: %w", b.AccountID, err)
 	}
@@ -157,6 +202,13 @@ func (r *Registry) Bind(ctx context.Context, b Bind, maxSessions int) (int, erro
 	}
 	if accepted == 0 {
 		return active, fmt.Errorf("session: bind %s: %w", b.AccountID, errs.ErrMaxSessionsExceeded)
+	}
+	// After the admission, so a refused bind leaves no entry: a score-0 member never expires. Its failure
+	// is not the bind's: the slot is already taken, and refusing now would hold it a whole TTL for a
+	// caller told no. Every refresh replays the write.
+	if err := r.rdb.ZAdd(ctx, idxKey, redis.Z{Member: b.idxMember()}).Err(); err != nil {
+		slog.WarnContext(ctx, "session: index write failed; the bind is live but unlisted until a refresh lands it",
+			"bind_id", b.BindID, "err", err)
 	}
 	return active, nil
 }
@@ -188,26 +240,31 @@ func (r *Registry) publishAddr(ctx context.Context, b Bind, now time.Time) error
 
 // Unbind removes b's session token and reports whether a session was present.
 func (r *Registry) Unbind(ctx context.Context, b Bind) (bool, error) {
-	removed, err := r.unbind.Run(ctx, r.rdb, []string{key(b.AccountID)}, b.member()).Int64()
+	removed, err := r.unbind.Run(ctx, r.rdb, []string{key(b.AccountID), metaKey(b.AccountID)}, b.member(), b.BindID).Int64()
 	if err != nil {
 		return false, fmt.Errorf("session: unbind %s: %w", b.AccountID, err)
+	}
+	if err := r.Unindex(ctx, b); err != nil {
+		return false, err
 	}
 	return removed > 0, nil
 }
 
+// Unindex drops b's index entries under b's account, whatever pod they name — the unbind of a bind whose
+// token already lapsed knows no pod, and has nothing else to remove.
+func (r *Registry) Unindex(ctx context.Context, b Bind) error {
+	prefix := b.BindID + idxSep + b.AccountID + idxSep
+	if err := r.rdb.ZRemRangeByLex(ctx, idxKey, "["+prefix, "("+prefix+"\xff").Err(); err != nil {
+		return fmt.Errorf("session: unindex %s: %w", b.BindID, err)
+	}
+	return nil
+}
+
 // Lookup returns the account's live sessions, having swept any whose TTL has lapsed.
 func (r *Registry) Lookup(ctx context.Context, accountID string) ([]Bind, error) {
-	members, err := r.lookup.Run(ctx, r.rdb, []string{key(accountID)}, r.now().Unix()).StringSlice()
+	binds, err := r.liveBinds(ctx, accountID)
 	if err != nil {
-		return nil, fmt.Errorf("session: lookup %s: %w", accountID, err)
-	}
-	binds := make([]Bind, 0, len(members))
-	for _, m := range members {
-		pod, bind, ok := strings.Cut(m, memberSep)
-		if !ok {
-			return nil, fmt.Errorf("session: lookup %s: malformed member %q", accountID, m)
-		}
-		binds = append(binds, Bind{AccountID: accountID, PodID: pod, BindID: bind})
+		return nil, err
 	}
 	addrs, err := r.podAddrs(ctx, binds)
 	if err != nil {
@@ -273,4 +330,160 @@ func parsePair(v any) (accepted, active int, err error) {
 		return 0, 0, fmt.Errorf("unexpected script reply element types %T,%T", arr[0], arr[1])
 	}
 	return int(a), int(c), nil
+}
+
+func (r *Registry) liveBinds(ctx context.Context, accountID string) ([]Bind, error) {
+	members, err := r.lookup.Run(ctx, r.rdb, []string{key(accountID), metaKey(accountID)}, r.now().Unix()).StringSlice()
+	if err != nil {
+		return nil, fmt.Errorf("session: lookup %s: %w", accountID, err)
+	}
+	binds := make([]Bind, 0, len(members))
+	for _, m := range members {
+		pod, bind, ok := strings.Cut(m, memberSep)
+		if !ok {
+			return nil, fmt.Errorf("session: lookup %s: malformed member %q", accountID, m)
+		}
+		binds = append(binds, Bind{AccountID: accountID, PodID: pod, BindID: bind})
+	}
+	return binds, nil
+}
+
+// ListAccount returns the account's live sessions ordered by bind_id, and active, the count its
+// max_sessions quota sees. A bind admitted by a registry older than its description has no meta yet:
+// it counts in active and is listed from its next refresh.
+func (r *Registry) ListAccount(ctx context.Context, accountID string) ([]Session, int, error) {
+	binds, err := r.liveBinds(ctx, accountID)
+	if err != nil || len(binds) == 0 {
+		return nil, 0, err
+	}
+	fields := make([]string, len(binds))
+	for i, b := range binds {
+		fields[i] = b.BindID
+	}
+	metas, err := r.rdb.HMGet(ctx, metaKey(accountID), fields...).Result()
+	if err != nil {
+		return nil, 0, fmt.Errorf("session: describe %s: %w", accountID, err)
+	}
+	sessions := make([]Session, 0, len(binds))
+	for i, raw := range metas {
+		if s, ok := raw.(string); ok {
+			sess, err := describe(accountID, binds[i].BindID, s)
+			if err != nil {
+				return nil, 0, err
+			}
+			sessions = append(sessions, sess)
+		}
+	}
+	sort.Slice(sessions, func(i, j int) bool { return sessions[i].BindID < sessions[j].BindID })
+	return sessions, len(binds), nil
+}
+
+// Resolve finds a live session by its bind id alone, which is all DELETE /admin/sessions/{id} carries.
+func (r *Registry) Resolve(ctx context.Context, bindID string) (bool, error) {
+	members, err := r.rdb.ZRangeArgs(ctx, redis.ZRangeArgs{
+		Key: idxKey, Start: "[" + bindID + idxSep, Stop: "(" + bindID + idxSep + "\xff", ByLex: true,
+	}).Result()
+	if err != nil {
+		return false, fmt.Errorf("session: resolve %s: %w", bindID, err)
+	}
+	live, err := r.liveEntries(ctx, members)
+	return len(live) > 0, err
+}
+
+// List pages through every live session in bind_id order, starting strictly after the bind id after
+// ("" = the first page). The registry is volatile and Redis gives no snapshot: a session closed between
+// two pages is missing from both, one opened below the cursor is never seen. next is "" on the last
+// page.
+func (r *Registry) List(ctx context.Context, after string, limit int) ([]Session, string, error) {
+	lower := "-"
+	if after != "" {
+		lower = "(" + after + idxSep + "\xff"
+	}
+	var out []Session
+	for len(out) <= limit {
+		members, err := r.rdb.ZRangeArgs(ctx, redis.ZRangeArgs{
+			Key: idxKey, Start: lower, Stop: "+", ByLex: true, Count: int64(limit + 1 - len(out)),
+		}).Result()
+		if err != nil {
+			return nil, "", fmt.Errorf("session: list: %w", err)
+		}
+		if len(members) == 0 {
+			break
+		}
+		live, err := r.liveEntries(ctx, members)
+		if err != nil {
+			return nil, "", err
+		}
+		out = append(out, live...)
+		lower = "(" + members[len(members)-1]
+	}
+	if len(out) > limit {
+		return out[:limit], out[limit-1].BindID, nil
+	}
+	return out, "", nil
+}
+
+// liveEntries keeps the index entries whose session is still live — described, and not past its
+// expiry — and purges the others.
+func (r *Registry) liveEntries(ctx context.Context, members []string) ([]Session, error) {
+	type probe struct {
+		b      Bind
+		meta   *redis.StringCmd
+		expiry *redis.FloatCmd
+	}
+	probes := make([]probe, 0, len(members))
+	pipe := r.rdb.Pipeline()
+	for _, m := range members {
+		parts := strings.Split(m, idxSep)
+		if len(parts) != 3 {
+			return nil, fmt.Errorf("session: malformed index entry %q", m)
+		}
+		b := Bind{BindID: parts[0], AccountID: parts[1], PodID: parts[2]}
+		probes = append(probes, probe{
+			b:      b,
+			meta:   pipe.HGet(ctx, metaKey(b.AccountID), b.BindID),
+			expiry: pipe.ZScore(ctx, key(b.AccountID), b.member()),
+		})
+	}
+	_, _ = pipe.Exec(ctx) // each command is read below; redis.Nil is an answer, not a failure
+	now := float64(r.now().Unix())
+	var live []Session
+	var dead []any
+	for i, p := range probes {
+		meta, metaErr := p.meta.Result()
+		expiry, expErr := p.expiry.Result()
+		for _, err := range []error{metaErr, expErr} {
+			if err != nil && !errors.Is(err, redis.Nil) {
+				return nil, fmt.Errorf("session: check %s: %w", p.b.BindID, err)
+			}
+		}
+		if metaErr != nil || expErr != nil || expiry <= now {
+			dead = append(dead, members[i])
+			continue
+		}
+		sess, err := describe(p.b.AccountID, p.b.BindID, meta)
+		if err != nil {
+			return nil, err
+		}
+		live = append(live, sess)
+	}
+	if len(dead) > 0 {
+		// Best effort: an entry this fails to purge is checked, and purged, by the next read.
+		_ = r.rdb.ZRem(ctx, idxKey, dead...).Err()
+	}
+	return live, nil
+}
+
+func describe(accountID, bindID, raw string) (Session, error) {
+	var m bindMeta
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return Session{}, fmt.Errorf("session: describe %s: %w", bindID, err)
+	}
+	return Session{
+		Bind: Bind{
+			AccountID: accountID, PodID: m.PodID, BindID: bindID,
+			SystemID: m.SystemID, BindType: m.BindType, RemoteAddr: m.RemoteAddr, WindowSize: m.WindowSize,
+		},
+		ConnectedAt: m.ConnectedAt,
+	}, nil
 }

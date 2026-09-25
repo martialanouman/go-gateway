@@ -23,12 +23,14 @@ const (
 	ScopeAccount Scope = "account"
 	// ScopeCustomer targets the sessions of every account of one customer (Event.ID is the customer id).
 	ScopeCustomer Scope = "customer"
+	// ScopeSession targets one bind (Event.ID is the bind id), on an operator's order (step-360).
+	ScopeSession Scope = "session"
 )
 
 // valid reports whether s is a known scope. An unknown scope must never match sessions.
-func (s Scope) valid() bool { return s == ScopeAccount || s == ScopeCustomer }
+func (s Scope) valid() bool { return s == ScopeAccount || s == ScopeCustomer || s == ScopeSession }
 
-// Event is one force-disconnect order. ID is the account or customer UUID (as a string) selected by
+// Event is one force-disconnect order. ID is the account, customer or bind id (as a string) selected by
 // Scope; Reason is a short machine label (e.g. "credential_revoked") logged on the close, never a
 // secret.
 type Event struct {

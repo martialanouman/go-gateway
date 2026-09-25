@@ -382,7 +382,7 @@ mutuelle l'y force, la suite ne peut pas rester verte sur une ligne qui différe
 - [x] step-350 — Réécriture de sender ID (§6.16) : ni l'admin, ni l'évaluation dans le pool ⛓ step-320 ;
       **sa PR2 doit merger après step-280**, sinon elle ajoute un étage au chemin d'envoi entre la
       caractérisation du pool et la campagne, et périme le dimensionnement sans que personne ne le voie
-- [ ] step-360 — Sessions SMPP : le flux temps réel existe, la lecture REST non ⛓ step-320
+- [x] step-360 — Sessions SMPP : le flux temps réel existe, la lecture REST non ⛓ step-320
 - [ ] step-370 — Politiques de contenu (§6.23) : la plateforme n'a pas de défaut configurable ⛓ step-320
 - [ ] step-380 — Métriques agrégées en lecture : le flux pousse, rien ne se lit ⛓ step-320, step-330
 - [ ] step-390 — Réglages de compte créables mais non modifiables, et trois opérations orphelines ⛓ step-320

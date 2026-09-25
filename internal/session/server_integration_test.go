@@ -182,3 +182,97 @@ func TestBindLookupCarriesPodAddrAcrossGRPC(t *testing.T) {
 			"every MO falls through to the webhook", got[0].GetPodAddr(), sess.GetPodAddr())
 	}
 }
+
+func TestListSessionsDescribesEachBindAcrossGRPC(t *testing.T) {
+	client := newTestClient(t)
+	ctx := context.Background()
+	account := uuid.NewString()
+
+	sess := newSession(account)
+	sess.RemoteAddr = "198.51.100.4"
+	sess.WindowSize = 12
+	if _, err := client.Bind(ctx, &pb.BindRequest{Session: sess, MaxSessions: 2}); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+
+	resp, err := client.ListSessions(ctx, &pb.ListSessionsRequest{AccountId: account})
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+	if resp.GetActive() != 1 || len(resp.GetSessions()) != 1 {
+		t.Fatalf("active=%d sessions=%d, want 1 and 1", resp.GetActive(), len(resp.GetSessions()))
+	}
+	got := resp.GetSessions()[0]
+	if got.GetBindId() != sess.GetBindId() || got.GetSystemId() != "sys-1" || got.GetPodId() != "pod-1" ||
+		got.GetBindType() != pb.BindType_BIND_TYPE_TRX || got.GetRemoteAddr() != "198.51.100.4" ||
+		got.GetWindowSize() != 12 || got.GetConnectedAtUnixMs() == 0 {
+		t.Fatalf("listed session = %+v, want the bind as declared, stamped", got)
+	}
+
+	page, err := client.ListSessions(ctx, &pb.ListSessionsRequest{Cursor: sess.GetBindId()[:len(sess.GetBindId())-1], Limit: 1})
+	if err != nil {
+		t.Fatalf("list page: %v", err)
+	}
+	if len(page.GetSessions()) != 1 || page.GetSessions()[0].GetBindId() != sess.GetBindId() {
+		t.Fatalf("page = %+v, want the bind just after the cursor", page.GetSessions())
+	}
+}
+
+func TestListSessionsRefusesALimitOutsideTheContract(t *testing.T) {
+	client := newTestClient(t)
+	for _, limit := range []int32{0, 501} {
+		_, err := client.ListSessions(context.Background(), &pb.ListSessionsRequest{Limit: limit})
+		if status.Code(err) != codes.InvalidArgument {
+			t.Fatalf("list with limit %d: code=%v, want InvalidArgument", limit, status.Code(err))
+		}
+	}
+}
+
+// TestUnbindOfALapsedBindStillUnindexesIt: a bind whose token lapsed before its unbind is no longer in
+// the account key, and its index entry must not outlive it for want of a reader.
+func TestUnbindOfALapsedBindStillUnindexesIt(t *testing.T) {
+	rdb := redistest.Client(t)
+	clk := &clock{t: time.Unix(1_700_000_000, 0)}
+	srv := session.NewServer(session.NewRegistry(rdb, session.WithSessionTTL(30*time.Second), session.WithClock(clk.now)), nil)
+	ctx := context.Background()
+	sess := newSession(uuid.NewString())
+	if _, err := srv.Bind(ctx, &pb.BindRequest{Session: sess, MaxSessions: 1}); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	clk.advance(31 * time.Second)
+
+	if _, err := srv.Unbind(ctx, &pb.UnbindRequest{AccountId: sess.GetAccountId(), BindId: sess.GetBindId()}); err != nil {
+		t.Fatalf("unbind: %v", err)
+	}
+	if n := indexEntries(t, rdb, sess.GetBindId()); n != 0 {
+		t.Fatalf("index holds %d entries for an unbound bind, want 0", n)
+	}
+}
+
+func TestDisconnectSessionAnswersNotFoundForAnUnknownBind(t *testing.T) {
+	client := newTestClient(t)
+	_, err := client.Disconnect(context.Background(), &pb.DisconnectRequest{
+		Scope: pb.DisconnectScope_DISCONNECT_SCOPE_SESSION, Id: "bind-" + uuid.NewString(), Reason: "operator_disconnect",
+	})
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("disconnect unknown session: code=%v, want NotFound", status.Code(err))
+	}
+}
+
+// TestUnbindUnderAnotherAccountLeavesTheIndexAlone: an unbind naming the wrong account must not unlist a
+// live bind it does not own.
+func TestUnbindUnderAnotherAccountLeavesTheIndexAlone(t *testing.T) {
+	rdb := redistest.Client(t)
+	srv := session.NewServer(session.NewRegistry(rdb), nil)
+	ctx := context.Background()
+	sess := newSession(uuid.NewString())
+	if _, err := srv.Bind(ctx, &pb.BindRequest{Session: sess, MaxSessions: 1}); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	if _, err := srv.Unbind(ctx, &pb.UnbindRequest{AccountId: uuid.NewString(), BindId: sess.GetBindId()}); err != nil {
+		t.Fatalf("unbind: %v", err)
+	}
+	if n := indexEntries(t, rdb, sess.GetBindId()); n != 1 {
+		t.Fatalf("index holds %d entries for the live bind, want 1", n)
+	}
+}
