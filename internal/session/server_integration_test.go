@@ -258,3 +258,21 @@ func TestDisconnectSessionAnswersNotFoundForAnUnknownBind(t *testing.T) {
 		t.Fatalf("disconnect unknown session: code=%v, want NotFound", status.Code(err))
 	}
 }
+
+// TestUnbindUnderAnotherAccountLeavesTheIndexAlone: an unbind naming the wrong account must not unlist a
+// live bind it does not own.
+func TestUnbindUnderAnotherAccountLeavesTheIndexAlone(t *testing.T) {
+	rdb := redistest.Client(t)
+	srv := session.NewServer(session.NewRegistry(rdb), nil)
+	ctx := context.Background()
+	sess := newSession(uuid.NewString())
+	if _, err := srv.Bind(ctx, &pb.BindRequest{Session: sess, MaxSessions: 1}); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	if _, err := srv.Unbind(ctx, &pb.UnbindRequest{AccountId: uuid.NewString(), BindId: sess.GetBindId()}); err != nil {
+		t.Fatalf("unbind: %v", err)
+	}
+	if n := indexEntries(t, rdb, sess.GetBindId()); n != 1 {
+		t.Fatalf("index holds %d entries for the live bind, want 1", n)
+	}
+}

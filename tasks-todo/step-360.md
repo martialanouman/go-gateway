@@ -96,10 +96,12 @@ Arbitré par Fable le 2026-09-25 (spec → Fable, aucun point remonté à l'huma
 - Un échec du `ZADD` d'index après admission **ne refuse plus le bind** : le slot est déjà pris, et le
   refuser le laissait compté une TTL entière pour un client à qui l'on a dit non. Le refresh rejoue
   l'écriture.
-- Un unbind dont le jeton a déjà expiré désindexe quand même le bind (`Registry.Unindex`) : l'index ne
-  grossit plus faute de lecteur. Reste une orpheline possible si le `ZREM` lui-même échoue — purgée à
+- Un unbind dont le jeton a déjà expiré désindexe quand même le bind (`Registry.Unindex`, borné au
+  compte de l'unbind) : l'index ne grossit plus faute de lecteur. L'échec d'écriture de l'index est
+  journalisé (`WARN`), sans quoi une panne durable viderait la liste en silence. Reste une orpheline possible si le `ZREM` lui-même échoue — purgée à
   la lecture suivante.
-- `bind_type` dérivé de l'enum généré (`session.BindTypeName`) : plus de table tenue à la main.
+- `bind_type` : une seule table, `pb.BindType.Name()`, fermée sur tx/rx/trx (`""` sinon) ; l'Admin API
+  n'importe plus `internal/session`.
 - Pannes gRPC du registre (`Unavailable`, `DeadlineExceeded`) → 503 ; `limit` borné à 500 côté gRPC.
 - **Ordre de déploiement** : `session-manager-svc` et `smpp-server-svc` avant `admin-api-svc`. Un
   session-manager d'avant la step répond `Unimplemented` à `ListSessions` et `InvalidArgument` au scope
@@ -107,3 +109,6 @@ Arbitré par Fable le 2026-09-25 (spec → Fable, aucun point remonté à l'huma
   par l'ancien Lua ne renouvelle pas la meta, et la session sort de la liste jusqu'au refresh suivant.
 - Rejeté : prélude Lua commun (chaque script cesserait d'être lisible seul) ; revérifier le score avant
   la purge (la course ne coûte qu'une absence jusqu'au refresh suivant, ≤ TTL/2).
+
+Tour 2 (sur le seul commit de correctifs) : aucun bloquant ; appliqués ci-dessus. Écartés : `Canceled`
+mappé à part (bruit de log seulement), forme du `FromError` dans `list`.

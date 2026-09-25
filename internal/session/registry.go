@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync"
@@ -205,7 +206,10 @@ func (r *Registry) Bind(ctx context.Context, b Bind, maxSessions int) (int, erro
 	// After the admission, so a refused bind leaves no entry: a score-0 member never expires. Its failure
 	// is not the bind's: the slot is already taken, and refusing now would hold it a whole TTL for a
 	// caller told no. Every refresh replays the write.
-	_ = r.rdb.ZAdd(ctx, idxKey, redis.Z{Member: b.idxMember()}).Err()
+	if err := r.rdb.ZAdd(ctx, idxKey, redis.Z{Member: b.idxMember()}).Err(); err != nil {
+		slog.WarnContext(ctx, "session: index write failed; the bind is live but unlisted until a refresh lands it",
+			"bind_id", b.BindID, "err", err)
+	}
 	return active, nil
 }
 
@@ -240,17 +244,18 @@ func (r *Registry) Unbind(ctx context.Context, b Bind) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("session: unbind %s: %w", b.AccountID, err)
 	}
-	if err := r.Unindex(ctx, b.BindID); err != nil {
+	if err := r.Unindex(ctx, b); err != nil {
 		return false, err
 	}
 	return removed > 0, nil
 }
 
-// Unindex drops a bind's index entries, whatever account and pod they name — the unbind of a bind whose
-// token already lapsed has nothing else to remove.
-func (r *Registry) Unindex(ctx context.Context, bindID string) error {
-	if err := r.rdb.ZRemRangeByLex(ctx, idxKey, "["+bindID+idxSep, "("+bindID+idxSep+"\xff").Err(); err != nil {
-		return fmt.Errorf("session: unindex %s: %w", bindID, err)
+// Unindex drops b's index entries under b's account, whatever pod they name — the unbind of a bind whose
+// token already lapsed knows no pod, and has nothing else to remove.
+func (r *Registry) Unindex(ctx context.Context, b Bind) error {
+	prefix := b.BindID + idxSep + b.AccountID + idxSep
+	if err := r.rdb.ZRemRangeByLex(ctx, idxKey, "["+prefix, "("+prefix+"\xff").Err(); err != nil {
+		return fmt.Errorf("session: unindex %s: %w", b.BindID, err)
 	}
 	return nil
 }

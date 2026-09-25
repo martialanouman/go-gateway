@@ -11,7 +11,6 @@ import (
 	"google.golang.org/grpc/status"
 
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
-	"github.com/martialanouman/go-gateway/internal/session"
 	registrypb "github.com/martialanouman/go-gateway/internal/session/pb"
 )
 
@@ -140,7 +139,7 @@ func fromPB(in []*registrypb.Session) ([]LiveSession, error) {
 		}
 		out = append(out, LiveSession{
 			AccountID: account, BindID: s.GetBindId(), SystemID: s.GetSystemId(), PodID: s.GetPodId(),
-			BindType: session.BindTypeName(s.GetBindType()), RemoteAddr: s.GetRemoteAddr(), WindowSize: int(s.GetWindowSize()),
+			BindType: s.GetBindType().Name(), RemoteAddr: s.GetRemoteAddr(), WindowSize: int(s.GetWindowSize()),
 			ConnectedAt: time.UnixMilli(s.GetConnectedAtUnixMs()).UTC(),
 		})
 	}

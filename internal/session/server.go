@@ -62,7 +62,7 @@ func (s *Server) Bind(ctx context.Context, req *pb.BindRequest) (*pb.BindRespons
 		Addr:      sess.GetPodAddr(),
 
 		SystemID:   sess.GetSystemId(),
-		BindType:   BindTypeName(sess.GetBindType()),
+		BindType:   sess.GetBindType().Name(),
 		RemoteAddr: sess.GetRemoteAddr(),
 		WindowSize: int(sess.GetWindowSize()),
 	}
@@ -97,7 +97,7 @@ func (s *Server) Unbind(ctx context.Context, req *pb.UnbindRequest) (*pb.UnbindR
 		}
 		return &pb.UnbindResponse{Removed: removed}, nil
 	}
-	if err := s.reg.Unindex(ctx, req.GetBindId()); err != nil {
+	if err := s.reg.Unindex(ctx, Bind{AccountID: req.GetAccountId(), BindID: req.GetBindId()}); err != nil {
 		return nil, status.Errorf(codes.Internal, "unbind: %v", err)
 	}
 	return &pb.UnbindResponse{Removed: false}, nil
@@ -206,12 +206,6 @@ func toPB(sessions []Session) []*pb.Session {
 // maxListLimit is the Admin contract's page ceiling, held here too so a direct gRPC caller cannot pipeline
 // the whole index in one call.
 const maxListLimit = 500
-
-// BindTypeName is the contract's name for a bind type (tx, rx, trx), derived from the generated enum so
-// no hand-kept table can drift from it.
-func BindTypeName(t pb.BindType) string {
-	return strings.ToLower(strings.TrimPrefix(t.String(), "BIND_TYPE_"))
-}
 
 // disconnectScope maps the wire scope to the domain scope, rejecting the unspecified (zero) value so
 // a malformed request can never fan out to every session.
