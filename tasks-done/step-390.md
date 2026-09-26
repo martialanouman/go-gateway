@@ -70,10 +70,10 @@ défaut fonctionnel réel : **un compte créé avec la mauvaise politique ne peu
 
 ## Definition of Done
 
-- [ ] `make check` vert (lint · `test -race` · govulncheck · contrats)
-- [ ] les changements de politique atteignent les sessions vivantes, prouvé par un test de bout en bout
-- [ ] le sort de `list-customer-accounts` tranché et écrit ; bump majeur si retrait du contrat
-- [ ] `api/collections/admin-api.yaml` synchronisée ; les 5 lignes retirées de `deferred` (step-320)
+- [x] `make check` vert (lint · `test -race` · govulncheck · contrats)
+- [x] les changements de politique atteignent les sessions vivantes, prouvé par un test de bout en bout — sender ID : graphe réel du router (`cmd/router-svc/senderid_reload_test.go`) ; `query_sm`/`cancel_sm` : déconnexion du compte
+- [x] le sort de `list-customer-accounts` tranché et écrit (servie, Design arrêté) ; bump majeur si retrait du contrat
+- [x] `api/collections/admin-api.yaml` synchronisée ; les 5 lignes retirées de `deferred` (step-320)
 
 ## Hors périmètre
 
