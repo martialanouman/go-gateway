@@ -41,11 +41,14 @@ func TestAuditLogIsAppendOnlyInTheDatabase(t *testing.T) {
 	repo := postgres.NewAuditLogRepo(pool)
 
 	open := beginAudit(t, pool)
-	_, err := pool.Exec(ctx, `UPDATE control_plane.audit_log SET target = '/v1/admin/elsewhere' WHERE id = $1`, open)
-	wantRefusedByDatabase(t, "rewriting target of an open row", err)
-
-	_, err = pool.Exec(ctx, `UPDATE control_plane.audit_log SET finished_at = now() WHERE id = $1`, open)
+	_, err := pool.Exec(ctx, `UPDATE control_plane.audit_log SET finished_at = now() WHERE id = $1`, open)
 	wantRefusedByDatabase(t, "finishing an open row without an outcome", err)
+
+	_, err = pool.Exec(ctx, `UPDATE control_plane.audit_log SET status = 201 WHERE id = $1`, open)
+	wantRefusedByDatabase(t, "closing a row without its finish time", err)
+
+	_, err = pool.Exec(ctx, `UPDATE control_plane.audit_log SET status = 201, finished_at = '2020-01-01' WHERE id = $1`, open)
+	wantRefusedByDatabase(t, "closing a row with a backdated finish time", err)
 
 	// Each rewrite rides along the one allowed transition: alone, the missing status would refuse it and
 	// hide whether the column itself is guarded.

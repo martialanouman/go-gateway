@@ -28,8 +28,6 @@ Ce que chacune voit seule :
   action proxyfiée.
 - L'écran de consultation du BFF (sa step-184) montre les deux sources. Une action proxyfiée y apparaît
   deux fois, l'une sous l'humain, l'autre sous le jeton : ce sont deux faits, pas un doublon.
-- La base rend `control_plane.audit_log` immuable (migration 0020). Seule la clôture d'une ligne est
-  permise.
 
 ## Consequences
 
@@ -37,4 +35,3 @@ Ce que chacune voit seule :
   annotée en ce sens.
 - Relier une ligne de passerelle à son humain demande que le BFF transmette une corrélation, par exemple
   `X-Request-Id`, que la colonne `request_id` conserve déjà. Rien ne l'impose aujourd'hui.
-- step-310 ajoutera le format `sub` à `operator` : le contrat le laisse en chaîne libre pour ne pas rompre.

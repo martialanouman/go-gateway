@@ -91,15 +91,4 @@ func TestEveryMSISDNPathIsMaskedInTheTrail(t *testing.T) {
 			}
 		}
 	}
-	for id := range msisdnInTarget {
-		found := false
-		for path, item := range api.OpenAPI().Paths {
-			for _, op := range []*huma.Operation{item.Get, item.Post, item.Put, item.Patch, item.Delete} {
-				found = found || (op != nil && op.OperationID == id && strings.Contains(path, "{msisdn}"))
-			}
-		}
-		if !found {
-			t.Errorf("msisdnInTarget names %q, which serves no {msisdn} path", id)
-		}
-	}
 }

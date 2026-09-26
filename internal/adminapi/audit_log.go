@@ -20,6 +20,8 @@ var msisdnInTarget = map[string]bool{
 	"delete-exact-route": true,
 }
 
+const exactRoutesPrefix = "/exact-routes/"
+
 // auditEntryDTO is the wire form of an audit row (contract schema AuditEntry). The strings are free on
 // purpose: a replay row is not an HTTP request, and step-310 adds a third operator format.
 type auditEntryDTO struct {
@@ -41,9 +43,10 @@ type auditEntryPageDTO struct {
 
 func toAuditEntryDTO(e cp.AuditEntry, reveal bool) auditEntryDTO {
 	target := e.Target
-	if msisdnInTarget[e.OperationID] {
-		i := strings.LastIndexByte(target, '/')
-		target = target[:i+1] + maskMSISDN(target[i+1:], reveal)
+	if i := strings.Index(target, exactRoutesPrefix); msisdnInTarget[e.OperationID] && i >= 0 {
+		// The whole remainder, not the last segment: an escaped slash in the number decodes into the path.
+		cut := i + len(exactRoutesPrefix)
+		target = target[:cut] + maskMSISDN(target[cut:], reveal)
 	}
 	return auditEntryDTO{
 		ID: idString(e.ID), Operator: e.Operator, OperationID: e.OperationID, Method: e.Method, Target: target,
@@ -84,6 +87,10 @@ func (h *auditLogHandlers) list(ctx context.Context, in *listAuditLogInput) (*li
 	}
 	if !in.ToDate.IsZero() {
 		filter.To = &in.ToDate
+	}
+	if filter.From != nil && filter.To != nil && !filter.From.Before(*filter.To) {
+		return nil, humaerr.FailValidation("invalid date window",
+			humaerr.FieldError{Field: "from_date", Message: "from_date must be before to_date"})
 	}
 	var after *cp.AuditLogKey
 	if in.Cursor != "" {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -108,6 +109,14 @@ func TestListAuditLogPassesItsFilters(t *testing.T) {
 	}
 }
 
+// TestListAuditLogRefusesAnInvertedWindow: 422 like search-messages, not an empty page that reads as "nothing happened".
+func TestListAuditLogRefusesAnInvertedWindow(t *testing.T) {
+	code, _ := getAuditLog(t, newFakeAuditLog(), "audit:read", "?from_date=2026-09-02T00:00:00Z&to_date=2026-09-01T00:00:00Z")
+	if code != http.StatusUnprocessableEntity {
+		t.Errorf("status = %d, want 422", code)
+	}
+}
+
 // TestListAuditLogRefusesAMalformedCursor: 422, not a first page served as if nothing was asked.
 func TestListAuditLogRefusesAMalformedCursor(t *testing.T) {
 	if code, _ := getAuditLog(t, newFakeAuditLog(), "audit:read", "?cursor=not-a-cursor"); code != http.StatusUnprocessableEntity {
@@ -120,9 +129,12 @@ func TestListAuditLogRefusesAMalformedCursor(t *testing.T) {
 // reveals a number, so the read enters the trail itself.
 func TestListAuditLogMasksTheNumberInATarget(t *testing.T) {
 	const msisdn = "22507123456"
+	// An escaped slash decodes into the recorded path: the whole remainder is the number, not its last segment.
+	const slashed = "225/07123456"
 	entries := []cp.AuditEntry{
 		{ID: uuid.New(), OperationID: "delete-exact-route", Method: "DELETE", Target: "/v1/admin/exact-routes/" + msisdn, At: time.Now()},
 		{ID: uuid.New(), OperationID: "update-exact-route", Method: "PATCH", Target: "/v1/admin/exact-routes/" + msisdn, At: time.Now()},
+		{ID: uuid.New(), OperationID: "delete-exact-route", Method: "DELETE", Target: "/v1/admin/exact-routes/" + slashed, At: time.Now()},
 		{ID: uuid.New(), OperationID: "import-exact-routes", Method: "POST", Target: "/v1/admin/exact-routes/import", At: time.Now()},
 	}
 
@@ -134,8 +146,11 @@ func TestListAuditLogMasksTheNumberInATarget(t *testing.T) {
 			t.Errorf("%s target = %q, want the number masked in place", e.OperationID, e.Target)
 		}
 	}
-	if page.Data[2].Target != "/v1/admin/exact-routes/import" {
-		t.Errorf("import target = %q, want it untouched: it names no number", page.Data[2].Target)
+	if strings.Contains(page.Data[2].Target, "0712") {
+		t.Errorf("target = %q, want the number masked past its first slash", page.Data[2].Target)
+	}
+	if page.Data[3].Target != "/v1/admin/exact-routes/import" {
+		t.Errorf("import target = %q, want it untouched: it names no number", page.Data[3].Target)
 	}
 	if intents, _, _ := store.snapshot(); len(intents) != 0 {
 		t.Errorf("a masked read was recorded %d times, want none: it reveals nothing", len(intents))
@@ -144,8 +159,10 @@ func TestListAuditLogMasksTheNumberInATarget(t *testing.T) {
 	store = newFakeAuditLog()
 	store.entries = entries
 	_, page = getAuditLog(t, store, "audit:read|msisdn:reveal", "")
-	if page.Data[0].Target != "/v1/admin/exact-routes/"+msisdn {
-		t.Errorf("target = %q with msisdn:reveal, want the number in clear", page.Data[0].Target)
+	for _, e := range page.Data[:2] {
+		if e.Target != "/v1/admin/exact-routes/"+msisdn {
+			t.Errorf("%s target = %q with msisdn:reveal, want the number in clear", e.OperationID, e.Target)
+		}
 	}
 	if intents, _, _ := store.snapshot(); len(intents) != 1 || intents[0].OperationID != "list-audit-log" {
 		t.Errorf("recorded intents = %+v, want the revealing read itself in the trail", intents)

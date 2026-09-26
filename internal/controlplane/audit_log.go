@@ -19,8 +19,7 @@ type AuditIntent struct {
 	RequestID string
 }
 
-// AuditEntry is one row of the audit trail as it is read back. Not every row is an HTTP request: a replay
-// writes Method "REPLAY" and Operator "declared:<name>". Status nil means the outcome was not recorded.
+// AuditEntry is one row of the audit trail as it is read back. Status nil means the outcome was not recorded.
 type AuditEntry struct {
 	ID          uuid.UUID
 	Operator    string
