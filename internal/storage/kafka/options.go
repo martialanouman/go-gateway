@@ -18,15 +18,14 @@ import (
 // fetch, and a zero DialTimeout is net.Dialer{Timeout: 0} — no dial timeout at all (kgo/client.go:510).
 // Both are silent stalls, where an unset knob is merely the library default.
 
-// dialOpts are the client options every kgo client in this package shares.
+// DialOpts are the client options every kgo client shares, the provisioning Job's admin client included.
 //
 // DialTimeout bounds one connection attempt to a broker; franz-go's own default is 10s
 // (kgo/config.go:602). Until step-201 KAFKA_TIMEOUT was read and validated but reached no client at
 // all, so it governed the readiness probe while every dial behind that probe ignored it. It is a dial
 // bound only: a produce is bounded by producerOpts (KAFKA_PRODUCE_TIMEOUT, step-260e), a fetch by the
-// caller's context. With KAFKA_TLS_ENABLED every dial is TLS (step-305); the CA is read here, so an unusable
-// one fails the constructor rather than a later dial.
-func dialOpts(cfg config.Kafka) ([]kgo.Opt, error) {
+// caller's context. TLS: step-305.
+func DialOpts(cfg config.Kafka) ([]kgo.Opt, error) {
 	var opts []kgo.Opt
 	if cfg.Timeout > 0 {
 		opts = append(opts, kgo.DialTimeout(cfg.Timeout))
@@ -46,7 +45,7 @@ func dialOpts(cfg config.Kafka) ([]kgo.Opt, error) {
 // broker's ISR wait only makes a batch "unsure if produced" sooner, and kgo retries such a batch past
 // every bound rather than risk a duplicate.
 func producerOpts(cfg config.Kafka, bound time.Duration) ([]kgo.Opt, error) {
-	opts, err := dialOpts(cfg)
+	opts, err := DialOpts(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -73,7 +72,7 @@ func producerOpts(cfg config.Kafka, bound time.Duration) ([]kgo.Opt, error) {
 // accepted limit of the lever — there is deliberately no per-consumer override, which would mean a
 // second naming scheme for every consumer in the repository.
 func consumerOpts(cfg config.Kafka) ([]kgo.Opt, error) {
-	opts, err := dialOpts(cfg)
+	opts, err := DialOpts(cfg)
 	if err != nil {
 		return nil, err
 	}

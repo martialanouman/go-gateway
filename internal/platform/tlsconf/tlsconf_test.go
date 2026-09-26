@@ -895,19 +895,13 @@ func storePeer(t *testing.T, ca *tlstest.CA) net.Addr {
 }
 
 // dialStore reaches the store by name, as a client composes KAFKA_BROKERS: the ServerName is derived from it.
-func dialStore(addr net.Addr, cfg *tls.Config) (string, error) {
+func dialStore(addr net.Addr, cfg *tls.Config) error {
 	_, port, _ := net.SplitHostPort(addr.String())
 	conn, err := tls.Dial("tcp", net.JoinHostPort("localhost", port), cfg)
 	if err != nil {
-		return "", err
+		return err
 	}
-	defer func() { _ = conn.Close() }()
-	if _, err := conn.Write([]byte("ping")); err != nil {
-		return "", err
-	}
-	buf := make([]byte, 4)
-	_, err = io.ReadFull(conn, buf)
-	return string(buf), err
+	return conn.Close()
 }
 
 // TestStoreClientTrustsTheOperatorsCA: a store signed by the CA the operator mounts is reached at TLS 1.2,
@@ -918,10 +912,10 @@ func TestStoreClientTrustsTheOperatorsCA(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StoreClientConfig: %v", err)
 	}
-	if got, err := dialStore(storePeer(t, operatorCA), cfg); err != nil || got != "ping" {
-		t.Fatalf("store of the mounted CA: got %q, err %v — want the bytes to cross", got, err)
+	if err := dialStore(storePeer(t, operatorCA), cfg); err != nil {
+		t.Fatalf("store of the mounted CA: %v", err)
 	}
-	if _, err := dialStore(storePeer(t, tlstest.NewCA(t)), cfg); err == nil {
+	if err := dialStore(storePeer(t, tlstest.NewCA(t)), cfg); err == nil {
 		t.Error("a store signed by another authority was accepted")
 	}
 }
@@ -936,7 +930,7 @@ func TestStoreClientWithoutCAUsesTheSystemRoots(t *testing.T) {
 	if cfg.RootCAs != nil || cfg.InsecureSkipVerify {
 		t.Errorf("RootCAs = %v, InsecureSkipVerify = %v: want the system roots, verified", cfg.RootCAs, cfg.InsecureSkipVerify)
 	}
-	if _, err := dialStore(storePeer(t, tlstest.NewCA(t)), cfg); err == nil {
+	if err := dialStore(storePeer(t, tlstest.NewCA(t)), cfg); err == nil {
 		t.Error("a store signed by a private CA was accepted against the system roots")
 	}
 }

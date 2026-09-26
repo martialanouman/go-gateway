@@ -1,6 +1,7 @@
 package tlstest
 
 import (
+	"context"
 	"crypto/tls"
 	"net"
 	"testing"
@@ -18,7 +19,7 @@ func (ca *CA) HandshakePeer(t *testing.T) (addr string, handshakes <-chan struct
 	if err != nil {
 		t.Fatalf("load peer pair: %v", err)
 	}
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	lis, err := new(net.ListenConfig).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
@@ -31,8 +32,10 @@ func (ca *CA) HandshakePeer(t *testing.T) (addr string, handshakes <-chan struct
 				return
 			}
 			conn := tls.Server(raw, &tls.Config{Certificates: []tls.Certificate{cert}})
-			_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
-			if conn.Handshake() == nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			err = conn.HandshakeContext(ctx)
+			cancel()
+			if err == nil {
 				select {
 				case done <- struct{}{}:
 				default:

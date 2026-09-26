@@ -154,7 +154,7 @@ func TestForFailClosedConsumerIgnoresTheEnvBound(t *testing.T) {
 	}
 }
 
-// TestAnUnsetLeverKeepsTheLibraryDefault pins the zero-value contract of consumerOpts and dialOpts.
+// TestAnUnsetLeverKeepsTheLibraryDefault pins the zero-value contract of consumerOpts and DialOpts.
 //
 // It is not a hypothetical: a config.Kafka built as a struct literal — which is how every integration
 // test in the repository builds one — leaves the new fields at zero, and forwarding those zeros makes

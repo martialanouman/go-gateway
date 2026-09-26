@@ -26,6 +26,20 @@ type Conn struct {
 // NewConn opens a connection to the configured ClickHouse. It does not block on reachability; use
 // ReadyCheck for that.
 func NewConn(cfg config.ClickHouse) (*Conn, error) {
+	opts, err := options(cfg)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := clickhouse.Open(opts)
+	if err != nil {
+		return nil, fmt.Errorf("clickhouse: open: %w", err)
+	}
+	return &Conn{conn: conn}, nil
+}
+
+// options are the connection settings the services and the migrator share, so the migration Job dials
+// exactly as they do, TLS included.
+func options(cfg config.ClickHouse) (*clickhouse.Options, error) {
 	var tlsCfg *tls.Config
 	if cfg.TLSEnabled {
 		var err error
@@ -33,7 +47,7 @@ func NewConn(cfg config.ClickHouse) (*Conn, error) {
 			return nil, fmt.Errorf("clickhouse: %w", err)
 		}
 	}
-	conn, err := clickhouse.Open(&clickhouse.Options{
+	return &clickhouse.Options{
 		Addr: cfg.Addr,
 		Auth: clickhouse.Auth{
 			Database: cfg.Database,
@@ -52,11 +66,7 @@ func NewConn(cfg config.ClickHouse) (*Conn, error) {
 		// the Kafka offset would then be committed for a CDR that quietly never lands (D6/D8).
 		MaxOpenConns: cfg.MaxOpenConns,
 		MaxIdleConns: cfg.MaxIdleConns,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("clickhouse: open: %w", err)
-	}
-	return &Conn{conn: conn}, nil
+	}, nil
 }
 
 // Ping reports whether ClickHouse is reachable.

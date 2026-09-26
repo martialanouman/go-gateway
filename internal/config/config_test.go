@@ -1351,3 +1351,20 @@ func TestExactCacheTTLReachesTheConfig(t *testing.T) {
 		t.Errorf("Exact.CacheTTL = %s, want %s (EXACT_CACHE_TTL must keep its name)", got, want)
 	}
 }
+
+// TestStoreTLSReachesItsSection: the four variables land in the section each client reads.
+func TestStoreTLSReachesItsSection(t *testing.T) {
+	setEnv(t, map[string]string{
+		"KAFKA_TLS_ENABLED": "true", "KAFKA_TLS_CA_FILE": "/etc/kafka/ca.crt",
+		"CLICKHOUSE_TLS_ENABLED": "true", "CLICKHOUSE_TLS_CA_FILE": "/etc/ch/ca.crt",
+	})
+	cfg, err := config.Load("router-svc")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.Kafka.TLSEnabled || cfg.Kafka.TLSCAFile != "/etc/kafka/ca.crt" ||
+		!cfg.ClickHouse.TLSEnabled || cfg.ClickHouse.TLSCAFile != "/etc/ch/ca.crt" {
+		t.Errorf("kafka = %v %q, clickhouse = %v %q", cfg.Kafka.TLSEnabled, cfg.Kafka.TLSCAFile,
+			cfg.ClickHouse.TLSEnabled, cfg.ClickHouse.TLSCAFile)
+	}
+}

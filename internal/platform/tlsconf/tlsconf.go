@@ -167,6 +167,7 @@ func StoreClientConfig(caFile string) (*tls.Config, error) {
 	if caFile == "" {
 		return cfg, nil
 	}
+	//nolint:gosec // G304: the path is the operator's own *_TLS_CA_FILE setting, never request input.
 	caPEM, err := os.ReadFile(caFile)
 	if err != nil {
 		return nil, fmt.Errorf("tlsconf: read the store CA: %w", err)

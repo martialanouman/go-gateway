@@ -74,3 +74,22 @@ func TestAnUnreadableKafkaCAIsABootError(t *testing.T) {
 		t.Error("NewProducer accepted a CA file that does not exist")
 	}
 }
+
+// TestKafkaRefusesABrokerOfAnotherAuthority: the dial verifies the broker, so a skipped verification on this
+// path could not pass the handshake test above unnoticed.
+func TestKafkaRefusesABrokerOfAnotherAuthority(t *testing.T) {
+	addr, handshakes := tlstest.NewCA(t).HandshakePeer(t)
+	p, err := NewProducer(config.Kafka{Brokers: []string{addr}, Timeout: time.Second, TLSEnabled: true, TLSCAFile: tlstest.NewCA(t).CAFile})
+	if err != nil {
+		t.Fatalf("NewProducer: %v", err)
+	}
+	defer p.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = p.Ping(ctx)
+	select {
+	case <-handshakes:
+		t.Fatal("a broker signed by another authority completed a handshake")
+	default:
+	}
+}

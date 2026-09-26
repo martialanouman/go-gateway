@@ -34,7 +34,7 @@ type StreamProducer struct {
 // reachability, and it is deliberately absent from readiness: the stream is not vital, and a service must
 // stay in the load balancer with its dashboard feed down.
 func NewStreamProducer(cfg config.Kafka) (*StreamProducer, error) {
-	shared, err := dialOpts(cfg)
+	shared, err := DialOpts(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("kafka: new stream producer: %w", err)
 	}

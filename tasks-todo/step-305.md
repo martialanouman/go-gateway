@@ -70,20 +70,17 @@ Arbitrage Fable, 2026-09-26 (Q1-Q5), sans conflit avec la spec, qui ne dit rien 
   est amendé d'une phrase.
 - **Propagation** : `dialOpts` rend `([]kgo.Opt, error)`. Les constructeurs Kafka rendent déjà une erreur,
   donc aucun `_ =` n'est nécessaire. `kafkaprovision.NewAdmin` suit. `clickhouse.NewConn` pose `TLS`.
+  *(Revue : le migrateur ClickHouse composait son propre DSN en clair ; il partage désormais les `Options`
+  de `NewConn`. `kafkaprovision` passe par `kafka.DialOpts`, exporté, plutôt que d'en recopier la logique.)*
 - **Configuration** : une `*_TLS_CA_FILE` renseignée avec `*_TLS_ENABLED=false` est refusée, parce que ce
   réglage n'aurait aucun effet.
 - **Pas de garde de production** : quatre liens de même nature, pas deux sur quatre. Postgres, Redis,
   Kafka et ClickHouse deviennent quatre lignes de la checklist de step-410.
 - **ServerName** : franz-go (`kgo/client.go:513`) et `crypto/tls` (via clickhouse-go) le déduisent de
-  l'hôte composé. À écrire dans `deploy/` : le SAN doit couvrir l'hôte **annoncé** des brokers
-  (`advertised.listeners`), et le port natif TLS de ClickHouse est 9440. `bascule-tls-sans-mode-transitoire`
-  s'applique : activer TLS sur un cluster vivant exige des brokers à double listener.
+  l'hôte composé. Ce que l'exploitant doit en savoir est dans `deploy/k8s/tls/README.md`.
 - **Preuve du handshake** : un faux pair TLS local, avec un certificat de `tlstest`, constate un handshake
   **abouti** depuis le client Kafka et depuis le client ClickHouse. Le protocole applicatif échoue ensuite,
   ce qui n'est pas l'objet du test.
-- **Hors périmètre** : `ancre-de-confiance-par-connecteur` ne reçoit qu'un addendum : le constructeur existe
-  désormais. Nouvelle dette `kafka-sans-authentification`, puisque Kafka est le seul lien sans aucune
-  authentification.
 
 ## Definition of Done
 
