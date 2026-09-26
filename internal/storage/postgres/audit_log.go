@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -128,4 +129,29 @@ func (r *AuditLogRepo) Purge(ctx context.Context, retention time.Duration) (int6
 		return 0, translate("purge audit log", err)
 	}
 	return purged, nil
+}
+
+// RunRetention purges the rows older than retention now, then every interval, until ctx ends. 0 disables it.
+// A failed pass is logged, never returned: a retention fault must not take the service down.
+func (r *AuditLogRepo) RunRetention(ctx context.Context, every, retention time.Duration, logger *slog.Logger) error {
+	if every <= 0 {
+		<-ctx.Done()
+		return nil
+	}
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+	for {
+		purged, err := r.Purge(ctx, retention)
+		switch {
+		case err != nil && ctx.Err() == nil:
+			logger.ErrorContext(ctx, "audit log retention pass failed", "err", err)
+		case purged > 0:
+			logger.InfoContext(ctx, "audit log retention pass", "purged", purged)
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+		}
+	}
 }

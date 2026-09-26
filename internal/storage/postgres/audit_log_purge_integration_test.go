@@ -2,6 +2,7 @@ package postgres_test
 
 import (
 	"context"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -106,4 +107,29 @@ func TestAuditLogDeleteOutsideThePurgeIsRefused(t *testing.T) {
 	}
 	_, err = conn.Exec(ctx, `DELETE FROM control_plane.audit_log WHERE id = $1`, old)
 	wantRefusedByDatabase(t, "a DELETE after an untransacted SET LOCAL", err)
+}
+
+// TestAuditLogRetentionRunsFromTheStart: the pass purges on its first round, not a whole interval later, and
+// stops cleanly when the service does.
+func TestAuditLogRetentionRunsFromTheStart(t *testing.T) {
+	pool := pgtest.Pool(t)
+	operator := "tok_run_" + uuid.NewString()
+	expired := insertAuditAged(t, pool, operator, 500*day)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- postgres.NewAuditLogRepo(pool).RunRetention(ctx, time.Hour, 400*day, slog.New(slog.DiscardHandler))
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for survivingAudit(t, pool, operator)[expired] && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Errorf("run = %v, want nil on shutdown", err)
+	}
+	if survivingAudit(t, pool, operator)[expired] {
+		t.Error("the first pass did not purge the expired row")
+	}
 }

@@ -23,7 +23,7 @@ var knownVars = []string{
 	"SERVICE_NAME",
 	"OTEL_SDK_DISABLED", "OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_INSECURE",
 	"OTEL_TRACES_SAMPLER_ARG",
-	"POSTGRES_URL", "POSTGRES_MAX_CONNS", "POSTGRES_MIN_CONNS", "POSTGRES_TIMEOUT",
+	"POSTGRES_URL", "POSTGRES_MAX_CONNS", "POSTGRES_MIN_CONNS", "POSTGRES_TIMEOUT", "POSTGRES_AUDIT_LOG_RETENTION",
 	"KAFKA_BROKERS", "KAFKA_TIMEOUT", "KAFKA_PRODUCE_TIMEOUT",
 	"KAFKA_FETCH_MIN_BYTES", "KAFKA_FETCH_MAX_WAIT", "KAFKA_FETCH_MAX_BYTES",
 	"KAFKA_FETCH_MAX_PARTITION_BYTES",
@@ -366,6 +366,8 @@ func TestLoadRejectsInvalid(t *testing.T) {
 			"POSTGRES_MAX_CONNS": "4",
 			"POSTGRES_MIN_CONNS": "8",
 		}, "POSTGRES_MIN_CONNS"},
+		{"audit log retention under the spec's one year", map[string]string{"POSTGRES_AUDIT_LOG_RETENTION": "8759h"}, "POSTGRES_AUDIT_LOG_RETENTION"},
+		{"audit log retention over the spec's seven years", map[string]string{"POSTGRES_AUDIT_LOG_RETENTION": "61321h"}, "POSTGRES_AUDIT_LOG_RETENTION"},
 		{"http port zero", map[string]string{"HTTP_PORT": "0"}, "HTTP_PORT"},
 		{"http port too high", map[string]string{"HTTP_PORT": "70000"}, "HTTP_PORT"},
 		{"http read header timeout zero", map[string]string{"HTTP_READ_HEADER_TIMEOUT": "0s"}, "HTTP_READ_HEADER_TIMEOUT"},
@@ -849,6 +851,9 @@ func TestCapacityLeverDefaults(t *testing.T) {
 	// (pgxpool/pool.go:20), so nothing is pre-warmed and a peak pays a burst of dials.
 	if cfg.Postgres.MinConns != 2 {
 		t.Errorf("Postgres.MinConns = %d, want 2", cfg.Postgres.MinConns)
+	}
+	if cfg.Postgres.AuditLogRetention != 365*24*time.Hour {
+		t.Errorf("Postgres.AuditLogRetention = %s, want 365 days: the spec's floor is the default", cfg.Postgres.AuditLogRetention)
 	}
 }
 
