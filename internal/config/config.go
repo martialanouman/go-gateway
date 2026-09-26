@@ -13,6 +13,7 @@ package config
 import (
 	"fmt"
 	"log/slog"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -107,6 +108,7 @@ type Config struct {
 	BillingReaper BillingReaper `envPrefix:"BILLING_REAPER_"`
 	Exact         Exact         `envPrefix:"EXACT_"`
 	TLS           TLS           `envPrefix:"TLS_"`
+	OIDC          OIDC          `envPrefix:"OIDC_"`
 }
 
 // OTel configures tracing export. The variable names follow the OpenTelemetry specification so
@@ -532,6 +534,15 @@ type ContentKey struct {
 	Addr string `env:"ADDR" envDefault:"localhost:7002"`
 }
 
+// OIDC is where admin-api-svc verifies operator tokens: the identity provider's issuer, the audience
+// tokens must carry, and the JWKS they are signed with. All empty is the laptop setting, where the
+// static verifier stands in; production requires all three (step-310).
+type OIDC struct {
+	Issuer   string `env:"ISSUER"`
+	Audience string `env:"AUDIENCE"`
+	JWKSURL  string `env:"JWKS_URL"`
+}
+
 // TLS is the pod's transport identity: one certificate for every surface it serves and every service it
 // calls, because a service both listens and dials — smpp-server-svc serves its SessionRegistry and calls
 // session-manager-svc. The values are PATHS, never PEM: a private key in the environment is readable in
@@ -649,13 +660,14 @@ const (
 	SectionBillingReaper
 	SectionExact
 	SectionTLS
+	SectionOIDC
 
 	// SectionAll is what a caller declaring nothing gets. It must include every section, or
 	// Validate() — which runs validate(SectionAll) — would quietly stop being a full check. The
 	// cost of a section a binary does not use is nil: its fields carry valid defaults.
 	SectionAll = SectionOTel | SectionPostgres | SectionKafka | SectionClickHouse | SectionHTTP |
 		SectionRedis | SectionGRPC | SectionSMPP | SectionBilling | SectionContentKey |
-		SectionBillingReaper | SectionExact | SectionTLS
+		SectionBillingReaper | SectionExact | SectionTLS | SectionOIDC
 )
 
 // Load reads the configuration for serviceName from the environment and validates the sections it
@@ -764,6 +776,9 @@ func (c Config) validate(sections Section) error {
 	}
 	if sections&SectionTLS != 0 {
 		problems = append(problems, c.tlsProblems()...)
+	}
+	if sections&SectionOIDC != 0 {
+		problems = append(problems, c.oidcProblems()...)
 	}
 
 	if len(problems) == 0 {
@@ -1323,6 +1338,9 @@ func (c Config) LogValue() slog.Value {
 		// The tokens themselves are secrets and never logged: only whether any are configured, which
 		// is all a boot diagnosis needs.
 		slog.Bool("http_admin_tokens_set", len(c.HTTP.AdminTokens) > 0),
+		slog.String("oidc_issuer", c.OIDC.Issuer),
+		slog.String("oidc_audience", c.OIDC.Audience),
+		slog.String("oidc_jwks_url", c.OIDC.JWKSURL),
 		// The Redis URL can embed a password, so it is reduced to a boolean, as the Postgres URL is.
 		slog.Bool("redis_url_set", strings.TrimSpace(c.Redis.URL) != ""),
 		slog.Int("grpc_port", c.GRPC.Port),
@@ -1344,6 +1362,44 @@ func (c Config) LogValue() slog.Value {
 // The production rule is the same tier as the dev-default guards of Postgres, Redis and ClickHouse, and
 // it exists for the same reason: the safe value is the one an operator forgets to set. Off by default is
 // what keeps the test suites running; without this, off by default would also be what ships.
+// oidcProblems refuses a half-configured provider in every tier — it would boot and answer 401 to every
+// operator — and a missing or plaintext one in production.
+func (c Config) oidcProblems() []string {
+	fields := []struct{ name, value string }{
+		{"OIDC_ISSUER", c.OIDC.Issuer},
+		{"OIDC_AUDIENCE", c.OIDC.Audience},
+		{"OIDC_JWKS_URL", c.OIDC.JWKSURL},
+	}
+	var set, missing []string
+	for _, f := range fields {
+		if strings.TrimSpace(f.value) == "" {
+			missing = append(missing, f.name)
+		} else {
+			set = append(set, f.name)
+		}
+	}
+	if len(set) == 0 && !c.Environment.IsProduction() {
+		return nil
+	}
+
+	var problems []string
+	if len(missing) > 0 {
+		problems = append(problems, fmt.Sprintf("%s must be set: operator tokens cannot be verified without them",
+			strings.Join(missing, ", ")))
+	}
+	if c.OIDC.JWKSURL == "" {
+		return problems
+	}
+	u, err := url.Parse(c.OIDC.JWKSURL)
+	switch {
+	case err != nil || u.Scheme == "" || u.Host == "":
+		problems = append(problems, "OIDC_JWKS_URL must be an absolute URL")
+	case c.Environment.IsProduction() && u.Scheme != "https":
+		problems = append(problems, "OIDC_JWKS_URL must use https in production: a key set fetched in plaintext can be swapped")
+	}
+	return problems
+}
+
 func (c Config) tlsProblems() []string {
 	var problems []string
 

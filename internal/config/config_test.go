@@ -42,6 +42,7 @@ var knownVars = []string{
 	"CONTENT_KEY_ADDR",
 	"EXACT_CACHE_TTL",
 	"TLS_ENABLED", "TLS_CERT_FILE", "TLS_KEY_FILE", "TLS_CLIENT_CA_FILE", "TLS_ALLOWED_CLIENTS",
+	"OIDC_ISSUER", "OIDC_AUDIENCE", "OIDC_JWKS_URL",
 }
 
 // setEnv installs a clean environment holding exactly kv. Each variable goes through t.Setenv
@@ -173,6 +174,9 @@ func TestLoadFromEnvironment(t *testing.T) {
 		"TLS_CERT_FILE":               "/etc/gateway/tls/tls.crt",
 		"TLS_KEY_FILE":                "/etc/gateway/tls/tls.key",
 		"TLS_CLIENT_CA_FILE":          "/etc/gateway/tls/ca.crt",
+		"OIDC_ISSUER":                 "https://idp.example/realms/gw",
+		"OIDC_AUDIENCE":               "gateway-admin",
+		"OIDC_JWKS_URL":               "https://idp.example/realms/gw/certs",
 		"TLS_ALLOWED_CLIENTS":         "router-svc,admin-api-svc",
 	})
 
@@ -600,6 +604,9 @@ func TestDisabledOTelSkipsExporterValidation(t *testing.T) {
 		"TLS_CERT_FILE":               "/etc/gateway/tls/tls.crt",
 		"TLS_KEY_FILE":                "/etc/gateway/tls/tls.key",
 		"TLS_CLIENT_CA_FILE":          "/etc/gateway/tls/ca.crt",
+		"OIDC_ISSUER":                 "https://idp.example/realms/gw",
+		"OIDC_AUDIENCE":               "gateway-admin",
+		"OIDC_JWKS_URL":               "https://idp.example/realms/gw/certs",
 	})
 
 	cfg, err := config.Load("router-svc")
