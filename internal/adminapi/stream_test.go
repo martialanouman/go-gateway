@@ -68,6 +68,18 @@ func TestStreamMetricsRequiresTheOperatorScope(t *testing.T) {
 	if resp == nil || resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("status = %v, want 401", resp)
 	}
+
+	writeOnly := httptest.NewServer(newTestAPIWithScopes(t, adminapi.Deps{StreamHub: hub}, "admin:write"))
+	t.Cleanup(writeOnly.Close)
+	conn, resp, err = websocket.Dial(ctx, wsURL(writeOnly.URL)+"/v1/admin/stream/metrics",
+		&websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer " + operatorToken}}})
+	if err == nil {
+		_ = conn.CloseNow()
+		t.Fatal("a token without admin:read completed the upgrade")
+	}
+	if resp == nil || resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %v, want 403", resp)
+	}
 }
 
 func waitForSubscriber(t *testing.T, hub *realtime.Hub) {

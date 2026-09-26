@@ -1799,6 +1799,7 @@ paths:
       responses:
         '101': { description: Switching Protocols (WebSocket). }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /admin/stream/sessions:
     get:
       tags: [Realtime]
@@ -1811,6 +1812,7 @@ paths:
       responses:
         '101': { description: Switching Protocols (WebSocket). }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /admin/stream/billing-alerts:
     get:
       tags: [Realtime]
@@ -1825,6 +1827,7 @@ paths:
       responses:
         '101': { description: Switching Protocols (WebSocket). }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
 components:
 

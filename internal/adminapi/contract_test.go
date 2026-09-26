@@ -820,8 +820,8 @@ func TestUpgradeOperationsDeclareTheirContract(t *testing.T) {
 			continue
 		}
 		t.Run(op.id, func(t *testing.T) {
-			if got := responseCodes(cOp); !reflect.DeepEqual(got, []string{"101", "401"}) {
-				t.Errorf("contract responses = %v, want [101 401]", got)
+			if got := responseCodes(cOp); !reflect.DeepEqual(got, []string{"101", "401", "403"}) {
+				t.Errorf("contract responses = %v, want [101 401 403]", got)
 			}
 		})
 	}
