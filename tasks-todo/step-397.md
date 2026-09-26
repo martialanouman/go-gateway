@@ -82,3 +82,22 @@ c'est une convention de tout le contrat, pas un défaut de ces 50.
 Passer `auth.Middleware` en fail-closed (une opération sans `security:` refusée plutôt que servie).
 C'est la ceinture qui rendrait la classe impossible plutôt que visible, mais elle change un
 comportement global et mérite sa propre justification.
+
+## Design arrêté
+
+Rouge de départ lu le 2026-09-26 : lever la condition `cOp["security"] != nil` fait tomber **50**
+opérations, toutes `contract: <nil>` (32 `admin:write`, 18 `admin:read`). Les codes `401`/`403` sont
+déjà au contrat : la comparaison stricte des codes passait, seul `security:` manque.
+
+- **YAML** : `security: [ { OperatorBearer: [ <scope servi> ] } ]` sur les 50, le scope recopié du
+  rouge (donc de `scopeSecurity(...)`), pas relu d'intention. Bump **mineur** 6.6.0 → 6.7.0, confirmé
+  par `make contracts`.
+- **Garde** : dans `TestGeneratedSpecMatchesTheContractForEveryM1Operation`, la comparaison `security`
+  devient inconditionnelle et monte **avant** la sortie anticipée des opérations d'upgrade ; la
+  non-vacuité (chaque alternative nomme `OperatorBearer` avec au moins un scope) y est exigée sur le
+  côté servi. `TestEveryGeneratedOperationRequiresAScope` est retiré, et la comparaison `security` de
+  `TestUpgradeOperationsDeclareTheirContract` avec lui : les deux deviennent redondantes.
+- **Couverture équivalente** : l'ancienne garde parcourait toutes les opérations générées, la nouvelle
+  parcourt `m1Operations` ; `TestGeneratedSpecRegistersNoOperationOutsideTheM1Surface` garantit que
+  les premières sont incluses dans les secondes.
+- Aucun arbitrage ouvert : la fiche fixe le périmètre, le bump et la garde.
