@@ -1690,8 +1690,8 @@ paths:
         MT messages submitted within the window, bucketed every 10s (5m) or every minute (1h), with the same
         cohort semantics as get-metrics-summary. Only 5m and 1h are served; any other window is refused with
         422. The 20 keys with the most submissions get their own series, the rest is summed under the key
-        `other`. By group, the membership is the CURRENT one and customers outside any group fall under
-        `ungrouped`. By connector, a message never dispatched has no connector and appears in no series.
+        `other`. By group, the membership is the CURRENT one and customers outside any group, or deleted since, fall
+        under `ungrouped`. By connector, a message never dispatched has no connector and appears in no series.
         503 when the window holds more rows than a read may return.
       operationId: get-traffic-metrics
       security: [ { OperatorBearer: [ admin:read ] } ]

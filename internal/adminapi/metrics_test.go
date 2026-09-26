@@ -49,14 +49,14 @@ func getMetrics(t *testing.T, api http.Handler, path string, into any) int {
 func TestMetricsSummaryReadsTheLastFiveMinutesByDefault(t *testing.T) {
 	p50, p99 := 120.0, 900.0
 	fake := &fakeMetrics{counts: clickhouse.MetricsCounts{Submitted: 9, Delivered: 5, Failed: 2, Rejected: 1, MOReceived: 4, E2EP50: &p50, E2EP99: &p99}}
-	api := newTestAPIWith(t, adminapi.Deps{Metrics: fake})
+	api := newTestAPIWithScopes(t, adminapi.Deps{Metrics: fake}, "admin:read")
 
 	var body map[string]any
 	if code := getMetrics(t, api, "summary", &body); code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", code)
+		t.Fatalf("status = %d, want 200 for a read-only operator", code)
 	}
-	if got := fake.to.Sub(fake.from); got != 5*time.Minute {
-		t.Fatalf("read window = %v, want 5m", got)
+	if got := fake.to.Sub(fake.from); got != 5*time.Minute || !fake.to.Equal(fake.to.Truncate(10*time.Second)) {
+		t.Fatalf("read [%v, %v), want 5m ending on a 10s bucket boundary", fake.from, fake.to)
 	}
 	want := map[string]any{"window": "5m", "submitted": 9.0, "delivered": 5.0, "failed": 2.0, "rejected": 1.0,
 		"mo_received": 4.0, "e2e_latency_ms_p50": 120.0, "e2e_latency_ms_p99": 900.0}
@@ -65,18 +65,27 @@ func TestMetricsSummaryReadsTheLastFiveMinutesByDefault(t *testing.T) {
 			t.Errorf("%s = %v, want %v", k, body[k], v)
 		}
 	}
-	for _, absent := range []string{"active_sessions", "ingest_latency_ms_p50"} {
-		if v, ok := body[absent]; ok && v != nil {
-			t.Errorf("%s = %v, want absent or null: nothing measures it", absent, v)
+	for _, unmeasured := range []string{"ingest_latency_ms_p50", "ingest_latency_ms_p99"} {
+		if v, ok := body[unmeasured]; !ok || v != nil {
+			t.Errorf("%s = %v (present=%v), want null as the contract says", unmeasured, v, ok)
 		}
+	}
+	if v, ok := body["active_sessions"]; ok {
+		t.Errorf("active_sessions = %v, want absent: nothing counts it", v)
 	}
 }
 
 func TestMetricsRefuseAWindowTheyCannotAfford(t *testing.T) {
 	api := newTestAPIWith(t, adminapi.Deps{Metrics: &fakeMetrics{}})
-	for _, path := range []string{"summary?window=24h", "traffic?window=24h", "summary?window=2m"} {
-		if code := getMetrics(t, api, path, nil); code != http.StatusUnprocessableEntity {
-			t.Errorf("%s: status = %d, want 422", path, code)
+	for _, path := range []string{"summary?window=24h", "traffic?window=24h"} {
+		var body struct {
+			Errors []struct {
+				Field string `json:"field"`
+			} `json:"errors"`
+		}
+		code := getMetrics(t, api, path, &body)
+		if code != http.StatusUnprocessableEntity || len(body.Errors) != 1 || body.Errors[0].Field != "window" {
+			t.Errorf("%s: status = %d errors = %+v, want 422 naming window", path, code, body.Errors)
 		}
 	}
 }
@@ -117,11 +126,12 @@ func (b trafficBody) submittedBy() map[string]int {
 func TestTrafficBucketsAnHourByTheMinute(t *testing.T) {
 	connector := uuid.New()
 	bucket := time.Date(2026, 9, 26, 10, 0, 0, 0, time.UTC)
-	fake := &fakeMetrics{points: []clickhouse.TrafficPoint{
-		{Bucket: bucket, Key: connector, Submitted: 3, Delivered: 2, Failed: 1},
-		{Bucket: bucket.Add(time.Minute), Key: connector, Submitted: 1},
-	}}
-	api := newTestAPIWith(t, adminapi.Deps{Metrics: fake})
+	fake := &fakeMetrics{}
+	for _, m := range []int{4, 1, 3, 0, 2} {
+		fake.points = append(fake.points, clickhouse.TrafficPoint{Bucket: bucket.Add(time.Duration(m) * time.Minute), Key: connector, Submitted: int64(m + 1)})
+	}
+	fake.points[3].Delivered, fake.points[3].Failed = 2, 1
+	api := newTestAPIWithScopes(t, adminapi.Deps{Metrics: fake}, "admin:read")
 
 	var body trafficBody
 	if code := getMetrics(t, api, "traffic", &body); code != http.StatusOK {
@@ -134,8 +144,13 @@ func TestTrafficBucketsAnHourByTheMinute(t *testing.T) {
 		t.Fatalf("body = %+v, want one connector series over 1h", body)
 	}
 	p := body.Series[0].Points
-	if len(p) != 2 || !p[0].T.Equal(bucket) || p[0].Submitted != 3 || p[0].Delivered != 2 || p[0].Failed != 1 || p[1].Submitted != 1 {
-		t.Fatalf("points = %+v, want the two buckets in order", p)
+	if len(p) != 5 || p[0].Delivered != 2 || p[0].Failed != 1 {
+		t.Fatalf("points = %+v, want five buckets, the first carrying its outcomes", p)
+	}
+	for i, pt := range p {
+		if !pt.T.Equal(bucket.Add(time.Duration(i)*time.Minute)) || pt.Submitted != i+1 {
+			t.Fatalf("points = %+v, want the buckets in time order", p)
+		}
 	}
 }
 

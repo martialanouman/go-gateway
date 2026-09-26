@@ -90,8 +90,10 @@ func (s *fakeCustomerStore) List(_ context.Context, f cp.CustomerFilter) (cp.Pag
 		}
 		items = append(items, c)
 	}
-	if f.Limit > 0 && len(items) > f.Limit {
-		return cp.Page[cp.Customer]{Items: items[:f.Limit], NextCursor: cp.EncodeCursor(items[f.Limit-1].ID), HasMore: true}, nil
+	// The repository fetches Limit+1 rows: without a limit it returns one customer and no next page.
+	limit := max(f.Limit, 1)
+	if len(items) > limit {
+		return cp.Page[cp.Customer]{Items: items[:limit], HasMore: f.Limit > 0}, nil
 	}
 	return cp.Page[cp.Customer]{Items: items}, nil
 }

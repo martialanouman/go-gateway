@@ -28,10 +28,9 @@ type metricsFixture struct {
 
 // message seeds a message's pre-dispatch row, then one segment row per later status, each written with
 // its own version: the read must count the message once, in its last state.
-func (f *metricsFixture) message(customerID uuid.UUID, dir clickhouse.Direction, at time.Time, connectorID *uuid.UUID, latencyMs uint32, statuses ...clickhouse.Status) uuid.UUID {
-	id := uuid.New()
+func (f *metricsFixture) message(customerID uuid.UUID, dir clickhouse.Direction, at time.Time, connectorID *uuid.UUID, latencyMs uint32, statuses ...clickhouse.Status) clickhouse.CDRRow {
 	base := clickhouse.CDRRow{
-		MessageID: id, TraceID: uuid.New(), AccountID: uuid.New(), CustomerID: customerID, Direction: dir,
+		MessageID: uuid.New(), TraceID: uuid.New(), AccountID: uuid.New(), CustomerID: customerID, Direction: dir,
 		SourceAddr: "GATEWAY", DestAddr: searchMSISDN(), SubmittedAt: at, Status: clickhouse.StatusAccepted,
 		SegmentCount: 1, Encoding: clickhouse.EncodingGSM7,
 	}
@@ -52,7 +51,7 @@ func (f *metricsFixture) message(customerID uuid.UUID, dir clickhouse.Direction,
 		}
 		f.rows = append(f.rows, row)
 	}
-	return id
+	return base
 }
 
 func (f *metricsFixture) flush(t *testing.T) {
@@ -96,11 +95,9 @@ func TestMetricsSummaryCountsEachMessageOnceInItsFinalState(t *testing.T) {
 	}
 
 	// A DLR landing later moves the message, without rewriting its earlier rows.
-	f.rows = append(f.rows, clickhouse.CDRRow{
-		MessageID: inFlight, TraceID: uuid.New(), AccountID: uuid.New(), CustomerID: customer,
-		Direction: clickhouse.DirectionMT, SourceAddr: "GATEWAY", DestAddr: searchMSISDN(), SubmittedAt: at,
-		Status: clickhouse.StatusDelivered, SegmentSeq: 1, SegmentCount: 1, Encoding: clickhouse.EncodingGSM7,
-	})
+	dlr := inFlight
+	dlr.Status, dlr.SegmentSeq = clickhouse.StatusDelivered, 1
+	f.rows = append(f.rows, dlr)
 	f.flush(t)
 	if got, err = reader.MetricsSummary(ctx, from, to); err != nil || got.Delivered != 3 || got.Submitted != 6 {
 		t.Fatalf("after the DLR: delivered=%d submitted=%d err=%v, want 3 and 6", got.Delivered, got.Submitted, err)

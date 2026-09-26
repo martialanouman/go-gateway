@@ -22,9 +22,8 @@ type MetricsReader interface {
 	Traffic(ctx context.Context, from, to time.Time, step time.Duration, dim clickhouse.TrafficDimension, maxRows int) ([]clickhouse.TrafficPoint, error)
 }
 
-// metricsWindows are the only windows a read may cover. 24h is not one: at the target throughput it is
-// ~690 M messages to scan per request, and the spec (§6.3) wants it served from a pre-aggregate that does
-// not exist yet.
+// metricsWindows are the only windows a read may cover; 24h awaits a pre-aggregate
+// (debts/metriques-24h-sans-pre-agregat.md).
 var metricsWindows = map[string]struct{ span, step time.Duration }{
 	"5m": {5 * time.Minute, 10 * time.Second},
 	"1h": {time.Hour, time.Minute},
@@ -34,8 +33,6 @@ const (
 	trafficTopSeries = 20
 	trafficMaxRows   = 100_000
 	trafficOtherKey  = "other"
-	trafficNoGroup   = "ungrouped"
-	membershipPage   = 500
 )
 
 type metricsSummaryInput struct {
@@ -49,10 +46,10 @@ type metricsSummaryDTO struct {
 	Failed         int64    `json:"failed" required:"false"`
 	Rejected       int64    `json:"rejected" required:"false"`
 	MOReceived     int64    `json:"mo_received" required:"false"`
-	IngestP50      *float64 `json:"ingest_latency_ms_p50,omitempty" nullable:"true"`
-	IngestP99      *float64 `json:"ingest_latency_ms_p99,omitempty" nullable:"true"`
-	E2EP50         *float64 `json:"e2e_latency_ms_p50,omitempty" nullable:"true"`
-	E2EP99         *float64 `json:"e2e_latency_ms_p99,omitempty" nullable:"true"`
+	IngestP50      *float64 `json:"ingest_latency_ms_p50" nullable:"true" required:"false"`
+	IngestP99      *float64 `json:"ingest_latency_ms_p99" nullable:"true" required:"false"`
+	E2EP50         *float64 `json:"e2e_latency_ms_p50" nullable:"true" required:"false"`
+	E2EP99         *float64 `json:"e2e_latency_ms_p99" nullable:"true" required:"false"`
 	ActiveSessions *int     `json:"active_sessions,omitempty"`
 }
 
@@ -111,7 +108,7 @@ func windowOf(name string) (from, to time.Time, step time.Duration, err error) {
 		return from, to, 0, humaerr.FailValidation("unsupported window",
 			humaerr.FieldError{Field: "window", Message: "must be one of 5m, 1h"})
 	}
-	to = time.Now().UTC()
+	to = time.Now().UTC().Truncate(w.step)
 	return to.Add(-w.span), to, w.step, nil
 }
 
@@ -154,7 +151,7 @@ func (h *metricsHandlers) traffic(ctx context.Context, in *trafficInput) (*traff
 			if g, ok := groups[id]; ok {
 				return g.String()
 			}
-			return trafficNoGroup
+			return "ungrouped"
 		}
 	}
 	return &trafficOutput{Body: trafficDTO{GroupBy: in.GroupBy, Window: in.Window, Series: foldSeries(points, keyOf)}}, nil
@@ -164,7 +161,7 @@ func (h *metricsHandlers) traffic(ctx context.Context, in *trafficInput) (*traff
 // another group takes its past traffic with it.
 func (h *metricsHandlers) groupOfEachCustomer(ctx context.Context) (map[uuid.UUID]uuid.UUID, error) {
 	out := map[uuid.UUID]uuid.UUID{}
-	f := cp.CustomerFilter{Limit: membershipPage}
+	f := cp.CustomerFilter{Limit: 500}
 	for {
 		page, err := h.customers.List(ctx, f)
 		if err != nil {

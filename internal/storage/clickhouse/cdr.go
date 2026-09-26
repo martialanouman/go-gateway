@@ -312,10 +312,8 @@ const cdrAggInnerCols = `customer_id, account_id, direction, submitted_at, messa
 // under the new model, so the two agree for new data.
 const cdrDispatched = `status NOT IN ('accepted', 'rejected')`
 
-// cdrStatusCounts and cdrStatusPrecedence are the ONE definition of a message's aggregated status: the
-// per-message counts over its collapsed segment rows, and the §6.6 precedence that reads them. The CDR
-// explorer and the metrics both fold through them, so a message cannot read delivered in one and failed
-// in the other.
+// cdrStatusCounts and cdrStatusPrecedence are the ONE definition of a message's aggregated status, shared
+// by the CDR explorer and the metrics so a message cannot read delivered in one and failed in the other.
 const cdrStatusCounts = `maxIf(segment_count, ` + cdrDispatched + `) AS dispatched_total,
 	countIf(status = 'delivered') AS delivered_segs,
 	countIf(status = 'cancelled') AS cancelled_cnt,

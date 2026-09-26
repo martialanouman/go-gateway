@@ -17,13 +17,19 @@ import (
 // able to hold the cluster's CPU for as long as it keeps a tab open.
 const metricsMaxExecutionSeconds = 10
 
-// clickhouseTimeoutExceeded is TIMEOUT_EXCEEDED, raised when max_execution_time trips.
-const clickhouseTimeoutExceeded = 159
+// metricsOverBudget are the ClickHouse errors of a read the cluster could not afford right now: a retry,
+// or a quieter moment, may pass, so they answer 503 rather than 500.
+var metricsOverBudget = map[int32]bool{
+	159: true, // TIMEOUT_EXCEEDED, max_execution_time
+	160: true, // TOO_SLOW, the same limit estimated ahead
+	241: true, // MEMORY_LIMIT_EXCEEDED
+}
 
 // metricsMessages collapses each message of a submitted_at window to its final status, like cdrAggregate
 // but over the few columns a count needs: the explorer's inner level takes argMax of every column,
 // ciphertext included, which a window of millions of messages cannot afford.
-const metricsMessages = `SELECT submitted_at, customer_id, direction, connector_id, latency_ms,
+func metricsMessages(innerFilter string) string {
+	return `SELECT submitted_at, customer_id, direction, connector_id, latency_ms,
 	` + cdrStatusPrecedence + ` AS status
 FROM (
 	SELECT submitted_at, message_id, any(customer_id) AS customer_id, any(direction) AS direction,
@@ -35,10 +41,11 @@ FROM (
 			argMax(status, version) AS status, argMax(segment_count, version) AS segment_count,
 			argMax(connector_id, version) AS connector_id, argMax(latency_ms, version) AS latency_ms
 		FROM cdr
-		WHERE submitted_at >= ? AND submitted_at < ?
+		WHERE submitted_at >= ? AND submitted_at < ?` + innerFilter + `
 		GROUP BY customer_id, direction, submitted_at, message_id, segment_seq
 	) GROUP BY submitted_at, message_id
 )`
+}
 
 // metricsFailed counts an expiry as a failure: both are a message that will never be delivered, and the
 // contract has no separate expired counter.
@@ -58,14 +65,14 @@ type MetricsCounts struct {
 
 // MetricsSummary counts the MT and MO messages submitted in [from, to).
 func (r *CDRReader) MetricsSummary(ctx context.Context, from, to time.Time) (MetricsCounts, error) {
-	const query = `SELECT
+	query := `SELECT
 		toInt64(countIf(direction = 'mt')),
 		toInt64(countIf(direction = 'mt' AND status = 'delivered')),
 		toInt64(countIf(direction = 'mt' AND ` + metricsFailed + `)),
 		toInt64(countIf(direction = 'mt' AND status = 'rejected')),
 		toInt64(countIf(direction = 'mo')),
 		quantilesTDigestIf(0.5, 0.99)(latency_ms, direction = 'mt' AND status = 'delivered')
-	FROM (` + metricsMessages + `)`
+	FROM (` + metricsMessages(``) + `)`
 
 	var out MetricsCounts
 	var quantiles []float32
@@ -104,14 +111,14 @@ type TrafficPoint struct {
 // has no connector and appears in no connector series. More than maxRows points is refused as
 // ErrServiceUnavailable rather than returned truncated.
 func (r *CDRReader) Traffic(ctx context.Context, from, to time.Time, step time.Duration, dim TrafficDimension, maxRows int) ([]TrafficPoint, error) {
-	key, filter := `customer_id`, ``
+	key, where := `customer_id`, ``
 	if dim == TrafficByConnector {
-		key, filter = `assumeNotNull(connector_id)`, ` AND connector_id IS NOT NULL`
+		key, where = `assumeNotNull(connector_id)`, `
+	WHERE connector_id IS NOT NULL`
 	}
 	query := `SELECT toStartOfInterval(submitted_at, toIntervalSecond(?)) AS bucket, ` + key + ` AS key,
 		toInt64(count()), toInt64(countIf(status = 'delivered')), toInt64(countIf(` + metricsFailed + `))
-	FROM (` + metricsMessages + `)
-	WHERE direction = 'mt'` + filter + `
+	FROM (` + metricsMessages(` AND direction = 'mt'`) + `)` + where + `
 	GROUP BY bucket, key
 	ORDER BY bucket, key
 	LIMIT ?`
@@ -145,7 +152,7 @@ func metricsContext(ctx context.Context) context.Context {
 
 func metricsErr(op string, err error) error {
 	var ex *clickhouse.Exception
-	if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &ex) && ex.Code == clickhouseTimeoutExceeded) {
+	if errors.As(err, &ex) && metricsOverBudget[ex.Code] {
 		return fmt.Errorf("clickhouse: metrics %s: %w", op, errs.ErrServiceUnavailable)
 	}
 	return fmt.Errorf("clickhouse: metrics %s: %w", op, err)
