@@ -425,9 +425,8 @@ type HTTP struct {
 	// that leaves it unset.
 	ReadHeaderTimeout time.Duration `env:"READ_HEADER_TIMEOUT" envDefault:"5s"`
 
-	// AdminTokens are the operator bearer tokens the M1 stand-in verifier accepts, as
-	// "token:scope|scope" entries (internal/auth). They are secret-bearing and never logged. The
-	// real identity provider (OIDC/mTLS) replaces them at M12.
+	// AdminTokens are the operator bearer tokens the static verifier accepts outside production, as
+	// "token:scope|scope" entries (internal/auth). They are secret-bearing and never logged.
 	AdminTokens []string `env:"ADMIN_TOKENS" envSeparator:","`
 
 	// ExportDir is where asynchronous CDR exports write their artefacts (step-187). Empty — the
@@ -1084,10 +1083,9 @@ func (c Config) httpProblems() []string {
 			"HTTP_READ_HEADER_TIMEOUT %s must be positive: an unbounded header read is a Slowloris vector",
 			c.HTTP.ReadHeaderTimeout))
 	}
-	// AdminTokens is deliberately NOT validated here. It is specific to admin-api-svc's stand-in
+	// AdminTokens is deliberately NOT validated here. It is specific to admin-api-svc's static
 	// verifier, yet SectionHTTP is part of SectionAll and rest-api-svc also carries an HTTP section
-	// without operator tokens. The "at least one usable token in production" policy therefore lives
-	// in cmd/admin-api-svc (the point of use), not in this shared validator.
+	// without operator tokens. Its policy therefore lives in cmd/admin-api-svc (the point of use).
 	return problems
 }
 

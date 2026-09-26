@@ -64,11 +64,21 @@ spec:
                 secretKeyRef:
                   name: gateway-secrets
                   key: CLICKHOUSE_PASSWORD
-            - name: HTTP_ADMIN_TOKENS
+            - name: OIDC_ISSUER
               valueFrom:
-                secretKeyRef:
-                  name: gateway-secrets
-                  key: HTTP_ADMIN_TOKENS
+                configMapKeyRef:
+                  name: gateway-oidc
+                  key: OIDC_ISSUER
+            - name: OIDC_AUDIENCE
+              valueFrom:
+                configMapKeyRef:
+                  name: gateway-oidc
+                  key: OIDC_AUDIENCE
+            - name: OIDC_JWKS_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: gateway-oidc
+                  key: OIDC_JWKS_URL
           ports:
             - name: ops
               containerPort: 9090

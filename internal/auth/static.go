@@ -9,9 +9,9 @@ import (
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 )
 
-// StaticVerifier accepts a fixed set of operator tokens. It exists so the authorization path is
-// real while the identity provider is not yet built; it is NOT an authentication system, and it is
-// replaced wholesale at M12. Tokens are compared in constant time.
+// StaticVerifier accepts a fixed set of operator tokens, for a laptop without an identity provider. It
+// is NOT an authentication system, and production cannot select it (cmd/admin-api-svc). Tokens are
+// compared in constant time.
 type StaticVerifier struct {
 	entries []staticEntry
 }
@@ -23,8 +23,7 @@ type staticEntry struct {
 
 // NewStaticVerifier parses "token:scope|scope" entries (config.HTTP.AdminTokens). Each entry's
 // subject is the token's Fingerprint; the pipe-separated scopes must be known. An empty list is allowed (a
-// verifier that rejects everything), which is valid on a laptop; cmd/admin-api-svc enforces the
-// "at least one token in production" policy before wiring this verifier.
+// verifier that rejects everything), which is valid on a laptop.
 func NewStaticVerifier(entries []string) (*StaticVerifier, error) {
 	parsed := make([]staticEntry, 0, len(entries))
 	for i, raw := range entries {

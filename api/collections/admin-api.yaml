@@ -10,7 +10,9 @@ info:
     "token:scope|scope" entries and the client sends only the token (subject)
     part as `Authorization: Bearer <token>`. For local runs configure e.g.
       HTTP_ADMIN_TOKENS=dev-operator-token:admin:read|admin:write
-    and set the `operatorToken` env var to `dev-operator-token`.
+    and set the `operatorToken` env var to `dev-operator-token`. Static tokens
+    only exist outside production; there, `operatorToken` is a JWT access token
+    from the identity provider named by OIDC_ISSUER / OIDC_AUDIENCE / OIDC_JWKS_URL.
 
     Path IDs are collection variables (customerId, accountId, ...) so mutating
     requests are runnable once you paste real UUIDs. Optional query filters are

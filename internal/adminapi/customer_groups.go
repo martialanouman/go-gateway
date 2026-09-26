@@ -14,7 +14,8 @@ import (
 )
 
 // customerGroupDTO is the wire form of a CustomerGroup (contract schema CustomerGroup). created_by
-// is read-only and stays null until real operator auth lands (step-310).
+// is read-only and stays null: it names a dashboard operator, and the Admin API only ever sees a
+// service token (debts/created-by-jamais-renseigne.md).
 type customerGroupDTO struct {
 	ID          string    `json:"id" format:"uuid"`
 	Name        string    `json:"name"`

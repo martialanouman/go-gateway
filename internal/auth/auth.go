@@ -1,10 +1,8 @@
 // Package auth authenticates operators on the Admin API and enforces the scopes each operation
 // declares.
 //
-// At M1 the identity provider does not exist yet: StaticVerifier compares bearer tokens against a
-// configured list, so the authorization path is real — 401 and 403 genuinely happen and are
-// genuinely tested — while OIDC/mTLS is deferred to M12. Nothing above the TokenVerifier interface
-// changes when the real provider lands.
+// Production verifies JWT access tokens from the configured identity provider (OIDCVerifier). Outside
+// production, without one, StaticVerifier compares bearer tokens against a configured list.
 package auth
 
 import (
@@ -36,15 +34,14 @@ const (
 )
 
 // fingerprintBytes is how much of the SHA-256 digest the fingerprint keeps: 8 octets, 16 hex characters,
-// 64 bits. Production refuses a token under 32 bytes (cmd/admin-api-svc), so the prefix identifies
-// an operator without offering a digest worth brute-forcing.
+// 64 bits: enough to identify an operator, too little to be a digest worth brute-forcing.
 const fingerprintBytes = 8
 
 // Fingerprint is the identity recorded for an operator token wherever a principal is written down —
 // audit rows, job rows, logs. It is "tok_" and a truncated SHA-256 of the token, never the token: those
 // records outlive the token and are read by people who must not be able to replay it. Migration
-// 0014_operator_fingerprint computes the same value in SQL for the rows written before it existed, and
-// those rows keep this format after the static verifier is replaced (step-310).
+// 0014_operator_fingerprint computes the same value in SQL for the rows written before it existed. Those
+// rows keep this format under OIDC, whose subject is the token's sub: nothing maps one to the other.
 func Fingerprint(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return "tok_" + hex.EncodeToString(sum[:fingerprintBytes])
@@ -68,8 +65,7 @@ func (p Principal) Has(s Scope) bool {
 	return false
 }
 
-// TokenVerifier turns a bearer token into a Principal, or an error when the token is unknown. M1
-// ships StaticVerifier; M12 replaces it with OIDC discovery + JWKS behind this same interface.
+// TokenVerifier turns a bearer token into a Principal, or an error when the token is unknown.
 type TokenVerifier interface {
 	Verify(ctx context.Context, token string) (Principal, error)
 }
