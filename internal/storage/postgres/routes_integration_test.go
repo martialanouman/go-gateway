@@ -132,6 +132,9 @@ func TestRouteRepoReorderIsAllOrNothing(t *testing.T) {
 		"unknown":    append([]uuid.UUID{uuid.New()}, reversed[1:]...),
 		"empty":      {},
 	} {
+		if name == "empty" && len(reversed) == 0 {
+			continue
+		}
 		if _, err := routes.Reorder(ctx, ids); !errors.Is(err, errs.ErrValidation) {
 			t.Errorf("%s list: err = %v, want ErrValidation", name, err)
 		}
@@ -192,6 +195,12 @@ func TestRouteRepoReorderRefusedByAConcurrentDeleteMovesNothing(t *testing.T) {
 	pool := pgtest.Pool(t)
 	ctx := context.Background()
 	routes := postgres.NewRouteRepo(pool)
+	// Survivors besides the doomed route: alone, it would leave nothing that a partial update could move.
+	for range 2 {
+		if _, err := routes.Create(ctx, cp.NewRoute{Name: "survivor-" + uuid.NewString(), DistributionStrategy: cp.DistributionWeighted}); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+	}
 	doomed, err := routes.Create(ctx, cp.NewRoute{Name: "doomed-" + uuid.NewString(), DistributionStrategy: cp.DistributionWeighted})
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -215,7 +224,23 @@ func TestRouteRepoReorderRefusedByAConcurrentDeleteMovesNothing(t *testing.T) {
 		_, err := routes.Reorder(ctx, order)
 		result <- err
 	}()
-	time.Sleep(500 * time.Millisecond) // the reorder now waits on the doomed row's lock
+	// Commit only once the UPDATE waits on the doomed row: committed earlier, the delete is refused by the
+	// guard instead, and the rollback this test is about never runs.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var waiting bool
+		if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+			WHERE wait_event_type = 'Lock' AND query LIKE '%UPDATE control_plane.routes r SET priority%')`).Scan(&waiting); err != nil {
+			t.Fatalf("pg_stat_activity: %v", err)
+		}
+		if waiting {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the reorder never waited on the doomed row's lock")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	if err := deleter.Commit(ctx); err != nil {
 		t.Fatalf("commit delete: %v", err)
 	}

@@ -22,9 +22,9 @@ Procédure complète (les six étapes, le tableau correctif/mineur/majeur,
 `internal/adminapi/collection_test.go` — il se régénère, il ne s'édite pas.
 
 Une opération déclarée sous `paths:` que **personne ne sert** fait échouer la
-suite tant qu'elle n'est pas inscrite en `deferred`, avec raison **et** step :
-`internal/adminapi/contract_test.go` pour l'Admin,
-`internal/restapi/conformance_test.go` pour le public. Déclarer le contrat
-**avant** l'implémentation reste la règle — ce qui est interdit, c'est l'écart
-**non déclaré**. La step qui sert l'opération retire sa ligne ; les deux listes
-s'excluent mutuellement.
+suite. Côté public, elle peut s'inscrire en `deferred` (raison **et** step,
+`internal/restapi/conformance_test.go`). Côté Admin, la liste d'exceptions a
+disparu avec step-390, qui a servi tout le contrat
+(`internal/adminapi/contract_test.go`) : déclarer le contrat **avant**
+l'implémentation reste la règle, donc contrat et handler arrivent dans la même
+PR, ou la PR réintroduit une liste annotée.
