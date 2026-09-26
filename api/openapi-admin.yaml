@@ -1467,31 +1467,61 @@ paths:
       tags: [Content & RGPD]
       summary: Get platform default content policy
       operationId: get-platform-content-policy
+      description: >-
+        The policy an `inherit` customer resolves to. `off` until changed. `content_retention_days` is the
+        body retention the CDR applies (a ClickHouse column TTL, 30 days).
+      security: [ { OperatorBearer: [ admin:read ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ContentPolicy' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
     patch:
       tags: [Content & RGPD]
       summary: Update platform default content policy
       operationId: update-platform-content-policy
+      description: >-
+        `content_storage` is `off` or `stored_encrypted`; `inherit` and `stored_plaintext` are refused with
+        422 — storage in clear belongs to a named customer under contract, never to every customer that has
+        not chosen. `content_retention_days` cannot be changed here (422 unless absent or equal to the
+        current value): it is a ClickHouse column TTL, altered as an operations task. The new default
+        reaches the data plane on its next configuration reload, without a restart.
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ContentPolicy' } } } }
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ContentPolicy' } } } }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /admin/customers/{id}/content-policy:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
     get:
       tags: [Content & RGPD]
       summary: Get a customer's content policy
       operationId: get-customer-content-policy
+      description: >-
+        The customer's own setting, `inherit` included — not the resolved policy. `content_retention_days`
+        is stored but not yet applied: every body expires with the platform retention.
+      security: [ { OperatorBearer: [ admin:read ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ContentPolicy' } } } }
         '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
     patch:
       tags: [Content & RGPD]
       summary: Update a customer's content policy
       operationId: update-customer-content-policy
+      description: >-
+        Same fields as update-customer. The change reaches the data plane on its next configuration reload,
+        without a restart. `content_retention_days` is stored but not yet applied.
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ContentPolicy' } } } }
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ContentPolicy' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /admin/messages/{id}/content:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
     get:

@@ -169,6 +169,11 @@ var m1Operations = []opRef{
 	{"list-sessions", "get", "/admin/sessions"},
 	{"disconnect-session", "delete", "/admin/sessions/{id}"},
 	{"list-account-sessions", "get", "/admin/smpp-accounts/{id}/sessions"},
+
+	{"get-platform-content-policy", "get", "/admin/platform/content-policy"},
+	{"update-platform-content-policy", "patch", "/admin/platform/content-policy"},
+	{"get-customer-content-policy", "get", "/admin/customers/{id}/content-policy"},
+	{"update-customer-content-policy", "patch", "/admin/customers/{id}/content-policy"},
 }
 
 // deferredOp annotates an operation the contract declares and nobody serves yet. Both fields are
@@ -182,12 +187,6 @@ type deferredOp struct{ reason, step string }
 // unclassified entry here is a typed client calling a 404. Kept honest by
 // TestEveryContractOperationIsServedOrDeferred, which also forbids overlapping with m1Operations.
 var deferred = map[string]deferredOp{
-
-	// Content policy (§6.23): customers.content_storage exists; the platform default does not.
-	"get-customer-content-policy":    {"get-customer returns it, no dedicated one", "step-370"},
-	"update-customer-content-policy": {"update-customer writes it, no dedicated one", "step-370"},
-	"get-platform-content-policy":    {"no platform-wide policy table at all", "step-370"},
-	"update-platform-content-policy": {"no platform-wide policy table at all", "step-370"},
 
 	// Aggregated metrics: stream-metrics pushes; nothing answers a pull.
 	"get-metrics-summary": {"stream-metrics pushes, nothing pulls", "step-380"},
@@ -909,7 +908,7 @@ func declaresUpgrade(codes []string) bool {
 // deferred anyway. A step needing to defer past step-390 widens this list in its own PR — one line
 // of diff, visible in review.
 var deferredSteps = []string{
-	"step-330", "step-340", "step-350", "step-360", "step-370", "step-380", "step-390",
+	"step-330", "step-340", "step-350", "step-380", "step-390",
 }
 
 // TestEveryContractOperationIsServedOrDeferred is the direction the four tests above leave open:
