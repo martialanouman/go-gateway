@@ -70,3 +70,32 @@ support de cette valeur.
 ## Hors périmètre
 
 Le chiffrement lui-même, la lecture gardée, le crypto-shred et la rétention (step-162 à 165, livrés).
+
+## Design arrêté
+
+Arbitré par Fable le 2026-09-26 (spec → Fable, aucun point remonté à l'humain).
+
+1. **Support plateforme** : `control_plane.platform_content_policy`, une ligne (`id boolean PRIMARY KEY
+   DEFAULT true CHECK (id)`), `content_storage text NOT NULL DEFAULT 'off' CHECK (content_storage IN
+   ('off','stored_encrypted'))`. La migration Postgres insère `'off'` : aucun changement observable.
+   La base porte le refus du clair ; le 422 de l'API n'en est que le message.
+2. **Un seul chemin de lecture** : `PolicyLister` gagne `PlatformContentStorage(ctx)` ;
+   `EffectiveStorage(cs, platform)` résout `inherit` vers le défaut plateforme au chargement ; le watcher
+   existant du router recharge l'instantané sur `config:changed` (publié par le middleware admin sur
+   toute mutation). Au **boot**, une lecture plateforme en échec fait échouer le démarrage (le
+   chargement passe sous `loadWithRetry` comme les autres instantanés) — pas de repli sur `off`, qui
+   masquerait un ordre de déploiement faux et ferait diverger les pods. Au **rechargement**, l'instantané
+   précédent reste. Ordre : migration avant router ; un router ancien ignore la table.
+3. **Plateforme** : `inherit` et `stored_plaintext` → 422 (§6.23 réserve le clair à un client sous
+   contrat nommé). Schéma `ContentPolicy` partagé, non forké ; 422 déclaré.
+4. **`content_retention_days` plateforme** = 30, la TTL de colonne de la migration ClickHouse 0003 (un
+   test lit le DDL et garde l'égalité). PATCH avec une autre valeur → 422 ; 30 ou absent accepté, pour
+   qu'un GET→PATCH reste idempotent. Changer la TTL est une opération d'exploitation (ALTER ClickHouse).
+5. **Client** : vues minces sur `CustomerStore.Get/Update` (sémantique de pointeurs d'`update-customer`),
+   `inherit` rendu brut, 404 si inconnu. `content_retention_days` servi tel que stocké, **non appliqué**
+   : fiche de dette (plus court → ignoré ; plus long → plafonné en silence par la TTL).
+6. **Scopes** : `admin:read` / `admin:write`, 401/403 au contrat, bump mineur. Pas de scope dédié : la
+   contrainte du point 1 borne le pire cas au stockage chiffré, et la mutation est auditée.
+7. **Tests** : au router, `PolicyHolder` rechargé `off` → `stored_encrypted` change la ligne CDR suivante
+   (ciphertext absent puis présent) ; non-régression `inherit` + plateforme `off` ; intégration
+   Postgres : la migration pose `'off'` ; invariant (a) sous les trois modes.
