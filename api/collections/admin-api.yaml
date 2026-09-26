@@ -195,6 +195,13 @@ items:
           url: '{{baseUrl}}/admin/customers/{{customerId}}'
         docs: Get a customer (scope admin:read).
       - info:
+          name: list-customer-accounts
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/customers/{{customerId}}/smpp-accounts'
+        docs: The customer's SMPP accounts, at most 500, unpaginated (scope admin:read).
+      - info:
           name: update-customer
           type: http
         http:
@@ -413,6 +420,45 @@ items:
                 "allowed_bind_types": "trx"
               }
         docs: Set max_sessions and allowed bind types.
+      - info:
+          name: set-account-sender-id-policy
+          type: http
+        http:
+          method: PATCH
+          url: '{{baseUrl}}/admin/smpp-accounts/{{accountId}}/sender-id-policy'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+                {
+                  "sender_id_policy": "strict"
+                }
+        docs: Applies to the next message, live sessions included (scope admin:write).
+      - info:
+          name: set-account-smpp-ops
+          type: http
+        http:
+          method: PATCH
+          url: '{{baseUrl}}/admin/smpp-accounts/{{accountId}}/smpp-ops'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+                {
+                  "cancel_sm_enabled": false
+                }
+        docs: Disconnects the account's binds so they rebind under the new flags (scope admin:write).
+      - info:
+          name: suspend-smpp-account
+          type: http
+        http:
+          method: POST
+          url: '{{baseUrl}}/admin/smpp-accounts/{{accountId}}/suspend'
+        docs: Suspends the account and disconnects its binds (scope admin:write).
       - info:
           name: list-account-sessions
           type: http
@@ -693,6 +739,22 @@ items:
           method: GET
           url: '{{baseUrl}}/admin/routes'
         docs: List routes ordered by priority (scope admin:read).
+      - info:
+          name: reorder-routes
+          type: http
+        http:
+          method: POST
+          url: '{{baseUrl}}/admin/routes/reorder'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "ordered_ids": ["{{routeId}}"]
+              }
+        docs: Every route exactly once; priorities become 10, 20, ... in one statement (scope admin:write).
       - info:
           name: create-route
           type: http

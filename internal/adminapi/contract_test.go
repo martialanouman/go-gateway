@@ -39,6 +39,7 @@ var m1Operations = []opRef{
 	{"update-customer", "patch", "/admin/customers/{id}"},
 	{"delete-customer", "delete", "/admin/customers/{id}"},
 	{"suspend-customer", "post", "/admin/customers/{id}/suspend"},
+	{"list-customer-accounts", "get", "/admin/customers/{id}/smpp-accounts"},
 
 	{"list-smpp-accounts", "get", "/admin/smpp-accounts"},
 	{"create-smpp-account", "post", "/admin/smpp-accounts"},
@@ -47,6 +48,9 @@ var m1Operations = []opRef{
 	{"delete-smpp-account", "delete", "/admin/smpp-accounts/{id}"},
 	{"set-account-channels", "patch", "/admin/smpp-accounts/{id}/channels"},
 	{"set-account-session-limits", "patch", "/admin/smpp-accounts/{id}/session-limits"},
+	{"set-account-sender-id-policy", "patch", "/admin/smpp-accounts/{id}/sender-id-policy"},
+	{"set-account-smpp-ops", "patch", "/admin/smpp-accounts/{id}/smpp-ops"},
+	{"suspend-smpp-account", "post", "/admin/smpp-accounts/{id}/suspend"},
 
 	{"list-credentials", "get", "/admin/smpp-accounts/{id}/credentials"},
 	{"create-credential", "post", "/admin/smpp-accounts/{id}/credentials"},
@@ -70,6 +74,7 @@ var m1Operations = []opRef{
 	{"set-connector-bind-pool", "patch", "/admin/connectors/{id}/bind-pool"},
 
 	{"list-routes", "get", "/admin/routes"},
+	{"reorder-routes", "post", "/admin/routes/reorder"},
 	{"create-route", "post", "/admin/routes"},
 	{"get-route", "get", "/admin/routes/{id}"},
 	{"update-route", "patch", "/admin/routes/{id}"},
@@ -178,26 +183,6 @@ var m1Operations = []opRef{
 	{"update-customer-content-policy", "patch", "/admin/customers/{id}/content-policy"},
 }
 
-// deferredOp annotates an operation the contract declares and nobody serves yet. Both fields are
-// asserted non-empty: an annotation no test reads is a comment, and a comment does not hold this list
-// honest across seven steps. A step that serves an operation drops its line here and adds it to
-// m1Operations — two lines of diff that make the intent readable in review.
-type deferredOp struct{ reason, step string }
-
-// deferred is the other half of the surface: the operations api/openapi-admin.yaml publishes that
-// internal/adminapi does not register. The dashboard consumes this contract as an npm package, so an
-// unclassified entry here is a typed client calling a 404. Kept honest by
-// TestEveryContractOperationIsServedOrDeferred, which also forbids overlapping with m1Operations.
-var deferred = map[string]deferredOp{
-
-	// Accounts and routes: three settings are creatable and never modifiable.
-	"suspend-smpp-account":         {"PATCH update-smpp-account does it today", "step-390"},
-	"set-account-sender-id-policy": {"settable at create, never after", "step-390"},
-	"set-account-smpp-ops":         {"settable at create, never after", "step-390"},
-	"reorder-routes":               {"priority is per route, no atomic bulk reorder", "step-390"},
-	"list-customer-accounts":       {"redundant with list-smpp-accounts filters", "step-390"},
-}
-
 // loadContract reads api/openapi-admin.yaml (the source of truth) into a generic tree.
 func loadContract(t *testing.T) map[string]any {
 	t.Helper()
@@ -277,6 +262,11 @@ func TestGeneratedSpecMatchesTheContractForEveryM1Operation(t *testing.T) {
 			}
 			if !reflect.DeepEqual(cCodes, gCodes) {
 				t.Errorf("response codes differ:\n contract:  %v\n generated: %v", cCodes, gCodes)
+			}
+			// Where the contract names a scope, the served one must be it: a write operation served under
+			// admin:read would still pass the scope-presence check. The operations that name none are step-397.
+			if cOp["security"] != nil && !reflect.DeepEqual(cOp["security"], gOp["security"]) {
+				t.Errorf("security differs:\n contract:  %v\n generated: %v", cOp["security"], gOp["security"])
 			}
 
 			compareSchemas(t, "requestBody", requestSchema(contract, cOp), requestSchema(generated, gOp))
@@ -899,36 +889,12 @@ func declaresUpgrade(codes []string) bool {
 	return slices.Contains(codes, "101")
 }
 
-// deferredSteps is the closed set of steps an entry may be deferred to. It is what keeps the `step`
-// field from rotting into prose ("later"), into a typo, or into a step outside the window that owns
-// these surfaces — none of which "not empty" catches. What it does NOT catch: a step still listed
-// here after it has shipped. Pruning is left to the step itself, which empties its own lines from
-// deferred anyway. A step needing to defer past step-390 widens this list in its own PR — one line
-// of diff, visible in review.
-var deferredSteps = []string{
-	"step-330", "step-340", "step-350", "step-390",
-}
-
-// TestEveryContractOperationIsServedOrDeferred is the direction the four tests above leave open:
-// declared in the published contract, implemented by nobody. It holds three properties, each closing
-// a different way the list rots. Counting instead (declared == served+deferred) would not do: it
-// names no culprit, and it cancels out in pairs — add an operation to the contract AND a phantom
-// deferred entry and the totals match again, green, with one operation unclassified and one entry
-// stale.
-//
-//   - coverage: every operationId under paths: is either served or deferred, on pain of being named;
-//   - mutual exclusion: an operation cannot be both, so a step that serves one MUST drop its deferred
-//     line — otherwise the suite stays green while a line claims "deferred to step-330" about an
-//     operation in production;
-//   - no stale entry: an operation removed from the contract cannot leave its line behind forever.
-//
-// The annotation is the fourth: a reason no test reads is a comment, and a comment does not hold a
-// thirty-line list across seven steps.
-func TestEveryContractOperationIsServedOrDeferred(t *testing.T) {
+// TestEveryContractOperationIsServed is the direction the tests above leave open: declared in the published
+// contract, implemented by nobody. The dashboard consumes this contract as an npm package, so an unserved
+// operation is a typed client calling a 404. Since step-390 every operation is served; a step that needs to
+// publish one ahead of its handler brings back an explicit, annotated exception list.
+func TestEveryContractOperationIsServed(t *testing.T) {
 	declared := operationRefs(t, loadContract(t))
-	// The stale-entry property below already screams when the contract goes unread — but only while
-	// deferred is non-empty, which stops being true once step-330…390 have served all thirty. This
-	// keeps the guard from quietly becoming a no-op on the day it finally has nothing left to defer.
 	if len(declared) == 0 {
 		t.Fatal("contract declares no operation: the contract went unread, or paths: moved")
 	}
@@ -937,52 +903,20 @@ func TestEveryContractOperationIsServedOrDeferred(t *testing.T) {
 	for _, op := range m1Operations {
 		served[op.id] = true
 	}
-
 	for _, id := range sortedRefs(declared) {
-		if !served[id] && !isDeferred(id) {
+		if !served[id] {
 			ref := declared[id]
-			t.Errorf("contract declares %s %s (%s): nothing serves it and nothing defers it — "+
-				"add it to m1Operations once served, or to deferred with a reason and a step",
+			t.Errorf("contract declares %s %s (%s) and nothing serves it: add it to m1Operations once served",
 				ref.method, ref.path, id)
 		}
 	}
-
-	for _, id := range sortedDeferred() {
-		entry := deferred[id]
-		if served[id] {
-			t.Errorf("%q is in deferred and in m1Operations: it is served, so drop the deferred entry", id)
-		}
-		if _, ok := declared[id]; !ok {
-			t.Errorf("%q is deferred but the contract no longer declares it: drop the stale entry", id)
-		}
-		if entry.reason == "" || entry.step == "" {
-			t.Errorf("deferred %q has reason=%q step=%q: both are required", id, entry.reason, entry.step)
-		}
-		if entry.step != "" && !slices.Contains(deferredSteps, entry.step) {
-			t.Errorf("deferred %q targets step %q, which is not one of %v", id, entry.step, deferredSteps)
-		}
-	}
 }
 
-func isDeferred(id string) bool {
-	_, ok := deferred[id]
-	return ok
-}
-
-// sortedRefs and sortedDeferred keep the failure output in a stable order: ranging a map would
-// reorder the names on every run, and a thirty-line red is read by eye.
+// sortedRefs keeps the failure output in a stable order: ranging a map would reorder the names on every
+// run, and a long red is read by eye.
 func sortedRefs(refs map[string]opRef) []string {
 	out := make([]string, 0, len(refs))
 	for id := range refs {
-		out = append(out, id)
-	}
-	sort.Strings(out)
-	return out
-}
-
-func sortedDeferred() []string {
-	out := make([]string, 0, len(deferred))
-	for id := range deferred {
 		out = append(out, id)
 	}
 	sort.Strings(out)

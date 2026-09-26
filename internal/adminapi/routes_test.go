@@ -1,6 +1,7 @@
 package adminapi_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -118,5 +119,52 @@ func TestCreateStaticRouteSucceeds(t *testing.T) {
 	}
 	if got["priority"] != float64(100) {
 		t.Errorf("priority = %v, want 100 (the default)", got["priority"])
+	}
+}
+
+func TestReorderRoutesAnswersTheNewOrderAndRefusesAPartialList(t *testing.T) {
+	store := newFakeRouteStore()
+	var ids []string
+	for range 3 {
+		r, err := store.Create(context.Background(), cp.NewRoute{Name: "r", DistributionStrategy: cp.DistributionWeighted})
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		ids = append([]string{r.ID.String()}, ids...)
+	}
+	api := newTestAPIWith(t, adminapi.Deps{Routes: store})
+
+	type reordered struct {
+		ID       string `json:"id"`
+		Priority int    `json:"priority"`
+	}
+	reorder := func(order []string) (int, []reordered) {
+		body, _ := json.Marshal(map[string]any{"ordered_ids": order})
+		w := httptest.NewRecorder()
+		api.ServeHTTP(w, authed(t, http.MethodPost, "/v1/admin/routes/reorder", string(body)))
+		var out []reordered
+		_ = json.Unmarshal(w.Body.Bytes(), &out)
+		return w.Code, out
+	}
+
+	code, got := reorder(ids)
+	if code != http.StatusOK || len(got) != 3 {
+		t.Fatalf("status = %d routes = %+v, want 200 and three routes", code, got)
+	}
+	for i, r := range got {
+		if r.ID != ids[i] || r.Priority != (i+1)*10 {
+			t.Fatalf("routes = %+v, want %v at priorities 10, 20, 30", got, ids)
+		}
+	}
+	if code, _ := reorder(ids[1:]); code != http.StatusUnprocessableEntity {
+		t.Fatalf("partial list: status = %d, want 422", code)
+	}
+	for _, r := range got {
+		if stored, _ := store.Get(context.Background(), uuid.MustParse(r.ID)); stored.Priority != r.Priority {
+			t.Fatalf("route %s moved to %d behind a refused reorder", r.ID, stored.Priority)
+		}
+	}
+	if code, _ := reorder([]string{"not-a-uuid"}); code != http.StatusUnprocessableEntity {
+		t.Fatalf("malformed id: status = %d, want 422 before the handler parses it", code)
 	}
 }

@@ -79,3 +79,31 @@ func TestAccountRepoCreateUnderUnknownCustomerIsValidation(t *testing.T) {
 		t.Errorf("orphan Create code = %q, want validation_error", code)
 	}
 }
+
+// TestAccountRepoUpdateChangesThePoliciesCreateSets: sender_id_policy and the two optional SMPP ops were
+// settable at creation only. Each is changed alone, so a COALESCE wired to the wrong column fails here.
+func TestAccountRepoUpdateChangesThePoliciesCreateSets(t *testing.T) {
+	pool := pgtest.Pool(t)
+	ctx := context.Background()
+	customer, err := postgres.NewCustomerRepo(pool).Create(ctx, cp.NewCustomer{Name: "PolicyCo-" + uuid.NewString()})
+	if err != nil {
+		t.Fatalf("create customer: %v", err)
+	}
+	accounts := postgres.NewAccountRepo(pool)
+	acct, err := accounts.Create(ctx, cp.NewAccount{CustomerID: customer.ID, Name: "policy"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	disabled, off := cp.SenderIDPolicyDisabled, false
+	got, err := accounts.Update(ctx, acct.ID, cp.AccountPatch{SenderIDPolicy: &disabled})
+	if err != nil || got.SenderIDPolicy != disabled || !got.QuerySMEnabled || !got.CancelSMEnabled || got.Name != "policy" {
+		t.Fatalf("policy update = %+v err=%v, want disabled and every other field untouched", got, err)
+	}
+	if got, err = accounts.Update(ctx, acct.ID, cp.AccountPatch{CancelSMEnabled: &off}); err != nil || got.CancelSMEnabled || !got.QuerySMEnabled || got.SenderIDPolicy != disabled {
+		t.Fatalf("cancel_sm update = %+v err=%v, want cancel_sm off alone", got, err)
+	}
+	if got, err = accounts.Update(ctx, acct.ID, cp.AccountPatch{QuerySMEnabled: &off}); err != nil || got.QuerySMEnabled || got.CancelSMEnabled {
+		t.Fatalf("query_sm update = %+v err=%v, want query_sm off, cancel_sm still off", got, err)
+	}
+}

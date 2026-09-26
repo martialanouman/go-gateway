@@ -385,7 +385,7 @@ mutuelle l'y force, la suite ne peut pas rester verte sur une ligne qui différe
 - [x] step-360 — Sessions SMPP : le flux temps réel existe, la lecture REST non ⛓ step-320
 - [x] step-370 — Politiques de contenu (§6.23) : la plateforme n'a pas de défaut configurable ⛓ step-320
 - [x] step-380 — Métriques agrégées en lecture : le flux pousse, rien ne se lit ⛓ step-320, step-330
-- [ ] step-390 — Réglages de compte créables mais non modifiables, et trois opérations orphelines ⛓ step-320
+- [x] step-390 — Réglages de compte créables mais non modifiables, et trois opérations orphelines ⛓ step-320
 - [ ] step-390b — `query_sm` résout l'état du message contre le CDR au lieu de répondre UNKNOWN (§6.22) — ouverte par step-260g, sans dépendance
 
 ## Les dettes ouvertes par step-260c, les dettes du tableau de bord, puis la porte

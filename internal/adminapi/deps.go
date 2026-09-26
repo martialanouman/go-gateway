@@ -113,6 +113,7 @@ type RouteStore interface {
 	List(ctx context.Context) ([]cp.Route, error)
 	Update(ctx context.Context, id uuid.UUID, p cp.RoutePatch) (cp.Route, error)
 	Delete(ctx context.Context, id uuid.UUID) error
+	Reorder(ctx context.Context, ids []uuid.UUID) ([]cp.Route, error)
 }
 
 // SenderIDStore is the persistence the sender-ID handlers need. Sender IDs are nested under a

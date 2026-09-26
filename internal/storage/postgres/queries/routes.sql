@@ -52,3 +52,12 @@ VALUES (@route_id, @connector_id, COALESCE(sqlc.narg('weight')::int, 1), COALESC
 
 -- name: DeleteRouteTargets :exec
 DELETE FROM control_plane.route_targets WHERE route_id = @route_id;
+
+-- name: ReorderRoutes :execrows
+-- One statement, so the router's snapshot sees the whole old order or the whole new one. The guard lives in
+-- the statement itself: a list that is incomplete, repeats an id or names an unknown one updates no row.
+UPDATE control_plane.routes r SET priority = (o.ord * 10)::integer
+FROM unnest(@ordered_ids::uuid[]) WITH ORDINALITY AS o(id, ord)
+WHERE r.id = o.id
+  AND (SELECT count(*) FROM control_plane.routes) = cardinality(@ordered_ids::uuid[])
+  AND (SELECT count(*) FROM control_plane.routes WHERE id = ANY(@ordered_ids::uuid[])) = cardinality(@ordered_ids::uuid[]);

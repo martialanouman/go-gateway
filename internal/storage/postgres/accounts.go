@@ -69,12 +69,15 @@ func (r *AccountRepo) List(ctx context.Context, f cp.AccountFilter) (cp.Page[cp.
 	return paginate(items, f.Limit, func(a cp.Account) uuid.UUID { return a.ID }), nil
 }
 
-// Update applies a partial change (name and status only) and returns the account, or ErrNotFound.
+// Update applies a partial change (nil fields unchanged) and returns the account, or ErrNotFound.
 func (r *AccountRepo) Update(ctx context.Context, id uuid.UUID, p cp.AccountPatch) (cp.Account, error) {
 	row, err := r.q.UpdateAccount(ctx, sqlcgen.UpdateAccountParams{
-		ID:     id,
-		Name:   p.Name,
-		Status: strPtr(p.Status),
+		ID:              id,
+		Name:            p.Name,
+		Status:          strPtr(p.Status),
+		SenderIDPolicy:  strPtr(p.SenderIDPolicy),
+		QuerySmEnabled:  p.QuerySMEnabled,
+		CancelSmEnabled: p.CancelSMEnabled,
 	})
 	if err != nil {
 		return cp.Account{}, translate("update account", err)

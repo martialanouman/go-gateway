@@ -62,6 +62,8 @@ type routerApp struct {
 	// routes is the graph's route resolver, kept so a wiring test can resolve through the overlays the
 	// graph actually installs (the least_loaded gauge reader, step-260d) rather than through a stand-in.
 	routes *routing.SnapshotResolver
+	// senderIDs is the authorizer the pipeline checks every message against, kept for the same reason.
+	senderIDs pipeline.SenderIDAuthorizer
 
 	// closers release what was opened, in reverse order of opening — the exact LIFO the deferred
 	// Closes in run() used to provide. They are named because that order is the property worth
@@ -117,6 +119,7 @@ func newRouterApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 		return nil, err
 	}
 	a.routes = boot.routes
+	a.senderIDs = boot.senderIDs
 
 	// The anti-spam engine, the token bucket and the exact-route short-cut all read Redis, which is a
 	// boot dependency (NewClient pings eagerly). It retries with the same discipline as the snapshots —
@@ -254,7 +257,7 @@ func (s *stores) close() {
 // on the first failure.
 type bootSnapshots struct {
 	routes    *routing.SnapshotResolver
-	senderIDs *senderid.Authorizer
+	senderIDs *senderid.Holder
 	optOut    *optout.Enforcer
 
 	// suppressions is kept because the opt-out enforcer is rebuilt from it on every invalidation.
@@ -272,10 +275,12 @@ func loadBootSnapshots(ctx context.Context, pool *pgxpool.Pool, logger *slog.Log
 
 	// The sender-ID authorization snapshot (§6.19): the account policies and the customers' active
 	// sender IDs, indexed once for lock-free per-message checks.
-	senderIDs, err := loadSenderIDSnapshotWithRetry(ctx, postgres.NewAccountRepo(pool), postgres.NewSenderIDRepo(pool), logger)
+	senderSnap, err := loadSenderIDSnapshotWithRetry(ctx, postgres.NewAccountRepo(pool), postgres.NewSenderIDRepo(pool), logger)
 	if err != nil {
 		return nil, fmt.Errorf("load sender-id snapshot: %w", err)
 	}
+	senderIDs := &senderid.Holder{}
+	senderIDs.Store(senderSnap)
 
 	// The opt-out enforcer (§6.20): a per-scope Bloom over the suppressions (exact confirmation behind
 	// it) and an inbound-number index to resolve the sending number's scope.
@@ -734,6 +739,12 @@ func newSnapshotWatcher(
 				return err
 			}
 			blooms.set("optout", boot.optOut.CapacityBits())
+
+			senderSnap, err := senderid.LoadSnapshot(ctx, postgres.NewAccountRepo(pool), postgres.NewSenderIDRepo(pool))
+			if err != nil {
+				return err
+			}
+			boot.senderIDs.Store(senderSnap)
 
 			// Rebuild the routing-script snapshot (recompiles the active scripts) and swap it in.
 			scriptSnap, err := routing.BuildScriptSnapshot(ctx, stack.scriptRepo, logger)

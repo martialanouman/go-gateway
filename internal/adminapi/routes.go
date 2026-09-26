@@ -113,6 +113,13 @@ func registerRoutes(api huma.API, store RouteStore) {
 	}, h.list)
 
 	register(api, huma.Operation{
+		OperationID: "reorder-routes", Method: http.MethodPost, Path: "/admin/routes/reorder",
+		Summary: "Reorder route priorities", Tags: []string{"Routes"},
+		Security: scopeSecurity(auth.ScopeAdminWrite),
+		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusUnprocessableEntity},
+	}, h.reorder)
+
+	register(api, huma.Operation{
 		OperationID: "create-route", Method: http.MethodPost, Path: "/admin/routes",
 		DefaultStatus: http.StatusCreated,
 		Summary:       "Create a route", Tags: []string{"Routes"},
@@ -152,11 +159,33 @@ func (h *routeHandlers) list(ctx context.Context, _ *struct{}) (*listRoutesOutpu
 	if err != nil {
 		return nil, humaerr.FromError(err)
 	}
+	return routesOutput(routes), nil
+}
+
+func routesOutput(routes []cp.Route) *listRoutesOutput {
 	out := &listRoutesOutput{Body: make([]routeDTO, 0, len(routes))}
 	for _, r := range routes {
 		out.Body = append(out.Body, toRouteDTO(r))
 	}
-	return out, nil
+	return out
+}
+
+type reorderRoutesInput struct {
+	Body struct {
+		OrderedIDs []string `json:"ordered_ids" format:"uuid" nullable:"false"`
+	}
+}
+
+func (h *routeHandlers) reorder(ctx context.Context, in *reorderRoutesInput) (*listRoutesOutput, error) {
+	ids := make([]uuid.UUID, 0, len(in.Body.OrderedIDs))
+	for _, raw := range in.Body.OrderedIDs {
+		ids = append(ids, uuid.MustParse(raw)) // huma rejects a malformed uuid before the handler runs
+	}
+	routes, err := h.store.Reorder(ctx, ids)
+	if err != nil {
+		return nil, humaerr.FromError(err)
+	}
+	return routesOutput(routes), nil
 }
 
 type createRouteInput struct{ Body routeCreateBody }

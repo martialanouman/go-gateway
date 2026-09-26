@@ -48,11 +48,14 @@ type AccountSenderIDPolicy struct {
 	Policy     SenderIDPolicy
 }
 
-// AccountPatch is a partial update of an account. Per the contract's SmppAccountUpdate, only the
-// name and status are updatable here; channels and session limits have their own endpoints.
+// AccountPatch is a partial update of an account: a nil field is left unchanged. Channels and session
+// limits have their own endpoints.
 type AccountPatch struct {
-	Name   *string
-	Status *AccountStatus
+	Name            *string
+	Status          *AccountStatus
+	SenderIDPolicy  *SenderIDPolicy
+	QuerySMEnabled  *bool
+	CancelSMEnabled *bool
 }
 
 // AccountFilter selects and paginates an account listing.

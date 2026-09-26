@@ -312,6 +312,9 @@ func (s *fakeAccountStore) List(ctx context.Context, f cp.AccountFilter) (cp.Pag
 	defer s.mu.Unlock()
 	items := make([]cp.Account, 0, len(s.byID))
 	for _, a := range s.byID {
+		if f.CustomerID != nil && a.CustomerID != *f.CustomerID {
+			continue
+		}
 		if f.GroupID != nil && !s.customerIsInGroup(ctx, a.CustomerID, *f.GroupID) {
 			continue
 		}
@@ -346,6 +349,11 @@ func (s *fakeAccountStore) Update(_ context.Context, id uuid.UUID, p cp.AccountP
 	if p.Status != nil {
 		a.Status = *p.Status
 	}
+	if p.SenderIDPolicy != nil {
+		a.SenderIDPolicy = *p.SenderIDPolicy
+	}
+	a.QuerySMEnabled = boolOr(p.QuerySMEnabled, a.QuerySMEnabled)
+	a.CancelSMEnabled = boolOr(p.CancelSMEnabled, a.CancelSMEnabled)
 	s.byID[id] = a
 	return a, nil
 }
@@ -727,6 +735,30 @@ func (s *fakeRouteStore) Delete(_ context.Context, id uuid.UUID) error {
 	}
 	delete(s.byID, id)
 	return nil
+}
+
+// Reorder models the repository: every route exactly once or nothing moves.
+func (s *fakeRouteStore) Reorder(_ context.Context, ids []uuid.UUID) ([]cp.Route, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	seen := map[uuid.UUID]bool{}
+	for _, id := range ids {
+		if _, ok := s.byID[id]; !ok || seen[id] {
+			return nil, errs.ErrValidation
+		}
+		seen[id] = true
+	}
+	if len(ids) != len(s.byID) {
+		return nil, errs.ErrValidation
+	}
+	out := make([]cp.Route, 0, len(ids))
+	for i, id := range ids {
+		r := s.byID[id]
+		r.Priority = (i + 1) * 10
+		s.byID[id] = r
+		out = append(out, r)
+	}
+	return out, nil
 }
 
 // fakeSenderIDStore is an in-memory SenderIDStore for handler unit tests.

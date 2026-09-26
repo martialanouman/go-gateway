@@ -282,10 +282,15 @@ paths:
     get:
       tags: [Customers]
       summary: List a customer's SMPP accounts
+      description: At most 500 accounts, unpaginated.
       operationId: list-customer-accounts
+      security: [ { OperatorBearer: [ admin:read ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/SmppAccount' } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
 
   # ============================ SMPP ACCOUNTS (§6.18) ============================
   /admin/smpp-accounts:
@@ -358,10 +363,15 @@ paths:
     post:
       tags: [SMPP Accounts]
       summary: Suspend an SMPP account
+      description: Disconnects the account's live binds (reason account_suspended).
       operationId: suspend-smpp-account
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SmppAccount' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
   /admin/smpp-accounts/{id}/channels:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
     patch:
@@ -411,19 +421,33 @@ paths:
     patch:
       tags: [SMPP Accounts]
       summary: Set sender-ID authorization policy (§6.19)
+      description: Takes effect on the next message, live sessions included; no rebind.
       operationId: set-account-sender-id-policy
+      security: [ { OperatorBearer: [ admin:write ] } ]
       requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { sender_id_policy: { $ref: '#/components/schemas/SenderIdPolicy' } }, required: [sender_id_policy] } } } }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SmppAccount' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
   /admin/smpp-accounts/{id}/smpp-ops:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
     patch:
       tags: [SMPP Accounts]
       summary: Toggle optional SMPP ops query_sm / cancel_sm (§6.22)
+      description: >-
+        The flags are read at bind, so every successful change disconnects the account's live binds (reason
+        account_smpp_ops_changed); clients rebind under the new setting. At least one field is required.
       operationId: set-account-smpp-ops
+      security: [ { OperatorBearer: [ admin:write ] } ]
       requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { query_sm_enabled: { type: boolean }, cancel_sm_enabled: { type: boolean } } } } } }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SmppAccount' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
 
   # ---- Webhooks (per account) ----
   /admin/smpp-accounts/{id}/webhooks:
@@ -684,10 +708,16 @@ paths:
     post:
       tags: [Routes]
       summary: Reorder route priorities
+      description: >-
+        ordered_ids must list every route exactly once; the first gets priority 10, the next 20, and so on.
+        Applied in a single statement: a refused list changes no route.
       operationId: reorder-routes
+      security: [ { OperatorBearer: [ admin:write ] } ]
       requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { ordered_ids: { type: array, items: { type: string, format: uuid } } }, required: [ordered_ids] } } } }
       responses:
         '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Route' } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '422': { $ref: '#/components/responses/ValidationError' }
   /admin/routes/{id}:
     parameters: [ { $ref: '#/components/parameters/Id' } ]

@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -55,6 +56,35 @@ func (r *RouteRepo) Create(ctx context.Context, in cp.NewRoute) (cp.Route, error
 		return cp.Route{}, translate("create route", err)
 	}
 	return route, nil
+}
+
+// Reorder gives the routes priorities 10, 20, ... in the order of ids, which must name every route once;
+// otherwise it changes nothing and reports ErrValidation. It returns the routes as read after the commit.
+func (r *RouteRepo) Reorder(ctx context.Context, ids []uuid.UUID) ([]cp.Route, error) {
+	incomplete := fmt.Errorf("reorder routes: ordered_ids must list every route exactly once: %w", errs.ErrValidation)
+	if len(ids) == 0 {
+		routes, err := r.List(ctx)
+		if err == nil && len(routes) > 0 {
+			return nil, incomplete
+		}
+		return routes, err
+	}
+	// The transaction exists for the rollback: a route deleted while the UPDATE waits on its row lock is
+	// skipped after the guard has passed, and the other routes must not stay renumbered behind the refusal.
+	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		n, err := r.q.WithTx(tx).ReorderRoutes(ctx, ids)
+		if err != nil {
+			return translate("reorder routes", err)
+		}
+		if n != int64(len(ids)) {
+			return incomplete
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return r.List(ctx)
 }
 
 // Get returns a route with its targets, or ErrNotFound.
