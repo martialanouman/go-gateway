@@ -128,7 +128,7 @@ func (scopelessProvider) Verify(context.Context, string) (auth.Principal, error)
 }
 
 // TestValidTokenWithoutAnyScopeIs403: a provider's token that carries none of our scopes is still an
-// authenticated caller — the static verifier could never produce this principal.
+// authenticated caller.
 func TestValidTokenWithoutAnyScopeIs403(t *testing.T) {
 	api := middlewareAPI(t, scopelessProvider{})
 

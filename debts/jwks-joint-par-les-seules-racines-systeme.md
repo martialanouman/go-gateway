@@ -3,7 +3,7 @@
 > **Statut :** OUVERTE · **Nature :** technique
 > **Née de :** step-310 · **Portée par :** —
 
-**Ce qu'on a fait à la place.** Le client HTTP qui charge le JWKS (`internal/auth/oidc.go:30`) utilise le
+**Ce qu'on a fait à la place.** Le client HTTP qui charge le JWKS (`internal/auth/oidc.go:68`) utilise le
 transport par défaut, donc les racines système de l'image. Aucune variable ne désigne une autorité de
 l'exploitant, contrairement à Kafka et ClickHouse (`*_TLS_CA_FILE`, step-305).
 
@@ -17,4 +17,4 @@ se diagnostique, mais ne se contourne qu'en reconstruisant l'image.
 **À quoi on reconnaîtra qu'il faut la payer.** Dès que l'IdP retenu pour la production présente un
 certificat hors des racines publiques. C'est une ligne à trancher dans la checklist de step-410.
 
-Source : `internal/auth/oidc.go:30`
+Source : `internal/auth/oidc.go:68`

@@ -206,7 +206,7 @@ func TestOIDCVerifierReportsAnUnreachableKeySetAsUnavailable(t *testing.T) {
 			if !errors.Is(err, errs.ErrServiceUnavailable) {
 				t.Errorf("Verify() error = %v, want ErrServiceUnavailable: a retry can succeed", err)
 			}
-			if !strings.Contains(logged.String(), "oidc") {
+			if !strings.Contains(logged.String(), "fetching keys") {
 				t.Errorf("log = %q, want the fetch failure's cause: the 503 alone does not say why", logged.String())
 			}
 		})

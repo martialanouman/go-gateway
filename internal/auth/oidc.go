@@ -27,8 +27,7 @@ type OIDCVerifier struct {
 // NewOIDCVerifier builds a verifier over the JWKS at jwksURL. Nothing is fetched here: the keys load on
 // the first token, so the service boots and passes readiness while the identity provider is down.
 func NewOIDCVerifier(ctx context.Context, logger *slog.Logger, issuer, audience, jwksURL string) *OIDCVerifier {
-	client := &http.Client{Timeout: keySetFetchTimeout}
-	keys := classifyingKeySet{oidc.NewRemoteKeySet(oidc.ClientContext(ctx, client), jwksURL)}
+	keys := classifyingKeySet{oidc.NewRemoteKeySet(oidc.ClientContext(ctx, keySetClient()), jwksURL)}
 	return &OIDCVerifier{logger: logger, verifier: oidc.NewVerifier(issuer, keys, &oidc.Config{
 		ClientID:             audience,
 		SupportedSigningAlgs: []string{oidc.RS256, oidc.ES256},
@@ -64,6 +63,22 @@ func (v *OIDCVerifier) Verify(ctx context.Context, token string) (Principal, err
 }
 
 type fetchFailureKey struct{}
+
+func keySetClient() *http.Client {
+	return &http.Client{Timeout: keySetFetchTimeout, CheckRedirect: refuseDowngrade}
+}
+
+// refuseDowngrade keeps a redirect from fetching in plaintext what config required over https; past that it
+// is net/http's default policy.
+func refuseDowngrade(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return errors.New("stopped after 10 redirects")
+	}
+	if via[len(via)-1].URL.Scheme == "https" && req.URL.Scheme != "https" {
+		return fmt.Errorf("key set redirected from https to %s", req.URL.Scheme)
+	}
+	return nil
+}
 
 // classifyingKeySet exists because IDTokenVerifier flattens the key set's error with %v: whether the
 // keys could be fetched is only still visible here, so the failure is set aside for Verify to find.
