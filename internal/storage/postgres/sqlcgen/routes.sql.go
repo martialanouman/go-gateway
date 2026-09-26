@@ -215,6 +215,24 @@ func (q *Queries) ListRoutes(ctx context.Context) ([]ControlPlaneRoute, error) {
 	return items, nil
 }
 
+const reorderRoutes = `-- name: ReorderRoutes :execrows
+UPDATE control_plane.routes r SET priority = (o.ord * 10)::integer
+FROM unnest($1::uuid[]) WITH ORDINALITY AS o(id, ord)
+WHERE r.id = o.id
+  AND (SELECT count(*) FROM control_plane.routes) = cardinality($1::uuid[])
+  AND (SELECT count(*) FROM control_plane.routes WHERE id = ANY($1::uuid[])) = cardinality($1::uuid[])
+`
+
+// One statement, so the router's snapshot sees the whole old order or the whole new one. The guard lives in
+// the statement itself: a list that is incomplete, repeats an id or names an unknown one updates no row.
+func (q *Queries) ReorderRoutes(ctx context.Context, orderedIds []uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, reorderRoutes, orderedIds)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const updateRoute = `-- name: UpdateRoute :one
 UPDATE control_plane.routes SET
     name                  = COALESCE($1, name),

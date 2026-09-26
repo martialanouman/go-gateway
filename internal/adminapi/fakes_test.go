@@ -737,6 +737,30 @@ func (s *fakeRouteStore) Delete(_ context.Context, id uuid.UUID) error {
 	return nil
 }
 
+// Reorder models the repository: every route exactly once or nothing moves.
+func (s *fakeRouteStore) Reorder(_ context.Context, ids []uuid.UUID) ([]cp.Route, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	seen := map[uuid.UUID]bool{}
+	for _, id := range ids {
+		if _, ok := s.byID[id]; !ok || seen[id] {
+			return nil, errs.ErrValidation
+		}
+		seen[id] = true
+	}
+	if len(ids) != len(s.byID) {
+		return nil, errs.ErrValidation
+	}
+	out := make([]cp.Route, 0, len(ids))
+	for i, id := range ids {
+		r := s.byID[id]
+		r.Priority = (i + 1) * 10
+		s.byID[id] = r
+		out = append(out, r)
+	}
+	return out, nil
+}
+
 // fakeSenderIDStore is an in-memory SenderIDStore for handler unit tests.
 type fakeSenderIDStore struct {
 	mu        sync.Mutex

@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -55,6 +56,19 @@ func (r *RouteRepo) Create(ctx context.Context, in cp.NewRoute) (cp.Route, error
 		return cp.Route{}, translate("create route", err)
 	}
 	return route, nil
+}
+
+// Reorder gives the routes priorities 10, 20, ... in the order of ids, which must name every route once;
+// otherwise it changes nothing and reports ErrValidation. It returns every route in the new order.
+func (r *RouteRepo) Reorder(ctx context.Context, ids []uuid.UUID) ([]cp.Route, error) {
+	n, err := r.q.ReorderRoutes(ctx, ids)
+	if err != nil {
+		return nil, translate("reorder routes", err)
+	}
+	if n != int64(len(ids)) {
+		return nil, fmt.Errorf("reorder routes: ordered_ids must list every route exactly once: %w", errs.ErrValidation)
+	}
+	return r.List(ctx)
 }
 
 // Get returns a route with its targets, or ErrNotFound.

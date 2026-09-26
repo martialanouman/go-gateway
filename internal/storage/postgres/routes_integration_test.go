@@ -2,9 +2,14 @@ package postgres_test
 
 import (
 	"context"
+	"errors"
+	"slices"
 	"testing"
 
+	"github.com/google/uuid"
+
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
+	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 	"github.com/martialanouman/go-gateway/internal/storage/postgres"
 	"github.com/martialanouman/go-gateway/internal/testutil/pgtest"
 )
@@ -78,5 +83,88 @@ func TestRouteRepoStaticRouteRoundTrips(t *testing.T) {
 	}
 	if len(created.Targets) != 0 {
 		t.Errorf("static route targets = %d, want 0", len(created.Targets))
+	}
+}
+
+func routeIDs(rs []cp.Route) []uuid.UUID {
+	out := make([]uuid.UUID, 0, len(rs))
+	for _, r := range rs {
+		out = append(out, r.ID)
+	}
+	return out
+}
+
+// TestRouteRepoReorderIsAllOrNothing: the router reads a snapshot at any moment, so a reorder is one
+// statement — a reader sees the whole old order or the whole new one — and a refused list moves nothing.
+func TestRouteRepoReorderIsAllOrNothing(t *testing.T) {
+	pool := pgtest.Pool(t)
+	ctx := context.Background()
+	routes := postgres.NewRouteRepo(pool)
+	for range 3 {
+		if _, err := routes.Create(ctx, cp.NewRoute{Name: "reorder-" + uuid.NewString(), DistributionStrategy: cp.DistributionWeighted}); err != nil {
+			t.Fatalf("create route: %v", err)
+		}
+	}
+	all, err := routes.List(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	reversed := routeIDs(all)
+	slices.Reverse(reversed)
+
+	got, err := routes.Reorder(ctx, reversed)
+	if err != nil {
+		t.Fatalf("Reorder: %v", err)
+	}
+	if !slices.Equal(routeIDs(got), reversed) {
+		t.Fatalf("order = %v, want %v", routeIDs(got), reversed)
+	}
+	for i, r := range got {
+		if r.Priority != (i+1)*10 {
+			t.Fatalf("route %d priority = %d, want %d", i, r.Priority, (i+1)*10)
+		}
+	}
+
+	for name, ids := range map[string][]uuid.UUID{
+		"incomplete": reversed[1:],
+		"duplicate":  append([]uuid.UUID{reversed[0]}, reversed[:len(reversed)-1]...),
+		"unknown":    append([]uuid.UUID{uuid.New()}, reversed[1:]...),
+	} {
+		if _, err := routes.Reorder(ctx, ids); !errors.Is(err, errs.ErrValidation) {
+			t.Errorf("%s list: err = %v, want ErrValidation", name, err)
+		}
+		if now, _ := routes.List(ctx); !slices.Equal(routeIDs(now), reversed) {
+			t.Fatalf("%s list moved routes: order = %v, want still %v", name, routeIDs(now), reversed)
+		}
+	}
+
+	original := routeIDs(all)
+	done := make(chan struct{})
+	var mixed []uuid.UUID
+	go func() {
+		defer close(done)
+		for range 200 {
+			now, err := routes.List(ctx)
+			if err != nil {
+				return
+			}
+			if ids := routeIDs(now); !slices.Equal(ids, original) && !slices.Equal(ids, reversed) {
+				mixed = ids
+				return
+			}
+		}
+	}()
+	for i := range 20 {
+		order := reversed
+		if i%2 == 0 {
+			order = original
+		}
+		if _, err := routes.Reorder(ctx, order); err != nil {
+			t.Fatalf("Reorder %d: %v", i, err)
+		}
+	}
+	<-done
+	if mixed != nil {
+		t.Fatalf("a concurrent reader saw %v, neither the old order nor the new one", mixed)
 	}
 }

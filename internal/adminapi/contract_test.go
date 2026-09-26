@@ -74,6 +74,7 @@ var m1Operations = []opRef{
 	{"set-connector-bind-pool", "patch", "/admin/connectors/{id}/bind-pool"},
 
 	{"list-routes", "get", "/admin/routes"},
+	{"reorder-routes", "post", "/admin/routes/reorder"},
 	{"create-route", "post", "/admin/routes"},
 	{"get-route", "get", "/admin/routes/{id}"},
 	{"update-route", "patch", "/admin/routes/{id}"},
@@ -192,11 +193,7 @@ type deferredOp struct{ reason, step string }
 // internal/adminapi does not register. The dashboard consumes this contract as an npm package, so an
 // unclassified entry here is a typed client calling a 404. Kept honest by
 // TestEveryContractOperationIsServedOrDeferred, which also forbids overlapping with m1Operations.
-var deferred = map[string]deferredOp{
-
-	// Accounts and routes: three settings are creatable and never modifiable.
-	"reorder-routes": {"priority is per route, no atomic bulk reorder", "step-390"},
-}
+var deferred = map[string]deferredOp{}
 
 // loadContract reads api/openapi-admin.yaml (the source of truth) into a generic tree.
 func loadContract(t *testing.T) map[string]any {
@@ -906,7 +903,7 @@ func declaresUpgrade(codes []string) bool {
 // deferred anyway. A step needing to defer past step-390 widens this list in its own PR — one line
 // of diff, visible in review.
 var deferredSteps = []string{
-	"step-330", "step-340", "step-350", "step-390",
+	"step-330", "step-340", "step-350",
 }
 
 // TestEveryContractOperationIsServedOrDeferred is the direction the four tests above leave open:
