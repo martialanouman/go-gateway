@@ -906,7 +906,7 @@ Format d'archive columnar (Parquet) auto-descriptif, relisible sans la plateform
 | Corps du message | `content_retention_days` (ex. 7 j) | Découplé, plus court que les métadonnées ; purge ou crypto-shred (§6.23) |
 | Métadonnées CDR | 90 j (configurable) | MSISDN = donnée personnelle |
 | Grand livre | 13 mois+ | Obligation comptable ; froid au-delà de la fenêtre active |
-| Journal d'audit | 1–7 ans selon conformité | Immuable |
+| Journal d'audit | 1–7 ans selon conformité | Immuable ; défaut 365 j, plancher tenu en base, purge `DELETE` (non partitionné) — ADR-0018 |
 | Traces / logs | Court (jours) | Jamais de corps (§6.11) |
 | Suppressions (opt-out) | Sans expiration | Expirer serait une violation (§6.20) |
 
@@ -917,6 +917,7 @@ Purge par échéance = **drop de partition**, pas `DELETE WHERE`.
 - **Effacer un client** : crypto-shred de sa clé de contenu (§6.23) + purge de ses lignes CDR. Le grand livre peut devoir être conservé (obligation fiscale prime).
 - **Effacer une personne (MSISDN — le cas DSAR)** : on ne peut pas crypto-shredder (clé partagée entre destinataires) → suppression ciblée ligne à ligne du contenu **et** des métadonnées, `WHERE source_addr = :m OR dest_addr = :m`, across clients. Job asynchrone (mutation ClickHouse) + attestation d'effacement.
 - **Exception** : les suppressions/opt-out d'un MSISDN sont conservées (les effacer le ré-exposerait).
+- **Ce qui survit à l'effacement** (journal d'audit, opt-out, archives froides, log Kafka) : durée et base légale dans ADR-0018.
 
 ### 6.15 Disjoncteur (Passerelle → SMSC)
 
