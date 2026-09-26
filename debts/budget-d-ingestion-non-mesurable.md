@@ -15,3 +15,6 @@ exposition ». `message_e2e_duration_seconds` a reçu son correctif ; celle-ci n
 d'ingestion — c'est-à-dire avant step-280, qui le publiera sans cette métrique si rien ne bouge.
 
 Sources : `internal/observability/metrics/catalog.go:39` · `:158`
+
+**Suite (step-380).** `get-metrics-summary` publie `ingest_latency_ms_p50/p99` à `null` pour la même
+raison : ni l'exposition ni le CDR ne portent cette latence. Payer cette dette rend le champ servable.
