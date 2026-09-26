@@ -69,6 +69,12 @@ UPDATE control_plane.smpp_accounts SET status = 'suspended' WHERE customer_id = 
 -- Every customer's content_storage, for the data-plane content-policy snapshot (loaded once at boot).
 SELECT id, content_storage FROM control_plane.customers;
 
+-- name: GetPlatformContentStorage :one
+SELECT content_storage FROM control_plane.platform_content_policy;
+
+-- name: SetPlatformContentStorage :one
+UPDATE control_plane.platform_content_policy SET content_storage = @content_storage RETURNING content_storage;
+
 -- name: SetCustomerGroup :one
 -- Group membership has its own path on purpose: UpdateCustomer omits group_id, and COALESCE could
 -- not express this write anyway — the whole point is that a NULL argument CLEARS the column rather

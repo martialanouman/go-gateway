@@ -176,6 +176,25 @@ func (r *CustomerRepo) ListContentStorage(ctx context.Context) ([]cp.CustomerCon
 	return out, nil
 }
 
+// PlatformContentStorage returns the platform default an inherit customer resolves to (step-370).
+func (r *CustomerRepo) PlatformContentStorage(ctx context.Context) (cp.ContentStorage, error) {
+	cs, err := r.q.GetPlatformContentStorage(ctx)
+	if err != nil {
+		return "", translate("get platform content storage", err)
+	}
+	return cp.ContentStorage(cs), nil
+}
+
+// SetPlatformContentStorage replaces the platform default. The table's CHECK refuses inherit and
+// stored_plaintext, which surface as ErrValidation.
+func (r *CustomerRepo) SetPlatformContentStorage(ctx context.Context, cs cp.ContentStorage) (cp.ContentStorage, error) {
+	got, err := r.q.SetPlatformContentStorage(ctx, string(cs))
+	if err != nil {
+		return "", translate("set platform content storage", err)
+	}
+	return cp.ContentStorage(got), nil
+}
+
 // SetGroup sets or clears a customer's group membership (set-customer-group, §6.17). An unknown
 // customer is ErrNotFound; an unknown group violates the FK and becomes ErrValidation. Nothing
 // checks the group first: that check could only be stale by the time the UPDATE runs.
