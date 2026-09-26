@@ -56,6 +56,35 @@ faute de pair réel. Voir `debts/ancre-de-confiance-par-connecteur.md` : les deu
 - **Ne pas casser les suites d'intégration** : `testcontainers` démarre ces quatre magasins en clair.
   Le TLS doit rester activable par configuration, éteint par défaut, comme partout ailleurs.
 
+## Design arrêté
+
+Arbitrage Fable, 2026-09-26 (Q1-Q5), sans conflit avec la spec, qui ne dit rien du TLS vers les magasins.
+
+- **Ancre par magasin** : `KAFKA_TLS_ENABLED` + `KAFKA_TLS_CA_FILE`, `CLICKHOUSE_TLS_ENABLED` +
+  `CLICKHOUSE_TLS_CA_FILE`. Une CA vide prend les racines système (magasin managé), une CA renseignée devient
+  le seul pool (PKI de l'exploitant). Plancher TLS 1.2, aucun certificat client. `ClientConfig()` (notre CA,
+  notre certificat, TLS 1.3) est faux ici, parce que les magasins ne sont pas dans notre PKI. Une paire
+  unique `STORE_TLS_*` est écartée, parce que Kafka et ClickHouse peuvent venir de deux fournisseurs.
+- **Constructeur** : `tlsconf.StoreClientConfig(caFile)`, fonction de paquet. Il lit la CA au boot et rend
+  l'erreur si le fichier est illisible ou si le PEM ne contient aucun certificat. L'en-tête de `tlsconf.go`
+  est amendé d'une phrase.
+- **Propagation** : `dialOpts` rend `([]kgo.Opt, error)`. Les constructeurs Kafka rendent déjà une erreur,
+  donc aucun `_ =` n'est nécessaire. `kafkaprovision.NewAdmin` suit. `clickhouse.NewConn` pose `TLS`.
+- **Configuration** : une `*_TLS_CA_FILE` renseignée avec `*_TLS_ENABLED=false` est refusée, parce que ce
+  réglage n'aurait aucun effet.
+- **Pas de garde de production** : quatre liens de même nature, pas deux sur quatre. Postgres, Redis,
+  Kafka et ClickHouse deviennent quatre lignes de la checklist de step-410.
+- **ServerName** : franz-go (`kgo/client.go:513`) et `crypto/tls` (via clickhouse-go) le déduisent de
+  l'hôte composé. À écrire dans `deploy/` : le SAN doit couvrir l'hôte **annoncé** des brokers
+  (`advertised.listeners`), et le port natif TLS de ClickHouse est 9440. `bascule-tls-sans-mode-transitoire`
+  s'applique : activer TLS sur un cluster vivant exige des brokers à double listener.
+- **Preuve du handshake** : un faux pair TLS local, avec un certificat de `tlstest`, constate un handshake
+  **abouti** depuis le client Kafka et depuis le client ClickHouse. Le protocole applicatif échoue ensuite,
+  ce qui n'est pas l'objet du test.
+- **Hors périmètre** : `ancre-de-confiance-par-connecteur` ne reçoit qu'un addendum : le constructeur existe
+  désormais. Nouvelle dette `kafka-sans-authentification`, puisque Kafka est le seul lien sans aucune
+  authentification.
+
 ## Definition of Done
 
 - [ ] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts
