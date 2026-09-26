@@ -6,6 +6,7 @@ import (
 	"github.com/twmb/franz-go/pkg/kgo"
 
 	"github.com/martialanouman/go-gateway/internal/config"
+	"github.com/martialanouman/go-gateway/internal/platform/tlsconf"
 )
 
 // A zero-valued field is deliberately left unset here, so franz-go keeps its own default.
@@ -17,30 +18,42 @@ import (
 // fetch, and a zero DialTimeout is net.Dialer{Timeout: 0} — no dial timeout at all (kgo/client.go:510).
 // Both are silent stalls, where an unset knob is merely the library default.
 
-// dialOpts are the client options every kgo client in this package shares.
+// DialOpts are the client options every kgo client shares, the provisioning Job's admin client included.
 //
 // DialTimeout bounds one connection attempt to a broker; franz-go's own default is 10s
 // (kgo/config.go:602). Until step-201 KAFKA_TIMEOUT was read and validated but reached no client at
 // all, so it governed the readiness probe while every dial behind that probe ignored it. It is a dial
 // bound only: a produce is bounded by producerOpts (KAFKA_PRODUCE_TIMEOUT, step-260e), a fetch by the
-// caller's context.
-func dialOpts(cfg config.Kafka) []kgo.Opt {
-	if cfg.Timeout <= 0 {
-		return nil
+// caller's context. The TLS CA is read here (step-305), so an unusable one fails the constructor, not a
+// later dial.
+func DialOpts(cfg config.Kafka) ([]kgo.Opt, error) {
+	var opts []kgo.Opt
+	if cfg.Timeout > 0 {
+		opts = append(opts, kgo.DialTimeout(cfg.Timeout))
 	}
-	return []kgo.Opt{kgo.DialTimeout(cfg.Timeout)}
+	if cfg.TLSEnabled {
+		tlsCfg, err := tlsconf.StoreClientConfig(cfg.TLSCAFile)
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, kgo.DialTLSConfig(tlsCfg))
+	}
+	return opts, nil
 }
 
 // producerOpts bound how long a record may sit in the client (step-260e); franz-go retries without
 // limit by default. ProduceRequestTimeout is deliberately left at the library default: shortening the
 // broker's ISR wait only makes a batch "unsure if produced" sooner, and kgo retries such a batch past
 // every bound rather than risk a duplicate.
-func producerOpts(cfg config.Kafka, bound time.Duration) []kgo.Opt {
-	opts := dialOpts(cfg)
+func producerOpts(cfg config.Kafka, bound time.Duration) ([]kgo.Opt, error) {
+	opts, err := DialOpts(cfg)
+	if err != nil {
+		return nil, err
+	}
 	if bound > 0 {
 		opts = append(opts, kgo.RecordDeliveryTimeout(bound))
 	}
-	return opts
+	return opts, nil
 }
 
 // consumerOpts are the capacity levers shared by every consumer built in this package (step-201, D5).
@@ -59,8 +72,11 @@ func producerOpts(cfg config.Kafka, bound time.Duration) []kgo.Opt {
 // and in admin-api-svc it also delays the metrics tail reader's live frames. That is a known and
 // accepted limit of the lever — there is deliberately no per-consumer override, which would mean a
 // second naming scheme for every consumer in the repository.
-func consumerOpts(cfg config.Kafka) []kgo.Opt {
-	opts := dialOpts(cfg)
+func consumerOpts(cfg config.Kafka) ([]kgo.Opt, error) {
+	opts, err := DialOpts(cfg)
+	if err != nil {
+		return nil, err
+	}
 	if cfg.FetchMinBytes > 0 {
 		opts = append(opts, kgo.FetchMinBytes(cfg.FetchMinBytes))
 	}
@@ -75,5 +91,5 @@ func consumerOpts(cfg config.Kafka) []kgo.Opt {
 	if cfg.FetchMaxPartitionBytes > 0 {
 		opts = append(opts, kgo.FetchMaxPartitionBytes(cfg.FetchMaxPartitionBytes))
 	}
-	return opts
+	return opts, nil
 }

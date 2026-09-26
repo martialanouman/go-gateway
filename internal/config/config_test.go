@@ -24,13 +24,13 @@ var knownVars = []string{
 	"OTEL_SDK_DISABLED", "OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_INSECURE",
 	"OTEL_TRACES_SAMPLER_ARG",
 	"POSTGRES_URL", "POSTGRES_MAX_CONNS", "POSTGRES_MIN_CONNS", "POSTGRES_TIMEOUT", "POSTGRES_AUDIT_LOG_RETENTION",
-	"KAFKA_BROKERS", "KAFKA_TIMEOUT", "KAFKA_PRODUCE_TIMEOUT",
+	"KAFKA_BROKERS", "KAFKA_TIMEOUT", "KAFKA_PRODUCE_TIMEOUT", "KAFKA_TLS_ENABLED", "KAFKA_TLS_CA_FILE",
 	"KAFKA_FETCH_MIN_BYTES", "KAFKA_FETCH_MAX_WAIT", "KAFKA_FETCH_MAX_BYTES",
 	"KAFKA_FETCH_MAX_PARTITION_BYTES",
 	"KAFKA_TOPIC_PARTITIONS", "KAFKA_TOPIC_PARTITIONS_OVERRIDES", "KAFKA_TOPIC_REPLICATION_FACTOR",
 	"CLICKHOUSE_ADDR", "CLICKHOUSE_DATABASE", "CLICKHOUSE_USERNAME", "CLICKHOUSE_PASSWORD", "CLICKHOUSE_TIMEOUT",
 	"CLICKHOUSE_MAX_OPEN_CONNS", "CLICKHOUSE_MAX_IDLE_CONNS",
-	"CLICKHOUSE_CDR_RETENTION", "CLICKHOUSE_RETENTION_INTERVAL", "CLICKHOUSE_ARCHIVE_PREFIX",
+	"CLICKHOUSE_CDR_RETENTION", "CLICKHOUSE_RETENTION_INTERVAL", "CLICKHOUSE_ARCHIVE_PREFIX", "CLICKHOUSE_TLS_ENABLED", "CLICKHOUSE_TLS_CA_FILE",
 	"HTTP_PORT", "HTTP_READ_HEADER_TIMEOUT", "HTTP_ADMIN_TOKENS", "HTTP_EXPORT_DIR",
 	"REDIS_URL", "REDIS_TIMEOUT", "GRPC_PORT",
 	"SMPP_PORT", "SMPP_SESSION_MANAGER_ADDR", "SMPP_POD_ID", "SMPP_IDLE_TIMEOUT",
@@ -368,6 +368,8 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		}, "POSTGRES_MIN_CONNS"},
 		{"audit log retention under the spec's one year", map[string]string{"POSTGRES_AUDIT_LOG_RETENTION": "8759h"}, "POSTGRES_AUDIT_LOG_RETENTION"},
 		{"audit log retention over the spec's seven years", map[string]string{"POSTGRES_AUDIT_LOG_RETENTION": "61321h"}, "POSTGRES_AUDIT_LOG_RETENTION"},
+		{"kafka ca without tls", map[string]string{"KAFKA_TLS_CA_FILE": "/etc/kafka/ca.crt"}, "KAFKA_TLS_CA_FILE"},
+		{"clickhouse ca without tls", map[string]string{"CLICKHOUSE_TLS_CA_FILE": "/etc/ch/ca.crt"}, "CLICKHOUSE_TLS_CA_FILE"},
 		{"http port zero", map[string]string{"HTTP_PORT": "0"}, "HTTP_PORT"},
 		{"http port too high", map[string]string{"HTTP_PORT": "70000"}, "HTTP_PORT"},
 		{"http read header timeout zero", map[string]string{"HTTP_READ_HEADER_TIMEOUT": "0s"}, "HTTP_READ_HEADER_TIMEOUT"},
@@ -851,6 +853,9 @@ func TestCapacityLeverDefaults(t *testing.T) {
 	// (pgxpool/pool.go:20), so nothing is pre-warmed and a peak pays a burst of dials.
 	if cfg.Postgres.MinConns != 2 {
 		t.Errorf("Postgres.MinConns = %d, want 2", cfg.Postgres.MinConns)
+	}
+	if cfg.Kafka.TLSEnabled || cfg.ClickHouse.TLSEnabled {
+		t.Error("TLS toward Kafka or ClickHouse is on by default: the integration suites run them in clear")
 	}
 	if cfg.Postgres.AuditLogRetention != 365*24*time.Hour {
 		t.Errorf("Postgres.AuditLogRetention = %s, want 365 days: the spec's floor is the default", cfg.Postgres.AuditLogRetention)
@@ -1344,5 +1349,22 @@ func TestExactCacheTTLReachesTheConfig(t *testing.T) {
 	}
 	if got, want := cfg.Exact.CacheTTL, 45*time.Minute; got != want {
 		t.Errorf("Exact.CacheTTL = %s, want %s (EXACT_CACHE_TTL must keep its name)", got, want)
+	}
+}
+
+// TestStoreTLSReachesItsSection: the four variables land in the section each client reads.
+func TestStoreTLSReachesItsSection(t *testing.T) {
+	setEnv(t, map[string]string{
+		"KAFKA_TLS_ENABLED": "true", "KAFKA_TLS_CA_FILE": "/etc/kafka/ca.crt",
+		"CLICKHOUSE_TLS_ENABLED": "true", "CLICKHOUSE_TLS_CA_FILE": "/etc/ch/ca.crt",
+	})
+	cfg, err := config.Load("router-svc")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.Kafka.TLSEnabled || cfg.Kafka.TLSCAFile != "/etc/kafka/ca.crt" ||
+		!cfg.ClickHouse.TLSEnabled || cfg.ClickHouse.TLSCAFile != "/etc/ch/ca.crt" {
+		t.Errorf("kafka = %v %q, clickhouse = %v %q", cfg.Kafka.TLSEnabled, cfg.Kafka.TLSCAFile,
+			cfg.ClickHouse.TLSEnabled, cfg.ClickHouse.TLSCAFile)
 	}
 }

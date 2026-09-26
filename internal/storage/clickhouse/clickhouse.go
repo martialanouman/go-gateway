@@ -5,6 +5,7 @@ package clickhouse
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/observability"
+	"github.com/martialanouman/go-gateway/internal/platform/tlsconf"
 )
 
 // Conn is a ClickHouse connection over the native protocol. The pool is managed internally by the
@@ -24,7 +26,28 @@ type Conn struct {
 // NewConn opens a connection to the configured ClickHouse. It does not block on reachability; use
 // ReadyCheck for that.
 func NewConn(cfg config.ClickHouse) (*Conn, error) {
-	conn, err := clickhouse.Open(&clickhouse.Options{
+	opts, err := options(cfg)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := clickhouse.Open(opts)
+	if err != nil {
+		return nil, fmt.Errorf("clickhouse: open: %w", err)
+	}
+	return &Conn{conn: conn}, nil
+}
+
+// options are the connection settings the services and the migrator share, so the migration Job dials
+// exactly as they do, TLS included.
+func options(cfg config.ClickHouse) (*clickhouse.Options, error) {
+	var tlsCfg *tls.Config
+	if cfg.TLSEnabled {
+		var err error
+		if tlsCfg, err = tlsconf.StoreClientConfig(cfg.TLSCAFile); err != nil {
+			return nil, fmt.Errorf("clickhouse: %w", err)
+		}
+	}
+	return &clickhouse.Options{
 		Addr: cfg.Addr,
 		Auth: clickhouse.Auth{
 			Database: cfg.Database,
@@ -32,6 +55,7 @@ func NewConn(cfg config.ClickHouse) (*Conn, error) {
 			Password: cfg.Password,
 		},
 		DialTimeout: cfg.Timeout,
+		TLS:         tlsCfg,
 		// Pool sizing (step-201, D5). It matters for admin-api-svc, where search-messages queries and
 		// CDR exports contend, far more than for the CDR writer, which is one insert loop. Both are
 		// refused as non-positive by config validation, because the library silently substitutes its
@@ -42,11 +66,7 @@ func NewConn(cfg config.ClickHouse) (*Conn, error) {
 		// the Kafka offset would then be committed for a CDR that quietly never lands (D6/D8).
 		MaxOpenConns: cfg.MaxOpenConns,
 		MaxIdleConns: cfg.MaxIdleConns,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("clickhouse: open: %w", err)
-	}
-	return &Conn{conn: conn}, nil
+	}, nil
 }
 
 // Ping reports whether ClickHouse is reachable.

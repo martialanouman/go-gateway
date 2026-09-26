@@ -34,6 +34,10 @@ type StreamProducer struct {
 // reachability, and it is deliberately absent from readiness: the stream is not vital, and a service must
 // stay in the load balancer with its dashboard feed down.
 func NewStreamProducer(cfg config.Kafka) (*StreamProducer, error) {
+	shared, err := DialOpts(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("kafka: new stream producer: %w", err)
+	}
 	opts := append([]kgo.Opt{
 		kgo.SeedBrokers(cfg.Brokers...),
 		// LeaderAck, not AllISRAcks: losing a snapshot on a leader failover costs one dashboard frame. It
@@ -42,7 +46,7 @@ func NewStreamProducer(cfg config.Kafka) (*StreamProducer, error) {
 		kgo.RequiredAcks(kgo.LeaderAck()),
 		kgo.DisableIdempotentWrite(),
 		kgo.MaxBufferedRecords(streamBufferedRecords),
-	}, dialOpts(cfg)...)
+	}, shared...)
 	cl, err := kgo.NewClient(opts...)
 	if err != nil {
 		return nil, fmt.Errorf("kafka: new stream producer: %w", err)

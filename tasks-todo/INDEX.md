@@ -344,7 +344,7 @@ Indépendantes de la chaîne de charge : parallélisables si deux mains travaill
 - [x] step-304 — La voie retour raconte mal ses échecs (`bind_exhausted` pour une annulation qui est la
       nôtre) et republie l'adresse du pod à chaque rafraîchissement de bind — deux dettes antérieures,
       mises en production par step-302
-- [ ] step-305 — Le TLS client vers les quatre magasins : Kafka et ClickHouse sont du code, Postgres et
+- [x] step-305 — Le TLS client vers les quatre magasins : Kafka et ClickHouse sont du code, Postgres et
       Redis une ligne de checklist — ouverte par step-300d, qui a laissé le fork de l'ancre de confiance
 - [ ] step-310 — Auth opérateur réelle (OIDC/mTLS) remplaçant le stub M1 ⛓ step-300
 - [x] step-315 — Le journal d'audit se lit, et la base le rend immuable — ouverte par step-290d ; ⛓ step-310 levée (ADR-0017)

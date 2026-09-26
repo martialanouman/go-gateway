@@ -881,3 +881,73 @@ func TestThePublicServerNegotiatesTheProtocolItAdvertises(t *testing.T) {
 		})
 	}
 }
+
+// storePeer is a data store outside our PKI: its certificate comes from ca, it speaks at most TLS 1.2, and it
+// asks for no client certificate.
+func storePeer(t *testing.T, ca *tlstest.CA) net.Addr {
+	t.Helper()
+	certFile, keyFile := ca.Issue(t, "store", "localhost")
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		t.Fatalf("load store pair: %v", err)
+	}
+	return serve(t, &tls.Config{Certificates: []tls.Certificate{cert}, MaxVersion: tls.VersionTLS12})
+}
+
+// dialStore reaches the store by name, as a client composes KAFKA_BROKERS: the ServerName is derived from it.
+func dialStore(addr net.Addr, cfg *tls.Config) error {
+	_, port, _ := net.SplitHostPort(addr.String())
+	conn, err := tls.Dial("tcp", net.JoinHostPort("localhost", port), cfg)
+	if err != nil {
+		return err
+	}
+	return conn.Close()
+}
+
+// TestStoreClientTrustsTheOperatorsCA: a store signed by the CA the operator mounts is reached at TLS 1.2,
+// with no client certificate; a store signed by any other authority is refused.
+func TestStoreClientTrustsTheOperatorsCA(t *testing.T) {
+	operatorCA := tlstest.NewCA(t)
+	cfg, err := tlsconf.StoreClientConfig(operatorCA.CAFile)
+	if err != nil {
+		t.Fatalf("StoreClientConfig: %v", err)
+	}
+	if err := dialStore(storePeer(t, operatorCA), cfg); err != nil {
+		t.Fatalf("store of the mounted CA: %v", err)
+	}
+	if err := dialStore(storePeer(t, tlstest.NewCA(t)), cfg); err == nil {
+		t.Error("a store signed by another authority was accepted")
+	}
+}
+
+// TestStoreClientWithoutCAUsesTheSystemRoots: no CA file means a managed store signed by a public authority,
+// so a private CA's store is refused rather than trusted by default.
+func TestStoreClientWithoutCAUsesTheSystemRoots(t *testing.T) {
+	cfg, err := tlsconf.StoreClientConfig("")
+	if err != nil {
+		t.Fatalf("StoreClientConfig: %v", err)
+	}
+	if cfg.RootCAs != nil || cfg.InsecureSkipVerify {
+		t.Errorf("RootCAs = %v, InsecureSkipVerify = %v: want the system roots, verified", cfg.RootCAs, cfg.InsecureSkipVerify)
+	}
+	if err := dialStore(storePeer(t, tlstest.NewCA(t)), cfg); err == nil {
+		t.Error("a store signed by a private CA was accepted against the system roots")
+	}
+}
+
+// TestStoreClientRefusesAnUnusableCAAtBoot: a CA that cannot be read is a boot error handed back, never a
+// handshake that starts failing at three in the morning.
+func TestStoreClientRefusesAnUnusableCAAtBoot(t *testing.T) {
+	empty := filepath.Join(t.TempDir(), "ca.crt")
+	if err := os.WriteFile(empty, []byte("not a certificate"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for name, path := range map[string]string{
+		"missing file":         filepath.Join(t.TempDir(), "absent.crt"),
+		"PEM without any cert": empty,
+	} {
+		if _, err := tlsconf.StoreClientConfig(path); err == nil {
+			t.Errorf("%s: StoreClientConfig accepted %s", name, path)
+		}
+	}
+}

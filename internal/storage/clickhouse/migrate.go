@@ -4,12 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/url"
 	"path/filepath"
 
+	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/golang-migrate/migrate/v4"
-	// clickhouse is the migration database driver; the blank import registers the "clickhouse" scheme.
-	_ "github.com/golang-migrate/migrate/v4/database/clickhouse"
+	chmigrate "github.com/golang-migrate/migrate/v4/database/clickhouse"
+
 	// file is the migration source; the blank import registers the "file://" scheme.
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 
@@ -40,25 +40,26 @@ func NewMigrator(cfg config.ClickHouse, dir string, log *slog.Logger) (*Migrator
 		return nil, fmt.Errorf("resolve migrations dir %q: %w", dir, err)
 	}
 
-	m, err := migrate.New("file://"+abs, migrateURL(cfg))
+	opts, err := options(cfg)
 	if err != nil {
-		// The URL carries a password: report the directory, never the URL.
+		return nil, err
+	}
+	opts.Addr = opts.Addr[:1]
+	db := clickhouse.OpenDB(opts)
+	// MultiStatementEnabled stays false: the driver's multi-statement splitter is a naive split on ';',
+	// which breaks on a ';' inside an SQL comment. The convention is therefore ONE statement per migration
+	// file, which the driver runs as a single Exec — robust and simple.
+	driver, err := chmigrate.WithInstance(db, &chmigrate.Config{DatabaseName: cfg.Database})
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("open clickhouse migrator: %w", err)
+	}
+	m, err := migrate.NewWithDatabaseInstance("file://"+abs, "clickhouse", driver)
+	if err != nil {
+		_ = driver.Close()
 		return nil, fmt.Errorf("open clickhouse migrator on %s: %w", abs, err)
 	}
 	return &Migrator{m: m, log: log}, nil
-}
-
-// migrateURL builds the golang-migrate ClickHouse DSN. x-multi-statement is deliberately NOT set:
-// the driver's multi-statement splitter is a naive split on ';', which breaks on a ';' inside an
-// SQL comment. The convention is therefore ONE statement per migration file (add 0002, 0003… for
-// further tables), which the driver runs as a single Exec — robust and simple.
-func migrateURL(cfg config.ClickHouse) string {
-	q := url.Values{}
-	q.Set("username", cfg.Username)
-	q.Set("password", cfg.Password)
-	q.Set("database", cfg.Database)
-	u := url.URL{Scheme: "clickhouse", Host: cfg.Addr[0], RawQuery: q.Encode()}
-	return u.String()
 }
 
 // Up applies every pending migration. It reports nil when the schema is already current, so a

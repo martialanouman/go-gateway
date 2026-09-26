@@ -94,7 +94,7 @@ func run(dryRun bool) error {
 		ReplicationFactor: cfg.Kafka.TopicReplicationFactor,
 	}
 
-	adm, err := kafkaprovision.NewAdmin(cfg.Kafka.Brokers, cfg.Kafka.Timeout)
+	adm, err := kafkaprovision.NewAdmin(cfg.Kafka)
 	if err != nil {
 		return err
 	}

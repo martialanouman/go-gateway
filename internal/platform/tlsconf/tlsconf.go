@@ -1,6 +1,7 @@
 // Package tlsconf builds the TLS configuration of every surface this repository serves or calls, from
 // three PEM files on disk. It knows nothing about who writes them: cert-manager, an internal PKI or an
-// operator's kubectl all look alike from here.
+// operator's kubectl all look alike from here. The data stores are the exception: they are outside our PKI,
+// so StoreClientConfig trusts one CA file, or the system roots, and presents nothing (step-305).
 //
 // The files are read at every handshake, not once at boot, because certificates rotate under a running
 // process — the kubelet rewrites a Secret volume in place and the pod never restarts. What makes that
@@ -155,6 +156,27 @@ func (f Files) ClientConfig() (*tls.Config, error) {
 			return st.cert, nil
 		},
 	}, nil
+}
+
+// StoreClientConfig builds the dialling side toward a data store (Kafka, ClickHouse), which is not in our PKI:
+// caFile is the operator's authority, and empty means a managed store signed by a public one. Floor TLS 1.2,
+// which managed stores commonly cap at, and no client certificate. The CA is read here, once, so an unusable
+// file is a boot error rather than a handshake that fails later.
+func StoreClientConfig(caFile string) (*tls.Config, error) {
+	cfg := &tls.Config{MinVersion: tls.VersionTLS12}
+	if caFile == "" {
+		return cfg, nil
+	}
+	//nolint:gosec // G304: the path is the operator's own *_TLS_CA_FILE setting, never request input.
+	caPEM, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil, fmt.Errorf("tlsconf: read the store CA: %w", err)
+	}
+	cfg.RootCAs = x509.NewCertPool()
+	if !cfg.RootCAs.AppendCertsFromPEM(caPEM) {
+		return nil, fmt.Errorf("tlsconf: %s holds no certificate", caFile)
+	}
+	return cfg, nil
 }
 
 // state is one loaded generation of the three files.

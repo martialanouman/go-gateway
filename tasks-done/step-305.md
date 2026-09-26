@@ -1,6 +1,6 @@
 # step-305 — Le TLS client vers les quatre magasins de données
 
-> **Jalon :** M12 · **Statut :** À FAIRE
+> **Jalon :** M12 · **Statut :** FAIT
 > **Dépend de :** step-300 (livrée) · **Bloque :** step-410 (go-live)
 
 ## Pourquoi cette fiche existe
@@ -56,13 +56,39 @@ faute de pair réel. Voir `debts/ancre-de-confiance-par-connecteur.md` : les deu
 - **Ne pas casser les suites d'intégration** : `testcontainers` démarre ces quatre magasins en clair.
   Le TLS doit rester activable par configuration, éteint par défaut, comme partout ailleurs.
 
+## Design arrêté
+
+Arbitrage Fable, 2026-09-26 (Q1-Q5), sans conflit avec la spec, qui ne dit rien du TLS vers les magasins.
+
+- **Ancre par magasin** : `KAFKA_TLS_ENABLED` + `KAFKA_TLS_CA_FILE`, `CLICKHOUSE_TLS_ENABLED` +
+  `CLICKHOUSE_TLS_CA_FILE`. Une CA vide prend les racines système (magasin managé), une CA renseignée devient
+  le seul pool (PKI de l'exploitant). Plancher TLS 1.2, aucun certificat client. `ClientConfig()` (notre CA,
+  notre certificat, TLS 1.3) est faux ici, parce que les magasins ne sont pas dans notre PKI. Une paire
+  unique `STORE_TLS_*` est écartée, parce que Kafka et ClickHouse peuvent venir de deux fournisseurs.
+- **Constructeur** : `tlsconf.StoreClientConfig(caFile)`, fonction de paquet. Il lit la CA au boot et rend
+  l'erreur si le fichier est illisible ou si le PEM ne contient aucun certificat. L'en-tête de `tlsconf.go`
+  est amendé d'une phrase.
+- **Propagation** : `dialOpts` rend `([]kgo.Opt, error)`. Les constructeurs Kafka rendent déjà une erreur,
+  donc aucun `_ =` n'est nécessaire. `kafkaprovision.NewAdmin` suit. `clickhouse.NewConn` pose `TLS`.
+  *(Revue : le migrateur ClickHouse composait son propre DSN en clair ; il partage désormais les `Options`
+  de `NewConn`. `kafkaprovision` passe par `kafka.DialOpts`, exporté, plutôt que d'en recopier la logique.)*
+- **Configuration** : une `*_TLS_CA_FILE` renseignée avec `*_TLS_ENABLED=false` est refusée, parce que ce
+  réglage n'aurait aucun effet.
+- **Pas de garde de production** : quatre liens de même nature, pas deux sur quatre. Postgres, Redis,
+  Kafka et ClickHouse deviennent quatre lignes de la checklist de step-410.
+- **ServerName** : franz-go (`kgo/client.go:513`) et `crypto/tls` (via clickhouse-go) le déduisent de
+  l'hôte composé. Ce que l'exploitant doit en savoir est dans `deploy/k8s/tls/README.md`.
+- **Preuve du handshake** : un faux pair TLS local, avec un certificat de `tlstest`, constate un handshake
+  **abouti** depuis le client Kafka et depuis le client ClickHouse. Le protocole applicatif échoue ensuite,
+  ce qui n'est pas l'objet du test.
+
 ## Definition of Done
 
-- [ ] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts
-- [ ] Kafka et ClickHouse joignables en TLS par configuration, éteint par défaut
-- [ ] Un chemin de certificat illisible est une erreur de boot **rendue**, prouvée par un test
-- [ ] Les deux lignes Postgres/Redis inscrites dans la checklist de go-live de step-410
-- [ ] `debts/tls-client-vers-kafka-et-clickhouse-absent.md` passe à `PAYÉE`, avec la date et la PR
+- [x] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts
+- [x] Kafka et ClickHouse joignables en TLS par configuration, éteint par défaut
+- [x] Un chemin de certificat illisible est une erreur de boot **rendue**, prouvée par un test
+- [x] Les deux lignes Postgres/Redis inscrites dans la checklist de go-live de step-410
+- [x] `debts/tls-client-vers-kafka-et-clickhouse-absent.md` passe à `PAYÉE`, avec la date et la PR
 
 ## Hors périmètre
 

@@ -61,6 +61,10 @@ func newConsumer(cfg config.Kafka, group string, reset kgo.Offset, topics ...str
 	if len(topics) == 0 {
 		return nil, fmt.Errorf("kafka: consumer needs at least one topic")
 	}
+	shared, err := consumerOpts(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("kafka: new consumer: %w", err)
+	}
 	opts := append([]kgo.Opt{
 		kgo.SeedBrokers(cfg.Brokers...),
 		kgo.ConsumerGroup(group),
@@ -68,7 +72,7 @@ func newConsumer(cfg config.Kafka, group string, reset kgo.Offset, topics ...str
 		// Commit only after work is done; never let franz-go advance offsets on a timer.
 		kgo.DisableAutoCommit(),
 		kgo.ConsumeResetOffset(reset),
-	}, consumerOpts(cfg)...)
+	}, shared...)
 	cl, err := kgo.NewClient(opts...)
 	if err != nil {
 		return nil, fmt.Errorf("kafka: new consumer: %w", err)
@@ -434,11 +438,15 @@ func sumLag(byPartition map[string]map[int32]int64) map[string]int64 {
 // process-wide prefix leaves no room to separate the two; the levers are meant for the CDR path, and a
 // service running both should be tuned with that in mind.
 func NewTailReader(cfg config.Kafka, topics ...string) (*Consumer, error) {
+	shared, err := consumerOpts(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("kafka: new tail reader: %w", err)
+	}
 	opts := append([]kgo.Opt{
 		kgo.SeedBrokers(cfg.Brokers...),
 		kgo.ConsumeTopics(topics...),
 		kgo.ConsumeResetOffset(kgo.NewOffset().AtEnd()),
-	}, consumerOpts(cfg)...)
+	}, shared...)
 	cl, err := kgo.NewClient(opts...)
 	if err != nil {
 		return nil, fmt.Errorf("kafka: new tail reader: %w", err)

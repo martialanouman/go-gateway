@@ -12,6 +12,9 @@ import (
 	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kerr"
 	"github.com/twmb/franz-go/pkg/kgo"
+
+	"github.com/martialanouman/go-gateway/internal/config"
+	"github.com/martialanouman/go-gateway/internal/storage/kafka"
 )
 
 // metadataMinAge bounds how long the client may answer a topic-metadata question from its own cache.
@@ -26,17 +29,16 @@ const metadataMinAge = 10 * time.Millisecond
 
 // NewAdmin builds the admin client this package expects: seeded on brokers, dialling within timeout,
 // and — see metadataMinAge — not answering topic metadata from a stale cache. Close it when done; that
-// closes the underlying client too.
-// A dialTimeout of zero or less keeps franz-go's own 10s default rather than passing it through:
-// kgo.DialTimeout(0) is net.Dialer{Timeout: 0}, which is no dial timeout at all.
-func NewAdmin(brokers []string, dialTimeout time.Duration) (*kadm.Client, error) {
-	opts := []kgo.Opt{
-		kgo.SeedBrokers(brokers...),
+// closes the underlying client too. It dials as the services do (kafka.DialOpts), TLS included.
+func NewAdmin(cfg config.Kafka) (*kadm.Client, error) {
+	dial, err := kafka.DialOpts(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("kafka admin client: %w", err)
+	}
+	opts := append([]kgo.Opt{
+		kgo.SeedBrokers(cfg.Brokers...),
 		kgo.MetadataMinAge(metadataMinAge),
-	}
-	if dialTimeout > 0 {
-		opts = append(opts, kgo.DialTimeout(dialTimeout))
-	}
+	}, dial...)
 
 	client, err := kgo.NewClient(opts...)
 	if err != nil {
