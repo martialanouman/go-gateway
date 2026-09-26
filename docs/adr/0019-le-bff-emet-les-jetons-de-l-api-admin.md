@@ -108,10 +108,11 @@ restent grossiers : un `script_author` porte `admin:write`, et le BFF reste seul
 
 ## Action Items
 
-1. [ ] Passerelle : ancre de confiance du JWKS (`OIDC_JWKS_CA_FILE`), qui paie
+1. [ ] Passerelle (step-405) : ancre de confiance du JWKS (`OIDC_JWKS_CA_FILE`), qui paie
    `debts/jwks-joint-par-les-seules-racines-systeme.md`, avant step-410.
-2. [ ] Passerelle : description d'`OperatorBearer` dans `api/openapi-admin.yaml` (émetteur = BFF), bump MINEUR.
-3. [ ] Passerelle : décider de la FK `created_by` et écrire `sub` dans `created_by`, ce qui paie
+2. [ ] Passerelle (step-405) : description d'`OperatorBearer` dans `api/openapi-admin.yaml` (émetteur = BFF),
+   bump MINEUR.
+3. [ ] Passerelle (step-405) : décider de la FK `created_by` et écrire `sub` dans `created_by`, ce qui paie
    `debts/created-by-jamais-renseigne.md`.
 4. [ ] BFF (`go-gateway-bo`) : émission, JWKS, rotation, traduction permissions → scopes, jetons personnels.
 5. [ ] step-410 : `gateway-oidc` renseigné avec `OIDC_ISSUER` (le BFF), `OIDC_AUDIENCE=gateway-admin` et

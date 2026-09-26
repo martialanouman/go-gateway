@@ -399,8 +399,10 @@ l'autorisation de la moitié des opérations, et le tableau de bord génère ses
 - [x] step-397 — 50 opérations Admin exigent un scope que le contrat ne déclare pas ⛓ step-390 —
       ouverte par step-330
 - [ ] step-400 — `billing.events` durable : le BFF doit pouvoir détecter, pas seulement afficher
+- [ ] step-405 — La passerelle accepte les jetons du BFF : ancre du JWKS, contrat honnête, `created_by`
+      rempli ⛓ step-310, ADR-0019 — ouverte par ADR-0019 ; unité faute de multiple de dix libre
 - [ ] step-410 — **GO-LIVE** : dérouler la checklist de mise en production
-      ⛓ step-260, step-270, step-280, step-290, step-310, step-320, step-397
+      ⛓ step-260, step-270, step-280, step-290, step-310, step-320, step-397, step-405
 
 ---
 
