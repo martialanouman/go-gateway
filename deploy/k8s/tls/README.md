@@ -140,6 +140,33 @@ ignored ».
 cert-manager renouvelle aux deux tiers de la durée de vie, le kubelet réécrit les fichiers, et le process
 relit au handshake suivant. Rien à redémarrer.
 
+## Vers les magasins de données (step-305)
+
+Postgres, Redis, Kafka et ClickHouse ne sont pas dans notre PKI : ce sont des pairs de l'exploitant, et
+`TLS_ENABLED` ne les concerne pas.
+
+| Magasin | Activation | Ancre |
+|---|---|---|
+| PostgreSQL | `sslmode=require` ou `verify-full` dans `POSTGRES_URL` | `sslrootcert=` dans l'URL, sinon les racines système |
+| Redis | schéma `rediss://` dans `REDIS_URL` | racines système |
+| Kafka | `KAFKA_TLS_ENABLED=true` | `KAFKA_TLS_CA_FILE`, vide = racines système |
+| ClickHouse | `CLICKHOUSE_TLS_ENABLED=true` | `CLICKHOUSE_TLS_CA_FILE`, vide = racines système |
+
+Un fichier de CA **remplace** les racines système, il ne s'y ajoute pas. Plancher TLS 1.2, et aucun
+certificat client n'est présenté. Une CA illisible fait échouer le démarrage, et un changement de CA
+exige un redémarrage, comme pour tout client de ce dépôt.
+
+- **Le SAN doit couvrir l'hôte tel qu'on le compose.** Pour Kafka, c'est l'hôte **annoncé** par chaque
+  broker (`advertised.listeners`), pas seulement celui de `KAFKA_BROKERS` : le client recompose chaque
+  broker par son adresse annoncée. Une adresse IP exige un SAN IP.
+- **ClickHouse chiffré écoute sur un autre port** : 9440 pour le protocole natif chez la plupart des
+  fournisseurs, pas 9000. `CLICKHOUSE_ADDR` change avec le drapeau.
+- **Pas de mode transitoire** (`debts/bascule-tls-sans-mode-transitoire.md`) : le drapeau est binaire par
+  pod. Activer TLS sur un cluster vivant suppose des brokers qui exposent les deux listeners le temps
+  du déploiement.
+- **Kafka n'a aucune authentification** : voir `debts/kafka-sans-authentification.md`. TLS chiffre le
+  lien, il ne dit pas qui parle.
+
 **cert-manager n'est pas déployé par ce dépôt**, au même titre que Postgres, Kafka, le collecteur OTel ou
 l'Ingress : c'est un opérateur cluster-wide, avec ses CRD et son webhook d'admission. La checklist de
 go-live (step-410) vérifie qu'un émetteur existe.

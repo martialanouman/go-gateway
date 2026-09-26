@@ -70,3 +70,8 @@ Sources : `cmd/connector-pool-svc/wiring.go` (projection `ClientConfig`) ·
 question posée ici — le pool aura besoin d'`Open` sans `Seal` — a donc déjà sa réponse et sa forme : une
 ligne `"connector-pool-svc": {"Open"}`. Le garde correspondant est
 `TestConfigSecretsGivesTheReturnPathOpenButNotSeal`.
+
+**Addendum step-305 (2026-09-26).** Le constructeur de l'option écartée ici existe désormais :
+`tlsconf.StoreClientConfig(caFile)` (racines système si vide, plancher 1.2, aucun certificat client) sert
+Kafka et ClickHouse. Un `CONNECTOR_TLS_CA_FILE`, ou `tls_config_json` le jour où le pool le lira, le
+réutiliserait tel quel. Le coût du paiement baisse ; son déclencheur ne change pas.

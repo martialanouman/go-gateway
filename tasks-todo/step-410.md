@@ -42,6 +42,12 @@ chaque item et matérialiser la porte de go-live.
      `smpp-bindgen -password …` et `smsc-ceiling -password …` (ajouté en step-201). Visible dans `ps`
      pour tout utilisateur de la machine pendant tout le run, et dans l'historique du shell. Le lire
      dans l'environnement, flag conservé en repli documenté comme non sûr — **les deux binaires**.
+- **Le lien vers les quatre magasins est chiffré, ou son clair est accepté par écrit** (step-305). Aucune
+  garde de configuration ne le vérifie, pour ne pas en poser deux sur quatre : `POSTGRES_URL` porte
+  `sslmode=require` (ou `verify-full`), `REDIS_URL` est en `rediss://`, `KAFKA_TLS_ENABLED=true` et
+  `CLICKHOUSE_TLS_ENABLED=true` (port natif TLS, 9440 chez la plupart des fournisseurs), sur **chaque**
+  service et sur les Jobs `migrate-*` et `kafka-provision`. Un clair se coche « accepté » seulement si un
+  maillage chiffre le réseau, et en nommant qui l'accepte.
 - Vérifier une dernière fois les **4 invariants** (a/b/c/d) verts sur l'ensemble avant go-live.
 - Item explicite : **auth opérateur réelle active** (le stub M1 n'est plus câblé).
 - Artefact documentaire (pas de code) : ne PAS inventer d'items — reprendre §15 du guide.
