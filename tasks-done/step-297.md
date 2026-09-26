@@ -1,6 +1,6 @@
 # step-297 — Ce qui survit à un effacement attesté : rétention, base légale, journaux
 
-> **Jalon :** Dette ouverte par step-290d · **Statut :** À FAIRE
+> **Jalon :** Dette ouverte par step-290d · **Statut :** FAIT
 > **Dépend de :** — · **Bloque :** —
 
 ## Pourquoi cette fiche existe
@@ -88,11 +88,11 @@ Arbitrages : Fable (Q1-Q4), puis l'utilisateur pour la porte (GUC contre rôle d
 
 ## Definition of Done
 
-- [ ] Une durée de rétention d'`audit_log` est choisie, écrite dans `docs/` et appliquée par une purge.
-- [ ] La purge et l'immuabilité de step-315 sont compatibles, et chacune des deux fiches le dit.
-- [ ] La base légale de ce qui survit à un effacement attesté est écrite dans `docs/`, pas seulement
+- [x] Une durée de rétention d'`audit_log` est choisie, écrite dans `docs/` et appliquée par une purge.
+- [x] La purge et l'immuabilité de step-315 sont compatibles, et chacune des deux fiches le dit.
+- [x] La base légale de ce qui survit à un effacement attesté est écrite dans `docs/`, pas seulement
       dans un commentaire.
-- [ ] Le log d'échec d'attestation ne conserve un MSISDN que si la décision ci-dessus l'autorise.
+- [x] Le log d'échec d'attestation ne conserve un MSISDN que si la décision ci-dessus l'autorise.
 
 ## Hors périmètre
 
