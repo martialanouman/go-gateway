@@ -312,6 +312,25 @@ const cdrAggInnerCols = `customer_id, account_id, direction, submitted_at, messa
 // under the new model, so the two agree for new data.
 const cdrDispatched = `status NOT IN ('accepted', 'rejected')`
 
+// cdrStatusCounts and cdrStatusPrecedence are the ONE definition of a message's aggregated status, shared
+// by the CDR explorer and the metrics so a message cannot read delivered in one and failed in the other.
+const cdrStatusCounts = `maxIf(segment_count, ` + cdrDispatched + `) AS dispatched_total,
+	countIf(status = 'delivered') AS delivered_segs,
+	countIf(status = 'cancelled') AS cancelled_cnt,
+	countIf(status = 'failed') AS failed_cnt,
+	countIf(status = 'expired') AS expired_cnt,
+	countIf(status = 'rejected') AS rejected_cnt,
+	countIf(` + cdrDispatched + `) AS dispatched_cnt`
+
+const cdrStatusPrecedence = `multiIf(
+		rejected_cnt > 0, 'rejected',
+		cancelled_cnt > 0, 'cancelled',
+		failed_cnt > 0, 'failed',
+		expired_cnt > 0, 'expired',
+		dispatched_total > 0 AND delivered_segs = dispatched_total, 'delivered',
+		dispatched_cnt > 0, 'enroute',
+		'accepted')`
+
 // cdrAggMessageCols is the middle level: it reduces a message's per-segment rows to one row of PLAIN
 // per-message aggregates (counts and maxima). Keeping these separate from the status/delivered_at
 // decision matters — ClickHouse forbids nesting one aggregate inside another, so the multiIf that reads
@@ -330,13 +349,7 @@ const cdrAggMessageCols = `message_id, submitted_at,
 	any(encoding) AS encoding, any(content_ciphertext) AS content_ciphertext,
 	any(content_key_id) AS content_key_id, maxIf(latency_ms, ` + cdrDispatched + `) AS latency_ms,
 	max(billed) AS billed, any(credits_charged) AS credits_charged,
-	maxIf(segment_count, ` + cdrDispatched + `) AS dispatched_total,
-	countIf(status = 'delivered') AS delivered_segs,
-	countIf(status = 'cancelled') AS cancelled_cnt,
-	countIf(status = 'failed') AS failed_cnt,
-	countIf(status = 'expired') AS expired_cnt,
-	countIf(status = 'rejected') AS rejected_cnt,
-	countIf(` + cdrDispatched + `) AS dispatched_cnt,
+	` + cdrStatusCounts + `,
 	maxIf(delivered_at, status = 'delivered') AS delivered_at_max,
 	argMinIf(error_code, segment_seq, status IN ('failed', 'expired', 'rejected')) AS error_code`
 
@@ -351,14 +364,7 @@ const cdrAggMessageCols = `message_id, submitted_at,
 const cdrAggOuterCols = `message_id, trace_id, account_id, customer_id, direction, source_addr, dest_addr,
 	original_source_addr, connector_id, route_id, routing_script_id, submitted_at,
 	if(dispatched_total > 0 AND delivered_segs = dispatched_total, delivered_at_max, NULL) AS delivered_at,
-	multiIf(
-		rejected_cnt > 0, 'rejected',
-		cancelled_cnt > 0, 'cancelled',
-		failed_cnt > 0, 'failed',
-		expired_cnt > 0, 'expired',
-		dispatched_total > 0 AND delivered_segs = dispatched_total, 'delivered',
-		dispatched_cnt > 0, 'enroute',
-		'accepted') AS status,
+	` + cdrStatusPrecedence + ` AS status,
 	error_code, greatest(dispatched_total, 1) AS segment_count, toUInt16(0) AS segment_seq,
 	encoding, content_ciphertext, content_key_id, latency_ms, billed, credits_charged, toUInt64(0) AS version`
 

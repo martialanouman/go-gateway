@@ -199,6 +199,9 @@ type Deps struct {
 	// MessageSearch reads the CDR for search-messages (step-186) and feeds the export worker.
 	MessageSearch SearchStore
 
+	// Metrics aggregates the CDR for get-metrics-summary and get-traffic-metrics (step-380).
+	Metrics MetricsReader
+
 	// ExportJobs and ExportSink back the asynchronous export (step-187). A nil sink means the
 	// deployment has no export storage: create-message-export then answers 503 rather than queueing a
 	// job nothing can fulfil.

@@ -395,6 +395,7 @@ func adminDeps(
 		SecretSealer:  adminapi.NewGRPCSecretSealer(configsecretspb.NewConfigSecretsClient(clients.contentKey)),
 		Messages:      clickhouse.NewCDRReader(st.ch),
 		MessageSearch: clickhouse.NewCDRReader(st.ch),
+		Metrics:       clickhouse.NewCDRReader(st.ch),
 		ExportJobs:    postgres.NewMessageExportJobRepo(st.pg),
 		ExportSink:    sink,
 		ContentAudit:  postgres.NewContentAccessAuditRepo(st.pg),

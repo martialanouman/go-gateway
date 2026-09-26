@@ -162,6 +162,8 @@ var m1Operations = []opRef{
 	{"create-message-export", "post", "/admin/messages/export"},
 	{"get-message-export", "get", "/admin/messages/export/{jobId}"},
 
+	{"get-metrics-summary", "get", "/admin/metrics/summary"},
+	{"get-traffic-metrics", "get", "/admin/metrics/traffic"},
 	{"stream-metrics", "get", "/admin/stream/metrics"},
 	{"stream-sessions", "get", "/admin/stream/sessions"},
 	{"stream-billing-alerts", "get", "/admin/stream/billing-alerts"},
@@ -187,10 +189,6 @@ type deferredOp struct{ reason, step string }
 // unclassified entry here is a typed client calling a 404. Kept honest by
 // TestEveryContractOperationIsServedOrDeferred, which also forbids overlapping with m1Operations.
 var deferred = map[string]deferredOp{
-
-	// Aggregated metrics: stream-metrics pushes; nothing answers a pull.
-	"get-metrics-summary": {"stream-metrics pushes, nothing pulls", "step-380"},
-	"get-traffic-metrics": {"stream-metrics pushes, nothing pulls", "step-380"},
 
 	// Accounts and routes: three settings are creatable and never modifiable.
 	"suspend-smpp-account":         {"PATCH update-smpp-account does it today", "step-390"},
@@ -908,7 +906,7 @@ func declaresUpgrade(codes []string) bool {
 // deferred anyway. A step needing to defer past step-390 widens this list in its own PR — one line
 // of diff, visible in review.
 var deferredSteps = []string{
-	"step-330", "step-340", "step-350", "step-380", "step-390",
+	"step-330", "step-340", "step-350", "step-390",
 }
 
 // TestEveryContractOperationIsServedOrDeferred is the direction the four tests above leave open:
