@@ -1,6 +1,6 @@
 # step-310 — Auth opérateur réelle (OIDC/mTLS) remplaçant le stub M1
 
-> **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
+> **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** FAIT
 > **Dépend de :** step-300 · **Bloque :** —
 
 ## But
@@ -81,9 +81,9 @@ fixe l'appelant : l'Admin API authentifie un **jeton de service** (BFF, script, 
   Déclencheur : plusieurs certificats clients admis avec des privilèges différents.
 
 ## Definition of Done
-- [ ] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts
-- [ ] critères couverts par tests · godoc sur l'exporté · aucun invariant (a/b/c/d) violé
-- [ ] auth opérateur réelle active ; stub M1 retiré de la production ; validation OIDC via lib figée par `ctx7`
+- [x] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts
+- [x] critères couverts par tests · godoc sur l'exporté · aucun invariant (a/b/c/d) violé
+- [x] auth opérateur réelle active ; stub M1 retiré de la production ; validation OIDC via lib figée par `ctx7`
 
 ## Hors périmètre
 Manifests k8s → step-270. Checklist prod → step-410.

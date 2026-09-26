@@ -49,6 +49,11 @@ chaque item et matérialiser la porte de go-live.
   maillage chiffre le réseau, et en nommant qui l'accepte.
 - Vérifier une dernière fois les **4 invariants** (a/b/c/d) verts sur l'ensemble avant go-live.
 - Item explicite : **auth opérateur réelle active** (le stub M1 n'est plus câblé).
+- **L'IdP de production est nommé** (step-310) : le ConfigMap `gateway-oidc` existe, avec `OIDC_ISSUER`,
+  `OIDC_AUDIENCE` et `OIDC_JWKS_URL`. Le `tokenUrl` du contrat Admin (placeholder
+  `admin.gateway.internal/oauth/token`) est remplacé par celui de cet IdP dans la doc remise au BFF. Si son
+  certificat n'est pas sous une racine publique, `debts/jwks-joint-par-les-seules-racines-systeme.md` se
+  paie avant le go-live.
 - Artefact documentaire (pas de code) : ne PAS inventer d'items — reprendre §15 du guide.
 
 ## Tests (écrits dans la même PR)
