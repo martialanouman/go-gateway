@@ -177,6 +177,14 @@ type SessionDirectory interface {
 	DisconnectSession(ctx context.Context, bindID, reason string) error
 }
 
+// PlatformContentPolicyStore reads and replaces the platform default an inherit customer resolves to
+// (step-370). Only off and stored_encrypted are storable: the store refuses anything else with
+// ErrValidation. *postgres.CustomerRepo satisfies it.
+type PlatformContentPolicyStore interface {
+	PlatformContentStorage(ctx context.Context) (cp.ContentStorage, error)
+	SetPlatformContentStorage(ctx context.Context, cs cp.ContentStorage) (cp.ContentStorage, error)
+}
+
 // Deps are the collaborators the Admin API needs. Later milestones add a store field per resource;
 // New tolerates a nil store (the contract test builds the API without any), but a running server
 // wires them all.
@@ -197,13 +205,14 @@ type Deps struct {
 	ExportJobs ExportJobStore
 	ExportSink ExportSink
 
-	Customers      CustomerStore
-	CustomerGroups CustomerGroupStore
-	Webhooks       WebhookStore
-	Accounts       AccountStore
-	Sessions       SessionDirectory
-	Credentials    CredentialStore
-	Connectors     ConnectorStore
+	Customers             CustomerStore
+	PlatformContentPolicy PlatformContentPolicyStore
+	CustomerGroups        CustomerGroupStore
+	Webhooks              WebhookStore
+	Accounts              AccountStore
+	Sessions              SessionDirectory
+	Credentials           CredentialStore
+	Connectors            ConnectorStore
 	// SecretSealer is required by the three handlers that write a replayed secret (connectors, billing
 	// providers, webhooks): without it they refuse rather than store something unusable.
 	SecretSealer       SecretSealer

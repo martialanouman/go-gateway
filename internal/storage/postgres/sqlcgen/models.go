@@ -231,6 +231,11 @@ type ControlPlaneOptOutKeyword struct {
 	UpdatedAt         pgtype.Timestamptz
 }
 
+type ControlPlanePlatformContentPolicy struct {
+	ID             bool
+	ContentStorage string
+}
+
 type ControlPlaneRateLimit struct {
 	ID            uuid.UUID
 	EntityType    string

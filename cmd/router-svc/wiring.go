@@ -480,7 +480,9 @@ func newAcceptedProjector(ctx context.Context, cfg config.Config, pool *pgxpool.
 		}
 	}()
 
-	policy, err := content.LoadPolicySnapshot(ctx, postgres.NewCustomerRepo(pool))
+	policy, err := loadWithRetry(ctx, logger, "content-storage policy", func(ctx context.Context) (*content.PolicySnapshot, error) {
+		return content.LoadPolicySnapshot(ctx, postgres.NewCustomerRepo(pool))
+	})
 	if err != nil {
 		return nil, fmt.Errorf("load content-storage policy: %w", err)
 	}

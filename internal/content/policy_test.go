@@ -11,28 +11,49 @@ import (
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 )
 
-func TestEffectiveStorageResolvesInheritToOff(t *testing.T) {
-	cases := map[cp.ContentStorage]cp.ContentStorage{
-		cp.ContentInherit:          cp.ContentOff, // conservative default
-		cp.ContentOff:              cp.ContentOff,
-		cp.ContentStoredPlaintext:  cp.ContentStoredPlaintext,
-		cp.ContentStoredEncrypted:  cp.ContentStoredEncrypted,
-		cp.ContentStorage("bogus"): cp.ContentOff, // unknown → off
+func TestEffectiveStorageResolvesInheritToThePlatformDefault(t *testing.T) {
+	for _, platform := range []cp.ContentStorage{cp.ContentOff, cp.ContentStoredEncrypted} {
+		cases := map[cp.ContentStorage]cp.ContentStorage{
+			cp.ContentInherit:          platform,
+			cp.ContentOff:              cp.ContentOff,
+			cp.ContentStoredPlaintext:  cp.ContentStoredPlaintext,
+			cp.ContentStoredEncrypted:  cp.ContentStoredEncrypted,
+			cp.ContentStorage("bogus"): cp.ContentOff, // unknown → off, never the platform default
+		}
+		for in, want := range cases {
+			if got := content.EffectiveStorage(in, platform); got != want {
+				t.Errorf("EffectiveStorage(%q, platform %q) = %q, want %q", in, platform, got, want)
+			}
+		}
 	}
-	for in, want := range cases {
-		if got := content.EffectiveStorage(in); got != want {
-			t.Errorf("EffectiveStorage(%q) = %q, want %q", in, got, want)
+}
+
+// TestAPlatformDefaultNeverResolvesToPlaintext: the database refuses a plaintext platform default, and the
+// resolution must not trust that alone — an inherit customer only stores in clear under its own contract.
+func TestAPlatformDefaultNeverResolvesToPlaintext(t *testing.T) {
+	for _, platform := range []cp.ContentStorage{cp.ContentStoredPlaintext, cp.ContentInherit, "bogus"} {
+		if got := content.EffectiveStorage(cp.ContentInherit, platform); got != cp.ContentOff {
+			t.Errorf("inherit under platform %q = %q, want off", platform, got)
 		}
 	}
 }
 
 type fakePolicyLister struct {
-	rows []cp.CustomerContentPolicy
-	err  error
+	rows        []cp.CustomerContentPolicy
+	err         error
+	platform    cp.ContentStorage
+	platformErr error
 }
 
 func (f fakePolicyLister) ListContentStorage(context.Context) ([]cp.CustomerContentPolicy, error) {
 	return f.rows, f.err
+}
+
+func (f fakePolicyLister) PlatformContentStorage(context.Context) (cp.ContentStorage, error) {
+	if f.platform == "" {
+		return cp.ContentOff, f.platformErr
+	}
+	return f.platform, f.platformErr
 }
 
 func TestPolicySnapshotForResolvesAndDefaultsOff(t *testing.T) {
@@ -90,5 +111,32 @@ func TestPolicyHolderStoreSwapsAndDefaultsOff(t *testing.T) {
 	h.Store(off)
 	if got := h.For(cust); got != cp.ContentOff {
 		t.Errorf("after opt-out swap For = %q, want off", got)
+	}
+}
+
+func TestPolicySnapshotResolvesInheritAgainstThePlatformDefault(t *testing.T) {
+	inh, off := uuid.New(), uuid.New()
+	snap, err := content.LoadPolicySnapshot(context.Background(), fakePolicyLister{
+		platform: cp.ContentStoredEncrypted,
+		rows: []cp.CustomerContentPolicy{
+			{CustomerID: inh, ContentStorage: cp.ContentInherit},
+			{CustomerID: off, ContentStorage: cp.ContentOff},
+		},
+	})
+	if err != nil {
+		t.Fatalf("LoadPolicySnapshot: %v", err)
+	}
+	if got := snap.For(inh); got != cp.ContentStoredEncrypted {
+		t.Errorf("inherit customer = %q, want the platform's stored_encrypted", got)
+	}
+	if got := snap.For(off); got != cp.ContentOff {
+		t.Errorf("explicit off customer = %q, want off: an opt-out beats the platform", got)
+	}
+}
+
+func TestPolicySnapshotFailsWhenThePlatformDefaultIsUnreadable(t *testing.T) {
+	_, err := content.LoadPolicySnapshot(context.Background(), fakePolicyLister{platformErr: errors.New("no table")})
+	if err == nil {
+		t.Fatal("LoadPolicySnapshot succeeded without a platform default; want an error, never a silent off")
 	}
 }

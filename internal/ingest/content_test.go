@@ -131,10 +131,15 @@ func TestInvariantANoBodyLeakUnderEveryMode(t *testing.T) {
 		{"off", ingest.NewContentSealer(fakePolicy{cp.ContentOff}, fakeKeys{}, nil, nil)},
 		{"plaintext", ingest.NewContentSealer(fakePolicy{cp.ContentStoredPlaintext}, fakeKeys{}, nil, nil)},
 		{"encrypted", ingest.NewContentSealer(fakePolicy{cp.ContentStoredEncrypted}, fakeKeys{dk: content.DataKey{KeyID: uuid.New(), DEK: dek}}, nil, nil)},
+		// inherit resolved through the real snapshot against an encrypted platform default (step-370).
+		{"inherit-platform-encrypted", ingest.NewContentSealer(inheritHolder(t, inheritCustomer, cp.ContentStoredEncrypted), fakeKeys{dk: content.DataKey{KeyID: uuid.New(), DEK: dek}}, nil, nil)},
 	}
 	for _, m := range modes {
 		t.Run(m.name, func(t *testing.T) {
-			got := sealRow(m.sealer, uuid.New(), uuid.New(), msg.NewBodyString(secretBody))
+			got := sealRow(m.sealer, inheritCustomer, uuid.New(), msg.NewBodyString(secretBody))
+			if m.name == "inherit-platform-encrypted" && got.ContentCiphertext == nil {
+				t.Fatal("inherit under an encrypted platform stored nothing: the case would pass without exercising a sealed body")
+			}
 			for name, v := range map[string]string{
 				"source_addr": got.SourceAddr, "dest_addr": got.DestAddr, "status": string(got.Status),
 			} {
@@ -146,5 +151,59 @@ func TestInvariantANoBodyLeakUnderEveryMode(t *testing.T) {
 				t.Errorf("%s: clear body found in content_ciphertext", m.name)
 			}
 		})
+	}
+}
+
+var inheritCustomer = uuid.New()
+
+func inheritHolder(t *testing.T, cust uuid.UUID, platform cp.ContentStorage) *content.PolicyHolder {
+	t.Helper()
+	snap, err := content.LoadPolicySnapshot(context.Background(), platformLister{customer: cust, platform: platform})
+	if err != nil {
+		t.Fatalf("load snapshot: %v", err)
+	}
+	h := &content.PolicyHolder{}
+	h.Store(snap)
+	return h
+}
+
+type platformLister struct {
+	customer uuid.UUID
+	platform cp.ContentStorage
+}
+
+func (l platformLister) ListContentStorage(context.Context) ([]cp.CustomerContentPolicy, error) {
+	return []cp.CustomerContentPolicy{{CustomerID: l.customer, ContentStorage: cp.ContentInherit}}, nil
+}
+
+func (l platformLister) PlatformContentStorage(context.Context) (cp.ContentStorage, error) {
+	return l.platform, nil
+}
+
+// TestAPlatformDefaultChangeReachesTheNextRowWithoutARestart drives the path an operator's PATCH takes: the
+// router reloads the snapshot into the holder the sealer already reads, and the next accepted row of an
+// inherit customer follows the new platform default.
+func TestAPlatformDefaultChangeReachesTheNextRowWithoutARestart(t *testing.T) {
+	cust := uuid.New()
+	holder := &content.PolicyHolder{}
+	load := func(platform cp.ContentStorage) {
+		snap, err := content.LoadPolicySnapshot(context.Background(), platformLister{customer: cust, platform: platform})
+		if err != nil {
+			t.Fatalf("load snapshot: %v", err)
+		}
+		holder.Store(snap)
+	}
+	dek := make([]byte, 32)
+	sealer := ingest.NewContentSealer(holder, fakeKeys{dk: content.DataKey{KeyID: uuid.New(), DEK: dek}}, nil, nil)
+
+	load(cp.ContentOff)
+	if row := sealRow(sealer, cust, uuid.New(), msg.NewBodyString(secretBody)); row.ContentCiphertext != nil {
+		t.Fatal("inherit customer under platform off stored a body; the migration default must change nothing")
+	}
+
+	load(cp.ContentStoredEncrypted)
+	row := sealRow(sealer, cust, uuid.New(), msg.NewBodyString(secretBody))
+	if row.ContentCiphertext == nil || strings.Contains(*row.ContentCiphertext, secretBody) {
+		t.Fatalf("after the platform switched to stored_encrypted: ciphertext=%v, want a sealed body", row.ContentCiphertext)
 	}
 }

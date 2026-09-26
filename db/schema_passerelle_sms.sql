@@ -237,6 +237,15 @@ CREATE TABLE control_plane.message_export_jobs (
 );
 CREATE INDEX message_export_jobs_created_idx ON control_plane.message_export_jobs(created_at);
 
+-- platform_content_policy is the default an `inherit` customer resolves to (§6.23, step-370): one row, 'off'
+-- at creation. Never 'stored_plaintext' — storage in clear belongs to a named customer under contract.
+-- internal/adminapi/content_policy.go words the same list for the dashboard: widen both together.
+CREATE TABLE control_plane.platform_content_policy (
+  id              boolean PRIMARY KEY DEFAULT true CHECK (id),
+  content_storage text NOT NULL DEFAULT 'off' CHECK (content_storage IN ('off','stored_encrypted'))
+);
+INSERT INTO control_plane.platform_content_policy DEFAULT VALUES;
+
 -- audit_log is the consolidated operator audit trail (step-290c): one row per audited Admin API request —
 -- every write, and the reads that reveal subscriber numbers — written BEFORE the handler runs (no row, no
 -- action) and completed with its HTTP status after. Never a body, a query string or a token: an admin

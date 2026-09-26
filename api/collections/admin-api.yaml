@@ -1548,6 +1548,53 @@ items:
           url: '{{baseUrl}}/admin/customers/{{customerId}}/content/rotate-key'
         docs: Rotate a customer's content encryption key, delegated to billing-svc (scope admin:write).
       - info:
+          name: get-platform-content-policy
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/platform/content-policy'
+        docs: The default an inherit customer resolves to; retention is the CDR column TTL (scope admin:read).
+      - info:
+          name: update-platform-content-policy
+          type: http
+        http:
+          method: PATCH
+          url: '{{baseUrl}}/admin/platform/content-policy'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "content_storage": "stored_encrypted"
+              }
+        docs: off or stored_encrypted only; inherit and stored_plaintext are 422 (scope admin:write).
+      - info:
+          name: get-customer-content-policy
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/customers/{{customerId}}/content-policy'
+        docs: The customer's own setting, inherit included (scope admin:read).
+      - info:
+          name: update-customer-content-policy
+          type: http
+        http:
+          method: PATCH
+          url: '{{baseUrl}}/admin/customers/{{customerId}}/content-policy'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "content_storage": "stored_encrypted",
+                "content_retention_days": 7
+              }
+        docs: Same fields as update-customer; retention stored, not yet applied (scope admin:write).
+      - info:
           name: stream-metrics
           type: http
         http:

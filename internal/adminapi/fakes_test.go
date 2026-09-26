@@ -101,6 +101,12 @@ func (s *fakeCustomerStore) Update(_ context.Context, id uuid.UUID, p cp.Custome
 	if p.Status != nil {
 		c.Status = *p.Status
 	}
+	if p.ContentStorage != nil {
+		c.ContentStorage = *p.ContentStorage
+	}
+	if p.ContentRetentionDays != nil {
+		c.ContentRetentionDays = p.ContentRetentionDays
+	}
 	s.byID[id] = c
 	return c, nil
 }

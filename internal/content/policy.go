@@ -11,21 +11,28 @@ import (
 )
 
 // EffectiveStorage resolves a customer's raw content_storage into the policy actually applied at CDR write.
-// `inherit` (and any unknown value) falls to the conservative platform default OFF: a customer that has not
-// explicitly opted in stores no body. A configurable platform default replaces this constant in a later step.
-func EffectiveStorage(cs cp.ContentStorage) cp.ContentStorage {
+// `inherit` takes the platform default (step-370), which can only be off or stored_encrypted: a plaintext
+// platform — refused by the database already — still resolves to off here, because storage in clear needs
+// the customer's own contract. Any unknown value is off.
+func EffectiveStorage(cs, platform cp.ContentStorage) cp.ContentStorage {
 	switch cs {
 	case cp.ContentOff, cp.ContentStoredPlaintext, cp.ContentStoredEncrypted:
 		return cs
-	default: // ContentInherit or anything unrecognized
+	case cp.ContentInherit:
+		if platform == cp.ContentStoredEncrypted {
+			return platform
+		}
+		return cp.ContentOff
+	default:
 		return cp.ContentOff
 	}
 }
 
-// PolicyLister loads every customer's content_storage. *postgres.CustomerRepo satisfies it;
-// declared consumer-side.
+// PolicyLister loads every customer's content_storage and the platform default inherit resolves to.
+// *postgres.CustomerRepo satisfies it; declared consumer-side.
 type PolicyLister interface {
 	ListContentStorage(ctx context.Context) ([]cp.CustomerContentPolicy, error)
+	PlatformContentStorage(ctx context.Context) (cp.ContentStorage, error)
 }
 
 // PolicySnapshot is an immutable, lock-free map of customer_id → effective content_storage, loaded once at
@@ -41,15 +48,20 @@ type PolicySnapshot struct {
 }
 
 // LoadPolicySnapshot reads every customer's content_storage once and indexes the EFFECTIVE policy per customer
-// (inherit already resolved to off). An empty snapshot is valid: every customer then resolves to off.
+// (inherit already resolved against the platform default). An unreadable platform default is an error, never
+// a silent off: pods falling back one by one would store differently for the same customer.
 func LoadPolicySnapshot(ctx context.Context, lister PolicyLister) (*PolicySnapshot, error) {
+	platform, err := lister.PlatformContentStorage(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("content: load platform content-storage default: %w", err)
+	}
 	rows, err := lister.ListContentStorage(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("content: load content-storage snapshot: %w", err)
 	}
 	byCustomer := make(map[uuid.UUID]cp.ContentStorage, len(rows))
 	for _, r := range rows {
-		byCustomer[r.CustomerID] = EffectiveStorage(r.ContentStorage)
+		byCustomer[r.CustomerID] = EffectiveStorage(r.ContentStorage, platform)
 	}
 	return &PolicySnapshot{byCustomer: byCustomer}, nil
 }

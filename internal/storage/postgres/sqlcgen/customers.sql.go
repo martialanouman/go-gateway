@@ -137,6 +137,17 @@ func (q *Queries) GetCustomer(ctx context.Context, id uuid.UUID) (ControlPlaneCu
 	return i, err
 }
 
+const getPlatformContentStorage = `-- name: GetPlatformContentStorage :one
+SELECT content_storage FROM control_plane.platform_content_policy
+`
+
+func (q *Queries) GetPlatformContentStorage(ctx context.Context) (string, error) {
+	row := q.db.QueryRow(ctx, getPlatformContentStorage)
+	var content_storage string
+	err := row.Scan(&content_storage)
+	return content_storage, err
+}
+
 const listContentStorage = `-- name: ListContentStorage :many
 SELECT id, content_storage FROM control_plane.customers
 `
@@ -270,6 +281,20 @@ func (q *Queries) SetCustomerGroup(ctx context.Context, arg SetCustomerGroupPara
 		&i.ExternalBillingProviderID,
 	)
 	return i, err
+}
+
+const setPlatformContentStorage = `-- name: SetPlatformContentStorage :one
+INSERT INTO control_plane.platform_content_policy (content_storage) VALUES ($1)
+ON CONFLICT (id) DO UPDATE SET content_storage = EXCLUDED.content_storage
+RETURNING content_storage
+`
+
+// An upsert, so a PATCH repairs a table someone emptied instead of answering 404.
+func (q *Queries) SetPlatformContentStorage(ctx context.Context, contentStorage string) (string, error) {
+	row := q.db.QueryRow(ctx, setPlatformContentStorage, contentStorage)
+	var content_storage string
+	err := row.Scan(&content_storage)
+	return content_storage, err
 }
 
 const suspendCustomer = `-- name: SuspendCustomer :one
