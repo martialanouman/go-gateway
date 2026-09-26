@@ -4,7 +4,9 @@
 > **Née de :** step-165 (aveu dans un commentaire SQL), fichée en step-370 · **Portée par :** —
 
 **Ce qu'on a fait à la place.** Le corps d'un message expire par une TTL de colonne ClickHouse **unique
-pour toute la plateforme** : 30 jours (`migrations/clickhouse/0003_cdr_content_ttl.up.sql:9`).
+pour toute la plateforme** : 30 jours (`migrations/clickhouse/0003_cdr_content_ttl.up.sql:21`, l'aveu
+en l.9 ; la même valeur servie par `internal/adminapi/content_policy.go`,
+`platformContentRetentionDays`).
 `customers.content_retention_days` est accepté par `update-customer` et
 `update-customer-content-policy`, stocké, relu — et lu par aucun code qui purge. Les descriptions du
 contrat Admin le disent depuis step-370.

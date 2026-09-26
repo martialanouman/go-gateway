@@ -131,10 +131,15 @@ func TestInvariantANoBodyLeakUnderEveryMode(t *testing.T) {
 		{"off", ingest.NewContentSealer(fakePolicy{cp.ContentOff}, fakeKeys{}, nil, nil)},
 		{"plaintext", ingest.NewContentSealer(fakePolicy{cp.ContentStoredPlaintext}, fakeKeys{}, nil, nil)},
 		{"encrypted", ingest.NewContentSealer(fakePolicy{cp.ContentStoredEncrypted}, fakeKeys{dk: content.DataKey{KeyID: uuid.New(), DEK: dek}}, nil, nil)},
+		// inherit resolved through the real snapshot against an encrypted platform default (step-370).
+		{"inherit-platform-encrypted", ingest.NewContentSealer(inheritHolder(t, inheritCustomer, cp.ContentStoredEncrypted), fakeKeys{dk: content.DataKey{KeyID: uuid.New(), DEK: dek}}, nil, nil)},
 	}
 	for _, m := range modes {
 		t.Run(m.name, func(t *testing.T) {
-			got := sealRow(m.sealer, uuid.New(), uuid.New(), msg.NewBodyString(secretBody))
+			got := sealRow(m.sealer, inheritCustomer, uuid.New(), msg.NewBodyString(secretBody))
+			if m.name == "inherit-platform-encrypted" && got.ContentCiphertext == nil {
+				t.Fatal("inherit under an encrypted platform stored nothing: the case would pass without exercising a sealed body")
+			}
 			for name, v := range map[string]string{
 				"source_addr": got.SourceAddr, "dest_addr": got.DestAddr, "status": string(got.Status),
 			} {
@@ -147,6 +152,19 @@ func TestInvariantANoBodyLeakUnderEveryMode(t *testing.T) {
 			}
 		})
 	}
+}
+
+var inheritCustomer = uuid.New()
+
+func inheritHolder(t *testing.T, cust uuid.UUID, platform cp.ContentStorage) *content.PolicyHolder {
+	t.Helper()
+	snap, err := content.LoadPolicySnapshot(context.Background(), platformLister{customer: cust, platform: platform})
+	if err != nil {
+		t.Fatalf("load snapshot: %v", err)
+	}
+	h := &content.PolicyHolder{}
+	h.Store(snap)
+	return h
 }
 
 type platformLister struct {

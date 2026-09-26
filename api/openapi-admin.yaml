@@ -1512,8 +1512,9 @@ paths:
       summary: Update a customer's content policy
       operationId: update-customer-content-policy
       description: >-
-        Same fields as update-customer. The change reaches the data plane on its next configuration reload,
-        without a restart. `content_retention_days` is stored but not yet applied.
+        Writes the same columns as update-customer, but `content_storage` is required here. The change reaches
+        the data plane on its next configuration reload, without a restart. `content_retention_days` is
+        stored but not yet applied, and a `null` leaves it unchanged.
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ContentPolicy' } } } }
       security: [ { OperatorBearer: [ admin:write ] } ]
       responses:

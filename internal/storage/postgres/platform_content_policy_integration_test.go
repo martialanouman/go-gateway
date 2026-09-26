@@ -36,5 +36,28 @@ func TestPlatformContentPolicyIsOffAfterMigrationAndNeverPlaintext(t *testing.T)
 		if _, err := repo.SetPlatformContentStorage(ctx, refused); !errors.Is(err, errs.ErrValidation) {
 			t.Errorf("set %q: err=%v, want ErrValidation from the table's CHECK", refused, err)
 		}
+		if got, _ := repo.PlatformContentStorage(ctx); got != cp.ContentStoredEncrypted {
+			t.Fatalf("after refusing %q the default is %q, want stored_encrypted unchanged", refused, got)
+		}
+	}
+}
+
+// TestSettingThePlatformDefaultRestoresAMissingRow: nothing but a constraint-free DELETE can empty the
+// table, and when it happens the operator's PATCH must repair it rather than answer an undeclared 404.
+// Not parallel: the row is global to the package's database.
+func TestSettingThePlatformDefaultRestoresAMissingRow(t *testing.T) {
+	pool := pgtest.Pool(t)
+	repo := postgres.NewCustomerRepo(pool)
+	ctx := context.Background()
+	t.Cleanup(func() { _, _ = repo.SetPlatformContentStorage(context.Background(), cp.ContentOff) })
+	if _, err := pool.Exec(ctx, `DELETE FROM control_plane.platform_content_policy WHERE true`); err != nil {
+		t.Fatalf("empty the table: %v", err)
+	}
+
+	if got, err := repo.SetPlatformContentStorage(ctx, cp.ContentOff); err != nil || got != cp.ContentOff {
+		t.Fatalf("set on an empty table = %q, err=%v; want off", got, err)
+	}
+	if got, err := repo.PlatformContentStorage(ctx); err != nil || got != cp.ContentOff {
+		t.Fatalf("read back = %q, err=%v; want off", got, err)
 	}
 }

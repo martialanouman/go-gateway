@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -80,9 +82,10 @@ func TestPlatformContentPolicyRefusesClearAndInherit(t *testing.T) {
 	store := &fakePlatformPolicy{}
 	api := newTestAPIWith(t, adminapi.Deps{PlatformContentPolicy: store})
 	for _, cs := range []string{"stored_plaintext", "inherit"} {
-		code, _ := contentPolicyCall(t, api, http.MethodPatch, "/v1/admin/platform/content-policy", `{"content_storage":"`+cs+`"}`)
-		if code != http.StatusUnprocessableEntity {
-			t.Errorf("PATCH %s: status=%d, want 422", cs, code)
+		w := httptest.NewRecorder()
+		api.ServeHTTP(w, authed(t, http.MethodPatch, "/v1/admin/platform/content-policy", `{"content_storage":"`+cs+`"}`))
+		if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), `"field":"content_storage"`) {
+			t.Errorf("PATCH %s: status=%d body=%s, want 422 naming content_storage", cs, w.Code, w.Body)
 		}
 	}
 	if cs, _ := store.PlatformContentStorage(context.Background()); cs != cp.ContentOff {
@@ -109,7 +112,8 @@ func TestPlatformContentRetentionIsReadOnly(t *testing.T) {
 	}
 }
 
-// TestPlatformContentRetentionMatchesTheCDRColumnTTL: the value served is the one ClickHouse applies.
+// TestPlatformContentRetentionMatchesTheCDRColumnTTL: the value served is the one ClickHouse applies, to the
+// body and to the key reference that expires with it.
 func TestPlatformContentRetentionMatchesTheCDRColumnTTL(t *testing.T) {
 	ddl, err := os.ReadFile("../../migrations/clickhouse/0003_cdr_content_ttl.up.sql")
 	if err != nil {
@@ -120,13 +124,14 @@ func TestPlatformContentRetentionMatchesTheCDRColumnTTL(t *testing.T) {
 	if got.ContentRetentionDays == nil {
 		t.Fatal("no content_retention_days served")
 	}
-	ttl := "content_ciphertext Nullable(String) TTL toDate(submitted_at) + INTERVAL " + itoa(*got.ContentRetentionDays) + " DAY"
-	if !strings.Contains(string(ddl), ttl) {
-		t.Fatalf("served retention %d days is not the CDR column TTL (want %q in the DDL)", *got.ContentRetentionDays, ttl)
+	for _, column := range []string{"content_ciphertext", "content_key_id"} {
+		ttl := regexp.MustCompile(column + `\s+Nullable\(\w+\)\s+TTL\s+toDate\(submitted_at\)\s*\+\s*INTERVAL\s+(\d+)\s+DAY`)
+		m := ttl.FindSubmatch(ddl)
+		if m == nil || string(m[1]) != strconv.Itoa(*got.ContentRetentionDays) {
+			t.Errorf("%s TTL in the DDL = %q, served retention = %d days; want them equal", column, m, *got.ContentRetentionDays)
+		}
 	}
 }
-
-func itoa(n int) string { b, _ := json.Marshal(n); return string(b) }
 
 func TestCustomerContentPolicyReadsAndWritesTheCustomersOwnSetting(t *testing.T) {
 	customers := newFakeCustomerStore()

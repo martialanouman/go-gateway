@@ -22,7 +22,10 @@ step-350 : `update-sender-rewrite-rule` ne peut vider ni `rewrite_to`, ni `reaso
 Pour un motif, `.*` vaut NULL (pas `""`, qui ne correspond qu'à une adresse vide) ; pour les champs
 propres à un type, les laisser en place est sans effet (seuls ceux que lit le type courant sont
 évalués), et c'est ce qui rend un changement de type possible.
+step-370 : `update-customer-content-policy` ne peut vider `content_retention_days` (même chemin
+qu'`update-customer`) ; un `null` rend 200 et la valeur précédente.
 
 Sources : `internal/controlplane/doc.go:15` ·
 `internal/storage/postgres/queries/customer_groups.sql` (`UpdateCustomerGroup`) ·
-`internal/storage/postgres/queries/sender_rewrite_rules.sql` (`UpdateSenderRewriteRule`)
+`internal/storage/postgres/queries/sender_rewrite_rules.sql` (`UpdateSenderRewriteRule`) ·
+`internal/adminapi/content_policy.go` (`updateCustomer`)

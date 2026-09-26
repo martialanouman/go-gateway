@@ -77,6 +77,11 @@ func (h *contentPolicyHandlers) updatePlatform(ctx context.Context, in *updateCo
 		return nil, humaerr.FailValidation("content_retention_days is not settable",
 			humaerr.FieldError{Field: "content_retention_days", Message: "the platform body retention is a ClickHouse column TTL, altered as an operations task"})
 	}
+	// The table's CHECK is the guard; this only names the field the dashboard must correct.
+	if in.Body.ContentStorage != string(cp.ContentOff) && in.Body.ContentStorage != string(cp.ContentStoredEncrypted) {
+		return nil, humaerr.FailValidation("the platform default is off or stored_encrypted",
+			humaerr.FieldError{Field: "content_storage", Message: "inherit has no meaning here, and storage in clear needs a customer's own contract"})
+	}
 	cs, err := h.platform.SetPlatformContentStorage(ctx, cp.ContentStorage(in.Body.ContentStorage))
 	if err != nil {
 		return nil, humaerr.FromError(err)

@@ -99,3 +99,20 @@ Arbitré par Fable le 2026-09-26 (spec → Fable, aucun point remonté à l'huma
 7. **Tests** : au router, `PolicyHolder` rechargé `off` → `stored_encrypted` change la ligne CDR suivante
    (ciphertext absent puis présent) ; non-régression `inherit` + plateforme `off` ; intégration
    Postgres : la migration pose `'off'` ; invariant (a) sous les trois modes.
+
+### Revue (tour 1) — trois axes, aucun bloquant
+
+Appliqué : le `PATCH` plateforme est un upsert (une table vidée à la main renvoyait un 404 hors
+contrat, et le router bouclait au boot sans que l'opérateur puisse réparer) ; le 422 plateforme nomme
+`content_storage` (le CHECK reste la garde, le handler ne fait que le formuler) ; l'invariant (a) est
+rejoué sur `inherit` résolu vers une plateforme chiffrée ; le test du DDL tolère les espaces et couvre
+`content_key_id` ; descriptions et fiches de dette précisées.
+
+Écarté : échouer net sur table absente au lieu de retenter (`loadWithRetry` est partagé par tous les
+instantanés du router ; le même comportement vaut déjà pour les routes) ; renommer
+`PlatformContentPolicy` pour réduire le réalignement gofmt (du diff, pas du code) ; un test d'audit
+dédié (le middleware générique le couvre).
+
+**Ordre de déploiement** : migration 0019 avant `router-svc` et `admin-api-svc`. Retour arrière :
+router d'abord, `down` ensuite — un router neuf sans la table ne recharge plus sa politique, et un
+opt-out n'y serait plus appliqué.

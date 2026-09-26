@@ -205,8 +205,7 @@ type Deps struct {
 	ExportJobs ExportJobStore
 	ExportSink ExportSink
 
-	Customers CustomerStore
-	// PlatformContentPolicy backs the platform default of the content-storage policy (step-370).
+	Customers             CustomerStore
 	PlatformContentPolicy PlatformContentPolicyStore
 	CustomerGroups        CustomerGroupStore
 	Webhooks              WebhookStore

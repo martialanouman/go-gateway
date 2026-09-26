@@ -73,7 +73,10 @@ SELECT id, content_storage FROM control_plane.customers;
 SELECT content_storage FROM control_plane.platform_content_policy;
 
 -- name: SetPlatformContentStorage :one
-UPDATE control_plane.platform_content_policy SET content_storage = @content_storage RETURNING content_storage;
+-- An upsert, so a PATCH repairs a table someone emptied instead of answering 404.
+INSERT INTO control_plane.platform_content_policy (content_storage) VALUES (@content_storage)
+ON CONFLICT (id) DO UPDATE SET content_storage = EXCLUDED.content_storage
+RETURNING content_storage;
 
 -- name: SetCustomerGroup :one
 -- Group membership has its own path on purpose: UpdateCustomer omits group_id, and COALESCE could
