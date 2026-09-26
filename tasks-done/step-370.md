@@ -1,6 +1,6 @@
 # step-370 — Politiques de stockage de contenu (§6.23) : la plateforme n'a pas de défaut configurable
 
-> **Jalon :** Surfaces Admin déclarées au contrat, jamais construites (§6.23 `docs/specification-technique-passerelle-sms.md`) · **Statut :** À FAIRE
+> **Jalon :** Surfaces Admin déclarées au contrat, jamais construites (§6.23 `docs/specification-technique-passerelle-sms.md`) · **Statut :** LIVRÉE
 > **Dépend de :** step-320 (triage) · **Bloque :** —
 
 ## But
@@ -61,11 +61,12 @@ support de cette valeur.
 
 ## Definition of Done
 
-- [ ] `make check` vert (lint · `test -race` · govulncheck · contrats)
-- [ ] les 4 opérations servies ; le défaut plateforme = `off`, sans changement de comportement observable
-- [ ] fenêtre de propagation câblée ou documentée ; invariant (a) vert sous les trois modes
-- [ ] `db/schema_passerelle_sms.sql` **et** la migration `golang-migrate` si une table est ajoutée
-- [ ] `api/collections/admin-api.yaml` synchronisée ; lignes retirées de `deferred` (step-320)
+- [x] `make check` vert (lint · `test -race` · govulncheck · contrats) — 2026-09-26
+- [x] les 4 opérations servies ; le défaut plateforme = `off`, sans changement de comportement observable
+- [x] fenêtre de propagation câblée (rechargement du router sur `config:changed`) ; invariant (a) vert
+  sous les trois modes et sur `inherit` résolu vers la plateforme
+- [x] `db/schema_passerelle_sms.sql` **et** la migration `0019_platform_content_policy`
+- [x] `api/collections/admin-api.yaml` synchronisée ; lignes retirées de `deferred` (step-320)
 
 ## Hors périmètre
 
