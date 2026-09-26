@@ -762,6 +762,7 @@ paths:
       tags: [Exact Routes]
       summary: List exact routes
       operationId: list-exact-routes
+      security: [ { OperatorBearer: [ admin:read ] } ]
       parameters: [ { $ref: '#/components/parameters/Cursor' }, { $ref: '#/components/parameters/Limit' } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ExactRoutePage' } } } }
@@ -772,6 +773,7 @@ paths:
       tags: [Exact Routes]
       summary: Create/upsert an exact route (MSISDN -> connector|route)
       operationId: create-exact-route
+      security: [ { OperatorBearer: [ admin:write ] } ]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ExactRouteCreate' } } } }
       responses:
         '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/ExactRoute' } } } }
@@ -783,6 +785,7 @@ paths:
       tags: [Exact Routes]
       summary: Bulk MNP import (async)
       operationId: import-exact-routes
+      security: [ { OperatorBearer: [ admin:write ] } ]
       requestBody: { required: true, content: { text/csv: { schema: { type: string } }, application/json: { schema: { type: object, properties: { source: { type: string, enum: [mnp_import, carrier_feed] }, rows: { type: array, maxItems: 10000, items: { $ref: '#/components/schemas/ExactRouteCreate' } } }, required: [rows] } } } }
       responses:
         '202': { description: Import job accepted., content: { application/json: { schema: { $ref: '#/components/schemas/AsyncJob' } } } }
@@ -794,6 +797,7 @@ paths:
       tags: [Exact Routes]
       summary: Look up the exact route for an MSISDN
       operationId: lookup-exact-route
+      security: [ { OperatorBearer: [ admin:read ] } ]
       parameters: [ { name: msisdn, in: query, required: true, schema: { type: string } } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ExactRoute' } } } }
@@ -807,6 +811,7 @@ paths:
       tags: [Exact Routes]
       summary: Update an exact route
       operationId: update-exact-route
+      security: [ { OperatorBearer: [ admin:write ] } ]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ExactRouteUpdate' } } } }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ExactRoute' } } } }
@@ -818,6 +823,7 @@ paths:
       tags: [Exact Routes]
       summary: Delete an exact route
       operationId: delete-exact-route
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '204': { description: Deleted. }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -830,6 +836,7 @@ paths:
       tags: [Routing Scripts]
       summary: List routing scripts
       operationId: list-routing-scripts
+      security: [ { OperatorBearer: [ admin:read ] } ]
       parameters: [ { name: scope, in: query, schema: { $ref: '#/components/schemas/ScriptScope' } }, { name: scopeId, in: query, schema: { type: string, format: uuid } } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/RoutingScript' } } } } }
@@ -840,6 +847,7 @@ paths:
       tags: [Routing Scripts]
       summary: Create a routing script (draft)
       operationId: create-routing-script
+      security: [ { OperatorBearer: [ admin:write ] } ]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/RoutingScriptCreate' } } } }
       responses:
         '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/RoutingScript' } } } }
@@ -852,6 +860,7 @@ paths:
       tags: [Routing Scripts]
       summary: Get a routing script
       operationId: get-routing-script
+      security: [ { OperatorBearer: [ admin:read ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/RoutingScript' } } } }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -861,6 +870,7 @@ paths:
       tags: [Routing Scripts]
       summary: Update a routing script (source/limits)
       operationId: update-routing-script
+      security: [ { OperatorBearer: [ admin:write ] } ]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/RoutingScriptUpdate' } } } }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/RoutingScript' } } } }
@@ -873,6 +883,7 @@ paths:
       tags: [Routing Scripts]
       summary: Delete a routing script
       operationId: delete-routing-script
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '204': { description: Deleted. }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -884,6 +895,7 @@ paths:
       tags: [Routing Scripts]
       summary: Assign the script to a scope
       operationId: assign-routing-script
+      security: [ { OperatorBearer: [ admin:write ] } ]
       requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { scope: { $ref: '#/components/schemas/ScriptScope' }, scope_id: { type: [string, "null"], format: uuid } }, required: [scope] } } } }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/RoutingScript' } } } }
@@ -898,6 +910,7 @@ paths:
       tags: [Routing Scripts]
       summary: Static validation (syntax, limits)
       operationId: validate-routing-script
+      security: [ { OperatorBearer: [ admin:read ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ScriptValidateResult' } } } }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -909,6 +922,7 @@ paths:
       tags: [Routing Scripts]
       summary: Dry-run against a sample message
       operationId: test-routing-script
+      security: [ { OperatorBearer: [ admin:read ] } ]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ScriptTestRequest' } } } }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ScriptTestResult' } } } }
@@ -922,6 +936,7 @@ paths:
       tags: [Routing Scripts]
       summary: Publish (activate) — rejected if another script is active in the same scope
       operationId: publish-routing-script
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/RoutingScript' } } } }
         '409': { $ref: '#/components/responses/Conflict' }
@@ -935,6 +950,7 @@ paths:
       tags: [Routing Scripts]
       summary: List script versions
       operationId: list-routing-script-versions
+      security: [ { OperatorBearer: [ admin:read ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/ScriptVersion' } } } } }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -987,6 +1003,7 @@ paths:
       tags: [Anti-spam]
       summary: List anti-spam rules
       operationId: list-antispam-rules
+      security: [ { OperatorBearer: [ admin:read ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/AntispamRule' } } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
@@ -995,6 +1012,7 @@ paths:
       tags: [Anti-spam]
       summary: Create an anti-spam rule
       operationId: create-antispam-rule
+      security: [ { OperatorBearer: [ admin:write ] } ]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/AntispamRuleCreate' } } } }
       responses:
         '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/AntispamRule' } } } }
@@ -1007,6 +1025,7 @@ paths:
       tags: [Anti-spam]
       summary: Update an anti-spam rule
       operationId: update-antispam-rule
+      security: [ { OperatorBearer: [ admin:write ] } ]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/AntispamRuleUpdate' } } } }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/AntispamRule' } } } }
@@ -1018,6 +1037,7 @@ paths:
       tags: [Anti-spam]
       summary: Delete an anti-spam rule
       operationId: delete-antispam-rule
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '204': { description: Deleted. }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -1030,6 +1050,7 @@ paths:
       tags: [Suppression]
       summary: List suppressions
       operationId: list-suppressions
+      security: [ { OperatorBearer: [ admin:read ] } ]
       parameters:
         - { name: scope, in: query, schema: { $ref: '#/components/schemas/SuppressionScope' } }
         - { name: scopeId, in: query, schema: { type: string, format: uuid } }
@@ -1045,6 +1066,7 @@ paths:
       tags: [Suppression]
       summary: Add a suppression
       operationId: create-suppression
+      security: [ { OperatorBearer: [ admin:write ] } ]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/SuppressionCreate' } } } }
       responses:
         '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Suppression' } } } }
@@ -1057,6 +1079,7 @@ paths:
       tags: [Suppression]
       summary: Bulk import suppressions (async)
       operationId: import-suppressions
+      security: [ { OperatorBearer: [ admin:write ] } ]
       requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { scope: { $ref: '#/components/schemas/SuppressionScope' }, scope_id: { type: [string, "null"], format: uuid }, source: { $ref: '#/components/schemas/SuppressionSource' }, msisdns: { type: array, items: { type: string }, maxItems: 10000 } }, required: [scope, msisdns] } } } }
       responses:
         '202': { description: Accepted., content: { application/json: { schema: { $ref: '#/components/schemas/AsyncJob' } } } }
@@ -1068,6 +1091,7 @@ paths:
       tags: [Suppression]
       summary: Would this recipient be blocked, and by which scope?
       operationId: check-suppression
+      security: [ { OperatorBearer: [ admin:read ] } ]
       requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { msisdn: { type: string }, sender_addr: { type: [string, "null"] }, account_id: { type: [string, "null"], format: uuid } }, required: [msisdn] } } } }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SuppressionCheckResult' } } } }
@@ -1080,6 +1104,7 @@ paths:
       tags: [Suppression]
       summary: Un-suppress (audit-logged)
       operationId: delete-suppression
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '204': { description: Removed. }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -1091,6 +1116,7 @@ paths:
       tags: [Opt-out Keywords]
       summary: List opt-out keywords
       operationId: list-opt-out-keywords
+      security: [ { OperatorBearer: [ admin:read ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/OptOutKeyword' } } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
@@ -1099,6 +1125,7 @@ paths:
       tags: [Opt-out Keywords]
       summary: Create an opt-out keyword
       operationId: create-opt-out-keyword
+      security: [ { OperatorBearer: [ admin:write ] } ]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/OptOutKeywordCreate' } } } }
       responses:
         '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/OptOutKeyword' } } } }
@@ -1112,6 +1139,7 @@ paths:
       tags: [Opt-out Keywords]
       summary: Update an opt-out keyword
       operationId: update-opt-out-keyword
+      security: [ { OperatorBearer: [ admin:write ] } ]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/OptOutKeywordUpdate' } } } }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/OptOutKeyword' } } } }
@@ -1123,6 +1151,7 @@ paths:
       tags: [Opt-out Keywords]
       summary: Delete an opt-out keyword
       operationId: delete-opt-out-keyword
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '204': { description: Deleted. }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -1135,6 +1164,7 @@ paths:
       tags: [Inbound Numbers]
       summary: List inbound numbers
       operationId: list-inbound-numbers
+      security: [ { OperatorBearer: [ admin:read ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/InboundNumber' } } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
@@ -1143,6 +1173,7 @@ paths:
       tags: [Inbound Numbers]
       summary: Create an inbound number
       operationId: create-inbound-number
+      security: [ { OperatorBearer: [ admin:write ] } ]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/InboundNumberCreate' } } } }
       responses:
         '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/InboundNumber' } } } }
@@ -1156,6 +1187,7 @@ paths:
       tags: [Inbound Numbers]
       summary: Update an inbound number
       operationId: update-inbound-number
+      security: [ { OperatorBearer: [ admin:write ] } ]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/InboundNumberUpdate' } } } }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/InboundNumber' } } } }
@@ -1167,6 +1199,7 @@ paths:
       tags: [Inbound Numbers]
       summary: Delete an inbound number
       operationId: delete-inbound-number
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '204': { description: Deleted. }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -1178,6 +1211,7 @@ paths:
       tags: [Inbound Numbers]
       summary: Assign to an account (dedicated) or clear (shared, keyword-resolved)
       operationId: assign-inbound-number
+      security: [ { OperatorBearer: [ admin:write ] } ]
       requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { account_id: { type: [string, "null"], format: uuid } }, required: [account_id] } } } }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/InboundNumber' } } } }
@@ -1191,12 +1225,14 @@ paths:
       tags: [Inbound Numbers]
       summary: List keywords for a shared inbound number
       operationId: list-inbound-keywords
+      security: [ { OperatorBearer: [ admin:read ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/InboundKeyword' } } } } }
     post:
       tags: [Inbound Numbers]
       summary: Add a keyword mapping
       operationId: create-inbound-keyword
+      security: [ { OperatorBearer: [ admin:write ] } ]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/InboundKeywordCreate' } } } }
       responses:
         '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/InboundKeyword' } } } }
@@ -1206,6 +1242,7 @@ paths:
       tags: [Inbound Numbers]
       summary: Update a keyword mapping
       operationId: update-inbound-keyword
+      security: [ { OperatorBearer: [ admin:write ] } ]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/InboundKeywordUpdate' } } } }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/InboundKeyword' } } } }
@@ -1214,6 +1251,7 @@ paths:
       tags: [Inbound Numbers]
       summary: Delete a keyword mapping
       operationId: delete-inbound-keyword
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '204': { description: Deleted. }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -1222,6 +1260,7 @@ paths:
       tags: [Inbound Numbers]
       summary: List unrouted MO messages
       operationId: list-unrouted-mo
+      security: [ { OperatorBearer: [ admin:read ] } ]
       parameters: [ { $ref: '#/components/parameters/Cursor' }, { $ref: '#/components/parameters/Limit' } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/MessageSummaryPage' } } } }
@@ -1383,6 +1422,7 @@ paths:
       tags: [Billing]
       summary: Read the billing ledger
       operationId: get-billing-ledger
+      security: [ { OperatorBearer: [ admin:read ] } ]
       parameters:
         - { name: direction, in: query, schema: { $ref: '#/components/schemas/Direction' } }
         - { name: accountId, in: query, schema: { type: string, format: uuid } }
@@ -1400,6 +1440,7 @@ paths:
       tags: [Rate Plans]
       summary: List rate plans
       operationId: list-rate-plans
+      security: [ { OperatorBearer: [ admin:read ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/RatePlan' } } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
@@ -1408,6 +1449,7 @@ paths:
       tags: [Rate Plans]
       summary: Create a rate plan
       operationId: create-rate-plan
+      security: [ { OperatorBearer: [ admin:write ] } ]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/RatePlanCreate' } } } }
       responses:
         '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/RatePlan' } } } }
@@ -1420,6 +1462,7 @@ paths:
       tags: [Rate Plans]
       summary: Update a rate plan
       operationId: update-rate-plan
+      security: [ { OperatorBearer: [ admin:write ] } ]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/RatePlanUpdate' } } } }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/RatePlan' } } } }
@@ -1431,6 +1474,7 @@ paths:
       tags: [Rate Plans]
       summary: Delete a rate plan
       operationId: delete-rate-plan
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '204': { description: Deleted. }
         '401': { $ref: '#/components/responses/Unauthorized' }
@@ -1443,6 +1487,7 @@ paths:
       tags: [Billing Providers]
       summary: List external billing providers
       operationId: list-billing-providers
+      security: [ { OperatorBearer: [ admin:read ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/ExternalBillingProvider' } } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
@@ -1451,6 +1496,7 @@ paths:
       tags: [Billing Providers]
       summary: Create an external billing provider
       operationId: create-billing-provider
+      security: [ { OperatorBearer: [ admin:write ] } ]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ExternalBillingProviderCreate' } } } }
       responses:
         '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/ExternalBillingProvider' } } } }
@@ -1463,6 +1509,7 @@ paths:
       tags: [Billing Providers]
       summary: Update an external billing provider
       operationId: update-billing-provider
+      security: [ { OperatorBearer: [ admin:write ] } ]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ExternalBillingProviderUpdate' } } } }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ExternalBillingProvider' } } } }
@@ -1474,6 +1521,7 @@ paths:
       tags: [Billing Providers]
       summary: Delete an external billing provider
       operationId: delete-billing-provider
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '204': { description: Deleted. }
         '401': { $ref: '#/components/responses/Unauthorized' }
@@ -1485,6 +1533,7 @@ paths:
       tags: [Billing Providers]
       summary: Test connectivity to the provider
       operationId: test-billing-provider
+      security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { type: object, properties: { ok: { type: boolean }, latency_ms: { type: [integer, "null"] }, detail: { type: [string, "null"] } }, required: [ok] } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
@@ -1623,6 +1672,7 @@ paths:
       tags: [Messages]
       summary: Span timeline for a message (never carries the body)
       operationId: get-message-trace
+      security: [ { OperatorBearer: [ admin:read ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/MessageTrace' } } } }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -1749,6 +1799,7 @@ paths:
       responses:
         '101': { description: Switching Protocols (WebSocket). }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /admin/stream/sessions:
     get:
       tags: [Realtime]
@@ -1761,6 +1812,7 @@ paths:
       responses:
         '101': { description: Switching Protocols (WebSocket). }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /admin/stream/billing-alerts:
     get:
       tags: [Realtime]
@@ -1775,6 +1827,7 @@ paths:
       responses:
         '101': { description: Switching Protocols (WebSocket). }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
 components:
 

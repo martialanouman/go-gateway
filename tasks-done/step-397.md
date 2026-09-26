@@ -1,6 +1,6 @@
 # step-397 — La moitié de l'Admin API exige un scope que son contrat ne déclare pas
 
-> **Jalon :** Dette du tableau de bord · **Statut :** À FAIRE
+> **Jalon :** Dette du tableau de bord · **Statut :** LIVRÉE
 > **Dépend de :** step-390 (toutes les surfaces Admin servies) · **Bloque :** step-410
 
 ## Pourquoi cette fiche existe
@@ -82,3 +82,24 @@ c'est une convention de tout le contrat, pas un défaut de ces 50.
 Passer `auth.Middleware` en fail-closed (une opération sans `security:` refusée plutôt que servie).
 C'est la ceinture qui rendrait la classe impossible plutôt que visible, mais elle change un
 comportement global et mérite sa propre justification.
+
+## Design arrêté
+
+Rouge de départ lu le 2026-09-26 : lever la condition `cOp["security"] != nil` fait tomber **50**
+opérations, toutes `contract: <nil>` (32 `admin:write`, 18 `admin:read`). Les codes `401`/`403` sont
+déjà au contrat : la comparaison stricte des codes passait, seul `security:` manque.
+
+- **YAML** : `security: [ { OperatorBearer: [ <scope servi> ] } ]` sur les 50, le scope recopié du
+  rouge (donc de `scopeSecurity(...)`), pas relu d'intention. Bump **mineur** 6.6.0 → 6.7.0, confirmé
+  par `make contracts`.
+- **Garde** : dans `TestGeneratedSpecMatchesTheContractForEveryM1Operation`, la comparaison `security`
+  devient inconditionnelle et monte **avant** la sortie anticipée des opérations d'upgrade ; la
+  non-vacuité (chaque alternative nomme `OperatorBearer` avec au moins un scope) y est exigée sur le
+  côté servi. `TestEveryGeneratedOperationRequiresAScope` est retiré ; `TestUpgradeOperationsDeclareTheirContract`
+  se replie dans la branche d'upgrade du même test (coupe de revue).
+- **Flux WebSocket** (constat de revue) : les trois `stream-*` exigent `admin:read` et ne déclaraient
+  que `[101, 401]`. Le 403 est réel (prouvé par `TestStreamMetricsRequiresTheOperatorScope`), donc
+  déclaré : l'attendu devient `[101, 401, 403]`, additif, même bump mineur.
+- **Couverture équivalente** : l'ancienne garde parcourait toutes les opérations générées, la nouvelle
+  parcourt `m1Operations` ; `TestGeneratedSpecRegistersNoOperationOutsideTheM1Surface` garantit que
+  les premières sont incluses dans les secondes.
