@@ -95,9 +95,11 @@ déjà au contrat : la comparaison stricte des codes passait, seul `security:` m
 - **Garde** : dans `TestGeneratedSpecMatchesTheContractForEveryM1Operation`, la comparaison `security`
   devient inconditionnelle et monte **avant** la sortie anticipée des opérations d'upgrade ; la
   non-vacuité (chaque alternative nomme `OperatorBearer` avec au moins un scope) y est exigée sur le
-  côté servi. `TestEveryGeneratedOperationRequiresAScope` est retiré, et la comparaison `security` de
-  `TestUpgradeOperationsDeclareTheirContract` avec lui : les deux deviennent redondantes.
+  côté servi. `TestEveryGeneratedOperationRequiresAScope` est retiré ; `TestUpgradeOperationsDeclareTheirContract`
+  se replie dans la branche d'upgrade du même test (coupe de revue).
+- **Flux WebSocket** (constat de revue) : les trois `stream-*` exigent `admin:read` et ne déclaraient
+  que `[101, 401]`. Le 403 est réel (prouvé par `TestStreamMetricsRequiresTheOperatorScope`), donc
+  déclaré : l'attendu devient `[101, 401, 403]`, additif, même bump mineur.
 - **Couverture équivalente** : l'ancienne garde parcourait toutes les opérations générées, la nouvelle
   parcourt `m1Operations` ; `TestGeneratedSpecRegistersNoOperationOutsideTheM1Surface` garantit que
   les premières sont incluses dans les secondes.
-- Aucun arbitrage ouvert : la fiche fixe le périmètre, le bump et la garde.

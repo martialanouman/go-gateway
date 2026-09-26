@@ -249,7 +249,7 @@ func TestGeneratedSpecMatchesTheContractForEveryM1Operation(t *testing.T) {
 				t.Errorf("operationId = %q, want %q", got, op.id)
 			}
 
-			// Before the upgrade exemption below: a WebSocket operation escapes the schema comparison, not this.
+			// Above the upgrade exemption, so the WebSocket operations are checked too.
 			if !reflect.DeepEqual(cOp["security"], gOp["security"]) {
 				t.Errorf("security differs:\n contract:  %v\n generated: %v", cOp["security"], gOp["security"])
 			}
@@ -259,8 +259,11 @@ func TestGeneratedSpecMatchesTheContractForEveryM1Operation(t *testing.T) {
 			gCodes := responseCodes(gOp)
 			// A protocol upgrade has no output schema, so Huma generates no responses at all. The criterion
 			// is the CONTRACT declaring 101 — a normal operation cannot claim that by accident, whereas a
-			// list of ids could be pointed at one. TestUpgradeOperationsDeclareTheirContract checks these.
+			// list of ids could be pointed at one.
 			if declaresUpgrade(cCodes) {
+				if !reflect.DeepEqual(cCodes, []string{"101", "401", "403"}) {
+					t.Errorf("upgrade contract responses = %v, want [101 401 403]", cCodes)
+				}
 				if len(gCodes) != 0 {
 					t.Errorf("upgrade operation now generates %v; the exemption can go", gCodes)
 				}
@@ -809,27 +812,6 @@ func deepStringMap(v any) any {
 	}
 }
 
-// TestUpgradeOperationsDeclareTheirContract is what keeps the exemption above honest: a WebSocket operation
-// escapes the schema comparison, so its contract entry is asserted directly.
-func TestUpgradeOperationsDeclareTheirContract(t *testing.T) {
-	contract := loadContract(t)
-
-	for _, op := range m1Operations {
-		cOp := operationNode(contract, op.path, op.method)
-		if cOp == nil || !declaresUpgrade(responseCodes(cOp)) {
-			continue
-		}
-		t.Run(op.id, func(t *testing.T) {
-			if got := responseCodes(cOp); !reflect.DeepEqual(got, []string{"101", "401", "403"}) {
-				t.Errorf("contract responses = %v, want [101 401 403]", got)
-			}
-		})
-	}
-}
-
-// operatorSchemeName is the security scheme the contract and the middleware both name.
-const operatorSchemeName = "OperatorBearer"
-
 // requireAScope closes the class of bug step-330 found: auth.Middleware derives authorisation from
 // ctx.Operation().Security, and huma never merges the document's global security: block into an operation —
 // so an operation declaring none is served to ANYONE. Comparing with the contract is not enough: DeepEqual
@@ -847,15 +829,8 @@ func requireAScope(t *testing.T, security any) {
 	// empty one.
 	for _, requirement := range requirements {
 		schemes, _ := requirement.(map[string]any)
-		scopes, named := schemes[operatorSchemeName].([]any)
-		if !named {
-			t.Errorf("has an alternative that does not name %q: the middleware enforces none "+
-				"of it, so it grants free passage", operatorSchemeName)
-			continue
-		}
-		if len(scopes) == 0 {
-			t.Error("has an alternative requiring no scope: any operator token satisfies it, " +
-				"including one holding none of the admin scopes")
+		if scopes, _ := schemes["OperatorBearer"].([]any); len(scopes) == 0 {
+			t.Error("has an alternative requiring no OperatorBearer scope: any operator token satisfies it")
 		}
 	}
 }
