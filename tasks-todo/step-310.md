@@ -36,10 +36,45 @@ existants.
 - Jeton OIDC valide → `Principal` + scopes ; jeton invalide/expiré → refusé.
 - Mapping claims → scopes ; les endpoints Admin restent gardés comme avant (middleware inchangé).
 
+## Design arrêté
+
+Arbitrage Fable, 2026-09-26 (F1-F9), sans conflit avec la spec ; F1 confirmé par l'utilisateur. ADR-0017
+fixe l'appelant : l'Admin API authentifie un **jeton de service** (BFF, script, collection), jamais l'humain.
+
+- **Vérificateur** : `auth.OIDCVerifier` derrière `TokenVerifier`, sur `github.com/coreos/go-oidc/v3`
+  (`NewRemoteKeySet` + `NewVerifier`, lib figée par `ctx7`). Pas de discovery : l'URL JWKS est configurée,
+  les clés se chargent paresseusement, et le service boote et passe readiness sans l'IdP. La rotation sur
+  `kid` inconnu est celle de `RemoteKeySet`.
+- **Algorithmes** : `RS256` et `ES256`, figés. `typ: at+jwt` n'est pas exigé (SHOULD côté émetteur, absent
+  chez Keycloak) : le contrôle d'audience écarte déjà un ID token.
+- **Scopes** : claim `scope`, chaîne séparée par espaces (RFC 9068 §2.2.3). `scp` n'est pas lu. Un scope
+  inconnu est ignoré, parce que les IdP en greffent par défaut. Un jeton valide sans scope connu donne un
+  403, pas un 401.
+- **Subject** : `sub` brut. `tok_` et `declared:` se distinguent déjà seuls. `client_id`/`azp` est
+  réassignable, `sub` est l'identité stable. Un `sub` vide donne un 401.
+- **IdP injoignable → 503** : le client JWKS a un timeout de 5 s et change un statut ≠ 200 en erreur de
+  transport. `Verify` rend `ErrServiceUnavailable` sur `*url.Error`. Le middleware gagne une branche 503.
+  Un 401 ferait prendre au BFF un hoquet d'IdP pour une session morte. Le contrat n'est pas touché : le
+  503 d'infrastructure n'est énuméré par aucune opération, comme le 500.
+- **Configuration** : `OIDC_ISSUER`, `OIDC_AUDIENCE`, `OIDC_JWKS_URL`, dans une section déclarée par le seul
+  admin-api-svc. En production, `validateAdminConfig` exige les trois, une URL JWKS en `https`, et refuse
+  un `HTTP_ADMIN_TOKENS` non vide, qui n'aurait aucun effet.
+- **StaticVerifier** : conservé **hors production** seulement. Le dev local (collection, README) n'a aucun
+  IdP. La DoD « stub M1 retiré » se lit « retiré de la production ».
+- **Manifests** : `deploy/k8s/admin-api-svc.yaml` troque `HTTP_ADMIN_TOKENS` contre les `OIDC_*` dans cette
+  PR, sinon la production refuse de booter.
+- **`tok_` ↔ `sub`** : pas de table. Seul le détenteur du jeton en clair peut relier l'empreinte, et la
+  continuité « même opérateur » vit côté BFF (ADR-0017). L'historique reste `tok_`, ce que dit la godoc
+  de `Fingerprint`.
+- **Contrat** : inchangé. `OperatorBearer` dit déjà JWT + clientCredentials. Le vrai `tokenUrl` est un
+  fait de déploiement, pour la checklist de step-410.
+- **RFC 8705 (liaison au certificat)** : rien. Le mTLS de step-300 lie déjà l'appelant à un certificat.
+  Déclencheur : plusieurs certificats clients admis avec des privilèges différents.
+
 ## Definition of Done
 - [ ] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts
 - [ ] critères couverts par tests · godoc sur l'exporté · aucun invariant (a/b/c/d) violé
-- [ ] auth opérateur réelle active ; stub M1 retiré ; validation OIDC via lib figée par `ctx7`
+- [ ] auth opérateur réelle active ; stub M1 retiré de la production ; validation OIDC via lib figée par `ctx7`
 
 ## Hors périmètre
 Manifests k8s → step-270. Checklist prod → step-410.
