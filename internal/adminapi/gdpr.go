@@ -183,7 +183,7 @@ func (h *gdprHandlers) run(ctx context.Context, job cp.GDPREraseJob) {
 	}
 }
 
-// withoutSubject leaves a failure text, which carries no subject token, whole.
+// withoutSubject drops the leading subject=… token; a failure text, which has none, stays whole.
 func withoutSubject(attestation string) string {
 	if !strings.HasPrefix(attestation, "subject=") {
 		return attestation

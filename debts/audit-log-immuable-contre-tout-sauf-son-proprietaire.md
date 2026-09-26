@@ -18,7 +18,7 @@ exclure `audit_log` de l'effacement RGPD.
 
 **À quoi on reconnaîtra qu'il faut la payer.** Dès qu'un audit de conformité demande la preuve que la trace
 est inaltérable par l'application. step-297 a posé la purge **sans** la payer (ADR-0018) : une porte
-`audit_log.purge` dans le trigger, avec un plancher de 365 jours, et `DELETE` rendu au propriétaire. Seul un
+`audit_log.purge` dans le trigger, avec un plancher de 8760 heures, et `DELETE` rendu au propriétaire. Seul un
 propriétaire distinct du rôle applicatif rend ce plancher inaltérable.
 
 Source : `migrations/0020_audit_log_append_only.up.sql:1`

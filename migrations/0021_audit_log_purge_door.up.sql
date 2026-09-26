@@ -18,6 +18,7 @@ BEGIN
     USING ERRCODE = 'insufficient_privilege';
 END $$;
 
+-- While the application role owns the table, step-315's REVOKE bound only intent, as a SET LOCAL does.
 DO $$ BEGIN
   EXECUTE format('GRANT DELETE ON control_plane.audit_log TO %s',
     (SELECT relowner::regrole FROM pg_class WHERE oid = 'control_plane.audit_log'::regclass));
