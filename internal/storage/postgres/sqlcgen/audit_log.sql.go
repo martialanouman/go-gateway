@@ -9,6 +9,7 @@ import (
 	"context"
 
 	uuid "github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const finishAudit = `-- name: FinishAudit :exec
@@ -54,4 +55,64 @@ func (q *Queries) InsertAuditIntent(ctx context.Context, arg InsertAuditIntentPa
 	var id uuid.UUID
 	err := row.Scan(&id)
 	return id, err
+}
+
+const listAuditLog = `-- name: ListAuditLog :many
+SELECT id, operator, operation_id, method, target, request_id, status, at, finished_at FROM control_plane.audit_log
+WHERE ($1::text IS NULL OR operator = $1)
+  AND ($2::timestamptz IS NULL OR at >= $2)
+  AND ($3::timestamptz IS NULL OR at < $3)
+  AND ($4::timestamptz IS NULL
+       OR at < $4
+       OR (at = $4 AND id < $5::uuid))
+ORDER BY at DESC, id DESC
+LIMIT $6
+`
+
+type ListAuditLogParams struct {
+	Operator *string
+	FromAt   pgtype.Timestamptz
+	ToAt     pgtype.Timestamptz
+	AfterAt  pgtype.Timestamptz
+	AfterID  *uuid.UUID
+	Lim      int32
+}
+
+// Newest first, id breaking ties; every filter optional. Column-wise keyset (not a row-value comparison) so
+// sqlc infers each parameter's type.
+func (q *Queries) ListAuditLog(ctx context.Context, arg ListAuditLogParams) ([]ControlPlaneAuditLog, error) {
+	rows, err := q.db.Query(ctx, listAuditLog,
+		arg.Operator,
+		arg.FromAt,
+		arg.ToAt,
+		arg.AfterAt,
+		arg.AfterID,
+		arg.Lim,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ControlPlaneAuditLog{}
+	for rows.Next() {
+		var i ControlPlaneAuditLog
+		if err := rows.Scan(
+			&i.ID,
+			&i.Operator,
+			&i.OperationID,
+			&i.Method,
+			&i.Target,
+			&i.RequestID,
+			&i.Status,
+			&i.At,
+			&i.FinishedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
