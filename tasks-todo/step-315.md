@@ -1,7 +1,7 @@
 # step-315 — Le journal d'audit se lit, et la base le rend immuable
 
-> **Jalon :** Dette ouverte par step-290d · **Statut :** À FAIRE
-> **Dépend de :** step-310 · **Bloque :** —
+> **Jalon :** Dette ouverte par step-290d · **Statut :** LIVRÉE (2026-09-26)
+> **Dépend de :** step-310 (levée, voir Design arrêté) · **Bloque :** —
 
 ## Pourquoi cette fiche existe
 
@@ -105,12 +105,12 @@ et sans reveal, 403 sans `audit:read`.
 
 ## Definition of Done
 
-- [ ] Contrat déclaré avant l'implémentation, `api/package.json` bumpé, collection Admin regénérée.
-- [ ] `GET /audit-log` servi sous `audit:read`, avec pagination keyset (`platform/keyset`).
-- [ ] L'index `(operator, at)` que step-290c avait annoncé est créé : la migration 0015 n'a livré que
+- [x] Contrat déclaré avant l'implémentation, `api/package.json` bumpé, collection Admin regénérée.
+- [x] `GET /audit-log` servi sous `audit:read`, avec pagination keyset (`platform/keyset`).
+- [x] L'index `(operator, at)` que step-290c avait annoncé est créé : la migration 0015 n'a livré que
       `audit_log_at_idx (at)`, et un filtre par opérateur sans lui balaie la table.
-- [ ] Trigger + `REVOKE DELETE` en migration, prouvés par des tests d'intégration.
-- [ ] La question de la collision de nom est tranchée et écrite.
+- [x] Trigger + `REVOKE DELETE` en migration, prouvés par des tests d'intégration.
+- [x] La question de la collision de nom est tranchée et écrite.
 
 ## Hors périmètre
 

@@ -347,7 +347,7 @@ Indépendantes de la chaîne de charge : parallélisables si deux mains travaill
 - [ ] step-305 — Le TLS client vers les quatre magasins : Kafka et ClickHouse sont du code, Postgres et
       Redis une ligne de checklist — ouverte par step-300d, qui a laissé le fork de l'ancre de confiance
 - [ ] step-310 — Auth opérateur réelle (OIDC/mTLS) remplaçant le stub M1 ⛓ step-300
-- [ ] step-315 — Le journal d'audit se lit, et la base le rend immuable ⛓ step-310 — ouverte par step-290d
+- [x] step-315 — Le journal d'audit se lit, et la base le rend immuable — ouverte par step-290d ; ⛓ step-310 levée (ADR-0017)
 
 **step-290 cherchait des preuves manquantes ; elle a trouvé des secrets en clair.** gosec tournait déjà
 dans golangci-lint et govulncheck était déjà une gate : ce qui manquait de ce côté n'était que le jugement
