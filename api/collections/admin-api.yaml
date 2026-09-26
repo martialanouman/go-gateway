@@ -1600,7 +1600,7 @@ items:
         http:
           method: GET
           url: '{{baseUrl}}/admin/metrics/summary?window=5m'
-        docs: Counters of the messages submitted in the last 5m or 1h; other windows 422 (scope admin:read).
+        docs: Counters of the messages submitted in the last 5m, 15m, 30m or 1h; other windows 422 (scope admin:read).
       - info:
           name: get-traffic-metrics
           type: http

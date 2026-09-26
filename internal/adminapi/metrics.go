@@ -25,8 +25,10 @@ type MetricsReader interface {
 // metricsWindows are the only windows a read may cover; 24h awaits a pre-aggregate
 // (debts/metriques-24h-sans-pre-agregat.md).
 var metricsWindows = map[string]struct{ span, step time.Duration }{
-	"5m": {5 * time.Minute, 10 * time.Second},
-	"1h": {time.Hour, time.Minute},
+	"5m":  {5 * time.Minute, 10 * time.Second},
+	"15m": {15 * time.Minute, 30 * time.Second},
+	"30m": {30 * time.Minute, time.Minute},
+	"1h":  {time.Hour, time.Minute},
 }
 
 const (
@@ -36,7 +38,7 @@ const (
 )
 
 type metricsSummaryInput struct {
-	Window string `query:"window" default:"5m" doc:"One of 5m, 1h."`
+	Window string `query:"window" default:"5m" doc:"One of 5m, 15m, 30m, 1h."`
 }
 
 type metricsSummaryDTO struct {
@@ -57,7 +59,7 @@ type metricsSummaryOutput struct{ Body metricsSummaryDTO }
 
 type trafficInput struct {
 	GroupBy string `query:"groupBy" enum:"connector,customer,group" default:"connector"`
-	Window  string `query:"window" default:"1h" doc:"One of 5m, 1h."`
+	Window  string `query:"window" default:"1h" doc:"One of 5m, 15m, 30m, 1h."`
 }
 
 type trafficPointDTO struct {
@@ -106,7 +108,7 @@ func windowOf(name string) (from, to time.Time, step time.Duration, err error) {
 	w, ok := metricsWindows[name]
 	if !ok {
 		return from, to, 0, humaerr.FailValidation("unsupported window",
-			humaerr.FieldError{Field: "window", Message: "must be one of 5m, 1h"})
+			humaerr.FieldError{Field: "window", Message: "must be one of 5m, 15m, 30m, 1h"})
 	}
 	to = time.Now().UTC().Truncate(w.step)
 	return to.Add(-w.span), to, w.step, nil

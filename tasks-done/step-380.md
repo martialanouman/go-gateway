@@ -71,7 +71,8 @@ Arbitrages : Fable (11 points), humain (24h refusé ; flux DLR en dette). Contra
 partitionnée et immuable), avec son statut agrégé **à l'instant de la lecture** : sur 5m, `delivered`
 sous-compte ce qui est encore en vol — écrit dans la description.
 
-**Fenêtres servies : `5m` et `1h`, pour les deux opérations ; toute autre valeur → 422** à l'exécution. Le
+**Fenêtres servies : `5m`, `15m`, `30m` et `1h` (15m et 30m ajoutées à la demande de l'utilisateur, pas de 30 s
+et 1 min), pour les deux opérations ; toute autre valeur → 422** à l'exécution. Le
 schéma reste `string` (un `enum` sur une opération déjà publiée = rupture oasdiff = majeur). Pas du
 traffic fixe : 5m → 10 s (30 points), 1h → 1 min (60 points). `24h` refusé : un scan brut à 8 000/s
 lit ~690 M messages ; la spec §6.3 le veut pré-agrégé, et ce pré-agrégat n'existe pas → fiche de dette.

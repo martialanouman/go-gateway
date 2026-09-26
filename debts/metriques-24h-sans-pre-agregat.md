@@ -3,8 +3,8 @@
 > **Statut :** OUVERTE · **Nature :** produit
 > **Née de :** step-380 (design arrêté, arbitrage humain) · **Portée par :** —
 
-**Ce qu'on a fait à la place.** `get-metrics-summary` et `get-traffic-metrics` n'acceptent que `5m` et
-`1h` ; `24h` répond 422 (`internal/adminapi/metrics.go`, `metricsWindows`). La spec du tableau de bord
+**Ce qu'on a fait à la place.** `get-metrics-summary` et `get-traffic-metrics` n'acceptent que `5m`,
+`15m`, `30m` et `1h` ; `24h` répond 422 (`internal/adminapi/metrics.go`, `metricsWindows`). La spec du tableau de bord
 (§6.3) liste pourtant la bascule 5 min / 1 h / 24 h.
 
 **Pourquoi.** Les deux lectures agrègent le CDR brut, message par message. À 8 000 SMS/s, 24 h font

@@ -1671,12 +1671,13 @@ paths:
       description: >-
         Counts the messages SUBMITTED within the window (a cohort on submitted_at), each with its status at
         the time of the read: on a short window, delivered undercounts what is still in flight. The window
-        ends at the last completed 10s (5m) or minute (1h) boundary; the bucket in progress is excluded. Only 5m and
-        1h are served; any other window is refused with 422 (24h awaits a pre-aggregate). delivered and
+        ends at the last completed bucket boundary of get-traffic-metrics; the bucket in progress is excluded.
+        Only 5m, 15m, 30m and 1h are served; any other window is refused with 422 (24h awaits a
+        pre-aggregate). delivered and
         failed follow the same status precedence as search-messages.
       operationId: get-metrics-summary
       security: [ { OperatorBearer: [ admin:read ] } ]
-      parameters: [ { name: window, in: query, description: 'One of 5m, 1h.', schema: { type: string, default: 5m, examples: [5m, 1h] } } ]
+      parameters: [ { name: window, in: query, description: 'One of 5m, 15m, 30m, 1h.', schema: { type: string, default: 5m, examples: [5m, 1h] } } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/MetricsSummary' } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
@@ -1688,17 +1689,18 @@ paths:
       tags: [Metrics]
       summary: Traffic time series grouped by dimension
       description: >-
-        MT messages submitted within the window, bucketed every 10s (5m) or every minute (1h), with the same
-        cohort semantics and the same window end as get-metrics-summary. Only 5m and 1h are served; any other window is refused with
-        422. The 20 keys with the most submissions get their own series, the rest is summed under the key
-        `other`. By group, the membership is the CURRENT one and customers outside any group, or deleted since, fall
-        under `ungrouped`. By connector, a message never dispatched has no connector and appears in no series.
+        MT messages submitted within the window, bucketed every 10s (5m), 30s (15m) or minute (30m, 1h),
+        with the same cohort semantics and the same window end as get-metrics-summary. Only 5m, 15m, 30m and
+        1h are served; any other window is refused with 422. The 20 keys with the most submissions get their
+        own series, the rest is summed under the key `other`. By group, the membership is the CURRENT one and
+        customers outside any group, or deleted since, fall under `ungrouped`. By connector, a message never
+        dispatched has no connector and appears in no series.
         503 when the window holds more rows than a read may return.
       operationId: get-traffic-metrics
       security: [ { OperatorBearer: [ admin:read ] } ]
       parameters:
         - { name: groupBy, in: query, schema: { type: string, enum: [connector, customer, group], default: connector } }
-        - { name: window, in: query, description: 'One of 5m, 1h.', schema: { type: string, default: 1h } }
+        - { name: window, in: query, description: 'One of 5m, 15m, 30m, 1h.', schema: { type: string, default: 1h } }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/TrafficMetrics' } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }

@@ -224,3 +224,23 @@ func TestTrafficByGroupFollowsTheCurrentMembership(t *testing.T) {
 		t.Fatalf("after the move = %v, want the traffic under %s", got, groups[1])
 	}
 }
+
+func TestTrafficBucketsEachServedWindowIntoThirtyOrSixtyPoints(t *testing.T) {
+	for window, want := range map[string]struct{ span, step time.Duration }{
+		"5m":  {5 * time.Minute, 10 * time.Second},
+		"15m": {15 * time.Minute, 30 * time.Second},
+		"30m": {30 * time.Minute, time.Minute},
+		"1h":  {time.Hour, time.Minute},
+	} {
+		fake := &fakeMetrics{}
+		api := newTestAPIWith(t, adminapi.Deps{Metrics: fake})
+		var body trafficBody
+		if code := getMetrics(t, api, "traffic?window="+window, &body); code != http.StatusOK || body.Window != window {
+			t.Errorf("%s: status = %d window = %q, want 200 echoing it", window, code, body.Window)
+			continue
+		}
+		if fake.to.Sub(fake.from) != want.span || fake.step != want.step || !fake.to.Equal(fake.to.Truncate(want.step)) {
+			t.Errorf("%s: read [%v, %v) by %v, want %v by %v ending on a bucket boundary", window, fake.from, fake.to, fake.step, want.span, want.step)
+		}
+	}
+}
