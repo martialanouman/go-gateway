@@ -264,8 +264,8 @@ func TestGeneratedSpecMatchesTheContractForEveryM1Operation(t *testing.T) {
 				t.Errorf("response codes differ:\n contract:  %v\n generated: %v", cCodes, gCodes)
 			}
 			// Where the contract names a scope, the served one must be it: a write operation served under
-			// admin:read would still pass the scope-presence check. The operations that name none are step-397.
-			if cOp["security"] != nil && !reflect.DeepEqual(cOp["security"], gOp["security"]) {
+			// admin:read would still pass the scope-presence check.
+			if !reflect.DeepEqual(cOp["security"], gOp["security"]) {
 				t.Errorf("security differs:\n contract:  %v\n generated: %v", cOp["security"], gOp["security"])
 			}
 
