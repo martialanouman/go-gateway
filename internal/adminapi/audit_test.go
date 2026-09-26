@@ -26,6 +26,11 @@ type fakeAuditLog struct {
 	ids      []uuid.UUID
 	finished map[uuid.UUID]int
 	beginErr error
+
+	entries    []cp.AuditEntry
+	listFilter cp.AuditLogFilter
+	listLimit  int
+	listAfter  *cp.AuditLogKey
 }
 
 func newFakeAuditLog() *fakeAuditLog { return &fakeAuditLog{finished: map[uuid.UUID]int{}} }
@@ -55,6 +60,23 @@ func (f *fakeAuditLog) Finish(_ context.Context, id uuid.UUID, status int) error
 	}
 	f.finished[id] = status
 	return nil
+}
+
+// List serves the seeded entries in order, from the one after the cursor, and records what it was asked.
+func (f *fakeAuditLog) List(_ context.Context, filter cp.AuditLogFilter, limit int, after *cp.AuditLogKey) ([]cp.AuditEntry, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.listFilter, f.listLimit, f.listAfter = filter, limit, after
+	rows := f.entries
+	if after != nil {
+		for i, e := range rows {
+			if e.ID == after.ID {
+				rows = rows[i+1:]
+				break
+			}
+		}
+	}
+	return rows[:min(limit, len(rows))], nil
 }
 
 func (f *fakeAuditLog) snapshot() ([]cp.AuditIntent, []uuid.UUID, map[uuid.UUID]int) {

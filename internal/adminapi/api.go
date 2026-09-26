@@ -96,6 +96,7 @@ func New(deps Deps) (*chi.Mux, huma.API) {
 	registerMessageTrace(api, deps.Trace)
 	registerMessageSearch(api, deps.MessageSearch, deps.Customers)
 	registerMetrics(api, deps.Metrics, deps.Customers)
+	registerAuditLog(api, deps.AuditLog)
 	registerMessageExport(api, deps.ExportJobs, deps.MessageSearch, deps.ExportSink, deps.Customers, deps.GDPRRunner, deps.Logger)
 
 	humaspec.Prune(api, codesMetaKey)
@@ -121,6 +122,7 @@ func operatorSecurityScheme() *huma.SecurityScheme {
 					string(auth.ScopeMSISDNReveal):  "See subscriber numbers unmasked (search, trace and export mask them otherwise).",
 					string(auth.ScopeGDPRErase):     "Erase a customer's data (GDPR).",
 					string(auth.ScopeCDRExportBulk): "Create and read bulk CDR exports.",
+					string(auth.ScopeAuditRead):     "Read the operator audit trail.",
 				},
 			},
 		},

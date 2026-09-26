@@ -31,6 +31,8 @@ const (
 	// hundred thousand rows into a persistent artefact is not reading a page, and separate from
 	// admin:write because the right to export follows an investigation role, not a provisioning one.
 	ScopeCDRExportBulk Scope = "cdr:export_bulk"
+	// ScopeAuditRead reads the operator audit trail: a compliance role, granted apart from the rights it audits.
+	ScopeAuditRead Scope = "audit:read"
 )
 
 // fingerprintBytes is how much of the SHA-256 digest the fingerprint keeps: 8 octets, 16 hex characters,
