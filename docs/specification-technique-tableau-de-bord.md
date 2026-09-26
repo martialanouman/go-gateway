@@ -338,6 +338,7 @@ GET     /notifications
 POST    /notifications/{id}/read
 GET/POST/DELETE        /saved-views
 GET     /audit-log?operator=&targetType=&dateFrom=&dateTo=
+        # BFF actions only; what reaches the gateway is read from GET /admin/audit-log (ADR-0017)
 POST    /internal/alertmanager-webhook               # server-to-server, mTLS/shared secret (§6.8)
 
 # Operators, roles & permissions (operators:manage / roles:manage)
