@@ -215,6 +215,11 @@ type Kafka struct {
 	// kafka.FailClosedProduceTimeout — an expired record there is a redelivery, and a duplicate SMS.
 	ProduceTimeout time.Duration `env:"PRODUCE_TIMEOUT" envDefault:"5s"`
 
+	// TLSEnabled dials the brokers over TLS, verified against TLSCAFile, or the system roots when that is empty (a
+	// managed store signed by a public authority). Off by default: the integration suites run it in clear.
+	TLSEnabled bool   `env:"TLS_ENABLED" envDefault:"false"`
+	TLSCAFile  string `env:"TLS_CA_FILE"`
+
 	// FetchMinBytes is how many bytes a broker waits to accumulate before answering a fetch, unless
 	// FetchMaxWait fires first. It is the batch-size lever of the ClickHouse CDR writer (step-201, D8):
 	// the batch is exactly what one poll returned, so raising this raises the insert size. The default
@@ -398,6 +403,11 @@ type ClickHouse struct {
 	// (the default) drops without archiving — the real cold bucket is an infrastructure decision, so
 	// tiering is opt-in rather than silently filling the ClickHouse server's own disk.
 	ArchivePrefix string `env:"ARCHIVE_PREFIX"`
+
+	// TLSEnabled dials ClickHouse over TLS, verified against TLSCAFile, or the system roots when that is empty (a
+	// managed store signed by a public authority). Off by default: the integration suites run it in clear.
+	TLSEnabled bool   `env:"TLS_ENABLED" envDefault:"false"`
+	TLSCAFile  string `env:"TLS_CA_FILE"`
 }
 
 // HTTP configures a service's client-facing REST listener. Only the HTTP services declare
@@ -876,6 +886,9 @@ func (c Config) kafkaProblems() []string {
 	if len(c.Kafka.Brokers) == 0 {
 		problems = append(problems, "KAFKA_BROKERS is empty")
 	}
+	if c.Kafka.TLSCAFile != "" && !c.Kafka.TLSEnabled {
+		problems = append(problems, "KAFKA_TLS_CA_FILE is set but KAFKA_TLS_ENABLED is false: it would have no effect")
+	}
 	for _, b := range c.Kafka.Brokers {
 		if strings.TrimSpace(b) == "" {
 			problems = append(problems, "KAFKA_BROKERS contains an empty entry")
@@ -981,6 +994,9 @@ func (c Config) clickhouseProblems() []string {
 
 	if len(c.ClickHouse.Addr) == 0 {
 		problems = append(problems, "CLICKHOUSE_ADDR is empty")
+	}
+	if c.ClickHouse.TLSCAFile != "" && !c.ClickHouse.TLSEnabled {
+		problems = append(problems, "CLICKHOUSE_TLS_CA_FILE is set but CLICKHOUSE_TLS_ENABLED is false: it would have no effect")
 	}
 	for _, a := range c.ClickHouse.Addr {
 		if strings.TrimSpace(a) == "" {
