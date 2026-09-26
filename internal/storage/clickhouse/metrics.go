@@ -22,6 +22,7 @@ const metricsMaxExecutionSeconds = 10
 var metricsOverBudget = map[int32]bool{
 	159: true, // TIMEOUT_EXCEEDED, max_execution_time
 	160: true, // TOO_SLOW, the same limit estimated ahead
+	202: true, // TOO_MANY_SIMULTANEOUS_QUERIES
 	241: true, // MEMORY_LIMIT_EXCEEDED
 }
 

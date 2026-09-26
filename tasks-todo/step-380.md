@@ -66,7 +66,8 @@ Les flux temps réel (livrés en M11). Les dashboards Grafana et les règles d'a
 
 Arbitrages : Fable (11 points), humain (24h refusé ; flux DLR en dette). Contrat 6.4.0 → **6.5.0** (mineur).
 
-**Fenêtre = cohorte.** Un message compte s'il a été soumis dans `[now−window, now)` (`submitted_at`, seule clé
+**Fenêtre = cohorte.** Un message compte s'il a été soumis dans `[to−window, to)`, `to` = `now` tronqué au pas
+(le bucket en cours est exclu, revue) (`submitted_at`, seule clé
 partitionnée et immuable), avec son statut agrégé **à l'instant de la lecture** : sur 5m, `delivered`
 sous-compte ce qui est encore en vol — écrit dans la description.
 
@@ -79,7 +80,7 @@ lit ~690 M messages ; la spec §6.3 le veut pré-agrégé, et ce pré-agrégat n
 corps chiffré compris. Trois niveaux sur les seules colonnes utiles (`status`, `latency_ms`,
 `connector_id`, `delivered_at`). La précédence de statut §6.6 est **extraite** de `cdrAggOuterCols` en
 une constante partagée : une seule définition du statut agrégé dans le dépôt, pour l'explorateur CDR
-et pour les métriques. `max_execution_time` posé sur la requête ; dépassement (ou deadline) →
+et pour les métriques. `max_execution_time` posé sur la requête ; une lecture hors budget (codes 159/160/202/241) →
 `ErrServiceUnavailable` → 503.
 
 **Définitions.** `submitted` = MT, tous statuts (un rejet est une soumission reçue) ; `delivered` =

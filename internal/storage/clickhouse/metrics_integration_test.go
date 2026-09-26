@@ -157,6 +157,7 @@ func TestTrafficByCustomerKeepsTheRejected(t *testing.T) {
 	customer := uuid.New()
 	f := &metricsFixture{writer: writer}
 	f.message(customer, clickhouse.DirectionMT, from, nil, 0, clickhouse.StatusRejected)
+	f.message(customer, clickhouse.DirectionMO, from, nil, 0, clickhouse.StatusDelivered)
 	f.flush(t)
 
 	points, err := reader.Traffic(context.Background(), from, to, time.Minute, clickhouse.TrafficByCustomer, 100)

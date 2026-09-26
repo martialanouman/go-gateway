@@ -130,7 +130,7 @@ func TestTrafficBucketsAnHourByTheMinute(t *testing.T) {
 	for _, m := range []int{4, 1, 3, 0, 2} {
 		fake.points = append(fake.points, clickhouse.TrafficPoint{Bucket: bucket.Add(time.Duration(m) * time.Minute), Key: connector, Submitted: int64(m + 1)})
 	}
-	fake.points[3].Delivered, fake.points[3].Failed = 2, 1
+	fake.points[3].Submitted, fake.points[3].Delivered, fake.points[3].Failed = 3, 2, 1
 	api := newTestAPIWithScopes(t, adminapi.Deps{Metrics: fake}, "admin:read")
 
 	var body trafficBody
@@ -144,11 +144,11 @@ func TestTrafficBucketsAnHourByTheMinute(t *testing.T) {
 		t.Fatalf("body = %+v, want one connector series over 1h", body)
 	}
 	p := body.Series[0].Points
-	if len(p) != 5 || p[0].Delivered != 2 || p[0].Failed != 1 {
+	if len(p) != 5 || p[0].Submitted != 3 || p[0].Delivered != 2 || p[0].Failed != 1 {
 		t.Fatalf("points = %+v, want five buckets, the first carrying its outcomes", p)
 	}
-	for i, pt := range p {
-		if !pt.T.Equal(bucket.Add(time.Duration(i)*time.Minute)) || pt.Submitted != i+1 {
+	for i, pt := range p[1:] {
+		if !pt.T.Equal(bucket.Add(time.Duration(i+1)*time.Minute)) || pt.Submitted != i+2 {
 			t.Fatalf("points = %+v, want the buckets in time order", p)
 		}
 	}

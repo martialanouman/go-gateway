@@ -1670,7 +1670,8 @@ paths:
       summary: Rolling summary counters
       description: >-
         Counts the messages SUBMITTED within the window (a cohort on submitted_at), each with its status at
-        the time of the read: on a short window, delivered undercounts what is still in flight. Only 5m and
+        the time of the read: on a short window, delivered undercounts what is still in flight. The window
+        ends at the last completed 10s (5m) or minute (1h) boundary; the bucket in progress is excluded. Only 5m and
         1h are served; any other window is refused with 422 (24h awaits a pre-aggregate). delivered and
         failed follow the same status precedence as search-messages.
       operationId: get-metrics-summary
@@ -1688,7 +1689,7 @@ paths:
       summary: Traffic time series grouped by dimension
       description: >-
         MT messages submitted within the window, bucketed every 10s (5m) or every minute (1h), with the same
-        cohort semantics as get-metrics-summary. Only 5m and 1h are served; any other window is refused with
+        cohort semantics and the same window end as get-metrics-summary. Only 5m and 1h are served; any other window is refused with
         422. The 20 keys with the most submissions get their own series, the rest is summed under the key
         `other`. By group, the membership is the CURRENT one and customers outside any group, or deleted since, fall
         under `ungrouped`. By connector, a message never dispatched has no connector and appears in no series.
