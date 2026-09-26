@@ -24,7 +24,8 @@ import (
 // (kgo/config.go:602). Until step-201 KAFKA_TIMEOUT was read and validated but reached no client at
 // all, so it governed the readiness probe while every dial behind that probe ignored it. It is a dial
 // bound only: a produce is bounded by producerOpts (KAFKA_PRODUCE_TIMEOUT, step-260e), a fetch by the
-// caller's context. TLS: step-305.
+// caller's context. The TLS CA is read here (step-305), so an unusable one fails the constructor, not a
+// later dial.
 func DialOpts(cfg config.Kafka) ([]kgo.Opt, error) {
 	var opts []kgo.Opt
 	if cfg.Timeout > 0 {

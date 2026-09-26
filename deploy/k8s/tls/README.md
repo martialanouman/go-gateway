@@ -152,8 +152,8 @@ Postgres, Redis, Kafka et ClickHouse ne sont pas dans notre PKI : ce sont des pa
 | Kafka | `KAFKA_TLS_ENABLED=true` | `KAFKA_TLS_CA_FILE`, vide = racines système |
 | ClickHouse | `CLICKHOUSE_TLS_ENABLED=true` | `CLICKHOUSE_TLS_CA_FILE`, vide = racines système |
 
-Les Jobs suivent les mêmes variables : `migrate-clickhouse` compose comme les services, et
-`kafka-provision` aussi. Un fichier de CA **remplace** les racines système, il ne s'y ajoute pas. Plancher TLS 1.2, et aucun
+Les Jobs suivent les mêmes variables : `migrate-clickhouse` et `kafka-provision` composent comme les
+services. Un fichier de CA **remplace** les racines système, il ne s'y ajoute pas. Plancher TLS 1.2, et aucun
 certificat client n'est présenté. Une CA illisible fait échouer le démarrage, et un changement de CA
 exige un redémarrage, comme pour tout client de ce dépôt.
 
