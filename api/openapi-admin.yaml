@@ -1818,9 +1818,10 @@ paths:
       tags: [Realtime]
       summary: WebSocket — live metrics stream
       description: >-
-        Upgrade to a WebSocket. Emits one metricstream Snapshot per frame
-        (`{v, feed, service, instance, emitted_at, samples[]}`); branch on `v`. `101 Switching Protocols` on upgrade.
+        Upgrade to a WebSocket. Each text frame is one `MetricSnapshot` (see `x-websocket-message`); branch on
+        `v`. `101 Switching Protocols` on upgrade.
       operationId: stream-metrics
+      x-websocket-message: { $ref: '#/components/schemas/MetricSnapshot' }
       security: [ { OperatorBearer: [ admin:read ] } ]
       responses:
         '101': { description: Switching Protocols (WebSocket). }
@@ -1831,9 +1832,10 @@ paths:
       tags: [Realtime]
       summary: WebSocket — live session events
       description: >-
-        Upgrade to a WebSocket. Emits one metricstream SessionEvent per frame
-        (`{v, feed, account_id, system_id, state, sessions}`). `101 Switching Protocols` on upgrade.
+        Upgrade to a WebSocket. Each text frame is one `SessionEvent` (see `x-websocket-message`); branch on
+        `v`. `101 Switching Protocols` on upgrade.
       operationId: stream-sessions
+      x-websocket-message: { $ref: '#/components/schemas/SessionEvent' }
       security: [ { OperatorBearer: [ admin:read ] } ]
       responses:
         '101': { description: Switching Protocols (WebSocket). }
@@ -1844,11 +1846,11 @@ paths:
       tags: [Realtime]
       summary: WebSocket — MO floor-reached alerts
       description: >-
-        Upgrade to a WebSocket. Emits one metricstream BillingAlert per frame
-        (`{v, feed, customer_id, owner_type, owner_id, alert, balance}`). Only `mo_floor_reached` is emitted
-        today; low-balance and breaker-open alerts have no configured threshold yet. `101 Switching
-        Protocols` on upgrade.
+        Upgrade to a WebSocket. Each text frame is one `BillingAlert` (see `x-websocket-message`); branch on
+        `v`. Only `mo_floor_reached` is emitted today; low-balance and breaker-open alerts have no configured
+        threshold yet. `101 Switching Protocols` on upgrade.
       operationId: stream-billing-alerts
+      x-websocket-message: { $ref: '#/components/schemas/BillingAlert' }
       security: [ { OperatorBearer: [ admin:read ] } ]
       responses:
         '101': { description: Switching Protocols (WebSocket). }
@@ -3129,3 +3131,84 @@ components:
                   required: [t]
             required: [key, points]
       required: [group_by, window, series]
+    StreamFrameVersion:
+      type: integer
+      description: >-
+        Wire version of the frame (`metricstream.SchemaVersion`, 1 today). The topic has no schema registry, so a
+        consumer branches on it; it is bumped when the shape changes in a way a consumer must notice.
+    MetricSample:
+      type: object
+      properties:
+        kind: { type: string, description: 'Metric name, matching the catalogue in internal/observability/metrics where one exists.' }
+        labels:
+          type: object
+          additionalProperties: { type: string }
+          description: Bounded dimensions of the sample. Absent when the sample has none.
+        value:
+          type: number
+          description: >-
+            A counter carries its DELTA over the interval, a gauge its current level: no state is needed to
+            render a rate, and a reconnecting client is never shown a total accumulated since boot.
+      required: [kind, value]
+    MetricSnapshot:
+      type: object
+      description: >-
+        One frame of stream-metrics: everything one replica of a service measured during one interval.
+        Aggregation across replicas: COUNTERS (interval deltas) are SUMMED across instances; instance-scoped
+        gauges are read per instance, then summed or maxed as the question requires; GROUP-scoped gauges
+        (`queue_depth_records` above all) carry the same value on every replica, so take the latest per
+        instance and then the MAX, never the sum.
+      properties:
+        v: { $ref: '#/components/schemas/StreamFrameVersion' }
+        feed: { type: string, description: '`metrics`. Absent on records produced before step-184; read absent as `metrics`.' }
+        service: { type: string }
+        instance: { type: string, description: 'The replica that produced the snapshot (the pod name by default); the key of every aggregation.' }
+        emitted_at: { type: string, format: date-time }
+        samples:
+          type: array
+          items: { $ref: '#/components/schemas/MetricSample' }
+          description: Never empty; an interval that measured nothing publishes no snapshot.
+        dropped_since_start:
+          type: integer
+          format: int64
+          description: >-
+            Samples this emitter refused since start. CUMULATIVE, unlike the counters in `samples`: do not plot
+            it as a rate. Absent while zero.
+      required: [v, service, instance, emitted_at, samples]
+    SessionEvent:
+      type: object
+      description: One frame of stream-sessions, an SMPP bind state change. Identifiers only, never a password or a body.
+      properties:
+        v: { $ref: '#/components/schemas/StreamFrameVersion' }
+        feed: { type: string, description: '`sessions`.' }
+        service: { type: string }
+        instance: { type: string }
+        emitted_at: { type: string, format: date-time }
+        account_id: { type: string }
+        system_id: { type: string }
+        state: { type: string, enum: [bound, unbound] }
+        sessions:
+          type: integer
+          description: >-
+            The account's live bind count after the change. Absent on `unbound`: the count is not known there,
+            and 0 would read as "no binds left".
+      required: [v, feed, service, instance, emitted_at, account_id, system_id, state]
+    BillingAlert:
+      type: object
+      description: One frame of stream-billing-alerts, a billing threshold an operator must see. For display only.
+      properties:
+        v: { $ref: '#/components/schemas/StreamFrameVersion' }
+        feed: { type: string, description: '`billing-alerts`.' }
+        service: { type: string }
+        instance: { type: string }
+        emitted_at: { type: string, format: date-time }
+        customer_id: { type: string }
+        owner_type: { type: string, description: 'Kind of the balance the alert is about; the MO meter is owner-scoped.' }
+        owner_id:
+          type: string
+          description: >-
+            The balance the alert is about. Under balance_scope=smpp_account two accounts of one customer alert
+            separately, and this is what tells them apart.
+        alert: { type: string, description: '`mo_floor_reached` today; other values may be added.' }
+        balance: { type: integer, format: int64 }
+      required: [v, feed, service, instance, emitted_at, customer_id, owner_type, owner_id, alert, balance]
