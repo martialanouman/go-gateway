@@ -20,7 +20,7 @@ WHERE (sqlc.narg(operator)::text IS NULL OR operator = sqlc.narg(operator))
   AND (sqlc.narg(after_at)::timestamptz IS NULL
        OR at < sqlc.narg(after_at)
        OR (at = sqlc.narg(after_at) AND id < sqlc.narg(after_id)::uuid))
-  -- Redundant with the line above, but an index can seek on it: without it every page rescans from the newest.
+  -- Redundant with the line above, but a custom plan can seek an index on it: without it every page rescans from the newest.
   AND (sqlc.narg(after_at)::timestamptz IS NULL OR at <= sqlc.narg(after_at))
 ORDER BY at DESC, id DESC
 LIMIT @lim;

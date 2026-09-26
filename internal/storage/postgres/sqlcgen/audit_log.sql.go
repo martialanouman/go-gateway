@@ -65,7 +65,7 @@ WHERE ($1::text IS NULL OR operator = $1)
   AND ($4::timestamptz IS NULL
        OR at < $4
        OR (at = $4 AND id < $5::uuid))
-  -- Redundant with the line above, but an index can seek on it: without it every page rescans from the newest.
+  -- Redundant with the line above, but a custom plan can seek an index on it: without it every page rescans from the newest.
   AND ($4::timestamptz IS NULL OR at <= $4)
 ORDER BY at DESC, id DESC
 LIMIT $6

@@ -86,6 +86,9 @@ func TestEveryMSISDNPathIsMaskedInTheTrail(t *testing.T) {
 			if op == nil || !strings.Contains(path, "{msisdn}") {
 				continue
 			}
+			if !strings.Contains(path, exactRoutesPrefix) {
+				t.Errorf("%s %s carries a number outside %s: toAuditEntryDTO would not find it to mask", op.Method, path, exactRoutesPrefix)
+			}
 			if op.Method != http.MethodGet && !msisdnInTarget[op.OperationID] {
 				t.Errorf("%s %s records a number in its audit target, but msisdnInTarget does not mask it", op.Method, path)
 			}
