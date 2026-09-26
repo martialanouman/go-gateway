@@ -34,7 +34,7 @@ const (
 )
 
 // fingerprintBytes is how much of the SHA-256 digest the fingerprint keeps: 8 octets, 16 hex characters,
-// 64 bits: enough to identify an operator, too little to be a digest worth brute-forcing.
+// 64 bits: enough to identify an operator.
 const fingerprintBytes = 8
 
 // Fingerprint is the identity recorded for an operator token wherever a principal is written down —

@@ -2,8 +2,7 @@
 #
 # Nothing here is a credential: POSTGRES_URL, REDIS_URL, CLICKHOUSE_PASSWORD, CONTENT_KMS_MASTER_KEY
 # and the connector's bind credentials come from the `gateway-secrets` Secret, which this repository
-# does NOT ship. Nor does it ship the `gateway-oidc` ConfigMap, where the operator names the identity
-# provider admin-api-svc verifies tokens against (OIDC_ISSUER, OIDC_AUDIENCE, OIDC_JWKS_URL).
+# does NOT ship. Nor does it ship the `gateway-oidc` ConfigMap (see admin-api-svc.yaml).
 #
 # A set-but-empty variable falls back to its default rather than failing (internal/config), so an
 # entry left blank here is silently the development default, not an error. Leave it out instead.

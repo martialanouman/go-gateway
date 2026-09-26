@@ -121,7 +121,7 @@ func newAdminApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (_
 	runners := newRunners(ctx, cfg, logger)
 	a.onClose("runners", runners.close)
 
-	verifier, err := newVerifier(ctx, cfg)
+	verifier, err := newVerifier(ctx, cfg, logger)
 	if err != nil {
 		return nil, fmt.Errorf("build operator token verifier: %w", err)
 	}
@@ -458,9 +458,9 @@ func exportSink(cfg config.Config) adminapi.ExportSink {
 
 // newVerifier picks the identity provider when one is configured — always, in production, where
 // config.Load requires it — and the static tokens otherwise.
-func newVerifier(ctx context.Context, cfg config.Config) (auth.TokenVerifier, error) {
+func newVerifier(ctx context.Context, cfg config.Config, logger *slog.Logger) (auth.TokenVerifier, error) {
 	if cfg.OIDC.Issuer != "" {
-		return auth.NewOIDCVerifier(ctx, cfg.OIDC.Issuer, cfg.OIDC.Audience, cfg.OIDC.JWKSURL), nil
+		return auth.NewOIDCVerifier(ctx, logger, cfg.OIDC.Issuer, cfg.OIDC.Audience, cfg.OIDC.JWKSURL), nil
 	}
 	return auth.NewStaticVerifier(cfg.HTTP.AdminTokens)
 }

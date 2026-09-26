@@ -52,13 +52,18 @@ fixe l'appelant : l'Admin API authentifie un **jeton de service** (BFF, script, 
   403, pas un 401.
 - **Subject** : `sub` brut. `tok_` et `declared:` se distinguent déjà seuls. `client_id`/`azp` est
   réassignable, `sub` est l'identité stable. Un `sub` vide donne un 401.
-- **IdP injoignable → 503** : le client JWKS a un timeout de 5 s et change un statut ≠ 200 en erreur de
-  transport. `Verify` rend `ErrServiceUnavailable` sur `*url.Error`. Le middleware gagne une branche 503.
+- **IdP injoignable → 503** : le client JWKS a un timeout de 5 s. `Verify` rend `ErrServiceUnavailable`
+  quand les clés n'ont pas pu être chargées, et en journalise la cause. Le middleware gagne une branche 503.
+  *(Revue : `IDTokenVerifier` aplatit l'erreur du KeySet en `%v`, et une redirection, une page HTML ou un
+  corps tronqué échappaient à `*url.Error`. La classification se fait dans un adaptateur de KeySet : go-oidc
+  enveloppe tout échec de rechargement en `fetching keys %w`, et l'échec « aucune clé ne vérifie » est un
+  `errors.New` sans cause. Le `RoundTripper` qui changeait un statut ≠ 200 en erreur disparaît.)*
   Un 401 ferait prendre au BFF un hoquet d'IdP pour une session morte. Le contrat n'est pas touché : le
   503 d'infrastructure n'est énuméré par aucune opération, comme le 500.
 - **Configuration** : `OIDC_ISSUER`, `OIDC_AUDIENCE`, `OIDC_JWKS_URL`, dans une section déclarée par le seul
-  admin-api-svc. En production, `validateAdminConfig` exige les trois, une URL JWKS en `https`, et refuse
-  un `HTTP_ADMIN_TOKENS` non vide, qui n'aurait aucun effet.
+  admin-api-svc. La section refuse une configuration partielle partout, et une valeur entourée de blancs
+  (l'issuer est comparé octet pour octet). En production, elle exige les trois et une URL JWKS en `https`.
+  `validateAdminConfig` refuse un `HTTP_ADMIN_TOKENS` non vide à côté d'un IdP, où il n'aurait aucun effet.
 - **StaticVerifier** : conservé **hors production** seulement. Le dev local (collection, README) n'a aucun
   IdP. La DoD « stub M1 retiré » se lit « retiré de la production ».
 - **Manifests** : `deploy/k8s/admin-api-svc.yaml` troque `HTTP_ADMIN_TOKENS` contre les `OIDC_*` dans cette
@@ -68,6 +73,8 @@ fixe l'appelant : l'Admin API authentifie un **jeton de service** (BFF, script, 
   de `Fingerprint`.
 - **Contrat** : inchangé. `OperatorBearer` dit déjà JWT + clientCredentials. Le vrai `tokenUrl` est un
   fait de déploiement, pour la checklist de step-410.
+- **Dettes nées ici** : `debts/created-by-jamais-renseigne.md`, `debts/jwks-recharge-sans-limite-de-frequence.md`,
+  `debts/jwks-joint-par-les-seules-racines-systeme.md`.
 - **RFC 8705 (liaison au certificat)** : rien. Le mTLS de step-300 lie déjà l'appelant à un certificat.
   Déclencheur : plusieurs certificats clients admis avec des privilèges différents.
 

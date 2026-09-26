@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -21,14 +21,15 @@ const keySetFetchTimeout = 5 * time.Second
 // claim carries (RFC 9068), the provider's own being ignored.
 type OIDCVerifier struct {
 	verifier *oidc.IDTokenVerifier
+	logger   *slog.Logger
 }
 
 // NewOIDCVerifier builds a verifier over the JWKS at jwksURL. Nothing is fetched here: the keys load on
 // the first token, so the service boots and passes readiness while the identity provider is down.
-func NewOIDCVerifier(ctx context.Context, issuer, audience, jwksURL string) *OIDCVerifier {
-	client := &http.Client{Timeout: keySetFetchTimeout, Transport: failNonOK{http.DefaultTransport}}
+func NewOIDCVerifier(ctx context.Context, logger *slog.Logger, issuer, audience, jwksURL string) *OIDCVerifier {
+	client := &http.Client{Timeout: keySetFetchTimeout}
 	keys := classifyingKeySet{oidc.NewRemoteKeySet(oidc.ClientContext(ctx, client), jwksURL)}
-	return &OIDCVerifier{verifier: oidc.NewVerifier(issuer, keys, &oidc.Config{
+	return &OIDCVerifier{logger: logger, verifier: oidc.NewVerifier(issuer, keys, &oidc.Config{
 		ClientID:             audience,
 		SupportedSigningAlgs: []string{oidc.RS256, oidc.ES256},
 	})}
@@ -40,6 +41,7 @@ func (v *OIDCVerifier) Verify(ctx context.Context, token string) (Principal, err
 	var fetchFailure error
 	idToken, err := v.verifier.Verify(context.WithValue(ctx, fetchFailureKey{}, &fetchFailure), token)
 	if fetchFailure != nil {
+		v.logger.WarnContext(ctx, "operator token not judged: identity provider key set unavailable", "err", fetchFailure)
 		return Principal{}, fmt.Errorf("%w: %w", errs.ErrServiceUnavailable, fetchFailure)
 	}
 	if err != nil {
@@ -63,33 +65,18 @@ func (v *OIDCVerifier) Verify(ctx context.Context, token string) (Principal, err
 
 type fetchFailureKey struct{}
 
-// classifyingKeySet exists because IDTokenVerifier flattens the key set's error with %v: the transport
-// failure is only still typed here, so it is set aside for Verify to find.
+// classifyingKeySet exists because IDTokenVerifier flattens the key set's error with %v: whether the
+// keys could be fetched is only still visible here, so the failure is set aside for Verify to find.
 type classifyingKeySet struct{ keys *oidc.RemoteKeySet }
 
+// VerifySignature relies on go-oidc v3 wrapping every fetch failure — transport, status, body, decoding
+// — as "fetching keys %w", while a token no fetched key verifies is a bare errors.New.
 func (k classifyingKeySet) VerifySignature(ctx context.Context, jwt string) ([]byte, error) {
 	payload, err := k.keys.VerifySignature(ctx, jwt)
-	var transport *url.Error
-	if errors.As(err, &transport) {
+	if errors.Unwrap(err) != nil {
 		if slot, ok := ctx.Value(fetchFailureKey{}).(*error); ok {
-			*slot = transport
+			*slot = err
 		}
 	}
 	return payload, err
-}
-
-// failNonOK makes a non-200 key set response a transport error, as a connection failure is, because
-// go-oidc formats the status with %s and would otherwise leave it indistinguishable from a bad token.
-type failNonOK struct{ next http.RoundTripper }
-
-func (t failNonOK) RoundTrip(req *http.Request) (*http.Response, error) {
-	resp, err := t.next.RoundTrip(req)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode != http.StatusOK {
-		_ = resp.Body.Close()
-		return nil, fmt.Errorf("key set answered %s", resp.Status)
-	}
-	return resp, nil
 }

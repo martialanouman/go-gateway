@@ -121,6 +121,23 @@ func TestUnreachableIdentityProviderIs503(t *testing.T) {
 	}
 }
 
+type scopelessProvider struct{}
+
+func (scopelessProvider) Verify(context.Context, string) (auth.Principal, error) {
+	return auth.Principal{Subject: "service-account"}, nil
+}
+
+// TestValidTokenWithoutAnyScopeIs403: a provider's token that carries none of our scopes is still an
+// authenticated caller — the static verifier could never produce this principal.
+func TestValidTokenWithoutAnyScopeIs403(t *testing.T) {
+	api := middlewareAPI(t, scopelessProvider{})
+
+	status, m := request(t, api, http.MethodGet, "/read", "Bearer any")
+	if status != http.StatusForbidden || m["code"] != "forbidden_scope" {
+		t.Errorf("status = %d, code = %v; want 403 forbidden_scope", status, m["code"])
+	}
+}
+
 // TestValidTokenMissingScopeIs403: a recognised operator lacking the operation's scope is
 // forbidden_scope, not unauthenticated — the distinction the contract's 401 vs 403 encodes.
 func TestValidTokenMissingScopeIs403(t *testing.T) {

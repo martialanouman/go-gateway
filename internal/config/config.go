@@ -1360,44 +1360,6 @@ func (c Config) LogValue() slog.Value {
 // The production rule is the same tier as the dev-default guards of Postgres, Redis and ClickHouse, and
 // it exists for the same reason: the safe value is the one an operator forgets to set. Off by default is
 // what keeps the test suites running; without this, off by default would also be what ships.
-// oidcProblems refuses a half-configured provider in every tier — it would boot and answer 401 to every
-// operator — and a missing or plaintext one in production.
-func (c Config) oidcProblems() []string {
-	fields := []struct{ name, value string }{
-		{"OIDC_ISSUER", c.OIDC.Issuer},
-		{"OIDC_AUDIENCE", c.OIDC.Audience},
-		{"OIDC_JWKS_URL", c.OIDC.JWKSURL},
-	}
-	var set, missing []string
-	for _, f := range fields {
-		if strings.TrimSpace(f.value) == "" {
-			missing = append(missing, f.name)
-		} else {
-			set = append(set, f.name)
-		}
-	}
-	if len(set) == 0 && !c.Environment.IsProduction() {
-		return nil
-	}
-
-	var problems []string
-	if len(missing) > 0 {
-		problems = append(problems, fmt.Sprintf("%s must be set: operator tokens cannot be verified without them",
-			strings.Join(missing, ", ")))
-	}
-	if c.OIDC.JWKSURL == "" {
-		return problems
-	}
-	u, err := url.Parse(c.OIDC.JWKSURL)
-	switch {
-	case err != nil || u.Scheme == "" || u.Host == "":
-		problems = append(problems, "OIDC_JWKS_URL must be an absolute URL")
-	case c.Environment.IsProduction() && u.Scheme != "https":
-		problems = append(problems, "OIDC_JWKS_URL must use https in production: a key set fetched in plaintext can be swapped")
-	}
-	return problems
-}
-
 func (c Config) tlsProblems() []string {
 	var problems []string
 
@@ -1418,6 +1380,50 @@ func (c Config) tlsProblems() []string {
 		if strings.TrimSpace(f.value) == "" {
 			problems = append(problems, f.name+" is empty while TLS_ENABLED is true")
 		}
+	}
+	return problems
+}
+
+// oidcProblems refuses a half-configured provider in every tier — it would boot and answer 401 to every
+// operator — and a missing or plaintext one in production.
+func (c Config) oidcProblems() []string {
+	fields := []struct{ name, value string }{
+		{"OIDC_ISSUER", c.OIDC.Issuer},
+		{"OIDC_AUDIENCE", c.OIDC.Audience},
+		{"OIDC_JWKS_URL", c.OIDC.JWKSURL},
+	}
+	var missing, padded []string
+	for _, f := range fields {
+		switch {
+		case f.value == "":
+			missing = append(missing, f.name)
+		case strings.TrimSpace(f.value) != f.value:
+			padded = append(padded, f.name)
+		}
+	}
+	if len(missing) == len(fields) && !c.Environment.IsProduction() {
+		return nil
+	}
+
+	var problems []string
+	if len(padded) > 0 {
+		// The issuer is compared byte for byte with the token's iss, and a blank one still selects the
+		// OIDC verifier: surrounding spaces would refuse every token without saying why.
+		problems = append(problems, fmt.Sprintf("%s must not carry surrounding spaces", strings.Join(padded, ", ")))
+	}
+	if len(missing) > 0 {
+		problems = append(problems, fmt.Sprintf("%s must be set: operator tokens cannot be verified without them",
+			strings.Join(missing, ", ")))
+	}
+	if c.OIDC.JWKSURL == "" {
+		return problems
+	}
+	u, err := url.Parse(c.OIDC.JWKSURL)
+	switch {
+	case err != nil || u.Scheme == "" || u.Host == "":
+		problems = append(problems, "OIDC_JWKS_URL must be an absolute URL")
+	case c.Environment.IsProduction() && u.Scheme != "https":
+		problems = append(problems, "OIDC_JWKS_URL must use https in production: a key set fetched in plaintext can be swapped")
 	}
 	return problems
 }

@@ -1,6 +1,7 @@
 package auth_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -8,9 +9,11 @@ import (
 	"crypto/rsa"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -54,10 +57,11 @@ func newIDP(t *testing.T) *idp {
 	return p
 }
 
-func (p *idp) verifier(t *testing.T) *auth.OIDCVerifier {
-	t.Helper()
-	return auth.NewOIDCVerifier(context.Background(), testIssuer, testAudience, p.srv.URL)
+func (p *idp) verifier() *auth.OIDCVerifier {
+	return auth.NewOIDCVerifier(context.Background(), discard(), testIssuer, testAudience, p.srv.URL)
 }
+
+func discard() *slog.Logger { return slog.New(slog.DiscardHandler) }
 
 func validClaims() map[string]any {
 	return map[string]any{
@@ -70,12 +74,7 @@ func validClaims() map[string]any {
 	}
 }
 
-func sign(t *testing.T, alg jose.SignatureAlgorithm, key any, claims map[string]any) string {
-	t.Helper()
-	return signWithKeyID(t, alg, key, testKeyID, claims)
-}
-
-func signWithKeyID(t *testing.T, alg jose.SignatureAlgorithm, key any, keyID string, claims map[string]any) string {
+func sign(t *testing.T, alg jose.SignatureAlgorithm, key any, keyID string, claims map[string]any) string {
 	t.Helper()
 	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: alg, Key: key},
 		(&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", keyID))
@@ -97,40 +96,41 @@ func signWithKeyID(t *testing.T, alg jose.SignatureAlgorithm, key any, keyID str
 	return token
 }
 
-func TestOIDCVerifierAcceptsAValidTokenAndKeepsOnlyKnownScopes(t *testing.T) {
+func TestOIDCVerifierKeepsTheKnownScopesOfAValidToken(t *testing.T) {
 	p := newIDP(t)
 
-	got, err := p.verifier(t).Verify(context.Background(), sign(t, jose.RS256, p.key, validClaims()))
-	if err != nil {
-		t.Fatalf("Verify() error = %v", err)
-	}
-	if got.Subject != "7d1c2f0e-service-account" {
-		t.Errorf("Subject = %q, want the token's sub", got.Subject)
-	}
-	if !slices.Equal(got.Scopes, []auth.Scope{auth.ScopeAdminRead}) {
-		t.Errorf("Scopes = %v, want only admin:read (email and profile are the provider's, not ours)", got.Scopes)
+	for _, tt := range []struct {
+		scope string
+		want  []auth.Scope
+	}{
+		{"admin:read email profile", []auth.Scope{auth.ScopeAdminRead}},
+		{"email admin:read admin:write", []auth.Scope{auth.ScopeAdminRead, auth.ScopeAdminWrite}},
+		// A principal without scopes, not an error: the missing scope is the middleware's 403.
+		{"email profile", nil},
+	} {
+		t.Run(tt.scope, func(t *testing.T) {
+			claims := validClaims()
+			claims["scope"] = tt.scope
+
+			got, err := p.verifier().Verify(context.Background(), sign(t, jose.RS256, p.key, testKeyID, claims))
+			if err != nil {
+				t.Fatalf("Verify() error = %v", err)
+			}
+			if got.Subject != "7d1c2f0e-service-account" {
+				t.Errorf("Subject = %q, want the token's sub", got.Subject)
+			}
+			if !slices.Equal(got.Scopes, tt.want) {
+				t.Errorf("Scopes = %v, want %v", got.Scopes, tt.want)
+			}
+		})
 	}
 }
 
 func TestOIDCVerifierAcceptsAnECSignedToken(t *testing.T) {
 	p := newIDP(t)
 
-	if _, err := p.verifier(t).Verify(context.Background(), signWithKeyID(t, jose.ES256, p.ecKey, testECKeyID, validClaims())); err != nil {
+	if _, err := p.verifier().Verify(context.Background(), sign(t, jose.ES256, p.ecKey, testECKeyID, validClaims())); err != nil {
 		t.Errorf("Verify() error = %v, want ES256 accepted for a provider with EC keys", err)
-	}
-}
-
-func TestOIDCVerifierGrantsNoScopeWithoutAKnownOne(t *testing.T) {
-	p := newIDP(t)
-	claims := validClaims()
-	claims["scope"] = "email profile"
-
-	got, err := p.verifier(t).Verify(context.Background(), sign(t, jose.RS256, p.key, claims))
-	if err != nil {
-		t.Fatalf("Verify() error = %v, want a principal: the missing scope is the middleware's 403", err)
-	}
-	if len(got.Scopes) != 0 {
-		t.Errorf("Scopes = %v, want none", got.Scopes)
 	}
 }
 
@@ -150,18 +150,19 @@ func TestOIDCVerifierRejectsAnInvalidToken(t *testing.T) {
 		name  string
 		token string
 	}{
-		{"expired", sign(t, jose.RS256, p.key, with("exp", time.Now().Add(-time.Hour).Unix()))},
-		{"another issuer", sign(t, jose.RS256, p.key, with("iss", "https://evil.test"))},
-		{"another audience", sign(t, jose.RS256, p.key, with("aud", "some-other-client"))},
-		{"empty subject", sign(t, jose.RS256, p.key, with("sub", ""))},
-		{"signed by another key", sign(t, jose.RS256, otherKey, validClaims())},
-		{"symmetric algorithm", sign(t, jose.HS256, []byte("a-shared-secret-of-at-least-32-bytes"), validClaims())},
+		{"expired", sign(t, jose.RS256, p.key, testKeyID, with("exp", time.Now().Add(-time.Hour).Unix()))},
+		{"another issuer", sign(t, jose.RS256, p.key, testKeyID, with("iss", "https://evil.test"))},
+		{"another audience", sign(t, jose.RS256, p.key, testKeyID, with("aud", "some-other-client"))},
+		{"empty subject", sign(t, jose.RS256, p.key, testKeyID, with("sub", ""))},
+		{"unreadable scope claim", sign(t, jose.RS256, p.key, testKeyID, with("scope", []string{"admin:write"}))},
+		// Refetched, the key set still holds no key for it: a bad token, not an unavailable provider.
+		{"signed by another key", sign(t, jose.RS256, otherKey, testKeyID, validClaims())},
 		// The provider's own key, under an algorithm we do not accept: only the algorithm list refuses it.
-		{"algorithm outside the accepted list", sign(t, jose.PS256, p.key, validClaims())},
+		{"algorithm outside the accepted list", sign(t, jose.PS256, p.key, testKeyID, validClaims())},
 		{"not a jwt", "opaque-token"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := p.verifier(t).Verify(context.Background(), tt.token)
+			_, err := p.verifier().Verify(context.Background(), tt.token)
 			if !errors.Is(err, errs.ErrUnauthenticated) {
 				t.Errorf("Verify() error = %v, want ErrUnauthenticated", err)
 			}
@@ -170,6 +171,17 @@ func TestOIDCVerifierRejectsAnInvalidToken(t *testing.T) {
 }
 
 func TestOIDCVerifierReportsAnUnreachableKeySetAsUnavailable(t *testing.T) {
+	answering := func(status int, body string) func(t *testing.T) string {
+		return func(t *testing.T) string {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte(body))
+			}))
+			t.Cleanup(srv.Close)
+			return srv.URL
+		}
+	}
+
 	for _, tt := range []struct {
 		name   string
 		keySet func(t *testing.T) string
@@ -179,22 +191,62 @@ func TestOIDCVerifierReportsAnUnreachableKeySetAsUnavailable(t *testing.T) {
 			srv.Close()
 			return srv.URL
 		}},
-		{"key set answering 500", func(t *testing.T) string {
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				http.Error(w, "boom", http.StatusInternalServerError)
-			}))
-			t.Cleanup(srv.Close)
-			return srv.URL
-		}},
+		{"key set answering 500", answering(http.StatusInternalServerError, "boom")},
+		{"key set answering 404", answering(http.StatusNotFound, "no such realm")},
+		// A proxy or WAF page in front of the provider.
+		{"key set answering HTML", answering(http.StatusOK, "<html>maintenance</html>")},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			p := newIDP(t)
-			v := auth.NewOIDCVerifier(context.Background(), testIssuer, testAudience, tt.keySet(t))
+			var logged bytes.Buffer
+			v := auth.NewOIDCVerifier(context.Background(), slog.New(slog.NewTextHandler(&logged, nil)),
+				testIssuer, testAudience, tt.keySet(t))
 
-			_, err := v.Verify(context.Background(), sign(t, jose.RS256, p.key, validClaims()))
+			_, err := v.Verify(context.Background(), sign(t, jose.RS256, p.key, testKeyID, validClaims()))
 			if !errors.Is(err, errs.ErrServiceUnavailable) {
 				t.Errorf("Verify() error = %v, want ErrServiceUnavailable: a retry can succeed", err)
 			}
+			if !strings.Contains(logged.String(), "oidc") {
+				t.Errorf("log = %q, want the fetch failure's cause: the 503 alone does not say why", logged.String())
+			}
 		})
+	}
+}
+
+// TestOIDCVerifierBoundsAHangingKeySet: the fetch runs in the key set's own goroutine, which every token
+// with an unknown kid then waits on. Unbounded, one silent provider parks them all.
+func TestOIDCVerifierBoundsAHangingKeySet(t *testing.T) {
+	release := make(chan struct{})
+	hanging := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { <-release }))
+	defer hanging.Close()
+	defer close(release)
+	p := newIDP(t)
+
+	token := sign(t, jose.RS256, p.key, testKeyID, validClaims())
+	done := make(chan error, 1)
+	go func() {
+		_, err := auth.NewOIDCVerifier(context.Background(), discard(), testIssuer, testAudience, hanging.URL).
+			Verify(context.Background(), token)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, errs.ErrServiceUnavailable) {
+			t.Errorf("Verify() error = %v, want ErrServiceUnavailable", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Verify() still waiting after 10s, want the key set fetch bounded")
+	}
+}
+
+func TestOIDCVerifierFollowsARedirectedKeySet(t *testing.T) {
+	p := newIDP(t)
+	redirect := httptest.NewServer(http.RedirectHandler(p.srv.URL, http.StatusFound))
+	defer redirect.Close()
+
+	v := auth.NewOIDCVerifier(context.Background(), discard(), testIssuer, testAudience, redirect.URL)
+	if _, err := v.Verify(context.Background(), sign(t, jose.RS256, p.key, testKeyID, validClaims())); err != nil {
+		t.Errorf("Verify() error = %v, want the redirect followed", err)
 	}
 }

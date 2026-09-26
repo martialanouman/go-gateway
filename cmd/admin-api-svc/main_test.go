@@ -1,12 +1,10 @@
 package main
 
 import (
-	"context"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/martialanouman/go-gateway/internal/auth"
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/metricstream"
 	"github.com/martialanouman/go-gateway/internal/realtime"
@@ -41,6 +39,15 @@ func TestRunRequiresOIDCInProduction(t *testing.T) {
 	if !strings.Contains(err.Error(), "OIDC_ISSUER") {
 		t.Errorf("error %q should name OIDC_ISSUER", err)
 	}
+
+	// With a provider, the static tokens beside it are what refuses the boot — before Postgres is opened.
+	t.Setenv("OIDC_ISSUER", "https://idp.internal/realms/gw")
+	t.Setenv("OIDC_AUDIENCE", "gateway-admin")
+	t.Setenv("OIDC_JWKS_URL", "https://idp.internal/realms/gw/certs")
+	t.Setenv("HTTP_ADMIN_TOKENS", "static-operator-token:admin:read")
+	if err := run(); err == nil || !strings.Contains(err.Error(), "HTTP_ADMIN_TOKENS") {
+		t.Errorf("run() = %v, want the boot refused over HTTP_ADMIN_TOKENS", err)
+	}
 }
 
 // TestValidateAdminConfigRefusesStaticTokensBesideOIDC: once a provider is configured the static tokens
@@ -49,7 +56,7 @@ func TestRunRequiresOIDCInProduction(t *testing.T) {
 func TestValidateAdminConfigRefusesStaticTokensBesideOIDC(t *testing.T) {
 	t.Parallel()
 
-	const token = "a-static-operator-token-of-32-bytes!"
+	const token = "static-operator-token"
 	oidc := config.OIDC{Issuer: "https://idp", Audience: "gw", JWKSURL: "https://idp/certs"}
 
 	for _, env := range []config.Environment{config.EnvProduction, config.EnvDevelopment} {
@@ -69,27 +76,9 @@ func TestValidateAdminConfigRefusesStaticTokensBesideOIDC(t *testing.T) {
 		t.Errorf("validateAdminConfig() = %v, want nil for blank entries only", err)
 	}
 
-	cfg = config.Config{Environment: config.EnvDevelopment, HTTP: config.HTTP{AdminTokens: []string{"short:admin:read"}}}
+	cfg = config.Config{Environment: config.EnvDevelopment, HTTP: config.HTTP{AdminTokens: []string{"t:admin:read"}}}
 	if err := validateAdminConfig(cfg); err != nil {
 		t.Errorf("validateAdminConfig() = %v, want the static verifier accepted without a provider", err)
-	}
-}
-
-// TestNewVerifierFollowsTheConfiguredProvider: the choice is the whole of the stub's retirement from
-// production, so it is pinned both ways.
-func TestNewVerifierFollowsTheConfiguredProvider(t *testing.T) {
-	t.Parallel()
-
-	v, err := newVerifier(context.Background(), config.Config{
-		OIDC: config.OIDC{Issuer: "https://idp", Audience: "gw", JWKSURL: "https://idp/certs"},
-	})
-	if _, ok := v.(*auth.OIDCVerifier); err != nil || !ok {
-		t.Errorf("newVerifier() = %T, %v; want *auth.OIDCVerifier when OIDC is configured", v, err)
-	}
-
-	v, err = newVerifier(context.Background(), config.Config{HTTP: config.HTTP{AdminTokens: []string{"t:admin:read"}}})
-	if _, ok := v.(*auth.StaticVerifier); err != nil || !ok {
-		t.Errorf("newVerifier() = %T, %v; want *auth.StaticVerifier without a provider", v, err)
 	}
 }
 

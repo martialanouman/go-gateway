@@ -51,8 +51,26 @@ func TestOIDCSection(t *testing.T) {
 			env: with(map[string]string{"OIDC_JWKS_URL": "http://localhost:8080/certs"}),
 		},
 		{
-			name: "a relative key set URL is refused", environment: "development",
-			env: with(map[string]string{"OIDC_JWKS_URL": "/certs"}), want: "OIDC_JWKS_URL",
+			name: "a partial configuration without a key set is refused", environment: "production",
+			env: with(map[string]string{"OIDC_JWKS_URL": ""}), want: "OIDC_JWKS_URL",
+		},
+		{
+			name: "a key set URL without a scheme is refused", environment: "development",
+			env: with(map[string]string{"OIDC_JWKS_URL": "//idp.example/certs"}), want: "OIDC_JWKS_URL",
+		},
+		{
+			name: "a key set URL without a host is refused", environment: "development",
+			env: with(map[string]string{"OIDC_JWKS_URL": "https:///certs"}), want: "OIDC_JWKS_URL",
+		},
+		{
+			// Compared byte for byte with the token's iss: the padded issuer would refuse every token.
+			name: "a padded issuer is refused", environment: "production",
+			env: with(map[string]string{"OIDC_ISSUER": "https://idp.example/realms/gw "}), want: "OIDC_ISSUER",
+		},
+		{
+			// Blank reads as unset to a human and as set to the verifier choice.
+			name: "a blank issuer is refused", environment: "development",
+			env: map[string]string{"OIDC_ISSUER": "  "}, want: "OIDC_ISSUER",
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
