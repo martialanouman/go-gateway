@@ -8,6 +8,7 @@ import (
 
 	"github.com/twmb/franz-go/pkg/kadm"
 
+	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
 	"github.com/martialanouman/go-gateway/internal/storage/kafkaprovision"
 	"github.com/martialanouman/go-gateway/internal/testutil/kafkatest"
@@ -190,7 +191,7 @@ func provision(ctx context.Context, t *testing.T, brokers []string, cfg kafkapro
 func admin(t *testing.T, brokers []string) *kadm.Client {
 	t.Helper()
 
-	adm, err := kafkaprovision.NewAdmin(brokers, 5*time.Second)
+	adm, err := kafkaprovision.NewAdmin(config.Kafka{Brokers: brokers, Timeout: 5 * time.Second})
 	if err != nil {
 		t.Fatalf("NewAdmin(): %v", err)
 	}

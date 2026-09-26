@@ -45,13 +45,17 @@ func NewProducer(cfg config.Kafka, opts ...ProducerOption) (*Producer, error) {
 	for _, o := range opts {
 		o(&policy)
 	}
+	shared, err := producerOpts(cfg, policy.bound)
+	if err != nil {
+		return nil, fmt.Errorf("kafka: new producer: %w", err)
+	}
 	kopts := append([]kgo.Opt{
 		kgo.SeedBrokers(cfg.Brokers...),
 		// AllISRAcks is franz-go's default and the precondition for idempotent producing; naming it
 		// makes the durability contract explicit and guards against a future edit weakening it.
 		kgo.RequiredAcks(kgo.AllISRAcks()),
 		kgo.ProducerBatchMaxBytes(16 << 20),
-	}, producerOpts(cfg, policy.bound)...)
+	}, shared...)
 	cl, err := kgo.NewClient(kopts...)
 	if err != nil {
 		return nil, fmt.Errorf("kafka: new producer: %w", err)
