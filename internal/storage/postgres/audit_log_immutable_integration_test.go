@@ -3,6 +3,7 @@ package postgres_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/google/uuid"
@@ -82,9 +83,9 @@ func TestAuditLogIsAppendOnlyInTheDatabase(t *testing.T) {
 }
 
 // TestAuditLogOwnerHoldsNoTruncatePrivilege: the owner is the application role today (one POSTGRES_URL). In
-// production it is not a superuser, so the revoked privilege is what refuses it before the trigger does. DELETE
-// is held again since step-297: the purge needs it, and the trigger alone bounds it (ADR-0018).
-func TestAuditLogOwnerHoldsNoTruncatePrivilege(t *testing.T) {
+// production it is not a superuser, so the revoked privilege is what refuses it before the trigger does. It
+// holds DELETE: the purge runs as it, and the trigger bounds it.
+func TestAuditLogOwnerHoldsDeleteButNotTruncate(t *testing.T) {
 	pool := pgtest.Pool(t)
 	var held []string
 	rows, err := pool.Query(context.Background(), `
@@ -106,7 +107,7 @@ func TestAuditLogOwnerHoldsNoTruncatePrivilege(t *testing.T) {
 			t.Errorf("owner privileges = %v, want no TRUNCATE", held)
 		}
 	}
-	if len(held) == 0 {
-		t.Fatal("owner holds no privilege at all: the query read nothing, so it proves nothing")
+	if !slices.Contains(held, "DELETE") {
+		t.Errorf("owner privileges = %v, want DELETE: without it the purge fails on every pass in production", held)
 	}
 }

@@ -32,9 +32,7 @@ quelques dizaines d'actions par jour, écart assumé en step-290c) ni purgée. I
   Quel que soit l'ordre de merge, celle qui arrive en second respecte ce que la première a posé.
   **step-315 a mergé en premier** (migration 0020) : le trigger `audit_log_append_only` refuse tout
   `DELETE`, même en superuser, et le propriétaire n'a plus le privilège. La purge doit ouvrir une porte
-  dans le trigger. *(Corrigé au design : cette porte ne **paie pas**
-  `debts/audit-log-immuable-contre-tout-sauf-son-proprietaire.md` — tant que le rôle applicatif est
-  propriétaire, il peut supprimer le trigger ; voir « Design arrêté ».)*
+  dans le trigger. *(Elle ne paie pas la dette : voir « Design arrêté ».)*
 
 ## Constat 2 — la base légale n'est écrite nulle part dans `docs/`
 
@@ -62,11 +60,12 @@ Arbitrages : Fable (Q1-Q4), puis l'utilisateur pour la porte (GUC contre rôle d
 - **Durée** : `AUDIT_LOG_RETENTION`, défaut **365 jours** (le plancher de la spec : la conformité qui
   allonge est celle de l'exploitant, la minimisation fixe le défaut), validé dans [365 j, 7×365 j].
   Cadence : `RETENTION_INTERVAL` existant, une seule horloge de purge (0 coupe les deux).
-- **Plancher en jours, pas en année** : `interval '1 year'` compte 12 mois calendaires, 366 j une année
-  bissextile, contre 8760 h côté Go. Une seule ligne jugée trop jeune par le trigger annule **tout** le
-  `DELETE`. Trigger et Go comptent donc tous deux 365 jours.
+- **Plancher en heures absolues** : `interval '1 year'` compte 366 j une année bissextile, et
+  `'365 days'` suit l'heure d'été du fuseau de session (vérifié : sous `Europe/Paris`, une heure d'écart
+  autour du changement d'heure ; relevé par la revue). Une seule ligne jugée trop jeune par le trigger annule
+  **tout** le `DELETE`. Le trigger compte donc `8760 hours`, aussi absolu que `make_interval(secs)` côté Go.
 - **La porte** (migration 0021, `CREATE OR REPLACE` de `audit_log_append_only`) : un `DELETE` passe si
-  `current_setting('audit_log.purge', true) = 'on'` **et** `OLD.at < now() - interval '365 days'`. Le
+  `current_setting('audit_log.purge', true) = 'on'` **et** `OLD.at < now() - interval '8760 hours'`. Le
   plancher est dans le trigger : aucune configuration ne purge sous la spec. `TRUNCATE` reste refusé.
   `DELETE` est rendu au propriétaire. Contre l'accident, le trigger suffit. Contre l'intention, un rôle
   NOLOGIN n'aurait rien ajouté tant que le rôle applicatif est propriétaire (`SET LOCAL ROLE` et

@@ -111,9 +111,8 @@ func (r *AuditLogRepo) List(ctx context.Context, f cp.AuditLogFilter, limit int,
 	return out, nil
 }
 
-// Purge deletes the rows older than retention and reports how many. The append-only trigger lets a DELETE
-// through only under the transaction-local audit_log.purge setting, and never below its 365-day floor
-// (migration 0021, ADR-0018): a retention under the floor refuses the whole statement.
+// Purge deletes the rows older than retention and reports how many. SET LOCAL acts only inside a transaction,
+// hence BeginFunc; under the trigger's floor, the whole DELETE is refused (ADR-0018).
 func (r *AuditLogRepo) Purge(ctx context.Context, retention time.Duration) (int64, error) {
 	var purged int64
 	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {

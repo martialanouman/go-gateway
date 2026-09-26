@@ -29,10 +29,11 @@ Un auditeur qui lit l'attestation trouve ici, pour chaque exclusion, sa durée e
 - **Défaut au plancher.** La spec dit « 1 à 7 ans selon conformité ». Une exigence plus longue est celle de
   l'exploitant ; le défaut suit la minimisation.
 - **Le plancher est dans la base.** Le trigger `audit_log_append_only` (migration 0021) laisse passer un
-  `DELETE` seulement sous le réglage transactionnel `audit_log.purge` **et** au-delà de 365 jours. Aucune
+  `DELETE` seulement sous le réglage transactionnel `audit_log.purge` **et** au-delà de 8760 heures. Aucune
   configuration ne purge sous la spec, et un `DELETE` accidentel reste refusé. Le plancher est compté en
-  **jours** : `interval '1 year'` vaut 366 jours une année bissextile, et une seule ligne jugée trop jeune
-  annulerait toute la purge.
+  **heures**, aussi absolu que la coupure de la purge : `'1 year'` (366 jours une année bissextile) et
+  `'365 days'` (qui suit l'heure d'été du fuseau de session) tracent une autre ligne, et une seule ligne
+  jugée trop jeune annulerait toute la purge.
 - **Purge par `DELETE WHERE`, pas par partition.** C'est un écart assumé avec §6.14.3 : la table n'est pas
   partitionnée (step-290c), et son volume est de quelques dizaines de lignes par jour. La purge tourne dans
   `admin-api-svc`, au rythme de `CLICKHOUSE_RETENTION_INTERVAL`.

@@ -1,8 +1,11 @@
 package postgres_test
 
 import (
+	"bytes"
 	"context"
 	"log/slog"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -72,16 +75,32 @@ func TestAuditLogPurgeRemovesOnlyWhatOutlivedItsRetention(t *testing.T) {
 	}
 }
 
-// TestAuditLogPurgeCannotReachBelowTheFloor: the trigger holds the spec's one-year floor, whatever retention
-// the caller asks for. One row under the floor refuses the whole statement, so nothing is deleted.
+// TestAuditLogPurgeAtTheDefaultRetentionMeetsTheFloor: the default retention IS the floor, so Go and the
+// trigger must draw the same line to the minute, or one row between them refuses the whole purge.
+func TestAuditLogPurgeAtTheDefaultRetentionMeetsTheFloor(t *testing.T) {
+	pool := pgtest.Pool(t)
+	operator := "tok_default_" + uuid.NewString()
+	past := insertAuditAged(t, pool, operator, 365*day+time.Minute)
+	within := insertAuditAged(t, pool, operator, 365*day-time.Minute)
+
+	if _, err := postgres.NewAuditLogRepo(pool).Purge(context.Background(), 365*day); err != nil {
+		t.Fatalf("purge at the default retention: %v", err)
+	}
+	if left := survivingAudit(t, pool, operator); left[past] || !left[within] {
+		t.Errorf("survivors = %v, want only the row within the retention", left)
+	}
+}
+
+// TestAuditLogPurgeCannotReachBelowTheFloor: the trigger holds the floor whatever retention the caller asks
+// for. The retention sits minutes under it, so only rows just under the floor can be what refuses the purge.
 func TestAuditLogPurgeCannotReachBelowTheFloor(t *testing.T) {
 	pool := pgtest.Pool(t)
 	operator := "tok_floor_" + uuid.NewString()
 	old := insertAuditAged(t, pool, operator, 500*day)
-	underFloor := insertAuditAged(t, pool, operator, 364*day)
+	underFloor := insertAuditAged(t, pool, operator, 365*day-time.Minute)
 
-	_, err := postgres.NewAuditLogRepo(pool).Purge(context.Background(), 30*day)
-	wantRefusedByDatabase(t, "a purge reaching under the 365-day floor", err)
+	_, err := postgres.NewAuditLogRepo(pool).Purge(context.Background(), 365*day-2*time.Minute)
+	wantRefusedByDatabase(t, "a purge reaching under the floor", err)
 	if left := survivingAudit(t, pool, operator); !left[old] || !left[underFloor] {
 		t.Errorf("a refused purge deleted rows: %v", left)
 	}
@@ -132,4 +151,46 @@ func TestAuditLogRetentionRunsFromTheStart(t *testing.T) {
 	if survivingAudit(t, pool, operator)[expired] {
 		t.Error("the first pass did not purge the expired row")
 	}
+}
+
+// TestAuditLogRetentionSurvivesAFailedPass: a refused pass is logged, never returned — returned, it would stop
+// admin-api-svc through its supervisor.
+func TestAuditLogRetentionSurvivesAFailedPass(t *testing.T) {
+	pool := pgtest.Pool(t)
+	insertAuditAged(t, pool, "tok_fail_"+uuid.NewString(), 364*day)
+
+	var logs syncBuffer
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- postgres.NewAuditLogRepo(pool).RunRetention(ctx, time.Hour, 30*day, slog.New(slog.NewTextHandler(&logs, nil)))
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for !strings.Contains(logs.String(), "audit log retention pass failed") && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Errorf("run = %v, want nil: a failed pass must not stop the service", err)
+	}
+	if !strings.Contains(logs.String(), "audit log retention pass failed") {
+		t.Errorf("the refused pass was not logged:\n%s", logs.String())
+	}
+}
+
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }

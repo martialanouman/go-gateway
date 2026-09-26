@@ -1,12 +1,10 @@
--- step-297: the retention purge is the one door in the append-only trigger (ADR-0018). A DELETE passes only
--- under the transaction-local audit_log.purge setting AND past a 365-day floor held here, so no retention
--- setting can purge under the spec's minimum. Days, not '1 year': a calendar year is 366 days in a leap
--- year, and one row the trigger judged too young would refuse the whole purge. DELETE goes back to the owner:
--- while the application role owns the table the REVOKE bound only intent, which a SET LOCAL equally is.
+-- step-297: the retention purge is the one door in the append-only trigger (ADR-0018). The floor is in hours,
+-- as absolute as the purge's own cutoff: '1 year' or '365 days' follow the session's calendar (leap day,
+-- daylight saving), and one row the trigger judged too young would refuse the whole purge.
 CREATE OR REPLACE FUNCTION control_plane.audit_log_append_only() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   IF TG_OP = 'DELETE' AND current_setting('audit_log.purge', true) = 'on'
-     AND OLD.at < now() - interval '365 days' THEN
+     AND OLD.at < now() - interval '8760 hours' THEN
     RETURN OLD;
   END IF;
   IF TG_OP = 'UPDATE'

@@ -272,11 +272,11 @@ CREATE INDEX audit_log_operator_at_idx ON control_plane.audit_log(operator, at);
 -- Immutable by constraint (step-315): the one allowed change closes a row — status and finished_at from NULL
 -- to a value, every other column unchanged. The trigger holds against a superuser's plain DML; the REVOKE holds the
 -- owner, which is the application role today, where it is not one. The one door is step-297's retention purge
--- (ADR-0018): a DELETE under the transaction-local audit_log.purge setting, never below a 365-day floor.
+-- (ADR-0018): a DELETE under the transaction-local audit_log.purge setting, never below an 8760-hour floor.
 CREATE FUNCTION control_plane.audit_log_append_only() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   IF TG_OP = 'DELETE' AND current_setting('audit_log.purge', true) = 'on'
-     AND OLD.at < now() - interval '365 days' THEN
+     AND OLD.at < now() - interval '8760 hours' THEN
     RETURN OLD;
   END IF;
   IF TG_OP = 'UPDATE'
