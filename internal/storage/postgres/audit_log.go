@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
@@ -15,12 +17,13 @@ import (
 
 // AuditLogRepo appends the consolidated operator audit trail (control_plane.audit_log, step-290c).
 type AuditLogRepo struct {
-	q *sqlcgen.Queries
+	pool *pgxpool.Pool
+	q    *sqlcgen.Queries
 }
 
 // NewAuditLogRepo returns the audit-log repository backed by pool.
 func NewAuditLogRepo(pool *pgxpool.Pool) *AuditLogRepo {
-	return &AuditLogRepo{q: sqlcgen.New(pool)}
+	return &AuditLogRepo{pool: pool, q: sqlcgen.New(pool)}
 }
 
 // maxRequestIDLen bounds the stored request id. chi echoes a client's X-Request-Id header verbatim, so an
@@ -105,4 +108,24 @@ func (r *AuditLogRepo) List(ctx context.Context, f cp.AuditLogFilter, limit int,
 		out = append(out, e)
 	}
 	return out, nil
+}
+
+// Purge deletes the rows older than retention and reports how many. The append-only trigger lets a DELETE
+// through only under the transaction-local audit_log.purge setting, and never below its 365-day floor
+// (migration 0021, ADR-0018): a retention under the floor refuses the whole statement.
+func (r *AuditLogRepo) Purge(ctx context.Context, retention time.Duration) (int64, error) {
+	var purged int64
+	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SET LOCAL audit_log.purge = 'on'`); err != nil {
+			return err
+		}
+		tag, err := tx.Exec(ctx, `DELETE FROM control_plane.audit_log WHERE at < now() - make_interval(secs => $1)`,
+			retention.Seconds())
+		purged = tag.RowsAffected()
+		return err
+	})
+	if err != nil {
+		return 0, translate("purge audit log", err)
+	}
+	return purged, nil
 }

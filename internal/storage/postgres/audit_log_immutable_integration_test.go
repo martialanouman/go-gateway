@@ -81,9 +81,10 @@ func TestAuditLogIsAppendOnlyInTheDatabase(t *testing.T) {
 	}
 }
 
-// TestAuditLogOwnerHoldsNoDeletePrivilege: the owner is the application role today (one POSTGRES_URL). In
-// production it is not a superuser, so the revoked privilege is what refuses it before the trigger does.
-func TestAuditLogOwnerHoldsNoDeletePrivilege(t *testing.T) {
+// TestAuditLogOwnerHoldsNoTruncatePrivilege: the owner is the application role today (one POSTGRES_URL). In
+// production it is not a superuser, so the revoked privilege is what refuses it before the trigger does. DELETE
+// is held again since step-297: the purge needs it, and the trigger alone bounds it (ADR-0018).
+func TestAuditLogOwnerHoldsNoTruncatePrivilege(t *testing.T) {
 	pool := pgtest.Pool(t)
 	var held []string
 	rows, err := pool.Query(context.Background(), `
@@ -101,8 +102,8 @@ func TestAuditLogOwnerHoldsNoDeletePrivilege(t *testing.T) {
 		held = append(held, p)
 	}
 	for _, p := range held {
-		if p == "DELETE" || p == "TRUNCATE" {
-			t.Errorf("owner privileges = %v, want neither DELETE nor TRUNCATE", held)
+		if p == "TRUNCATE" {
+			t.Errorf("owner privileges = %v, want no TRUNCATE", held)
 		}
 	}
 	if len(held) == 0 {
