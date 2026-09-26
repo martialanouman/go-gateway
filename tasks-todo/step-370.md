@@ -116,3 +116,7 @@ dédié (le middleware générique le couvre).
 **Ordre de déploiement** : migration 0019 avant `router-svc` et `admin-api-svc`. Retour arrière :
 router d'abord, `down` ensuite — un router neuf sans la table ne recharge plus sa politique, et un
 opt-out n'y serait plus appliqué.
+
+Tour 2 (sur le seul commit de correctifs) : aucun bloquant ; la branche du double qui recopiait le CHECK
+est supprimée (le handler et la base sont chacun prouvés seuls), renvoi croisé migration ↔ handler,
+regex du DDL ancrée.

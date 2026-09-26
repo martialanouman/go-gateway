@@ -16,10 +16,10 @@ import (
 
 	"github.com/martialanouman/go-gateway/internal/adminapi"
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
-	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 )
 
-// fakePlatformPolicy models the table's CHECK: only off and stored_encrypted are storable.
+// fakePlatformPolicy holds the platform default. The table's CHECK is proven against Postgres
+// (platform_content_policy_integration_test.go); the handler refuses the other values before calling it.
 type fakePlatformPolicy struct {
 	mu sync.Mutex
 	cs cp.ContentStorage
@@ -37,9 +37,6 @@ func (f *fakePlatformPolicy) PlatformContentStorage(context.Context) (cp.Content
 func (f *fakePlatformPolicy) SetPlatformContentStorage(_ context.Context, cs cp.ContentStorage) (cp.ContentStorage, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if cs != cp.ContentOff && cs != cp.ContentStoredEncrypted {
-		return "", errs.ErrValidation
-	}
 	f.cs = cs
 	return cs, nil
 }
@@ -125,7 +122,7 @@ func TestPlatformContentRetentionMatchesTheCDRColumnTTL(t *testing.T) {
 		t.Fatal("no content_retention_days served")
 	}
 	for _, column := range []string{"content_ciphertext", "content_key_id"} {
-		ttl := regexp.MustCompile(column + `\s+Nullable\(\w+\)\s+TTL\s+toDate\(submitted_at\)\s*\+\s*INTERVAL\s+(\d+)\s+DAY`)
+		ttl := regexp.MustCompile(`\b` + column + `\s+Nullable\(\w+\)\s+TTL\s+toDate\(submitted_at\)\s*\+\s*INTERVAL\s+(\d+)\s+DAY`)
 		m := ttl.FindSubmatch(ddl)
 		if m == nil || string(m[1]) != strconv.Itoa(*got.ContentRetentionDays) {
 			t.Errorf("%s TTL in the DDL = %q, served retention = %d days; want them equal", column, m, *got.ContentRetentionDays)
