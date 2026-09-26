@@ -53,6 +53,46 @@ step-290 annonçait cette décision « au plus tard à step-310 ». Elle glisse 
 question ne se tranche utilement qu'avec le lecteur, et le lecteur attend `audit:read`, donc step-310.
 Si le BFF avance avant, elle se tranche là-bas, pas ici.
 
+## Design arrêté
+
+Arbitrages du 26/09/2026. La dépendance ⛓ step-310 est **levée** : `msisdn:reveal` et `cdr:export_bulk`
+ont été posés sur le vérificateur statique, et step-310 consomme les scopes existants sans en créer (Fable ;
+confirmé par l'utilisateur après lecture du dépôt `go-gateway-bo`). Périmètre entier.
+
+**Constat 3 — tranché (ADR-0017).** `control_plane.audit_log` fait foi pour tout ce qui atteint la
+passerelle : l'Admin API, quel que soit l'appelant, et `mt-replay`. `dashboard.audit_log` fait foi pour les
+actions propres au BFF (sessions, MFA, opérateurs, rôles). Le BFF ne projette pas la nôtre : il la lit par
+`GET /admin/audit-log`, et son écran (step-184 côté BFF) montre les deux sources.
+
+**Contrat (6.8.0, mineur).** `GET /admin/audit-log`, `list-audit-log`, sous le scope neuf `audit:read`.
+Filtres optionnels : `operator` (égalité exacte), `from_date` (inclus), `to_date` (exclu). Tri `at DESC, id DESC`,
+keyset `platform/keyset` (micro). `AuditEntry` : `operator`, `operation_id`, `method`, `target` sont des
+chaînes libres, **sans enum ni motif**, parce qu'une ligne `REPLAY` / `declared:<nom>` doit passer et que
+step-310 ajoutera le format `sub`. `status`, `request_id` et `finished_at` sont nullables, et un `status`
+null veut dire « issue non enregistrée ».
+
+**MSISDN dans `target`.** `update-exact-route` / `delete-exact-route` écrivent `/…/exact-routes/{msisdn}`.
+Sans `msisdn:reveal`, ce segment est masqué (`maskMSISDN`). Avec ce scope, la lecture démasque un numéro :
+`list-audit-log` entre donc dans `revealReads` et se journalise lui-même.
+
+**Immuabilité (migration 0020).**
+- Trigger `BEFORE UPDATE OR DELETE` par ligne. Il n'autorise qu'une modification : `status` et `finished_at`
+  passent de NULL à non NULL, toutes les autres colonnes restent identiques. Tout le reste lève une
+  exception, DELETE compris. Un trigger par instruction refuse aussi le vidage de table.
+- `REVOKE DELETE` et le privilège de vidage `FROM CURRENT_USER`, c'est-à-dire le propriétaire, qui est
+  aujourd'hui aussi le rôle applicatif (un seul `POSTGRES_URL`).
+- Pourquoi les deux : les tests et compose tournent en **superuser**, qui ignore les privilèges, donc le
+  trigger seul y porte la preuve. Le REVOKE tient un propriétaire non superuser en production et se prouve
+  par l'ACL. Aucun des deux ne résiste à un propriétaire qui les défait : c'est une dette
+  (`debts/`), qui porte la séparation migrate/app. step-297 (la purge) sera l'unique porte ouverte dans le
+  trigger.
+- Index `audit_log_operator_at_idx (operator, at)`.
+
+**Tests.** Intégration, contre la base : UPDATE d'une autre colonne, second finish brut, DELETE et vidage
+refusés ; ACL du propriétaire sans ces deux privilèges ; Begin puis Finish toujours verts ; List filtre et
+pagine. Handler : forme du contrat, filtres transmis, curseur invalide renvoyant 422, `target` masqué avec
+et sans reveal, 403 sans `audit:read`.
+
 ## Tests
 
 - Un `UPDATE` d'une colonne autre que `status`, un second `FinishAudit` sur une ligne déjà close, et un
