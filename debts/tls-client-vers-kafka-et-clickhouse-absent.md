@@ -1,7 +1,13 @@
 # Le TLS client vers Kafka et ClickHouse n'existe pas, et sa fiche non plus
 
-> **Statut :** OUVERTE · **Nature :** technique
-> **Née de :** step-300 (`tasks-done/step-300.md`) · **Portée par :** **step-305**, créée le 2026-09-19 par step-300d
+> **Statut :** PAYÉE le 2026-09-26 (PR #220) · **Nature :** technique
+> **Née de :** step-300 (`tasks-done/step-300.md`) · **Payée par :** step-305
+
+**Payée.** `KAFKA_TLS_*` et `CLICKHOUSE_TLS_*` : chaque client Kafka (services et Job de provisionnement),
+`clickhouse.NewConn` et le migrateur ClickHouse composent en TLS, vérifié contre la CA de l'exploitant ou
+les racines système (`tlsconf.StoreClientConfig`). Postgres et Redis restent une ligne de la checklist de
+step-410. Ce que la revue a trouvé : le migrateur ClickHouse composait son propre DSN, hors de `NewConn`,
+et aurait gardé le mot de passe en clair sous le drapeau.
 
 step-300 a cartographié les quatre magasins : PostgreSQL et Redis sont chiffrables **sans code**
 (`sslmode=require`, schéma `rediss://`) ; Kafka et ClickHouse **non** — `dialOpts` ne pose que

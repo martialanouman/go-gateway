@@ -1,6 +1,6 @@
 # step-305 — Le TLS client vers les quatre magasins de données
 
-> **Jalon :** M12 · **Statut :** À FAIRE
+> **Jalon :** M12 · **Statut :** FAIT
 > **Dépend de :** step-300 (livrée) · **Bloque :** step-410 (go-live)
 
 ## Pourquoi cette fiche existe
@@ -84,11 +84,11 @@ Arbitrage Fable, 2026-09-26 (Q1-Q5), sans conflit avec la spec, qui ne dit rien 
 
 ## Definition of Done
 
-- [ ] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts
-- [ ] Kafka et ClickHouse joignables en TLS par configuration, éteint par défaut
-- [ ] Un chemin de certificat illisible est une erreur de boot **rendue**, prouvée par un test
-- [ ] Les deux lignes Postgres/Redis inscrites dans la checklist de go-live de step-410
-- [ ] `debts/tls-client-vers-kafka-et-clickhouse-absent.md` passe à `PAYÉE`, avec la date et la PR
+- [x] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts
+- [x] Kafka et ClickHouse joignables en TLS par configuration, éteint par défaut
+- [x] Un chemin de certificat illisible est une erreur de boot **rendue**, prouvée par un test
+- [x] Les deux lignes Postgres/Redis inscrites dans la checklist de go-live de step-410
+- [x] `debts/tls-client-vers-kafka-et-clickhouse-absent.md` passe à `PAYÉE`, avec la date et la PR
 
 ## Hors périmètre
 
