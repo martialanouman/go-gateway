@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -175,9 +176,20 @@ func (h *gdprHandlers) run(ctx context.Context, job cp.GDPREraseJob) {
 	}
 	if ferr := h.jobs.Finish(book, job.ID, status, attestation); ferr != nil {
 		// Last resort: the attestation must exist somewhere, so it goes to the log rather than being lost.
+		// Without its subject: the job row names it, and an erased number must not outlive the erasure in the
+		// log collector (ADR-0018).
 		h.logger.ErrorContext(book, "gdpr erasure: recording the outcome failed; attestation follows",
-			"job_id", job.ID, "status", status, "attestation", attestation, "err", ferr)
+			"job_id", job.ID, "status", status, "attestation", withoutSubject(attestation), "err", ferr)
 	}
+}
+
+// withoutSubject drops an attestation's leading subject=… token.
+func withoutSubject(attestation string) string {
+	if !strings.HasPrefix(attestation, "subject=") {
+		return attestation
+	}
+	_, rest, _ := strings.Cut(attestation, " ")
+	return rest
 }
 
 // performErasure erases the subject and returns the attestation — the proof of execution: what was erased,
