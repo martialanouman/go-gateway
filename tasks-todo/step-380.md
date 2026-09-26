@@ -61,3 +61,54 @@ lecture initiale, le flux ne suffit pas : il donne le mouvement, pas l'état.
 ## Hors périmètre
 
 Les flux temps réel (livrés en M11). Les dashboards Grafana et les règles d'alerte, hors dépôt.
+
+## Design arrêté
+
+Arbitrages : Fable (11 points), humain (24h refusé ; flux DLR en dette). Contrat 6.4.0 → **6.5.0** (mineur).
+
+**Fenêtre = cohorte.** Un message compte s'il a été soumis dans `[now−window, now)` (`submitted_at`, seule clé
+partitionnée et immuable), avec son statut agrégé **à l'instant de la lecture** : sur 5m, `delivered`
+sous-compte ce qui est encore en vol — écrit dans la description.
+
+**Fenêtres servies : `5m` et `1h`, pour les deux opérations ; toute autre valeur → 422** à l'exécution. Le
+schéma reste `string` (un `enum` sur une opération déjà publiée = rupture oasdiff = majeur). Pas du
+traffic fixe : 5m → 10 s (30 points), 1h → 1 min (60 points). `24h` refusé : un scan brut à 8 000/s
+lit ~690 M messages ; la spec §6.3 le veut pré-agrégé, et ce pré-agrégat n'existe pas → fiche de dette.
+
+**Agrégation dédiée, légère.** Pas `cdrAggregateSearch` : son niveau interne `argMax` toutes les colonnes,
+corps chiffré compris. Trois niveaux sur les seules colonnes utiles (`status`, `latency_ms`,
+`connector_id`, `delivered_at`). La précédence de statut §6.6 est **extraite** de `cdrAggOuterCols` en
+une constante partagée : une seule définition du statut agrégé dans le dépôt, pour l'explorateur CDR
+et pour les métriques. `max_execution_time` posé sur la requête ; dépassement (ou deadline) →
+`ErrServiceUnavailable` → 503.
+
+**Définitions.** `submitted` = MT, tous statuts (un rejet est une soumission reçue) ; `delivered` =
+statut agrégé `delivered` ; `failed` = `failed` + `expired` ; `rejected` = `rejected` ; `cancelled`,
+`enroute`, `accepted` ne comptent que dans `submitted` ; `mo_received` = MO. Invariant :
+`delivered + failed + rejected ≤ submitted`. Correspondance avec le flux, par cohérence et non par
+identité (le flux n'émet rien des DLR) : `rejected` ≡ `messages_total{status=rejected}` du router (même
+événement, même ligne CDR) ; `delivered`/`failed` n'ont qu'une définition, celle partagée ci-dessus.
+
+**Latences.** `e2e_latency_ms_p50/p99` = `quantilesTDigest` de `latency_ms` (DLR − soumission) des MT
+livrés, par message et non par segment. `ingest_latency_ms_*` = `null` : mesurée nulle part (fiche
+existante `budget-d-ingestion-non-mesurable.md`, étendue). `active_sessions` **omis** : le registre n'a pas
+de compteur global exact (`sess:idx` surcompte), et marcher l'index à chaque GET est un DoS → fiche.
+
+**Ventilation.** ClickHouse agrège par `(bucket, clé)` ; Go replie. `connector` : un message jamais
+dispatché n'a pas de connecteur → exclu (`Σ series ≤ summary`, écrit). `customer` : l'id. `group` :
+ClickHouse par client, Go replie par l'appartenance **courante** (pagination de `CustomerStore.List`),
+clients sans groupe → clé `ungrouped`. Puis **top 20 séries par `submitted` + série `other`** (le reste
+sommé) : la somme des séries est conservée sans champ neuf. Garde de lignes `LIMIT 100 001` → au-delà, 503
+plutôt qu'un résultat tronqué en silence.
+
+**Contrat.** `security: admin:read` (les deux opérations sont aujourd'hui **publiques**), 401/403/422/503,
+descriptions (fenêtres, cohorte, `failed`, clés réservées `ungrouped`/`other`). Collection synchronisée ;
+lignes retirées de `deferred`.
+
+**Dettes** (même PR) : pré-agrégat 24 h ; `active_sessions` sans compteur ; le flux n'émet pas de
+`dlr_total` ; extension de `budget-d-ingestion-non-mesurable.md`.
+
+**Plan.** U1 contrat + collection · U2 `clickhouse` : précédence extraite, `CDRReader.MetricsSummary` /
+`TrafficMetrics` (intégration : N messages dont M livrés ; deux versions comptées une fois ; mutation de
+statut) · U3 `adminapi` : handlers, fenêtres, repli groupe/top-20, `Deps.Metrics` câblé · U4 dettes · fiche →
+`tasks-done`.
