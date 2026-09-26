@@ -1,12 +1,13 @@
 // Package senderid authorizes a message's source address (the sender ID) against each account's
 // policy and its customer's registered sender IDs (spec §6.19). It is the real implementation behind
-// the frozen pipeline.sender_id stage (step-060): the authorization runs off an immutable snapshot
-// loaded once at startup, so the router checks every message lock-free. Hot reload arrives with M7.
+// the frozen pipeline.sender_id stage (step-060): the authorization runs off an immutable snapshot the
+// router swaps whole on each config-sync invalidation (step-390), so every message is checked lock-free.
 package senderid
 
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/google/uuid"
 
@@ -94,6 +95,20 @@ func (a *Authorizer) Authorize(_ context.Context, accountID, customerID uuid.UUI
 		return nil
 	}
 	return errs.ErrSenderIDNotAuthorized
+}
+
+// Holder keeps the current Authorizer behind an atomic pointer: loaded at boot, swapped on each
+// invalidation, so a policy change or a sender ID registered after boot reaches the next message.
+type Holder struct {
+	snap atomic.Pointer[Authorizer]
+}
+
+// Store swaps in a freshly loaded snapshot.
+func (h *Holder) Store(a *Authorizer) { h.snap.Store(a) }
+
+// Authorize checks against the current snapshot.
+func (h *Holder) Authorize(ctx context.Context, accountID, customerID uuid.UUID, from string) error {
+	return h.snap.Load().Authorize(ctx, accountID, customerID, from)
 }
 
 // isNumeric reports whether s is a non-empty numeric sender ID: an optional single leading '+' (E.164)
