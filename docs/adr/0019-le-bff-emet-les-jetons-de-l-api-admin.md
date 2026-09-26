@@ -92,9 +92,9 @@ restent grossiers : un `script_author` porte `admin:write`, et le BFF reste seul
 - **ADR-0017 est amendé, pas remplacé.** Les deux journaux gardent leur périmètre. Mais
   `control_plane.audit_log.operator` porte désormais l'`operator_id` de l'humain pour tout appel du BFF. La
   corrélation par `X-Request-Id` n'est plus nécessaire pour retrouver l'humain.
-- **`created_by` devient remplissable**, à une condition : la FK vers `dashboard.operators` n'est satisfaite
-  que si le BFF écrit ses opérateurs dans le schéma `dashboard` de la même base. Sinon, la FK tombe. À trancher
-  dans la step qui paie `debts/created-by-jamais-renseigne.md`.
+- **`created_by` devient remplissable, sans FK.** Le BFF a sa propre base : la FK vers le stub
+  `dashboard.operators` ne pourrait jamais être satisfaite par un opérateur réel, et elle tombe (step-405).
+  La colonne porte l'`operator_id` du BFF, et c'est au BFF de le traduire en nom.
 - **Le JWKS du BFF sera servi sous une autorité interne.** `debts/jwks-joint-par-les-seules-racines-systeme.md`
   devient **bloquante pour le go-live** : la passerelle a besoin d'une ancre de confiance pour le JWKS, sur le
   modèle `*_TLS_CA_FILE` de step-305.
@@ -112,8 +112,8 @@ restent grossiers : un `script_author` porte `admin:write`, et le BFF reste seul
    `debts/jwks-joint-par-les-seules-racines-systeme.md`, avant step-410.
 2. [ ] Passerelle (step-405) : description d'`OperatorBearer` dans `api/openapi-admin.yaml` (émetteur = BFF),
    bump MINEUR.
-3. [ ] Passerelle (step-405) : décider de la FK `created_by` et écrire `sub` dans `created_by`, ce qui paie
-   `debts/created-by-jamais-renseigne.md`.
+3. [ ] Passerelle (step-405) : retirer la FK `created_by → dashboard.operators` et le stub, puis écrire `sub`
+   dans `created_by`, ce qui paie `debts/created-by-jamais-renseigne.md`.
 4. [ ] BFF (`go-gateway-bo`) : émission, JWKS, rotation, traduction permissions → scopes, jetons personnels.
 5. [ ] step-410 : `gateway-oidc` renseigné avec `OIDC_ISSUER` (le BFF), `OIDC_AUDIENCE=gateway-admin` et
    `OIDC_JWKS_URL` (le JWKS du BFF).

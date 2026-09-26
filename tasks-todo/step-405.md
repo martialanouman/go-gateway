@@ -35,11 +35,18 @@ fonctionne en production, et aucune step ne les porte :
 
 ## Points d'implémentation clés
 
+- **Tranché (utilisateur, 2026-09-26) : la FK `created_by → dashboard.operators(id)` disparaît.** Le BFF a sa
+  propre base (spec tableau de bord §3.1 : « schéma PostgreSQL 18 séparé »), et la passerelle ne doit pas
+  dépendre des tables d'un autre service. La table `dashboard.operators` n'est qu'un stub qui n'existe que
+  pour satisfaire ces FK (`db/schema_passerelle_sms.sql:51-59`) : aucun opérateur réel n'y figurera jamais,
+  donc chaque écriture d'un `sub` réel échouerait. La migration retire les quatre FK (`:77`, `:375`, `:497`,
+  `:581`), puis le stub, puis le schéma `dashboard` s'il est vide. Le schéma **et** la migration changent
+  ensemble (`.claude/rules/db-schema.md`). `created_by` reste un uuid sans référence : c'est l'`operator_id`
+  du BFF, et c'est au BFF de le traduire en nom, comme ADR-0017 lui confie l'humain.
+  `internal/storage/postgres/queries/customer_groups.sql:3` justifie la colonne par cette FK : corriger le
+  commentaire, puis régénérer sqlc.
+
 - **À arbitrer avant tout code (échelle : spec → Fable → humain)** :
-  - La FK `created_by → dashboard.operators(id)`. Elle n'est satisfaite que si le BFF écrit ses opérateurs
-    dans le schéma `dashboard` de **cette** base. Sinon : retirer la FK, ce qui demande une migration et le
-    schéma (`.claude/rules/db-schema.md`), et garder un uuid sans référence. Ou bien ne rien écrire et laisser
-    la dette ouverte. Question à poser au dépôt du BFF.
   - La forme de l'ancre dans le manifest : fichier monté, ou PEM dans le ConfigMap.
   - Un `sub` qui n'est pas un uuid, venu d'un émetteur mal configuré : écrire NULL, ou refuser l'appel ?
 - `internal/controlplane/customergroup.go:23` annonce encore « the operator identity arrives with step-310 » :
@@ -59,7 +66,8 @@ fonctionne en production, et aucune step ne les porte :
 
 - [ ] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts
 - [ ] `debts/jwks-joint-par-les-seules-racines-systeme.md` passe à `PAYÉE`, avec la date et la PR
-- [ ] `debts/created-by-jamais-renseigne.md` passe à `PAYÉE`, ou reste ouverte avec l'arbitrage écrit
+- [ ] `debts/created-by-jamais-renseigne.md` passe à `PAYÉE` ; FK et stub `dashboard.operators` retirés
+  (schéma + migration)
 - [ ] contrat `OperatorBearer` à jour, `api/package.json` bumpé en MINEUR
 - [ ] le résidu `keySetClient()` de step-310 est prouvé, ou sa raison est écrite
 
