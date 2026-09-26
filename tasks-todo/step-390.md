@@ -40,8 +40,8 @@ défaut fonctionnel réel : **un compte créé avec la mauvaise politique ne peu
   - `query_sm_enabled` / `cancel_sm_enabled` sont lus **au bind** depuis PostgreSQL
     (`internal/storage/postgres/bind_authn.go`) puis **figés dans l'état de session** : seule une
     déconnexion forcée (le mécanisme de step-032) les propage à une session déjà ouverte ;
-  - `sender_id_policy` est lu par l'instantané du routeur (`senderid.LoadSnapshot`), rechargé par le
-    watcher de config : aucune reconnexion nécessaire.
+  - `sender_id_policy` est lu par l'instantané du routeur (`senderid.LoadSnapshot`) — **chargé au boot
+    seulement** (correction au cadrage de la step : le watcher ne le recharge pas, cf. Design arrêté).
 
   Ne pas chercher un « compteur de génération de config » pour ces projections : le seul du dépôt
   (`connector:cfggen:{id}`, step-128) est **par connecteur** et ne les concerne pas. Sans ce câblage, le
@@ -79,3 +79,44 @@ défaut fonctionnel réel : **un compte créé avec la mauvaise politique ne peu
 
 L'autorisation de sender ID elle-même (§6.19, livrée en step-060) et les bascules `query_sm`/`cancel_sm`
 côté protocole (livrées en step-025/030). Cette fiche ne fait que rendre leurs réglages modifiables.
+
+## Design arrêté
+
+Arbitrage Fable (8 points, aucun renvoi à l'humain). Contrat 6.5.0 → **6.6.0** (mineur).
+
+**Correction de la fiche.** L'instantané de sender ID n'est **jamais rechargé** : `senderid.LoadSnapshot` ne
+tourne qu'au boot du router (« Hot reload arrives with M7 », jamais livré). Défaut déjà en prod : un sender
+ID créé ou révoqué après le boot n'est vu qu'au redémarrage. Corrigé ici : `senderid.Holder` (motif
+`credit.Holder`, `atomic.Pointer`) dans `pipeline.Deps.SenderIDs`, rechargé par `newSnapshotWatcher`. Le
+middleware `PublishConfigChanges` publie déjà l'invalidation après chaque mutation Admin.
+
+**Preuve de traversée.** Test `cmd/router-svc` sur le graphe réel (`newRouterApp` + watcher +
+invalidation) : un expéditeur accepté sous `disabled` est refusé après passage en `strict`. L'autorisation
+est par message, non par session : ce test est la preuve que la politique atteint une session ouverte.
+
+**`set-account-smpp-ops`.** Les deux drapeaux sont figés au bind : chaque PATCH réussi déconnecte le compte
+(motif `account_smpp_ops_changed`), sans lecture préalable. Corps vide → 422. `cancel_sm` refusé côté
+protocole : déjà couvert (`TestOnCancelDisabledIsInvalidCmdID`) ; le test neuf prouve la déconnexion.
+
+**Stockage.** `UpdateAccount` gagne trois `COALESCE` (`sender_id_policy`, `query_sm_enabled`,
+`cancel_sm_enabled`) et `cp.AccountPatch` trois pointeurs. Le corps d'`update-smpp-account` ne change pas.
+
+**`suspend-smpp-account`.** `store.Suspend` + `disconnectAccount("account_suspended")`, calqué sur
+`suspend-customer`. Un compte `closed` passe comme par le PATCH : rendre `closed` terminal serait une
+décision produit sur les trois chemins, hors périmètre.
+
+**`reorder-routes`.** Liste **complète** des routes, sans doublon ; sinon 422. Priorités `(i+1)*10`
+(laisse de la place à `create-route`). **Une seule instruction SQL**, dont la garde (complétude,
+unicité, existence) vit dans l'instruction elle-même : une liste invalide ne met à jour **aucune** ligne,
+jamais à moitié. Réponse : les routes dans le nouvel ordre.
+
+**`list-customer-accounts`.** **Servie**, pas retirée : le retrait coûte un bump majeur et une
+coordination avec le tableau de bord pour un doublon inoffensif. Tableau des comptes du client
+(une page de 500), 404 si le client est inconnu.
+
+**Contrat.** `security` (`admin:read` pour la liste, `admin:write` pour les quatre autres), 401/403,
+404 sur les opérations `{id}`, 422 sur les corps. Collection synchronisée, 5 lignes retirées de `deferred`.
+
+**Plan.** U1 contrat + collection · U2 rechargement du sender ID (Holder + watcher + test router) ·
+U3 comptes : stockage étendu, sender-id-policy, smpp-ops, suspend, list-customer-accounts · U4
+reorder-routes · fiche → `tasks-done`.
