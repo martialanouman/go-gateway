@@ -249,6 +249,12 @@ func TestGeneratedSpecMatchesTheContractForEveryM1Operation(t *testing.T) {
 				t.Errorf("operationId = %q, want %q", got, op.id)
 			}
 
+			// Before the upgrade exemption below: a WebSocket operation escapes the schema comparison, not this.
+			if !reflect.DeepEqual(cOp["security"], gOp["security"]) {
+				t.Errorf("security differs:\n contract:  %v\n generated: %v", cOp["security"], gOp["security"])
+			}
+			requireAScope(t, gOp["security"])
+
 			cCodes := responseCodes(cOp)
 			gCodes := responseCodes(gOp)
 			// A protocol upgrade has no output schema, so Huma generates no responses at all. The criterion
@@ -262,11 +268,6 @@ func TestGeneratedSpecMatchesTheContractForEveryM1Operation(t *testing.T) {
 			}
 			if !reflect.DeepEqual(cCodes, gCodes) {
 				t.Errorf("response codes differ:\n contract:  %v\n generated: %v", cCodes, gCodes)
-			}
-			// Where the contract names a scope, the served one must be it: a write operation served under
-			// admin:read would still pass the scope-presence check.
-			if !reflect.DeepEqual(cOp["security"], gOp["security"]) {
-				t.Errorf("security differs:\n contract:  %v\n generated: %v", cOp["security"], gOp["security"])
 			}
 
 			compareSchemas(t, "requestBody", requestSchema(contract, cOp), requestSchema(generated, gOp))
@@ -809,10 +810,9 @@ func deepStringMap(v any) any {
 }
 
 // TestUpgradeOperationsDeclareTheirContract is what keeps the exemption above honest: a WebSocket operation
-// escapes the schema comparison, so its contract entry and its authorization are asserted directly.
+// escapes the schema comparison, so its contract entry is asserted directly.
 func TestUpgradeOperationsDeclareTheirContract(t *testing.T) {
 	contract := loadContract(t)
-	generated := loadGenerated(t)
 
 	for _, op := range m1Operations {
 		cOp := operationNode(contract, op.path, op.method)
@@ -823,16 +823,6 @@ func TestUpgradeOperationsDeclareTheirContract(t *testing.T) {
 			if got := responseCodes(cOp); !reflect.DeepEqual(got, []string{"101", "401"}) {
 				t.Errorf("contract responses = %v, want [101 401]", got)
 			}
-			gOp := operationNode(generated, op.path, op.method)
-			if gOp == nil {
-				t.Fatal("not registered, so neither routed nor scope-checked")
-			}
-			// The exemption removes the only other check on these operations, so the authorization the
-			// contract promises and the one the service enforces are compared exactly. An empty scope list
-			// would accept any valid operator token.
-			if !reflect.DeepEqual(cOp["security"], gOp["security"]) {
-				t.Errorf("security differs:\n contract:  %v\n generated: %v", cOp["security"], gOp["security"])
-			}
 		})
 	}
 }
@@ -840,46 +830,32 @@ func TestUpgradeOperationsDeclareTheirContract(t *testing.T) {
 // operatorSchemeName is the security scheme the contract and the middleware both name.
 const operatorSchemeName = "OperatorBearer"
 
-// TestEveryGeneratedOperationRequiresAScope closes the class of bug step-330 found: auth.Middleware
-// derives authorisation from ctx.Operation().Security, and huma never merges the document's global
-// security: block into an operation — so an operation declaring none is served to ANYONE, with the
-// suite green and the audit trail recording its mutations against no principal.
-//
-// It checks the SERVED side only. Comparing it to the published contract would be the stronger
-// guard, and it is what step-397 is about: 50 of the
-// operations already shipped declare no security: in the YAML while requiring a scope in code.
-func TestEveryGeneratedOperationRequiresAScope(t *testing.T) {
-	generated := loadGenerated(t)
-	refs := operationRefs(t, generated)
-	if len(refs) == 0 {
-		t.Fatal("generated spec exposes no operation: the spec went unread, or paths: moved")
+// requireAScope closes the class of bug step-330 found: auth.Middleware derives authorisation from
+// ctx.Operation().Security, and huma never merges the document's global security: block into an operation —
+// so an operation declaring none is served to ANYONE. Comparing with the contract is not enough: DeepEqual
+// passes when both sides are empty.
+func requireAScope(t *testing.T, security any) {
+	t.Helper()
+	requirements, _ := security.([]any)
+	if len(requirements) == 0 {
+		t.Error("declares no security: auth.Middleware serves it to anyone — register it with scopeSecurity(...)")
+		return
 	}
-
-	for _, id := range sortedRefs(refs) {
-		ref := refs[id]
-		where := ref.method + " " + ref.path + " (" + id + ")"
-		requirements, _ := operationNode(generated, ref.path, ref.method)["security"].([]any)
-		if len(requirements) == 0 {
-			t.Errorf("%s declares no security: auth.Middleware serves it to anyone — "+
-				"register it with scopeSecurity(...)", where)
+	// Each requirement is an ALTERNATIVE: the middleware accepts as soon as ONE is satisfied, and
+	// one naming no scope is satisfied by any operator token. So the weakest decides, and every
+	// one of them has to be checked — summing the scopes would let a strong alternative hide an
+	// empty one.
+	for _, requirement := range requirements {
+		schemes, _ := requirement.(map[string]any)
+		scopes, named := schemes[operatorSchemeName].([]any)
+		if !named {
+			t.Errorf("has an alternative that does not name %q: the middleware enforces none "+
+				"of it, so it grants free passage", operatorSchemeName)
 			continue
 		}
-		// Each requirement is an ALTERNATIVE: the middleware accepts as soon as ONE is satisfied, and
-		// one naming no scope is satisfied by any operator token. So the weakest decides, and every
-		// one of them has to be checked — summing the scopes would let a strong alternative hide an
-		// empty one.
-		for _, requirement := range requirements {
-			schemes, _ := requirement.(map[string]any)
-			scopes, named := schemes[operatorSchemeName].([]any)
-			if !named {
-				t.Errorf("%s has an alternative that does not name %q: the middleware enforces none "+
-					"of it, so it grants free passage", where, operatorSchemeName)
-				continue
-			}
-			if len(scopes) == 0 {
-				t.Errorf("%s has an alternative requiring no scope: any operator token satisfies it, "+
-					"including one holding none of the admin scopes", where)
-			}
+		if len(scopes) == 0 {
+			t.Error("has an alternative requiring no scope: any operator token satisfies it, " +
+				"including one holding none of the admin scopes")
 		}
 	}
 }
