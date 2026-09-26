@@ -39,6 +39,7 @@ var m1Operations = []opRef{
 	{"update-customer", "patch", "/admin/customers/{id}"},
 	{"delete-customer", "delete", "/admin/customers/{id}"},
 	{"suspend-customer", "post", "/admin/customers/{id}/suspend"},
+	{"list-customer-accounts", "get", "/admin/customers/{id}/smpp-accounts"},
 
 	{"list-smpp-accounts", "get", "/admin/smpp-accounts"},
 	{"create-smpp-account", "post", "/admin/smpp-accounts"},
@@ -47,6 +48,9 @@ var m1Operations = []opRef{
 	{"delete-smpp-account", "delete", "/admin/smpp-accounts/{id}"},
 	{"set-account-channels", "patch", "/admin/smpp-accounts/{id}/channels"},
 	{"set-account-session-limits", "patch", "/admin/smpp-accounts/{id}/session-limits"},
+	{"set-account-sender-id-policy", "patch", "/admin/smpp-accounts/{id}/sender-id-policy"},
+	{"set-account-smpp-ops", "patch", "/admin/smpp-accounts/{id}/smpp-ops"},
+	{"suspend-smpp-account", "post", "/admin/smpp-accounts/{id}/suspend"},
 
 	{"list-credentials", "get", "/admin/smpp-accounts/{id}/credentials"},
 	{"create-credential", "post", "/admin/smpp-accounts/{id}/credentials"},
@@ -191,11 +195,7 @@ type deferredOp struct{ reason, step string }
 var deferred = map[string]deferredOp{
 
 	// Accounts and routes: three settings are creatable and never modifiable.
-	"suspend-smpp-account":         {"PATCH update-smpp-account does it today", "step-390"},
-	"set-account-sender-id-policy": {"settable at create, never after", "step-390"},
-	"set-account-smpp-ops":         {"settable at create, never after", "step-390"},
-	"reorder-routes":               {"priority is per route, no atomic bulk reorder", "step-390"},
-	"list-customer-accounts":       {"redundant with list-smpp-accounts filters", "step-390"},
+	"reorder-routes": {"priority is per route, no atomic bulk reorder", "step-390"},
 }
 
 // loadContract reads api/openapi-admin.yaml (the source of truth) into a generic tree.

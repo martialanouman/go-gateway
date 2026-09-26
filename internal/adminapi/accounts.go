@@ -105,13 +105,14 @@ type accountPage struct {
 }
 
 type accountHandlers struct {
-	store  AccountStore
-	disc   Disconnector
-	logger *slog.Logger
+	store     AccountStore
+	customers CustomerStore
+	disc      Disconnector
+	logger    *slog.Logger
 }
 
-func registerAccounts(api huma.API, store AccountStore, disc Disconnector, logger *slog.Logger) {
-	h := &accountHandlers{store: store, disc: disc, logger: logger}
+func registerAccounts(api huma.API, store AccountStore, customers CustomerStore, disc Disconnector, logger *slog.Logger) {
+	h := &accountHandlers{store: store, customers: customers, disc: disc, logger: logger}
 
 	register(api, huma.Operation{
 		OperationID: "list-smpp-accounts", Method: http.MethodGet, Path: "/admin/smpp-accounts",
@@ -163,6 +164,34 @@ func registerAccounts(api huma.API, store AccountStore, disc Disconnector, logge
 		Security: scopeSecurity(auth.ScopeAdminWrite),
 		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity},
 	}, h.setSessionLimits)
+
+	register(api, huma.Operation{
+		OperationID: "set-account-sender-id-policy", Method: http.MethodPatch, Path: "/admin/smpp-accounts/{id}/sender-id-policy",
+		Summary: "Set sender-ID authorization policy (§6.19)", Tags: []string{"SMPP Accounts"},
+		Security: scopeSecurity(auth.ScopeAdminWrite),
+		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity},
+	}, h.setSenderIDPolicy)
+
+	register(api, huma.Operation{
+		OperationID: "set-account-smpp-ops", Method: http.MethodPatch, Path: "/admin/smpp-accounts/{id}/smpp-ops",
+		Summary: "Toggle optional SMPP ops query_sm / cancel_sm (§6.22)", Tags: []string{"SMPP Accounts"},
+		Security: scopeSecurity(auth.ScopeAdminWrite),
+		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity},
+	}, h.setSmppOps)
+
+	register(api, huma.Operation{
+		OperationID: "suspend-smpp-account", Method: http.MethodPost, Path: "/admin/smpp-accounts/{id}/suspend",
+		Summary: "Suspend an SMPP account", Tags: []string{"SMPP Accounts"},
+		Security: scopeSecurity(auth.ScopeAdminWrite),
+		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound},
+	}, h.suspend)
+
+	register(api, huma.Operation{
+		OperationID: "list-customer-accounts", Method: http.MethodGet, Path: "/admin/customers/{id}/smpp-accounts",
+		Summary: "List a customer's SMPP accounts", Tags: []string{"Customers"},
+		Security: scopeSecurity(auth.ScopeAdminRead),
+		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity},
+	}, h.listForCustomer)
 }
 
 type listAccountsInput struct {
@@ -270,7 +299,7 @@ func (h *accountHandlers) update(ctx context.Context, in *updateAccountInput) (*
 		return nil, humaerr.FromError(err)
 	}
 	// An account left non-active by this update (suspended or closed) must lose its live binds too
-	// (step-032) — this PATCH is the account-suspension path (there is no dedicated suspend endpoint yet).
+	// (step-032) — this PATCH remains a suspension path beside suspend-smpp-account, with the same effect.
 	if a.Status != cp.AccountActive {
 		disconnectAccount(ctx, h.disc, h.logger, id, "account_"+string(a.Status))
 	}
@@ -325,4 +354,90 @@ func (h *accountHandlers) setSessionLimits(ctx context.Context, in *setSessionLi
 		return nil, humaerr.FromError(err)
 	}
 	return &accountOutput{Body: toAccountDTO(a)}, nil
+}
+
+type senderIDPolicyBody struct {
+	SenderIDPolicy string `json:"sender_id_policy" enum:"strict,allow_unregistered_numeric,disabled"`
+}
+
+type setSenderIDPolicyInput struct {
+	ID   string `path:"id" format:"uuid"`
+	Body senderIDPolicyBody
+}
+
+func (h *accountHandlers) setSenderIDPolicy(ctx context.Context, in *setSenderIDPolicyInput) (*accountOutput, error) {
+	id, err := uuid.Parse(in.ID)
+	if err != nil {
+		return nil, notFound("smpp account")
+	}
+	policy := cp.SenderIDPolicy(in.Body.SenderIDPolicy)
+	a, err := h.store.Update(ctx, id, cp.AccountPatch{SenderIDPolicy: &policy})
+	if err != nil {
+		return nil, humaerr.FromError(err)
+	}
+	return &accountOutput{Body: toAccountDTO(a)}, nil
+}
+
+type smppOpsBody struct {
+	QuerySMEnabled  *bool `json:"query_sm_enabled,omitempty"`
+	CancelSMEnabled *bool `json:"cancel_sm_enabled,omitempty"`
+}
+
+type setSmppOpsInput struct {
+	ID   string `path:"id" format:"uuid"`
+	Body smppOpsBody
+}
+
+func (h *accountHandlers) setSmppOps(ctx context.Context, in *setSmppOpsInput) (*accountOutput, error) {
+	id, err := uuid.Parse(in.ID)
+	if err != nil {
+		return nil, notFound("smpp account")
+	}
+	if in.Body.QuerySMEnabled == nil && in.Body.CancelSMEnabled == nil {
+		return nil, humaerr.FailValidation("nothing to set",
+			humaerr.FieldError{Field: "query_sm_enabled", Message: "set query_sm_enabled, cancel_sm_enabled or both"})
+	}
+	a, err := h.store.Update(ctx, id, cp.AccountPatch{QuerySMEnabled: in.Body.QuerySMEnabled, CancelSMEnabled: in.Body.CancelSMEnabled})
+	if err != nil {
+		return nil, humaerr.FromError(err)
+	}
+	// Both flags are read at bind and frozen in the session: only a rebind applies the change.
+	disconnectAccount(ctx, h.disc, h.logger, id, "account_smpp_ops_changed")
+	return &accountOutput{Body: toAccountDTO(a)}, nil
+}
+
+func (h *accountHandlers) suspend(ctx context.Context, in *accountIDInput) (*accountOutput, error) {
+	id, err := uuid.Parse(in.ID)
+	if err != nil {
+		return nil, notFound("smpp account")
+	}
+	a, err := h.store.Suspend(ctx, id)
+	if err != nil {
+		return nil, humaerr.FromError(err)
+	}
+	disconnectAccount(ctx, h.disc, h.logger, id, "account_suspended")
+	return &accountOutput{Body: toAccountDTO(a)}, nil
+}
+
+type customerAccountsOutput struct{ Body []accountDTO }
+
+// listForCustomer answers the contract's unpaginated array with one page of 500: a customer holding more
+// accounts than that is not a shape this platform provisions.
+func (h *accountHandlers) listForCustomer(ctx context.Context, in *accountIDInput) (*customerAccountsOutput, error) {
+	id, err := uuid.Parse(in.ID)
+	if err != nil {
+		return nil, notFound("customer")
+	}
+	if _, err := h.customers.Get(ctx, id); err != nil {
+		return nil, humaerr.FromError(err)
+	}
+	page, err := h.store.List(ctx, cp.AccountFilter{CustomerID: &id, Limit: 500})
+	if err != nil {
+		return nil, humaerr.FromError(err)
+	}
+	out := make([]accountDTO, 0, len(page.Items))
+	for _, a := range page.Items {
+		out = append(out, toAccountDTO(a))
+	}
+	return &customerAccountsOutput{Body: out}, nil
 }

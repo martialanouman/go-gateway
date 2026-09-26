@@ -312,6 +312,9 @@ func (s *fakeAccountStore) List(ctx context.Context, f cp.AccountFilter) (cp.Pag
 	defer s.mu.Unlock()
 	items := make([]cp.Account, 0, len(s.byID))
 	for _, a := range s.byID {
+		if f.CustomerID != nil && a.CustomerID != *f.CustomerID {
+			continue
+		}
 		if f.GroupID != nil && !s.customerIsInGroup(ctx, a.CustomerID, *f.GroupID) {
 			continue
 		}
@@ -346,6 +349,11 @@ func (s *fakeAccountStore) Update(_ context.Context, id uuid.UUID, p cp.AccountP
 	if p.Status != nil {
 		a.Status = *p.Status
 	}
+	if p.SenderIDPolicy != nil {
+		a.SenderIDPolicy = *p.SenderIDPolicy
+	}
+	a.QuerySMEnabled = boolOr(p.QuerySMEnabled, a.QuerySMEnabled)
+	a.CancelSMEnabled = boolOr(p.CancelSMEnabled, a.CancelSMEnabled)
 	s.byID[id] = a
 	return a, nil
 }

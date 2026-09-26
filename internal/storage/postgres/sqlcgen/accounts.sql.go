@@ -329,20 +329,33 @@ func (q *Queries) SuspendAccount(ctx context.Context, id uuid.UUID) (ControlPlan
 
 const updateAccount = `-- name: UpdateAccount :one
 UPDATE control_plane.smpp_accounts SET
-    name   = COALESCE($1, name),
-    status = COALESCE($2, status)
-WHERE id = $3
+    name              = COALESCE($1, name),
+    status            = COALESCE($2, status),
+    sender_id_policy  = COALESCE($3, sender_id_policy),
+    query_sm_enabled  = COALESCE($4, query_sm_enabled),
+    cancel_sm_enabled = COALESCE($5, cancel_sm_enabled)
+WHERE id = $6
 RETURNING id, customer_id, name, status, smpp_enabled, rest_enabled, sender_id_policy, query_sm_enabled, cancel_sm_enabled, allowed_bind_types, max_sessions, created_at, updated_at
 `
 
 type UpdateAccountParams struct {
-	Name   *string
-	Status *string
-	ID     uuid.UUID
+	Name            *string
+	Status          *string
+	SenderIDPolicy  *string
+	QuerySmEnabled  *bool
+	CancelSmEnabled *bool
+	ID              uuid.UUID
 }
 
 func (q *Queries) UpdateAccount(ctx context.Context, arg UpdateAccountParams) (ControlPlaneSmppAccount, error) {
-	row := q.db.QueryRow(ctx, updateAccount, arg.Name, arg.Status, arg.ID)
+	row := q.db.QueryRow(ctx, updateAccount,
+		arg.Name,
+		arg.Status,
+		arg.SenderIDPolicy,
+		arg.QuerySmEnabled,
+		arg.CancelSmEnabled,
+		arg.ID,
+	)
 	var i ControlPlaneSmppAccount
 	err := row.Scan(
 		&i.ID,

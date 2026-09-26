@@ -34,8 +34,11 @@ LIMIT @lim;
 
 -- name: UpdateAccount :one
 UPDATE control_plane.smpp_accounts SET
-    name   = COALESCE(sqlc.narg('name'), name),
-    status = COALESCE(sqlc.narg('status'), status)
+    name              = COALESCE(sqlc.narg('name'), name),
+    status            = COALESCE(sqlc.narg('status'), status),
+    sender_id_policy  = COALESCE(sqlc.narg('sender_id_policy'), sender_id_policy),
+    query_sm_enabled  = COALESCE(sqlc.narg('query_sm_enabled'), query_sm_enabled),
+    cancel_sm_enabled = COALESCE(sqlc.narg('cancel_sm_enabled'), cancel_sm_enabled)
 WHERE id = @id
 RETURNING *;
 
