@@ -1,6 +1,6 @@
 # step-397 — La moitié de l'Admin API exige un scope que son contrat ne déclare pas
 
-> **Jalon :** Dette du tableau de bord · **Statut :** À FAIRE
+> **Jalon :** Dette du tableau de bord · **Statut :** LIVRÉE
 > **Dépend de :** step-390 (toutes les surfaces Admin servies) · **Bloque :** step-410
 
 ## Pourquoi cette fiche existe
