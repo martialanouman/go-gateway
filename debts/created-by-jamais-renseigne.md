@@ -1,7 +1,7 @@
 # `created_by` est publié par le contrat et reste nul pour toujours
 
 > **Statut :** OUVERTE · **Nature :** produit
-> **Née de :** step-310 · **Portée par :** —
+> **Née de :** step-310 · **Portée par :** — (ADR-0019 la rend payable : `sub` = `dashboard.operators.id`)
 
 **Ce qu'on a fait à la place.** Quatre tables du plan de contrôle portent `created_by uuid REFERENCES
 dashboard.operators(id)` (`db/schema_passerelle_sms.sql:77`, `:375`, `:497`, `:581`), et le contrat Admin

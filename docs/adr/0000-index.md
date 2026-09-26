@@ -22,6 +22,7 @@ Les décisions structurantes de la passerelle, une par fichier, au format ADR st
 | [0016](0016-secrets-rejoues-scelles-par-content-key-svc.md) | Les secrets qu'on **rejoue** sont scellés par `content-key-svc`, pas hachés (étend 0011) | Accepted |
 | [0017](0017-deux-journaux-d-audit-deux-perimetres.md) | Deux journaux d'audit : `control_plane` fait foi pour ce qui atteint la passerelle, `dashboard` pour le BFF | Accepted |
 | [0018](0018-ce-qui-survit-a-un-effacement-atteste.md) | Ce qui survit à un effacement attesté : `audit_log` 365 j par défaut (plancher en base), opt-out sans fin, logs sans numéro | Accepted |
+| [0019](0019-le-bff-emet-les-jetons-de-l-api-admin.md) | Le BFF émet les jetons de l'API Admin (JWT `ES256`, JWKS publié), `sub` = opérateur humain (amende 0017) | Proposed |
 
 ## Convention
 
