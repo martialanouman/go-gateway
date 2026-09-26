@@ -1668,20 +1668,42 @@ paths:
     get:
       tags: [Metrics]
       summary: Rolling summary counters
+      description: >-
+        Counts the messages SUBMITTED within the window (a cohort on submitted_at), each with its status at
+        the time of the read: on a short window, delivered undercounts what is still in flight. Only 5m and
+        1h are served; any other window is refused with 422 (24h awaits a pre-aggregate). delivered and
+        failed follow the same status precedence as search-messages.
       operationId: get-metrics-summary
-      parameters: [ { name: window, in: query, schema: { type: string, default: 5m, examples: [5m, 1h] } } ]
+      security: [ { OperatorBearer: [ admin:read ] } ]
+      parameters: [ { name: window, in: query, description: 'One of 5m, 1h.', schema: { type: string, default: 5m, examples: [5m, 1h] } } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/MetricsSummary' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /admin/metrics/traffic:
     get:
       tags: [Metrics]
       summary: Traffic time series grouped by dimension
+      description: >-
+        MT messages submitted within the window, bucketed every 10s (5m) or every minute (1h), with the same
+        cohort semantics as get-metrics-summary. Only 5m and 1h are served; any other window is refused with
+        422. The 20 keys with the most submissions get their own series, the rest is summed under the key
+        `other`. By group, the membership is the CURRENT one and customers outside any group fall under
+        `ungrouped`. By connector, a message never dispatched has no connector and appears in no series.
+        503 when the window holds more rows than a read may return.
       operationId: get-traffic-metrics
+      security: [ { OperatorBearer: [ admin:read ] } ]
       parameters:
         - { name: groupBy, in: query, schema: { type: string, enum: [connector, customer, group], default: connector } }
-        - { name: window, in: query, schema: { type: string, default: 1h } }
+        - { name: window, in: query, description: 'One of 5m, 1h.', schema: { type: string, default: 1h } }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/TrafficMetrics' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /admin/stream/metrics:
     get:
       tags: [Realtime]
@@ -2942,14 +2964,14 @@ components:
         window: { type: string }
         submitted: { type: integer }
         delivered: { type: integer }
-        failed: { type: integer }
+        failed: { type: integer, description: Failed or expired. }
         rejected: { type: integer }
         mo_received: { type: integer }
         ingest_latency_ms_p50: { type: [number, "null"] }
-        ingest_latency_ms_p99: { type: [number, "null"] }
+        ingest_latency_ms_p99: { type: [number, "null"], description: Null while ingestion latency is measured nowhere. }
         e2e_latency_ms_p50: { type: [number, "null"] }
-        e2e_latency_ms_p99: { type: [number, "null"] }
-        active_sessions: { type: integer }
+        e2e_latency_ms_p99: { type: [number, "null"], description: 'Per message, from submission to its delivery receipt.' }
+        active_sessions: { type: integer, description: Absent while the session registry keeps no global count. }
       required: [window]
     TrafficMetrics:
       type: object
@@ -2961,7 +2983,7 @@ components:
           items:
             type: object
             properties:
-              key: { type: string, description: Dimension value (connector/customer/group id or name). }
+              key: { type: string, description: 'Dimension value (connector/customer/group id), or the reserved keys other and ungrouped.' }
               points:
                 type: array
                 items:

@@ -1595,6 +1595,20 @@ items:
               }
         docs: Same fields as update-customer; retention stored, not yet applied (scope admin:write).
       - info:
+          name: get-metrics-summary
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/metrics/summary?window=5m'
+        docs: Counters of the messages submitted in the last 5m or 1h; other windows 422 (scope admin:read).
+      - info:
+          name: get-traffic-metrics
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/metrics/traffic?groupBy=group&window=1h'
+        docs: Top 20 series plus other; by group, customers outside a group under ungrouped (scope admin:read).
+      - info:
           name: stream-metrics
           type: http
         http:
