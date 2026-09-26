@@ -195,6 +195,9 @@ type Postgres struct {
 	//
 	// It is capacity, not correctness: 0 is accepted and restores pgxpool's own behaviour.
 	MinConns int32 `env:"MIN_CONNS" envDefault:"2"`
+
+	// AuditLogRetention is how long control_plane.audit_log keeps a row (ADR-0018).
+	AuditLogRetention time.Duration `env:"AUDIT_LOG_RETENTION" envDefault:"8760h"`
 }
 
 // Kafka is the durable data plane (plan §1.6). Reaching it is what readiness means for the
@@ -386,6 +389,8 @@ type ClickHouse struct {
 
 	// RetentionInterval is how often the retention pass runs. 0 disables the pass entirely, leaving purge
 	// to an external scheduler (the partition-drop is the same either way).
+	// admin-api-svc paces the audit_log purge on it too (step-297): 0 stops that purge as well, and no
+	// external scheduler can take it over, since only the purge's own transaction opens the trigger's door.
 	RetentionInterval time.Duration `env:"RETENTION_INTERVAL" envDefault:"24h"`
 
 	// ArchivePrefix enables cold-storage tiering: an expired partition is archived as
@@ -823,6 +828,11 @@ func (c Config) otelProblems() []string {
 	return problems
 }
 
+// minAuditLogRetention is the audit_log trigger's floor: a purge below it is refused whole.
+const minAuditLogRetention = 365 * 24 * time.Hour
+
+const maxAuditLogRetention = 7 * minAuditLogRetention
+
 func (c Config) postgresProblems() []string {
 	var problems []string
 
@@ -834,6 +844,10 @@ func (c Config) postgresProblems() []string {
 	}
 	if c.Postgres.Timeout <= 0 {
 		problems = append(problems, fmt.Sprintf("POSTGRES_TIMEOUT %s must be positive", c.Postgres.Timeout))
+	}
+	if c.Postgres.AuditLogRetention < minAuditLogRetention || c.Postgres.AuditLogRetention > maxAuditLogRetention {
+		problems = append(problems, fmt.Sprintf("POSTGRES_AUDIT_LOG_RETENTION %s must be between %s and %s (spec: 1 to 7 years)",
+			c.Postgres.AuditLogRetention, minAuditLogRetention, maxAuditLogRetention))
 	}
 	// pgxpool documents pool_min_conns as "integer 0 or greater" (pgxpool/pool.go:346). It does not check
 	// it against MaxConns, though: a min above the max is a target the pool can never reach, so its

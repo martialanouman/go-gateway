@@ -1,6 +1,6 @@
 # step-297 — Ce qui survit à un effacement attesté : rétention, base légale, journaux
 
-> **Jalon :** Dette ouverte par step-290d · **Statut :** À FAIRE
+> **Jalon :** Dette ouverte par step-290d · **Statut :** FAIT
 > **Dépend de :** — · **Bloque :** —
 
 ## Pourquoi cette fiche existe
@@ -32,8 +32,7 @@ quelques dizaines d'actions par jour, écart assumé en step-290c) ni purgée. I
   Quel que soit l'ordre de merge, celle qui arrive en second respecte ce que la première a posé.
   **step-315 a mergé en premier** (migration 0020) : le trigger `audit_log_append_only` refuse tout
   `DELETE`, même en superuser, et le propriétaire n'a plus le privilège. La purge doit ouvrir une porte
-  dans le trigger, réservée à un rôle distinct, ce qui paie
-  `debts/audit-log-immuable-contre-tout-sauf-son-proprietaire.md`.
+  dans le trigger. *(Elle ne paie pas la dette : voir « Design arrêté ».)*
 
 ## Constat 2 — la base légale n'est écrite nulle part dans `docs/`
 
@@ -54,6 +53,33 @@ Trois voies : ne journaliser que `job_id` (la ligne de job porte le sujet, et el
 qui a échoué, pas la création) ; journaliser une attestation au sujet masqué ; ou l'assumer sous la
 décision du constat 2. À trancher **avec** les deux autres, pas séparément.
 
+## Design arrêté
+
+Arbitrages : Fable (Q1-Q4), puis l'utilisateur pour la porte (GUC contre rôle distinct), 2026-09-26.
+
+- **Durée** : `AUDIT_LOG_RETENTION`, défaut **365 jours** (le plancher de la spec : la conformité qui
+  allonge est celle de l'exploitant, la minimisation fixe le défaut), validé dans [365 j, 7×365 j].
+  Cadence : `RETENTION_INTERVAL` existant, une seule horloge de purge (0 coupe les deux).
+- **Plancher en heures absolues** : `interval '1 year'` compte 366 j une année bissextile, et
+  `'365 days'` suit l'heure d'été du fuseau de session (vérifié : sous `Europe/Paris`, une heure d'écart
+  autour du changement d'heure ; relevé par la revue). Une seule ligne jugée trop jeune par le trigger annule
+  **tout** le `DELETE`. Le trigger compte donc `8760 hours`, aussi absolu que `make_interval(secs)` côté Go.
+- **La porte** (migration 0021, `CREATE OR REPLACE` de `audit_log_append_only`) : un `DELETE` passe si
+  `current_setting('audit_log.purge', true) = 'on'` **et** `OLD.at < now() - interval '8760 hours'`. Le
+  plancher est dans le trigger : aucune configuration ne purge sous la spec. `TRUNCATE` reste refusé.
+  `DELETE` est rendu au propriétaire. Contre l'accident, le trigger suffit. Contre l'intention, un rôle
+  NOLOGIN n'aurait rien ajouté tant que le rôle applicatif est propriétaire (`SET LOCAL ROLE` et
+  `SET LOCAL` sont le même geste délibéré). Il aurait en revanche exigé `CREATEROLE` du migrateur.
+- **La purge** : `AuditLogRepo.Purge` en transaction explicite (`SET LOCAL` hors transaction est un no-op),
+  `DELETE ... WHERE at < now() - retention`. Elle tourne dans admin-api-svc à côté de la passe CDR ; deux
+  réplicas sont inoffensifs (le second supprime 0 ligne).
+- **La dette reste OUVERTE**, `Portée par : —` : seule la séparation propriétaire/rôle applicatif la paie.
+- **Constat 3** : le log de dernier recours porte `job_id`, `status` et l'attestation **amputée de son
+  premier jeton** `subject=…` : le sujet vit sur la ligne de job, qui existe. Même chemin pour `customer`.
+- **Base légale** : ADR-0018, plus un renvoi dans la spec (§6.14.3 et §6.14.4). Il couvre `audit_log`,
+  l'opt-out, les archives froides, le log Kafka, les logs applicatifs, et l'écart assumé avec « purge =
+  drop de partition ».
+
 ## Tests
 
 - La purge supprime ce qui a dépassé l'échéance et **rien** d'autre, sur une base réelle.
@@ -62,11 +88,11 @@ décision du constat 2. À trancher **avec** les deux autres, pas séparément.
 
 ## Definition of Done
 
-- [ ] Une durée de rétention d'`audit_log` est choisie, écrite dans `docs/` et appliquée par une purge.
-- [ ] La purge et l'immuabilité de step-315 sont compatibles, et chacune des deux fiches le dit.
-- [ ] La base légale de ce qui survit à un effacement attesté est écrite dans `docs/`, pas seulement
+- [x] Une durée de rétention d'`audit_log` est choisie, écrite dans `docs/` et appliquée par une purge.
+- [x] La purge et l'immuabilité de step-315 sont compatibles, et chacune des deux fiches le dit.
+- [x] La base légale de ce qui survit à un effacement attesté est écrite dans `docs/`, pas seulement
       dans un commentaire.
-- [ ] Le log d'échec d'attestation ne conserve un MSISDN que si la décision ci-dessus l'autorise.
+- [x] Le log d'échec d'attestation ne conserve un MSISDN que si la décision ci-dessus l'autorise.
 
 ## Hors périmètre
 

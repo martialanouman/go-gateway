@@ -3,10 +3,13 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
@@ -15,12 +18,13 @@ import (
 
 // AuditLogRepo appends the consolidated operator audit trail (control_plane.audit_log, step-290c).
 type AuditLogRepo struct {
-	q *sqlcgen.Queries
+	pool *pgxpool.Pool
+	q    *sqlcgen.Queries
 }
 
 // NewAuditLogRepo returns the audit-log repository backed by pool.
 func NewAuditLogRepo(pool *pgxpool.Pool) *AuditLogRepo {
-	return &AuditLogRepo{q: sqlcgen.New(pool)}
+	return &AuditLogRepo{pool: pool, q: sqlcgen.New(pool)}
 }
 
 // maxRequestIDLen bounds the stored request id. chi echoes a client's X-Request-Id header verbatim, so an
@@ -105,4 +109,48 @@ func (r *AuditLogRepo) List(ctx context.Context, f cp.AuditLogFilter, limit int,
 		out = append(out, e)
 	}
 	return out, nil
+}
+
+// Purge deletes the rows older than retention and reports how many. SET LOCAL acts only inside a transaction,
+// hence BeginFunc; under the trigger's floor, the whole DELETE is refused (ADR-0018).
+func (r *AuditLogRepo) Purge(ctx context.Context, retention time.Duration) (int64, error) {
+	var purged int64
+	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SET LOCAL audit_log.purge = 'on'`); err != nil {
+			return err
+		}
+		tag, err := tx.Exec(ctx, `DELETE FROM control_plane.audit_log WHERE at < now() - make_interval(secs => $1)`,
+			retention.Seconds())
+		purged = tag.RowsAffected()
+		return err
+	})
+	if err != nil {
+		return 0, translate("purge audit log", err)
+	}
+	return purged, nil
+}
+
+// RunRetention purges the rows older than retention now, then every interval, until ctx ends. 0 disables it.
+// A failed pass is logged, never returned: a retention fault must not take the service down.
+func (r *AuditLogRepo) RunRetention(ctx context.Context, every, retention time.Duration, logger *slog.Logger) error {
+	if every <= 0 {
+		<-ctx.Done()
+		return nil
+	}
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+	for {
+		purged, err := r.Purge(ctx, retention)
+		switch {
+		case err != nil && ctx.Err() == nil:
+			logger.ErrorContext(ctx, "audit log retention pass failed", "err", err)
+		case purged > 0:
+			logger.InfoContext(ctx, "audit log retention pass", "purged", purged)
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+		}
+	}
 }

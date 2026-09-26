@@ -251,7 +251,7 @@ INSERT INTO control_plane.platform_content_policy DEFAULT VALUES;
 -- action) and completed with its HTTP status after. Never a body, a query string or a token: an admin
 -- body carries the secrets revealed once (plan §1.9). cmd/mt-replay writes here too (step-296), one row per
 -- run, request_id its run id: a row is not always an HTTP request, as the column comments say.
--- status NULL = outcome not recorded, NOT success. No code path deletes a row. Read it with:
+-- status NULL = outcome not recorded, NOT success. Only the retention purge deletes a row. Read it with:
 --   SELECT at, operator, method, target, status FROM control_plane.audit_log
 --    WHERE at >= now() - interval '1 day' ORDER BY at DESC;
 CREATE TABLE control_plane.audit_log (
@@ -271,9 +271,14 @@ CREATE INDEX audit_log_operator_at_idx ON control_plane.audit_log(operator, at);
 
 -- Immutable by constraint (step-315): the one allowed change closes a row — status and finished_at from NULL
 -- to a value, every other column unchanged. The trigger holds against a superuser's plain DML; the REVOKE holds the
--- owner, which is the application role today, where it is not one. step-297's purge is the only door to open.
+-- owner, which is the application role today, where it is not one. The one door is step-297's retention purge
+-- (ADR-0018): a DELETE under the transaction-local audit_log.purge setting, never below an 8760-hour floor.
 CREATE FUNCTION control_plane.audit_log_append_only() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
+  IF TG_OP = 'DELETE' AND current_setting('audit_log.purge', true) = 'on'
+     AND OLD.at < now() - interval '8760 hours' THEN
+    RETURN OLD;
+  END IF;
   IF TG_OP = 'UPDATE'
      AND OLD.status IS NULL AND NEW.status IS NOT NULL AND NEW.finished_at = now()
      AND NEW.id = OLD.id AND NEW.operator = OLD.operator AND NEW.operation_id = OLD.operation_id
@@ -290,7 +295,7 @@ CREATE TRIGGER audit_log_no_truncate BEFORE TRUNCATE ON control_plane.audit_log
   FOR EACH STATEMENT EXECUTE FUNCTION control_plane.audit_log_append_only();
 -- The owner, not CURRENT_USER: a migration runner that does not own the table would revoke from itself.
 DO $$ BEGIN
-  EXECUTE format('REVOKE DELETE, TRUNCATE ON control_plane.audit_log FROM %s',
+  EXECUTE format('REVOKE TRUNCATE ON control_plane.audit_log FROM %s',
     (SELECT relowner::regrole FROM pg_class WHERE oid = 'control_plane.audit_log'::regclass));
 END $$;
 

@@ -329,7 +329,7 @@ Indépendantes de la chaîne de charge : parallélisables si deux mains travaill
       ouverte par step-295, relevée par step-340
 - [x] step-296 — `mt-replay` rejoue des messages sans laisser de trace ; la fiche porte aussi, sans
       pouvoir le clore, l'audit de `test-billing-provider` — ouverte par step-290d
-- [ ] step-297 — Ce qui survit à un effacement attesté : rétention d'`audit_log`, base légale, MSISDN
+- [x] step-297 — Ce qui survit à un effacement attesté : rétention d'`audit_log`, base légale, MSISDN
       dans le log d'attestation — ouverte par step-290d
 - [x] step-300 — TLS / SMPP-TLS / mTLS sur les transports, **dont la DEK qui circulait en clair sur un
       gRPC non authentifié** (`content-key-svc`) — ce dernier point ajouté par step-290d, **payé par

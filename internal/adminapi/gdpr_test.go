@@ -1,9 +1,11 @@
 package adminapi_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -24,6 +26,7 @@ type fakeGDPRJobs struct {
 	mu        sync.Mutex
 	jobs      map[uuid.UUID]cp.GDPREraseJob
 	createErr error
+	finishErr error
 }
 
 func newFakeGDPRJobs() *fakeGDPRJobs {
@@ -64,6 +67,9 @@ func (f *fakeGDPRJobs) MarkRunning(_ context.Context, id uuid.UUID) error {
 }
 
 func (f *fakeGDPRJobs) Finish(_ context.Context, id uuid.UUID, status cp.GDPRJobStatus, attestation string) error {
+	if f.finishErr != nil {
+		return f.finishErr
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	job := f.jobs[id]
@@ -295,5 +301,30 @@ func TestGetGDPREraseJobReturnsAttestation(t *testing.T) {
 	att, _ := got["attestation"].(string)
 	if !strings.Contains(att, "cdr_rows_erased=5") {
 		t.Errorf("attestation = %q, want the erasure counters", att)
+	}
+}
+
+// TestGDPRUnrecordedAttestationKeepsTheNumberOutOfTheLog: when the attestation cannot be written to its job,
+// the log keeps it so it is not lost — but not the erased person's number, which would outlive the erasure in
+// the log collector. The job row, found by job_id, still names the subject.
+func TestGDPRUnrecordedAttestationKeepsTheNumberOutOfTheLog(t *testing.T) {
+	var logs bytes.Buffer
+	jobs := newFakeGDPRJobs()
+	jobs.finishErr = errors.New("postgres unavailable")
+	api := newGDPRAPI(t, adminapi.Deps{
+		GDPRJobs: jobs, CDREraser: &fakeCDREraser{msisdnRows: 42}, ContentKeyEraser: &fakeContentKeyEraser{},
+		Logger: slog.New(slog.NewTextHandler(&logs, nil)),
+	})
+
+	if w := postErase(t, api, `{"subject_type":"msisdn","id":"+2250700000000"}`); w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", w.Code)
+	}
+	job := jobs.only(t)
+	out := logs.String()
+	if strings.Contains(out, "2250700000000") {
+		t.Errorf("the erased number reached the log:\n%s", out)
+	}
+	if !strings.Contains(out, "cdr_rows_erased=42") || !strings.Contains(out, job.ID.String()) {
+		t.Errorf("the log must keep the attestation and its job_id, so it is not lost:\n%s", out)
 	}
 }

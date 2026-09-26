@@ -43,6 +43,7 @@ type adminApp struct {
 	ops      *observability.OpsServer
 	http     *http.Server
 	retainer *clickhouse.Retainer
+	auditLog *postgres.AuditLogRepo
 	hub      *realtime.Hub
 	stream   *kafka.Consumer
 	// deps is what the Admin API was built from, held for the same reason as closers: that every field
@@ -101,6 +102,7 @@ func newAdminApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (_
 		return nil, err
 	}
 	a.retainer = retention.retainer
+	a.auditLog = postgres.NewAuditLogRepo(st.pg)
 
 	// Redis carries the config-change announcement (step-105): the Admin API publishes a coarse event
 	// after each mutation. A publish failure is best-effort (logged, not fatal), so — unlike Postgres —
