@@ -73,3 +73,36 @@ func (r *AuditLogRepo) Finish(ctx context.Context, id uuid.UUID, status int) err
 	}
 	return nil
 }
+
+// List reads the trail newest first, filtered by f, after the keyset position when one is given.
+func (r *AuditLogRepo) List(ctx context.Context, f cp.AuditLogFilter, limit int, after *cp.AuditLogKey) ([]cp.AuditEntry, error) {
+	params := sqlcgen.ListAuditLogParams{
+		FromAt: tsFromPtr(f.From),
+		ToAt:   tsFromPtr(f.To),
+		Lim:    int32(limit), //nolint:gosec // limit is a small bounded page size
+	}
+	if f.Operator != "" {
+		params.Operator = &f.Operator
+	}
+	if after != nil {
+		params.AfterAt = tsFrom(after.At)
+		params.AfterID = &after.ID
+	}
+	rows, err := r.q.ListAuditLog(ctx, params)
+	if err != nil {
+		return nil, translate("list audit log", err)
+	}
+	out := make([]cp.AuditEntry, 0, len(rows))
+	for _, row := range rows {
+		e := cp.AuditEntry{
+			ID: row.ID, Operator: row.Operator, OperationID: row.OperationID, Method: row.Method,
+			Target: row.Target, RequestID: row.RequestID, At: tsVal(row.At), FinishedAt: tsPtr(row.FinishedAt),
+		}
+		if row.Status != nil {
+			s := int(*row.Status)
+			e.Status = &s
+		}
+		out = append(out, e)
+	}
+	return out, nil
+}

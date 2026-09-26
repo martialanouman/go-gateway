@@ -30,6 +30,10 @@ quelques dizaines d'actions par jour, écart assumé en step-290c) ni purgée. I
 - **le couplage avec step-315** : cette step-là pose l'immuabilité en base (`REVOKE DELETE` + trigger).
   Les deux se contredisent si personne ne l'écrit — **la purge doit être le seul titulaire du `DELETE`**.
   Quel que soit l'ordre de merge, celle qui arrive en second respecte ce que la première a posé.
+  **step-315 a mergé en premier** (migration 0020) : le trigger `audit_log_append_only` refuse tout
+  `DELETE`, même en superuser, et le propriétaire n'a plus le privilège. La purge doit ouvrir une porte
+  dans le trigger, réservée à un rôle distinct, ce qui paie
+  `debts/audit-log-immuable-contre-tout-sauf-son-proprietaire.md`.
 
 ## Constat 2 — la base légale n'est écrite nulle part dans `docs/`
 

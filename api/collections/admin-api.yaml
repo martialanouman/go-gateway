@@ -1758,3 +1758,14 @@ items:
           method: GET
           url: '{{baseUrl}}/admin/gdpr/erase/{{jobId}}'
         docs: Read an RGPD erase job's status and attestation (scope gdpr:erase).
+  - info:
+      name: Audit
+      type: folder
+    items:
+      - info:
+          name: list-audit-log
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/audit-log?from_date=2026-09-01T00:00:00Z&limit=50'
+        docs: List the operator audit trail, newest first (scope audit:read; target numbers masked without msisdn:reveal).

@@ -20,6 +20,7 @@ import (
 type AuditLogStore interface {
 	Begin(ctx context.Context, in cp.AuditIntent) (uuid.UUID, error)
 	Finish(ctx context.Context, id uuid.UUID, status int) error
+	List(ctx context.Context, f cp.AuditLogFilter, limit int, after *cp.AuditLogKey) ([]cp.AuditEntry, error)
 }
 
 // auditTimeout bounds each audit write, the way publishTimeout bounds the config-change publish.
@@ -33,6 +34,7 @@ var revealReads = map[string]bool{
 	"get-message-trace": true,
 	"list-suppressions": true,
 	"list-unrouted-mo":  true,
+	"list-audit-log":    true,
 }
 
 // unconditionalReads are reads recorded whatever the caller's scopes, because what they hand over is not

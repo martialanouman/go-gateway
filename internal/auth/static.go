@@ -78,7 +78,7 @@ func (v *StaticVerifier) Verify(_ context.Context, token string) (Principal, err
 func knownScope(s Scope) bool {
 	switch s {
 	case ScopeAdminRead, ScopeAdminWrite, ScopeContentRead, ScopeContentErase, ScopeGDPRErase, ScopeMSISDNReveal,
-		ScopeCDRExportBulk:
+		ScopeCDRExportBulk, ScopeAuditRead:
 		return true
 	default:
 		return false

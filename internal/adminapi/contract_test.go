@@ -97,6 +97,7 @@ var m1Operations = []opRef{
 	{"delete-inbound-keyword", "delete", "/admin/inbound-numbers/{id}/keywords/{keywordId}"},
 
 	{"list-unrouted-mo", "get", "/admin/mo/unrouted"},
+	{"list-audit-log", "get", "/admin/audit-log"},
 
 	{"list-suppressions", "get", "/admin/suppressions"},
 	{"create-suppression", "post", "/admin/suppressions"},

@@ -1,6 +1,7 @@
 package adminapi
 
 import (
+	"net/http"
 	"strings"
 	"testing"
 
@@ -72,6 +73,25 @@ func TestReadOnlyPostSuffixesNameKnownDiagnostics(t *testing.T) {
 		if item.Post != nil && strings.HasSuffix(path, "}") {
 			t.Errorf("POST %s ends with a path parameter: its value could end in a read-only suffix and "+
 				"exonerate a write from the audit trail", path)
+		}
+	}
+}
+
+// TestEveryMSISDNPathIsMaskedInTheTrail: a path that carries a subscriber number records it in the audit
+// target. A new such operation missing from msisdnInTarget would serve the number in clear to audit:read.
+func TestEveryMSISDNPathIsMaskedInTheTrail(t *testing.T) {
+	_, api := New(Deps{})
+	for path, item := range api.OpenAPI().Paths {
+		for _, op := range []*huma.Operation{item.Get, item.Post, item.Put, item.Patch, item.Delete} {
+			if op == nil || !strings.Contains(path, "{msisdn}") {
+				continue
+			}
+			if !strings.Contains(path, exactRoutesPrefix) {
+				t.Errorf("%s %s carries a number outside %s: toAuditEntryDTO would not find it to mask", op.Method, path, exactRoutesPrefix)
+			}
+			if op.Method != http.MethodGet && !msisdnInTarget[op.OperationID] {
+				t.Errorf("%s %s records a number in its audit target, but msisdnInTarget does not mask it", op.Method, path)
+			}
 		}
 	}
 }
