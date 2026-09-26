@@ -9,9 +9,11 @@ import (
 	"sort"
 	"testing"
 
+	"github.com/danielgtaylor/huma/v2"
 	yaml "go.yaml.in/yaml/v3"
 
 	"github.com/martialanouman/go-gateway/internal/adminapi"
+	"github.com/martialanouman/go-gateway/internal/metricstream"
 )
 
 // opRef identifies an operation by its method and path.
@@ -873,4 +875,60 @@ func sortedRefs(refs map[string]opRef) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// TestStreamFramesMatchTheContract: a WebSocket frame is the metricstream record verbatim, and huma
+// documents no 101, so nothing else ties the struct to the schema the dashboard is generated from. A renamed
+// tag would otherwise reach the consumer as an empty field.
+func TestStreamFramesMatchTheContract(t *testing.T) {
+	contract := loadContract(t)
+	registry := huma.NewMapRegistry("#/components/schemas/", huma.DefaultSchemaNamer)
+	frames := map[string]reflect.Type{
+		"stream-metrics":        reflect.TypeFor[metricstream.Snapshot](),
+		"stream-sessions":       reflect.TypeFor[metricstream.SessionEvent](),
+		"stream-billing-alerts": reflect.TypeFor[metricstream.BillingAlert](),
+	}
+	refs := operationRefs(t, contract)
+	for id, frameType := range frames {
+		t.Run(id, func(t *testing.T) {
+			op := operationNode(contract, refs[id].path, refs[id].method)
+			message, _ := op["x-websocket-message"].(map[string]any)
+			if message == nil {
+				t.Fatal("operation declares no x-websocket-message")
+			}
+			generated := map[string]any{}
+			raw, _ := json.Marshal(map[string]any{
+				"components": map[string]any{"schemas": registry.Map()},
+				"root":       registry.Schema(frameType, true, ""),
+			})
+			if err := json.Unmarshal(raw, &generated); err != nil {
+				t.Fatal(err)
+			}
+			want := withoutEnums(resolve(contract, message, map[string]bool{}))
+			got := resolve(generated, generated["root"].(map[string]any), map[string]bool{})
+			compareSchemas(t, "frame", want, got)
+		})
+	}
+}
+
+// withoutEnums drops the enums the contract adds on top of the struct: Go declares state as a plain string,
+// so no Go-derived schema can carry them.
+func withoutEnums(v any) map[string]any {
+	node, _ := v.(map[string]any)
+	out := map[string]any{}
+	for k, child := range node {
+		switch {
+		case k == "enum":
+		case isMap(child):
+			out[k] = withoutEnums(child)
+		default:
+			out[k] = child
+		}
+	}
+	return out
+}
+
+func isMap(v any) bool {
+	_, ok := v.(map[string]any)
+	return ok
 }
