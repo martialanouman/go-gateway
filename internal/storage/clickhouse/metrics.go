@@ -46,11 +46,11 @@ const metricsFailed = `status IN ('failed', 'expired')`
 
 // MetricsCounts is the summary of the messages submitted within a window, each in its current status.
 type MetricsCounts struct {
-	Submitted  uint64
-	Delivered  uint64
-	Failed     uint64
-	Rejected   uint64
-	MOReceived uint64
+	Submitted  int64
+	Delivered  int64
+	Failed     int64
+	Rejected   int64
+	MOReceived int64
 	// E2EP50 and E2EP99 are nil when no message of the window was delivered with a measured latency.
 	E2EP50 *float64
 	E2EP99 *float64
@@ -59,11 +59,11 @@ type MetricsCounts struct {
 // MetricsSummary counts the MT and MO messages submitted in [from, to).
 func (r *CDRReader) MetricsSummary(ctx context.Context, from, to time.Time) (MetricsCounts, error) {
 	const query = `SELECT
-		countIf(direction = 'mt'),
-		countIf(direction = 'mt' AND status = 'delivered'),
-		countIf(direction = 'mt' AND ` + metricsFailed + `),
-		countIf(direction = 'mt' AND status = 'rejected'),
-		countIf(direction = 'mo'),
+		toInt64(countIf(direction = 'mt')),
+		toInt64(countIf(direction = 'mt' AND status = 'delivered')),
+		toInt64(countIf(direction = 'mt' AND ` + metricsFailed + `)),
+		toInt64(countIf(direction = 'mt' AND status = 'rejected')),
+		toInt64(countIf(direction = 'mo')),
 		quantilesTDigestIf(0.5, 0.99)(latency_ms, direction = 'mt' AND status = 'delivered')
 	FROM (` + metricsMessages + `)`
 
@@ -95,9 +95,9 @@ const (
 type TrafficPoint struct {
 	Bucket    time.Time
 	Key       uuid.UUID
-	Submitted uint64
-	Delivered uint64
-	Failed    uint64
+	Submitted int64
+	Delivered int64
+	Failed    int64
 }
 
 // Traffic buckets the MT messages submitted in [from, to) by step and dimension. A message never dispatched
@@ -109,7 +109,7 @@ func (r *CDRReader) Traffic(ctx context.Context, from, to time.Time, step time.D
 		key, filter = `assumeNotNull(connector_id)`, ` AND connector_id IS NOT NULL`
 	}
 	query := `SELECT toStartOfInterval(submitted_at, toIntervalSecond(?)) AS bucket, ` + key + ` AS key,
-		count(), countIf(status = 'delivered'), countIf(` + metricsFailed + `)
+		toInt64(count()), toInt64(countIf(status = 'delivered')), toInt64(countIf(` + metricsFailed + `))
 	FROM (` + metricsMessages + `)
 	WHERE direction = 'mt'` + filter + `
 	GROUP BY bucket, key

@@ -72,7 +72,12 @@ func (s *fakeCustomerStore) List(_ context.Context, f cp.CustomerFilter) (cp.Pag
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var items []cp.Customer
+	skipping := f.After != uuid.Nil
 	for _, id := range s.order {
+		if skipping {
+			skipping = id != f.After
+			continue
+		}
 		c := s.byID[id]
 		if f.Status != nil && c.Status != *f.Status {
 			continue
@@ -84,6 +89,9 @@ func (s *fakeCustomerStore) List(_ context.Context, f cp.CustomerFilter) (cp.Pag
 			continue
 		}
 		items = append(items, c)
+	}
+	if f.Limit > 0 && len(items) > f.Limit {
+		return cp.Page[cp.Customer]{Items: items[:f.Limit], NextCursor: cp.EncodeCursor(items[f.Limit-1].ID), HasMore: true}, nil
 	}
 	return cp.Page[cp.Customer]{Items: items}, nil
 }
