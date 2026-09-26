@@ -53,10 +53,10 @@ lecture initiale, le flux ne suffit pas : il donne le mouvement, pas l'état.
 
 ## Definition of Done
 
-- [ ] `make check` vert (lint · `test -race` · govulncheck · contrats)
-- [ ] les 2 opérations servies ; agrégations résolues sur `argMax(version)` ; fenêtre et lignes bornées
-- [ ] définitions identiques à celles du flux temps réel
-- [ ] `api/collections/admin-api.yaml` synchronisée ; lignes retirées de `deferred` (step-320)
+- [x] `make check` vert (lint · `test -race` · govulncheck · contrats)
+- [x] les 2 opérations servies ; agrégations résolues sur `argMax(version)` ; fenêtre et lignes bornées
+- [x] définitions identiques à celles du flux temps réel — **par cohérence seulement** : `rejected` coïncide ; le flux n'émet rien des DLR (arbitrage humain, `debts/flux-temps-reel-sans-dlr.md`)
+- [x] `api/collections/admin-api.yaml` synchronisée ; lignes retirées de `deferred` (step-320)
 
 ## Hors périmètre
 
