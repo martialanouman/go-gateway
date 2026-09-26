@@ -161,6 +161,7 @@ func TestNewAdminAppBuildsTheWholeGraph(t *testing.T) {
 		"ops":      app.ops,
 		"http":     app.http,
 		"retainer": app.retainer,
+		"auditLog": app.auditLog,
 		"hub":      app.hub,
 		"stream":   app.stream,
 	} {

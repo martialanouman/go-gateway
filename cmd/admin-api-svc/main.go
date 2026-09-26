@@ -82,6 +82,9 @@ func run() error {
 	g.Add("cdr retention", func(c context.Context) error {
 		return app.retainer.Run(c, cfg.ClickHouse.RetentionInterval)
 	})
+	g.Add("audit log retention", func(c context.Context) error {
+		return app.auditLog.RunRetention(c, cfg.ClickHouse.RetentionInterval, cfg.Postgres.AuditLogRetention, logger)
+	})
 	// Self-restarting, never fatal: the dashboard feed is best-effort, and a Kafka hiccup must not tear down
 	// the control plane — customers, credentials, billing, GDPR — along with it.
 	g.Add("metrics stream", func(c context.Context) error {
