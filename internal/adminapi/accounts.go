@@ -183,7 +183,7 @@ func registerAccounts(api huma.API, store AccountStore, customers CustomerStore,
 		OperationID: "suspend-smpp-account", Method: http.MethodPost, Path: "/admin/smpp-accounts/{id}/suspend",
 		Summary: "Suspend an SMPP account", Tags: []string{"SMPP Accounts"},
 		Security: scopeSecurity(auth.ScopeAdminWrite),
-		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound},
+		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity},
 	}, h.suspend)
 
 	register(api, huma.Operation{
@@ -243,11 +243,16 @@ func (h *accountHandlers) list(ctx context.Context, in *listAccountsInput) (*lis
 	out := &listAccountsOutput{}
 	out.Body.NextCursor = cursorString(string(page.NextCursor))
 	out.Body.HasMore = page.HasMore
-	out.Body.Data = make([]accountDTO, 0, len(page.Items))
-	for _, a := range page.Items {
-		out.Body.Data = append(out.Body.Data, toAccountDTO(a))
-	}
+	out.Body.Data = accountDTOs(page.Items)
 	return out, nil
+}
+
+func accountDTOs(accounts []cp.Account) []accountDTO {
+	out := make([]accountDTO, 0, len(accounts))
+	for _, a := range accounts {
+		out = append(out, toAccountDTO(a))
+	}
+	return out
 }
 
 type createAccountInput struct{ Body accountCreateBody }
@@ -435,9 +440,5 @@ func (h *accountHandlers) listForCustomer(ctx context.Context, in *accountIDInpu
 	if err != nil {
 		return nil, humaerr.FromError(err)
 	}
-	out := make([]accountDTO, 0, len(page.Items))
-	for _, a := range page.Items {
-		out = append(out, toAccountDTO(a))
-	}
-	return &customerAccountsOutput{Body: out}, nil
+	return &customerAccountsOutput{Body: accountDTOs(page.Items)}, nil
 }

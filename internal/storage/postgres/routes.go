@@ -61,12 +61,24 @@ func (r *RouteRepo) Create(ctx context.Context, in cp.NewRoute) (cp.Route, error
 // Reorder gives the routes priorities 10, 20, ... in the order of ids, which must name every route once;
 // otherwise it changes nothing and reports ErrValidation. It returns every route in the new order.
 func (r *RouteRepo) Reorder(ctx context.Context, ids []uuid.UUID) ([]cp.Route, error) {
-	n, err := r.q.ReorderRoutes(ctx, ids)
-	if err != nil {
-		return nil, translate("reorder routes", err)
+	incomplete := fmt.Errorf("reorder routes: ordered_ids must list every route exactly once: %w", errs.ErrValidation)
+	if len(ids) == 0 {
+		return nil, incomplete
 	}
-	if n != int64(len(ids)) {
-		return nil, fmt.Errorf("reorder routes: ordered_ids must list every route exactly once: %w", errs.ErrValidation)
+	// The transaction exists for the rollback: a route deleted while the UPDATE waits on its row lock is
+	// skipped after the guard has passed, and the other routes must not stay renumbered behind the refusal.
+	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		n, err := r.q.WithTx(tx).ReorderRoutes(ctx, ids)
+		if err != nil {
+			return translate("reorder routes", err)
+		}
+		if n != int64(len(ids)) {
+			return incomplete
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return r.List(ctx)
 }

@@ -134,17 +134,15 @@ func TestReorderRoutesAnswersTheNewOrderAndRefusesAPartialList(t *testing.T) {
 	}
 	api := newTestAPIWith(t, adminapi.Deps{Routes: store})
 
-	reorder := func(order []string) (int, []struct {
+	type reordered struct {
 		ID       string `json:"id"`
 		Priority int    `json:"priority"`
-	}) {
+	}
+	reorder := func(order []string) (int, []reordered) {
 		body, _ := json.Marshal(map[string]any{"ordered_ids": order})
 		w := httptest.NewRecorder()
 		api.ServeHTTP(w, authed(t, http.MethodPost, "/v1/admin/routes/reorder", string(body)))
-		var out []struct {
-			ID       string `json:"id"`
-			Priority int    `json:"priority"`
-		}
+		var out []reordered
 		_ = json.Unmarshal(w.Body.Bytes(), &out)
 		return w.Code, out
 	}
@@ -160,6 +158,11 @@ func TestReorderRoutesAnswersTheNewOrderAndRefusesAPartialList(t *testing.T) {
 	}
 	if code, _ := reorder(ids[1:]); code != http.StatusUnprocessableEntity {
 		t.Fatalf("partial list: status = %d, want 422", code)
+	}
+	for _, r := range got {
+		if stored, _ := store.Get(context.Background(), uuid.MustParse(r.ID)); stored.Priority != r.Priority {
+			t.Fatalf("route %s moved to %d behind a refused reorder", r.ID, stored.Priority)
+		}
 	}
 	if code, _ := reorder([]string{"not-a-uuid"}); code != http.StatusUnprocessableEntity {
 		t.Fatalf("malformed id: status = %d, want 422 before the handler parses it", code)

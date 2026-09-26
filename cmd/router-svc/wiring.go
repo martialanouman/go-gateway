@@ -738,13 +738,13 @@ func newSnapshotWatcher(
 			if err := boot.optOut.Reload(ctx, boot.suppressions, postgres.NewInboundNumberRepo(pool)); err != nil {
 				return err
 			}
+			blooms.set("optout", boot.optOut.CapacityBits())
 
 			senderSnap, err := senderid.LoadSnapshot(ctx, postgres.NewAccountRepo(pool), postgres.NewSenderIDRepo(pool))
 			if err != nil {
 				return err
 			}
 			boot.senderIDs.Store(senderSnap)
-			blooms.set("optout", boot.optOut.CapacityBits())
 
 			// Rebuild the routing-script snapshot (recompiles the active scripts) and swap it in.
 			scriptSnap, err := routing.BuildScriptSnapshot(ctx, stack.scriptRepo, logger)

@@ -159,11 +159,15 @@ func (h *routeHandlers) list(ctx context.Context, _ *struct{}) (*listRoutesOutpu
 	if err != nil {
 		return nil, humaerr.FromError(err)
 	}
+	return routesOutput(routes), nil
+}
+
+func routesOutput(routes []cp.Route) *listRoutesOutput {
 	out := &listRoutesOutput{Body: make([]routeDTO, 0, len(routes))}
 	for _, r := range routes {
 		out.Body = append(out.Body, toRouteDTO(r))
 	}
-	return out, nil
+	return out
 }
 
 type reorderRoutesInput struct {
@@ -181,11 +185,7 @@ func (h *routeHandlers) reorder(ctx context.Context, in *reorderRoutesInput) (*l
 	if err != nil {
 		return nil, humaerr.FromError(err)
 	}
-	out := &listRoutesOutput{Body: make([]routeDTO, 0, len(routes))}
-	for _, r := range routes {
-		out.Body = append(out.Body, toRouteDTO(r))
-	}
-	return out, nil
+	return routesOutput(routes), nil
 }
 
 type createRouteInput struct{ Body routeCreateBody }

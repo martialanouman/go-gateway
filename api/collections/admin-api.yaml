@@ -200,7 +200,7 @@ items:
         http:
           method: GET
           url: '{{baseUrl}}/admin/customers/{{customerId}}/smpp-accounts'
-        docs: The customer's SMPP accounts, unpaginated (scope admin:read).
+        docs: The customer's SMPP accounts, at most 500, unpaginated (scope admin:read).
       - info:
           name: update-customer
           type: http

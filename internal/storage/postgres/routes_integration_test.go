@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -129,6 +130,7 @@ func TestRouteRepoReorderIsAllOrNothing(t *testing.T) {
 		"incomplete": reversed[1:],
 		"duplicate":  append([]uuid.UUID{reversed[0]}, reversed[:len(reversed)-1]...),
 		"unknown":    append([]uuid.UUID{uuid.New()}, reversed[1:]...),
+		"empty":      {},
 	} {
 		if _, err := routes.Reorder(ctx, ids); !errors.Is(err, errs.ErrValidation) {
 			t.Errorf("%s list: err = %v, want ErrValidation", name, err)
@@ -139,22 +141,32 @@ func TestRouteRepoReorderIsAllOrNothing(t *testing.T) {
 	}
 
 	original := routeIDs(all)
-	done := make(chan struct{})
+	writing, done := make(chan struct{}), make(chan struct{})
 	var mixed []uuid.UUID
+	var readErr error
+	seen := map[bool]bool{}
 	go func() {
 		defer close(done)
-		for range 200 {
+		for {
+			select {
+			case <-writing:
+				return
+			default:
+			}
 			now, err := routes.List(ctx)
 			if err != nil {
+				readErr = err
 				return
 			}
-			if ids := routeIDs(now); !slices.Equal(ids, original) && !slices.Equal(ids, reversed) {
+			ids := routeIDs(now)
+			if !slices.Equal(ids, original) && !slices.Equal(ids, reversed) {
 				mixed = ids
 				return
 			}
+			seen[slices.Equal(ids, original)] = true
 		}
 	}()
-	for i := range 20 {
+	for i := range 200 {
 		order := reversed
 		if i%2 == 0 {
 			order = original
@@ -163,8 +175,63 @@ func TestRouteRepoReorderIsAllOrNothing(t *testing.T) {
 			t.Fatalf("Reorder %d: %v", i, err)
 		}
 	}
+	close(writing)
 	<-done
-	if mixed != nil {
-		t.Fatalf("a concurrent reader saw %v, neither the old order nor the new one", mixed)
+	if readErr != nil || mixed != nil {
+		t.Fatalf("concurrent reader: err=%v, saw %v — neither the old order nor the new one", readErr, mixed)
+	}
+	if !seen[true] || !seen[false] {
+		t.Fatalf("the reader saw only one of the two orders (%v): it proved nothing about the switch", seen)
+	}
+}
+
+// TestRouteRepoReorderRefusedByAConcurrentDeleteMovesNothing: the guard reads the routes when the
+// statement starts; a route deleted while the UPDATE waits on its row lock is skipped. Without a rollback
+// the other routes would stay renumbered behind a 422 — and a refused request publishes no invalidation.
+func TestRouteRepoReorderRefusedByAConcurrentDeleteMovesNothing(t *testing.T) {
+	pool := pgtest.Pool(t)
+	ctx := context.Background()
+	routes := postgres.NewRouteRepo(pool)
+	doomed, err := routes.Create(ctx, cp.NewRoute{Name: "doomed-" + uuid.NewString(), DistributionStrategy: cp.DistributionWeighted})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	before, err := routes.List(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	order := routeIDs(before)
+	slices.Reverse(order)
+
+	deleter, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if _, err := deleter.Exec(ctx, `DELETE FROM control_plane.routes WHERE id = $1`, doomed.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	result := make(chan error, 1)
+	go func() {
+		_, err := routes.Reorder(ctx, order)
+		result <- err
+	}()
+	time.Sleep(500 * time.Millisecond) // the reorder now waits on the doomed row's lock
+	if err := deleter.Commit(ctx); err != nil {
+		t.Fatalf("commit delete: %v", err)
+	}
+
+	if err := <-result; !errors.Is(err, errs.ErrValidation) {
+		t.Fatalf("reorder across a concurrent delete: err = %v, want ErrValidation", err)
+	}
+	after, err := routes.List(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	for _, r := range after {
+		for _, b := range before {
+			if r.ID == b.ID && r.Priority != b.Priority {
+				t.Fatalf("route %s moved from %d to %d behind a refused reorder", r.ID, b.Priority, r.Priority)
+			}
+		}
 	}
 }
