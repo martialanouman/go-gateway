@@ -51,7 +51,7 @@ chaque item et matérialiser la porte de go-live.
   l'identité S3 d'archivage n'a que `PutObject`, `GetObject` et `ListBucket` sous le bucket, **aucun droit de
   suppression** ; la collection nommée `cdr_archive` est déclarée sur le serveur ClickHouse (`url` du bucket
   terminée par `/`, `access_key_id`, `secret_access_key`), et l'utilisateur ClickHouse de la passerelle a
-  `GRANT NAMED COLLECTION ON cdr_archive`. Sans elle, admin-api-svc boote mais chaque passe de rétention finit
+  le droit `NAMED COLLECTION` sur `cdr_archive` (`GRANT NAMED COLLECTION ON cdr_archive`, compris dans `GRANT ALL`). Sans elle, admin-api-svc boote mais chaque passe de rétention finit
   en `archive_failed`, et aucune partition ne se supprime.
 - Vérifier une dernière fois les **4 invariants** (a/b/c/d) verts sur l'ensemble avant go-live.
 - Item explicite : **auth opérateur réelle active** (le stub M1 n'est plus câblé).

@@ -3,8 +3,6 @@
     <gateway>
       <grants>
         <query>GRANT ALL ON *.*</query>
-        <query>GRANT NAMED COLLECTION ON cdr_archive</query>
-        <query>GRANT NAMED COLLECTION ON cdr_archive_denied</query>
       </grants>
     </gateway>
   </users>

@@ -75,22 +75,28 @@ Arbitré par Fable le 2026-09-27 (points 1 à 3), sans conflit avec la fiche ; l
 - **Catalogue** : `control_plane.cdr_archives (day date PK, object text, row_count bigint ≥ 0,
   archived_at timestamptz)`, schéma + migration 0022. Interface `ArchiveCatalog` déclarée côté consommateur
   (package `clickhouse`), obligatoire pour `PartitionArchiver`. Une seule requête, jamais de réécriture :
-  `INSERT … ON CONFLICT (day) DO NOTHING RETURNING row_count UNION ALL` la ligne préexistante → rend le
-  `row_count` de la ligne qui fait foi. **Si ce `row_count` < lignes de la partition** (un DROP raté après
-  inscription, puis la partition a grossi), l'archiveur échoue et la partition reste : `archive_failed`
-  visible plutôt qu'un catalogue silencieusement incomplet. Sinon le second objet reste orphelin, non inscrit.
+  `INSERT … ON CONFLICT (day) DO NOTHING RETURNING object UNION ALL` la ligne préexistante → rend l'objet de
+  la ligne qui fait foi ; rejouée une fois si une insertion concurrente l'a devancée (l'instantané de la
+  requête ne voit pas sa ligne). **Si l'objet inscrit n'est pas le nôtre** (DROP raté après inscription, ou
+  écriture tardive qui recrée le jour), la partition n'est supprimée que si l'objet inscrit contient toutes ses
+  paires `(message_id, version)` ; sinon `archive_failed`, partition gardée
+  (`debts/jour-cdr-bloque-par-une-archive-inscrite-incomplete.md`). **Révisé en revue** (Fable, même jour) :
+  comparer des comptes ne prouvait rien sous `ReplacingMergeTree`, un merge réduit la partition alors que la
+  version gardée est la nouvelle.
 - **Garde de production** : `validateAdminConfig` (admin-api-svc est le seul porteur du Retainer ; six autres
   services chargent la section ClickHouse sans rien purger). Production ET (préfixe vide OU collection vide) →
   boot refusé ; `FileDestination` est donc refusée en production. **Pas d'exemption** pour
   `RETENTION_INTERVAL = 0` : elle rouvrirait un « planificateur externe » qui supprime sans archiver.
-- **Constats du spike** (ClickHouse 24.8, MinIO) : une identité à `PutObject`/`GetObject`/`ListBucket` seuls
+- **Stockage de test : RustFS** (demandé par l'utilisateur ; `minio/minio` n'est plus tirable depuis Docker
+  Hub), provisionné par le client `mc` de Chainguard, images épinglées par digest.
+- **Constats du spike** (ClickHouse 24.8, MinIO puis RustFS) : une identité à `PutObject`/`GetObject`/`ListBucket` seuls
   suffit ; ClickHouse refuse de réécrire une clé existante ; l'utilisateur ClickHouse de la passerelle a besoin
-  de `GRANT NAMED COLLECTION ON cdr_archive` ; `query_log` ne voit que le nom de la collection. Les deux
+  du droit `NAMED COLLECTION` sur `cdr_archive` (compris dans `GRANT ALL`) ; `query_log` ne voit que le nom de la collection. Les deux
   derniers vont à la checklist de step-410.
 
 ## Tests (écrits dans la même PR)
 
-- Sur un stockage S3 de test (conteneur MinIO), une partition expirée est archivée, relue, inscrite au
+- Sur un stockage S3 de test (conteneur RustFS), une partition expirée est archivée, relue, inscrite au
   catalogue, puis supprimée.
 - Écriture refusée par le stockage : la partition n'est pas supprimée.
 - Inscription au catalogue qui échoue : la partition n'est pas supprimée.

@@ -3,6 +3,7 @@ package clickhouse_test
 import (
 	"context"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
 	"github.com/martialanouman/go-gateway/internal/testutil/chtest"
+	"github.com/martialanouman/go-gateway/internal/testutil/ciguard"
 )
 
 const (
@@ -28,6 +30,10 @@ const (
 // but not delete.
 func startS3Archive(t *testing.T) *clickhouse.Conn {
 	t.Helper()
+	if testing.Short() {
+		ciguard.Skip(t, "s3 archive: skipped under -short (needs Docker)")
+	}
+	ciguard.RequireDocker(t)
 	ctx := context.Background()
 
 	nw, err := network.New(ctx)
@@ -94,9 +100,9 @@ func mc(t *testing.T, nw *testcontainers.DockerNetwork, args ...string) {
 
 func TestPartitionArchiverOnObjectStorage(t *testing.T) {
 	conn := startS3Archive(t)
-	ctx := context.Background()
 
 	t.Run("an expired partition is archived, read back, catalogued, then dropped", func(t *testing.T) {
+		ctx := context.Background()
 		day := seedDay(t, conn, 70, 5)
 		catalog := newArchiveCatalog()
 		retainer := clickhouse.NewRetainer(conn, retentionKeepsToday, clickhouse.WithArchiver(
@@ -119,6 +125,7 @@ func TestPartitionArchiverOnObjectStorage(t *testing.T) {
 	})
 
 	t.Run("a write the storage refuses keeps the partition", func(t *testing.T) {
+		ctx := context.Background()
 		day := seedDay(t, conn, 80, 2)
 		catalog := newArchiveCatalog()
 		retainer := clickhouse.NewRetainer(conn, retentionKeepsToday, clickhouse.WithArchiver(
@@ -133,9 +140,16 @@ func TestPartitionArchiverOnObjectStorage(t *testing.T) {
 		if len(catalog.entries) != 0 {
 			t.Errorf("catalogue holds %v, want nothing recorded for a refused write", catalog.entries)
 		}
+		err := clickhouse.NewPartitionArchiver(conn, "cdr", clickhouse.S3Destination("cdr_archive_denied"), catalog).
+			Archive(ctx, clickhouse.Partition{Day: day, Rows: 2})
+		// 499 is S3_ERROR, the storage answering 403 to the existence check; a missing collection grant is 497.
+		if err == nil || !strings.Contains(err.Error(), "code: 499") {
+			t.Errorf("Archive() = %v, want the storage's own refusal (code 499)", err)
+		}
 	})
 
 	t.Run("no statement carries the S3 identity", func(t *testing.T) {
+		ctx := context.Background()
 		if err := conn.Exec(ctx, "SYSTEM FLUSH LOGS"); err != nil {
 			t.Fatalf("flush logs: %v", err)
 		}

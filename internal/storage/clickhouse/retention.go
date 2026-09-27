@@ -89,9 +89,9 @@ func ValidArchiveCollection(name string) bool { return archiveCollectionPattern.
 // ArchiveCatalog records which object holds a dropped partition (control_plane.cdr_archives). Declared
 // consumer-side.
 type ArchiveCatalog interface {
-	// Record catalogues object as the archive of day unless the day already has one, and returns the row
-	// count of the line that now holds the day.
-	Record(ctx context.Context, day time.Time, object string, rows uint64) (uint64, error)
+	// Record catalogues object as the archive of day unless the day already has one, and returns the object
+	// that now holds the day.
+	Record(ctx context.Context, day time.Time, object string, rows uint64) (string, error)
 }
 
 // PartitionArchiver archives a CDR partition by having ClickHouse itself write it out through a table
@@ -192,14 +192,36 @@ func (a *PartitionArchiver) Archive(ctx context.Context, p Partition) error {
 	if err != nil {
 		return fmt.Errorf("clickhouse: catalogue archive of partition %s: %w", p.Name(), err)
 	}
-	// Only after a drop that failed once the day was catalogued: the line is never rewritten, so the object it
-	// names must still cover the partition, or the rows since would survive only in an object nobody can find.
-	if catalogued < p.Rows {
-		return fmt.Errorf("clickhouse: partition %s holds %d rows but its catalogued archive only %d",
-			p.Name(), p.Rows, catalogued)
+	if catalogued == object {
+		return nil
+	}
+	return a.coveredBy(ctx, p, catalogued)
+}
+
+// coveredBy reports whether the object catalogued earlier for p holds every row p holds now. That day's line is
+// never rewritten, so after a drop that failed, a later version of a message (ReplacingMergeTree, same
+// partition) or a late write recreating the day would otherwise survive only in an uncatalogued object. Row
+// counts cannot tell: a merge shrinks the partition while the version it keeps is the new one.
+func (a *PartitionArchiver) coveredBy(ctx context.Context, p Partition, catalogued string) error {
+	if !archiveObjectPattern.MatchString(catalogued) {
+		return fmt.Errorf("clickhouse: refusing catalogued archive %q of partition %s", catalogued, p.Name())
+	}
+	var missing uint64
+	q := fmt.Sprintf(`SELECT count() FROM %s WHERE toDate(submitted_at) = '%s'
+		AND (toString(message_id), version) NOT IN (SELECT message_id, version FROM %s)`,
+		cdrTable, p.Name(), a.dest(catalogued))
+	if err := a.conn.QueryRow(ctx, q).Scan(&missing); err != nil {
+		return fmt.Errorf("clickhouse: check catalogued archive of partition %s: %w", p.Name(), err)
+	}
+	if missing > 0 {
+		return fmt.Errorf("clickhouse: partition %s holds %d rows its catalogued archive %s lacks",
+			p.Name(), missing, catalogued)
 	}
 	return nil
 }
+
+// archiveObjectPattern guards an object name read back from the catalogue before it is interpolated.
+var archiveObjectPattern = regexp.MustCompile(`^[A-Za-z0-9._/-]{1,200}$`)
 
 // Retainer enforces CDR retention by DROPPING WHOLE PARTITIONS, never by DELETE (§14): at 8000 msg/s a
 // delete-by-predicate would rewrite parts continuously, while dropping a daily partition is a metadata

@@ -103,6 +103,11 @@ func TestNewRetainerRejectsAMalformedArchiveCollection(t *testing.T) {
 	if _, err := newRetainer(cfg, nil, nil, silentLogger()); err == nil {
 		t.Fatal("newRetainer accepted a malformed archive collection")
 	}
+
+	cfg.ClickHouse.ArchiveCollection = "cdr_archive"
+	if _, err := newRetainer(cfg, nil, nil, silentLogger()); err != nil {
+		t.Fatalf("newRetainer refused the collection the manifest deploys: %v", err)
+	}
 }
 
 func TestArchiveDestinationFollowsTheCollection(t *testing.T) {
