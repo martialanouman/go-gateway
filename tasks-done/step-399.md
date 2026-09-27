@@ -1,6 +1,6 @@
 # step-399 — Une invalidation perdue laisse une config périmée sans borne : resynchroniser périodiquement
 
-> **Jalon :** Dette ouverte par step-395 · **Statut :** À FAIRE
+> **Jalon :** Dette ouverte par step-395 · **Statut :** LIVRÉE
 > **Dépend de :** step-395, step-398 · **Bloque :** —
 
 ## Pourquoi cette fiche existe
