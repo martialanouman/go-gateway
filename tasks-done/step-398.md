@@ -1,6 +1,6 @@
 # step-398 — Un STOP reçu en MO n'est appliqué qu'à la prochaine mutation Admin
 
-> **Jalon :** Défaut de conformité trouvé en ouvrant step-399 · **Statut :** À FAIRE
+> **Jalon :** Défaut de conformité trouvé en ouvrant step-399 · **Statut :** LIVRÉE
 > **Dépend de :** step-395 · **Bloque :** step-399, step-410
 
 ## Pourquoi cette fiche existe
