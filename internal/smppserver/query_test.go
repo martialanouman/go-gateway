@@ -112,6 +112,21 @@ func TestOnQueryRejectsWhatItCannotResolve(t *testing.T) {
 	}
 }
 
+func TestOnQueryDeliveredWithoutADateLeavesFinalDateEmpty(t *testing.T) {
+	st := &connState{querySMEnabled: true, customerID: uuid.New(), accountID: uuid.New()}
+	msgID := uuid.New()
+	reader := &scopedReader{rows: map[[3]uuid.UUID]clickhouse.CDRRow{
+		{st.customerID, st.accountID, msgID}: {MessageID: msgID, Status: clickhouse.StatusDelivered},
+	}}
+	l := New(nil, nil, nil, Options{MessageReader: reader}, discardLog())
+
+	res := l.onQuery(context.Background(), st)(context.Background(), session.QueryRequest{MessageID: msgID.String()})
+
+	if res.Status != smpp.StatusOK || res.MessageState != smpp.MessageStateDelivered || res.FinalDate != "" {
+		t.Errorf("res = %+v, want DELIVERED with an empty final_date", res)
+	}
+}
+
 // TestOnQueryBoundsTheLookup pins that the CDR read runs under its own deadline: it runs on the session's
 // read goroutine, and ClickHouse's default read timeout would freeze the whole bind.
 func TestOnQueryBoundsTheLookup(t *testing.T) {
