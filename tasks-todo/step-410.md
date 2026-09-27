@@ -47,6 +47,12 @@ chaque item et matérialiser la porte de go-live.
   `rediss://`, `KAFKA_TLS_ENABLED=true` et `CLICKHOUSE_TLS_ENABLED=true`, sur **chaque** service et sur
   les Jobs `migrate-*` et `kafka-provision`. Un clair se coche « accepté » seulement si un
   maillage chiffre le réseau, et en nommant qui l'accepte.
+- **Bucket d'archive CDR** (step-407) : le bucket existe, sa politique de cycle de vie garde 13 mois (§6.14),
+  l'identité S3 d'archivage n'a que `PutObject`, `GetObject` et `ListBucket` sous le bucket, **aucun droit de
+  suppression** ; la collection nommée `cdr_archive` est déclarée sur le serveur ClickHouse (`url` du bucket
+  terminée par `/`, `access_key_id`, `secret_access_key`), et l'utilisateur ClickHouse de la passerelle a
+  `GRANT NAMED COLLECTION ON cdr_archive`. Sans elle, admin-api-svc boote mais chaque passe de rétention finit
+  en `archive_failed`, et aucune partition ne se supprime.
 - Vérifier une dernière fois les **4 invariants** (a/b/c/d) verts sur l'ensemble avant go-live.
 - Item explicite : **auth opérateur réelle active** (le stub M1 n'est plus câblé).
 - **L'émetteur des jetons est le BFF** (ADR-0019, step-405) : le ConfigMap `gateway-oidc` porte
@@ -67,6 +73,8 @@ chaque item et matérialiser la porte de go-live.
       npm versionné vers le tableau de bord : une opération déclarée et non servie devient un client
       typé qui appelle un 404.
 - [ ] dette du harnais soldée : verrou d'envoi en place, aucun secret de bind sur `argv`
+- [ ] bucket d'archive CDR : existe, cycle de vie 13 mois, identité S3 sans droit de suppression, collection
+      nommée déclarée sur le serveur ClickHouse
 
 ## Hors périmètre
 DR inter-région (RPO/RTO) — non-objectif (§16). Fin de M12 et du plan.
