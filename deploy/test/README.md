@@ -11,7 +11,7 @@ ce qui ne se verrait qu'au déploiement (kubeconform + les invariants propres à
 
 ## 2. Prérequis
 
-- VPS Ubuntu 24.04, **8 vCPU / 16 Go minimum** (Contabo ou équivalent).
+- VPS Rocky Linux 10, **8 vCPU / 16 Go minimum** (Contabo ou équivalent), SELinux laissé en `Enforcing`.
 - Accès root par clé SSH déjà installé sur le VPS (sinon `install.sh` désactive l'authentification par
   mot de passe et vous enferme dehors).
 - DNS Cloudflare, deux enregistrements A vers l'IP du VPS :
@@ -31,7 +31,7 @@ scp deploy/test/host/install.sh deploy/test/host/gateway-deploy root@IP:/root/
 ssh root@IP bash /root/install.sh "$(cat cd-key.pub)"
 ```
 
-`install.sh` pose ufw (SSH + les réseaux pods/Services de k3s), installe k3s, crée le namespace
+`install.sh` active firewalld (SSH, 80/443, 2775 et les réseaux pods/Services de k3s ; cockpit fermé), installe k3s, crée le namespace
 `gateway` (étiqueté `pod-security.kubernetes.io/enforce=baseline` : une clé de CD fuitée ne peut pas y
 faire tourner un pod privilégié ou hostPath/hostNetwork), un utilisateur `deploy` avec un kubeconfig
 **restreint à ce namespace** (`/home/deploy/.kube/config`), et une `authorized_keys` à **commande
@@ -110,10 +110,9 @@ c'est la même CA `tlsgen` que les Secrets `*-tls` internes). Le certificat port
 la vérification du nom échoue. Les identifiants de bind sont dans
 `~/.config/go-gateway-test/bind-credentials`.
 
-**Exposition réseau** : `smpp-server-svc` (2775) est un `Service` `LoadBalancer` — le ServiceLB de k3s
-publie les ports qu'il expose par des règles iptables posées **avant** la chaîne ufw, donc aucune
-règle ufw n'est nécessaire pour 2775, ni pour 80/443 (Traefik, bundlé avec k3s, exposé de la même
-façon). `install.sh` n'ouvre que 22/tcp et les réseaux internes du cluster.
+**Exposition réseau** : firewalld n'ouvre que 22, 80, 443 et 2775 ; l'API k8s (6443), le kubelet
+(10250) et VXLAN (8472/udp) restent fermés. `smpp-server-svc` (2775) et Traefik (80/443) sont publiés
+par le ServiceLB de k3s.
 
 ## 9. Passer les paquets GHCR en privé
 

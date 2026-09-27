@@ -4,13 +4,12 @@
 > **Née de :** l'environnement de test k3s (2026-09-27) · **Portée par :** —
 
 **Ce qu'on a fait à la place.** `api.test.manouman.com` est proxifié par Cloudflare, mais le port 443
-du VPS accepte toute source : Traefik le publie par le ServiceLB de k3s, en iptables, en amont de
-`ufw` (`deploy/test/README.md:95-97`) ; `deploy/test/host/install.sh:8-15` ne pose que SSH et les
-réseaux pods/Services de k3s, aucune règle pour 80/443. Qui connaît l'IP atteint l'API directement,
+du VPS accepte toute source : firewalld l'ouvre à tous (`--add-service=https`,
+`deploy/test/host/install.sh:13`), sans restriction aux plages IP de Cloudflare. Qui connaît l'IP atteint l'API directement,
 sous un certificat Origin CA qu'aucun navigateur ne reconnaît.
 
-**Pourquoi.** Filtrer aux plages Cloudflare exige une règle iptables hors `ufw` ou une politique
-réseau Traefik (`ipAllowList`), à tenir à jour avec les plages publiées ; disproportionné pour un
+**Pourquoi.** Filtrer aux plages Cloudflare exige un ipset firewalld ou une politique Traefik
+(`ipAllowList`), à tenir à jour avec les plages publiées ; disproportionné pour un
 environnement de test sans données réelles.
 
 **Ce qu'il en coûte si on ne la paie jamais.** L'API de test reste exposée aux scans directs, sans le

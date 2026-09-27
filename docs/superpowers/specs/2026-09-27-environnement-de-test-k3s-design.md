@@ -14,7 +14,7 @@ cet environnement est la répétition de ce que step-410 déroulera.
 | Décision | Raison | Écarté |
 |---|---|---|
 | **k3s mono-nœud** | rejoue `deploy/k8s` tel quel : ConfigMap, Secrets, Jobs, probes, drain, `status.podIP` | Dokploy : un compose parallèle aux manifests, non gardé, qui dériverait |
-| **Contabo Cloud VPS 8** (8 vCPU, 24 Go, ~17 $/mois), Ubuntu 24.04 | seule offre ≥ 16 Go disponible à ce prix (Hetzner CAX/CX43/CX53 indisponibles, CPX42 à 69 €) | AWS (~120 $/mois, crédits CPU) ; le design ne dépend pas du fournisseur |
+| **Contabo Cloud VPS 8** (8 vCPU, 24 Go, ~17 $/mois), Rocky Linux 10 (SELinux `Enforcing`) | seule offre ≥ 16 Go disponible à ce prix (Hetzner CAX/CX43/CX53 indisponibles, CPX42 à 69 €) | AWS (~120 $/mois, crédits CPU) ; le design ne dépend pas du fournisseur |
 | **Images `v0.0.1-sha-<12 hex>`** | pré-version SemVer que `scripts/render-manifests.sh` accepte déjà : aucun changement du script | `v0.0.0-sha-…` : sous-chaîne du gabarit `:v0.0.0` que le script neutralise (correspondance non ancrée fin de ligne) — le rendu se rejetterait lui-même |
 | **Build dans GitHub Actions, déploiement par SSH** | le `Dockerfile` ne compile pas (il copie le binaire GoReleaser) ; l'API k8s n'est jamais exposée | build sur l'hôte ; kubeconfig distant |
 | **`Release` reste manuel** | step-270b : une Release SemVer est un geste. Les images de test ne sont ni `latest`, ni Release, ni tag git | — |
@@ -100,7 +100,7 @@ l'admin k3s.
 
 ### 4. `deploy/test/README.md` — le runbook
 
-Préparation de l'hôte (Ubuntu 24.04, `ufw` refus par défaut, SSH par clé seule, `LimitNOFILE` du
+Préparation de l'hôte (Rocky Linux 10, firewalld limité à 22/80/443/2775, `kernel-modules-extra` du noyau courant, SSH par clé seule, `LimitNOFILE` du
 service k3s — prérequis de smpp-server-svc) ; installation de k3s ; utilisateur `deploy` et
 `authorized_keys` avec `command="/usr/local/bin/gateway-deploy"` ; `bootstrap-secrets.sh` crée
 `gateway-secrets` (mots de passe et jeton admin aléatoires), les **neuf** `Secret` TLS et le `Secret`
@@ -115,11 +115,11 @@ déploiement ; rollback ; bascule des paquets GHCR en privé (`/etc/rancher/k3s/
 |---|---|---|
 | 22 | SSH, clé seule | oui |
 | 2775 | SMPP (ServiceLB), `smpp.test.manouman.com`, en **TLS** sous la CA de la passerelle | oui |
-| 443 | REST (Traefik), `api.test.manouman.com`, derrière le proxy Cloudflare, certificat Origin CA | oui, à tous : ServiceLB publie en amont de `ufw`, un filtrage aux IP Cloudflare y serait sans effet (`debts/api-de-test-joignable-hors-cloudflare.md`) |
-| 6443 | API k8s | non (`ufw`) |
+| 443 | REST (Traefik), `api.test.manouman.com`, derrière le proxy Cloudflare, certificat Origin CA | oui, à tous : aucun filtrage aux plages IP Cloudflare (`debts/api-de-test-joignable-hors-cloudflare.md`) |
+| 6443 | API k8s | non (firewalld) |
 | Admin API, ops 9090, dépendances | — | non : `ssh -L`, et `HTTP_ADMIN_TOKENS` + certificat client `operator` (mTLS) requis même par le tunnel |
 
-Le ServiceLB et Traefik publient leurs ports par iptables, **en amont de `ufw`** : seuls les
+Le ServiceLB publie les ports des `Service` `LoadBalancer` ; firewalld n'ouvre que 22/80/443/2775 : seuls les
 `Service` de type `LoadBalancer` sont donc exposés, et l'overlay n'en ajoute aucun.
 
 ## Gestion des erreurs
@@ -142,7 +142,7 @@ rollout n'a pas abouti. Le rollback est un `workflow_dispatch` sur un SHA antér
 
 ## Dettes (`debts/`)
 
-- `debts/api-de-test-joignable-hors-cloudflare.md` — Traefik expose 443 en amont de `ufw`, sans
+- `debts/api-de-test-joignable-hors-cloudflare.md` — Traefik expose 443 à toute source, sans
   filtrage aux plages Cloudflare.
 
 ## Hors périmètre
@@ -152,7 +152,7 @@ seed du plan de contrôle et preuve bout-en-bout (step-275).
 
 ## Prérequis externes
 
-- Le VPS Contabo commandé, Ubuntu 24.04, accès root par clé.
+- Le VPS Contabo commandé, Rocky Linux 10, accès root par clé.
 - DNS : enregistrements `A` `api.test.manouman.com` et `smpp.test.manouman.com` vers l'IP du VPS,
   posés avant le premier déploiement. Zone Cloudflare : `api.test` **proxifié** (nuage orange, SSL
   Full (strict)), `smpp.test` en **DNS only** — le proxy ne transporte pas SMPP sur 2775.
