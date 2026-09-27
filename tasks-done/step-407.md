@@ -1,6 +1,6 @@
 # step-407 — La production archive ses CDR avant de les supprimer
 
-> **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
+> **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** FAIT
 > **Dépend de :** step-165 (livrée) · **Bloque :** step-410, step-420
 
 ## Pourquoi cette fiche existe
@@ -106,11 +106,11 @@ Arbitré par Fable le 2026-09-27 (points 1 à 3), sans conflit avec la fiche ; l
 
 ## Definition of Done
 
-- [ ] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts
-- [ ] en production, une partition expirée est archivée sur le stockage objet, inscrite au catalogue, puis
+- [x] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts
+- [x] en production, une partition expirée est archivée sur le stockage objet, inscrite au catalogue, puis
       supprimée — et jamais supprimée sinon
-- [ ] manifestes à jour, garde `internal/deploy` verte
-- [ ] step-410 porte la ligne « bucket d'archive CDR : existe, cycle de vie 13 mois, identité S3 sans droit de
+- [x] manifestes à jour, garde `internal/deploy` verte
+- [x] step-410 porte la ligne « bucket d'archive CDR : existe, cycle de vie 13 mois, identité S3 sans droit de
       suppression, collection nommée déclarée sur le serveur ClickHouse »
 
 ## Hors périmètre
