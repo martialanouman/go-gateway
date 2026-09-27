@@ -173,3 +173,50 @@ func TestNewPoolAppRefusesToBootWithoutItsSnapshots(t *testing.T) {
 		})
 	}
 }
+
+// TestNewPoolAppResyncsItsRulesWithoutAnInvalidation: a rule written with no invalidation published — the
+// announcement lost — still reaches the running pool on its periodic resync (step-399).
+func TestNewPoolAppResyncsItsRulesWithoutAnInvalidation(t *testing.T) {
+	cfg := testConfig()
+	cfg.Postgres = pgtest.Config(t)
+	cfg.Redis = redistest.Config(t)
+	cfg.ConfigResyncInterval = 300 * time.Millisecond
+	pool := pgtest.Pool(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	clean := func() {
+		if _, err := pool.Exec(context.Background(), "DELETE FROM control_plane.sender_id_rewrite_rules WHERE true"); err != nil {
+			t.Fatalf("clean: %v", err)
+		}
+	}
+	clean()
+	t.Cleanup(clean)
+
+	env := testBindEnv()
+	app, err := newPoolApp(ctx, cfg, env, silentLogger())
+	if err != nil {
+		t.Fatalf("newPoolApp: %v", err)
+	}
+	defer app.close()
+	watchCtx, stop := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() { defer close(done); _ = app.rewriteWatcher.Run(watchCtx) }()
+	defer func() { stop(); <-done }()
+
+	to := "RESYNCED"
+	if _, err := postgres.NewSenderRewriteRuleRepo(pool).Create(ctx, cp.NewSenderRewriteRule{
+		Scope: cp.RewriteScopeConnector, ScopeID: &env.ID, RewriteType: cp.RewriteStatic, RewriteTo: &to, Priority: 1,
+	}); err != nil {
+		t.Fatalf("create rule: %v", err)
+	}
+	sent := func() string {
+		return app.rewriter.Rewrite(env.ID, uuid.New(), uuid.New(), "ACME", "2250700000001", uuid.New())
+	}
+	for deadline := time.Now().Add(10 * time.Second); sent() != to; {
+		if time.Now().After(deadline) {
+			t.Fatalf("with no invalidation: %q, want %s — the pool never resynchronised its rules", sent(), to)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
