@@ -876,6 +876,7 @@ connectorload:{connector_id}                        -- derived in-flight gauge p
                                                     --   entries, recomputed by the pool's status heartbeat script), for least_loaded (§6.1)
 config:changed                                      -- pub/sub channel: Admin API announces a control-plane mutation; config-sync coalesces these
 breaker:events                                      -- pub/sub channel for routing-snapshot invalidation (config-sync M7, circuit breaker M8)
+optout:changed                                      -- pub/sub channel: a STOP received as an MO announces its suppression; router-svc reloads its opt-out filter alone (step-398)
 
 -- Kafka topics (data plane):
 mt.inbound        -- raw submissions (SMPP/REST), pre-routing. Partitioned by customer/account hash.

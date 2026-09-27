@@ -125,6 +125,16 @@ func TestNewReturnPathAppBuildsTheWholeGraph(t *testing.T) {
 		}
 	}
 
+	// A STOP that announces nothing is enforced by no router until an unrelated config rebuild (step-398).
+	announce := reflect.ValueOf(app.mo).Elem().FieldByName("deps").FieldByName("Stop").Elem().
+		FieldByName("deps").FieldByName("Announce")
+	switch {
+	case !announce.IsValid():
+		t.Error("MORouter.deps.Stop.deps.Announce is gone: update this wiring check")
+	case announce.IsNil():
+		t.Error("the STOP detector has no Announcer: a STOP would reach no router's opt-out filter")
+	}
+
 	// Fail-closed producer (mo.routed before the offset commit): the constant, never the env (step-260e).
 	if got := app.producer.DeliveryTimeout(); got != kafka.FailClosedProduceTimeout {
 		t.Errorf("producer delivery timeout = %s, want the fail-closed constant %s", got, kafka.FailClosedProduceTimeout)

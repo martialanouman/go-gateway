@@ -3,11 +3,13 @@ package modlrrouter_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/martialanouman/go-gateway/internal/config"
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	"github.com/martialanouman/go-gateway/internal/modlrrouter"
 	"github.com/martialanouman/go-gateway/internal/observability"
@@ -53,6 +55,17 @@ func (f *fakeSuppress) DeleteByKey(_ context.Context, _ cp.SuppressionScope, _ *
 	return true, nil
 }
 
+// fakeAnnouncer records the channels an opt-out change was announced on, and fails when err is set.
+type fakeAnnouncer struct {
+	channels []string
+	err      error
+}
+
+func (f *fakeAnnouncer) Publish(_ context.Context, channel string, _ []byte) error {
+	f.channels = append(f.channels, channel)
+	return f.err
+}
+
 func derefStr(u *uuid.UUID) string {
 	if u == nil {
 		return ""
@@ -64,12 +77,17 @@ func strptr(s string) *string { return &s }
 
 func detectorWith(t *testing.T, kws []cp.OptOutKeyword, sup *fakeSuppress, prod *fakeProducer) *modlrrouter.StopDetector {
 	t.Helper()
+	return detectorAnnouncing(t, kws, sup, prod, &fakeAnnouncer{})
+}
+
+func detectorAnnouncing(t *testing.T, kws []cp.OptOutKeyword, sup *fakeSuppress, prod *fakeProducer, ann *fakeAnnouncer) *modlrrouter.StopDetector {
+	t.Helper()
 	kw, err := modlrrouter.LoadOptOutKeywords(context.Background(), fakeOptOutLister{kws})
 	if err != nil {
 		t.Fatalf("LoadOptOutKeywords: %v", err)
 	}
 	return modlrrouter.NewStopDetector(modlrrouter.StopDeps{
-		Keywords: kw, Suppress: sup, Producer: prod, Tracer: observability.Tracer(nil, "test"),
+		Keywords: kw, Suppress: sup, Announce: ann, Producer: prod, Tracer: observability.Tracer(nil, "test"),
 	})
 }
 
@@ -341,5 +359,45 @@ func TestStopWriteErrorIsRetryable(t *testing.T) {
 
 	if err := d.Detect(context.Background(), stopInput("36000", "2250700000001", uuid.New(), "STOP")); err == nil {
 		t.Fatal("a suppression-write failure must return an error so the MO is reprocessed")
+	}
+}
+
+// TestStopAnnouncesTheOptOutChange: the router filters opt-outs through an in-memory Bloom that only a
+// rebuild refreshes, so a STOP that announces nothing is not enforced until some unrelated admin
+// mutation — days, possibly, of MTs to a recipient who opted out (§6.20, step-398). A repeated STOP
+// announces again: it is how a recipient repairs an announcement that was lost.
+func TestStopAnnouncesTheOptOutChange(t *testing.T) {
+	ann := &fakeAnnouncer{}
+	d := detectorAnnouncing(t, []cp.OptOutKeyword{
+		{Keyword: "STOP", Action: cp.OptOutActionSuppress, MatchType: cp.OptOutMatchExact, Status: cp.OptOutKeywordActive},
+	}, &fakeSuppress{}, &fakeProducer{}, ann)
+
+	in := stopInput("36000", "2250700000001", uuid.New(), "STOP")
+	for range 2 {
+		if err := d.Detect(context.Background(), in); err != nil {
+			t.Fatalf("Detect: %v", err)
+		}
+	}
+	want := []string{config.ChannelOptOutChanged, config.ChannelOptOutChanged}
+	if !slices.Equal(ann.channels, want) {
+		t.Errorf("announced on %v, want %v: the second STOP found its suppression already written and "+
+			"must still announce it", ann.channels, want)
+	}
+}
+
+// TestStopAnnouncementFailureDoesNotFailTheMO: the suppression is durable before the announcement, and
+// a STOP must never interrupt the MO's delivery (§6.20) — a lost announcement is caught up by the
+// router's periodic resync (step-399), not by redelivering the MO.
+func TestStopAnnouncementFailureDoesNotFailTheMO(t *testing.T) {
+	sup := &fakeSuppress{}
+	d := detectorAnnouncing(t, []cp.OptOutKeyword{
+		{Keyword: "STOP", Action: cp.OptOutActionSuppress, MatchType: cp.OptOutMatchExact, Status: cp.OptOutKeywordActive},
+	}, sup, &fakeProducer{}, &fakeAnnouncer{err: errors.New("redis down")})
+
+	if err := d.Detect(context.Background(), stopInput("36000", "2250700000001", uuid.New(), "STOP")); err != nil {
+		t.Fatalf("Detect = %v: a failed announcement would redeliver the MO", err)
+	}
+	if len(sup.keys) != 1 {
+		t.Errorf("suppressions written = %d, want 1", len(sup.keys))
 	}
 }

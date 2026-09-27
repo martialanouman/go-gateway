@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -147,4 +149,71 @@ func TestGuardReloadUnderTraffic(t *testing.T) {
 	}
 	close(stop)
 	wg.Wait()
+}
+
+// gatedSuppressions returns the rows current when ListSuppressions is CALLED, but holds the first call
+// until release is closed — a reload that read the table just before a STOP committed and is still
+// building its filter.
+type gatedSuppressions struct {
+	mutableSuppressions
+	// A flag, not a sync.Once: Once.Do makes concurrent callers wait for the first, which would hold the
+	// fresh reload too and serialise the two reloads for the test instead of for the code.
+	gated   atomic.Bool
+	reading chan struct{}
+	release chan struct{}
+}
+
+func (g *gatedSuppressions) ListSuppressions(ctx context.Context) ([]cp.Suppression, error) {
+	rows, err := g.mutableSuppressions.ListSuppressions(ctx)
+	if g.gated.CompareAndSwap(false, true) {
+		close(g.reading)
+		<-g.release
+	}
+	return rows, err
+}
+
+// TestEnforcerReloadKeepsTheFreshestRead: the router reloads the opt-out filter from two watchers — the
+// full config rebuild and the STOP announcement (step-398). A full rebuild that read suppressions just
+// before a STOP committed must not swap its stale filter in AFTER the STOP watcher installed the fresh
+// one: that is exactly the false negative §6.20 forbids, a recipient who said STOP receiving MTs again.
+func TestEnforcerReloadKeepsTheFreshestRead(t *testing.T) {
+	ctx := context.Background()
+	const stopped = "2250700000001"
+	lister := &gatedSuppressions{reading: make(chan struct{}), release: make(chan struct{})}
+	snap, err := optout.LoadSnapshot(ctx, &lister.mutableSuppressions)
+	if err != nil {
+		t.Fatalf("LoadSnapshot: %v", err)
+	}
+	e := optout.NewEnforcer(optout.NewGuard(snap, alwaysConfirm{}), nil)
+	inbound := fakeInboundLister{}
+
+	staleDone := make(chan error, 1)
+	go func() { staleDone <- e.Reload(ctx, lister, inbound) }()
+	<-lister.reading // the full rebuild has read the table WITHOUT the STOP
+
+	lister.set(stopped) // the STOP commits
+	freshDone := make(chan error, 1)
+	go func() { freshDone <- e.Reload(ctx, lister, inbound) }()
+	// Unserialised, the fresh reload completes now and the stale one lands on top of it below.
+	select {
+	case <-freshDone:
+		freshDone <- nil
+	// Generous on purpose: this wait only has to outlast the fresh reload when the lock is ABSENT, and a
+	// short one would let that mutation pass on a loaded -race runner.
+	case <-time.After(time.Second):
+	}
+
+	close(lister.release)
+	for _, done := range []chan error{staleDone, freshDone} {
+		if err := <-done; err != nil {
+			t.Fatalf("Reload: %v", err)
+		}
+	}
+	blocked, err := e.IsOptedOut(ctx, uuid.New(), uuid.New(), "ACME", stopped)
+	if err != nil {
+		t.Fatalf("IsOptedOut: %v", err)
+	}
+	if !blocked {
+		t.Error("the stale reload overwrote the fresh one: a recipient who sent STOP is no longer opted out")
+	}
 }

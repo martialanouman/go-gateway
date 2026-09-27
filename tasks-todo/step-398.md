@@ -24,15 +24,17 @@ Arbitrage Fable le 2026-09-27, corrigé sur un point (la course, ci-dessous). La
 chiffrée (Annexe B : « near-immediate » ; §6.20 : « jamais de faux négatif ») ; aucun ADR ne tranche.
 
 **Annonce dédiée, rebuild sélectif.** Après l'écriture d'un STOP, `StopDetector` publie sur un canal
-dédié `optout:changed` — au mieux, sous `publishTimeout` comme l'annonce Admin, et même si la
-suppression existait déjà (`created=false`) : un STOP répété répare une annonce perdue. Publier
+dédié `optout:changed` — au mieux, sous un délai d'1 s (l'annonce Admin en a 5 ; celle-ci est sur le
+chemin du consommateur MO), et même si la suppression existait déjà (`created=false`) : un STOP répété
+répare une annonce perdue. Publier
 `config:changed` aurait déclenché un rebuild **complet** par STOP, Bloom exact compris (`exact_routes`,
 alimentée par la base MNP, peut compter des millions de lignes), sur chaque réplica.
 
 `router-svc` lance un **second `config.Watcher`**, réutilisé tel quel (fenêtre de 250 ms, rejeu de
 step-395), dont le rebuild n'est que `optOut.Reload` : un STOP coûte une relecture de `suppressions` et de
-`inbound_numbers`, pas du reste. Il est supervisé comme le premier. Il n'alimente pas
-`config_rebuild_total` : cette métrique dit la fraîcheur de la config entière.
+`inbound_numbers`, pas du reste. Il est supervisé comme le premier et pose la jauge
+`bloom_capacity_bits{filter="optout"}` comme lui. Il n'alimente pas `config_rebuild_total` : cette
+métrique dit la fraîcheur de la config entière.
 
 **La course, que l'arbitrage jugeait bénigne.** Les deux watchers peuvent appeler `Enforcer.Reload` en
 même temps. Chaque appel lit puis remplace : un rebuild général qui a lu `suppressions` juste avant le

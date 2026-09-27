@@ -14,6 +14,9 @@ import (
 const (
 	ChannelConfigChanged        = "config:changed"
 	ChannelSnapshotInvalidation = "breaker:events"
+	// ChannelOptOutChanged is announced by a STOP received as an MO (step-398), apart from
+	// ChannelSnapshotInvalidation so a STOP reloads the router's opt-out filter only.
+	ChannelOptOutChanged = "optout:changed"
 )
 
 // defaultCoalesceWindow is the trailing window a burst of notifications collapses into one rebuild.

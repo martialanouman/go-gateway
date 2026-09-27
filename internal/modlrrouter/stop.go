@@ -6,11 +6,13 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/martialanouman/go-gateway/internal/config"
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
@@ -116,9 +118,22 @@ func (k *OptOutKeywords) Match(country, body string) (OptOutMatch, bool) {
 type StopDeps struct {
 	Keywords *OptOutKeywords
 	Suppress SuppressionWriter
+	Announce Announcer
 	Producer Producer
 	Tracer   trace.Tracer
 	Logger   *slog.Logger
+}
+
+// announceTimeout bounds the opt-out announcement: it runs on the MO consumer's path, so a hung Redis must
+// not stall the return path for long.
+const announceTimeout = time.Second
+
+// optOutChangedPayload is the announcement body; subscribers are payload-agnostic.
+var optOutChangedPayload = []byte(`{"reason":"optout"}`)
+
+// Announcer publishes a pub/sub notification. *redisstore.PubSubPublisher satisfies it.
+type Announcer interface {
+	Publish(ctx context.Context, channel string, payload []byte) error
 }
 
 // StopDetector applies opt-out keywords to a mobile-originated message: a matched STOP writes a
@@ -190,6 +205,7 @@ func (d *StopDetector) Detect(ctx context.Context, in StopInput) (err error) {
 		}
 		d.deps.Logger.InfoContext(ctx, "modlrrouter: opt-out STOP applied",
 			"inbound_number_id", in.InboundNumberID, "created", created)
+		d.announceOptOut(ctx, in.InboundNumberID)
 	case cp.OptOutActionUnsuppress:
 		removed, err := d.deps.Suppress.DeleteByKey(ctx, cp.SuppressionScopeInboundNumber, &in.InboundNumberID, in.From)
 		if err != nil {
@@ -202,6 +218,17 @@ func (d *StopDetector) Detect(ctx context.Context, in StopInput) (err error) {
 	}
 
 	return d.autoReply(ctx, in, kw)
+}
+
+// announceOptOut announces even when the suppression already existed, so a repeated STOP repairs a lost
+// announcement. A failure is logged, never returned: a STOP must never interrupt the MO's delivery (§6.20).
+func (d *StopDetector) announceOptOut(ctx context.Context, inboundNumberID uuid.UUID) {
+	ctx, cancel := context.WithTimeout(ctx, announceTimeout)
+	defer cancel()
+	if err := d.deps.Announce.Publish(ctx, config.ChannelOptOutChanged, optOutChangedPayload); err != nil {
+		d.deps.Logger.WarnContext(ctx, "modlrrouter: opt-out announcement failed; routers catch up on resync",
+			"inbound_number_id", inboundNumberID, "err", err)
+	}
 }
 
 // autoReply publishes the keyword's auto-reply, if any, as a never-billed system MT straight to

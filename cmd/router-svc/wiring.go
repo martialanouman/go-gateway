@@ -64,6 +64,10 @@ type routerApp struct {
 	routes *routing.SnapshotResolver
 	// senderIDs is the authorizer the pipeline checks every message against, kept for the same reason.
 	senderIDs pipeline.SenderIDAuthorizer
+	// optOut is the enforcer the pipeline checks every message against, kept for the same reason.
+	optOut *optout.Enforcer
+	// optOutWatcher reloads the opt-out filter alone on a STOP announcement (step-398).
+	optOutWatcher *config.Watcher
 
 	// closers release what was opened, in reverse order of opening — the exact LIFO the deferred
 	// Closes in run() used to provide. They are named because that order is the property worth
@@ -120,6 +124,7 @@ func newRouterApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 	}
 	a.routes = boot.routes
 	a.senderIDs = boot.senderIDs
+	a.optOut = boot.optOut
 
 	// The anti-spam engine, the token bucket and the exact-route short-cut all read Redis, which is a
 	// boot dependency (NewClient pings eagerly). It retries with the same discipline as the snapshots —
@@ -189,6 +194,7 @@ func newRouterApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 	a.ops = ops
 
 	a.watcher = newSnapshotWatcher(st.pg, rdb, boot, stack, proj, blooms, a.catalog, logger)
+	a.optOutWatcher = newOptOutWatcher(st.pg, rdb, boot, blooms, logger)
 	return a, nil
 }
 
@@ -777,6 +783,24 @@ func newSnapshotWatcher(
 			proj.policy.Store(csnap)
 			return nil
 		}),
+		config.WithLogger(logger),
+	)
+}
+
+// newOptOutWatcher reloads the opt-out filter alone on optout:changed (step-398). It stays off
+// config_rebuild_total, which tracks the freshness of the whole config.
+func newOptOutWatcher(pool *pgxpool.Pool, rdb *goredis.Client, boot *bootSnapshots, blooms bloomGauges, logger *slog.Logger) *config.Watcher {
+	return config.NewWatcher(
+		func(ctx context.Context) (config.Stream, error) {
+			return redisstore.Subscribe(ctx, rdb, config.ChannelOptOutChanged), nil
+		},
+		func(ctx context.Context) error {
+			if err := boot.optOut.Reload(ctx, boot.suppressions, postgres.NewInboundNumberRepo(pool)); err != nil {
+				return err
+			}
+			blooms.set("optout", boot.optOut.CapacityBits())
+			return nil
+		},
 		config.WithLogger(logger),
 	)
 }

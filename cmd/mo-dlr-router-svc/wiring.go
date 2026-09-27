@@ -294,6 +294,7 @@ func newMOLeg(ctx context.Context, cfg config.Config, st *stores, logger *slog.L
 	stopDetector := modlrrouter.NewStopDetector(modlrrouter.StopDeps{
 		Keywords: optOutKeywords,
 		Suppress: postgres.NewSuppressionRepo(m.pg),
+		Announce: redisstore.NewPubSubPublisher(st.rdb),
 		Producer: m.producer,
 		Tracer:   observability.Tracer(nil, serviceName),
 		Logger:   logger,
