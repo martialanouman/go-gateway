@@ -405,10 +405,13 @@ type ClickHouse struct {
 	RetentionInterval time.Duration `env:"RETENTION_INTERVAL" envDefault:"24h"`
 
 	// ArchivePrefix enables cold-storage tiering: an expired partition is archived as
-	// "<prefix>-<YYYY-MM-DD>.parquet" before it is dropped, and never dropped if archiving failed. Empty
-	// (the default) drops without archiving — the real cold bucket is an infrastructure decision, so
-	// tiering is opt-in rather than silently filling the ClickHouse server's own disk.
+	// "<prefix>-<YYYY-MM-DD>-<token>.parquet" before it is dropped, and never dropped if archiving failed.
+	// Empty (the default) drops without archiving, which admin-api-svc refuses in production.
 	ArchivePrefix string `env:"ARCHIVE_PREFIX"`
+
+	// ArchiveCollection names the ClickHouse named collection holding the archive bucket's url and identity
+	// (step-407). Empty archives on the ClickHouse server's own disk: the local tier.
+	ArchiveCollection string `env:"ARCHIVE_COLLECTION"`
 
 	// TLSEnabled dials ClickHouse over TLS, verified against TLSCAFile, or the system roots when that is empty (a
 	// managed store signed by a public authority). Off by default: the integration suites run it in clear.
@@ -1022,6 +1025,9 @@ func (c Config) clickhouseProblems() []string {
 	}
 	if c.ClickHouse.TLSCAFile != "" && !c.ClickHouse.TLSEnabled {
 		problems = append(problems, "CLICKHOUSE_TLS_CA_FILE is set but CLICKHOUSE_TLS_ENABLED is false: it would have no effect")
+	}
+	if c.ClickHouse.ArchiveCollection != "" && c.ClickHouse.ArchivePrefix == "" {
+		problems = append(problems, "CLICKHOUSE_ARCHIVE_COLLECTION is set but CLICKHOUSE_ARCHIVE_PREFIX is empty: it would have no effect")
 	}
 	for _, a := range c.ClickHouse.Addr {
 		if strings.TrimSpace(a) == "" {

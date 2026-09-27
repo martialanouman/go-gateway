@@ -93,6 +93,29 @@ func TestNewRetainerRejectsAMalformedArchivePrefix(t *testing.T) {
 	}
 }
 
+func TestNewRetainerRejectsAMalformedArchiveCollection(t *testing.T) {
+	t.Parallel()
+
+	cfg := testConfig()
+	cfg.ClickHouse.ArchivePrefix = "cdr"
+	cfg.ClickHouse.ArchiveCollection = "cdr_archive, url = 'http://elsewhere/'"
+
+	if _, err := newRetainer(cfg, nil, nil, silentLogger()); err == nil {
+		t.Fatal("newRetainer accepted a malformed archive collection")
+	}
+}
+
+func TestArchiveDestinationFollowsTheCollection(t *testing.T) {
+	t.Parallel()
+
+	if got := archiveDestination("cdr_archive")("o.parquet"); got != "s3(cdr_archive, filename = 'o.parquet', format = 'Parquet')" {
+		t.Errorf("with a collection: %s, want the s3 named-collection destination", got)
+	}
+	if got := archiveDestination("")("o.parquet"); got != "file('o.parquet', 'Parquet')" {
+		t.Errorf("without a collection: %s, want the local file destination", got)
+	}
+}
+
 // TestNewAdminAppReleasesInDependencyOrder asserts the order on the graph newAdminApp actually builds,
 // not on a stack a test pushed by hand. Here that order is load-bearing: the background runners' jobs
 // use the Postgres pool, so their drain must complete BEFORE the pool is closed. Swap those two

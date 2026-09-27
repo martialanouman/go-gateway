@@ -232,10 +232,21 @@ func newRetainer(cfg config.Config, ch *clickhouse.Conn, catalog clickhouse.Arch
 		if !clickhouse.ValidArchivePrefix(prefix) {
 			return nil, fmt.Errorf("CLICKHOUSE_ARCHIVE_PREFIX %q is not a plain name ([A-Za-z0-9._/-], max 128)", prefix)
 		}
+		collection := cfg.ClickHouse.ArchiveCollection
+		if collection != "" && !clickhouse.ValidArchiveCollection(collection) {
+			return nil, fmt.Errorf("CLICKHOUSE_ARCHIVE_COLLECTION %q is not an identifier ([A-Za-z_][A-Za-z0-9_], max 64)", collection)
+		}
 		opts = append(opts, clickhouse.WithArchiver(
-			clickhouse.NewPartitionArchiver(ch, prefix, clickhouse.FileDestination(), catalog)))
+			clickhouse.NewPartitionArchiver(ch, prefix, archiveDestination(collection), catalog)))
 	}
 	return &retention{retainer: clickhouse.NewRetainer(ch, cfg.ClickHouse.CDRRetention, opts...), outcomes: outcomes}, nil
+}
+
+func archiveDestination(collection string) clickhouse.Destination {
+	if collection == "" {
+		return clickhouse.FileDestination()
+	}
+	return clickhouse.S3Destination(collection)
 }
 
 // runners are the bounded background job pools. The bulk-import runner runs exact-route MNP imports
@@ -472,6 +483,10 @@ func newVerifier(ctx context.Context, cfg config.Config, logger *slog.Logger) (a
 // believing a token works, and — production requiring a provider — keeps the stub out of production.
 // The error names the variable, never a token, since it lands in the boot log.
 func validateAdminConfig(cfg config.Config) error {
+	if cfg.Environment.IsProduction() && (cfg.ClickHouse.ArchivePrefix == "" || cfg.ClickHouse.ArchiveCollection == "") {
+		return fmt.Errorf("CLICKHOUSE_ARCHIVE_PREFIX and CLICKHOUSE_ARCHIVE_COLLECTION must be set in production: " +
+			"the retention pass would otherwise drop CDR partitions without an object-storage archive")
+	}
 	if cfg.OIDC.Issuer == "" {
 		return nil
 	}
