@@ -29,6 +29,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	"github.com/martialanouman/go-gateway/internal/session"
 	registrypb "github.com/martialanouman/go-gateway/internal/session/pb"
+	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
 )
 
 // CredentialStore resolves a presented SMPP system_id to its bind credential. It is satisfied by
@@ -74,11 +75,21 @@ type Canceller interface {
 	Cancel(ctx context.Context, customerID, accountID, messageID uuid.UUID) error
 }
 
+// MessageReader reads a message's aggregated lifecycle snapshot, scoped to the caller's account: a
+// message of another account is not found. *clickhouse.CDRReader satisfies it.
+type MessageReader interface {
+	Current(ctx context.Context, customerID, accountID, messageID uuid.UUID) (clickhouse.CDRRow, bool, error)
+}
+
 // registryCallTimeout bounds a single registry RPC on the session-token lifecycle path: the periodic
 // refresh Bind and the final Unbind that frees the token after a connection ends. The Unbind runs on a
 // fresh context so a token is released even while the pod is draining (the connection's own context is
 // already cancelled by then).
 const registryCallTimeout = 5 * time.Second
+
+// cdrLookupTimeout bounds the ClickHouse work of a query_sm or cancel_sm. Both run on the session's read
+// goroutine, and the client's default read timeout (5 min) would freeze the whole bind behind one slow read.
+const cdrLookupTimeout = 5 * time.Second
 
 // defaultRefreshInterval refreshes a live bind's registry token at half the registry's default session
 // TTL, so the token is renewed twice per lifetime and never lapses under a session that is still alive.
@@ -139,6 +150,9 @@ type Options struct {
 	// enabled cancel_sm with ESME_RCANCELFAIL (bind-only tests leave it nil); production wiring passes
 	// a *cancel.Canceller.
 	Canceller Canceller
+	// MessageReader resolves a query_sm against the CDR, scoped to the bind's account. Nil answers every
+	// enabled query_sm ESME_RQUERYFAIL. In production it is a *clickhouse.CDRReader.
+	MessageReader MessageReader
 	// QueryLimiter rate-limits query_sm per account, on a bucket dedicated to query_sm and separate from
 	// the submit_sm budget (§6.22). Nil disables the limit (query_sm is answered without throttling).
 	QueryLimiter QueryLimiter

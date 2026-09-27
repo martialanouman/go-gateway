@@ -77,6 +77,12 @@ get-message répond au même instant. Un `MessageReader` absent (build sans Clic
 `ESME_RQUERYFAIL`, comme un `Canceller` absent répond `ESME_RCANCELFAIL`. Jamais `ESME_ROK` + `UNKNOWN`
 sur une erreur : ce serait retomber dans le défaut que cette fiche ferme.
 
+**Ajouts de la revue** (arbitrés par Fable le 2026-09-27) : un statut CDR hors du mapping répond
+`ESME_RQUERYFAIL`, pas `ESME_ROK` + `UNKNOWN`. La lecture ClickHouse de `query_sm` et le `Cancel` de
+`cancel_sm` sont bornés par `cdrLookupTimeout` (5 s, à côté de `registryCallTimeout`) : les deux tournent
+sur la goroutine de lecture de la session, et le `ReadTimeout` par défaut du client (300 s) gèlerait tout
+le bind. Un dépassement répond `ESME_RQUERYFAIL` pour `query_sm` et `ESME_RSYSERR` pour `cancel_sm`.
+
 **Retrait de l'aveu** : le godoc de `MessageStateUnknown` (`smpp.go:58-59`) perd sa seconde phrase dans
 la même PR.
 

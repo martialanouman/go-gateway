@@ -19,7 +19,7 @@ type BindHandler func(ctx context.Context, req BindRequest) BindResult
 type SubmitHandler func(ctx context.Context, req SubmitRequest) SubmitResult
 
 // QueryHandler decides the outcome of a query_sm. It runs on the session's read goroutine. step-025
-// wires the account's query_sm_enabled toggle here; the real message-state lookup is later work.
+// wires the account's query_sm_enabled toggle here.
 type QueryHandler func(ctx context.Context, req QueryRequest) QueryResult
 
 // CancelHandler decides the outcome of a cancel_sm. It runs on the session's read goroutine. step-025
