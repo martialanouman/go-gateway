@@ -15,11 +15,16 @@ ce qui ne se verrait qu'au déploiement (kubeconform + les invariants propres à
 - Accès root par clé SSH déjà installé sur le VPS (sinon `install.sh` désactive l'authentification par
   mot de passe et vous enferme dehors).
 - DNS Cloudflare, deux enregistrements A vers l'IP du VPS :
-  - `api.test` — **proxifié** (nuage orange), SSL/TLS en mode **Full (strict)**.
+  - `api-test` — **proxifié** (nuage orange), SSL/TLS en mode **Full (strict)**.
+    Un seul niveau de sous-domaine : le certificat Universal SSL de Cloudflare ne couvre que
+    `*.manouman.com`, et un `api.test.manouman.com` échoue à la poignée de main TLS dès la bordure.
   - `smpp.test` — **DNS only** (nuage gris) : SMPP n'est pas du HTTP, Cloudflare ne peut pas le
     proxifier.
-- Un certificat **Origin CA** Cloudflare pour `api.test.manouman.com`, téléchargé en `origin.crt` /
-  `origin.key` (Cloudflare → SSL/TLS → Origin Server).
+- Un certificat **Origin CA** Cloudflare pour `api-test.manouman.com`. Générer la clé et la CSR sur le
+  poste, pour que la clé ne quitte jamais la machine, puis coller la CSR dans Cloudflare → SSL/TLS →
+  Origin Server → « Use my private key and CSR » et enregistrer le certificat en `origin.crt` :
+  `openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -keyout origin.key
+  -subj /CN=api-test.manouman.com -addext subjectAltName=DNS:api-test.manouman.com -out origin.csr`
 - L'image `ghcr.io/martialanouman/go-smsc-simulator:v0.8.0` publiée en `linux/amd64` par la CI de ce
   dépôt-là (`deps/smsc-simulator.yaml` la référence telle quelle).
 
@@ -60,6 +65,13 @@ Une seule fois : le script refuse s'ils existent déjà (Postgres fige son mot d
 second tirage le désynchronise). Pour tout régénérer — perte de données, c'est un environnement de
 test — `kubectl delete namespace gateway`, recréer le namespace, relancer `bootstrap-secrets.sh` puis
 le premier déploiement.
+
+Pour remplacer le seul certificat Origin CA, sans toucher aux autres secrets :
+
+```bash
+kubectl -n gateway create secret tls api-origin-tls --cert=origin.crt --key=origin.key \
+  --dry-run=client -o yaml | ssh root@IP kubectl apply -f -
+```
 
 ## 6. Premier déploiement
 

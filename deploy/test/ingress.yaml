@@ -17,7 +17,7 @@ spec:
   entryPoints: [websecure]
   routes:
     - kind: Rule
-      match: Host(`api.test.manouman.com`)
+      match: Host(`api-test.manouman.com`)
       services:
         - kind: Service
           name: rest-api-svc

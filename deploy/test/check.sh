@@ -38,7 +38,7 @@ grep -B3 '^  name: gateway-config$' "$all" | grep -q 'gateway.test/phase: deps' 
 [[ $(grep -c 'gateway.test/phase: deps$' "$all") -eq 14 ]] || fail "une dépendance n'est pas en phase deps : elle partirait avec l'application"
 
 # shellcheck disable=SC2016 # backticks littéraux : la règle Traefik Host(`...`) rendue par kustomize
-grep -q 'Host(`api.test.manouman.com`)' "$all" || fail "l'API REST n'est pas routée"
+grep -q 'Host(`api-test.manouman.com`)' "$all" || fail "l'API REST n'est pas routée"
 grep -q 'serverName: rest-api-svc' "$all" || fail "Traefik ne vérifie pas le certificat du backend"
 
 kubeconform -strict -summary -ignore-missing-schemas -kubernetes-version 1.31.0 "$all"

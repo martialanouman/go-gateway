@@ -3,7 +3,7 @@
 > **Statut :** OUVERTE · **Nature :** technique
 > **Née de :** l'environnement de test k3s (2026-09-27) · **Portée par :** —
 
-**Ce qu'on a fait à la place.** `api.test.manouman.com` est proxifié par Cloudflare, mais le port 443
+**Ce qu'on a fait à la place.** `api-test.manouman.com` est proxifié par Cloudflare, mais le port 443
 du VPS accepte toute source : firewalld l'ouvre à tous (`--add-service=https`,
 `deploy/test/host/install.sh:13`), sans restriction aux plages IP de Cloudflare. Qui connaît l'IP atteint l'API directement,
 sous un certificat Origin CA qu'aucun navigateur ne reconnaît.

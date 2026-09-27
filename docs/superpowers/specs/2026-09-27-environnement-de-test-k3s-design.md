@@ -59,9 +59,9 @@ CI verte sur main ─► deploy-test.yml             deps : postgres, redis, red
   - **admin-api-svc** : `HTTP_ADMIN_TOKENS` statique (`Secret gateway-secrets`), pas d'IdP OIDC hors
     `production`. L'accès exploitant ajoute un certificat client (mTLS, SAN `operator`, même CA
     `tlsgen`) : jeton **et** certificat, tous deux réservés à ce qui est hors production.
-  - **rest-api-svc** : un `Ingress` Traefik sur `api.test.manouman.com`, TLS par le `Secret`
+  - **rest-api-svc** : un `Ingress` Traefik sur `api-test.manouman.com`, TLS par le `Secret`
     `api-origin-tls` : un certificat **Cloudflare Origin CA** (15 ans), créé à la main depuis le runbook.
-    Il n'est reconnu que par le proxy Cloudflare : l'enregistrement `api.test` est donc **proxifié**, en
+    Il n'est reconnu que par le proxy Cloudflare : l'enregistrement `api-test` est donc **proxifié**, en
     mode SSL **Full (strict)**. Aucun ACME, aucune dépendance au port 80. Le proxy masque l'IP cliente :
     sans effet, rest-api-svc ne lit pas l'adresse distante (seul le listener SMPP le fait).
   - **`gateway-oidc`** : ConfigMap de valeurs de test (rien de secret).
@@ -115,7 +115,7 @@ déploiement ; rollback ; bascule des paquets GHCR en privé (`/etc/rancher/k3s/
 |---|---|---|
 | 22 | SSH, clé seule | oui |
 | 2775 | SMPP (ServiceLB), `smpp.test.manouman.com`, en **TLS** sous la CA de la passerelle | oui |
-| 443 | REST (Traefik), `api.test.manouman.com`, derrière le proxy Cloudflare, certificat Origin CA | oui, à tous : aucun filtrage aux plages IP Cloudflare (`debts/api-de-test-joignable-hors-cloudflare.md`) |
+| 443 | REST (Traefik), `api-test.manouman.com`, derrière le proxy Cloudflare, certificat Origin CA | oui, à tous : aucun filtrage aux plages IP Cloudflare (`debts/api-de-test-joignable-hors-cloudflare.md`) |
 | 6443 | API k8s | non (firewalld) |
 | Admin API, ops 9090, dépendances | — | non : `ssh -L`, et `HTTP_ADMIN_TOKENS` + certificat client `operator` (mTLS) requis même par le tunnel |
 
@@ -153,9 +153,9 @@ seed du plan de contrôle et preuve bout-en-bout (step-275).
 ## Prérequis externes
 
 - Le VPS Contabo commandé, Rocky Linux 10, accès root par clé.
-- DNS : enregistrements `A` `api.test.manouman.com` et `smpp.test.manouman.com` vers l'IP du VPS,
-  posés avant le premier déploiement. Zone Cloudflare : `api.test` **proxifié** (nuage orange, SSL
+- DNS : enregistrements `A` `api-test.manouman.com` et `smpp.test.manouman.com` vers l'IP du VPS,
+  posés avant le premier déploiement. Zone Cloudflare : `api-test` **proxifié** (nuage orange, SSL
   Full (strict)), `smpp.test` en **DNS only** — le proxy ne transporte pas SMPP sur 2775.
-- Un certificat Cloudflare Origin CA pour `api.test.manouman.com`, chargé dans le `Secret`
+- Un certificat Cloudflare Origin CA pour `api-test.manouman.com`, chargé dans le `Secret`
   `api-origin-tls` (runbook) ; jamais dans git.
 - La CI de `go-smsc-simulator` publie une image `linux/amd64` sur GHCR, taguée par version.
