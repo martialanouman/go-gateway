@@ -143,5 +143,8 @@ TLS sur SMPP public, exposition de l'API Admin.
 
 - Le VPS Contabo commandé, Ubuntu 24.04, accès root par clé.
 - DNS : enregistrements `A` `api.test.manouman.com` et `smpp.test.manouman.com` vers l'IP du VPS,
-  posés avant le premier déploiement (le défi HTTP-01 échoue sinon).
+  posés avant le premier déploiement (le défi HTTP-01 échoue sinon). Zone gérée par Cloudflare : les
+  deux en **DNS only** (nuage gris). Le proxy Cloudflare ne transporte pas SMPP sur 2775, et devant
+  l'API il masquerait l'IP cliente et pourrait intercepter le défi ACME. Aucun jeton d'API Cloudflare
+  n'entre donc dans le cluster.
 - La CI de `go-smsc-simulator` publie une image `linux/amd64` sur GHCR, taguée par version.
