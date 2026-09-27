@@ -1,0 +1,14 @@
+<clickhouse>
+  <named_collections>
+    <cdr_archive>
+      <url>http://s3:9000/cdr-archive/</url>
+      <access_key_id>ARCHIVEKEY407</access_key_id>
+      <secret_access_key>archive-secret-407</secret_access_key>
+    </cdr_archive>
+    <cdr_archive_denied>
+      <url>http://s3:9000/cdr-forbidden/</url>
+      <access_key_id>ARCHIVEKEY407</access_key_id>
+      <secret_access_key>archive-secret-407</secret_access_key>
+    </cdr_archive_denied>
+  </named_collections>
+</clickhouse>

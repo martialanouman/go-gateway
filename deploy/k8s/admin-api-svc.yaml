@@ -64,6 +64,12 @@ spec:
                 secretKeyRef:
                   name: gateway-secrets
                   key: CLICKHOUSE_PASSWORD
+            # The retention pass archives each expired CDR partition before dropping it (step-407). The
+            # bucket url and its identity live in the named collection on the ClickHouse server, never here.
+            - name: CLICKHOUSE_ARCHIVE_PREFIX
+              value: cdr
+            - name: CLICKHOUSE_ARCHIVE_COLLECTION
+              value: cdr_archive
             - name: OIDC_ISSUER
               valueFrom:
                 configMapKeyRef:

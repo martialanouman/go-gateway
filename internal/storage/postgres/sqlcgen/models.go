@@ -77,6 +77,13 @@ type ControlPlaneBillingLedgerDefault struct {
 	CreatedAt    pgtype.Timestamptz
 }
 
+type ControlPlaneCdrArchive struct {
+	Day        pgtype.Date
+	Object     string
+	RowCount   int64
+	ArchivedAt pgtype.Timestamptz
+}
+
 type ControlPlaneContentAccessAudit struct {
 	ID         uuid.UUID
 	Operator   string

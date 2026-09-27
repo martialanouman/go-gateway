@@ -30,6 +30,8 @@ func TestRunRequiresOIDCInProduction(t *testing.T) {
 	t.Setenv("TLS_CERT_FILE", "/etc/gateway/tls/tls.crt")
 	t.Setenv("TLS_KEY_FILE", "/etc/gateway/tls/tls.key")
 	t.Setenv("TLS_CLIENT_CA_FILE", "/etc/gateway/tls/ca.crt")
+	t.Setenv("CLICKHOUSE_ARCHIVE_PREFIX", "cdr")
+	t.Setenv("CLICKHOUSE_ARCHIVE_COLLECTION", "cdr_archive")
 	// OIDC_* deliberately unset.
 
 	err := run()
@@ -58,9 +60,11 @@ func TestValidateAdminConfigRefusesStaticTokensBesideOIDC(t *testing.T) {
 
 	const token = "static-operator-token"
 	oidc := config.OIDC{Issuer: "https://idp", Audience: "gw", JWKSURL: "https://idp/certs"}
+	archive := config.ClickHouse{ArchivePrefix: "cdr", ArchiveCollection: "cdr_archive"}
 
 	for _, env := range []config.Environment{config.EnvProduction, config.EnvDevelopment} {
-		cfg := config.Config{Environment: env, OIDC: oidc, HTTP: config.HTTP{AdminTokens: []string{token + ":admin:read"}}}
+		cfg := config.Config{Environment: env, OIDC: oidc, ClickHouse: archive,
+			HTTP: config.HTTP{AdminTokens: []string{token + ":admin:read"}}}
 		err := validateAdminConfig(cfg)
 		if err == nil || !strings.Contains(err.Error(), "HTTP_ADMIN_TOKENS") {
 			t.Errorf("%s: validateAdminConfig() = %v, want a refusal naming HTTP_ADMIN_TOKENS", env, err)
@@ -71,7 +75,8 @@ func TestValidateAdminConfigRefusesStaticTokensBesideOIDC(t *testing.T) {
 	}
 
 	// A trailing separator in the variable is not a configured token.
-	cfg := config.Config{Environment: config.EnvProduction, OIDC: oidc, HTTP: config.HTTP{AdminTokens: []string{" "}}}
+	cfg := config.Config{Environment: config.EnvProduction, OIDC: oidc, ClickHouse: archive,
+		HTTP: config.HTTP{AdminTokens: []string{" "}}}
 	if err := validateAdminConfig(cfg); err != nil {
 		t.Errorf("validateAdminConfig() = %v, want nil for blank entries only", err)
 	}
@@ -79,6 +84,35 @@ func TestValidateAdminConfigRefusesStaticTokensBesideOIDC(t *testing.T) {
 	cfg = config.Config{Environment: config.EnvDevelopment, HTTP: config.HTTP{AdminTokens: []string{"t:admin:read"}}}
 	if err := validateAdminConfig(cfg); err != nil {
 		t.Errorf("validateAdminConfig() = %v, want the static verifier accepted without a provider", err)
+	}
+}
+
+// A purge that drops without archiving loses a day of CDRs for good, and the file destination writes on the
+// ClickHouse node's own disk: production boots only with an object-storage destination.
+func TestValidateAdminConfigRefusesProductionWithoutAnArchiveDestination(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name       string
+		env        config.Environment
+		prefix     string
+		collection string
+		refused    bool
+	}{
+		{"production without archive", config.EnvProduction, "", "", true},
+		{"production on the file destination", config.EnvProduction, "cdr", "", true},
+		{"production on object storage", config.EnvProduction, "cdr", "cdr_archive", false},
+		{"development without archive", config.EnvDevelopment, "", "", false},
+	} {
+		cfg := config.Config{Environment: tc.env,
+			ClickHouse: config.ClickHouse{ArchivePrefix: tc.prefix, ArchiveCollection: tc.collection}}
+		err := validateAdminConfig(cfg)
+		if tc.refused && (err == nil || !strings.Contains(err.Error(), "CLICKHOUSE_ARCHIVE_COLLECTION")) {
+			t.Errorf("%s: validateAdminConfig() = %v, want a refusal naming CLICKHOUSE_ARCHIVE_COLLECTION", tc.name, err)
+		}
+		if !tc.refused && err != nil {
+			t.Errorf("%s: validateAdminConfig() = %v, want nil", tc.name, err)
+		}
 	}
 }
 

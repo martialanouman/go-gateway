@@ -1,0 +1,9 @@
+<clickhouse>
+  <users>
+    <gateway>
+      <grants>
+        <query>GRANT ALL ON *.*</query>
+      </grants>
+    </gateway>
+  </users>
+</clickhouse>

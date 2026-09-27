@@ -61,9 +61,41 @@ archive est un jour qu'aucune step ne pourra rendre.
   déjà accepté (« responsabilité de l'exploitant ») ; la politique de cycle de vie du bucket (13 mois) est une
   ligne de la checklist de step-410.
 
+## Design arrêté
+
+Arbitré par Fable le 2026-09-27 (points 1 à 3), sans conflit avec la fiche ; le reste découle de la spec.
+
+- **Configuration** : `CLICKHOUSE_ARCHIVE_COLLECTION` nomme la collection nommée ClickHouse. Posée →
+  `s3(<collection>, filename = '<prefix>-<jour>-<token>.parquet', format = 'Parquet')` ; vide avec un préfixe
+  → `FileDestination` (poste local). `CLICKHOUSE_ARCHIVE_PREFIX` reste l'interrupteur. La collection est
+  validée comme identifiant (`^[A-Za-z_][A-Za-z0-9_]{0,63}$`) dans `newRetainer`, à côté de
+  `ValidArchivePrefix` ; une collection sans préfixe est refusée (« would have no effect »).
+- **`Destination`** devient `func(object string) string` : l'archiveur nomme l'objet (préfixe, jour, jeton),
+  la destination ne fait que l'envelopper. Le nom d'objet est ce que le catalogue retient.
+- **Catalogue** : `control_plane.cdr_archives (day date PK, object text, row_count bigint ≥ 0,
+  archived_at timestamptz)`, schéma + migration 0022. Interface `ArchiveCatalog` déclarée côté consommateur
+  (package `clickhouse`), obligatoire pour `PartitionArchiver`. Une seule requête, jamais de réécriture :
+  `INSERT … ON CONFLICT (day) DO NOTHING RETURNING object UNION ALL` la ligne préexistante → rend l'objet de
+  la ligne qui fait foi ; rejouée une fois si une insertion concurrente l'a devancée (l'instantané de la
+  requête ne voit pas sa ligne). **Si l'objet inscrit n'est pas le nôtre** (DROP raté après inscription, ou
+  écriture tardive qui recrée le jour), la partition est gardée, `archive_failed`, et un opérateur tranche
+  (`debts/jour-cdr-bloque-par-une-archive-inscrite-incomplete.md`). **Révisé en revue, tranché par
+  l'utilisateur** : comparer des comptes laissait perdre une version tardive sous `ReplacingMergeTree`, et
+  comparer le contenu (proposé par Fable au 2ᵉ tour) oubliait `segment_seq` et relisait une journée en mémoire.
+- **Garde de production** : `validateAdminConfig` (admin-api-svc est le seul porteur du Retainer ; six autres
+  services chargent la section ClickHouse sans rien purger). Production ET (préfixe vide OU collection vide) →
+  boot refusé ; `FileDestination` est donc refusée en production. **Pas d'exemption** pour
+  `RETENTION_INTERVAL = 0` : elle rouvrirait un « planificateur externe » qui supprime sans archiver.
+- **Stockage de test : RustFS** (demandé par l'utilisateur ; `minio/minio` n'est plus tirable depuis Docker
+  Hub), provisionné par le client `mc` de Chainguard, images épinglées par digest.
+- **Constats du spike** (ClickHouse 24.8, MinIO puis RustFS) : une identité à `PutObject`/`GetObject`/`ListBucket` seuls
+  suffit ; ClickHouse refuse de réécrire une clé existante ; l'utilisateur ClickHouse de la passerelle a besoin
+  du droit `NAMED COLLECTION` sur `cdr_archive` (compris dans `GRANT ALL`) ; `query_log` ne voit que le nom de la collection. Les deux
+  derniers vont à la checklist de step-410.
+
 ## Tests (écrits dans la même PR)
 
-- Sur un stockage S3 de test (conteneur MinIO), une partition expirée est archivée, relue, inscrite au
+- Sur un stockage S3 de test (conteneur RustFS), une partition expirée est archivée, relue, inscrite au
   catalogue, puis supprimée.
 - Écriture refusée par le stockage : la partition n'est pas supprimée.
 - Inscription au catalogue qui échoue : la partition n'est pas supprimée.

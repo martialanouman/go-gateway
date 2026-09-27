@@ -88,8 +88,36 @@ func TestNewRetainerRejectsAMalformedArchivePrefix(t *testing.T) {
 	cfg := testConfig()
 	cfg.ClickHouse.ArchivePrefix = "cdr archive; DROP"
 
-	if _, err := newRetainer(cfg, nil, silentLogger()); err == nil {
+	if _, err := newRetainer(cfg, nil, nil, silentLogger()); err == nil {
 		t.Fatal("newRetainer accepted a malformed archive prefix")
+	}
+}
+
+func TestNewRetainerRejectsAMalformedArchiveCollection(t *testing.T) {
+	t.Parallel()
+
+	cfg := testConfig()
+	cfg.ClickHouse.ArchivePrefix = "cdr"
+	cfg.ClickHouse.ArchiveCollection = "cdr_archive, url = 'http://elsewhere/'"
+
+	if _, err := newRetainer(cfg, nil, nil, silentLogger()); err == nil {
+		t.Fatal("newRetainer accepted a malformed archive collection")
+	}
+
+	cfg.ClickHouse.ArchiveCollection = "cdr_archive"
+	if _, err := newRetainer(cfg, nil, nil, silentLogger()); err != nil {
+		t.Fatalf("newRetainer refused the collection the manifest deploys: %v", err)
+	}
+}
+
+func TestArchiveDestinationFollowsTheCollection(t *testing.T) {
+	t.Parallel()
+
+	if got := archiveDestination("cdr_archive")("o.parquet"); got != "s3(cdr_archive, filename = 'o.parquet', format = 'Parquet')" {
+		t.Errorf("with a collection: %s, want the s3 named-collection destination", got)
+	}
+	if got := archiveDestination("")("o.parquet"); got != "file('o.parquet', 'Parquet')" {
+		t.Errorf("without a collection: %s, want the local file destination", got)
 	}
 }
 

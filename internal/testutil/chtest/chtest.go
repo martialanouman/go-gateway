@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/testcontainers/testcontainers-go"
 	tcclickhouse "github.com/testcontainers/testcontainers-go/modules/clickhouse"
 
 	"github.com/martialanouman/go-gateway/internal/config"
@@ -48,29 +49,47 @@ func Config(t *testing.T) config.ClickHouse {
 	}
 	ciguard.RequireDocker(t)
 
-	once.Do(func() { shared, sharedErr = start() })
+	once.Do(func() { shared, _, sharedErr = start() })
 	if sharedErr != nil {
 		t.Fatalf("chtest: start shared clickhouse: %v", sharedErr)
 	}
 	return shared
 }
 
-func start() (config.ClickHouse, error) {
+// Start runs a dedicated, migrated ClickHouse customised by opts (a server config file, a network) and
+// terminates it when the test ends. Use it only when the shared server cannot carry the configuration.
+func Start(t *testing.T, opts ...testcontainers.ContainerCustomizer) config.ClickHouse {
+	t.Helper()
+
+	if testing.Short() {
+		ciguard.Skip(t, "chtest: skipped under -short (needs Docker)")
+	}
+	ciguard.RequireDocker(t)
+
+	cfg, container, err := start(opts...)
+	testcontainers.CleanupContainer(t, container)
+	if err != nil {
+		t.Fatalf("chtest: start dedicated clickhouse: %v", err)
+	}
+	return cfg
+}
+
+func start(opts ...testcontainers.ContainerCustomizer) (config.ClickHouse, *tcclickhouse.ClickHouseContainer, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	container, err := tcclickhouse.Run(ctx, image,
+	container, err := tcclickhouse.Run(ctx, image, append([]testcontainers.ContainerCustomizer{
 		tcclickhouse.WithDatabase(database),
 		tcclickhouse.WithUsername(username),
 		tcclickhouse.WithPassword(password),
-	)
+	}, opts...)...)
 	if err != nil {
-		return config.ClickHouse{}, fmt.Errorf("run container: %w", err)
+		return config.ClickHouse{}, container, fmt.Errorf("run container: %w", err)
 	}
 
 	host, err := container.ConnectionHost(ctx)
 	if err != nil {
-		return config.ClickHouse{}, fmt.Errorf("connection host: %w", err)
+		return config.ClickHouse{}, container, fmt.Errorf("connection host: %w", err)
 	}
 
 	cfg := config.ClickHouse{
@@ -82,9 +101,9 @@ func start() (config.ClickHouse, error) {
 	}
 
 	if err := applyMigrations(cfg); err != nil {
-		return config.ClickHouse{}, err
+		return config.ClickHouse{}, container, err
 	}
-	return cfg, nil
+	return cfg, container, nil
 }
 
 // applyMigrations runs the shipping migration path (clickhouse.NewMigrator) against the container,

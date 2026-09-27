@@ -237,6 +237,17 @@ CREATE TABLE control_plane.message_export_jobs (
 );
 CREATE INDEX message_export_jobs_created_idx ON control_plane.message_export_jobs(created_at);
 
+-- cdr_archives names the ONE archive object that holds a dropped CDR partition (§6.14, step-407). Every
+-- archiving attempt writes its own object, and a failed attempt can leave a complete one behind: this row is
+-- what says which one counts. Written after the object is read back and before the partition is dropped; never
+-- rewritten. `object` is the key under the ClickHouse named collection's url, never a credential.
+CREATE TABLE control_plane.cdr_archives (
+  day         date PRIMARY KEY,
+  object      text NOT NULL,
+  row_count   bigint NOT NULL CHECK (row_count >= 0),
+  archived_at timestamptz NOT NULL DEFAULT now()
+);
+
 -- platform_content_policy is the default an `inherit` customer resolves to (§6.23, step-370): one row, 'off'
 -- at creation. Never 'stored_plaintext' — storage in clear belongs to a named customer under contract.
 -- internal/adminapi/content_policy.go words the same list for the dashboard: widen both together.
