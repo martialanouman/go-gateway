@@ -73,6 +73,10 @@ type Config struct {
 	// service with no load balancer in front of it, and for tests.
 	DrainDelay time.Duration `env:"DRAIN_DELAY" envDefault:"5s"`
 
+	// ConfigResyncInterval is how often a config watcher rebuilds with no invalidation at all (step-399):
+	// it bounds how long a lost announcement leaves a pod on a stale config. Zero disables it.
+	ConfigResyncInterval time.Duration `env:"CONFIG_RESYNC_INTERVAL" envDefault:"5m"`
+
 	// DrainBudget caps the WHOLE teardown, once the pre-drain hooks have run: past it the supervisor
 	// stops waiting, abandons whatever has not returned and reports it (step-270). Without that
 	// ceiling one component ignoring its context holds the pod open until the kubelet's SIGKILL.
@@ -810,6 +814,11 @@ func (c Config) coreProblems() []string {
 			"DRAIN_DELAY %s must not be negative: use 0 to drain without waiting for the load balancer",
 			c.DrainDelay))
 	}
+	if c.ConfigResyncInterval < 0 {
+		problems = append(problems, fmt.Sprintf(
+			"CONFIG_RESYNC_INTERVAL %s must not be negative: use 0 to rebuild on invalidations only",
+			c.ConfigResyncInterval))
+	}
 	if c.ShutdownTimeout <= 0 {
 		problems = append(problems, fmt.Sprintf(
 			"SHUTDOWN_TIMEOUT %s must be positive: a service that cannot drain loses in-flight work",
@@ -1306,6 +1315,7 @@ func (c Config) LogValue() slog.Value {
 		slog.Int("ops_port", c.OpsPort),
 		slog.Duration("shutdown_timeout", c.ShutdownTimeout),
 		slog.Duration("drain_delay", c.DrainDelay),
+		slog.Duration("config_resync_interval", c.ConfigResyncInterval),
 		slog.Bool("otel_disabled", c.OTel.Disabled),
 		slog.String("otel_endpoint", c.OTel.Endpoint),
 		slog.Bool("postgres_url_set", strings.TrimSpace(c.Postgres.URL) != ""),

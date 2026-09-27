@@ -20,6 +20,7 @@ import (
 // cannot leak into a result.
 var knownVars = []string{
 	"ENVIRONMENT", "LOG_LEVEL", "OPS_PORT", "SHUTDOWN_TIMEOUT", "DRAIN_DELAY", "DRAIN_BUDGET",
+	"CONFIG_RESYNC_INTERVAL",
 	"SERVICE_NAME",
 	"OTEL_SDK_DISABLED", "OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_INSECURE",
 	"OTEL_TRACES_SAMPLER_ARG",
@@ -93,6 +94,10 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.DrainDelay != 5*time.Second {
 		t.Errorf("DrainDelay = %s, want 5s: a zero default gives kube-proxy no time to remove the "+
 			"endpoint, so a rolling deploy cuts binds the pod has just accepted", cfg.DrainDelay)
+	}
+	if cfg.ConfigResyncInterval != 5*time.Minute {
+		t.Errorf("ConfigResyncInterval = %s, want 5m: it bounds how long a lost invalidation leaves a pod "+
+			"on a stale config, a lost STOP included (step-399)", cfg.ConfigResyncInterval)
 	}
 	// DrainBudget bounds the WHOLE teardown, ShutdownTimeout only one component of it. They are
 	// separate variables because making them one number breaks a legitimate drain: a component that
@@ -293,6 +298,7 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		{"shutdown timeout zero", map[string]string{"SHUTDOWN_TIMEOUT": "0s"}, "SHUTDOWN_TIMEOUT"},
 		{"shutdown timeout negative", map[string]string{"SHUTDOWN_TIMEOUT": "-5s"}, "SHUTDOWN_TIMEOUT"},
 		{"drain delay negative", map[string]string{"DRAIN_DELAY": "-1s"}, "DRAIN_DELAY"},
+		{"config resync negative", map[string]string{"CONFIG_RESYNC_INTERVAL": "-1s"}, "CONFIG_RESYNC_INTERVAL"},
 		{"drain budget zero", map[string]string{"DRAIN_BUDGET": "0s"}, "DRAIN_BUDGET"},
 		{"drain budget negative", map[string]string{"DRAIN_BUDGET": "-1s"}, "DRAIN_BUDGET"},
 		// Under the per-component timeout the ceiling is worse than none: it cuts drains that were
