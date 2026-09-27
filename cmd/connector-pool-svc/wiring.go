@@ -175,6 +175,7 @@ func newPoolApp(ctx context.Context, cfg config.Config, bindEnv connectorEnv, lo
 			return redisstore.Subscribe(ctx, st.rdb, config.ChannelSnapshotInvalidation), nil
 		},
 		a.catalog.ObserveConfigRebuild(reloadRewrites),
+		config.WithResync(cfg.ConfigResyncInterval),
 		config.WithLogger(logger),
 	)
 

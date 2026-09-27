@@ -400,7 +400,7 @@ l'autorisation de la moitié des opérations, et le tableau de bord génère ses
       ouverte par step-330
 - [x] step-398 — Un STOP reçu en MO n'est appliqué qu'à la prochaine mutation Admin (§6.20) ⛓ step-395 —
       trouvé en ouvrant step-399 ; unité faute de multiple de dix libre
-- [ ] step-399 — Une invalidation perdue laisse une config périmée sans borne : resynchroniser
+- [x] step-399 — Une invalidation perdue laisse une config périmée sans borne : resynchroniser
       périodiquement ⛓ step-395, step-398 — ouverte par step-395 ; unité faute de multiple de dix libre
 - [ ] step-400 — `billing.events` durable : le BFF doit pouvoir détecter, pas seulement afficher
 - [ ] step-405 — La passerelle accepte les jetons du BFF : ancre du JWKS, contrat honnête, `created_by`

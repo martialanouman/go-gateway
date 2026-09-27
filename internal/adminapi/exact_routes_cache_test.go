@@ -256,7 +256,7 @@ func TestExactRouteImportAnnouncesTheConfigChangeAfterItsCommit(t *testing.T) {
 }
 
 // TestExactRouteImportAnnouncementFailureDoesNotFailTheJob: the rows are committed and the cache is
-// clear; a lost announcement only delays the Bloom rebuild to the next admin mutation, which is the
+// clear; a lost announcement only delays the Bloom rebuild to the next admin mutation or resync, which is the
 // same best-effort bargain the middleware already makes.
 func TestExactRouteImportAnnouncementFailureDoesNotFailTheJob(t *testing.T) {
 	log := &opLog{}

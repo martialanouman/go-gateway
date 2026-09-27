@@ -66,7 +66,7 @@ type routerApp struct {
 	senderIDs pipeline.SenderIDAuthorizer
 	// optOut is the enforcer the pipeline checks every message against, kept for the same reason.
 	optOut *optout.Enforcer
-	// optOutWatcher reloads the opt-out filter alone on a STOP announcement (step-398).
+	// optOutWatcher reloads the opt-out filter alone on a STOP announcement (step-398) and on its resync.
 	optOutWatcher *config.Watcher
 
 	// closers release what was opened, in reverse order of opening — the exact LIFO the deferred
@@ -193,8 +193,8 @@ func newRouterApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 	}
 	a.ops = ops
 
-	a.watcher = newSnapshotWatcher(st.pg, rdb, boot, stack, proj, blooms, a.catalog, logger)
-	a.optOutWatcher = newOptOutWatcher(st.pg, rdb, boot, blooms, logger)
+	a.watcher = newSnapshotWatcher(st.pg, rdb, boot, stack, proj, blooms, a.catalog, cfg.ConfigResyncInterval, logger)
+	a.optOutWatcher = newOptOutWatcher(st.pg, rdb, boot, blooms, cfg.ConfigResyncInterval, logger)
 	return a, nil
 }
 
@@ -721,6 +721,7 @@ func newSnapshotWatcher(
 	proj *acceptedProjector,
 	blooms bloomGauges,
 	catalog *metrics.Catalog,
+	resync time.Duration,
 	logger *slog.Logger,
 ) *config.Watcher {
 	return config.NewWatcher(
@@ -783,13 +784,15 @@ func newSnapshotWatcher(
 			proj.policy.Store(csnap)
 			return nil
 		}),
+		config.WithResync(resync),
 		config.WithLogger(logger),
 	)
 }
 
-// newOptOutWatcher reloads the opt-out filter alone on optout:changed (step-398). It stays off
+// newOptOutWatcher reloads the opt-out filter alone on optout:changed (step-398), and on its own resync so a
+// lost STOP does not wait for the routes to be healthy (step-399). It stays off
 // config_rebuild_total, which tracks the freshness of the whole config.
-func newOptOutWatcher(pool *pgxpool.Pool, rdb *goredis.Client, boot *bootSnapshots, blooms bloomGauges, logger *slog.Logger) *config.Watcher {
+func newOptOutWatcher(pool *pgxpool.Pool, rdb *goredis.Client, boot *bootSnapshots, blooms bloomGauges, resync time.Duration, logger *slog.Logger) *config.Watcher {
 	return config.NewWatcher(
 		func(ctx context.Context) (config.Stream, error) {
 			return redisstore.Subscribe(ctx, rdb, config.ChannelOptOutChanged), nil
@@ -801,6 +804,7 @@ func newOptOutWatcher(pool *pgxpool.Pool, rdb *goredis.Client, boot *bootSnapsho
 			blooms.set("optout", boot.optOut.CapacityBits())
 			return nil
 		},
+		config.WithResync(resync),
 		config.WithLogger(logger),
 	)
 }

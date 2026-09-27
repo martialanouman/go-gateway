@@ -407,3 +407,103 @@ func TestWatcherWindowIsNotPushedBackBySustainedNotifications(t *testing.T) {
 		t.Fatal("no rebuild at all")
 	}
 }
+
+// TestWatcherResyncsWithoutANotification: with no notification at all, the watcher rebuilds once per resync
+// period. A lost invalidation fails nothing and is replayed by nothing, so without this a pod serves the
+// config from before the change until the next mutation (step-399).
+func TestWatcherResyncsWithoutANotification(t *testing.T) {
+	const period = 200 * time.Millisecond
+	stream := newFakeStream()
+	rb := newFailingRebuild(func(int32) bool { return false })
+	w := config.NewWatcher(
+		func(context.Context) (config.Stream, error) { return stream, nil },
+		rb.rebuild,
+		config.WithWindow(5*time.Millisecond),
+		config.WithResync(period),
+	)
+	prev := time.Now()
+	_, stop := runWatcher(t, w)
+	defer stop()
+
+	for i := range 3 {
+		at := rb.next(t, "no resync rebuild without a notification")
+		// The jitter's own bounds are TestResyncDelayJittersTenPercentEitherWay's; this ceiling only
+		// catches a period ignored, with room for a loaded CI host.
+		if gap := at.Sub(prev); gap < period*9/10 || gap > period*4 {
+			t.Errorf("resync %d came %v after the previous one, want about %v", i+1, gap, period)
+		}
+		prev = at
+	}
+}
+
+// TestWatcherResyncCountsFromTheLastSuccess: a rebuild a notification triggered restarts the resync period,
+// so the config is never older than one period and a pod that the control plane keeps busy does not also
+// rebuild on a fixed clock.
+func TestWatcherResyncCountsFromTheLastSuccess(t *testing.T) {
+	const period = 300 * time.Millisecond
+	stream := newFakeStream()
+	rb := newFailingRebuild(func(int32) bool { return false })
+	w := config.NewWatcher(
+		func(context.Context) (config.Stream, error) { return stream, nil },
+		rb.rebuild,
+		config.WithWindow(5*time.Millisecond),
+		config.WithResync(period),
+	)
+	_, stop := runWatcher(t, w)
+	defer stop()
+
+	time.Sleep(period / 2)
+	stream.emit()
+	notified := rb.next(t, "the notification did not trigger a rebuild")
+	if gap := rb.next(t, "no resync after the notified rebuild").Sub(notified); gap < period*9/10 {
+		t.Errorf("the resync came %v after a successful rebuild, want at least %v: the period did not restart", gap, period*9/10)
+	}
+}
+
+// TestWatcherResyncLeavesAFailureToTheBackoff: a failed rebuild does not re-arm the resync, so an outage is
+// retried on the step-395 backoff alone instead of once more per period.
+func TestWatcherResyncLeavesAFailureToTheBackoff(t *testing.T) {
+	const period, backoff = 50 * time.Millisecond, time.Second
+	stream := newFakeStream()
+	rb := newFailingRebuild(func(int32) bool { return true })
+	w := config.NewWatcher(
+		func(context.Context) (config.Stream, error) { return stream, nil },
+		rb.rebuild,
+		config.WithWindow(5*time.Millisecond),
+		config.WithRetryBackoff(backoff, backoff),
+		config.WithResync(period),
+	)
+	_, stop := runWatcher(t, w)
+	defer stop()
+
+	failed := rb.next(t, "no resync rebuild")
+	if gap := rb.next(t, "the failed rebuild was never retried").Sub(failed); gap < backoff*9/10 {
+		t.Errorf("the failed rebuild was retried after %v, want the %v backoff: the resync cut it short", gap, backoff)
+	}
+}
+
+// TestWatcherResyncIsDisarmedByAFailure: the resync a success armed does not survive a later failure, so an
+// outage that starts between two resyncs is still retried on the backoff alone.
+func TestWatcherResyncIsDisarmedByAFailure(t *testing.T) {
+	const period, backoff = 150 * time.Millisecond, time.Second
+	stream := newFakeStream()
+	rb := newFailingRebuild(func(call int32) bool { return call >= 2 })
+	w := config.NewWatcher(
+		func(context.Context) (config.Stream, error) { return stream, nil },
+		rb.rebuild,
+		config.WithWindow(5*time.Millisecond),
+		config.WithRetryBackoff(backoff, backoff),
+		config.WithResync(period),
+	)
+	_, stop := runWatcher(t, w)
+	defer stop()
+
+	stream.emit()
+	rb.next(t, "the first notification did not trigger a rebuild")
+	stream.emit()
+	failed := rb.next(t, "the second notification did not trigger a rebuild")
+	if gap := rb.next(t, "the failed rebuild was never retried").Sub(failed); gap < backoff*9/10 {
+		t.Errorf("the failed rebuild was retried after %v, want the %v backoff: the resync armed by the "+
+			"earlier success cut it short", gap, backoff)
+	}
+}

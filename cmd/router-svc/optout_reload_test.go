@@ -78,3 +78,65 @@ func TestAStopAnnouncedOnItsOwnChannelReachesTheRunningRouter(t *testing.T) {
 		time.Sleep(300 * time.Millisecond)
 	}
 }
+
+// TestAStopWhoseAnnouncementIsLostReachesTheRouterOnResync: the STOP is written and NOTHING is published —
+// the announcement lost to a Redis blip. Each watcher that reloads the opt-out filter runs alone and must
+// apply it on its own resync: the snapshot watcher's reload sits behind the routes and the exact-route
+// Bloom, so an outage of those tables must not suspend the opt-out watcher's bound (§6.20, step-399).
+func TestAStopWhoseAnnouncementIsLostReachesTheRouterOnResync(t *testing.T) {
+	for _, name := range []string{"snapshot", "opt-out"} {
+		t.Run(name, func(t *testing.T) { stopAppliedOnResync(t, name) })
+	}
+}
+
+func stopAppliedOnResync(t *testing.T, watcher string) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	cfg := testConfig()
+	cfg.Postgres = pgtest.Config(t)
+	cfg.Redis = redistest.Config(t)
+	cfg.ConfigResyncInterval = 500 * time.Millisecond
+	app, err := newRouterApp(ctx, cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("newRouterApp: %v", err)
+	}
+	watcherDone := make(chan struct{})
+	w := app.watcher
+	if watcher == "opt-out" {
+		w = app.optOutWatcher
+	}
+	go func() { _ = w.Run(ctx); close(watcherDone) }()
+	t.Cleanup(func() {
+		cancel()
+		<-watcherDone
+		app.close()
+	})
+
+	recipient := fmt.Sprintf("22507%08d", rand.IntN(100_000_000))
+	optedOut := func() bool {
+		t.Helper()
+		blocked, err := app.optOut.IsOptedOut(ctx, uuid.New(), uuid.New(), "ACME", recipient)
+		if err != nil {
+			t.Fatalf("IsOptedOut: %v", err)
+		}
+		return blocked
+	}
+	if optedOut() {
+		t.Fatal("the recipient is opted out before any STOP — the control failed")
+	}
+
+	if _, err := postgres.NewSuppressionRepo(pgtest.Pool(t)).Create(ctx, cp.NewSuppression{
+		Scope: cp.SuppressionScopePlatform, MSISDN: recipient, Source: cp.SuppressionSourceMOStop,
+	}); err != nil {
+		t.Fatalf("write the STOP suppression: %v", err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for !optedOut() {
+		if time.Now().After(deadline) {
+			t.Fatal("the running router still sends to a recipient who sent STOP: with no announcement, " +
+				"nothing ever rebuilt its opt-out filter")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
