@@ -1,6 +1,6 @@
 # ADR-0019 : Le BFF du tableau de bord émet les jetons de l'API Admin, au nom de l'opérateur connecté
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-09-26
 **Deciders:** Équipe plateforme (arbitrage utilisateur, après step-310)
 **Réf spec:** passerelle §6.14 ; tableau de bord §6.9, §6.10, §517 ; ADR-0017 (amendé, non remplacé) ; step-310
@@ -46,7 +46,13 @@ Le BFF est l'**émetteur** des jetons de l'API Admin. Il n'y a pas d'IdP sépar�
 - **Rotation.** Le BFF publie la nouvelle clé, signe avec elle, puis retire l'ancienne du JWKS une fois la
   durée de vie maximale d'un jeton écoulée. La passerelle recharge le JWKS dès qu'elle rencontre un `kid`
   inconnu : aucune coordination, aucun redémarrage.
-- **Scripts et collection en production.** Pas de compte de service. Le BFF délivre à un opérateur
+- **Jobs planifiés.** Les extractions programmées sont planifiées **par le BFF**, qui signe un jeton de
+  5 minutes à chaque exécution : aucun jeton n'est stocké. Un job tourne au nom de **l'opérateur qui l'a
+  créé** (`sub`, avec ses scopes au moment de l'exécution). Si cet opérateur est désactivé, ses jobs
+  s'arrêtent. Le traitement lui-même est asynchrone dans la passerelle (le modèle de
+  `create-message-export`), qui n'appelle pas l'API Admin et n'a besoin d'aucun jeton.
+- **Scripts et collection en production.** Pas de compte de service : aucune automatisation externe n'est
+  prévue (arbitrage utilisateur, 2026-09-27). Le BFF délivre à un opérateur
   authentifié, MFA comprise, un **jeton personnel** à son `sub`, dont les scopes sont inclus dans les siens et
   dont la durée est d'une heure au plus. Tout appel reste imputé à une personne.
 - **Transport.** Le mTLS de step-300 reste la preuve de *quelle machine* appelle. Le jeton est la preuve de
@@ -103,8 +109,10 @@ restent grossiers : un `script_author` porte `admin:write`, et le BFF reste seul
   changer le type du schéma ne l'est pas, et n'est pas proposé ici.
 - **Plus dur :** le BFF doit garder une clé, la faire tourner et servir un JWKS disponible. Si son JWKS est
   indisponible pendant qu'une clé tourne, la passerelle répond 503 aux jetons signés par la nouvelle clé.
-- **À revoir** si un second appelant, qui ne soit pas le BFF, doit un jour parler à l'API Admin sans humain
-  derrière lui.
+- **À revoir** si une automatisation externe doit un jour parler à l'API Admin sans humain derrière elle.
+  Il faudrait alors des comptes de service **gérés par le BFF** (secret échangé auprès du BFF contre un jeton
+  de 5 minutes, révocation dans le BFF), plutôt que des jetons longue durée révocables par la passerelle, qui
+  lui imposeraient une liste de révocation sur le chemin d'authentification.
 
 ## Action Items
 

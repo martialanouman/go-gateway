@@ -404,6 +404,10 @@ l'autorisation de la moitié des opérations, et le tableau de bord génère ses
 - [ ] step-410 — **GO-LIVE** : dérouler la checklist de mise en production
       ⛓ step-260, step-270, step-280, step-290, step-310, step-320, step-397, step-405
 
+## Après le go-live
+- [ ] step-420 — Exporter les CDR archivés : l'archive froide n'existe pas en production (aucune
+      destination objet, `ARCHIVE_PREFIX` absent) ; la faire exister, puis la lire ⛓ step-410
+
 ---
 
 ## Correspondance des numéros — renumérotation du 2026-08-27
