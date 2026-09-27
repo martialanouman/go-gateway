@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway-config
+  labels:
+    gateway.test/phase: deps
+data:
+  ENVIRONMENT: staging
+  KAFKA_BROKERS: redpanda:9092
+  KAFKA_TOPIC_REPLICATION_FACTOR: "1"
+  OTEL_SDK_DISABLED: "true"

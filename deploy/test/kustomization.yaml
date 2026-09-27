@@ -1,0 +1,29 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: gateway
+resources:
+  - rendered/base.yaml
+  - gateway-oidc.yaml
+  - ingress.yaml
+  - deps/postgres.yaml
+  - deps/redis.yaml
+  - deps/redpanda.yaml
+  - deps/clickhouse.yaml
+  - deps/rustfs.yaml
+  - deps/smsc-simulator.yaml
+patches:
+  - path: patches/gateway-config.yaml
+  - path: patches/smpp-server-svc.yaml
+  - path: patches/connector-pool-svc.yaml
+  - path: patches/admin-api-svc.yaml
+  - path: patches/scale-down.yaml
+    target:
+      kind: Deployment
+      labelSelector: app.kubernetes.io/part-of=go-gateway
+  - path: patches/hpa.yaml
+    target:
+      kind: HorizontalPodAutoscaler
+  - path: patches/job-phase.yaml
+    target:
+      kind: Job
+      labelSelector: app.kubernetes.io/part-of=go-gateway

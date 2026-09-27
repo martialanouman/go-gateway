@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Commande forcée de la clé de CD (authorized_keys) : lit le YAML rendu sur stdin et l'applique par
+# phases. Un Job est supprimé avant d'être réappliqué : son template est immuable.
+set -euo pipefail
+# Commande forcée SSH (shell non-connecté) : PAM peut ne pas exposer /usr/local/bin. On l'ajoute sans
+# écraser un PATH déjà fourni (le test y préfixe un kubectl factice).
+export PATH="${PATH:+$PATH:}/usr/local/bin:/usr/bin:/bin"
+# kubectl de k3s (binaire multi-appel) retombe sur /etc/rancher/k3s/k3s.yaml (root, mode 600) quand
+# KUBECONFIG est vide : l'utilisateur deploy se voit alors refuser l'accès sans jamais lire le sien.
+export KUBECONFIG="$HOME/.kube/config"
+
+ns=gateway
+work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
+cat >"$work/all.yaml"
+k() { kubectl -n "$ns" "$@"; }
+
+# k wait --for=condition=complete ne renvoie jamais sur un Job Failed (bloqué jusqu'au timeout) :
+# on scrute chaque Job de la phase et on sort en échec dès qu'un Failed apparaît.
+run_jobs() {
+  k delete job -l "gateway.test/phase=$1" --ignore-not-found --wait=true
+  k apply -f "$work/all.yaml" -l "gateway.test/phase=$1"
+  local names deadline name status pending
+  names=$(k get job -l "gateway.test/phase=$1" -o jsonpath='{.items[*].metadata.name}')
+  deadline=$((SECONDS + 300))
+  while [[ -n $names ]]; do
+    pending=""
+    for name in $names; do
+      status=$(k get job "$name" -o jsonpath='{range .status.conditions[*]}{.type}={.status}{","}{end}')
+      if [[ $status == *"Failed=True"* ]]; then
+        echo "gateway-deploy: job $name en échec" >&2
+        k logs "job/$name" --tail=50 || true
+        exit 1
+      fi
+      [[ $status == *"Complete=True"* ]] || pending="$pending $name"
+    done
+    names="${pending# }"
+    if [[ -n $names ]]; then
+      (( SECONDS < deadline )) || { echo "gateway-deploy: délai dépassé pour la phase $1" >&2; exit 1; }
+      sleep 2
+    fi
+  done
+}
+
+k apply -f "$work/all.yaml" -l gateway.test/phase=deps
+for r in $(k get statefulset,deployment -l app.kubernetes.io/part-of=test-deps -o name); do
+  k rollout status "$r" --timeout=300s
+done
+run_jobs deps-job
+run_jobs job
+k apply -f "$work/all.yaml" -l '!gateway.test/phase'
+for r in $(k get deployment -l app.kubernetes.io/part-of=go-gateway -o name); do
+  k rollout status "$r" --timeout=600s
+done
+echo "gateway-deploy: déployé"

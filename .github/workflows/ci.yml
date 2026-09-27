@@ -149,7 +149,9 @@ jobs:
       # ops port, the grace period, secrets by reference, the HPA ceiling — is asserted by
       # internal/deploy under the `test` job.
       - name: kubeconform
-        run: make kubeconform manifests
+        run: |
+          make kubeconform manifests
+          PATH="$(go env GOPATH)/bin:$PATH" make test-env
 
   image:
     name: Image builds, runs non-root and refuses an incomplete production config

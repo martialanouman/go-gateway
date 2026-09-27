@@ -1,0 +1,14 @@
+# Le ServiceLB de k3s n'envoie pas d'en-tête PROXY et la source arrive en 10.x : avec la liste de
+# confiance de production, chaque bind serait refusé (internal/smppserver/proxyproto.go).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: smpp-server-svc
+spec:
+  template:
+    spec:
+      containers:
+        - name: smpp-server-svc
+          env:
+            - name: SMPP_TRUSTED_PROXY_CIDRS
+              $patch: delete

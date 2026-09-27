@@ -15,6 +15,9 @@ Deux gardes les tiennent, et elles ne se recouvrent pas :
 
 ## Ce que ces manifests ne contiennent pas
 
+L'environnement de test k3s rejoue ces manifests sans les modifier, par l'overlay `deploy/test/` : voir
+son `README.md`.
+
 - **Les images existent depuis step-270b**, publiées sur GHCR par le workflow `Release` — qui se
   déclenche **à la main** (`workflow_dispatch`), pas au merge. Elles sont `linux/amd64` et
   `linux/arm64`, distroless, sans shell, en `USER 65532`.
