@@ -46,11 +46,37 @@ Points à trancher (spec → Fable → humain, cf. le déroulé des steps) :
 5. **Le cas de l'Admin API.** Rendre l'annonce durable (outbox) serait l'autre remède ; il ne couvre pas
    les deux autres portes, d'où la préférence pour la resynchronisation. À confirmer.
 
+## Design arrêté
+
+Arbitrage Fable le 2026-09-27, validé par l'utilisateur. La spec ne chiffre aucune fraîcheur ; son schéma
+d'architecture nomme déjà « config sync (pub/sub / polling) », et `modlrrouter/stop.go` logue depuis step-398
+« routers catch up on resync » : cette fiche tient ce contrat.
+
+1. **Réglage** : `CONFIG_RESYNC_INTERVAL`, champ de premier niveau de `config.Config` (même contrat que
+   `DRAIN_DELAY`) : défaut 5 min, 0 désactive, négatif refusé. Passé au Watcher par `WithResync(d)`, qui
+   ignore `d ≤ 0` ; sans l'option, pas de resynchronisation. 5 min et non 1 h : la même période borne l'envoi
+   à un désabonné dont l'annonce `optout:changed` s'est perdue.
+2. **Mécanisme — un tick synthétique** : un timer de resync armé au démarrage de `Run` et réarmé après chaque
+   rebuild **réussi**, gigue ±10 % ; à l'échéance il dépose un tick dans `ticks`, rien d'autre. Coalescence,
+   rejeu et « jamais deux rebuilds concurrents » restent ceux de step-395. Fraîcheur bornée par
+   1,1 × période depuis le dernier succès. La gigue décorrèle les pods qu'une notification commune aligne.
+3. **Charge** : `buildFilter` pagine par 1 000 ; 5 M de lignes MNP × 4 réplicas / 5 min ≈ 70 requêtes
+   d'index/s sur la flotte.
+4. **Services** : le snapshot watcher du routeur (son rebuild recharge aussi l'opt-out, il rattrape donc un
+   `optout:changed` perdu) et le rewrite watcher du connector-pool. Ni le watcher opt-out seul, ni config-sync
+   (sans état). Une resync dédiée plus courte de l'opt-out attendra une exigence qui nomme une borne < 5 min.
+5. **Outbox Admin écartée** : elle ne couvre ni le pub/sub non durable ni config-sync redémarrant.
+
+Conséquences assumées : `config_rebuild_total{outcome="ok"}` ne mesure plus l'activité Admin ; l'écriture
+non atomique entre composants devient périodique ; un arrêt pendant un rebuild compte `+1 error` plus souvent
+(step-395). Dettes ouvertes dans la PR : `buildFilter` matérialise tous les MSISDN avant de dimensionner le
+filtre (~150 Mo transitoires toutes les 5 min) ; le cache `exactroute:*` (TTL 6 h) n'est pas borné par la
+resync si le DEL Admin a échoué.
+
 ## Chaîne de preuves (esquisse)
 
 1. Rouge dans `internal/config` : sans aucune notification, un rebuild a lieu au bout de la période.
-2. Mutation : la période ignorée ou infinie fait tomber le test ; un rebuild périodique concurrent d'un
-   rejeu aussi.
+2. Mutation : la période ignorée, le réarmement absent, ou réarmé sur échec font tomber les tests.
 3. Bout en bout : un changement en base **sans** publication atteint le résolveur du routeur dans la
    période.
 4. `make check` vert.
