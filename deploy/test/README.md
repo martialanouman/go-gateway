@@ -12,6 +12,8 @@ ce qui ne se verrait qu'au déploiement (kubeconform + les invariants propres à
 ## 2. Prérequis
 
 - VPS Ubuntu 24.04, **8 vCPU / 16 Go minimum** (Contabo ou équivalent).
+- Accès root par clé SSH déjà installé sur le VPS (sinon `install.sh` désactive l'authentification par
+  mot de passe et vous enferme dehors).
 - DNS Cloudflare, deux enregistrements A vers l'IP du VPS :
   - `api.test` — **proxifié** (nuage orange), SSL/TLS en mode **Full (strict)**.
   - `smpp.test` — **DNS only** (nuage gris) : SMPP n'est pas du HTTP, Cloudflare ne peut pas le
@@ -30,10 +32,12 @@ ssh root@IP bash /root/install.sh "$(cat cd-key.pub)"
 ```
 
 `install.sh` pose ufw (SSH + les réseaux pods/Services de k3s), installe k3s, crée le namespace
-`gateway`, un utilisateur `deploy` avec un kubeconfig **restreint à ce namespace**
-(`/home/deploy/.kube/config`), et une `authorized_keys` à **commande forcée** : la clé de CD ne peut
-exécuter que `/usr/local/bin/gateway-deploy` (`gateway-deploy` copié à l'étape précédente), rien
-d'autre. Notez la dernière ligne affichée — l'empreinte de l'hôte, nécessaire à l'étape suivante.
+`gateway` (étiqueté `pod-security.kubernetes.io/enforce=baseline` : une clé de CD fuitée ne peut pas y
+faire tourner un pod privilégié ou hostPath/hostNetwork), un utilisateur `deploy` avec un kubeconfig
+**restreint à ce namespace** (`/home/deploy/.kube/config`), et une `authorized_keys` à **commande
+forcée** : la clé de CD ne peut exécuter que `/usr/local/bin/gateway-deploy` (`gateway-deploy` copié à
+l'étape précédente), rien d'autre. Notez la dernière ligne affichée — l'empreinte de l'hôte, nécessaire
+à l'étape suivante.
 
 ## 4. Secrets GitHub (environnement `test`)
 
@@ -59,11 +63,25 @@ le premier déploiement.
 
 ## 6. Premier déploiement
 
-GitHub → Actions → **Deploy test** → *Run workflow*, avec le SHA de `main` en entrée (`sha`).
+Le premier push de ce dépôt crée les paquets GHCR (`go-gateway/*` et `go-smsc-simulator`) **privés** :
+k3s ne peut pas encore les tirer. Avant le tout premier déploiement, dans l'ordre :
+
+1. Lancer une fois le workflow (étape ci-dessous) : il pousse les images puis le déploiement échoue en
+   `ImagePullBackOff` — c'est attendu.
+2. Sur GitHub, basculer chaque paquet (`go-gateway/*` et `go-smsc-simulator`) en **public**. Alternative
+   sans rendre les paquets publics : §9 (`registries.yaml` avec un PAT `read:packages`), à poser dès
+   l'installation de l'hôte.
+3. Relancer le workflow avec le même SHA — il retrouve les images déjà poussées.
+
+GitHub → Actions → **Deploy test** → *Run workflow*, avec le SHA complet (40 caractères) de `main` en
+entrée (`sha`).
 
 ## 7. Rollback
 
-Le même geste, avec le SHA d'un commit antérieur.
+Le même geste, avec le SHA complet (40 caractères) d'un commit antérieur. Ça ne marche qu'entre commits
+qui n'ont ajouté aucune migration : revenir à un commit antérieur à une migration fait échouer le Job
+`migrate` (golang-migrate : « no migration found for version N »), qui bloque le déploiement avant
+l'application. Dans ce cas, repartir d'un namespace neuf (étape 5) plutôt que de rollback.
 
 ## 8. Accès exploitant
 
