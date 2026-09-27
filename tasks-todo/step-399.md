@@ -1,7 +1,7 @@
-# step-398 — Une invalidation perdue laisse une config périmée sans borne : resynchroniser périodiquement
+# step-399 — Une invalidation perdue laisse une config périmée sans borne : resynchroniser périodiquement
 
 > **Jalon :** Dette ouverte par step-395 · **Statut :** À FAIRE
-> **Dépend de :** step-395 · **Bloque :** —
+> **Dépend de :** step-395, step-398 · **Bloque :** —
 
 ## Pourquoi cette fiche existe
 

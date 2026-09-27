@@ -3,6 +3,7 @@ package optout
 import (
 	"context"
 	"fmt"
+	"sync"
 	"sync/atomic"
 
 	"github.com/google/uuid"
@@ -59,6 +60,10 @@ func (i *InboundNumberIndex) Resolve(from string) (uuid.UUID, bool) {
 type Enforcer struct {
 	guard   *Guard
 	inbound atomic.Pointer[InboundNumberIndex]
+	// reloading serialises Reload's read-then-swap. Two watchers reload the enforcer (the full config
+	// rebuild and the STOP announcement, step-398): unserialised, a reload that read the table before a
+	// STOP committed could swap its stale filter in after the fresh one — a STOP silently lost (§6.20).
+	reloading sync.Mutex
 }
 
 // NewEnforcer composes the opt-out Guard with the inbound-number index. A nil index is treated as
@@ -78,6 +83,8 @@ func NewEnforcer(guard *Guard, inbound *InboundNumberIndex) *Enforcer {
 // number unenforced until restart, so both move together. Each is swapped atomically; on a build
 // failure the current value keeps serving, and the returned error triggers an idempotent retry.
 func (e *Enforcer) Reload(ctx context.Context, supp SuppressionLister, inbound InboundNumberLister) error {
+	e.reloading.Lock()
+	defer e.reloading.Unlock()
 	if err := e.guard.Reload(ctx, supp); err != nil {
 		return err
 	}

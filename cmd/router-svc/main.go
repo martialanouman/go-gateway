@@ -90,6 +90,7 @@ func run() error {
 		return runResilient(c, "outcome-cdr projector", app.outcome.projector.Run, logger)
 	})
 	g.Add("snapshot watcher", app.watcher.Run)
+	g.Add("opt-out watcher", app.optOutWatcher.Run)
 	g.Add("metric stream", func(c context.Context) error {
 		app.emitter.Run(c, metricStreamInterval)
 		return nil

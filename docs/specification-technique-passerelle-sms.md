@@ -419,6 +419,7 @@ connectorload:{connector_id}         -- derived in-flight gauge per connector (s
                                          read by router-svc for least_loaded (§6.1) through a 1 s per-connector cache
 config:changed                       -- pub/sub channel: Admin API announces a control-plane mutation; config-sync coalesces these (§11, M7)
 breaker:events                       -- pub/sub channel for near-immediate routing-snapshot invalidation (config-sync M7, breaker transition M8)
+optout:changed                       -- pub/sub channel: a STOP received as an MO announces its suppression; router-svc reloads its opt-out filter alone (§6.20)
 ```
 
 ### 3.3 Plan de données (broker de messages — Kafka)
