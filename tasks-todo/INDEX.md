@@ -393,7 +393,7 @@ Les deux premières sont nées de step-260c. **step-395 est un défaut de produc
 périmée sans borne — et se solde avant le go-live ; **step-396** est une question de mesure, pas une
 politique manquante, et ne bloque rien. **step-397** est née de step-330 : le contrat publié ment sur
 l'autorisation de la moitié des opérations, et le tableau de bord génère ses clients depuis lui.
-- [ ] step-395 — Le watcher de config ne rejoue jamais un rebuild échoué (correctif + métrique)
+- [x] step-395 — Le watcher de config ne rejoue jamais un rebuild échoué (correctif + métrique)
 - [ ] step-396 — Le Postgres *lent* : mesurer l'équivalence « lent ≡ coupé » (et trancher d'abord
       l'atteignabilité de la branche `ErrConflict`)
 - [x] step-397 — 50 opérations Admin exigent un scope que le contrat ne déclare pas ⛓ step-390 —

@@ -1,6 +1,6 @@
 # step-395 — Le watcher de config ne rejoue jamais un rebuild échoué
 
-> **Jalon :** Dette ouverte par step-260c · **Statut :** À FAIRE
+> **Jalon :** Dette ouverte par step-260c · **Statut :** LIVRÉE
 > **Dépend de :** — · **Bloque :** —
 
 ## Pourquoi cette fiche existe
