@@ -14,8 +14,8 @@ traverse. Deux manques, reportés hors du premier livrable :
    ligne `smsc_connectors` visée par une route. Le modèle du seed : `internal/e2e/e2e_test.go:221`
    (`seedControlPlane`) ; par l'API Admin, pour que `config:changed` invalide les caches.
 2. **Aucune preuve bout-en-bout.** Un Job `smoke` qui binde en TLS, soumet un `submit_sm` avec
-   `registered_delivery` et attend son DLR — à condition que smsc-simulator v0.7.0 émette des DLR avec
-   la configuration `healthy` (à vérifier dans son dépôt ; `docs/specification-technique-simulateur-smsc.md`).
+   `registered_delivery` et attend son DLR — smsc-simulator v0.8.0 les émet : le bloc `dlr` de sa
+   configuration (`deploy/test/bootstrap-secrets.sh`) reprend celui de son propre `deploy/configmap.yaml`.
 
 ## Definition of Done
 - [ ] Seed idempotent par l'API Admin, rejouable après une remise à zéro du namespace.

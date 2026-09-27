@@ -21,10 +21,11 @@ spec:
     spec:
       containers:
         - name: smsc-simulator
-          image: ghcr.io/martialanouman/go-smsc-simulator:v0.7.0
+          image: ghcr.io/martialanouman/go-smsc-simulator:v0.8.0
+          args: [--config, /etc/smsc/config.yml]
           ports: [{containerPort: 2775}, {containerPort: 9000}]
           readinessProbe:
-            httpGet: {path: /health, port: 9000}
+            tcpSocket: {port: 2775}
             periodSeconds: 5
           volumeMounts:
             - {name: config, mountPath: /etc/smsc/config.yml, subPath: config.yml}

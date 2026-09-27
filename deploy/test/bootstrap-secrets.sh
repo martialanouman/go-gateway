@@ -72,6 +72,10 @@ virtual_smscs:
     scenario:
       profile: healthy
       latency: { distribution: fixed, params: { ms: 5 } }
+      dlr:
+        delay: { distribution: fixed, ticks: 5 }
+        outcome_weights: { delivered: 90, failed: 8, expired: 2 }
+        clock: logical
 EOF
 
 k() { kubectl -n "$ns" create "$@" --dry-run=client -o yaml; echo "---"; }

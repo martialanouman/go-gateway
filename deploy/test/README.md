@@ -20,7 +20,7 @@ ce qui ne se verrait qu'au déploiement (kubeconform + les invariants propres à
     proxifier.
 - Un certificat **Origin CA** Cloudflare pour `api.test.manouman.com`, téléchargé en `origin.crt` /
   `origin.key` (Cloudflare → SSL/TLS → Origin Server).
-- L'image `ghcr.io/martialanouman/go-smsc-simulator:v0.7.0` publiée en `linux/amd64` par la CI de ce
+- L'image `ghcr.io/martialanouman/go-smsc-simulator:v0.8.0` publiée en `linux/amd64` par la CI de ce
   dépôt-là (`deps/smsc-simulator.yaml` la référence telle quelle).
 
 ## 3. Préparer l'hôte
