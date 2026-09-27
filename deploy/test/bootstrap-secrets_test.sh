@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/../.."
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+openssl req -x509 -newkey rsa:2048 -nodes -subj /CN=origin -days 1 \
+  -keyout "$tmp/o.key" -out "$tmp/o.crt" 2>/dev/null
+XDG_CONFIG_HOME="$tmp/cfg" deploy/test/bootstrap-secrets.sh --print \
+  --origin-cert "$tmp/o.crt" --origin-key "$tmp/o.key" >"$tmp/out.yaml"
+
+fail() { echo "bootstrap-secrets_test: $*" >&2; exit 1; }
+for s in gateway-secrets test-deps clickhouse-archive smsc-simulator-config api-origin-tls \
+  billing-svc-tls content-key-svc-tls session-manager-svc-tls smpp-server-svc-tls \
+  mo-dlr-router-svc-tls admin-api-svc-tls router-svc-tls connector-pool-svc-tls rest-api-svc-tls; do
+  grep -q "^  name: $s$" "$tmp/out.yaml" || fail "secret absent : $s"
+done
+for k in POSTGRES_URL REDIS_URL CLICKHOUSE_PASSWORD CONTENT_KMS_MASTER_KEY CONNECTOR_SYSTEM_ID \
+  CONNECTOR_PASSWORD HTTP_ADMIN_TOKENS POSTGRES_PASSWORD REDIS_PASSWORD RUSTFS_ACCESS_KEY RUSTFS_SECRET_KEY; do
+  grep -q "^  $k: " "$tmp/out.yaml" || fail "clé absente : $k"
+done
+pw=$(grep '^  CONNECTOR_PASSWORD: ' "$tmp/out.yaml" | awk '{print $2}' | base64 -d)
+(( ${#pw} <= 8 )) || fail "CONNECTOR_PASSWORD fait ${#pw} caractères, SMPP en permet 8"
+kms=$(grep '^  CONTENT_KMS_MASTER_KEY: ' "$tmp/out.yaml" | awk '{print $2}' | base64 -d | base64 -d | wc -c)
+(( kms == 32 )) || fail "CONTENT_KMS_MASTER_KEY décode en $kms octets, 32 attendus"
+[[ -f "$tmp/cfg/go-gateway-test/operator.crt" ]] || fail "certificat exploitant non conservé"
+[[ -z $(git status --porcelain --ignored -- .tls) ]] || fail "des certificats ont atterri dans le dépôt"
+echo "bootstrap-secrets_test: ok"
