@@ -37,9 +37,9 @@ step-260g a ouvert celle-ci pour que la dette ait un porteur.
 |---|---|---|
 | `accepted`, `enroute`, `rerouted` | `ENROUTE` (1) | vide |
 | `delivered` | `DELIVERED` (2) | `delivered_at` |
-| `expired` | `EXPIRED` (3) | `delivered_at` |
-| `cancelled` | `DELETED` (4) | vide (voir ci-dessous) |
-| `failed` | `UNDELIVERABLE` (5) | `delivered_at` si porté, sinon vide |
+| `expired` | `EXPIRED` (3) | vide |
+| `cancelled` | `DELETED` (4) | vide |
+| `failed` | `UNDELIVERABLE` (5) | vide |
 | `rejected` | `REJECTED` (8) | vide — aucun writer n'émet ce statut aujourd'hui (`StatusRejected` n'est que lu, `replay.go:213`) |
 | inconnu du tenant, ou `message_id` non parsable | `ESME_RINVMSGID` | — |
 
@@ -51,13 +51,16 @@ compte de l'abonné par le service client », pas « accepté par la passerelle 
 la soumission est `ENROUTE` pour un ESME 3.4 (SCHEDULED n'existe qu'en 5.0). La distinction
 `accepted`/`enroute` reste visible par `get-message` REST, pas par `query_sm`.
 
-**`final_date`** : `CDRRow` ne porte que `SubmittedAt` et `DeliveredAt` (`cdr.go:114-115`), et la table
-n'a pas d'horodatage d'insertion (`version` est un rang). Les lignes `cancelled` (`mapping.go:104`) et
-reroute/dead-letter (`reroute.go:183`) ne remplissent pas `delivered_at` : leur `final_date` est vide,
-ce que SMPP tolère mal pour un état final. Arbitrage à la PR : soit le consigner comme écart, soit faire
-remplir `delivered_at` par ces writers (une ligne chacun, mais un changement de sémantique de colonne à
-nommer). À noter aussi : l'expiration max-age du pool passe par la dead-letter et écrit `failed`, pas
-`expired` (`reroute.go:139-142`) — un tel message répond `UNDELIVERABLE`, non `EXPIRED`.
+**`final_date`** (arbitré par Fable le 2026-09-27) : `delivered_at` n'est rempli que pour
+`delivered` (`modlrrouter.go:210`), et l'agrégat ne le remonte que si tous les segments sont livrés
+(`cdr.go:366`). `final_date` vaut donc `delivered_at` pour DELIVERED et reste vide pour tout autre état,
+final compris. Faire remplir `delivered_at` par les writers `expired`/`failed`/`cancelled` changerait la
+sémantique d'une colonne publique (REST get-message, export et recherche Admin, `latency_ms`,
+`cdr_events.at`) : écarté. Une colonne `finalized_at` (migration + tous les writers) est hors de
+proportion pour un champ informatif d'une opération de polling. L'écart est consigné dans
+`debts/query-sm-final-date-vide-hors-delivered.md`. Format : temps absolu SMPP §7.1.1 en UTC
+(`YYMMDDhhmmsst00+`). À noter aussi : l'expiration max-age du pool passe par la dead-letter et écrit
+`failed`, pas `expired` (`reroute.go:139-142`) — un tel message répond `UNDELIVERABLE`, non `EXPIRED`.
 
 **Arbitrage — le lag de projection (ADR-0012).** Le statut est une projection asynchrone : un message
 soumis il y a 200 ms peut n'avoir que sa ligne `accepted` alors qu'il est déjà sur le fil. Comme
@@ -66,9 +69,13 @@ terminale ; après, on répond le dernier état durablement connu, exactement ce
 répond au même instant (parité protocole). On ne lit **pas** Redis ni le pool pour
 « rattraper » la projection. Le lag se surveille par la métrique du guide §16.
 
-**Erreur ClickHouse** : `ESME_RQUERYFAIL` (`0x67`), le code SMPP dédié, **n'existe pas** dans
-`internal/platform/errors` (vérifié) : l'ajouter suit `.claude/rules/errors.md` (trois endroits). Jamais `ESME_ROK` + `UNKNOWN` sur une erreur : ce serait retomber dans le défaut que
-cette fiche ferme.
+**Erreur ClickHouse** (arbitré par Fable le 2026-09-27) : `ESME_RQUERYFAIL` (`0x67`), ajouté comme
+constante SMPP brute `StatusQueryFail` à côté de `StatusInvalidBindStatus`, **pas** comme `Code` du
+catalogue : il n'a ni surface HTTP ni `cdr.error_code`, donc `.claude/rules/errors.md` ne s'applique pas
+(ni OpenAPI, ni §11.3, ni bump). Le `Code` métier de l'échec reste `internal_error`, ce que REST
+get-message répond au même instant. Un `MessageReader` absent (build sans ClickHouse) répond aussi
+`ESME_RQUERYFAIL`, comme un `Canceller` absent répond `ESME_RCANCELFAIL`. Jamais `ESME_ROK` + `UNKNOWN`
+sur une erreur : ce serait retomber dans le défaut que cette fiche ferme.
 
 **Retrait de l'aveu** : le godoc de `MessageStateUnknown` (`smpp.go:58-59`) perd sa seconde phrase dans
 la même PR.
@@ -80,9 +87,11 @@ la même PR.
 2. Table du mapping ; `ESME_RINVMSGID` pour un ID inconnu ; `ESME_RINVMSGID` pour un ID d'un autre
    compte (fixture non creuse : le fake reader **doit** recevoir le `accountID` de la session, sinon
    le test passe sur un reader qui ignore le scope — mémoire `hollow-test-fixtures`).
-3. Intégration `clickhouse` : `Current` sur une ligne insérée par le writer, scope respecté.
-4. Test de câblage `cmd/smpp-server-svc/wiring_test.go` : le reader est branché (mutation : retirer
-   l'option → `UNKNOWN` → tombe).
+3. Intégration `clickhouse` : déjà couverte par `TestCDRCurrentScopedToAccount`
+   (`cdr_integration_test.go:151`), rien à ajouter.
+4. Test de câblage `TestNewSMPPAppBuildsTheWholeGraph` : lit par `reflect` le champ non exporté
+   `opts.MessageReader` du listener construit (aucune surface de production ajoutée) ; mutation :
+   retirer l'option de `wiring.go` → tombe.
 5. `make check` vert.
 
 ## Hors périmètre
