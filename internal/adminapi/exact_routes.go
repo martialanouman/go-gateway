@@ -211,14 +211,14 @@ func (h *exactRouteHandlers) forget(ctx context.Context, msisdns ...string) bool
 // the PublishConfigChanges middleware and must NOT call this.
 func (h *exactRouteHandlers) announceReload(ctx context.Context) bool {
 	if h.pub == nil {
-		return true // no publisher wired: the next admin mutation still triggers a rebuild
+		return true // no publisher wired: the next admin mutation or resync still triggers a rebuild
 	}
 	actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), invalidateTimeout)
 	defer cancel()
 
 	if err := h.pub.Publish(actx, h.channel, ConfigChangePayload); err != nil {
 		h.logger.WarnContext(ctx, "exact-route reload announcement failed; "+
-			"imported numbers stay out of the Bloom until the next admin mutation", "err", err)
+			"imported numbers stay out of the Bloom until the next admin mutation or resync", "err", err)
 		return false
 	}
 	return true
