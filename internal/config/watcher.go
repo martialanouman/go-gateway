@@ -77,7 +77,7 @@ func WithRetryBackoff(initial, max time.Duration) Option {
 }
 
 // WithResync rebuilds once per period (±10 % jitter) after the last successful rebuild, even without a
-// notification, so a lost invalidation leaves the config stale for about one period (1.1 at most). d ≤ 0 disables it.
+// notification, so a lost invalidation leaves the config stale for about one period (1.1, plus the window and the rebuild). d ≤ 0 disables it.
 func WithResync(d time.Duration) Option {
 	return func(w *Watcher) {
 		if d > 0 {
@@ -87,6 +87,7 @@ func WithResync(d time.Duration) Option {
 }
 
 func resyncDelay(period time.Duration) time.Duration {
+	//nolint:gosec // G404: jitter de-synchronises resyncs across pods, it is not a secret
 	return period - period/10 + rand.N(period/5+1)
 }
 

@@ -66,7 +66,7 @@ type routerApp struct {
 	senderIDs pipeline.SenderIDAuthorizer
 	// optOut is the enforcer the pipeline checks every message against, kept for the same reason.
 	optOut *optout.Enforcer
-	// optOutWatcher reloads the opt-out filter alone on a STOP announcement (step-398).
+	// optOutWatcher reloads the opt-out filter alone on a STOP announcement (step-398) and on its resync.
 	optOutWatcher *config.Watcher
 
 	// closers release what was opened, in reverse order of opening — the exact LIFO the deferred
@@ -789,7 +789,8 @@ func newSnapshotWatcher(
 	)
 }
 
-// newOptOutWatcher reloads the opt-out filter alone on optout:changed (step-398). It stays off
+// newOptOutWatcher reloads the opt-out filter alone on optout:changed (step-398), and on its own resync so a
+// lost STOP does not wait for the routes to be healthy (step-399). It stays off
 // config_rebuild_total, which tracks the freshness of the whole config.
 func newOptOutWatcher(pool *pgxpool.Pool, rdb *goredis.Client, boot *bootSnapshots, blooms bloomGauges, resync time.Duration, logger *slog.Logger) *config.Watcher {
 	return config.NewWatcher(

@@ -52,8 +52,8 @@ Arbitrage Fable le 2026-09-27, validé par l'utilisateur. La spec ne chiffre auc
 d'architecture nomme déjà « config sync (pub/sub / polling) », et `modlrrouter/stop.go` logue depuis step-398
 « routers catch up on resync » : cette fiche tient ce contrat.
 
-1. **Réglage** : `CONFIG_RESYNC_INTERVAL`, champ de premier niveau de `config.Config` (même contrat que
-   `DRAIN_DELAY`) : défaut 5 min, 0 désactive ; toute autre valeur sous 1 min est refusée (revue : `5ms` pour `5m`
+1. **Réglage** : `CONFIG_RESYNC_INTERVAL`, champ de premier niveau de `config.Config`, comme
+   `DRAIN_DELAY` : défaut 5 min, 0 désactive ; toute autre valeur sous 1 min est refusée (revue : `5ms` pour `5m`
    ferait rebâtir la flotte en continu contre le plan de contrôle partagé). Passé au Watcher par `WithResync(d)`, qui
    ignore `d ≤ 0` ; sans l'option, pas de resynchronisation. 5 min et non 1 h : la même période borne l'envoi
    à un désabonné dont l'annonce `optout:changed` s'est perdue.
@@ -63,7 +63,8 @@ d'architecture nomme déjà « config sync (pub/sub / polling) », et `modlrrout
    rejeu et « jamais deux rebuilds concurrents » restent ceux de step-395. Fraîcheur bornée par
    1,1 × période depuis le dernier succès. La gigue décorrèle les pods qu'une notification commune aligne.
 3. **Charge** : `buildFilter` pagine par 1 000 ; 5 M de lignes MNP × 4 réplicas / 5 min ≈ 70 requêtes
-   d'index/s sur la flotte.
+   d'index/s sur la flotte. L'opt-out se recharge deux fois par période et par pod (closure du snapshot et
+   watcher opt-out) ; `Enforcer.Reload` les sérialise.
 4. **Services** : le snapshot watcher du routeur, le watcher opt-out du routeur et le rewrite watcher du
    connector-pool ; pas config-sync (sans état). Amendé à la revue : la closure du snapshot recharge l'opt-out
    APRÈS les routes et le Bloom exact, donc une panne d'`exact_routes` suspendait la borne d'un STOP perdu ; la
