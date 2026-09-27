@@ -13,7 +13,8 @@ simple de le connaître. Compter puis streamer dans le filtre demande une requê
 parcours, sans bénéfice tant que la table reste petite. step-399 ne touchait pas au Bloom (arbitrage Fable,
 2026-09-27).
 
-**Ce qu'il en coûte.** Pour 5 M de numéros portés, de l'ordre de 150 Mo transitoires par rebuild et par pod,
+**Ce qu'il en coûte.** Pour 5 M de numéros portés, au moins 150 Mo transitoires par rebuild et par pod (5 M × 16 o
+d'en-tête de chaîne + ~16 o de chiffres, avant les recopies de l'`append`),
 soit une rafale d'allocation et de GC toutes les 5 min sur un pod qui route. La gigue de la resync décorrèle
 les pods entre eux, elle ne réduit pas la rafale.
 

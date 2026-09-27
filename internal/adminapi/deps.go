@@ -239,7 +239,7 @@ type Deps struct {
 	// an import is the 202 while BulkUpsert is still running, so the fleet would rebuild its Bloom
 	// from a table that does not hold the rows yet and nothing would republish after the commit.
 	// Small imports won that race and large ones lost it, the inverse of the use case. Best-effort,
-	// like the middleware: a lost announcement only defers the rebuild to the next admin mutation or resync (step-399).
+	// like the middleware: a lost announcement only defers the rebuild to the next admin mutation or resync.
 	ConfigChanges    ConfigChangePublisher
 	ConfigChannel    string
 	RoutingScripts   RoutingScriptAdminStore
