@@ -35,7 +35,7 @@ CI verte sur main ─► deploy-test.yml             deps : postgres, redis, red
   2. render-manifests.sh + kustomize                    kafka-provision, smoke
      → rendered.yaml                             app  : 10 Deployments de deploy/k8s, patchés
   3. ssh deploy@vps < rendered.yaml ──────────►  gateway-deploy (commande forcée)
-                                                 exposé : 22, 2775 (SMPP), 80/443 (REST via Traefik)
+                                                 exposé : 22, 2775 (SMPP), 443 (REST via Traefik)
 ```
 
 ## Composants
@@ -54,9 +54,11 @@ CI verte sur main ─► deploy-test.yml             deps : postgres, redis, red
     ramenés à ~¼ ; `limits` gardées. Motif : les `requests` de production totalisent ~21,5 vCPU.
   - **HPA** : `minReplicas: 1`, `maxReplicas: 2`.
   - **connector-pool-svc** : `CONNECTOR_ADDR=smsc-simulator:2775`.
-  - **rest-api-svc** : un `Ingress` Traefik sur `api.test.manouman.com`, TLS Let's Encrypt (défi
-    HTTP-01) par l'ACME intégré à Traefik, configuré via un `HelmChartConfig` k3s — aucun cert-manager.
-    Redirection 80 → 443.
+  - **rest-api-svc** : un `Ingress` Traefik sur `api.test.manouman.com`, TLS par le `Secret`
+    `api-origin-tls` : un certificat **Cloudflare Origin CA** (15 ans), créé à la main depuis le runbook.
+    Il n'est reconnu que par le proxy Cloudflare : l'enregistrement `api.test` est donc **proxifié**, en
+    mode SSL **Full (strict)**. Aucun ACME, aucune dépendance au port 80. Le proxy masque l'IP cliente :
+    sans effet, rest-api-svc ne lit pas l'adresse distante (seul le listener SMPP le fait).
   - **`gateway-oidc`** : ConfigMap de valeurs de test (rien de secret).
 - `smoke/` : un Job qui ouvre un bind SMPP, soumet un `submit_sm` et attend son DLR — la preuve
   bout-en-bout de chaque déploiement.
@@ -95,7 +97,7 @@ service k3s — prérequis de smpp-server-svc) ; installation de k3s ; utilisate
 `authorized_keys` avec `command="/usr/local/bin/gateway-deploy"` ; création de `gateway-secrets`
 (mots de passe aléatoires) et des 8 `Secret` TLS ; premier déploiement ; rollback ; bascule des paquets
 GHCR en privé (`/etc/rancher/k3s/registries.yaml` + PAT `read:packages` — sans quoi tout part en
-`ImagePullBackOff`).
+`ImagePullBackOff`) ; création du `Secret` `api-origin-tls` depuis le certificat Origin CA.
 
 ## Exposition
 
@@ -103,8 +105,7 @@ GHCR en privé (`/etc/rancher/k3s/registries.yaml` + PAT `read:packages` — san
 |---|---|---|
 | 22 | SSH, clé seule | oui |
 | 2775 | SMPP (ServiceLB), `smpp.test.manouman.com`, en clair | oui |
-| 80 | redirection vers 443, défi ACME HTTP-01 | oui |
-| 443 | REST (Traefik), `api.test.manouman.com`, Let's Encrypt | oui |
+| 443 | REST (Traefik), `api.test.manouman.com`, derrière le proxy Cloudflare, certificat Origin CA | oui, à tous : ServiceLB publie en amont de `ufw`, un filtrage aux IP Cloudflare y serait sans effet |
 | 6443 | API k8s | non (`ufw`) |
 | Admin API, ops 9090, dépendances | — | non : `ssh -L` |
 
@@ -143,8 +144,8 @@ TLS sur SMPP public, exposition de l'API Admin.
 
 - Le VPS Contabo commandé, Ubuntu 24.04, accès root par clé.
 - DNS : enregistrements `A` `api.test.manouman.com` et `smpp.test.manouman.com` vers l'IP du VPS,
-  posés avant le premier déploiement (le défi HTTP-01 échoue sinon). Zone gérée par Cloudflare : les
-  deux en **DNS only** (nuage gris). Le proxy Cloudflare ne transporte pas SMPP sur 2775, et devant
-  l'API il masquerait l'IP cliente et pourrait intercepter le défi ACME. Aucun jeton d'API Cloudflare
-  n'entre donc dans le cluster.
+  posés avant le premier déploiement. Zone Cloudflare : `api.test` **proxifié** (nuage orange, SSL
+  Full (strict)), `smpp.test` en **DNS only** — le proxy ne transporte pas SMPP sur 2775.
+- Un certificat Cloudflare Origin CA pour `api.test.manouman.com`, chargé dans le `Secret`
+  `api-origin-tls` (runbook) ; jamais dans git.
 - La CI de `go-smsc-simulator` publie une image `linux/amd64` sur GHCR, taguée par version.
