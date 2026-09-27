@@ -5,6 +5,9 @@ set -euo pipefail
 # Commande forcée SSH (shell non-connecté) : PAM peut ne pas exposer /usr/local/bin. On l'ajoute sans
 # écraser un PATH déjà fourni (le test y préfixe un kubectl factice).
 export PATH="${PATH:+$PATH:}/usr/local/bin:/usr/bin:/bin"
+# kubectl de k3s (binaire multi-appel) retombe sur /etc/rancher/k3s/k3s.yaml (root, mode 600) quand
+# KUBECONFIG est vide : l'utilisateur deploy se voit alors refuser l'accès sans jamais lire le sien.
+export KUBECONFIG="$HOME/.kube/config"
 
 ns=gateway
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT

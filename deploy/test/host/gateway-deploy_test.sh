@@ -6,6 +6,7 @@ mkdir "$tmp/bin"
 cat >"$tmp/bin/kubectl" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >>"$KUBECTL_LOG"
+echo "$KUBECONFIG" >>"$KUBECONFIG_LOG"
 case "$*" in
   *"get statefulset,deployment"*) echo statefulset.apps/postgres ;;
   *"get deployment"*) echo deployment.apps/router-svc ;;
@@ -44,10 +45,11 @@ sequence_of() {
   echo "${seq% }"
 }
 
-export KUBECTL_LOG="$tmp/log"
+export KUBECTL_LOG="$tmp/log" KUBECONFIG_LOG="$tmp/kubeconfig-log"
 echo 'kind: ConfigMap' | PATH="$tmp/bin:$PATH" "$here/gateway-deploy" >/dev/null
 seq=$(sequence_of "$KUBECTL_LOG")
 [[ $seq == "deps-apply deps-job job app-apply app-rollout" ]] || fail "ordre violé : $seq -- log : $(cat "$KUBECTL_LOG")"
+[[ $(head -n1 "$KUBECONFIG_LOG") == */.kube/config ]] || fail "KUBECONFIG n'est pas exporté vers ~/.kube/config"
 
 : >"$KUBECTL_LOG"
 if echo 'kind: ConfigMap' | FAIL_JOB=1 PATH="$tmp/bin:$PATH" "$here/gateway-deploy" >/dev/null 2>&1; then

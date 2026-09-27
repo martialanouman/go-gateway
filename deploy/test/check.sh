@@ -31,9 +31,13 @@ for dep in postgres redis redpanda clickhouse rustfs smsc-simulator; do
   grep -q "^  name: $dep$" "$all" || fail "dépendance absente : $dep"
 done
 grep -q 'gateway.test/phase: deps-job' "$all" || fail "le Job du bucket ne porte pas sa phase"
-# 6 Services, 5 StatefulSets, le Deployment du simulateur, le ConfigMap des droits ClickHouse.
-[[ $(grep -c 'gateway.test/phase: deps$' "$all") -eq 13 ]] || fail "une dépendance n'est pas en phase deps : elle partirait avec l'application"
+grep -B3 '^  name: gateway-config$' "$all" | grep -q 'gateway.test/phase: deps' \
+  || fail "gateway-config n'est pas en phase deps : les Jobs (envFrom non optional) resteraient en CreateContainerConfigError"
+# 6 Services, 5 StatefulSets, le Deployment du simulateur, le ConfigMap des droits ClickHouse, le
+# ConfigMap gateway-config.
+[[ $(grep -c 'gateway.test/phase: deps$' "$all") -eq 14 ]] || fail "une dépendance n'est pas en phase deps : elle partirait avec l'application"
 
+# shellcheck disable=SC2016 # backticks littéraux : la règle Traefik Host(`...`) rendue par kustomize
 grep -q 'Host(`api.test.manouman.com`)' "$all" || fail "l'API REST n'est pas routée"
 grep -q 'serverName: rest-api-svc' "$all" || fail "Traefik ne vérifie pas le certificat du backend"
 
