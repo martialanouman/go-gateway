@@ -1,6 +1,6 @@
 # step-390b — `query_sm` résout l'état du message au lieu de répondre UNKNOWN
 
-> **Jalon :** Surfaces déclarées par la spec, jamais construites (§6.22 `docs/specification-technique-passerelle-sms.md`) · **Statut :** À FAIRE
+> **Jalon :** Surfaces déclarées par la spec, jamais construites (§6.22 `docs/specification-technique-passerelle-sms.md`) · **Statut :** LIVRÉE
 > **Dépend de :** — · **Bloque :** —
 
 ## But
