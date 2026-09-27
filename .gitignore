@@ -1,6 +1,9 @@
 # Release artifacts (GoReleaser output).
 /dist/
 
+# Rendu de l'overlay de test (deploy/test/check.sh) : dérivé, jamais versionné.
+/deploy/test/rendered/
+
 # Compiled binaries built ad-hoc at the repo root (`go build ./cmd/<name>`). The tracked build path
 # is GoReleaser's /dist; these root binaries are never checked in.
 #

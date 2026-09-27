@@ -1,0 +1,10 @@
+# Vide exprès : hors production, admin-api-svc retombe sur les jetons statiques HTTP_ADMIN_TOKENS
+# (cmd/admin-api-svc/wiring.go). Le ConfigMap doit exister : le Deployment le lit sans optional.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway-oidc
+data:
+  OIDC_ISSUER: ""
+  OIDC_AUDIENCE: ""
+  OIDC_JWKS_URL: ""

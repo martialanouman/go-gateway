@@ -236,6 +236,10 @@ kubeconform: ## Install kubeconform at the pinned version (CI uses this; `make t
 manifests: ## Validate deploy/k8s against the Kubernetes schemas (kubeconform; needs network)
 	kubeconform -strict -summary -kubernetes-version $(KUBERNETES_VERSION) deploy/k8s
 
+.PHONY: test-env
+test-env: ## Render the k3s test overlay (deploy/test) and check its invariants (kubectl + kubeconform)
+	deploy/test/check.sh
+
 # Container images. The context is dist/imagectx, laid out the way GoReleaser stages artefacts
 # (<goos>/<goarch>/<binary>) — NEVER the repository root, which is why no .dockerignore is needed and
 # why this target proves the same Dockerfile the release uses.

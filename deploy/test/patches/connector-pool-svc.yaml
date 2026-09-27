@@ -1,0 +1,12 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: connector-pool-svc
+spec:
+  template:
+    spec:
+      containers:
+        - name: connector-pool-svc
+          env:
+            - name: CONNECTOR_ADDR
+              value: smsc-simulator:2775

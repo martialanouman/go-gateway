@@ -1,0 +1,10 @@
+# Les requêtes de production totalisent ~21,5 vCPU : sur un nœud de 8, la moitié des pods resterait
+# Pending. Les limites sont gardées.
+- op: replace
+  path: /spec/replicas
+  value: 1
+- op: replace
+  path: /spec/template/spec/containers/0/resources/requests
+  value:
+    cpu: 50m
+    memory: 64Mi
