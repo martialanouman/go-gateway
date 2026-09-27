@@ -23,11 +23,9 @@ archive est un jour qu'aucune step ne pourra rendre.
 
 ## Périmètre (ce que fait CETTE PR)
 
-1. **Destination objet** : une `Destination` `s3(url, …, 'Parquet')` choisie par configuration.
-   `FileDestination` reste pour le poste local. Les identifiants de l'objet arrivent par `secretKeyRef` (garde
-   `secrets-by-reference` de `internal/deploy`), et ne figurent ni dans un log, ni dans une erreur, ni dans la
-   requête journalisée. L'expression `s3(...)` porte les identifiants si on les y interpole : préférer une
-   collection nommée ou une configuration côté serveur ClickHouse (à arbitrer).
+1. **Destination objet** : une `Destination` `s3(<collection nommée>, filename = …, format = 'Parquet')`,
+   choisie par configuration. `FileDestination` reste pour le poste local. Les identifiants S3 vivent dans la
+   configuration du serveur ClickHouse, jamais dans la passerelle, ni dans une requête, ni dans un log.
 2. **Catalogue des archives** : chaque tentative écrit son propre objet (`<prefix>-<jour>-<token>.parquet`),
    et une tentative échouée peut laisser derrière elle un objet **complet**. Le lecteur de step-420 doit
    savoir lequel fait foi. L'archiveur inscrit donc l'objet vérifié du jour **après** la relecture et
@@ -36,14 +34,22 @@ archive est un jour qu'aucune step ne pourra rendre.
 
 ## Points d'implémentation clés
 
-- **À arbitrer avant tout code (échelle : spec → Fable → humain)** :
-  - **La production doit-elle refuser de booter sans destination d'archive ?** C'est le modèle des gardes de
-    production du dépôt (`TLS_ENABLED`, `OIDC_*`) : une purge qui détruit sans archiver est exactement le
-    défaut silencieux qu'une garde évite. Mais cela impose un bucket dès le premier déploiement.
+- **Tranché (utilisateur, 2026-09-27)** :
+  - **La production refuse de booter sans destination d'archive**, sur le modèle de `TLS_ENABLED` et
+    `OIDC_*`. Une purge qui supprime sans archiver est un défaut silencieux.
+  - **Des identifiants S3 dédiés** (clé d'accès et secret d'une identité propre à l'archivage), pour que
+    tout service compatible S3 convienne (AWS, MinIO, Scaleway, OVH…). Un rôle IAM au sens AWS, par
+    profil d'instance ou IRSA, n'existe que chez AWS. Droits minimaux : écriture et lecture sous le préfixe,
+    **aucune suppression**, pour que l'archive reste immuable (§6.14).
+  - **Mécanisme retenu, sous réserve de revue** : ClickHouse reçoit ces identifiants par une **collection
+    nommée** déclarée dans la configuration du serveur ClickHouse, et la requête ne cite que son nom
+    (`s3(cdr_archive, filename = '…')`). Pourquoi : des identifiants passés en arguments de `s3(...)`
+    finissent en clair dans `system.query_log`. Conséquence : ClickHouse n'est pas déployé par ce dépôt,
+    donc la collection nommée devient une ligne de la checklist de step-410, et la passerelle ne détient
+    jamais ce secret.
+- **À arbitrer avant tout code** :
   - La forme du catalogue : une table `control_plane` en Postgres (changement de schéma **et** migration,
-    `.claude/rules/db-schema.md`), une table ClickHouse, ou un objet manifeste dans le bucket.
-  - Comment ClickHouse reçoit les identifiants S3 : `named_collections`, configuration du serveur ou rôle
-    IAM. L'interpolation dans la requête est écartée d'office.
+    `.claude/rules/db-schema.md`), une table ClickHouse, ou un objet témoin dans le bucket.
 - **Pièges connus** (step-165, `cdr-retention-tiering-traps`) : un seul propriétaire de la rétention (le TTL
   de table reste à 400 jours) ; ne jamais supprimer ce qu'on n'a pas relu ; la projection vient de
   `system.columns`, et le préfixe reste validé par `ValidArchivePrefix`.
@@ -59,8 +65,8 @@ archive est un jour qu'aucune step ne pourra rendre.
 - Inscription au catalogue qui échoue : la partition n'est pas supprimée.
 - Deux tentatives pour un même jour (la première complète mais non inscrite) : le catalogue n'en désigne
   qu'une.
-- Aucun identifiant S3 dans les logs ni dans les erreurs.
-- Si la garde de production est retenue : un boot en production sans destination est refusé.
+- Aucune requête émise ne contient d'identifiant S3 : la destination ne cite que le nom de la collection.
+- Un boot en production sans destination d'archive est refusé.
 
 ## Definition of Done
 
@@ -68,7 +74,8 @@ archive est un jour qu'aucune step ne pourra rendre.
 - [ ] en production, une partition expirée est archivée sur le stockage objet, inscrite au catalogue, puis
       supprimée — et jamais supprimée sinon
 - [ ] manifestes à jour, garde `internal/deploy` verte
-- [ ] step-410 porte la ligne « bucket d'archive CDR : existe, cycle de vie 13 mois, identifiants provisionnés »
+- [ ] step-410 porte la ligne « bucket d'archive CDR : existe, cycle de vie 13 mois, identité S3 sans droit de
+      suppression, collection nommée déclarée sur le serveur ClickHouse »
 
 ## Hors périmètre
 
