@@ -192,36 +192,13 @@ func (a *PartitionArchiver) Archive(ctx context.Context, p Partition) error {
 	if err != nil {
 		return fmt.Errorf("clickhouse: catalogue archive of partition %s: %w", p.Name(), err)
 	}
-	if catalogued == object {
-		return nil
-	}
-	return a.coveredBy(ctx, p, catalogued)
-}
-
-// coveredBy reports whether the object catalogued earlier for p holds every row p holds now. That day's line is
-// never rewritten, so after a drop that failed, a later version of a message (ReplacingMergeTree, same
-// partition) or a late write recreating the day would otherwise survive only in an uncatalogued object. Row
-// counts cannot tell: a merge shrinks the partition while the version it keeps is the new one.
-func (a *PartitionArchiver) coveredBy(ctx context.Context, p Partition, catalogued string) error {
-	if !archiveObjectPattern.MatchString(catalogued) {
-		return fmt.Errorf("clickhouse: refusing catalogued archive %q of partition %s", catalogued, p.Name())
-	}
-	var missing uint64
-	q := fmt.Sprintf(`SELECT count() FROM %s WHERE toDate(submitted_at) = '%s'
-		AND (toString(message_id), version) NOT IN (SELECT message_id, version FROM %s)`,
-		cdrTable, p.Name(), a.dest(catalogued))
-	if err := a.conn.QueryRow(ctx, q).Scan(&missing); err != nil {
-		return fmt.Errorf("clickhouse: check catalogued archive of partition %s: %w", p.Name(), err)
-	}
-	if missing > 0 {
-		return fmt.Errorf("clickhouse: partition %s holds %d rows its catalogued archive %s lacks",
-			p.Name(), missing, catalogued)
+	// The day's line is never rewritten, and nothing cheap proves an earlier object still covers the partition
+	// (a later version of a message lands in it): the day waits for an operator.
+	if catalogued != object {
+		return fmt.Errorf("clickhouse: partition %s is already catalogued as %s", p.Name(), catalogued)
 	}
 	return nil
 }
-
-// archiveObjectPattern guards an object name read back from the catalogue before it is interpolated.
-var archiveObjectPattern = regexp.MustCompile(`^[A-Za-z0-9._/-]{1,200}$`)
 
 // Retainer enforces CDR retention by DROPPING WHOLE PARTITIONS, never by DELETE (§14): at 8000 msg/s a
 // delete-by-predicate would rewrite parts continuously, while dropping a daily partition is a metadata

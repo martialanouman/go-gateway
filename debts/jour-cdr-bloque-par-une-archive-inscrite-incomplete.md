@@ -1,23 +1,23 @@
-# Un jour de CDR dont l'archive inscrite est incomplète n'est jamais supprimé
+# Un jour de CDR déjà inscrit avec un autre objet n'est jamais supprimé par la rétention
 
 > **Statut :** OUVERTE · **Nature :** technique
-> **Née de :** step-407 (`internal/storage/clickhouse/retention.go:198`) · **Portée par :** —
+> **Née de :** step-407 (`internal/storage/clickhouse/retention.go:197`) · **Portée par :** —
 
 Le catalogue `control_plane.cdr_archives` garde un seul objet par jour, et la ligne ne se réécrit jamais.
-Quand un jour est déjà inscrit (un DROP a échoué après l'inscription, ou une écriture tardive a recréé la
-partition d'un jour supprimé), l'archiveur compare la partition à l'objet inscrit sur les paires
-`(message_id, version)` (`coveredBy`, `retention.go:205`). Si l'objet les couvre toutes, la partition se
-supprime seule. Sinon elle reste, et chaque passe se solde par `archive_failed`.
+Quand la passe retrouve un jour déjà inscrit avec un autre objet que celui qu'elle vient d'écrire (un DROP a
+échoué après l'inscription, ou une écriture tardive a recréé la partition d'un jour supprimé), elle garde la
+partition et se solde par `archive_failed`, à chaque passe.
 
-**Pourquoi.** Réécrire la ligne ferait mentir le lecteur de step-420 sur l'objet qui fait foi, et supprimer
-sans couverture perdrait des lignes que seul un objet non inscrit détient. Arbitré par Fable pendant la
-revue de step-407 : l'automatisation couvre le cas fréquent (DROP raté, partition inchangée), le reste
-demande un humain.
+**Pourquoi.** Tranché par l'utilisateur en revue de step-407, après deux mécaniques automatiques rejetées :
+comparer des comptes laisse perdre une version tardive (`ReplacingMergeTree` fusionne dans la même
+partition) ; comparer le contenu `(message_id, segment_seq, version)` relit une journée entière en mémoire,
+des centaines de millions de clés au débit visé. L'identité d'objet ne perd rien et ne coûte rien.
 
-**Ce qu'il en coûte.** Aucune procédure n'existe : le jour occupe le disque de ClickHouse et l'alerte sur
-`cdr_retention_partitions_total{outcome="archive_failed"}` sonne jusqu'à ce qu'un opérateur choisisse,
-à la main, entre étendre le catalogue à plusieurs objets par jour et accepter la perte des lignes
-manquantes.
+**Ce qu'il en coûte.** Le jour occupe le disque de ClickHouse et l'alerte
+`cdr_retention_partitions_total{outcome="archive_failed"}` sonne jusqu'à l'intervention. Procédure : comparer
+la partition à l'objet inscrit (`SELECT … FROM s3(cdr_archive, filename = '<objet>', format = 'Parquet')`) ;
+s'il la couvre, `ALTER TABLE cdr DROP PARTITION '<jour>'` à la main ; sinon, décider entre plusieurs objets
+par jour au catalogue et la perte des lignes manquantes.
 
-**À payer quand** `archive_failed` persiste sur un même jour au-delà de deux passes, ou avant d'écrire
-une version de CDR sur un message de plus de 90 jours.
+**À payer quand** `archive_failed` persiste sur un même jour, ou avant d'écrire une version de CDR sur un
+message de plus de 90 jours.

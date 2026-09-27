@@ -78,11 +78,10 @@ Arbitré par Fable le 2026-09-27 (points 1 à 3), sans conflit avec la fiche ; l
   `INSERT … ON CONFLICT (day) DO NOTHING RETURNING object UNION ALL` la ligne préexistante → rend l'objet de
   la ligne qui fait foi ; rejouée une fois si une insertion concurrente l'a devancée (l'instantané de la
   requête ne voit pas sa ligne). **Si l'objet inscrit n'est pas le nôtre** (DROP raté après inscription, ou
-  écriture tardive qui recrée le jour), la partition n'est supprimée que si l'objet inscrit contient toutes ses
-  paires `(message_id, version)` ; sinon `archive_failed`, partition gardée
-  (`debts/jour-cdr-bloque-par-une-archive-inscrite-incomplete.md`). **Révisé en revue** (Fable, même jour) :
-  comparer des comptes ne prouvait rien sous `ReplacingMergeTree`, un merge réduit la partition alors que la
-  version gardée est la nouvelle.
+  écriture tardive qui recrée le jour), la partition est gardée, `archive_failed`, et un opérateur tranche
+  (`debts/jour-cdr-bloque-par-une-archive-inscrite-incomplete.md`). **Révisé en revue, tranché par
+  l'utilisateur** : comparer des comptes laissait perdre une version tardive sous `ReplacingMergeTree`, et
+  comparer le contenu (proposé par Fable au 2ᵉ tour) oubliait `segment_seq` et relisait une journée en mémoire.
 - **Garde de production** : `validateAdminConfig` (admin-api-svc est le seul porteur du Retainer ; six autres
   services chargent la section ClickHouse sans rien purger). Production ET (préfixe vide OU collection vide) →
   boot refusé ; `FileDestination` est donc refusée en production. **Pas d'exemption** pour
