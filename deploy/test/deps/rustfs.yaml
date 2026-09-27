@@ -1,0 +1,60 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: rustfs
+  labels: {app.kubernetes.io/part-of: test-deps, gateway.test/phase: deps}
+spec:
+  selector: {app: rustfs}
+  ports: [{name: s3, port: 9000}]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: rustfs
+  labels: {app.kubernetes.io/part-of: test-deps, gateway.test/phase: deps}
+spec:
+  serviceName: rustfs
+  replicas: 1
+  selector: {matchLabels: {app: rustfs}}
+  template:
+    metadata:
+      labels: {app: rustfs, app.kubernetes.io/part-of: test-deps}
+    spec:
+      containers:
+        - name: rustfs
+          image: rustfs/rustfs:1.0.0@sha256:8cc9801755448b71a786705ce76692c77e14936cccd87cf2fc31842e58f4d1ff
+          env:
+            - name: RUSTFS_ACCESS_KEY
+              valueFrom: {secretKeyRef: {name: test-deps, key: RUSTFS_ACCESS_KEY}}
+            - name: RUSTFS_SECRET_KEY
+              valueFrom: {secretKeyRef: {name: test-deps, key: RUSTFS_SECRET_KEY}}
+          ports: [{containerPort: 9000}]
+          readinessProbe:
+            tcpSocket: {port: 9000}
+            periodSeconds: 5
+          volumeMounts: [{name: data, mountPath: /data}]
+  volumeClaimTemplates:
+    - metadata: {name: data}
+      spec: {accessModes: [ReadWriteOnce], resources: {requests: {storage: 20Gi}}}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: rustfs-bucket
+  labels: {app.kubernetes.io/part-of: test-deps, gateway.test/phase: deps-job}
+spec:
+  backoffLimit: 4
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: mc
+          image: cgr.dev/chainguard/minio-client@sha256:b2bd7824d23d3e3b15bedd7e87fbc3be29d2e213307b4f901e4a1d92356dc20f
+          args: [mb, --ignore-existing, root/cdr-archive]
+          env:
+            - name: RUSTFS_ACCESS_KEY
+              valueFrom: {secretKeyRef: {name: test-deps, key: RUSTFS_ACCESS_KEY}}
+            - name: RUSTFS_SECRET_KEY
+              valueFrom: {secretKeyRef: {name: test-deps, key: RUSTFS_SECRET_KEY}}
+            - name: MC_HOST_root
+              value: http://$(RUSTFS_ACCESS_KEY):$(RUSTFS_SECRET_KEY)@rustfs:9000

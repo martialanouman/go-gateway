@@ -4,6 +4,12 @@ namespace: gateway
 resources:
   - rendered/base.yaml
   - gateway-oidc.yaml
+  - deps/postgres.yaml
+  - deps/redis.yaml
+  - deps/redpanda.yaml
+  - deps/clickhouse.yaml
+  - deps/rustfs.yaml
+  - deps/smsc-simulator.yaml
 patches:
   - path: patches/gateway-config.yaml
   - path: patches/smpp-server-svc.yaml

@@ -1,0 +1,66 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: clickhouse
+  labels: {app.kubernetes.io/part-of: test-deps, gateway.test/phase: deps}
+spec:
+  selector: {app: clickhouse}
+  ports:
+    - {name: native, port: 9000}
+    - {name: http, port: 8123}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clickhouse-grants
+  labels: {app.kubernetes.io/part-of: test-deps, gateway.test/phase: deps}
+data:
+  zz-grants.xml: |
+    <clickhouse>
+      <users>
+        <gateway>
+          <grants>
+            <query>GRANT ALL ON *.*</query>
+          </grants>
+        </gateway>
+      </users>
+    </clickhouse>
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: clickhouse
+  labels: {app.kubernetes.io/part-of: test-deps, gateway.test/phase: deps}
+spec:
+  serviceName: clickhouse
+  replicas: 1
+  selector: {matchLabels: {app: clickhouse}}
+  template:
+    metadata:
+      labels: {app: clickhouse, app.kubernetes.io/part-of: test-deps}
+    spec:
+      containers:
+        - name: clickhouse
+          image: clickhouse/clickhouse-server:24.8-alpine
+          env:
+            - {name: CLICKHOUSE_USER, value: gateway}
+            - {name: CLICKHOUSE_DB, value: gateway}
+            - {name: CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT, value: "1"}
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom: {secretKeyRef: {name: gateway-secrets, key: CLICKHOUSE_PASSWORD}}
+          ports: [{containerPort: 9000}, {containerPort: 8123}]
+          readinessProbe:
+            httpGet: {path: /ping, port: 8123}
+            periodSeconds: 5
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/clickhouse}
+            - {name: archive, mountPath: /etc/clickhouse-server/config.d/named_collections.xml, subPath: named_collections.xml}
+            - {name: grants, mountPath: /etc/clickhouse-server/users.d/zz-grants.xml, subPath: zz-grants.xml}
+      volumes:
+        - name: archive
+          secret: {secretName: clickhouse-archive}
+        - name: grants
+          configMap: {name: clickhouse-grants}
+  volumeClaimTemplates:
+    - metadata: {name: data}
+      spec: {accessModes: [ReadWriteOnce], resources: {requests: {storage: 20Gi}}}

@@ -27,5 +27,12 @@ grep -q 'name: HTTP_ADMIN_TOKENS' "$all" || fail "admin-api-svc sans HTTP_ADMIN_
 ! grep -qE '^ +cpu: ([1-9][0-9]*|[1-9][0-9]{2,}m)$' "$all" || fail "une requête CPU de production survit"
 grep -q 'gateway.test/phase: job' "$all" || fail "les Jobs ne portent pas leur phase"
 
+for dep in postgres redis redpanda clickhouse rustfs smsc-simulator; do
+  grep -q "^  name: $dep$" "$all" || fail "dépendance absente : $dep"
+done
+grep -q 'gateway.test/phase: deps-job' "$all" || fail "le Job du bucket ne porte pas sa phase"
+# 6 Services, 5 StatefulSets, le Deployment du simulateur, le ConfigMap des droits ClickHouse.
+[[ $(grep -c 'gateway.test/phase: deps$' "$all") -eq 13 ]] || fail "une dépendance n'est pas en phase deps : elle partirait avec l'application"
+
 kubeconform -strict -summary -ignore-missing-schemas -kubernetes-version 1.31.0 "$all"
 echo "check.sh: overlay de test conforme ($VERSION)"

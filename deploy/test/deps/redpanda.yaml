@@ -1,0 +1,43 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: redpanda
+  labels: {app.kubernetes.io/part-of: test-deps, gateway.test/phase: deps}
+spec:
+  selector: {app: redpanda}
+  ports: [{name: kafka, port: 9092}]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redpanda
+  labels: {app.kubernetes.io/part-of: test-deps, gateway.test/phase: deps}
+spec:
+  serviceName: redpanda
+  replicas: 1
+  selector: {matchLabels: {app: redpanda}}
+  template:
+    metadata:
+      labels: {app: redpanda, app.kubernetes.io/part-of: test-deps}
+    spec:
+      containers:
+        - name: redpanda
+          image: redpandadata/redpanda:v24.2.18
+          args:
+            - redpanda
+            - start
+            - --mode=dev-container
+            - --smp=1
+            - --memory=1G
+            - --overprovisioned
+            - --kafka-addr=PLAINTEXT://0.0.0.0:9092
+            - --advertise-kafka-addr=PLAINTEXT://redpanda:9092
+          ports: [{containerPort: 9092}]
+          readinessProbe:
+            exec: {command: [sh, -c, "rpk cluster health | grep -q 'Healthy:.*true'"]}
+            periodSeconds: 5
+            timeoutSeconds: 5
+          volumeMounts: [{name: data, mountPath: /var/lib/redpanda/data}]
+  volumeClaimTemplates:
+    - metadata: {name: data}
+      spec: {accessModes: [ReadWriteOnce], resources: {requests: {storage: 20Gi}}}
