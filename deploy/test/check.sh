@@ -20,6 +20,8 @@ grep -q 'ENVIRONMENT: staging' "$all" || fail "ENVIRONMENT n'est pas staging"
 grep -q 'OTEL_SDK_DISABLED: "true"' "$all" || fail "le traçage n'est pas coupé"
 grep -q 'KAFKA_BROKERS: redpanda:9092' "$all" || fail "KAFKA_BROKERS ne vise pas redpanda"
 ! grep -q 'SMPP_TRUSTED_PROXY_CIDRS' "$all" || fail "SMPP_TRUSTED_PROXY_CIDRS survit : tout bind serait refusé"
+# access_management et le bloc grants de zz-grants.xml s'excluent : ClickHouse refuse alors de démarrer.
+! grep -q 'CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT' "$all" || fail "CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT empêcherait ClickHouse de démarrer"
 grep -q 'value: smsc-simulator:2775' "$all" || fail "CONNECTOR_ADDR ne vise pas le simulateur"
 grep -q 'name: HTTP_ADMIN_TOKENS' "$all" || fail "admin-api-svc sans HTTP_ADMIN_TOKENS"
 ! grep -q 'ghcr.io/martialanouman/go-gateway/[a-z0-9-]*:v0.0.0$' "$all" || fail "un gabarit v0.0.0 a survécu"

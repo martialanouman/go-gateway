@@ -45,7 +45,6 @@ spec:
           env:
             - {name: CLICKHOUSE_USER, value: gateway}
             - {name: CLICKHOUSE_DB, value: gateway}
-            - {name: CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT, value: "1"}
             - name: CLICKHOUSE_PASSWORD
               valueFrom: {secretKeyRef: {name: gateway-secrets, key: CLICKHOUSE_PASSWORD}}
           ports: [{containerPort: 9000}, {containerPort: 8123}]
