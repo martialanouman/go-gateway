@@ -80,10 +80,16 @@ func TestAStopAnnouncedOnItsOwnChannelReachesTheRunningRouter(t *testing.T) {
 }
 
 // TestAStopWhoseAnnouncementIsLostReachesTheRouterOnResync: the STOP is written and NOTHING is published —
-// the announcement lost to a Redis blip. Only the snapshot watcher runs, not the opt-out one: its periodic
-// resync reloads the opt-out filter too, and that is what bounds the send to a recipient who opted out
-// (step-399).
+// the announcement lost to a Redis blip. Each watcher that reloads the opt-out filter runs alone and must
+// apply it on its own resync: the snapshot watcher's reload sits behind the routes and the exact-route
+// Bloom, so an outage of those tables must not suspend the opt-out watcher's bound (§6.20, step-399).
 func TestAStopWhoseAnnouncementIsLostReachesTheRouterOnResync(t *testing.T) {
+	for _, name := range []string{"snapshot", "opt-out"} {
+		t.Run(name, func(t *testing.T) { stopAppliedOnResync(t, name) })
+	}
+}
+
+func stopAppliedOnResync(t *testing.T, watcher string) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
@@ -96,7 +102,11 @@ func TestAStopWhoseAnnouncementIsLostReachesTheRouterOnResync(t *testing.T) {
 		t.Fatalf("newRouterApp: %v", err)
 	}
 	watcherDone := make(chan struct{})
-	go func() { _ = app.watcher.Run(ctx); close(watcherDone) }()
+	w := app.watcher
+	if watcher == "opt-out" {
+		w = app.optOutWatcher
+	}
+	go func() { _ = w.Run(ctx); close(watcherDone) }()
 	t.Cleanup(func() {
 		cancel()
 		<-watcherDone

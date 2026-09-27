@@ -194,7 +194,7 @@ func newRouterApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 	a.ops = ops
 
 	a.watcher = newSnapshotWatcher(st.pg, rdb, boot, stack, proj, blooms, a.catalog, cfg.ConfigResyncInterval, logger)
-	a.optOutWatcher = newOptOutWatcher(st.pg, rdb, boot, blooms, logger)
+	a.optOutWatcher = newOptOutWatcher(st.pg, rdb, boot, blooms, cfg.ConfigResyncInterval, logger)
 	return a, nil
 }
 
@@ -791,7 +791,7 @@ func newSnapshotWatcher(
 
 // newOptOutWatcher reloads the opt-out filter alone on optout:changed (step-398). It stays off
 // config_rebuild_total, which tracks the freshness of the whole config.
-func newOptOutWatcher(pool *pgxpool.Pool, rdb *goredis.Client, boot *bootSnapshots, blooms bloomGauges, logger *slog.Logger) *config.Watcher {
+func newOptOutWatcher(pool *pgxpool.Pool, rdb *goredis.Client, boot *bootSnapshots, blooms bloomGauges, resync time.Duration, logger *slog.Logger) *config.Watcher {
 	return config.NewWatcher(
 		func(ctx context.Context) (config.Stream, error) {
 			return redisstore.Subscribe(ctx, rdb, config.ChannelOptOutChanged), nil
@@ -803,6 +803,7 @@ func newOptOutWatcher(pool *pgxpool.Pool, rdb *goredis.Client, boot *bootSnapsho
 			blooms.set("optout", boot.optOut.CapacityBits())
 			return nil
 		},
+		config.WithResync(resync),
 		config.WithLogger(logger),
 	)
 }
