@@ -127,7 +127,11 @@ func TestNewSMPPAppBuildsTheWholeGraph(t *testing.T) {
 		}
 	}
 
-	if reflect.ValueOf(app.listener).Elem().FieldByName("opts").FieldByName("MessageReader").IsNil() {
+	reader := reflect.ValueOf(app.listener).Elem().FieldByName("opts").FieldByName("MessageReader")
+	switch {
+	case !reader.IsValid():
+		t.Error("smppserver.Listener has no opts.MessageReader field: update this wiring check")
+	case reader.IsNil():
 		t.Error("query_sm has no MessageReader: every query_sm would answer ESME_RQUERYFAIL")
 	}
 

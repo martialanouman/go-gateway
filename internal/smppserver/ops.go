@@ -23,7 +23,7 @@ import (
 // cannot resolve is ESME_RQUERYFAIL, never ESME_ROK with an unknown state. The message body is never
 // involved, so nothing can leak (invariant a).
 func (l *Listener) onQuery(_ context.Context, st *connState) session.QueryHandler {
-	return func(ctx context.Context, req session.QueryRequest) session.QueryResult {
+	return func(ctx context.Context, req session.QueryRequest) (res session.QueryResult) {
 		if !st.querySMEnabled {
 			return session.QueryResult{Status: errs.StatusInvalidCmdID}
 		}
@@ -39,6 +39,19 @@ func (l *Listener) onQuery(_ context.Context, st *connState) session.QueryHandle
 		if l.opts.MessageReader == nil {
 			return session.QueryResult{Status: errs.StatusQueryFail}
 		}
+
+		ctx, span := l.opts.Tracer.Start(ctx, "smpp.query")
+		defer span.End()
+		defer func() {
+			switch res.Status {
+			case smpp.StatusOK:
+			case errs.StatusInvalidMsgID:
+				observability.RecordSpanError(span, errs.ErrMessageNotFound)
+			default:
+				observability.RecordSpanError(span, errs.ErrInternal)
+			}
+		}()
+
 		id, err := uuid.Parse(req.MessageID)
 		if err != nil {
 			return session.QueryResult{Status: errs.StatusInvalidMsgID}
@@ -47,7 +60,7 @@ func (l *Listener) onQuery(_ context.Context, st *connState) session.QueryHandle
 		defer cancel()
 		row, found, err := l.opts.MessageReader.Current(ctx, st.customerID, st.accountID, id)
 		if err != nil {
-			l.logger.ErrorContext(ctx, "smpp query_sm: read cdr", "message_id", id, "account_id", st.accountID, "err", err)
+			l.logger.WarnContext(ctx, "smpp query_sm: read cdr", "message_id", id, "account_id", st.accountID, "err", err)
 			return session.QueryResult{Status: errs.StatusQueryFail}
 		}
 		if !found {
@@ -58,7 +71,7 @@ func (l *Listener) onQuery(_ context.Context, st *connState) session.QueryHandle
 			l.logger.ErrorContext(ctx, "smpp query_sm: unmapped cdr status", "message_id", id, "status", row.Status)
 			return session.QueryResult{Status: errs.StatusQueryFail}
 		}
-		res := session.QueryResult{Status: smpp.StatusOK, MessageID: req.MessageID, MessageState: state}
+		res = session.QueryResult{Status: smpp.StatusOK, MessageID: req.MessageID, MessageState: state}
 		if row.Status == clickhouse.StatusDelivered && row.DeliveredAt != nil {
 			res.FinalDate = smppAbsoluteTime(*row.DeliveredAt)
 		}

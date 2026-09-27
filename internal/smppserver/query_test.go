@@ -7,6 +7,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/codes"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 	"github.com/martialanouman/go-gateway/internal/smpp"
@@ -138,5 +141,33 @@ func TestOnQueryBoundsTheLookup(t *testing.T) {
 
 	if !reader.deadline {
 		t.Error("CDR read without a deadline")
+	}
+}
+
+func TestOnQueryTracesTheLookupOutcome(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		reader *scopedReader
+		want   errs.Code
+	}{
+		{"unknown message", &scopedReader{}, errs.ErrMessageNotFound},
+		{"failed read", &scopedReader{err: errors.New("clickhouse down")}, errs.ErrInternal},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := tracetest.NewSpanRecorder()
+			tracer := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec)).Tracer("test")
+			l := New(nil, nil, nil, Options{MessageReader: tc.reader, Tracer: tracer}, discardLog())
+
+			l.onQuery(context.Background(), &connState{querySMEnabled: true})(
+				context.Background(), session.QueryRequest{MessageID: uuid.NewString()})
+
+			spans := rec.Ended()
+			if len(spans) != 1 || spans[0].Name() != "smpp.query" {
+				t.Fatalf("ended spans = %d, want one smpp.query", len(spans))
+			}
+			if got := spans[0].Status(); got.Code != codes.Error || got.Description != string(tc.want) {
+				t.Errorf("span status = %+v, want Error %q", got, tc.want)
+			}
+		})
 	}
 }
