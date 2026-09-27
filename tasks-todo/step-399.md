@@ -69,9 +69,8 @@ d'architecture nomme déjà « config sync (pub/sub / polling) », et `modlrrout
 
 Conséquences assumées : `config_rebuild_total{outcome="ok"}` ne mesure plus l'activité Admin ; l'écriture
 non atomique entre composants devient périodique ; un arrêt pendant un rebuild compte `+1 error` plus souvent
-(step-395). Dettes ouvertes dans la PR : `buildFilter` matérialise tous les MSISDN avant de dimensionner le
-filtre (~150 Mo transitoires toutes les 5 min) ; le cache `exactroute:*` (TTL 6 h) n'est pas borné par la
-resync si le DEL Admin a échoué.
+(step-395). Dette ouverte dans la PR : `buildFilter` matérialise tous les MSISDN avant de dimensionner le
+filtre (~150 Mo transitoires toutes les 5 min, `debts/bloom-exact-routes-materialise-tous-les-msisdn.md`).
 
 ## Chaîne de preuves (esquisse)
 
@@ -85,3 +84,8 @@ resync si le DEL Admin a échoué.
 
 Rendre le rebuild atomique entre composants (déjà écarté par step-395). Une règle d'alerte PromQL versionnée
 sur l'âge de la config : le dépôt n'en versionne aucune aujourd'hui.
+
+Le cache read-through `exactroute:{msisdn}` : la resync borne le Bloom, pas lui. Une invalidation Admin
+échouée y laisse une cible périmée jusqu'au TTL (6 h) — borne déjà assumée par ADR-0015
+(`internal/routing/exact/invalidator.go:28`), indépendante de la resynchronisation. Le design arrêté la
+comptait d'abord parmi les dettes de cette PR ; ce n'en est pas une neuve.
