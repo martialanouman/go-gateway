@@ -195,7 +195,7 @@ func TestRouterConfigSnapshotsDegradeSilentlyWhenPostgresIsCut(t *testing.T) {
 		}
 		// The failure is now visible without reading logs (step-395): the counter the built graph wraps
 		// around the whole rebuild closure has moved. Unwrap the closure in the wiring and this reads 0.
-		if got := testutil.ToFloat64(app.rebuilds.total.WithLabelValues("error")); got == 0 {
+		if got := testutil.ToFloat64(app.catalog.ConfigRebuilds.WithLabelValues("error")); got == 0 {
 			t.Error(`config_rebuild_total{outcome="error"} did not move during the outage: the failed ` +
 				"rebuilds are counted nowhere, and the degradation is back to being visible in logs only")
 		}

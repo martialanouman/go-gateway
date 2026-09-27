@@ -55,7 +55,6 @@ type routerApp struct {
 	// durability property a test must be able to assert (step-201c D9).
 	outcome  *outcomeProjector
 	watcher  *config.Watcher
-	rebuilds rebuildMetrics
 	emitter  *metricstream.Emitter
 	consumer *kafka.Consumer
 	catalog  *metrics.Catalog
@@ -183,14 +182,13 @@ func newRouterApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 		Metrics:  a.catalog,
 	})
 
-	ops, blooms, rebuilds, err := newOpsServer(cfg, logger, st.consumer, a.catalog, stack, proj, outc, stream, boot)
+	ops, blooms, err := newOpsServer(cfg, logger, st.consumer, a.catalog, stack, proj, outc, stream, boot)
 	if err != nil {
 		return nil, err
 	}
 	a.ops = ops
 
-	a.rebuilds = rebuilds
-	a.watcher = newSnapshotWatcher(st.pg, rdb, boot, stack, proj, blooms, rebuilds, logger)
+	a.watcher = newSnapshotWatcher(st.pg, rdb, boot, stack, proj, blooms, a.catalog, logger)
 	return a, nil
 }
 
@@ -643,40 +641,6 @@ func (g bloomGauges) set(filter string, capacityBits uint) {
 	g.capacity.WithLabelValues(filter).Set(float64(capacityBits))
 }
 
-// rebuildMetrics record the outcome of each WHOLE config rebuild (step-395). Unlike the Bloom gauges,
-// which move in the middle of the closure, last-success is set only once every component rebuilt, so a
-// rebuild that swapped its routes and then failed never reads as fresh.
-type rebuildMetrics struct {
-	total       *prometheus.CounterVec
-	lastSuccess prometheus.Gauge
-}
-
-func newRebuildMetrics() rebuildMetrics {
-	return rebuildMetrics{
-		total: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "config_rebuild_total",
-			Help: "Config snapshot rebuilds run by the hot-reload watcher, by outcome.",
-		}, []string{"outcome"}),
-		lastSuccess: prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "config_rebuild_last_success_timestamp_seconds",
-			Help: "Unix time of the last config snapshot build that completed every component, boot load included.",
-		}),
-	}
-}
-
-// observe returns rebuild's error unchanged: the Watcher retries on it.
-func (m rebuildMetrics) observe(rebuild func(context.Context) error) func(context.Context) error {
-	return func(ctx context.Context) error {
-		if err := rebuild(ctx); err != nil {
-			m.total.WithLabelValues("error").Inc()
-			return err
-		}
-		m.total.WithLabelValues("ok").Inc()
-		m.lastSuccess.SetToCurrentTime()
-		return nil
-	}
-}
-
 // newOpsServer builds the ops listener (not yet bound) and registers exactly the metrics this
 // service feeds.
 //
@@ -694,12 +658,12 @@ func newOpsServer(
 	outc *outcomeProjector,
 	stream *metricStream,
 	boot *bootSnapshots,
-) (*observability.OpsServer, bloomGauges, rebuildMetrics, error) {
+) (*observability.OpsServer, bloomGauges, error) {
 	ops, err := observability.NewOpsServer(cfg, logger,
 		consumer.ReadyCheck("kafka", cfg.Kafka.Timeout),
 	)
 	if err != nil {
-		return nil, bloomGauges{}, rebuildMetrics{}, fmt.Errorf("init ops server: %w", err)
+		return nil, bloomGauges{}, fmt.Errorf("init ops server: %w", err)
 	}
 	ops.Registry().MustRegister(stack.failOpenTotal, proj.dropped, outc.projected)
 	// Only the catalogue metrics this service actually feeds. Registering Collectors() wholesale would both
@@ -707,7 +671,8 @@ func newOpsServer(
 	// rather than "not measured here".
 	ops.Registry().MustRegister(catalog.RoutingScriptFailures, catalog.QueueDepth,
 		catalog.MessagesTotal, catalog.RejectedTotal, catalog.PipelineDuration,
-		catalog.ExactRouteLookups, catalog.ExactRouteCacheCorrupt)
+		catalog.ExactRouteLookups, catalog.ExactRouteCacheCorrupt,
+		catalog.ConfigRebuilds, catalog.ConfigRebuildLastSuccess)
 	ops.Registry().MustRegister(stream.dropped...)
 
 	blooms := bloomGauges{
@@ -732,13 +697,9 @@ func newOpsServer(
 	blooms.set("exact", stack.exactBloom.CapacityBits())
 	blooms.set("optout", boot.optOut.CapacityBits())
 
-	rebuilds := newRebuildMetrics()
-	ops.Registry().MustRegister(rebuilds.total, rebuilds.lastSuccess)
-	rebuilds.total.WithLabelValues("ok")
-	rebuilds.total.WithLabelValues("error")
-	rebuilds.lastSuccess.SetToCurrentTime()
+	catalog.SeedConfigRebuild()
 
-	return ops, blooms, rebuilds, nil
+	return ops, blooms, nil
 }
 
 // newSnapshotWatcher builds the hot-reload watcher (step-105/106): on a config-sync invalidation it
@@ -753,14 +714,14 @@ func newSnapshotWatcher(
 	stack *pipelineStack,
 	proj *acceptedProjector,
 	blooms bloomGauges,
-	rebuilds rebuildMetrics,
+	catalog *metrics.Catalog,
 	logger *slog.Logger,
 ) *config.Watcher {
 	return config.NewWatcher(
 		func(ctx context.Context) (config.Stream, error) {
 			return redisstore.Subscribe(ctx, rdb, config.ChannelSnapshotInvalidation), nil
 		},
-		rebuilds.observe(func(ctx context.Context) error {
+		catalog.ObserveConfigRebuild(func(ctx context.Context) error {
 			snap, err := routing.BuildSnapshot(ctx, postgres.NewRouteRepo(pool))
 			if err != nil {
 				return err

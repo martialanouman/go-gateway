@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"context"
 	"sort"
 	"time"
 
@@ -103,6 +104,14 @@ type Catalog struct {
 	// label so it cannot inflate those ratios.
 	ExactRouteLookups      *prometheus.CounterVec
 	ExactRouteCacheCorrupt prometheus.Counter
+
+	// ConfigRebuilds counts the hot-reload rebuilds a config Watcher runs, by outcome (ok, error), and
+	// ConfigRebuildLastSuccess is when one last completed EVERY component (step-395). Both exist because a
+	// failed rebuild is a MASKED degradation: the pod keeps serving its last config and /readyz stays green,
+	// so without them a stale config is visible in logs only. Feed them through ObserveConfigRebuild, which
+	// is what keeps last-success off a rebuild that swapped its first component and failed further down.
+	ConfigRebuilds           *prometheus.CounterVec
+	ConfigRebuildLastSuccess prometheus.Gauge
 
 	// ConnectorLoadReads counts least_loaded's reads of the derived connectorload gauge by outcome
 	// (hit, missing, error). It exists because "no gauge published" and "every connector idle" both read
@@ -235,6 +244,15 @@ func NewCatalog() *Catalog {
 				"(bloom_miss, redis_hit, redis_error, pg_hit, pg_miss, pg_error).",
 		}, []string{"outcome"}),
 
+		ConfigRebuilds: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "config_rebuild_total",
+			Help: "Config snapshot rebuilds run by the hot-reload watcher, by outcome (ok, error).",
+		}, []string{"outcome"}),
+		ConfigRebuildLastSuccess: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "config_rebuild_last_success_timestamp_seconds",
+			Help: "Unix time of the last config snapshot build that completed every component, boot load included.",
+		}),
+
 		ExactRouteCacheCorrupt: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "exact_route_cache_corrupt_total",
 			Help: "Exact-route cache entries the resolver could not use: an undecodable value, or a key of another Redis type. The durable table answers instead, and overwrites the entry — except when it holds no row for that number, or cannot be read, where the bad entry survives and counts again.",
@@ -258,6 +276,8 @@ func (c *Catalog) Collectors() []prometheus.Collector {
 		c.RoutingScriptFailures,
 		c.ExactRouteLookups,
 		c.ExactRouteCacheCorrupt,
+		c.ConfigRebuilds,
+		c.ConfigRebuildLastSuccess,
 		c.ConnectorLoadReads,
 		c.MessagesTotal,
 		c.RejectedTotal,
@@ -265,6 +285,28 @@ func (c *Catalog) Collectors() []prometheus.Collector {
 		c.SubmitsTotal,
 		c.SubmitRejectedTotal,
 	}
+}
+
+// ObserveConfigRebuild wraps a config Watcher's rebuild so each run is counted, and returns its error
+// unchanged: the Watcher retries on it.
+func (c *Catalog) ObserveConfigRebuild(rebuild func(context.Context) error) func(context.Context) error {
+	return func(ctx context.Context) error {
+		if err := rebuild(ctx); err != nil {
+			c.ConfigRebuilds.WithLabelValues("error").Inc()
+			return err
+		}
+		c.ConfigRebuilds.WithLabelValues("ok").Inc()
+		c.ConfigRebuildLastSuccess.SetToCurrentTime()
+		return nil
+	}
+}
+
+// SeedConfigRebuild records the boot load as the last successful build and creates both outcome series.
+// Call it once the service's boot snapshot has loaded, before its Watcher runs.
+func (c *Catalog) SeedConfigRebuild() {
+	c.ConfigRebuilds.WithLabelValues("ok")
+	c.ConfigRebuilds.WithLabelValues("error")
+	c.ConfigRebuildLastSuccess.SetToCurrentTime()
 }
 
 // SetConnectorBreakerState records a connector's breaker state as a one-hot set of gauges: the given state

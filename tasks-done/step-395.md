@@ -81,6 +81,14 @@ comme `ok | error` et réserve `result` à `hit | miss`. L'horodatage est **amor
 pré-créés comme `ExactRouteLookups`. connector-pool et config-sync ont le rejeu mais pas la métrique :
 seul le routeur a son dégradé masqué décrit par §16.
 
+**Extension après revue (demandée à l'implémentation).** Le connector-pool recharge ses règles de
+réécriture du sender ID par le même watcher et a le même dégradé masqué, sans ligne au tableau de
+`docs/guide-codage-go.md` alors que la règle **[MUST]** qui le suit l'exige. Les deux métriques passent donc
+dans le catalogue partagé (`internal/observability/metrics`, `ObserveConfigRebuild` et
+`SeedConfigRebuild`), alimentées par le routeur **et** le connector-pool ; le label `job` les distingue. La
+ligne manquante est ajoutée au tableau. config-sync n'en a pas : sa seule panne est Redis, que son
+`/readyz` sonde déjà.
+
 **Jauges `bloom_last_reload_timestamp_seconds` : laissées.** Elles disent vrai par filtre ; c'est la
 fraîcheur de la config qu'elles ne savent pas dire, et c'est le rôle de la neuve. Leur commentaire y
 renvoie.

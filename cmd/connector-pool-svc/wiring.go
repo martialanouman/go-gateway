@@ -169,11 +169,12 @@ func newPoolApp(ctx context.Context, cfg config.Config, bindEnv connectorEnv, lo
 	if err := reloadRewrites(ctx); err != nil {
 		return nil, err
 	}
+	a.catalog.SeedConfigRebuild()
 	a.rewriteWatcher = config.NewWatcher(
 		func(ctx context.Context) (config.Stream, error) {
 			return redisstore.Subscribe(ctx, st.rdb, config.ChannelSnapshotInvalidation), nil
 		},
-		reloadRewrites,
+		a.catalog.ObserveConfigRebuild(reloadRewrites),
 		config.WithLogger(logger),
 	)
 
@@ -519,6 +520,8 @@ func poolCatalogueCollectors(catalog *metrics.Catalog) []prometheus.Collector {
 		catalog.SubmitsTotal,
 		catalog.SubmitRejectedTotal,
 		catalog.MessageE2EDuration,
+		catalog.ConfigRebuilds,
+		catalog.ConfigRebuildLastSuccess,
 	}
 }
 
