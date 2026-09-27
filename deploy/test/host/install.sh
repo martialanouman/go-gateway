@@ -13,14 +13,27 @@ ufw allow 22/tcp
 ufw allow from 10.42.0.0/16
 ufw allow from 10.43.0.0/16
 ufw --force enable
-sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config
+# Ubuntu 24.04 inclut sshd_config.d/50-cloud-init.conf avant tout /etc/ssh/sshd_config personnalisé, et
+# le premier PasswordAuthentication rencontré gagne : un sed sur sshd_config n'a donc aucun effet. Un
+# fichier trié avant lui (00-) prend la priorité.
+cat >/etc/ssh/sshd_config.d/00-gateway.conf <<'EOF'
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+EOF
+sshd -t
 systemctl reload ssh
 
-curl -sfL https://get.k3s.io | sh -s - --write-kubeconfig-mode 600
+# Traefik bundlé : ServersTransport.spec.rootCAs (utilisé par ingress.yaml) exige Traefik >= 3.2.
+# v1.36.4+k3s1 est la tête du canal "stable" de k3s (update.k3s.io/v1-release/channels) et embarque
+# Traefik v3.7.8. INSTALL_K3S_VERSION doit atteindre le script get.k3s.io (le "sh"), pas "curl".
+curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=v1.36.4+k3s1 sh -s - --write-kubeconfig-mode 600
 until kubectl get nodes >/dev/null 2>&1; do sleep 2; done
 systemctl show k3s -p LimitNOFILE
 
 kubectl create namespace gateway --dry-run=client -o yaml | kubectl apply -f -
+# Le Role du compte deploy ne peut pas s'appliquer à lui-même (Namespace est cluster-scoped) : sans
+# cette étiquette posée ici, une clé de CD fuitée pourrait créer un pod privilégié ou hostPath/hostNetwork.
+kubectl label ns gateway pod-security.kubernetes.io/enforce=baseline --overwrite
 kubectl apply -f - <<'EOF'
 apiVersion: v1
 kind: ServiceAccount
@@ -61,7 +74,9 @@ KUBECONFIG=/home/deploy/.kube/config kubectl config use-context deploy
 chown deploy:deploy /home/deploy/.kube/config && chmod 600 /home/deploy/.kube/config
 
 install -m 755 "$here/gateway-deploy" /usr/local/bin/gateway-deploy
-printf 'command="/usr/local/bin/gateway-deploy",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty %s\n' "$pubkey" \
+# restrict (OpenSSH >= 7.2, Ubuntu 24.04 ships 9.6) désactive tout ce qu'une commande forcée peut
+# laisser passer par défaut, en un seul mot-clé au lieu d'une énumération qui peut en oublier un.
+printf 'restrict,command="/usr/local/bin/gateway-deploy" %s\n' "$pubkey" \
   >/home/deploy/.ssh/authorized_keys
 chown deploy:deploy /home/deploy/.ssh/authorized_keys && chmod 600 /home/deploy/.ssh/authorized_keys
 echo "install.sh: prêt. Empreinte de l'hôte pour TEST_SSH_KNOWN_HOSTS :"
