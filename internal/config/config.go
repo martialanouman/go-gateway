@@ -74,7 +74,7 @@ type Config struct {
 	DrainDelay time.Duration `env:"DRAIN_DELAY" envDefault:"5s"`
 
 	// ConfigResyncInterval is how often a config watcher rebuilds with no invalidation at all (step-399):
-	// it bounds how long a lost announcement leaves a pod on a stale config. Zero disables it.
+	// it bounds how long a lost announcement leaves a pod on a stale config. Zero disables it; otherwise ≥ 1m.
 	ConfigResyncInterval time.Duration `env:"CONFIG_RESYNC_INTERVAL" envDefault:"5m"`
 
 	// DrainBudget caps the WHOLE teardown, once the pre-drain hooks have run: past it the supervisor
@@ -814,9 +814,11 @@ func (c Config) coreProblems() []string {
 			"DRAIN_DELAY %s must not be negative: use 0 to drain without waiting for the load balancer",
 			c.DrainDelay))
 	}
-	if c.ConfigResyncInterval < 0 {
+	// A floor, unlike DRAIN_DELAY: 5ms typed for 5m would not hurt the pod but the shared control plane,
+	// every replica rebuilding its whole config, exact-route Bloom included, back to back.
+	if c.ConfigResyncInterval != 0 && c.ConfigResyncInterval < time.Minute {
 		problems = append(problems, fmt.Sprintf(
-			"CONFIG_RESYNC_INTERVAL %s must not be negative: use 0 to rebuild on invalidations only",
+			"CONFIG_RESYNC_INTERVAL %s must be 0 (rebuild on invalidations only) or at least 1m",
 			c.ConfigResyncInterval))
 	}
 	if c.ShutdownTimeout <= 0 {

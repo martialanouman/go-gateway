@@ -299,6 +299,7 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		{"shutdown timeout negative", map[string]string{"SHUTDOWN_TIMEOUT": "-5s"}, "SHUTDOWN_TIMEOUT"},
 		{"drain delay negative", map[string]string{"DRAIN_DELAY": "-1s"}, "DRAIN_DELAY"},
 		{"config resync negative", map[string]string{"CONFIG_RESYNC_INTERVAL": "-1s"}, "CONFIG_RESYNC_INTERVAL"},
+		{"config resync under a minute", map[string]string{"CONFIG_RESYNC_INTERVAL": "30s"}, "CONFIG_RESYNC_INTERVAL"},
 		{"drain budget zero", map[string]string{"DRAIN_BUDGET": "0s"}, "DRAIN_BUDGET"},
 		{"drain budget negative", map[string]string{"DRAIN_BUDGET": "-1s"}, "DRAIN_BUDGET"},
 		// Under the per-component timeout the ceiling is worse than none: it cuts drains that were
@@ -1379,5 +1380,17 @@ func TestStoreTLSReachesItsSection(t *testing.T) {
 		!cfg.ClickHouse.TLSEnabled || cfg.ClickHouse.TLSCAFile != "/etc/ch/ca.crt" {
 		t.Errorf("kafka = %v %q, clickhouse = %v %q", cfg.Kafka.TLSEnabled, cfg.Kafka.TLSCAFile,
 			cfg.ClickHouse.TLSEnabled, cfg.ClickHouse.TLSCAFile)
+	}
+}
+
+// TestLoadAcceptsTheConfigResyncBounds: 0 turns the resync off and 1m is the floor, both boot.
+func TestLoadAcceptsTheConfigResyncBounds(t *testing.T) {
+	for _, v := range []string{"0", "1m"} {
+		t.Run(v, func(t *testing.T) {
+			setEnv(t, map[string]string{"CONFIG_RESYNC_INTERVAL": v})
+			if _, err := config.Load("router-svc"); err != nil {
+				t.Fatalf("Load() with CONFIG_RESYNC_INTERVAL=%s: %v", v, err)
+			}
+		})
 	}
 }
