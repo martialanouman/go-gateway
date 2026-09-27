@@ -3,6 +3,7 @@ package auth_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/martialanouman/go-gateway/internal/auth"
+	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 	"github.com/martialanouman/go-gateway/internal/platform/errors/humaerr"
 )
 
@@ -96,6 +98,43 @@ func TestUnknownTokenIs401(t *testing.T) {
 	}
 	if m["code"] != "unauthenticated" {
 		t.Errorf("code = %v, want unauthenticated", m["code"])
+	}
+}
+
+type unreachableProvider struct{}
+
+func (unreachableProvider) Verify(context.Context, string) (auth.Principal, error) {
+	return auth.Principal{}, fmt.Errorf("%w: key set down", errs.ErrServiceUnavailable)
+}
+
+// TestUnreachableIdentityProviderIs503: the token was never judged, so a 401 would tell the caller to
+// drop a session a retry could have kept.
+func TestUnreachableIdentityProviderIs503(t *testing.T) {
+	api := middlewareAPI(t, unreachableProvider{})
+
+	status, m := request(t, api, http.MethodGet, "/read", "Bearer any")
+	if status != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", status)
+	}
+	if m["code"] != "service_unavailable" {
+		t.Errorf("code = %v, want service_unavailable", m["code"])
+	}
+}
+
+type scopelessProvider struct{}
+
+func (scopelessProvider) Verify(context.Context, string) (auth.Principal, error) {
+	return auth.Principal{Subject: "service-account"}, nil
+}
+
+// TestValidTokenWithoutAnyScopeIs403: a provider's token that carries none of our scopes is still an
+// authenticated caller.
+func TestValidTokenWithoutAnyScopeIs403(t *testing.T) {
+	api := middlewareAPI(t, scopelessProvider{})
+
+	status, m := request(t, api, http.MethodGet, "/read", "Bearer any")
+	if status != http.StatusForbidden || m["code"] != "forbidden_scope" {
+		t.Errorf("status = %d, code = %v; want 403 forbidden_scope", status, m["code"])
 	}
 }
 

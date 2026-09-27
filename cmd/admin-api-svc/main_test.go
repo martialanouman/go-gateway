@@ -10,15 +10,14 @@ import (
 	"github.com/martialanouman/go-gateway/internal/realtime"
 )
 
-// TestRunRequiresAdminTokensInProduction pins the operator-token policy: a production Admin API with
-// no HTTP_ADMIN_TOKENS must fail the boot (fast, before touching Postgres) rather than come up and
-// answer every request with 401. The guard runs right after config.Load, so no database is needed.
-func TestRunRequiresAdminTokensInProduction(t *testing.T) {
+// TestRunRequiresOIDCInProduction: production has no static tokens, so a production Admin API without an
+// identity provider must fail the boot rather than come up and answer every request with 401. The guard
+// runs in config.Load, so no database is needed.
+func TestRunRequiresOIDCInProduction(t *testing.T) {
 	t.Setenv("ENVIRONMENT", "production")
 	t.Setenv("OTEL_SDK_DISABLED", "true")
 	// Non-localhost dependency addresses so the production config guards pass; the pool and the
-	// session-manager client are never opened because the token check fires first. SMPP_SESSION_MANAGER_ADDR
-	// is required now that the Admin API calls session-manager to force-disconnect on revoke/suspend (step-032).
+	// session-manager client are never opened because the config check fires first.
 	t.Setenv("POSTGRES_URL", "postgres://u:p@db.internal:5432/gw")
 	t.Setenv("SMPP_SESSION_MANAGER_ADDR", "session-manager.internal:7000")
 	t.Setenv("BILLING_ADDR", "billing.internal:7001")
@@ -27,77 +26,59 @@ func TestRunRequiresAdminTokensInProduction(t *testing.T) {
 	t.Setenv("CONTENT_KEY_ADDR", "content-key.internal:7002")
 	t.Setenv("REDIS_URL", "redis://redis.internal:6379")
 	t.Setenv("KAFKA_BROKERS", "kafka.internal:9092")
-	// Production refuses plaintext too (step-300b), and config reports every problem at once — without
-	// these the boot fails on TLS before it ever reaches the token check this test is about. The paths
-	// are never opened: the check fires first.
 	t.Setenv("TLS_ENABLED", "true")
 	t.Setenv("TLS_CERT_FILE", "/etc/gateway/tls/tls.crt")
 	t.Setenv("TLS_KEY_FILE", "/etc/gateway/tls/tls.key")
 	t.Setenv("TLS_CLIENT_CA_FILE", "/etc/gateway/tls/ca.crt")
-	// HTTP_ADMIN_TOKENS deliberately unset.
+	// OIDC_* deliberately unset.
 
 	err := run()
 	if err == nil {
-		t.Fatal("run() = nil, want a boot failure for missing admin tokens in production")
+		t.Fatal("run() = nil, want a boot failure for a production Admin API without an identity provider")
 	}
-	if !strings.Contains(err.Error(), "HTTP_ADMIN_TOKENS") {
-		t.Errorf("error %q should name HTTP_ADMIN_TOKENS", err)
+	if !strings.Contains(err.Error(), "OIDC_ISSUER") {
+		t.Errorf("error %q should name OIDC_ISSUER", err)
+	}
+
+	// With a provider, the static tokens beside it are what refuses the boot — before Postgres is opened.
+	t.Setenv("OIDC_ISSUER", "https://idp.internal/realms/gw")
+	t.Setenv("OIDC_AUDIENCE", "gateway-admin")
+	t.Setenv("OIDC_JWKS_URL", "https://idp.internal/realms/gw/certs")
+	t.Setenv("HTTP_ADMIN_TOKENS", "static-operator-token:admin:read")
+	if err := run(); err == nil || !strings.Contains(err.Error(), "HTTP_ADMIN_TOKENS") {
+		t.Errorf("run() = %v, want the boot refused over HTTP_ADMIN_TOKENS", err)
 	}
 }
 
-// TestValidateAdminConfigRefusesShortTokensInProduction: the recorded operator identity is a truncated
-// hash of the token, so production refuses a token short enough to brute-force from it. The error names
-// the entry, never the token — a boot error lands in logs.
-func TestValidateAdminConfigRefusesShortTokensInProduction(t *testing.T) {
+// TestValidateAdminConfigRefusesStaticTokensBesideOIDC: once a provider is configured the static tokens
+// are never read, so setting them is a mistake to report, not a fallback. The error names the variable,
+// never a token — a boot error lands in logs.
+func TestValidateAdminConfigRefusesStaticTokensBesideOIDC(t *testing.T) {
 	t.Parallel()
 
-	const short = "short-operator-token"
-	long := strings.Repeat("x", 32)
-	cfg := config.Config{
-		Environment: config.EnvProduction,
-		HTTP:        config.HTTP{AdminTokens: []string{long + ":admin:read", short + ":admin:read|admin:write"}},
+	const token = "static-operator-token"
+	oidc := config.OIDC{Issuer: "https://idp", Audience: "gw", JWKSURL: "https://idp/certs"}
+
+	for _, env := range []config.Environment{config.EnvProduction, config.EnvDevelopment} {
+		cfg := config.Config{Environment: env, OIDC: oidc, HTTP: config.HTTP{AdminTokens: []string{token + ":admin:read"}}}
+		err := validateAdminConfig(cfg)
+		if err == nil || !strings.Contains(err.Error(), "HTTP_ADMIN_TOKENS") {
+			t.Errorf("%s: validateAdminConfig() = %v, want a refusal naming HTTP_ADMIN_TOKENS", env, err)
+		}
+		if err != nil && strings.Contains(err.Error(), token) {
+			t.Errorf("%s: error %q leaks the token", env, err)
+		}
 	}
 
-	err := validateAdminConfig(cfg)
-	if err == nil {
-		t.Fatal("validateAdminConfig() = nil, want a refusal for a 20-character production token")
-	}
-	if !strings.Contains(err.Error(), "entry 1") || !strings.Contains(err.Error(), "32") {
-		t.Errorf("error %q should name the entry and the minimum length", err)
-	}
-	if strings.Contains(err.Error(), short) {
-		t.Errorf("error %q leaks the token", err)
-	}
-
-	cfg.HTTP.AdminTokens = []string{long + ":admin:read", " ", long + "y:admin:write"}
+	// A trailing separator in the variable is not a configured token.
+	cfg := config.Config{Environment: config.EnvProduction, OIDC: oidc, HTTP: config.HTTP{AdminTokens: []string{" "}}}
 	if err := validateAdminConfig(cfg); err != nil {
-		t.Errorf("validateAdminConfig() = %v, want nil for 32+ character tokens (blank entries are skipped)", err)
+		t.Errorf("validateAdminConfig() = %v, want nil for blank entries only", err)
 	}
 
-	// Padding is not entropy: the guard measures the token without it.
-	cfg.HTTP.AdminTokens = []string{strings.Repeat("x", 31) + "   :admin:read"}
-	if err := validateAdminConfig(cfg); err == nil {
-		t.Error("validateAdminConfig() = nil, want a refusal for a 31-byte token padded with spaces")
-	}
-
-	// A variable holding only separators and blanks configures no token: the same silent 401 service as an
-	// unset one.
-	cfg.HTTP.AdminTokens = []string{" ", " "}
-	if err := validateAdminConfig(cfg); err == nil || !strings.Contains(err.Error(), "must be set") {
-		t.Errorf("validateAdminConfig() = %v, want the missing-tokens refusal for blank entries only", err)
-	}
-
-	// An entry without a colon, or with an empty token, is malformed, not short: auth.NewStaticVerifier names that fault, so the
-	// guard leaves it alone rather than report a misleading length.
-	cfg.HTTP.AdminTokens = []string{long + ":admin:read", "abc", ":admin:read"}
+	cfg = config.Config{Environment: config.EnvDevelopment, HTTP: config.HTTP{AdminTokens: []string{"t:admin:read"}}}
 	if err := validateAdminConfig(cfg); err != nil {
-		t.Errorf("validateAdminConfig() = %v, want nil: a malformed entry is the verifier's to report", err)
-	}
-
-	cfg.Environment = config.EnvDevelopment
-	cfg.HTTP.AdminTokens = []string{short + ":admin:read"}
-	if err := validateAdminConfig(cfg); err != nil {
-		t.Errorf("validateAdminConfig() = %v, want nil outside production", err)
+		t.Errorf("validateAdminConfig() = %v, want the static verifier accepted without a provider", err)
 	}
 }
 

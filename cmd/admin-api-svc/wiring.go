@@ -121,7 +121,7 @@ func newAdminApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (_
 	runners := newRunners(ctx, cfg, logger)
 	a.onClose("runners", runners.close)
 
-	verifier, err := auth.NewStaticVerifier(cfg.HTTP.AdminTokens)
+	verifier, err := newVerifier(ctx, cfg, logger)
 	if err != nil {
 		return nil, fmt.Errorf("build operator token verifier: %w", err)
 	}
@@ -353,7 +353,7 @@ func adminDeps(
 	runners *runners,
 	clients *controlPlaneClients,
 	feed *realtimeFeed,
-	verifier *auth.StaticVerifier,
+	verifier auth.TokenVerifier,
 	sink adminapi.ExportSink,
 ) adminapi.Deps {
 	return adminapi.Deps{
@@ -456,44 +456,30 @@ func exportSink(cfg config.Config) adminapi.ExportSink {
 	return adminapi.NewFileExportSink(cfg.HTTP.ExportDir)
 }
 
-// minAdminTokenLen is the shortest operator token production accepts, in bytes. Audit rows record an
-// operator as auth.Fingerprint(token), a 64-bit prefix of its SHA-256: that is only safe to publish if the
-// token itself cannot be guessed. Length is all this can check — not randomness.
-const minAdminTokenLen = 32
+// newVerifier picks the identity provider when one is configured — always, in production, where
+// config.Load requires it — and the static tokens otherwise.
+func newVerifier(ctx context.Context, cfg config.Config, logger *slog.Logger) (auth.TokenVerifier, error) {
+	if cfg.OIDC.Issuer != "" {
+		return auth.NewOIDCVerifier(ctx, logger, cfg.OIDC.Issuer, cfg.OIDC.Audience, cfg.OIDC.JWKSURL), nil
+	}
+	return auth.NewStaticVerifier(cfg.HTTP.AdminTokens)
+}
 
 // validateAdminConfig enforces the policies specific to this service, at the point of use rather than
-// in the shared config validator.
+// in the shared config validator, which rest-api-svc's HTTP section also goes through.
 //
-// Operator tokens are specific to this service (not the pipeline binaries that share the HTTP
-// section). Without them a production Admin API would boot, pass readiness, and answer every
-// request with 401 — a silent, fully non-functional service. A token short enough to guess from its
-// recorded fingerprint is refused on the same tier; the error names the entry, never the token, since
-// it lands in the boot log.
+// Static tokens beside a configured provider are never read: refusing them keeps an operator from
+// believing a token works, and — production requiring a provider — keeps the stub out of production.
+// The error names the variable, never a token, since it lands in the boot log.
 func validateAdminConfig(cfg config.Config) error {
-	if !cfg.Environment.IsProduction() {
+	if cfg.OIDC.Issuer == "" {
 		return nil
 	}
-	configured := 0
-	for i, entry := range cfg.HTTP.AdminTokens {
-		entry = strings.TrimSpace(entry)
-		if entry == "" {
-			continue // auth.NewStaticVerifier skips blank entries too
+	for _, entry := range cfg.HTTP.AdminTokens {
+		if strings.TrimSpace(entry) != "" {
+			return fmt.Errorf("HTTP_ADMIN_TOKENS must be empty when OIDC_ISSUER is set: " +
+				"static operator tokens would have no effect")
 		}
-		configured++
-		token, _, ok := strings.Cut(entry, ":")
-		// Measured without surrounding spaces: padding is not entropy.
-		n := len(strings.TrimSpace(token))
-		if !ok || n == 0 {
-			continue // malformed, not short: auth.NewStaticVerifier reports it by entry number
-		}
-		if n < minAdminTokenLen {
-			return fmt.Errorf("HTTP_ADMIN_TOKENS entry %d: a production token needs at least %d bytes, "+
-				"got %d (only the length is checked, not the randomness)", i, minAdminTokenLen, n)
-		}
-	}
-	if configured == 0 {
-		return fmt.Errorf("HTTP_ADMIN_TOKENS must be set in production: " +
-			"the Admin API would otherwise reject every operator request")
 	}
 	return nil
 }

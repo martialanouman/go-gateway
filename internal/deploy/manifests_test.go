@@ -239,7 +239,7 @@ func inspect(t *testing.T, dir string) []violation {
 				}
 			}
 		case "Secret":
-			// 3. No Secret ships from this repo. step-300 (TLS) and step-310 (OIDC) provision them.
+			// 3. No Secret ships from this repo. step-300 (TLS) provisions them.
 			if len(m.Data) > 0 || len(m.StringData) > 0 {
 				add("secrets-by-reference", "%s: Secret %q carries data — manifests reference secrets, they never contain them", m.Source, m.Metadata.Name)
 			}

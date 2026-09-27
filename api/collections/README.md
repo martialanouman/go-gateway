@@ -21,8 +21,10 @@ the base URL is `http://localhost:8081/v1` (the `Local` environment's `baseUrl`)
 part** as `Authorization: Bearer <token>` — bearer auth is set once at the
 collection level (`request.auth`) as `{{operatorToken}}`, which the `Local` environment
 resolves to `dev-operator-token`. Reads need `admin:read`, mutations `admin:write`.
-Audit rows record the token's fingerprint (`tok_…`), never the token. Production refuses a token
-shorter than 32 bytes, so this development token only works outside `ENVIRONMENT=production`.
+Audit rows record the token's fingerprint (`tok_…`), never the token. Static tokens only exist
+outside `ENVIRONMENT=production`: there, set `operatorToken` to a JWT access token from the identity
+provider named by `OIDC_ISSUER`, `OIDC_AUDIENCE` and `OIDC_JWKS_URL`; its scopes come from its `scope`
+claim.
 
 ## Variables
 

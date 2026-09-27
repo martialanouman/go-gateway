@@ -1,7 +1,7 @@
 # step-410 — Dérouler la checklist de mise en production (go-live)
 
 > **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
-> **Dépend de :** step-280, step-260, step-290, step-310, step-270, **step-270b**, step-320 · **Bloque :** —
+> **Dépend de :** step-280, step-260, step-290, step-310, **step-405**, **step-407**, step-270, **step-270b**, step-320 · **Bloque :** —
 
 ## But
 Clore M12 : dérouler la checklist de mise en production (guide d'ingénierie §15), consigner l'état de
@@ -49,6 +49,9 @@ chaque item et matérialiser la porte de go-live.
   maillage chiffre le réseau, et en nommant qui l'accepte.
 - Vérifier une dernière fois les **4 invariants** (a/b/c/d) verts sur l'ensemble avant go-live.
 - Item explicite : **auth opérateur réelle active** (le stub M1 n'est plus câblé).
+- **L'émetteur des jetons est le BFF** (ADR-0019, step-405) : le ConfigMap `gateway-oidc` porte
+  `OIDC_ISSUER` (l'URL du BFF), `OIDC_AUDIENCE=gateway-admin`, `OIDC_JWKS_URL` (le JWKS du BFF), et l'ancre
+  `OIDC_JWKS_CA_FILE` si ce JWKS est servi sous une autorité interne.
 - Artefact documentaire (pas de code) : ne PAS inventer d'items — reprendre §15 du guide.
 
 ## Tests (écrits dans la même PR)

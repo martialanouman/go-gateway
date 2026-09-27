@@ -13,6 +13,7 @@ package config
 import (
 	"fmt"
 	"log/slog"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -107,6 +108,7 @@ type Config struct {
 	BillingReaper BillingReaper `envPrefix:"BILLING_REAPER_"`
 	Exact         Exact         `envPrefix:"EXACT_"`
 	TLS           TLS           `envPrefix:"TLS_"`
+	OIDC          OIDC          `envPrefix:"OIDC_"`
 }
 
 // OTel configures tracing export. The variable names follow the OpenTelemetry specification so
@@ -423,9 +425,8 @@ type HTTP struct {
 	// that leaves it unset.
 	ReadHeaderTimeout time.Duration `env:"READ_HEADER_TIMEOUT" envDefault:"5s"`
 
-	// AdminTokens are the operator bearer tokens the M1 stand-in verifier accepts, as
-	// "token:scope|scope" entries (internal/auth). They are secret-bearing and never logged. The
-	// real identity provider (OIDC/mTLS) replaces them at M12.
+	// AdminTokens are the operator bearer tokens the static verifier accepts outside production, as
+	// "token:scope|scope" entries (internal/auth). They are secret-bearing and never logged.
 	AdminTokens []string `env:"ADMIN_TOKENS" envSeparator:","`
 
 	// ExportDir is where asynchronous CDR exports write their artefacts (step-187). Empty — the
@@ -530,6 +531,15 @@ type ContentKey struct {
 	// Addr is the host:port of the content-key gRPC service. It is dialled lazily, so a key service that
 	// is briefly down does not block a caller's startup.
 	Addr string `env:"ADDR" envDefault:"localhost:7002"`
+}
+
+// OIDC is where admin-api-svc verifies operator tokens: the identity provider's issuer, the audience
+// tokens must carry, and the JWKS they are signed with. All empty is the laptop setting, where the
+// static verifier stands in; production requires all three (step-310).
+type OIDC struct {
+	Issuer   string `env:"ISSUER"`
+	Audience string `env:"AUDIENCE"`
+	JWKSURL  string `env:"JWKS_URL"`
 }
 
 // TLS is the pod's transport identity: one certificate for every surface it serves and every service it
@@ -649,13 +659,14 @@ const (
 	SectionBillingReaper
 	SectionExact
 	SectionTLS
+	SectionOIDC
 
 	// SectionAll is what a caller declaring nothing gets. It must include every section, or
 	// Validate() — which runs validate(SectionAll) — would quietly stop being a full check. The
 	// cost of a section a binary does not use is nil: its fields carry valid defaults.
 	SectionAll = SectionOTel | SectionPostgres | SectionKafka | SectionClickHouse | SectionHTTP |
 		SectionRedis | SectionGRPC | SectionSMPP | SectionBilling | SectionContentKey |
-		SectionBillingReaper | SectionExact | SectionTLS
+		SectionBillingReaper | SectionExact | SectionTLS | SectionOIDC
 )
 
 // Load reads the configuration for serviceName from the environment and validates the sections it
@@ -764,6 +775,9 @@ func (c Config) validate(sections Section) error {
 	}
 	if sections&SectionTLS != 0 {
 		problems = append(problems, c.tlsProblems()...)
+	}
+	if sections&SectionOIDC != 0 {
+		problems = append(problems, c.oidcProblems()...)
 	}
 
 	if len(problems) == 0 {
@@ -1069,10 +1083,9 @@ func (c Config) httpProblems() []string {
 			"HTTP_READ_HEADER_TIMEOUT %s must be positive: an unbounded header read is a Slowloris vector",
 			c.HTTP.ReadHeaderTimeout))
 	}
-	// AdminTokens is deliberately NOT validated here. It is specific to admin-api-svc's stand-in
+	// AdminTokens is deliberately NOT validated here. It is specific to admin-api-svc's static
 	// verifier, yet SectionHTTP is part of SectionAll and rest-api-svc also carries an HTTP section
-	// without operator tokens. The "at least one usable token in production" policy therefore lives
-	// in cmd/admin-api-svc (the point of use), not in this shared validator.
+	// without operator tokens. Its policy therefore lives in cmd/admin-api-svc (the point of use).
 	return problems
 }
 
@@ -1323,6 +1336,9 @@ func (c Config) LogValue() slog.Value {
 		// The tokens themselves are secrets and never logged: only whether any are configured, which
 		// is all a boot diagnosis needs.
 		slog.Bool("http_admin_tokens_set", len(c.HTTP.AdminTokens) > 0),
+		slog.String("oidc_issuer", c.OIDC.Issuer),
+		slog.String("oidc_audience", c.OIDC.Audience),
+		slog.String("oidc_jwks_url", c.OIDC.JWKSURL),
 		// The Redis URL can embed a password, so it is reduced to a boolean, as the Postgres URL is.
 		slog.Bool("redis_url_set", strings.TrimSpace(c.Redis.URL) != ""),
 		slog.Int("grpc_port", c.GRPC.Port),
@@ -1364,6 +1380,50 @@ func (c Config) tlsProblems() []string {
 		if strings.TrimSpace(f.value) == "" {
 			problems = append(problems, f.name+" is empty while TLS_ENABLED is true")
 		}
+	}
+	return problems
+}
+
+// oidcProblems refuses a half-configured provider in every tier — it would boot and answer 401 to every
+// operator — and a missing or plaintext one in production.
+func (c Config) oidcProblems() []string {
+	fields := []struct{ name, value string }{
+		{"OIDC_ISSUER", c.OIDC.Issuer},
+		{"OIDC_AUDIENCE", c.OIDC.Audience},
+		{"OIDC_JWKS_URL", c.OIDC.JWKSURL},
+	}
+	var missing, padded []string
+	for _, f := range fields {
+		switch {
+		case f.value == "":
+			missing = append(missing, f.name)
+		case strings.TrimSpace(f.value) != f.value:
+			padded = append(padded, f.name)
+		}
+	}
+	if len(missing) == len(fields) && !c.Environment.IsProduction() {
+		return nil
+	}
+
+	var problems []string
+	if len(padded) > 0 {
+		// The issuer is compared byte for byte with the token's iss, and a blank one still selects the
+		// OIDC verifier: surrounding spaces would refuse every token without saying why.
+		problems = append(problems, fmt.Sprintf("%s must not carry surrounding spaces", strings.Join(padded, ", ")))
+	}
+	if len(missing) > 0 {
+		problems = append(problems, fmt.Sprintf("%s must be set: operator tokens cannot be verified without them",
+			strings.Join(missing, ", ")))
+	}
+	if c.OIDC.JWKSURL == "" {
+		return problems
+	}
+	u, err := url.Parse(c.OIDC.JWKSURL)
+	switch {
+	case err != nil || u.Scheme == "" || u.Host == "":
+		problems = append(problems, "OIDC_JWKS_URL must be an absolute URL")
+	case c.Environment.IsProduction() && u.Scheme != "https":
+		problems = append(problems, "OIDC_JWKS_URL must use https in production: a key set fetched in plaintext can be swapped")
 	}
 	return problems
 }

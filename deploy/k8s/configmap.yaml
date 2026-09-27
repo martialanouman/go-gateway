@@ -1,8 +1,9 @@
 # Shared, NON-SECRET configuration. Every service pulls it with envFrom and overrides what is its own.
 #
-# Nothing here is a credential: POSTGRES_URL, REDIS_URL, CLICKHOUSE_PASSWORD, HTTP_ADMIN_TOKENS,
-# CONTENT_KMS_MASTER_KEY and the connector's bind credentials come from the `gateway-secrets` Secret,
-# which this repository does NOT ship — step-300 (TLS/certs) and step-310 (operator auth) provision it.
+# Nothing here is a credential: POSTGRES_URL, REDIS_URL, CLICKHOUSE_PASSWORD, CONTENT_KMS_MASTER_KEY
+# and the connector's bind credentials come from the `gateway-secrets` Secret, which this repository
+# does NOT ship. Nor does it ship the `gateway-oidc` ConfigMap, where the operator names the identity
+# provider admin-api-svc verifies tokens against.
 #
 # A set-but-empty variable falls back to its default rather than failing (internal/config), so an
 # entry left blank here is silently the development default, not an error. Leave it out instead.

@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 
@@ -15,7 +16,8 @@ import (
 // forgets its scopes fails the contract test, not production.
 //
 // Behaviour: an operation with no security declaration passes through; a missing or malformed
-// bearer token, or one the verifier rejects, is 401 unauthenticated; a valid token whose principal
+// bearer token, or one the verifier rejects, is 401 unauthenticated; a verifier that could not judge
+// the token (identity provider unreachable) is 503; a valid token whose principal
 // lacks a required scope is 403 forbidden_scope. On success the Principal is attached to the
 // request context for handlers to read.
 func Middleware(api huma.API, v TokenVerifier, schemeName string) func(huma.Context, func(huma.Context)) {
@@ -34,6 +36,10 @@ func Middleware(api huma.API, v TokenVerifier, schemeName string) func(huma.Cont
 		}
 
 		principal, err := v.Verify(ctx.Context(), token)
+		if errors.Is(err, errs.ErrServiceUnavailable) {
+			writeErr(api, ctx, errs.ErrServiceUnavailable, "identity provider unavailable")
+			return
+		}
 		if err != nil {
 			writeErr(api, ctx, errs.ErrUnauthenticated, "invalid operator token")
 			return
