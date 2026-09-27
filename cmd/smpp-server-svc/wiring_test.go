@@ -127,6 +127,14 @@ func TestNewSMPPAppBuildsTheWholeGraph(t *testing.T) {
 		}
 	}
 
+	reader := reflect.ValueOf(app.listener).Elem().FieldByName("opts").FieldByName("MessageReader")
+	switch {
+	case !reader.IsValid():
+		t.Error("smppserver.Listener has no opts.MessageReader field: update this wiring check")
+	case reader.IsNil():
+		t.Error("query_sm has no MessageReader: every query_sm would answer ESME_RQUERYFAIL")
+	}
+
 	for name, port := range map[string]int{"ops": cfg.OpsPort, "smpp": cfg.SMPP.Port, "grpc": cfg.GRPC.Port} {
 		if c, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), time.Second); err == nil {
 			_ = c.Close()

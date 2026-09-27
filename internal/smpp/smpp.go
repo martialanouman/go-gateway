@@ -55,8 +55,7 @@ const (
 	MessageStateDeleted       uint8 = 4
 	MessageStateUndeliverable uint8 = 5
 	MessageStateAccepted      uint8 = 6
-	// MessageStateUnknown is the honest answer for a message whose state the server cannot resolve. It
-	// is also the query_sm_resp default while the real state lookup is unimplemented.
+	// MessageStateUnknown is the honest answer for a message whose state the server cannot resolve.
 	MessageStateUnknown  uint8 = 7
 	MessageStateRejected uint8 = 8
 )

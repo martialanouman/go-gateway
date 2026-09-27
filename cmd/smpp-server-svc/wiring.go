@@ -244,8 +244,9 @@ func newListener(cfg config.Config, st *stores, logger *slog.Logger) (_ *listene
 	// state (ClickHouse), flags the cancel intent in Redis for the connector pool to honour before
 	// submit_sm, and writes the cancelled CDR row. Cancellation is SMPP-only — there is no REST surface
 	// (ADR-0009).
+	cdrReader := clickhouse.NewCDRReader(st.ch)
 	canceller := cancel.NewCanceller(
-		clickhouse.NewCDRReader(st.ch),
+		cdrReader,
 		clickhouse.NewCDRWriter(st.ch),
 		cancel.NewRedisFlags(st.rdb),
 		logger,
@@ -300,6 +301,7 @@ func newListener(cfg config.Config, st *stores, logger *slog.Logger) (_ *listene
 			ThrottleBlocked: l.throttleBlocked,
 			MaxConns:        cfg.SMPP.MaxConns,
 			Canceller:       canceller,
+			MessageReader:   cdrReader,
 			QueryLimiter:    queryLimiter,
 			QueryThrottled:  l.queryThrottled,
 			InboundWindow:   cfg.SMPP.InboundWindow,

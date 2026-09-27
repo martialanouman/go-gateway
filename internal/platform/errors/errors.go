@@ -115,6 +115,7 @@ const (
 	StatusMsgQueueFull   uint32 = 0x00000014 // ESME_RMSGQFUL
 	StatusSubmitFail     uint32 = 0x00000045 // ESME_RSUBMITFAIL
 	StatusThrottled      uint32 = 0x00000058 // ESME_RTHROTTLED
+	StatusQueryFail      uint32 = 0x00000067 // ESME_RQUERYFAIL
 
 	// StatusInsufficientCredit is a vendor-specific status: billing has no standard SMPP code.
 	StatusInsufficientCredit uint32 = 0x00000400

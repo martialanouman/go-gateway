@@ -19,10 +19,12 @@ type fakeCanceller struct {
 	customerID uuid.UUID
 	accountID  uuid.UUID
 	messageID  uuid.UUID
+	deadline   bool
 }
 
-func (f *fakeCanceller) Cancel(_ context.Context, customerID, accountID, messageID uuid.UUID) error {
+func (f *fakeCanceller) Cancel(ctx context.Context, customerID, accountID, messageID uuid.UUID) error {
 	f.called = true
+	_, f.deadline = ctx.Deadline()
 	f.customerID, f.accountID, f.messageID = customerID, accountID, messageID
 	return f.err
 }
@@ -38,19 +40,11 @@ func TestOnQueryToggle(t *testing.T) {
 		}
 	})
 
-	t.Run("enabled is a skeleton OK echoing the id with a valid state", func(t *testing.T) {
+	t.Run("enabled without a reader is ESME_RQUERYFAIL", func(t *testing.T) {
 		res := l.onQuery(context.Background(), &connState{querySMEnabled: true})(
-			context.Background(), session.QueryRequest{MessageID: "m1"})
-		if res.Status != smpp.StatusOK {
-			t.Errorf("status = %#x, want StatusOK", res.Status)
-		}
-		if res.MessageID != "m1" {
-			t.Errorf("message id = %q, want m1", res.MessageID)
-		}
-		// message_state must be a valid SMPP v3.4 value (1..8); the skeleton has no real lookup yet, so
-		// it reports UNKNOWN rather than the undefined 0.
-		if res.MessageState != smpp.MessageStateUnknown {
-			t.Errorf("message_state = %d, want UNKNOWN (%d)", res.MessageState, smpp.MessageStateUnknown)
+			context.Background(), session.QueryRequest{MessageID: uuid.NewString()})
+		if res.Status != errs.StatusQueryFail {
+			t.Errorf("status = %#x, want ESME_RQUERYFAIL (%#x)", res.Status, errs.StatusQueryFail)
 		}
 	})
 }
@@ -87,13 +81,13 @@ func TestOnQueryRateLimited(t *testing.T) {
 		}
 	})
 
-	t.Run("under the limit answers normally", func(t *testing.T) {
+	t.Run("under the limit reaches the reader", func(t *testing.T) {
 		lim := &stubQueryLimiter{allow: true}
-		l := New(nil, nil, nil, Options{QueryLimiter: lim}, discardLog())
+		l := New(nil, nil, nil, Options{QueryLimiter: lim, MessageReader: &scopedReader{}}, discardLog())
 		res := l.onQuery(context.Background(), &connState{querySMEnabled: true, accountID: account})(
-			context.Background(), session.QueryRequest{MessageID: "m1"})
-		if res.Status != smpp.StatusOK || res.MessageID != "m1" {
-			t.Errorf("res = {%#x, %q}, want a StatusOK echoing m1", res.Status, res.MessageID)
+			context.Background(), session.QueryRequest{MessageID: uuid.NewString()})
+		if res.Status != errs.StatusInvalidMsgID {
+			t.Errorf("status = %#x, want the reader's unknown-message ESME_RINVMSGID (%#x)", res.Status, errs.StatusInvalidMsgID)
 		}
 	})
 
@@ -191,5 +185,19 @@ func TestOnCancelRejectsMalformedMessageID(t *testing.T) {
 	}
 	if fc.called {
 		t.Error("Canceller must not be called for a malformed message_id")
+	}
+}
+
+// TestOnCancelBoundsTheCall pins that the cancel runs under its own deadline: it reads ClickHouse on the
+// session's read goroutine, and ClickHouse's default read timeout would freeze the whole bind.
+func TestOnCancelBoundsTheCall(t *testing.T) {
+	fc := &fakeCanceller{}
+	l := New(nil, nil, nil, Options{Canceller: fc}, discardLog())
+
+	l.onCancel(context.Background(), &connState{cancelSMEnabled: true})(
+		context.Background(), session.CancelRequest{MessageID: uuid.NewString()})
+
+	if !fc.deadline {
+		t.Error("Canceller called without a deadline")
 	}
 }
