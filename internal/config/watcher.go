@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"time"
 )
 
@@ -49,6 +50,7 @@ type Watcher struct {
 	window     time.Duration
 	retryStart time.Duration
 	retryMax   time.Duration
+	resync     time.Duration
 	logger     *slog.Logger
 }
 
@@ -70,6 +72,16 @@ func WithRetryBackoff(initial, max time.Duration) Option {
 	return func(w *Watcher) {
 		if initial > 0 && max >= initial {
 			w.retryStart, w.retryMax = initial, max
+		}
+	}
+}
+
+// WithResync rebuilds once per period (±10 % jitter) after the last successful rebuild, even without a
+// notification, so a lost invalidation leaves the config stale for one period at most. d ≤ 0 disables it.
+func WithResync(d time.Duration) Option {
+	return func(w *Watcher) {
+		if d > 0 {
+			w.resync = d
 		}
 	}
 }
@@ -146,9 +158,27 @@ func (w *Watcher) Run(ctx context.Context) error {
 		timerC = timer.C
 		backingOff = backoff
 	}
+	var resyncTimer *time.Timer
+	var resyncC <-chan time.Time
+	// Jittered because a notification aligns every pod: without it they would all rebuild at the same
+	// second, one period after each admin mutation, for good.
+	armResync := func() {
+		if w.resync <= 0 {
+			return
+		}
+		if resyncTimer != nil {
+			resyncTimer.Stop()
+		}
+		resyncTimer = time.NewTimer(w.resync - w.resync/10 + rand.N(w.resync/5+1))
+		resyncC = resyncTimer.C
+	}
+	armResync()
 	defer func() {
 		if timer != nil {
 			timer.Stop()
+		}
+		if resyncTimer != nil {
+			resyncTimer.Stop()
 		}
 	}()
 	for {
@@ -164,11 +194,18 @@ func (w *Watcher) Run(ctx context.Context) error {
 			if timerC == nil || backingOff { // arm the trailing window; further ticks inside it are coalesced
 				arm(w.window, false)
 			}
+		case <-resyncC:
+			resyncC = nil
+			select {
+			case ticks <- struct{}{}:
+			default:
+			}
 		case <-timerC:
 			timer, timerC, backingOff = nil, nil, false
 			rerr := w.rebuild(ctx)
 			if rerr == nil {
 				retryDelay = 0
+				armResync()
 				continue
 			}
 			retryDelay = min(max(2*retryDelay, w.retryStart), w.retryMax)
