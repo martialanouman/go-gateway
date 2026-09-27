@@ -53,18 +53,21 @@ d'architecture nomme déjà « config sync (pub/sub / polling) », et `modlrrout
 « routers catch up on resync » : cette fiche tient ce contrat.
 
 1. **Réglage** : `CONFIG_RESYNC_INTERVAL`, champ de premier niveau de `config.Config` (même contrat que
-   `DRAIN_DELAY`) : défaut 5 min, 0 désactive, négatif refusé. Passé au Watcher par `WithResync(d)`, qui
+   `DRAIN_DELAY`) : défaut 5 min, 0 désactive ; toute autre valeur sous 1 min est refusée (revue : `5ms` pour `5m`
+   ferait rebâtir la flotte en continu contre le plan de contrôle partagé). Passé au Watcher par `WithResync(d)`, qui
    ignore `d ≤ 0` ; sans l'option, pas de resynchronisation. 5 min et non 1 h : la même période borne l'envoi
    à un désabonné dont l'annonce `optout:changed` s'est perdue.
 2. **Mécanisme — un tick synthétique** : un timer de resync armé au démarrage de `Run` et réarmé après chaque
-   rebuild **réussi**, gigue ±10 % ; à l'échéance il dépose un tick dans `ticks`, rien d'autre. Coalescence,
+   rebuild **réussi** et désarmé par un échec (la resync ne tourne qu'hors panne : le backoff de step-395
+   gouverne seul), gigue ±10 % ; à l'échéance il dépose un tick dans `ticks`, rien d'autre. Coalescence,
    rejeu et « jamais deux rebuilds concurrents » restent ceux de step-395. Fraîcheur bornée par
    1,1 × période depuis le dernier succès. La gigue décorrèle les pods qu'une notification commune aligne.
 3. **Charge** : `buildFilter` pagine par 1 000 ; 5 M de lignes MNP × 4 réplicas / 5 min ≈ 70 requêtes
    d'index/s sur la flotte.
-4. **Services** : le snapshot watcher du routeur (son rebuild recharge aussi l'opt-out, il rattrape donc un
-   `optout:changed` perdu) et le rewrite watcher du connector-pool. Ni le watcher opt-out seul, ni config-sync
-   (sans état). Une resync dédiée plus courte de l'opt-out attendra une exigence qui nomme une borne < 5 min.
+4. **Services** : le snapshot watcher du routeur, le watcher opt-out du routeur et le rewrite watcher du
+   connector-pool ; pas config-sync (sans état). Amendé à la revue : la closure du snapshot recharge l'opt-out
+   APRÈS les routes et le Bloom exact, donc une panne d'`exact_routes` suspendait la borne d'un STOP perdu ; la
+   même période sur le watcher opt-out la rend indépendante (§6.20). `Enforcer.Reload` est sérialisé.
 5. **Outbox Admin écartée** : elle ne couvre ni le pub/sub non durable ni config-sync redémarrant.
 
 Conséquences assumées : `config_rebuild_total{outcome="ok"}` ne mesure plus l'activité Admin ; l'écriture
@@ -86,6 +89,6 @@ Rendre le rebuild atomique entre composants (déjà écarté par step-395). Une 
 sur l'âge de la config : le dépôt n'en versionne aucune aujourd'hui.
 
 Le cache read-through `exactroute:{msisdn}` : la resync borne le Bloom, pas lui. Une invalidation Admin
-échouée y laisse une cible périmée jusqu'au TTL (6 h) — borne déjà assumée par ADR-0015
-(`internal/routing/exact/invalidator.go:28`), indépendante de la resynchronisation. Le design arrêté la
+échouée y laisse une cible périmée jusqu'au TTL (6 h) — borne déjà assumée
+(`internal/routing/exact/invalidator.go:29`, TTL à `internal/routing/exact/resolver.go:19`), indépendante de la resynchronisation. Le design arrêté la
 comptait d'abord parmi les dettes de cette PR ; ce n'en est pas une neuve.
