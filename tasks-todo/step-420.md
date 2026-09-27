@@ -1,7 +1,7 @@
-# step-420 — Exporter les CDR archivés : d'abord faire exister l'archive, puis la lire
+# step-420 — Exporter les CDR archivés
 
 > **Jalon :** après le go-live (besoin produit du 2026-09-27) · **Statut :** À FAIRE
-> **Dépend de :** step-410 · **Bloque :** les extractions planifiées du tableau de bord sur des données de plus de `CDR_RETENTION`
+> **Dépend de :** step-407, step-410 · **Bloque :** les extractions planifiées du tableau de bord sur des données de plus de `CDR_RETENTION`
 
 ## Pourquoi cette fiche existe
 
@@ -14,27 +14,16 @@ n'exporte aujourd'hui que ce que ClickHouse détient encore :
 - Au-delà de `CDR_RETENTION` (90 jours par défaut), le Retainer **supprime la partition**
   (`internal/storage/clickhouse/retention.go:172`). Il ne l'archive en Parquet que si `ARCHIVE_PREFIX` est
   posé (`internal/config/config.go:403-407`).
-- **En production, rien n'est archivé.** Aucun manifeste de `deploy/k8s` ne pose `ARCHIVE_PREFIX`, et la
-  seule `Destination` du dépôt est `FileDestination`, qui écrit sur le disque du serveur ClickHouse
-  (`retention.go:76`). Son commentaire le dit : « Production supplies an s3(...) Destination ». Personne ne
-  l'a écrite. Chaque jour, une partition de 90 jours disparaît pour de bon.
-
-Les vieilles données ne peuvent donc être exportées que si l'archive existe. Cette step fait les deux.
+- step-407 fait exister l'archive en production (destination objet, catalogue de l'objet qui fait foi par
+  jour). Cette step la **lit**.
 
 ## Périmètre (ce que fait CETTE PR)
 
-1. **Destination objet** : une `Destination` `s3(...)` (bucket, préfixe, identifiants de l'exploitant),
-   choisie par configuration. `FileDestination` reste pour le poste local. Manifest : `ARCHIVE_PREFIX` et la
-   destination posés dans `deploy/k8s`. Les identifiants arrivent par `secretKeyRef`, sous la garde de
-   `internal/deploy`.
-2. **Catalogue des archives** : quel objet fait foi pour quel jour. Chaque tentative d'archivage écrit son
-   propre objet (`<prefix>-<jour>-<token>.parquet`), et une tentative échouée peut laisser un objet
-   **complet** derrière elle. Lire le glob `<prefix>-<jour>-*` compterait alors les lignes deux fois. Il faut
-   donc une trace de l'objet vérifié pour chaque jour, écrite **avant** la suppression de la partition.
-3. **Export depuis l'archive** : un job d'export dont la fenêtre dépasse la rétention chaude lit les jours
-   archivés par la même table function, `SELECT … FROM s3(...)` : c'est ClickHouse qui lit le Parquet, pas
-   de décodeur Parquet en Go. Il applique les mêmes filtres, le même masquage MSISDN (`msisdn:reveal`), le
-   même format et le même plafond, et n'exporte jamais de corps (les archives n'en ont pas).
+- **Export depuis l'archive** : un job d'export dont la fenêtre dépasse la rétention chaude lit les jours
+  archivés, en prenant pour chaque jour l'objet désigné par le catalogue de step-407. La lecture passe par la
+  même table function, `SELECT … FROM s3(...)` : c'est ClickHouse qui lit le Parquet, pas de décodeur
+  Parquet en Go. Il applique les mêmes filtres, le même masquage MSISDN (`msisdn:reveal`), le même format et
+  le même plafond, et n'exporte jamais de corps (les archives n'en ont pas).
 
 ## Points d'implémentation clés
 
@@ -47,8 +36,8 @@ Les vieilles données ne peuvent donc être exportées que si l'archive existe. 
     en premier** : les deux autres points en dépendent.
   - Fenêtre et plafond : garder 31 jours et 100 000 lignes pour l'archive, ou un profil propre. Un export
     froid est lent, et c'est le BFF qui découpe.
-  - La forme du catalogue : une table Postgres `control_plane`, ou un objet manifeste à côté des Parquet.
-    Un catalogue en base change le schéma **et** demande une migration (`.claude/rules/db-schema.md`).
+  - Les jours sans entrée au catalogue (partitions supprimées avant step-407) : les signaler dans le job,
+    jamais les taire — un export incomplet ne doit pas passer pour exhaustif.
 - **Contrat** : si la requête d'export gagne un paramètre, ou si la description change (31 jours, source
   chaude seulement), le contrat est déclaré **avant** l'implémentation, avec un bump de `api/package.json`.
   Durcir un champ existant serait une rupture (`deferred-operation-schemas-already-ship`).
@@ -61,10 +50,9 @@ Les vieilles données ne peuvent donc être exportées que si l'archive existe. 
 
 ## Tests (écrits dans la même PR)
 
-- Destination objet : une partition archivée sur un stockage S3 de test (conteneur MinIO) est relue et
-  vérifiée avant suppression, et n'est pas supprimée si l'écriture échoue.
-- Catalogue : deux objets pour un même jour (une tentative échouée mais complète, puis une réussie) sont
-  exportés **une seule fois**.
+- Deux objets pour un même jour (une tentative échouée mais complète, puis celle du catalogue) : les lignes
+  sont exportées **une seule fois**.
+- Un jour absent du catalogue est signalé dans le job.
 - Export : une fenêtre à cheval entre le chaud et l'archive rend chaque ligne une seule fois, masquée selon le
   scope, sans corps.
 - La règle RGPD retenue, prouvée par un MSISDN effacé présent dans l'archive.
@@ -72,7 +60,6 @@ Les vieilles données ne peuvent donc être exportées que si l'archive existe. 
 ## Definition of Done
 
 - [ ] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts
-- [ ] en production, une partition expirée est archivée sur le stockage objet avant d'être supprimée
 - [ ] un export couvre une fenêtre plus ancienne que `CDR_RETENTION`
 - [ ] l'arbitrage RGPD est écrit (ADR-0018 amendé, ou nouvel ADR)
 - [ ] `debts/export-cdr-eteint-par-defaut.md` et `debts/artefacts-d-export-jamais-purges.md` soldées ou

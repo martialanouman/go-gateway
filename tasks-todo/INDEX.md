@@ -401,12 +401,15 @@ l'autorisation de la moitié des opérations, et le tableau de bord génère ses
 - [ ] step-400 — `billing.events` durable : le BFF doit pouvoir détecter, pas seulement afficher
 - [ ] step-405 — La passerelle accepte les jetons du BFF : ancre du JWKS, contrat honnête, `created_by`
       rempli ⛓ step-310, ADR-0019 — ouverte par ADR-0019 ; unité faute de multiple de dix libre
+- [ ] step-407 — La production archive ses CDR avant de les supprimer : aucune destination objet, aucun
+      `CLICKHOUSE_ARCHIVE_PREFIX` posé, donc chaque partition de 90 jours est perdue ⛓ step-165 — sortie de
+      step-420 ; unité faute de multiple de dix libre
 - [ ] step-410 — **GO-LIVE** : dérouler la checklist de mise en production
-      ⛓ step-260, step-270, step-280, step-290, step-310, step-320, step-397, step-405
+      ⛓ step-260, step-270, step-280, step-290, step-310, step-320, step-397, step-405, step-407
 
 ## Après le go-live
-- [ ] step-420 — Exporter les CDR archivés : l'archive froide n'existe pas en production (aucune
-      destination objet, `ARCHIVE_PREFIX` absent) ; la faire exister, puis la lire ⛓ step-410
+- [ ] step-420 — Exporter les CDR archivés (lecture de l'archive froide par l'export asynchrone)
+      ⛓ step-407, step-410
 
 ---
 
