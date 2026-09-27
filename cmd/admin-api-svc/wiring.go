@@ -97,7 +97,7 @@ func newAdminApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (_
 	}
 	a.onClose("stores", st.close)
 
-	retention, err := newRetainer(cfg, st.ch, logger)
+	retention, err := newRetainer(cfg, st.ch, postgres.NewCDRArchiveRepo(st.pg), logger)
 	if err != nil {
 		return nil, err
 	}
@@ -217,7 +217,7 @@ type retention struct {
 	outcomes *prometheus.CounterVec
 }
 
-func newRetainer(cfg config.Config, ch *clickhouse.Conn, logger *slog.Logger) (*retention, error) {
+func newRetainer(cfg config.Config, ch *clickhouse.Conn, catalog clickhouse.ArchiveCatalog, logger *slog.Logger) (*retention, error) {
 	outcomes := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "cdr_retention_partitions_total",
 		Help: "CDR partitions processed by the retention pass, by outcome.",
@@ -233,7 +233,7 @@ func newRetainer(cfg config.Config, ch *clickhouse.Conn, logger *slog.Logger) (*
 			return nil, fmt.Errorf("CLICKHOUSE_ARCHIVE_PREFIX %q is not a plain name ([A-Za-z0-9._/-], max 128)", prefix)
 		}
 		opts = append(opts, clickhouse.WithArchiver(
-			clickhouse.NewPartitionArchiver(ch, clickhouse.FileDestination(prefix))))
+			clickhouse.NewPartitionArchiver(ch, prefix, clickhouse.FileDestination(), catalog)))
 	}
 	return &retention{retainer: clickhouse.NewRetainer(ch, cfg.ClickHouse.CDRRetention, opts...), outcomes: outcomes}, nil
 }

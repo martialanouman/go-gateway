@@ -45,17 +45,11 @@ type Archiver interface {
 	Archive(ctx context.Context, p Partition) error
 }
 
-// Destination builds the ClickHouse table-function expression a partition is archived into, for the given
-// run token. It is operator configuration, not user input: it becomes part of the INSERT statement.
-// FileDestination is the local default; a production deploy supplies an s3(...) builder instead — that is
-// the pluggable seam. The same expression must be READABLE, because the archive is verified by reading it
-// back before the partition is dropped.
-//
-// The token makes every archiving attempt write its OWN object. That is deliberate: two writers sharing one
-// destination (two replicas, or a retry overlapping its predecessor) produce a truncated, unreadable file
-// while both report success — and would then both drop the partition. Unique names cost a stale object after
-// a failed attempt and buy the guarantee that no archive is ever half-written.
-type Destination func(p Partition, token string) string
+// Destination wraps an archive object name in the ClickHouse table-function expression that writes and reads
+// it. It is operator configuration, not user input: it becomes part of the INSERT statement. The same
+// expression must be READABLE, because the archive is verified by reading it back before the partition is
+// dropped.
+type Destination func(object string) string
 
 // archivePrefixPattern constrains the operator-supplied archive prefix. It lands inside a quoted SQL string
 // literal, so an apostrophe would break out of it: reject anything but a plain path-ish name, at startup.
@@ -65,31 +59,55 @@ var archivePrefixPattern = regexp.MustCompile(`^[A-Za-z0-9._/-]{1,128}$`)
 func ValidArchivePrefix(prefix string) bool { return archivePrefixPattern.MatchString(prefix) }
 
 // FileDestination archives a partition as a Parquet file on the ClickHouse server, under its configured
-// user_files directory, named "<prefix>-<YYYY-MM-DD>-<token>.parquet".
+// user_files directory.
 //
 // It writes to the ClickHouse server's OWN disk, so it is the local/dev tier: it proves the path end to end
-// but frees no space and dies with the node. Production supplies an s3(...) Destination.
+// but frees no space and dies with the node. Production uses S3Destination.
 //
 // GDPR note for whoever enables tiering: the archive holds source_addr/dest_addr (MSISDNs) outside the
 // platform, so it is reached by neither the crypto-shred nor the per-MSISDN erasure. Its own retention and
 // erasure are the operator's responsibility.
-func FileDestination(prefix string) Destination {
-	return func(p Partition, token string) string {
-		return fmt.Sprintf("file('%s-%s-%s.parquet', 'Parquet')", prefix, p.Name(), token)
+func FileDestination() Destination {
+	return func(object string) string { return fmt.Sprintf("file('%s', 'Parquet')", object) }
+}
+
+// S3Destination archives into object storage through a ClickHouse named collection, declared in the
+// ClickHouse server's own configuration with the bucket url and the archive identity. The statement names
+// only the collection: credentials passed as s3() arguments would land in clear in system.query_log.
+func S3Destination(collection string) Destination {
+	return func(object string) string {
+		return fmt.Sprintf("s3(%s, filename = '%s', format = 'Parquet')", collection, object)
 	}
+}
+
+// archiveCollectionPattern constrains the named collection: it lands in the statement unquoted.
+var archiveCollectionPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,63}$`)
+
+// ValidArchiveCollection reports whether a configured named collection is safe to interpolate.
+func ValidArchiveCollection(name string) bool { return archiveCollectionPattern.MatchString(name) }
+
+// ArchiveCatalog records which object holds a dropped partition (control_plane.cdr_archives). Declared
+// consumer-side.
+type ArchiveCatalog interface {
+	// Record catalogues object as the archive of day unless the day already has one, and returns the row
+	// count of the line that now holds the day.
+	Record(ctx context.Context, day time.Time, object string, rows uint64) (uint64, error)
 }
 
 // PartitionArchiver archives a CDR partition by having ClickHouse itself write it out through a table
 // function — the server streams the rows straight to the destination, so no partition ever transits through
 // this process (and no Parquet encoder is needed here). Swapping Destination swaps the storage tier.
 type PartitionArchiver struct {
-	conn *Conn
-	dest Destination
+	conn    *Conn
+	prefix  string
+	dest    Destination
+	catalog ArchiveCatalog
 }
 
-// NewPartitionArchiver returns an Archiver writing partitions to dest.
-func NewPartitionArchiver(c *Conn, dest Destination) *PartitionArchiver {
-	return &PartitionArchiver{conn: c, dest: dest}
+// NewPartitionArchiver returns an Archiver writing partitions to dest as "<prefix>-<YYYY-MM-DD>-<token>.parquet"
+// and cataloguing each verified object before the partition may be dropped.
+func NewPartitionArchiver(c *Conn, prefix string, dest Destination, catalog ArchiveCatalog) *PartitionArchiver {
+	return &PartitionArchiver{conn: c, prefix: prefix, dest: dest, catalog: catalog}
 }
 
 // columnNamePattern guards a column name read from system.columns before it is interpolated into the
@@ -150,7 +168,10 @@ func (a *PartitionArchiver) Archive(ctx context.Context, p Partition) error {
 	if err != nil {
 		return err
 	}
-	dest := a.dest(p, uuid.NewString()[:8])
+	// Every attempt writes its OWN object: two writers sharing one (two replicas, or a retry overlapping its
+	// predecessor) produce a truncated file while both report success, and would then both drop the partition.
+	object := fmt.Sprintf("%s-%s-%s.parquet", a.prefix, p.Name(), uuid.NewString()[:8])
+	dest := a.dest(object)
 
 	stmt := fmt.Sprintf("INSERT INTO FUNCTION %s SELECT %s FROM %s WHERE toDate(submitted_at) = '%s'",
 		dest, projection, cdrTable, p.Name())
@@ -165,6 +186,17 @@ func (a *PartitionArchiver) Archive(ctx context.Context, p Partition) error {
 	if archived < p.Rows {
 		return fmt.Errorf("clickhouse: archive of partition %s holds %d rows, expected at least %d",
 			p.Name(), archived, p.Rows)
+	}
+
+	catalogued, err := a.catalog.Record(ctx, p.Day, object, archived)
+	if err != nil {
+		return fmt.Errorf("clickhouse: catalogue archive of partition %s: %w", p.Name(), err)
+	}
+	// Only after a drop that failed once the day was catalogued: the line is never rewritten, so the object it
+	// names must still cover the partition, or the rows since would survive only in an object nobody can find.
+	if catalogued < p.Rows {
+		return fmt.Errorf("clickhouse: partition %s holds %d rows but its catalogued archive only %d",
+			p.Name(), p.Rows, catalogued)
 	}
 	return nil
 }

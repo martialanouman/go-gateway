@@ -88,7 +88,7 @@ func TestNewRetainerRejectsAMalformedArchivePrefix(t *testing.T) {
 	cfg := testConfig()
 	cfg.ClickHouse.ArchivePrefix = "cdr archive; DROP"
 
-	if _, err := newRetainer(cfg, nil, silentLogger()); err == nil {
+	if _, err := newRetainer(cfg, nil, nil, silentLogger()); err == nil {
 		t.Fatal("newRetainer accepted a malformed archive prefix")
 	}
 }

@@ -128,16 +128,9 @@ func TestRetainerArchivesBeforeDrop(t *testing.T) {
 	if n := countDay(t, conn, day); n != 4 {
 		t.Fatalf("partition holds %d rows before archiving, want 4 — nothing may delete rows ahead of the Retainer", n)
 	}
-	prefix := "cdr-archive-" + uuid.NewString()[:8]
-	// Each archiving attempt writes its own object, so the test captures the destination the archiver
-	// actually used in order to read it back.
-	var archivedDest string
-	dest := func(p clickhouse.Partition, token string) string {
-		archivedDest = fmt.Sprintf("file('%s-%s-%s.parquet', 'Parquet')", prefix, p.Name(), token)
-		return archivedDest
-	}
-	retainer := clickhouse.NewRetainer(conn, retentionKeepsToday,
-		clickhouse.WithArchiver(clickhouse.NewPartitionArchiver(conn, dest)))
+	catalog := newArchiveCatalog()
+	retainer := clickhouse.NewRetainer(conn, retentionKeepsToday, clickhouse.WithArchiver(
+		clickhouse.NewPartitionArchiver(conn, archivePrefix(), clickhouse.FileDestination(), catalog)))
 
 	report, err := retainer.Purge(ctx)
 	if err != nil {
@@ -150,8 +143,9 @@ func TestRetainerArchivesBeforeDrop(t *testing.T) {
 		t.Errorf("archived partition still holds %d rows, want 0", n)
 	}
 
-	// The Parquet archive is readable on its own and holds the partition's rows — including the enum and
-	// UUID columns rendered as strings, so it can be read without the platform's schema.
+	// The object the catalogue designates is readable on its own and holds the partition's rows — including the
+	// enum and UUID columns rendered as strings, so it can be read without the platform's schema.
+	archivedDest := clickhouse.FileDestination()(catalog.object(t, day))
 	var archived uint64
 	if err := conn.QueryRow(ctx, "SELECT count() FROM "+archivedDest).Scan(&archived); err != nil {
 		t.Fatalf("read back archive: %v", err)
