@@ -1,0 +1,28 @@
+# rest-api-svc sert en TLS sous la CA de la passerelle (tlsgen) : Traefik doit la connaître pour
+# vérifier le backend plutôt que d'ignorer son certificat.
+apiVersion: traefik.io/v1alpha1
+kind: ServersTransport
+metadata:
+  name: rest-api-backend
+spec:
+  serverName: rest-api-svc
+  rootCAs:
+    - secret: rest-api-svc-tls
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: rest-api
+spec:
+  entryPoints: [websecure]
+  routes:
+    - kind: Rule
+      match: Host(`api.test.manouman.com`)
+      services:
+        - kind: Service
+          name: rest-api-svc
+          port: 8080
+          scheme: https
+          serversTransport: rest-api-backend
+  tls:
+    secretName: api-origin-tls

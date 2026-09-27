@@ -4,6 +4,7 @@ namespace: gateway
 resources:
   - rendered/base.yaml
   - gateway-oidc.yaml
+  - ingress.yaml
   - deps/postgres.yaml
   - deps/redis.yaml
   - deps/redpanda.yaml

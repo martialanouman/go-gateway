@@ -34,5 +34,8 @@ grep -q 'gateway.test/phase: deps-job' "$all" || fail "le Job du bucket ne porte
 # 6 Services, 5 StatefulSets, le Deployment du simulateur, le ConfigMap des droits ClickHouse.
 [[ $(grep -c 'gateway.test/phase: deps$' "$all") -eq 13 ]] || fail "une dépendance n'est pas en phase deps : elle partirait avec l'application"
 
+grep -q 'Host(`api.test.manouman.com`)' "$all" || fail "l'API REST n'est pas routée"
+grep -q 'serverName: rest-api-svc' "$all" || fail "Traefik ne vérifie pas le certificat du backend"
+
 kubeconform -strict -summary -ignore-missing-schemas -kubernetes-version 1.31.0 "$all"
 echo "check.sh: overlay de test conforme ($VERSION)"
