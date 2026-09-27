@@ -235,6 +235,41 @@ func TestOpsExposesTheExactRouteLookupCounter(t *testing.T) {
 	}
 }
 
+// TestOpsExposesTheConfigRebuildMetricsFromBoot pins that the rebuild metrics exist before any
+// invalidation: a counter vector exposes nothing until it has a child, so a failure rate would have no
+// series to read, and an unseeded last-success gauge would read 0 — "never refreshed" — on a healthy pod
+// whose boot load IS its last successful build.
+func TestOpsExposesTheConfigRebuildMetricsFromBoot(t *testing.T) {
+	cfg := testConfig()
+	cfg.Postgres = pgtest.Config(t)
+	cfg.Redis = redistest.Config(t)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	app, err := newRouterApp(ctx, cfg, silentLogger())
+	if err != nil {
+		t.Fatalf("newRouterApp: %v", err)
+	}
+	defer app.close()
+
+	rec := httptest.NewRecorder()
+	promhttp.HandlerFor(app.ops.Registry(), promhttp.HandlerOpts{}).
+		ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+
+	for _, series := range []string{`config_rebuild_total{outcome="ok"} 0`, `config_rebuild_total{outcome="error"} 0`} {
+		if !strings.Contains(body, series) {
+			t.Errorf("/metrics does not expose %s at boot", series)
+		}
+	}
+	if strings.Contains(body, "\nconfig_rebuild_last_success_timestamp_seconds 0\n") ||
+		!strings.Contains(body, "\nconfig_rebuild_last_success_timestamp_seconds ") {
+		t.Error("config_rebuild_last_success_timestamp_seconds is absent or 0 at boot: a healthy pod would " +
+			"read as never refreshed")
+	}
+}
+
 // TestLagAlertOperandsHaveTheLabelSetsTheExpressionAssumes freezes the two facts the alert expression
 // rests on, because the expression itself is evaluated by no test in this repo (step-201c, D14/D17).
 //

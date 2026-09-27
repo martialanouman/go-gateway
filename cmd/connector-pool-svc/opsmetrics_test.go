@@ -35,6 +35,7 @@ func TestOpsExposesTheMetricsThisServiceFeeds(t *testing.T) {
 	catalog.SubmitsTotal.WithLabelValues(connector, "ok").Inc()
 	catalog.SubmitRejectedTotal.WithLabelValues(connector, "submit_failed").Inc()
 	catalog.MessageE2EDuration.WithLabelValues(connector, "ok").Observe(0.05)
+	catalog.SeedConfigRebuild()
 
 	rec := httptest.NewRecorder()
 	promhttp.HandlerFor(reg, promhttp.HandlerOpts{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
@@ -51,8 +52,13 @@ func TestOpsExposesTheMetricsThisServiceFeeds(t *testing.T) {
 		// The NFR budget (spec §1.2) is read off this one by test/load/gatewaymetrics. Unregistered, it
 		// reports nothing and a load run would score a budget it never measured.
 		"message_e2e_duration_seconds",
+		// The sender-rewrite rules are a masked degradation: a failed reload keeps the last rules and
+		// readiness stays green, so these are the only signal besides a log line (step-395).
+		"config_rebuild_total",
+		"config_rebuild_last_success_timestamp_seconds",
 	} {
-		if !strings.Contains(body, name+"{") && !strings.Contains(body, name+"_bucket{") {
+		if !strings.Contains(body, name+"{") && !strings.Contains(body, name+"_bucket{") &&
+			!strings.Contains(body, "\n"+name+" ") {
 			t.Errorf("%s is fed by connector-pool but not exposed on /metrics", name)
 		}
 	}

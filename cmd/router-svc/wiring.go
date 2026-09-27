@@ -188,7 +188,7 @@ func newRouterApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 	}
 	a.ops = ops
 
-	a.watcher = newSnapshotWatcher(st.pg, rdb, boot, stack, proj, blooms, logger)
+	a.watcher = newSnapshotWatcher(st.pg, rdb, boot, stack, proj, blooms, a.catalog, logger)
 	return a, nil
 }
 
@@ -628,6 +628,8 @@ func newMetricStream(cfg config.Config) (_ *metricStream, err error) {
 // bloomGauges track each in-memory Bloom filter's freshness and size. They are labelled by filter
 // (exact | optout), with no unbounded label: the timestamp lets an alert fire on a stale filter, the
 // capacity tracks growth after a reload.
+// A filter's timestamp says nothing of the config as a whole: that is
+// config_rebuild_last_success_timestamp_seconds.
 type bloomGauges struct {
 	reload   *prometheus.GaugeVec
 	capacity *prometheus.GaugeVec
@@ -669,7 +671,8 @@ func newOpsServer(
 	// rather than "not measured here".
 	ops.Registry().MustRegister(catalog.RoutingScriptFailures, catalog.QueueDepth,
 		catalog.MessagesTotal, catalog.RejectedTotal, catalog.PipelineDuration,
-		catalog.ExactRouteLookups, catalog.ExactRouteCacheCorrupt)
+		catalog.ExactRouteLookups, catalog.ExactRouteCacheCorrupt,
+		catalog.ConfigRebuilds, catalog.ConfigRebuildLastSuccess)
 	ops.Registry().MustRegister(stream.dropped...)
 
 	blooms := bloomGauges{
@@ -694,6 +697,8 @@ func newOpsServer(
 	blooms.set("exact", stack.exactBloom.CapacityBits())
 	blooms.set("optout", boot.optOut.CapacityBits())
 
+	catalog.SeedConfigRebuild()
+
 	return ops, blooms, nil
 }
 
@@ -701,8 +706,7 @@ func newOpsServer(
 // rebuilds the immutable route snapshot and the two Bloom filters (exact-number routes, opt-out
 // suppressions) and swaps each atomically — the readers pick up the new state lock-free, with no
 // downtime and no routing hole. Each component keeps its current state on its own build failure; the
-// returned error just makes the Watcher log and retry on the next notification (rebuilds are
-// idempotent).
+// returned error makes the Watcher log and retry on its backoff (rebuilds are idempotent).
 func newSnapshotWatcher(
 	pool *pgxpool.Pool,
 	rdb *goredis.Client,
@@ -710,13 +714,14 @@ func newSnapshotWatcher(
 	stack *pipelineStack,
 	proj *acceptedProjector,
 	blooms bloomGauges,
+	catalog *metrics.Catalog,
 	logger *slog.Logger,
 ) *config.Watcher {
 	return config.NewWatcher(
 		func(ctx context.Context) (config.Stream, error) {
 			return redisstore.Subscribe(ctx, rdb, config.ChannelSnapshotInvalidation), nil
 		},
-		func(ctx context.Context) error {
+		catalog.ObserveConfigRebuild(func(ctx context.Context) error {
 			snap, err := routing.BuildSnapshot(ctx, postgres.NewRouteRepo(pool))
 			if err != nil {
 				return err
@@ -771,7 +776,7 @@ func newSnapshotWatcher(
 			}
 			proj.policy.Store(csnap)
 			return nil
-		},
+		}),
 		config.WithLogger(logger),
 	)
 }

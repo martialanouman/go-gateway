@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/martialanouman/go-gateway/internal/config"
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
@@ -72,6 +73,12 @@ func TestNewPoolAppRewritesWithTheRulesAndFollowsAnInvalidation(t *testing.T) {
 		t.Error("the pool does not pin multipart senders in Redis")
 	}
 
+	// The boot load is the last successful build: a pod that has not reloaded yet must not read as never
+	// refreshed.
+	if got := testutil.ToFloat64(app.catalog.ConfigRebuildLastSuccess); got == 0 {
+		t.Error("config_rebuild_last_success_timestamp_seconds was not seeded by the boot load")
+	}
+
 	watchCtx, stop := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() { defer close(done); _ = app.rewriteWatcher.Run(watchCtx) }()
@@ -84,6 +91,10 @@ func TestNewPoolAppRewritesWithTheRulesAndFollowsAnInvalidation(t *testing.T) {
 		// Published until seen: the watcher may not have subscribed yet when the first one goes out.
 		_ = rdb.Publish(ctx, config.ChannelSnapshotInvalidation, "{}").Err()
 		time.Sleep(100 * time.Millisecond)
+	}
+	// The reload that swapped RELOADED in is the watcher's closure: counted only if the wiring wraps it.
+	if got := testutil.ToFloat64(app.catalog.ConfigRebuilds.WithLabelValues("ok")); got == 0 {
+		t.Error(`config_rebuild_total{outcome="ok"} did not move on a reload: the watcher's closure is not wrapped`)
 	}
 }
 

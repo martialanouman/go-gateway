@@ -1,6 +1,6 @@
 # step-395 — Le watcher de config ne rejoue jamais un rebuild échoué
 
-> **Jalon :** Dette ouverte par step-260c · **Statut :** À FAIRE
+> **Jalon :** Dette ouverte par step-260c · **Statut :** LIVRÉE
 > **Dépend de :** — · **Bloque :** —
 
 ## Pourquoi cette fiche existe
@@ -53,6 +53,51 @@ Réarmer la fenêtre sur `rerr`, avec un backoff borné, et le prouver.
   `bloom_last_reload_timestamp_seconds` donnent le patron mais pas le placement — posées en milieu de
   closure, elles mentent sur un rebuild partiellement raté. La neuve se pose **après** la dernière
   étape, ou pas du tout.
+
+## Design arrêté
+
+Arbitrages rendus par Fable le 2026-09-27 ; la spec, les guides et les ADR ne tranchent aucun des points.
+
+**Rejeu dans `Watcher.Run`** (`internal/config/watcher.go`, donc pour les trois services qui s'en
+servent : router, connector-pool, config-sync). Sur `rerr`, le watcher réarme son unique timer avec un
+délai exponentiel doublant, de **500 ms** à **30 s** au plus, remis à l'initial au premier succès.
+Ce sont les constantes de `loadWithRetry` (`cmd/router-svc/wiring.go:828-829`) : un seul vocabulaire de
+rejeu Postgres dans le service. Réglable par `WithRetryBackoff(initial, max)`, sur le modèle de
+`WithWindow` (même garde `> 0`).
+
+Une notification arrivant pendant l'attente du rejeu **ramène le timer à la fenêtre courte** : une
+invalidation veut dire « la base a changé », et la faire attendre jusqu'à 30 s dégraderait le
+comportement actuel (250 ms). Un seul timer dans une boucle mono-goroutine : deux rebuilds concurrents
+sont impossibles par construction.
+
+**Métrique, routeur seulement.** Le câblage du routeur enveloppe sa closure de rebuild : la closure du
+câblage *est* la closure entière. Il publie `config_rebuild_total{outcome="ok"|"error"}` et
+`config_rebuild_last_success_timestamp_seconds`, posé seulement quand la closure entière a réussi.
+Pas de prometheus dans `internal/config` : `internal/observability` importe `internal/config`, le registre
+gardé y ferait un cycle. Le label est `outcome` et non `result`, écart à l'arbitrage relevé à
+l'implémentation : la liste blanche (`internal/observability/metrics/labels.go`) documente déjà `outcome`
+comme `ok | error` et réserve `result` à `hit | miss`. L'horodatage est **amorcé au boot** dans `newOpsServer`, à côté de
+`blooms.set` (le chargement initial est le premier succès), et les deux enfants du compteur sont
+pré-créés comme `ExactRouteLookups`. connector-pool et config-sync ont le rejeu mais pas la métrique :
+seul le routeur a son dégradé masqué décrit par §16.
+
+**Extension après revue (demandée à l'implémentation).** Le connector-pool recharge ses règles de
+réécriture du sender ID par le même watcher et a le même dégradé masqué, sans ligne au tableau de
+`docs/guide-codage-go.md` alors que la règle **[MUST]** qui le suit l'exige. Les deux métriques passent donc
+dans le catalogue partagé (`internal/observability/metrics`, `ObserveConfigRebuild` et
+`SeedConfigRebuild`), alimentées par le routeur **et** le connector-pool ; le label `job` les distingue. La
+ligne manquante est ajoutée au tableau. config-sync n'en a pas : sa seule panne est Redis, que son
+`/readyz` sonde déjà.
+
+**Jauges `bloom_last_reload_timestamp_seconds` : laissées.** Elles disent vrai par filtre ; c'est la
+fraîcheur de la config qu'elles ne savent pas dire, et c'est le rôle de la neuve. Leur commentaire y
+renvoie.
+
+**Test de chaos.** La reprise après la coupure ne republie plus : elle interroge le résolveur jusqu'à une
+deadline qui couvre le plafond de production (30 s). La boucle de republication reste pour le contrôle
+d'avant coupure, où une notification publiée avant le SUBSCRIBE peut réellement se perdre.
+
+**Documentation.** La ligne PostgreSQL de `docs/guide-codage-go.md:386` dit le rejeu borné et la métrique.
 
 ## Chaîne de preuves
 
