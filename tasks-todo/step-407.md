@@ -47,9 +47,13 @@ archive est un jour qu'aucune step ne pourra rendre.
     finissent en clair dans `system.query_log`. Conséquence : ClickHouse n'est pas déployé par ce dépôt,
     donc la collection nommée devient une ligne de la checklist de step-410, et la passerelle ne détient
     jamais ce secret.
-- **À arbitrer avant tout code** :
-  - La forme du catalogue : une table `control_plane` en Postgres (changement de schéma **et** migration,
-    `.claude/rules/db-schema.md`), une table ClickHouse, ou un objet témoin dans le bucket.
+  - **Catalogue : une table Postgres `control_plane.cdr_archives`** (`day` en clé primaire, `object`,
+    `row_count`, `archived_at`). Postgres est déjà la source de vérité du plan de contrôle, admin-api-svc y
+    écrit et porte à la fois le Retainer et l'export, et l'écriture est transactionnelle. Une table ClickHouse
+    mêlerait du contrôle aux CDR, sans transaction ; un objet témoin dans le bucket ne se corrigerait pas sans
+    droit de suppression. Le schéma change **et** une migration l'accompagne (`.claude/rules/db-schema.md`).
+    Une ligne ne se réécrit jamais : si le jour est déjà inscrit, la partition a déjà été supprimée, et un
+    second archivage n'a rien à inscrire.
 - **Pièges connus** (step-165, `cdr-retention-tiering-traps`) : un seul propriétaire de la rétention (le TTL
   de table reste à 400 jours) ; ne jamais supprimer ce qu'on n'a pas relu ; la projection vient de
   `system.columns`, et le préfixe reste validé par `ValidArchivePrefix`.
