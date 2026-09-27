@@ -78,3 +78,55 @@ func TestAStopAnnouncedOnItsOwnChannelReachesTheRunningRouter(t *testing.T) {
 		time.Sleep(300 * time.Millisecond)
 	}
 }
+
+// TestAStopWhoseAnnouncementIsLostReachesTheRouterOnResync: the STOP is written and NOTHING is published —
+// the announcement lost to a Redis blip. Only the snapshot watcher runs, not the opt-out one: its periodic
+// resync reloads the opt-out filter too, and that is what bounds the send to a recipient who opted out
+// (step-399).
+func TestAStopWhoseAnnouncementIsLostReachesTheRouterOnResync(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	cfg := testConfig()
+	cfg.Postgres = pgtest.Config(t)
+	cfg.Redis = redistest.Config(t)
+	cfg.ConfigResyncInterval = 500 * time.Millisecond
+	app, err := newRouterApp(ctx, cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("newRouterApp: %v", err)
+	}
+	watcherDone := make(chan struct{})
+	go func() { _ = app.watcher.Run(ctx); close(watcherDone) }()
+	t.Cleanup(func() {
+		cancel()
+		<-watcherDone
+		app.close()
+	})
+
+	recipient := fmt.Sprintf("22507%08d", rand.IntN(100_000_000))
+	optedOut := func() bool {
+		t.Helper()
+		blocked, err := app.optOut.IsOptedOut(ctx, uuid.New(), uuid.New(), "ACME", recipient)
+		if err != nil {
+			t.Fatalf("IsOptedOut: %v", err)
+		}
+		return blocked
+	}
+	if optedOut() {
+		t.Fatal("the recipient is opted out before any STOP — the control failed")
+	}
+
+	if _, err := postgres.NewSuppressionRepo(pgtest.Pool(t)).Create(ctx, cp.NewSuppression{
+		Scope: cp.SuppressionScopePlatform, MSISDN: recipient, Source: cp.SuppressionSourceMOStop,
+	}); err != nil {
+		t.Fatalf("write the STOP suppression: %v", err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for !optedOut() {
+		if time.Now().After(deadline) {
+			t.Fatal("the running router still sends to a recipient who sent STOP: with no announcement, " +
+				"nothing ever rebuilt its opt-out filter")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}

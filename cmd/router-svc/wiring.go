@@ -193,7 +193,7 @@ func newRouterApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 	}
 	a.ops = ops
 
-	a.watcher = newSnapshotWatcher(st.pg, rdb, boot, stack, proj, blooms, a.catalog, logger)
+	a.watcher = newSnapshotWatcher(st.pg, rdb, boot, stack, proj, blooms, a.catalog, cfg.ConfigResyncInterval, logger)
 	a.optOutWatcher = newOptOutWatcher(st.pg, rdb, boot, blooms, logger)
 	return a, nil
 }
@@ -721,6 +721,7 @@ func newSnapshotWatcher(
 	proj *acceptedProjector,
 	blooms bloomGauges,
 	catalog *metrics.Catalog,
+	resync time.Duration,
 	logger *slog.Logger,
 ) *config.Watcher {
 	return config.NewWatcher(
@@ -783,6 +784,7 @@ func newSnapshotWatcher(
 			proj.policy.Store(csnap)
 			return nil
 		}),
+		config.WithResync(resync),
 		config.WithLogger(logger),
 	)
 }
