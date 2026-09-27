@@ -15,7 +15,10 @@ ce qui ne se verrait qu'au déploiement (kubeconform + les invariants propres à
 - Accès root par clé SSH déjà installé sur le VPS (sinon `install.sh` désactive l'authentification par
   mot de passe et vous enferme dehors).
 - DNS Cloudflare, deux enregistrements A vers l'IP du VPS :
-  - `api-test` — **proxifié** (nuage orange), SSL/TLS en mode **Full (strict)**.
+  - `api-test` — **proxifié** (nuage orange), SSL/TLS en **Full (strict)** par une Configuration Rule
+    (Rules → Configuration Rules : Hostname equals `api-test.manouman.com` → SSL Full (strict)) : le
+    mode de la zone s'applique à tous ses hôtes, et le passer en strict coupe ceux dont l'origine n'a
+    pas de certificat valide.
     Un seul niveau de sous-domaine : le certificat Universal SSL de Cloudflare ne couvre que
     `*.manouman.com`, et un `api.test.manouman.com` échoue à la poignée de main TLS dès la bordure.
   - `smpp.test` — **DNS only** (nuage gris) : SMPP n'est pas du HTTP, Cloudflare ne peut pas le
