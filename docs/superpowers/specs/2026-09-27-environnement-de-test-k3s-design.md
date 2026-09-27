@@ -35,7 +35,7 @@ CI verte sur main ─► deploy-test.yml             deps : postgres, redis, red
   2. render-manifests.sh + kustomize                    kafka-provision, smoke
      → rendered.yaml                             app  : 10 Deployments de deploy/k8s, patchés
   3. ssh deploy@vps < rendered.yaml ──────────►  gateway-deploy (commande forcée)
-                                                 exposé : 22, 2775 (SMPP), 80 (REST via Traefik)
+                                                 exposé : 22, 2775 (SMPP), 80/443 (REST via Traefik)
 ```
 
 ## Composants
@@ -54,7 +54,9 @@ CI verte sur main ─► deploy-test.yml             deps : postgres, redis, red
     ramenés à ~¼ ; `limits` gardées. Motif : les `requests` de production totalisent ~21,5 vCPU.
   - **HPA** : `minReplicas: 1`, `maxReplicas: 2`.
   - **connector-pool-svc** : `CONNECTOR_ADDR=smsc-simulator:2775`.
-  - **rest-api-svc** : un `Ingress` Traefik sans hôte, port 80.
+  - **rest-api-svc** : un `Ingress` Traefik sur `api.test.manouman.com`, TLS Let's Encrypt (défi
+    HTTP-01) par l'ACME intégré à Traefik, configuré via un `HelmChartConfig` k3s — aucun cert-manager.
+    Redirection 80 → 443.
   - **`gateway-oidc`** : ConfigMap de valeurs de test (rien de secret).
 - `smoke/` : un Job qui ouvre un bind SMPP, soumet un `submit_sm` et attend son DLR — la preuve
   bout-en-bout de chaque déploiement.
@@ -100,8 +102,9 @@ GHCR en privé (`/etc/rancher/k3s/registries.yaml` + PAT `read:packages` — san
 | Port | Service | Exposé |
 |---|---|---|
 | 22 | SSH, clé seule | oui |
-| 2775 | SMPP (ServiceLB) | oui |
-| 80 | REST (Traefik), HTTP clair | oui |
+| 2775 | SMPP (ServiceLB), `smpp.test.manouman.com`, en clair | oui |
+| 80 | redirection vers 443, défi ACME HTTP-01 | oui |
+| 443 | REST (Traefik), `api.test.manouman.com`, Let's Encrypt | oui |
 | 6443 | API k8s | non (`ufw`) |
 | Admin API, ops 9090, dépendances | — | non : `ssh -L` |
 
@@ -126,7 +129,7 @@ rollback est un `workflow_dispatch` sur un SHA antérieur.
 
 ## Dettes à ficher (`debts/`, même PR)
 
-- REST en HTTP clair sur l'environnement de test.
+- SMPP en clair sur le port 2775 de l'environnement de test.
 - Métriques `External` des HPA sans adaptateur.
 - Aucun collecteur OTel.
 - Dépendance à l'image smsc-simulator publiée par un autre dépôt.
@@ -134,9 +137,11 @@ rollback est un `workflow_dispatch` sur un SHA antérieur.
 ## Hors périmètre
 
 Observabilité (Prometheus/Grafana), sauvegardes (tout se recrée), charge (step-280, sur hôte dédié),
-nom de domaine et TLS public (un `Ingress` + DNS le jour venu).
+TLS sur SMPP public, exposition de l'API Admin.
 
 ## Prérequis externes
 
 - Le VPS Contabo commandé, Ubuntu 24.04, accès root par clé.
+- DNS : enregistrements `A` `api.test.manouman.com` et `smpp.test.manouman.com` vers l'IP du VPS,
+  posés avant le premier déploiement (le défi HTTP-01 échoue sinon).
 - La CI de `go-smsc-simulator` publie une image `linux/amd64` sur GHCR, taguée par version.
