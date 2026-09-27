@@ -398,8 +398,10 @@ l'autorisation de la moitié des opérations, et le tableau de bord génère ses
       l'atteignabilité de la branche `ErrConflict`)
 - [x] step-397 — 50 opérations Admin exigent un scope que le contrat ne déclare pas ⛓ step-390 —
       ouverte par step-330
-- [ ] step-398 — Une invalidation perdue laisse une config périmée sans borne : resynchroniser
-      périodiquement ⛓ step-395 — ouverte par step-395 ; unité faute de multiple de dix libre
+- [ ] step-398 — Un STOP reçu en MO n'est appliqué qu'à la prochaine mutation Admin (§6.20) ⛓ step-395 —
+      trouvé en ouvrant step-399 ; unité faute de multiple de dix libre
+- [ ] step-399 — Une invalidation perdue laisse une config périmée sans borne : resynchroniser
+      périodiquement ⛓ step-395, step-398 — ouverte par step-395 ; unité faute de multiple de dix libre
 - [ ] step-400 — `billing.events` durable : le BFF doit pouvoir détecter, pas seulement afficher
 - [ ] step-405 — La passerelle accepte les jetons du BFF : ancre du JWKS, contrat honnête, `created_by`
       rempli ⛓ step-310, ADR-0019 — ouverte par ADR-0019 ; unité faute de multiple de dix libre
@@ -407,7 +409,7 @@ l'autorisation de la moitié des opérations, et le tableau de bord génère ses
       `CLICKHOUSE_ARCHIVE_PREFIX` posé, donc chaque partition de 90 jours est perdue ⛓ step-165 — sortie de
       step-420 ; unité faute de multiple de dix libre
 - [ ] step-410 — **GO-LIVE** : dérouler la checklist de mise en production
-      ⛓ step-260, step-270, step-280, step-290, step-310, step-320, step-397, step-405, step-407
+      ⛓ step-260, step-270, step-280, step-290, step-310, step-320, step-397, step-398, step-405, step-407
 
 ## Après le go-live
 - [ ] step-420 — Exporter les CDR archivés (lecture de l'archive froide par l'export asynchrone)
