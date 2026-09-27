@@ -23,4 +23,26 @@ kms=$(grep '^  CONTENT_KMS_MASTER_KEY: ' "$tmp/out.yaml" | awk '{print $2}' | ba
 (( kms == 32 )) || fail "CONTENT_KMS_MASTER_KEY décode en $kms octets, 32 attendus"
 [[ -f "$tmp/cfg/go-gateway-test/operator.crt" ]] || fail "certificat exploitant non conservé"
 [[ -z $(git status --porcelain --ignored -- .tls) ]] || fail "des certificats ont atterri dans le dépôt"
+
+# Panne transitoire SSH sur la vérification d'existence, puis apply qui "réussit" : un faux ssh qui
+# n'échoue que sur le "get secret" reproduit exactement le scénario dangereux (panne lue comme
+# absence, écrasement d'un environnement déjà initialisé) sans jamais toucher un vrai hôte.
+fakebin="$tmp/fakebin"; mkdir -p "$fakebin"
+cat >"$fakebin/ssh" <<'FAKESSH'
+#!/usr/bin/env bash
+case "$*" in
+  *"get secret gateway-secrets"*) exit 255 ;;
+esac
+cat >/dev/null
+exit 0
+FAKESSH
+chmod +x "$fakebin/ssh"
+
+cfg2="$tmp/cfg2"
+if PATH="$fakebin:$PATH" XDG_CONFIG_HOME="$cfg2" deploy/test/bootstrap-secrets.sh --host x \
+     --origin-cert "$tmp/o.crt" --origin-key "$tmp/o.key" >/dev/null 2>&1; then
+  fail "une panne SSH transitoire sur la vérification d'existence n'aurait pas dû laisser l'apply passer"
+fi
+[[ ! -f "$cfg2/go-gateway-test/admin-token" ]] || fail "accès exploitant écrits malgré une vérification d'existence en échec"
+
 echo "bootstrap-secrets_test: ok"

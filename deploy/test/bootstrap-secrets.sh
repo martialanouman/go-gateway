@@ -2,6 +2,7 @@
 # Génère tous les secrets de l'environnement de test sur le poste de l'exploitant et les applique par
 # SSH. Une seule fois : Postgres fige son mot de passe à l'initdb, un second tirage le désynchronise.
 set -euo pipefail
+umask 077
 
 usage() { echo "usage: $0 (--host root@IP | --print) --origin-cert FILE --origin-key FILE" >&2; exit 2; }
 host="" print=0 origin_cert="" origin_key=""
@@ -22,9 +23,15 @@ ns=gateway
 keep="${XDG_CONFIG_HOME:-$HOME/.config}/go-gateway-test"
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 
-if [[ $print == 0 ]] && ssh "$host" kubectl -n "$ns" get secret gateway-secrets >/dev/null 2>&1; then
-  echo "$0: gateway-secrets existe déjà sur $host — refus de régénérer" >&2
-  exit 1
+if [[ $print == 0 ]]; then
+  # --ignore-not-found turns "absent" into empty output with exit 0 ; toute autre panne (hôte
+  # injoignable, échec SSH, kubeconfig invalide) garde son exit non nul et arrête le script ici sous
+  # set -e — une panne transitoire ne doit jamais se lire comme "le secret n'existe pas encore".
+  existing=$(ssh "$host" kubectl -n "$ns" get secret gateway-secrets --ignore-not-found -o name)
+  if [[ -n $existing ]]; then
+    echo "$0: gateway-secrets existe déjà sur $host — refus de régénérer" >&2
+    exit 1
+  fi
 fi
 
 hex() { openssl rand -hex "$1"; }
@@ -91,15 +98,21 @@ k() { kubectl -n "$ns" create "$@" --dry-run=client -o yaml; echo "---"; }
   done
 } >"$work/secrets.yaml"
 
-mkdir -p "$keep"; chmod 700 "$keep"
-cp "$work/tls/ca.crt" "$work/tls/operator.crt" "$work/tls/operator.key" "$keep/"
-printf '%s\n' "$admin_token" >"$keep/admin-token"
-printf 'system_id=%s\npassword=%s\n' "$bind_id" "$bind_pw" >"$keep/bind-credentials"
-chmod 600 "$keep"/*
+# Différé après l'apply en mode --host : un apply qui échoue ne doit jamais écraser un jeu d'accès
+# exploitant qui fonctionnait avec des identifiants jamais réellement appliqués.
+write_keep() {
+  mkdir -p "$keep"; chmod 700 "$keep"
+  cp "$work/tls/ca.crt" "$work/tls/operator.crt" "$work/tls/operator.key" "$keep/"
+  printf '%s\n' "$admin_token" >"$keep/admin-token"
+  printf 'system_id=%s\npassword=%s\n' "$bind_id" "$bind_pw" >"$keep/bind-credentials"
+  chmod 600 "$keep"/*
+}
 
 if [[ $print == 1 ]]; then
+  write_keep
   cat "$work/secrets.yaml"
 else
   ssh "$host" kubectl apply -f - <"$work/secrets.yaml"
+  write_keep
   echo "$0: secrets appliqués ; accès exploitant dans $keep"
 fi
