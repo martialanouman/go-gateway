@@ -24,7 +24,7 @@ grep -q 'value: smsc-simulator:2775' "$all" || fail "CONNECTOR_ADDR ne vise pas 
 grep -q 'name: HTTP_ADMIN_TOKENS' "$all" || fail "admin-api-svc sans HTTP_ADMIN_TOKENS"
 ! grep -q 'ghcr.io/martialanouman/go-gateway/[a-z0-9-]*:v0.0.0$' "$all" || fail "un gabarit v0.0.0 a survécu"
 ! grep -qE '^ +replicas: ([2-9]|[1-9][0-9]+)$' "$all" || fail "un Deployment garde plus d'une réplique"
-! grep -qE '^ +cpu: ([1-9][0-9]*|[1-9][0-9]{3,}m)$' "$all" || fail "une requête CPU de production survit"
+! grep -qE '^ +cpu: ([1-9][0-9]*|[1-9][0-9]{2,}m)$' "$all" || fail "une requête CPU de production survit"
 grep -q 'gateway.test/phase: job' "$all" || fail "les Jobs ne portent pas leur phase"
 
 kubeconform -strict -summary -ignore-missing-schemas -kubernetes-version 1.31.0 "$all"
