@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Commande forcée de la clé de CD (authorized_keys) : lit le YAML rendu sur stdin et l'applique par
+# phases. Un Job est supprimé avant d'être réappliqué : son template est immuable.
+set -euo pipefail
+
+ns=gateway
+work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
+cat >"$work/all.yaml"
+k() { kubectl -n "$ns" "$@"; }
+
+run_jobs() {
+  k delete job -l "gateway.test/phase=$1" --ignore-not-found --wait=true
+  k apply -f "$work/all.yaml" -l "gateway.test/phase=$1"
+  k wait --for=condition=complete job -l "gateway.test/phase=$1" --timeout=300s
+}
+
+k apply -f "$work/all.yaml" -l gateway.test/phase=deps
+for r in $(k get statefulset,deployment -l app.kubernetes.io/part-of=test-deps -o name); do
+  k rollout status "$r" --timeout=300s
+done
+run_jobs deps-job
+run_jobs job
+k apply -f "$work/all.yaml" -l '!gateway.test/phase'
+for r in $(k get deployment -l app.kubernetes.io/part-of=go-gateway -o name); do
+  k rollout status "$r" --timeout=600s
+done
+echo "gateway-deploy: déployé"
