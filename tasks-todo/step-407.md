@@ -61,6 +61,33 @@ archive est un jour qu'aucune step ne pourra rendre.
   déjà accepté (« responsabilité de l'exploitant ») ; la politique de cycle de vie du bucket (13 mois) est une
   ligne de la checklist de step-410.
 
+## Design arrêté
+
+Arbitré par Fable le 2026-09-27 (points 1 à 3), sans conflit avec la fiche ; le reste découle de la spec.
+
+- **Configuration** : `CLICKHOUSE_ARCHIVE_COLLECTION` nomme la collection nommée ClickHouse. Posée →
+  `s3(<collection>, filename = '<prefix>-<jour>-<token>.parquet', format = 'Parquet')` ; vide avec un préfixe
+  → `FileDestination` (poste local). `CLICKHOUSE_ARCHIVE_PREFIX` reste l'interrupteur. La collection est
+  validée comme identifiant (`^[A-Za-z_][A-Za-z0-9_]{0,63}$`) dans `newRetainer`, à côté de
+  `ValidArchivePrefix` ; une collection sans préfixe est refusée (« would have no effect »).
+- **`Destination`** devient `func(object string) string` : l'archiveur nomme l'objet (préfixe, jour, jeton),
+  la destination ne fait que l'envelopper. Le nom d'objet est ce que le catalogue retient.
+- **Catalogue** : `control_plane.cdr_archives (day date PK, object text, row_count bigint ≥ 0,
+  archived_at timestamptz)`, schéma + migration 0022. Interface `ArchiveCatalog` déclarée côté consommateur
+  (package `clickhouse`), obligatoire pour `PartitionArchiver`. Une seule requête, jamais de réécriture :
+  `INSERT … ON CONFLICT (day) DO NOTHING RETURNING row_count UNION ALL` la ligne préexistante → rend le
+  `row_count` de la ligne qui fait foi. **Si ce `row_count` < lignes de la partition** (un DROP raté après
+  inscription, puis la partition a grossi), l'archiveur échoue et la partition reste : `archive_failed`
+  visible plutôt qu'un catalogue silencieusement incomplet. Sinon le second objet reste orphelin, non inscrit.
+- **Garde de production** : `validateAdminConfig` (admin-api-svc est le seul porteur du Retainer ; six autres
+  services chargent la section ClickHouse sans rien purger). Production ET (préfixe vide OU collection vide) →
+  boot refusé ; `FileDestination` est donc refusée en production. **Pas d'exemption** pour
+  `RETENTION_INTERVAL = 0` : elle rouvrirait un « planificateur externe » qui supprime sans archiver.
+- **Constats du spike** (ClickHouse 24.8, MinIO) : une identité à `PutObject`/`GetObject`/`ListBucket` seuls
+  suffit ; ClickHouse refuse de réécrire une clé existante ; l'utilisateur ClickHouse de la passerelle a besoin
+  de `GRANT NAMED COLLECTION ON cdr_archive` ; `query_log` ne voit que le nom de la collection. Les deux
+  derniers vont à la checklist de step-410.
+
 ## Tests (écrits dans la même PR)
 
 - Sur un stockage S3 de test (conteneur MinIO), une partition expirée est archivée, relue, inscrite au
