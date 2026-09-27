@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/martialanouman/go-gateway/internal/config"
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
@@ -141,7 +142,7 @@ func TestRouterConfigSnapshotsDegradeSilentlyWhenPostgresIsCut(t *testing.T) {
 		// does reach the served snapshot. Without it, "still serving the old one" would hold just as well
 		// against a hot reload that never worked at all.
 		retarget(second.ID)
-		waitResolves(t, invalidate, resolved, second.ID, "the hot reload never reached the served "+
+		waitResolves(t, invalidate, resolved, second.ID, 15*time.Second, "the hot reload never reached the served "+
 			"snapshot with postgres up, so the outage assertion below would prove nothing")
 
 		// Everything the log has said so far is the control's business. Only the suffix written AFTER
@@ -188,9 +189,15 @@ func TestRouterConfigSnapshotsDegradeSilentlyWhenPostgresIsCut(t *testing.T) {
 		select {
 		case err := <-watcherDone:
 			t.Fatalf("the Watcher returned %v during the outage: a rebuild failure is logged and "+
-				"retried on the next notification, never fatal — a pod that dies here takes the stale "+
+				"retried on its own backoff, never fatal — a pod that dies here takes the stale "+
 				"but working snapshot with it", err)
 		default:
+		}
+		// The failure is now visible without reading logs (step-395): the counter the built graph wraps
+		// around the whole rebuild closure has moved. Unwrap the closure in the wiring and this reads 0.
+		if got := testutil.ToFloat64(app.rebuilds.total.WithLabelValues("error")); got == 0 {
+			t.Error(`config_rebuild_total{outcome="error"} did not move during the outage: the failed ` +
+				"rebuilds are counted nowhere, and the degradation is back to being visible in logs only")
 		}
 
 		// The other half of "invisible", and the half a future edit is most likely to break: readiness
@@ -215,12 +222,14 @@ func TestRouterConfigSnapshotsDegradeSilentlyWhenPostgresIsCut(t *testing.T) {
 				"every router pod during an outage the router is built to serve through", body)
 		}
 
-		// Recovery, and the half a refusal alone would not establish: nothing latched. The republish loop
-		// is infrastructure recovery, not the behaviour under test — a lone notification can land while
-		// the pool is still handing out connections the cut killed, and NOTHING retries a failed rebuild
-		// on its own (step-395).
+		// Recovery, and the half a refusal alone would not establish: nothing latched. NO notification is
+		// published from here on — the control plane is silent, as it is at night — so the third route can
+		// only arrive through the Watcher replaying its failed rebuild on its own (step-395). The deadline
+		// covers the production backoff cap (30 s) plus the pool re-dialling past connections the cut killed.
 		proxy.Resume()
-		waitResolves(t, invalidate, resolved, third.ID, "the snapshot latched on the outage")
+		waitResolves(t, func() {}, resolved, third.ID, 45*time.Second, "the Watcher never replayed its "+
+			"failed rebuild on its own: without a new invalidation the pod would serve the stale snapshot "+
+			"for as long as the control plane stays silent")
 	})
 
 	t.Run("the boot snapshot load retries instead of giving up", func(t *testing.T) {
@@ -284,18 +293,16 @@ func TestRouterConfigSnapshotsDegradeSilentlyWhenPostgresIsCut(t *testing.T) {
 	})
 }
 
-// waitResolves republishes the invalidation and polls resolve until it reports want, failing with why
-// once the deadline passes.
+// waitResolves runs invalidate and polls resolve until it reports want, failing with why once within
+// has passed.
 //
-// It republishes on every pass rather than once up front, and that is not belt-and-braces: pub/sub has
-// no delivery guarantee, a notification published before the Watcher's SUBSCRIBE has registered is
-// simply gone, and NOTHING in the Watcher replays a missed or failed rebuild on its own (step-395). A
-// single publish would turn that into a 15-second hang ending in a misleading "the hot reload never
-// worked".
-func waitResolves(t *testing.T, invalidate func(), resolve func() uuid.UUID, want uuid.UUID, why string) {
+// Where a caller republishes on every pass, that is not belt-and-braces: pub/sub has no delivery
+// guarantee, and a notification published before the Watcher's SUBSCRIBE has registered is simply gone —
+// the Watcher replays a FAILED rebuild on its own (step-395), not a MISSED notification.
+func waitResolves(t *testing.T, invalidate func(), resolve func() uuid.UUID, want uuid.UUID, within time.Duration, why string) {
 	t.Helper()
 
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.Now().Add(within)
 	for {
 		invalidate()
 		if got := resolve(); got == want {

@@ -71,11 +71,12 @@ comportement actuel (250 ms). Un seul timer dans une boucle mono-goroutine : deu
 sont impossibles par construction.
 
 **Métrique, routeur seulement.** Le câblage du routeur enveloppe sa closure de rebuild : la closure du
-câblage *est* la closure entière. Il publie `config_rebuild_total{result="ok"|"error"}` et
+câblage *est* la closure entière. Il publie `config_rebuild_total{outcome="ok"|"error"}` et
 `config_rebuild_last_success_timestamp_seconds`, posé seulement quand la closure entière a réussi.
 Pas de prometheus dans `internal/config` : `internal/observability` importe `internal/config`, le registre
-gardé y ferait un cycle. Le label `result` est déjà dans la liste blanche (`labels.go:44`), dont le
-commentaire est mis à jour. L'horodatage est **amorcé au boot** dans `newOpsServer`, à côté de
+gardé y ferait un cycle. Le label est `outcome` et non `result`, écart à l'arbitrage relevé à
+l'implémentation : la liste blanche (`internal/observability/metrics/labels.go`) documente déjà `outcome`
+comme `ok | error` et réserve `result` à `hit | miss`. L'horodatage est **amorcé au boot** dans `newOpsServer`, à côté de
 `blooms.set` (le chargement initial est le premier succès), et les deux enfants du compteur sont
 pré-créés comme `ExactRouteLookups`. connector-pool et config-sync ont le rejeu mais pas la métrique :
 seul le routeur a son dégradé masqué décrit par §16.

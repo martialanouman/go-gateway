@@ -224,3 +224,186 @@ func TestWatcherClosesStreamOnStop(t *testing.T) {
 		t.Error("stream not closed after Run stopped")
 	}
 }
+
+// failingRebuild fails the calls fail picks (numbered from 1) and records when each call started.
+type failingRebuild struct {
+	fail  func(call int32) bool
+	calls atomic.Int32
+	at    chan time.Time
+}
+
+func newFailingRebuild(fail func(call int32) bool) *failingRebuild {
+	return &failingRebuild{fail: fail, at: make(chan time.Time, 64)}
+}
+
+func failsFirst(n int32) func(int32) bool { return func(call int32) bool { return call <= n } }
+
+func (f *failingRebuild) rebuild(context.Context) error {
+	f.at <- time.Now()
+	if f.fail(f.calls.Add(1)) {
+		return errors.New("rebuild boom")
+	}
+	return nil
+}
+
+func (f *failingRebuild) next(t *testing.T, why string) time.Time {
+	t.Helper()
+	select {
+	case at := <-f.at:
+		return at
+	case <-time.After(2 * time.Second):
+		t.Fatalf("no rebuild within 2s: %s", why)
+		return time.Time{}
+	}
+}
+
+// TestWatcherRetriesAFailedRebuildWithoutANotification: a failed rebuild is replayed on its own. Waiting
+// for the next invalidation would leave a pod serving a stale config for as long as the control plane
+// stays silent — the whole night, typically (step-395).
+func TestWatcherRetriesAFailedRebuildWithoutANotification(t *testing.T) {
+	stream := newFakeStream()
+	rb := newFailingRebuild(failsFirst(1))
+	w := config.NewWatcher(
+		func(context.Context) (config.Stream, error) { return stream, nil },
+		rb.rebuild,
+		config.WithWindow(5*time.Millisecond),
+		config.WithRetryBackoff(5*time.Millisecond, 20*time.Millisecond),
+	)
+	_, stop := runWatcher(t, w)
+	defer stop()
+
+	stream.emit()
+	rb.next(t, "the notification did not trigger the first rebuild")
+	rb.next(t, "the failed rebuild was never replayed without a new notification")
+}
+
+// TestWatcherRetryBackoffDoublesUpToItsCap: consecutive failures are retried after a delay that doubles
+// from the initial backoff and stops growing at the cap. A backoff pinned at zero would hammer a database
+// that is already down; an uncapped one would leave the pod stale for longer than the outage; one pinned
+// at the cap would make every transient blip cost the full cap.
+func TestWatcherRetryBackoffDoublesUpToItsCap(t *testing.T) {
+	const initial, capped = 20 * time.Millisecond, 160 * time.Millisecond
+	stream := newFakeStream()
+	rb := newFailingRebuild(func(int32) bool { return true })
+	w := config.NewWatcher(
+		func(context.Context) (config.Stream, error) { return stream, nil },
+		rb.rebuild,
+		config.WithWindow(5*time.Millisecond),
+		config.WithRetryBackoff(initial, capped),
+	)
+	_, stop := runWatcher(t, w)
+	defer stop()
+
+	stream.emit()
+	prev := rb.next(t, "the notification did not trigger the first rebuild")
+	gaps := make([]time.Duration, 0, 6)
+	for range 6 {
+		at := rb.next(t, "a failed rebuild was not retried")
+		gaps = append(gaps, at.Sub(prev))
+		prev = at
+	}
+	for i, floor := range []time.Duration{initial, 2 * initial, 4 * initial, capped, capped, capped} {
+		if gaps[i] < floor {
+			t.Errorf("retry %d came %v after the failure, want at least %v (gaps %v)", i+1, gaps[i], floor, gaps)
+		}
+	}
+	// Timers never fire early, so only these two ceilings carry timing risk, and both keep a wide margin.
+	if gaps[0] >= capped/2 {
+		t.Errorf("the first retry came %v after the failure: the backoff did not start from %v (gaps %v)", gaps[0], initial, gaps)
+	}
+	// Uncapped, the sixth delay would be 640 ms.
+	if gaps[5] >= 3*capped {
+		t.Errorf("the sixth retry came %v after the failure: the backoff grew past its %v cap (gaps %v)", gaps[5], capped, gaps)
+	}
+}
+
+// TestWatcherRetryBackoffResetsOnSuccess: a success ends the outage, so the next failure starts again from
+// the initial backoff instead of inheriting the delay the previous outage had grown to.
+func TestWatcherRetryBackoffResetsOnSuccess(t *testing.T) {
+	const initial, capped = 20 * time.Millisecond, 2 * time.Second
+	stream := newFakeStream()
+	// Calls 1-5 fail and grow the backoff to 320 ms, call 6 succeeds, call 7 fails again.
+	rb := newFailingRebuild(func(call int32) bool { return call <= 5 || call == 7 })
+	w := config.NewWatcher(
+		func(context.Context) (config.Stream, error) { return stream, nil },
+		rb.rebuild,
+		config.WithWindow(5*time.Millisecond),
+		config.WithRetryBackoff(initial, capped),
+	)
+	_, stop := runWatcher(t, w)
+	defer stop()
+
+	stream.emit()
+	for range 6 {
+		rb.next(t, "the outage was not retried through to its recovery")
+	}
+	stream.emit()
+	failedAt := rb.next(t, "the notification after the recovery did not trigger a rebuild")
+	retryAt := rb.next(t, "the failure after the recovery was not retried")
+	if gap := retryAt.Sub(failedAt); gap >= 300*time.Millisecond {
+		t.Errorf("the first retry after a success came %v later: the backoff was not reset to %v", gap, initial)
+	}
+}
+
+// TestWatcherNotificationCutsTheRetryBackoffShort: an invalidation arriving while a retry waits is
+// rebuilt within the coalesce window, not after the backoff — it announces a change, and a healthy
+// watcher answers one in a window. A burst still collapses into that ONE rebuild, and cutting the wait
+// does not end the outage: the next failure keeps doubling instead of starting over from initial.
+func TestWatcherNotificationCutsTheRetryBackoffShort(t *testing.T) {
+	const initial = 300 * time.Millisecond
+	stream := newFakeStream()
+	rb := newFailingRebuild(func(int32) bool { return true })
+	w := config.NewWatcher(
+		func(context.Context) (config.Stream, error) { return stream, nil },
+		rb.rebuild,
+		config.WithWindow(5*time.Millisecond),
+		config.WithRetryBackoff(initial, time.Minute),
+	)
+	_, stop := runWatcher(t, w)
+	defer stop()
+
+	stream.emit()
+	failedAt := rb.next(t, "the notification did not trigger the first rebuild")
+	stream.emit()
+	stream.emit()
+	stream.emit()
+	cutAt := rb.next(t, "a notification during the retry backoff waited for the backoff")
+	if gap := cutAt.Sub(failedAt); gap >= initial-50*time.Millisecond {
+		t.Errorf("the notification was rebuilt %v after the failure: it waited out the %v backoff", gap, initial)
+	}
+	retryAt := rb.next(t, "the failure after the cut was not retried")
+	if gap := retryAt.Sub(cutAt); gap < 2*initial {
+		t.Errorf("the retry after the cut came %v later, want at least %v: either the burst was not "+
+			"coalesced into one rebuild, or the cut reset an outage that is still going on", gap, 2*initial)
+	}
+}
+
+// TestWatcherWindowIsNotPushedBackBySustainedNotifications: the window is armed by the first notification
+// and NOT re-armed by the ones inside it. Re-arming would turn it into a debounce that a steady trickle
+// of invalidations — a bulk admin operation, a flapping breaker — starves of any rebuild at all.
+func TestWatcherWindowIsNotPushedBackBySustainedNotifications(t *testing.T) {
+	const window = 50 * time.Millisecond
+	stream := newFakeStream()
+	rb := newFailingRebuild(func(int32) bool { return false })
+	w := config.NewWatcher(
+		func(context.Context) (config.Stream, error) { return stream, nil },
+		rb.rebuild,
+		config.WithWindow(window),
+	)
+	_, stop := runWatcher(t, w)
+	defer stop()
+
+	trickleEnd := time.Now().Add(20 * window)
+	for time.Now().Before(trickleEnd) {
+		stream.emit()
+		time.Sleep(window / 5)
+	}
+	select {
+	case at := <-rb.at:
+		if !at.Before(trickleEnd) {
+			t.Errorf("the first rebuild ran only after the notifications stopped: the window slid with them")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no rebuild at all")
+	}
+}

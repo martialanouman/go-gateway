@@ -162,7 +162,7 @@ Redis : zéro conteneur neuf. `internal/restapi`, lui,
 Redpanda ni ClickHouse de plus, donc le risque `fs.aio-max-nr` (step-250c) est inchangé ; ce qui change
 est qu'`internal/restapi` dépend désormais de Docker.
 
-Deux dettes ouvertes par cette step : le watcher **ne rejoue jamais** un rebuild échoué (step-395), et
+Deux dettes ouvertes par cette step : le watcher **ne rejouait jamais** un rebuild échoué (payée par step-395), et
 l'équivalence « Postgres lent ≡ Postgres coupé » reste non mesurée — `tcpproxy` ne sait que sévérer
 (step-396). Elle a par ailleurs trouvé un **défaut de production** que seule la configuration réelle
 révélait : le listener des tests n'avait pas le throttle anti-brute-force que la production câble
