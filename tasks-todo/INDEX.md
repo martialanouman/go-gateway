@@ -405,7 +405,7 @@ l'autorisation de la moitié des opérations, et le tableau de bord génère ses
 - [ ] step-400 — `billing.events` durable : le BFF doit pouvoir détecter, pas seulement afficher
 - [ ] step-405 — La passerelle accepte les jetons du BFF : ancre du JWKS, contrat honnête, `created_by`
       rempli ⛓ step-310, ADR-0019 — ouverte par ADR-0019 ; unité faute de multiple de dix libre
-- [ ] step-407 — La production archive ses CDR avant de les supprimer : aucune destination objet, aucun
+- [x] step-407 — La production archive ses CDR avant de les supprimer : aucune destination objet, aucun
       `CLICKHOUSE_ARCHIVE_PREFIX` posé, donc chaque partition de 90 jours est perdue ⛓ step-165 — sortie de
       step-420 ; unité faute de multiple de dix libre
 - [ ] step-410 — **GO-LIVE** : dérouler la checklist de mise en production
