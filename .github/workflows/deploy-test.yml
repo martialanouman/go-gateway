@@ -29,6 +29,12 @@ jobs:
     env:
       SHA: ${{ inputs.sha || github.event.workflow_run.head_sha }}
     steps:
+      # $SHA (l'env var, pas ${{ }} dans run:) : un input workflow_dispatch mal formé ne doit jamais
+      # s'interpoler tel quel dans un script shell.
+      - name: Valider le SHA
+        run: |
+          [[ $SHA =~ ^[0-9a-f]{40}$ ]] || { echo "::error::SHA invalide (attendu 40 caractères hex) : $SHA"; exit 1; }
+
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.SHA }}
