@@ -5,8 +5,9 @@
 
 **Ce qu'on a fait à la place.** `api.test.manouman.com` est proxifié par Cloudflare, mais le port 443
 du VPS accepte toute source : Traefik le publie par le ServiceLB de k3s, en iptables, en amont de
-`ufw` (`deploy/test/host/install.sh`). Qui connaît l'IP atteint l'API directement, sous un certificat
-Origin CA qu'aucun navigateur ne reconnaît.
+`ufw` (`deploy/test/README.md:95-97`) ; `deploy/test/host/install.sh:8-15` ne pose que SSH et les
+réseaux pods/Services de k3s, aucune règle pour 80/443. Qui connaît l'IP atteint l'API directement,
+sous un certificat Origin CA qu'aucun navigateur ne reconnaît.
 
 **Pourquoi.** Filtrer aux plages Cloudflare exige une règle iptables hors `ufw` ou une politique
 réseau Traefik (`ipAllowList`), à tenir à jour avec les plages publiées ; disproportionné pour un

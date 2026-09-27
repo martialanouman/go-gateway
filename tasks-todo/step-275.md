@@ -17,7 +17,7 @@ traverse. Deux manques, reportés hors du premier livrable :
    `registered_delivery` et attend son DLR — à condition que smsc-simulator v0.7.0 émette des DLR avec
    la configuration `healthy` (à vérifier dans son dépôt ; `docs/specification-technique-simulateur-smsc.md`).
 
-## Définition de terminé
+## Definition of Done
 - [ ] Seed idempotent par l'API Admin, rejouable après une remise à zéro du namespace.
 - [ ] `CONNECTOR_ID` de l'overlay égal à l'id du connecteur seedé.
 - [ ] Job `smoke` lancé par `gateway-deploy` en dernière phase ; le workflow échoue s'il échoue.
