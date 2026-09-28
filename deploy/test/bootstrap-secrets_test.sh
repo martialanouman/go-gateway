@@ -10,8 +10,14 @@ XDG_CONFIG_HOME="$tmp/cfg" deploy/test/bootstrap-secrets.sh --print \
 fail() { echo "bootstrap-secrets_test: $*" >&2; exit 1; }
 for s in gateway-secrets test-deps clickhouse-archive smsc-simulator-config api-origin-tls \
   billing-svc-tls content-key-svc-tls session-manager-svc-tls smpp-server-svc-tls \
-  mo-dlr-router-svc-tls admin-api-svc-tls router-svc-tls connector-pool-svc-tls rest-api-svc-tls; do
+  mo-dlr-router-svc-tls admin-api-svc-tls router-svc-tls connector-pool-svc-tls rest-api-svc-tls \
+  operator-tls; do
   grep -q "^  name: $s$" "$tmp/out.yaml" || fail "secret absent : $s"
+done
+op=$(awk -v RS='---\n' 'index($0,"name: operator-tls")' "$tmp/out.yaml")
+grep -q 'kind: Secret' <<<"$op" || fail "operator-tls n'est pas un Secret"
+for k in ca.crt tls.crt tls.key; do
+  grep -q "  $k: " <<<"$op" || fail "operator-tls sans $k"
 done
 for k in POSTGRES_URL REDIS_URL CLICKHOUSE_PASSWORD CONTENT_KMS_MASTER_KEY CONNECTOR_SYSTEM_ID \
   CONNECTOR_PASSWORD HTTP_ADMIN_TOKENS POSTGRES_PASSWORD REDIS_PASSWORD RUSTFS_ACCESS_KEY RUSTFS_SECRET_KEY; do
