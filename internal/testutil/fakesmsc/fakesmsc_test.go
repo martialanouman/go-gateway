@@ -149,8 +149,8 @@ func TestSendDLR(t *testing.T) {
 	if dlr.ESMClass&smpp.ESMClassMCDeliveryReceipt == 0 {
 		t.Error("deliver_sm should carry the delivery-receipt esm_class bit")
 	}
-	if v, ok := dlr.TLVs.Get(smpp.TagReceiptedMessageID); !ok || string(v) != assignedID {
-		t.Errorf("receipted_message_id: got %q ok=%v want %q", v, ok, assignedID)
+	if v, ok := dlr.TLVs.Get(smpp.TagReceiptedMessageID); !ok || string(v) != assignedID+"\x00" {
+		t.Errorf("receipted_message_id: got %q ok=%v want %q NUL-terminated", v, ok, assignedID)
 	}
 }
 
