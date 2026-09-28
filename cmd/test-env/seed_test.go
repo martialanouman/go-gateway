@@ -36,8 +36,8 @@ func TestSeedCreatesTheControlPlaneThenReplaysWithoutWriting(t *testing.T) {
 	if got := f.lastAccount; got.AllowedBindTypes != "trx" || got.MaxSessions != 2 {
 		t.Errorf("compte créé : allowed_bind_types %q, max_sessions %d, want trx, 2", got.AllowedBindTypes, got.MaxSessions)
 	}
-	if want := (fakeCredentialCreate{Type: "smpp_bind", SystemID: smokeSystemID}); f.lastCredential != want {
-		t.Errorf("credential créée %+v, want %+v", f.lastCredential, want)
+	if got := f.lastCredential; got.Type != "smpp_bind" || got.SystemID == nil || *got.SystemID != smokeSystemID {
+		t.Errorf("credential créée %+v, want smpp_bind %q", got, smokeSystemID)
 	}
 
 	before := f.writes

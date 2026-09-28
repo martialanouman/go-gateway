@@ -70,6 +70,7 @@ type smppAccountCreate struct {
 
 type credential struct {
 	ID       string `json:"id"`
+	Type     string `json:"type"`
 	SystemID string `json:"system_id"`
 	Status   string `json:"status"`
 }
