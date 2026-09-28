@@ -100,6 +100,8 @@ k() { kubectl -n "$ns" create "$@" --dry-run=client -o yaml; echo "---"; }
     k secret generic "$svc-tls" --from-file=tls.crt="$work/tls/$svc.crt" \
       --from-file=tls.key="$work/tls/$svc.key" --from-file=ca.crt="$work/tls/ca.crt"
   done
+  k secret generic operator-tls --from-file=tls.crt="$work/tls/operator.crt" \
+    --from-file=tls.key="$work/tls/operator.key" --from-file=ca.crt="$work/tls/ca.crt"
 } >"$work/secrets.yaml"
 
 # Différé après l'apply en mode --host : un apply qui échoue ne doit jamais écraser un jeu d'accès

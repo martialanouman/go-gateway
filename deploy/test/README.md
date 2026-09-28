@@ -7,7 +7,9 @@ prouver que le pipeline tourne, pas pour tenir 8 000 SMS/s. C'est un overlay kus
 `deploy/k8s/` sans le modifier — patches (proxy CIDRs, admin token, réplicas, HPA), Jobs par phase,
 dépendances (`deps/`), Ingress Traefik. `make test-env` rend l'overlay avec un tag fictif et vérifie
 ce qui ne se verrait qu'au déploiement (kubeconform + les invariants propres à cet overlay :
-`deploy/test/check.sh`).
+`deploy/test/check.sh`). À chaque déploiement, deux Jobs bornent la preuve : `test-seed` peuple un
+compte SMPP `smoke` et sa route, puis `smoke` envoie un SMS de bout en bout par ce compte — un `smoke`
+en échec fait échouer le workflow **Deploy test**.
 
 ## 2. Prérequis
 
@@ -47,6 +49,15 @@ forcée** : la clé de CD ne peut exécuter que `/usr/local/bin/gateway-deploy` 
 l'étape précédente), rien d'autre. Notez la dernière ligne affichée — l'empreinte de l'hôte, nécessaire
 à l'étape suivante.
 
+**Mettre à jour `gateway-deploy`.** L'hôte n'exécute que la copie posée par `install.sh` ; le workflow
+ne la remplace jamais. Toute modification de `deploy/test/host/gateway-deploy` doit donc être réinstallée
+**avant** le merge qui la porte (le déploiement de ce merge tournerait sinon avec l'ancienne) :
+
+```bash
+scp deploy/test/host/gateway-deploy root@IP:/tmp/gateway-deploy \
+  && ssh root@IP install -m 755 /tmp/gateway-deploy /usr/local/bin/gateway-deploy
+```
+
 ## 4. Secrets GitHub (environnement `test`)
 
 Dans l'environnement GitHub `test` du dépôt :
@@ -76,17 +87,35 @@ kubectl -n gateway create secret tls api-origin-tls --cert=origin.crt --key=orig
   --dry-run=client -o yaml | ssh root@IP kubectl apply -f -
 ```
 
+Un environnement bootstrappé avant step-275 n'a pas encore `operator-tls` (`bootstrap-secrets.sh` le
+crée désormais avec les autres). Le poser sans toucher aux autres secrets, depuis les fichiers déjà
+déposés par le run précédent de ce script dans `~/.config/go-gateway-test/` — la clé ne transite
+jamais dans les arguments de la commande sur l'hôte, seulement sur son entrée standard :
+
+```bash
+kubectl -n gateway create secret generic operator-tls --dry-run=client -o yaml \
+  --from-file=tls.crt=$HOME/.config/go-gateway-test/operator.crt \
+  --from-file=tls.key=$HOME/.config/go-gateway-test/operator.key \
+  --from-file=ca.crt=$HOME/.config/go-gateway-test/ca.crt | ssh root@IP kubectl apply -f -
+```
+
 ## 6. Premier déploiement
 
-Le premier push de ce dépôt crée les paquets GHCR (`go-gateway/*` et `go-smsc-simulator`) **privés** :
-k3s ne peut pas encore les tirer. Avant le tout premier déploiement, dans l'ordre :
+Le premier push de ce dépôt crée les paquets GHCR (`go-gateway/*` — treize paquets depuis step-275,
+`test-env` compris bien qu'il ne passe pas par GoReleaser — et `go-smsc-simulator`) **privés** : k3s ne
+peut pas encore les tirer. Avant le tout premier déploiement, dans l'ordre :
 
 1. Lancer une fois le workflow (étape ci-dessous) : il pousse les images puis le déploiement échoue en
-   `ImagePullBackOff` — c'est attendu.
-2. Sur GitHub, basculer chaque paquet (`go-gateway/*` et `go-smsc-simulator`) en **public**. Alternative
-   sans rendre les paquets publics : §9 (`registries.yaml` avec un PAT `read:packages`), à poser dès
-   l'installation de l'hôte.
+   `ImagePullBackOff`, Jobs `test-seed` et `smoke` compris — c'est attendu.
+2. Sur GitHub, basculer chaque paquet (`go-gateway/*`, `test-env` compris, et `go-smsc-simulator`) en
+   **public**. Alternative sans rendre les paquets publics : §9 (`registries.yaml` avec un PAT
+   `read:packages`), à poser dès l'installation de l'hôte.
 3. Relancer le workflow avec le même SHA — il retrouve les images déjà poussées.
+
+Un environnement déjà déployé avant step-275 n'a jamais tiré `test-env` : ce paquet, créé privé par le
+premier déploiement qui le pousse, doit passer en **public** (ou §9, `registries.yaml`) avant le
+déploiement qui lance les Jobs `test-seed`/`smoke` — sinon `ImagePullBackOff`, et le workflow échoue.
+Réinstaller aussi `gateway-deploy` (§3) avant ce merge.
 
 GitHub → Actions → **Deploy test** → *Run workflow*, avec le SHA complet (40 caractères) de `main` en
 entrée (`sha`).
@@ -122,8 +151,11 @@ Les quatre fichiers viennent de `bootstrap-secrets.sh` (étape 5), déposés dan
 **SMPP** : `smpp.test.manouman.com:2775`, en **TLS** sous la CA de la passerelle (pas Let's Encrypt —
 c'est la même CA `tlsgen` que les Secrets `*-tls` internes). Le certificat porte le SAN
 `smpp-server-svc`, donc le client SMPP doit poser `ServerName=smpp-server-svc` à la connexion, sinon
-la vérification du nom échoue. Les identifiants de bind sont dans
-`~/.config/go-gateway-test/bind-credentials`.
+la vérification du nom échoue. `~/.config/go-gateway-test/bind-credentials` porte les identifiants
+**passerelle → simulateur** (`CONNECTOR_SYSTEM_ID`/`CONNECTOR_PASSWORD`), pas un compte client. Pour un
+bind client, utiliser le compte `smoke` et sa credential `smoke` (posés par le Job `test-seed`) ; le
+secret s'obtient par `POST /v1/admin/smpp-accounts/{id}/credentials/{credId}/rotate` sur l'Admin API —
+le Job `smoke` du déploiement suivant le re-rotate, donc le relever avant de redéployer.
 
 **Exposition réseau** : firewalld n'ouvre que 22, 80, 443 et 2775 ; l'API k8s (6443), le kubelet
 (10250) et VXLAN (8472/udp) restent fermés. `smpp-server-svc` (2775) et Traefik (80/443) sont publiés
@@ -152,6 +184,6 @@ privé :
 
 ## 10. Ce qui n'y est pas
 
-Observabilité (collecteur OTel, alerting), sauvegardes, mesure de charge (step-280), seed de données
-et preuve bout-en-bout (step-275). Cet environnement prouve que le pipeline se déploie et répond, pas
-qu'il tient la charge ni qu'il survit à une panne.
+Observabilité (collecteur OTel, alerting), sauvegardes, mesure de charge (step-280). Cet environnement
+prouve, via les Jobs `test-seed`/`smoke`, qu'un message traverse le pipeline bout en bout, pas qu'il
+tient la charge ni qu'il survit à une panne.

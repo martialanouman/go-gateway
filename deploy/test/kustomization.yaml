@@ -11,6 +11,8 @@ resources:
   - deps/clickhouse.yaml
   - deps/rustfs.yaml
   - deps/smsc-simulator.yaml
+  - jobs/test-seed.yaml
+  - jobs/smoke.yaml
 patches:
   - path: patches/gateway-config.yaml
   - path: patches/smpp-server-svc.yaml
