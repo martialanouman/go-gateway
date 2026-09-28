@@ -31,7 +31,16 @@ grep -q 'gateway.test/phase: job' "$all" || fail "les Jobs ne portent pas leur p
 grep -q 'gateway.test/phase: seed$' "$all" || fail "pas de Job de seed"
 grep -q 'gateway.test/phase: smoke$' "$all" || fail "pas de Job de smoke"
 grep -q "go-gateway/test-env:$VERSION\$" "$all" || fail "l'image test-env ne porte pas la version déployée"
-cid=$(grep -A4 -- '- name: CONNECTOR_ID$' "$all")
+# item complet, pas une fenêtre de N lignes : un `value:` littéral ajouté avant `valueFrom` décale
+# sinon `name: test-seed` hors d'un `-A` fixe, et la garde du dessous ne tombe plus jamais seule.
+cid=$(awk '
+  /^[[:space:]]*- name: CONNECTOR_ID$/ { match($0, /^[[:space:]]*/); indent = RLENGTH; print; found = 1; next }
+  found {
+    match($0, /^[[:space:]]*/); cur = RLENGTH
+    if ($0 ~ /^[[:space:]]*- name:/ && cur <= indent) { exit }
+    print
+  }
+' "$all")
 grep -q 'name: test-seed' <<<"$cid" || fail "CONNECTOR_ID ne vient pas de la ConfigMap test-seed"
 ! grep -q 'value:' <<<"$cid" || fail "CONNECTOR_ID garde sa valeur de production à côté de valueFrom"
 
