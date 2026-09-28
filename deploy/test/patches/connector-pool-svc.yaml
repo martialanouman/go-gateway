@@ -10,3 +10,7 @@ spec:
           env:
             - name: CONNECTOR_ADDR
               value: smsc-simulator:2775
+            - name: CONNECTOR_ID
+              value: null
+              valueFrom:
+                configMapKeyRef: { name: test-seed, key: CONNECTOR_ID, optional: true }

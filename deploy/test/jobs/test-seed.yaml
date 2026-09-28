@@ -1,0 +1,32 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: test-seed
+  labels:
+    gateway.test/phase: seed
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 240
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: test-env
+          image: ghcr.io/martialanouman/go-gateway/test-env:v0.0.0
+          args: [seed]
+          env:
+            - { name: TLS_DIR, value: /etc/test-env/tls }
+            - name: HTTP_ADMIN_TOKENS
+              valueFrom: { secretKeyRef: { name: gateway-secrets, key: HTTP_ADMIN_TOKENS } }
+            - name: CONNECTOR_SYSTEM_ID
+              valueFrom: { secretKeyRef: { name: gateway-secrets, key: CONNECTOR_SYSTEM_ID } }
+            - name: CONNECTOR_PASSWORD
+              valueFrom: { secretKeyRef: { name: gateway-secrets, key: CONNECTOR_PASSWORD } }
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { memory: 64Mi }
+          volumeMounts:
+            - { name: tls, mountPath: /etc/test-env/tls, readOnly: true }
+      volumes:
+        - name: tls
+          secret: { secretName: operator-tls }

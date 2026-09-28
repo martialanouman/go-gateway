@@ -11,7 +11,7 @@ cd "$(dirname "$0")/../.."
 out=deploy/test/rendered
 mkdir -p "$out"
 scripts/render-manifests.sh "$VERSION" >"$out/base.yaml"
-kubectl kustomize deploy/test >"$out/all.yaml"
+kubectl kustomize deploy/test | sed "s#go-gateway/test-env:v0.0.0\$#go-gateway/test-env:$VERSION#" >"$out/all.yaml"
 all="$out/all.yaml"
 
 fail() { echo "check.sh: $*" >&2; exit 1; }
@@ -28,6 +28,12 @@ grep -q 'name: HTTP_ADMIN_TOKENS' "$all" || fail "admin-api-svc sans HTTP_ADMIN_
 ! grep -qE '^ +replicas: ([2-9]|[1-9][0-9]+)$' "$all" || fail "un Deployment garde plus d'une réplique"
 ! grep -qE '^ +cpu: ([1-9][0-9]*|[1-9][0-9]{2,}m)$' "$all" || fail "une requête CPU de production survit"
 grep -q 'gateway.test/phase: job' "$all" || fail "les Jobs ne portent pas leur phase"
+grep -q 'gateway.test/phase: seed$' "$all" || fail "pas de Job de seed"
+grep -q 'gateway.test/phase: smoke$' "$all" || fail "pas de Job de smoke"
+grep -q "go-gateway/test-env:$VERSION\$" "$all" || fail "l'image test-env ne porte pas la version déployée"
+cid=$(grep -A4 -- '- name: CONNECTOR_ID$' "$all")
+grep -q 'name: test-seed' <<<"$cid" || fail "CONNECTOR_ID ne vient pas de la ConfigMap test-seed"
+! grep -q 'value:' <<<"$cid" || fail "CONNECTOR_ID garde sa valeur de production à côté de valueFrom"
 
 for dep in postgres redis redpanda clickhouse rustfs smsc-simulator; do
   grep -q "^  name: $dep$" "$all" || fail "dépendance absente : $dep"
