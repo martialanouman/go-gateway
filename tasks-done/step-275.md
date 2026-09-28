@@ -1,6 +1,6 @@
 # step-275 — Environnement de test : seed du plan de contrôle et preuve bout-en-bout
 
-> **Jalon :** M12 · **Statut :** À FAIRE
+> **Jalon :** M12 · **Statut :** FAIT
 > **Dépend de :** l'environnement de test k3s (docs/superpowers/specs/2026-09-27-environnement-de-test-k3s-design.md) · **Bloque :** —
 
 ## Pourquoi cette fiche existe
@@ -18,9 +18,9 @@ traverse. Deux manques, reportés hors du premier livrable :
    configuration (`deploy/test/bootstrap-secrets.sh`) reprend celui de son propre `deploy/configmap.yaml`.
 
 ## Definition of Done
-- [ ] Seed idempotent par l'API Admin, rejouable après une remise à zéro du namespace.
-- [ ] `CONNECTOR_ID` de l'overlay égal à l'id du connecteur seedé.
-- [ ] Job `smoke` lancé par `gateway-deploy` en dernière phase ; le workflow échoue s'il échoue.
+- [x] Seed idempotent par l'API Admin, rejouable après une remise à zéro du namespace.
+- [x] `CONNECTOR_ID` de l'overlay égal à l'id du connecteur seedé.
+- [x] Job `smoke` lancé par `gateway-deploy` en dernière phase ; le workflow échoue s'il échoue.
 
 ## Design arrêté
 
