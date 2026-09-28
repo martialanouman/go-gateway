@@ -42,9 +42,16 @@ Arbitré par Fable le 28/09/2026 (six points), sans contradiction avec la spec.
 6. **`messages.js` gagne un override `DURATION`** : les profils sont figés à 60 s, la fenêtre mesurée
    doit faire ≥ 10 min.
 
-**Coupé par rapport à l'arbitrage (ponytail, déclaré) :** le second profil « facturation coupée » pour
-chiffrer l'étage crédit — on mesure le chemin de production seulement. À rajouter en step-409 si le
-goulot s'y trouve.
+**Révisé le 28/09/2026 après le premier run (le profil mono-client ne mesurait que deux plafonds par client).**
+`mt.inbound` est partitionné par compte (guide §4.1) : un compte = une partition = une voie du routeur,
+et le premier run a tout mis sur la partition 8 des 12. Chaque capture incrémente la ligne
+`control_plane.balance` du client : un client = une ligne verrouillée, 6-7 transactions en attente,
+captures au-delà de leurs 200 ms, pool à 369 `submit_sm/s`. Ce sont des plafonds **par client**, voulus
+par l'ordre par compte et consignés comme tels. Pour mesurer la passerelle, `seed-load` sème
+`LOAD_CUSTOMERS` clients (`load-00`…), chacun avec son sender ID, son compte `load`, sa facturation postpayée
+et sa clé ; k6 reçoit `API_KEYS` et donne à chaque VU la clé `__VU % n`. 24 clients : deux par partition
+en moyenne. Le second profil « facturation coupée » que j'avais retiré n'est plus nécessaire : la
+contention est attribuée par `pg_stat_activity`, pas par soustraction.
 
 **Pièges consignés d'avance.** (a) Le simulateur sert ~200 `submit_sm/s` par bind (latence fixe 5 ms,
 service sérialisé) et `seed` crée le connecteur à `bind_pool_size` 1 : sans levier, la campagne mesure
