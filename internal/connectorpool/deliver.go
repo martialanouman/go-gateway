@@ -1,6 +1,7 @@
 package connectorpool
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"strings"
@@ -85,7 +86,7 @@ type receipt struct {
 func parseReceipt(ds *smpp.DeliverSM) receipt {
 	var r receipt
 	if v, ok := ds.TLVs.Get(smpp.TagReceiptedMessageID); ok {
-		r.smscMsgID = string(v)
+		r.smscMsgID = string(bytes.TrimRight(v, "\x00"))
 	}
 	if v, ok := ds.TLVs.Get(smpp.TagMessageState); ok && len(v) == 1 {
 		r.state = v[0]

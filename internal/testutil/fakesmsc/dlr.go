@@ -32,7 +32,8 @@ func (s *Server) SendDLR(smscMsgID string, state DLRState) error {
 	body := &smpp.DeliverSM{}
 	body.ESMClass = smpp.ESMClassMCDeliveryReceipt
 	body.ShortMessage = []byte(fmt.Sprintf("id:%s stat:%s", smscMsgID, state.text))
-	body.TLVs.Set(smpp.TagReceiptedMessageID, []byte(smscMsgID))
+	// C-Octet String (SMPP v3.4 §5.3.2.12): a conforming SMSC sends the terminator, and so must the fake.
+	body.TLVs.Set(smpp.TagReceiptedMessageID, append([]byte(smscMsgID), 0))
 	body.TLVs.Set(smpp.TagMessageState, []byte{state.code})
 
 	pdu := smpp.PDU{Sequence: s.seq.Add(1), Body: body}

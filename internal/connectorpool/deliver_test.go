@@ -53,6 +53,18 @@ func TestParseReceiptPrefersTLVs(t *testing.T) {
 	}
 }
 
+// TestParseReceiptDropsTheCOctetStringTerminator: receipted_message_id is a C-Octet String (SMPP v3.4
+// §5.3.2.12), so a conforming SMSC sends it NUL-terminated. Kept, the NUL makes the id match no DLR
+// mapping and every receipt is dropped.
+func TestParseReceiptDropsTheCOctetStringTerminator(t *testing.T) {
+	ds := &smpp.DeliverSM{}
+	ds.TLVs.Set(smpp.TagReceiptedMessageID, []byte("6136-0001\x00"))
+
+	if r := parseReceipt(ds); r.smscMsgID != "6136-0001" {
+		t.Errorf("smscMsgID = %q, want 6136-0001 without its terminator", r.smscMsgID)
+	}
+}
+
 // TestParseReceiptFallsBackToText: with no TLVs, the id and stat come from the receipt text and state
 // stays zero.
 func TestParseReceiptFallsBackToText(t *testing.T) {

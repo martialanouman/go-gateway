@@ -26,7 +26,9 @@ const (
 	connectorPort   = 2775
 	deadline        = 3 * time.Minute
 	smokeRetry      = 2 * time.Second
-	dlrWait         = 60 * time.Second
+	// Below smpp-server's SMPP_IDLE_TIMEOUT (60s): the smoke sends nothing while it waits, and each
+	// resubmission is what keeps the session from being dropped as idle.
+	dlrWait = 30 * time.Second
 )
 
 func main() {
