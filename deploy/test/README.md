@@ -184,6 +184,36 @@ privé :
 
 ## 10. Ce qui n'y est pas
 
-Observabilité (collecteur OTel, alerting), sauvegardes, mesure de charge (step-280). Cet environnement
-prouve, via les Jobs `test-seed`/`smoke`, qu'un message traverse le pipeline bout en bout, pas qu'il
-tient la charge ni qu'il survit à une panne.
+Observabilité (collecteur OTel, alerting), sauvegardes. Cet environnement prouve, via les Jobs
+`test-seed`/`smoke`, qu'un message traverse le pipeline bout en bout, pas qu'il survit à une panne.
+La charge s'y mesure (§11), mais **pas de façon représentative** : un nœud de 8 vCPU porte tout, et
+le verdict NFR appartient à step-409.
+
+## 11. Campagne de charge (step-280)
+
+`deploy/test-load/run.sh`, depuis le poste de l'exploitant (accès root SSH). `VERSION` est le tag
+déployé (`v0.0.1-sha-<12 hex>`). **Aucun merge sur `main` pendant une campagne** : le déploiement
+suivant ramène l'overlay de test et ses réplicas uniques.
+
+Le premier déploiement qui pousse l'image `smsc-ceiling` crée son paquet GHCR **privé** : le passer en
+public (ou §9) avant `ceiling`, sinon le Job reste en `ImagePullBackOff`.
+
+```bash
+H=root@IP V=v0.0.1-sha-…
+deploy/test-load/run.sh $H apply $V         # rest-api, router, pool : 2 réplicas figés
+deploy/test-load/run.sh $H seed $V 0.2      # part portée 20 % ; refuse si une règle anti-spam
+                                            # duplicate/velocity couvre le compte
+deploy/test-load/run.sh $H ceiling $V       # plafond du simulateur, 10 → 80 binds
+deploy/test-load/run.sh $H k6 sustained off 10m
+deploy/test-load/run.sh $H k6 sustained on 10m
+deploy/test-load/run.sh $H k6 peak off 10m
+```
+
+`seed-load` bascule le client `test` en facturation postpayée sans plafond (le chemin de production,
+jamais bloquant) et porte le connecteur à 26 binds par pod (52 au total). Chaque `seed` émet une clé API
+neuve et révoque la précédente.
+
+**Un 202 ne prouve rien en aval** : `rest-api-svc` n'applique ni crédit ni anti-spam. Pour chaque run,
+relever côte à côte les 202 de k6, les `submit_sm` servis par le simulateur, les CDR, le lag des
+consumers (`rpk group describe`), `kubectl top pod` et `iostat` sur le nœud. Latence bout-en-bout :
+`e2e-budget` par `port-forward` sur le port 9090 d'un pod `connector-pool-svc`, via le tunnel du §8.

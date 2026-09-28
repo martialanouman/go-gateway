@@ -114,7 +114,8 @@ export const options = {
       executor: 'constant-arrival-rate',
       rate: profile.rate,
       timeUnit: '1s',
-      duration: profile.duration,
+      // DURATION overrides the profile's 60 s: the campaign's measured window is ten minutes (step-280).
+      duration: __ENV.DURATION || profile.duration,
       preAllocatedVUs: profile.preAllocatedVUs,
       maxVUs: profile.maxVUs,
       // A slow server must show up as latency, not as a truncated run.

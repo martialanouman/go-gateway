@@ -1,0 +1,28 @@
+# Campagne step-280 : l'overlay de test, plus les leviers figés de la campagne. Jamais `kubectl
+# scale` : une valeur qui ne vit pas dans un fichier ne se rejoue pas. Le prochain déploiement de main
+# ramène l'overlay de test — pas de merge pendant une campagne.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: gateway
+resources:
+  - ../test
+patches:
+  - target:
+      kind: Deployment
+      name: rest-api-svc|router-svc|connector-pool-svc
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 2
+  # min = max : avec les requests de 50m du VPS, un HPA CPU sature dès la première seconde et ne
+  # mesure rien.
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: rest-api-svc|router-svc|connector-pool-svc
+    patch: |
+      - op: replace
+        path: /spec/minReplicas
+        value: 2
+      - op: replace
+        path: /spec/maxReplicas
+        value: 2

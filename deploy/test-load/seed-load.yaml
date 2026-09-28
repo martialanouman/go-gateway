@@ -1,0 +1,33 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: seed-load
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 240
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: test-env
+          image: ghcr.io/martialanouman/go-gateway/test-env:@VERSION@
+          args: [seed-load]
+          env:
+            - { name: TLS_DIR, value: /etc/test-env/tls }
+            # 2 réplicas du pool × 26 = 52 binds : la cible de 10 400 submit_sm/s à ~200/s par bind.
+            - { name: LOAD_BIND_POOL_SIZE, value: "26" }
+            - { name: LOAD_PORTED_SHARE, value: "@PORTED_SHARE@" }
+            - name: HTTP_ADMIN_TOKENS
+              valueFrom: { secretKeyRef: { name: gateway-secrets, key: HTTP_ADMIN_TOKENS } }
+            - name: CONNECTOR_SYSTEM_ID
+              valueFrom: { secretKeyRef: { name: gateway-secrets, key: CONNECTOR_SYSTEM_ID } }
+            - name: CONNECTOR_PASSWORD
+              valueFrom: { secretKeyRef: { name: gateway-secrets, key: CONNECTOR_PASSWORD } }
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { memory: 64Mi }
+          volumeMounts:
+            - { name: tls, mountPath: /etc/test-env/tls, readOnly: true }
+      volumes:
+        - name: tls
+          secret: { secretName: operator-tls }

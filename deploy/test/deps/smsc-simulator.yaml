@@ -5,7 +5,7 @@ metadata:
   labels: {app.kubernetes.io/part-of: test-deps, gateway.test/phase: deps}
 spec:
   selector: {app: smsc-simulator}
-  ports: [{name: smpp, port: 2775}]
+  ports: [{name: smpp, port: 2775}, {name: metrics, port: 9000}]
 ---
 apiVersion: apps/v1
 kind: Deployment

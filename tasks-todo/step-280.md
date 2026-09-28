@@ -34,7 +34,7 @@ Arbitré par Fable le 28/09/2026 (six points), sans contradiction avec la spec.
    `bind_pool_size` retenu par le plafond ; route catch-all ; routes exactes à la part portée retenue.
    **Refuse de démarrer** si une règle anti-spam `duplicate`/`velocity` couvre le client : k6 répète un
    corps sur 10 000 destinations, le run serait faux en silence.
-5. **Leviers : un overlay `deploy/test/load/`** (base `../`) figé, jamais `kubectl scale` :
+5. **Leviers : un overlay `deploy/test-load/`** (base `../`) figé, jamais `kubectl scale` :
    `rest-api-svc`, `router-svc`, `connector-pool-svc` à 2 réplicas, HPA min = max (avec des requests à
    50 m l'HPA sature dès la première seconde et ne mesure rien), `CONNECTOR_BIND_POOL_SIZE` levé.
    Redpanda (`--smp=1`) et Redis (aucun `maxmemory`) restent tels quels et sont consignés.
@@ -64,7 +64,7 @@ bruit de ±30 % de l'hôte. Balayage complet à relancer, hôte au repos.
 ## Definition of Done
 - [ ] `TestPoolSubmitCeiling` rejoué en entier, hôte au repos, consigné ci-dessus
 - [ ] `test-env seed-load` livré, testé contre le faux admin, refus anti-spam compris
-- [ ] image `smsc-ceiling` publiée ; Jobs k6/ceiling et overlay `deploy/test/load/` versionnés ;
+- [ ] image `smsc-ceiling` publiée ; Jobs k6/ceiling et overlay `deploy/test-load/` versionnés ;
       `make test-env` vert
 - [ ] plafond du pair mesuré dans le cluster, nombre de binds et profil de latence cités
 - [ ] `sustained` et `peak`, `IDEMPOTENCY=off` et `on`, ≥ 10 min chacun ; par run : 202 k6,
