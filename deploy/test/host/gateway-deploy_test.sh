@@ -19,9 +19,17 @@ case "$*" in
   *"get job test-seed -o jsonpath="*) echo "Complete=True," ;;
   *"get job smoke -o jsonpath="*)
     if [[ -n ${FAIL_SMOKE:-} ]]; then echo "Failed=True,"; else echo "Complete=True,"; fi ;;
-  *"get pods -l job-name=test-seed --field-selector=status.phase=Succeeded -o jsonpath="*) echo test-seed-ok ;;
-  *"logs test-seed-ok"*)
+  # Le pod réussi du déploiement précédent peut survivre à la suppression de son Job : seul le plus
+  # récent porte l'id de ce seed.
+  *"get pods -l job-name=test-seed --field-selector=status.phase=Succeeded"*)
+    if [[ $* == *"--sort-by=.metadata.creationTimestamp"* && $* == *"{.items[-1:].metadata.name}"* ]]; then
+      echo test-seed-new
+    else
+      echo test-seed-old
+    fi ;;
+  *"logs test-seed-new"*)
     [[ -n ${NO_SEED_LINE:-} ]] || echo "connector_id=${SEED_ID:-11111111-1111-1111-1111-111111111111}" ;;
+  *"logs test-seed-old"*) echo "connector_id=22222222-2222-2222-2222-222222222222" ;;
   # Adresse heuristique (« un pod de ce Job », sans filtre Succeeded) : elle peut tomber sur un pod
   # échoué d'une tentative précédente. Toujours muette ici, pour prouver que gateway-deploy ne s'y fie
   # plus.
@@ -42,9 +50,10 @@ label_of() {
     *"phase=job"*|*"job migrate"*) echo job ;;
     *"!gateway.test/phase"*) echo app-apply ;;
     *"rollout status deployment.apps/router-svc"*) echo app-rollout ;;
-    *"phase=seed"*|*"job test-seed"*|*"job/test-seed"*|*"job-name=test-seed"*|*"test-seed-ok"*) echo seed ;;
+    *"phase=seed"*|*"job test-seed"*|*"job/test-seed"*|*"job-name=test-seed"*|*"logs test-seed-"*) echo seed ;;
     *"phase=smoke"*|*"job smoke"*) echo smoke ;;
     *"rollout restart"*) echo restart ;;
+    *"rollout status deployment/connector-pool-svc"*) echo rollout ;;
     *"configmap test-seed"*|*"apply -f -"*) echo seed ;;
     *) ;;
   esac
@@ -65,9 +74,11 @@ sequence_of() {
 export KUBECTL_LOG="$tmp/log" KUBECONFIG_LOG="$tmp/kubeconfig-log"
 echo 'kind: ConfigMap' | PATH="$tmp/bin:$PATH" "$here/gateway-deploy" >/dev/null
 seq=$(sequence_of "$KUBECTL_LOG")
-[[ $seq == "deps-apply deps-job job app-apply app-rollout seed restart smoke" ]] || fail "ordre violé : $seq -- log : $(cat "$KUBECTL_LOG")"
+[[ $seq == "deps-apply deps-job job app-apply app-rollout seed restart rollout smoke" ]] || fail "ordre violé : $seq -- log : $(cat "$KUBECTL_LOG")"
 [[ $(head -n1 "$KUBECONFIG_LOG") == */.kube/config ]] || fail "KUBECONFIG n'est pas exporté vers ~/.kube/config"
 grep -q 'rollout restart deployment/connector-pool-svc' "$KUBECTL_LOG" || fail "connector-pool-svc n'est pas redémarré"
+grep -q 'create configmap test-seed --from-literal=CONNECTOR_ID=11111111-1111-1111-1111-111111111111 ' "$KUBECTL_LOG" \
+  || fail "CONNECTOR_ID ne vient pas du pod de seed le plus récent -- log : $(cat "$KUBECTL_LOG")"
 
 : >"$KUBECTL_LOG"
 if echo 'kind: ConfigMap' | FAIL_JOB=1 PATH="$tmp/bin:$PATH" "$here/gateway-deploy" >/dev/null 2>&1; then
@@ -90,4 +101,10 @@ if echo 'kind: ConfigMap' | NO_SEED_LINE=1 PATH="$tmp/bin:$PATH" "$here/gateway-
   fail "l'absence de connector_id dans les logs du seed n'arrête pas le déploiement"
 fi
 ! grep -q 'configmap' "$KUBECTL_LOG" || fail "la configmap est écrite sans connector_id valide"
+
+: >"$KUBECTL_LOG"
+if echo 'kind: ConfigMap' | SEED_ID=pas-un-uuid PATH="$tmp/bin:$PATH" "$here/gateway-deploy" >/dev/null 2>&1; then
+  fail "un connector_id qui n'est pas un UUID n'arrête pas le déploiement"
+fi
+! grep -q 'configmap' "$KUBECTL_LOG" || fail "la configmap est écrite avec un connector_id invalide"
 echo "gateway-deploy_test: ok"

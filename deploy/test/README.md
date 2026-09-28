@@ -49,6 +49,15 @@ forcée** : la clé de CD ne peut exécuter que `/usr/local/bin/gateway-deploy` 
 l'étape précédente), rien d'autre. Notez la dernière ligne affichée — l'empreinte de l'hôte, nécessaire
 à l'étape suivante.
 
+**Mettre à jour `gateway-deploy`.** L'hôte n'exécute que la copie posée par `install.sh` ; le workflow
+ne la remplace jamais. Toute modification de `deploy/test/host/gateway-deploy` doit donc être réinstallée
+**avant** le merge qui la porte (le déploiement de ce merge tournerait sinon avec l'ancienne) :
+
+```bash
+scp deploy/test/host/gateway-deploy root@IP:/tmp/gateway-deploy \
+  && ssh root@IP install -m 755 /tmp/gateway-deploy /usr/local/bin/gateway-deploy
+```
+
 ## 4. Secrets GitHub (environnement `test`)
 
 Dans l'environnement GitHub `test` du dépôt :
@@ -102,6 +111,11 @@ peut pas encore les tirer. Avant le tout premier déploiement, dans l'ordre :
    **public**. Alternative sans rendre les paquets publics : §9 (`registries.yaml` avec un PAT
    `read:packages`), à poser dès l'installation de l'hôte.
 3. Relancer le workflow avec le même SHA — il retrouve les images déjà poussées.
+
+Un environnement déjà déployé avant step-275 n'a jamais tiré `test-env` : ce paquet, créé privé par le
+premier déploiement qui le pousse, doit passer en **public** (ou §9, `registries.yaml`) avant le
+déploiement qui lance les Jobs `test-seed`/`smoke` — sinon `ImagePullBackOff`, et le workflow échoue.
+Réinstaller aussi `gateway-deploy` (§3) avant ce merge.
 
 GitHub → Actions → **Deploy test** → *Run workflow*, avec le SHA complet (40 caractères) de `main` en
 entrée (`sha`).

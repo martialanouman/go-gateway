@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -19,10 +22,10 @@ type credentialSecret struct {
 	Secret string `json:"secret"`
 }
 
-// smoke binds as the smoke SMPP account, submits one message and waits for its own DLR. ctx carries
+// smoke binds as the smoke SMPP account, submits a message and waits for its DLR. ctx carries
 // the overall deadline; retry is the interval between two refused binds (rotation takes a moment to
-// reach session-manager).
-func smoke(ctx context.Context, a *admin, dial dialFunc, retry time.Duration) error {
+// reach session-manager); dlrWait bounds the wait for one submission's DLR before resubmitting.
+func smoke(ctx context.Context, a *admin, dial dialFunc, retry, dlrWait time.Duration) error {
 	accountID, err := findSmokeAccount(ctx, a)
 	if err != nil {
 		return err
@@ -38,11 +41,7 @@ func smoke(ctx context.Context, a *admin, dial dialFunc, retry time.Duration) er
 	}
 	defer func() { _ = nc.Close() }()
 
-	msgID, err := submitSmoke(nc)
-	if err != nil {
-		return err
-	}
-	return waitForDLR(ctx, nc, msgID)
+	return submitUntilDLR(ctx, nc, dlrWait)
 }
 
 // rotateSmokeSecret finds the smoke account's active smpp_bind credential and rotates it, so the
@@ -118,9 +117,45 @@ func bindWithRetry(ctx context.Context, dial dialFunc, secret string, retry time
 	}
 }
 
-// submitSmoke sends the smoke message and returns the message id the SMSC assigned it.
-func submitSmoke(nc net.Conn) (string, error) {
-	req := smpp.PDU{Sequence: 2, Body: &smpp.SubmitSM{SMFields: smpp.SMFields{
+// submitUntilDLR resubmits after each dlrWait without a DLR, until ctx is done: connector-pool-svc,
+// restarted onto a new CONNECTOR_ID, consumes mt.routed through a fresh group that starts at the
+// topic's end and can miss the first message. Any submitted message's DLR ends the test.
+func submitUntilDLR(ctx context.Context, nc net.Conn, dlrWait time.Duration) error {
+	deadline, hasDeadline := ctx.Deadline()
+	submitted := map[string]bool{}
+	seq := uint32(1)
+
+	for {
+		seq++
+		wait := time.Now().Add(dlrWait)
+		lastRound := hasDeadline && !deadline.After(wait)
+		if lastRound {
+			wait = deadline
+		}
+		if err := nc.SetDeadline(wait); err != nil {
+			return fmt.Errorf("échéance de connexion : %w", err)
+		}
+		if err := smpp.WritePDU(nc, smokeSubmit(seq)); err != nil {
+			return fmt.Errorf("écriture submit_sm : %w", err)
+		}
+
+		received, err := readUntilDLR(nc, submitted)
+		var netErr net.Error
+		switch {
+		case received:
+			seq++
+			_ = smpp.WritePDU(nc, smpp.PDU{Sequence: seq, Body: &smpp.Unbind{}})
+			return nil
+		case errors.As(err, &netErr) && netErr.Timeout() && !lastRound:
+			continue
+		default:
+			return fmt.Errorf("aucun DLR pour %s : %w", strings.Join(slices.Sorted(maps.Keys(submitted)), ", "), err)
+		}
+	}
+}
+
+func smokeSubmit(seq uint32) smpp.PDU {
+	return smpp.PDU{Sequence: seq, Body: &smpp.SubmitSM{SMFields: smpp.SMFields{
 		SourceAddrTON:      5,
 		SourceAddr:         senderAddr,
 		DestAddrTON:        1,
@@ -129,55 +164,38 @@ func submitSmoke(nc net.Conn) (string, error) {
 		RegisteredDelivery: smpp.RegisteredDeliveryReceipt,
 		ShortMessage:       []byte("step-275 smoke"),
 	}}}
-	if err := smpp.WritePDU(nc, req); err != nil {
-		return "", fmt.Errorf("écriture submit_sm : %w", err)
-	}
-	resp, err := smpp.ReadPDU(nc)
-	if err != nil {
-		return "", fmt.Errorf("lecture submit_sm_resp : %w", err)
-	}
-	body, ok := resp.Body.(*smpp.SubmitSMResp)
-	if !ok {
-		return "", fmt.Errorf("réponse au submit_sm : %T", resp.Body)
-	}
-	if resp.Status != smpp.StatusOK {
-		return "", fmt.Errorf("submit_sm refusé, command_status %#08x", resp.Status)
-	}
-	return body.MessageID, nil
 }
 
-// waitForDLR reads PDUs until it sees the deliver_sm carrying msgID's own DLR, answering
-// enquire_link and every deliver_sm along the way, then unbinds. A deadline with no matching DLR is
-// reported as an error naming the DLR, never as a bare read timeout.
-func waitForDLR(ctx context.Context, nc net.Conn, msgID string) error {
-	deadline, hasDeadline := ctx.Deadline()
-	want := "id:" + msgID + " "
-	seq := uint32(10)
-
+// readUntilDLR records each submit_sm_resp's message id in submitted and answers enquire_link and
+// deliver_sm, until a delivery receipt for one of submitted arrives (true) or a read fails.
+func readUntilDLR(nc net.Conn, submitted map[string]bool) (bool, error) {
 	for {
-		if hasDeadline {
-			if err := nc.SetDeadline(deadline); err != nil {
-				return fmt.Errorf("échéance de connexion : %w", err)
-			}
-		}
 		pdu, err := smpp.ReadPDU(nc)
 		if err != nil {
-			return fmt.Errorf("aucun DLR pour %s avant l'échéance", msgID)
+			return false, err
 		}
 
 		switch body := pdu.Body.(type) {
+		case *smpp.SubmitSMResp:
+			if pdu.Status != smpp.StatusOK {
+				return false, fmt.Errorf("submit_sm refusé, command_status %#08x", pdu.Status)
+			}
+			submitted[body.MessageID] = true
 		case *smpp.EnquireLink:
 			if err := smpp.WritePDU(nc, smpp.PDU{Sequence: pdu.Sequence, Body: &smpp.EnquireLinkResp{}}); err != nil {
-				return fmt.Errorf("écriture enquire_link_resp : %w", err)
+				return false, fmt.Errorf("écriture enquire_link_resp : %w", err)
 			}
 		case *smpp.DeliverSM:
 			if err := smpp.WritePDU(nc, smpp.PDU{Sequence: pdu.Sequence, Body: &smpp.DeliverSMResp{}}); err != nil {
-				return fmt.Errorf("écriture deliver_sm_resp : %w", err)
+				return false, fmt.Errorf("écriture deliver_sm_resp : %w", err)
 			}
-			if body.ESMClass&smpp.ESMClassMCDeliveryReceipt != 0 && strings.HasPrefix(string(body.ShortMessage), want) {
-				seq++
-				_ = smpp.WritePDU(nc, smpp.PDU{Sequence: seq, Body: &smpp.Unbind{}})
-				return nil
+			if body.ESMClass&smpp.ESMClassMCDeliveryReceipt == 0 {
+				continue
+			}
+			receipt, ok := strings.CutPrefix(string(body.ShortMessage), "id:")
+			msgID, _, _ := strings.Cut(receipt, " ")
+			if ok && submitted[msgID] {
+				return true, nil
 			}
 		}
 	}

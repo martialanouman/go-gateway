@@ -53,8 +53,11 @@ for r in $(k get deployment -l app.kubernetes.io/part-of=go-gateway -o name); do
 done
 
 run_jobs seed
-# backoffLimit laisse les pods des tentatives précédentes : seul celui qui a réussi porte l'id.
-pod=$(k get pods -l job-name=test-seed --field-selector=status.phase=Succeeded -o jsonpath='{.items[0].metadata.name}')
+# backoffLimit laisse les pods des tentatives précédentes : seul celui qui a réussi porte l'id. Le
+# pod réussi du déploiement précédent peut survivre (delete --wait attend le Job, pas ses pods) : le
+# plus récent.
+pod=$(k get pods -l job-name=test-seed --field-selector=status.phase=Succeeded \
+  --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1:].metadata.name}')
 id=""
 [[ -n $pod ]] && id=$(k logs "$pod" | sed -n 's/^connector_id=//p' | tail -n1)
 [[ $id =~ ^[0-9a-f-]{36}$ ]] || { echo "gateway-deploy: le seed n'a pas rendu de connector_id" >&2; exit 1; }

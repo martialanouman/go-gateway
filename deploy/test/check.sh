@@ -42,6 +42,9 @@ cid=$(awk '
   }
 ' "$all")
 grep -q 'name: test-seed' <<<"$cid" || fail "CONNECTOR_ID ne vient pas de la ConfigMap test-seed"
+# Sans optional, le premier déploiement (ConfigMap pas encore créée par le seed) bloque
+# connector-pool-svc en CreateContainerConfigError : le rollout attend 600 s et le seed ne part jamais.
+grep -q 'optional: true' <<<"$cid" || fail "CONNECTOR_ID sans optional: true : le premier déploiement bloquerait avant le seed"
 ! grep -q 'value:' <<<"$cid" || fail "CONNECTOR_ID garde sa valeur de production à côté de valueFrom"
 
 for dep in postgres redis redpanda clickhouse rustfs smsc-simulator; do

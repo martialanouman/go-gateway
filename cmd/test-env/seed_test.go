@@ -27,6 +27,19 @@ func TestSeedCreatesTheControlPlaneThenReplaysWithoutWriting(t *testing.T) {
 		t.Errorf("aucune credential smpp_bind %q active sur le compte %q", smokeSystemID, accountName)
 	}
 
+	wantConnector := fakeConnectorCreate{
+		Name: connectorName, Host: "smsc-simulator", Port: 2775, BindType: "trx", SystemID: "gateway", Password: "pw",
+	}
+	if f.lastConnector != wantConnector {
+		t.Errorf("connecteur créé %+v, want %+v", f.lastConnector, wantConnector)
+	}
+	if got := f.lastAccount; got.AllowedBindTypes != "trx" || got.MaxSessions != 2 {
+		t.Errorf("compte créé : allowed_bind_types %q, max_sessions %d, want trx, 2", got.AllowedBindTypes, got.MaxSessions)
+	}
+	if want := (fakeCredentialCreate{Type: "smpp_bind", SystemID: smokeSystemID}); f.lastCredential != want {
+		t.Errorf("credential créée %+v, want %+v", f.lastCredential, want)
+	}
+
 	before := f.writes
 	id2, err := seed(context.Background(), f.admin(), spec)
 	if err != nil {

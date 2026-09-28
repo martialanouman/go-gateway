@@ -53,6 +53,10 @@ type fakeAdmin struct {
 	accounts   []*fakeAccountRow
 	connectors []fakeConnectorRow
 	routes     []fakeRouteRow
+
+	lastAccount    fakeSmppAccountCreate
+	lastCredential fakeCredentialCreate
+	lastConnector  fakeConnectorCreate
 }
 
 type fakePageMeta struct {
@@ -339,6 +343,7 @@ func (f *fakeAdmin) createAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f.mu.Lock()
+	f.lastAccount = body
 	a := &fakeAccountRow{id: uuid.NewString(), customerID: body.CustomerID, name: body.Name}
 	f.accounts = append(f.accounts, a)
 	f.writes++
@@ -373,6 +378,7 @@ func (f *fakeAdmin) createCredential(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	f.lastCredential = body
 	c := &fakeCredentialRow{id: uuid.NewString(), systemID: body.SystemID, status: "active", secret: fakeBindPassword()}
 	a.credentials = append(a.credentials, c)
 	f.writes++
@@ -420,6 +426,7 @@ func (f *fakeAdmin) createConnector(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f.mu.Lock()
+	f.lastConnector = body
 	c := fakeConnectorRow{id: uuid.NewString(), name: body.Name}
 	f.connectors = append(f.connectors, c)
 	f.writes++

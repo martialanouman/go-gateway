@@ -26,6 +26,7 @@ const (
 	connectorPort   = 2775
 	deadline        = 3 * time.Minute
 	smokeRetry      = 2 * time.Second
+	dlrWait         = 60 * time.Second
 )
 
 func main() {
@@ -34,7 +35,6 @@ func main() {
 		fmt.Fprintln(os.Stderr, "usage: test-env seed|smoke")
 		os.Exit(2)
 	}
-	// run holds the ctx/defer scope: log.Fatal here, after it returns, would skip that defer.
 	cmd := os.Args[1]
 	if err := run(cmd); err != nil {
 		//nolint:gosec // G706: cmd is checked above to be exactly "seed" or "smoke", never raw input.
@@ -90,7 +90,7 @@ func run(cmd string) error {
 			MinVersion: tls.VersionTLS12,
 		}}
 		dial := func(ctx context.Context) (net.Conn, error) { return dialer.DialContext(ctx, "tcp", smppAddr) }
-		return smoke(ctx, a, dial, smokeRetry)
+		return smoke(ctx, a, dial, smokeRetry, dlrWait)
 	}
 	// unreachable: main validates cmd against exactly "seed"/"smoke" before calling run.
 	return fmt.Errorf("sous-commande %q inconnue", cmd)
