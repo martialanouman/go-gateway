@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -81,7 +82,7 @@ func run(cmd string) error {
 		}
 		fmt.Printf("connector_id=%s\n", id)
 		return nil
-	default:
+	case "smoke":
 		smppAddr := envOr("SMPP_ADDR", defaultSMPPAddr)
 		dialer := tls.Dialer{Config: &tls.Config{
 			RootCAs:    tlsCfg.RootCAs,
@@ -91,6 +92,8 @@ func run(cmd string) error {
 		dial := func(ctx context.Context) (net.Conn, error) { return dialer.DialContext(ctx, "tcp", smppAddr) }
 		return smoke(ctx, a, dial, smokeRetry)
 	}
+	// unreachable: main validates cmd against exactly "seed"/"smoke" before calling run.
+	return fmt.Errorf("sous-commande %q inconnue", cmd)
 }
 
 // tlsAssets is the mTLS material every subcommand's transport needs: a CA pool to verify the peer and
@@ -123,7 +126,7 @@ func adminToken(tokens string) (string, error) {
 	first, _, _ := strings.Cut(tokens, ",")
 	token, _, _ := strings.Cut(first, ":")
 	if token == "" {
-		return "", fmt.Errorf("aucun jeton dans %q", tokens)
+		return "", errors.New("aucun jeton avant le premier ':'")
 	}
 	return token, nil
 }
