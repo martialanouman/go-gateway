@@ -14,6 +14,14 @@ case "$*" in
   *"get job -l gateway.test/phase=job"*) echo migrate ;;
   *"get job rustfs-bucket -o jsonpath="*|*"get job migrate -o jsonpath="*)
     if [[ -n ${FAIL_JOB:-} ]]; then echo "Failed=True,"; else echo "Complete=True,"; fi ;;
+  *"get job -l gateway.test/phase=seed"*) echo test-seed ;;
+  *"get job -l gateway.test/phase=smoke"*) echo smoke ;;
+  *"get job test-seed -o jsonpath="*) echo "Complete=True," ;;
+  *"get job smoke -o jsonpath="*)
+    if [[ -n ${FAIL_SMOKE:-} ]]; then echo "Failed=True,"; else echo "Complete=True,"; fi ;;
+  *"logs job/test-seed"*)
+    [[ -n ${NO_SEED_LINE:-} ]] || echo "connector_id=${SEED_ID:-11111111-1111-1111-1111-111111111111}" ;;
+  *"get configmap test-seed"*) echo "${CURRENT_ID:-}" ;;
 esac
 exit 0
 EOF
@@ -29,6 +37,10 @@ label_of() {
     *"phase=job"*|*"job migrate"*) echo job ;;
     *"!gateway.test/phase"*) echo app-apply ;;
     *"rollout status deployment.apps/router-svc"*) echo app-rollout ;;
+    *"phase=seed"*|*"job test-seed"*|*"job/test-seed"*) echo seed ;;
+    *"phase=smoke"*|*"job smoke"*) echo smoke ;;
+    *"rollout restart"*) echo restart ;;
+    *"configmap test-seed"*|*"apply -f -"*) echo seed ;;
     *) ;;
   esac
 }
@@ -48,12 +60,29 @@ sequence_of() {
 export KUBECTL_LOG="$tmp/log" KUBECONFIG_LOG="$tmp/kubeconfig-log"
 echo 'kind: ConfigMap' | PATH="$tmp/bin:$PATH" "$here/gateway-deploy" >/dev/null
 seq=$(sequence_of "$KUBECTL_LOG")
-[[ $seq == "deps-apply deps-job job app-apply app-rollout" ]] || fail "ordre violé : $seq -- log : $(cat "$KUBECTL_LOG")"
+[[ $seq == "deps-apply deps-job job app-apply app-rollout seed restart smoke" ]] || fail "ordre violé : $seq -- log : $(cat "$KUBECTL_LOG")"
 [[ $(head -n1 "$KUBECONFIG_LOG") == */.kube/config ]] || fail "KUBECONFIG n'est pas exporté vers ~/.kube/config"
+grep -q 'rollout restart deployment/connector-pool-svc' "$KUBECTL_LOG" || fail "connector-pool-svc n'est pas redémarré"
 
 : >"$KUBECTL_LOG"
 if echo 'kind: ConfigMap' | FAIL_JOB=1 PATH="$tmp/bin:$PATH" "$here/gateway-deploy" >/dev/null 2>&1; then
   fail "un Job en échec n'arrête pas le déploiement"
 fi
 ! grep -q '!gateway.test/phase' "$KUBECTL_LOG" || fail "l'application est appliquée malgré un Job en échec"
+
+: >"$KUBECTL_LOG"
+echo 'kind: ConfigMap' | CURRENT_ID=11111111-1111-1111-1111-111111111111 PATH="$tmp/bin:$PATH" "$here/gateway-deploy" >/dev/null
+seq=$(sequence_of "$KUBECTL_LOG")
+[[ $seq == "deps-apply deps-job job app-apply app-rollout seed smoke" ]] || fail "id inchangé mais redémarrage : $seq -- log : $(cat "$KUBECTL_LOG")"
+
+: >"$KUBECTL_LOG"
+if echo 'kind: ConfigMap' | FAIL_SMOKE=1 PATH="$tmp/bin:$PATH" "$here/gateway-deploy" >/dev/null 2>&1; then
+  fail "un smoke test en échec n'arrête pas le déploiement"
+fi
+
+: >"$KUBECTL_LOG"
+if echo 'kind: ConfigMap' | NO_SEED_LINE=1 PATH="$tmp/bin:$PATH" "$here/gateway-deploy" >/dev/null 2>&1; then
+  fail "l'absence de connector_id dans les logs du seed n'arrête pas le déploiement"
+fi
+! grep -q 'configmap' "$KUBECTL_LOG" || fail "la configmap est écrite sans connector_id valide"
 echo "gateway-deploy_test: ok"

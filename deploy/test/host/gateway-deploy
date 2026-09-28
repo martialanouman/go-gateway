@@ -51,4 +51,16 @@ k apply -f "$work/all.yaml" -l '!gateway.test/phase'
 for r in $(k get deployment -l app.kubernetes.io/part-of=go-gateway -o name); do
   k rollout status "$r" --timeout=600s
 done
+
+run_jobs seed
+id=$(k logs job/test-seed | sed -n 's/^connector_id=//p' | tail -n1)
+[[ $id =~ ^[0-9a-f-]{36}$ ]] || { echo "gateway-deploy: le seed n'a pas rendu de connector_id" >&2; exit 1; }
+# Le connecteur est créé par le seed via l'API : son id est attribué par le serveur, l'overlay ne
+# peut pas le porter statiquement.
+if [[ $(k get configmap test-seed --ignore-not-found -o jsonpath='{.data.CONNECTOR_ID}') != "$id" ]]; then
+  k create configmap test-seed --from-literal=CONNECTOR_ID="$id" --dry-run=client -o yaml | k apply -f -
+  k rollout restart deployment/connector-pool-svc
+  k rollout status deployment/connector-pool-svc --timeout=600s
+fi
+run_jobs smoke
 echo "gateway-deploy: déployé"
