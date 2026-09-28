@@ -19,8 +19,13 @@ case "$*" in
   *"get job test-seed -o jsonpath="*) echo "Complete=True," ;;
   *"get job smoke -o jsonpath="*)
     if [[ -n ${FAIL_SMOKE:-} ]]; then echo "Failed=True,"; else echo "Complete=True,"; fi ;;
-  *"logs job/test-seed"*)
+  *"get pods -l job-name=test-seed --field-selector=status.phase=Succeeded -o jsonpath="*) echo test-seed-ok ;;
+  *"logs test-seed-ok"*)
     [[ -n ${NO_SEED_LINE:-} ]] || echo "connector_id=${SEED_ID:-11111111-1111-1111-1111-111111111111}" ;;
+  # Adresse heuristique (« un pod de ce Job », sans filtre Succeeded) : elle peut tomber sur un pod
+  # échoué d'une tentative précédente. Toujours muette ici, pour prouver que gateway-deploy ne s'y fie
+  # plus.
+  *"logs job/test-seed"*) : ;;
   *"get configmap test-seed"*) echo "${CURRENT_ID:-}" ;;
 esac
 exit 0
@@ -37,7 +42,7 @@ label_of() {
     *"phase=job"*|*"job migrate"*) echo job ;;
     *"!gateway.test/phase"*) echo app-apply ;;
     *"rollout status deployment.apps/router-svc"*) echo app-rollout ;;
-    *"phase=seed"*|*"job test-seed"*|*"job/test-seed"*) echo seed ;;
+    *"phase=seed"*|*"job test-seed"*|*"job/test-seed"*|*"job-name=test-seed"*|*"test-seed-ok"*) echo seed ;;
     *"phase=smoke"*|*"job smoke"*) echo smoke ;;
     *"rollout restart"*) echo restart ;;
     *"configmap test-seed"*|*"apply -f -"*) echo seed ;;
