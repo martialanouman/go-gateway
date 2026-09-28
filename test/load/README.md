@@ -47,7 +47,7 @@ make load BASE_URL=http://… IDEMPOTENCY=on             # même profil, chemin 
 make load-binds BINDS=200 ADDR=127.0.0.1:2775          # N binds SMPP concurrents
 ```
 
-Variables du script k6 : `PROFILE`, `BASE_URL`, `API_KEY`, `SENDER_ID`, `IDEMPOTENCY`, `DURATION` (durée k6, ex. `10m`, défaut : celle du profil).
+Variables du script k6 : `PROFILE`, `BASE_URL`, `API_KEY` (ou `API_KEYS`, séparées par des virgules : chaque VU prend `__VU % n`), `SENDER_ID`, `IDEMPOTENCY`, `DURATION` (durée k6, ex. `10m`, défaut : celle du profil).
 
 ## L'option `IDEMPOTENCY` (step-201, `D10`–`D12`)
 

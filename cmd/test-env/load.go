@@ -9,7 +9,10 @@ import (
 // k6Destinations mirrors msisdn() in test/load/k6/messages.js: +225070000 followed by four digits.
 const k6Destinations = 10000
 
+const loadAccountName = "load"
+
 type loadSpec struct {
+	Customers    int
 	BindPoolSize int
 	PortedShare  float64
 }
@@ -29,21 +32,58 @@ type exactRouteCreate struct {
 	Source     string `json:"source"`
 }
 
-// seedLoad turns the smoke tenant into the load campaign's tenant (step-280) and returns a new API key.
-func seedLoad(ctx context.Context, a *admin, c connectorSpec, spec loadSpec) (string, error) {
+// seedLoad prepares the load campaign's tenants (step-280) and returns one fresh API key per customer.
+// mt.inbound is keyed by account and every capture updates its customer's balance row, so a single
+// tenant measures one partition and one locked row, not the gateway.
+func seedLoad(ctx context.Context, a *admin, c connectorSpec, spec loadSpec) ([]string, error) {
 	connectorID, err := seed(ctx, a, c)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	customerID, accountID, err := findSmokeAccount(ctx, a)
+	if err := a.do(ctx, http.MethodPatch, "/connectors/"+connectorID+"/bind-pool", map[string]int{"bind_pool_size": spec.BindPoolSize}, nil); err != nil {
+		return nil, fmt.Errorf("bind_pool_size : %w", err)
+	}
+	// Opt-in (§6.13), and the control plane overrides CONNECTOR_AUTO_RECONNECT: without it the first peer
+	// reset parks the connector until a manual rebind, and the run stops traversing.
+	if err := a.do(ctx, http.MethodPatch, "/connectors/"+connectorID+"/reconnect-policy", map[string]bool{"auto_reconnect_enabled": true}, nil); err != nil {
+		return nil, fmt.Errorf("auto-reconnexion : %w", err)
+	}
+	if ported := int(spec.PortedShare * k6Destinations); ported > 0 {
+		rows := make([]exactRouteCreate, ported)
+		for n := range rows {
+			rows[n] = exactRouteCreate{MSISDN: fmt.Sprintf("+225070000%04d", n), TargetType: "connector", TargetID: connectorID, Source: "mnp_import"}
+		}
+		body := map[string]any{"source": "mnp_import", "rows": rows}
+		if err := a.do(ctx, http.MethodPost, "/exact-routes/import", body, nil); err != nil {
+			return nil, fmt.Errorf("import des routes exactes : %w", err)
+		}
+	}
+
+	keys := make([]string, spec.Customers)
+	for i := range keys {
+		name := fmt.Sprintf("load-%02d", i)
+		if keys[i], err = seedLoadCustomer(ctx, a, name); err != nil {
+			return nil, fmt.Errorf("client %q : %w", name, err)
+		}
+	}
+	return keys, nil
+}
+
+func seedLoadCustomer(ctx context.Context, a *admin, name string) (string, error) {
+	customerID, err := findOrCreateCustomer(ctx, a, name)
 	if err != nil {
 		return "", err
 	}
-
+	if err := ensureActiveSenderID(ctx, a, customerID, senderAddr); err != nil {
+		return "", fmt.Errorf("sender ID %q : %w", senderAddr, err)
+	}
+	accountID, err := findOrCreateAccount(ctx, a, customerID, loadAccountName)
+	if err != nil {
+		return "", fmt.Errorf("compte %q : %w", loadAccountName, err)
+	}
 	if err := refuseRunFlaggingRules(ctx, a, customerID, accountID); err != nil {
 		return "", err
 	}
-
 	// Postpaid before enabling: in the other order, a failed second PATCH leaves a strict prepaid
 	// customer that blocks every message. credit_limit is left alone — a PATCH null does not clear it.
 	postpaidSoft := map[string]any{"billing_mode": "postpaid", "credit_limit_is_hard": false}
@@ -53,27 +93,6 @@ func seedLoad(ctx context.Context, a *admin, c connectorSpec, spec loadSpec) (st
 	if err := a.do(ctx, http.MethodPatch, "/customers/"+customerID, map[string]any{"billing_enabled": true}, nil); err != nil {
 		return "", fmt.Errorf("activation de la facturation : %w", err)
 	}
-
-	if err := a.do(ctx, http.MethodPatch, "/connectors/"+connectorID+"/bind-pool", map[string]int{"bind_pool_size": spec.BindPoolSize}, nil); err != nil {
-		return "", fmt.Errorf("bind_pool_size : %w", err)
-	}
-	// Opt-in (§6.13), and the control plane overrides CONNECTOR_AUTO_RECONNECT: without it the first peer
-	// reset parks the connector until a manual rebind, and the run stops traversing.
-	if err := a.do(ctx, http.MethodPatch, "/connectors/"+connectorID+"/reconnect-policy", map[string]bool{"auto_reconnect_enabled": true}, nil); err != nil {
-		return "", fmt.Errorf("auto-reconnexion : %w", err)
-	}
-
-	if ported := int(spec.PortedShare * k6Destinations); ported > 0 {
-		rows := make([]exactRouteCreate, ported)
-		for n := range rows {
-			rows[n] = exactRouteCreate{MSISDN: fmt.Sprintf("+225070000%04d", n), TargetType: "connector", TargetID: connectorID, Source: "mnp_import"}
-		}
-		body := map[string]any{"source": "mnp_import", "rows": rows}
-		if err := a.do(ctx, http.MethodPost, "/exact-routes/import", body, nil); err != nil {
-			return "", fmt.Errorf("import des routes exactes : %w", err)
-		}
-	}
-
 	return freshAPIKey(ctx, a, accountID)
 }
 
