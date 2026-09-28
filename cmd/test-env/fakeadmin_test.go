@@ -87,7 +87,7 @@ type fakeSenderIDCreate struct {
 	Address string `json:"address"`
 }
 
-type fakeSenderIDUpdate struct {
+type fakeStatusUpdate struct {
 	Status string `json:"status"`
 }
 
@@ -351,7 +351,7 @@ func (f *fakeAdmin) createSenderID(w http.ResponseWriter, r *http.Request) {
 }
 
 func (f *fakeAdmin) updateSenderID(w http.ResponseWriter, r *http.Request) {
-	body, ok := decodeFakeBody[fakeSenderIDUpdate](w, r)
+	body, ok := decodeFakeBody[fakeStatusUpdate](w, r)
 	if !ok {
 		return
 	}
@@ -476,7 +476,7 @@ func (f *fakeAdmin) rotateCredential(w http.ResponseWriter, r *http.Request) {
 }
 
 func (f *fakeAdmin) updateCredentialStatus(w http.ResponseWriter, r *http.Request) {
-	body, ok := decodeFakeBody[fakeSenderIDUpdate](w, r)
+	body, ok := decodeFakeBody[fakeStatusUpdate](w, r)
 	if !ok {
 		return
 	}

@@ -35,8 +35,9 @@ Arbitré par Fable le 28/09/2026 (six points), sans contradiction avec la spec.
    **Refuse de démarrer** si une règle anti-spam `duplicate`/`velocity` couvre le client : k6 répète un
    corps sur 10 000 destinations, le run serait faux en silence.
 5. **Leviers : `run.sh apply` les patche**, valeurs versionnées dans le script, jamais `kubectl scale` :
-   `rest-api-svc`, `router-svc`, `connector-pool-svc` à 2 réplicas, HPA min = max (avec des requests à
-   50 m l'HPA sature dès la première seconde et ne mesure rien), `CONNECTOR_BIND_POOL_SIZE` levé.
+   `rest-api-svc`, `router-svc`, `connector-pool-svc` à 2 réplicas par HPA min = max (avec des requests à
+   50 m l'HPA sature dès la première seconde et ne mesure rien). `bind_pool_size` passe par l'Admin
+   (`seed-load`), que le pool relit avant chaque connexion ; `CONNECTOR_BIND_POOL_SIZE` reste à 2.
    Redpanda (`--smp=1`) et Redis (aucun `maxmemory`) restent tels quels et sont consignés.
 6. **`messages.js` gagne un override `DURATION`** : les profils sont figés à 60 s, la fenêtre mesurée
    doit faire ≥ 10 min.

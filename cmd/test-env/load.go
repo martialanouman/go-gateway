@@ -106,14 +106,15 @@ func freshAPIKey(ctx context.Context, a *admin, accountID string) (string, error
 		if c.Type != "api_key" {
 			continue
 		}
+		// Rotate before reactivating: the other order would briefly revive the old secret.
 		path := "/smpp-accounts/" + accountID + "/credentials/" + c.ID
+		if err := a.do(ctx, http.MethodPost, path+"/rotate", nil, &minted); err != nil {
+			return "", fmt.Errorf("rotation de la clé %s : %w", c.ID, err)
+		}
 		if c.Status != "active" {
 			if err := a.do(ctx, http.MethodPatch, path, map[string]string{"status": "active"}, nil); err != nil {
 				return "", fmt.Errorf("réactivation de la clé %s : %w", c.ID, err)
 			}
-		}
-		if err := a.do(ctx, http.MethodPost, path+"/rotate", nil, &minted); err != nil {
-			return "", fmt.Errorf("rotation de la clé %s : %w", c.ID, err)
 		}
 		return minted.Secret, nil
 	}
