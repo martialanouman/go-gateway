@@ -200,7 +200,7 @@ public (ou §9) avant `ceiling`, sinon le Job reste en `ImagePullBackOff`.
 
 ```bash
 H=root@IP V=v0.0.1-sha-…
-deploy/test-load/run.sh $H apply $V         # rest-api, router, pool : 2 réplicas figés
+deploy/test-load/run.sh $H apply            # rest-api, router, pool : 2 réplicas figés
 deploy/test-load/run.sh $H seed $V 0.2      # part portée 20 % ; refuse si une règle anti-spam
                                             # duplicate/velocity couvre le compte
 deploy/test-load/run.sh $H ceiling $V       # plafond du simulateur, 10 → 80 binds
@@ -209,9 +209,9 @@ deploy/test-load/run.sh $H k6 sustained on 10m
 deploy/test-load/run.sh $H k6 peak off 10m
 ```
 
-`seed-load` bascule le client `test` en facturation postpayée sans plafond (le chemin de production,
-jamais bloquant) et porte le connecteur à 26 binds par pod (52 au total). Chaque `seed` émet une clé API
-neuve et révoque la précédente.
+`seed-load` bascule le client `test` en facturation postpayée à plafond non bloquant (le chemin de production,
+jamais bloquant) et lève le `bind_pool_size` du connecteur (`seed-load.yaml`). Chaque `seed` émet une clé API
+neuve (rotation de la précédente).
 
 **Un 202 ne prouve rien en aval** : `rest-api-svc` n'applique ni crédit ni anti-spam. Pour chaque run,
 relever côte à côte les 202 de k6, les `submit_sm` servis par le simulateur, les CDR, le lag des

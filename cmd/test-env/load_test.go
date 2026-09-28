@@ -19,8 +19,8 @@ func TestSeedLoadPreparesTheProductionPathAndHandsOutAFreshKey(t *testing.T) {
 		t.Fatalf("premier seed-load : %v", err)
 	}
 	customerID := f.customerID(customerName)
-	if b := f.billing[customerID]; !b.enabled || b.mode != "postpaid" || b.creditLimit != nil {
-		t.Errorf("facturation %+v, want activée, postpaid, sans plafond", b)
+	if b := f.billing[customerID]; !b.enabled || b.mode != "postpaid" || b.hard == nil || *b.hard {
+		t.Errorf("facturation %+v, want activée, postpaid, plafond non bloquant", b)
 	}
 	if got := f.bindPoolSize(connectorName); got != 26 {
 		t.Errorf("bind_pool_size %d, want 26", got)
@@ -44,10 +44,26 @@ func TestSeedLoadPreparesTheProductionPathAndHandsOutAFreshKey(t *testing.T) {
 		t.Errorf("clés %q puis %q, want deux clés distinctes", key1, key2)
 	}
 	if got := f.activeAPIKeys(accountName); got != 1 {
-		t.Errorf("%d clés api_key actives après rejeu, want 1 (l'ancienne révoquée)", got)
+		t.Errorf("%d clés api_key actives après rejeu, want 1", got)
 	}
 	if !f.hasActiveCredential(accountName, smokeSystemID) {
 		t.Errorf("la credential smpp_bind %q du smoke a été révoquée", smokeSystemID)
+	}
+}
+
+func TestSeedLoadRevivesARevokedKey(t *testing.T) {
+	f := newFakeAdmin(t)
+	if _, err := seedLoad(context.Background(), f.admin(), loadConnector, loadSpec{BindPoolSize: 1}); err != nil {
+		t.Fatal(err)
+	}
+	f.revokeAPIKey(accountName)
+
+	key, err := seedLoad(context.Background(), f.admin(), loadConnector, loadSpec{BindPoolSize: 1})
+	if err != nil {
+		t.Fatalf("seed-load après révocation : %v", err)
+	}
+	if key == "" || f.activeAPIKeys(accountName) != 1 {
+		t.Errorf("clé %q, %d clés actives, want une clé active", key, f.activeAPIKeys(accountName))
 	}
 }
 
@@ -77,7 +93,7 @@ func TestSeedLoadRefusesAnAntispamRuleThatWouldFlagTheRun(t *testing.T) {
 			if _, err := seed(context.Background(), f.admin(), loadConnector); err != nil {
 				t.Fatal(err)
 			}
-			rule := fakeAntispamRule{ID: uuid.NewString(), RuleType: tc.ruleType, Scope: tc.scope, Action: "block", Status: tc.status}
+			rule := fakeAntispamRule{ID: uuid.NewString(), RuleType: tc.ruleType, Scope: tc.scope, Status: tc.status}
 			if tc.scope != "global" {
 				other := uuid.NewString()
 				if tc.scoped {

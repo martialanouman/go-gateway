@@ -14,7 +14,10 @@ spec:
           args: [run, /scripts/messages.js]
           env:
             # En direct, sans Traefik ni Cloudflare : le budget est l'ingestion, pas l'Internet.
-            - { name: BASE_URL, value: "http://rest-api-svc:8080" }
+            # rest-api-svc sert en TLS ; la vérification est coupée plutôt que de monter le Secret
+            # rest-api-svc-tls, qui porte aussi la clé privée du service.
+            - { name: BASE_URL, value: "https://rest-api-svc:8080" }
+            - { name: K6_INSECURE_SKIP_TLS_VERIFY, value: "true" }
             - { name: SENDER_ID, value: TEST }
             - { name: PROFILE, value: "@PROFILE@" }
             - { name: IDEMPOTENCY, value: "@IDEMPOTENCY@" }

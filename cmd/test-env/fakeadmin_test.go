@@ -120,14 +120,14 @@ type fakeCustomerUpdate struct {
 }
 
 type fakeBillingUpdate struct {
-	BillingMode string `json:"billing_mode"`
-	CreditLimit *int   `json:"credit_limit"`
+	BillingMode       string `json:"billing_mode"`
+	CreditLimitIsHard *bool  `json:"credit_limit_is_hard"`
 }
 
 type fakeBilling struct {
-	enabled     bool
-	mode        string
-	creditLimit *int
+	enabled bool
+	mode    string
+	hard    *bool
 }
 
 type fakeBindPoolUpdate struct {
@@ -139,7 +139,6 @@ type fakeAntispamRule struct {
 	RuleType string  `json:"rule_type"`
 	Scope    string  `json:"scope"`
 	ScopeID  *string `json:"scope_id"`
-	Action   string  `json:"action"`
 	Status   string  `json:"status"`
 }
 
@@ -215,7 +214,7 @@ func newFakeAdmin(t *testing.T) *fakeAdmin {
 	mux.HandleFunc("POST /v1/admin/smpp-accounts/{id}/credentials/{cid}/rotate", f.rotateCredential)
 	mux.HandleFunc("GET /v1/admin/connectors", f.listConnectors)
 	mux.HandleFunc("POST /v1/admin/connectors", f.createConnector)
-	mux.HandleFunc("DELETE /v1/admin/smpp-accounts/{id}/credentials/{cid}", f.revokeCredential)
+	mux.HandleFunc("PATCH /v1/admin/smpp-accounts/{id}/credentials/{cid}", f.updateCredentialStatus)
 	mux.HandleFunc("PATCH /v1/admin/customers/{id}", f.updateCustomer)
 	mux.HandleFunc("PATCH /v1/admin/customers/{id}/billing", f.updateBilling)
 	mux.HandleFunc("PATCH /v1/admin/connectors/{id}/bind-pool", f.setBindPool)
@@ -438,6 +437,13 @@ func (f *fakeAdmin) createCredential(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"code":"validation_error","message":"system_id requis pour smpp_bind seulement"}`, http.StatusUnprocessableEntity)
 		return
 	}
+	for _, existing := range a.credentials {
+		if existing.typ == body.Type {
+			// credentials_one_per_type_uq: a revoked row keeps its slot (internal/storage/postgres/credentials.go).
+			http.Error(w, `{"code":"conflict","message":"type déjà présent sur le compte"}`, http.StatusConflict)
+			return
+		}
+	}
 	c := &fakeCredentialRow{id: uuid.NewString(), typ: body.Type, systemID: systemID, status: "active", secret: fakeBindPassword()}
 	a.credentials = append(a.credentials, c)
 	f.writes++
@@ -469,7 +475,11 @@ func (f *fakeAdmin) rotateCredential(w http.ResponseWriter, r *http.Request) {
 	http.NotFound(w, r)
 }
 
-func (f *fakeAdmin) revokeCredential(w http.ResponseWriter, r *http.Request) {
+func (f *fakeAdmin) updateCredentialStatus(w http.ResponseWriter, r *http.Request) {
+	body, ok := decodeFakeBody[fakeSenderIDUpdate](w, r)
+	if !ok {
+		return
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	a := f.findAccount(r.PathValue("id"))
@@ -479,9 +489,9 @@ func (f *fakeAdmin) revokeCredential(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, c := range a.credentials {
 		if c.id == r.PathValue("cid") {
-			c.status = "revoked"
+			c.status = body.Status
 			f.writes++
-			w.WriteHeader(http.StatusNoContent)
+			writeFakeJSON(w, http.StatusOK, fakeCredentialResp{ID: c.id, Type: c.typ, SystemID: c.systemID, Status: c.status})
 			return
 		}
 	}
@@ -522,7 +532,7 @@ func (f *fakeAdmin) updateBilling(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	b := f.billing[c.id]
-	b.mode, b.creditLimit = body.BillingMode, body.CreditLimit
+	b.mode, b.hard = body.BillingMode, body.CreditLimitIsHard
 	f.billing[c.id] = b
 	f.writes++
 	writeFakeJSON(w, http.StatusOK, map[string]any{"customer_id": c.id})
@@ -531,10 +541,6 @@ func (f *fakeAdmin) updateBilling(w http.ResponseWriter, r *http.Request) {
 func (f *fakeAdmin) setBindPool(w http.ResponseWriter, r *http.Request) {
 	body, ok := decodeFakeBody[fakeBindPoolUpdate](w, r)
 	if !ok {
-		return
-	}
-	if body.BindPoolSize < 1 || body.BindPoolSize > 32 {
-		http.Error(w, `{"code":"validation_error","message":"bind_pool_size hors [1, 32]"}`, http.StatusUnprocessableEntity)
 		return
 	}
 	f.mu.Lock()
@@ -559,10 +565,6 @@ func (f *fakeAdmin) listAntispamRules(w http.ResponseWriter, _ *http.Request) {
 func (f *fakeAdmin) importExactRoutes(w http.ResponseWriter, r *http.Request) {
 	body, ok := decodeFakeBody[fakeExactRouteImport](w, r)
 	if !ok {
-		return
-	}
-	if len(body.Rows) > 10000 {
-		http.Error(w, `{"code":"validation_error","message":"plus de 10000 lignes"}`, http.StatusUnprocessableEntity)
 		return
 	}
 	f.mu.Lock()
@@ -737,6 +739,18 @@ func (f *fakeAdmin) bindPoolSize(name string) int {
 		}
 	}
 	return 0
+}
+
+func (f *fakeAdmin) revokeAPIKey(accountName string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, a := range f.accounts {
+		for _, c := range a.credentials {
+			if a.name == accountName && c.typ == "api_key" {
+				c.status = "revoked"
+			}
+		}
+	}
 }
 
 func (f *fakeAdmin) activeAPIKeys(accountName string) int {

@@ -70,7 +70,7 @@ func TestFindSmokeAccountReturnsTheAccountSeedCreated(t *testing.T) {
 	if _, err := seed(context.Background(), f.admin(), spec); err != nil {
 		t.Fatal(err)
 	}
-	accountID, err := findSmokeAccount(context.Background(), f.admin())
+	_, accountID, err := findSmokeAccount(context.Background(), f.admin())
 	if err != nil {
 		t.Fatalf("findSmokeAccount : %v", err)
 	}
@@ -81,7 +81,7 @@ func TestFindSmokeAccountReturnsTheAccountSeedCreated(t *testing.T) {
 
 func TestFindSmokeAccountFailsWithoutTheCustomer(t *testing.T) {
 	f := newFakeAdmin(t)
-	if _, err := findSmokeAccount(context.Background(), f.admin()); err == nil {
+	if _, _, err := findSmokeAccount(context.Background(), f.admin()); err == nil {
 		t.Fatal("err = nil, want a not-found error")
 	}
 }

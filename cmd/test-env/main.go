@@ -40,7 +40,7 @@ func main() {
 	}
 	cmd := os.Args[1]
 	if err := run(cmd); err != nil {
-		//nolint:gosec // G706: cmd is checked above against the three subcommands, never raw input.
+		//nolint:gosec // G706: cmd is checked above against the subcommand list, never raw input.
 		log.Fatalf("%s : %v", cmd, err)
 	}
 }
@@ -88,8 +88,9 @@ func run(cmd string) error {
 			return fmt.Errorf("LOAD_BIND_POOL_SIZE : %w", err)
 		}
 		share, err := strconv.ParseFloat(mustEnv("LOAD_PORTED_SHARE"), 64)
-		if err != nil || share < 0 || share > 1 {
-			return fmt.Errorf("LOAD_PORTED_SHARE %q : une part dans [0, 1]", os.Getenv("LOAD_PORTED_SHARE"))
+		// 0.8 : au-delà, l'import dépasse le corps de 1 MiB que huma accepte par défaut.
+		if err != nil || share < 0 || share > 0.8 {
+			return fmt.Errorf("LOAD_PORTED_SHARE %q : une part dans [0, 0.8]", os.Getenv("LOAD_PORTED_SHARE"))
 		}
 		key, err := seedLoad(ctx, a, connector(), loadSpec{BindPoolSize: bindPool, PortedShare: share})
 		if err != nil {
@@ -113,7 +114,7 @@ func run(cmd string) error {
 		dial := func(ctx context.Context) (net.Conn, error) { return dialer.DialContext(ctx, "tcp", smppAddr) }
 		return smoke(ctx, a, dial, smokeRetry, dlrWait)
 	}
-	// unreachable: main validates cmd against its three subcommands before calling run.
+	// unreachable: main validates cmd against the subcommand list before calling run.
 	return fmt.Errorf("sous-commande %q inconnue", cmd)
 }
 

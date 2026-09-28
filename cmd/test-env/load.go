@@ -35,25 +35,23 @@ func seedLoad(ctx context.Context, a *admin, c connectorSpec, spec loadSpec) (st
 	if err != nil {
 		return "", err
 	}
-	customerID, err := findCustomerID(ctx, a, customerName)
+	customerID, accountID, err := findSmokeAccount(ctx, a)
 	if err != nil {
-		return "", fmt.Errorf("client %q : %w", customerName, err)
-	}
-	accountID, err := findAccountID(ctx, a, customerID, accountName)
-	if err != nil {
-		return "", fmt.Errorf("compte %q : %w", accountName, err)
+		return "", err
 	}
 
 	if err := refuseRunFlaggingRules(ctx, a, customerID, accountID); err != nil {
 		return "", err
 	}
 
+	// Postpaid before enabling: in the other order, a failed second PATCH leaves a strict prepaid
+	// customer that blocks every message. credit_limit is left alone — a PATCH null does not clear it.
+	postpaidSoft := map[string]any{"billing_mode": "postpaid", "credit_limit_is_hard": false}
+	if err := a.do(ctx, http.MethodPatch, "/customers/"+customerID+"/billing", postpaidSoft, nil); err != nil {
+		return "", fmt.Errorf("mode postpayé : %w", err)
+	}
 	if err := a.do(ctx, http.MethodPatch, "/customers/"+customerID, map[string]any{"billing_enabled": true}, nil); err != nil {
 		return "", fmt.Errorf("activation de la facturation : %w", err)
-	}
-	postpaidNoLimit := map[string]any{"billing_mode": "postpaid", "credit_limit": nil}
-	if err := a.do(ctx, http.MethodPatch, "/customers/"+customerID+"/billing", postpaidNoLimit, nil); err != nil {
-		return "", fmt.Errorf("mode postpayé : %w", err)
 	}
 
 	if err := a.do(ctx, http.MethodPatch, "/connectors/"+connectorID+"/bind-pool", map[string]int{"bind_pool_size": spec.BindPoolSize}, nil); err != nil {
@@ -94,23 +92,33 @@ func refuseRunFlaggingRules(ctx context.Context, a *admin, customerID, accountID
 	return nil
 }
 
+// freshAPIKey rotates the account's api_key: a revoked row keeps its (account, type) slot, so creating
+// a second one conflicts.
 func freshAPIKey(ctx context.Context, a *admin, accountID string) (string, error) {
 	var creds []credential
 	if err := a.do(ctx, http.MethodGet, "/smpp-accounts/"+accountID+"/credentials", nil, &creds); err != nil {
 		return "", err
 	}
-	for _, c := range creds {
-		if c.Type == "api_key" && c.Status == "active" {
-			if err := a.do(ctx, http.MethodDelete, "/smpp-accounts/"+accountID+"/credentials/"+c.ID, nil, nil); err != nil {
-				return "", fmt.Errorf("révocation de la clé %s : %w", c.ID, err)
-			}
-		}
-	}
-	var created struct {
+	var minted struct {
 		Secret string `json:"secret"`
 	}
-	if err := a.do(ctx, http.MethodPost, "/smpp-accounts/"+accountID+"/credentials", map[string]string{"type": "api_key"}, &created); err != nil {
+	for _, c := range creds {
+		if c.Type != "api_key" {
+			continue
+		}
+		path := "/smpp-accounts/" + accountID + "/credentials/" + c.ID
+		if c.Status != "active" {
+			if err := a.do(ctx, http.MethodPatch, path, map[string]string{"status": "active"}, nil); err != nil {
+				return "", fmt.Errorf("réactivation de la clé %s : %w", c.ID, err)
+			}
+		}
+		if err := a.do(ctx, http.MethodPost, path+"/rotate", nil, &minted); err != nil {
+			return "", fmt.Errorf("rotation de la clé %s : %w", c.ID, err)
+		}
+		return minted.Secret, nil
+	}
+	if err := a.do(ctx, http.MethodPost, "/smpp-accounts/"+accountID+"/credentials", map[string]string{"type": "api_key"}, &minted); err != nil {
 		return "", fmt.Errorf("création de la clé : %w", err)
 	}
-	return created.Secret, nil
+	return minted.Secret, nil
 }

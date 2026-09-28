@@ -28,13 +28,13 @@ Arbitré par Fable le 28/09/2026 (six points), sans contradiction avec la spec.
 3. **`e2e-budget` depuis le poste**, `port-forward` sur le port ops du pod pool, `-connector` du compte
    de charge. Deux scrapes, pas de débit : le tunnel n'y coûte rien.
 4. **`test-env seed-load`**, sous-commande lancée par la campagne seule (pas à chaque déploiement : la
-   clé API n'est lisible qu'à la création). Client `billing_enabled=true`, `postpaid`, `credit_limit`
-   nul (chemin de facturation de production, jamais bloquant) ; sender ID actif ; comptes REST + clé
-   `api_key` neuve à chaque run (l'ancienne révoquée) imprimée `API_KEY=…` ; connecteur au
+   clé API n'est lisible qu'à la création). Client `billing_enabled=true`, `postpaid`, `credit_limit_is_hard`
+   faux (chemin de facturation de production, jamais bloquant) ; sender ID actif ; comptes REST + clé
+   `api_key` tournée à chaque run (réactivée si révoquée) imprimée `API_KEY=…` ; connecteur au
    `bind_pool_size` retenu par le plafond ; route catch-all ; routes exactes à la part portée retenue.
    **Refuse de démarrer** si une règle anti-spam `duplicate`/`velocity` couvre le client : k6 répète un
    corps sur 10 000 destinations, le run serait faux en silence.
-5. **Leviers : un overlay `deploy/test-load/`** (base `../`) figé, jamais `kubectl scale` :
+5. **Leviers : `run.sh apply` les patche**, valeurs versionnées dans le script, jamais `kubectl scale` :
    `rest-api-svc`, `router-svc`, `connector-pool-svc` à 2 réplicas, HPA min = max (avec des requests à
    50 m l'HPA sature dès la première seconde et ne mesure rien), `CONNECTOR_BIND_POOL_SIZE` levé.
    Redpanda (`--smp=1`) et Redis (aucun `maxmemory`) restent tels quels et sont consignés.
@@ -53,6 +53,11 @@ l'hôte (cf. le plafond 4 800 de step-201d). (d) Un seul disque pour Postgres, C
 l'AOF Redis et RustFS : `iostat` pendant chaque run. (e) Un 202 ne prouve rien en aval
 (`rest-api-svc` n'applique ni crédit ni anti-spam) : chaque run porte quatre chiffres côte à côte.
 (f) `e2e-budget` sort « non résolu » quand 2 s tombe dans un bucket : ni succès ni échec.
+(g) 52 binds × 200/s = 10 400 est un plafond **théorique** : le pool envoie en série par bind (fenêtre
+effective 1, plus claim Redis, DLR, CDR et settle par message), là où `smsc-ceiling` pousse une fenêtre
+de 32 — les deux courbes ne se comparent que si le simulateur sérialise vraiment chaque session.
+(h) billing-svc relit la config client toutes les 30 s : `run.sh seed` attend 35 s avant de rendre la main.
+(i) L'authentification REST fait une requête Postgres par appel, sans cache : elle est dans la mesure.
 
 ## Plafond du pool après step-350 PR2 (prérequis local)
 
@@ -64,7 +69,7 @@ bruit de ±30 % de l'hôte. Balayage complet à relancer, hôte au repos.
 ## Definition of Done
 - [ ] `TestPoolSubmitCeiling` rejoué en entier, hôte au repos, consigné ci-dessus
 - [ ] `test-env seed-load` livré, testé contre le faux admin, refus anti-spam compris
-- [ ] image `smsc-ceiling` publiée ; Jobs k6/ceiling et overlay `deploy/test-load/` versionnés ;
+- [ ] image `smsc-ceiling` publiée ; Jobs et `deploy/test-load/run.sh` versionnés ;
       `make test-env` vert
 - [ ] plafond du pair mesuré dans le cluster, nombre de binds et profil de latence cités
 - [ ] `sustained` et `peak`, `IDEMPOTENCY=off` et `on`, ≥ 10 min chacun ; par run : 202 k6,

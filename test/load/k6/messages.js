@@ -114,7 +114,7 @@ export const options = {
       executor: 'constant-arrival-rate',
       rate: profile.rate,
       timeUnit: '1s',
-      // DURATION overrides the profile's 60 s: the campaign's measured window is ten minutes (step-280).
+      // DURATION overrides the profile's 60 s: a campaign measures over ten minutes.
       duration: __ENV.DURATION || profile.duration,
       preAllocatedVUs: profile.preAllocatedVUs,
       maxVUs: profile.maxVUs,

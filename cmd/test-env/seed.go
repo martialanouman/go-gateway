@@ -140,22 +140,22 @@ func seed(ctx context.Context, a *admin, c connectorSpec) (string, error) {
 	return connectorID, nil
 }
 
-func findSmokeAccount(ctx context.Context, a *admin) (string, error) {
-	customerID, err := findCustomerID(ctx, a, customerName)
+func findSmokeAccount(ctx context.Context, a *admin) (customerID, accountID string, err error) {
+	customerID, err = findCustomerID(ctx, a, customerName)
 	if err != nil {
-		return "", fmt.Errorf("client %q : %w", customerName, err)
+		return "", "", fmt.Errorf("client %q : %w", customerName, err)
 	}
 	if customerID == "" {
-		return "", fmt.Errorf("client %q : introuvable", customerName)
+		return "", "", fmt.Errorf("client %q : introuvable", customerName)
 	}
-	accountID, err := findAccountID(ctx, a, customerID, accountName)
+	accountID, err = findAccountID(ctx, a, customerID, accountName)
 	if err != nil {
-		return "", fmt.Errorf("compte %q : %w", accountName, err)
+		return "", "", fmt.Errorf("compte %q : %w", accountName, err)
 	}
 	if accountID == "" {
-		return "", fmt.Errorf("compte %q : introuvable", accountName)
+		return "", "", fmt.Errorf("compte %q : introuvable", accountName)
 	}
-	return accountID, nil
+	return customerID, accountID, nil
 }
 
 func findCustomerID(ctx context.Context, a *admin, name string) (string, error) {
