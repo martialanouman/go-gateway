@@ -1,7 +1,7 @@
 # step-410 — Dérouler la checklist de mise en production (go-live)
 
 > **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
-> **Dépend de :** step-280, step-260, step-290, step-310, **step-398**, **step-405**, **step-407**, step-270, **step-270b**, step-320 · **Bloque :** —
+> **Dépend de :** step-280, **step-409**, step-260, step-290, step-310, **step-398**, **step-405**, **step-407**, step-270, **step-270b**, step-320 · **Bloque :** —
 
 ## But
 Clore M12 : dérouler la checklist de mise en production (guide d'ingénierie §15), consigner l'état de
@@ -13,7 +13,7 @@ chaque item et matérialiser la porte de go-live.
 - Récapitulatif des NFR tenus (débit, latence) et des politiques de panne vérifiées.
 
 ## Points d'implémentation clés
-- La checklist référence les livrables : NFR (step-200/201/**280**), chaos par politique (step-250/260),
+- La checklist référence les livrables : NFR (step-200/201/280/**409**), chaos par politique (step-250/260),
   sécurité (step-290/300), auth opérateur réelle (step-310), manifests (step-270) et images (step-270b).
 - **Les dettes de sécurité que step-290 a ouvertes sans les fermer sont à statuer ici, pas à
   découvrir :** secrets stockés sous une forme inutilisable (step-295), rejeu de dead-letter sans trace, et l'audit d'une sonde
