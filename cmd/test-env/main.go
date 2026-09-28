@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -33,13 +34,13 @@ const (
 
 func main() {
 	log.SetFlags(0)
-	if len(os.Args) != 2 || (os.Args[1] != "seed" && os.Args[1] != "smoke") {
-		fmt.Fprintln(os.Stderr, "usage: test-env seed|smoke")
+	if len(os.Args) != 2 || (os.Args[1] != "seed" && os.Args[1] != "smoke" && os.Args[1] != "seed-load") {
+		fmt.Fprintln(os.Stderr, "usage: test-env seed|smoke|seed-load")
 		os.Exit(2)
 	}
 	cmd := os.Args[1]
 	if err := run(cmd); err != nil {
-		//nolint:gosec // G706: cmd is checked above to be exactly "seed" or "smoke", never raw input.
+		//nolint:gosec // G706: cmd is checked above against the subcommand list, never raw input.
 		log.Fatalf("%s : %v", cmd, err)
 	}
 }
@@ -71,14 +72,34 @@ func run(cmd string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), deadline)
 	defer cancel()
 
-	switch cmd {
-	case "seed":
-		id, err := seed(ctx, a, connectorSpec{
+	connector := func() connectorSpec {
+		return connectorSpec{
 			Host:     connectorHost,
 			Port:     connectorPort,
 			SystemID: mustEnv("CONNECTOR_SYSTEM_ID"),
 			Password: mustEnv("CONNECTOR_PASSWORD"),
-		})
+		}
+	}
+
+	switch cmd {
+	case "seed-load":
+		bindPool, err := strconv.Atoi(mustEnv("LOAD_BIND_POOL_SIZE"))
+		if err != nil {
+			return fmt.Errorf("LOAD_BIND_POOL_SIZE : %w", err)
+		}
+		share, err := strconv.ParseFloat(mustEnv("LOAD_PORTED_SHARE"), 64)
+		// 0.8 : au-delà, l'import dépasse le corps de 1 MiB que huma accepte par défaut.
+		if err != nil || share < 0 || share > 0.8 {
+			return fmt.Errorf("LOAD_PORTED_SHARE %q : une part dans [0, 0.8]", os.Getenv("LOAD_PORTED_SHARE"))
+		}
+		key, err := seedLoad(ctx, a, connector(), loadSpec{BindPoolSize: bindPool, PortedShare: share})
+		if err != nil {
+			return err
+		}
+		fmt.Printf("API_KEY=%s\n", key)
+		return nil
+	case "seed":
+		id, err := seed(ctx, a, connector())
 		if err != nil {
 			return err
 		}
@@ -93,7 +114,7 @@ func run(cmd string) error {
 		dial := func(ctx context.Context) (net.Conn, error) { return dialer.DialContext(ctx, "tcp", smppAddr) }
 		return smoke(ctx, a, dial, smokeRetry, dlrWait)
 	}
-	// unreachable: main validates cmd against exactly "seed"/"smoke" before calling run.
+	// unreachable: main validates cmd against the subcommand list before calling run.
 	return fmt.Errorf("sous-commande %q inconnue", cmd)
 }
 

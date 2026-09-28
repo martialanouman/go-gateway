@@ -31,12 +31,13 @@ type fakeAccountRow struct {
 }
 
 type fakeCredentialRow struct {
-	id, systemID, status, secret string
-	rotations                    int
+	id, typ, systemID, status, secret string
+	rotations                         int
 }
 
 type fakeConnectorRow struct {
-	id, name string
+	id, name     string
+	bindPoolSize int
 }
 
 type fakeRouteRow struct {
@@ -53,6 +54,10 @@ type fakeAdmin struct {
 	accounts   []*fakeAccountRow
 	connectors []fakeConnectorRow
 	routes     []fakeRouteRow
+
+	antispamRules []fakeAntispamRule
+	billing       map[string]fakeBilling
+	exactRoutes   []fakeExactRouteCreate
 
 	lastAccount    fakeSmppAccountCreate
 	lastCredential fakeCredentialCreate
@@ -82,7 +87,7 @@ type fakeSenderIDCreate struct {
 	Address string `json:"address"`
 }
 
-type fakeSenderIDUpdate struct {
+type fakeStatusUpdate struct {
 	Status string `json:"status"`
 }
 
@@ -106,8 +111,47 @@ type fakeSmppAccountResp struct {
 }
 
 type fakeCredentialCreate struct {
-	Type     string `json:"type"`
-	SystemID string `json:"system_id"`
+	Type     string  `json:"type"`
+	SystemID *string `json:"system_id"`
+}
+
+type fakeCustomerUpdate struct {
+	BillingEnabled *bool `json:"billing_enabled"`
+}
+
+type fakeBillingUpdate struct {
+	BillingMode       string `json:"billing_mode"`
+	CreditLimitIsHard *bool  `json:"credit_limit_is_hard"`
+}
+
+type fakeBilling struct {
+	enabled bool
+	mode    string
+	hard    *bool
+}
+
+type fakeBindPoolUpdate struct {
+	BindPoolSize int `json:"bind_pool_size"`
+}
+
+type fakeAntispamRule struct {
+	ID       string  `json:"id"`
+	RuleType string  `json:"rule_type"`
+	Scope    string  `json:"scope"`
+	ScopeID  *string `json:"scope_id"`
+	Status   string  `json:"status"`
+}
+
+type fakeExactRouteCreate struct {
+	MSISDN     string `json:"msisdn"`
+	TargetType string `json:"target_type"`
+	TargetID   string `json:"target_id"`
+	Source     string `json:"source"`
+}
+
+type fakeExactRouteImport struct {
+	Source string                 `json:"source"`
+	Rows   []fakeExactRouteCreate `json:"rows"`
 }
 
 type fakeCredentialResp struct {
@@ -154,7 +198,7 @@ func fakeBindPassword() string {
 
 func newFakeAdmin(t *testing.T) *fakeAdmin {
 	t.Helper()
-	f := &fakeAdmin{t: t}
+	f := &fakeAdmin{t: t, billing: map[string]fakeBilling{}}
 	f.customers = append(f.customers, &fakeCustomerRow{id: uuid.NewString(), name: "autre"})
 
 	mux := http.NewServeMux()
@@ -170,6 +214,12 @@ func newFakeAdmin(t *testing.T) *fakeAdmin {
 	mux.HandleFunc("POST /v1/admin/smpp-accounts/{id}/credentials/{cid}/rotate", f.rotateCredential)
 	mux.HandleFunc("GET /v1/admin/connectors", f.listConnectors)
 	mux.HandleFunc("POST /v1/admin/connectors", f.createConnector)
+	mux.HandleFunc("PATCH /v1/admin/smpp-accounts/{id}/credentials/{cid}", f.updateCredentialStatus)
+	mux.HandleFunc("PATCH /v1/admin/customers/{id}", f.updateCustomer)
+	mux.HandleFunc("PATCH /v1/admin/customers/{id}/billing", f.updateBilling)
+	mux.HandleFunc("PATCH /v1/admin/connectors/{id}/bind-pool", f.setBindPool)
+	mux.HandleFunc("GET /v1/admin/antispam-rules", f.listAntispamRules)
+	mux.HandleFunc("POST /v1/admin/exact-routes/import", f.importExactRoutes)
 	mux.HandleFunc("GET /v1/admin/routes", f.listRoutes)
 	mux.HandleFunc("POST /v1/admin/routes", f.createRoute)
 
@@ -301,7 +351,7 @@ func (f *fakeAdmin) createSenderID(w http.ResponseWriter, r *http.Request) {
 }
 
 func (f *fakeAdmin) updateSenderID(w http.ResponseWriter, r *http.Request) {
-	body, ok := decodeFakeBody[fakeSenderIDUpdate](w, r)
+	body, ok := decodeFakeBody[fakeStatusUpdate](w, r)
 	if !ok {
 		return
 	}
@@ -361,7 +411,7 @@ func (f *fakeAdmin) listCredentials(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]fakeCredentialResp, 0, len(a.credentials))
 	for _, c := range a.credentials {
-		out = append(out, fakeCredentialResp{ID: c.id, Type: "smpp_bind", SystemID: c.systemID, Status: c.status})
+		out = append(out, fakeCredentialResp{ID: c.id, Type: c.typ, SystemID: c.systemID, Status: c.status})
 	}
 	writeFakeJSON(w, http.StatusOK, out)
 }
@@ -379,11 +429,26 @@ func (f *fakeAdmin) createCredential(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f.lastCredential = body
-	c := &fakeCredentialRow{id: uuid.NewString(), systemID: body.SystemID, status: "active", secret: fakeBindPassword()}
+	systemID := ""
+	if body.SystemID != nil {
+		systemID = *body.SystemID
+	}
+	if (body.Type == "smpp_bind") != (systemID != "") {
+		http.Error(w, `{"code":"validation_error","message":"system_id requis pour smpp_bind seulement"}`, http.StatusUnprocessableEntity)
+		return
+	}
+	for _, existing := range a.credentials {
+		if existing.typ == body.Type {
+			// credentials_one_per_type_uq: a revoked row keeps its slot (internal/storage/postgres/credentials.go).
+			http.Error(w, `{"code":"conflict","message":"type déjà présent sur le compte"}`, http.StatusConflict)
+			return
+		}
+	}
+	c := &fakeCredentialRow{id: uuid.NewString(), typ: body.Type, systemID: systemID, status: "active", secret: fakeBindPassword()}
 	a.credentials = append(a.credentials, c)
 	f.writes++
 	writeFakeJSON(w, http.StatusCreated, fakeCredentialResp{
-		ID: c.id, Type: body.Type, SystemID: c.systemID, Status: c.status, Secret: c.secret,
+		ID: c.id, Type: c.typ, SystemID: c.systemID, Status: c.status, Secret: c.secret,
 	})
 }
 
@@ -403,11 +468,110 @@ func (f *fakeAdmin) rotateCredential(w http.ResponseWriter, r *http.Request) {
 		c.rotations++
 		f.writes++
 		writeFakeJSON(w, http.StatusOK, fakeCredentialResp{
-			ID: c.id, Type: "smpp_bind", SystemID: c.systemID, Status: c.status, Secret: c.secret,
+			ID: c.id, Type: c.typ, SystemID: c.systemID, Status: c.status, Secret: c.secret,
 		})
 		return
 	}
 	http.NotFound(w, r)
+}
+
+func (f *fakeAdmin) updateCredentialStatus(w http.ResponseWriter, r *http.Request) {
+	body, ok := decodeFakeBody[fakeStatusUpdate](w, r)
+	if !ok {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	a := f.findAccount(r.PathValue("id"))
+	if a == nil {
+		http.NotFound(w, r)
+		return
+	}
+	for _, c := range a.credentials {
+		if c.id == r.PathValue("cid") {
+			c.status = body.Status
+			f.writes++
+			writeFakeJSON(w, http.StatusOK, fakeCredentialResp{ID: c.id, Type: c.typ, SystemID: c.systemID, Status: c.status})
+			return
+		}
+	}
+	http.NotFound(w, r)
+}
+
+func (f *fakeAdmin) updateCustomer(w http.ResponseWriter, r *http.Request) {
+	body, ok := decodeFakeBody[fakeCustomerUpdate](w, r)
+	if !ok {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c := f.findCustomer(r.PathValue("id"))
+	if c == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if body.BillingEnabled != nil {
+		b := f.billing[c.id]
+		b.enabled = *body.BillingEnabled
+		f.billing[c.id] = b
+	}
+	f.writes++
+	writeFakeJSON(w, http.StatusOK, fakeCustomerResp{ID: c.id, Name: c.name})
+}
+
+func (f *fakeAdmin) updateBilling(w http.ResponseWriter, r *http.Request) {
+	body, ok := decodeFakeBody[fakeBillingUpdate](w, r)
+	if !ok {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c := f.findCustomer(r.PathValue("id"))
+	if c == nil {
+		http.NotFound(w, r)
+		return
+	}
+	b := f.billing[c.id]
+	b.mode, b.hard = body.BillingMode, body.CreditLimitIsHard
+	f.billing[c.id] = b
+	f.writes++
+	writeFakeJSON(w, http.StatusOK, map[string]any{"customer_id": c.id})
+}
+
+func (f *fakeAdmin) setBindPool(w http.ResponseWriter, r *http.Request) {
+	body, ok := decodeFakeBody[fakeBindPoolUpdate](w, r)
+	if !ok {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.connectors {
+		if f.connectors[i].id == r.PathValue("id") {
+			f.connectors[i].bindPoolSize = body.BindPoolSize
+			f.writes++
+			writeFakeJSON(w, http.StatusOK, fakeConnectorResp{ID: f.connectors[i].id, Name: f.connectors[i].name})
+			return
+		}
+	}
+	http.NotFound(w, r)
+}
+
+func (f *fakeAdmin) listAntispamRules(w http.ResponseWriter, _ *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	writeFakeJSON(w, http.StatusOK, append([]fakeAntispamRule{}, f.antispamRules...))
+}
+
+func (f *fakeAdmin) importExactRoutes(w http.ResponseWriter, r *http.Request) {
+	body, ok := decodeFakeBody[fakeExactRouteImport](w, r)
+	if !ok {
+		return
+	}
+	f.mu.Lock()
+	f.exactRoutes = append(f.exactRoutes, body.Rows...)
+	f.writes++
+	f.mu.Unlock()
+	writeFakeJSON(w, http.StatusAccepted, map[string]any{"job_id": uuid.NewString(), "status": "queued", "created_at": "2026-09-28T00:00:00Z"})
 }
 
 func (f *fakeAdmin) listConnectors(w http.ResponseWriter, r *http.Request) {
@@ -553,4 +717,55 @@ func (f *fakeAdmin) preloadPendingSender(customerName, address string) {
 		f.customers = append(f.customers, c)
 	}
 	c.senders = append(c.senders, &fakeSenderRow{id: uuid.NewString(), address: address, status: "pending_carrier_approval"})
+}
+
+func (f *fakeAdmin) customerID(name string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, c := range f.customers {
+		if c.name == name {
+			return c.id
+		}
+	}
+	return ""
+}
+
+func (f *fakeAdmin) bindPoolSize(name string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, c := range f.connectors {
+		if c.name == name {
+			return c.bindPoolSize
+		}
+	}
+	return 0
+}
+
+func (f *fakeAdmin) revokeAPIKey(accountName string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, a := range f.accounts {
+		for _, c := range a.credentials {
+			if a.name == accountName && c.typ == "api_key" {
+				c.status = "revoked"
+			}
+		}
+	}
+}
+
+func (f *fakeAdmin) activeAPIKeys(accountName string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, a := range f.accounts {
+		if a.name != accountName {
+			continue
+		}
+		for _, c := range a.credentials {
+			if c.typ == "api_key" && c.status == "active" {
+				n++
+			}
+		}
+	}
+	return n
 }

@@ -209,8 +209,8 @@ qu'on mesure un environnement représentatif.
 - [x] step-270d — Les résidus logiciels de step-270c : L0 dans le run plein-stack, la cardinalité des
       destinations, le levier de TTL, et le rapport `MaxConns`/voies corrigé ⛓ step-250e, step-270c
 - [x] step-275 — Environnement de test : seed du plan de contrôle et preuve bout-en-bout
-- [ ] step-280 — Campagne NFR pleine échelle sur environnement représentatif ⛓ step-230, step-270b,
-      step-270c, step-270d
+- [ ] step-280 — Campagne NFR sur le VPS de test : outillage répétable, chiffres non représentatifs
+      ⛓ step-230, step-270b, step-270c, step-270d, step-275 — recadrée le 28/09/2026, le verdict part en step-409
 
 Le seul **défaut de correction** du lot est clos : step-240 a fermé le rejeu d'un message annulé, et
 step-245 le cas où l'annulation avait gagné son jeton sans jamais écrire sa ligne CDR. step-250 a
@@ -409,8 +409,10 @@ l'autorisation de la moitié des opérations, et le tableau de bord génère ses
 - [x] step-407 — La production archive ses CDR avant de les supprimer : aucune destination objet, aucun
       `CLICKHOUSE_ARCHIVE_PREFIX` posé, donc chaque partition de 90 jours est perdue ⛓ step-165 — sortie de
       step-420 ; unité faute de multiple de dix libre
+- [ ] step-409 — Campagne NFR pleine échelle sur environnement représentatif : le verdict ⛓ step-280,
+      step-270b — l'ancienne step-280 ; unité faute de multiple de dix libre
 - [ ] step-410 — **GO-LIVE** : dérouler la checklist de mise en production
-      ⛓ step-260, step-270, step-280, step-290, step-310, step-320, step-397, step-398, step-405, step-407
+      ⛓ step-260, step-270, step-280, step-409, step-290, step-310, step-320, step-397, step-398, step-405, step-407
 
 ## Après le go-live
 - [ ] step-420 — Exporter les CDR archivés (lecture de l'archive froide par l'export asynchrone)
@@ -431,7 +433,7 @@ passé. La `git history` n'est pas concernée : aucune step renumérotée n'avai
 
 | Cité dans l'historique | Fiche aujourd'hui | |
 |---|---|---|
-| step-201b | **step-280** | campagne NFR |
+| step-201b | **step-280** → **step-409** | campagne NFR |
 | step-201g | **step-230** | gardes du banc `loadref` |
 | step-202 | **step-250** | chaos Redis |
 | step-203 | **step-260** | chaos drain / failover |

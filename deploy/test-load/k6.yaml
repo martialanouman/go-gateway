@@ -1,0 +1,35 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: k6-load
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 1500
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: k6
+          image: grafana/k6:1.3.0@sha256:3ddc8b1a33a2c3d8edc6e99b6a762ae36cba08788463458f5e6a7703e14eb77d
+          args: [run, /scripts/messages.js]
+          env:
+            # En direct, sans Traefik ni Cloudflare : le budget est l'ingestion, pas l'Internet.
+            # rest-api-svc sert en TLS ; la vérification est coupée plutôt que de monter le Secret
+            # rest-api-svc-tls, qui porte aussi la clé privée du service.
+            - { name: BASE_URL, value: "https://rest-api-svc:8080" }
+            - { name: K6_INSECURE_SKIP_TLS_VERIFY, value: "true" }
+            - { name: SENDER_ID, value: TEST }
+            - { name: PROFILE, value: "@PROFILE@" }
+            - { name: IDEMPOTENCY, value: "@IDEMPOTENCY@" }
+            - { name: DURATION, value: "@DURATION@" }
+            - name: API_KEY
+              valueFrom: { secretKeyRef: { name: k6-load, key: API_KEY } }
+          # Une limite fixe : la part de l'hôte que prend l'injecteur co-résident est connue.
+          resources:
+            requests: { cpu: "2", memory: 1Gi }
+            limits: { cpu: "3", memory: 3Gi }
+          volumeMounts:
+            - { name: script, mountPath: /scripts, readOnly: true }
+      volumes:
+        - name: script
+          configMap: { name: k6-script }

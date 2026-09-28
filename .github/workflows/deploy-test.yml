@@ -76,14 +76,18 @@ jobs:
 
       # Hors GoReleaser : internal/deploy/images_test.go refuse une image publiée que deploy/k8s ne
       # déploie pas. Même Dockerfile, même base distroless.
-      - name: Image test-env
+      # smsc-ceiling : le plafond du simulateur se mesure dans le cluster (step-280), un port-forward
+      # mesurerait le tunnel.
+      - name: Images test-env et smsc-ceiling
         run: |
           mkdir -p dist-test/linux/amd64
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o dist-test/linux/amd64/test-env ./cmd/test-env
-          img=ghcr.io/martialanouman/go-gateway/test-env:$VERSION
-          docker buildx build --platform linux/amd64 --build-arg BINARY=test-env -t "$img" \
-            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
-            --push dist-test -f Dockerfile
+          for bin in test-env smsc-ceiling; do
+            CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o "dist-test/linux/amd64/$bin" "./cmd/$bin"
+            img=ghcr.io/martialanouman/go-gateway/$bin:$VERSION
+            docker buildx build --platform linux/amd64 --build-arg BINARY="$bin" -t "$img" \
+              --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+              --push dist-test -f Dockerfile
+          done
 
       - name: kubeconform
         run: make kubeconform && echo "$(go env GOPATH)/bin" >>"$GITHUB_PATH"

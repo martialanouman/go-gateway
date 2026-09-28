@@ -20,7 +20,7 @@ type dialFunc func(ctx context.Context) (net.Conn, error)
 // the overall deadline; retry is the interval between two refused binds (rotation takes a moment to
 // reach session-manager); dlrWait bounds the wait for one submission's DLR before resubmitting.
 func smoke(ctx context.Context, a *admin, dial dialFunc, retry, dlrWait time.Duration) error {
-	accountID, err := findSmokeAccount(ctx, a)
+	_, accountID, err := findSmokeAccount(ctx, a)
 	if err != nil {
 		return err
 	}

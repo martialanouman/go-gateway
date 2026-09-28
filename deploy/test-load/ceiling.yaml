@@ -1,0 +1,29 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: smsc-ceiling
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 900
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: smsc-ceiling
+          image: ghcr.io/martialanouman/go-gateway/smsc-ceiling:@VERSION@
+          # Mot de passe en argv : dette déjà fichée (debts/mot-de-passe-de-bind-en-argv.md).
+          args:
+            - -addr=smsc-simulator:2775
+            - -metrics=http://smsc-simulator:9000
+            - -system-id=$(CONNECTOR_SYSTEM_ID)
+            - -password=$(CONNECTOR_PASSWORD)
+            - -binds=10,20,40,52,80
+            - -reference=52
+          env:
+            - name: CONNECTOR_SYSTEM_ID
+              valueFrom: { secretKeyRef: { name: gateway-secrets, key: CONNECTOR_SYSTEM_ID } }
+            - name: CONNECTOR_PASSWORD
+              valueFrom: { secretKeyRef: { name: gateway-secrets, key: CONNECTOR_PASSWORD } }
+          resources:
+            requests: { cpu: 500m, memory: 128Mi }
+            limits: { memory: 512Mi }
