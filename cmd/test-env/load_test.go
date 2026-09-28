@@ -25,6 +25,9 @@ func TestSeedLoadPreparesTheProductionPathAndHandsOutAFreshKey(t *testing.T) {
 	if got := f.bindPoolSize(connectorName); got != 26 {
 		t.Errorf("bind_pool_size %d, want 26", got)
 	}
+	if !f.autoReconnect(connectorName) {
+		t.Error("auto-reconnexion coupée : au premier reset du pair, le connecteur se gare jusqu'à un rebind manuel (§6.13)")
+	}
 	if got := len(f.exactRoutes); got != 2000 {
 		t.Fatalf("%d routes exactes, want 2000 (20 %% des 10 000 destinations de k6)", got)
 	}

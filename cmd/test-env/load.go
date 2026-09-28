@@ -57,6 +57,11 @@ func seedLoad(ctx context.Context, a *admin, c connectorSpec, spec loadSpec) (st
 	if err := a.do(ctx, http.MethodPatch, "/connectors/"+connectorID+"/bind-pool", map[string]int{"bind_pool_size": spec.BindPoolSize}, nil); err != nil {
 		return "", fmt.Errorf("bind_pool_size : %w", err)
 	}
+	// Opt-in (§6.13), and the control plane overrides CONNECTOR_AUTO_RECONNECT: without it the first peer
+	// reset parks the connector until a manual rebind, and the run stops traversing.
+	if err := a.do(ctx, http.MethodPatch, "/connectors/"+connectorID+"/reconnect-policy", map[string]bool{"auto_reconnect_enabled": true}, nil); err != nil {
+		return "", fmt.Errorf("auto-reconnexion : %w", err)
+	}
 
 	if ported := int(spec.PortedShare * k6Destinations); ported > 0 {
 		rows := make([]exactRouteCreate, ported)

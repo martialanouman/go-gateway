@@ -36,8 +36,9 @@ type fakeCredentialRow struct {
 }
 
 type fakeConnectorRow struct {
-	id, name     string
-	bindPoolSize int
+	id, name      string
+	bindPoolSize  int
+	autoReconnect bool
 }
 
 type fakeRouteRow struct {
@@ -130,6 +131,10 @@ type fakeBilling struct {
 	hard    *bool
 }
 
+type fakeReconnectPolicy struct {
+	AutoReconnectEnabled *bool `json:"auto_reconnect_enabled"`
+}
+
 type fakeBindPoolUpdate struct {
 	BindPoolSize int `json:"bind_pool_size"`
 }
@@ -218,6 +223,7 @@ func newFakeAdmin(t *testing.T) *fakeAdmin {
 	mux.HandleFunc("PATCH /v1/admin/customers/{id}", f.updateCustomer)
 	mux.HandleFunc("PATCH /v1/admin/customers/{id}/billing", f.updateBilling)
 	mux.HandleFunc("PATCH /v1/admin/connectors/{id}/bind-pool", f.setBindPool)
+	mux.HandleFunc("PATCH /v1/admin/connectors/{id}/reconnect-policy", f.setReconnectPolicy)
 	mux.HandleFunc("GET /v1/admin/antispam-rules", f.listAntispamRules)
 	mux.HandleFunc("POST /v1/admin/exact-routes/import", f.importExactRoutes)
 	mux.HandleFunc("GET /v1/admin/routes", f.listRoutes)
@@ -556,6 +562,28 @@ func (f *fakeAdmin) setBindPool(w http.ResponseWriter, r *http.Request) {
 	http.NotFound(w, r)
 }
 
+func (f *fakeAdmin) setReconnectPolicy(w http.ResponseWriter, r *http.Request) {
+	body, ok := decodeFakeBody[fakeReconnectPolicy](w, r)
+	if !ok {
+		return
+	}
+	if body.AutoReconnectEnabled == nil {
+		http.Error(w, `{"code":"validation_error","message":"auto_reconnect_enabled requis"}`, http.StatusUnprocessableEntity)
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.connectors {
+		if f.connectors[i].id == r.PathValue("id") {
+			f.connectors[i].autoReconnect = *body.AutoReconnectEnabled
+			f.writes++
+			writeFakeJSON(w, http.StatusOK, fakeConnectorResp{ID: f.connectors[i].id, Name: f.connectors[i].name})
+			return
+		}
+	}
+	http.NotFound(w, r)
+}
+
 func (f *fakeAdmin) listAntispamRules(w http.ResponseWriter, _ *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -751,6 +779,17 @@ func (f *fakeAdmin) revokeAPIKey(accountName string) {
 			}
 		}
 	}
+}
+
+func (f *fakeAdmin) autoReconnect(name string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, c := range f.connectors {
+		if c.name == name {
+			return c.autoReconnect
+		}
+	}
+	return false
 }
 
 func (f *fakeAdmin) activeAPIKeys(accountName string) int {
