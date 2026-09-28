@@ -31,8 +31,8 @@ type fakeAccountRow struct {
 }
 
 type fakeCredentialRow struct {
-	id, systemID, status string
-	rotations            int
+	id, systemID, status, secret string
+	rotations                    int
 }
 
 type fakeConnectorRow struct {
@@ -139,6 +139,13 @@ type fakeRouteResp struct {
 	ID                string `json:"id"`
 	Name              string `json:"name"`
 	TargetConnectorID string `json:"target_connector_id"`
+}
+
+// fakeBindPassword mints a secret the length a real bind password would be (8 chars — SMPP v3.4
+// §4.1.1 bounds the field to 9 octets including the NUL terminator); a full UUID does not fit and a
+// real SMPP peer would reject it as a malformed PDU before ever checking it.
+func fakeBindPassword() string {
+	return uuid.NewString()[:8]
 }
 
 func newFakeAdmin(t *testing.T) *fakeAdmin {
@@ -366,11 +373,11 @@ func (f *fakeAdmin) createCredential(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	c := &fakeCredentialRow{id: uuid.NewString(), systemID: body.SystemID, status: "active"}
+	c := &fakeCredentialRow{id: uuid.NewString(), systemID: body.SystemID, status: "active", secret: fakeBindPassword()}
 	a.credentials = append(a.credentials, c)
 	f.writes++
 	writeFakeJSON(w, http.StatusCreated, fakeCredentialResp{
-		ID: c.id, Type: body.Type, SystemID: c.systemID, Status: c.status, Secret: uuid.NewString(),
+		ID: c.id, Type: body.Type, SystemID: c.systemID, Status: c.status, Secret: c.secret,
 	})
 }
 
@@ -386,10 +393,11 @@ func (f *fakeAdmin) rotateCredential(w http.ResponseWriter, r *http.Request) {
 		if c.id != r.PathValue("cid") {
 			continue
 		}
+		c.secret = fakeBindPassword()
 		c.rotations++
 		f.writes++
 		writeFakeJSON(w, http.StatusOK, fakeCredentialResp{
-			ID: c.id, Type: "smpp_bind", SystemID: c.systemID, Status: c.status, Secret: uuid.NewString(),
+			ID: c.id, Type: "smpp_bind", SystemID: c.systemID, Status: c.status, Secret: c.secret,
 		})
 		return
 	}
@@ -485,6 +493,24 @@ func (f *fakeAdmin) senderStatus(customerName, address string) string {
 		for _, s := range c.senders {
 			if s.address == address {
 				return s.status
+			}
+		}
+	}
+	return ""
+}
+
+// credentialSecret returns a credential row's current secret — the value from the most recent
+// create or rotate call — so an in-process SMPP peer can check a bind password against it.
+func (f *fakeAdmin) credentialSecret(accountName, systemID string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, a := range f.accounts {
+		if a.name != accountName {
+			continue
+		}
+		for _, c := range a.credentials {
+			if c.systemID == systemID {
+				return c.secret
 			}
 		}
 	}
