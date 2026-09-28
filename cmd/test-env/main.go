@@ -18,9 +18,9 @@ import (
 )
 
 const (
-	defaultAdminURL = "https://admin-api-svc:8081/v1/admin"
+	adminURL        = "https://admin-api-svc:8081/v1/admin"
 	adminServerName = "admin-api-svc"
-	defaultSMPPAddr = "smpp-server-svc:2775"
+	smppAddr        = "smpp-server-svc:2775"
 	smppServerName  = "smpp-server-svc"
 	connectorHost   = "smsc-simulator"
 	connectorPort   = 2775
@@ -53,7 +53,7 @@ func run(cmd string) error {
 		return fmt.Errorf("HTTP_ADMIN_TOKENS : %w", err)
 	}
 	a := &admin{
-		base:  envOr("ADMIN_URL", defaultAdminURL),
+		base:  adminURL,
 		token: token,
 		hc: &http.Client{
 			Timeout: 10 * time.Second,
@@ -83,7 +83,6 @@ func run(cmd string) error {
 		fmt.Printf("connector_id=%s\n", id)
 		return nil
 	case "smoke":
-		smppAddr := envOr("SMPP_ADDR", defaultSMPPAddr)
 		dialer := tls.Dialer{Config: &tls.Config{
 			RootCAs:    tlsCfg.RootCAs,
 			ServerName: smppServerName,
@@ -96,8 +95,6 @@ func run(cmd string) error {
 	return fmt.Errorf("sous-commande %q inconnue", cmd)
 }
 
-// tlsAssets is the mTLS material every subcommand's transport needs: a CA pool to verify the peer and
-// this side's own client certificate.
 type tlsAssets struct {
 	RootCAs      *x509.CertPool
 	Certificates []tls.Certificate
@@ -120,8 +117,6 @@ func loadTLSConfig(dir string) (tlsAssets, error) {
 	return tlsAssets{RootCAs: pool, Certificates: []tls.Certificate{cert}}, nil
 }
 
-// adminToken extracts the bearer token from HTTP_ADMIN_TOKENS: the part before the first ':' of the
-// first ','-separated entry.
 func adminToken(tokens string) (string, error) {
 	first, _, _ := strings.Cut(tokens, ",")
 	token, _, _ := strings.Cut(first, ":")
@@ -129,13 +124,6 @@ func adminToken(tokens string) (string, error) {
 		return "", errors.New("aucun jeton avant le premier ':'")
 	}
 	return token, nil
-}
-
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
 }
 
 func mustEnv(key string) string {

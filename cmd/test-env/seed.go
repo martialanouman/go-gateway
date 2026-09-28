@@ -16,7 +16,6 @@ const (
 	routeName     = "test-catch-all"
 )
 
-// connectorSpec is the smoke SMSC simulator's bind coordinates, supplied by the caller (Task 3's flags).
 type connectorSpec struct {
 	Host     string
 	Port     int
@@ -124,7 +123,7 @@ func seed(ctx context.Context, a *admin, c connectorSpec) (string, error) {
 		return "", fmt.Errorf("compte %q : %w", accountName, err)
 	}
 
-	if err := ensureCredential(ctx, a, accountID, smokeSystemID); err != nil {
+	if err := ensureCredential(ctx, a, accountID); err != nil {
 		return "", fmt.Errorf("credential %q : %w", smokeSystemID, err)
 	}
 
@@ -140,7 +139,6 @@ func seed(ctx context.Context, a *admin, c connectorSpec) (string, error) {
 	return connectorID, nil
 }
 
-// findSmokeAccount locates the smoke SMPP account seed creates, for a smoke test that only reads.
 func findSmokeAccount(ctx context.Context, a *admin) (string, error) {
 	customerID, err := findCustomerID(ctx, a, customerName)
 	if err != nil {
@@ -159,7 +157,6 @@ func findSmokeAccount(ctx context.Context, a *admin) (string, error) {
 	return accountID, nil
 }
 
-// findCustomerID walks the customer pages (limit=500 each) until it finds name or runs out of pages.
 func findCustomerID(ctx context.Context, a *admin, name string) (string, error) {
 	cursor := ""
 	for {
@@ -250,17 +247,25 @@ func findOrCreateAccount(ctx context.Context, a *admin, customerID, name string)
 	return created.ID, nil
 }
 
-func ensureCredential(ctx context.Context, a *admin, accountID, systemID string) error {
+func activeCredentialID(ctx context.Context, a *admin, accountID string) (string, error) {
 	var creds []credential
 	if err := a.do(ctx, http.MethodGet, "/smpp-accounts/"+accountID+"/credentials", nil, &creds); err != nil {
-		return err
+		return "", err
 	}
 	for _, c := range creds {
-		if c.SystemID == systemID && c.Status == "active" {
-			return nil
+		if c.SystemID == smokeSystemID && c.Status == "active" {
+			return c.ID, nil
 		}
 	}
-	body := credentialCreate{Type: "smpp_bind", SystemID: systemID}
+	return "", nil
+}
+
+func ensureCredential(ctx context.Context, a *admin, accountID string) error {
+	id, err := activeCredentialID(ctx, a, accountID)
+	if err != nil || id != "" {
+		return err
+	}
+	body := credentialCreate{Type: "smpp_bind", SystemID: smokeSystemID}
 	return a.do(ctx, http.MethodPost, "/smpp-accounts/"+accountID+"/credentials", body, nil)
 }
 

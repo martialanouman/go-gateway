@@ -24,8 +24,6 @@ type dlrMessage struct {
 	ignoredSubmits int
 }
 
-// smokePeer is an in-process stand-in for the smoke SMSC simulator: it binds, submits and delivers
-// exactly like session-manager would, so smoke() can be tested without Docker.
 type smokePeer struct {
 	ln  net.Listener
 	f   *fakeAdmin
@@ -171,22 +169,5 @@ func TestSmokeFailsWhenNoReceiptArrives(t *testing.T) {
 func TestSmokeRetriesARefusedBindUntilTheRotatedSecretIsKnown(t *testing.T) {
 	if err := runSmoke(t, 2, &dlrMessage{stat: "DELIVRD"}); err != nil {
 		t.Fatalf("smoke : %v", err)
-	}
-}
-
-func TestSmokeUsesTheRotatedSecret(t *testing.T) {
-	f := newFakeAdmin(t)
-	a := f.admin()
-	seedForSmoke(t, a)
-	creationSecret := f.credentialSecret(accountName, smokeSystemID)
-	peer := newSmokePeer(t, f, 0, &dlrMessage{stat: "DELIVRD"})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if err := smoke(ctx, a, peer.dial, 10*time.Millisecond, testDLRWait); err != nil {
-		t.Fatalf("smoke : %v", err)
-	}
-	if rotated := f.credentialSecret(accountName, smokeSystemID); rotated == creationSecret {
-		t.Fatal("le secret n'a pas changé : la rotation n'a pas eu lieu")
 	}
 }

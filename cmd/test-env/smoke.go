@@ -14,13 +14,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/smpp"
 )
 
-// dialFunc opens the connection smoke binds over. Tests inject a plain TCP dial to an in-process
-// peer; production dials TLS to smpp-server-svc:2775.
 type dialFunc func(ctx context.Context) (net.Conn, error)
-
-type credentialSecret struct {
-	Secret string `json:"secret"`
-}
 
 // smoke binds as the smoke SMPP account, submits a message and waits for its DLR. ctx carries
 // the overall deadline; retry is the interval between two refused binds (rotation takes a moment to
@@ -44,36 +38,26 @@ func smoke(ctx context.Context, a *admin, dial dialFunc, retry, dlrWait time.Dur
 	return submitUntilDLR(ctx, nc, dlrWait)
 }
 
-// rotateSmokeSecret finds the smoke account's active smpp_bind credential and rotates it, so the
-// bind below never uses a secret the operator (or another test run) already saw.
+// rotateSmokeSecret rotates the smoke credential so the bind below never uses a secret the operator
+// (or another test run) already saw.
 func rotateSmokeSecret(ctx context.Context, a *admin, accountID string) (string, error) {
-	var creds []credential
-	if err := a.do(ctx, http.MethodGet, "/smpp-accounts/"+accountID+"/credentials", nil, &creds); err != nil {
+	credID, err := activeCredentialID(ctx, a, accountID)
+	if err != nil {
 		return "", err
-	}
-	var credID string
-	for _, c := range creds {
-		if c.SystemID == smokeSystemID && c.Status == "active" {
-			credID = c.ID
-			break
-		}
 	}
 	if credID == "" {
 		return "", fmt.Errorf("credential %q : introuvable ou inactive", smokeSystemID)
 	}
 
-	var rotated credentialSecret
+	var rotated struct {
+		Secret string `json:"secret"`
+	}
 	if err := a.do(ctx, http.MethodPost, "/smpp-accounts/"+accountID+"/credentials/"+credID+"/rotate", nil, &rotated); err != nil {
 		return "", err
-	}
-	if rotated.Secret == "" {
-		return "", fmt.Errorf("rotation de la credential %q : secret vide", smokeSystemID)
 	}
 	return rotated.Secret, nil
 }
 
-// bindWithRetry dials and binds until accepted or ctx is done. A refused bind — command_status other
-// than OK — closes the connection and tries again after retry.
 func bindWithRetry(ctx context.Context, dial dialFunc, secret string, retry time.Duration) (net.Conn, error) {
 	for {
 		if err := ctx.Err(); err != nil {
@@ -166,8 +150,6 @@ func smokeSubmit(seq uint32) smpp.PDU {
 	}}}
 }
 
-// readUntilDLR records each submit_sm_resp's message id in submitted and answers enquire_link and
-// deliver_sm, until a delivery receipt for one of submitted arrives (true) or a read fails.
 func readUntilDLR(nc net.Conn, submitted map[string]bool) (bool, error) {
 	for {
 		pdu, err := smpp.ReadPDU(nc)

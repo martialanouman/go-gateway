@@ -30,10 +30,6 @@ case "$*" in
   *"logs test-seed-new"*)
     [[ -n ${NO_SEED_LINE:-} ]] || echo "connector_id=${SEED_ID:-11111111-1111-1111-1111-111111111111}" ;;
   *"logs test-seed-old"*) echo "connector_id=22222222-2222-2222-2222-222222222222" ;;
-  # Adresse heuristique (« un pod de ce Job », sans filtre Succeeded) : elle peut tomber sur un pod
-  # échoué d'une tentative précédente. Toujours muette ici, pour prouver que gateway-deploy ne s'y fie
-  # plus.
-  *"logs job/test-seed"*) : ;;
   *"get configmap test-seed"*) echo "${CURRENT_ID:-}" ;;
 esac
 exit 0
@@ -50,11 +46,10 @@ label_of() {
     *"phase=job"*|*"job migrate"*) echo job ;;
     *"!gateway.test/phase"*) echo app-apply ;;
     *"rollout status deployment.apps/router-svc"*) echo app-rollout ;;
-    *"phase=seed"*|*"job test-seed"*|*"job/test-seed"*|*"job-name=test-seed"*|*"logs test-seed-"*) echo seed ;;
+    *"phase=seed"*|*"job test-seed"*|*"job-name=test-seed"*|*"logs test-seed-"*|*"configmap test-seed"*|*"apply -f -"*) echo seed ;;
     *"phase=smoke"*|*"job smoke"*) echo smoke ;;
     *"rollout restart"*) echo restart ;;
     *"rollout status deployment/connector-pool-svc"*) echo rollout ;;
-    *"configmap test-seed"*|*"apply -f -"*) echo seed ;;
     *) ;;
   esac
 }

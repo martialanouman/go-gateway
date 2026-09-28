@@ -506,8 +506,6 @@ func (f *fakeAdmin) senderStatus(customerName, address string) string {
 	return ""
 }
 
-// credentialSecret returns a credential row's current secret — the value from the most recent
-// create or rotate call — so an in-process SMPP peer can check a bind password against it.
 func (f *fakeAdmin) credentialSecret(accountName, systemID string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
