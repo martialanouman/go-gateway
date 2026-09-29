@@ -14,6 +14,9 @@
 
 > **Hérité de step-280 (29/09/2026).** Lire d'abord son journal (`tasks-done/step-280.md`) : plafonds par
 > client, auto-reconnexion opt-in, step-285 prérequise, simulateur v0.8.1 sans télémétrie de fermeture.
+>
+> **Mise à jour (29/09/2026, #238).** Le simulateur de l'environnement de test est en v0.9.1 : depuis
+> v0.9.0, chaque fermeture de session SMPP porte une raison bornée.
 
 ## But
 Rendre le **verdict NFR** que step-201 ne pouvait pas rendre : débit soutenu **8 000 SMS/s**, pic
