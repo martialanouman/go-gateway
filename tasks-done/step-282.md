@@ -1,6 +1,6 @@
 # step-282 — `mt.inbound` n'est plus partitionné par compte
 
-> **Jalon :** M12 · **Statut :** À FAIRE
+> **Jalon :** M12 · **Statut :** FAIT
 > **Dépend de :** step-280 · **Bloque :** step-287
 > Décision humaine du 29/09/2026 (goulot 2 de step-280) ; unité faute de multiple de dix libre.
 

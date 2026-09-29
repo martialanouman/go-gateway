@@ -211,7 +211,7 @@ qu'on mesure un environnement représentatif.
 - [x] step-275 — Environnement de test : seed du plan de contrôle et preuve bout-en-bout
 - [x] step-280 — Campagne NFR sur le VPS de test : outillage répétable, chiffres non représentatifs
       ⛓ step-230, step-270b, step-270c, step-270d, step-275 — recadrée le 28/09/2026, le verdict part en step-409
-- [ ] step-282 — `mt.inbound` n'est plus partitionné par compte ⛓ step-280 — décision humaine ; unité
+- [x] step-282 — `mt.inbound` n'est plus partitionné par compte ⛓ step-280 — décision humaine ; unité
       faute de multiple de dix libre
 - [ ] step-283 — Le débit se refuse avant l'ACK, jamais après — décision humaine ; unité faute de
       multiple de dix libre
