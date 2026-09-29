@@ -1,6 +1,6 @@
 # step-280 — Campagne NFR sur le VPS de test : outillage répétable et chiffres non représentatifs
 
-> **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** EN COURS
+> **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** FAIT (sans verdict, voir le journal)
 > **Dépend de :** step-201c, step-201f, step-270b, step-270c, step-270d, step-275 · **Bloque :** step-409
 
 > **Recadrage (28/09/2026), décision humaine.** L'ancienne step-280 (verdict NFR sur environnement
@@ -69,25 +69,81 @@ de 32 — les deux courbes ne se comparent que si le simulateur sérialise vraim
 
 ## Plafond du pool après step-350 PR2 (prérequis local)
 
-`make load-reference RUN=TestPoolSubmitCeiling`, 28/09/2026, interrompu après 4 binds :
-4 516 · 7 584 · 12 624 `submit_sm/s` à 1 · 2 · 4 binds (pair 134 646–167 990/s). Dans la bande de
-step-201f (3 294–4 351 · 4 814–7 724 · 8 125–12 947) : la réécriture de sender ID ne se voit pas au
-bruit de ±30 % de l'hôte. Balayage complet à relancer, hôte au repos.
+`make load-reference RUN=TestPoolSubmitCeiling`, 29/09/2026, hôte au repos, balayage complet :
+4 742 · 7 971 · 12 815 · 19 578 · 29 598 `submit_sm/s` à 1 · 2 · 4 · 8 · 16 binds (w64), et 19 474 à
+19 566 à 8 binds de w1 à w256. Chaque palier est dans la bande de step-201f ou juste au-dessus : la
+réécriture de sender ID ne se voit pas au bruit de l'hôte. Le banc n'a **pas** d'étage de facturation. C'est
+exactement ce qui le sépare des 369 `submit_sm/s` du VPS (journal, goulot 2).
+
+## Journal de la campagne (28-29/09/2026, VPS de test, 8 vCPU, image `v0.0.1-sha-59d7eec`)
+
+**Aucun verdict n'est rendu ici.** Tout ce qui suit est mesuré sur un seul nœud où k6, le simulateur,
+les 4 magasins et les 11 services se partagent 8 vCPU.
+
+**Plafond du pair, dans le cluster** (`smsc-ceiling`, `healthy`, latence fixe 5 ms, fenêtre 32, pool
+arrêté pendant la mesure) : 51 066 · 67 917 · 72 144 · **73 077** `submit_sm/s` à 10 · 20 · 40 · **52**
+binds, soit ×7 la cible de 10 400. La courbe plie entre 40 et 52 binds. Le palier à 80 binds est disqualifié :
+le pair a lâché 8 sessions en cours de fenêtre. Le simulateur ne sert jamais de contrainte.
+
+**Ingestion `sustained` (8 000 req/s visés, `IDEMPOTENCY=off`, 10 min)** :
+
+| Profil | req/s tenues | 202 | p99 | Itérations abandonnées |
+|---|---:|---:|---:|---:|
+| 1 client | 5 820 | 100 % | 981 ms | 2 173/s (4 000 VUs, le maximum) |
+| 24 clients | 5 540 | 100 % | 1,1 s | 2 453/s |
+
+L'hôte était saturé : `vmstat` moyen à 52 % us, 29 % sy, **18 % idle** et 0 % wa. CPU moyen par pod : k6 1,8 cœur,
+ClickHouse 1,4, Postgres 0,87 (l'auth REST fait une requête par appel, sans cache), `rest-api-svc` ~0,65
+par pod. **Goulot de l'ingestion : l'hôte (co-résidence)**, dans la lignée du plafond 4 800 de step-201d.
+NFR ingestion p99 < 250 ms : **mesuré 981 ms-1,1 s, non tenu ici, verdict non rendu (→ step-409).**
+
+**Traversée : trois goulots nommés, aucun chiffre NFR.**
+
+1. **Une partition par compte** (voulu, guide §4.1) : avec 1 client, tout `mt.inbound` est allé sur la
+   partition 8, soit une seule voie du routeur.
+2. **Une ligne de solde verrouillée par client.** Chaque capture fait `AdjustBalance … ON CONFLICT` sur la
+   même ligne `control_plane.balance`. On a observé 6-7 transactions en attente de verrou, des captures
+   au-delà de leurs 200 ms (fail-open, ~1 000/min) et **369 `submit_sm/s`** en traversée, pour un pool à
+   0,24 cœur. Ce plafond est propre à un client unique : un gros client A2P le heurterait en production.
+3. **Le routeur ne sort pas d'un backlog quand la facturation est active.** Avec 24 clients, les
+   réservations en rafale dépassent `RESERVE_TIMEOUT` et le superviseur abat le processus. Résultat :
+   CrashLoopBackOff, **0 message consommé en 60 s** sans aucune ingestion, 3,3 M messages en attente.
+   → **step-285**, prérequis de step-409.
+
+NFR débit soutenu 8 000/s, pic 15 000/s et bout-en-bout p99 < 2 s : **non mesurables** sur cette
+campagne tant que step-285 n'est pas livrée. Les runs `IDEMPOTENCY=on` et `peak` n'ont pas été faits :
+ils auraient mesuré le même CrashLoop.
+
+**Défauts de l'outillage trouvés en le faisant tourner**, tous corrigés :
+- le pool s'est garé 85 min au premier reset du simulateur, parce que l'auto-reconnexion est opt-in et que
+  le plan de contrôle écrase l'env (dette `connector-auto-reconnect-du-manifest-sans-effet`) ;
+- les binds du pool disqualifiaient le plafond du pair ;
+- un sshd public sous brute-force refusait les poignées de main au-delà de `MaxStartups` (d'où une seule
+  connexion multiplexée) ;
+- le premier `ssh -L` devenait le maître du multiplexage et figeait tout.
+
+**Hors de la passerelle.** Le simulateur v0.8.1 a coupé deux sessions à 21:16:59 et 21:18:45 UTC sans
+aucune trace (ni log ni métrique de fermeture). Un prompt pour lui ajouter une télémétrie des fermetures a
+été remis à l'exploitant ; son déploiement est un prérequis de lecture pour step-409.
+
+**Non fait, renvoyé à step-409 :**
+- ratios L0 à l'échelle ;
+- `e2e-budget` (le tunnel a été coupé, et la traversée était nulle) ;
+- `iostat`, absent de Rocky, remplacé par `vmstat`.
 
 ## Definition of Done
-- [ ] `TestPoolSubmitCeiling` rejoué en entier, hôte au repos, consigné ci-dessus
-- [ ] `test-env seed-load` livré, testé contre le faux admin, refus anti-spam compris
-- [ ] image `smsc-ceiling` publiée ; Jobs et `deploy/test-load/run.sh` versionnés ;
-      `make test-env` vert
-- [ ] plafond du pair mesuré dans le cluster, nombre de binds et profil de latence cités
-- [ ] `sustained` et `peak`, `IDEMPOTENCY=off` et `on`, ≥ 10 min chacun ; par run : 202 k6,
-      `submit_sm` servis par le simulateur, CDR, lag consumer, `e2e-budget`, `kubectl top` par pod,
-      `iostat`
-- [ ] le goulot **nommé**
-- [ ] ratios L0 (lookups/msg, `outcome`, octets/clé, attentes pgx) consignés ; valeurs → step-409
-- [ ] tableau NFR : chaque ligne « mesuré : X sur 8 vCPU co-résidents — verdict : non rendu (→ step-409) »,
-      aucune case NFR cochée
-- [ ] `deploy/test/README.md` §10 : la charge n'y est plus absente, elle y est non représentative
+- [x] `TestPoolSubmitCeiling` rejoué en entier, hôte au repos, consigné ci-dessus
+- [x] `test-env seed-load` livré (24 clients, auto-reconnexion, clé tournée), testé contre le faux admin,
+      refus anti-spam compris
+- [x] image `smsc-ceiling` publiée ; Jobs et `deploy/test-load/run.sh` versionnés ; `make test-env` vert
+- [x] plafond du pair mesuré dans le cluster, nombre de binds et profil de latence cités
+- [ ] `sustained`/`peak` × `IDEMPOTENCY` — **fait :** `sustained` off (1 client puis 24) ; **non fait,
+      nommément :** les trois autres, bloqués par step-285
+- [x] les goulots **nommés** : hôte (ingestion), partition par compte, ligne de solde par client, routeur
+      en CrashLoop sur backlog (step-285)
+- [ ] ratios L0 à l'échelle — **non fait**, renvoyé à step-409
+- [x] tableau NFR : aucun NFR coché, chacun « mesuré ou non mesurable ici — verdict non rendu (→ step-409) »
+- [x] `deploy/test/README.md` §10 : la charge n'y est plus absente, elle y est non représentative
 
 ## Hors périmètre
 Le verdict NFR, le matériel représentatif, les valeurs de dimensionnement → step-409.
