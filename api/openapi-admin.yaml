@@ -2030,7 +2030,8 @@ components:
         created_by: { type: [string, "null"], format: uuid }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
-      required: [id, name, status, created_at, updated_at]
+        member_count: { type: integer, format: int64, minimum: 0, description: 'Customers whose group_id designates this group, whatever their status.' }
+      required: [id, name, status, created_at, updated_at, member_count]
     CustomerGroupCreate:
       type: object
       additionalProperties: false

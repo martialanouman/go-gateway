@@ -17,6 +17,7 @@ type CustomerGroup struct {
 	CreatedBy   *uuid.UUID
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+	MemberCount int64
 }
 
 // NewCustomerGroup is the input to create a group. No status: creation is always active, the DDL
