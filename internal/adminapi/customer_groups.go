@@ -24,6 +24,7 @@ type customerGroupDTO struct {
 	CreatedBy   *string   `json:"created_by,omitempty" format:"uuid" nullable:"true"`
 	CreatedAt   time.Time `json:"created_at" format:"date-time"`
 	UpdatedAt   time.Time `json:"updated_at" format:"date-time"`
+	MemberCount int64     `json:"member_count" minimum:"0" doc:"Customers whose group_id designates this group, whatever their status."`
 }
 
 func toCustomerGroupDTO(g cp.CustomerGroup) customerGroupDTO {
@@ -35,6 +36,7 @@ func toCustomerGroupDTO(g cp.CustomerGroup) customerGroupDTO {
 		CreatedBy:   idPtr(g.CreatedBy),
 		CreatedAt:   g.CreatedAt,
 		UpdatedAt:   g.UpdatedAt,
+		MemberCount: g.MemberCount,
 	}
 }
 

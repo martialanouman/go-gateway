@@ -88,6 +88,30 @@ func TestListCustomerGroupsReturnsABareArray(t *testing.T) {
 	}
 }
 
+// TestGetCustomerGroupCarriesMemberCount: the store's count reaches the wire as member_count.
+func TestGetCustomerGroupCarriesMemberCount(t *testing.T) {
+	groups := newFakeCustomerGroupStore()
+	id := uuid.New()
+	groups.seed(cp.CustomerGroup{ID: id, Name: "Alpha", Status: cp.CustomerGroupActive, MemberCount: 3})
+	api := newGroupAPI(t, groups, newFakeCustomerStore())
+
+	w := httptest.NewRecorder()
+	api.ServeHTTP(w, authed(t, http.MethodGet, "/v1/admin/customer-groups/"+id.String(), ""))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body)
+	}
+	var got struct {
+		MemberCount *int64 `json:"member_count"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v; body=%s", err, w.Body)
+	}
+	if got.MemberCount == nil || *got.MemberCount != 3 {
+		t.Errorf("member_count = %v, want 3; body=%s", got.MemberCount, w.Body)
+	}
+}
+
 // TestListCustomerGroupsFiltersByStatus: ?status= reaches the store as a filter rather than being
 // dropped on the floor.
 func TestListCustomerGroupsFiltersByStatus(t *testing.T) {

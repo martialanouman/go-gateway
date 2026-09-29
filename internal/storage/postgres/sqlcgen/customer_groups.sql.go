@@ -12,9 +12,9 @@ import (
 )
 
 const createCustomerGroup = `-- name: CreateCustomerGroup :one
-INSERT INTO control_plane.customer_groups (name, description)
+INSERT INTO control_plane.customer_groups AS g (name, description)
 VALUES ($1, $2)
-RETURNING id, name, description, status, created_by, created_at, updated_at
+RETURNING g.id, g.name, g.description, g.status, g.created_by, g.created_at, g.updated_at, (SELECT count(*) FROM control_plane.customers c WHERE c.group_id = g.id)::bigint AS member_count
 `
 
 type CreateCustomerGroupParams struct {
@@ -22,19 +22,25 @@ type CreateCustomerGroupParams struct {
 	Description *string
 }
 
+type CreateCustomerGroupRow struct {
+	ControlPlaneCustomerGroup ControlPlaneCustomerGroup
+	MemberCount               int64
+}
+
 // status falls back to the DDL default ('active'), and created_by stays NULL until real operator
 // auth lands (step-310) — the column exists to satisfy the FK to the dashboard.operators stub.
-func (q *Queries) CreateCustomerGroup(ctx context.Context, arg CreateCustomerGroupParams) (ControlPlaneCustomerGroup, error) {
+func (q *Queries) CreateCustomerGroup(ctx context.Context, arg CreateCustomerGroupParams) (CreateCustomerGroupRow, error) {
 	row := q.db.QueryRow(ctx, createCustomerGroup, arg.Name, arg.Description)
-	var i ControlPlaneCustomerGroup
+	var i CreateCustomerGroupRow
 	err := row.Scan(
-		&i.ID,
-		&i.Name,
-		&i.Description,
-		&i.Status,
-		&i.CreatedBy,
-		&i.CreatedAt,
-		&i.UpdatedAt,
+		&i.ControlPlaneCustomerGroup.ID,
+		&i.ControlPlaneCustomerGroup.Name,
+		&i.ControlPlaneCustomerGroup.Description,
+		&i.ControlPlaneCustomerGroup.Status,
+		&i.ControlPlaneCustomerGroup.CreatedBy,
+		&i.ControlPlaneCustomerGroup.CreatedAt,
+		&i.ControlPlaneCustomerGroup.UpdatedAt,
+		&i.MemberCount,
 	)
 	return i, err
 }
@@ -55,49 +61,63 @@ func (q *Queries) DeleteCustomerGroup(ctx context.Context, id uuid.UUID) (int64,
 }
 
 const getCustomerGroup = `-- name: GetCustomerGroup :one
-SELECT id, name, description, status, created_by, created_at, updated_at FROM control_plane.customer_groups WHERE id = $1
+SELECT g.id, g.name, g.description, g.status, g.created_by, g.created_at, g.updated_at, (SELECT count(*) FROM control_plane.customers c WHERE c.group_id = g.id)::bigint AS member_count
+FROM control_plane.customer_groups g WHERE g.id = $1
 `
 
-func (q *Queries) GetCustomerGroup(ctx context.Context, id uuid.UUID) (ControlPlaneCustomerGroup, error) {
+type GetCustomerGroupRow struct {
+	ControlPlaneCustomerGroup ControlPlaneCustomerGroup
+	MemberCount               int64
+}
+
+func (q *Queries) GetCustomerGroup(ctx context.Context, id uuid.UUID) (GetCustomerGroupRow, error) {
 	row := q.db.QueryRow(ctx, getCustomerGroup, id)
-	var i ControlPlaneCustomerGroup
+	var i GetCustomerGroupRow
 	err := row.Scan(
-		&i.ID,
-		&i.Name,
-		&i.Description,
-		&i.Status,
-		&i.CreatedBy,
-		&i.CreatedAt,
-		&i.UpdatedAt,
+		&i.ControlPlaneCustomerGroup.ID,
+		&i.ControlPlaneCustomerGroup.Name,
+		&i.ControlPlaneCustomerGroup.Description,
+		&i.ControlPlaneCustomerGroup.Status,
+		&i.ControlPlaneCustomerGroup.CreatedBy,
+		&i.ControlPlaneCustomerGroup.CreatedAt,
+		&i.ControlPlaneCustomerGroup.UpdatedAt,
+		&i.MemberCount,
 	)
 	return i, err
 }
 
 const listCustomerGroups = `-- name: ListCustomerGroups :many
-SELECT id, name, description, status, created_by, created_at, updated_at FROM control_plane.customer_groups
-WHERE ($1::text IS NULL OR status = $1)
-ORDER BY name
+SELECT g.id, g.name, g.description, g.status, g.created_by, g.created_at, g.updated_at, (SELECT count(*) FROM control_plane.customers c WHERE c.group_id = g.id)::bigint AS member_count
+FROM control_plane.customer_groups g
+WHERE ($1::text IS NULL OR g.status = $1)
+ORDER BY g.name
 `
+
+type ListCustomerGroupsRow struct {
+	ControlPlaneCustomerGroup ControlPlaneCustomerGroup
+	MemberCount               int64
+}
 
 // Not paginated: the contract returns a bare array. A group count is an operator-scale number —
 // one row per commercial segment — not a subscriber-scale one, so there is no keyset here.
-func (q *Queries) ListCustomerGroups(ctx context.Context, status *string) ([]ControlPlaneCustomerGroup, error) {
+func (q *Queries) ListCustomerGroups(ctx context.Context, status *string) ([]ListCustomerGroupsRow, error) {
 	rows, err := q.db.Query(ctx, listCustomerGroups, status)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ControlPlaneCustomerGroup{}
+	items := []ListCustomerGroupsRow{}
 	for rows.Next() {
-		var i ControlPlaneCustomerGroup
+		var i ListCustomerGroupsRow
 		if err := rows.Scan(
-			&i.ID,
-			&i.Name,
-			&i.Description,
-			&i.Status,
-			&i.CreatedBy,
-			&i.CreatedAt,
-			&i.UpdatedAt,
+			&i.ControlPlaneCustomerGroup.ID,
+			&i.ControlPlaneCustomerGroup.Name,
+			&i.ControlPlaneCustomerGroup.Description,
+			&i.ControlPlaneCustomerGroup.Status,
+			&i.ControlPlaneCustomerGroup.CreatedBy,
+			&i.ControlPlaneCustomerGroup.CreatedAt,
+			&i.ControlPlaneCustomerGroup.UpdatedAt,
+			&i.MemberCount,
 		); err != nil {
 			return nil, err
 		}
@@ -110,12 +130,12 @@ func (q *Queries) ListCustomerGroups(ctx context.Context, status *string) ([]Con
 }
 
 const updateCustomerGroup = `-- name: UpdateCustomerGroup :one
-UPDATE control_plane.customer_groups SET
+UPDATE control_plane.customer_groups AS g SET
     name        = COALESCE($1, name),
     description = COALESCE($2, description),
     status      = COALESCE($3, status)
-WHERE id = $4
-RETURNING id, name, description, status, created_by, created_at, updated_at
+WHERE g.id = $4
+RETURNING g.id, g.name, g.description, g.status, g.created_by, g.created_at, g.updated_at, (SELECT count(*) FROM control_plane.customers c WHERE c.group_id = g.id)::bigint AS member_count
 `
 
 type UpdateCustomerGroupParams struct {
@@ -125,26 +145,32 @@ type UpdateCustomerGroupParams struct {
 	ID          uuid.UUID
 }
 
+type UpdateCustomerGroupRow struct {
+	ControlPlaneCustomerGroup ControlPlaneCustomerGroup
+	MemberCount               int64
+}
+
 // Partial update: a NULL argument leaves its column unchanged (COALESCE). updated_at is not set
 // here — the customer_groups_touch trigger does it. Consequence of COALESCE: description cannot be
 // cleared back to NULL through this path, although the contract marks it nullable
 // (debts/patch-null-ne-peut-pas-effacer-un-champ.md).
-func (q *Queries) UpdateCustomerGroup(ctx context.Context, arg UpdateCustomerGroupParams) (ControlPlaneCustomerGroup, error) {
+func (q *Queries) UpdateCustomerGroup(ctx context.Context, arg UpdateCustomerGroupParams) (UpdateCustomerGroupRow, error) {
 	row := q.db.QueryRow(ctx, updateCustomerGroup,
 		arg.Name,
 		arg.Description,
 		arg.Status,
 		arg.ID,
 	)
-	var i ControlPlaneCustomerGroup
+	var i UpdateCustomerGroupRow
 	err := row.Scan(
-		&i.ID,
-		&i.Name,
-		&i.Description,
-		&i.Status,
-		&i.CreatedBy,
-		&i.CreatedAt,
-		&i.UpdatedAt,
+		&i.ControlPlaneCustomerGroup.ID,
+		&i.ControlPlaneCustomerGroup.Name,
+		&i.ControlPlaneCustomerGroup.Description,
+		&i.ControlPlaneCustomerGroup.Status,
+		&i.ControlPlaneCustomerGroup.CreatedBy,
+		&i.ControlPlaneCustomerGroup.CreatedAt,
+		&i.ControlPlaneCustomerGroup.UpdatedAt,
+		&i.MemberCount,
 	)
 	return i, err
 }

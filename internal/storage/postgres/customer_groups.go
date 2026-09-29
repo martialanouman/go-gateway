@@ -30,7 +30,7 @@ func (r *CustomerGroupRepo) List(ctx context.Context, f cp.CustomerGroupFilter) 
 	}
 	out := make([]cp.CustomerGroup, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, customerGroupFromRow(row))
+		out = append(out, customerGroupFromRow(row.ControlPlaneCustomerGroup, row.MemberCount))
 	}
 	return out, nil
 }
@@ -41,7 +41,7 @@ func (r *CustomerGroupRepo) Get(ctx context.Context, id uuid.UUID) (cp.CustomerG
 	if err != nil {
 		return cp.CustomerGroup{}, translate("get customer group", err)
 	}
-	return customerGroupFromRow(row), nil
+	return customerGroupFromRow(row.ControlPlaneCustomerGroup, row.MemberCount), nil
 }
 
 // Create inserts a group. A duplicate name hits the UNIQUE constraint and comes back as ErrConflict.
@@ -53,7 +53,7 @@ func (r *CustomerGroupRepo) Create(ctx context.Context, in cp.NewCustomerGroup) 
 	if err != nil {
 		return cp.CustomerGroup{}, translate("create customer group", err)
 	}
-	return customerGroupFromRow(row), nil
+	return customerGroupFromRow(row.ControlPlaneCustomerGroup, row.MemberCount), nil
 }
 
 // Update applies a partial change and returns the updated group, or ErrNotFound. Renaming onto a
@@ -68,7 +68,7 @@ func (r *CustomerGroupRepo) Update(ctx context.Context, id uuid.UUID, p cp.Custo
 	if err != nil {
 		return cp.CustomerGroup{}, translate("update customer group", err)
 	}
-	return customerGroupFromRow(row), nil
+	return customerGroupFromRow(row.ControlPlaneCustomerGroup, row.MemberCount), nil
 }
 
 // Delete removes a group; its customers are detached by the schema, never by code here (§6.17).
@@ -84,7 +84,7 @@ func (r *CustomerGroupRepo) Delete(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
-func customerGroupFromRow(row sqlcgen.ControlPlaneCustomerGroup) cp.CustomerGroup {
+func customerGroupFromRow(row sqlcgen.ControlPlaneCustomerGroup, memberCount int64) cp.CustomerGroup {
 	return cp.CustomerGroup{
 		ID:          row.ID,
 		Name:        row.Name,
@@ -93,5 +93,6 @@ func customerGroupFromRow(row sqlcgen.ControlPlaneCustomerGroup) cp.CustomerGrou
 		CreatedBy:   row.CreatedBy,
 		CreatedAt:   tsVal(row.CreatedAt),
 		UpdatedAt:   tsVal(row.UpdatedAt),
+		MemberCount: memberCount,
 	}
 }

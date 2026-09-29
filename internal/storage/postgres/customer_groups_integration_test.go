@@ -240,6 +240,97 @@ func TestSetCustomerGroupDrivesBothGroupFilters(t *testing.T) {
 		[]uuid.UUID{outside.ID}, []uuid.UUID{outsideAccount})
 }
 
+// TestCustomerGroupMemberCountFollowsMembership: member_count is read from customers.group_id on
+// every path that returns a group. The two groups end up with different counts, so a list that
+// copied one group's count onto the other, or a constant, fails.
+func TestCustomerGroupMemberCountFollowsMembership(t *testing.T) {
+	pool := pgtest.Pool(t)
+	groups := postgres.NewCustomerGroupRepo(pool)
+	customers := postgres.NewCustomerRepo(pool)
+	ctx := context.Background()
+
+	first, err := groups.Create(ctx, cp.NewCustomerGroup{Name: uniqueGroupName("Counted")})
+	if err != nil {
+		t.Fatalf("Create(first) error = %v", err)
+	}
+	if first.MemberCount != 0 {
+		t.Errorf("Create().MemberCount = %d, want 0", first.MemberCount)
+	}
+	second, err := groups.Create(ctx, cp.NewCustomerGroup{Name: uniqueGroupName("Counted")})
+	if err != nil {
+		t.Fatalf("Create(second) error = %v", err)
+	}
+
+	stays := createCustomerInGroup(ctx, t, customers, first.ID)
+	moves := createCustomerInGroup(ctx, t, customers, first.ID)
+	if _, err := customers.Suspend(ctx, stays); err != nil {
+		t.Fatalf("Suspend() error = %v", err)
+	}
+	closed := cp.CustomerClosed
+	if _, err := customers.Update(ctx, moves, cp.CustomerPatch{Status: &closed}); err != nil {
+		t.Fatalf("Update(closed) error = %v", err)
+	}
+	assertMemberCounts(ctx, t, groups, map[uuid.UUID]int64{first.ID: 2, second.ID: 0})
+
+	desc := "described while populated"
+	updated, err := groups.Update(ctx, first.ID, cp.CustomerGroupPatch{Description: &desc})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if updated.MemberCount != 2 {
+		t.Errorf("Update().MemberCount = %d, want 2", updated.MemberCount)
+	}
+
+	if _, err := customers.SetGroup(ctx, moves, &second.ID); err != nil {
+		t.Fatalf("SetGroup(moves -> second) error = %v", err)
+	}
+	assertMemberCounts(ctx, t, groups, map[uuid.UUID]int64{first.ID: 1, second.ID: 1})
+
+	if _, err := customers.SetGroup(ctx, stays, nil); err != nil {
+		t.Fatalf("SetGroup(stays -> null) error = %v", err)
+	}
+	assertMemberCounts(ctx, t, groups, map[uuid.UUID]int64{first.ID: 0, second.ID: 1})
+}
+
+// assertMemberCounts checks each group's count through Get and through one List call.
+func assertMemberCounts(ctx context.Context, t *testing.T, groups *postgres.CustomerGroupRepo, want map[uuid.UUID]int64) {
+	t.Helper()
+	listed, err := groups.List(ctx, cp.CustomerGroupFilter{})
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	fromList := make(map[uuid.UUID]int64, len(listed))
+	for _, g := range listed {
+		fromList[g.ID] = g.MemberCount
+	}
+	for id, count := range want {
+		got, err := groups.Get(ctx, id)
+		if err != nil {
+			t.Fatalf("Get(%s) error = %v", id, err)
+		}
+		if got.MemberCount != count {
+			t.Errorf("Get(%s).MemberCount = %d, want %d", id, got.MemberCount, count)
+		}
+		if listedCount, ok := fromList[id]; !ok || listedCount != count {
+			t.Errorf("List() member_count of %s = %d (listed: %t), want %d", id, listedCount, ok, count)
+		}
+	}
+}
+
+// createCustomerInGroup creates a customer outside any group and joins it through SetGroup, the
+// set-customer-group path.
+func createCustomerInGroup(ctx context.Context, t *testing.T, customers *postgres.CustomerRepo, groupID uuid.UUID) uuid.UUID {
+	t.Helper()
+	c, err := customers.Create(ctx, cp.NewCustomer{Name: uniqueGroupName("Member")})
+	if err != nil {
+		t.Fatalf("Create(customer) error = %v", err)
+	}
+	if _, err := customers.SetGroup(ctx, c.ID, &groupID); err != nil {
+		t.Fatalf("SetGroup() error = %v", err)
+	}
+	return c.ID
+}
+
 // TestSetCustomerGroupUnknownGroupIsValidation: the FK to customer_groups is what rejects an unknown
 // group, translated to 422 — which is why set-customer-group declares it and the handler runs no
 // pre-flight existence check that a concurrent delete could invalidate anyway.
