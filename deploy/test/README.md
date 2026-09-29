@@ -30,7 +30,7 @@ en échec fait échouer le workflow **Deploy test**.
   Origin Server → « Use my private key and CSR » et enregistrer le certificat en `origin.crt` :
   `openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -keyout origin.key
   -subj /CN=api-test.manouman.com -addext subjectAltName=DNS:api-test.manouman.com -out origin.csr`
-- L'image `ghcr.io/martialanouman/go-smsc-simulator:v0.8.1` publiée en `linux/amd64` par la CI de ce
+- L'image `ghcr.io/martialanouman/go-smsc-simulator:v0.9.1` publiée en `linux/amd64` par la CI de ce
   dépôt-là (`deps/smsc-simulator.yaml` la référence telle quelle).
 
 ## 3. Préparer l'hôte

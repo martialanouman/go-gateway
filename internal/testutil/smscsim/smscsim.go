@@ -140,6 +140,8 @@ func ThrottlingConfig(systemID, password string, capPerSec int) string {
 func DeadCarrierConfig(systemID, password string) string {
 	return virtualSMSC(systemID, password, `    scenario:
       profile: dead-carrier
+      params:
+        mode: timeout_all
       latency:
         distribution: fixed
         params: { ms: 5 }
@@ -151,6 +153,8 @@ func DeadCarrierConfig(systemID, password string) string {
 func FlakyCarrierConfig(systemID, password string) string {
 	return virtualSMSC(systemID, password, `    scenario:
       profile: flaky-carrier
+      params:
+        success_rate: 0.8
       latency:
         distribution: fixed
         params: { ms: 5 }
