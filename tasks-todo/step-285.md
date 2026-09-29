@@ -7,7 +7,7 @@
 ## Ce que la campagne a vu
 
 VPS de test, 24 clients en facturation postpayée, ~3,3 M messages dans `mt.inbound` après un run
-`sustained`. Sans **aucune** ingestion, Postgres au repos, le routeur n'a consommé **0 message en 60 s** :
+`sustained`. Sans **aucune** ingestion, le routeur n'a consommé **0 message en 60 s** :
 
 1. il relit le lot non commité de `mt.inbound` ;
 2. `handleBatch` lance une goroutine par partition et chaque voie réserve le crédit de ses messages ;
@@ -20,10 +20,19 @@ VPS de test, 24 clients en facturation postpayée, ~3,3 M messages dans `mt.inbo
 7 redémarrages en 16 min, CrashLoopBackOff. Pendant un run, c'est ce qui a fait tomber la traversée à
 zéro. En production, c'est la reprise après **n'importe quelle** panne qui accumule un backlog.
 
+## Le même verrou que le goulot 2 de step-280
+
+La réservation n'est pas qu'un aller-retour Redis : elle écrit durablement de façon synchrone
+(`RecordDurable` → `AdjustBalance … ON CONFLICT DO UPDATE`, `internal/billing/billing.go:274`), sur la
+ligne `control_plane.balances` du client, que la capture verrouille aussi (delta 0, `billing.go:382`).
+Pendant la rafale de reprise, Postgres n'est donc pas au repos : les réservations d'un même client se
+sérialisent derrière ce verrou, et c'est vraisemblablement ce qui les pousse au-delà de 200 ms. À vérifier
+en tête de step : `pg_stat_activity` pendant un redémarrage.
+
 ## Pourquoi ce n'est pas un réglage
 
 Élargir `RESERVE_TIMEOUT` repousse le seuil, ne le supprime pas : la rafale de reprise grandit avec le
-backlog. Le défaut est qu'une erreur **transitoire** a une conséquence **fatale** (le processus), et que
+backlog, et le verrou par client la sérialise. Le défaut est qu'une erreur **transitoire** a une conséquence **fatale** (le processus), et que
 la reprise refait la même rafale. La mécanique « une erreur de traitement abat le groupe » est déjà fichée
 pour `mo-dlr-router-svc` (`debts/content-key-svc-est-sur-le-chemin-de-la-remise-sans-etre-une-dependance-de-readiness.md`) ;
 ici elle ne se résorbe pas d'elle-même.
@@ -35,6 +44,8 @@ ici elle ne se résorbe pas d'elle-même.
   bornée vers billing-svc ; ou les deux.
 - Ce que la réponse change pour les autres consommateurs du superviseur (même mécanique partout).
 - Si billing-svc doit borner lui-même sa file (il était à 0,75 cœur sous une request de 50 m).
+- Si l'écriture durable synchrone sur une ligne par client (réserve **et** capture) est le bon modèle à
+  8 000/s : c'est aussi le plafond par client de step-280.
 
 ## Definition of Done
 - [ ] un test d'intégration qui rejoue un backlog sous une réservation lente et prouve que le routeur

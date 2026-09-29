@@ -34,7 +34,7 @@ Arbitré par Fable le 28/09/2026 (six points), sans contradiction avec la spec.
    `bind_pool_size` retenu par le plafond ; route catch-all ; routes exactes à la part portée retenue.
    **Refuse de démarrer** si une règle anti-spam `duplicate`/`velocity` couvre le client : k6 répète un
    corps sur 10 000 destinations, le run serait faux en silence.
-5. **Leviers : `run.sh apply` les patche**, valeurs versionnées dans le script, jamais `kubectl scale` :
+5. **Leviers : `run.sh apply` les patche**, valeurs versionnées dans le script, jamais un `kubectl scale` à la main :
    `rest-api-svc`, `router-svc`, `connector-pool-svc` à 2 réplicas par HPA min = max (avec des requests à
    50 m l'HPA sature dès la première seconde et ne mesure rien). `bind_pool_size` passe par l'Admin
    (`seed-load`), que le pool relit avant chaque connexion ; `CONNECTOR_BIND_POOL_SIZE` reste à 2.
@@ -45,13 +45,12 @@ Arbitré par Fable le 28/09/2026 (six points), sans contradiction avec la spec.
 **Révisé le 28/09/2026 après le premier run (le profil mono-client ne mesurait que deux plafonds par client).**
 `mt.inbound` est partitionné par compte (guide §4.1) : un compte = une partition = une voie du routeur,
 et le premier run a tout mis sur la partition 8 des 12. Chaque capture incrémente la ligne
-`control_plane.balance` du client : un client = une ligne verrouillée, 6-7 transactions en attente,
+`control_plane.balances` du client : un client = une ligne verrouillée, 6-7 transactions en attente,
 captures au-delà de leurs 200 ms, pool à 369 `submit_sm/s`. Ce sont des plafonds **par client**, voulus
 par l'ordre par compte et consignés comme tels. Pour mesurer la passerelle, `seed-load` sème
 `LOAD_CUSTOMERS` clients (`load-00`…), chacun avec son sender ID, son compte `load`, sa facturation postpayée
 et sa clé ; k6 reçoit `API_KEYS` et donne à chaque VU la clé `__VU % n`. 24 clients : deux par partition
-en moyenne. Le second profil « facturation coupée » que j'avais retiré n'est plus nécessaire : la
-contention est attribuée par `pg_stat_activity`, pas par soustraction.
+en moyenne.
 
 **Pièges consignés d'avance.** (a) Le simulateur sert ~200 `submit_sm/s` par bind (latence fixe 5 ms,
 service sérialisé) et `seed` crée le connecteur à `bind_pool_size` 1 : sans levier, la campagne mesure
@@ -102,7 +101,7 @@ NFR ingestion p99 < 250 ms : **mesuré 981 ms-1,1 s, non tenu ici, verdict non r
 1. **Une partition par compte** (voulu, guide §4.1) : avec 1 client, tout `mt.inbound` est allé sur la
    partition 8, soit une seule voie du routeur.
 2. **Une ligne de solde verrouillée par client.** Chaque capture fait `AdjustBalance … ON CONFLICT` sur la
-   même ligne `control_plane.balance`. On a observé 6-7 transactions en attente de verrou, des captures
+   même ligne `control_plane.balances`. On a observé 6-7 transactions en attente de verrou, des captures
    au-delà de leurs 200 ms (fail-open, ~1 000/min) et **369 `submit_sm/s`** en traversée, pour un pool à
    0,24 cœur. Ce plafond est propre à un client unique : un gros client A2P le heurterait en production.
 3. **Le routeur ne sort pas d'un backlog quand la facturation est active.** Avec 24 clients, les
@@ -120,7 +119,8 @@ ils auraient mesuré le même CrashLoop.
 - les binds du pool disqualifiaient le plafond du pair ;
 - un sshd public sous brute-force refusait les poignées de main au-delà de `MaxStartups` (d'où une seule
   connexion multiplexée) ;
-- le premier `ssh -L` devenait le maître du multiplexage et figeait tout.
+- le premier `ssh -L` du script de relevé (hors dépôt) devenait le maître du multiplexage et figeait
+  tout : ouvrir un maître dédié (`ssh -MNf`) avant tout tunnel.
 
 **Hors de la passerelle.** Le simulateur v0.8.1 a coupé deux sessions à 21:16:59 et 21:18:45 UTC sans
 aucune trace (ni log ni métrique de fermeture). Un prompt pour lui ajouter une télémétrie des fermetures a

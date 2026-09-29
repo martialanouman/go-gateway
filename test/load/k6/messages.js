@@ -101,7 +101,7 @@ function randomBase36(n) {
 
 const BASE_URL = __ENV.BASE_URL || 'http://127.0.0.1:8099';
 // The stub authenticates on shape alone; a real gateway needs a real key passed in. API_KEYS spreads
-// VUs over several tenants: mt.inbound is keyed by account, so one key measures one partition.
+// VUs over several tenants: one key would measure one mt.inbound partition.
 const API_KEYS = (__ENV.API_KEYS || __ENV.API_KEY || 'sgw_loadtest').split(',');
 const SENDER_ID = __ENV.SENDER_ID || 'ACME';
 
@@ -163,7 +163,6 @@ function msisdn() {
   return `+225070000${String(n).padStart(4, '0')}`; // n=0 gives the repo placeholder exactly
 }
 
-// One params object per key, built once: each VU keeps its tenant for the whole run.
 const paramsByKey = API_KEYS.map((key) => ({
   headers: {
     'Content-Type': 'application/json',

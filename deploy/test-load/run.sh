@@ -2,7 +2,7 @@
 # Campagne step-280 sur le VPS de test (README §11). Accès root SSH de l'exploitant.
 #
 #   run.sh HOST apply                      leviers de campagne (2 réplicas figés)
-#   run.sh HOST seed VERSION PORTED_SHARE  compte de charge ; la clé API va dans le Secret k6-load
+#   run.sh HOST seed VERSION PORTED_SHARE  clients de charge ; leurs clés API vont dans le Secret k6-load
 #   run.sh HOST ceiling VERSION            plafond du simulateur, dans le cluster
 #   run.sh HOST k6 PROFILE IDEMPOTENCY DURATION
 set -euo pipefail
@@ -34,7 +34,7 @@ run_job() {
 }
 
 case $action in
-  # Jamais `kubectl scale` à la main : les valeurs vivent ici. L'HPA ramène les réplicas dans [min, max]
+  # Jamais un `kubectl scale` à la main : les valeurs vivent ici. L'HPA ramène les réplicas dans [min, max]
   # avant de lire ses métriques. min = max, parce qu'avec les requests de
   # 50m du VPS un HPA CPU sature dès la première seconde et ne mesure rien. Le prochain déploiement de
   # main les écrase — pas de merge pendant une campagne.
@@ -51,8 +51,9 @@ case $action in
     out=$(run_job seed-load "$manifest") || { echo "$out" >&2; exit 1; }
     key=$(sed -n 's/^API_KEYS=//p' <<<"$out")
     [[ -n $key ]] || { echo "seed-load n'a rendu aucune clé" >&2; exit 1; }
-    # Rendu en local : la clé ne passe jamais dans une ligne de commande de l'hôte.
-    kubectl create secret generic k6-load --from-literal="API_KEYS=$key" --dry-run=client -o yaml | kube apply -f -
+    # Rendu en local, par un fichier : les clés ne passent dans aucune ligne de commande.
+    kubectl create secret generic k6-load --from-env-file=<(printf 'API_KEYS=%s\n' "$key") --dry-run=client -o yaml |
+      kube apply -f -
     # billing-svc ne relit la config client que toutes les 30 s : avant, le client est prépayé strict et
     # le début d'un run serait refusé en aval, sans bruit, derrière des 202.
     sleep 35
@@ -62,7 +63,7 @@ case $action in
   ceiling)
     trap 'kube scale deployment connector-pool-svc --replicas=2' EXIT
     kube scale deployment connector-pool-svc --replicas=0
-    kube wait --for=delete pod -l app=connector-pool-svc --timeout=200s
+    kube wait --for=delete pod -l app=connector-pool-svc --timeout=200s || true
     run_job smsc-ceiling "$(sed "s/@VERSION@/$3/" "$here/ceiling.yaml")"
     ;;
   k6)

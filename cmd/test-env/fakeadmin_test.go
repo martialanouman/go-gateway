@@ -132,7 +132,7 @@ type fakeBilling struct {
 }
 
 type fakeReconnectPolicy struct {
-	AutoReconnectEnabled *bool `json:"auto_reconnect_enabled"`
+	AutoReconnectEnabled bool `json:"auto_reconnect_enabled"`
 }
 
 type fakeBindPoolUpdate struct {
@@ -567,15 +567,11 @@ func (f *fakeAdmin) setReconnectPolicy(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if body.AutoReconnectEnabled == nil {
-		http.Error(w, `{"code":"validation_error","message":"auto_reconnect_enabled requis"}`, http.StatusUnprocessableEntity)
-		return
-	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for i := range f.connectors {
 		if f.connectors[i].id == r.PathValue("id") {
-			f.connectors[i].autoReconnect = *body.AutoReconnectEnabled
+			f.connectors[i].autoReconnect = body.AutoReconnectEnabled
 			f.writes++
 			writeFakeJSON(w, http.StatusOK, fakeConnectorResp{ID: f.connectors[i].id, Name: f.connectors[i].name})
 			return

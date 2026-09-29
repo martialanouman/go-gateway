@@ -32,9 +32,8 @@ type exactRouteCreate struct {
 	Source     string `json:"source"`
 }
 
-// seedLoad prepares the load campaign's tenants (step-280) and returns one fresh API key per customer.
-// mt.inbound is keyed by account and every capture updates its customer's balance row, so a single
-// tenant measures one partition and one locked row, not the gateway.
+// seedLoad prepares the load campaign's tenants and returns one fresh API key per customer: one tenant
+// would measure one mt.inbound partition and one balance row (tasks-done/step-280.md).
 func seedLoad(ctx context.Context, a *admin, c connectorSpec, spec loadSpec) ([]string, error) {
 	connectorID, err := seed(ctx, a, c)
 	if err != nil {
@@ -43,8 +42,7 @@ func seedLoad(ctx context.Context, a *admin, c connectorSpec, spec loadSpec) ([]
 	if err := a.do(ctx, http.MethodPatch, "/connectors/"+connectorID+"/bind-pool", map[string]int{"bind_pool_size": spec.BindPoolSize}, nil); err != nil {
 		return nil, fmt.Errorf("bind_pool_size : %w", err)
 	}
-	// Opt-in (§6.13), and the control plane overrides CONNECTOR_AUTO_RECONNECT: without it the first peer
-	// reset parks the connector until a manual rebind, and the run stops traversing.
+	// Opt-in (§6.13): without it the first peer reset parks the connector until a manual rebind.
 	if err := a.do(ctx, http.MethodPatch, "/connectors/"+connectorID+"/reconnect-policy", map[string]bool{"auto_reconnect_enabled": true}, nil); err != nil {
 		return nil, fmt.Errorf("auto-reconnexion : %w", err)
 	}

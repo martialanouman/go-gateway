@@ -12,12 +12,8 @@
 > step-280 et se réutilise ; les **valeurs** de dimensionnement L0 (`POSTGRES_MAX_CONNS`, empreinte et
 > éviction Redis, mesure « en réseau ») sont ici, les **ratios** ont été mesurés par step-280.
 
-> **Hérité de step-280 (29/09/2026).** La campagne sur le VPS a nommé ce que cette fiche doit savoir
-> d'avance : les plafonds **par client** (une partition de `mt.inbound` par compte, une ligne de solde
-> verrouillée par client — semer plusieurs clients, `LOAD_CUSTOMERS`) ; l'auto-reconnexion est opt-in et
-> `seed-load` l'active ; le routeur ne sortait pas d'un backlog sous facturation (**step-285**, prérequis) ;
-> le simulateur v0.8.1 coupe des sessions sans trace — une version qui journalise ses fermetures est à
-> déployer avant de lire une campagne (prompt dans le journal de step-280).
+> **Hérité de step-280 (29/09/2026).** Lire d'abord son journal (`tasks-done/step-280.md`) : plafonds par
+> client, auto-reconnexion opt-in, step-285 prérequise, simulateur v0.8.1 sans télémétrie de fermeture.
 
 ## But
 Rendre le **verdict NFR** que step-201 ne pouvait pas rendre : débit soutenu **8 000 SMS/s**, pic
