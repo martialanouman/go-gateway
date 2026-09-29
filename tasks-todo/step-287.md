@@ -1,7 +1,7 @@
 # step-287 — Rejouer la campagne du VPS, injecteur sur une VM séparée
 
 > **Jalon :** M12 · **Statut :** À FAIRE
-> **Dépend de :** step-282, step-284, step-285 · **Bloque :** step-409
+> **Dépend de :** step-282, step-283, step-284, step-285 · **Bloque :** step-409
 > Suggestion humaine du 29/09/2026 ; unité faute de multiple de dix libre.
 
 ## Pourquoi

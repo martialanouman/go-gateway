@@ -213,11 +213,13 @@ qu'on mesure un environnement représentatif.
       ⛓ step-230, step-270b, step-270c, step-270d, step-275 — recadrée le 28/09/2026, le verdict part en step-409
 - [ ] step-282 — `mt.inbound` n'est plus partitionné par compte ⛓ step-280 — décision humaine ; unité
       faute de multiple de dix libre
+- [ ] step-283 — Le débit se refuse avant l'ACK, jamais après — décision humaine ; unité faute de
+      multiple de dix libre
 - [ ] step-284 — L'écriture durable du solde devient asynchrone, le plancher reste atomique ⛓ step-280 —
       décision humaine ; unité faute de multiple de dix libre
 - [ ] step-285 — Le routeur se tue en boucle sur un backlog quand la facturation est active ⛓ step-280 —
       ouverte par la campagne step-280 ; unité faute de multiple de dix libre
-- [ ] step-287 — Rejouer la campagne du VPS, injecteur sur une VM séparée ⛓ step-282, step-284, step-285
+- [ ] step-287 — Rejouer la campagne du VPS, injecteur sur une VM séparée ⛓ step-282, step-283, step-284, step-285
       — unité faute de multiple de dix libre
 
 Le seul **défaut de correction** du lot est clos : step-240 a fermé le rejeu d'un message annulé, et
