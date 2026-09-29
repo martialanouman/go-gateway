@@ -1,6 +1,6 @@
 # ADR-0020 : La catégorie de trafic est déclarée par sender ID ; elle fixe le `priority_flag` sortant et réserve des connecteurs
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-09-29
 **Deciders:** Équipe plateforme. Arbitrages utilisateur du 29/09/2026 : pas de ML ; les champs de priorité
 servent les connecteurs sortants ; la catégorie se déclare **par sender ID**, avec `marketing` par défaut et une

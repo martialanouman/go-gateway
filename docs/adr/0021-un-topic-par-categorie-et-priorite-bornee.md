@@ -1,6 +1,6 @@
 # ADR-0021 : Un topic par catégorie de trafic ; l'OTP et le transactionnel passent d'abord, dans une part bornée
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-09-29
 **Deciders:** Équipe plateforme. Arbitrages utilisateur du 29/09/2026 : un topic par type de trafic, moins de
 partitions pour l'OTP et le transactionnel que pour le marketing ; l'OTP et le transactionnel sont délivrés en
