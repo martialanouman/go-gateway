@@ -414,9 +414,8 @@ func TestInjectReportsATransportFailure(t *testing.T) {
 }
 
 // TestInjectSendsThePerSubmissionKey: Key must reach the wire, and its absence must keep the single
-// APIKey. It is the injector half of spreading the load across accounts — mt.inbound is keyed by
-// account, so one key means one partition and any parallelism result measured on it is void
-// (step-201d, D5).
+// APIKey. It is the injector half of spreading the load across accounts — one key means one
+// balance row, and any throughput measured on it is void (step-280).
 func TestInjectSendsThePerSubmissionKey(t *testing.T) {
 	seen := make(chan string, 4096)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

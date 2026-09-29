@@ -161,7 +161,7 @@ sender ID, un OTP frauduleux consomme toute la part prioritaire.
    `CONNECTOR_MARKETING_MIN_SHARE` ; drainer et `mt-replay` republient selon la catégorie du record.
 6. [ ] Observabilité : lag et latence d'attente par catégorie ; alerte sur le lag OTP.
 7. [ ] Spec §5.1, §6.4 ; guide §4.1 ; `CLAUDE.md` (ordre du pipeline) ; `deploy/k8s` (groupes, HPA).
-8. [ ] step-282 : réduire son périmètre au topic marketing.
+8. [x] step-282 : clé `message_id`, sans ordonnancement ; la mesure est faite par step-287.
 9. [ ] Spec du tableau de bord : limite de débit par sender ID sur l'écran des sender IDs ; lag et
    latence d'attente par catégorie au trafic temps réel (§6.3) et par connecteur ; alerte de lag OTP dans
    `alert_rules` (métrique d'infrastructure, évaluée par Alertmanager) ; état « refusé à l'admission »

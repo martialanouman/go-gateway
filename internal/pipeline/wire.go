@@ -61,8 +61,8 @@ type routedWire struct {
 	OwnerType          string     `json:"owner_type,omitempty"`
 }
 
-// EncodeInbound builds the mt.inbound record for env, keyed by account so an account's submissions
-// keep their partition order (§1.6). The headers carry ids only.
+// EncodeInbound builds the mt.inbound record for env, keyed by message so one account spreads over every
+// router lane: per-account order is not required. The headers carry ids only.
 func EncodeInbound(env InboundMT) (kafka.Record, error) {
 	value, err := json.Marshal(inboundWire{
 		MessageID:          env.MessageID,
@@ -84,7 +84,7 @@ func EncodeInbound(env InboundMT) (kafka.Record, error) {
 	if err != nil {
 		return kafka.Record{}, fmt.Errorf("pipeline: encode mt.inbound: %w", err)
 	}
-	key := env.AccountID
+	key := env.MessageID
 	return kafka.Record{
 		Topic:   kafka.TopicMTInbound,
 		Key:     key[:],

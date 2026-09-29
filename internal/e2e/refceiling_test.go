@@ -396,10 +396,9 @@ func backlogHeld(first, last map[int32]int64) error {
 
 // prefillBalance reports whether the prefill landed on every partition in comparable amounts.
 //
-// The account ids are picked against franz-go's partitioner so that one lands on each partition, but
-// that is an optimisation, not a guarantee: kafka.NewProducer configures no RecordPartitioner, so the
-// default decides, and a version bump could move it without a single test going red. This reads the
-// end offsets and observes where the records actually went.
+// Records are keyed by message id, and kafka.NewProducer configures no RecordPartitioner, so franz-go's
+// default decides where they land; a version bump could move it without a single test going red. This
+// reads the end offsets and observes where the records actually went.
 //
 // A starved partition does not fail the run outright the way a drained one does — it drags the palier
 // down and says nothing, which is worse.

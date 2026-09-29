@@ -74,11 +74,8 @@ type InjectConfig struct {
 	// Key maps a submission's sequence number to the API key it is sent with, and therefore to the
 	// ACCOUNT it lands on. Nil sends every submission with APIKey.
 	//
-	// It exists because mt.inbound is keyed by account (§1.6, so an account's submissions keep their
-	// partition order). One account puts the entire run on ONE partition, whatever the topic's partition
-	// count, however many pods join the group and whatever in-process fan-out the router grows — and the
-	// per-topic totals read exactly as they would for a balanced run. Spreading the keys is what makes a
-	// parallelism result mean anything (step-201d, D5).
+	// It exists because each capture locks its customer's balance row: one account serialises the run
+	// on ONE row, and the totals read exactly as they would for a balanced run (step-280).
 	Key func(seq uint64) string
 }
 

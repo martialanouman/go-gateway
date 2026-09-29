@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/twmb/franz-go/pkg/kgo"
 
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	"github.com/martialanouman/go-gateway/internal/platform/msg"
@@ -43,9 +44,8 @@ func TestInboundRoundTrip(t *testing.T) {
 	if rec.Topic != kafka.TopicMTInbound {
 		t.Errorf("topic: got %q", rec.Topic)
 	}
-	// Keyed by account so an account's submissions keep order (§1.6).
-	if !bytes.Equal(rec.Key, in.AccountID[:]) {
-		t.Errorf("key should be the account id bytes")
+	if !bytes.Equal(rec.Key, in.MessageID[:]) {
+		t.Errorf("key should be the message id bytes")
 	}
 
 	out, err := pipeline.DecodeInbound(rec)
@@ -75,6 +75,25 @@ func routedFixture() pipeline.RoutedMT {
 		MessageID: uuid.New(), TraceID: uuid.New(), AccountID: uuid.New(), CustomerID: uuid.New(),
 		From: "GATEWAY", To: "+22507000000", Body: msg.NewBodyString("hi"),
 		Encoding: "gsm7", ConnectorID: uuid.New(), SegmentCount: 1, SubmittedAt: time.Now().UTC().Truncate(time.Millisecond),
+	}
+}
+
+// kafka.NewProducer keeps franz-go's default partitioner, whose keyed branch is the murmur2 hash that
+// StickyKeyPartitioner wraps; the default itself panics when called outside a client.
+func TestInboundSingleAccountSpreadsOverEveryPartition(t *testing.T) {
+	const partitions = 12
+	partitioner := kgo.StickyKeyPartitioner(nil).ForTopic(kafka.TopicMTInbound)
+	account := uuid.New()
+	hit := map[int]bool{}
+	for range 20 * partitions {
+		rec, err := pipeline.EncodeInbound(pipeline.InboundMT{MessageID: uuid.New(), AccountID: account})
+		if err != nil {
+			t.Fatalf("encode: %v", err)
+		}
+		hit[partitioner.Partition(&kgo.Record{Key: rec.Key}, partitions)] = true
+	}
+	if len(hit) != partitions {
+		t.Errorf("one account reached %d of %d partitions, want all", len(hit), partitions)
 	}
 }
 

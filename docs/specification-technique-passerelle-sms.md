@@ -425,7 +425,7 @@ optout:changed                       -- pub/sub channel: a STOP received as an M
 ### 3.3 Plan de données (broker de messages — Kafka)
 
 ```
-mt.inbound        -- raw submissions (SMPP/REST), pre-routing. Partitioned by customer/account hash.
+mt.inbound        -- raw submissions (SMPP/REST), pre-routing. Partitioned by message_id.
 mt.routed         -- post-routing, ready for dispatch. Partitioned by (connector_id, shard_index) where
                      shard_index = hash(message_key) % bind_pool_size of the target connector (§6.8). message_key is
                      the LOGICAL message id (all UDH segments share it -> same bind, in order — §6.1/C-segment note).
@@ -815,7 +815,7 @@ Pour la logique que les règles déclaratives ne peuvent exprimer, le fournisseu
 - `smpp-server-svc` fait exception (état TCP) — scalé aussi, la remise MO/DLR utilisant le registre `session-manager-svc`. **Remise au bon pod** : le registre maintient `account → {pod_id, pod_addr, bind_id}[]` — `pod_addr` est l'adresse que le pod publie lui-même à chaque bind (`status.podIP`), et que le routeur dial sans résoudre aucun nom (step-302) ; `mo-dlr-router-svc` remet **directement au pod détenteur via gRPC** (endpoint de remise interne), round-robin sur les binds vivants ; à défaut de bind, repli webhook.
 - **Pool de binds par connecteur** : `bind_pool_size > 1` (§3.1) partitionne `mt.routed` par `(connector_id, shard_index)`, `shard_index = hash(message_key) % bind_pool_size`. Chaque partition est consommée par une instance dédiée tenant un bind indépendant. `message_key` est l'**ID de message logique** (tous les segments UDH d'un message concaténé le partagent → même shard/bind, dans l'ordre — requis par les SMSC réassemblant sur un seul bind).
 - **Agrégation du disjoncteur multi-pod** : les binds étant répartis sur plusieurs pods, chacun écrit uniquement ses champs dans le hash `breaker:binds:{connector_id}` ; l'état connecteur agrégé (`breaker:state`) est **dérivé** par règle de majorité (recalcul-et-CAS sur transition, ou agrégateur élu). La charge (`connectorload`) suit le même schéma (une somme, recalculée à chaque publication, pas une majorité).
-- Kafka : partitions dimensionnées pour le parallélisme (partitions par connecteur × `bind_pool_size` pour `mt.routed` ; hash de compte pour `mt.inbound`/`mo.inbound`).
+- Kafka : partitions dimensionnées pour le parallélisme (partitions par connecteur × `bind_pool_size` pour `mt.routed` ; `message_id` pour `mt.inbound`, hash de compte pour `mo.inbound`).
 - Multi-région : plan de données par région pour la latence, synchro de config cross-région ; primaire Postgres dans une région avec réplicas en lecture. *(La reprise après sinistre n'est pas traitée ici, §1.2bis.)*
 
 ### 6.9 Solde de crédit SMS (opt-in)

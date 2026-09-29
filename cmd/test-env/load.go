@@ -33,7 +33,7 @@ type exactRouteCreate struct {
 }
 
 // seedLoad prepares the load campaign's tenants and returns one fresh API key per customer: one tenant
-// would measure one mt.inbound partition and one balance row (tasks-done/step-280.md).
+// would measure one balance row (tasks-done/step-280.md).
 func seedLoad(ctx context.Context, a *admin, c connectorSpec, spec loadSpec) ([]string, error) {
 	connectorID, err := seed(ctx, a, c)
 	if err != nil {

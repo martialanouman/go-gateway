@@ -24,8 +24,6 @@ pas touché.
 
 ## Design arrêté
 
-La spec tranche tous les points : aucun n'est remonté à Fable ni à l'humain.
-
 - **Clé = `message_id`.** Inventaire des lecteurs qui supposeraient un compte par partition : aucun.
   L'idempotence REST se joue avant Kafka (`internal/idempotency`). Le rejeu, `mt-replay` et le
   dead-letter publient sur `mt.routed`, qui est déjà clé par message. Le débit et la réserve au routeur
@@ -41,9 +39,9 @@ La spec tranche tous les points : aucun n'est remonté à Fable ni à l'humain.
 - **Migration** : aucune production (ADR-0021). Pendant un déploiement, anciens et nouveaux records se
   mélangent le temps d'un drain, ce qui est sans effet puisque l'ordre par compte n'est plus exigé.
 - **Pas d'ADR neuve** : ADR-0021 nomme déjà la clé « celle de step-282 ». On amende le guide §4.1,
-  la spec §4 et §8 et le plan §1.6.
+  la spec §3.3 et §6.8 et le plan §1.6.
 
 ## Definition of Done
-- [ ] design arrêté dans la fiche, guide §4.1 amendé
-- [ ] un test prouve qu'un seul compte remplit toutes les partitions de `mt.inbound` — rouge lu sur le code actuel
-- [ ] l'ordre des segments d'un même message sur `mt.routed` reste gardé (test existant vert)
+- [x] design arrêté dans la fiche, guide §4.1 amendé
+- [x] un test prouve qu'un seul compte remplit toutes les partitions de `mt.inbound` — rouge lu sur le code actuel
+- [x] l'ordre des segments d'un même message sur `mt.routed` reste gardé (test existant vert)
