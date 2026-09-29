@@ -55,3 +55,53 @@ Un message acquitté peut être perdu pour une simple question de débit.
       `message_id`, pas par `(connector_id, shard)`)
 - [ ] l'ordre du pipeline de `CLAUDE.md` et de la spec §5.1 dit que le débit se contrôle avant l'ACK
 - [ ] les quatre invariants verts
+
+## Design arrêté
+
+Arbitrages du 29/09/2026 : la spec tranche S1-S5, Fable tranche F1-F6 sans heurter la spec.
+
+**Tranché par la spec**
+- **S1 — Admission par compte dans `ingest.Ingestor.Accept`**, avant l'encodage et le produce : le seul
+  chemin partagé REST/SMPP. `ErrRateLimited` y devient `429` (humaerr) et `ESME_RTHROTTLED`
+  (`SMPPStatusForError`). Rien n'est écrit sur `mt.inbound`. En REST idempotent, le créneau est libéré et le
+  client peut réessayer.
+- **S2 — Le plafond du connecteur passe au pool.** Chaque `submit_sm` attend son jeton du seau `connector`
+  (§6.4 backpressure ; ADR-0021 §5 « chaque envoi consomme un jeton du seau du connecteur »).
+  L'attente précède l'écriture du PDU, donc aucune place de la fenêtre SMPP n'est occupée. La boucle
+  sérielle du shard et la barrière de lot calent, et la consommation Kafka ralentit : c'est la backpressure.
+- **S3 — L'étape rate-limit du pipeline disparaît** : le compte passe à l'ingestion, le connecteur au pool,
+  la route est supprimée (F1). `pipeline.Deps.RateLimiter` et `Enforcer.Check` sont retirés. Le routeur ne
+  peut donc plus produire de CDR `rejected` pour cause de débit.
+- **S4 — Le parking et le draineur restent** : la spec §6.15 veut éviter une tempête de republication.
+- **S5 — Le seau `sender_id` n'est pas traité ici** : il revient à la step qui porte ADR-0021.
+
+**Tranché par Fable**
+- **F1 — Suppression du seau `route`.** Il n'est écrivable que par SQL, jamais par l'Admin. Le payer au pool
+  bloquerait en tête de ligne les autres routes du shard. Changements : migration `0023` (CHECK sans
+  `'route'`), schéma, spec §6.4 « compte/connecteur ». La migration **ne supprime aucune ligne** : si une
+  ligne `route` existe, l'`ADD CONSTRAINT` échoue et l'opérateur décide (écart assumé avec Fable, qui
+  proposait un `DELETE`).
+- **F2 — Un seau de republication distinct.** `AllowConnector` (porte de parking, draineur) consomme la
+  fenêtre `"reroute"` au débit de la cible. L'envoi est seul à payer la fenêtre `"sec"`. Sans cela, un
+  message rerouté paierait deux fois.
+- **F3 — Le coût d'admission est le nombre exact de segments.** `pipeline.SegmentCount(in)` reprend la
+  détection d'encodage et le `Split` des étapes 6-7 : ce sont les mêmes fonctions, et un test vérifie la
+  parité. Avec un jeton par message, un UCS-2 de 160 caractères (3 segments) coûterait 1, et le client
+  enverrait 3× son contrat.
+- **F4 — Position de l'attente au pool** : après le max-age, avant le claim d'annulation. Un message en
+  backpressure reste ainsi annulable. Si le disjoncteur est ouvert, le jeton est perdu, mais ce budget ne
+  sert à personne pendant la panne.
+- **F5 — `MaxPerDay` reste une dette**, avec une fiche dans `debts/` : GET /account l'expose sans qu'il soit
+  appliqué.
+- **F6 — Politique de panne** : pas de code. La borne s'écrit dans §6.4 : débit du compte × (pods REST +
+  pods SMPP portant un bind du compte, au plus min(`max_sessions`, pods SMPP)).
+
+**API de `ratelimit.Enforcer`** : `AdmitAccount(ctx, account, segments) error` ·
+`WaitConnector(ctx, connector, segments) error`, qui refait l'essai après `segments/rate` et rend `ctx.Err()` à
+l'annulation · `AllowConnector` (fenêtre `"reroute"`).
+
+**Tests** : R1 est un rouge REST par le câblage réel (`newHTTPServer`) : aujourd'hui 202, attendu 429. R2 est
+un rouge routeur par `newPipelineStack` : un connecteur vidé par le compte A rejette aujourd'hui le compte B
+en `rate_limited`. S'y ajoutent l'ingestion (rien produit au-delà du débit ; chaos Redis déplacé du routeur
+vers l'ingestion), le pool (attente avant le claim et avant le submit), l'Enforcer (attente, fenêtres
+disjointes) et la parité des segments.
