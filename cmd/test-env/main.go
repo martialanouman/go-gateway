@@ -92,11 +92,15 @@ func run(cmd string) error {
 		if err != nil || share < 0 || share > 0.8 {
 			return fmt.Errorf("LOAD_PORTED_SHARE %q : une part dans [0, 0.8]", os.Getenv("LOAD_PORTED_SHARE"))
 		}
-		key, err := seedLoad(ctx, a, connector(), loadSpec{BindPoolSize: bindPool, PortedShare: share})
+		customers, err := strconv.Atoi(mustEnv("LOAD_CUSTOMERS"))
+		if err != nil || customers < 1 {
+			return fmt.Errorf("LOAD_CUSTOMERS %q : au moins un client", os.Getenv("LOAD_CUSTOMERS"))
+		}
+		keys, err := seedLoad(ctx, a, connector(), loadSpec{Customers: customers, BindPoolSize: bindPool, PortedShare: share})
 		if err != nil {
 			return err
 		}
-		fmt.Printf("API_KEY=%s\n", key)
+		fmt.Printf("API_KEYS=%s\n", strings.Join(keys, ","))
 		return nil
 	case "seed":
 		id, err := seed(ctx, a, connector())

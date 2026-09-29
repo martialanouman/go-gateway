@@ -22,8 +22,8 @@ spec:
             - { name: PROFILE, value: "@PROFILE@" }
             - { name: IDEMPOTENCY, value: "@IDEMPOTENCY@" }
             - { name: DURATION, value: "@DURATION@" }
-            - name: API_KEY
-              valueFrom: { secretKeyRef: { name: k6-load, key: API_KEY } }
+            - name: API_KEYS
+              valueFrom: { secretKeyRef: { name: k6-load, key: API_KEYS } }
           # Une limite fixe : la part de l'hôte que prend l'injecteur co-résident est connue.
           resources:
             requests: { cpu: "2", memory: 1Gi }

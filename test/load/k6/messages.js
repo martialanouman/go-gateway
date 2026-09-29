@@ -100,8 +100,9 @@ function randomBase36(n) {
 }
 
 const BASE_URL = __ENV.BASE_URL || 'http://127.0.0.1:8099';
-// The stub authenticates on shape alone; a real gateway needs a real key passed in.
-const API_KEY = __ENV.API_KEY || 'sgw_loadtest';
+// The stub authenticates on shape alone; a real gateway needs a real key passed in. API_KEYS spreads
+// VUs over several tenants: one key would measure one mt.inbound partition.
+const API_KEYS = (__ENV.API_KEYS || __ENV.API_KEY || 'sgw_loadtest').split(',');
 const SENDER_ID = __ENV.SENDER_ID || 'ACME';
 
 export const options = {
@@ -162,15 +163,15 @@ function msisdn() {
   return `+225070000${String(n).padStart(4, '0')}`; // n=0 gives the repo placeholder exactly
 }
 
-const params = {
+const paramsByKey = API_KEYS.map((key) => ({
   headers: {
     'Content-Type': 'application/json',
-    Authorization: `Bearer ${API_KEY}`,
+    Authorization: `Bearer ${key}`,
   },
   // No assertion reads the body; parsing it at 15 000 req/s would measure the load generator's JSON
   // throughput instead of the gateway's latency.
   responseType: 'text',
-};
+}));
 
 // requestParams returns the params for one request. With IDEMPOTENCY off it returns `params`
 // untouched, so the header is ABSENT — never present and empty, which the gateway would read as "no
@@ -187,6 +188,7 @@ const params = {
 // Object.assign rather than object spread: it is ES2015 and cannot depend on the compatibility mode
 // the run was started with.
 function requestParams() {
+  const params = paramsByKey[__VU % paramsByKey.length];
   if (!IDEMPOTENT) {
     return params;
   }

@@ -1,7 +1,7 @@
 # step-409 — Campagne NFR pleine échelle sur environnement représentatif
 
 > **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
-> **Dépend de :** **step-280**, step-270, **step-270b** · **Bloque :** step-410
+> **Dépend de :** **step-280**, **step-285**, **step-287**, step-270, **step-270b** · **Bloque :** step-410
 > Unité faute de multiple de dix libre.
 
 > **Origine (28/09/2026).** Cette fiche est l'ancienne step-280. Décision humaine : la campagne se fait
@@ -11,6 +11,9 @@
 > par step-280). L'outillage de campagne (`test-env seed-load`, Jobs `deploy/test/load/`) est livré par
 > step-280 et se réutilise ; les **valeurs** de dimensionnement L0 (`POSTGRES_MAX_CONNS`, empreinte et
 > éviction Redis, mesure « en réseau ») sont ici, les **ratios** ont été mesurés par step-280.
+
+> **Hérité de step-280 (29/09/2026).** Lire d'abord son journal (`tasks-done/step-280.md`) : plafonds par
+> client, auto-reconnexion opt-in, step-285 prérequise, simulateur v0.8.1 sans télémétrie de fermeture.
 
 ## But
 Rendre le **verdict NFR** que step-201 ne pouvait pas rendre : débit soutenu **8 000 SMS/s**, pic

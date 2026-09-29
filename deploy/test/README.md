@@ -209,9 +209,11 @@ deploy/test-load/run.sh $H k6 sustained on 10m
 deploy/test-load/run.sh $H k6 peak off 10m
 ```
 
-`seed-load` bascule le client `test` en facturation postpayée à plafond non bloquant (le chemin de production,
-jamais bloquant) et lève le `bind_pool_size` du connecteur (`seed-load.yaml`). Chaque `seed` émet une clé API
-neuve (rotation de la précédente).
+`seed-load` sème 24 clients `load-00`…`load-23` (facturation postpayée à plafond non bloquant, une
+clé API chacun, tournée à chaque `seed`), active l'auto-reconnexion du connecteur et lève son
+`bind_pool_size` (`seed-load.yaml`). Plusieurs clients parce que `mt.inbound` est partitionné par compte
+et que chaque capture verrouille la ligne de solde de son client : un seul client mesure une partition
+et une ligne, pas la passerelle.
 
 **Un 202 ne prouve rien en aval** : `rest-api-svc` n'applique ni crédit ni anti-spam. Pour chaque run,
 relever côte à côte les 202 de k6, les `submit_sm` servis par le simulateur, les CDR, le lag des
