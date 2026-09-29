@@ -101,7 +101,7 @@ function randomBase36(n) {
 
 const BASE_URL = __ENV.BASE_URL || 'http://127.0.0.1:8099';
 // The stub authenticates on shape alone; a real gateway needs a real key passed in. API_KEYS spreads
-// VUs over several tenants: one key would measure one mt.inbound partition.
+// VUs over several tenants: one key would measure one balance row.
 const API_KEYS = (__ENV.API_KEYS || __ENV.API_KEY || 'sgw_loadtest').split(',');
 const SENDER_ID = __ENV.SENDER_ID || 'ACME';
 

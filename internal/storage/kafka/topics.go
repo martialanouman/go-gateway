@@ -9,7 +9,7 @@ package kafka
 // literal.
 const (
 	// TopicMTInbound carries raw submissions (SMPP/REST), pre-routing. A REST 202 is earned by a
-	// durable write here (§6.7). Partition key = a hash of the account.
+	// durable write here (§6.7). Partition key = the message id.
 	TopicMTInbound = "mt.inbound"
 	// TopicMTRouted carries routed messages, one per logical message. Partition key = the logical
 	// message id, so every UDH segment of a message lands on the same partition, in order (§7.3).

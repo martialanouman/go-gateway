@@ -34,11 +34,6 @@ const (
 	// Past it the palier has not started, and a rate of zero would be reported as a measurement.
 	ceilingJoinDeadline = 30 * time.Second
 
-	// ceilingSamplingAttempts bounds the rejection sampling below. Covering P partitions is a coupon
-	// collector — ~54 draws for 16 — so this is orders of magnitude of headroom, there to turn an
-	// impossible hash into a failed test rather than a hung one.
-	ceilingSamplingAttempts = 100000
-
 	// prefillBatchMaxBytes is the broker's ceiling, not production's. See prefill's godoc: the 16MiB
 	// production setting is unreachable under ProduceSync and rejected under async producing.
 	prefillBatchMaxBytes = 1 << 20
@@ -66,9 +61,9 @@ func newRouterBed(t *testing.T, brokers []string, partitions, records int, dest 
 	t.Helper()
 
 	topic := newCeilingTopic(t, brokers, "inbound", partitions)
-	accounts := partitionAccounts(topic, partitions)
+	account := uuid.New()
 	prefillRate := prefill(t, brokers, topic, records, func(i int) (kafka.Record, error) {
-		return pipeline.EncodeInbound(inboundBench(accounts[i%len(accounts)], dest(i)))
+		return pipeline.EncodeInbound(inboundBench(account, dest(i)))
 	})
 
 	if err := prefillBalance(endOffsets(t, brokers, topic), partitions); err != nil {
@@ -325,39 +320,6 @@ func adminClient(t *testing.T, brokers []string) (*kadm.Client, func()) {
 	return kadm.NewClient(cl), cl.Close
 }
 
-// partitionAccounts picks one account id per partition, by rejection sampling against the partitioner.
-//
-// This is an OPTIMISATION, not a guarantee, and the distinction matters. kafka.NewProducer configures
-// no RecordPartitioner, so franz-go's default decides — today UniformBytesPartitioner, whose keyed
-// branch is KafkaHasher(murmur2), the same hash StickyKeyPartitioner wraps. A version bump could move
-// that without a single test going red, which is why the guard that actually protects the measurement
-// is prefillBalance: it reads the end offsets and observes where the records landed. If this prediction
-// ever goes wrong, the run fails loudly instead of quietly drawing a curve against idle lanes.
-//
-// Random ids would spread balls-into-bins: at 16 partitions one routinely takes twice another's share,
-// and the light one drains mid-window (step-201d, reference_test.go's per-partition backlog).
-func partitionAccounts(topic string, partitions int) []uuid.UUID {
-	tp := kgo.StickyKeyPartitioner(nil).ForTopic(topic)
-	out := make([]uuid.UUID, partitions)
-	filled := make([]bool, partitions)
-	left := partitions
-	for attempt := 0; left > 0; attempt++ {
-		if attempt >= ceilingSamplingAttempts {
-			panic(fmt.Sprintf("partitionAccounts: %d partitions uncovered after %d draws: the partitioner "+
-				"is not spreading keys as assumed", left, attempt))
-		}
-		id := uuid.New()
-		key := id[:]
-		p := tp.Partition(&kgo.Record{Topic: topic, Key: key}, partitions)
-		if p < 0 || p >= partitions || filled[p] {
-			continue
-		}
-		out[p], filled[p] = id, true
-		left--
-	}
-	return out
-}
-
 // prefill writes `records` records built by `encode` to topic, and returns the rate it achieved in
 // records per second.
 //
@@ -368,7 +330,7 @@ func partitionAccounts(topic string, partitions int) []uuid.UUID {
 // It uses a raw kgo client rather than kafka.Producer because Producer.Produce is ProduceSync with
 // acks=all: at the ~2 000/s that path has been measured at, 150 000 records would cost 75 seconds per
 // palier — twenty-five times the window. This is legitimate because the prefill is FIXTURE GENERATION:
-// the fidelity that matters is the record's (pipeline.EncodeInbound, keyed by account, a GSM-7 body)
+// the fidelity that matters is the record's (pipeline.EncodeInbound, keyed by message, a GSM-7 body)
 // and its placement, not the client that writes it.
 //
 // It departs from kafka.NewProducer on one option, and the departure is forced. Production sets
@@ -594,7 +556,7 @@ func (ceilAntispam) Evaluate(context.Context, uuid.UUID, uuid.UUID, string, stri
 }
 
 // inboundBench is the record the REST API and the SMPP server publish: one GSM-7 segment of the length
-// the injector sends, keyed by the account so the prefill lands where partitionAccounts intended. A
+// the injector sends. A
 // synthetic payload would segment differently and price a different message.
 func inboundBench(account uuid.UUID, to string) pipeline.InboundMT {
 	const body = "Your one time code is 424242. It expires in ten minutes. Do not share it with anyone, our staff will never ask you for it."

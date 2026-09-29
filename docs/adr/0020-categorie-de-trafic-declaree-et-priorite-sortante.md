@@ -177,7 +177,7 @@ détecte, et là qu'on le sanctionne sans couper les autres flux du client.
    verdict).
 6. [ ] Spec §1.2bis (l.65), §6.1, §6.5, §6.8 (`priority_tier` défini), §6.19, §9 (l.1046) ; glossaire ;
    fiche des quiet hours mise à jour.
-7. [ ] step-282 : l'ordonnancement au routeur tient compte du rang de catégorie.
+7. [x] step-282 : pas d'ordonnancement au routeur ; le rang de catégorie est porté par les topics d'ADR-0021.
 8. [ ] Spec du tableau de bord : catégorie sur l'écran des sender IDs (défaut `marketing`, passage à
    `otp`/`transactional` confirmé) ; retrait de la politique de sender ID du compte (§ périmètre, route
    `sender-id-policy`) ; `priority_flag_default` et `priority_tier` expliqués dans le formulaire du

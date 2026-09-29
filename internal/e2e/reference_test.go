@@ -703,9 +703,9 @@ func (l *lagTrace) breakdown(from, to time.Time) string {
 // partitions renders the LAST reading inside the window split per partition, for mt.inbound only.
 //
 // It answers a question the totals structurally cannot: whether the backlog is spread across the topic's
-// partitions or piled on one. mt.inbound is keyed by account, so a run seeding a single account puts
-// every record on one partition — and then no amount of partitions, pods or in-process shards can move
-// the throughput, while the total reads exactly as it would for a balanced run (step-201d, D5/M4).
+// partitions or piled on one. A skewed key once put a single account's whole run on one partition — and
+// then no amount of partitions, pods or in-process shards could move the throughput, while the total
+// read exactly as it would for a balanced run (step-201d, D5/M4).
 //
 // A flat result after a parallelism fix means nothing until this line has been read.
 func (l *lagTrace) partitions(from, to time.Time) string {

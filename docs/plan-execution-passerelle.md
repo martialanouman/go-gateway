@@ -116,7 +116,7 @@ Attention aux défauts **partagés** : `HTTP_PORT` vaut 8081 et `GRPC_PORT` 7000
 
 ### 1.6 Topics Kafka (liste canonique)
 
-`mt.inbound` (clé = hash compte) · `mt.routed` (clé = `(connector_id, shard_index)`, `shard_index = hash(message_key) % bind_pool_size`) · `mo.inbound` · `dlr.events` · `mt.dead-letter` · `mo.dead-letter` · `mt.reroute-park` · `metrics.stream` (alimente les WS temps réel, `M11`). `message_key` = **ID de message logique** (tous les segments UDH le partagent).
+`mt.inbound` (clé = `message_id`) · `mt.routed` (clé = `(connector_id, shard_index)`, `shard_index = hash(message_key) % bind_pool_size`) · `mo.inbound` · `dlr.events` · `mt.dead-letter` · `mo.dead-letter` · `mt.reroute-park` · `metrics.stream` (alimente les WS temps réel, `M11`). `message_key` = **ID de message logique** (tous les segments UDH le partagent).
 
 ### 1.7 Nommage & emplacements
 

@@ -135,7 +135,7 @@ La persistance est polyglotte : chaque magasin est choisi pour son motif d'accè
 
 Le clé de partition n'est pas cosmétique — elle garantit l'ordre et le parallélisme.
 
-`mt.inbound` et `mo.inbound` sont partitionnés par hash de compte/client, ce qui distribue la charge tout en gardant les messages d'un compte cohérents. `mt.routed` est partitionné par `(connector_id, shard_index)` où `shard_index = hash(message_key) % bind_pool_size` du connecteur cible. **`message_key` est l'ID de message logique** : tous les segments UDH d'un SMS concaténé le partagent, donc ils atterrissent sur le même shard, donc sur le même bind, dans l'ordre — exigence des SMSC qui réassemblent sur un seul bind.
+`mt.inbound` est partitionné par `message_id` : un seul compte occupe toutes les voies du routeur, et l'ordre d'arrivée par compte n'est pas une exigence. `mo.inbound` est partitionné par hash de compte/client. `mt.routed` est partitionné par `(connector_id, shard_index)` où `shard_index = hash(message_key) % bind_pool_size` du connecteur cible. **`message_key` est l'ID de message logique** : tous les segments UDH d'un SMS concaténé le partagent, donc ils atterrissent sur le même shard, donc sur le même bind, dans l'ordre — exigence des SMSC qui réassemblent sur un seul bind.
 
 ---
 

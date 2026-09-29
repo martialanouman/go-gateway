@@ -68,7 +68,7 @@ func NewProducer(cfg config.Kafka, opts ...ProducerOption) (*Producer, error) {
 // record never sent, or whose last attempt got a definite retriable reply: a request in flight is
 // bounded by kgo's read deadline instead, and a batch answered REQUEST_TIMED_OUT is retried until a
 // definite reply, since failing it could duplicate on the broker. The record MUST carry a key on an
-// ordered topic (mt.inbound, mt.routed): producing keyless would scatter a message's segments across
+// ordered topic (mt.routed): producing keyless would scatter a message's segments across
 // partitions and lose their order (§7.3).
 func (p *Producer) Produce(ctx context.Context, rec Record) error {
 	kr := &kgo.Record{Topic: rec.Topic, Key: rec.Key, Value: rec.Value}

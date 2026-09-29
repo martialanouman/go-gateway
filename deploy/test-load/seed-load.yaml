@@ -17,7 +17,7 @@ spec:
             # 2 réplicas du pool × 26 = 52 binds : la cible de 10 400 submit_sm/s à ~200/s par bind.
             - { name: LOAD_BIND_POOL_SIZE, value: "26" }
             - { name: LOAD_PORTED_SHARE, value: "@PORTED_SHARE@" }
-            # Deux clients par partition de mt.inbound en moyenne (tasks-done/step-280.md).
+            # Une ligne de solde par client : un seul client sérialise la capture (tasks-done/step-280.md).
             - { name: LOAD_CUSTOMERS, value: "24" }
             - name: HTTP_ADMIN_TOKENS
               valueFrom: { secretKeyRef: { name: gateway-secrets, key: HTTP_ADMIN_TOKENS } }

@@ -129,7 +129,7 @@ const routerCeilingPrefill = 1500000
 // and segmentation, which are 74% of the pipeline, run for real.
 //
 // The record is the one the REST API and the SMPP server publish: encoded by pipeline.EncodeInbound,
-// keyed by account id, a GSM-7 body of the length the injector sends. Only the topic is overridden.
+// keyed by message id, a GSM-7 body of the length the injector sends. Only the topic is overridden.
 func TestRouterConsumeCeiling(t *testing.T) {
 	brokers := kafkatest.Brokers(t)
 	hold := envDuration(t, envCalHold, routerCeilingHold)
