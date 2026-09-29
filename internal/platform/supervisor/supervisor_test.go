@@ -452,16 +452,16 @@ func TestABudgetThatExpiresOnAFinishedComponentReportsNothing(t *testing.T) {
 
 	for _, tc := range []struct {
 		name string
-		run  func(context.Context, *slog.Logger, time.Duration) error
+		run  func(context.Context, *slog.Logger, time.Duration, supervisor.Component) error
 	}{
-		{"group", func(c context.Context, l *slog.Logger, b time.Duration) error {
+		{"group", func(c context.Context, l *slog.Logger, b time.Duration, comp supervisor.Component) error {
 			var g supervisor.Group
-			g.Add("already-finished", func(context.Context) error { return nil })
+			g.Add("already-finished", comp)
 			return g.Run(c, l, b)
 		}},
-		{"ordered", func(c context.Context, l *slog.Logger, b time.Duration) error {
+		{"ordered", func(c context.Context, l *slog.Logger, b time.Duration, comp supervisor.Component) error {
 			var o supervisor.Ordered
-			o.Add("already-finished", func(context.Context) error { return nil })
+			o.Add("already-finished", comp)
 			return o.Run(c, l, b)
 		}},
 	} {
@@ -472,9 +472,13 @@ func TestABudgetThatExpiresOnAFinishedComponentReportsNothing(t *testing.T) {
 			for range 200 {
 				ctx, cancel := context.WithCancel(context.Background())
 				done := make(chan error, 1)
-				// The component returns at once, so its done channel is closed well before Run reaches
-				// the wait; a 1 ns budget makes the deadline ready too.
-				go func() { done <- tc.run(ctx, quietLogger(), time.Nanosecond) }()
+				returned := make(chan struct{})
+				finishAtOnce := func(context.Context) error { close(returned); return nil }
+				go func() { done <- tc.run(ctx, quietLogger(), time.Nanosecond, finishAtOnce) }()
+				// A sleep alone assumed the component got scheduled within it, false under a loaded suite.
+				// The component's return is observable, its done channel is not: the sleep now only covers
+				// the supervisor's deferred close after that return. The 1 ns budget makes the tie.
+				<-returned
 				time.Sleep(time.Millisecond)
 				cancel()
 

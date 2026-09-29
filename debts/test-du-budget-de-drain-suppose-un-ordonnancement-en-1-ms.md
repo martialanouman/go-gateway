@@ -1,6 +1,6 @@
 # Un test du budget de drain suppose qu'une goroutine est ordonnancée en 1 ms
 
-> **Statut :** OUVERTE · **Nature :** test
+> **Statut :** PAYÉE (29/09/2026, voir ci-dessous) · **Nature :** test
 > **Née de :** step-397 (constatée dans `make check`) · **Portée par :** —
 
 `TestABudgetThatExpiresOnAFinishedComponentReportsNothing/group` a échoué une fois dans `make check`
@@ -18,3 +18,20 @@ dans le test : attendre que le composant ait rendu la main (un canal fermé par 
 au lieu de dormir.
 
 Sources : `internal/platform/supervisor/supervisor_test.go:472-479` · `internal/platform/supervisor/supervisor.go:142`
+
+## Paiement (29/09/2026)
+
+Déclencheur atteint : rouge en CI sur la PR #237 (`Test (race)`). Reproduit localement sous `-race`,
+12 cœurs saturés, `-cpu 1,2` : 4 échecs sur 60 passages, dans les deux variantes (`group` et `ordered`).
+
+Le remède prévu ci-dessus ne suffisait pas seul. Attendre le retour du composant supprime le cas
+« goroutine jamais ordonnancée », mais le `close(done)` différé du superviseur s'exécute *après* ce
+retour et reste invisible depuis le test : 4 échecs sur 450 passages (`-cpu 1,2,4`), tous `ordered`. Le test attend
+donc le retour, **puis** garde la milliseconde, qui ne couvre plus que cette seule instruction.
+Résultat : 0 échec sur 450 passages sous la même charge. Les deux mutations du départage
+d'égalité (le `select` de confirmation d'`Ordered.drain`, `notStopped` de `Group.Run`) font toujours
+tomber le test.
+
+Ce qui reste : une préemption de plus d'une milliseconde entre le retour du composant et le
+`close(done)` ferait encore rougir le test. Aucune observée.
+
