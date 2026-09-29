@@ -211,8 +211,14 @@ qu'on mesure un environnement représentatif.
 - [x] step-275 — Environnement de test : seed du plan de contrôle et preuve bout-en-bout
 - [x] step-280 — Campagne NFR sur le VPS de test : outillage répétable, chiffres non représentatifs
       ⛓ step-230, step-270b, step-270c, step-270d, step-275 — recadrée le 28/09/2026, le verdict part en step-409
+- [ ] step-282 — `mt.inbound` n'est plus partitionné par compte ⛓ step-280 — décision humaine ; unité
+      faute de multiple de dix libre
+- [ ] step-284 — L'écriture durable du solde devient asynchrone, le plancher reste atomique ⛓ step-280 —
+      décision humaine ; unité faute de multiple de dix libre
 - [ ] step-285 — Le routeur se tue en boucle sur un backlog quand la facturation est active ⛓ step-280 —
       ouverte par la campagne step-280 ; unité faute de multiple de dix libre
+- [ ] step-287 — Rejouer la campagne du VPS, injecteur sur une VM séparée ⛓ step-282, step-284, step-285
+      — unité faute de multiple de dix libre
 
 Le seul **défaut de correction** du lot est clos : step-240 a fermé le rejeu d'un message annulé, et
 step-245 le cas où l'annulation avait gagné son jeton sans jamais écrire sa ligne CDR. step-250 a
@@ -411,7 +417,7 @@ l'autorisation de la moitié des opérations, et le tableau de bord génère ses
 - [x] step-407 — La production archive ses CDR avant de les supprimer : aucune destination objet, aucun
       `CLICKHOUSE_ARCHIVE_PREFIX` posé, donc chaque partition de 90 jours est perdue ⛓ step-165 — sortie de
       step-420 ; unité faute de multiple de dix libre
-- [ ] step-409 — Campagne NFR pleine échelle sur environnement représentatif : le verdict ⛓ step-280, step-285,
+- [ ] step-409 — Campagne NFR pleine échelle sur environnement représentatif : le verdict ⛓ step-280, step-285, step-287,
       step-270b — l'ancienne step-280 ; unité faute de multiple de dix libre
 - [ ] step-410 — **GO-LIVE** : dérouler la checklist de mise en production
       ⛓ step-260, step-270, step-280, step-409, step-290, step-310, step-320, step-397, step-398, step-405, step-407

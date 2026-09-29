@@ -1,7 +1,7 @@
 # step-285 — Le routeur se tue en boucle sur un backlog quand la facturation est active
 
 > **Jalon :** M12 · **Statut :** À FAIRE
-> **Dépend de :** step-280 · **Bloque :** step-409
+> **Dépend de :** step-280 · **Bloque :** step-287
 > Ouverte par la campagne step-280 ; unité faute de multiple de dix libre.
 
 ## Ce que la campagne a vu
