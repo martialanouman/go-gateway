@@ -211,7 +211,7 @@ qu'on mesure un environnement représentatif.
 - [x] step-275 — Environnement de test : seed du plan de contrôle et preuve bout-en-bout
 - [x] step-280 — Campagne NFR sur le VPS de test : outillage répétable, chiffres non représentatifs
       ⛓ step-230, step-270b, step-270c, step-270d, step-275 — recadrée le 28/09/2026, le verdict part en step-409
-- [ ] step-285 — Le routeur ne sort pas d'un backlog quand la facturation est active ⛓ step-280 —
+- [ ] step-285 — Le routeur se tue en boucle sur un backlog quand la facturation est active ⛓ step-280 —
       ouverte par la campagne step-280 ; unité faute de multiple de dix libre
 
 Le seul **défaut de correction** du lot est clos : step-240 a fermé le rejeu d'un message annulé, et

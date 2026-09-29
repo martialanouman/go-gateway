@@ -1,4 +1,4 @@
-# step-285 — Le routeur ne sort pas d'un backlog quand la facturation est active
+# step-285 — Le routeur se tue en boucle sur un backlog quand la facturation est active
 
 > **Jalon :** M12 · **Statut :** À FAIRE
 > **Dépend de :** step-280 · **Bloque :** step-409
@@ -17,8 +17,11 @@ VPS de test, 24 clients en facturation postpayée, ~3,3 M messages dans `mt.inbo
    abat le processus (« component failed, shutting down ») ;
 4. Kubernetes le relance après un backoff qui monte à 5 min, et tout recommence au point 1.
 
-7 redémarrages en 16 min, CrashLoopBackOff. Pendant un run, c'est ce qui a fait tomber la traversée à
-zéro. En production, c'est la reprise après **n'importe quelle** panne qui accumule un backlog.
+7 redémarrages en 16 min, CrashLoopBackOff. Le routeur a fini par en sortir **de lui-même** : à partir de
+~23:45 UTC, il a vidé les 3,3 M messages en ~65 min (~820 `submit_sm/s` au simulateur, lag à 0 avant
+00:49). Mais pendant la phase de boucle, la traversée est tombée à zéro. En production, ce serait
+chaque reprise d'un backlog, après n'importe quelle panne, qui passerait par des minutes d'arrêt complet
+et par un backoff Kubernetes qui monte à 5 min.
 
 ## Le même verrou que le goulot 2 de step-280
 
@@ -35,7 +38,7 @@ en tête de step : `pg_stat_activity` pendant un redémarrage.
 backlog, et le verrou par client la sérialise. Le défaut est qu'une erreur **transitoire** a une conséquence **fatale** (le processus), et que
 la reprise refait la même rafale. La mécanique « une erreur de traitement abat le groupe » est déjà fichée
 pour `mo-dlr-router-svc` (`debts/content-key-svc-est-sur-le-chemin-de-la-remise-sans-etre-une-dependance-de-readiness.md`) ;
-ici elle ne se résorbe pas d'elle-même.
+ici, la reprise dépend du hasard des redémarrages et du backoff, pas d'une conception.
 
 ## À arbitrer (spec → Fable → humain)
 
@@ -50,5 +53,6 @@ ici elle ne se résorbe pas d'elle-même.
 ## Definition of Done
 - [ ] un test d'intégration qui rejoue un backlog sous une réservation lente et prouve que le routeur
       avance sans redémarrer — rouge lu sur le code actuel
-- [ ] la reprise d'un backlog de step-280 rejouée sur le VPS de test : lag décroissant, zéro redémarrage
+- [ ] la reprise d'un backlog de step-280 rejouée sur le VPS de test : lag décroissant dès la première
+      minute, zéro redémarrage
 - [ ] la dette `content-key-svc…` statuée à la lumière de la même décision (payée ou explicitement non)

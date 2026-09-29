@@ -104,10 +104,12 @@ NFR ingestion p99 < 250 ms : **mesuré 981 ms-1,1 s, non tenu ici, verdict non r
    même ligne `control_plane.balances`. On a observé 6-7 transactions en attente de verrou, des captures
    au-delà de leurs 200 ms (fail-open, ~1 000/min) et **369 `submit_sm/s`** en traversée, pour un pool à
    0,24 cœur. Ce plafond est propre à un client unique : un gros client A2P le heurterait en production.
-3. **Le routeur ne sort pas d'un backlog quand la facturation est active.** Avec 24 clients, les
-   réservations en rafale dépassent `RESERVE_TIMEOUT` et le superviseur abat le processus. Résultat :
-   CrashLoopBackOff, **0 message consommé en 60 s** sans aucune ingestion, 3,3 M messages en attente.
-   → **step-285**, prérequis de step-409.
+3. **Le routeur se tue en boucle sur un backlog quand la facturation est active.** Avec 24 clients, les
+   réservations en rafale dépassent `RESERVE_TIMEOUT` et le superviseur abat le processus : 7
+   redémarrages en 16 min, CrashLoopBackOff, **0 message consommé** sur la fenêtre de 60 s mesurée. Il en
+   est sorti de lui-même vers 23:45 UTC, puis a vidé les 3,3 M messages en ~65 min, soit **~820
+   `submit_sm/s` de traversée avec 24 clients** (contre 369 avec un seul client), sans aucune ingestion
+   en face. → **step-285**, prérequis de step-409.
 
 NFR débit soutenu 8 000/s, pic 15 000/s et bout-en-bout p99 < 2 s : **non mesurables** sur cette
 campagne tant que step-285 n'est pas livrée. Les runs `IDEMPOTENCY=on` et `peak` n'ont pas été faits :
