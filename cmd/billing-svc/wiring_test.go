@@ -146,6 +146,7 @@ func TestNewBillingAppBuildsTheWholeGraph(t *testing.T) {
 		"reconciler":     app.reconciler,
 		"reaper":         app.reaper,
 		"foldLag":        app.foldLag,
+		"folder":         app.folder,
 	} {
 		if component == nil || reflect.ValueOf(component).IsNil() {
 			t.Errorf("component %q was not wired", name)
@@ -156,7 +157,7 @@ func TestNewBillingAppBuildsTheWholeGraph(t *testing.T) {
 		t.Fatalf("gather: %v", err)
 	}
 	if !slices.ContainsFunc(families, func(f *dto.MetricFamily) bool { return f.GetName() == "billing_balance_deltas_lag_seconds" }) {
-		t.Error("billing_balance_deltas_lag_seconds is not exposed: the fold lag alert would read nothing")
+		t.Error("billing_balance_deltas_lag_seconds is not exposed: nothing would see the fold falling behind")
 	}
 
 	// Building the graph must not start serving: both ports are bound by their Run, which only the

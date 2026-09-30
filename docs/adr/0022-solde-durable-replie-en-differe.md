@@ -46,7 +46,10 @@ l'écriture est synchrone. Une réhydratation sur un durable en retard rendrait 
 6. **Ordre de déploiement : migration, puis admin-api-svc, puis billing-svc en `Recreate`.** Une version
    antérieure lit `balances` sans les deltas. admin-api-svc (transfert, change-scope, soldes) doit donc
    savoir les lire avant que billing-svc commence à en écrire, et billing-svc ne doit jamais mêler les deux
-   versions.
+   versions. Prix : chaque déploiement coupe billing-svc entièrement (le PDB ne protège que des évictions).
+   Pendant la coupure le routeur ne committe pas ses offsets : les messages facturés attendent, sans rejet
+   ni envoi non facturé, et repartent au retour — un backlog, celui que step-285 traite. Seule la transition
+   vers les deltas l'exige : `debts/billing-svc-reste-en-recreate-apres-la-transition.md`.
 
 ## Consequences
 

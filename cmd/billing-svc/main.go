@@ -19,7 +19,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/grpc"
 
 	"github.com/martialanouman/go-gateway/internal/billing"
@@ -101,7 +100,7 @@ func run() error {
 		return runReap(c, app.reaper, cfg.BillingReaper.Interval, logger)
 	})
 	g.Add("balance fold", func(c context.Context) error {
-		return runFold(c, app.repo, app.foldLag, logger)
+		return runFold(c, app.folder)
 	})
 	if err := g.Run(ctx, logger, cfg.DrainBudget); err != nil {
 		return err
@@ -228,22 +227,12 @@ func runGRPC(ctx context.Context, srv *grpc.Server, port int, timeout time.Durat
 	}
 }
 
-// foldInterval and foldBatch pace the balance-delta fold (ADR-0022). The fold never changes a balance, only
-// where it lives, so its lag costs read time (GetBalance sums the unfolded deltas), not correctness.
-const (
-	foldInterval = time.Second
-	foldBatch    = 5000
-)
+// foldInterval paces the balance-delta fold (ADR-0022).
+const foldInterval = time.Second
 
-// folder is the durable side the fold loop drives; *postgres.BillingRepo satisfies it.
-type folder interface {
-	FoldOnce(ctx context.Context, limit int) (int64, error)
-	OldestPendingDelta(ctx context.Context) (time.Time, bool, error)
-}
-
-// runFold folds balance deltas every foldInterval until ctx is cancelled. Every replica runs it: SKIP LOCKED
+// runFold runs one fold pass every foldInterval until ctx is cancelled. Every replica runs it: SKIP LOCKED
 // splits the rows between them.
-func runFold(ctx context.Context, f folder, lag prometheus.Gauge, logger *slog.Logger) error {
+func runFold(ctx context.Context, f *billing.Folder) error {
 	ticker := time.NewTicker(foldInterval)
 	defer ticker.Stop()
 	for {
@@ -251,32 +240,7 @@ func runFold(ctx context.Context, f folder, lag prometheus.Gauge, logger *slog.L
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			foldTick(ctx, f, lag, logger)
+			f.DrainOnce(ctx)
 		}
 	}
-}
-
-// foldTick folds until a batch comes back short, so a backlog is caught up in one tick, then publishes the
-// age of the oldest delta still waiting. A failed fold (40P01 against an admin tx) waits for the next tick.
-func foldTick(ctx context.Context, f folder, lag prometheus.Gauge, logger *slog.Logger) {
-	for {
-		n, err := f.FoldOnce(ctx, foldBatch)
-		if err != nil {
-			logger.WarnContext(ctx, "billing: balance-delta fold failed — retrying next tick", "err", err)
-			break
-		}
-		if n < foldBatch {
-			break
-		}
-	}
-	oldest, pending, err := f.OldestPendingDelta(ctx)
-	if err != nil {
-		logger.WarnContext(ctx, "billing: could not read the balance-delta lag", "err", err)
-		return
-	}
-	if !pending {
-		lag.Set(0)
-		return
-	}
-	lag.Set(time.Since(oldest).Seconds())
 }

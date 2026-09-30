@@ -43,6 +43,7 @@ type billingApp struct {
 	// foldLag is the age of the oldest unfolded balance delta (ADR-0022): past ~30s the fold is not keeping
 	// up, and every durable balance read sums a growing backlog.
 	foldLag prometheus.Gauge
+	folder  *billing.Folder
 
 	// closers release what was opened, in reverse order of opening — the exact LIFO the deferred Closes
 	// in run() used to provide. They are named because that order is the property worth guarding,
@@ -128,6 +129,7 @@ func newBillingApp(ctx context.Context, cfg config.Config, logger *slog.Logger) 
 		Name: "billing_balance_deltas_lag_seconds",
 		Help: "Age of the oldest balance delta not yet folded into balances (ADR-0022); 0 when none waits.",
 	})
+	a.folder = billing.NewFolder(a.repo, a.foldLag, logger)
 	collectors := make([]prometheus.Collector, 0, 1+len(ext.collectors)+len(reap.collectors)+len(feed.collectors))
 	collectors = append(collectors, a.foldLag)
 	collectors = append(collectors, ext.collectors...)
