@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -67,7 +68,8 @@ const defaultHoldTTL = 5 * time.Minute
 // the durable authority. It exists to CAP cache/durable divergence: reserve.lua/release.lua use KEEPTTL,
 // so the key expires this long after each rehydrate regardless of activity, and any drift (from a rare
 // concurrent race, §step-142a review) self-heals on the next rehydrate. Rehydration is always consistent
-// because RecordDurable(reserve) is synchronous — the durable balance already reflects outstanding holds.
+// because the durable balance it reads includes the unfolded deltas, so it reflects every outstanding hold
+// however late the fold runs (ADR-0022).
 const defaultBalanceCacheTTL = 10 * time.Minute
 
 // LedgerStore is the durable authority (control_plane balances + billing_ledger, step-141). The interface
@@ -272,7 +274,8 @@ func (a *Accountant) Reserve(ctx context.Context, owner Owner, messageID uuid.UU
 		}
 		switch status := res[0].(string); status {
 		case "reserved":
-			newBalance, applied, err := a.store.RecordDurable(ctx, a.entry(owner, &messageID, cp.EntryReserve, -credits))
+			decided := toInt(res[1])
+			newBalance, applied, err := a.store.RecordDurable(ctx, a.entry(owner, &messageID, cp.EntryReserve, -credits, &decided))
 			if err != nil {
 				// A durable error is ambiguous: a lost commit-ack looks identical to a real failure. If the
 				// reserve entry IS in the ledger the commit actually succeeded — compensating would refund a
@@ -305,7 +308,7 @@ func (a *Accountant) Reserve(ctx context.Context, owner Owner, messageID uuid.UU
 				return 0, fmt.Errorf("billing: reserve replay lookup: %w", err)
 			}
 			if !found {
-				newBalance, _, err := a.store.RecordDurable(ctx, a.entry(owner, &messageID, cp.EntryReserve, -credits))
+				newBalance, _, err := a.store.RecordDurable(ctx, a.entry(owner, &messageID, cp.EntryReserve, -credits, nil))
 				if err != nil {
 					return 0, fmt.Errorf("billing: reserve replay repair: %w", err)
 				}
@@ -355,7 +358,7 @@ func oppositeTerminal(et cp.EntryType) cp.EntryType {
 // yields if the opposite terminal already won, is an idempotent no-op if this terminal already exists,
 // refuses (capture only) when no durable reserve entry exists, and otherwise records the movement with
 // the given signed delta.
-func (a *Accountant) resolveTerminal(ctx context.Context, owner Owner, messageID uuid.UUID, entryType cp.EntryType, delta int, requireReserve bool) (terminalOutcome, error) {
+func (a *Accountant) resolveTerminal(ctx context.Context, owner Owner, messageID uuid.UUID, entryType cp.EntryType, delta int, balanceAfter *int, requireReserve bool) (terminalOutcome, error) {
 	outcome := outcomeRecorded
 	err := a.withTerminalLock(ctx, messageID, func(lctx context.Context) error {
 		if ok, e := a.store.LedgerEntryExists(lctx, messageID, entryType); e != nil {
@@ -380,7 +383,7 @@ func (a *Accountant) resolveTerminal(ctx context.Context, owner Owner, messageID
 		}
 		// RecordDurable is itself idempotent by (message_id, entry_type); applied=false means a concurrent
 		// attempt already recorded this terminal between our check and our write — a no-op, not an error.
-		if _, applied, e := a.store.RecordDurable(lctx, a.entry(owner, &messageID, entryType, delta)); e != nil {
+		if _, applied, e := a.store.RecordDurable(lctx, a.entry(owner, &messageID, entryType, delta, balanceAfter)); e != nil {
 			return e
 		} else if !applied {
 			outcome = outcomeAlreadyDone
@@ -406,9 +409,13 @@ func (a *Accountant) Capture(ctx context.Context, owner Owner, messageID uuid.UU
 
 	// The charged amount is the live hold's credits, or — if the hold lapsed — the reserve entry's amount.
 	var reserved int
+	var decided *int
 	switch status := res[0].(string); status {
 	case "captured":
 		reserved = toInt(res[1])
+		if cached, err := strconv.Atoi(fmt.Sprint(res[2])); err == nil {
+			decided = &cached
+		}
 	case "no_reservation":
 		credits, _, found, err := a.store.ReserveEntry(ctx, messageID)
 		if err != nil {
@@ -421,7 +428,7 @@ func (a *Accountant) Capture(ctx context.Context, owner Owner, messageID uuid.UU
 		return 0, fmt.Errorf("billing: capture unexpected status %q", status)
 	}
 
-	outcome, err := a.resolveTerminal(ctx, owner, messageID, cp.EntryCapture, 0, true)
+	outcome, err := a.resolveTerminal(ctx, owner, messageID, cp.EntryCapture, 0, decided, true)
 	if err != nil {
 		return 0, fmt.Errorf("billing: capture durable: %w", err)
 	}
@@ -450,10 +457,13 @@ func (a *Accountant) Release(ctx context.Context, owner Owner, messageID uuid.UU
 
 	var refund int         // the positive credit amount to add back durably
 	var cacheRefunded bool // release.lua already added the refund back to a LIVE cache (status "released")
+	var decided *int
 	switch status := res[0].(string); status {
 	case "released":
 		refund = toInt(res[2]) // the Lua already refunded the cache by this amount
 		cacheRefunded = true
+		refunded := toInt(res[1])
+		decided = &refunded
 	case "cold":
 		refund = toInt(res[1]) // the cache had lapsed; the Lua cleared the hold, we refund durably
 	case "no_reservation":
@@ -472,7 +482,7 @@ func (a *Accountant) Release(ctx context.Context, owner Owner, messageID uuid.UU
 		return fmt.Errorf("billing: release unexpected status %q", status)
 	}
 
-	outcome, err := a.resolveTerminal(ctx, owner, messageID, cp.EntryRelease, refund, false)
+	outcome, err := a.resolveTerminal(ctx, owner, messageID, cp.EntryRelease, refund, decided, false)
 	if err != nil {
 		// release.lua already refunded the LIVE cache and dropped the hold, and the durable release did
 		// not land: the cache now shows credit the ledger never applied, and nothing is left to refund in
@@ -552,7 +562,7 @@ func (a *Accountant) RecordMO(ctx context.Context, owner Owner, messageID uuid.U
 
 		case "charged":
 			newBalance, crossed := toInt(res[1]), toInt(res[2]) == 1
-			_, applied, err := a.store.RecordDurable(ctx, a.moEntry(owner, messageID, -credits))
+			_, applied, err := a.store.RecordDurable(ctx, a.moEntry(owner, messageID, -credits, &newBalance))
 			if err != nil {
 				// Undo the speculative cache debit on an un-cancellable context, then fail closed. INCRBY
 				// preserves the key's TTL; DEL of the seen-key lets a legitimate retry re-accrue.
@@ -655,20 +665,20 @@ func (a *Accountant) rehydrate(ctx context.Context, bkey string, owner Owner) er
 	return nil
 }
 
-func (a *Accountant) entry(owner Owner, messageID *uuid.UUID, et cp.EntryType, credits int) cp.LedgerEntry {
+func (a *Accountant) entry(owner Owner, messageID *uuid.UUID, et cp.EntryType, credits int, balanceAfter *int) cp.LedgerEntry {
 	return cp.LedgerEntry{
 		OwnerType: owner.Type, OwnerID: owner.ID, Direction: directionMT,
 		CustomerID: owner.CustomerID, AccountID: owner.AccountID, MessageID: messageID,
-		EntryType: et, Credits: credits,
+		EntryType: et, Credits: credits, BalanceAfter: balanceAfter,
 	}
 }
 
 // moEntry builds an MO meter ledger entry (direction=mo, entry_type=mo_charge, credits<0).
-func (a *Accountant) moEntry(owner Owner, messageID uuid.UUID, credits int) cp.LedgerEntry {
+func (a *Accountant) moEntry(owner Owner, messageID uuid.UUID, credits int, balanceAfter *int) cp.LedgerEntry {
 	return cp.LedgerEntry{
 		OwnerType: owner.Type, OwnerID: owner.ID, Direction: directionMO,
 		CustomerID: owner.CustomerID, AccountID: owner.AccountID, MessageID: &messageID,
-		EntryType: cp.EntryMOCharge, Credits: credits,
+		EntryType: cp.EntryMOCharge, Credits: credits, BalanceAfter: balanceAfter,
 	}
 }
 

@@ -289,3 +289,60 @@ func TestRehydrationSeesUnfoldedReserves(t *testing.T) {
 		t.Fatalf("second Reserve after rehydration = %v, want ErrInsufficientCredit (only 4 credits remain)", err)
 	}
 }
+
+// TestLedgerBalanceAfterIsTheCreditDecision pins where balance_after comes from on the hot path: the value
+// Redis computed when it decided (ADR-0022), not a durable re-read that would sum every unfolded delta. A
+// delta written behind Redis's back makes the two differ.
+func TestLedgerBalanceAfterIsTheCreditDecision(t *testing.T) {
+	h := newBillingHarness(t, 100)
+	ctx := context.Background()
+	pool := pgtest.Pool(t)
+	balanceAfter := func(messageID uuid.UUID, et cp.EntryType) int {
+		t.Helper()
+		var v int
+		if err := pool.QueryRow(ctx,
+			`SELECT balance_after FROM control_plane.billing_ledger WHERE message_id = $1 AND entry_type = $2`,
+			messageID, string(et)).Scan(&v); err != nil {
+			t.Fatalf("read balance_after: %v", err)
+		}
+		return v
+	}
+
+	first := uuid.New()
+	if _, err := h.acc.Reserve(ctx, h.owner, first, 3); err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	if got := balanceAfter(first, cp.EntryReserve); got != 97 {
+		t.Errorf("balance_after = %d, want 97", got)
+	}
+
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO control_plane.balance_deltas (owner_type, owner_id, direction, credits) VALUES ($1, $2, 'mt', -5)`,
+		h.owner.Type, h.owner.ID); err != nil {
+		t.Fatalf("inject delta: %v", err)
+	}
+	second := uuid.New()
+	if _, err := h.acc.Reserve(ctx, h.owner, second, 2); err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	if got := balanceAfter(second, cp.EntryReserve); got != 95 {
+		t.Errorf("reserve balance_after = %d, want 95 (Redis's decision), not 90 (a durable re-read)", got)
+	}
+	if _, err := h.acc.Capture(ctx, h.owner, second); err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	if got := balanceAfter(second, cp.EntryCapture); got != 95 {
+		t.Errorf("capture balance_after = %d, want 95", got)
+	}
+
+	third := uuid.New()
+	if _, err := h.acc.Reserve(ctx, h.owner, third, 1); err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	if err := h.acc.Release(ctx, h.owner, third); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	if got := balanceAfter(third, cp.EntryRelease); got != 95 {
+		t.Errorf("release balance_after = %d, want 95", got)
+	}
+}
