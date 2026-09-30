@@ -842,7 +842,7 @@ Pour la logique que les règles déclaratives ne peuvent exprimer, le fournisseu
 2. Échec de réservation → rejet immédiat (REST `402`, SMPP `submit_sm_resp` code d'extension), aucune entrée de grand livre.
 3. Sur `submit_sm_resp` réussi, `connector-pool-svc` **capture** ; sur échec/expiration, **libère**.
 4. **Idempotence** : réserve/capture/libère sont idempotentes par `message_id` (clé de réservation unique + contrainte `UNIQUE(message_id, entry_type)`), car réserve (router) et capture (connector) encadrent un hop Kafka au moins une fois. Le sweep d'orphelins ne libère qu'après vérification d'absence de capture et de corrélation DLR.
-- **Autorité du solde = grand livre Postgres durable** (chaque `reserve` est journalisée, solde reconstructible). Le cache Redis est une projection ; à sa perte/failover, le Credit Engine réhydrate depuis Postgres avant d'accepter une réservation et bloque (fail-closed) pendant la fenêtre pour les comptes en garantie stricte.
+- **Autorité du solde = grand livre Postgres durable** (chaque `reserve` est journalisée, solde reconstructible). Le cache Redis est une projection ; à sa perte/failover, le Credit Engine réhydrate depuis Postgres avant d'accepter une réservation et bloque (fail-closed) pendant la fenêtre pour les comptes en garantie stricte. Le solde durable est `balances` plus les deltas non encore repliés, lus ensemble : le report dans `balances` est différé, jamais le grand livre (ADR-0022).
 
 **Postpayé MT** : aucune vérification bloquante à la soumission ; usage enregistré après envoi. `credit_limit` souple pour alertes, bloquant seulement si `credit_limit_is_hard`.
 

@@ -25,6 +25,7 @@ Les décisions structurantes de la passerelle, une par fichier, au format ADR st
 | [0019](0019-le-bff-emet-les-jetons-de-l-api-admin.md) | Le BFF émet les jetons de l'API Admin (JWT `ES256`, JWKS publié), `sub` = opérateur humain (amende 0017) | Accepted |
 | [0020](0020-categorie-de-trafic-declaree-et-priorite-sortante.md) | Catégorie de trafic déclarée par sender ID, `marketing` par défaut (pas de ML) ; elle fixe le `priority_flag` sortant, `priority_tier` réserve des connecteurs | Accepted |
 | [0021](0021-un-topic-par-categorie-et-priorite-bornee.md) | Un topic par catégorie aux deux étages, un consommateur par topic ; OTP et transactionnel d'abord, part minimale garantie au marketing, débit par sender ID à l'admission | Accepted |
+| [0022](0022-solde-durable-replie-en-differe.md) | Le grand livre reste synchrone ; le solde durable = `balances` + deltas non repliés, replié en différé | Proposed |
 
 ## Convention
 

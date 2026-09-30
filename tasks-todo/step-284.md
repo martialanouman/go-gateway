@@ -37,3 +37,35 @@ refus « solde insuffisant » ne dépend pas de Postgres. C'est ce qui rend l'as
       qui échoue sur une implémentation naïve (rouge lu)
 - [ ] aucun dépassement pour un client prépayé strict sous charge concurrente (test d'intégration)
 - [ ] rejouer la mesure mono-client de step-280 : plus de verrou en attente dans `pg_stat_activity`
+
+## Design arrêté
+Arbitrage : spec §6.9 → Fable (option A retenue, 30/09/2026) → validation humaine du 30/09/2026. ADR-0022.
+
+- **Synchrone, dans la tx de `RecordDurable`** : claim `billing_idempotency` + ligne du grand livre + un delta
+  dans `control_plane.balance_deltas` (append-only). Invariant c inchangé ; un crash ne perd aucun débit.
+- **Tri par `entry_type`, pas par `message_id`** (un topup en porte un) : `reserve|capture|release|refund|mo_charge`
+  → delta (aucun si 0 : la capture ne touche plus de ligne partagée) ; `topup|adjustment|transfer` →
+  `AdjustBalance` synchrone, comme aujourd'hui.
+- **Lecture unifiée** : toute lecture durable (réhydratation, `Balances`, transfer, change-scope, `balance_after`)
+  = `balances.credits + SUM(deltas)` en UN statement. Un delta est replié ou en attente, jamais les deux :
+  la réhydratation voit toute réserve committée. Pas de filigrane, pas de blocage ; TTL 10 min conservé.
+- **Replieur** : `FoldOnce` = un statement `DELETE … FOR UPDATE SKIP LOCKED RETURNING` → `INSERT INTO balances
+  … GROUP BY … ORDER BY owner ON CONFLICT DO UPDATE`. Boucle 1 s, lot 5 000, une par réplique ; 40P01 → log,
+  tick suivant. Métrique de retard (âge du plus vieux delta), alerte > 30 s. Autovacuum agressif sur la table.
+- **Transfer / change-scope** : gardent `FOR UPDATE` sur `balances` (sérialise admin ↔ admin ↔ replieur), lisent
+  la valeur unifiée ; jambes du transfer ordonnées par propriétaire. Pas de verrou consultatif : le point de
+  sérialisation avec le chemin chaud est Redis, aujourd'hui comme demain.
+- **`balance_after`** = solde unifié relu dans la tx : « solde vu au commit », non monotone entre entrées
+  concurrentes d'un même propriétaire.
+- **MO** : même chemin, aucun code dédié.
+- **Déploiement** : billing-svc en `strategy: Recreate` — une ancienne réplique qui lit `balances` seul
+  réhydraterait sans les deltas.
+- **Écartés** : journal Kafka (retard non interrogeable à la réhydratation), agrégation mémoire (perte sur
+  crash), cache sans TTL (perd la borne de step-142b), solde strié (reste un plafond de verrou, synchrone),
+  PR préalable « capture à delta 0 » (couverte par PR2, une mesure VPS de plus).
+
+**PR** : 1. design + ADR-0022 + §6.9 · 2. migration + sqlc + repo + `FoldOnce` + tests (ne se déploie pas sans
+3) · 3. boucle + métrique + alerte + `Recreate` · 4. mesure step-280.
+
+**Test rouge** (replieur arrêté) : topup 10 → reserve 6 → DEL du cache → reserve 6 ⇒ `ErrInsufficientCredit` ;
+la lecture naïve (`balances` seul) réhydrate 10 et accepte. Puis `FoldOnce` ⇒ solde 4, deltas vides.
