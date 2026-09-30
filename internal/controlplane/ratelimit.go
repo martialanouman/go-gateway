@@ -13,8 +13,8 @@ type RateLimit struct {
 }
 
 // RateLimitEntry is one configured limit with the entity it applies to (entity_type is one of
-// smpp_account/connector/route). The router's cold-loaded snapshot (step-085) is built from a List of
-// these, then indexed by (EntityType, EntityID).
+// smpp_account/connector). The cold-loaded snapshot of the ingestion and the connector pool is built from
+// a List of these, then indexed by (EntityType, EntityID).
 type RateLimitEntry struct {
 	EntityType string
 	EntityID   uuid.UUID

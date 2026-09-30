@@ -374,7 +374,7 @@ Chaque dépendance dégradée a un comportement **codé explicitement**, jamais 
 
 | Dépendance en panne | Sous-système | Comportement | Raison |
 |---|---|---|---|
-| Redis (rate-limit) | débit | **fail-closed** : plafond technique statique local du connecteur | ne jamais envoyer sans borne |
+| Redis (rate-limit) | débit | **fail-closed** : plafond local par pod — du connecteur au pool, du compte à l'ingestion | ne jamais envoyer sans borne |
 | Redis (anti-spam à état) | dédup/vélocité/réputation | **fail-open avec flag** ; les règles de contenu statiques continuent | disponibilité > précision, traçable |
 | Redis (cache de solde) | crédit MT strict | **fail-closed** pendant la réhydratation depuis Postgres | garantie de zéro dépassement |
 | Redis (registre de sessions) | bind SMPP | **fail-closed** : le bind est refusé (`ESME_RSYSERR`) | sans le registre, `max_sessions` (invariant d) n'est plus opposable |

@@ -49,6 +49,14 @@ func testAPI(t *testing.T) huma.API {
 		return nil, huma.Error404NotFound("not found", fmt.Errorf("dup: %w", errs.ErrConflict))
 	})
 
+	// A throttled submission, as the ingestion refuses one (step-283).
+	huma.Register(api, huma.Operation{
+		OperationID: "throttled", Method: http.MethodGet, Path: "/throttled",
+		Errors: []int{http.StatusTooManyRequests},
+	}, func(ctx context.Context, _ *struct{}) (*struct{}, error) {
+		return nil, humaerr.FromError(fmt.Errorf("admit: %w", errs.ErrRateLimited))
+	})
+
 	// An error with no code is an internal_error / 500.
 	huma.Register(api, huma.Operation{
 		OperationID: "uncoded", Method: http.MethodGet, Path: "/uncoded",
@@ -242,6 +250,20 @@ func TestACodeWithNoHTTPSurfaceIsRenderedAsInternalError(t *testing.T) {
 		_ = json.Unmarshal(body, &m)
 		if m["code"] != "internal_error" {
 			t.Errorf("%s: code = %v, want internal_error: a code outside the contract's enum reached the body", name, m["code"])
+		}
+	}
+}
+
+// TestA429TellsTheClientWhenToRetry: the contract declares Retry-After on every 429, and the account
+// bucket refills per second, so one second is when a retry can next be admitted.
+func TestA429TellsTheClientWhenToRetry(t *testing.T) {
+	api := testAPI(t)
+	for path, want := range map[string]string{"/throttled": "1", "/conflict": ""} {
+		r := httptest.NewRequest(http.MethodGet, path, http.NoBody)
+		w := httptest.NewRecorder()
+		api.Adapter().ServeHTTP(w, r)
+		if got := w.Header().Get("Retry-After"); got != want {
+			t.Errorf("%s: Retry-After = %q, want %q", path, got, want)
 		}
 	}
 }

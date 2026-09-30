@@ -59,7 +59,8 @@ const defaultMOSeenTTL = time.Hour
 
 // defaultHoldTTL is how long a reservation hold survives without a capture/release. It MUST exceed the
 // worst SMSC round-trip plus the connector pool's retry window, so the fast path (a live hold) is the
-// norm and the slow ledger-recovery path is only hit after a genuine outage.
+// norm and the slow ledger-recovery path is only hit after a genuine outage — or after a connector's
+// ceiling has held a message longer than this (step-283 backpressure).
 const defaultHoldTTL = 5 * time.Minute
 
 // defaultBalanceCacheTTL bounds how long the balance cache lives before a reserve must rehydrate it from

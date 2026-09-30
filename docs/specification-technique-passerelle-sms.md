@@ -26,7 +26,7 @@
 - **Désabonnement (opt-out / STOP)** — liste de suppression scopée au canal (numéro entrant) ; une étape MT bloquante empêche l'envoi vers un destinataire désabonné (§6.20).
 - **Numéros entrants & mots-clés** — shortcodes/long codes détenus par le fournisseur, assignés à un compte SMPP ou résolus par mot-clé, servant de source de vérité au routage MO et à l'opt-out (§6.21).
 - **Gestion des sessions SMPP** — cycle de vie des binds dans les deux sens : authentification, keep-alive `enquire_link`, application fenêtre/débit par session, `max_sessions` par compte, unbind gracieux, déconnexion forcée (§6.3).
-- **Gestion du débit** — limitation par compte SMPP, connecteur et route ; fenêtre glissante SMPP ; backpressure et mise en file quand l'aval est saturé (§6.4).
+- **Gestion du débit** — limitation par compte SMPP (avant l'accusé de réception) et par connecteur (à l'envoi) ; fenêtre glissante SMPP ; backpressure et mise en file quand l'aval est saturé (§6.4).
 - **Anti-spam / filtrage de contenu** — moteur de règles configurable : vélocité (MT et MO entrant), listes noires de contenu, détection de doublons, score de réputation par client (§6.5).
 - **Accusés de réception (DLR)** — capture des rapports de remise du SMSC, transmission au compte d'origine via SMPP `deliver_sm` ou webhook, corrélés par ID de message.
 - **SMS long / concaténé & encodage** — segmentation/réassemblage UDH, encodage GSM-7, UCS-2, 8-bit (§6.6).
@@ -377,7 +377,7 @@ external_billing_providers
   status
 ```
 
-**Le solde SMS n'est pas une somme monétaire.** C'est toujours un compteur entier de crédits SMS. Un SMS concaténé consomme plus d'un crédit : `rate_plans` tarifie **par segment**, donc le coût d'un message est `segment_count × credits_per_segment(destination, type d'expéditeur)`. La réservation de crédit a donc lieu après la segmentation et après la vérification de limite de débit (§6.9).
+**Le solde SMS n'est pas une somme monétaire.** C'est toujours un compteur entier de crédits SMS. Un SMS concaténé consomme plus d'un crédit : `rate_plans` tarifie **par segment**, donc le coût d'un message est `segment_count × credits_per_segment(destination, type d'expéditeur)`. La réservation de crédit a donc lieu après la segmentation (§6.9) ; le débit du compte, lui, a été payé à l'admission (§6.4).
 
 **Répartition des niveaux (§6.18).**
 
@@ -426,9 +426,9 @@ optout:changed                       -- pub/sub channel: a STOP received as an M
 
 ```
 mt.inbound        -- raw submissions (SMPP/REST), pre-routing. Partitioned by message_id.
-mt.routed         -- post-routing, ready for dispatch. Partitioned by (connector_id, shard_index) where
-                     shard_index = hash(message_key) % bind_pool_size of the target connector (§6.8). message_key is
-                     the LOGICAL message id (all UDH segments share it -> same bind, in order — §6.1/C-segment note).
+mt.routed         -- post-routing, ready for dispatch. Partitioned by message_id, the LOGICAL message id: all UDH
+                     segments share it -> same partition. connector-pool-svc shards a batch by
+                     hash(message_id) % bind_pool_size (§6.8) -> same bind, in order (§6.1/C-segment note).
                      Each message carries a fallback_chain header for unilateral reroute by connector-pool-svc (§6.15).
 mo.inbound        -- raw deliver_sm from SMSC connectors, pre-routing to accounts
 dlr.events        -- delivery receipt events, correlated to original message ID
@@ -489,8 +489,8 @@ Partitionné par jour (`PARTITION BY toDate(submitted_at)`), avec tiering TTL (�
 |  +-------------+       | 6. Route resolution: exact | script   |     | retry/failover,     |  |
 |                       |    | declarative (§6.1)             |     | auto-reconnect)     |  |
 |                       | 7. Encoding/UDH split (segment_count) |     +--------------------+   |
-|                       | 8. Rate-limit                         |          | deliver_sm/DLR    |
-|                       | 9. MT credit reserve (§6.9)           |          v                    |
+|                       | 8. MT credit reserve (§6.9)           |          | deliver_sm/DLR    |
+|                       | (account rate: at ingress, §6.4)      |          v                    |
 |                       +---------------------------------------+     +--------------------+    |
 |  +-------------+       +---------------------------------+          | MO/DLR Router      |    |
 |  | SMPP Server |<------| Delivery: deliver_sm or webhook  |<--Kafka--| resolve inbound#/  |    |
@@ -499,7 +499,7 @@ Partitionné par jour (`PARTITION BY toDate(submitted_at)`), avec tiering TTL (�
 |  | Webhook Sender|                                                  | meter (§6.9)        |    |
 |  +-------------+                                                    +--------------------+    |
 |  Session Manager (Redis) - all SMPP binds, windows, enquire_link, max_sessions, reconnect     |
-|  Rate Limiter (Redis token-bucket) - per account/connector/route                              |
+|  Rate Limiter (Redis token-bucket) - account before the ACK, connector at the send (§6.4)     |
 |  Anti-spam Engine - velocity (MT + inbound MO), content, duplicate, reputation                |
 |  Circuit Breaker (per connector) - local decision + aggregated state to Redis (§6.15)         |
 |  Sender ID Rewrite Engine (§6.16) - pre-dispatch                                               |
@@ -519,10 +519,10 @@ Partitionné par jour (`PARTITION BY toDate(submitted_at)`), avec tiering TTL (�
 
 ### 4.1 Services principaux (unités déployables)
 
-1. **smpp-server-svc** — TCP longue durée, gère les binds SMPP côté utilisateur ; scalé horizontalement derrière un LB L4 avec affinité de session ; publie sur `mt.inbound`, consomme `mo.inbound`/`dlr.events` pour remettre à la session propriétaire (via le registre de session, §6.8). Gère `query_sm`/`cancel_sm` (§6.22).
-2. **rest-api-svc** — service HTTP sans état pour la soumission MT, la requête de statut, la config webhook ; publie sur `mt.inbound`.
-3. **router-svc** — consommateur sans état de `mt.inbound` ; applique auth, normalisation E.164, autorisation de sender ID (§6.19), opt-out (§6.20), anti-spam, résolution de route (§6.1), encodage/segmentation, limite de débit, puis réservation de crédit MT. Publie sur `mt.routed`. Émet un span par étape.
-4. **connector-pool-svc** — un pool logique par SMSC ; gère les binds SMPP sortants avec `bind_pool_size` binds parallèles, consomme `mt.routed`, applique le lissage de débit et le disjoncteur (§6.15), évalue la réécriture de sender ID (§6.16) juste avant l'envoi, gère retries/bascule et l'auto-reconnexion (§6.13), capture/libère les réservations MT, publie `mo.inbound`/`dlr.events`. Publie l'état de disjoncteur agrégé dans Redis et reroute via `fallback_chain`.
+1. **smpp-server-svc** — TCP longue durée, gère les binds SMPP côté utilisateur ; scalé horizontalement derrière un LB L4 avec affinité de session ; admet le débit du compte (§6.4) puis publie sur `mt.inbound`, consomme `mo.inbound`/`dlr.events` pour remettre à la session propriétaire (via le registre de session, §6.8). Gère `query_sm`/`cancel_sm` (§6.22).
+2. **rest-api-svc** — service HTTP sans état pour la soumission MT, la requête de statut, la config webhook ; admet le débit du compte (§6.4) puis publie sur `mt.inbound`.
+3. **router-svc** — consommateur sans état de `mt.inbound` ; applique auth, normalisation E.164, autorisation de sender ID (§6.19), opt-out (§6.20), anti-spam, résolution de route (§6.1), encodage/segmentation, puis réservation de crédit MT. Publie sur `mt.routed`. Il ne rejette jamais pour débit (§6.4). Émet un span par étape.
+4. **connector-pool-svc** — un pool logique par SMSC ; gère les binds SMPP sortants avec `bind_pool_size` binds parallèles, consomme `mt.routed`, attend le jeton du plafond du connecteur avant chaque `submit_sm` (§6.4), applique le disjoncteur (§6.15), évalue la réécriture de sender ID (§6.16) juste avant l'envoi, gère retries/bascule et l'auto-reconnexion (§6.13), capture/libère les réservations MT, publie `mo.inbound`/`dlr.events`. Publie l'état de disjoncteur agrégé dans Redis et reroute via `fallback_chain`.
 5. **mo-dlr-router-svc** — consomme `mo.inbound`/`dlr.events` ; normalise E.164, détecte les mots-clés STOP (§6.20), résout le compte via le numéro entrant/mot-clé (§6.21), applique le compteur MO (§6.9), remet via SMPP ou webhook.
 6. **session-manager-svc** — registre de session faisant autorité (Redis) ; expose une API gRPC pour bind/unbind/lookup, applique `max_sessions`, pilote la supervision `enquire_link`.
 7. **billing-svc** (déployé si facturation activée) — possède `balances`/`billing_customers`/`billing_ledger` ; expose l'API réserve/capture/libère, réconcilie le cache avec Postgres, héberge l'adaptateur de facturation externe (§6.10). Absent du chemin de requête quand la facturation est désactivée.
@@ -532,7 +532,7 @@ Partitionné par jour (`PARTITION BY toDate(submitted_at)`), avec tiering TTL (�
 
 ### 4.2 Flux de données — MT (soumission)
 
-Un client soumet (SMPP `submit_sm` ou REST `POST`) → le service d'ingestion **authentifie** l'identifiant (bind ou clé API), le résout vers son **compte SMPP** puis son **client** (les deux ID sont attachés à l'enveloppe et propagés comme en-têtes Kafka), vérifie que le canal est activé et le quota, ouvre le span racine, **accuse réception dès validation dans `mt.inbound`** → `router-svc` : normalisation E.164 → **autorisation de sender ID** (§6.19) → **contrôle d'opt-out** (§6.20) → anti-spam → **résolution de route** (§6.1 : numéro exact → script → déclaratif) → encodage/segmentation (`segment_count`) → contrôle de limite de débit → **réservation de crédit MT** (ignorée si facturation désactivée) → publication sur `mt.routed` → `connector-pool-svc` vérifie le disjoncteur, applique la réécriture de sender ID (§6.16), envoie `submit_sm`, suit `submit_sm_resp`, **capture** en cas de succès / **libère** en cas d'échec, publie l'issue sur `mt.outcome` (la ligne CDR `enroute`/`failed` est projetée par `router-svc`, ADR-0012) — ou republie vers le connecteur suivant du `fallback_chain` si le disjoncteur est ouvert (§6.15) → plus tard, DLR reçu → CDR mis à jour, span clos, DLR transmis au compte d'origine.
+Un client soumet (SMPP `submit_sm` ou REST `POST`) → le service d'ingestion **authentifie** l'identifiant (bind ou clé API), le résout vers son **compte SMPP** puis son **client** (les deux ID sont attachés à l'enveloppe et propagés comme en-têtes Kafka), vérifie que le canal est activé, **admet le débit du compte** (§6.4 ; au-delà : `429` / `ESME_RTHROTTLED`, rien n'est écrit), ouvre le span racine, **accuse réception dès validation dans `mt.inbound`** → `router-svc` : normalisation E.164 → **autorisation de sender ID** (§6.19) → **contrôle d'opt-out** (§6.20) → anti-spam → **résolution de route** (§6.1 : numéro exact → script → déclaratif) → encodage/segmentation (`segment_count`) → **réservation de crédit MT** (ignorée si facturation désactivée) → publication sur `mt.routed` → `connector-pool-svc` attend le jeton du plafond du connecteur (§6.4), vérifie le disjoncteur, applique la réécriture de sender ID (§6.16), envoie `submit_sm`, suit `submit_sm_resp`, **capture** en cas de succès / **libère** en cas d'échec, publie l'issue sur `mt.outcome` (la ligne CDR `enroute`/`failed` est projetée par `router-svc`, ADR-0012) — ou republie vers le connecteur suivant du `fallback_chain` si le disjoncteur est ouvert (§6.15) → plus tard, DLR reçu → CDR mis à jour, span clos, DLR transmis au compte d'origine.
 
 ### 4.3 Flux de données — MO (réception)
 
@@ -709,12 +709,12 @@ WS      /admin/stream/billing-alerts                    # MT low-balance / MT ov
                         (open-breaker / disabled connectors excluded, §6.15)
 ============ back to the common pipeline — NOTHING is skipped ================
                         [ 6. ENCODING / UDH SEGMENTATION ] -> segment_count   (§6.6)
-                        [ 7. RATE LIMIT ]                                     (§6.4)
-                        [ 8. MT CREDIT RESERVE ] on billing:balance:mt:{owner} (§6.9)
+                        [ 7. MT CREDIT RESERVE ] on billing:balance:mt:{owner} (§6.9)
                         publish -> Kafka mt.routed (key = logical message id) (§3.3)
 =========================== connector-pool-svc ================================
+                        connector token: wait, never reject                   (§6.4)
                         breaker closed? --no--> reroute via fallback_chain    (§6.15)
-                        [ 9. SENDER-ID REWRITE ] provider-side, pre-dispatch  (§6.16)
+                        [ 8. SENDER-ID REWRITE ] provider-side, pre-dispatch  (§6.16)
                         submit_sm -> SMSC -> submit_sm_resp
                         capture credit / release on failure; write CDR        (§6.9/§3.4)
                         later: deliver_sm (DLR) -> update CDR -> push to client
@@ -779,11 +779,13 @@ Pour la logique que les règles déclaratives ne peuvent exprimer, le fournisseu
 
 ### 6.4 Gestion du débit
 
-- Deux niveaux : (1) fenêtre SMPP au protocole par session, (2) token-bucket métier par compte/connecteur/route dans Redis (Lua atomique).
+- Deux niveaux : (1) fenêtre SMPP au protocole par session, (2) token-bucket métier par compte SMPP et par connecteur dans Redis (Lua atomique). Il n'y a pas de seau par route.
+- **Le débit se refuse avant l'ACK, jamais après.** Le seau du compte s'applique à l'ingestion, avant l'écriture dans `mt.inbound` : au-delà, `429` en REST, `ESME_RTHROTTLED` en SMPP, et rien n'entre dans la file partagée — un client n'y fait pas entrer plus que son contrat. Une soumission coûte son nombre exact de segments, calculé par l'encodage et la segmentation mêmes du pipeline. Une fois acquitté, un message peut être ralenti par le débit, jamais rejeté.
 - **Précédence** : `smsc_connectors.throughput_limit_per_sec` est le plafond technique absolu ; une ligne `rate_limits` pour ce connecteur est un gouverneur opérationnel qui ne peut jamais le dépasser (validation à l'écriture). Le débit effectif est le minimum des deux.
-- **Backpressure** : à l'approche du plafond, `connector-pool-svc` ralentit la consommation Kafka ; les messages restent durablement en file.
+- **Backpressure** : chaque `submit_sm` de `connector-pool-svc` attend son jeton du seau du connecteur, partagé entre pods ; un connecteur saturé ralentit la consommation de `mt.routed` et les messages restent durablement en file. L'attente précède l'écriture du PDU et n'occupe aucune place de la fenêtre SMPP. Le parking et le draineur de reroute (§6.15) paient un budget de republication distinct, au même débit : un message rerouté ne paie le plafond du connecteur qu'une fois, à l'envoi.
 - **Throttling adaptatif** : les signaux d'erreur `submit_sm_resp` (ex. `ESME_RTHROTTLED`) alimentent un ajusteur AIMD qui réduit puis remonte progressivement le débit effectif.
-- **Politique de panne Redis (rate-limit)** : **fail-closed conservateur** — si les compteurs sont injoignables, chaque pod applique localement le plafond technique statique du connecteur, jamais un débit non borné.
+- **Politique de panne Redis (rate-limit)** : **fail-closed conservateur** — si les compteurs sont injoignables, chaque pod applique localement le plafond : celui du connecteur au pool, celui du compte à l'ingestion. La borne d'un compte pendant la panne est donc son débit × (pods REST + pods SMPP portant un bind du compte, au plus `min(max_sessions, pods SMPP)`) ; jamais un débit non borné.
+- **`max_per_day`** est chargé mais pas encore appliqué (seule la fenêtre par seconde l'est) : dette `debts/max-per-day-expose-jamais-applique.md`.
 
 ### 6.5 Moteur anti-spam
 
@@ -799,7 +801,7 @@ Pour la logique que les règles déclaratives ne peuvent exprimer, le fournisseu
 
 - Détecte l'encodage (GSM-7/UCS-2/8-bit), en respectant `data_coding_default` du connecteur si défini ; calcule le nombre de segments ; découpe avec en-tête UDH.
 - Réassemblage des MO concaténés avant remise ; le réassemblage détermine le nombre de segments pour le compteur MO (§6.9).
-- S'exécute avant la limite de débit et la réservation de crédit (le coût dépend du nombre de segments).
+- S'exécute avant la réservation de crédit (le coût dépend du nombre de segments). L'admission du débit à l'ingestion calcule le même nombre, par les mêmes fonctions (§6.4).
 
 ### 6.7 Fiabilité & gestion des pannes
 
@@ -813,9 +815,9 @@ Pour la logique que les règles déclaratives ne peuvent exprimer, le fournisseu
 
 - Tous les services du plan de données sont sans état et s'étendent via HPA (CPU/lag Kafka).
 - `smpp-server-svc` fait exception (état TCP) — scalé aussi, la remise MO/DLR utilisant le registre `session-manager-svc`. **Remise au bon pod** : le registre maintient `account → {pod_id, pod_addr, bind_id}[]` — `pod_addr` est l'adresse que le pod publie lui-même à chaque bind (`status.podIP`), et que le routeur dial sans résoudre aucun nom (step-302) ; `mo-dlr-router-svc` remet **directement au pod détenteur via gRPC** (endpoint de remise interne), round-robin sur les binds vivants ; à défaut de bind, repli webhook.
-- **Pool de binds par connecteur** : `bind_pool_size > 1` (§3.1) partitionne `mt.routed` par `(connector_id, shard_index)`, `shard_index = hash(message_key) % bind_pool_size`. Chaque partition est consommée par une instance dédiée tenant un bind indépendant. `message_key` est l'**ID de message logique** (tous les segments UDH d'un message concaténé le partagent → même shard/bind, dans l'ordre — requis par les SMSC réassemblant sur un seul bind).
+- **Pool de binds par connecteur** : `mt.routed` est partitionné par `message_id`, l'**ID de message logique** ; avec `bind_pool_size > 1` (§3.1), le pool répartit chaque lot sur ses binds par `hash(message_id) % bind_pool_size`. Tous les segments UDH d'un message concaténé partagent cet ID → même partition, même bind, dans l'ordre — requis par les SMSC réassemblant sur un seul bind.
 - **Agrégation du disjoncteur multi-pod** : les binds étant répartis sur plusieurs pods, chacun écrit uniquement ses champs dans le hash `breaker:binds:{connector_id}` ; l'état connecteur agrégé (`breaker:state`) est **dérivé** par règle de majorité (recalcul-et-CAS sur transition, ou agrégateur élu). La charge (`connectorload`) suit le même schéma (une somme, recalculée à chaque publication, pas une majorité).
-- Kafka : partitions dimensionnées pour le parallélisme (partitions par connecteur × `bind_pool_size` pour `mt.routed` ; `message_id` pour `mt.inbound`, hash de compte pour `mo.inbound`).
+- Kafka : partitions dimensionnées pour le parallélisme (`message_id` pour `mt.routed` ; `message_id` pour `mt.inbound`, hash de compte pour `mo.inbound`).
 - Multi-région : plan de données par région pour la latence, synchro de config cross-région ; primaire Postgres dans une région avec réplicas en lecture. *(La reprise après sinistre n'est pas traitée ici, §1.2bis.)*
 
 ### 6.9 Solde de crédit SMS (opt-in)
@@ -833,7 +835,7 @@ Pour la logique que les règles déclaratives ne peuvent exprimer, le fournisseu
 - **`smpp_account`** : chaque compte a ses propres soldes MT et MO ; isole les budgets et supprime le point de sérialisation Redis du pool partagé.
 - **Verrou** : `balance_scope` est fixé à la création et ne peut être changé que si **tous les soldes du client sont à zéro** (sans rien à répartir, aucune allocation arbitraire possible). Le mode hybride est un non-objectif.
 
-**Formule** : `credits = segment_count × credits_per_segment(destination, sender_type)`, consultée dans `rate_plans`, après segmentation et après la limite de débit.
+**Formule** : `credits = segment_count × credits_per_segment(destination, sender_type)`, consultée dans `rate_plans`, après segmentation ; le débit du compte a été payé à l'admission (§6.4).
 
 **Prépayé MT — réserve → capture/libère :**
 1. `router-svc` appelle la réservation atomique (Lua) sur `billing:balance:mt:{owner}` ; plancher `0` (ou `-overdraft_limit`).
@@ -863,7 +865,7 @@ Pour la logique que les règles déclaratives ne peuvent exprimer, le fournisseu
 
 Chaque message reçoit un ID de trace (OpenTelemetry/W3C) à l'ingestion, propagé comme en-tête Kafka et rattaché au CDR.
 
-- **Spans par étape** : ingestion/auth, autorisation sender ID, opt-out, anti-spam, routage (règle/script), limite de débit, réservation/capture, encodage, envoi SMSC + `submit_sm_resp`, réception DLR, remise finale.
+- **Spans par étape** : ingestion/auth (un refus de débit à l'admission marque son span racine `rate_limited`), autorisation sender ID, opt-out, anti-spam, routage (règle/script), réservation/capture, encodage, envoi SMSC + `submit_sm_resp`, réception DLR, remise finale.
 - **Échantillonnage** : 100 % pour tout message en erreur/rejet/timeout ; configurable pour le trafic réussi.
 - **Invariant absolu** : un span **ne contient jamais le corps du message**, sous aucune politique de stockage ni aucun environnement ; au plus une longueur et un `content_hash` tronqué. Idem pour tous les logs. Le corps n'est visible que depuis le tableau de bord (§6.23).
 

@@ -242,7 +242,7 @@ func serveAndGet(t *testing.T, srv *http.Server, client *http.Client, scheme str
 
 func TestTheRestAPIServesHTTPSToAClientWithoutACertificate(t *testing.T) {
 	cfg := tlsTestConfig(t)
-	srv, err := newHTTPServer(cfg, emptyStores(), silentLogger())
+	srv, err := newHTTPServer(cfg, emptyStores(), nil, silentLogger())
 	if err != nil {
 		t.Fatalf("newHTTPServer: %v", err)
 	}
@@ -259,7 +259,7 @@ func TestTheRestAPIServesHTTPSToAClientWithoutACertificate(t *testing.T) {
 }
 
 func TestTheRestAPIServesPlaintextWhenTLSIsOff(t *testing.T) {
-	srv, err := newHTTPServer(testConfig(), emptyStores(), silentLogger())
+	srv, err := newHTTPServer(testConfig(), emptyStores(), nil, silentLogger())
 	if err != nil {
 		t.Fatalf("newHTTPServer: %v", err)
 	}
@@ -281,7 +281,7 @@ func TestTheRestAPIRefusesToBootOnAnUnreadableIdentity(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			cfg := tlsTestConfig(t)
 			breakIt(&cfg.TLS)
-			if _, err := newHTTPServer(cfg, emptyStores(), silentLogger()); err == nil {
+			if _, err := newHTTPServer(cfg, emptyStores(), nil, silentLogger()); err == nil {
 				t.Fatal("a missing file booted: the failure must be a value, not a handshake at 3am")
 			}
 		})

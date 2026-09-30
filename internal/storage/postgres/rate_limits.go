@@ -13,7 +13,7 @@ import (
 )
 
 // entityTypeSMPPAccount is the rate_limits.entity_type discriminator for an SMPP account. The table
-// is polymorphic (smpp_account/connector/route) so the scope is carried in this column, not an FK.
+// is polymorphic (smpp_account/connector) so the scope is carried in this column, not an FK.
 const entityTypeSMPPAccount = "smpp_account"
 
 // RateLimitRepo is the throughput-limits repository.
@@ -47,9 +47,9 @@ func (r *RateLimitRepo) RateLimit(ctx context.Context, accountID uuid.UUID) (cp.
 	}, true, nil
 }
 
-// List returns every configured throughput limit, for the router's cold-loaded rate-limit snapshot
-// (step-085). It reads all three entity kinds (smpp_account/connector/route); an empty result is a
-// valid "nothing configured" state, not an error.
+// List returns every configured throughput limit, for the cold-loaded rate-limit snapshot of the
+// ingestion and the connector pool (step-283). It reads both entity kinds (smpp_account/connector); an
+// empty result is a valid "nothing configured" state, not an error.
 func (r *RateLimitRepo) List(ctx context.Context) ([]cp.RateLimitEntry, error) {
 	rows, err := r.q.ListRateLimits(ctx)
 	if err != nil {

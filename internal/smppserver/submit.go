@@ -64,6 +64,12 @@ func (l *Listener) onSubmit(_ context.Context, st *connState) session.SubmitHand
 
 		if err := l.ingestor.Accept(sctx, env); err != nil {
 			status := errs.SMPPStatusForError(err)
+			if status == errs.StatusThrottled {
+				// Debug, not Error: a client over its rate hammers this path, and an Error per refusal
+				// would amplify it into a log flood.
+				l.logger.DebugContext(sctx, "smpp submit throttled", "account_id", st.accountID)
+				return session.SubmitResult{Status: status}
+			}
 			l.logger.ErrorContext(sctx, "smpp submit: ingest failed",
 				"message_id", messageID, "account_id", st.accountID, "command_status", status)
 			return session.SubmitResult{Status: status}

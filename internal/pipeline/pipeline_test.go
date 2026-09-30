@@ -54,14 +54,6 @@ func (s stubAntispam) Evaluate(context.Context, uuid.UUID, uuid.UUID, string, st
 	return s.action, s.err
 }
 
-// stubRateLimiter returns a fixed verdict for the rate-limit stage. The zero value allows every
-// message; a non-nil err rejects (a store fault surfaces as its own error, a breach as ErrRateLimited).
-type stubRateLimiter struct{ err error }
-
-func (s stubRateLimiter) Check(context.Context, uuid.UUID, uuid.UUID, *uuid.UUID, int) error {
-	return s.err
-}
-
 // stubReserver returns a fixed credit-stage verdict and counts its calls. The zero value reserves nothing
 // (billing disabled), so a test that wires it proves the stage ran without a real billing client.
 type stubReserver struct {
@@ -97,12 +89,11 @@ var allStages = []string{
 	"pipeline.route",
 	"pipeline.encoding",
 	"pipeline.segment",
-	"pipeline.rate_limit",
 	"pipeline.credit",
 }
 
-// testDeps is the pipeline every test starts from: stubs that pass every message, no rate limiter and
-// no credit reserver. A test then names ONLY the collaborator it varies, so what it exercises is
+// testDeps is the pipeline every test starts from: stubs that pass every message and no credit
+// reserver. A test then names ONLY the collaborator it varies, so what it exercises is
 // readable at its call site rather than buried in argument position.
 func testDeps(tracer trace.Tracer) pipeline.Deps {
 	return pipeline.Deps{
@@ -329,31 +320,6 @@ func TestPipelineRejectsNoRoute(t *testing.T) {
 	}
 }
 
-// TestPipelineRejectsOverRateLimit: the rate-limit stage rejects a throttled message with rate_limited,
-// AFTER route resolution and segmentation (the cost is the segment count) and before the credit stage.
-func TestPipelineRejectsOverRateLimit(t *testing.T) {
-	rec := otelrec.New(t)
-	tracer := observability.Tracer(rec.Provider(), "router")
-	deps := testDeps(tracer)
-	deps.RateLimiter = stubRateLimiter{err: errs.ErrRateLimited}
-	p := pipeline.New(deps)
-
-	_, _, err := p.Process(context.Background(), inbound("+2250700000000"))
-	if code, _ := errs.CodeOf(err); code != errs.ErrRateLimited {
-		t.Fatalf("code: got %q want rate_limited", code)
-	}
-	if !rec.Recorded("pipeline.rate_limit") {
-		t.Error("rate_limit span should have been emitted")
-	}
-	if !rec.Recorded("pipeline.route") || !rec.Recorded("pipeline.segment") {
-		t.Error("rate limiting must run AFTER route resolution and segmentation")
-	}
-	if rec.Recorded("pipeline.credit") {
-		t.Error("credit stage must NOT run after a rate-limit rejection (frozen order)")
-	}
-	rec.AssertNoBody(t, "topsecretbody")
-}
-
 // TestPipelineReserveSetsBillableAndOwner: a successful reserve pins Billable and the resolved owner onto the
 // routed message so connector-pool can capture the identical balance key (step-146).
 func TestPipelineReserveSetsBillableAndOwner(t *testing.T) {
@@ -395,8 +361,8 @@ func TestPipelineReserveDisabledLeavesUnbilled(t *testing.T) {
 	}
 }
 
-// TestPipelineCreditInsufficientRejects: a business denial rejects with insufficient_credit AFTER rate_limit
-// (frozen order), so the caller writes a rejected CDR and never sends; the span carries no body (invariant a).
+// TestPipelineCreditInsufficientRejects: a business denial rejects with insufficient_credit AFTER
+// segmentation (frozen order), so the caller writes a rejected CDR and never sends; the span carries no body (invariant a).
 func TestPipelineCreditInsufficientRejects(t *testing.T) {
 	rec := otelrec.New(t)
 	tracer := observability.Tracer(rec.Provider(), "router")
@@ -412,8 +378,8 @@ func TestPipelineCreditInsufficientRejects(t *testing.T) {
 	if !rec.Recorded("pipeline.credit") {
 		t.Error("credit span should have been emitted")
 	}
-	if !rec.Recorded("pipeline.rate_limit") {
-		t.Error("credit must run AFTER rate_limit (frozen order)")
+	if !rec.Recorded("pipeline.segment") {
+		t.Error("credit must run AFTER segmentation (frozen order)")
 	}
 	rec.AssertNoBody(t, "topsecretbody")
 }
@@ -524,5 +490,45 @@ func TestPipelinePreSegmentedUDHIBypass(t *testing.T) {
 	}
 	if string(segs[0].Payload) != raw {
 		t.Error("a pre-segmented body must pass through verbatim")
+	}
+}
+
+// TestSegmentCountIsThePipelinesOwn: admission pays the segment count before the acknowledgement
+// (step-283); it must be the count the pipeline then segments into, or a client pays one figure at the
+// door and occupies another on the wire.
+func TestSegmentCountIsThePipelinesOwn(t *testing.T) {
+	ucs2 := 8
+	cases := map[string]struct {
+		mutate func(*pipeline.InboundMT)
+		want   int
+	}{
+		"short gsm-7":              {func(in *pipeline.InboundMT) { in.Body = msg.NewBodyString("hello") }, 1},
+		"long gsm-7":               {func(in *pipeline.InboundMT) { in.Body = msg.NewBodyString(strings.Repeat("a", 200)) }, 2},
+		"160 chars that are ucs-2": {func(in *pipeline.InboundMT) { in.Body = msg.NewBodyString(strings.Repeat("ê", 160)) }, 3},
+		"ucs-2 forced by data_coding": {func(in *pipeline.InboundMT) {
+			in.Body = msg.NewBodyString(strings.Repeat("a", 100))
+			in.DataCoding = &ucs2
+		}, 2},
+		"pre-segmented by the client": {func(in *pipeline.InboundMT) {
+			in.Body = msg.NewBodyString(strings.Repeat("a", 150))
+			in.ESMClass = smpp.ESMClassUDHIndicator
+		}, 1},
+	}
+	p := pipeline.New(testDeps(observability.Tracer(otelrec.New(t).Provider(), "router")))
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			in := inbound("+2250700000000")
+			c.mutate(&in)
+			out, _, err := p.Process(context.Background(), in)
+			if err != nil {
+				t.Fatalf("Process: %v", err)
+			}
+			if out.SegmentCount != c.want {
+				t.Fatalf("the pipeline segmented into %d, want %d — the case does not test what it says", out.SegmentCount, c.want)
+			}
+			if got := pipeline.SegmentCount(in); got != out.SegmentCount {
+				t.Errorf("admission counts %d segments, the pipeline sends %d", got, out.SegmentCount)
+			}
+		})
 	}
 }

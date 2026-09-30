@@ -453,7 +453,7 @@ func buildRefStack(
 
 	mux, _ := restapi.New(restapi.Deps{
 		Principals: postgres.NewAPIKeyRepo(pool),
-		Ingestor:   ingest.NewIngestor(producer, nil),
+		Ingestor:   ingest.NewIngestor(producer, nil, nil),
 		CDRReader:  cdrReader,
 		Tracer:     tracer,
 		Version:    "loadref",

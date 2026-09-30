@@ -46,7 +46,7 @@ import (
 // pipelineStages are the spans the router pipeline must emit for every message (plan §6 M2).
 var pipelineStages = []string{
 	"pipeline.e164", "pipeline.sender_id", "pipeline.opt_out", "pipeline.anti_spam",
-	"pipeline.route", "pipeline.encoding", "pipeline.rate_limit", "pipeline.credit",
+	"pipeline.route", "pipeline.encoding", "pipeline.segment", "pipeline.credit",
 }
 
 type stack struct {
@@ -113,7 +113,7 @@ func buildStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg config
 
 	mux, _ := restapi.New(restapi.Deps{
 		Principals: postgres.NewAPIKeyRepo(pool),
-		Ingestor:   ingest.NewIngestor(producer, nil),
+		Ingestor:   ingest.NewIngestor(producer, nil, nil),
 		CDRReader:  cdrReader,
 		Tracer:     observability.Tracer(rec.Provider(), "rest-api"),
 		Version:    "e2e",

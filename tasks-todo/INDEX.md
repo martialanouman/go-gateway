@@ -213,7 +213,7 @@ qu'on mesure un environnement représentatif.
       ⛓ step-230, step-270b, step-270c, step-270d, step-275 — recadrée le 28/09/2026, le verdict part en step-409
 - [x] step-282 — `mt.inbound` n'est plus partitionné par compte ⛓ step-280 — décision humaine ; unité
       faute de multiple de dix libre
-- [ ] step-283 — Le débit se refuse avant l'ACK, jamais après — décision humaine ; unité faute de
+- [x] step-283 — Le débit se refuse avant l'ACK, jamais après — décision humaine ; unité faute de
       multiple de dix libre
 - [ ] step-284 — L'écriture durable du solde devient asynchrone, le plancher reste atomique ⛓ step-280 —
       décision humaine ; unité faute de multiple de dix libre

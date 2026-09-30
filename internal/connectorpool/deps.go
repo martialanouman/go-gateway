@@ -215,6 +215,9 @@ type Deps struct {
 	// env; M3+ sources it from the connectors control plane.
 	ConnectorID uuid.UUID
 	Bind        BindConfig
+	// SendLimiter holds each submit_sm until the connector's shared ceiling has room (step-283). Nil does
+	// not pace.
+	SendLimiter SendLimiter
 	// MaxSendRate is the connector's throughput_limit_per_sec — the ceiling for the adaptive throttle
 	// (step-086). Zero disables the AIMD pacing (the pre-M6 behaviour).
 	MaxSendRate float64

@@ -136,14 +136,14 @@ func newPoolApp(ctx context.Context, cfg config.Config, bindEnv connectorEnv, lo
 	}
 	breakerAgg := breaker.NewAggregator(st.rdb, redisstore.NewPubSubPublisher(st.rdb), podID)
 
-	// Reroute parking gate (step-126): the per-connector token bucket (shared with the router's
-	// rate-limit, so rerouted/drained/fresh traffic compete for one budget) decides whether a reroute
-	// can go straight to mt.routed or must be parked and drained at the fallback connector's ceiling.
+	// The connector's token bucket, shared across pods: every submit_sm waits for its token (step-283),
+	// and a reroute pays a separate republication budget that decides whether it goes straight to
+	// mt.routed or is parked and drained at the fallback connector's rate (step-126).
 	rateSnap, err := ratelimit.LoadSnapshot(ctx, postgres.NewRateLimitRepo(st.pg), postgres.NewConnectorRepo(st.pg))
 	if err != nil {
 		return nil, fmt.Errorf("load rate-limit snapshot: %w", err)
 	}
-	rerouteLimiter := ratelimit.NewEnforcer(rateSnap, ratelimit.NewLimiter(st.rdb))
+	rateLimiter := ratelimit.NewEnforcer(rateSnap, ratelimit.NewLimiter(st.rdb))
 
 	billing, err := newSettler(cfg, logger)
 	if err != nil {
@@ -192,7 +192,8 @@ func newPoolApp(ctx context.Context, cfg config.Config, bindEnv connectorEnv, lo
 		Producer:       st.producer,
 		Breaker:        breakerAgg,
 		BreakerState:   breakerStateReader{rdb: st.rdb},
-		RerouteLimiter: rerouteLimiter,
+		RerouteLimiter: rateLimiter,
+		SendLimiter:    rateLimiter,
 		Reconnect: reconnect.Config{
 			Enabled:      bindEnv.AutoReconnect,
 			InitialDelay: bindEnv.ReconnectInitialDelay,
@@ -235,7 +236,7 @@ func newPoolApp(ctx context.Context, cfg config.Config, bindEnv connectorEnv, lo
 		return nil, err
 	}
 
-	drainer, err := newDrainer(cfg, st, rerouteLimiter, bindEnv.ID, logger)
+	drainer, err := newDrainer(cfg, st, rateLimiter, bindEnv.ID, logger)
 	if err != nil {
 		return nil, err
 	}

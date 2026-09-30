@@ -127,7 +127,7 @@ func buildHarness(t *testing.T, principals restapi.PrincipalStore, reader restap
 
 	mux, _ := restapi.New(restapi.Deps{
 		Principals:  principals,
-		Ingestor:    ingest.NewIngestor(producer, nil),
+		Ingestor:    ingest.NewIngestor(producer, nil, nil),
 		CDRReader:   reader,
 		Idempotency: idem,
 		Tracer:      observability.Tracer(rec.Provider(), "rest-api"),

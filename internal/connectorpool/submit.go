@@ -167,7 +167,8 @@ func (s *Service) processOne(ctx context.Context, b *bind, bindIndex int, rec ka
 }
 
 // preDispatch settles everything that decides a record's fate WITHOUT putting it on the wire: the
-// connector filter, the max-age SLA, the cancel token, a reroute off an open breaker, the AIMD wait.
+// connector filter, the max-age SLA, the connector's ceiling, the cancel token, a reroute off an open
+// breaker, the AIMD wait.
 // done reports that the record is settled and processOne must return err as it is.
 func (s *Service) preDispatch(ctx context.Context, span trace.Span, bindIndex int, routed pipeline.RoutedMT) (bool, error) {
 	// Per-connector addressing (step-125, option B): the pool's group consumes ALL of mt.routed, so a
@@ -208,6 +209,15 @@ func (s *Service) preDispatch(ctx context.Context, span trace.Span, bindIndex in
 		// permanent reject is exactly what an operator goes looking for.
 		observability.RecordSpanError(span, errs.ErrDeliveryExpired)
 		return true, s.deadLetterWith(ctx, routed, errs.ErrDeliveryExpired)
+	}
+
+	// The connector's ceiling (§6.4, step-283): wait for its token, so a saturated connector slows the
+	// consumption instead of rejecting. Before the claim, so a message held here can still be cancelled;
+	// a wait cut short leaves the record uncommitted.
+	if s.deps.SendLimiter != nil {
+		if err := s.deps.SendLimiter.WaitConnector(ctx, routed.ConnectorID); err != nil {
+			return true, fmt.Errorf("connectorpool: connector ceiling wait: %w", err)
+		}
 	}
 
 	// Claim the cancel token before putting anything on the wire (ADR-0013). Claiming, not reading, is

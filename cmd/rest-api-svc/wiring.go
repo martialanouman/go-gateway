@@ -14,6 +14,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/idempotency"
 	"github.com/martialanouman/go-gateway/internal/ingest"
 	"github.com/martialanouman/go-gateway/internal/observability"
+	"github.com/martialanouman/go-gateway/internal/pipeline/ratelimit"
 	"github.com/martialanouman/go-gateway/internal/platform/buildinfo"
 	"github.com/martialanouman/go-gateway/internal/platform/tlsconf"
 	"github.com/martialanouman/go-gateway/internal/restapi"
@@ -79,10 +80,16 @@ func newRestAPIApp(ctx context.Context, cfg config.Config, logger *slog.Logger) 
 	}
 	a.onClose("stores", st.close)
 
+	rateSnap, err := ratelimit.LoadSnapshot(ctx, postgres.NewRateLimitRepo(st.pg), postgres.NewConnectorRepo(st.pg))
+	if err != nil {
+		return nil, fmt.Errorf("load rate-limit snapshot: %w", err)
+	}
+	admission := ratelimit.NewEnforcer(rateSnap, ratelimit.NewLimiter(st.rdb))
+
 	//nolint:contextcheck // The boot context has no business inside a request handler: the API-key
 	// middleware authenticates on the REQUEST context (ctx.Context()), which is the only correct one —
 	// a lookup must be cancelled when its client hangs up, not when the process shuts down.
-	a.http, err = newHTTPServer(cfg, st, logger)
+	a.http, err = newHTTPServer(cfg, st, admission, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -156,12 +163,12 @@ func (s *stores) close() {
 
 // newHTTPServer assembles the public API surface over the stores. It binds nothing: the listener opens
 // in runHTTP.
-func newHTTPServer(cfg config.Config, st *stores, logger *slog.Logger) (*http.Server, error) {
+func newHTTPServer(cfg config.Config, st *stores, admission ingest.Admission, logger *slog.Logger) (*http.Server, error) {
 	// The second return is the huma API handle, which nothing here needs: the routes are already
 	// registered on the mux by then.
 	handler, _ := restapi.New(restapi.Deps{
 		Principals:  postgres.NewAPIKeyRepo(st.pg),
-		Ingestor:    ingest.NewIngestor(st.producer, logger),
+		Ingestor:    ingest.NewIngestor(st.producer, admission, logger),
 		CDRReader:   clickhouse.NewCDRReader(st.ch),
 		Accounts:    postgres.NewAccountRepo(st.pg),
 		SenderIDs:   postgres.NewSenderIDRepo(st.pg),

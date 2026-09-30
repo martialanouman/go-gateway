@@ -20,7 +20,7 @@ type fakeRerouteLimiter struct {
 	allowAfter int32 // deny until this many calls have been made (0 = follow `allow`)
 }
 
-func (f *fakeRerouteLimiter) AllowConnector(_ context.Context, _ uuid.UUID, _ int) bool {
+func (f *fakeRerouteLimiter) AllowConnector(_ context.Context, _ uuid.UUID) bool {
 	n := f.calls.Add(1)
 	if f.allowAfter > 0 {
 		return n >= f.allowAfter
