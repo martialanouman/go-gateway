@@ -1,10 +1,13 @@
 -- name: GetBalance :one
--- The durable authority for one owner balance (owner_type, owner_id, direction). PostgreSQL owns the
--- balance; Redis caches it (§6.9). A missing row means zero credits ever recorded — the caller treats
--- absence as 0, not an error.
-SELECT credits
-FROM control_plane.balances
-WHERE owner_type = @owner_type AND owner_id = @owner_id AND direction = @direction;
+-- The durable owner balance (owner_type, owner_id, direction) is the folded balances row PLUS the owner's
+-- unfolded deltas (ADR-0022), read in ONE statement so a concurrent fold cannot hide a delta from both halves
+-- or show it in both. found=false means nothing was ever recorded for the owner — a legitimate zero.
+SELECT COALESCE(f.credits, 0)::int AS folded, COALESCE(p.total, 0)::bigint AS pending,
+       (f.credits IS NOT NULL OR p.total IS NOT NULL) AS found
+FROM (SELECT (SELECT b.credits FROM control_plane.balances b
+               WHERE b.owner_type = @owner_type AND b.owner_id = @owner_id AND b.direction = @direction) AS credits) f,
+     (SELECT sum(d.credits) AS total FROM control_plane.balance_deltas d
+       WHERE d.owner_type = @owner_type AND d.owner_id = @owner_id AND d.direction = @direction) p;
 
 -- name: GetBillingCustomer :one
 -- A customer's MT billing configuration. Billing config lives on the customer row itself (§6.9, step-142d

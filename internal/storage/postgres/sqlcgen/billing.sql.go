@@ -121,9 +121,12 @@ func (q *Queries) FoldBalanceDeltas(ctx context.Context, lim int32) (int64, erro
 }
 
 const getBalance = `-- name: GetBalance :one
-SELECT credits
-FROM control_plane.balances
-WHERE owner_type = $1 AND owner_id = $2 AND direction = $3
+SELECT COALESCE(f.credits, 0)::int AS folded, COALESCE(p.total, 0)::bigint AS pending,
+       (f.credits IS NOT NULL OR p.total IS NOT NULL) AS found
+FROM (SELECT (SELECT b.credits FROM control_plane.balances b
+               WHERE b.owner_type = $1 AND b.owner_id = $2 AND b.direction = $3) AS credits) f,
+     (SELECT sum(d.credits) AS total FROM control_plane.balance_deltas d
+       WHERE d.owner_type = $1 AND d.owner_id = $2 AND d.direction = $3) p
 `
 
 type GetBalanceParams struct {
@@ -132,14 +135,20 @@ type GetBalanceParams struct {
 	Direction string
 }
 
-// The durable authority for one owner balance (owner_type, owner_id, direction). PostgreSQL owns the
-// balance; Redis caches it (§6.9). A missing row means zero credits ever recorded — the caller treats
-// absence as 0, not an error.
-func (q *Queries) GetBalance(ctx context.Context, arg GetBalanceParams) (int32, error) {
+type GetBalanceRow struct {
+	Folded  int32
+	Pending int64
+	Found   *bool
+}
+
+// The durable owner balance (owner_type, owner_id, direction) is the folded balances row PLUS the owner's
+// unfolded deltas (ADR-0022), read in ONE statement so a concurrent fold cannot hide a delta from both halves
+// or show it in both. found=false means nothing was ever recorded for the owner — a legitimate zero.
+func (q *Queries) GetBalance(ctx context.Context, arg GetBalanceParams) (GetBalanceRow, error) {
 	row := q.db.QueryRow(ctx, getBalance, arg.OwnerType, arg.OwnerID, arg.Direction)
-	var credits int32
-	err := row.Scan(&credits)
-	return credits, err
+	var i GetBalanceRow
+	err := row.Scan(&i.Folded, &i.Pending, &i.Found)
+	return i, err
 }
 
 const getBalanceForUpdate = `-- name: GetBalanceForUpdate :one

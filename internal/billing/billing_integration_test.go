@@ -70,7 +70,7 @@ func newBillingHarnessOn(t *testing.T, rdb *redis.Client, pool *pgxpool.Pool, in
 	repo := postgres.NewBillingRepo(pool)
 	verify := postgres.NewBillingRepo(healthy)
 	// Establish the durable balance with a topup entry; the Redis cache stays absent (cold).
-	if _, _, err := verify.RecordDurable(ctx, cp.LedgerEntry{
+	if _, _, err := verify.Topup(ctx, cp.LedgerEntry{
 		OwnerType: cp.OwnerTypeCustomer, OwnerID: customerID, Direction: cp.BillingDirectionMT,
 		CustomerID: customerID, EntryType: cp.EntryTopup, Credits: initialBalance,
 	}); err != nil {
@@ -270,4 +270,22 @@ func poolCount(t *testing.T, h *billingHarness, messageID uuid.UUID, entryType s
 	return pool.QueryRow(context.Background(),
 		`SELECT count(*) FROM control_plane.billing_ledger WHERE message_id = $1 AND entry_type = $2`,
 		messageID, entryType).Scan(out)
+}
+
+// TestRehydrationSeesUnfoldedReserves is the trap ADR-0022 closes: the fold is late (never run here), the
+// balance cache expires, and the next reserve rehydrates. Rehydrating from the folded balance alone would
+// hand back the 6 credits already reserved and let a strict-prepaid customer spend them twice.
+func TestRehydrationSeesUnfoldedReserves(t *testing.T) {
+	h := newBillingHarness(t, 10)
+	ctx := context.Background()
+
+	if _, err := h.acc.Reserve(ctx, h.owner, uuid.New(), 6); err != nil {
+		t.Fatalf("first Reserve: %v", err)
+	}
+	h.dropCachedBalance(t)
+
+	_, err := h.acc.Reserve(ctx, h.owner, uuid.New(), 6)
+	if !errors.Is(err, errs.ErrInsufficientCredit) {
+		t.Fatalf("second Reserve after rehydration = %v, want ErrInsufficientCredit (only 4 credits remain)", err)
+	}
 }

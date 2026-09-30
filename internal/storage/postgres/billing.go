@@ -31,19 +31,20 @@ func NewBillingRepo(pool *pgxpool.Pool) *BillingRepo {
 	return &BillingRepo{pool: pool, q: sqlcgen.New(pool)}
 }
 
-// Balance reads the durable owner balance for a direction (mt/mo). found=false means no balance row has
-// ever been written for the owner — a legitimate "zero" state that the caller treats as 0, not an error.
+// Balance reads the durable owner balance for a direction (mt/mo). found=false means nothing has ever been
+// recorded for the owner — a legitimate "zero" state that the caller treats as 0, not an error.
 func (r *BillingRepo) Balance(ctx context.Context, ownerType string, ownerID uuid.UUID, direction string) (int, bool, error) {
-	credits, err := r.q.GetBalance(ctx, sqlcgen.GetBalanceParams{
+	return balanceOn(ctx, r.q, ownerType, ownerID, direction)
+}
+
+func balanceOn(ctx context.Context, q *sqlcgen.Queries, ownerType string, ownerID uuid.UUID, direction string) (int, bool, error) {
+	row, err := q.GetBalance(ctx, sqlcgen.GetBalanceParams{
 		OwnerType: ownerType, OwnerID: ownerID, Direction: direction,
 	})
-	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, false, nil
-	}
 	if err != nil {
 		return 0, false, translate("get balance", err)
 	}
-	return int(credits), true, nil
+	return int(row.Folded) + int(row.Pending), row.Found != nil && *row.Found, nil
 }
 
 // billingModeVal maps the nullable customers.billing_mode to the domain type; a NULL mode is "" (unset),
@@ -439,10 +440,9 @@ func (r *BillingRepo) ReserveEntry(ctx context.Context, messageID uuid.UUID) (cr
 // if that (message_id, entry_type) was already recorded — even on an earlier day, which the ledger's
 // same-day idem index cannot see — the claim conflicts, no balance/ledger write happens, and it returns
 // (currentBalance, applied=false) so the caller can undo any speculative cache change. Otherwise it
-// applies the entry's SIGNED credit delta to the owner's durable balance (credits += delta,
-// order-independent) and appends the append-only ledger row with the resulting balance as balance_after —
-// so the balance is always the exact SUM of the ledger's credits, whatever order concurrent same-owner
-// movements commit in — and returns (newBalance, applied=true). The claim INSERT is the lock, so two
+// appends the entry's SIGNED credit delta to balance_deltas — never the owner's balances row, whose lock
+// serialised a customer's whole traffic (ADR-0022) — and the append-only ledger row, and returns
+// (newBalance, applied=true). The durable balance stays the exact SUM of the ledger's credits. The claim INSERT is the lock, so two
 // concurrent replays cannot both apply (no read-then-write race), and idempotency holds across day
 // boundaries (invariant c), not only within the Redis hold's TTL.
 //
@@ -467,31 +467,28 @@ func (r *BillingRepo) RecordDurable(ctx context.Context, entry cp.LedgerEntry) (
 			return 0, false, translate("claim idempotency", cerr)
 		}
 		if claimed == 0 {
-			bal, berr := qtx.GetBalance(ctx, sqlcgen.GetBalanceParams{
-				OwnerType: entry.OwnerType, OwnerID: entry.OwnerID, Direction: entry.Direction,
-			})
-			if errors.Is(berr, pgx.ErrNoRows) {
-				return 0, false, nil
-			}
+			bal, _, berr := balanceOn(ctx, qtx, entry.OwnerType, entry.OwnerID, entry.Direction)
 			if berr != nil {
-				return 0, false, translate("get balance on replay", berr)
+				return 0, false, berr
 			}
 			if err := tx.Commit(ctx); err != nil {
 				return 0, false, translate("commit billing tx", err)
 			}
-			return int(bal), false, nil
+			return bal, false, nil
 		}
 	}
 
-	//nolint:gosec // credit counts are bounded well within int32 (integer credits, not monetary amounts)
-	balance, err := qtx.AdjustBalance(ctx, sqlcgen.AdjustBalanceParams{
-		OwnerType: entry.OwnerType,
-		OwnerID:   entry.OwnerID,
-		Direction: entry.Direction,
-		Delta:     int32(entry.Credits),
-	})
+	if entry.Credits != 0 {
+		//nolint:gosec // credit counts are bounded well within int32 (integer credits, not monetary amounts)
+		if err := qtx.InsertBalanceDelta(ctx, sqlcgen.InsertBalanceDeltaParams{
+			OwnerType: entry.OwnerType, OwnerID: entry.OwnerID, Direction: entry.Direction, Credits: int32(entry.Credits),
+		}); err != nil {
+			return 0, false, translate("insert balance delta", err)
+		}
+	}
+	balance, err := balanceAfter(ctx, qtx, entry)
 	if err != nil {
-		return 0, false, translate("adjust balance", err)
+		return 0, false, err
 	}
 	//nolint:gosec // see above: balance is an integer credit count
 	if _, err := qtx.InsertLedgerEntry(ctx, sqlcgen.InsertLedgerEntryParams{
@@ -503,7 +500,7 @@ func (r *BillingRepo) RecordDurable(ctx context.Context, entry cp.LedgerEntry) (
 		MessageID:    entry.MessageID,
 		EntryType:    string(entry.EntryType),
 		Credits:      int32(entry.Credits),
-		BalanceAfter: balance,
+		BalanceAfter: int32(balance),
 		Reference:    entry.Reference,
 	}); err != nil {
 		return 0, false, translate("insert ledger entry", err)
@@ -511,5 +508,15 @@ func (r *BillingRepo) RecordDurable(ctx context.Context, entry cp.LedgerEntry) (
 	if err := tx.Commit(ctx); err != nil {
 		return 0, false, translate("commit billing tx", err)
 	}
-	return int(balance), true, nil
+	return balance, true, nil
+}
+
+// balanceAfter is the value Redis computed for the entry when it has one. Reading the durable balance on
+// every reserve would sum all the owner's unfolded deltas — a cost that grows with the customer's rate.
+func balanceAfter(ctx context.Context, qtx *sqlcgen.Queries, entry cp.LedgerEntry) (int, error) {
+	if entry.BalanceAfter != nil {
+		return *entry.BalanceAfter, nil
+	}
+	bal, _, err := balanceOn(ctx, qtx, entry.OwnerType, entry.OwnerID, entry.Direction)
+	return bal, err
 }
