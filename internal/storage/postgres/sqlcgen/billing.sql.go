@@ -12,12 +12,11 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const adjustBalance = `-- name: AdjustBalance :one
+const adjustBalance = `-- name: AdjustBalance :exec
 INSERT INTO control_plane.balances (owner_type, owner_id, direction, credits)
 VALUES ($1, $2, $3, $4)
 ON CONFLICT (owner_type, owner_id, direction)
 DO UPDATE SET credits = control_plane.balances.credits + $4, updated_at = now()
-RETURNING credits
 `
 
 type AdjustBalanceParams struct {
@@ -28,20 +27,18 @@ type AdjustBalanceParams struct {
 }
 
 // Apply a SIGNED delta to the durable owner balance for a direction (credits += delta), creating the row
-// on first use, and RETURN the resulting balance. The delta form is order-independent: two concurrent
-// movements for the same owner commit in any order and the balance is always the sum of every delta —
-// which is exactly the append-only ledger's SUM(credits). An absolute set would let a stale write clobber
+// on first use. The delta form is order-independent: two concurrent movements for the same owner commit in
+// any order and the balance is always the sum of every delta; with the unfolded deltas (ADR-0022), that is
+// the append-only ledger's SUM(credits). An absolute set would let a stale write clobber
 // a fresher one under the concurrency this system runs at.
-func (q *Queries) AdjustBalance(ctx context.Context, arg AdjustBalanceParams) (int32, error) {
-	row := q.db.QueryRow(ctx, adjustBalance,
+func (q *Queries) AdjustBalance(ctx context.Context, arg AdjustBalanceParams) error {
+	_, err := q.db.Exec(ctx, adjustBalance,
 		arg.OwnerType,
 		arg.OwnerID,
 		arg.Direction,
 		arg.Delta,
 	)
-	var credits int32
-	err := row.Scan(&credits)
-	return credits, err
+	return err
 }
 
 const claimIdempotency = `-- name: ClaimIdempotency :execrows
@@ -91,10 +88,42 @@ func (q *Queries) ConsumedCredits(ctx context.Context, customerID uuid.UUID) (in
 	return consumed, err
 }
 
+const foldBalanceDeltas = `-- name: FoldBalanceDeltas :one
+WITH moved AS (
+  DELETE FROM control_plane.balance_deltas
+  WHERE id IN (
+    SELECT id FROM control_plane.balance_deltas ORDER BY id LIMIT $1 FOR UPDATE SKIP LOCKED
+  )
+  RETURNING owner_type, owner_id, direction, credits
+), upserted AS (
+  INSERT INTO control_plane.balances (owner_type, owner_id, direction, credits)
+  SELECT owner_type, owner_id, direction, sum(credits)::int FROM moved
+  GROUP BY owner_type, owner_id, direction
+  ORDER BY owner_type, owner_id, direction
+  ON CONFLICT (owner_type, owner_id, direction)
+  DO UPDATE SET credits = control_plane.balances.credits + excluded.credits, updated_at = now()
+  RETURNING 1
+)
+SELECT count(*) FROM moved
+`
+
+// Move up to @lim pending deltas into balances in ONE statement, so a reader sees each delta either pending
+// or folded, never both nor neither. SKIP LOCKED splits the work between replicas; the owner ORDER BY keeps
+// their row locks in one order. Returns the number of deltas folded (a full batch means more are waiting).
+func (q *Queries) FoldBalanceDeltas(ctx context.Context, lim int32) (int64, error) {
+	row := q.db.QueryRow(ctx, foldBalanceDeltas, lim)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const getBalance = `-- name: GetBalance :one
-SELECT credits
-FROM control_plane.balances
-WHERE owner_type = $1 AND owner_id = $2 AND direction = $3
+SELECT (COALESCE(f.credits, 0) + COALESCE(p.total, 0))::int AS credits,
+       (f.credits IS NOT NULL OR p.total IS NOT NULL) AS found
+FROM (SELECT (SELECT b.credits FROM control_plane.balances b
+               WHERE b.owner_type = $1 AND b.owner_id = $2 AND b.direction = $3) AS credits) f,
+     (SELECT sum(d.credits) AS total FROM control_plane.balance_deltas d
+       WHERE d.owner_type = $1 AND d.owner_id = $2 AND d.direction = $3) p
 `
 
 type GetBalanceParams struct {
@@ -103,36 +132,19 @@ type GetBalanceParams struct {
 	Direction string
 }
 
-// The durable authority for one owner balance (owner_type, owner_id, direction). PostgreSQL owns the
-// balance; Redis caches it (§6.9). A missing row means zero credits ever recorded — the caller treats
-// absence as 0, not an error.
-func (q *Queries) GetBalance(ctx context.Context, arg GetBalanceParams) (int32, error) {
+type GetBalanceRow struct {
+	Credits int32
+	Found   *bool
+}
+
+// The durable owner balance (owner_type, owner_id, direction) is the folded balances row PLUS the owner's
+// unfolded deltas (ADR-0022), read in ONE statement so a concurrent fold cannot hide a delta from both halves
+// or show it in both. found=false means nothing was ever recorded for the owner — a legitimate zero.
+func (q *Queries) GetBalance(ctx context.Context, arg GetBalanceParams) (GetBalanceRow, error) {
 	row := q.db.QueryRow(ctx, getBalance, arg.OwnerType, arg.OwnerID, arg.Direction)
-	var credits int32
-	err := row.Scan(&credits)
-	return credits, err
-}
-
-const getBalanceForUpdate = `-- name: GetBalanceForUpdate :one
-SELECT credits FROM control_plane.balances
-WHERE owner_type = $1 AND owner_id = $2 AND direction = $3
-FOR UPDATE
-`
-
-type GetBalanceForUpdateParams struct {
-	OwnerType string
-	OwnerID   uuid.UUID
-	Direction string
-}
-
-// Read one owner balance and LOCK its row (§6.9, step-148 admin transfer / change-scope). The lock
-// serialises this admin tx against a concurrent durable mirror write to the same balance, so a transfer's
-// overdraw check and a change-scope zero-check see a stable value. A missing row is a legitimate 0.
-func (q *Queries) GetBalanceForUpdate(ctx context.Context, arg GetBalanceForUpdateParams) (int32, error) {
-	row := q.db.QueryRow(ctx, getBalanceForUpdate, arg.OwnerType, arg.OwnerID, arg.Direction)
-	var credits int32
-	err := row.Scan(&credits)
-	return credits, err
+	var i GetBalanceRow
+	err := row.Scan(&i.Credits, &i.Found)
+	return i, err
 }
 
 const getBillingCustomer = `-- name: GetBillingCustomer :one
@@ -192,6 +204,30 @@ func (q *Queries) GetReserveEntry(ctx context.Context, messageID *uuid.UUID) (Ge
 	var i GetReserveEntryRow
 	err := row.Scan(&i.Credits, &i.BalanceAfter)
 	return i, err
+}
+
+const insertBalanceDelta = `-- name: InsertBalanceDelta :exec
+INSERT INTO control_plane.balance_deltas (owner_type, owner_id, direction, credits)
+VALUES ($1, $2, $3, $4)
+`
+
+type InsertBalanceDeltaParams struct {
+	OwnerType string
+	OwnerID   uuid.UUID
+	Direction string
+	Credits   int32
+}
+
+// Record a hot-path balance movement without touching the owner's balances row, whose lock serialised every
+// reserve of a customer (ADR-0022). The fold moves it into balances later.
+func (q *Queries) InsertBalanceDelta(ctx context.Context, arg InsertBalanceDeltaParams) error {
+	_, err := q.db.Exec(ctx, insertBalanceDelta,
+		arg.OwnerType,
+		arg.OwnerID,
+		arg.Direction,
+		arg.Credits,
+	)
+	return err
 }
 
 const insertLedgerEntry = `-- name: InsertLedgerEntry :one
@@ -544,6 +580,27 @@ func (q *Queries) ListOrphanedReservations(ctx context.Context, arg ListOrphaned
 	return items, nil
 }
 
+const lockBalance = `-- name: LockBalance :exec
+SELECT 1 FROM control_plane.balances
+WHERE owner_type = $1 AND owner_id = $2 AND direction = $3
+FOR UPDATE
+`
+
+type LockBalanceParams struct {
+	OwnerType string
+	OwnerID   uuid.UUID
+	Direction string
+}
+
+// Lock one owner's balances row (§6.9, step-148 admin transfer / change-scope) against another admin tx and
+// the fold; the hot path appends deltas without it, and Redis is its serialisation point. Read the balance
+// in a LATER statement: under READ COMMITTED a statement that waits on this lock re-reads the row's newest
+// version but keeps its older snapshot of balance_deltas, and would count a just-folded delta twice.
+func (q *Queries) LockBalance(ctx context.Context, arg LockBalanceParams) error {
+	_, err := q.db.Exec(ctx, lockBalance, arg.OwnerType, arg.OwnerID, arg.Direction)
+	return err
+}
+
 const lockCustomerScope = `-- name: LockCustomerScope :one
 SELECT balance_scope FROM control_plane.customers WHERE id = $1 FOR UPDATE
 `
@@ -555,6 +612,17 @@ func (q *Queries) LockCustomerScope(ctx context.Context, id uuid.UUID) (string, 
 	var balance_scope string
 	err := row.Scan(&balance_scope)
 	return balance_scope, err
+}
+
+const oldestBalanceDelta = `-- name: OldestBalanceDelta :one
+SELECT created_at FROM control_plane.balance_deltas ORDER BY id LIMIT 1
+`
+
+func (q *Queries) OldestBalanceDelta(ctx context.Context) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, oldestBalanceDelta)
+	var created_at pgtype.Timestamptz
+	err := row.Scan(&created_at)
+	return created_at, err
 }
 
 const updateBalanceScope = `-- name: UpdateBalanceScope :execrows

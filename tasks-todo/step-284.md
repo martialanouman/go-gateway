@@ -37,3 +37,71 @@ refus « solde insuffisant » ne dépend pas de Postgres. C'est ce qui rend l'as
       qui échoue sur une implémentation naïve (rouge lu)
 - [ ] aucun dépassement pour un client prépayé strict sous charge concurrente (test d'intégration)
 - [ ] rejouer la mesure mono-client de step-280 : plus de verrou en attente dans `pg_stat_activity`
+
+## Design arrêté
+Arbitrage : spec §6.9 → Fable (option A retenue, 30/09/2026) → validation humaine du 30/09/2026. ADR-0022.
+
+- **Synchrone, dans la tx de `RecordDurable`** : claim `billing_idempotency` + ligne du grand livre + un delta
+  dans `control_plane.balance_deltas` (append-only). Invariant c inchangé ; un crash ne perd aucun débit.
+- **Tri par chemin** : `RecordDurable` (seul appelant : l'Accountant — reserve, capture, release, mo_charge)
+  → delta, aucun si 0 (la capture ne touche plus de ligne partagée) ; `applyEntry` (Topup, Transfer) →
+  `AdjustBalance` synchrone, comme aujourd'hui. (Réarbitré par Fable : pas de switch sur `entry_type`.)
+- **Lecture unifiée** : toute lecture durable (réhydratation, `Balances`, transfer, change-scope, `balance_after`)
+  = `balances.credits + SUM(deltas)` en UN statement. Un delta est replié ou en attente, jamais les deux :
+  la réhydratation voit toute réserve committée. Pas de filigrane, pas de blocage ; TTL 10 min conservé.
+- **Replieur** : `FoldOnce` = un statement `DELETE … FOR UPDATE SKIP LOCKED RETURNING` → `INSERT INTO balances
+  … GROUP BY … ORDER BY owner ON CONFLICT DO UPDATE`. Boucle 1 s, lot 5 000, une par réplique ; 40P01 → log,
+  tick suivant. Métrique de retard (âge du plus vieux delta), alerte > 30 s. Autovacuum agressif sur la table.
+- **Transfer / change-scope** : gardent `FOR UPDATE` sur `balances` (sérialise admin ↔ admin ↔ replieur), lisent
+  la valeur unifiée ; jambes du transfer ordonnées par propriétaire. Pas de verrou consultatif : le point de
+  sérialisation avec le chemin chaud est Redis, aujourd'hui comme demain.
+- **`balance_after`** = la valeur que Redis vient de calculer (`reserve.lua`, `capture.lua` res[2],
+  `release.lua` « released », `recordmo.lua`), portée par `cp.LedgerEntry.BalanceAfter *int` : « solde après,
+  dans l'ordre des décisions de crédit ». `nil` → lecture unifiée, chemins rares seulement (cache froid,
+  replay non appliqué, release sans hold). Relire l'unifié à chaque réserve sommerait tous les deltas en
+  attente du client (~8 000 lignes par réserve à 8 000/s) : pire que le verrou retiré. (Réarbitrage Fable du
+  30/09.) Topup/Transfer : l'unifié, relu dans la tx après `AdjustBalance`.
+- **MO** : même chemin, aucun code dédié.
+- **Déploiement** : billing-svc en `strategy: Recreate` — une ancienne réplique qui lit `balances` seul
+  réhydraterait sans les deltas.
+- **Écartés** : journal Kafka (retard non interrogeable à la réhydratation), agrégation mémoire (perte sur
+  crash), cache sans TTL (perd la borne de step-142b), solde strié (reste un plafond de verrou, synchrone),
+  PR préalable « capture à delta 0 » (couverte par PR2, une mesure VPS de plus).
+
+### Amendement du 30/09 — les réserves en vol à la réhydratation (PR2b)
+La Task 6 (test de charge de la DoD) a montré un défaut **préexistant sur `main`** : `reserve.lua` débite Redis
+**avant** que `RecordDurable` committe. Un DEL du cache (TTL, `dropBalanceCache`, invalidation admin après
+un topup) fait réhydrater depuis un durable qui ignore ces débits en vol : 63 réserves de 1 acceptées pour
+50 crédits sur `main`, 59-61 sur la branche. Sous charge réelle : ~débit × latence durable crédits par
+réhydratation. Arbitrage Fable (deux tours : un compteur remis à 0 était faux — un décrément tardif mange
+l'incrément d'une réserve postérieure) :
+- `billing:inflight:mt:{owner_type}:{owner_id}`, HASH `message_id → "credits:ts_ms"`. `reserve.lua` fait le
+  HSET dans le script qui débite. Go fait HDEL (`defer`, ctx détaché) sur tout chemin après `reserved`.
+  **Pas** après la réparation du chemin `held` (recommandée par Fable, écartée) : sur une double livraison
+  concurrente, l'essai d'origine est encore en vol, et retirer son champ avant son commit rouvrirait le
+  dépassement. Un champ laissé par un crash expire à `holdTTL`.
+- `rehydrate` lit le HASH **avant** le solde durable, somme les champs de moins de `holdTTL`, et fait
+  `SET NX (durable − en vol)`. Un commit entre les deux lectures est soustrait deux fois : sous-estimation
+  conservatrice, guérie à la réhydratation suivante. Les champs plus vieux que `holdTTL` (crash entre
+  `reserve.lua` et le HDEL) sont purgés.
+- L'écriture durable de la réserve, réparation `held` comprise, est bornée côté billing-svc
+  (`reserveDurableTimeout`, bien sous `holdTTL`) : `RESERVE_TIMEOUT` n'a pas de plafond, et un commit plus long que l'âge de purge rouvrirait
+  le trou.
+- **Réhydratation périmée** (revue, rouge déterministe, présent sur `main`) : une réplique qui a lu le durable
+  puis stalle peut faire son `SET NX` après qu'une autre a réchauffé le cache, débité, et que le cache a été
+  supprimé : elle ressuscite le crédit. Arbitrage Fable : `billing:seq:mt:{owner_type}:{owner_id}`, compteur
+  de **débits** sans TTL, incrémenté par `reserve.lua` avec le débit ; la réhydratation le lit **avant** tout le
+  reste et son `SET NX` (un script) est refusé si le compteur a bougé — la réserve retente. Règle : **quiconque
+  baisse le solde durable hors de `reserve.lua` incrémente le compteur** (transfert et topup admin :
+  `billing.InvalidateBalanceCaches`, qui incrémente et supprime dans un script). Une version bumpée par la
+  réhydratation ne suffit pas (R1 réchauffe avant la lecture de R0, puis les débits suivent : rien ne bouge).
+- **Hors périmètre, step-286** (décision humaine du 30/09) : trois dépassements préexistants relevés au 2ᵉ tour
+  de revue — doublon concurrent qui rembourse le cache, garde du transfert sans les réserves en vol, fenêtre
+  entre le commit admin et l'invalidation.
+- Hors périmètre : même course sur le compteur MO → `debts/compteur-mo-reydrate-sans-ses-debits-en-vol.md`.
+
+**PR** : 1. design + ADR-0022 + §6.9 · 2. migration + sqlc + repo + `FoldOnce` + tests (ne se déploie pas sans
+3) · 3. boucle + métrique + alerte + `Recreate` · 4. mesure step-280.
+
+**Test rouge** (replieur arrêté) : topup 10 → reserve 6 → DEL du cache → reserve 6 ⇒ `ErrInsufficientCredit` ;
+la lecture naïve (`balances` seul) réhydrate 10 et accepte. Puis `FoldOnce` ⇒ solde 4, deltas vides.

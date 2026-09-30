@@ -1,9 +1,12 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -31,19 +34,20 @@ func NewBillingRepo(pool *pgxpool.Pool) *BillingRepo {
 	return &BillingRepo{pool: pool, q: sqlcgen.New(pool)}
 }
 
-// Balance reads the durable owner balance for a direction (mt/mo). found=false means no balance row has
-// ever been written for the owner — a legitimate "zero" state that the caller treats as 0, not an error.
+// Balance reads the durable owner balance for a direction (mt/mo). found=false means nothing has ever been
+// recorded for the owner — a legitimate "zero" state that the caller treats as 0, not an error.
 func (r *BillingRepo) Balance(ctx context.Context, ownerType string, ownerID uuid.UUID, direction string) (int, bool, error) {
-	credits, err := r.q.GetBalance(ctx, sqlcgen.GetBalanceParams{
+	return balanceOn(ctx, r.q, ownerType, ownerID, direction)
+}
+
+func balanceOn(ctx context.Context, q *sqlcgen.Queries, ownerType string, ownerID uuid.UUID, direction string) (int, bool, error) {
+	row, err := q.GetBalance(ctx, sqlcgen.GetBalanceParams{
 		OwnerType: ownerType, OwnerID: ownerID, Direction: direction,
 	})
-	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, false, nil
-	}
 	if err != nil {
 		return 0, false, translate("get balance", err)
 	}
-	return int(credits), true, nil
+	return int(row.Credits), row.Found != nil && *row.Found, nil
 }
 
 // billingModeVal maps the nullable customers.billing_mode to the domain type; a NULL mode is "" (unset),
@@ -233,14 +237,17 @@ func (r *BillingRepo) Transfer(ctx context.Context, debit, credit cp.LedgerEntry
 		return nil, false, nil
 	}
 
-	// Lock the source balance and refuse to overdraw it.
-	srcBal, serr := qtx.GetBalanceForUpdate(ctx, sqlcgen.GetBalanceForUpdateParams{
-		OwnerType: debit.OwnerType, OwnerID: debit.OwnerID, Direction: debit.Direction,
-	})
-	if serr != nil && !errors.Is(serr, pgx.ErrNoRows) {
-		return nil, false, translate("lock source balance", serr)
+	// Lock both owners in the fold's order (owner_type, owner_id), or a transfer and a fold touching the same
+	// two rows in opposite orders deadlock. Then refuse to overdraw the source.
+	legs := []cp.BalanceOwner{{OwnerType: debit.OwnerType, OwnerID: debit.OwnerID}, {OwnerType: credit.OwnerType, OwnerID: credit.OwnerID}}
+	if err := lockBalances(ctx, qtx, legs, debit.Direction); err != nil {
+		return nil, false, err
 	}
-	if int(srcBal) < amount {
+	srcBal, _, err := balanceOn(ctx, qtx, debit.OwnerType, debit.OwnerID, debit.Direction)
+	if err != nil {
+		return nil, false, err
+	}
+	if srcBal < amount {
 		return nil, false, fmt.Errorf("transfer: source balance %d < %d: %w", srcBal, amount, errs.ErrInsufficientCredit)
 	}
 
@@ -281,13 +288,14 @@ func (r *BillingRepo) ChangeBalanceScope(ctx context.Context, customerID uuid.UU
 	if _, err := qtx.LockCustomerScope(ctx, customerID); err != nil {
 		return translate("lock customer", err)
 	}
+	if err := lockBalances(ctx, qtx, currentOwners, cp.BillingDirectionMO, cp.BillingDirectionMT); err != nil {
+		return err
+	}
 	for _, o := range currentOwners {
 		for _, dir := range []string{cp.BillingDirectionMT, cp.BillingDirectionMO} {
-			bal, berr := qtx.GetBalanceForUpdate(ctx, sqlcgen.GetBalanceForUpdateParams{
-				OwnerType: o.OwnerType, OwnerID: o.OwnerID, Direction: dir,
-			})
-			if berr != nil && !errors.Is(berr, pgx.ErrNoRows) {
-				return translate("lock balance", berr)
+			bal, _, berr := balanceOn(ctx, qtx, o.OwnerType, o.OwnerID, dir)
+			if berr != nil {
+				return berr
 			}
 			if bal != 0 {
 				return fmt.Errorf("change-scope: %s %s balance is %d, not zero: %w", o.OwnerType, dir, bal, errs.ErrConflict)
@@ -308,21 +316,25 @@ func (r *BillingRepo) ChangeBalanceScope(ctx context.Context, customerID uuid.UU
 }
 
 // applyEntry adjusts the owner's balance by the entry's signed delta and appends the ledger row, on the
-// given tx queries, returning the stored row (id, balance_after, created_at). It is the shared apply half of
-// RecordDurable, reused by Topup and Transfer.
+// given tx queries, returning the stored row (id, balance_after, created_at). It is Topup's and Transfer's
+// apply step; RecordDurable appends a delta instead (ADR-0022).
 //
 //nolint:gosec // credit counts are bounded well within int32 (integer credits, not monetary amounts)
 func applyEntry(ctx context.Context, qtx *sqlcgen.Queries, e cp.LedgerEntry) (cp.LedgerRow, error) {
-	balance, err := qtx.AdjustBalance(ctx, sqlcgen.AdjustBalanceParams{
+	if err := qtx.AdjustBalance(ctx, sqlcgen.AdjustBalanceParams{
 		OwnerType: e.OwnerType, OwnerID: e.OwnerID, Direction: e.Direction, Delta: int32(e.Credits),
-	})
-	if err != nil {
+	}); err != nil {
 		return cp.LedgerRow{}, translate("adjust balance", err)
+	}
+	// Read in a later statement than the adjust, for the reason LockBalance gives.
+	balance, _, err := balanceOn(ctx, qtx, e.OwnerType, e.OwnerID, e.Direction)
+	if err != nil {
+		return cp.LedgerRow{}, err
 	}
 	row, err := qtx.InsertLedgerEntry(ctx, sqlcgen.InsertLedgerEntryParams{
 		OwnerType: e.OwnerType, OwnerID: e.OwnerID, Direction: e.Direction, CustomerID: e.CustomerID,
 		AccountID: e.AccountID, MessageID: e.MessageID, EntryType: string(e.EntryType), Credits: int32(e.Credits),
-		BalanceAfter: balance, Reference: e.Reference,
+		BalanceAfter: int32(balance), Reference: e.Reference,
 	})
 	if err != nil {
 		return cp.LedgerRow{}, translate("insert ledger entry", err)
@@ -330,7 +342,7 @@ func applyEntry(ctx context.Context, qtx *sqlcgen.Queries, e cp.LedgerEntry) (cp
 	return cp.LedgerRow{
 		ID: row.ID, OwnerType: e.OwnerType, OwnerID: e.OwnerID, Direction: e.Direction, CustomerID: e.CustomerID,
 		AccountID: e.AccountID, MessageID: e.MessageID, EntryType: e.EntryType, Credits: e.Credits,
-		BalanceAfter: int(balance), Reference: e.Reference, CreatedAt: tsVal(row.CreatedAt),
+		BalanceAfter: balance, Reference: e.Reference, CreatedAt: tsVal(row.CreatedAt),
 	}, nil
 }
 
@@ -439,12 +451,11 @@ func (r *BillingRepo) ReserveEntry(ctx context.Context, messageID uuid.UUID) (cr
 // if that (message_id, entry_type) was already recorded — even on an earlier day, which the ledger's
 // same-day idem index cannot see — the claim conflicts, no balance/ledger write happens, and it returns
 // (currentBalance, applied=false) so the caller can undo any speculative cache change. Otherwise it
-// applies the entry's SIGNED credit delta to the owner's durable balance (credits += delta,
-// order-independent) and appends the append-only ledger row with the resulting balance as balance_after —
-// so the balance is always the exact SUM of the ledger's credits, whatever order concurrent same-owner
-// movements commit in — and returns (newBalance, applied=true). The claim INSERT is the lock, so two
-// concurrent replays cannot both apply (no read-then-write race), and idempotency holds across day
-// boundaries (invariant c), not only within the Redis hold's TTL.
+// appends the entry's SIGNED credit delta to balance_deltas — never the owner's balances row, whose lock
+// serialised a customer's whole traffic (ADR-0022) — and the append-only ledger row, and returns
+// (newBalance, applied=true). The durable balance stays the exact SUM of the ledger's credits. The claim
+// INSERT is the lock, so two concurrent replays cannot both apply (no read-then-write race), and idempotency
+// holds across day boundaries (invariant c), not only within the Redis hold's TTL.
 //
 // Entries with no message_id (top-ups, adjustments) bypass the claim and always apply — they are not
 // message-scoped and carry their own audit reference. The ledger stays append-only; the caller supplies
@@ -467,31 +478,28 @@ func (r *BillingRepo) RecordDurable(ctx context.Context, entry cp.LedgerEntry) (
 			return 0, false, translate("claim idempotency", cerr)
 		}
 		if claimed == 0 {
-			bal, berr := qtx.GetBalance(ctx, sqlcgen.GetBalanceParams{
-				OwnerType: entry.OwnerType, OwnerID: entry.OwnerID, Direction: entry.Direction,
-			})
-			if errors.Is(berr, pgx.ErrNoRows) {
-				return 0, false, nil
-			}
+			bal, _, berr := balanceOn(ctx, qtx, entry.OwnerType, entry.OwnerID, entry.Direction)
 			if berr != nil {
-				return 0, false, translate("get balance on replay", berr)
+				return 0, false, berr
 			}
 			if err := tx.Commit(ctx); err != nil {
 				return 0, false, translate("commit billing tx", err)
 			}
-			return int(bal), false, nil
+			return bal, false, nil
 		}
 	}
 
-	//nolint:gosec // credit counts are bounded well within int32 (integer credits, not monetary amounts)
-	balance, err := qtx.AdjustBalance(ctx, sqlcgen.AdjustBalanceParams{
-		OwnerType: entry.OwnerType,
-		OwnerID:   entry.OwnerID,
-		Direction: entry.Direction,
-		Delta:     int32(entry.Credits),
-	})
+	if entry.Credits != 0 {
+		//nolint:gosec // credit counts are bounded well within int32 (integer credits, not monetary amounts)
+		if err := qtx.InsertBalanceDelta(ctx, sqlcgen.InsertBalanceDeltaParams{
+			OwnerType: entry.OwnerType, OwnerID: entry.OwnerID, Direction: entry.Direction, Credits: int32(entry.Credits),
+		}); err != nil {
+			return 0, false, translate("insert balance delta", err)
+		}
+	}
+	balance, err := balanceAfter(ctx, qtx, entry)
 	if err != nil {
-		return 0, false, translate("adjust balance", err)
+		return 0, false, err
 	}
 	//nolint:gosec // see above: balance is an integer credit count
 	if _, err := qtx.InsertLedgerEntry(ctx, sqlcgen.InsertLedgerEntryParams{
@@ -503,7 +511,7 @@ func (r *BillingRepo) RecordDurable(ctx context.Context, entry cp.LedgerEntry) (
 		MessageID:    entry.MessageID,
 		EntryType:    string(entry.EntryType),
 		Credits:      int32(entry.Credits),
-		BalanceAfter: balance,
+		BalanceAfter: int32(balance),
 		Reference:    entry.Reference,
 	}); err != nil {
 		return 0, false, translate("insert ledger entry", err)
@@ -511,5 +519,58 @@ func (r *BillingRepo) RecordDurable(ctx context.Context, entry cp.LedgerEntry) (
 	if err := tx.Commit(ctx); err != nil {
 		return 0, false, translate("commit billing tx", err)
 	}
-	return int(balance), true, nil
+	return balance, true, nil
+}
+
+// balanceAfter is the value Redis computed for the entry when it has one. Reading the durable balance on
+// every reserve would sum all the owner's unfolded deltas — a cost that grows with the customer's rate.
+func balanceAfter(ctx context.Context, qtx *sqlcgen.Queries, entry cp.LedgerEntry) (int, error) {
+	if entry.BalanceAfter != nil {
+		return *entry.BalanceAfter, nil
+	}
+	bal, _, err := balanceOn(ctx, qtx, entry.OwnerType, entry.OwnerID, entry.Direction)
+	return bal, err
+}
+
+// FoldOnce moves up to limit unfolded deltas into balances (ADR-0022) and returns how many it moved; fewer
+// than limit means the backlog is drained.
+func (r *BillingRepo) FoldOnce(ctx context.Context, limit int) (int64, error) {
+	//nolint:gosec // the caller's batch size is a small constant
+	n, err := r.q.FoldBalanceDeltas(ctx, int32(limit))
+	if err != nil {
+		return 0, translate("fold balance deltas", err)
+	}
+	return n, nil
+}
+
+// OldestPendingDelta returns when the oldest unfolded delta was recorded; found=false when none is pending.
+func (r *BillingRepo) OldestPendingDelta(ctx context.Context) (time.Time, bool, error) {
+	at, err := r.q.OldestBalanceDelta(ctx)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return time.Time{}, false, nil
+	}
+	if err != nil {
+		return time.Time{}, false, translate("oldest balance delta", err)
+	}
+	return tsVal(at), true, nil
+}
+
+// lockBalances locks the owners' balances rows in the fold's order — (owner_type, owner_id, direction) — so
+// an admin tx and a fold touching the same rows cannot deadlock. directions must be given in ascending order.
+func lockBalances(ctx context.Context, qtx *sqlcgen.Queries, owners []cp.BalanceOwner, directions ...string) error {
+	sorted := slices.Clone(owners)
+	slices.SortFunc(sorted, func(a, b cp.BalanceOwner) int {
+		if c := strings.Compare(a.OwnerType, b.OwnerType); c != 0 {
+			return c
+		}
+		return bytes.Compare(a.OwnerID[:], b.OwnerID[:])
+	})
+	for _, o := range sorted {
+		for _, dir := range directions {
+			if err := qtx.LockBalance(ctx, sqlcgen.LockBalanceParams{OwnerType: o.OwnerType, OwnerID: o.OwnerID, Direction: dir}); err != nil {
+				return translate("lock balance", err)
+			}
+		}
+	}
+	return nil
 }

@@ -171,4 +171,7 @@ type LedgerEntry struct {
 	EntryType  EntryType
 	Credits    int
 	Reference  *string
+	// BalanceAfter is the balance Redis computed when it took this credit decision (ADR-0022). nil makes
+	// the store read the durable balance instead, which sums the owner's unfolded deltas.
+	BalanceAfter *int
 }

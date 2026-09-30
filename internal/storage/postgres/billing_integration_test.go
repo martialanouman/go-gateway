@@ -171,7 +171,7 @@ func TestBillingRepoTransfer(t *testing.T) {
 		t.Fatalf("seed acct2: %v", err)
 	}
 	// Fund acct1 with 100 (topup).
-	if _, _, err := repo.RecordDurable(ctx, cp.LedgerEntry{
+	if _, _, err := repo.Topup(ctx, cp.LedgerEntry{
 		OwnerType: cp.OwnerTypeSMPPAccount, OwnerID: acct1, Direction: cp.BillingDirectionMT,
 		CustomerID: customerID, AccountID: &acct1, EntryType: cp.EntryTopup, Credits: 100,
 	}); err != nil {
@@ -251,7 +251,7 @@ func TestBillingRepoChangeBalanceScope(t *testing.T) {
 	}
 
 	// Fund the owner, then a flip back must be refused (409) because the balance is non-zero.
-	if _, _, err := repo.RecordDurable(ctx, cp.LedgerEntry{
+	if _, _, err := repo.Topup(ctx, cp.LedgerEntry{
 		OwnerType: cp.OwnerTypeCustomer, OwnerID: customerID, Direction: cp.BillingDirectionMT,
 		CustomerID: customerID, EntryType: cp.EntryTopup, Credits: 50,
 	}); err != nil {
@@ -392,5 +392,64 @@ func TestBillingRepoRecordAndIdempotency(t *testing.T) {
 	}
 	if sum != 97 {
 		t.Errorf("SUM(credits) = %d, want 97 (must equal the balance — ledger self-consistency)", sum)
+	}
+}
+
+// TestRecordDurableLeavesBalancesRowUntouched pins ADR-0022: a hot-path movement appends a delta and never
+// takes the balances row lock, yet the durable balance a reader sees already includes it.
+func TestRecordDurableLeavesBalancesRowUntouched(t *testing.T) {
+	pool := pgtest.Pool(t)
+	ctx := context.Background()
+	repo := postgres.NewBillingRepo(pool)
+
+	var customerID uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO control_plane.customers (name) VALUES ('billing-delta-test') RETURNING id`).Scan(&customerID); err != nil {
+		t.Fatalf("seed customer: %v", err)
+	}
+	entry := func(et cp.EntryType, mid *uuid.UUID, credits int) cp.LedgerEntry {
+		return cp.LedgerEntry{
+			OwnerType: cp.OwnerTypeCustomer, OwnerID: customerID, Direction: cp.BillingDirectionMT,
+			CustomerID: customerID, MessageID: mid, EntryType: et, Credits: credits,
+		}
+	}
+	if _, _, err := repo.Topup(ctx, entry(cp.EntryTopup, nil, 100)); err != nil {
+		t.Fatalf("topup: %v", err)
+	}
+	messageID := uuid.New()
+	if _, _, err := repo.RecordDurable(ctx, entry(cp.EntryReserve, &messageID, -3)); err != nil {
+		t.Fatalf("reserve: %v", err)
+	}
+	if _, _, err := repo.RecordDurable(ctx, entry(cp.EntryCapture, &messageID, 0)); err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+
+	var folded int
+	if err := pool.QueryRow(ctx,
+		`SELECT credits FROM control_plane.balances WHERE owner_type = 'customer' AND owner_id = $1 AND direction = 'mt'`,
+		customerID).Scan(&folded); err != nil {
+		t.Fatalf("read balances row: %v", err)
+	}
+	if folded != 100 {
+		t.Errorf("balances row = %d, want 100: the reserve must not write it", folded)
+	}
+	var deltas []int
+	rows, err := pool.Query(ctx,
+		`SELECT credits FROM control_plane.balance_deltas WHERE owner_type = 'customer' AND owner_id = $1 ORDER BY id`, customerID)
+	if err != nil {
+		t.Fatalf("read deltas: %v", err)
+	}
+	for rows.Next() {
+		var c int
+		if err := rows.Scan(&c); err != nil {
+			t.Fatalf("scan delta: %v", err)
+		}
+		deltas = append(deltas, c)
+	}
+	if len(deltas) != 1 || deltas[0] != -3 {
+		t.Errorf("deltas = %v, want [-3]: one for the reserve, none for the zero-credit capture", deltas)
+	}
+	if bal, found, err := repo.Balance(ctx, cp.OwnerTypeCustomer, customerID, cp.BillingDirectionMT); err != nil || !found || bal != 97 {
+		t.Errorf("Balance = (%d, %v, %v), want (97, true, nil)", bal, found, err)
 	}
 }

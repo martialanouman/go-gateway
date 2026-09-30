@@ -409,6 +409,10 @@ billing:balance:{direction}:{owner_type}:{owner_id}   -- cached balance, mirrori
                                          reserve/capture/release; accrual meter for MO. Reconciled with Postgres.
 billing:reservation:{message_id}     -- short-TTL MT hold (amount, direction, owner, customer_id, account_id),
                                          cleared on capture/release; expiry sweep reconciles orphans. No MO reservation.
+billing:inflight:mt:{owner_type}:{owner_id} -- HASH of reserves debited in Redis, not yet durable; a rehydration
+                                         subtracts them (ADR-0022).
+billing:seq:mt:{owner_type}:{owner_id} -- debit counter (no TTL); a rehydration refuses to write a value computed
+                                         before a debit it did not see (ADR-0022).
 retry:delayed:{connector_id}         -- sorted-set delay queue (score = due ts) for connector retry/backoff
 breaker:binds:{connector_id}         -- HASH of per (pod_id, bind_index) sub-bind states, each written only by the
                                          owning pod; the connector-level aggregate is derived by majority (§6.8/§6.15)
@@ -842,7 +846,7 @@ Pour la logique que les règles déclaratives ne peuvent exprimer, le fournisseu
 2. Échec de réservation → rejet immédiat (REST `402`, SMPP `submit_sm_resp` code d'extension), aucune entrée de grand livre.
 3. Sur `submit_sm_resp` réussi, `connector-pool-svc` **capture** ; sur échec/expiration, **libère**.
 4. **Idempotence** : réserve/capture/libère sont idempotentes par `message_id` (clé de réservation unique + contrainte `UNIQUE(message_id, entry_type)`), car réserve (router) et capture (connector) encadrent un hop Kafka au moins une fois. Le sweep d'orphelins ne libère qu'après vérification d'absence de capture et de corrélation DLR.
-- **Autorité du solde = grand livre Postgres durable** (chaque `reserve` est journalisée, solde reconstructible). Le cache Redis est une projection ; à sa perte/failover, le Credit Engine réhydrate depuis Postgres avant d'accepter une réservation et bloque (fail-closed) pendant la fenêtre pour les comptes en garantie stricte.
+- **Autorité du solde = grand livre Postgres durable** (chaque `reserve` est journalisée, solde reconstructible). Le cache Redis est une projection ; à sa perte/failover, le Credit Engine réhydrate depuis Postgres avant d'accepter une réservation et bloque (fail-closed) pendant la fenêtre pour les comptes en garantie stricte. Le solde durable est `balances` plus les deltas non encore repliés, lus ensemble : le report dans `balances` est différé, jamais le grand livre (ADR-0022).
 
 **Postpayé MT** : aucune vérification bloquante à la soumission ; usage enregistré après envoi. `credit_limit` souple pour alertes, bloquant seulement si `credit_limit_is_hard`.
 

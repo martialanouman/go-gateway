@@ -70,7 +70,7 @@ func newBillingHarnessOn(t *testing.T, rdb *redis.Client, pool *pgxpool.Pool, in
 	repo := postgres.NewBillingRepo(pool)
 	verify := postgres.NewBillingRepo(healthy)
 	// Establish the durable balance with a topup entry; the Redis cache stays absent (cold).
-	if _, _, err := verify.RecordDurable(ctx, cp.LedgerEntry{
+	if _, _, err := verify.Topup(ctx, cp.LedgerEntry{
 		OwnerType: cp.OwnerTypeCustomer, OwnerID: customerID, Direction: cp.BillingDirectionMT,
 		CustomerID: customerID, EntryType: cp.EntryTopup, Credits: initialBalance,
 	}); err != nil {
@@ -270,4 +270,106 @@ func poolCount(t *testing.T, h *billingHarness, messageID uuid.UUID, entryType s
 	return pool.QueryRow(context.Background(),
 		`SELECT count(*) FROM control_plane.billing_ledger WHERE message_id = $1 AND entry_type = $2`,
 		messageID, entryType).Scan(out)
+}
+
+// TestRehydrationSeesUnfoldedReserves is the trap ADR-0022 closes: the fold is late (never run here), the
+// balance cache expires, and the next reserve rehydrates. Rehydrating from the folded balance alone would
+// hand back the 6 credits already reserved and let a strict-prepaid customer spend them twice.
+func TestRehydrationSeesUnfoldedReserves(t *testing.T) {
+	h := newBillingHarness(t, 10)
+	ctx := context.Background()
+
+	if _, err := h.acc.Reserve(ctx, h.owner, uuid.New(), 6); err != nil {
+		t.Fatalf("first Reserve: %v", err)
+	}
+	h.dropCachedBalance(t)
+
+	_, err := h.acc.Reserve(ctx, h.owner, uuid.New(), 6)
+	if !errors.Is(err, errs.ErrInsufficientCredit) {
+		t.Fatalf("second Reserve after rehydration = %v, want ErrInsufficientCredit (only 4 credits remain)", err)
+	}
+}
+
+// TestLedgerBalanceAfterIsTheCreditDecision pins where balance_after comes from on the hot path: the value
+// Redis computed when it decided (ADR-0022), not a durable re-read that would sum every unfolded delta. A
+// delta written behind Redis's back makes the two differ.
+func TestLedgerBalanceAfterIsTheCreditDecision(t *testing.T) {
+	h := newBillingHarness(t, 100)
+	ctx := context.Background()
+	pool := pgtest.Pool(t)
+	balanceAfter := func(messageID uuid.UUID, et cp.EntryType) int {
+		t.Helper()
+		var v int
+		if err := pool.QueryRow(ctx,
+			`SELECT balance_after FROM control_plane.billing_ledger WHERE message_id = $1 AND entry_type = $2`,
+			messageID, string(et)).Scan(&v); err != nil {
+			t.Fatalf("read balance_after: %v", err)
+		}
+		return v
+	}
+
+	first := uuid.New()
+	if _, err := h.acc.Reserve(ctx, h.owner, first, 3); err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	if got := balanceAfter(first, cp.EntryReserve); got != 97 {
+		t.Errorf("balance_after = %d, want 97", got)
+	}
+
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO control_plane.balance_deltas (owner_type, owner_id, direction, credits) VALUES ($1, $2, 'mt', -5)`,
+		h.owner.Type, h.owner.ID); err != nil {
+		t.Fatalf("inject delta: %v", err)
+	}
+	second := uuid.New()
+	if _, err := h.acc.Reserve(ctx, h.owner, second, 2); err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	if got := balanceAfter(second, cp.EntryReserve); got != 95 {
+		t.Errorf("reserve balance_after = %d, want 95 (Redis's decision), not 90 (a durable re-read)", got)
+	}
+	if _, err := h.acc.Capture(ctx, h.owner, second); err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	if got := balanceAfter(second, cp.EntryCapture); got != 95 {
+		t.Errorf("capture balance_after = %d, want 95", got)
+	}
+
+	third := uuid.New()
+	if _, err := h.acc.Reserve(ctx, h.owner, third, 1); err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	if err := h.acc.Release(ctx, h.owner, third); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	if got := balanceAfter(third, cp.EntryRelease); got != 95 {
+		t.Errorf("release balance_after = %d, want 95", got)
+	}
+}
+
+// TestCaptureBalanceAfterIgnoresAnOutOfRangeCache: the cache value capture.lua hands back is text parsed
+// into the ledger's int32 column. One that does not fit must fall back to the durable read, never wrap.
+func TestCaptureBalanceAfterIgnoresAnOutOfRangeCache(t *testing.T) {
+	h := newBillingHarness(t, 100)
+	ctx := context.Background()
+	msg := uuid.New()
+	if _, err := h.acc.Reserve(ctx, h.owner, msg, 3); err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	key := billing.BalanceCacheKey(cp.BillingDirectionMT, h.owner.Type, h.owner.ID)
+	if err := h.rdb.Set(ctx, key, "3000000000", redis.KeepTTL).Err(); err != nil {
+		t.Fatalf("corrupt cache: %v", err)
+	}
+	if _, err := h.acc.Capture(ctx, h.owner, msg); err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	var got int
+	if err := pgtest.Pool(t).QueryRow(ctx,
+		`SELECT balance_after FROM control_plane.billing_ledger WHERE message_id = $1 AND entry_type = 'capture'`,
+		msg).Scan(&got); err != nil {
+		t.Fatalf("read balance_after: %v", err)
+	}
+	if got != 97 {
+		t.Errorf("capture balance_after = %d, want 97 (the durable balance), not a wrapped cache value", got)
+	}
 }

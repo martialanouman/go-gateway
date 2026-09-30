@@ -219,6 +219,8 @@ qu'on mesure un environnement représentatif.
       décision humaine ; unité faute de multiple de dix libre
 - [ ] step-285 — Le routeur se tue en boucle sur un backlog quand la facturation est active ⛓ step-280 —
       ouverte par la campagne step-280 ; unité faute de multiple de dix libre
+- [ ] step-286 — Une seule porte pour baisser le solde MT : Redis, avant Postgres ⛓ step-284 — ouverte par
+      la revue de step-284 ; unité faute de multiple de dix libre
 - [ ] step-287 — Rejouer la campagne du VPS, injecteur sur une VM séparée ⛓ step-282, step-283, step-284, step-285
       — unité faute de multiple de dix libre
 
@@ -422,7 +424,8 @@ l'autorisation de la moitié des opérations, et le tableau de bord génère ses
 - [ ] step-409 — Campagne NFR pleine échelle sur environnement représentatif : le verdict ⛓ step-280, step-285, step-287,
       step-270b — l'ancienne step-280 ; unité faute de multiple de dix libre
 - [ ] step-410 — **GO-LIVE** : dérouler la checklist de mise en production
-      ⛓ step-260, step-270, step-280, step-409, step-290, step-310, step-320, step-397, step-398, step-405, step-407
+      ⛓ step-260, step-270, step-280, step-409, step-290, step-310, step-320, step-397, step-398, step-405, step-407,
+      step-286
 
 ## Après le go-live
 - [ ] step-420 — Exporter les CDR archivés (lecture de l'archive froide par l'export asynchrone)

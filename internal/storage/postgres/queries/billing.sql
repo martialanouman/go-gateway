@@ -1,10 +1,13 @@
 -- name: GetBalance :one
--- The durable authority for one owner balance (owner_type, owner_id, direction). PostgreSQL owns the
--- balance; Redis caches it (§6.9). A missing row means zero credits ever recorded — the caller treats
--- absence as 0, not an error.
-SELECT credits
-FROM control_plane.balances
-WHERE owner_type = @owner_type AND owner_id = @owner_id AND direction = @direction;
+-- The durable owner balance (owner_type, owner_id, direction) is the folded balances row PLUS the owner's
+-- unfolded deltas (ADR-0022), read in ONE statement so a concurrent fold cannot hide a delta from both halves
+-- or show it in both. found=false means nothing was ever recorded for the owner — a legitimate zero.
+SELECT (COALESCE(f.credits, 0) + COALESCE(p.total, 0))::int AS credits,
+       (f.credits IS NOT NULL OR p.total IS NOT NULL) AS found
+FROM (SELECT (SELECT b.credits FROM control_plane.balances b
+               WHERE b.owner_type = @owner_type AND b.owner_id = @owner_id AND b.direction = @direction) AS credits) f,
+     (SELECT sum(d.credits) AS total FROM control_plane.balance_deltas d
+       WHERE d.owner_type = @owner_type AND d.owner_id = @owner_id AND d.direction = @direction) p;
 
 -- name: GetBillingCustomer :one
 -- A customer's MT billing configuration. Billing config lives on the customer row itself (§6.9, step-142d
@@ -59,11 +62,12 @@ WHERE l.customer_id = @customer_id AND l.direction = 'mt' AND l.entry_type = 're
       AND c.customer_id = l.customer_id AND c.direction = 'mt'
   );
 
--- name: GetBalanceForUpdate :one
--- Read one owner balance and LOCK its row (§6.9, step-148 admin transfer / change-scope). The lock
--- serialises this admin tx against a concurrent durable mirror write to the same balance, so a transfer's
--- overdraw check and a change-scope zero-check see a stable value. A missing row is a legitimate 0.
-SELECT credits FROM control_plane.balances
+-- name: LockBalance :exec
+-- Lock one owner's balances row (§6.9, step-148 admin transfer / change-scope) against another admin tx and
+-- the fold; the hot path appends deltas without it, and Redis is its serialisation point. Read the balance
+-- in a LATER statement: under READ COMMITTED a statement that waits on this lock re-reads the row's newest
+-- version but keeps its older snapshot of balance_deltas, and would count a just-folded delta twice.
+SELECT 1 FROM control_plane.balances
 WHERE owner_type = @owner_type AND owner_id = @owner_id AND direction = @direction
 FOR UPDATE;
 
@@ -129,17 +133,16 @@ VALUES
    @balance_after, @reference)
 RETURNING id, created_at;
 
--- name: AdjustBalance :one
+-- name: AdjustBalance :exec
 -- Apply a SIGNED delta to the durable owner balance for a direction (credits += delta), creating the row
--- on first use, and RETURN the resulting balance. The delta form is order-independent: two concurrent
--- movements for the same owner commit in any order and the balance is always the sum of every delta —
--- which is exactly the append-only ledger's SUM(credits). An absolute set would let a stale write clobber
+-- on first use. The delta form is order-independent: two concurrent movements for the same owner commit in
+-- any order and the balance is always the sum of every delta; with the unfolded deltas (ADR-0022), that is
+-- the append-only ledger's SUM(credits). An absolute set would let a stale write clobber
 -- a fresher one under the concurrency this system runs at.
 INSERT INTO control_plane.balances (owner_type, owner_id, direction, credits)
 VALUES (@owner_type, @owner_id, @direction, @delta)
 ON CONFLICT (owner_type, owner_id, direction)
-DO UPDATE SET credits = control_plane.balances.credits + @delta, updated_at = now()
-RETURNING credits;
+DO UPDATE SET credits = control_plane.balances.credits + @delta, updated_at = now();
 
 -- name: GetReserveEntry :one
 -- The reserve ledger entry for a message_id (the amount of record, §6.9). The capture and release paths
@@ -185,3 +188,33 @@ WHERE i.entry_type = 'reserve'
   )
 ORDER BY i.created_at
 LIMIT @row_limit;
+
+-- name: InsertBalanceDelta :exec
+-- Record a hot-path balance movement without touching the owner's balances row, whose lock serialised every
+-- reserve of a customer (ADR-0022). The fold moves it into balances later.
+INSERT INTO control_plane.balance_deltas (owner_type, owner_id, direction, credits)
+VALUES (@owner_type, @owner_id, @direction, @credits);
+
+-- name: FoldBalanceDeltas :one
+-- Move up to @lim pending deltas into balances in ONE statement, so a reader sees each delta either pending
+-- or folded, never both nor neither. SKIP LOCKED splits the work between replicas; the owner ORDER BY keeps
+-- their row locks in one order. Returns the number of deltas folded (a full batch means more are waiting).
+WITH moved AS (
+  DELETE FROM control_plane.balance_deltas
+  WHERE id IN (
+    SELECT id FROM control_plane.balance_deltas ORDER BY id LIMIT @lim FOR UPDATE SKIP LOCKED
+  )
+  RETURNING owner_type, owner_id, direction, credits
+), upserted AS (
+  INSERT INTO control_plane.balances (owner_type, owner_id, direction, credits)
+  SELECT owner_type, owner_id, direction, sum(credits)::int FROM moved
+  GROUP BY owner_type, owner_id, direction
+  ORDER BY owner_type, owner_id, direction
+  ON CONFLICT (owner_type, owner_id, direction)
+  DO UPDATE SET credits = control_plane.balances.credits + excluded.credits, updated_at = now()
+  RETURNING 1
+)
+SELECT count(*) FROM moved;
+
+-- name: OldestBalanceDelta :one
+SELECT created_at FROM control_plane.balance_deltas ORDER BY id LIMIT 1;
