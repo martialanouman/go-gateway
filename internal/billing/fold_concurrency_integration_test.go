@@ -120,6 +120,7 @@ func TestRehydrationSubtractsInFlightReserves(t *testing.T) {
 	h := newBillingHarness(t, 1)
 	ctx := context.Background()
 	store := &blockingStore{LedgerStore: h.repo, entered: make(chan struct{}), release: make(chan struct{})}
+	t.Cleanup(func() { closeOnce(store.release) })
 	acc := billing.New(h.rdb, store, billing.WithHoldTTL(time.Minute), billing.WithConfigSource(h.cfg))
 
 	first := make(chan error, 1)
@@ -137,7 +138,7 @@ func TestRehydrationSubtractsInFlightReserves(t *testing.T) {
 	h.dropCachedBalance(t)
 
 	_, err := acc.Reserve(ctx, h.owner, uuid.New(), 1)
-	close(store.release)
+	closeOnce(store.release)
 	select {
 	case ferr := <-first:
 		if ferr != nil {
@@ -240,6 +241,7 @@ func TestStaleRehydrationCannotResurrectSpentCredit(t *testing.T) {
 	h := newBillingHarness(t, 1)
 	ctx := context.Background()
 	slow := &slowRehydrationStore{LedgerStore: h.repo, read: make(chan struct{}), proceed: make(chan struct{})}
+	t.Cleanup(func() { closeOnce(slow.proceed) })
 	stale := billing.New(h.rdb, slow, billing.WithHoldTTL(time.Minute), billing.WithConfigSource(h.cfg))
 
 	staleResult := make(chan error, 1)
@@ -257,7 +259,7 @@ func TestStaleRehydrationCannotResurrectSpentCredit(t *testing.T) {
 		t.Fatalf("the other replica's Reserve: %v", err)
 	}
 	h.dropCachedBalance(t)
-	close(slow.proceed)
+	closeOnce(slow.proceed)
 
 	select {
 	case err := <-staleResult:
@@ -275,6 +277,7 @@ func TestStaleRehydrationCannotResurrectAnAdminDebit(t *testing.T) {
 	h := newBillingHarness(t, 1)
 	ctx := context.Background()
 	slow := &slowRehydrationStore{LedgerStore: h.repo, read: make(chan struct{}), proceed: make(chan struct{})}
+	t.Cleanup(func() { closeOnce(slow.proceed) })
 	stale := billing.New(h.rdb, slow, billing.WithHoldTTL(time.Minute), billing.WithConfigSource(h.cfg))
 
 	staleResult := make(chan error, 1)
@@ -298,7 +301,7 @@ func TestStaleRehydrationCannotResurrectAnAdminDebit(t *testing.T) {
 		billing.BalanceCacheKey(cp.BillingDirectionMT, h.owner.Type, h.owner.ID)); err != nil {
 		t.Fatalf("InvalidateBalanceCaches: %v", err)
 	}
-	close(slow.proceed)
+	closeOnce(slow.proceed)
 
 	select {
 	case err := <-staleResult:
@@ -307,5 +310,14 @@ func TestStaleRehydrationCannotResurrectAnAdminDebit(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("the stale replica's Reserve never returned")
+	}
+}
+
+// closeOnce releases a blocked double from the test body or, if the test failed first, from its cleanup.
+func closeOnce(ch chan struct{}) {
+	select {
+	case <-ch:
+	default:
+		close(ch)
 	}
 }

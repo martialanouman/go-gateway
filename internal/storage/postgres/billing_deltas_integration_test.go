@@ -274,6 +274,7 @@ func (f deltaFixture) foldHeldOpen(t *testing.T) pgx.Tx {
 	if err != nil {
 		t.Fatalf("begin fold: %v", err)
 	}
+	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
 	if _, err := sqlcgen.New(tx).FoldBalanceDeltas(context.Background(), 1_000_000); err != nil {
 		t.Fatalf("fold: %v", err)
 	}
@@ -288,7 +289,8 @@ func (f deltaFixture) waitForLockWaiter(t *testing.T) {
 	for time.Now().Before(deadline) {
 		var waiting int
 		if err := f.pool.QueryRow(context.Background(),
-			`SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND datname = current_database()`).Scan(&waiting); err != nil {
+			`SELECT count(*) FROM pg_stat_activity
+			 WHERE wait_event_type = 'Lock' AND datname = current_database() AND query ILIKE '%balances%'`).Scan(&waiting); err != nil {
 			t.Fatalf("read pg_stat_activity: %v", err)
 		}
 		if waiting > 0 {

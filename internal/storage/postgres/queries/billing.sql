@@ -135,9 +135,9 @@ RETURNING id, created_at;
 
 -- name: AdjustBalance :exec
 -- Apply a SIGNED delta to the durable owner balance for a direction (credits += delta), creating the row
--- on first use. The delta form is order-independent: two concurrent
--- movements for the same owner commit in any order and the balance is always the sum of every delta —
--- which is exactly the append-only ledger's SUM(credits). An absolute set would let a stale write clobber
+-- on first use. The delta form is order-independent: two concurrent movements for the same owner commit in
+-- any order and the balance is always the sum of every delta; with the unfolded deltas (ADR-0022), that is
+-- the append-only ledger's SUM(credits). An absolute set would let a stale write clobber
 -- a fresher one under the concurrency this system runs at.
 INSERT INTO control_plane.balances (owner_type, owner_id, direction, credits)
 VALUES (@owner_type, @owner_id, @direction, @delta)

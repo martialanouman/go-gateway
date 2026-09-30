@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -45,7 +46,10 @@ var rehydrateSrc string
 //go:embed lua/invalidate.lua
 var invalidateSrc string
 
-var invalidateScript = redis.NewScript(invalidateSrc)
+var (
+	rehydrateScript  = redis.NewScript(rehydrateSrc)
+	invalidateScript = redis.NewScript(invalidateSrc)
+)
 
 //go:embed lua/recordmo.lua
 var recordMOSrc string
@@ -121,7 +125,6 @@ type Accountant struct {
 	reserve    *redis.Script
 	capture    *redis.Script
 	release    *redis.Script
-	rehydrateS *redis.Script
 	recordMO   *redis.Script
 	undoMO     *redis.Script
 	holdTTL    time.Duration
@@ -202,7 +205,6 @@ func New(rdb *redis.Client, store LedgerStore, opts ...Option) *Accountant {
 		reserve:    redis.NewScript(reserveSrc),
 		capture:    redis.NewScript(captureSrc),
 		release:    redis.NewScript(releaseSrc),
-		rehydrateS: redis.NewScript(rehydrateSrc),
 		recordMO:   redis.NewScript(recordMOSrc),
 		undoMO:     redis.NewScript(undoMOSrc),
 		holdTTL:    defaultHoldTTL,
@@ -253,18 +255,20 @@ func debitSeqKey(balanceKey string) string {
 	return "billing:seq:" + strings.TrimPrefix(balanceKey, "billing:balance:")
 }
 
-// InvalidateBalanceCaches drops balance caches after a durable write outside reserve.lua (an admin transfer
-// or top-up). It bumps each key's debit counter in the same script, so a rehydration computed before the
-// write cannot land after it and resurrect the credit it removed.
+// InvalidateBalanceCaches drops balance caches after an admin durable write. For an MT balance it bumps the
+// debit counter in the same script, so a rehydration computed before a write that lowered the balance
+// cannot land after it and resurrect the credit.
 func InvalidateBalanceCaches(ctx context.Context, rdb *redis.Client, balanceKeys ...string) error {
 	if len(balanceKeys) == 0 {
 		return nil
 	}
-	keys := make([]string, 0, 2*len(balanceKeys))
+	keys := slices.Clone(balanceKeys)
 	for _, k := range balanceKeys {
-		keys = append(keys, k, debitSeqKey(k))
+		if strings.HasPrefix(k, "billing:balance:"+directionMT+":") {
+			keys = append(keys, debitSeqKey(k))
+		}
 	}
-	return invalidateScript.Run(ctx, rdb, keys).Err()
+	return invalidateScript.Run(ctx, rdb, keys, len(balanceKeys)).Err()
 }
 
 func inFlightKey(o Owner) string {
@@ -305,6 +309,8 @@ func (a *Accountant) Reserve(ctx context.Context, owner Owner, messageID uuid.UU
 		floorFlag = 1
 	}
 
+	// Three attempts: a cold cache rehydrates, a debit racing that rehydration refuses it once, and the last
+	// attempt reserves against whatever another replica warmed.
 	for attempt := 0; attempt < 3; attempt++ {
 		res, err := a.reserve.Run(ctx, a.rdb, []string{bkey, rkey, ikey, debitSeqKey(bkey)}, credits, floorFlag, floor,
 			a.holdTTL.Milliseconds(), messageID.String(), time.Now().UnixMilli()).Slice()
@@ -506,8 +512,8 @@ func (a *Accountant) Release(ctx context.Context, owner Owner, messageID uuid.UU
 	case "released":
 		refund = toInt(res[2]) // the Lua already refunded the cache by this amount
 		cacheRefunded = true
-		refunded := toInt(res[1])
-		decided = &refunded
+		balanceAfterRefund := toInt(res[1])
+		decided = &balanceAfterRefund
 	case "cold":
 		refund = toInt(res[1]) // the cache had lapsed; the Lua cleared the hold, we refund durably
 	case "no_reservation":
@@ -717,7 +723,7 @@ func (a *Accountant) rehydrate(ctx context.Context, bkey, ikey string, owner Own
 	// preserve it with KEEPTTL), so any cache/durable drift self-heals on the next rehydrate. The script's
 	// SET NX still guards against clobbering a concurrently-warmed value; a debit that raced us leaves the
 	// cache cold, and the caller's next attempt rehydrates again.
-	if err := a.rehydrateS.Run(ctx, a.rdb, []string{bkey, seqKey}, seq, bal-inFlight, a.balanceTTL.Milliseconds()).Err(); err != nil {
+	if err := rehydrateScript.Run(ctx, a.rdb, []string{bkey, seqKey}, seq, bal-inFlight, a.balanceTTL.Milliseconds()).Err(); err != nil {
 		return fmt.Errorf("billing: rehydrate set: %w", err)
 	}
 	return nil

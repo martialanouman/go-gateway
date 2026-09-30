@@ -23,7 +23,8 @@ func TestBalanceCacheInvalidationFencesRehydration(t *testing.T) {
 		t.Fatalf("seed cache: %v", err)
 	}
 
-	if err := (redisBalanceCache{rdb: rdb}).Del(ctx, key); err != nil {
+	moKey := billing.BalanceCacheKey(cp.BillingDirectionMO, cp.OwnerTypeCustomer, owner)
+	if err := (redisBalanceCache{rdb: rdb}).Del(ctx, key, moKey); err != nil {
 		t.Fatalf("Del: %v", err)
 	}
 	if n, _ := rdb.Exists(ctx, key).Result(); n != 0 {
@@ -31,5 +32,9 @@ func TestBalanceCacheInvalidationFencesRehydration(t *testing.T) {
 	}
 	if seq, err := rdb.Get(ctx, seqKey).Int(); err != nil || seq != 1 {
 		t.Errorf("debit counter = %d (%v), want 1: the invalidation must fence a stale rehydration", seq, err)
+	}
+	moSeq := "billing:seq:" + cp.BillingDirectionMO + ":" + cp.OwnerTypeCustomer + ":" + owner.String()
+	if n, _ := rdb.Exists(ctx, moSeq).Result(); n != 0 {
+		t.Error("an MO debit counter was created: nothing reads it, it would only accumulate")
 	}
 }

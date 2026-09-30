@@ -27,9 +27,9 @@ type AdjustBalanceParams struct {
 }
 
 // Apply a SIGNED delta to the durable owner balance for a direction (credits += delta), creating the row
-// on first use. The delta form is order-independent: two concurrent
-// movements for the same owner commit in any order and the balance is always the sum of every delta —
-// which is exactly the append-only ledger's SUM(credits). An absolute set would let a stale write clobber
+// on first use. The delta form is order-independent: two concurrent movements for the same owner commit in
+// any order and the balance is always the sum of every delta; with the unfolded deltas (ADR-0022), that is
+// the append-only ledger's SUM(credits). An absolute set would let a stale write clobber
 // a fresher one under the concurrency this system runs at.
 func (q *Queries) AdjustBalance(ctx context.Context, arg AdjustBalanceParams) error {
 	_, err := q.db.Exec(ctx, adjustBalance,
