@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	dto "github.com/prometheus/client_model/go"
+
 	"github.com/martialanouman/go-gateway/internal/billing"
 	"github.com/martialanouman/go-gateway/internal/config"
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
@@ -143,10 +145,19 @@ func TestNewBillingAppBuildsTheWholeGraph(t *testing.T) {
 		"configProvider": app.configProvider,
 		"reconciler":     app.reconciler,
 		"reaper":         app.reaper,
+		"foldLag":        app.foldLag,
+		"folder":         app.folder,
 	} {
 		if component == nil || reflect.ValueOf(component).IsNil() {
 			t.Errorf("component %q was not wired", name)
 		}
+	}
+	families, err := app.ops.Registry().Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	if !slices.ContainsFunc(families, func(f *dto.MetricFamily) bool { return f.GetName() == "billing_balance_deltas_lag_seconds" }) {
+		t.Error("billing_balance_deltas_lag_seconds is not exposed: nothing would see the fold falling behind")
 	}
 
 	// Building the graph must not start serving: both ports are bound by their Run, which only the

@@ -55,6 +55,7 @@ type Spec struct {
 	Replicas *int        `yaml:"replicas"`
 	Selector Selector    `yaml:"selector"`
 	Template PodTemplate `yaml:"template"`
+	Strategy Strategy    `yaml:"strategy"`
 
 	ClusterIP string        `yaml:"clusterIP"`
 	Type      string        `yaml:"type"`
@@ -67,6 +68,11 @@ type Spec struct {
 	MinReplicas    *int           `yaml:"minReplicas"`
 	MaxReplicas    int            `yaml:"maxReplicas"`
 	Metrics        []HPAMetric    `yaml:"metrics"`
+}
+
+// Strategy is a Deployment's update strategy.
+type Strategy struct {
+	Type string `yaml:"type"`
 }
 
 // Selector is a Deployment's or a PDB's label selector.

@@ -27,7 +27,8 @@ l'écriture est synchrone. Une réhydratation sur un durable en retard rendrait 
    mouvement committé. Aucun filigrane, aucun blocage ; le TTL du cache est conservé.
 3. **Un replieur** par réplique de billing-svc déplace les deltas dans `balances` en un statement atomique
    (`DELETE … SKIP LOCKED RETURNING` puis upsert groupé, ordonné par propriétaire). Son retard est une
-   métrique alertée ; il ne conditionne aucune décision de crédit.
+   métrique (`billing_balance_deltas_lag_seconds`, à alerter au-delà de 30 s) ; il ne conditionne aucune
+   décision de crédit.
 4. **`balance_after` est la valeur calculée par Redis** au moment de la décision de crédit, le seul vrai
    point de sérialisation. Relire `balances + SUM(deltas)` à chaque réserve sommerait tous les deltas en
    attente du client. Les chemins rares sans valeur Redis (cache froid, replay, release sans hold) relisent
@@ -45,7 +46,10 @@ l'écriture est synchrone. Une réhydratation sur un durable en retard rendrait 
 6. **Ordre de déploiement : migration, puis admin-api-svc, puis billing-svc en `Recreate`.** Une version
    antérieure lit `balances` sans les deltas. admin-api-svc (transfert, change-scope, soldes) doit donc
    savoir les lire avant que billing-svc commence à en écrire, et billing-svc ne doit jamais mêler les deux
-   versions.
+   versions. Prix : chaque déploiement coupe billing-svc entièrement (le PDB ne protège que des évictions).
+   Pendant la coupure le routeur ne committe pas ses offsets : les messages facturés attendent, sans rejet
+   ni envoi non facturé, et repartent au retour — un backlog, celui que step-285 traite. Seule la transition
+   vers les deltas l'exige : `debts/billing-svc-reste-en-recreate-apres-la-transition.md`.
 
 ## Consequences
 

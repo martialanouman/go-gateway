@@ -99,6 +99,9 @@ func run() error {
 	g.Add("reservation reaper", func(c context.Context) error {
 		return runReap(c, app.reaper, cfg.BillingReaper.Interval, logger)
 	})
+	g.Add("balance fold", func(c context.Context) error {
+		return runFold(c, app.folder)
+	})
 	if err := g.Run(ctx, logger, cfg.DrainBudget); err != nil {
 		return err
 	}
@@ -220,6 +223,24 @@ func runGRPC(ctx context.Context, srv *grpc.Server, port int, timeout time.Durat
 		case <-timer.C:
 			srv.Stop()
 			return nil
+		}
+	}
+}
+
+// foldInterval paces the balance-delta fold (ADR-0022).
+const foldInterval = time.Second
+
+// runFold runs one fold pass every foldInterval until ctx is cancelled. Every replica runs it: SKIP LOCKED
+// splits the rows between them.
+func runFold(ctx context.Context, f *billing.Folder) error {
+	ticker := time.NewTicker(foldInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			f.DrainOnce(ctx)
 		}
 	}
 }
