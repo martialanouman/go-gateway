@@ -19,10 +19,9 @@ l'écriture est synchrone. Une réhydratation sur un durable en retard rendrait 
 ## Decision
 
 1. **La réclamation d'idempotence et le grand livre restent synchrones** (§6.9 : chaque réserve est
-   journalisée). Dans la même tx, le mouvement insère un delta dans `control_plane.balance_deltas`,
-   append-only, au lieu de modifier `balances`. Types concernés : `reserve`, `capture`, `release`, `refund`,
-   `mo_charge` ; un delta nul n'est pas inséré. `topup`, `adjustment` et `transfer`, rares, restent sur
-   `AdjustBalance`.
+   journalisée). Dans la même tx, `RecordDurable` — le chemin de l'Accountant : réserve, capture, libération,
+   MO — insère un delta dans `control_plane.balance_deltas`, append-only, au lieu de modifier `balances` ; un
+   delta nul n'est pas inséré. Topup et Transfer, rares, restent sur `AdjustBalance`.
 2. **Le solde durable est `balances.credits + SUM(balance_deltas)`**, lu en un seul statement. Un delta est
    soit en attente, soit replié, jamais les deux : toute lecture, réhydratation comprise, voit chaque
    mouvement committé. Aucun filigrane, aucun blocage ; le TTL du cache est conservé.
@@ -40,8 +39,13 @@ l'écriture est synchrone. Une réhydratation sur un durable en retard rendrait 
    le test de charge de step-284). Chaque réserve s'inscrit dans un HASH par propriétaire
    (`billing:inflight:mt:…`, champ `message_id`), retirée après son commit ; la réhydratation soustrait ce
    HASH, lu avant le durable. Le fail-closed de §6.9 prend la forme d'une sous-estimation transitoire, pas
-   d'un blocage.
-6. billing-svc se déploie en `Recreate` : une réplique antérieure lirait `balances` sans les deltas.
+   d'un blocage. Une réhydratation lente ne doit pas non plus écrire une valeur calculée avant un débit :
+   un compteur de débits par propriétaire (`billing:seq:mt:…`), incrémenté par `reserve.lua` et par toute
+   écriture admin qui baisse le solde, est lu avant tout le reste ; le `SET NX` est refusé s'il a bougé.
+6. **Ordre de déploiement : migration, puis admin-api-svc, puis billing-svc en `Recreate`.** Une version
+   antérieure lit `balances` sans les deltas. admin-api-svc (transfert, change-scope, soldes) doit donc
+   savoir les lire avant que billing-svc commence à en écrire, et billing-svc ne doit jamais mêler les deux
+   versions.
 
 ## Consequences
 
@@ -49,6 +53,9 @@ l'écriture est synchrone. Une réhydratation sur un durable en retard rendrait 
   borné par le pool. Si `RESERVE_TIMEOUT` (step-285) venait de la latence et non du verrou, cet ADR ne le lève pas.
 - Aucun client ne peut dépasser, prépayé strict compris : pas de régime distinct pour l'overdraft.
 - Une table à forte rotation : autovacuum réglé par table dans la migration.
+- Transfer et change-scope verrouillent `balances` dans l'ordre du replieur, puis lisent le solde dans un
+  statement **suivant** : sous READ COMMITTED, un statement qui attend ce verrou relit la version récente de
+  la ligne mais garde son instantané des deltas, et compterait deux fois un delta tout juste replié.
 - Inchangé : transfer et change-scope se sérialisent sur `balances` entre eux et avec le replieur, pas avec
   le chemin chaud ; le vrai point de sérialisation reste Redis, et la fenêtre entre leur commit et
   l'invalidation du cache préexiste.

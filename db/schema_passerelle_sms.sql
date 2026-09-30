@@ -897,6 +897,8 @@ billing:balance:{direction}:{owner_type}:{owner_id} -- cached balance; atomic Lu
 billing:reservation:{message_id}                    -- short-TTL MT hold; cleared on capture/release
 billing:inflight:mt:{owner_type}:{owner_id}         -- HASH message_id → credits:ts of reserves debited in Redis
                                                        but not yet durable; subtracted on rehydrate (ADR-0022)
+billing:seq:mt:{owner_type}:{owner_id}              -- debit counter, no TTL: a rehydration whose SET would land
+                                                       after a debit it did not see is refused (ADR-0022)
 retry:delayed:{connector_id}                        -- sorted-set delay queue (score = due ts)
 breaker:binds:{connector_id}                        -- HASH of per (pod_id, bind_index) sub-bind states
 breaker:state:{connector_id}                        -- derived connector aggregate (closed|open|half_open)

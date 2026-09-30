@@ -411,6 +411,8 @@ billing:reservation:{message_id}     -- short-TTL MT hold (amount, direction, ow
                                          cleared on capture/release; expiry sweep reconciles orphans. No MO reservation.
 billing:inflight:mt:{owner_type}:{owner_id} -- HASH of reserves debited in Redis, not yet durable; a rehydration
                                          subtracts them (ADR-0022).
+billing:seq:mt:{owner_type}:{owner_id} -- debit counter (no TTL); a rehydration refuses to write a value computed
+                                         before a debit it did not see (ADR-0022).
 retry:delayed:{connector_id}         -- sorted-set delay queue (score = due ts) for connector retry/backoff
 breaker:binds:{connector_id}         -- HASH of per (pod_id, bind_index) sub-bind states, each written only by the
                                          owning pod; the connector-level aggregate is derived by majority (§6.8/§6.15)

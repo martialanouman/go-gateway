@@ -76,15 +76,25 @@ un topup) fait réhydrater depuis un durable qui ignore ces débits en vol : 63 
 réhydratation. Arbitrage Fable (deux tours : un compteur remis à 0 était faux — un décrément tardif mange
 l'incrément d'une réserve postérieure) :
 - `billing:inflight:mt:{owner_type}:{owner_id}`, HASH `message_id → "credits:ts_ms"`. `reserve.lua` fait le
-  HSET dans le script qui débite. Go fait HDEL (`defer`, ctx détaché) sur tout chemin après `reserved`, et
-  après la réparation du chemin `held`.
+  HSET dans le script qui débite. Go fait HDEL (`defer`, ctx détaché) sur tout chemin après `reserved`.
+  **Pas** après la réparation du chemin `held` (recommandée par Fable, écartée) : sur une double livraison
+  concurrente, l'essai d'origine est encore en vol, et retirer son champ avant son commit rouvrirait le
+  dépassement. Un champ laissé par un crash expire à `holdTTL`.
 - `rehydrate` lit le HASH **avant** le solde durable, somme les champs de moins de `holdTTL`, et fait
   `SET NX (durable − en vol)`. Un commit entre les deux lectures est soustrait deux fois : sous-estimation
   conservatrice, guérie à la réhydratation suivante. Les champs plus vieux que `holdTTL` (crash entre
   `reserve.lua` et le HDEL) sont purgés.
-- L'écriture durable de la réserve est bornée côté billing-svc (`reserveDurableTimeout`, bien sous
-  `holdTTL`) : `RESERVE_TIMEOUT` n'a pas de plafond, et un commit plus long que l'âge de purge rouvrirait
+- L'écriture durable de la réserve, réparation `held` comprise, est bornée côté billing-svc
+  (`reserveDurableTimeout`, bien sous `holdTTL`) : `RESERVE_TIMEOUT` n'a pas de plafond, et un commit plus long que l'âge de purge rouvrirait
   le trou.
+- **Réhydratation périmée** (revue, rouge déterministe, présent sur `main`) : une réplique qui a lu le durable
+  puis stalle peut faire son `SET NX` après qu'une autre a réchauffé le cache, débité, et que le cache a été
+  supprimé : elle ressuscite le crédit. Arbitrage Fable : `billing:seq:mt:{owner_type}:{owner_id}`, compteur
+  de **débits** sans TTL, incrémenté par `reserve.lua` avec le débit ; la réhydratation le lit **avant** tout le
+  reste et son `SET NX` (un script) est refusé si le compteur a bougé — la réserve retente. Règle : **quiconque
+  baisse le solde durable hors de `reserve.lua` incrémente le compteur** (transfert et topup admin :
+  `billing.InvalidateBalanceCaches`, qui incrémente et supprime dans un script). Une version bumpée par la
+  réhydratation ne suffit pas (R1 réchauffe avant la lecture de R0, puis les débits suivent : rien ne bouge).
 - Hors périmètre : même course sur le compteur MO → `debts/compteur-mo-reydrate-sans-ses-debits-en-vol.md`.
 
 **PR** : 1. design + ADR-0022 + §6.9 · 2. migration + sqlc + repo + `FoldOnce` + tests (ne se déploie pas sans
