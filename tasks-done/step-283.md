@@ -1,6 +1,6 @@
 # step-283 — Le débit se refuse avant l'ACK, jamais après
 
-> **Jalon :** M12 · **Statut :** À FAIRE
+> **Jalon :** M12 · **Statut :** FAIT
 > **Dépend de :** — · **Bloque :** step-287
 > Décision humaine du 29/09/2026 ; unité faute de multiple de dix libre.
 
@@ -46,15 +46,15 @@ Un message acquitté peut être perdu pour une simple question de débit.
 
 ## Definition of Done
 
-- [ ] un test prouve qu'un message au-delà du débit du compte est aujourd'hui **rejeté après l'ACK** —
+- [x] un test prouve qu'un message au-delà du débit du compte est aujourd'hui **rejeté après l'ACK** —
       rouge lu sur le code actuel
-- [ ] un test prouve qu'un connecteur saturé par un compte ne produit **aucun** CDR `rejected` pour un
+- [x] un test prouve qu'un connecteur saturé par un compte ne produit **aucun** CDR `rejected` pour un
       autre compte — rouge lu sur le code actuel
-- [ ] `429` REST et `ESME_RTHROTTLED` SMPP au-delà du débit du compte, sans écriture sur `mt.inbound`
-- [ ] spec §6.4 et guide alignés ; le guide §4.1 corrigé au passage (`mt.routed` est clé par
+- [x] `429` REST et `ESME_RTHROTTLED` SMPP au-delà du débit du compte, sans écriture sur `mt.inbound`
+- [x] spec §6.4 et guide alignés ; le guide §4.1 corrigé au passage (`mt.routed` est clé par
       `message_id`, pas par `(connector_id, shard)`)
-- [ ] l'ordre du pipeline de `CLAUDE.md` et de la spec §5.1 dit que le débit se contrôle avant l'ACK
-- [ ] les quatre invariants verts
+- [x] l'ordre du pipeline de `CLAUDE.md` et de la spec (§4, §4.2, §6.1 — la « §5.1 » visée est le guide) dit que le débit se contrôle avant l'ACK
+- [x] les quatre invariants verts
 
 ## Design arrêté
 
@@ -97,11 +97,39 @@ Arbitrages du 29/09/2026 : la spec tranche S1-S5, Fable tranche F1-F6 sans heurt
   pods SMPP portant un bind du compte, au plus min(`max_sessions`, pods SMPP)).
 
 **API de `ratelimit.Enforcer`** : `AdmitAccount(ctx, account, segments) error` ·
-`WaitConnector(ctx, connector, segments) error`, qui refait l'essai après `segments/rate` et rend `ctx.Err()` à
-l'annulation · `AllowConnector` (fenêtre `"reroute"`).
+`WaitConnector(ctx, connector) error` · `AllowConnector(ctx, connector) bool` (fenêtre `"reroute"`).
+Côté pool, un enregistrement de `mt.routed` est un segment, donc un `submit_sm`, donc un jeton : la revue a
+retiré le paramètre `segments`, qui ne valait jamais que 1. `WaitConnector` refait l'essai après
+max(1/débit, 5 ms) et rend `ctx.Err()` dès que le ctx est mort, même si le repli par pod accorde le jeton.
+
+**Déploiement** : le routeur **d'abord**. Un ancien routeur derrière une ingestion neuve ferait payer le
+compte deux fois et rejetterait après l'ACK. Dans l'autre ordre, la fenêtre est brève et sans limite de
+compte. Il n'y a pas de production (environnement de test seulement).
 
 **Tests** : R1 est un rouge REST par le câblage réel (`newHTTPServer`) : aujourd'hui 202, attendu 429. R2 est
 un rouge routeur par `newPipelineStack` : un connecteur vidé par le compte A rejette aujourd'hui le compte B
 en `rate_limited`. S'y ajoutent l'ingestion (rien produit au-delà du débit ; chaos Redis déplacé du routeur
 vers l'ingestion), le pool (attente avant le claim et avant le submit), l'Enforcer (attente, fenêtres
 disjointes) et la parité des segments.
+
+## Revue (30/09/2026)
+
+Trois axes : mécanisme, tests, doc et code en trop. Aucun constat bloquant n'est resté ouvert.
+- **Corrigés** :
+  - `WaitConnector` sur un ctx mort ;
+  - `Retry-After: 1` sur le 429 (le contrat le déclarait déjà) ;
+  - le paramètre `segments`, retiré ;
+  - la réconciliation inverse du chaos ;
+  - les tests à 1/s rendus robustes à un premier produce lent, et les lignes `rate_limits` nettoyées ;
+  - la spec : §6.1, §6.6, §6.7, §6.9, §6.11 ; le glossaire, le guide de codage, le guide §3.1 et §3.2.
+- **Mis en dette** après arbitrage de Fable :
+  - `debts/rebalancement-pendant-un-lot-ralenti.md` ;
+  - `debts/instantane-de-debit-charge-au-boot.md` ;
+  - `debts/reservation-expiree-sous-backpressure.md`.
+- **Écartés, avec raison** :
+  - Les gardes de câblage SMPP et pool, jugées « en trop » : ce sont les seuls tests qu'une mutation du
+    câblage fait tomber.
+  - Le helper commun de chargement : il ferait dépendre `ratelimit` de `postgres`, pour trois lignes.
+  - Le max-age revérifié après l'attente : l'écart est borné par la contention.
+  - Le 503 sur une clé idempotente en attente pendant un 429 : c'est le comportement existant de toute
+    erreur d'`Accept`.
