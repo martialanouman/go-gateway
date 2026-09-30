@@ -41,6 +41,15 @@ type ControlPlaneBalance struct {
 	UpdatedAt pgtype.Timestamptz
 }
 
+type ControlPlaneBalanceDelta struct {
+	ID        uuid.UUID
+	OwnerType string
+	OwnerID   uuid.UUID
+	Direction string
+	Credits   int32
+	CreatedAt pgtype.Timestamptz
+}
+
 type ControlPlaneBillingIdempotency struct {
 	MessageID uuid.UUID
 	EntryType string

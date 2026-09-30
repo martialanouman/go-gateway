@@ -185,3 +185,33 @@ WHERE i.entry_type = 'reserve'
   )
 ORDER BY i.created_at
 LIMIT @row_limit;
+
+-- name: InsertBalanceDelta :exec
+-- Record a hot-path balance movement without touching the owner's balances row, whose lock serialised every
+-- reserve of a customer (ADR-0022). The fold moves it into balances later.
+INSERT INTO control_plane.balance_deltas (owner_type, owner_id, direction, credits)
+VALUES (@owner_type, @owner_id, @direction, @credits);
+
+-- name: FoldBalanceDeltas :one
+-- Move up to @lim pending deltas into balances in ONE statement, so a reader sees each delta either pending
+-- or folded, never both nor neither. SKIP LOCKED splits the work between replicas; the owner ORDER BY keeps
+-- their row locks in one order. Returns the number of deltas folded (a full batch means more are waiting).
+WITH moved AS (
+  DELETE FROM control_plane.balance_deltas
+  WHERE id IN (
+    SELECT id FROM control_plane.balance_deltas ORDER BY id LIMIT @lim FOR UPDATE SKIP LOCKED
+  )
+  RETURNING owner_type, owner_id, direction, credits
+), upserted AS (
+  INSERT INTO control_plane.balances (owner_type, owner_id, direction, credits)
+  SELECT owner_type, owner_id, direction, sum(credits)::int FROM moved
+  GROUP BY owner_type, owner_id, direction
+  ORDER BY owner_type, owner_id, direction
+  ON CONFLICT (owner_type, owner_id, direction)
+  DO UPDATE SET credits = control_plane.balances.credits + excluded.credits, updated_at = now()
+  RETURNING 1
+)
+SELECT count(*) FROM moved;
+
+-- name: OldestBalanceDelta :one
+SELECT created_at FROM control_plane.balance_deltas ORDER BY id LIMIT 1;

@@ -91,6 +91,35 @@ func (q *Queries) ConsumedCredits(ctx context.Context, customerID uuid.UUID) (in
 	return consumed, err
 }
 
+const foldBalanceDeltas = `-- name: FoldBalanceDeltas :one
+WITH moved AS (
+  DELETE FROM control_plane.balance_deltas
+  WHERE id IN (
+    SELECT id FROM control_plane.balance_deltas ORDER BY id LIMIT $1 FOR UPDATE SKIP LOCKED
+  )
+  RETURNING owner_type, owner_id, direction, credits
+), upserted AS (
+  INSERT INTO control_plane.balances (owner_type, owner_id, direction, credits)
+  SELECT owner_type, owner_id, direction, sum(credits)::int FROM moved
+  GROUP BY owner_type, owner_id, direction
+  ORDER BY owner_type, owner_id, direction
+  ON CONFLICT (owner_type, owner_id, direction)
+  DO UPDATE SET credits = control_plane.balances.credits + excluded.credits, updated_at = now()
+  RETURNING 1
+)
+SELECT count(*) FROM moved
+`
+
+// Move up to @lim pending deltas into balances in ONE statement, so a reader sees each delta either pending
+// or folded, never both nor neither. SKIP LOCKED splits the work between replicas; the owner ORDER BY keeps
+// their row locks in one order. Returns the number of deltas folded (a full batch means more are waiting).
+func (q *Queries) FoldBalanceDeltas(ctx context.Context, lim int32) (int64, error) {
+	row := q.db.QueryRow(ctx, foldBalanceDeltas, lim)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const getBalance = `-- name: GetBalance :one
 SELECT credits
 FROM control_plane.balances
@@ -192,6 +221,30 @@ func (q *Queries) GetReserveEntry(ctx context.Context, messageID *uuid.UUID) (Ge
 	var i GetReserveEntryRow
 	err := row.Scan(&i.Credits, &i.BalanceAfter)
 	return i, err
+}
+
+const insertBalanceDelta = `-- name: InsertBalanceDelta :exec
+INSERT INTO control_plane.balance_deltas (owner_type, owner_id, direction, credits)
+VALUES ($1, $2, $3, $4)
+`
+
+type InsertBalanceDeltaParams struct {
+	OwnerType string
+	OwnerID   uuid.UUID
+	Direction string
+	Credits   int32
+}
+
+// Record a hot-path balance movement without touching the owner's balances row, whose lock serialised every
+// reserve of a customer (ADR-0022). The fold moves it into balances later.
+func (q *Queries) InsertBalanceDelta(ctx context.Context, arg InsertBalanceDeltaParams) error {
+	_, err := q.db.Exec(ctx, insertBalanceDelta,
+		arg.OwnerType,
+		arg.OwnerID,
+		arg.Direction,
+		arg.Credits,
+	)
+	return err
 }
 
 const insertLedgerEntry = `-- name: InsertLedgerEntry :one
@@ -555,6 +608,17 @@ func (q *Queries) LockCustomerScope(ctx context.Context, id uuid.UUID) (string, 
 	var balance_scope string
 	err := row.Scan(&balance_scope)
 	return balance_scope, err
+}
+
+const oldestBalanceDelta = `-- name: OldestBalanceDelta :one
+SELECT created_at FROM control_plane.balance_deltas ORDER BY id LIMIT 1
+`
+
+func (q *Queries) OldestBalanceDelta(ctx context.Context) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, oldestBalanceDelta)
+	var created_at pgtype.Timestamptz
+	err := row.Scan(&created_at)
+	return created_at, err
 }
 
 const updateBalanceScope = `-- name: UpdateBalanceScope :execrows

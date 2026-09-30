@@ -711,7 +711,9 @@ CREATE TABLE control_plane.opt_out_keywords (
 );
 
 -- -----------------------------------------------------------------------------------------------------
--- 22. Balances (§6.9) — THE balance table. One row per (owner, direction). owner_id is polymorphic.
+-- 22. Balances (§6.9) — the FOLDED balance, one row per (owner, direction). owner_id is polymorphic.
+-- The durable balance is this row PLUS the owner's rows in balance_deltas (ADR-0022): hot-path movements
+-- append a delta instead of locking this row, and billing-svc folds them in the background.
 -- -----------------------------------------------------------------------------------------------------
 CREATE TABLE control_plane.balances (
   owner_type text NOT NULL CHECK (owner_type IN ('customer','smpp_account')),  -- decided by balance_scope
@@ -721,6 +723,19 @@ CREATE TABLE control_plane.balances (
   updated_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (owner_type, owner_id, direction)
 );
+
+-- Unfolded movements (ADR-0022). A delta is either here or folded into balances, never both, so
+-- balances.credits + SUM(balance_deltas.credits), read in one statement, sees every committed movement.
+-- High insert/delete churn: vacuum by threshold, not by table-size ratio.
+CREATE TABLE control_plane.balance_deltas (
+  id         uuid NOT NULL DEFAULT uuidv7() PRIMARY KEY,
+  owner_type text NOT NULL CHECK (owner_type IN ('customer','smpp_account')),
+  owner_id   uuid NOT NULL,
+  direction  text NOT NULL CHECK (direction IN ('mt','mo')),
+  credits    integer NOT NULL CHECK (credits <> 0),
+  created_at timestamptz NOT NULL DEFAULT now()
+) WITH (autovacuum_vacuum_scale_factor = 0, autovacuum_vacuum_threshold = 1000);
+CREATE INDEX balance_deltas_owner_idx ON control_plane.balance_deltas(owner_type, owner_id, direction);
 
 -- -----------------------------------------------------------------------------------------------------
 -- 23. (Billing config lives on control_plane.customers — §6.9, ADR consolidation step-142d. The reserve
