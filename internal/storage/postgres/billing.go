@@ -1,9 +1,11 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -234,12 +236,26 @@ func (r *BillingRepo) Transfer(ctx context.Context, debit, credit cp.LedgerEntry
 		return nil, false, nil
 	}
 
-	// Lock the source balance and refuse to overdraw it.
-	srcBal, serr := qtx.GetBalanceForUpdate(ctx, sqlcgen.GetBalanceForUpdateParams{
-		OwnerType: debit.OwnerType, OwnerID: debit.OwnerID, Direction: debit.Direction,
+	// Lock both owners in the fold's order (owner_type, owner_id), or a transfer and a fold touching the same
+	// two rows in opposite orders deadlock. Then refuse to overdraw the source.
+	legs := []cp.LedgerEntry{debit, credit}
+	sort.Slice(legs, func(i, j int) bool {
+		if legs[i].OwnerType != legs[j].OwnerType {
+			return legs[i].OwnerType < legs[j].OwnerType
+		}
+		return bytes.Compare(legs[i].OwnerID[:], legs[j].OwnerID[:]) < 0
 	})
-	if serr != nil && !errors.Is(serr, pgx.ErrNoRows) {
-		return nil, false, translate("lock source balance", serr)
+	var srcBal int32
+	for _, leg := range legs {
+		bal, lerr := qtx.GetBalanceForUpdate(ctx, sqlcgen.GetBalanceForUpdateParams{
+			OwnerType: leg.OwnerType, OwnerID: leg.OwnerID, Direction: leg.Direction,
+		})
+		if lerr != nil {
+			return nil, false, translate("lock transfer balance", lerr)
+		}
+		if leg.Credits < 0 {
+			srcBal = bal
+		}
 	}
 	if int(srcBal) < amount {
 		return nil, false, fmt.Errorf("transfer: source balance %d < %d: %w", srcBal, amount, errs.ErrInsufficientCredit)
@@ -287,7 +303,7 @@ func (r *BillingRepo) ChangeBalanceScope(ctx context.Context, customerID uuid.UU
 			bal, berr := qtx.GetBalanceForUpdate(ctx, sqlcgen.GetBalanceForUpdateParams{
 				OwnerType: o.OwnerType, OwnerID: o.OwnerID, Direction: dir,
 			})
-			if berr != nil && !errors.Is(berr, pgx.ErrNoRows) {
+			if berr != nil {
 				return translate("lock balance", berr)
 			}
 			if bal != 0 {

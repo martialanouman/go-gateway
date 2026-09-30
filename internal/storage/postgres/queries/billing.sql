@@ -63,12 +63,16 @@ WHERE l.customer_id = @customer_id AND l.direction = 'mt' AND l.entry_type = 're
   );
 
 -- name: GetBalanceForUpdate :one
--- Read one owner balance and LOCK its row (§6.9, step-148 admin transfer / change-scope). The lock
--- serialises this admin tx against a concurrent durable mirror write to the same balance, so a transfer's
--- overdraw check and a change-scope zero-check see a stable value. A missing row is a legitimate 0.
-SELECT credits FROM control_plane.balances
-WHERE owner_type = @owner_type AND owner_id = @owner_id AND direction = @direction
-FOR UPDATE;
+-- Read one owner's durable balance (folded + unfolded deltas, ADR-0022) and LOCK its balances row (§6.9,
+-- step-148 admin transfer / change-scope). The lock serialises this admin tx against another admin tx and
+-- against the fold; the hot path appends deltas without it, and Redis is its serialisation point. Never
+-- ErrNoRows: an owner with no row reads its pending deltas alone.
+SELECT (COALESCE((SELECT b.credits FROM control_plane.balances b
+                   WHERE b.owner_type = @owner_type AND b.owner_id = @owner_id AND b.direction = @direction
+                   FOR UPDATE), 0)
+        + COALESCE((SELECT sum(d.credits) FROM control_plane.balance_deltas d
+                     WHERE d.owner_type = @owner_type AND d.owner_id = @owner_id AND d.direction = @direction), 0)
+       )::int AS credits;
 
 -- name: LockCustomerScope :one
 -- Read a customer's current balance_scope and LOCK the customer row, so two concurrent change-scope admin
@@ -137,12 +141,15 @@ RETURNING id, created_at;
 -- on first use, and RETURN the resulting balance. The delta form is order-independent: two concurrent
 -- movements for the same owner commit in any order and the balance is always the sum of every delta —
 -- which is exactly the append-only ledger's SUM(credits). An absolute set would let a stale write clobber
--- a fresher one under the concurrency this system runs at.
+-- a fresher one under the concurrency this system runs at. The returned balance includes the owner's
+-- unfolded deltas (ADR-0022): it is what the ledger's balance_after must report.
 INSERT INTO control_plane.balances (owner_type, owner_id, direction, credits)
 VALUES (@owner_type, @owner_id, @direction, @delta)
 ON CONFLICT (owner_type, owner_id, direction)
 DO UPDATE SET credits = control_plane.balances.credits + @delta, updated_at = now()
-RETURNING credits;
+RETURNING credits + COALESCE((SELECT sum(d.credits) FROM control_plane.balance_deltas d
+                              WHERE d.owner_type = @owner_type AND d.owner_id = @owner_id
+                                AND d.direction = @direction), 0)::int AS credits;
 
 -- name: GetReserveEntry :one
 -- The reserve ledger entry for a message_id (the amount of record, §6.9). The capture and release paths

@@ -17,7 +17,9 @@ INSERT INTO control_plane.balances (owner_type, owner_id, direction, credits)
 VALUES ($1, $2, $3, $4)
 ON CONFLICT (owner_type, owner_id, direction)
 DO UPDATE SET credits = control_plane.balances.credits + $4, updated_at = now()
-RETURNING credits
+RETURNING credits + COALESCE((SELECT sum(d.credits) FROM control_plane.balance_deltas d
+                              WHERE d.owner_type = $1 AND d.owner_id = $2
+                                AND d.direction = $3), 0)::int AS credits
 `
 
 type AdjustBalanceParams struct {
@@ -31,7 +33,8 @@ type AdjustBalanceParams struct {
 // on first use, and RETURN the resulting balance. The delta form is order-independent: two concurrent
 // movements for the same owner commit in any order and the balance is always the sum of every delta —
 // which is exactly the append-only ledger's SUM(credits). An absolute set would let a stale write clobber
-// a fresher one under the concurrency this system runs at.
+// a fresher one under the concurrency this system runs at. The returned balance includes the owner's
+// unfolded deltas (ADR-0022): it is what the ledger's balance_after must report.
 func (q *Queries) AdjustBalance(ctx context.Context, arg AdjustBalanceParams) (int32, error) {
 	row := q.db.QueryRow(ctx, adjustBalance,
 		arg.OwnerType,
@@ -152,9 +155,12 @@ func (q *Queries) GetBalance(ctx context.Context, arg GetBalanceParams) (GetBala
 }
 
 const getBalanceForUpdate = `-- name: GetBalanceForUpdate :one
-SELECT credits FROM control_plane.balances
-WHERE owner_type = $1 AND owner_id = $2 AND direction = $3
-FOR UPDATE
+SELECT (COALESCE((SELECT b.credits FROM control_plane.balances b
+                   WHERE b.owner_type = $1 AND b.owner_id = $2 AND b.direction = $3
+                   FOR UPDATE), 0)
+        + COALESCE((SELECT sum(d.credits) FROM control_plane.balance_deltas d
+                     WHERE d.owner_type = $1 AND d.owner_id = $2 AND d.direction = $3), 0)
+       )::int AS credits
 `
 
 type GetBalanceForUpdateParams struct {
@@ -163,9 +169,10 @@ type GetBalanceForUpdateParams struct {
 	Direction string
 }
 
-// Read one owner balance and LOCK its row (§6.9, step-148 admin transfer / change-scope). The lock
-// serialises this admin tx against a concurrent durable mirror write to the same balance, so a transfer's
-// overdraw check and a change-scope zero-check see a stable value. A missing row is a legitimate 0.
+// Read one owner's durable balance (folded + unfolded deltas, ADR-0022) and LOCK its balances row (§6.9,
+// step-148 admin transfer / change-scope). The lock serialises this admin tx against another admin tx and
+// against the fold; the hot path appends deltas without it, and Redis is its serialisation point. Never
+// ErrNoRows: an owner with no row reads its pending deltas alone.
 func (q *Queries) GetBalanceForUpdate(ctx context.Context, arg GetBalanceForUpdateParams) (int32, error) {
 	row := q.db.QueryRow(ctx, getBalanceForUpdate, arg.OwnerType, arg.OwnerID, arg.Direction)
 	var credits int32
