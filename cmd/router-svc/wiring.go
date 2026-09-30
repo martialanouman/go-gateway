@@ -29,7 +29,6 @@ import (
 	"github.com/martialanouman/go-gateway/internal/pipeline/antispam"
 	"github.com/martialanouman/go-gateway/internal/pipeline/credit"
 	"github.com/martialanouman/go-gateway/internal/pipeline/optout"
-	"github.com/martialanouman/go-gateway/internal/pipeline/ratelimit"
 	"github.com/martialanouman/go-gateway/internal/pipeline/senderid"
 	"github.com/martialanouman/go-gateway/internal/router"
 	"github.com/martialanouman/go-gateway/internal/routing"
@@ -126,7 +125,7 @@ func newRouterApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 	a.senderIDs = boot.senderIDs
 	a.optOut = boot.optOut
 
-	// The anti-spam engine, the token bucket and the exact-route short-cut all read Redis, which is a
+	// The anti-spam engine and the exact-route short-cut both read Redis, which is a
 	// boot dependency (NewClient pings eagerly). It retries with the same discipline as the snapshots —
 	// a transient outage must not crashloop a (re)starting pod.
 	rdb, err := loadWithRetry(ctx, logger, "redis", func(ctx context.Context) (*goredis.Client, error) {
@@ -325,7 +324,7 @@ func (p *pipelineStack) close() {
 }
 
 // newPipelineStack assembles the compliance and routing stages in pipeline order (§6.1) on top of
-// the boot snapshots: the Redis overlays, anti-spam, rate limiting, the L0/L1/L2 resolver chain and
+// the boot snapshots: the Redis overlays, anti-spam, the L0/L1/L2 resolver chain and
 // the credit reserver.
 func newPipelineStack(
 	ctx context.Context,
@@ -370,17 +369,6 @@ func newPipelineStack(
 	if err != nil {
 		return nil, fmt.Errorf("load anti-spam engine: %w", err)
 	}
-
-	// The rate-limit snapshot (§6.4): the operational rate_limits plus each connector's
-	// throughput_limit_per_sec hard ceiling, indexed once at boot. The token bucket that enforces it
-	// lives in Redis (shared across pods) and fails closed on an outage (step-084).
-	rateSnap, err := loadWithRetry(ctx, logger, "rate-limit snapshot", func(ctx context.Context) (*ratelimit.Snapshot, error) {
-		return ratelimit.LoadSnapshot(ctx, postgres.NewRateLimitRepo(pool), postgres.NewConnectorRepo(pool))
-	})
-	if err != nil {
-		return nil, fmt.Errorf("load rate-limit snapshot: %w", err)
-	}
-	rateLimiter := ratelimit.NewEnforcer(rateSnap, ratelimit.NewLimiter(rdb))
 
 	// The L0 exact-number short-cut (§6.1): an in-memory Bloom over every exact_routes MSISDN, loaded
 	// at boot and hot-swapped by Reload on each invalidation, in front of the exactroute:{msisdn}
@@ -440,13 +428,12 @@ func newPipelineStack(
 	reserver := credit.NewReserver(p.creditHolder, pb.NewBillingClient(p.billingConn), credit.WithTimeout(cfg.Billing.ReserveTimeout))
 
 	p.pipeline = pipeline.New(pipeline.Deps{
-		Tracer:      tracer,
-		Resolver:    resolver,
-		SenderIDs:   boot.senderIDs,
-		OptOut:      boot.optOut,
-		Antispam:    spam,
-		RateLimiter: rateLimiter,
-		Credit:      reserver,
+		Tracer:    tracer,
+		Resolver:  resolver,
+		SenderIDs: boot.senderIDs,
+		OptOut:    boot.optOut,
+		Antispam:  spam,
+		Credit:    reserver,
 	})
 	return p, nil
 }

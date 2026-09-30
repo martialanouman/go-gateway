@@ -17,7 +17,7 @@ import (
 
 // This file locks invariant (b) — one of the four green-for-life invariants (CLAUDE.md): a message
 // short-circuited by the L0 exact-number match still traverses EVERY compliance stage (E.164, sender
-// ID, opt-out, anti-spam, segmentation, rate). Only *route resolution* (declarative / script) is
+// ID, opt-out, anti-spam, segmentation). Only *route resolution* (declarative / script) is
 // skipped. Each compliance stage is a spy that counts its calls, so the assertion is observable.
 
 // countingExact is an L0 exact resolver that records how many times it was consulted (to prove that a
@@ -63,17 +63,10 @@ func (s *spyAntispam) Evaluate(context.Context, uuid.UUID, uuid.UUID, string, st
 	return cp.AntispamAction(""), nil // empty action passes
 }
 
-type spyRate struct{ calls atomic.Int32 }
-
-func (s *spyRate) Check(context.Context, uuid.UUID, uuid.UUID, *uuid.UUID, int) error {
-	s.calls.Add(1)
-	return nil
-}
-
 // l0Pipeline wires the real L0 resolver (exact hit) in front of a declarative catch-all, with counting
 // compliance spies. exactConn is the L0 target; declConn is the declarative connector (which must NOT
 // be selected — proving route resolution was short-circuited).
-func l0Pipeline(t *testing.T, ex routing.ExactResolver, opt *spyOptOut) (*pipeline.Pipeline, uuid.UUID, *spyAuthorizer, *spyAntispam, *spyRate) {
+func l0Pipeline(t *testing.T, ex routing.ExactResolver, opt *spyOptOut) (*pipeline.Pipeline, uuid.UUID, *spyAuthorizer, *spyAntispam) {
 	t.Helper()
 	declConn := uuid.New()
 	prefix := "225"
@@ -85,21 +78,20 @@ func l0Pipeline(t *testing.T, ex routing.ExactResolver, opt *spyOptOut) (*pipeli
 		t.Fatalf("LoadSnapshot: %v", err)
 	}
 	l0 := routing.NewL0Resolver(ex, nil, decl)
-	sender, antispam, rate := &spyAuthorizer{}, &spyAntispam{}, &spyRate{}
+	sender, antispam := &spyAuthorizer{}, &spyAntispam{}
 	tracer := observability.Tracer(nil, "test")
 	p := pipeline.New(pipeline.Deps{
-		Tracer:      tracer,
-		Resolver:    l0,
-		SenderIDs:   sender,
-		OptOut:      opt,
-		Antispam:    antispam,
-		RateLimiter: rate,
+		Tracer:    tracer,
+		Resolver:  l0,
+		SenderIDs: sender,
+		OptOut:    opt,
+		Antispam:  antispam,
 	})
-	return p, declConn, sender, antispam, rate
+	return p, declConn, sender, antispam
 }
 
 // TestInvariantBExactMessageTraversesAllCompliance: a message resolved by the L0 exact short-cut still
-// runs E.164, sender ID, opt-out, anti-spam, segmentation and rate — only declarative/script route
+// runs E.164, sender ID, opt-out, anti-spam and segmentation — only declarative/script route
 // resolution is skipped.
 func TestInvariantBExactMessageTraversesAllCompliance(t *testing.T) {
 	exactConn := uuid.New()
@@ -107,7 +99,7 @@ func TestInvariantBExactMessageTraversesAllCompliance(t *testing.T) {
 		"2250700000001": {Type: exact.TargetConnector, ID: exactConn},
 	}}
 	opt := &spyOptOut{}
-	p, declConn, sender, antispam, rate := l0Pipeline(t, ex, opt)
+	p, declConn, sender, antispam := l0Pipeline(t, ex, opt)
 
 	out, segs, err := p.Process(context.Background(), inbound("+2250700000001"))
 	if err != nil {
@@ -135,9 +127,6 @@ func TestInvariantBExactMessageTraversesAllCompliance(t *testing.T) {
 	if antispam.calls.Load() != 1 {
 		t.Error("anti-spam stage was skipped by the L0 short-cut")
 	}
-	if rate.calls.Load() != 1 {
-		t.Error("rate stage was skipped by the L0 short-cut")
-	}
 	// segs is populated only by the segment stage (nil if skipped) — the real proof it ran.
 	if len(segs) < 1 || out.SegmentCount != len(segs) {
 		t.Errorf("segmentation stage was skipped: segment_count=%d segs=%d", out.SegmentCount, len(segs))
@@ -155,7 +144,7 @@ func TestInvariantBOptOutBeatsL0(t *testing.T) {
 		"2250700000001": {Type: exact.TargetConnector, ID: exactConn},
 	}}
 	opt := &spyOptOut{optedOut: true} // the recipient opted out
-	p, _, _, _, _ := l0Pipeline(t, ex, opt)
+	p, _, _, _ := l0Pipeline(t, ex, opt)
 
 	_, _, err := p.Process(context.Background(), inbound("+2250700000001"))
 	if code, _ := errs.CodeOf(err); code != errs.ErrRecipientOptedOut {

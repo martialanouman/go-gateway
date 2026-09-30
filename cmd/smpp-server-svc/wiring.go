@@ -45,6 +45,8 @@ type smppApp struct {
 	listener *smppserver.Listener
 	grpc     *grpc.Server
 	rdb      *goredis.Client
+	// ingestor is the listener's, kept so a wiring test can submit through the admission the graph installs.
+	ingestor *ingest.Ingestor
 
 	// closers release what was opened, in reverse order of opening — the exact LIFO the deferred
 	// Closes in run() used to provide. They are named because that order is the property worth
@@ -93,12 +95,19 @@ func newSMPPApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (_ 
 	a.onClose("stores", st.close)
 	a.rdb = st.rdb
 
-	stack, err := newListener(cfg, st, logger)
+	rateSnap, err := ratelimit.LoadSnapshot(ctx, postgres.NewRateLimitRepo(st.pg), postgres.NewConnectorRepo(st.pg))
+	if err != nil {
+		return nil, fmt.Errorf("load rate-limit snapshot: %w", err)
+	}
+	admission := ratelimit.NewEnforcer(rateSnap, ratelimit.NewLimiter(st.rdb))
+
+	stack, err := newListener(cfg, st, admission, logger)
 	if err != nil {
 		return nil, err
 	}
 	a.onClose("listeners", stack.close)
 	a.listener = stack.listener
+	a.ingestor = stack.ingestor
 
 	// The pod-local Deliver gRPC surface: step-048 dials this pod (after a Lookup) to push a deliver_sm
 	// to a bind this pod owns. It shares cfg.GRPC.Port (reserved for the SMPP server's registry surface);
@@ -193,6 +202,7 @@ func (s *stores) close() {
 // listener binds in Run.
 type listenerStack struct {
 	listener *smppserver.Listener
+	ingestor *ingest.Ingestor
 
 	// throttleBlocked and queryThrottled carry bounded labels only — never a system_id, an IP, a
 	// message id or a MSISDN.
@@ -211,7 +221,7 @@ func (l *listenerStack) close() {
 	}
 }
 
-func newListener(cfg config.Config, st *stores, logger *slog.Logger) (_ *listenerStack, err error) {
+func newListener(cfg config.Config, st *stores, admission ingest.Admission, logger *slog.Logger) (_ *listenerStack, err error) {
 	l := &listenerStack{}
 	defer func() {
 		if err != nil {
@@ -231,7 +241,7 @@ func newListener(cfg config.Config, st *stores, logger *slog.Logger) (_ *listene
 		}
 	}
 
-	ingestor := ingest.NewIngestor(st.producer, logger)
+	l.ingestor = ingest.NewIngestor(st.producer, admission, logger)
 
 	throttle := bindthrottle.New(st.rdb, bindthrottle.Config{
 		MaxFailures: cfg.SMPP.BindMaxFailures,
@@ -288,7 +298,7 @@ func newListener(cfg config.Config, st *stores, logger *slog.Logger) (_ *listene
 	l.listener = smppserver.New(
 		postgres.NewBindRepo(st.pg),
 		registrypb.NewSessionRegistryClient(st.registry),
-		ingestor,
+		l.ingestor,
 		smppserver.Options{
 			Addr:            fmt.Sprintf(":%d", cfg.SMPP.Port),
 			PodID:           podID(cfg, logger),

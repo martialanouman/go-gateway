@@ -80,16 +80,6 @@ type AntispamEvaluator interface {
 	Evaluate(ctx context.Context, accountID, customerID uuid.UUID, from, dest string, body []byte) (cp.AntispamAction, error)
 }
 
-// RateLimiter applies the account >= route >= connector throughput limits to a message of `segments`
-// segments, consuming that many tokens from each applicable bucket (spec §6.4). It returns
-// errs.ErrRateLimited when a limit is exceeded; the connector's technical ceiling is never crossed. It
-// is implemented over an immutable snapshot plus a Redis token bucket (internal/pipeline/ratelimit) that
-// fails closed on a store outage; the interface lives here, consumer-side. A nil RateLimiter disables
-// the stage (the pre-M6 pass-through).
-type RateLimiter interface {
-	Check(ctx context.Context, accountID, connectorID uuid.UUID, routeID *uuid.UUID, segments int) error
-}
-
 // CreditReserver reserves MT credit for a message before the SMSC send (§6.9, step-145). reserved reports
 // whether a reservation now exists: false means billing is disabled for the customer — a cached-boolean
 // decision that makes NO billing round-trip — so nothing is settled downstream. When reserved, ownerType is
@@ -104,8 +94,8 @@ type CreditReserver interface {
 }
 
 // Deps are the pipeline's collaborators, one per stage that needs one. They are named rather than
-// positional on purpose: a nil RateLimiter or Credit turns its stage into a pass-through, and as
-// positional arguments those two nils were indistinguishable from padding — the reference load harness
+// positional on purpose: a nil Credit turns its stage into a pass-through, and as positional arguments
+// such a nil was indistinguishable from padding — the reference load harness
 // ran for two steps against a pipeline silently amputated of its rate-limit, credit and Redis-backed
 // anti-spam stages, and measured it as if it were production (step-201d). Tracer is required; the
 // others are required unless their godoc says otherwise.
@@ -115,8 +105,6 @@ type Deps struct {
 	SenderIDs SenderIDAuthorizer
 	OptOut    OptOutChecker
 	Antispam  AntispamEvaluator
-	// RateLimiter is optional: nil leaves the rate-limit stage a pass-through (the pre-M6 behaviour).
-	RateLimiter RateLimiter
 	// Credit is optional: nil leaves the credit stage a pass-through (the pre-billing behaviour).
 	Credit CreditReserver
 }
@@ -245,26 +233,18 @@ func (p *Pipeline) Process(ctx context.Context, in InboundMT) (RoutedMT, []pipee
 	// A connector data_coding_default is a later wiring (nil for now).
 	body := in.Body.Reveal() // audited: body -> in-memory encoding/segmentation only, never logged
 	if err := p.stage(ctx, "pipeline.encoding", func(context.Context) error {
-		// Only the encoding matters here; the segment stage below is the authority on SegmentCount
-		// (DetectAndCount's own count would be wrong for a pre-segmented body anyway).
-		out.Encoding, _ = encoding.DetectAndCount(requestedEncoding(in), nil, body)
+		out.Encoding = wireEncoding(in, body)
 		return nil
 	}); err != nil {
 		return RoutedMT{}, nil, err
 	}
 
 	// 7. Segmentation (§6.6). Split the body into the concatenated segments the SMSC wire carries, one
-	// mt.routed record each (the router fans them out). It precedes rate-limit and credit so those meter
-	// per segment (step-084/085). A client that pre-segmented its own SMPP submit (esm_class UDH
-	// indicator already set) is never re-split: its body already carries a UDH and travels whole. The
-	// span carries only the segment count, never the body (invariant a).
+	// mt.routed record each (the router fans them out). It precedes credit so that meters per segment.
+	// The span carries only the segment count, never the body (invariant a).
 	var segments []pipeenc.Segment
 	if err := p.stage(ctx, "pipeline.segment", func(ctx context.Context) error {
-		if in.ESMClass&smpp.ESMClassUDHIndicator != 0 {
-			segments = []pipeenc.Segment{{Seq: 1, Total: 1, Payload: body, HasUDH: true}}
-		} else {
-			segments = pipeenc.Split(in.MessageID, body, out.Encoding)
-		}
+		segments = split(in, body, out.Encoding)
 		out.SegmentCount = len(segments)
 		trace.SpanFromContext(ctx).SetAttributes(attribute.Int("segment.count", len(segments)))
 		return nil
@@ -272,21 +252,7 @@ func (p *Pipeline) Process(ctx context.Context, in InboundMT) (RoutedMT, []pipee
 		return RoutedMT{}, nil, err
 	}
 
-	// 8. Rate limit (§6.4). Consume this message's segments from the account, route and connector
-	// buckets in precedence order; a breach rejects with rate_limited (the caller writes a rejected CDR,
-	// never sends). It comes AFTER segmentation so the cost is the real segment count, and BEFORE the
-	// credit reserve and SMSC send. A routing short-cut (M7) would skip route resolution, never this
-	// stage. The span carries no body (invariant a). A nil limiter is a pass-through (pre-M6).
-	if err := p.stage(ctx, "pipeline.rate_limit", func(ctx context.Context) error {
-		if p.deps.RateLimiter == nil {
-			return nil
-		}
-		return p.deps.RateLimiter.Check(ctx, out.AccountID, out.ConnectorID, out.RouteID, out.SegmentCount)
-	}); err != nil {
-		return RoutedMT{}, nil, err
-	}
-
-	// 9. Credit reserve (§6.9). Reserve this message's segments against the customer's balance, AFTER
+	// 8. Credit reserve (§6.9). Reserve this message's segments against the customer's balance, AFTER
 	// segmentation (so the cost is the real segment count) and BEFORE the SMSC send. Billing is opt-in: a
 	// disabled customer is skipped with ZERO billing round-trip (a cached-boolean decision). Insufficient
 	// funds rejects with insufficient_credit (the caller writes a rejected CDR, never sends, no ledger); a
@@ -311,6 +277,28 @@ func (p *Pipeline) Process(ctx context.Context, in InboundMT) (RoutedMT, []pipee
 	}
 
 	return out, segments, nil
+}
+
+// SegmentCount is the number of segments in's body occupies on the wire: what its admission costs before
+// the acknowledgement (step-283). It is the pipeline's own encoding and segmentation, so the door and the
+// wire meter the same figure.
+func SegmentCount(in InboundMT) int {
+	body := in.Body.Reveal() // audited: body -> in-memory segment count only, never logged
+	return len(split(in, body, wireEncoding(in, body)))
+}
+
+func wireEncoding(in InboundMT, body []byte) string {
+	enc, _ := encoding.DetectAndCount(requestedEncoding(in), nil, body)
+	return enc
+}
+
+// split never re-splits a body the client pre-segmented (esm_class UDH indicator set): it already
+// carries a UDH and travels whole.
+func split(in InboundMT, body []byte, enc string) []pipeenc.Segment {
+	if in.ESMClass&smpp.ESMClassUDHIndicator != 0 {
+		return []pipeenc.Segment{{Seq: 1, Total: 1, Payload: body, HasUDH: true}}
+	}
+	return pipeenc.Split(in.MessageID, body, enc)
 }
 
 // requestedEncoding resolves the encoding request the detector sees. A client-supplied data_coding

@@ -87,9 +87,10 @@ func (d *Drainer) handle(ctx context.Context, rec kafka.Record) error {
 		return nil
 	}
 
-	// Pace to the target's ceiling: wait until it has capacity, so a drained burst never exceeds the
-	// fallback connector's throughput_limit_per_sec. AllowConnector consumes the tokens when it succeeds.
-	for d.limiter != nil && !d.limiter.AllowConnector(ctx, routed.ConnectorID, routed.SegmentCount) {
+	// Pace to the target's rate: wait until it has capacity, so a drained burst never republishes faster
+	// than the fallback connector's throughput_limit_per_sec. AllowConnector consumes the tokens when it
+	// succeeds.
+	for d.limiter != nil && !d.limiter.AllowConnector(ctx, routed.ConnectorID) {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()

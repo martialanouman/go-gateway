@@ -14,13 +14,21 @@ import (
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
 )
 
-// RerouteLimiter gates a reroute on the target connector's throughput ceiling (step-126). AllowConnector
-// consumes `segments` of the target's token bucket and reports whether they were available; a reroute
-// whose target has no capacity is PARKED on mt.reroute-park instead of piling onto it, and the drainer
-// replays parked messages at the same ceiling. *ratelimit.Enforcer satisfies it; a nil RerouteLimiter
+// RerouteLimiter gates a reroute on the target connector's throughput (step-126). AllowConnector
+// consumes one record of the target's republication budget and reports whether they were available; a
+// reroute whose target has no capacity is PARKED on mt.reroute-park instead of piling onto it, and the
+// drainer replays parked messages at the same rate. The send then pays the target's ceiling, once. *ratelimit.Enforcer satisfies it; a nil RerouteLimiter
 // disables parking (every reroute goes straight to mt.routed, the step-125 behaviour).
 type RerouteLimiter interface {
-	AllowConnector(ctx context.Context, connectorID uuid.UUID, segments int) bool
+	AllowConnector(ctx context.Context, connectorID uuid.UUID) bool
+}
+
+// SendLimiter paces every submit_sm to the connector's throughput ceiling (spec §6.4, step-283):
+// WaitConnector blocks until the bucket has room for one submit_sm, so a saturated connector slows the
+// consumption of mt.routed and never rejects a message. It returns ctx.Err() when ctx ends first.
+// *ratelimit.Enforcer satisfies it; a nil SendLimiter does not pace.
+type SendLimiter interface {
+	WaitConnector(ctx context.Context, connectorID uuid.UUID) error
 }
 
 // BreakerState reports whether a connector's cross-pod breaker aggregate is open (breaker:state, step-122).
@@ -119,7 +127,7 @@ func (s *Service) reroute(ctx context.Context, r pipeline.RoutedMT, reason errs.
 	// Park the excess (step-126): if the target has no send capacity now, durably queue the reroute on
 	// mt.reroute-park instead of piling it onto an already-saturated connector. The bounded drainer
 	// replays it to mt.routed at the target's ceiling. Same key (message_id) → order preserved.
-	parked := s.deps.RerouteLimiter != nil && !s.deps.RerouteLimiter.AllowConnector(ctx, target, r.SegmentCount)
+	parked := s.deps.RerouteLimiter != nil && !s.deps.RerouteLimiter.AllowConnector(ctx, target)
 	if parked {
 		rec.Topic = kafka.TopicMTReroutePark
 	}

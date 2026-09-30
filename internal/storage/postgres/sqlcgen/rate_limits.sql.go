@@ -28,7 +28,7 @@ type GetRateLimitRow struct {
 	BurstCapacity *int32
 }
 
-// Throughput limits for one entity (smpp_account/connector/route). A missing row means "no explicit
+// Throughput limits for one entity (smpp_account/connector). A missing row means "no explicit
 // limit configured" -> the caller treats it as absent, not an error. rate_limits_uq guarantees :one.
 func (q *Queries) GetRateLimit(ctx context.Context, arg GetRateLimitParams) (GetRateLimitRow, error) {
 	row := q.db.QueryRow(ctx, getRateLimit, arg.EntityType, arg.EntityID)
@@ -51,8 +51,8 @@ type ListRateLimitsRow struct {
 	BurstCapacity *int32
 }
 
-// Every configured throughput limit, for the router's cold-loaded snapshot (step-085): the pipeline
-// resolves an account/connector/route limit by (entity_type, entity_id) without a per-message read.
+// Every configured throughput limit, for the cold-loaded snapshot (step-283): admission and the send
+// resolve an account/connector limit by (entity_type, entity_id) without a per-message read.
 func (q *Queries) ListRateLimits(ctx context.Context) ([]ListRateLimitsRow, error) {
 	rows, err := q.db.Query(ctx, listRateLimits)
 	if err != nil {

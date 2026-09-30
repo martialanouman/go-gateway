@@ -522,7 +522,7 @@ CREATE UNIQUE INDEX routing_scripts_one_active_idx
 -- -----------------------------------------------------------------------------------------------------
 CREATE TABLE control_plane.rate_limits (
   id             uuid PRIMARY KEY DEFAULT uuidv7(),
-  entity_type    text NOT NULL CHECK (entity_type IN ('smpp_account','connector','route')),  -- no customer/group
+  entity_type    text NOT NULL CHECK (entity_type IN ('smpp_account','connector')),  -- no customer/group; no route (step-283)
   entity_id      uuid NOT NULL,      -- polymorphic -> no single FK
   max_per_sec    integer CHECK (max_per_sec IS NULL OR max_per_sec > 0),
   max_per_day    integer CHECK (max_per_day IS NULL OR max_per_day > 0),

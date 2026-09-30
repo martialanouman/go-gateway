@@ -14,6 +14,8 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/google/uuid"
+
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
@@ -26,30 +28,46 @@ type Producer interface {
 	Produce(ctx context.Context, rec kafka.Record) error
 }
 
-// Ingestor performs the shared ingestion sequence for one submission: it encodes the envelope and produces
-// it durably to mt.inbound (the boundary that earns the acknowledgement). The accepted CDR row is NOT written
+// Admission refuses a submission beyond its account's throughput before it is acknowledged (step-283):
+// past the acknowledgement, throughput may slow a message but never reject it. *ratelimit.Enforcer
+// satisfies it.
+type Admission interface {
+	AdmitAccount(ctx context.Context, accountID uuid.UUID, segments int) error
+}
+
+// Ingestor performs the shared ingestion sequence for one submission: it admits it against its account's
+// throughput, encodes the envelope and produces it durably to mt.inbound (the boundary that earns the
+// acknowledgement). The accepted CDR row is NOT written
 // here — it is projected off the durable mt.inbound topic by AcceptedConsumer (step-101), so it can never be
 // lost on the request path.
 type Ingestor struct {
-	producer Producer
-	logger   *slog.Logger
+	producer  Producer
+	admission Admission
+	logger    *slog.Logger
 }
 
-// NewIngestor wires an Ingestor over the durable producer.
-func NewIngestor(producer Producer, logger *slog.Logger) *Ingestor {
+// NewIngestor wires an Ingestor over the durable producer. A nil admission admits every submission.
+func NewIngestor(producer Producer, admission Admission, logger *slog.Logger) *Ingestor {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Ingestor{producer: producer, logger: logger}
+	return &Ingestor{producer: producer, admission: admission, logger: logger}
 }
 
-// Accept encodes env, produces it to mt.inbound (the durability boundary — §6.7/§7.3), and only then
-// enqueues the accepted CDR row off the caller's path. It returns a flat sentinel the caller maps to
-// its own surface — errs.ErrInternal on an encode fault, errs.ErrServiceUnavailable when the durable
+// Accept admits env against its account's throughput, encodes it, produces it to mt.inbound (the
+// durability boundary — §6.7/§7.3), and only then enqueues the accepted CDR row off the caller's path.
+// It returns a flat sentinel the caller maps to its own surface — errs.ErrRateLimited beyond the
+// account's throughput, errs.ErrInternal on an encode fault, errs.ErrServiceUnavailable when the durable
 // write fails — so a submission is never acknowledged before its record is durable. On success the
-// caller may safely acknowledge with env.MessageID. The body is revealed only inside EncodeInbound,
-// never here (invariant a).
+// caller may safely acknowledge with env.MessageID. The body is revealed only to count its segments and
+// inside EncodeInbound, never logged or spanned (invariant a).
 func (i *Ingestor) Accept(ctx context.Context, env pipeline.InboundMT) error {
+	if i.admission != nil {
+		if err := i.admission.AdmitAccount(ctx, env.AccountID, pipeline.SegmentCount(env)); err != nil {
+			return err
+		}
+	}
+
 	rec, err := pipeline.EncodeInbound(env)
 	if err != nil {
 		i.logger.ErrorContext(ctx, "encode mt.inbound", "message_id", env.MessageID, "err", err)

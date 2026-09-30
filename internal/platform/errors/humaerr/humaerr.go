@@ -48,6 +48,15 @@ func (m *Model) GetStatus() int { return m.status }
 // application/problem+json default.
 func (m *Model) ContentType(string) string { return "application/json" }
 
+// GetHeaders implements huma.HeadersError: a rate_limited 429 carries the Retry-After the contract
+// declares, one second because the buckets refill per second.
+func (m *Model) GetHeaders() http.Header {
+	if m.Code != string(errs.ErrRateLimited) {
+		return nil
+	}
+	return http.Header{"Retry-After": []string{"1"}}
+}
+
 // TransformSchema implements huma.SchemaTransformer: the served spec declares on code the same enum
 // as the contracts, computed from the catalogue so the served and the declared cannot drift apart.
 func (*Model) TransformSchema(_ huma.Registry, s *huma.Schema) *huma.Schema {

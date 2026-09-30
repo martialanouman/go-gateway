@@ -1,10 +1,10 @@
-// Package ratelimit is the atomic token-bucket rate limiter that protects accounts, connectors and
-// routes from exceeding their configured throughput (spec §6.4, §10). The bucket lives in Redis so the
+// Package ratelimit is the atomic token-bucket rate limiter that protects accounts and connectors from
+// exceeding their configured throughput (spec §6.4, §10). The bucket lives in Redis so the
 // limit is enforced across every pod; the refill-and-consume is one Lua script (the golden rule forbids
 // a Go read-modify-write on shared rate state). When Redis is unreachable the limiter FAILS CLOSED
 // against a per-pod static ceiling — it never fails open, because an unbounded connector is worse than a
-// throttled one. Wiring into the pipeline order and the account >= route >= connector ceiling precedence
-// land in step-085; this package is the mechanism.
+// throttled one. The account is admitted before the acknowledgement, the connector paces the send
+// (step-283).
 package ratelimit
 
 import (
