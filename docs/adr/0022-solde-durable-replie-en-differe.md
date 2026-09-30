@@ -53,6 +53,8 @@ l'écriture est synchrone. Une réhydratation sur un durable en retard rendrait 
   borné par le pool. Si `RESERVE_TIMEOUT` (step-285) venait de la latence et non du verrou, cet ADR ne le lève pas.
 - Aucun client ne peut dépasser, prépayé strict compris : pas de régime distinct pour l'overdraft.
 - Une table à forte rotation : autovacuum réglé par table dans la migration.
+- Le Redis de facturation doit tourner en `maxmemory-policy noeviction` (le défaut de Redis) : une éviction du
+  compteur de débits ou du HASH des réserves en vol rouvrirait le dépassement que ces clés ferment.
 - Transfer et change-scope verrouillent `balances` dans l'ordre du replieur, puis lisent le solde dans un
   statement **suivant** : sous READ COMMITTED, un statement qui attend ce verrou relit la version récente de
   la ligne mais garde son instantané des deltas, et compterait deux fois un delta tout juste replié.
