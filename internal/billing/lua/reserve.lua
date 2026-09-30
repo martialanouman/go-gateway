@@ -6,6 +6,7 @@
 -- KEYS[1] = billing:balance:{direction}:{owner_type}:{owner_id}  (integer credit balance cache)
 -- KEYS[2] = billing:reservation:{message_id}                     (short-TTL hold; stores the reserved amount)
 -- KEYS[3] = billing:inflight:mt:{owner_type}:{owner_id}          (HASH of debits not yet durable, ADR-0022)
+-- KEYS[4] = billing:seq:mt:{owner_type}:{owner_id}               (debit counter fencing rehydration, ADR-0022)
 -- ARGV[1] = credits    the segments to reserve (> 0)
 -- ARGV[2] = has_floor  1 if a minimum-balance floor applies, else 0 (an explicit flag, never a sentinel)
 -- ARGV[3] = floor      the minimum the balance may reach (e.g. 0 for strict prepaid, negative for overdraft)
@@ -49,4 +50,5 @@ balance = balance - credits
 redis.call('SET', bkey, balance, 'KEEPTTL')
 redis.call('SET', rkey, credits, 'PX', ttl)
 redis.call('HSET', KEYS[3], ARGV[5], credits .. ':' .. ARGV[6])
+redis.call('INCR', KEYS[4])
 return {'reserved', balance}

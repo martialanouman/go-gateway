@@ -15,6 +15,7 @@ import (
 
 	"github.com/martialanouman/go-gateway/internal/adminapi"
 	"github.com/martialanouman/go-gateway/internal/auth"
+	"github.com/martialanouman/go-gateway/internal/billing"
 	"github.com/martialanouman/go-gateway/internal/config"
 	configsecretspb "github.com/martialanouman/go-gateway/internal/configsecrets/pb"
 	"github.com/martialanouman/go-gateway/internal/connector/status"
@@ -509,8 +510,5 @@ func (m retentionMetric) Observe(outcome string) { m.c.WithLabelValues(outcome).
 type redisBalanceCache struct{ rdb *goredis.Client }
 
 func (c redisBalanceCache) Del(ctx context.Context, keys ...string) error {
-	if len(keys) == 0 {
-		return nil
-	}
-	return c.rdb.Del(ctx, keys...).Err()
+	return billing.InvalidateBalanceCaches(ctx, c.rdb, keys...)
 }

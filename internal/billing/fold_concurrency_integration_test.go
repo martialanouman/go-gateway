@@ -127,13 +127,24 @@ func TestRehydrationSubtractsInFlightReserves(t *testing.T) {
 		_, err := acc.Reserve(ctx, h.owner, uuid.New(), 1)
 		first <- err
 	}()
-	<-store.entered
+	select {
+	case <-store.entered:
+	case ferr := <-first:
+		t.Fatalf("first Reserve returned before its durable write: %v", ferr)
+	case <-time.After(10 * time.Second):
+		t.Fatal("first Reserve never reached its durable write")
+	}
 	h.dropCachedBalance(t)
 
 	_, err := acc.Reserve(ctx, h.owner, uuid.New(), 1)
 	close(store.release)
-	if ferr := <-first; ferr != nil {
-		t.Fatalf("first Reserve: %v", ferr)
+	select {
+	case ferr := <-first:
+		if ferr != nil {
+			t.Fatalf("first Reserve: %v", ferr)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("first Reserve never returned")
 	}
 	if !errors.Is(err, errs.ErrInsufficientCredit) {
 		t.Fatalf("second Reserve while the first is in flight = %v, want ErrInsufficientCredit", err)
@@ -200,5 +211,101 @@ func TestReserveBoundsItsDurableWrite(t *testing.T) {
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("Reserve still waiting on its durable write after 15s: the write is unbounded")
+	}
+}
+
+// slowRehydrationStore stalls the first balance read AFTER reading it, the way a rehydrating replica
+// descheduled between its durable read and its SET NX does.
+type slowRehydrationStore struct {
+	billing.LedgerStore
+	read    chan struct{}
+	proceed chan struct{}
+	once    sync.Once
+}
+
+func (s *slowRehydrationStore) Balance(ctx context.Context, ownerType string, ownerID uuid.UUID, direction string) (int, bool, error) {
+	bal, found, err := s.LedgerStore.Balance(ctx, ownerType, ownerID, direction)
+	first := false
+	s.once.Do(func() { first = true })
+	if first {
+		close(s.read)
+		<-s.proceed
+	}
+	return bal, found, err
+}
+
+// TestStaleRehydrationCannotResurrectSpentCredit: a rehydration computed before another replica's reserve
+// must not land after that reserve's credit is gone, or the credit is sold twice.
+func TestStaleRehydrationCannotResurrectSpentCredit(t *testing.T) {
+	h := newBillingHarness(t, 1)
+	ctx := context.Background()
+	slow := &slowRehydrationStore{LedgerStore: h.repo, read: make(chan struct{}), proceed: make(chan struct{})}
+	stale := billing.New(h.rdb, slow, billing.WithHoldTTL(time.Minute), billing.WithConfigSource(h.cfg))
+
+	staleResult := make(chan error, 1)
+	go func() {
+		_, err := stale.Reserve(ctx, h.owner, uuid.New(), 1)
+		staleResult <- err
+	}()
+	select {
+	case <-slow.read:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the stale replica never reached its durable read")
+	}
+
+	if _, err := h.acc.Reserve(ctx, h.owner, uuid.New(), 1); err != nil {
+		t.Fatalf("the other replica's Reserve: %v", err)
+	}
+	h.dropCachedBalance(t)
+	close(slow.proceed)
+
+	select {
+	case err := <-staleResult:
+		if !errors.Is(err, errs.ErrInsufficientCredit) {
+			t.Fatalf("stale replica's Reserve = %v, want ErrInsufficientCredit: the only credit is already spent", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the stale replica's Reserve never returned")
+	}
+}
+
+// TestStaleRehydrationCannotResurrectAnAdminDebit: the durable balance can also drop outside reserve.lua — an
+// admin transfer. Its invalidation must fence a rehydration computed before it, like a debit does.
+func TestStaleRehydrationCannotResurrectAnAdminDebit(t *testing.T) {
+	h := newBillingHarness(t, 1)
+	ctx := context.Background()
+	slow := &slowRehydrationStore{LedgerStore: h.repo, read: make(chan struct{}), proceed: make(chan struct{})}
+	stale := billing.New(h.rdb, slow, billing.WithHoldTTL(time.Minute), billing.WithConfigSource(h.cfg))
+
+	staleResult := make(chan error, 1)
+	go func() {
+		_, err := stale.Reserve(ctx, h.owner, uuid.New(), 1)
+		staleResult <- err
+	}()
+	select {
+	case <-slow.read:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the stale replica never reached its durable read")
+	}
+
+	if _, _, err := h.verify.Topup(ctx, cp.LedgerEntry{
+		OwnerType: h.owner.Type, OwnerID: h.owner.ID, Direction: cp.BillingDirectionMT,
+		CustomerID: h.owner.CustomerID, EntryType: cp.EntryAdjustment, Credits: -1,
+	}); err != nil {
+		t.Fatalf("admin debit: %v", err)
+	}
+	if err := billing.InvalidateBalanceCaches(ctx, h.rdb,
+		billing.BalanceCacheKey(cp.BillingDirectionMT, h.owner.Type, h.owner.ID)); err != nil {
+		t.Fatalf("InvalidateBalanceCaches: %v", err)
+	}
+	close(slow.proceed)
+
+	select {
+	case err := <-staleResult:
+		if !errors.Is(err, errs.ErrInsufficientCredit) {
+			t.Fatalf("stale replica's Reserve = %v, want ErrInsufficientCredit: the admin took the only credit", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the stale replica's Reserve never returned")
 	}
 }

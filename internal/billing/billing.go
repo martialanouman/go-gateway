@@ -39,6 +39,14 @@ var captureSrc string
 //go:embed lua/release.lua
 var releaseSrc string
 
+//go:embed lua/rehydrate.lua
+var rehydrateSrc string
+
+//go:embed lua/invalidate.lua
+var invalidateSrc string
+
+var invalidateScript = redis.NewScript(invalidateSrc)
+
 //go:embed lua/recordmo.lua
 var recordMOSrc string
 
@@ -67,9 +75,8 @@ const defaultHoldTTL = 5 * time.Minute
 // defaultBalanceCacheTTL bounds how long the balance cache lives before a reserve must rehydrate it from
 // the durable authority. It exists to CAP cache/durable divergence: reserve.lua/release.lua use KEEPTTL,
 // so the key expires this long after each rehydrate regardless of activity, and any drift (from a rare
-// concurrent race, §step-142a review) self-heals on the next rehydrate. Rehydration is always consistent
-// because the durable balance it reads includes the unfolded deltas, so it reflects every outstanding hold
-// however late the fold runs (ADR-0022).
+// concurrent race, §step-142a review) self-heals on the next rehydrate. Rehydration stays consistent because
+// it reads the durable balance with its unfolded deltas, minus the reserves still in flight (ADR-0022).
 const defaultBalanceCacheTTL = 10 * time.Minute
 
 // reserveDurableTimeout bounds a reserve's durable write whatever deadline the caller sent. A rehydration
@@ -80,12 +87,13 @@ const reserveDurableTimeout = 4 * time.Second
 // LedgerStore is the durable authority (control_plane balances + billing_ledger, step-141). The interface
 // is declared here, consumer-side (convention §2); *postgres.BillingRepo satisfies it.
 type LedgerStore interface {
-	// Balance reads the durable owner balance for a direction; found=false means no row (treat as 0).
+	// Balance reads the durable owner balance for a direction; found=false means nothing was ever recorded
+	// for the owner (treat as 0).
 	Balance(ctx context.Context, ownerType string, ownerID uuid.UUID, direction string) (int, bool, error)
 	// RecordDurable applies the entry's signed credit delta to the durable balance and appends the ledger
 	// row, in one transaction. It is IDEMPOTENT by (message_id, entry_type) across day boundaries: a replay
 	// applies nothing and returns applied=false with the current balance (so the caller can undo a
-	// speculative cache change); a first application returns applied=true with the new balance.
+	// speculative cache change); a first application returns applied=true with the balance after it.
 	RecordDurable(ctx context.Context, entry cp.LedgerEntry) (newBalance int, applied bool, err error)
 	// LedgerEntryExists is the authoritative cross-partition idempotency guard.
 	LedgerEntryExists(ctx context.Context, messageID uuid.UUID, entryType cp.EntryType) (bool, error)
@@ -113,6 +121,7 @@ type Accountant struct {
 	reserve    *redis.Script
 	capture    *redis.Script
 	release    *redis.Script
+	rehydrateS *redis.Script
 	recordMO   *redis.Script
 	undoMO     *redis.Script
 	holdTTL    time.Duration
@@ -193,6 +202,7 @@ func New(rdb *redis.Client, store LedgerStore, opts ...Option) *Accountant {
 		reserve:    redis.NewScript(reserveSrc),
 		capture:    redis.NewScript(captureSrc),
 		release:    redis.NewScript(releaseSrc),
+		rehydrateS: redis.NewScript(rehydrateSrc),
 		recordMO:   redis.NewScript(recordMOSrc),
 		undoMO:     redis.NewScript(undoMOSrc),
 		holdTTL:    defaultHoldTTL,
@@ -238,6 +248,25 @@ func moBalanceKey(o Owner) string {
 	return BalanceCacheKey(directionMO, o.Type, o.ID)
 }
 
+// debitSeqKey is the debit counter paired with a balance cache key (ADR-0022).
+func debitSeqKey(balanceKey string) string {
+	return "billing:seq:" + strings.TrimPrefix(balanceKey, "billing:balance:")
+}
+
+// InvalidateBalanceCaches drops balance caches after a durable write outside reserve.lua (an admin transfer
+// or top-up). It bumps each key's debit counter in the same script, so a rehydration computed before the
+// write cannot land after it and resurrect the credit it removed.
+func InvalidateBalanceCaches(ctx context.Context, rdb *redis.Client, balanceKeys ...string) error {
+	if len(balanceKeys) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, 2*len(balanceKeys))
+	for _, k := range balanceKeys {
+		keys = append(keys, k, debitSeqKey(k))
+	}
+	return invalidateScript.Run(ctx, rdb, keys).Err()
+}
+
 func inFlightKey(o Owner) string {
 	return "billing:inflight:" + directionMT + ":" + o.Type + ":" + o.ID.String()
 }
@@ -276,8 +305,8 @@ func (a *Accountant) Reserve(ctx context.Context, owner Owner, messageID uuid.UU
 		floorFlag = 1
 	}
 
-	for attempt := 0; attempt < 2; attempt++ {
-		res, err := a.reserve.Run(ctx, a.rdb, []string{bkey, rkey, ikey}, credits, floorFlag, floor,
+	for attempt := 0; attempt < 3; attempt++ {
+		res, err := a.reserve.Run(ctx, a.rdb, []string{bkey, rkey, ikey, debitSeqKey(bkey)}, credits, floorFlag, floor,
 			a.holdTTL.Milliseconds(), messageID.String(), time.Now().UnixMilli()).Slice()
 		if err != nil {
 			return 0, fmt.Errorf("billing: reserve script: %w", err)
@@ -321,7 +350,9 @@ func (a *Accountant) Reserve(ctx context.Context, owner Owner, messageID uuid.UU
 				return 0, fmt.Errorf("billing: reserve replay lookup: %w", err)
 			}
 			if !found {
-				newBalance, _, err := a.store.RecordDurable(ctx, a.entry(owner, &messageID, cp.EntryReserve, -credits, nil))
+				dctx, cancel := context.WithTimeout(ctx, reserveDurableTimeout)
+				defer cancel()
+				newBalance, _, err := a.store.RecordDurable(dctx, a.entry(owner, &messageID, cp.EntryReserve, -credits, nil))
 				if err != nil {
 					return 0, fmt.Errorf("billing: reserve replay repair: %w", err)
 				}
@@ -666,6 +697,11 @@ func (a *Accountant) dropBalanceCache(ctx context.Context, bkey string, messageI
 // sold again. The in-flight set is read BEFORE the durable balance: a debit committing between the two
 // reads is then subtracted twice — an underestimate the next rehydration heals — never not at all.
 func (a *Accountant) rehydrate(ctx context.Context, bkey, ikey string, owner Owner) error {
+	seqKey := debitSeqKey(bkey)
+	seq, err := a.rdb.Get(ctx, seqKey).Result()
+	if err != nil && !errors.Is(err, redis.Nil) {
+		return fmt.Errorf("billing: rehydrate debit counter (fail-closed): %w", err)
+	}
 	inFlight, err := a.inFlightCredits(ctx, ikey)
 	if err != nil {
 		return fmt.Errorf("billing: rehydrate in-flight reserves (fail-closed): %w", err)
@@ -678,9 +714,10 @@ func (a *Accountant) rehydrate(ctx context.Context, bkey, ikey string, owner Own
 		bal = 0
 	}
 	// A BOUNDED TTL (not 0): the cache expires balanceTTL after this rehydrate (reserve.lua/release.lua
-	// preserve it with KEEPTTL), so any cache/durable drift self-heals on the next rehydrate. SetNX still
-	// guards against clobbering a concurrently-warmed value.
-	if err := a.rdb.SetNX(ctx, bkey, bal-inFlight, a.balanceTTL).Err(); err != nil {
+	// preserve it with KEEPTTL), so any cache/durable drift self-heals on the next rehydrate. The script's
+	// SET NX still guards against clobbering a concurrently-warmed value; a debit that raced us leaves the
+	// cache cold, and the caller's next attempt rehydrates again.
+	if err := a.rehydrateS.Run(ctx, a.rdb, []string{bkey, seqKey}, seq, bal-inFlight, a.balanceTTL.Milliseconds()).Err(); err != nil {
 		return fmt.Errorf("billing: rehydrate set: %w", err)
 	}
 	return nil
