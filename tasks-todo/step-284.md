@@ -43,9 +43,9 @@ Arbitrage : spec §6.9 → Fable (option A retenue, 30/09/2026) → validation h
 
 - **Synchrone, dans la tx de `RecordDurable`** : claim `billing_idempotency` + ligne du grand livre + un delta
   dans `control_plane.balance_deltas` (append-only). Invariant c inchangé ; un crash ne perd aucun débit.
-- **Tri par `entry_type`, pas par `message_id`** (un topup en porte un) : `reserve|capture|release|refund|mo_charge`
-  → delta (aucun si 0 : la capture ne touche plus de ligne partagée) ; `topup|adjustment|transfer` →
-  `AdjustBalance` synchrone, comme aujourd'hui.
+- **Tri par chemin** : `RecordDurable` (seul appelant : l'Accountant — reserve, capture, release, mo_charge)
+  → delta, aucun si 0 (la capture ne touche plus de ligne partagée) ; `applyEntry` (Topup, Transfer) →
+  `AdjustBalance` synchrone, comme aujourd'hui. (Réarbitré par Fable : pas de switch sur `entry_type`.)
 - **Lecture unifiée** : toute lecture durable (réhydratation, `Balances`, transfer, change-scope, `balance_after`)
   = `balances.credits + SUM(deltas)` en UN statement. Un delta est replié ou en attente, jamais les deux :
   la réhydratation voit toute réserve committée. Pas de filigrane, pas de blocage ; TTL 10 min conservé.
@@ -55,8 +55,12 @@ Arbitrage : spec §6.9 → Fable (option A retenue, 30/09/2026) → validation h
 - **Transfer / change-scope** : gardent `FOR UPDATE` sur `balances` (sérialise admin ↔ admin ↔ replieur), lisent
   la valeur unifiée ; jambes du transfer ordonnées par propriétaire. Pas de verrou consultatif : le point de
   sérialisation avec le chemin chaud est Redis, aujourd'hui comme demain.
-- **`balance_after`** = solde unifié relu dans la tx : « solde vu au commit », non monotone entre entrées
-  concurrentes d'un même propriétaire.
+- **`balance_after`** = la valeur que Redis vient de calculer (`reserve.lua`, `capture.lua` res[2],
+  `release.lua` « released », `recordmo.lua`), portée par `cp.LedgerEntry.BalanceAfter *int` : « solde après,
+  dans l'ordre des décisions de crédit ». `nil` → lecture unifiée, chemins rares seulement (cache froid,
+  replay non appliqué, release sans hold). Relire l'unifié à chaque réserve sommerait tous les deltas en
+  attente du client (~8 000 lignes par réserve à 8 000/s) : pire que le verrou retiré. (Réarbitrage Fable du
+  30/09.) Topup/Transfer : l'unifié, relu dans la tx après `AdjustBalance`.
 - **MO** : même chemin, aucun code dédié.
 - **Déploiement** : billing-svc en `strategy: Recreate` — une ancienne réplique qui lit `balances` seul
   réhydraterait sans les deltas.

@@ -29,8 +29,12 @@ l'écriture est synchrone. Une réhydratation sur un durable en retard rendrait 
 3. **Un replieur** par réplique de billing-svc déplace les deltas dans `balances` en un statement atomique
    (`DELETE … SKIP LOCKED RETURNING` puis upsert groupé, ordonné par propriétaire). Son retard est une
    métrique alertée ; il ne conditionne aucune décision de crédit.
-4. **`balance_after` devient « solde vu au commit »**, relu dans la tx. Il n'est plus monotone entre entrées
-   concurrentes d'un même propriétaire ; `SUM(credits) == solde` reste vrai.
+4. **`balance_after` est la valeur calculée par Redis** au moment de la décision de crédit, le seul vrai
+   point de sérialisation. Relire `balances + SUM(deltas)` à chaque réserve sommerait tous les deltas en
+   attente du client. Les chemins rares sans valeur Redis (cache froid, replay, release sans hold) relisent
+   la valeur unifiée. `balance_after` n'est pas monotone par `created_at` entre entrées concurrentes (ce
+   n'était déjà pas le cas) et peut porter la dérive du cache, bornée par son TTL ; `SUM(credits) == solde`
+   reste vrai.
 5. billing-svc se déploie en `Recreate` : une réplique antérieure lirait `balances` sans les deltas.
 
 ## Consequences
