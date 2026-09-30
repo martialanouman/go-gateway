@@ -895,6 +895,8 @@ exactroute:{msisdn}                                 -- exact-number routing CACH
 suppress:{scope}:{scope_id}:{msisdn}                -- opt-out entry; read on Bloom possible-hit (§6.20)
 billing:balance:{direction}:{owner_type}:{owner_id} -- cached balance; atomic Lua MT reserve/capture/release
 billing:reservation:{message_id}                    -- short-TTL MT hold; cleared on capture/release
+billing:inflight:mt:{owner_type}:{owner_id}         -- HASH message_id → credits:ts of reserves debited in Redis
+                                                       but not yet durable; subtracted on rehydrate (ADR-0022)
 retry:delayed:{connector_id}                        -- sorted-set delay queue (score = due ts)
 breaker:binds:{connector_id}                        -- HASH of per (pod_id, bind_index) sub-bind states
 breaker:state:{connector_id}                        -- derived connector aggregate (closed|open|half_open)

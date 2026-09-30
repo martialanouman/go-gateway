@@ -68,6 +68,25 @@ Arbitrage : spec §6.9 → Fable (option A retenue, 30/09/2026) → validation h
   crash), cache sans TTL (perd la borne de step-142b), solde strié (reste un plafond de verrou, synchrone),
   PR préalable « capture à delta 0 » (couverte par PR2, une mesure VPS de plus).
 
+### Amendement du 30/09 — les réserves en vol à la réhydratation (PR2b)
+La Task 6 (test de charge de la DoD) a montré un défaut **préexistant sur `main`** : `reserve.lua` débite Redis
+**avant** que `RecordDurable` committe. Un DEL du cache (TTL, `dropBalanceCache`, invalidation admin après
+un topup) fait réhydrater depuis un durable qui ignore ces débits en vol : 63 réserves de 1 acceptées pour
+50 crédits sur `main`, 59-61 sur la branche. Sous charge réelle : ~débit × latence durable crédits par
+réhydratation. Arbitrage Fable (deux tours : un compteur remis à 0 était faux — un décrément tardif mange
+l'incrément d'une réserve postérieure) :
+- `billing:inflight:mt:{owner_type}:{owner_id}`, HASH `message_id → "credits:ts_ms"`. `reserve.lua` fait le
+  HSET dans le script qui débite. Go fait HDEL (`defer`, ctx détaché) sur tout chemin après `reserved`, et
+  après la réparation du chemin `held`.
+- `rehydrate` lit le HASH **avant** le solde durable, somme les champs de moins de `holdTTL`, et fait
+  `SET NX (durable − en vol)`. Un commit entre les deux lectures est soustrait deux fois : sous-estimation
+  conservatrice, guérie à la réhydratation suivante. Les champs plus vieux que `holdTTL` (crash entre
+  `reserve.lua` et le HDEL) sont purgés.
+- L'écriture durable de la réserve est bornée côté billing-svc (`reserveDurableTimeout`, bien sous
+  `holdTTL`) : `RESERVE_TIMEOUT` n'a pas de plafond, et un commit plus long que l'âge de purge rouvrirait
+  le trou.
+- Hors périmètre : même course sur le compteur MO → `debts/compteur-mo-reydrate-sans-ses-debits-en-vol.md`.
+
 **PR** : 1. design + ADR-0022 + §6.9 · 2. migration + sqlc + repo + `FoldOnce` + tests (ne se déploie pas sans
 3) · 3. boucle + métrique + alerte + `Recreate` · 4. mesure step-280.
 

@@ -409,6 +409,8 @@ billing:balance:{direction}:{owner_type}:{owner_id}   -- cached balance, mirrori
                                          reserve/capture/release; accrual meter for MO. Reconciled with Postgres.
 billing:reservation:{message_id}     -- short-TTL MT hold (amount, direction, owner, customer_id, account_id),
                                          cleared on capture/release; expiry sweep reconciles orphans. No MO reservation.
+billing:inflight:mt:{owner_type}:{owner_id} -- HASH of reserves debited in Redis, not yet durable; a rehydration
+                                         subtracts them (ADR-0022).
 retry:delayed:{connector_id}         -- sorted-set delay queue (score = due ts) for connector retry/backoff
 breaker:binds:{connector_id}         -- HASH of per (pod_id, bind_index) sub-bind states, each written only by the
                                          owning pod; the connector-level aggregate is derived by majority (§6.8/§6.15)

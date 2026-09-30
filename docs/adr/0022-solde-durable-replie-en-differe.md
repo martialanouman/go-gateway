@@ -35,7 +35,13 @@ l'écriture est synchrone. Une réhydratation sur un durable en retard rendrait 
    la valeur unifiée. `balance_after` n'est pas monotone par `created_at` entre entrées concurrentes (ce
    n'était déjà pas le cas) et peut porter la dérive du cache, bornée par son TTL ; `SUM(credits) == solde`
    reste vrai.
-5. billing-svc se déploie en `Recreate` : une réplique antérieure lirait `balances` sans les deltas.
+5. **La réhydratation soustrait les réserves en vol.** `reserve.lua` débite Redis avant le commit
+   durable : réhydrater depuis le seul durable rendrait ces débits (défaut antérieur à cet ADR, révélé par
+   le test de charge de step-284). Chaque réserve s'inscrit dans un HASH par propriétaire
+   (`billing:inflight:mt:…`, champ `message_id`), retirée après son commit ; la réhydratation soustrait ce
+   HASH, lu avant le durable. Le fail-closed de §6.9 prend la forme d'une sous-estimation transitoire, pas
+   d'un blocage.
+6. billing-svc se déploie en `Recreate` : une réplique antérieure lirait `balances` sans les deltas.
 
 ## Consequences
 
