@@ -536,3 +536,26 @@ func balanceAfter(ctx context.Context, qtx *sqlcgen.Queries, entry cp.LedgerEntr
 	bal, _, err := balanceOn(ctx, qtx, entry.OwnerType, entry.OwnerID, entry.Direction)
 	return bal, err
 }
+
+// FoldOnce moves up to limit unfolded deltas into balances (ADR-0022) and returns how many it moved; fewer
+// than limit means the backlog is drained.
+func (r *BillingRepo) FoldOnce(ctx context.Context, limit int) (int64, error) {
+	//nolint:gosec // the caller's batch size is a small constant
+	n, err := r.q.FoldBalanceDeltas(ctx, int32(limit))
+	if err != nil {
+		return 0, translate("fold balance deltas", err)
+	}
+	return n, nil
+}
+
+// OldestPendingDelta returns when the oldest unfolded delta was recorded; found=false when none is pending.
+func (r *BillingRepo) OldestPendingDelta(ctx context.Context) (time.Time, bool, error) {
+	at, err := r.q.OldestBalanceDelta(ctx)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return time.Time{}, false, nil
+	}
+	if err != nil {
+		return time.Time{}, false, translate("oldest balance delta", err)
+	}
+	return tsVal(at), true, nil
+}
