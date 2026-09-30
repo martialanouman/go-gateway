@@ -78,7 +78,7 @@ Vocabulaire SMPP / SMS et termes propres au projet. À lire une fois ; sert de r
 
 **AIMD** (Additive Increase / Multiplicative Decrease) — l'algorithme du throttling adaptatif : baisse brutale du débit sur signal `ESME_RTHROTTLED`, remontée progressive ensuite.
 
-**Token-bucket** — l'algorithme de limitation de débit métier (par compte/connecteur/route), implémenté en Lua atomique dans Redis.
+**Token-bucket** — l'algorithme de limitation de débit métier (par compte à l'admission, par connecteur à l'envoi), implémenté en Lua atomique dans Redis.
 
 **Pool de binds** (`bind_pool_size`) — plusieurs binds SMPP parallèles par connecteur pour lever le plafond de débit d'un bind unique. `mt.routed` est partitionné pour garder les segments d'un message sur un seul bind.
 

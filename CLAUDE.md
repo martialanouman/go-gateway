@@ -13,9 +13,11 @@ unique**. Cible de conception : agrégateur national, 8 000 SMS/s soutenu (exige
 programmé côté client). Le quoi/pourquoi complet : `specification-technique-passerelle-sms.md` §1-2 ;
 l'architecture : `guide-ingenierie-passerelle-sms.md` §2-§4.
 
-**Ordre du pipeline MT (NON réordonnable)** : auth → ACK durable Kafka → E.164 → autorisation sender
-ID → opt-out → anti-spam → résolution de route (numéro exact → script → déclaratif) →
-encodage/segmentation → débit → réservation crédit MT → envoi SMSC → capture/libère → CDR.
+**Ordre du pipeline MT (NON réordonnable)** : auth → débit du compte → ACK durable Kafka → E.164 →
+autorisation sender ID → opt-out → anti-spam → résolution de route (numéro exact → script → déclaratif) →
+encodage/segmentation → réservation crédit MT → jeton du connecteur → envoi SMSC → capture/libère → CDR.
+Le débit se refuse **avant** l'ACK (429 / `ESME_RTHROTTLED`), jamais après : au-delà, le plafond du
+connecteur ralentit l'envoi, il ne rejette pas.
 Le court-circuit « numéro exact » saute la *résolution de route*, **jamais** la conformité (sender ID,
 opt-out, anti-spam). Diagramme complet : guide d'ingénierie §5.1.
 

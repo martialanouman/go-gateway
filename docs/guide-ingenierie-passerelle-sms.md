@@ -75,19 +75,19 @@ La passerelle est un ensemble de services conteneurisés (Kubernetes). Chacun a 
 
 ### 3.1 `smpp-server-svc` — ingestion SMPP côté utilisateur
 
-Gère les binds SMPP longue durée des clients ESME (5 000–20 000 sessions simultanées). C'est le **seul service à état TCP**. À l'authentification d'un bind, il résout l'identifiant vers son compte SMPP puis son client, vérifie le canal (`smpp_enabled`) et `max_sessions` contre le registre inter-pods (`session-manager-svc`), puis publie chaque `submit_sm` validé sur `mt.inbound`. Il consomme `mo.inbound`/`dlr.events` pour remettre au bind propriétaire via le registre. Il traite `query_sm`/`cancel_sm` quand ils sont activés par compte (§6.22). Scalé derrière un load-balancer L4 avec affinité de session ; la remise MO/DLR au bon pod passe par le registre de sessions et un endpoint gRPC de remise interne (§6.8).
+Gère les binds SMPP longue durée des clients ESME (5 000–20 000 sessions simultanées). C'est le **seul service à état TCP**. À l'authentification d'un bind, il résout l'identifiant vers son compte SMPP puis son client, vérifie le canal (`smpp_enabled`) et `max_sessions` contre le registre inter-pods (`session-manager-svc`), puis admet chaque `submit_sm` contre le débit du compte (§6.4 ; au-delà `ESME_RTHROTTLED`) et le publie sur `mt.inbound`. Il consomme `mo.inbound`/`dlr.events` pour remettre au bind propriétaire via le registre. Il traite `query_sm`/`cancel_sm` quand ils sont activés par compte (§6.22). Scalé derrière un load-balancer L4 avec affinité de session ; la remise MO/DLR au bon pod passe par le registre de sessions et un endpoint gRPC de remise interne (§6.8).
 
 ### 3.2 `rest-api-svc` — ingestion REST
 
-Service HTTP **sans état** pour `POST /messages`, la requête de statut, l'annulation et la lecture read-only du compte. Authentifie la clé API (Bearer ou HMAC), résout compte→client, valide, publie sur `mt.inbound`, acquitte. Scalé par HPA (CPU / connexions). HTTP/2 ou keep-alive avec pool pour supporter 10 000+ connexions concurrentes.
+Service HTTP **sans état** pour `POST /messages`, la requête de statut, l'annulation et la lecture read-only du compte. Authentifie la clé API (Bearer ou HMAC), résout compte→client, valide, admet le débit du compte (§6.4 ; au-delà `429`), publie sur `mt.inbound`, acquitte. Scalé par HPA (CPU / connexions). HTTP/2 ou keep-alive avec pool pour supporter 10 000+ connexions concurrentes.
 
 ### 3.3 `router-svc` — le cœur du pipeline MT
 
-Consommateur **sans état** de `mt.inbound`. Applique, dans l'ordre : normalisation E.164 → autorisation de sender ID (§6.19) → opt-out (§6.20) → anti-spam (§6.5) → résolution de route (§6.1) → encodage/segmentation (§6.6) → limite de débit (§6.4) → réservation de crédit MT (§6.9). Publie sur `mt.routed`. Émet un span OpenTelemetry par étape. Maintient en mémoire des filtres de Bloom (numéros exacts, suppressions) et un instantané immuable de la configuration de routage, échangé atomiquement au rechargement à chaud. Les comptes portant un script de routage sont isolés sur des pools/quotas séparés car leur enveloppe de coût est distincte (§6.2). Héberge aussi les deux projecteurs CDR, chacun sur son propre groupe de consommation : `internal/ingest` écrit la ligne `accepted` depuis `mt.inbound`, `internal/outcome` la ligne `enroute`/`failed` depuis `mt.outcome` (ADR-0012).
+Consommateur **sans état** de `mt.inbound`. Applique, dans l'ordre : normalisation E.164 → autorisation de sender ID (§6.19) → opt-out (§6.20) → anti-spam (§6.5) → résolution de route (§6.1) → encodage/segmentation (§6.6) → réservation de crédit MT (§6.9). Publie sur `mt.routed`. Il ne rejette jamais pour débit : le compte est admis à l'ingestion, le connecteur plafonné au pool (§6.4). Émet un span OpenTelemetry par étape. Maintient en mémoire des filtres de Bloom (numéros exacts, suppressions) et un instantané immuable de la configuration de routage, échangé atomiquement au rechargement à chaud. Les comptes portant un script de routage sont isolés sur des pools/quotas séparés car leur enveloppe de coût est distincte (§6.2). Héberge aussi les deux projecteurs CDR, chacun sur son propre groupe de consommation : `internal/ingest` écrit la ligne `accepted` depuis `mt.inbound`, `internal/outcome` la ligne `enroute`/`failed` depuis `mt.outcome` (ADR-0012).
 
 ### 3.4 `connector-pool-svc` — envoi vers les SMSC
 
-Un pool logique **par SMSC**, tenant `bind_pool_size` binds SMPP sortants parallèles (§6.8). Consomme `mt.routed`, applique le lissage de débit et le disjoncteur (§6.15), évalue la réécriture de sender ID juste avant l'envoi (§6.16), envoie `submit_sm`, suit `submit_sm_resp`. En cas de succès il **capture** la réservation de crédit ; en cas d'échec il **libère**. Publie l'issue de chaque `submit_sm_resp` sur `mt.outcome` et commite ; la ligne CDR `enroute`/`failed` est projetée par `router-svc` (ADR-0012), le pool n'écrivant directement que les lignes qui précèdent l'envoi (`cancelled`, `rerouted`, dead-letter). Si le disjoncteur du connecteur cible est ouvert, il republie le message vers le connecteur suivant du `fallback_chain` porté en en-tête. Reçoit les `deliver_sm` entrants et publie sur `mo.inbound`/`dlr.events`. Publie l'état agrégé du disjoncteur et la charge dans Redis (par transition, pas par message).
+Un pool logique **par SMSC**, tenant `bind_pool_size` binds SMPP sortants parallèles (§6.8). Consomme `mt.routed`, attend le jeton du plafond du connecteur avant chaque `submit_sm` (§6.4), applique le disjoncteur (§6.15), évalue la réécriture de sender ID juste avant l'envoi (§6.16), envoie `submit_sm`, suit `submit_sm_resp`. En cas de succès il **capture** la réservation de crédit ; en cas d'échec il **libère**. Publie l'issue de chaque `submit_sm_resp` sur `mt.outcome` et commite ; la ligne CDR `enroute`/`failed` est projetée par `router-svc` (ADR-0012), le pool n'écrivant directement que les lignes qui précèdent l'envoi (`cancelled`, `rerouted`, dead-letter). Si le disjoncteur du connecteur cible est ouvert, il republie le message vers le connecteur suivant du `fallback_chain` porté en en-tête. Reçoit les `deliver_sm` entrants et publie sur `mo.inbound`/`dlr.events`. Publie l'état agrégé du disjoncteur et la charge dans Redis (par transition, pas par message).
 
 ### 3.5 `mo-dlr-router-svc` — routage retour
 
@@ -135,7 +135,7 @@ La persistance est polyglotte : chaque magasin est choisi pour son motif d'accè
 
 Le clé de partition n'est pas cosmétique — elle garantit l'ordre et le parallélisme.
 
-`mt.inbound` est partitionné par `message_id` : un seul compte occupe toutes les voies du routeur, et l'ordre d'arrivée par compte n'est pas une exigence. `mo.inbound` est partitionné par hash de compte/client. `mt.routed` est partitionné par `(connector_id, shard_index)` où `shard_index = hash(message_key) % bind_pool_size` du connecteur cible. **`message_key` est l'ID de message logique** : tous les segments UDH d'un SMS concaténé le partagent, donc ils atterrissent sur le même shard, donc sur le même bind, dans l'ordre — exigence des SMSC qui réassemblent sur un seul bind.
+`mt.inbound` est partitionné par `message_id` : un seul compte occupe toutes les voies du routeur, et l'ordre d'arrivée par compte n'est pas une exigence. `mo.inbound` est partitionné par hash de compte/client. `mt.routed` est partitionné par `message_id`, **l'ID de message logique** : tous les segments UDH d'un SMS concaténé le partagent, donc ils atterrissent sur la même partition ; le pool répartit ensuite un lot sur ses binds par `hash(message_id) % bind_pool_size`, donc sur le même bind, dans l'ordre — exigence des SMSC qui réassemblent sur un seul bind.
 
 ---
 
@@ -147,6 +147,7 @@ Le clé de partition n'est pas cosmétique — elle garantit l'ordre et le paral
 submit_sm | POST /messages
    │  AUTH: credential → smpp_account → customer   (les 2 IDs → en-têtes Kafka)
    │  CHANNEL: smpp_enabled / rest_enabled ?
+   │  ADMISSION: débit du compte (§6.4) — au-delà → 429 / ESME_RTHROTTLED, rien n'est écrit
    ▼
    ACK CLIENT dès écriture durable dans mt.inbound          ← frontière de durabilité (§6.7)
 ======================= router-svc =======================
@@ -157,19 +158,19 @@ submit_sm | POST /messages
    5. ROUTE RESOLUTION (3 niveaux, premier gagnant) :
         L0 numéro exact (MNP)  →  L1 script  →  L2 déclaratif
    6. ENCODING / UDH SEGMENTATION → segment_count
-   7. RATE LIMIT
-   8. MT CREDIT RESERVE (si facturation activée)
+   7. MT CREDIT RESERVE (si facturation activée)
    publish → mt.routed (key = ID logique)
 ================= connector-pool-svc =====================
+   jeton du connecteur (plafond §6.4) — on attend, on ne rejette pas
    breaker fermé ? sinon → reroute via fallback_chain
-   9. SENDER-ID REWRITE (côté fournisseur, avant envoi)
+   8. SENDER-ID REWRITE (côté fournisseur, avant envoi)
    submit_sm → SMSC → submit_sm_resp
    succès → CAPTURE crédit ; échec → RELEASE ; publie mt.outcome
    (router-svc projette mt.outcome → CDR enroute/failed, ADR-0012)
    plus tard : deliver_sm (DLR) → update CDR → push au client
 ```
 
-Point capital : **le court-circuit du niveau L0 ne saute que la résolution de route.** Les étapes 1–4 et 6–9 s'appliquent à *tout* message, y compris routé par numéro exact.
+Point capital : **le court-circuit du niveau L0 ne saute que la résolution de route.** Les étapes 1–4 et 6–8 s'appliquent à *tout* message, y compris routé par numéro exact.
 
 ### 5.2 MO (réception)
 
@@ -240,13 +241,13 @@ Opt-in par connecteur (`auto_reconnect_enabled`, défaut false). Désactivée, u
 
 ### 7.5 Gestion du débit (§6.4)
 
-Deux niveaux : fenêtre SMPP au protocole (par session) et token-bucket métier (par compte/connecteur/route, Lua atomique dans Redis). Précédence : `throughput_limit_per_sec` du connecteur est le plafond technique absolu ; une ligne `rate_limits` est un gouverneur opérationnel qui ne peut jamais le dépasser (validé à l'écriture — voir la note dans le DDL). Le débit effectif est le minimum des deux. Throttling adaptatif AIMD piloté par les signaux `ESME_RTHROTTLED`. **Panne Redis : fail-closed conservateur** — chaque pod applique localement le plafond technique statique, jamais un débit non borné.
+Deux niveaux : fenêtre SMPP au protocole (par session) et token-bucket métier (Lua atomique dans Redis) : le **compte** avant l'ACK, à l'ingestion (`429` / `ESME_RTHROTTLED`, rien n'est écrit) ; le **connecteur** à l'envoi, où chaque `submit_sm` attend son jeton — backpressure, jamais de rejet après l'ACK. Le parking de reroute paie un budget de republication distinct. Précédence : `throughput_limit_per_sec` du connecteur est le plafond technique absolu ; une ligne `rate_limits` est un gouverneur opérationnel qui ne peut jamais le dépasser (validé à l'écriture — voir la note dans le DDL). Le débit effectif est le minimum des deux. Throttling adaptatif AIMD piloté par les signaux `ESME_RTHROTTLED`. **Panne Redis : fail-closed conservateur** — chaque pod applique localement le plafond (du connecteur au pool, du compte à l'ingestion), jamais un débit non borné.
 
 ---
 
 ## 8. Facturation (opt-in, §6.9)
 
-**Le solde est un compteur entier de crédits SMS, jamais monétaire.** Un SMS concaténé consomme plus d'un crédit : `credits = segment_count × credits_per_segment(destination, sender_type)`, consulté après segmentation et après la limite de débit.
+**Le solde est un compteur entier de crédits SMS, jamais monétaire.** Un SMS concaténé consomme plus d'un crédit : `credits = segment_count × credits_per_segment(destination, sender_type)`, consulté après segmentation ; le débit du compte a été payé à l'admission.
 
 Deux axes orthogonaux. **Direction** : MT et MO ont des soldes séparés. Le MT est un vrai solde (réserve → capture/libère ; en prépayé sans découvert, zéro bloque l'envoi). Le MO est un **compteur postpayé qui ne bloque rien** — il descend jusqu'à `mo_billing_floor`, après quoi l'accumulation cesse et une alerte est émise ; un dépassement MO n'a aucun effet sur le MT. La séparation supprime un vecteur de déni de service économique (inonder un long-code pour couper les envois MT). **Propriétaire** (`customers.balance_scope`) : `customer` (pool partagé par direction, défaut) ou `smpp_account` (soldes isolés, pas de point de sérialisation Redis). Verrou : changer `balance_scope` exige que **tous les soldes soient à zéro**.
 
