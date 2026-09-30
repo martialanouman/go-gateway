@@ -11,6 +11,10 @@ metadata:
     app.kubernetes.io/part-of: go-gateway
 spec:
   replicas: 2
+  # Never two versions at once (ADR-0022): an older replica rehydrates the balance cache without the
+  # unfolded deltas. Recreate trades the rollout's availability for that.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: billing-svc
