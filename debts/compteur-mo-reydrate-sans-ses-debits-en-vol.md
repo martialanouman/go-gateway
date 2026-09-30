@@ -5,8 +5,8 @@
 
 **Ce qu'on a fait à la place.** step-284 soustrait les réserves MT en vol à la réhydratation du cache de solde
 (ADR-0022, `billing:inflight:mt:…`). Le compteur MO a la même fenêtre : `recordmo.lua` débite Redis avant
-que `RecordDurable(mo_charge)` committe (`internal/billing/billing.go`, `RecordMO`), et `rehydrateMO` lit
-le seul durable.
+que `RecordDurable(mo_charge)` committe (`internal/billing/billing.go:580`, `RecordMO`), et `rehydrateMO`
+lit le seul durable.
 
 **Pourquoi.** Arbitrage Fable du 30/09/2026 : le compteur MO ne bloque rien (§6.9), il s'arrête à
 `mo_billing_floor`. L'écart ne fait pas dépasser un solde prépayé ; il retarde l'arrêt de l'accumulation.

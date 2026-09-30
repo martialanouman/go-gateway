@@ -5,13 +5,16 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 	"github.com/martialanouman/go-gateway/internal/storage/postgres"
+	"github.com/martialanouman/go-gateway/internal/storage/postgres/sqlcgen"
 	"github.com/martialanouman/go-gateway/internal/testutil/pgtest"
 )
 
@@ -260,5 +263,99 @@ func TestConcurrentFoldsLoseAndDuplicateNothing(t *testing.T) {
 	credits, pending := f.folded(t, cp.OwnerTypeCustomer, f.customerID)
 	if credits != writers*perWriter || pending != 0 {
 		t.Errorf("balances row = %d with %d pending, want %d with none", credits, pending, writers*perWriter)
+	}
+}
+
+// foldHeldOpen folds every pending delta inside a transaction it leaves open, so the balances rows it moved
+// stay locked until the caller commits.
+func (f deltaFixture) foldHeldOpen(t *testing.T) pgx.Tx {
+	t.Helper()
+	tx, err := f.pool.Begin(context.Background())
+	if err != nil {
+		t.Fatalf("begin fold: %v", err)
+	}
+	if _, err := sqlcgen.New(tx).FoldBalanceDeltas(context.Background(), 1_000_000); err != nil {
+		t.Fatalf("fold: %v", err)
+	}
+	return tx
+}
+
+// waitForLockWaiter returns once some session is blocked on a row lock — the call under test has taken its
+// statement snapshot and is queued behind the open fold.
+func (f deltaFixture) waitForLockWaiter(t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		var waiting int
+		if err := f.pool.QueryRow(context.Background(),
+			`SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND datname = current_database()`).Scan(&waiting); err != nil {
+			t.Fatalf("read pg_stat_activity: %v", err)
+		}
+		if waiting > 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("no session ever waited on the fold's lock")
+}
+
+// TestTransferGuardUnderAConcurrentFold: a transfer queued behind a fold must not see the folded credit twice
+// — once in the balances row it waited for, once in the deltas of its own, older snapshot.
+func TestTransferGuardUnderAConcurrentFold(t *testing.T) {
+	f := newDeltaFixture(t, cp.OwnerTypeSMPPAccount)
+	src, dst := f.account(t), f.account(t)
+	f.topup(t, cp.OwnerTypeSMPPAccount, src, 1)
+	f.hotPath(t, cp.OwnerTypeSMPPAccount, src, cp.EntryRelease, 5)
+
+	fold := f.foldHeldOpen(t)
+	result := make(chan error, 1)
+	go func() {
+		debit := f.entry(cp.OwnerTypeSMPPAccount, src, cp.EntryTransfer, -10)
+		credit := f.entry(cp.OwnerTypeSMPPAccount, dst, cp.EntryTransfer, 10)
+		_, _, err := f.repo.Transfer(context.Background(), debit, credit, uuid.New())
+		result <- err
+	}()
+	f.waitForLockWaiter(t)
+	if err := fold.Commit(context.Background()); err != nil {
+		t.Fatalf("commit fold: %v", err)
+	}
+
+	select {
+	case err := <-result:
+		if !errors.Is(err, errs.ErrInsufficientCredit) {
+			t.Fatalf("Transfer(10 of 6) behind a fold = %v, want ErrInsufficientCredit", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Transfer never returned")
+	}
+}
+
+// TestTopupBalanceAfterUnderAConcurrentFold: same race on the admin path's balance_after.
+func TestTopupBalanceAfterUnderAConcurrentFold(t *testing.T) {
+	f := newDeltaFixture(t, cp.OwnerTypeCustomer)
+	f.topup(t, cp.OwnerTypeCustomer, f.customerID, 1)
+	f.hotPath(t, cp.OwnerTypeCustomer, f.customerID, cp.EntryRelease, 5)
+
+	fold := f.foldHeldOpen(t)
+	result := make(chan cp.LedgerRow, 1)
+	go func() {
+		row, _, err := f.repo.Topup(context.Background(), f.entry(cp.OwnerTypeCustomer, f.customerID, cp.EntryTopup, 1))
+		if err != nil {
+			t.Errorf("topup: %v", err)
+		}
+		result <- row
+	}()
+	f.waitForLockWaiter(t)
+	if err := fold.Commit(context.Background()); err != nil {
+		t.Fatalf("commit fold: %v", err)
+	}
+
+	select {
+	case row := <-result:
+		if row.BalanceAfter != 7 {
+			t.Errorf("topup balance_after behind a fold = %d, want 7 (1 + 5 + 1)", row.BalanceAfter)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Topup never returned")
 	}
 }

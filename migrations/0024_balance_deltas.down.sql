@@ -1,4 +1,6 @@
--- Fold every pending delta before removing the table, or the credits it holds are lost.
+-- Fold every pending delta before removing the table, or the credits it holds are lost. The lock keeps a
+-- still-running replica from adding a delta after the fold's snapshot and before the table goes.
+LOCK TABLE control_plane.balance_deltas IN ACCESS EXCLUSIVE MODE;
 WITH moved AS (
   DELETE FROM control_plane.balance_deltas RETURNING owner_type, owner_id, direction, credits
 )

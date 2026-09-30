@@ -2,7 +2,7 @@
 -- The durable owner balance (owner_type, owner_id, direction) is the folded balances row PLUS the owner's
 -- unfolded deltas (ADR-0022), read in ONE statement so a concurrent fold cannot hide a delta from both halves
 -- or show it in both. found=false means nothing was ever recorded for the owner — a legitimate zero.
-SELECT COALESCE(f.credits, 0)::int AS folded, COALESCE(p.total, 0)::bigint AS pending,
+SELECT (COALESCE(f.credits, 0) + COALESCE(p.total, 0))::int AS credits,
        (f.credits IS NOT NULL OR p.total IS NOT NULL) AS found
 FROM (SELECT (SELECT b.credits FROM control_plane.balances b
                WHERE b.owner_type = @owner_type AND b.owner_id = @owner_id AND b.direction = @direction) AS credits) f,
@@ -62,17 +62,14 @@ WHERE l.customer_id = @customer_id AND l.direction = 'mt' AND l.entry_type = 're
       AND c.customer_id = l.customer_id AND c.direction = 'mt'
   );
 
--- name: GetBalanceForUpdate :one
--- Read one owner's durable balance (folded + unfolded deltas, ADR-0022) and LOCK its balances row (§6.9,
--- step-148 admin transfer / change-scope). The lock serialises this admin tx against another admin tx and
--- against the fold; the hot path appends deltas without it, and Redis is its serialisation point. Never
--- ErrNoRows: an owner with no row reads its pending deltas alone.
-SELECT (COALESCE((SELECT b.credits FROM control_plane.balances b
-                   WHERE b.owner_type = @owner_type AND b.owner_id = @owner_id AND b.direction = @direction
-                   FOR UPDATE), 0)
-        + COALESCE((SELECT sum(d.credits) FROM control_plane.balance_deltas d
-                     WHERE d.owner_type = @owner_type AND d.owner_id = @owner_id AND d.direction = @direction), 0)
-       )::int AS credits;
+-- name: LockBalance :exec
+-- Lock one owner's balances row (§6.9, step-148 admin transfer / change-scope) against another admin tx and
+-- the fold; the hot path appends deltas without it, and Redis is its serialisation point. Read the balance
+-- in a LATER statement: under READ COMMITTED a statement that waits on this lock re-reads the row's newest
+-- version but keeps its older snapshot of balance_deltas, and would count a just-folded delta twice.
+SELECT 1 FROM control_plane.balances
+WHERE owner_type = @owner_type AND owner_id = @owner_id AND direction = @direction
+FOR UPDATE;
 
 -- name: LockCustomerScope :one
 -- Read a customer's current balance_scope and LOCK the customer row, so two concurrent change-scope admin
@@ -136,20 +133,16 @@ VALUES
    @balance_after, @reference)
 RETURNING id, created_at;
 
--- name: AdjustBalance :one
+-- name: AdjustBalance :exec
 -- Apply a SIGNED delta to the durable owner balance for a direction (credits += delta), creating the row
--- on first use, and RETURN the resulting balance. The delta form is order-independent: two concurrent
+-- on first use. The delta form is order-independent: two concurrent
 -- movements for the same owner commit in any order and the balance is always the sum of every delta —
 -- which is exactly the append-only ledger's SUM(credits). An absolute set would let a stale write clobber
--- a fresher one under the concurrency this system runs at. The returned balance includes the owner's
--- unfolded deltas (ADR-0022): it is what the ledger's balance_after must report.
+-- a fresher one under the concurrency this system runs at.
 INSERT INTO control_plane.balances (owner_type, owner_id, direction, credits)
 VALUES (@owner_type, @owner_id, @direction, @delta)
 ON CONFLICT (owner_type, owner_id, direction)
-DO UPDATE SET credits = control_plane.balances.credits + @delta, updated_at = now()
-RETURNING credits + COALESCE((SELECT sum(d.credits) FROM control_plane.balance_deltas d
-                              WHERE d.owner_type = @owner_type AND d.owner_id = @owner_id
-                                AND d.direction = @direction), 0)::int AS credits;
+DO UPDATE SET credits = control_plane.balances.credits + @delta, updated_at = now();
 
 -- name: GetReserveEntry :one
 -- The reserve ledger entry for a message_id (the amount of record, §6.9). The capture and release paths
