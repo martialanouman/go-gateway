@@ -32,6 +32,16 @@ Pendant la rafale de reprise, Postgres n'est donc pas au repos : les réservatio
 sérialisent derrière ce verrou, et c'est vraisemblablement ce qui les pousse au-delà de 200 ms. À vérifier
 en tête de step : `pg_stat_activity` pendant un redémarrage.
 
+**Rejoué le 30/09/2026 après step-284 (verrou retiré), image `v0.0.1-sha-cf28500ffff7` :** le routeur tombe
+quand même. Un **seul** client, `sustained` 10 min (~4 500 req/s en entrée) : les deux routeurs en
+CrashLoopBackOff (6 redémarrages chacun en ~11 min), `rpc error: code = DeadlineExceeded` sur la réserve,
+~1 900 `submits_total` sur la fenêtre. Depuis step-282, un client s'étale sur les 12 partitions : la
+concurrence des réserves qu'il fallait 24 clients pour atteindre est là dès le premier. Relevé au repos
+après coup : Postgres inactif (aucune attente), `balance_deltas` vide, billing-svc hors du haut de
+`kubectl top`. L'hypothèse du verrou ci-dessous n'explique donc plus les dépassements ; la source reste
+**non attribuée** — billing-svc n'expose ni latence gRPC ni compteurs de son pool Postgres (10 connexions).
+Première chose à poser en tête de step.
+
 ## Pourquoi ce n'est pas un réglage
 
 Élargir `RESERVE_TIMEOUT` repousse le seuil, ne le supprime pas : la rafale de reprise grandit avec le
