@@ -463,8 +463,10 @@ func (a *Accountant) Capture(ctx context.Context, owner Owner, messageID uuid.UU
 	switch status := res[0].(string); status {
 	case "captured":
 		reserved = toInt(res[1])
-		if cached, err := strconv.Atoi(fmt.Sprint(res[2])); err == nil {
-			decided = &cached
+		// Parsed at the ledger column's width: a cache value that does not fit falls back to the durable read.
+		if cached, err := strconv.ParseInt(fmt.Sprint(res[2]), 10, 32); err == nil {
+			balance := int(cached)
+			decided = &balance
 		}
 	case "no_reservation":
 		credits, _, found, err := a.store.ReserveEntry(ctx, messageID)

@@ -346,3 +346,30 @@ func TestLedgerBalanceAfterIsTheCreditDecision(t *testing.T) {
 		t.Errorf("release balance_after = %d, want 95", got)
 	}
 }
+
+// TestCaptureBalanceAfterIgnoresAnOutOfRangeCache: the cache value capture.lua hands back is text parsed
+// into the ledger's int32 column. One that does not fit must fall back to the durable read, never wrap.
+func TestCaptureBalanceAfterIgnoresAnOutOfRangeCache(t *testing.T) {
+	h := newBillingHarness(t, 100)
+	ctx := context.Background()
+	msg := uuid.New()
+	if _, err := h.acc.Reserve(ctx, h.owner, msg, 3); err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	key := billing.BalanceCacheKey(cp.BillingDirectionMT, h.owner.Type, h.owner.ID)
+	if err := h.rdb.Set(ctx, key, "3000000000", redis.KeepTTL).Err(); err != nil {
+		t.Fatalf("corrupt cache: %v", err)
+	}
+	if _, err := h.acc.Capture(ctx, h.owner, msg); err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	var got int
+	if err := pgtest.Pool(t).QueryRow(ctx,
+		`SELECT balance_after FROM control_plane.billing_ledger WHERE message_id = $1 AND entry_type = 'capture'`,
+		msg).Scan(&got); err != nil {
+		t.Fatalf("read balance_after: %v", err)
+	}
+	if got != 97 {
+		t.Errorf("capture balance_after = %d, want 97 (the durable balance), not a wrapped cache value", got)
+	}
+}
