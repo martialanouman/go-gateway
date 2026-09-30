@@ -72,6 +72,11 @@ const defaultHoldTTL = 5 * time.Minute
 // however late the fold runs (ADR-0022).
 const defaultBalanceCacheTTL = 10 * time.Minute
 
+// reserveDurableTimeout bounds a reserve's durable write whatever deadline the caller sent. A rehydration
+// stops subtracting an in-flight debit once it is older than the hold TTL, so a commit allowed to outlive
+// that age would be sold twice.
+const reserveDurableTimeout = 4 * time.Second
+
 // LedgerStore is the durable authority (control_plane balances + billing_ledger, step-141). The interface
 // is declared here, consumer-side (convention §2); *postgres.BillingRepo satisfies it.
 type LedgerStore interface {
@@ -233,6 +238,10 @@ func moBalanceKey(o Owner) string {
 	return BalanceCacheKey(directionMO, o.Type, o.ID)
 }
 
+func inFlightKey(o Owner) string {
+	return "billing:inflight:" + directionMT + ":" + o.Type + ":" + o.ID.String()
+}
+
 func reservationKey(messageID uuid.UUID) string {
 	return "billing:reservation:" + messageID.String()
 }
@@ -253,7 +262,7 @@ func (a *Accountant) Reserve(ctx context.Context, owner Owner, messageID uuid.UU
 	if credits <= 0 {
 		return 0, fmt.Errorf("billing: reserve: credits must be positive, got %d", credits)
 	}
-	bkey, rkey := balanceKey(owner), reservationKey(messageID)
+	bkey, rkey, ikey := balanceKey(owner), reservationKey(messageID), inFlightKey(owner)
 
 	// Per-customer floor: strict prepaid (floor 0), overdraft (floor -limit) or a postpaid hard limit; a
 	// soft/unfloored postpaid customer reserves with has_floor=0. An unknown customer fails closed to strict
@@ -268,14 +277,18 @@ func (a *Accountant) Reserve(ctx context.Context, owner Owner, messageID uuid.UU
 	}
 
 	for attempt := 0; attempt < 2; attempt++ {
-		res, err := a.reserve.Run(ctx, a.rdb, []string{bkey, rkey}, credits, floorFlag, floor, a.holdTTL.Milliseconds()).Slice()
+		res, err := a.reserve.Run(ctx, a.rdb, []string{bkey, rkey, ikey}, credits, floorFlag, floor,
+			a.holdTTL.Milliseconds(), messageID.String(), time.Now().UnixMilli()).Slice()
 		if err != nil {
 			return 0, fmt.Errorf("billing: reserve script: %w", err)
 		}
 		switch status := res[0].(string); status {
 		case "reserved":
+			defer a.forgetInFlight(ctx, ikey, messageID)
 			decided := toInt(res[1])
-			newBalance, applied, err := a.store.RecordDurable(ctx, a.entry(owner, &messageID, cp.EntryReserve, -credits, &decided))
+			dctx, cancel := context.WithTimeout(ctx, reserveDurableTimeout)
+			defer cancel()
+			newBalance, applied, err := a.store.RecordDurable(dctx, a.entry(owner, &messageID, cp.EntryReserve, -credits, &decided))
 			if err != nil {
 				// A durable error is ambiguous: a lost commit-ack looks identical to a real failure. If the
 				// reserve entry IS in the ledger the commit actually succeeded — compensating would refund a
@@ -321,7 +334,7 @@ func (a *Accountant) Reserve(ctx context.Context, owner Owner, messageID uuid.UU
 			return bal, nil
 
 		case "cold":
-			if err := a.rehydrate(ctx, bkey, owner); err != nil {
+			if err := a.rehydrate(ctx, bkey, ikey, owner); err != nil {
 				return 0, err // fail-closed
 			}
 			continue // retry with the warm cache
@@ -648,7 +661,15 @@ func (a *Accountant) dropBalanceCache(ctx context.Context, bkey string, messageI
 // rehydrate loads the durable balance into the cold cache with SET NX, so a concurrent rehydration cannot
 // clobber a fresher value. A durable-read failure is fatal (fail-closed): a credit is never passed
 // unverified.
-func (a *Accountant) rehydrate(ctx context.Context, bkey string, owner Owner) error {
+//
+// Reserves already debited in Redis but not yet durable are subtracted, or the credit they took would be
+// sold again. The in-flight set is read BEFORE the durable balance: a debit committing between the two
+// reads is then subtracted twice — an underestimate the next rehydration heals — never not at all.
+func (a *Accountant) rehydrate(ctx context.Context, bkey, ikey string, owner Owner) error {
+	inFlight, err := a.inFlightCredits(ctx, ikey)
+	if err != nil {
+		return fmt.Errorf("billing: rehydrate in-flight reserves (fail-closed): %w", err)
+	}
 	bal, found, err := a.store.Balance(ctx, owner.Type, owner.ID, directionMT)
 	if err != nil {
 		return fmt.Errorf("billing: rehydrate balance (fail-closed): %w", err)
@@ -659,10 +680,50 @@ func (a *Accountant) rehydrate(ctx context.Context, bkey string, owner Owner) er
 	// A BOUNDED TTL (not 0): the cache expires balanceTTL after this rehydrate (reserve.lua/release.lua
 	// preserve it with KEEPTTL), so any cache/durable drift self-heals on the next rehydrate. SetNX still
 	// guards against clobbering a concurrently-warmed value.
-	if err := a.rdb.SetNX(ctx, bkey, bal, a.balanceTTL).Err(); err != nil {
+	if err := a.rdb.SetNX(ctx, bkey, bal-inFlight, a.balanceTTL).Err(); err != nil {
 		return fmt.Errorf("billing: rehydrate set: %w", err)
 	}
 	return nil
+}
+
+// inFlightCredits sums the owner's reserves still waiting for their durable write, and drops the fields a
+// crash left behind. Past the hold TTL a field no longer counts: its hold has lapsed, so a replay can no
+// longer repair the durable entry against the cache. The age compares the reserving replica's clock with
+// this one's; a few seconds of skew are negligible against the hold TTL.
+func (a *Accountant) inFlightCredits(ctx context.Context, ikey string) (int, error) {
+	fields, err := a.rdb.HGetAll(ctx, ikey).Result()
+	if err != nil {
+		return 0, err
+	}
+	staleBefore := time.Now().Add(-a.holdTTL).UnixMilli()
+	var total int
+	var stale []string
+	for messageID, v := range fields {
+		creditsPart, atPart, _ := strings.Cut(v, ":")
+		credits, cerr := strconv.Atoi(creditsPart)
+		at, terr := strconv.ParseInt(atPart, 10, 64)
+		if cerr != nil || terr != nil || at < staleBefore {
+			stale = append(stale, messageID)
+			continue
+		}
+		total += credits
+	}
+	if len(stale) > 0 {
+		if err := a.rdb.HDel(ctx, ikey, stale...).Err(); err != nil {
+			a.logger.WarnContext(ctx, "billing: could not drop stale in-flight reserves", "err", err)
+		}
+	}
+	return total, nil
+}
+
+// forgetInFlight removes a reserve from the in-flight set once its outcome is durable (or undone). It runs
+// detached: a request that timed out must still clear it. A failure leaves the field to be subtracted until
+// it ages out — an underestimate, never an overdraft.
+func (a *Accountant) forgetInFlight(ctx context.Context, ikey string, messageID uuid.UUID) {
+	ctx = context.WithoutCancel(ctx)
+	if err := a.rdb.HDel(ctx, ikey, messageID.String()).Err(); err != nil {
+		a.logger.WarnContext(ctx, "billing: could not clear an in-flight reserve", "message_id", messageID, "err", err)
+	}
 }
 
 func (a *Accountant) entry(owner Owner, messageID *uuid.UUID, et cp.EntryType, credits int, balanceAfter *int) cp.LedgerEntry {

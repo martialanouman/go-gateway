@@ -3,6 +3,7 @@ package billing_test
 import (
 	"context"
 	"errors"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -10,6 +11,8 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/martialanouman/go-gateway/internal/billing"
+	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 	"github.com/martialanouman/go-gateway/internal/testutil/pgtest"
 )
@@ -51,7 +54,7 @@ func TestStrictPrepaidNeverOverdrawsWhileFolding(t *testing.T) {
 		}
 	})
 
-	var accepted atomic.Int64
+	var accepted, failed atomic.Int64
 	var reservers sync.WaitGroup
 	for range workers {
 		reservers.Add(1)
@@ -63,7 +66,8 @@ func TestStrictPrepaidNeverOverdrawsWhileFolding(t *testing.T) {
 				case err == nil:
 					accepted.Add(1)
 				case !errors.Is(err, errs.ErrInsufficientCredit):
-					t.Errorf("Reserve: %v", err)
+					// A cache dropped between rehydrate and retry refuses the reserve: fail-closed, not an overdraft.
+					failed.Add(1)
 				}
 			}
 		}()
@@ -72,11 +76,13 @@ func TestStrictPrepaidNeverOverdrawsWhileFolding(t *testing.T) {
 	close(stop)
 	background.Wait()
 
-	if got := accepted.Load(); got != funded {
-		t.Errorf("accepted %d reserves of 1 credit against %d funded, want exactly %d", got, funded, funded)
+	got := int(accepted.Load())
+	if got > funded || got == 0 {
+		t.Errorf("accepted %d reserves of 1 credit against %d funded (%d refused on a dropped cache), want 1..%d",
+			got, funded, failed.Load(), funded)
 	}
-	if got := h.balance(t); got != 0 {
-		t.Errorf("durable balance = %d, want 0", got)
+	if bal := h.balance(t); bal != funded-got {
+		t.Errorf("durable balance = %d, want %d", bal, funded-got)
 	}
 	var sum int
 	if err := pgtest.Pool(t).QueryRow(ctx,
@@ -84,7 +90,115 @@ func TestStrictPrepaidNeverOverdrawsWhileFolding(t *testing.T) {
 		h.owner.Type, h.owner.ID).Scan(&sum); err != nil {
 		t.Fatalf("sum ledger: %v", err)
 	}
-	if sum != 0 {
-		t.Errorf("SUM(ledger credits) = %d, want 0 (it must equal the balance)", sum)
+	if sum != funded-got {
+		t.Errorf("SUM(ledger credits) = %d, want %d (it must equal the balance)", sum, funded-got)
+	}
+}
+
+// blockingStore holds a reserve's durable commit until released, the way a slow Postgres does: the credit is
+// already debited in Redis and not yet in the durable balance.
+type blockingStore struct {
+	billing.LedgerStore
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (b *blockingStore) RecordDurable(ctx context.Context, entry cp.LedgerEntry) (int, bool, error) {
+	blocked := false
+	b.once.Do(func() { blocked = true })
+	if blocked {
+		close(b.entered)
+		<-b.release
+	}
+	return b.LedgerStore.RecordDurable(ctx, entry)
+}
+
+// TestRehydrationSubtractsInFlightReserves: reserve A has taken the last credit in Redis and is still writing
+// it durably when the cache expires. Rehydrating from the durable balance alone would sell that credit twice.
+func TestRehydrationSubtractsInFlightReserves(t *testing.T) {
+	h := newBillingHarness(t, 1)
+	ctx := context.Background()
+	store := &blockingStore{LedgerStore: h.repo, entered: make(chan struct{}), release: make(chan struct{})}
+	acc := billing.New(h.rdb, store, billing.WithHoldTTL(time.Minute), billing.WithConfigSource(h.cfg))
+
+	first := make(chan error, 1)
+	go func() {
+		_, err := acc.Reserve(ctx, h.owner, uuid.New(), 1)
+		first <- err
+	}()
+	<-store.entered
+	h.dropCachedBalance(t)
+
+	_, err := acc.Reserve(ctx, h.owner, uuid.New(), 1)
+	close(store.release)
+	if ferr := <-first; ferr != nil {
+		t.Fatalf("first Reserve: %v", ferr)
+	}
+	if !errors.Is(err, errs.ErrInsufficientCredit) {
+		t.Fatalf("second Reserve while the first is in flight = %v, want ErrInsufficientCredit", err)
+	}
+}
+
+// TestRehydrationForgetsCommittedReserves: once a reserve is durable it leaves the in-flight set, or every
+// rehydration would subtract it a second time and refuse credit the customer still has.
+func TestRehydrationForgetsCommittedReserves(t *testing.T) {
+	h := newBillingHarness(t, 2)
+	ctx := context.Background()
+	if _, err := h.acc.Reserve(ctx, h.owner, uuid.New(), 1); err != nil {
+		t.Fatalf("first Reserve: %v", err)
+	}
+	h.dropCachedBalance(t)
+	if _, err := h.acc.Reserve(ctx, h.owner, uuid.New(), 1); err != nil {
+		t.Fatalf("second Reserve with 1 credit left = %v, want success", err)
+	}
+}
+
+// TestRehydrationIgnoresInFlightReservesPastTheHold: a field a crash left behind stops counting once the hold
+// it stood for has lapsed, and is dropped.
+func TestRehydrationIgnoresInFlightReservesPastTheHold(t *testing.T) {
+	h := newBillingHarness(t, 1)
+	ctx := context.Background()
+	ikey := "billing:inflight:mt:" + h.owner.Type + ":" + h.owner.ID.String()
+	crashed := uuid.NewString()
+	longAgo := time.Now().Add(-2 * time.Minute).UnixMilli()
+	if err := h.rdb.HSet(ctx, ikey, crashed, "1:"+strconv.FormatInt(longAgo, 10)).Err(); err != nil {
+		t.Fatalf("seed stale field: %v", err)
+	}
+
+	if _, err := h.acc.Reserve(ctx, h.owner, uuid.New(), 1); err != nil {
+		t.Fatalf("Reserve = %v, want success: the stale field must not count", err)
+	}
+	if left, err := h.rdb.HExists(ctx, ikey, crashed).Result(); err != nil || left {
+		t.Errorf("stale field still present = %v (%v), want dropped", left, err)
+	}
+}
+
+// stuckStore never commits a reserve: it returns only when the write's context ends.
+type stuckStore struct{ billing.LedgerStore }
+
+func (stuckStore) RecordDurable(ctx context.Context, _ cp.LedgerEntry) (int, bool, error) {
+	<-ctx.Done()
+	return 0, false, ctx.Err()
+}
+
+// TestReserveBoundsItsDurableWrite: a caller with no deadline must not let a reserve's durable write outlive
+// the hold TTL, the age past which a rehydration stops subtracting it.
+func TestReserveBoundsItsDurableWrite(t *testing.T) {
+	h := newBillingHarness(t, 1)
+	acc := billing.New(h.rdb, stuckStore{h.repo}, billing.WithHoldTTL(time.Minute), billing.WithConfigSource(h.cfg))
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := acc.Reserve(context.Background(), h.owner, uuid.New(), 1)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Reserve on a durable write that never commits succeeded, want an error")
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("Reserve still waiting on its durable write after 15s: the write is unbounded")
 	}
 }
