@@ -95,6 +95,9 @@ l'incrément d'une réserve postérieure) :
   baisse le solde durable hors de `reserve.lua` incrémente le compteur** (transfert et topup admin :
   `billing.InvalidateBalanceCaches`, qui incrémente et supprime dans un script). Une version bumpée par la
   réhydratation ne suffit pas (R1 réchauffe avant la lecture de R0, puis les débits suivent : rien ne bouge).
+- **Hors périmètre, step-286** (décision humaine du 30/09) : trois dépassements préexistants relevés au 2ᵉ tour
+  de revue — doublon concurrent qui rembourse le cache, garde du transfert sans les réserves en vol, fenêtre
+  entre le commit admin et l'invalidation.
 - Hors périmètre : même course sur le compteur MO → `debts/compteur-mo-reydrate-sans-ses-debits-en-vol.md`.
 
 **PR** : 1. design + ADR-0022 + §6.9 · 2. migration + sqlc + repo + `FoldOnce` + tests (ne se déploie pas sans
