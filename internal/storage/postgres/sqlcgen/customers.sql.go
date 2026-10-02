@@ -329,9 +329,12 @@ func (q *Queries) SuspendCustomer(ctx context.Context, id uuid.UUID) (ControlPla
 }
 
 const suspendCustomerAccounts = `-- name: SuspendCustomerAccounts :exec
-UPDATE control_plane.smpp_accounts SET status = 'suspended' WHERE customer_id = $1
+UPDATE control_plane.smpp_accounts SET status = 'suspended'
+WHERE customer_id = $1 AND status <> 'closed'
 `
 
+// A closed account stays closed: the effective status is min(customer, account), and suspended would
+// read as an account to reactivate.
 func (q *Queries) SuspendCustomerAccounts(ctx context.Context, customerID uuid.UUID) error {
 	_, err := q.db.Exec(ctx, suspendCustomerAccounts, customerID)
 	return err

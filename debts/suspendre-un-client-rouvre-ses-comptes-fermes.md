@@ -1,6 +1,6 @@
 # Suspendre un client repasse ses comptes fermés en « suspendu »
 
-> **Statut :** OUVERTE · **Nature :** produit
+> **Statut :** PARTIELLEMENT PAYÉE (02/10/2026) — la cascade ; reste la transition au PATCH · **Nature :** produit
 > **Née de :** remontée de l'exploitant (02/10/2026), vérifiée dans le code · **Portée par :** —
 
 **Ce qu'on a fait à la place.** La cascade de suspension d'un client écrase le statut de **tous** ses comptes,
@@ -21,6 +21,10 @@ suspension. À noter : le PATCH d'un compte accepte déjà n'importe quelle tran
 compris (`internal/storage/postgres/queries/accounts.sql:38`) — `closed` n'est terminal nulle part ; la
 cascade en supprime surtout la mémoire.
 
-**À quoi on reconnaîtra qu'il faut la payer.** Dès qu'un client a des comptes fermés et peut être suspendu,
-c'est-à-dire avant le go-live. Correctif attendu : `AND status <> 'closed'` dans la cascade, un cas de compte
-fermé dans le test, et une décision sur le caractère terminal de `closed` au PATCH.
+**Payé le 02/10/2026.** La cascade exclut `closed` (`AND status <> 'closed'`), prouvé par
+`TestSuspendCustomerLeavesClosedAccountsClosed`, rouge lu sur l'ancienne requête.
+
+**Reste ouvert : `closed` est-il terminal ?** Le PATCH d'un compte accepte toujours `closed → active`
+(`internal/storage/postgres/queries/accounts.sql:38`). C'est une décision produit, pas un oubli de code. À
+trancher avant le go-live : si `closed` est définitif, le PATCH doit refuser d'en sortir (et le contrat
+Admin le dire).

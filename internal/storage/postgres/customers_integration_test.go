@@ -122,6 +122,45 @@ func TestSuspendCustomerCascadesToItsAccounts(t *testing.T) {
 	}
 }
 
+// TestSuspendCustomerLeavesClosedAccountsClosed: the effective status is min(customer, account), and closed
+// is the lowest. A suspension lowers an active account; it must not raise a closed one to suspended, where
+// it would read as an account to reactivate.
+func TestSuspendCustomerLeavesClosedAccountsClosed(t *testing.T) {
+	pool := pgtest.Pool(t)
+	repo := postgres.NewCustomerRepo(pool)
+	ctx := context.Background()
+
+	customer, err := repo.Create(ctx, cp.NewCustomer{Name: "Closed Account Co"})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	statusOf := map[string]uuid.UUID{}
+	for _, status := range []string{"active", "closed"} {
+		var id uuid.UUID
+		if err := pool.QueryRow(ctx,
+			`INSERT INTO control_plane.smpp_accounts (customer_id, name, status) VALUES ($1, $2, $2) RETURNING id`,
+			customer.ID, status).Scan(&id); err != nil {
+			t.Fatalf("insert %s account: %v", status, err)
+		}
+		statusOf[status] = id
+	}
+
+	if _, err := repo.Suspend(ctx, customer.ID); err != nil {
+		t.Fatalf("Suspend() error = %v", err)
+	}
+
+	for seeded, want := range map[string]string{"active": "suspended", "closed": "closed"} {
+		var got string
+		if err := pool.QueryRow(ctx,
+			`SELECT status FROM control_plane.smpp_accounts WHERE id = $1`, statusOf[seeded]).Scan(&got); err != nil {
+			t.Fatalf("read %s account: %v", seeded, err)
+		}
+		if got != want {
+			t.Errorf("%s account after the customer's suspension = %q, want %q", seeded, got, want)
+		}
+	}
+}
+
 func isNotFound(err error) bool {
 	code, ok := errs.CodeOf(err)
 	return ok && code == errs.ErrNotFound

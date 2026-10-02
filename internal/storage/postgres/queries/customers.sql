@@ -63,7 +63,10 @@ DELETE FROM control_plane.customers WHERE id = @id;
 UPDATE control_plane.customers SET status = 'suspended' WHERE id = @id RETURNING *;
 
 -- name: SuspendCustomerAccounts :exec
-UPDATE control_plane.smpp_accounts SET status = 'suspended' WHERE customer_id = @customer_id;
+-- A closed account stays closed: the effective status is min(customer, account), and suspended would
+-- read as an account to reactivate.
+UPDATE control_plane.smpp_accounts SET status = 'suspended'
+WHERE customer_id = @customer_id AND status <> 'closed';
 
 -- name: ListContentStorage :many
 -- Every customer's content_storage, for the data-plane content-policy snapshot (loaded once at boot).
