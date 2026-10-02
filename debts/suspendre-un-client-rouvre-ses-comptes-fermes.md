@@ -1,6 +1,6 @@
 # Suspendre un client repasse ses comptes fermés en « suspendu »
 
-> **Statut :** PARTIELLEMENT PAYÉE (02/10/2026) — la cascade ; reste la transition au PATCH · **Nature :** produit
+> **Statut :** PAYÉE (02/10/2026, PR #245) · **Nature :** produit
 > **Née de :** remontée de l'exploitant (02/10/2026), vérifiée dans le code · **Portée par :** —
 
 **Ce qu'on a fait à la place.** La cascade de suspension d'un client écrase le statut de **tous** ses comptes,
@@ -24,7 +24,8 @@ cascade en supprime surtout la mémoire.
 **Payé le 02/10/2026.** La cascade exclut `closed` (`AND status <> 'closed'`), prouvé par
 `TestSuspendCustomerLeavesClosedAccountsClosed`, rouge lu sur l'ancienne requête.
 
-**Reste ouvert : `closed` est-il terminal ?** Le PATCH d'un compte accepte toujours `closed → active`
-(`internal/storage/postgres/queries/accounts.sql:38`). C'est une décision produit, pas un oubli de code. À
-trancher avant le go-live : si `closed` est définitif, le PATCH doit refuser d'en sortir (et le contrat
-Admin le dire).
+**Payé aussi le 02/10/2026 : `closed` est définitif** (décision de l'exploitant). Un trigger
+`smpp_accounts_closed_is_final` (schéma et `migrations/0025_*`) refuse toute sortie de `closed`, quel que
+soit l'écrivain — PATCH Admin, suspension du compte, script — en `check_violation`, donc 422 ; le contrat
+Admin le dit sur `update-smpp-account` et `suspend-smpp-account` (6.10.1). Prouvé par
+`TestClosedAccountIsFinal`, rouge lu avant le trigger. Le statut `closed` d'un **client** n'est pas couvert.

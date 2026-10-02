@@ -334,6 +334,18 @@ CREATE TABLE control_plane.smpp_accounts (
   CONSTRAINT smpp_accounts_name_uq UNIQUE (customer_id, name)
 );
 CREATE INDEX smpp_accounts_customer_idx ON control_plane.smpp_accounts(customer_id);
+-- Closing an account is final: no writer (Admin PATCH, suspend, a customer's suspension cascade, a script)
+-- may move it to another status. check_violation surfaces as a 422 through the repositories' translate.
+CREATE FUNCTION control_plane.smpp_accounts_closed_is_final() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF OLD.status = 'closed' AND NEW.status <> 'closed' THEN
+    RAISE EXCEPTION 'smpp account % is closed: status % refused', OLD.id, NEW.status
+      USING ERRCODE = 'check_violation';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER smpp_accounts_closed_is_final BEFORE UPDATE OF status ON control_plane.smpp_accounts
+  FOR EACH ROW EXECUTE FUNCTION control_plane.smpp_accounts_closed_is_final();
 
 -- -----------------------------------------------------------------------------------------------------
 -- 7. Credentials (§6.3/§6.18) — EXACTLY two rows per account: one smpp_bind, one api_key
