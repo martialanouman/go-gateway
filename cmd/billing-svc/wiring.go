@@ -130,8 +130,8 @@ func newBillingApp(ctx context.Context, cfg config.Config, logger *slog.Logger) 
 		Help: "Age of the oldest balance delta not yet folded into balances (ADR-0022); 0 when none waits.",
 	})
 	a.folder = billing.NewFolder(a.repo, a.foldLag, logger)
-	collectors := make([]prometheus.Collector, 0, 1+len(ext.collectors)+len(reap.collectors)+len(feed.collectors))
-	collectors = append(collectors, a.foldLag)
+	collectors := make([]prometheus.Collector, 0, 2+len(ext.collectors)+len(reap.collectors)+len(feed.collectors))
+	collectors = append(collectors, a.foldLag, acct.reserveStage)
 	collectors = append(collectors, ext.collectors...)
 	collectors = append(collectors, reap.collectors...)
 	collectors = append(collectors, feed.collectors...)
@@ -189,6 +189,7 @@ type accountant struct {
 	acc            *billing.Accountant
 	repo           *postgres.BillingRepo
 	configProvider *billing.ConfigProvider
+	reserveStage   *prometheus.HistogramVec
 }
 
 // newAccountant builds the core and loads its first config snapshot.
@@ -200,8 +201,15 @@ func newAccountant(ctx context.Context, pool *pgxpool.Pool, rdb *goredis.Client,
 	a := &accountant{
 		repo:           postgres.NewBillingRepo(pool),
 		configProvider: &billing.ConfigProvider{},
+		reserveStage: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name: "billing_reserve_stage_seconds",
+			Help: "Time a reserve spent in each stage: the Redis script or the durable ledger write.",
+			// Around the router's 200 ms reserve deadline, up to reserveDurableTimeout (4 s).
+			Buckets: []float64{.001, .005, .01, .025, .05, .1, .2, .5, 1, 4},
+		}, []string{"stage"}),
 	}
-	a.acc = billing.New(rdb, a.repo, billing.WithConfigSource(a.configProvider), billing.WithLogger(logger))
+	a.acc = billing.New(rdb, a.repo, billing.WithConfigSource(a.configProvider), billing.WithLogger(logger),
+		billing.WithReserveTimer(reserveStageMetric{h: a.reserveStage}))
 	if err := a.acc.EnsureNonClustered(ctx); err != nil {
 		return nil, err
 	}
@@ -353,6 +361,13 @@ func newOpsServer(cfg config.Config, logger *slog.Logger, rdb *goredis.Client, p
 	}
 	ops.Registry().MustRegister(collectors...)
 	return ops, nil
+}
+
+// reserveStageMetric adapts the reserve stage histogram to billing.ReserveTimer.
+type reserveStageMetric struct{ h *prometheus.HistogramVec }
+
+func (m reserveStageMetric) ObserveReserveStage(stage string, seconds float64) {
+	m.h.WithLabelValues(stage).Observe(seconds)
 }
 
 // extFailOpenMetric adapts the fail-open counter to billing.ExternalMetric (bounded provider label).

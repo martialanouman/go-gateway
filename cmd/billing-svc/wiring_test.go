@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 	dto "github.com/prometheus/client_model/go"
 
 	"github.com/martialanouman/go-gateway/internal/billing"
@@ -359,5 +361,19 @@ func TestReaperIsWiredWithTheConfiguredMinAge(t *testing.T) {
 		spy.olderThan.After(after.Add(-cfg.BillingReaper.MinAge)) {
 		t.Errorf("reaper sweeps reservations older than %s, want %s (BILLING_REAPER_MIN_AGE)",
 			before.Sub(spy.olderThan), cfg.BillingReaper.MinAge)
+	}
+}
+
+func TestAccountantTimesItsReservesIntoTheExposedHistogram(t *testing.T) {
+	ctx := t.Context()
+	acct, err := newAccountant(ctx, pgtest.Pool(t), redistest.Client(t), silentLogger())
+	if err != nil {
+		t.Fatalf("newAccountant: %v", err)
+	}
+	owner := billing.Owner{Type: cp.OwnerTypeCustomer, ID: uuid.New(), CustomerID: uuid.New()}
+	_, _ = acct.acc.Reserve(ctx, owner, uuid.New(), 1) // an unfunded owner is refused after the script ran
+
+	if n := promtestutil.CollectAndCount(acct.reserveStage); n == 0 {
+		t.Fatal("a reserve left no observation in billing_reserve_stage_seconds: the timer is not wired")
 	}
 }
