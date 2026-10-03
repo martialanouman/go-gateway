@@ -89,6 +89,9 @@ func run() error {
 	g.Add("outcome cdr", func(c context.Context) error {
 		return runResilient(c, "outcome-cdr projector", app.outcome.projector.Run, logger)
 	})
+	g.Add("sender first use", func(c context.Context) error {
+		return runResilient(c, "sender first-use mark", app.firstUse.marker.Run, logger)
+	})
 	g.Add("snapshot watcher", app.watcher.Run)
 	g.Add("opt-out watcher", app.optOutWatcher.Run)
 	g.Add("metric stream", func(c context.Context) error {

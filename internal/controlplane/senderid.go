@@ -15,8 +15,18 @@ type SenderID struct {
 	Status     SenderIDStatus
 	CreatedBy  *uuid.UUID
 	ApprovedAt *time.Time
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	// FirstUsedAt is set once a message from this address reached a carrier SMSC; a used sender ID can
+	// only be disabled, never deleted (ADR-0023).
+	FirstUsedAt *time.Time
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+// SenderIDUse records that a customer submitted a message from address, at UsedAt.
+type SenderIDUse struct {
+	CustomerID uuid.UUID
+	Address    string
+	UsedAt     time.Time
 }
 
 // NewSenderID is the input to register a sender ID under a customer. It starts pending carrier

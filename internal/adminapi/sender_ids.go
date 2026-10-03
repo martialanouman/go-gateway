@@ -2,6 +2,7 @@ package adminapi
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"time"
 
@@ -10,31 +11,34 @@ import (
 
 	"github.com/martialanouman/go-gateway/internal/auth"
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
+	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 	humaerr "github.com/martialanouman/go-gateway/internal/platform/errors/humaerr"
 )
 
 // senderIDDTO is the wire form of a SenderId (contract schema SenderId).
 type senderIDDTO struct {
-	ID         string     `json:"id" format:"uuid"`
-	CustomerID string     `json:"customer_id" format:"uuid"`
-	Address    string     `json:"address"`
-	Status     string     `json:"status" enum:"pending_carrier_approval,active,disabled"`
-	CreatedBy  *string    `json:"created_by,omitempty" format:"uuid" nullable:"true"`
-	ApprovedAt *time.Time `json:"approved_at,omitempty" format:"date-time" nullable:"true"`
-	CreatedAt  time.Time  `json:"created_at" format:"date-time"`
-	UpdatedAt  time.Time  `json:"updated_at" format:"date-time"`
+	ID          string     `json:"id" format:"uuid"`
+	CustomerID  string     `json:"customer_id" format:"uuid"`
+	Address     string     `json:"address"`
+	Status      string     `json:"status" enum:"pending_carrier_approval,active,disabled"`
+	CreatedBy   *string    `json:"created_by,omitempty" format:"uuid" nullable:"true"`
+	ApprovedAt  *time.Time `json:"approved_at,omitempty" format:"date-time" nullable:"true"`
+	FirstUsedAt *time.Time `json:"first_used_at,omitempty" format:"date-time" nullable:"true"`
+	CreatedAt   time.Time  `json:"created_at" format:"date-time"`
+	UpdatedAt   time.Time  `json:"updated_at" format:"date-time"`
 }
 
 func toSenderIDDTO(s cp.SenderID) senderIDDTO {
 	return senderIDDTO{
-		ID:         idString(s.ID),
-		CustomerID: idString(s.CustomerID),
-		Address:    s.Address,
-		Status:     string(s.Status),
-		CreatedBy:  idPtr(s.CreatedBy),
-		ApprovedAt: s.ApprovedAt,
-		CreatedAt:  s.CreatedAt,
-		UpdatedAt:  s.UpdatedAt,
+		ID:          idString(s.ID),
+		CustomerID:  idString(s.CustomerID),
+		Address:     s.Address,
+		Status:      string(s.Status),
+		CreatedBy:   idPtr(s.CreatedBy),
+		ApprovedAt:  s.ApprovedAt,
+		FirstUsedAt: s.FirstUsedAt,
+		CreatedAt:   s.CreatedAt,
+		UpdatedAt:   s.UpdatedAt,
 	}
 }
 
@@ -83,7 +87,7 @@ func registerSenderIDs(api huma.API, senders SenderIDStore, customers CustomerSt
 		DefaultStatus: http.StatusNoContent,
 		Summary:       "Delete a sender ID", Tags: []string{"Sender IDs"},
 		Security: scopeSecurity(auth.ScopeAdminWrite),
-		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity},
+		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusConflict, http.StatusUnprocessableEntity},
 	}, h.delete)
 }
 
@@ -167,6 +171,9 @@ func (h *senderIDHandlers) delete(ctx context.Context, in *deleteSenderIDInput) 
 		return nil, err
 	}
 	if err := h.senders.Delete(ctx, customerID, senderID); err != nil {
+		if errors.Is(err, errs.ErrConflict) {
+			return nil, humaerr.Fail(errs.ErrConflict, "sender id has already been used to send messages and cannot be deleted; disable it instead")
+		}
 		return nil, humaerr.FromError(err)
 	}
 	return &deleteOutput{}, nil

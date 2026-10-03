@@ -317,14 +317,15 @@ type ControlPlaneRoutingScript struct {
 }
 
 type ControlPlaneSenderID struct {
-	ID         uuid.UUID
-	CustomerID uuid.UUID
-	Address    string
-	Status     string
-	CreatedBy  *uuid.UUID
-	ApprovedAt pgtype.Timestamptz
-	CreatedAt  pgtype.Timestamptz
-	UpdatedAt  pgtype.Timestamptz
+	ID          uuid.UUID
+	CustomerID  uuid.UUID
+	Address     string
+	Status      string
+	CreatedBy   *uuid.UUID
+	ApprovedAt  pgtype.Timestamptz
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+	FirstUsedAt pgtype.Timestamptz
 }
 
 type ControlPlaneSenderIDRewriteRule struct {

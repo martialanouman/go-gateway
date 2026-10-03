@@ -53,6 +53,7 @@ type routerApp struct {
 	// Kept as the wrapper, not just the projector: it owns the consumer whose start offset is a
 	// durability property a test must be able to assert (step-201c D9).
 	outcome  *outcomeProjector
+	firstUse *firstUseMark
 	watcher  *config.Watcher
 	emitter  *metricstream.Emitter
 	consumer *kafka.Consumer
@@ -166,6 +167,13 @@ func newRouterApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 	}
 	a.onClose("outcome", outc.close)
 	a.outcome = outc
+
+	fu, err := newFirstUseMark(cfg, st.pg, logger)
+	if err != nil {
+		return nil, err
+	}
+	a.onClose("first-use", fu.kafka.Close)
+	a.firstUse = fu
 
 	stream, err := newMetricStream(cfg)
 	if err != nil {
@@ -571,6 +579,22 @@ func newOutcomeProjector(cfg config.Config, ch *clickhouse.Conn, logger *slog.Lo
 		kafka:     consumer,
 		projected: projected,
 	}, nil
+}
+
+// firstUseMark marks sender IDs as used from mt.outcome (ADR-0023), on its own group so that neither it
+// nor the CDR projection can stall the other. Like the projection, a fresh group starts at the START of
+// the topic: an outcome skipped would leave a sender ID that has sent deletable.
+type firstUseMark struct {
+	marker *outcome.FirstUse
+	kafka  *kafka.Consumer
+}
+
+func newFirstUseMark(cfg config.Config, pool *pgxpool.Pool, logger *slog.Logger) (*firstUseMark, error) {
+	consumer, err := kafka.NewConsumer(cfg.Kafka, serviceName+"-sender-first-use", kafka.TopicMTOutcome)
+	if err != nil {
+		return nil, fmt.Errorf("kafka sender-first-use consumer: %w", err)
+	}
+	return &firstUseMark{marker: outcome.NewFirstUse(consumer, postgres.NewSenderIDRepo(pool), logger), kafka: consumer}, nil
 }
 
 // metricStream is the realtime dashboard feed (§1.6, step-182). It is BEST-EFFORT throughout: a
