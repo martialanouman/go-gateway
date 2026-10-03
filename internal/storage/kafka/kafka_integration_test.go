@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -425,5 +426,58 @@ func TestConsumerResumesAnAbandonedReplay(t *testing.T) {
 				t.Fatalf("the record the cancelled %s left uncommitted was skipped by the next call on the same consumer", name)
 			}
 		})
+	}
+}
+
+// TestConsumerDoesNotStallOnSporadicFailures is the step-285 VPS run: 2 % of reserves outran their deadline,
+// and a backoff that grew with every failure of a batch held all of its partitions for 30 s at a time.
+func TestConsumerDoesNotStallOnSporadicFailures(t *testing.T) {
+	cfg := config.Kafka{Brokers: kafkatest.Brokers(t), Timeout: 3 * time.Second}
+	producer, err := kafka.NewProducer(cfg)
+	if err != nil {
+		t.Fatalf("new producer: %v", err)
+	}
+	defer producer.Close()
+	group := "test-sporadic-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	const records = 300
+	for i := range records {
+		v := group + "-" + strconv.Itoa(i)
+		if err := producer.Produce(t.Context(), kafka.Record{Topic: kafka.TopicMTRouted, Key: []byte(v), Value: []byte(v)}); err != nil {
+			t.Fatalf("produce: %v", err)
+		}
+	}
+	consumer, err := kafka.NewConsumer(cfg, group, kafka.TopicMTRouted)
+	if err != nil {
+		t.Fatalf("new consumer: %v", err)
+	}
+	defer consumer.Close()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	failedOnce, handled := map[string]bool{}, map[string]bool{}
+	_ = consumer.RunBatch(ctx, func(_ context.Context, recs []kafka.Record) []error {
+		out := make([]error, len(recs))
+		halted := map[int32]bool{}
+		for i, rec := range recs {
+			v := string(rec.Value)
+			n, err := strconv.Atoi(strings.TrimPrefix(v, group+"-"))
+			switch {
+			case err != nil: // another test's record
+			case halted[rec.Partition]:
+				out[i] = errors.New("lane halted")
+			case n%20 == 0 && !failedOnce[v]:
+				failedOnce[v], halted[rec.Partition] = true, true
+				out[i] = errors.New("billing: deadline exceeded")
+			default:
+				handled[v] = true
+			}
+		}
+		if len(handled) == records {
+			cancel()
+		}
+		return out
+	})
+	if len(handled) != records {
+		t.Fatalf("%d of %d records handled in 15 s: one failure in twenty stalled the consumer", len(handled), records)
 	}
 }
