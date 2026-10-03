@@ -203,13 +203,13 @@ func newAccountant(ctx context.Context, pool *pgxpool.Pool, rdb *goredis.Client,
 		configProvider: &billing.ConfigProvider{},
 		reserveStage: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name: "billing_reserve_stage_seconds",
-			Help: "Time a reserve spent in each stage: the Redis script or the durable ledger write.",
-			// Around the router's 200 ms reserve deadline, up to reserveDurableTimeout (4 s).
-			Buckets: []float64{.001, .005, .01, .025, .05, .1, .2, .5, 1, 4},
+			Help: "Time a reserve took as a whole (total) and in its ledger write (durable).",
+			// Around the router's 200 ms reserve deadline, which the gRPC context carries into both stages.
+			Buckets: []float64{.001, .005, .01, .025, .05, .1, .2, .5},
 		}, []string{"stage"}),
 	}
 	a.acc = billing.New(rdb, a.repo, billing.WithConfigSource(a.configProvider), billing.WithLogger(logger),
-		billing.WithReserveTimer(reserveStageMetric{h: a.reserveStage}))
+		billing.WithReserveTimers(a.reserveStage.WithLabelValues("total"), a.reserveStage.WithLabelValues("durable")))
 	if err := a.acc.EnsureNonClustered(ctx); err != nil {
 		return nil, err
 	}
@@ -361,13 +361,6 @@ func newOpsServer(cfg config.Config, logger *slog.Logger, rdb *goredis.Client, p
 	}
 	ops.Registry().MustRegister(collectors...)
 	return ops, nil
-}
-
-// reserveStageMetric adapts the reserve stage histogram to billing.ReserveTimer.
-type reserveStageMetric struct{ h *prometheus.HistogramVec }
-
-func (m reserveStageMetric) ObserveReserveStage(stage string, seconds float64) {
-	m.h.WithLabelValues(stage).Observe(seconds)
 }
 
 // extFailOpenMetric adapts the fail-open counter to billing.ExternalMetric (bounded provider label).

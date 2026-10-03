@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 
 	"github.com/martialanouman/go-gateway/internal/billing"
@@ -160,6 +160,9 @@ func TestNewBillingAppBuildsTheWholeGraph(t *testing.T) {
 	}
 	if !slices.ContainsFunc(families, func(f *dto.MetricFamily) bool { return f.GetName() == "billing_balance_deltas_lag_seconds" }) {
 		t.Error("billing_balance_deltas_lag_seconds is not exposed: nothing would see the fold falling behind")
+	}
+	if !slices.ContainsFunc(families, func(f *dto.MetricFamily) bool { return f.GetName() == "billing_reserve_stage_seconds" }) {
+		t.Error("billing_reserve_stage_seconds is not exposed: a reserve deadline could not be attributed")
 	}
 
 	// Building the graph must not start serving: both ports are bound by their Run, which only the
@@ -371,9 +374,13 @@ func TestAccountantTimesItsReservesIntoTheExposedHistogram(t *testing.T) {
 		t.Fatalf("newAccountant: %v", err)
 	}
 	owner := billing.Owner{Type: cp.OwnerTypeCustomer, ID: uuid.New(), CustomerID: uuid.New()}
-	_, _ = acct.acc.Reserve(ctx, owner, uuid.New(), 1) // an unfunded owner is refused after the script ran
+	_, _ = acct.acc.Reserve(ctx, owner, uuid.New(), 1) // an unfunded owner is refused, and still timed
 
-	if n := promtestutil.CollectAndCount(acct.reserveStage); n == 0 {
-		t.Fatal("a reserve left no observation in billing_reserve_stage_seconds: the timer is not wired")
+	var m dto.Metric
+	if err := acct.reserveStage.WithLabelValues("total").(prometheus.Histogram).Write(&m); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if m.GetHistogram().GetSampleCount() != 1 {
+		t.Fatalf("total stage holds %d samples after one reserve: the timer is not wired", m.GetHistogram().GetSampleCount())
 	}
 }

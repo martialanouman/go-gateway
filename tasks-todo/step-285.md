@@ -83,7 +83,7 @@ ici, la reprise dépend du hasard des redémarrages et du backoff, pas d'une con
    de `max.poll.interval` : les battements de cœur vivent dans leur goroutine, un rejeu long n'expulse pas.
 5. **Concurrence vers billing-svc : non bornée de plus** — les voies la bornent déjà (≤ 1 réserve en vol
    par partition assignée).
-6. **Attribution** : un histogramme `billing_reserve_stage_seconds{stage="redis"|"durable"}` dans
+6. **Attribution** : un histogramme `billing_reserve_stage_seconds{stage="total"|"durable"}` dans
    `Accountant.Reserve`, injecté comme la jauge du replieur. Ni intercepteur gRPC, ni stats pgx.
 7. **Dette `content-key-svc…` : payée pour son sujet** (la jambe de remise rejoue seule, les autres
    groupes du pod continuent) ; ce qui n'est pas payé y est écrit.
