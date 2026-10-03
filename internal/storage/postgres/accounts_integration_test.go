@@ -107,3 +107,51 @@ func TestAccountRepoUpdateChangesThePoliciesCreateSets(t *testing.T) {
 		t.Fatalf("query_sm update = %+v err=%v, want query_sm off, cancel_sm still off", got, err)
 	}
 }
+
+// TestClosedAccountIsFinal: closing an account is definitive. No writer — the Admin PATCH, the suspend
+// endpoint, a direct UPDATE — may move it to another status, or a closed account comes back to send.
+// Re-asserting closed stays allowed, so a PATCH that does not touch the status still applies.
+func TestClosedAccountIsFinal(t *testing.T) {
+	pool := pgtest.Pool(t)
+	customers := postgres.NewCustomerRepo(pool)
+	accounts := postgres.NewAccountRepo(pool)
+	ctx := context.Background()
+
+	customer, err := customers.Create(ctx, cp.NewCustomer{Name: "Closed For Good Co"})
+	if err != nil {
+		t.Fatalf("create customer: %v", err)
+	}
+	acct, err := accounts.Create(ctx, cp.NewAccount{CustomerID: customer.ID, Name: "app-closed"})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	closed := cp.AccountClosed
+	if _, err := accounts.Update(ctx, acct.ID, cp.AccountPatch{Status: &closed}); err != nil {
+		t.Fatalf("close the account: %v", err)
+	}
+
+	active := cp.AccountActive
+	if _, err := accounts.Update(ctx, acct.ID, cp.AccountPatch{Status: &active}); !isValidation(err) {
+		t.Errorf("PATCH closed → active = %v, want validation_error", err)
+	}
+	if _, err := accounts.Suspend(ctx, acct.ID); !isValidation(err) {
+		t.Errorf("suspend a closed account = %v, want validation_error", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE control_plane.smpp_accounts SET status = 'active' WHERE id = $1`, acct.ID); err == nil {
+		t.Error("a direct UPDATE reopened a closed account")
+	}
+
+	renamed := "app-closed-renamed"
+	got, err := accounts.Update(ctx, acct.ID, cp.AccountPatch{Name: &renamed, Status: &closed})
+	if err != nil {
+		t.Fatalf("PATCH a closed account without leaving closed: %v", err)
+	}
+	if got.Status != cp.AccountClosed {
+		t.Errorf("status = %q, want closed", got.Status)
+	}
+}
+
+func isValidation(err error) bool {
+	code, ok := errs.CodeOf(err)
+	return ok && code == errs.ErrValidation
+}

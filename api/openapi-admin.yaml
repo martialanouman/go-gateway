@@ -178,6 +178,7 @@ paths:
     patch:
       tags: [Customers]
       summary: Update a customer
+      description: A closed customer stays closed — any other status is refused with 422.
       operationId: update-customer
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CustomerUpdate' } } } }
       security: [ { OperatorBearer: [ admin:write ] } ]
@@ -218,6 +219,7 @@ paths:
     post:
       tags: [Customers]
       summary: Suspend a customer (cascades — suspends all its SMPP accounts)
+      description: Closed SMPP accounts stay closed. A closed customer stays closed — suspending it is refused with 422.
       operationId: suspend-customer
       security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
@@ -339,6 +341,7 @@ paths:
     patch:
       tags: [SMPP Accounts]
       summary: Update an SMPP account
+      description: A closed account stays closed — any other status is refused with 422.
       operationId: update-smpp-account
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/SmppAccountUpdate' } } } }
       security: [ { OperatorBearer: [ admin:write ] } ]
@@ -364,7 +367,7 @@ paths:
     post:
       tags: [SMPP Accounts]
       summary: Suspend an SMPP account
-      description: Disconnects the account's live binds (reason account_suspended).
+      description: Disconnects the account's live binds (reason account_suspended). A closed account stays closed — suspending it is refused with 422.
       operationId: suspend-smpp-account
       security: [ { OperatorBearer: [ admin:write ] } ]
       responses:

@@ -122,7 +122,83 @@ func TestSuspendCustomerCascadesToItsAccounts(t *testing.T) {
 	}
 }
 
+// TestSuspendCustomerLeavesClosedAccountsClosed: the effective status is min(customer, account), and closed
+// is the lowest. A suspension lowers an active account; it must not raise a closed one to suspended, where
+// it would read as an account to reactivate.
+func TestSuspendCustomerLeavesClosedAccountsClosed(t *testing.T) {
+	pool := pgtest.Pool(t)
+	repo := postgres.NewCustomerRepo(pool)
+	ctx := context.Background()
+
+	customer, err := repo.Create(ctx, cp.NewCustomer{Name: "Closed Account Co"})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	statusOf := map[string]uuid.UUID{}
+	for _, status := range []string{"active", "closed"} {
+		var id uuid.UUID
+		if err := pool.QueryRow(ctx,
+			`INSERT INTO control_plane.smpp_accounts (customer_id, name, status) VALUES ($1, $2, $2) RETURNING id`,
+			customer.ID, status).Scan(&id); err != nil {
+			t.Fatalf("insert %s account: %v", status, err)
+		}
+		statusOf[status] = id
+	}
+
+	if _, err := repo.Suspend(ctx, customer.ID); err != nil {
+		t.Fatalf("Suspend() error = %v", err)
+	}
+
+	for seeded, want := range map[string]string{"active": "suspended", "closed": "closed"} {
+		var got string
+		if err := pool.QueryRow(ctx,
+			`SELECT status FROM control_plane.smpp_accounts WHERE id = $1`, statusOf[seeded]).Scan(&got); err != nil {
+			t.Fatalf("read %s account: %v", seeded, err)
+		}
+		if got != want {
+			t.Errorf("%s account after the customer's suspension = %q, want %q", seeded, got, want)
+		}
+	}
+}
+
 func isNotFound(err error) bool {
 	code, ok := errs.CodeOf(err)
 	return ok && code == errs.ErrNotFound
+}
+
+// TestClosedCustomerIsFinal: closing a customer is definitive, like closing an account. Neither the Admin
+// PATCH, the suspend endpoint nor a direct UPDATE may move it to another status.
+func TestClosedCustomerIsFinal(t *testing.T) {
+	pool := pgtest.Pool(t)
+	repo := postgres.NewCustomerRepo(pool)
+	ctx := context.Background()
+
+	customer, err := repo.Create(ctx, cp.NewCustomer{Name: "Closed Customer Co"})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	closed := cp.CustomerClosed
+	if _, err := repo.Update(ctx, customer.ID, cp.CustomerPatch{Status: &closed}); err != nil {
+		t.Fatalf("close the customer: %v", err)
+	}
+
+	active := cp.CustomerActive
+	if _, err := repo.Update(ctx, customer.ID, cp.CustomerPatch{Status: &active}); !isValidation(err) {
+		t.Errorf("PATCH closed → active = %v, want validation_error", err)
+	}
+	if _, err := repo.Suspend(ctx, customer.ID); !isValidation(err) {
+		t.Errorf("suspend a closed customer = %v, want validation_error", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE control_plane.customers SET status = 'active' WHERE id = $1`, customer.ID); err == nil {
+		t.Error("a direct UPDATE reopened a closed customer")
+	}
+
+	renamed := "Closed Customer Co (renamed)"
+	got, err := repo.Update(ctx, customer.ID, cp.CustomerPatch{Name: &renamed, Status: &closed})
+	if err != nil {
+		t.Fatalf("PATCH a closed customer without leaving closed: %v", err)
+	}
+	if got.Status != cp.CustomerClosed {
+		t.Errorf("status = %q, want closed", got.Status)
+	}
 }
