@@ -279,9 +279,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
-        '409':
-          description: The sender ID has already been used to send a message (`first_used_at` is set); disable it instead.
-          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/ValidationError' }
   /admin/customers/{id}/smpp-accounts:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
@@ -2134,9 +2132,9 @@ components:
           type: [string, "null"]
           format: date-time
           description: >-
-            When a message from this sender ID was first submitted to a carrier SMSC; null if never.
-            Set asynchronously, so it may lag the first send by a few seconds. Once set, the sender ID
-            can no longer be deleted, only disabled.
+            When a message from this sender ID was submitted to a carrier SMSC, approximately the first
+            one; null if never. Set asynchronously, so it may lag the first send by a few seconds. Once
+            set, the sender ID can no longer be deleted (409), only disabled.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
       required: [id, customer_id, address, status, created_at, updated_at]

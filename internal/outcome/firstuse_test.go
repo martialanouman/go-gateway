@@ -5,7 +5,6 @@ import (
 	"errors"
 	"reflect"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 
@@ -26,29 +25,27 @@ func (f *fakeMarker) MarkFirstUsed(_ context.Context, uses []cp.SenderIDUse) err
 }
 
 // TestFirstUseMarksTheSubmittedAddressOncePerBatch: the address marked is the one the client submitted
-// (the rewrite target is never one it registered), failed counts like enroute — both reached the SMSC
-// wire — and a sender ID seen twice in a poll batch carries its earliest submission.
+// (the rewrite target is never one it registered), and failed counts like enroute — both reached the
+// SMSC wire.
 func TestFirstUseMarksTheSubmittedAddressOncePerBatch(t *testing.T) {
 	customer := uuid.New()
-	early, late := submittedAt, submittedAt.Add(time.Minute)
-	event := func(from, original, status string, at time.Time) pipeline.OutcomeMT {
+	event := func(from, original, status string) pipeline.OutcomeMT {
 		e := enrouteEvent()
-		e.CustomerID, e.From, e.OriginalFrom, e.Status, e.SubmittedAt = customer, from, original, status, at
+		e.CustomerID, e.From, e.OriginalFrom, e.Status = customer, from, original, status
 		return e
 	}
 	consumer := &capturingConsumer{recs: []kafka.Record{
-		outcomeRec(t, event("ACME", "", "enroute", late)),
+		outcomeRec(t, event("ACME", "", "failed")),
 		{Value: []byte("not json")},
-		outcomeRec(t, event("ACME", "", "failed", early)),
-		outcomeRec(t, event("PLATFORM", "BANK", "enroute", late)),
+		outcomeRec(t, event("PLATFORM", "BANK", "enroute")),
 	}}
 	marker := &fakeMarker{}
 
 	_ = outcome.NewFirstUse(consumer, marker, nil).Run(t.Context())
 
 	want := []cp.SenderIDUse{
-		{CustomerID: customer, Address: "ACME", UsedAt: early},
-		{CustomerID: customer, Address: "BANK", UsedAt: late},
+		{CustomerID: customer, Address: "ACME", UsedAt: submittedAt},
+		{CustomerID: customer, Address: "BANK", UsedAt: submittedAt},
 	}
 	if len(marker.calls) != 1 || !reflect.DeepEqual(marker.calls[0], want) {
 		t.Fatalf("marks = %+v, want one call with %+v", marker.calls, want)

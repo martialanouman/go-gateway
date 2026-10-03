@@ -13,15 +13,13 @@ ses CDR s'y rattachent. `delete-sender-id` supprimait sans condition et `control
 retenait aucun usage. L'autorisation à l'envoi est lock-free sur un snapshot immuable : aucune écriture
 synchrone par message n'y est admissible.
 
-Deux voies : lire le CDR au moment de la suppression, ou poser une marque hors du chemin chaud.
-
 ## Decision
 
 1. **Une colonne `sender_ids.first_used_at timestamptz`**, posée une fois, jamais effacée.
 2. **Posée par un groupe de consommateurs dédié sur `mt.outcome`** dans router-svc (`<svc>-sender-first-use`),
    à côté de la projection CDR mais sans partager son groupe : aucune ne peut ralentir l'autre. Par lot, un
-   seul `UPDATE … FROM unnest(…) WHERE first_used_at IS NULL`, idempotent sous rejeu (at-least-once), avec
-   le plus ancien `submitted_at` du lot pour chaque couple.
+   seul `UPDATE … FROM unnest(…) WHERE first_used_at IS NULL`, idempotent sous rejeu (at-least-once) ; un
+   couple répété dans le lot prend le `submitted_at` de l'une de ses lignes, à l'ordre des partitions près.
 3. **Compte toute issue de `mt.outcome`, `enroute` comme `failed`.** Son unique constructeur
    (`connectorpool.submitOutcome`) part d'un `submit_sm_resp` : l'adresse est passée sur le fil de
    l'opérateur. Les échecs sans envoi (chaîne de repli épuisée) écrivent le CDR directement et n'y passent pas.
@@ -42,5 +40,8 @@ par appel, et ClickHouse entrerait dans le chemin d'écriture Admin.
   production (environnement de test seulement) : rien à rattraper.
 - La marque arrive en différé, de la latence du groupe : un sender ID supprimé dans les secondes qui
   suivent son tout premier envoi reste supprimable. La marque tombe alors sur une ligne absente, sans erreur.
+- La marque passe par le trigger `sender_ids_touch` : elle avance `updated_at`. Deux pods qui marquent les
+  mêmes couples peuvent s'interbloquer (40P01) ; le lot perdant se rejoue, la marque tient.
+- Le retard du groupe n'est pas publié : `debts/marque-de-premiere-emission-sans-retard-publie.md`.
 - Un `UPDATE` par lot de `mt.outcome`, même quand tous les couples sont déjà marqués. Index
   `sender_ids_uq (customer_id, address)` ; à revoir si Postgres le montre.
