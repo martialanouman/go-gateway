@@ -1,6 +1,6 @@
 # step-285 — Le routeur se tue en boucle sur un backlog quand la facturation est active
 
-> **Jalon :** M12 · **Statut :** À FAIRE
+> **Jalon :** M12 · **Statut :** LIVRÉE (#248, #249, #251, #252)
 > **Dépend de :** step-280 · **Bloque :** step-287
 > Ouverte par la campagne step-280 ; unité faute de multiple de dix libre.
 
@@ -61,11 +61,12 @@ ici, la reprise dépend du hasard des redémarrages et du backoff, pas d'une con
   8 000/s : c'est aussi le plafond par client de step-280.
 
 ## Definition of Done
-- [ ] un test d'intégration qui rejoue un backlog sous une réservation lente et prouve que le routeur
-      avance sans redémarrer — rouge lu sur le code actuel
-- [ ] la reprise d'un backlog de step-280 rejouée sur le VPS de test : lag décroissant dès la première
-      minute, zéro redémarrage
-- [ ] la dette `content-key-svc…` statuée à la lumière de la même décision (payée ou explicitement non)
+- [x] un test d'intégration qui rejoue un backlog sous une réservation lente et prouve que le routeur
+      avance sans redémarrer — rouge lu sur le code actuel (`internal/router/backlog_integration_test.go`,
+      placé dans `internal/router` et non `internal/e2e` : un vrai consommateur Redpanda suffit)
+- [x] la reprise d'un backlog de step-280 rejouée sur le VPS de test : lag décroissant dès la première
+      minute, zéro redémarrage (journal du 03/10 ci-dessous)
+- [x] la dette `content-key-svc…` statuée à la lumière de la même décision : PAYÉE pour son sujet
 
 ## Design arrêté (03/10/2026 — spec muette, tranché par Fable, appliqué)
 
@@ -95,9 +96,37 @@ ici, la reprise dépend du hasard des redémarrages et du backoff, pas d'une con
     l'appel suivant le traite avant de repoller — connector-pool rappelle `RunBatch` sur le même client
     après chaque chute de bind ; sans cela, le curseur déjà avancé sautait ces enregistrements. Et
     `mt-replay` s'arrête toujours sur le premier échec (`Replayer.Run` annule son propre ctx).
+11. **Amendement après le rejeu VPS du 03/10 (tranché par Fable)** : zéro redémarrage, mais ~9 msg/s. Le
+    backoff croissait à chaque échec d'un même lot (`attempt` jamais remis à zéro) et chaque attente gelait
+    toutes ses partitions : 2,4 % de réserves au-delà de 200 ms suffisaient à arrêter le routeur. Règle :
+    une tentative qui a traité quelque chose remet `attempt` à 0 et rejoue sans attendre ; seule une
+    tentative sans aucun progrès attend. Une panne franche garde son backoff exponentiel.
+    Chaque rejeu reste journalisé (`idle_attempts`, `delay=0` s'il a progressé). `RESERVE_TIMEOUT` passe à
+    1 s (décision utilisateur) : 200 ms tranchait 2,4 % de réserves que billing-svc servait en 42 ms.
 
 **Test de DoD** : e2e en processus (`internal/e2e`, harnais du routeur de référence) — backlog produit
 avant le démarrage, réserve qui rend `DeadlineExceeded` brut puis réussit ; `Run` ne rend rien, le lag
 du groupe atteint 0, chaque message est sur `mt.routed`. Rouge sur le code actuel : `Run` rend l'erreur.
 
 **Plan de PR** : PR1 = histogramme billing ; PR2 = rejeu en place + tests + docs + dettes ; puis rejeu VPS.
+
+## Journal du 03/10/2026 — rejeu VPS (DoD 2)
+
+Un seul client facturé sur 12 partitions, 2 routeurs, k6 `sustained` 10 min (~2 700 req/s acceptées) :
+
+- **Image `4d942d8` (#249)** : zéro redémarrage, mais ~9 msg/s pendant la charge, avec un lag de 1,64 M.
+  Le backoff grandissait à chaque expiration d'un même lot et gelait toutes ses partitions. 2,4 % de
+  réserves au-delà de 200 ms, alors que billing-svc les servait en 42 ms en moyenne. Correction :
+  amendement 11 (#251), et `RESERVE_TIMEOUT` à 1 s.
+- **Image `fb1e22c` (#251, #252), reprise du backlog restant (843 k)**, sans charge : zéro redémarrage sur
+  12 min, lag en baisse dès la première minute (843 k → 695 k), aucun rejeu journalisé. Les deux critères
+  sont tenus.
+- **Le débit de reprise est de ~13 000 msg/min (~225/s)**. Les routeurs sont presque inactifs (~165m).
+  billing-svc mesure 228 k réserves à 41 ms en moyenne, dont 33 ms d'écriture durable, et Postgres monte
+  à 1,2 cœur. Comme une voie réserve un message à la fois, le plafond vaut à peu près partitions ÷ latence
+  de réserve, soit 12 / 0,041 ≈ 290/s. C'est le plafond par client, plus le crash :
+  `debts/debit-par-client-borne-par-la-latence-de-la-reserve.md`.
+- `run.sh observe 2` pendant la reprise : 0 session en attente sur `balances`, ~190 submits/s pour un
+  client. C'est une donnée pour la DoD 4 de step-284 ; sa clôture reste une décision humaine.
+- Le smoke du déploiement de `fb1e22c` a échoué (aucun DLR en 3 min) : ses messages attendaient derrière
+  le backlog. C'est attendu sur un VPS en reprise, pas une régression.

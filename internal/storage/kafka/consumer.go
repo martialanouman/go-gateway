@@ -124,7 +124,7 @@ func (c *Consumer) Run(ctx context.Context, handle Handler) error {
 			return err
 		}
 
-		for attempt := 0; len(krs) > 0; attempt++ {
+		for attempt := 0; len(krs) > 0; {
 			failed, procErr := len(krs), error(nil)
 			for i, kr := range krs {
 				if err := handle(ctx, toRecord(kr)); err != nil {
@@ -147,6 +147,7 @@ func (c *Consumer) Run(ctx context.Context, handle Handler) error {
 					return fmt.Errorf("kafka: commit in group %s: %w", c.group, err)
 				}
 			}
+			attempt = nextAttempt(attempt, failed > 0)
 			if procErr != nil && !c.replay(ctx, attempt, krs[failed], procErr) {
 				c.held = krs[failed:]
 				return nil
@@ -189,10 +190,16 @@ func (c *Consumer) replay(ctx context.Context, attempt int, failed *kgo.Record, 
 	if ctx.Err() != nil {
 		return false // a drain, not a fault: nothing to warn about
 	}
-	delay := replayDelay(attempt)
+	var delay time.Duration // the attempt made progress: replay what is left at once
+	if attempt > 0 {
+		delay = replayDelay(attempt - 1)
+	}
 	slog.Default().WarnContext(ctx, "kafka: handler failed, replaying in place",
 		"group", c.group, "topic", failed.Topic, "partition", failed.Partition, "offset", failed.Offset,
-		"attempt", attempt+1, "delay", delay, "err", err)
+		"idle_attempts", attempt, "delay", delay, "err", err)
+	if delay == 0 {
+		return true
+	}
 	t := time.NewTimer(delay)
 	defer t.Stop()
 	select {
@@ -201,6 +208,17 @@ func (c *Consumer) replay(ctx context.Context, attempt int, failed *kgo.Record, 
 	case <-t.C:
 		return true
 	}
+}
+
+// nextAttempt counts consecutive attempts that handled nothing. Only those wait: a batch where 2 % of
+// reserves outran their deadline grew the backoff with every failure and held all its partitions for 30 s at
+// a time — zero restarts, ~9 messages a second (step-285, VPS run of 03/10). A real outage handles nothing
+// and keeps its exponential backoff.
+func nextAttempt(attempt int, progressed bool) int {
+	if progressed {
+		return 0
+	}
+	return attempt + 1
 }
 
 // replayDelay doubles from one second to a 30-second ceiling, with ±20 % jitter so replicas failing on the
@@ -230,7 +248,7 @@ func (c *Consumer) RunBatch(ctx context.Context, handle BatchHandler) error {
 			return err
 		}
 
-		for attempt := 0; len(krs) > 0; attempt++ {
+		for attempt := 0; len(krs) > 0; {
 			recs := make([]Record, len(krs))
 			for i, kr := range krs {
 				recs[i] = toRecord(kr)
@@ -257,6 +275,7 @@ func (c *Consumer) RunBatch(ctx context.Context, handle BatchHandler) error {
 					return fmt.Errorf("kafka: commit in group %s: %w", c.group, err)
 				}
 			}
+			attempt = nextAttempt(attempt, len(pending) < len(krs))
 			if i := firstFailure(results); i >= 0 && !c.replay(ctx, attempt, krs[i], results[i]) {
 				c.held = pending
 				return nil
