@@ -401,6 +401,7 @@ CREATE TABLE control_plane.sender_ids (
                 CHECK (status IN ('pending_carrier_approval','active','disabled')),
   created_by  uuid REFERENCES dashboard.operators(id),
   approved_at timestamptz,
+  first_used_at timestamptz,          -- set once from mt.outcome; a used sender ID is never deleted (ADR-0023)
   created_at  timestamptz NOT NULL DEFAULT now(),
   updated_at  timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT sender_ids_uq UNIQUE (customer_id, address)

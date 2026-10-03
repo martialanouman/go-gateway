@@ -190,6 +190,7 @@ sender_ids                          -- CUSTOMER-level; carrier/regulatory regist
   address              (alphanumeric or MSISDN)
   status               (pending_carrier_approval|active|disabled)
   created_by (fk -> operators), approved_at
+  first_used_at        (set once from mt.outcome; a used sender ID is disabled, never deleted — ADR-0023)
   -- Enforced at ingestion by sender-ID authorization (§6.19).
 
 suppressions                        -- opt-out list, PER CHANNEL (§6.20)

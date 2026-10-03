@@ -9,12 +9,13 @@ import (
 	"context"
 
 	uuid "github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const createSenderID = `-- name: CreateSenderID :one
 INSERT INTO control_plane.sender_ids (customer_id, address, created_by)
 VALUES ($1, $2, $3)
-RETURNING id, customer_id, address, status, created_by, approved_at, created_at, updated_at
+RETURNING id, customer_id, address, status, created_by, approved_at, created_at, updated_at, first_used_at
 `
 
 type CreateSenderIDParams struct {
@@ -37,12 +38,14 @@ func (q *Queries) CreateSenderID(ctx context.Context, arg CreateSenderIDParams) 
 		&i.ApprovedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.FirstUsedAt,
 	)
 	return i, err
 }
 
 const deleteSenderID = `-- name: DeleteSenderID :execrows
-DELETE FROM control_plane.sender_ids WHERE customer_id = $1 AND id = $2
+DELETE FROM control_plane.sender_ids
+WHERE customer_id = $1 AND id = $2 AND first_used_at IS NULL
 `
 
 type DeleteSenderIDParams struct {
@@ -50,6 +53,7 @@ type DeleteSenderIDParams struct {
 	ID         uuid.UUID
 }
 
+// A sender ID that has sent is never deleted (ADR-0023): zero rows is then a conflict, not a miss.
 func (q *Queries) DeleteSenderID(ctx context.Context, arg DeleteSenderIDParams) (int64, error) {
 	result, err := q.db.Exec(ctx, deleteSenderID, arg.CustomerID, arg.ID)
 	if err != nil {
@@ -58,8 +62,34 @@ func (q *Queries) DeleteSenderID(ctx context.Context, arg DeleteSenderIDParams) 
 	return result.RowsAffected(), nil
 }
 
+const getSenderID = `-- name: GetSenderID :one
+SELECT id, customer_id, address, status, created_by, approved_at, created_at, updated_at, first_used_at FROM control_plane.sender_ids WHERE customer_id = $1 AND id = $2
+`
+
+type GetSenderIDParams struct {
+	CustomerID uuid.UUID
+	ID         uuid.UUID
+}
+
+func (q *Queries) GetSenderID(ctx context.Context, arg GetSenderIDParams) (ControlPlaneSenderID, error) {
+	row := q.db.QueryRow(ctx, getSenderID, arg.CustomerID, arg.ID)
+	var i ControlPlaneSenderID
+	err := row.Scan(
+		&i.ID,
+		&i.CustomerID,
+		&i.Address,
+		&i.Status,
+		&i.CreatedBy,
+		&i.ApprovedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.FirstUsedAt,
+	)
+	return i, err
+}
+
 const listActiveSenderIDs = `-- name: ListActiveSenderIDs :many
-SELECT id, customer_id, address, status, created_by, approved_at, created_at, updated_at FROM control_plane.sender_ids WHERE status = 'active'
+SELECT id, customer_id, address, status, created_by, approved_at, created_at, updated_at, first_used_at FROM control_plane.sender_ids WHERE status = 'active'
 `
 
 // All active sender IDs across customers, for the sender-ID authorization snapshot (step-060). Only
@@ -82,6 +112,7 @@ func (q *Queries) ListActiveSenderIDs(ctx context.Context) ([]ControlPlaneSender
 			&i.ApprovedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.FirstUsedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -94,7 +125,7 @@ func (q *Queries) ListActiveSenderIDs(ctx context.Context) ([]ControlPlaneSender
 }
 
 const listSenderIDsByCustomer = `-- name: ListSenderIDsByCustomer :many
-SELECT id, customer_id, address, status, created_by, approved_at, created_at, updated_at FROM control_plane.sender_ids WHERE customer_id = $1 ORDER BY address
+SELECT id, customer_id, address, status, created_by, approved_at, created_at, updated_at, first_used_at FROM control_plane.sender_ids WHERE customer_id = $1 ORDER BY address
 `
 
 func (q *Queries) ListSenderIDsByCustomer(ctx context.Context, customerID uuid.UUID) ([]ControlPlaneSenderID, error) {
@@ -115,6 +146,7 @@ func (q *Queries) ListSenderIDsByCustomer(ctx context.Context, customerID uuid.U
 			&i.ApprovedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.FirstUsedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -126,10 +158,28 @@ func (q *Queries) ListSenderIDsByCustomer(ctx context.Context, customerID uuid.U
 	return items, nil
 }
 
+const markSenderIDsFirstUsed = `-- name: MarkSenderIDsFirstUsed :exec
+UPDATE control_plane.sender_ids s SET first_used_at = u.used_at
+FROM (SELECT unnest($1::uuid[]) AS customer_id, unnest($2::text[]) AS address,
+             unnest($3::timestamptz[]) AS used_at) u
+WHERE s.customer_id = u.customer_id AND s.address = u.address AND s.first_used_at IS NULL
+`
+
+type MarkSenderIDsFirstUsedParams struct {
+	CustomerIds []uuid.UUID
+	Addresses   []string
+	UsedAts     []pgtype.Timestamptz
+}
+
+func (q *Queries) MarkSenderIDsFirstUsed(ctx context.Context, arg MarkSenderIDsFirstUsedParams) error {
+	_, err := q.db.Exec(ctx, markSenderIDsFirstUsed, arg.CustomerIds, arg.Addresses, arg.UsedAts)
+	return err
+}
+
 const updateSenderID = `-- name: UpdateSenderID :one
 UPDATE control_plane.sender_ids SET status = COALESCE($1, status)
 WHERE customer_id = $2 AND id = $3
-RETURNING id, customer_id, address, status, created_by, approved_at, created_at, updated_at
+RETURNING id, customer_id, address, status, created_by, approved_at, created_at, updated_at, first_used_at
 `
 
 type UpdateSenderIDParams struct {
@@ -150,6 +200,7 @@ func (q *Queries) UpdateSenderID(ctx context.Context, arg UpdateSenderIDParams) 
 		&i.ApprovedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.FirstUsedAt,
 	)
 	return i, err
 }

@@ -83,7 +83,7 @@ func TestNewRouterAppReleasesInDependencyOrder(t *testing.T) {
 		t.Fatalf("newRouterApp: %v", err)
 	}
 
-	want := []string{"stream", "outcome", "accepted", "pipeline", "redis", "stores"}
+	want := []string{"stream", "first-use", "outcome", "accepted", "pipeline", "redis", "stores"}
 	if got := releaseOrder(app); !slices.Equal(got, want) {
 		t.Errorf("release order is %v, want %v", got, want)
 	}
@@ -135,6 +135,16 @@ func TestNewRouterAppBuildsTheWholeGraph(t *testing.T) {
 	if app.outcome.kafka.StartsFromEnd() {
 		t.Error("the outcome projection starts at the end of mt.outcome: every outcome produced before " +
 			"this group first joined is skipped for ever, and its reservation held for good")
+	}
+
+	// The first-use mark is the same durability property: an outcome skipped leaves a used sender ID
+	// deletable (ADR-0023).
+	if app.firstUse == nil {
+		t.Fatal("the sender ID first-use mark was not wired")
+	}
+	if app.firstUse.kafka.StartsFromEnd() {
+		t.Error("the first-use mark starts at the end of mt.outcome: a sender ID that sent before this group " +
+			"first joined stays deletable")
 	}
 
 	for name, component := range map[string]any{
