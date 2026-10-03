@@ -39,6 +39,10 @@ type Consumer struct {
 	// durability property — a group that starts at the end skips whatever was produced before it first
 	// joined — and one that no test could observe was one no test could guard (step-201c D9).
 	fromEnd bool
+
+	// held are the records a cancelled Run or RunBatch left uncommitted; see [Consumer.next]. Only the one
+	// goroutine that runs the consumer touches it.
+	held []*kgo.Record
 }
 
 // NewConsumer joins the given consumer group and subscribes to topics. A group with no committed
@@ -114,15 +118,11 @@ func (c *Consumer) commit(ctx context.Context, recs ...*kgo.Record) error {
 // a clean ctx-driven stop and a non-nil error only on a fetch or commit fault. Run owns the poll loop; call
 // it from a single supervised goroutine.
 func (c *Consumer) Run(ctx context.Context, handle Handler) error {
-	for {
-		fetches := c.cl.PollFetches(ctx)
-		if ctx.Err() != nil {
-			return nil
+	for ctx.Err() == nil {
+		krs, err := c.next(ctx)
+		if err != nil {
+			return err
 		}
-		if err := firstFetchError(fetches); err != nil {
-			return fmt.Errorf("kafka: fetch in group %s: %w", c.group, err)
-		}
-		krs := fetches.Records()
 
 		for attempt := 0; len(krs) > 0; attempt++ {
 			failed, procErr := len(krs), error(nil)
@@ -141,17 +141,41 @@ func (c *Consumer) Run(ctx context.Context, handle Handler) error {
 						// The detached retry inside commit failed too: the broker is unreachable, not merely
 						// cancelled. Nothing more to try on a pod that is going away — the records stay
 						// uncommitted and are redelivered, which is the at-least-once contract doing its job.
+						c.held = krs[failed:]
 						return nil
 					}
 					return fmt.Errorf("kafka: commit in group %s: %w", c.group, err)
 				}
 			}
-			krs = krs[failed:]
-			if procErr != nil && !c.replay(ctx, attempt, krs[0], procErr) {
+			if procErr != nil && !c.replay(ctx, attempt, krs[failed], procErr) {
+				c.held = krs[failed:]
 				return nil
 			}
+			krs = krs[failed:]
 		}
 	}
+	return nil
+}
+
+// next returns the records to handle: those a cancelled call left uncommitted, before any new poll.
+//
+// The fetch cursor is already past them, so a call that polled first would commit past them. connector-pool
+// calls RunBatch again on the same consumer after every bind drop or reconfiguration, which cancels it.
+// Records a poll returns as ctx ends are held the same way.
+func (c *Consumer) next(ctx context.Context) ([]*kgo.Record, error) {
+	if held := c.held; len(held) > 0 {
+		c.held = nil
+		return held, nil
+	}
+	fetches := c.cl.PollFetches(ctx)
+	if ctx.Err() != nil {
+		c.held = fetches.Records()
+		return nil, nil
+	}
+	if err := firstFetchError(fetches); err != nil {
+		return nil, fmt.Errorf("kafka: fetch in group %s: %w", c.group, err)
+	}
+	return fetches.Records(), nil
 }
 
 // replay waits before a failed record is handled again, and reports false when ctx ended the wait.
@@ -162,6 +186,9 @@ func (c *Consumer) Run(ctx context.Context, handle Handler) error {
 // owner. It never re-polls first: the fetch cursor is already past the failed records, and a later commit
 // would skip them.
 func (c *Consumer) replay(ctx context.Context, attempt int, failed *kgo.Record, err error) bool {
+	if ctx.Err() != nil {
+		return false // a drain, not a fault: nothing to warn about
+	}
 	delay := replayDelay(attempt)
 	slog.Default().WarnContext(ctx, "kafka: handler failed, replaying in place",
 		"group", c.group, "topic", failed.Topic, "partition", failed.Partition, "offset", failed.Offset,
@@ -197,15 +224,11 @@ type BatchHandler func(ctx context.Context, recs []Record) []error
 // ctx-driven stop and a non-nil error on a fetch or commit fault, or when the handler breaks its contract.
 // Like Run, call it from a single supervised goroutine.
 func (c *Consumer) RunBatch(ctx context.Context, handle BatchHandler) error {
-	for {
-		fetches := c.cl.PollFetches(ctx)
-		if ctx.Err() != nil {
-			return nil
+	for ctx.Err() == nil {
+		krs, err := c.next(ctx)
+		if err != nil {
+			return err
 		}
-		if err := firstFetchError(fetches); err != nil {
-			return fmt.Errorf("kafka: fetch in group %s: %w", c.group, err)
-		}
-		krs := fetches.Records()
 
 		for attempt := 0; len(krs) > 0; attempt++ {
 			recs := make([]Record, len(krs))
@@ -228,17 +251,20 @@ func (c *Consumer) RunBatch(ctx context.Context, handle BatchHandler) error {
 				if err := c.commit(ctx, commit...); err != nil {
 					if ctx.Err() != nil {
 						// See Run: the detached retry failed too, so the broker is gone, not just the context.
+						c.held = pending
 						return nil
 					}
 					return fmt.Errorf("kafka: commit in group %s: %w", c.group, err)
 				}
 			}
-			krs = pending
-			if len(krs) > 0 && !c.replay(ctx, attempt, krs[0], firstNonNil(results)) {
+			if i := firstFailure(results); i >= 0 && !c.replay(ctx, attempt, krs[i], results[i]) {
+				c.held = pending
 				return nil
 			}
+			krs = pending
 		}
 	}
+	return nil
 }
 
 // PartitionKey identifies a Kafka partition across topics (a consumer may subscribe to several).
@@ -293,14 +319,14 @@ func committablePrefix(krs []*kgo.Record, results []error) (commit, pending []*k
 	return commit, pending, nil
 }
 
-// firstNonNil returns the first non-nil error in the slice, or nil.
-func firstNonNil(errs []error) error {
-	for _, e := range errs {
+// firstFailure returns the index of the first non-nil error, or -1.
+func firstFailure(errs []error) int {
+	for i, e := range errs {
 		if e != nil {
-			return e
+			return i
 		}
 	}
-	return nil
+	return -1
 }
 
 // Ping reports whether the brokers are reachable.

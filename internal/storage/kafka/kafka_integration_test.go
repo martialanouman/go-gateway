@@ -347,3 +347,67 @@ func TestConsumerReplaysAFailedRecordInPlace(t *testing.T) {
 		})
 	}
 }
+
+// TestConsumerResumesAnAbandonedReplay: connector-pool calls RunBatch again on the same consumer after a
+// bind drop cancels it. The fetch cursor is already past the records the cancelled call left uncommitted; a
+// next call that polled first would commit past them.
+func TestConsumerResumesAnAbandonedReplay(t *testing.T) {
+	cfg := config.Kafka{Brokers: kafkatest.Brokers(t), Timeout: 3 * time.Second}
+	producer, err := kafka.NewProducer(cfg)
+	if err != nil {
+		t.Fatalf("new producer: %v", err)
+	}
+	defer producer.Close()
+	group := "test-abandoned-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	marker, after := group, group+"-after"
+	if err := producer.Produce(t.Context(), kafka.Record{Topic: kafka.TopicMTRouted, Key: []byte("k"), Value: []byte(marker)}); err != nil {
+		t.Fatalf("produce: %v", err)
+	}
+	consumer, err := kafka.NewConsumer(cfg, group, kafka.TopicMTRouted)
+	if err != nil {
+		t.Fatalf("new consumer: %v", err)
+	}
+	defer consumer.Close()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	err = consumer.RunBatch(ctx, func(_ context.Context, recs []kafka.Record) []error {
+		out := make([]error, len(recs))
+		for i, rec := range recs {
+			if string(rec.Value) == marker {
+				cancel() // the bind dropped while this record was failing
+				for j := i; j < len(recs); j++ {
+					out[j] = errors.New("connectorpool: submit_sm: bind closed")
+				}
+				break
+			}
+		}
+		return out
+	})
+	if err != nil {
+		t.Fatalf("cancelled RunBatch = %v, want nil", err)
+	}
+
+	if err := producer.Produce(t.Context(), kafka.Record{Topic: kafka.TopicMTRouted, Key: []byte("k"), Value: []byte(after)}); err != nil {
+		t.Fatalf("produce: %v", err)
+	}
+	ctx, cancel = context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	sawMarker := false
+	_ = consumer.RunBatch(ctx, func(_ context.Context, recs []kafka.Record) []error {
+		for _, rec := range recs {
+			switch string(rec.Value) {
+			case marker:
+				sawMarker = true
+			case after:
+				cancel()
+			}
+		}
+		return make([]error, len(recs))
+	})
+	if !errors.Is(ctx.Err(), context.Canceled) {
+		t.Fatal("the second RunBatch never read the record produced after the first")
+	}
+	if !sawMarker {
+		t.Fatal("the record the cancelled RunBatch left uncommitted was skipped by the next call on the same consumer")
+	}
+}

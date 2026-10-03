@@ -67,22 +67,32 @@ func TestRouterDrainsABacklogThroughReserveTimeouts(t *testing.T) {
 	go func() { runErr <- r.Run(ctx) }()
 
 	deadline := time.After(60 * time.Second)
-	for routed := 0; routed < backlog; {
+	for routed := map[uuid.UUID]bool{}; len(routed) < backlog; {
 		select {
 		case err := <-runErr:
 			t.Fatalf("the router stopped on a reserve timeout (%v): its supervisor would restart it into the same backlog", err)
 		case <-deadline:
-			t.Fatalf("%d of %d backlog messages routed", routed, backlog)
+			t.Fatalf("%d of %d backlog messages routed", len(routed), backlog)
 		case <-time.After(100 * time.Millisecond):
 		}
-		routed = 0
 		prod.mu.Lock()
 		for _, rec := range prod.produced {
 			if m, err := pipeline.DecodeRouted(rec); err == nil && want[m.MessageID] {
-				routed++
+				routed[m.MessageID] = true
 			}
 		}
 		prod.mu.Unlock()
+	}
+	for {
+		lag, err := consumer.Lag(t.Context())
+		if err == nil && lag[kafka.TopicMTInbound] == 0 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("the backlog was routed but not committed: lag %v (%v)", lag, err)
+		case <-time.After(100 * time.Millisecond):
+		}
 	}
 	cancel()
 	if err := <-runErr; err != nil {
