@@ -1,0 +1,26 @@
+# Le débit d'un client est borné par la latence de sa réserve : partitions ÷ latence
+
+> **Statut :** OUVERTE · **Nature :** technique
+> **Née de :** step-285 (rejeu VPS du 03/10/2026) · **Portée par :** step-287 (mesure), step-409 (verdict)
+
+**Ce qu'on a fait à la place.** step-285 a supprimé le crash et le backoff qui figeaient le routeur. Elle
+n'a pas touché au débit : une voie (une partition) réserve un message après l'autre, de façon synchrone,
+avant de le publier. Le plafond d'un client vaut donc à peu près le nombre de partitions divisé par la
+latence d'une réserve.
+
+**Pourquoi.** La fiche de step-285 renvoyait à la mesure la question « l'écriture durable synchrone est-elle
+le bon modèle à 8 000/s ? ». Sa DoD portait sur la reprise sans redémarrage, pas sur le débit.
+
+**Ce qu'il en coûte.** Mesure du VPS : ~225 messages/s pour un client. Une réserve prend 41 ms, dont 33 ms
+d'écriture durable : réclamation d'idempotence, delta et grand livre dans une transaction à commit
+synchrone. Postgres monte à 1,2 cœur, et les routeurs restent presque inactifs. Loin des 8 000/s, et la
+latence ne baisse pas en ajoutant des réplicas : seul le nombre de partitions élève le plafond.
+
+**À quoi on reconnaîtra qu'il faut la payer.** Le verdict de step-409, ou un client dont le débit
+contractuel dépasse partitions ÷ latence. Pistes : réserver par lot de voie (un aller-retour pour N
+messages), plusieurs réserves en vol par voie avec publication dans l'ordre, ou une écriture durable moins
+chère (commit asynchrone du grand livre, ce qui rouvre ADR-0022).
+
+Sources : `internal/router/router.go` (`handleBatch`, une goroutine par partition, séquentielle) ·
+`internal/billing/billing.go` (`Reserve`, `RecordDurable`) · `cmd/billing-svc/wiring.go`
+(`billing_reserve_stage_seconds`)
