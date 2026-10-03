@@ -105,3 +105,12 @@ l'incrément d'une réserve postérieure) :
 
 **Test rouge** (replieur arrêté) : topup 10 → reserve 6 → DEL du cache → reserve 6 ⇒ `ErrInsufficientCredit` ;
 la lecture naïve (`balances` seul) réhydrate 10 et accepte. Puis `FoldOnce` ⇒ solde 4, deltas vides.
+
+## Journal de la mesure (30/09/2026, VPS de test, image `v0.0.1-sha-cf28500ffff7`)
+
+Protocole de step-280 : un client (`run.sh seed … 0 1`), `k6 sustained off 10m`, relevé `run.sh observe`
+toutes les 10 s. **Aucun verdict.** `waiting_on_balances` est resté à 0 sur tout le run, mais ce zéro est
+**creux** : le routeur était en CrashLoopBackOff (réserve en `DeadlineExceeded`, step-285), si bien que
+presque aucune réserve n'a atteint billing-svc (~1 900 envois en 10 min). La DoD « plus de verrou en attente
+sous la charge mono-client de step-280 » n'est pas prouvée : elle attend step-285, et se rejoue dans
+step-287. ADR-0022 reste `Proposed` jusque-là.

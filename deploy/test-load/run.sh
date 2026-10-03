@@ -2,9 +2,12 @@
 # Campagne step-280 sur le VPS de test (README §11). Accès root SSH de l'exploitant.
 #
 #   run.sh HOST apply                      leviers de campagne (2 réplicas figés)
-#   run.sh HOST seed VERSION PORTED_SHARE  clients de charge ; leurs clés API vont dans le Secret k6-load
+#   run.sh HOST seed VERSION PORTED_SHARE [CUSTOMERS]
+#                                          clients de charge (24 par défaut) ; clés dans le Secret k6-load
 #   run.sh HOST ceiling VERSION            plafond du simulateur, dans le cluster
 #   run.sh HOST k6 PROFILE IDEMPOTENCY DURATION
+#   run.sh HOST observe MINUTES            toutes les 10 s : sessions Postgres en attente d'un verrou sur
+#                                          balances, et submits_total cumulé du pool (step-284)
 set -euo pipefail
 
 host=$1 action=$2
@@ -44,7 +47,7 @@ case $action in
     done
     ;;
   seed)
-    manifest=$(sed -e "s/@VERSION@/$3/" -e "s/@PORTED_SHARE@/$4/" "$here/seed-load.yaml")
+    manifest=$(sed -e "s/@VERSION@/$3/" -e "s/@PORTED_SHARE@/$4/" -e "s/@CUSTOMERS@/${5:-24}/" "$here/seed-load.yaml")
     # La clé n'est imprimée qu'une fois : on la range dans un Secret, puis on efface le Job qui la porte
     # dans ses logs.
     trap 'kube delete job seed-load --ignore-not-found' EXIT
@@ -70,8 +73,27 @@ case $action in
     kubectl create configmap k6-script --from-file="$root/test/load/k6/messages.js" --dry-run=client -o yaml | kube apply -f -
     run_job k6-load "$(sed -e "s/@PROFILE@/$3/" -e "s/@IDEMPOTENCY@/$4/" -e "s/@DURATION@/$5/" "$here/k6.yaml")"
     ;;
+  # Le relevé de step-284 : la ligne de solde d'un client ne doit plus faire attendre personne. Le débit de
+  # traversée est la pente de submits_total entre deux lignes, lu par le proxy de l'API (pas de curl dans
+  # les images distroless).
+  observe)
+    end=$((SECONDS + $3 * 60))
+    echo "time waiting_on_balances submits_total"
+    while ((SECONDS < end)); do
+      # shellcheck disable=SC2016 # $POSTGRES_USER/$POSTGRES_DB s'étendent dans le conteneur, pas ici.
+      waiting=$(kube exec postgres-0 -- sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = '\''Lock'\'' AND query ILIKE '\''%balances%'\''"')
+      submits=0
+      for pod in $(kube get pods -l app=connector-pool-svc -o jsonpath='{.items[*].metadata.name}'); do
+        n=$(kube get --raw "/api/v1/namespaces/gateway/pods/$pod:9090/proxy/metrics" |
+          awk '/^submits_total/ {s += $NF} END {printf "%d", s}')
+        submits=$((submits + n))
+      done
+      echo "$(date -u +%H:%M:%S) $waiting $submits"
+      sleep 10
+    done
+    ;;
   *)
-    echo "usage: run.sh HOST apply|seed|ceiling|k6 …" >&2
+    echo "usage: run.sh HOST apply|seed|ceiling|k6|observe …" >&2
     exit 2
     ;;
 esac

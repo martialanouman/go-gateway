@@ -18,7 +18,7 @@ spec:
             - { name: LOAD_BIND_POOL_SIZE, value: "26" }
             - { name: LOAD_PORTED_SHARE, value: "@PORTED_SHARE@" }
             # Une ligne de solde par client : un seul client sérialise la capture (tasks-done/step-280.md).
-            - { name: LOAD_CUSTOMERS, value: "24" }
+            - { name: LOAD_CUSTOMERS, value: "@CUSTOMERS@" }
             - name: HTTP_ADMIN_TOKENS
               valueFrom: { secretKeyRef: { name: gateway-secrets, key: HTTP_ADMIN_TOKENS } }
             - name: CONNECTOR_SYSTEM_ID
