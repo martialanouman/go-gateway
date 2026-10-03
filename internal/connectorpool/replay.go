@@ -113,16 +113,16 @@ func (r *Replayer) RefusedAbsent() int64 { return r.absent.Load() }
 // It stops on the first failure and returns it: the consumer would replay the record in place forever, and
 // an operator tool must exit, report what it replayed, and resume on exactly that record when re-run.
 func (r *Replayer) Run(ctx context.Context, consumer ReplayConsumer) error {
-	ctx, cancel := context.WithCancel(ctx)
+	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var failed error
-	err := consumer.Run(ctx, func(ctx context.Context, rec kafka.Record) error {
-		if err := r.handle(ctx, rec); err != nil {
-			failed = err
+	err := consumer.Run(runCtx, func(hctx context.Context, rec kafka.Record) error {
+		err := r.handle(hctx, rec)
+		if err != nil && ctx.Err() == nil { // an operator's interrupt is a stop, not a failure
+			failed = fmt.Errorf("replay stopped on %s[%d]@%d: %w", rec.Topic, rec.Partition, rec.Offset, err)
 			cancel()
-			return err
 		}
-		return nil
+		return err
 	})
 	if failed != nil {
 		return failed

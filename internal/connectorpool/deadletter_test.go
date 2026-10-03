@@ -573,3 +573,15 @@ func TestExpiredCancelledMessageIsNotDeadLettered(t *testing.T) {
 		})
 	}
 }
+
+// TestReplayTreatsAnInterruptAsAStop: an operator's ^C that lands inside a read is a stop, not a failed run.
+func TestReplayTreatsAnInterruptAsAStop(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	replayer := connectorpool.NewReplayer(connectorpool.ReplayerDeps{
+		Producer: newRecordingProducer(), CDR: &fakeCDRReader{err: context.Canceled},
+	})
+	if err := replayer.Run(ctx, &handlerConsumer{records: []kafka.Record{deadLetterRecord(t, routed(), "retries_exhausted")}}); err != nil {
+		t.Fatalf("an interrupted replay reported a failure: %v", err)
+	}
+}

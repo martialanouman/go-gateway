@@ -16,12 +16,14 @@ expulsé, et une lenteur de deux minutes devient pire qu'avant. Il faut aussi ch
 consommateurs. La fenêtre de doublons était déjà acceptée : `producer.go`, `FailClosedProduceTimeout`.
 
 **Ce qu'il en coûte.** Un traitement concurrent du suffixe par deux membres. Pour le routeur, ce sont des
-`mt.routed` republiés, bornés par le poll. La fenêtre dure le temps du lot plus celui du rejeu, au lieu du
-seul lot. Un offset ramené en arrière fait retraiter au nouveau
+`mt.routed` republiés, bornés par le poll. La fenêtre n'est pas bornée par le lot : un appel annulé
+garde ce qu'il n'a pas commité (`Consumer.held`) jusqu'à l'appel suivant, et connector-pool peut rester
+parké entre les deux. Une partition révoquée entre-temps est retraitée par l'ancien propriétaire à sa reprise. Un offset ramené en arrière fait retraiter au nouveau
 propriétaire, à son prochain redémarrage, ce qu'il avait déjà commité : des doublons, jamais une perte.
 
 **À quoi on reconnaîtra qu'il faut la payer.** Des doublons corrélés à un déploiement pendant une panne
-de facturation. Paiement : `OnPartitionsRevoked` abandonne le rejeu des partitions révoquées, ce qui coûte
+de facturation. Paiement : `OnPartitionsRevoked`/`OnPartitionsLost` abandonnent le rejeu et purgent `held` des
+partitions révoquées (sous verrou : ces rappels ne tournent pas dans la goroutine du poll), ce qui coûte
 moins cher que `BlockRebalanceOnPoll`.
 
 Sources : `internal/storage/kafka/consumer.go` (`RunBatch`, `Consumer.replay`) ·
