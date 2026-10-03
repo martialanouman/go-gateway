@@ -109,8 +109,25 @@ func (r *Replayer) RefusedAbsent() int64 { return r.absent.Load() }
 
 // Run consumes mt.dead-letter until ctx is cancelled, replaying each record to mt.routed. It is a
 // supervised worker with a context stop condition — it starts no unbounded goroutine.
+//
+// It stops on the first failure and returns it: the consumer would replay the record in place forever, and
+// an operator tool must exit, report what it replayed, and resume on exactly that record when re-run.
 func (r *Replayer) Run(ctx context.Context, consumer ReplayConsumer) error {
-	return consumer.Run(ctx, r.handle)
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var failed error
+	err := consumer.Run(runCtx, func(hctx context.Context, rec kafka.Record) error {
+		err := r.handle(hctx, rec)
+		if err != nil && ctx.Err() == nil { // an operator's interrupt is a stop, not a failure
+			failed = fmt.Errorf("replay stopped on %s[%d]@%d: %w", rec.Topic, rec.Partition, rec.Offset, err)
+			cancel()
+		}
+		return err
+	})
+	if failed != nil {
+		return failed
+	}
+	return err
 }
 
 func (r *Replayer) handle(ctx context.Context, rec kafka.Record) error {

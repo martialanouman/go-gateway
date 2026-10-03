@@ -87,9 +87,8 @@ func (s *Service) cancelBeforeDispatch(ctx context.Context, r pipeline.RoutedMT)
 // retries_exhausted and commits, so a persistently-failing message is not retried without end (step-129).
 // Throttle / queue-full NEVER reach here: those are pure backpressure, bounded only by the max-age SLA.
 //
-// Redelivery is driven by the reconnect/re-dial cycle (a dropped bind) or by the pod restart the
-// supervisor performs when reconnection gives up — NOT a tight in-process loop, so no pacing is needed
-// here (the reconnect loop and k8s each apply their own backoff). The first-failure time is keyed by the
+// Redelivery is the consumer replaying the record in place, after a backoff of one to 30 seconds (step-285),
+// or the reconnect/re-dial cycle when the bind dropped — so no pacing is needed here. The first-failure time is keyed by the
 // record's immutable (partition, offset) and accumulates across redeliveries for as long as this Service
 // lives (a re-dial keeps it; a process restart resets the window). A zero RetryWindow disables
 // dead-lettering, and the max-age SLA is the ultimate backstop in every case.

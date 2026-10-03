@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"math/rand/v2"
 	"time"
 
 	"github.com/twmb/franz-go/pkg/kadm"
@@ -16,8 +18,8 @@ import (
 // Handler processes one consumed record. Returning nil means the record is fully handled —
 // including a terminal business outcome already recorded downstream (e.g. an SMSC rejection written
 // to the CDR) — so its offset may be committed. Returning an error means a transient infrastructure
-// fault: the offset is NOT committed and Run stops, so the supervising service restarts and
-// reprocesses from the last commit. A record can therefore be redelivered, so the handler MUST be
+// fault: the offset is NOT committed and Run handles the record again, in place, after a backoff. A
+// record can therefore be handled more than once, so the handler MUST be
 // idempotent in whatever it writes downstream (§7.3 — billing is idempotent by message_id, the CDR
 // by its versioned rows).
 type Handler func(ctx context.Context, rec Record) error
@@ -37,6 +39,10 @@ type Consumer struct {
 	// durability property — a group that starts at the end skips whatever was produced before it first
 	// joined — and one that no test could observe was one no test could guard (step-201c D9).
 	fromEnd bool
+
+	// held are the records a cancelled Run or RunBatch left uncommitted; see [Consumer.next]. Only the one
+	// goroutine that runs the consumer touches it.
+	held []*kgo.Record
 }
 
 // NewConsumer joins the given consumer group and subscribes to topics. A group with no committed
@@ -108,62 +114,100 @@ func (c *Consumer) commit(ctx context.Context, recs ...*kgo.Record) error {
 }
 
 // Run polls and processes records until ctx is cancelled, committing each record's offset only
-// after handle returns nil. It returns nil on a clean ctx-driven stop and a non-nil error on a
-// fetch fault or a handler error (the latter is the signal to restart and reprocess). Run owns the
-// poll loop; call it from a single supervised goroutine.
+// after handle returns nil. A handler error is replayed in place (see [Consumer.replay]); Run returns nil on
+// a clean ctx-driven stop and a non-nil error only on a fetch or commit fault. Run owns the poll loop; call
+// it from a single supervised goroutine.
 func (c *Consumer) Run(ctx context.Context, handle Handler) error {
-	for {
-		fetches := c.cl.PollFetches(ctx)
-		if ctx.Err() != nil {
-			return nil
-		}
-		if err := firstFetchError(fetches); err != nil {
-			return fmt.Errorf("kafka: fetch in group %s: %w", c.group, err)
+	for ctx.Err() == nil {
+		krs, err := c.next(ctx)
+		if err != nil {
+			return err
 		}
 
-		var (
-			procErr error
-			handled []*kgo.Record
-		)
-		fetches.EachRecord(func(kr *kgo.Record) {
-			if procErr != nil {
-				return // stop at the first failure; its offset stays uncommitted for redelivery
-			}
-			rec := toRecord(kr)
-			if err := handle(ctx, rec); err != nil {
-				procErr = fmt.Errorf("handle %s[%d]@%d: %w", kr.Topic, kr.Partition, kr.Offset, err)
-				return
-			}
-			handled = append(handled, kr)
-		})
-
-		// Commit the successfully-handled prefix in one request rather than one broker round-trip per
-		// record — at the 8000 msg/s target a per-record commit RTT would dominate the consume loop. The
-		// at-least-once guarantee is unchanged: only handled records are committed, and anything past the
-		// first failure stays uncommitted for redelivery.
-		// A groupless tail reader has nothing to commit to.
-		if len(handled) > 0 && c.group != "" {
-			if err := c.commit(ctx, handled...); err != nil {
-				if ctx.Err() != nil {
-					// The detached retry inside commit failed too: the broker is unreachable, not merely
-					// cancelled. Nothing more to try on a pod that is going away — the records stay
-					// uncommitted and are redelivered, which is the at-least-once contract doing its job.
-					return nil
+		for attempt := 0; len(krs) > 0; attempt++ {
+			failed, procErr := len(krs), error(nil)
+			for i, kr := range krs {
+				if err := handle(ctx, toRecord(kr)); err != nil {
+					failed, procErr = i, err
+					break
 				}
-				return fmt.Errorf("kafka: commit in group %s: %w", c.group, err)
 			}
-		}
-		if procErr != nil {
-			// A handler that fails purely because ctx was cancelled is a graceful stop, not a fault:
-			// PollFetches can hand back a batch a hair before cancellation propagates, so the downstream
-			// Produce/Submit aborts with context.Canceled. Treat that like the post-fetch check above —
-			// return nil so the supervisor sees a clean shutdown, not a crash.
-			if ctx.Err() != nil {
+			// Commit the successfully-handled prefix in one request rather than one broker round-trip per
+			// record — at the 8000 msg/s target a per-record commit RTT would dominate the consume loop.
+			// A groupless tail reader has nothing to commit to.
+			if failed > 0 && c.group != "" {
+				if err := c.commit(ctx, krs[:failed]...); err != nil {
+					if ctx.Err() != nil {
+						// The detached retry inside commit failed too: the broker is unreachable, not merely
+						// cancelled. Nothing more to try on a pod that is going away — the records stay
+						// uncommitted and are redelivered, which is the at-least-once contract doing its job.
+						c.held = krs[failed:]
+						return nil
+					}
+					return fmt.Errorf("kafka: commit in group %s: %w", c.group, err)
+				}
+			}
+			if procErr != nil && !c.replay(ctx, attempt, krs[failed], procErr) {
+				c.held = krs[failed:]
 				return nil
 			}
-			return procErr
+			krs = krs[failed:]
 		}
 	}
+	return nil
+}
+
+// next returns the records to handle: those a cancelled call left uncommitted, before any new poll.
+//
+// The fetch cursor is already past them, so a call that polled first would commit past them. connector-pool
+// calls RunBatch again on the same consumer after every bind drop or reconfiguration, which cancels it.
+// Records a poll returns as ctx ends are held the same way.
+func (c *Consumer) next(ctx context.Context) ([]*kgo.Record, error) {
+	if held := c.held; len(held) > 0 {
+		c.held = nil
+		return held, nil
+	}
+	fetches := c.cl.PollFetches(ctx)
+	if ctx.Err() != nil {
+		c.held = fetches.Records()
+		return nil, nil
+	}
+	if err := firstFetchError(fetches); err != nil {
+		return nil, fmt.Errorf("kafka: fetch in group %s: %w", c.group, err)
+	}
+	return fetches.Records(), nil
+}
+
+// replay waits before a failed record is handled again, and reports false when ctx ended the wait.
+//
+// A handler error is transient by contract, and it used to end Run: the supervisor then took the whole process
+// down, and Kubernetes' restart backoff, up to five minutes, decided when the backlog moved again (step-285).
+// Replaying in place keeps the group membership, so no partition moves and nothing is republished by a new
+// owner. It never re-polls first: the fetch cursor is already past the failed records, and a later commit
+// would skip them.
+func (c *Consumer) replay(ctx context.Context, attempt int, failed *kgo.Record, err error) bool {
+	if ctx.Err() != nil {
+		return false // a drain, not a fault: nothing to warn about
+	}
+	delay := replayDelay(attempt)
+	slog.Default().WarnContext(ctx, "kafka: handler failed, replaying in place",
+		"group", c.group, "topic", failed.Topic, "partition", failed.Partition, "offset", failed.Offset,
+		"attempt", attempt+1, "delay", delay, "err", err)
+	t := time.NewTimer(delay)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
+}
+
+// replayDelay doubles from one second to a 30-second ceiling, with ±20 % jitter so replicas failing on the
+// same dependency do not retry in lockstep.
+func replayDelay(attempt int) time.Duration {
+	d := min(time.Second<<min(attempt, 5), 30*time.Second)
+	return time.Duration(float64(d) * (0.8 + 0.4*rand.Float64())) //nolint:gosec // G404: jitter, not a secret.
 }
 
 // BatchHandler processes a whole poll batch and reports, per record aligned by index, whether it was
@@ -175,60 +219,52 @@ func (c *Consumer) Run(ctx context.Context, handle Handler) error {
 type BatchHandler func(ctx context.Context, recs []Record) []error
 
 // RunBatch polls and processes records a batch at a time, committing — independently per partition — the
-// contiguous run of successfully-handled records up to that partition's first failure. It returns nil on
-// a clean ctx-driven stop and a non-nil error on a fetch fault or when the batch reported any failure
-// (the signal to restart and reprocess the uncommitted records). Like Run, call it from a single
-// supervised goroutine.
+// contiguous run of successfully-handled records up to that partition's first failure, then replaying what
+// it could not commit in place (see [Consumer.replay]) before polling again. It returns nil on a clean
+// ctx-driven stop and a non-nil error on a fetch or commit fault, or when the handler breaks its contract.
+// Like Run, call it from a single supervised goroutine.
 func (c *Consumer) RunBatch(ctx context.Context, handle BatchHandler) error {
-	for {
-		fetches := c.cl.PollFetches(ctx)
-		if ctx.Err() != nil {
-			return nil
-		}
-		if err := firstFetchError(fetches); err != nil {
-			return fmt.Errorf("kafka: fetch in group %s: %w", c.group, err)
-		}
-
-		var krs []*kgo.Record
-		fetches.EachRecord(func(kr *kgo.Record) { krs = append(krs, kr) })
-		if len(krs) == 0 {
-			continue
-		}
-
-		recs := make([]Record, len(krs))
-		for i, kr := range krs {
-			recs[i] = toRecord(kr)
-		}
-		results := handle(ctx, recs)
-
-		// Commit each partition up to (but not including) its first failed record. Offsets only compare
-		// within a partition, so a global prefix would be wrong: a failure in one partition must not hold
-		// back a fully-handled sibling partition, and a success AFTER a failure in the SAME partition must
-		// never be committed (it would skip the gap). krs is in per-partition offset order.
-		commit, err := committablePrefix(krs, results)
+	for ctx.Err() == nil {
+		krs, err := c.next(ctx)
 		if err != nil {
-			// The handler broke its contract. Fail closed: commit nothing and restart, so the batch is
-			// redelivered and reprocessed rather than half-committed on a verdict we cannot read.
-			return fmt.Errorf("kafka: batch handle in group %s: %w", c.group, err)
+			return err
 		}
-		if len(commit) > 0 && c.group != "" {
-			if err := c.commit(ctx, commit...); err != nil {
-				if ctx.Err() != nil {
-					// See Run: the detached retry failed too, so the broker is gone, not just the context.
-					return nil
-				}
-				return fmt.Errorf("kafka: commit in group %s: %w", c.group, err)
+
+		for attempt := 0; len(krs) > 0; attempt++ {
+			recs := make([]Record, len(krs))
+			for i, kr := range krs {
+				recs[i] = toRecord(kr)
 			}
-		}
-		if firstErr := firstNonNil(results); firstErr != nil {
-			// A failure that is really just ctx cancellation mid-batch is a graceful stop, not a fault
-			// (PollFetches can hand back a batch a hair before cancellation propagates) — mirror Run.
-			if ctx.Err() != nil {
+			results := handle(ctx, recs)
+
+			// Commit each partition up to (but not including) its first failed record. Offsets only compare
+			// within a partition, so a global prefix would be wrong: a failure in one partition must not hold
+			// back a fully-handled sibling partition, and a success AFTER a failure in the SAME partition must
+			// never be committed (it would skip the gap). krs is in per-partition offset order.
+			commit, pending, err := committablePrefix(krs, results)
+			if err != nil {
+				// The handler broke its contract. Fail closed: commit nothing and restart, so the batch is
+				// redelivered and reprocessed rather than half-committed on a verdict we cannot read.
+				return fmt.Errorf("kafka: batch handle in group %s: %w", c.group, err)
+			}
+			if len(commit) > 0 && c.group != "" {
+				if err := c.commit(ctx, commit...); err != nil {
+					if ctx.Err() != nil {
+						// See Run: the detached retry failed too, so the broker is gone, not just the context.
+						c.held = pending
+						return nil
+					}
+					return fmt.Errorf("kafka: commit in group %s: %w", c.group, err)
+				}
+			}
+			if i := firstFailure(results); i >= 0 && !c.replay(ctx, attempt, krs[i], results[i]) {
+				c.held = pending
 				return nil
 			}
-			return fmt.Errorf("kafka: batch handle in group %s: %w", c.group, firstErr)
+			krs = pending
 		}
 	}
+	return nil
 }
 
 // PartitionKey identifies a Kafka partition across topics (a consumer may subscribe to several).
@@ -247,15 +283,20 @@ func (r Record) PartitionKey() PartitionKey {
 	return PartitionKey{Topic: r.Topic, Partition: r.Partition}
 }
 
-// committablePrefix returns the records safe to commit: those handled successfully whose offset precedes
-// their partition's first failed offset. results is aligned with krs by index.
+// committablePrefix splits a handled batch into the records safe to commit — those handled successfully
+// whose offset precedes their partition's first failed offset — and everything else, still in batch order,
+// which must be replayed. results is aligned with krs by index.
+//
+// pending is the complement of commit, never just the failures: a success above a failure in its partition
+// is not committed, and the fetch cursor is already past it, so a record left out of both would be skipped
+// by the next commit.
 //
 // A results slice that does not line up with krs is a handler bug, and it is reported rather than
 // indexed through: this runs inside a data-plane pod's consume loop, where an index-out-of-range takes
 // the process down mid-batch. [BatchHandler] states the requirement; this is what enforces it.
-func committablePrefix(krs []*kgo.Record, results []error) ([]*kgo.Record, error) {
+func committablePrefix(krs []*kgo.Record, results []error) (commit, pending []*kgo.Record, err error) {
 	if len(results) != len(krs) {
-		return nil, fmt.Errorf("batch handler returned %d results for %d records", len(results), len(krs))
+		return nil, nil, fmt.Errorf("batch handler returned %d results for %d records", len(results), len(krs))
 	}
 	firstFail := make(map[PartitionKey]int64)
 	for i, kr := range krs {
@@ -267,27 +308,25 @@ func committablePrefix(krs []*kgo.Record, results []error) ([]*kgo.Record, error
 			firstFail[pk] = kr.Offset
 		}
 	}
-	var out []*kgo.Record
 	for i, kr := range krs {
-		if results[i] != nil {
+		off, failed := firstFail[PartitionKey{Topic: kr.Topic, Partition: kr.Partition}]
+		if results[i] != nil || (failed && kr.Offset > off) {
+			pending = append(pending, kr)
 			continue
 		}
-		if off, ok := firstFail[PartitionKey{Topic: kr.Topic, Partition: kr.Partition}]; ok && kr.Offset > off {
-			continue // a later record in a partition with an earlier failure: leave it for redelivery
-		}
-		out = append(out, kr)
+		commit = append(commit, kr)
 	}
-	return out, nil
+	return commit, pending, nil
 }
 
-// firstNonNil returns the first non-nil error in the slice, or nil.
-func firstNonNil(errs []error) error {
-	for _, e := range errs {
+// firstFailure returns the index of the first non-nil error, or -1.
+func firstFailure(errs []error) int {
+	for i, e := range errs {
 		if e != nil {
-			return e
+			return i
 		}
 	}
-	return nil
+	return -1
 }
 
 // Ping reports whether the brokers are reachable.

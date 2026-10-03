@@ -92,7 +92,7 @@ func New(deps Deps) *Router {
 }
 
 // Run consumes mt.inbound until ctx is cancelled. It returns whatever the consumer returns: nil on a
-// clean stop, an error on a transient fault (which restarts the service and reprocesses).
+// clean stop, an error on a fetch or commit fault. A failed message is replayed in place by the consumer.
 func (r *Router) Run(ctx context.Context) error {
 	return r.deps.Consumer.RunBatch(ctx, r.handleBatch)
 }

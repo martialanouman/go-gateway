@@ -146,13 +146,20 @@ func (c *pausingConsumer) RunBatch(ctx context.Context, handle kafka.BatchHandle
 	return nil
 }
 
-// handlerConsumer feeds records to a kafka.Handler (the Replayer's consumer shape).
+// handlerConsumer feeds records to a kafka.Handler (the Replayer's consumer shape). Like kafka.Consumer, it
+// replays a failed record in place and returns nil when ctx ends; it panics after a few attempts, so a
+// replayer that never stops fails its test instead of hanging it.
 type handlerConsumer struct{ records []kafka.Record }
 
 func (h *handlerConsumer) Run(ctx context.Context, handle kafka.Handler) error {
 	for _, r := range h.records {
-		if err := handle(ctx, r); err != nil {
-			return err
+		for attempt := 0; handle(ctx, r) != nil; attempt++ {
+			if ctx.Err() != nil {
+				return nil
+			}
+			if attempt == 3 {
+				panic("handlerConsumer: the handler kept failing and nothing stopped the consumer")
+			}
 		}
 	}
 	return nil
@@ -564,5 +571,17 @@ func TestExpiredCancelledMessageIsNotDeadLettered(t *testing.T) {
 					peeked, r.MessageID)
 			}
 		})
+	}
+}
+
+// TestReplayTreatsAnInterruptAsAStop: an operator's ^C that lands inside a read is a stop, not a failed run.
+func TestReplayTreatsAnInterruptAsAStop(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	replayer := connectorpool.NewReplayer(connectorpool.ReplayerDeps{
+		Producer: newRecordingProducer(), CDR: &fakeCDRReader{err: context.Canceled},
+	})
+	if err := replayer.Run(ctx, &handlerConsumer{records: []kafka.Record{deadLetterRecord(t, routed(), "retries_exhausted")}}); err != nil {
+		t.Fatalf("an interrupted replay reported a failure: %v", err)
 	}
 }

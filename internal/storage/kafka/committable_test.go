@@ -3,6 +3,7 @@ package kafka
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -26,7 +27,7 @@ func TestCommittablePrefix(t *testing.T) {
 
 	t.Run("all handled commits everything", func(t *testing.T) {
 		krs := []*kgo.Record{rec(0, 10), rec(0, 11), rec(1, 5)}
-		got, err := committablePrefix(krs, []error{nil, nil, nil})
+		got, _, err := committablePrefix(krs, []error{nil, nil, nil})
 		if err != nil {
 			t.Fatalf("committablePrefix: %v", err)
 		}
@@ -38,7 +39,7 @@ func TestCommittablePrefix(t *testing.T) {
 	t.Run("stops a partition at its first failure but not siblings", func(t *testing.T) {
 		// p0: 10 ok, 11 FAIL, 12 ok(skipped). p1: 5 ok, 6 ok — a p0 failure must not hold p1 back.
 		krs := []*kgo.Record{rec(0, 10), rec(0, 11), rec(0, 12), rec(1, 5), rec(1, 6)}
-		got, err := committablePrefix(krs, []error{nil, fail, nil, nil, nil})
+		got, _, err := committablePrefix(krs, []error{nil, fail, nil, nil, nil})
 		if err != nil {
 			t.Fatalf("committablePrefix: %v", err)
 		}
@@ -56,12 +57,25 @@ func TestCommittablePrefix(t *testing.T) {
 	t.Run("never commits a success after an earlier failure in the same partition", func(t *testing.T) {
 		// The gap invariant: 12 succeeded but 11 failed → 12 must NOT commit (would skip 11).
 		krs := []*kgo.Record{rec(0, 11), rec(0, 12)}
-		got, err := committablePrefix(krs, []error{fail, nil})
+		got, _, err := committablePrefix(krs, []error{fail, nil})
 		if err != nil {
 			t.Fatalf("committablePrefix: %v", err)
 		}
 		if len(got) != 0 {
 			t.Errorf("committed %v, want nothing (11 failed, 12 is past the gap)", offsets(got))
+		}
+	})
+
+	// The fetch cursor is already past the batch: a record neither committed nor replayed is skipped by the
+	// next commit. So what is replayed is everything not committed, including a success above a failure.
+	t.Run("pending is every record it does not commit", func(t *testing.T) {
+		krs := []*kgo.Record{rec(0, 10), rec(0, 11), rec(0, 12), rec(1, 5), rec(1, 6)}
+		_, pending, err := committablePrefix(krs, []error{nil, fail, nil, nil, fail})
+		if err != nil {
+			t.Fatalf("committablePrefix: %v", err)
+		}
+		if got, want := offsets(pending), []string{"0:11", "0:12", "1:6"}; !slices.Equal(got, want) {
+			t.Errorf("pending %v, want %v in batch order", got, want)
 		}
 	})
 
@@ -77,7 +91,7 @@ func TestCommittablePrefix(t *testing.T) {
 			"too long":  {nil, nil, nil},
 			"nil":       nil,
 		} {
-			got, err := committablePrefix(krs, results)
+			got, _, err := committablePrefix(krs, results)
 			if err == nil {
 				t.Errorf("%s: committablePrefix accepted %d results for %d records and committed %v",
 					name, len(results), len(krs), offsets(got))

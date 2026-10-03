@@ -91,6 +91,10 @@ ici, la reprise dépend du hasard des redémarrages et du backoff, pas d'une con
    (le délai de 200 ms ne protège d'aucun rééquilibrage, c'est un fail-fast).
 9. **Dettes ouvertes** : doublons par tentative au pool de connecteurs (produce `mt.outcome` après
    `submit_sm`) ; rejeu pendant un rééquilibrage ; tête de ligne silencieuse d'un poison.
+10. **Amendement de revue (PR2)** : un appel annulé garde ce qu'il n'a pas commité (`Consumer.held`) et
+    l'appel suivant le traite avant de repoller — connector-pool rappelle `RunBatch` sur le même client
+    après chaque chute de bind ; sans cela, le curseur déjà avancé sautait ces enregistrements. Et
+    `mt-replay` s'arrête toujours sur le premier échec (`Replayer.Run` annule son propre ctx).
 
 **Test de DoD** : e2e en processus (`internal/e2e`, harnais du routeur de référence) — backlog produit
 avant le démarrage, réserve qui rend `DeadlineExceeded` brut puis réussit ; `Run` ne rend rien, le lag

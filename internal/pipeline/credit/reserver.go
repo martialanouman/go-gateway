@@ -12,9 +12,9 @@ import (
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 )
 
-// defaultReserveTimeout bounds a single Reserve RPC. It is short on purpose: a hung billing-svc must not
-// stall the consumer past its session timeout (which would trigger a rebalance storm) — the deadline turns a
-// hang into a retryable error the router redelivers, not an indefinite block on the hot path.
+// defaultReserveTimeout bounds a single Reserve RPC. It is short on purpose, to fail fast: the deadline turns
+// a hung billing-svc into a transient error the consumer replays after a backoff, not an indefinite block of
+// the lane. It protects no group membership — franz-go heartbeats outside the poll loop.
 const defaultReserveTimeout = 200 * time.Millisecond
 
 // BillingClient is the slice of the billing gRPC client the credit stage uses. The generated pb.BillingClient
