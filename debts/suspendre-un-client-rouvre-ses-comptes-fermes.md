@@ -24,8 +24,10 @@ cascade en supprime surtout la mémoire.
 **Payé le 02/10/2026.** La cascade exclut `closed` (`AND status <> 'closed'`), prouvé par
 `TestSuspendCustomerLeavesClosedAccountsClosed`, rouge lu sur l'ancienne requête.
 
-**Payé aussi le 02/10/2026 : `closed` est définitif** (décision de l'exploitant). Un trigger
-`smpp_accounts_closed_is_final` (schéma et `migrations/0025_*`) refuse toute sortie de `closed`, quel que
-soit l'écrivain — PATCH Admin, suspension du compte, script — en `check_violation`, donc 422 ; le contrat
-Admin le dit sur `update-smpp-account` et `suspend-smpp-account` (6.10.1). Prouvé par
-`TestClosedAccountIsFinal`, rouge lu avant le trigger. Le statut `closed` d'un **client** n'est pas couvert.
+**Payé aussi le 02/10/2026 : `closed` est définitif**, pour un compte comme pour un client (décision de
+l'exploitant). La fonction `control_plane.closed_is_final()` et ses triggers `smpp_accounts_closed_is_final`
+et `customers_closed_is_final` (schéma et `migrations/0025_closed_is_final.*`) refusent toute sortie de
+`closed`, quel que soit l'écrivain — PATCH Admin, suspension, script — en `check_violation`, donc 422 ; le
+contrat Admin le dit sur `update-smpp-account`, `suspend-smpp-account`, `update-customer` et
+`suspend-customer` (6.10.1). Prouvé par `TestClosedAccountIsFinal` et `TestClosedCustomerIsFinal`, rouges lus
+avant les triggers.

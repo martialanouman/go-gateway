@@ -165,3 +165,40 @@ func isNotFound(err error) bool {
 	code, ok := errs.CodeOf(err)
 	return ok && code == errs.ErrNotFound
 }
+
+// TestClosedCustomerIsFinal: closing a customer is definitive, like closing an account. Neither the Admin
+// PATCH, the suspend endpoint nor a direct UPDATE may move it to another status.
+func TestClosedCustomerIsFinal(t *testing.T) {
+	pool := pgtest.Pool(t)
+	repo := postgres.NewCustomerRepo(pool)
+	ctx := context.Background()
+
+	customer, err := repo.Create(ctx, cp.NewCustomer{Name: "Closed Customer Co"})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	closed := cp.CustomerClosed
+	if _, err := repo.Update(ctx, customer.ID, cp.CustomerPatch{Status: &closed}); err != nil {
+		t.Fatalf("close the customer: %v", err)
+	}
+
+	active := cp.CustomerActive
+	if _, err := repo.Update(ctx, customer.ID, cp.CustomerPatch{Status: &active}); !isValidation(err) {
+		t.Errorf("PATCH closed → active = %v, want validation_error", err)
+	}
+	if _, err := repo.Suspend(ctx, customer.ID); !isValidation(err) {
+		t.Errorf("suspend a closed customer = %v, want validation_error", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE control_plane.customers SET status = 'active' WHERE id = $1`, customer.ID); err == nil {
+		t.Error("a direct UPDATE reopened a closed customer")
+	}
+
+	renamed := "Closed Customer Co (renamed)"
+	got, err := repo.Update(ctx, customer.ID, cp.CustomerPatch{Name: &renamed, Status: &closed})
+	if err != nil {
+		t.Fatalf("PATCH a closed customer without leaving closed: %v", err)
+	}
+	if got.Status != cp.CustomerClosed {
+		t.Errorf("status = %q, want closed", got.Status)
+	}
+}

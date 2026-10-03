@@ -160,6 +160,18 @@ CREATE TABLE control_plane.customers (
   CONSTRAINT customers_account_scope_no_credit_ck
     CHECK (balance_scope <> 'smpp_account' OR (NOT overdraft_enabled AND NOT credit_limit_is_hard))
 );
+-- Closing a customer, or one of its accounts, is final: no writer may move it to another status.
+-- check_violation surfaces as a 422 through the repositories' translate.
+CREATE FUNCTION control_plane.closed_is_final() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF OLD.status = 'closed' AND NEW.status <> 'closed' THEN
+    RAISE EXCEPTION '% % is closed: status % refused', TG_TABLE_NAME, OLD.id, NEW.status
+      USING ERRCODE = 'check_violation';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER customers_closed_is_final BEFORE UPDATE OF status ON control_plane.customers
+  FOR EACH ROW EXECUTE FUNCTION control_plane.closed_is_final();
 CREATE INDEX customers_group_idx ON control_plane.customers(group_id);
 
 -- -----------------------------------------------------------------------------------------------------
@@ -336,16 +348,8 @@ CREATE TABLE control_plane.smpp_accounts (
 CREATE INDEX smpp_accounts_customer_idx ON control_plane.smpp_accounts(customer_id);
 -- Closing an account is final: no writer (Admin PATCH, suspend, a customer's suspension cascade, a script)
 -- may move it to another status. check_violation surfaces as a 422 through the repositories' translate.
-CREATE FUNCTION control_plane.smpp_accounts_closed_is_final() RETURNS trigger LANGUAGE plpgsql AS $$
-BEGIN
-  IF OLD.status = 'closed' AND NEW.status <> 'closed' THEN
-    RAISE EXCEPTION 'smpp account % is closed: status % refused', OLD.id, NEW.status
-      USING ERRCODE = 'check_violation';
-  END IF;
-  RETURN NEW;
-END $$;
 CREATE TRIGGER smpp_accounts_closed_is_final BEFORE UPDATE OF status ON control_plane.smpp_accounts
-  FOR EACH ROW EXECUTE FUNCTION control_plane.smpp_accounts_closed_is_final();
+  FOR EACH ROW EXECUTE FUNCTION control_plane.closed_is_final();
 
 -- -----------------------------------------------------------------------------------------------------
 -- 7. Credentials (§6.3/§6.18) — EXACTLY two rows per account: one smpp_bind, one api_key
