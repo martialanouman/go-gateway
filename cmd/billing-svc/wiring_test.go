@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 
 	"github.com/martialanouman/go-gateway/internal/billing"
@@ -158,6 +160,9 @@ func TestNewBillingAppBuildsTheWholeGraph(t *testing.T) {
 	}
 	if !slices.ContainsFunc(families, func(f *dto.MetricFamily) bool { return f.GetName() == "billing_balance_deltas_lag_seconds" }) {
 		t.Error("billing_balance_deltas_lag_seconds is not exposed: nothing would see the fold falling behind")
+	}
+	if !slices.ContainsFunc(families, func(f *dto.MetricFamily) bool { return f.GetName() == "billing_reserve_stage_seconds" }) {
+		t.Error("billing_reserve_stage_seconds is not exposed: a reserve deadline could not be attributed")
 	}
 
 	// Building the graph must not start serving: both ports are bound by their Run, which only the
@@ -359,5 +364,23 @@ func TestReaperIsWiredWithTheConfiguredMinAge(t *testing.T) {
 		spy.olderThan.After(after.Add(-cfg.BillingReaper.MinAge)) {
 		t.Errorf("reaper sweeps reservations older than %s, want %s (BILLING_REAPER_MIN_AGE)",
 			before.Sub(spy.olderThan), cfg.BillingReaper.MinAge)
+	}
+}
+
+func TestAccountantTimesItsReservesIntoTheExposedHistogram(t *testing.T) {
+	ctx := t.Context()
+	acct, err := newAccountant(ctx, pgtest.Pool(t), redistest.Client(t), silentLogger())
+	if err != nil {
+		t.Fatalf("newAccountant: %v", err)
+	}
+	owner := billing.Owner{Type: cp.OwnerTypeCustomer, ID: uuid.New(), CustomerID: uuid.New()}
+	_, _ = acct.acc.Reserve(ctx, owner, uuid.New(), 1) // an unfunded owner is refused, and still timed
+
+	var m dto.Metric
+	if err := acct.reserveStage.WithLabelValues("total").(prometheus.Histogram).Write(&m); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if m.GetHistogram().GetSampleCount() != 1 {
+		t.Fatalf("total stage holds %d samples after one reserve: the timer is not wired", m.GetHistogram().GetSampleCount())
 	}
 }

@@ -130,8 +130,19 @@ type Accountant struct {
 	holdTTL    time.Duration
 	balanceTTL time.Duration
 	moSeenTTL  time.Duration
+	total      StageObserver
+	durable    StageObserver
 	logger     *slog.Logger
 }
+
+// StageObserver receives a duration in seconds. A prometheus.Observer satisfies it.
+type StageObserver interface {
+	Observe(seconds float64)
+}
+
+type nopObserver struct{}
+
+func (nopObserver) Observe(float64) {}
 
 // strictPrepaid is the default ConfigSource: every owner reserves against a floor of 0 (strict
 // prepaid, no overdraft). It keeps the Accountant safe by default until real per-customer config is wired
@@ -196,6 +207,16 @@ func WithMOSeenTTL(d time.Duration) Option {
 	}
 }
 
+// WithReserveTimers times each reserve as a whole, and its ledger write alone, so a reserve that outruns
+// its caller's deadline can be attributed to Redis or to Postgres (step-285).
+func WithReserveTimers(total, durable StageObserver) Option {
+	return func(a *Accountant) {
+		if total != nil && durable != nil {
+			a.total, a.durable = total, durable
+		}
+	}
+}
+
 // New builds an Accountant over rdb (a non-clustered Redis) and the durable store.
 func New(rdb *redis.Client, store LedgerStore, opts ...Option) *Accountant {
 	a := &Accountant{
@@ -210,6 +231,8 @@ func New(rdb *redis.Client, store LedgerStore, opts ...Option) *Accountant {
 		holdTTL:    defaultHoldTTL,
 		balanceTTL: defaultBalanceCacheTTL,
 		moSeenTTL:  defaultMOSeenTTL,
+		total:      nopObserver{},
+		durable:    nopObserver{},
 		logger:     slog.Default(),
 	}
 	for _, o := range opts {
@@ -295,6 +318,7 @@ func (a *Accountant) Reserve(ctx context.Context, owner Owner, messageID uuid.UU
 	if credits <= 0 {
 		return 0, fmt.Errorf("billing: reserve: credits must be positive, got %d", credits)
 	}
+	defer func(started time.Time) { a.total.Observe(time.Since(started).Seconds()) }(time.Now())
 	bkey, rkey, ikey := balanceKey(owner), reservationKey(messageID), inFlightKey(owner)
 
 	// Per-customer floor: strict prepaid (floor 0), overdraft (floor -limit) or a postpaid hard limit; a
@@ -323,7 +347,9 @@ func (a *Accountant) Reserve(ctx context.Context, owner Owner, messageID uuid.UU
 			decided := toInt(res[1])
 			dctx, cancel := context.WithTimeout(ctx, reserveDurableTimeout)
 			defer cancel()
+			started := time.Now()
 			newBalance, applied, err := a.store.RecordDurable(dctx, a.entry(owner, &messageID, cp.EntryReserve, -credits, &decided))
+			a.durable.Observe(time.Since(started).Seconds())
 			if err != nil {
 				// A durable error is ambiguous: a lost commit-ack looks identical to a real failure. If the
 				// reserve entry IS in the ledger the commit actually succeeded — compensating would refund a

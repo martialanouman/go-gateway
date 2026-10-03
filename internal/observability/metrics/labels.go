@@ -47,6 +47,7 @@ var allowed = map[string]struct{}{
 	"version":    {}, // go_info's build version: one value per binary
 	"event_type": {}, // DLR / MO event kinds
 	"direction":  {}, // mt | mo
+	"stage":      {}, // total | durable — the part of a billing reserve timed
 	// Where: named pieces of the deployment, declared in config or in code.
 	"source":   {}, // rest | smpp
 	"queue":    {}, // a Kafka topic name

@@ -66,3 +66,34 @@ ici, la reprise dépend du hasard des redémarrages et du backoff, pas d'une con
 - [ ] la reprise d'un backlog de step-280 rejouée sur le VPS de test : lag décroissant dès la première
       minute, zéro redémarrage
 - [ ] la dette `content-key-svc…` statuée à la lumière de la même décision (payée ou explicitement non)
+
+## Design arrêté (03/10/2026 — spec muette, tranché par Fable, appliqué)
+
+1. **Rejeu en place dans `kafka.Consumer`, `Run` et `RunBatch`, pour tous les consommateurs.** Une erreur de
+   handler ne remonte plus : le consommateur rejoue le suffixe non commité du lot, sans repoller, avec un
+   backoff exponentiel plafonné (1 s → 30 s, jitter ±20 %), jusqu'au succès ou à l'annulation du ctx. Un
+   `slog.Warn` par tentative (groupe, topic, partition, offset, tentative, délai, erreur).
+2. **`pending` est le complément de ce que `committablePrefix` rend committable**, jamais « `results[i] != nil` » :
+   le curseur de fetch est déjà au-delà du lot, un enregistrement ni rejoué ni commité serait sauté par le
+   commit suivant. `committablePrefix` rend `(commit, pending, err)`.
+3. **Restent fatals** : erreur de fetch, rupture de contrat du handler, échec de commit hors annulation.
+4. **Écartés** : recréer le client kgo (un rééquilibrage par échec, corrélé entre répliques, chaque
+   déplacement republie — ADR-0012) ; `BlockRebalanceOnPoll` (budget sous `RebalanceTimeout`, puis
+   expulsion) ; `SetOffsets` (déconseillé par kgo en groupe) ; élargir `RESERVE_TIMEOUT`. franz-go n'a pas
+   de `max.poll.interval` : les battements de cœur vivent dans leur goroutine, un rejeu long n'expulse pas.
+5. **Concurrence vers billing-svc : non bornée de plus** — les voies la bornent déjà (≤ 1 réserve en vol
+   par partition assignée).
+6. **Attribution** : un histogramme `billing_reserve_stage_seconds{stage="total"|"durable"}` dans
+   `Accountant.Reserve`, injecté comme la jauge du replieur. Ni intercepteur gRPC, ni stats pgx.
+7. **Dette `content-key-svc…` : payée pour son sujet** (la jambe de remise rejoue seule, les autres
+   groupes du pod continuent) ; ce qui n'est pas payé y est écrit.
+8. **Docs à corriger** : `Handler`/`BatchHandler`/`Run`/`RunBatch`, `router.Run`, `reserver.go:15-17`
+   (le délai de 200 ms ne protège d'aucun rééquilibrage, c'est un fail-fast).
+9. **Dettes ouvertes** : doublons par tentative au pool de connecteurs (produce `mt.outcome` après
+   `submit_sm`) ; rejeu pendant un rééquilibrage ; tête de ligne silencieuse d'un poison.
+
+**Test de DoD** : e2e en processus (`internal/e2e`, harnais du routeur de référence) — backlog produit
+avant le démarrage, réserve qui rend `DeadlineExceeded` brut puis réussit ; `Run` ne rend rien, le lag
+du groupe atteint 0, chaque message est sur `mt.routed`. Rouge sur le code actuel : `Run` rend l'erreur.
+
+**Plan de PR** : PR1 = histogramme billing ; PR2 = rejeu en place + tests + docs + dettes ; puis rejeu VPS.
