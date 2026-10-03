@@ -95,6 +95,11 @@ ici, la reprise dépend du hasard des redémarrages et du backoff, pas d'une con
     l'appel suivant le traite avant de repoller — connector-pool rappelle `RunBatch` sur le même client
     après chaque chute de bind ; sans cela, le curseur déjà avancé sautait ces enregistrements. Et
     `mt-replay` s'arrête toujours sur le premier échec (`Replayer.Run` annule son propre ctx).
+11. **Amendement après le rejeu VPS du 03/10 (tranché par Fable)** : zéro redémarrage, mais ~9 msg/s. Le
+    backoff croissait à chaque échec d'un même lot (`attempt` jamais remis à zéro) et chaque attente gelait
+    toutes ses partitions : 2,4 % de réserves au-delà de 200 ms suffisaient à arrêter le routeur. Règle :
+    une tentative qui a traité quelque chose remet `attempt` à 0 et rejoue sans attendre ; seule une
+    tentative sans aucun progrès attend. Une panne franche garde son backoff exponentiel.
 
 **Test de DoD** : e2e en processus (`internal/e2e`, harnais du routeur de référence) — backlog produit
 avant le démarrage, réserve qui rend `DeadlineExceeded` brut puis réussit ; `Run` ne rend rien, le lag
