@@ -15,7 +15,7 @@ import (
 // defaultReserveTimeout bounds a single Reserve RPC. It is short on purpose, to fail fast: the deadline turns
 // a hung billing-svc into a transient error the consumer replays after a backoff, not an indefinite block of
 // the lane. It protects no group membership — franz-go heartbeats outside the poll loop.
-const defaultReserveTimeout = 200 * time.Millisecond
+const defaultReserveTimeout = time.Second
 
 // BillingClient is the slice of the billing gRPC client the credit stage uses. The generated pb.BillingClient
 // satisfies it; declared consumer-side (convention §2) so a test can supply a counting fake.
@@ -34,7 +34,7 @@ type Reserver struct {
 // Option configures a Reserver.
 type Option func(*Reserver)
 
-// WithTimeout overrides the per-call Reserve deadline (default 200ms).
+// WithTimeout overrides the per-call Reserve deadline (default 1s).
 func WithTimeout(d time.Duration) Option {
 	return func(r *Reserver) { r.timeout = d }
 }
