@@ -217,7 +217,7 @@ qu'on mesure un environnement représentatif.
       multiple de dix libre
 - [ ] step-284 — L'écriture durable du solde devient asynchrone, le plancher reste atomique ⛓ step-280 —
       décision humaine ; unité faute de multiple de dix libre
-- [ ] step-285 — Le routeur se tue en boucle sur un backlog quand la facturation est active ⛓ step-280 —
+- [x] step-285 — Le routeur se tue en boucle sur un backlog quand la facturation est active ⛓ step-280 —
       ouverte par la campagne step-280 ; unité faute de multiple de dix libre
 - [ ] step-286 — Une seule porte pour baisser le solde MT : Redis, avant Postgres ⛓ step-284 — ouverte par
       la revue de step-284 ; unité faute de multiple de dix libre
