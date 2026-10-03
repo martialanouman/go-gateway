@@ -442,7 +442,8 @@ func TestConsumerDoesNotStallOnSporadicFailures(t *testing.T) {
 	const records = 300
 	for i := range records {
 		v := group + "-" + strconv.Itoa(i)
-		if err := producer.Produce(t.Context(), kafka.Record{Topic: kafka.TopicMTRouted, Key: []byte(v), Value: []byte(v)}); err != nil {
+		key := []byte("sporadic-" + strconv.Itoa(i)) // fixed, so the failures land on the same partitions every run
+		if err := producer.Produce(t.Context(), kafka.Record{Topic: kafka.TopicMTRouted, Key: key, Value: []byte(v)}); err != nil {
 			t.Fatalf("produce: %v", err)
 		}
 	}
@@ -479,5 +480,65 @@ func TestConsumerDoesNotStallOnSporadicFailures(t *testing.T) {
 	})
 	if len(handled) != records {
 		t.Fatalf("%d of %d records handled in 15 s: one failure in twenty stalled the consumer", len(handled), records)
+	}
+}
+
+// TestConsumerBacksOffARecordThatNeverPasses: only an attempt that handled something replays at once. A record
+// that fails for good must still wait between attempts, or an outage is hammered at CPU speed.
+func TestConsumerBacksOffARecordThatNeverPasses(t *testing.T) {
+	cfg := config.Kafka{Brokers: kafkatest.Brokers(t), Timeout: 3 * time.Second}
+	producer, err := kafka.NewProducer(cfg)
+	if err != nil {
+		t.Fatalf("new producer: %v", err)
+	}
+	defer producer.Close()
+
+	run := map[string]func(*kafka.Consumer, context.Context, kafka.Handler) error{
+		"Run": func(c *kafka.Consumer, ctx context.Context, h kafka.Handler) error { return c.Run(ctx, h) },
+		"RunBatch": func(c *kafka.Consumer, ctx context.Context, h kafka.Handler) error {
+			return c.RunBatch(ctx, func(ctx context.Context, recs []kafka.Record) []error {
+				out := make([]error, len(recs))
+				for i, rec := range recs {
+					out[i] = h(ctx, rec)
+				}
+				return out
+			})
+		},
+	}
+	for name, runner := range run {
+		t.Run(name, func(t *testing.T) {
+			group := "test-backoff-" + name + "-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+			if err := producer.Produce(t.Context(), kafka.Record{Topic: kafka.TopicMTRouted, Key: []byte("k"), Value: []byte(group)}); err != nil {
+				t.Fatalf("produce: %v", err)
+			}
+			consumer, err := kafka.NewConsumer(cfg, group, kafka.TopicMTRouted)
+			if err != nil {
+				t.Fatalf("new consumer: %v", err)
+			}
+			defer consumer.Close()
+
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			var first time.Time
+			calls := 0
+			_ = runner(consumer, ctx, func(_ context.Context, rec kafka.Record) error {
+				if string(rec.Value) != group {
+					return nil
+				}
+				if first.IsZero() {
+					first = time.Now()
+				}
+				if time.Since(first) > 2500*time.Millisecond {
+					cancel()
+				} else {
+					calls++
+				}
+				return errors.New("billing-svc unavailable")
+			})
+			// Attempts at 0, then after 0.8–1.2 s and 1.6–2.4 s more: at most three within 2.5 s.
+			if calls > 3 {
+				t.Errorf("%d handler calls in 2.5 s on a record that never passes: the replay does not back off", calls)
+			}
+		})
 	}
 }

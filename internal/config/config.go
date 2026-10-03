@@ -474,13 +474,12 @@ type Billing struct {
 	// of the RPC, so a healthy router that bills nobody never opens this connection.
 	Addr string `env:"ADDR" envDefault:"localhost:7001"`
 
-	// ReserveTimeout bounds a single credit-reserve RPC. It is short so a hung billing-svc turns into a
-	// retryable error rather than stalling the consumer past its session timeout. It must stay comfortably
-	// above billing-svc's synchronous durable-write latency, though: a deadline shorter than a legitimate
-	// reserve commit would spuriously fail-closed and retry under load — hence a knob ops can widen without a
-	// redeploy. Reserve is idempotent by message_id, so a deadline that fires after the server committed heals
+	// ReserveTimeout bounds a single credit-reserve RPC, so a hung billing-svc turns into an error the
+	// consumer replays rather than a lane blocked for good. It must stay well above billing-svc's reserve
+	// latency: at 200 ms, 2.4 % of reserves outran it on the VPS while the server timed them at 42 ms on
+	// average (step-285) — hence 1 s, and a knob ops can widen without a redeploy. Reserve is idempotent by message_id, so a deadline that fires after the server committed heals
 	// on redelivery without double-charging.
-	ReserveTimeout time.Duration `env:"RESERVE_TIMEOUT" envDefault:"200ms"`
+	ReserveTimeout time.Duration `env:"RESERVE_TIMEOUT" envDefault:"1s"`
 
 	// SettleTimeout bounds a single capture/release RPC in the connector pool (step-146). Like
 	// ReserveTimeout it is short so a slow billing-svc degrades to a fast fail-open rather than stalling the

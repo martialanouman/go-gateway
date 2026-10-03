@@ -190,13 +190,16 @@ func (c *Consumer) replay(ctx context.Context, attempt int, failed *kgo.Record, 
 	if ctx.Err() != nil {
 		return false // a drain, not a fault: nothing to warn about
 	}
-	if attempt == 0 {
-		return true // the attempt made progress: replay what is left at once
+	var delay time.Duration // the attempt made progress: replay what is left at once
+	if attempt > 0 {
+		delay = replayDelay(attempt - 1)
 	}
-	delay := replayDelay(attempt - 1)
 	slog.Default().WarnContext(ctx, "kafka: handler failed, replaying in place",
 		"group", c.group, "topic", failed.Topic, "partition", failed.Partition, "offset", failed.Offset,
-		"attempt", attempt+1, "delay", delay, "err", err)
+		"idle_attempts", attempt, "delay", delay, "err", err)
+	if delay == 0 {
+		return true
+	}
 	t := time.NewTimer(delay)
 	defer t.Stop()
 	select {

@@ -100,6 +100,8 @@ ici, la reprise dépend du hasard des redémarrages et du backoff, pas d'une con
     toutes ses partitions : 2,4 % de réserves au-delà de 200 ms suffisaient à arrêter le routeur. Règle :
     une tentative qui a traité quelque chose remet `attempt` à 0 et rejoue sans attendre ; seule une
     tentative sans aucun progrès attend. Une panne franche garde son backoff exponentiel.
+    Chaque rejeu reste journalisé (`idle_attempts`, `delay=0` s'il a progressé). `RESERVE_TIMEOUT` passe à
+    1 s (décision utilisateur) : 200 ms tranchait 2,4 % de réserves que billing-svc servait en 42 ms.
 
 **Test de DoD** : e2e en processus (`internal/e2e`, harnais du routeur de référence) — backlog produit
 avant le démarrage, réserve qui rend `DeadlineExceeded` brut puis réussit ; `Run` ne rend rien, le lag
