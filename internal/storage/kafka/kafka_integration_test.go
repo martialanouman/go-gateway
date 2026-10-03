@@ -535,8 +535,9 @@ func TestConsumerBacksOffARecordThatNeverPasses(t *testing.T) {
 				}
 				return errors.New("billing-svc unavailable")
 			})
-			// Attempts at 0, then after 0.8–1.2 s and 1.6–2.4 s more: at most three within 2.5 s.
-			if calls > 3 {
+			// Idle attempts wait 0.8–1.2 s, then 1.6–2.4 s: three calls within 2.5 s, plus whatever immediate
+			// replays the other tests' records on mt.routed earn by committing. Without the backoff it is millions.
+			if calls > 10 {
 				t.Errorf("%d handler calls in 2.5 s on a record that never passes: the replay does not back off", calls)
 			}
 		})
