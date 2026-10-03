@@ -22,8 +22,9 @@ import (
 	"github.com/martialanouman/go-gateway/internal/testutil/otelrec"
 )
 
-// fakeConsumer feeds its records as one poll batch and mirrors the part of kafka.RunBatch these tests
-// depend on: a batch that reported any failure surfaces as an error, so the offset is not committed.
+// fakeConsumer feeds its records as one poll batch and surfaces any failure as an error, so a test reads the
+// handler's verdict. The real consumer replays a failure in place instead; backlog_integration_test.go
+// covers that.
 //
 // Its records carry no partition, so they all land on partition 0 — one lane, processed sequentially.
 // That is deliberate: every assertion written before the fan-out keeps the exact meaning it had. The

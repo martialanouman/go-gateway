@@ -2,6 +2,7 @@ package kafka_test
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"sync"
 	"testing"
@@ -244,5 +245,105 @@ func TestConsumerCommitsHandledRecordsOnShutdown(t *testing.T) {
 		default:
 		}
 		break
+	}
+}
+
+// TestConsumerReplaysAFailedRecordInPlace is step-285: a transient handler failure used to end Run, and the
+// supervisor took the whole process down with it. The consumer now replays the record itself, and commits it.
+func TestConsumerReplaysAFailedRecordInPlace(t *testing.T) {
+	brokers := kafkatest.Brokers(t)
+	cfg := config.Kafka{Brokers: brokers, Timeout: 3 * time.Second}
+	producer, err := kafka.NewProducer(cfg)
+	if err != nil {
+		t.Fatalf("new producer: %v", err)
+	}
+	defer producer.Close()
+
+	run := map[string]func(*kafka.Consumer, context.Context, kafka.Handler) error{
+		"Run": func(c *kafka.Consumer, ctx context.Context, h kafka.Handler) error { return c.Run(ctx, h) },
+		"RunBatch": func(c *kafka.Consumer, ctx context.Context, h kafka.Handler) error {
+			return c.RunBatch(ctx, func(ctx context.Context, recs []kafka.Record) []error {
+				out := make([]error, len(recs))
+				for i, rec := range recs {
+					if out[i] = h(ctx, rec); out[i] != nil {
+						for j := i + 1; j < len(recs); j++ {
+							out[j] = out[i]
+						}
+						break
+					}
+				}
+				return out
+			})
+		},
+	}
+	for name, runner := range run {
+		t.Run(name, func(t *testing.T) {
+			group := "test-replay-" + name + "-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+			marker := []byte(group)
+			if err := producer.Produce(t.Context(), kafka.Record{Topic: kafka.TopicMTRouted, Key: []byte("k"), Value: marker}); err != nil {
+				t.Fatalf("produce: %v", err)
+			}
+
+			consumer, err := kafka.NewConsumer(cfg, group, kafka.TopicMTRouted)
+			if err != nil {
+				t.Fatalf("new consumer: %v", err)
+			}
+			defer consumer.Close()
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			failures, handled := 2, make(chan struct{}, 1)
+			runErr := make(chan error, 1)
+			go func() {
+				runErr <- runner(consumer, ctx, func(_ context.Context, rec kafka.Record) error {
+					if string(rec.Value) != group {
+						return nil
+					}
+					if failures > 0 {
+						failures--
+						return errors.New("billing: deadline exceeded")
+					}
+					handled <- struct{}{}
+					return nil
+				})
+			}()
+
+			select {
+			case err := <-runErr:
+				t.Fatalf("%s returned %v on a transient failure: the supervisor would restart the process", name, err)
+			case <-handled:
+			case <-time.After(30 * time.Second):
+				t.Fatal("the failed record was never replayed")
+			}
+			cancel()
+			if err := <-runErr; err != nil {
+				t.Fatalf("%s after cancel = %v, want nil", name, err)
+			}
+			consumer.Close() // its partitions must go to the next member of the group before the deadline below
+
+			// A record produced after the replay proves the next member is reading before it is asked what it saw.
+			after := group + "-after"
+			if err := producer.Produce(t.Context(), kafka.Record{Topic: kafka.TopicMTRouted, Key: []byte("k"), Value: []byte(after)}); err != nil {
+				t.Fatalf("produce: %v", err)
+			}
+			again, err := kafka.NewConsumer(cfg, group, kafka.TopicMTRouted)
+			if err != nil {
+				t.Fatalf("new consumer: %v", err)
+			}
+			defer again.Close()
+			actx, acancel := context.WithTimeout(t.Context(), 20*time.Second)
+			defer acancel()
+			_ = again.Run(actx, func(_ context.Context, rec kafka.Record) error {
+				switch string(rec.Value) {
+				case group:
+					t.Error("the replayed record was redelivered to the group: its offset was never committed")
+				case after:
+					acancel()
+				}
+				return nil
+			})
+			if !errors.Is(actx.Err(), context.Canceled) {
+				t.Fatal("the next member never read the record produced after the replay")
+			}
+		})
 	}
 }

@@ -1,7 +1,15 @@
 # `content-key-svc` est sur le chemin de la remise sans être une dépendance de readiness
 
-> **Statut :** OUVERTE · **Nature :** technique
+> **Statut :** PAYÉE (03/10/2026, step-285 PR2) · **Nature :** technique
 > **Née de :** step-295b · **Portée par :** —
+
+**Payée par step-285, par le second des deux paiements.** Une erreur de handler n'abat plus le groupe :
+le consommateur Kafka la rejoue en place (`internal/storage/kafka/consumer.go`, `Consumer.replay`). Un
+`Unavailable` de `content-key-svc` immobilise la seule jambe de remise, qui journalise chaque tentative ;
+les autres jambes du pod continuent, sans `CrashLoopBackOff`. **Non payé, sciemment :** la sonde de
+readiness n'est pas décidée, et la jambe de remise reste bloquée en tête de ligne tant que le service
+manque (`debts/un-poison-immobilise-son-consommateur-sans-redemarrage.md`). Les deux trous voisins ont
+leur fiche : `debts/allowlist-content-key-et-gardes-de-migration-sans-test.md`.
 
 Depuis step-295b, `mo-dlr-router-svc` ne peut signer aucune remise de webhook sans `content-key-svc` : il
 lui demande d'ouvrir le secret de signature à chaque événement. Mais `newOpsServer` n'enregistre comme
