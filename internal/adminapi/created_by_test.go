@@ -46,6 +46,7 @@ func TestCreationsRecordTheOperatorAsCreatedBy(t *testing.T) {
 	}{
 		{"operator id", operator, operator},
 		{"static token fingerprint", auth.Fingerprint(operatorToken), nil},
+		{"declared replay identity", "declared:nightly", nil},
 	} {
 		deps := adminapi.Deps{
 			Customers: customers, CustomerGroups: newFakeCustomerGroupStore(), RoutingScripts: newFakeRoutingScriptStore(),

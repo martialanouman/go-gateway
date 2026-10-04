@@ -1,5 +1,6 @@
 -- NOT VALID: the created_by written since the up reference operators the stub never held, and a
--- validated key would make this rollback impossible.
+-- validated key would make this rollback impossible. New rows are still checked: roll the binary back
+-- first, or every creation under a BFF token fails on the empty stub.
 CREATE SCHEMA dashboard;
 CREATE TABLE dashboard.operators (
   id          uuid PRIMARY KEY DEFAULT uuidv7(),

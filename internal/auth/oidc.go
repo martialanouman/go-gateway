@@ -29,7 +29,7 @@ type OIDCVerifier struct {
 
 // NewOIDCVerifier builds a verifier over the JWKS at jwksURL, trusting the authority in jwksCAFile, or the
 // system roots when it is empty. Nothing is fetched here: the keys load on the first token, so the service
-// boots and passes readiness while the identity provider is down. An unusable authority file is an error.
+// boots and passes readiness while the identity provider is down.
 func NewOIDCVerifier(ctx context.Context, logger *slog.Logger, issuer, audience, jwksURL, jwksCAFile string) (*OIDCVerifier, error) {
 	tlsConfig, err := tlsconf.StoreClientConfig(jwksCAFile)
 	if err != nil {
@@ -64,8 +64,7 @@ func (v *OIDCVerifier) Verify(ctx context.Context, token string) (Principal, err
 	// ADR-0019: the BFF signs an operator id. Any other sub is a misconfigured issuer, which would
 	// otherwise reach created_by as nothing at all.
 	if _, err := uuid.Parse(idToken.Subject); err != nil {
-		v.logger.WarnContext(ctx, "operator token refused: its sub is not an operator id",
-			"iss", idToken.Issuer, "sub", idToken.Subject)
+		v.logger.WarnContext(ctx, "operator token refused: its sub is not an operator id", "iss", idToken.Issuer)
 		return Principal{}, errs.ErrUnauthenticated
 	}
 	var scopes []Scope

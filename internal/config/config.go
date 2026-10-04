@@ -543,10 +543,9 @@ type ContentKey struct {
 // tokens must carry, and the JWKS they are signed with. All empty is the laptop setting, where the
 // static verifier stands in; production requires all three (step-310).
 type OIDC struct {
-	Issuer   string `env:"ISSUER"`
-	Audience string `env:"AUDIENCE"`
-	JWKSURL  string `env:"JWKS_URL"`
-	// JWKSCAFile is the path of the authority the key set's server is signed by; empty keeps the system roots.
+	Issuer     string `env:"ISSUER"`
+	Audience   string `env:"AUDIENCE"`
+	JWKSURL    string `env:"JWKS_URL"`
 	JWKSCAFile string `env:"JWKS_CA_FILE"`
 }
 

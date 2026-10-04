@@ -7,14 +7,11 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -66,26 +63,6 @@ func newIDP(t *testing.T) *idp {
 func (p *idp) verifier(t *testing.T) *auth.OIDCVerifier {
 	t.Helper()
 	return newVerifier(t, discard(), p.srv.URL, "")
-}
-
-// servedUnder serves the provider's key set over https, under a certificate ca signed for localhost.
-func (p *idp) servedUnder(t *testing.T, ca *tlstest.CA) string {
-	t.Helper()
-	return serveTLS(t, ca, p.srv.Config.Handler)
-}
-
-func serveTLS(t *testing.T, ca *tlstest.CA, handler http.Handler) string {
-	t.Helper()
-	certFile, keyFile := ca.Issue(t, "jwks", "localhost")
-	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv := httptest.NewUnstartedServer(handler)
-	srv.TLS = &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
-	srv.StartTLS()
-	t.Cleanup(srv.Close)
-	return "https://localhost:" + srv.URL[strings.LastIndex(srv.URL, ":")+1:]
 }
 
 func newVerifier(t *testing.T, logger *slog.Logger, jwksURL, jwksCAFile string) *auth.OIDCVerifier {
@@ -208,7 +185,7 @@ func TestOIDCVerifierRejectsAnInvalidToken(t *testing.T) {
 
 // TestOIDCVerifierRefusesASubjectThatIsNotAnOperatorID: ADR-0019 makes every sub the BFF signs an
 // operator id. Any other is a misconfigured issuer, refused on every call rather than recorded nowhere,
-// and named in the log, which the bare 401 is not.
+// and logged, which the bare 401 is not.
 func TestOIDCVerifierRefusesASubjectThatIsNotAnOperatorID(t *testing.T) {
 	p := newIDP(t)
 	var logged bytes.Buffer
@@ -220,8 +197,10 @@ func TestOIDCVerifierRefusesASubjectThatIsNotAnOperatorID(t *testing.T) {
 	if !errors.Is(err, errs.ErrUnauthenticated) {
 		t.Errorf("Verify() error = %v, want ErrUnauthenticated", err)
 	}
-	if !strings.Contains(logged.String(), "service-account-dashboard") {
-		t.Errorf("log = %q, want the refused sub named", logged.String())
+	// The issuer names the misconfiguration; the sub is left out, since a misconfigured provider puts an
+	// email there.
+	if !strings.Contains(logged.String(), testIssuer) || strings.Contains(logged.String(), "service-account-dashboard") {
+		t.Errorf("log = %q, want the issuer named and the sub left out", logged.String())
 	}
 }
 
@@ -310,7 +289,7 @@ func TestOIDCVerifierFollowsARedirectedKeySet(t *testing.T) {
 func TestOIDCVerifierTrustsTheConfiguredAuthorityForTheKeySet(t *testing.T) {
 	p := newIDP(t)
 	ca := tlstest.NewCA(t)
-	jwksURL := p.servedUnder(t, ca)
+	jwksURL := ca.HTTPSServer(t, p.srv.Config.Handler)
 	token := sign(t, jose.RS256, p.key, testKeyID, validClaims())
 
 	if _, err := newVerifier(t, discard(), jwksURL, ca.CAFile).Verify(context.Background(), token); err != nil {
@@ -327,29 +306,15 @@ func TestOIDCVerifierTrustsTheConfiguredAuthorityForTheKeySet(t *testing.T) {
 func TestOIDCVerifierRefusesAKeySetRedirectedToPlaintext(t *testing.T) {
 	p := newIDP(t)
 	ca := tlstest.NewCA(t)
-	downgrade := serveTLS(t, ca, http.RedirectHandler(p.srv.URL, http.StatusFound))
+	downgrade := ca.HTTPSServer(t, http.RedirectHandler(p.srv.URL, http.StatusFound))
+	var logged bytes.Buffer
 
-	_, err := newVerifier(t, discard(), downgrade, ca.CAFile).
+	_, err := newVerifier(t, slog.New(slog.NewTextHandler(&logged, nil)), downgrade, ca.CAFile).
 		Verify(context.Background(), sign(t, jose.RS256, p.key, testKeyID, validClaims()))
 	if !errors.Is(err, errs.ErrServiceUnavailable) {
 		t.Errorf("Verify() error = %v, want ErrServiceUnavailable: the plaintext key set must not be read", err)
 	}
-}
-
-func TestNewOIDCVerifierRefusesAnUnusableAuthority(t *testing.T) {
-	empty := filepath.Join(t.TempDir(), "empty.crt")
-	if err := os.WriteFile(empty, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	for name, caFile := range map[string]string{
-		"missing file":      filepath.Join(t.TempDir(), "absent.crt"),
-		"no certificate in": empty,
-	} {
-		t.Run(name, func(t *testing.T) {
-			_, err := auth.NewOIDCVerifier(context.Background(), discard(), testIssuer, testAudience, "https://bff/jwks", caFile)
-			if err == nil {
-				t.Error("NewOIDCVerifier() error = nil, want the unusable authority refused")
-			}
-		})
+	if !strings.Contains(logged.String(), "redirected from https") {
+		t.Errorf("log = %q, want the downgrade named as the cause", logged.String())
 	}
 }

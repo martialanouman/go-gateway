@@ -4,9 +4,28 @@ import (
 	"context"
 	"crypto/tls"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
+
+// HTTPSServer serves h over https under a certificate ca signed for localhost, and returns its URL under
+// that name, so the client verifies the certificate rather than an IP it does not carry.
+func (ca *CA) HTTPSServer(t *testing.T, h http.Handler) string {
+	t.Helper()
+	certFile, keyFile := ca.Issue(t, "https", "localhost")
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		t.Fatalf("load https pair: %v", err)
+	}
+	srv := httptest.NewUnstartedServer(h)
+	srv.TLS = &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	return "https://localhost:" + srv.URL[strings.LastIndex(srv.URL, ":")+1:]
+}
 
 // HandshakePeer listens as a peer signed by ca under the name localhost, and signals each TLS handshake that
 // completes. It speaks no application protocol, so the client's request fails afterwards: it proves the

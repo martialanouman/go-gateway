@@ -87,11 +87,13 @@ spec:
                   key: OIDC_JWKS_URL
             # The authority the BFF's JWKS is served under (ADR-0019). Empty keeps the system roots; the
             # internal PKI is already mounted at /etc/gateway/tls/ca.crt (deploy/k8s/tls/README.md).
+            # Optional: a gateway-oidc ConfigMap written before this key would otherwise stall the rollout.
             - name: OIDC_JWKS_CA_FILE
               valueFrom:
                 configMapKeyRef:
                   name: gateway-oidc
                   key: OIDC_JWKS_CA_FILE
+                  optional: true
           ports:
             - name: ops
               containerPort: 9090

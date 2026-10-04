@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -33,7 +32,11 @@ func TestNewAdminAppAuthenticatesAgainstTheConfiguredProvider(t *testing.T) {
 		t.Fatal(err)
 	}
 	ca := tlstest.NewCA(t)
-	jwksURL := serveKeySet(t, ca, &key.PublicKey)
+	jwksURL := ca.HTTPSServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{
+			{Key: &key.PublicKey, KeyID: "k1", Algorithm: string(jose.RS256), Use: "sig"},
+		}})
+	}))
 
 	cfg := testConfig()
 	cfg.Postgres = pgtest.Config(t)
@@ -60,9 +63,8 @@ func TestNewAdminAppAuthenticatesAgainstTheConfiguredProvider(t *testing.T) {
 		app.http.Handler.ServeHTTP(rec, req)
 		return rec.Code
 	}
-	create := func(bearer string) int { return post("/v1/admin/customers", bearer) }
 
-	if code := create(signedToken(t, key, subject)); code != http.StatusCreated {
+	if code := post("/v1/admin/customers", signedToken(t, key, subject)); code != http.StatusCreated {
 		t.Fatalf("create customer with the provider's token = %d, want 201", code)
 	}
 	var rows int
@@ -79,7 +81,7 @@ func TestNewAdminAppAuthenticatesAgainstTheConfiguredProvider(t *testing.T) {
 		t.Errorf("customer groups created by the token's sub = %d, %v; want 1", rows, err)
 	}
 
-	if code := create("test-token"); code != http.StatusUnauthorized {
+	if code := post("/v1/admin/customers", "test-token"); code != http.StatusUnauthorized {
 		t.Errorf("create customer with a static token = %d, want 401: the provider is the only verifier", code)
 	}
 }
@@ -103,25 +105,6 @@ func TestNewAdminAppRefusesToBootOnAnUnusableKeySetAuthority(t *testing.T) {
 	if !strings.Contains(err.Error(), "OIDC_JWKS_CA_FILE") {
 		t.Errorf("newAdminApp() error = %v, want it to name OIDC_JWKS_CA_FILE", err)
 	}
-}
-
-// serveKeySet serves pub as a JWKS over https, under a certificate ca signed for localhost.
-func serveKeySet(t *testing.T, ca *tlstest.CA, pub *rsa.PublicKey) string {
-	t.Helper()
-	certFile, keyFile := ca.Issue(t, "jwks", "localhost")
-	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{
-			{Key: pub, KeyID: "k1", Algorithm: string(jose.RS256), Use: "sig"},
-		}})
-	}))
-	srv.TLS = &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
-	srv.StartTLS()
-	t.Cleanup(srv.Close)
-	return "https://localhost:" + srv.URL[strings.LastIndex(srv.URL, ":")+1:]
 }
 
 func signedToken(t *testing.T, key *rsa.PrivateKey, subject string) string {

@@ -1871,7 +1871,7 @@ components:
         (ADR-0019). No service serves the `tokenUrl` below: it stays only because an OAuth2 flow requires
         one. The gateway verifies the signature (`RS256` or `ES256`) against the BFF's JWKS and expects:
         - `iss`: the BFF's canonical URL;
-        - `aud`: the gateway's audience, `gateway-admin`;
+        - `aud`: the gateway's configured audience (`gateway-admin` under ADR-0019);
         - `sub`: the operator's id, a UUID, written to `created_by` on the resources the call creates; a
           token whose `sub` is not a UUID is refused;
         - `scope`: one space-separated string; scopes outside this scheme are ignored;
