@@ -140,7 +140,7 @@ boucle) · spec §3.3 · plan §1.6.
 - [x] Kafka coupé : la ligne attend et la jauge monte (`TestEventRelayKeepsTheCrossingWhileKafkaIsDown`) ;
   `RecordMO` ne touche pas Kafka, par construction. La reprise après coupure n'a pas de test qui enchaîne
   les deux : chaque passe relit la file, ce que prouvent séparément le test coupé et le test au broker vivant.
-- [x] mutations vues tomber (18, dont 3 refaites faute d'avoir compilé ; une survivante attendue : un
+- [x] mutations vues tomber (19, dont 3 refaites faute d'avoir compilé ; une survivante attendue : un
   `FOR UPDATE` hors transaction se libère seul — la régression réelle, une transaction remise autour de
   la publication, tombe) · revue en deux axes puis
   contre-revue des correctifs · coupe (boucle partagée avec `Folder`, constructeur supprimé) ·
