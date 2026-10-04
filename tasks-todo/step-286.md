@@ -1,7 +1,7 @@
 # step-286 — Une seule porte pour baisser le solde MT : Redis, avant Postgres
 
 > **Jalon :** M12 · **Statut :** À FAIRE
-> **Dépend de :** step-284, step-285b · **Bloque :** step-410
+> **Dépend de :** step-284, step-285b, step-285c · **Bloque :** step-410
 > Ouverte par la revue de step-284 (30/09/2026), décision humaine : une step dédiée plutôt que la PR2 de
 > step-284 ; unité faute de multiple de dix libre.
 

@@ -1,6 +1,6 @@
 # step-285b — billing-svc groupe ses écritures durables : un commit pour N mouvements
 
-> **Jalon :** M12 · **Statut :** À FAIRE
+> **Jalon :** M12 · **Statut :** LIVRÉE (#255)
 > **Dépend de :** step-285 · **Bloque :** step-286, step-287
 > Paie `debts/debit-par-client-borne-par-la-latence-de-la-reserve.md` ; décision humaine du 04/10/2026 ;
 > lettre faute d'unité libre avant step-286, qui touche la même porte.
@@ -107,12 +107,36 @@ fiché : `debts/capture-et-liberation-commitees-apres-un-accuse-perdu.md`.
 
 ## Definition of Done
 
-- [ ] N écritures concurrentes : N lignes au grand livre, sa somme égale le solde
-- [ ] un doublon dans un même lot ne s'applique qu'une fois (invariant c)
-- [ ] une entrée empoisonnée dans un lot n'empêche pas les autres
-- [ ] sous concurrence, des lots de plus d'une entrée sont écrits (l'histogramme le montre)
-- [ ] chaque test ci-dessus tombe sous mutation
-- [ ] VPS, même protocole que l'A/B (backlog mono-client, pool à 10) : réserves/s et durée de l'étape
-      durable comparées à 273/s et 26,9 ms ; part `WALWrite`/`WalSync` relevée
-- [ ] fiche de dette des lectures préalables de la capture
-- [ ] fiche de dette de la course capture/libération sur le chemin unitaire
+- [x] N écritures concurrentes : N lignes au grand livre, sa somme égale le solde
+- [x] un doublon dans un même lot ne s'applique qu'une fois (invariant c)
+- [x] une entrée empoisonnée dans un lot n'empêche pas les autres
+- [x] sous concurrence, des lots de plus d'une entrée sont écrits (l'histogramme le montre)
+- [x] chaque test ci-dessus tombe sous mutation
+- [x] VPS, même protocole que l'A/B (backlog mono-client, pool à 10) : réserves/s et durée de l'étape
+      durable comparées à 273/s et 26,9 ms ; part `WALWrite`/`WalSync` relevée — voir le journal
+- [x] fiche de dette des lectures préalables de la capture
+- [x] fiche de dette de la course capture/libération sur le chemin unitaire
+
+## Journal
+
+**04/10/2026, VPS, image `v0.0.1-sha-979cfd5742b6`.** Même protocole que l'A/B : backlog mono-client
+(~820 k messages), pool de billing-svc à 10, fenêtre de 3 min.
+
+| | avant (A/B, pool 10) | step-285b |
+|---|---|---|
+| réserves/s | 273 | 294 |
+| étape durable | 26,9 ms | 24,8 ms |
+| réserve entière | 33,7 ms | 31,9 ms |
+| CPU de Postgres | 1 207 m | 622 m |
+| échantillons Postgres en attente du WAL | 36 % | 11 % |
+| commits/s des mouvements groupés | ~590 | 70, 8,4 mouvements par lot |
+
+**Le coût par message est payé, pas le plafond par client.** Huit fois moins de commits, Postgres à moitié
+de son CPU et presque plus en attente du WAL : le mur des 16 000 transactions/s est levé. Mais un client
+reste vers 300 réserves/s : 12 voies × une réserve chacune ne forment que des lots de 8, et une réserve
+attend le lot en cours puis le sien (~70 lots/s de ~14 ms, sur un hôte où ClickHouse prend 3 cœurs). Le
+plafond reste voies ÷ latence ; ce qui l'élève maintenant est la concurrence par voie, devenue bon marché
+pour Postgres puisqu'elle grossit les lots au lieu de multiplier les commits → step-285c.
+
+Le smoke du déploiement a échoué (aucun DLR en 3 min) : ses messages attendaient derrière le backlog,
+comme pour step-285.

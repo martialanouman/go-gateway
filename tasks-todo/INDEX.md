@@ -219,8 +219,10 @@ qu'on mesure un environnement représentatif.
       décision humaine ; unité faute de multiple de dix libre
 - [x] step-285 — Le routeur se tue en boucle sur un backlog quand la facturation est active ⛓ step-280 —
       ouverte par la campagne step-280 ; unité faute de multiple de dix libre
-- [ ] step-285b — billing-svc groupe ses écritures durables : un commit pour N mouvements ⛓ step-285 —
+- [x] step-285b — billing-svc groupe ses écritures durables : un commit pour N mouvements ⛓ step-285 —
       paie la dette du débit par client ; décision humaine du 04/10/2026
+- [ ] step-285c — Plusieurs réserves en vol par voie du routeur, publiées dans l'ordre ⛓ step-285b —
+      porte la dette du débit par client ; décision humaine du 04/10/2026
 - [ ] step-286 — Une seule porte pour baisser le solde MT : Redis, avant Postgres ⛓ step-284 — ouverte par
       la revue de step-284 ; unité faute de multiple de dix libre
 - [ ] step-287 — Rejouer la campagne du VPS, injecteur sur une VM séparée ⛓ step-282, step-283, step-284, step-285
