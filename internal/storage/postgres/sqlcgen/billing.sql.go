@@ -722,9 +722,9 @@ func (q *Queries) ListPendingBillingEvents(ctx context.Context, lim int32) ([]Co
 }
 
 const lockBalance = `-- name: LockBalance :exec
-SELECT 1 FROM control_plane.balances
-WHERE owner_type = $1 AND owner_id = $2 AND direction = $3
-FOR UPDATE
+INSERT INTO control_plane.balances (owner_type, owner_id, direction, credits)
+VALUES ($1, $2, $3, 0)
+ON CONFLICT (owner_type, owner_id, direction) DO UPDATE SET credits = control_plane.balances.credits
 `
 
 type LockBalanceParams struct {
@@ -737,6 +737,7 @@ type LockBalanceParams struct {
 // the fold; the hot path appends deltas without it, and Redis is its serialisation point. Read the balance
 // in a LATER statement: under READ COMMITTED a statement that waits on this lock re-reads the row's newest
 // version but keeps its older snapshot of balance_deltas, and would count a just-folded delta twice.
+// An absent row is created and locked: otherwise the fold could insert it mid-transaction and deadlock.
 func (q *Queries) LockBalance(ctx context.Context, arg LockBalanceParams) error {
 	_, err := q.db.Exec(ctx, lockBalance, arg.OwnerType, arg.OwnerID, arg.Direction)
 	return err
