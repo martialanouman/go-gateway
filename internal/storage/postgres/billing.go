@@ -630,3 +630,67 @@ func lockBalances(ctx context.Context, qtx *sqlcgen.Queries, owners []cp.Balance
 	}
 	return nil
 }
+
+// ledgerPartitionLock serialises the replicas creating ledger partitions; it only has to differ from every
+// other advisory lock taken on this database.
+const ledgerPartitionLock int64 = 0x6c6564676572
+
+// EnsureLedgerPartitions creates the daily (UTC) ledger partitions from from's day on, for days days. Each day
+// is its own transaction, so a day that fails — DEFAULT already holding rows of its range — leaves the others.
+//
+// CREATE TABLE … PARTITION OF would take ACCESS EXCLUSIVE on the parent, which every hot-path write holds in
+// ROW EXCLUSIVE; ATTACH PARTITION takes SHARE UPDATE EXCLUSIVE on the parent and ACCESS EXCLUSIVE on DEFAULT
+// alone. The advisory lock is shared by every day, so a replica must wait for it rather than skip: skipping
+// a day another replica is not on yet leaves it to nobody.
+func (r *BillingRepo) EnsureLedgerPartitions(ctx context.Context, from time.Time, days int) error {
+	day := from.UTC().Truncate(24 * time.Hour)
+	var failed []error
+	for range days {
+		if err := r.ensureLedgerPartition(ctx, day); err != nil {
+			failed = append(failed, fmt.Errorf("ledger partition %s: %w", day.Format(time.DateOnly), err))
+		}
+		day = day.AddDate(0, 0, 1)
+	}
+	return errors.Join(failed...)
+}
+
+func (r *BillingRepo) ensureLedgerPartition(ctx context.Context, day time.Time) error {
+	return pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		// Not the ATTACH's 200ms: the losing replica waits here for the winner's whole transaction.
+		if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '1s'`); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, ledgerPartitionLock); err != nil {
+			return err
+		}
+		name := "control_plane.billing_ledger_" + day.Format("20060102")
+		// A table of that name that is not attached is not the day's partition: the CREATE below fails on it, loudly.
+		var attached bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_inherits
+			WHERE inhparent = 'control_plane.billing_ledger'::regclass AND inhrelid = to_regclass($1))`, name).Scan(&attached); err != nil || attached {
+			return err
+		}
+		for _, stmt := range []string{
+			`CREATE TABLE ` + name + ` (LIKE control_plane.billing_ledger INCLUDING DEFAULTS INCLUDING CONSTRAINTS)`,
+			// The capture's ledger reads cannot be pruned and hold DEFAULT: those arriving while the ATTACH waits for
+			// DEFAULT queue behind it, then wait out its scan of DEFAULT. Both together stay under 200ms.
+			`SET LOCAL statement_timeout = '200ms'`,
+			fmt.Sprintf(`ALTER TABLE control_plane.billing_ledger ATTACH PARTITION %s FOR VALUES FROM ('%s 00:00:00+00') TO ('%s 00:00:00+00')`,
+				name, day.Format(time.DateOnly), day.AddDate(0, 0, 1).Format(time.DateOnly)),
+		} {
+			if _, err := tx.Exec(ctx, stmt); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// LedgerDefaultRows counts the rows in the ledger's DEFAULT partition, capped at 10 000: any is a day that had
+// no partition, and a full count of a DEFAULT that took a day's traffic would cost a scan per scrape.
+func (r *BillingRepo) LedgerDefaultRows(ctx context.Context) (int64, error) {
+	var n int64
+	err := r.pool.QueryRow(ctx,
+		`SELECT count(*) FROM (SELECT 1 FROM control_plane.billing_ledger_default LIMIT 10000) s`).Scan(&n)
+	return n, translate("count ledger default rows", err)
+}

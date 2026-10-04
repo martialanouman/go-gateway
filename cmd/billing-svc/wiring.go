@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -138,6 +139,19 @@ func newBillingApp(ctx context.Context, cfg config.Config, logger *slog.Logger) 
 		Help: "Age of the oldest billing event not yet relayed to billing.events (step-400); 0 when none waits, NaN when unreadable.",
 	}, billing.OutboxLag(acct.repo, cfg.Postgres.Timeout))
 	a.eventRelay = billing.NewEventRelay(acct.repo, eventsProducer, logger)
+	//nolint:contextcheck // A scrape carries no context: the boot context has no business inside it.
+	ledgerDefaultRows := prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Name: "billing_ledger_default_rows",
+		Help: "Rows in the billing ledger's DEFAULT partition, capped at 10000: any is a day written without its partition (step-408); NaN when unreadable.",
+	}, func() float64 {
+		ctx, cancel := context.WithTimeout(context.Background(), cfg.Postgres.Timeout)
+		defer cancel()
+		n, err := acct.repo.LedgerDefaultRows(ctx)
+		if err != nil {
+			return math.NaN()
+		}
+		return float64(n)
+	})
 
 	pb.RegisterBillingServer(a.grpc, billing.NewServer(ext.biller, acct.repo, feed.alerts))
 
@@ -146,8 +160,8 @@ func newBillingApp(ctx context.Context, cfg config.Config, logger *slog.Logger) 
 		Help: "Age of the oldest balance delta not yet folded into balances (ADR-0022); 0 when none waits.",
 	})
 	a.folder = billing.NewFolder(a.repo, a.foldLag, logger)
-	collectors := make([]prometheus.Collector, 0, 4+len(ext.collectors)+len(reap.collectors)+len(feed.collectors))
-	collectors = append(collectors, a.foldLag, eventRelayLag, acct.reserveStage, acct.batchSize)
+	collectors := make([]prometheus.Collector, 0, 5+len(ext.collectors)+len(reap.collectors)+len(feed.collectors))
+	collectors = append(collectors, a.foldLag, eventRelayLag, ledgerDefaultRows, acct.reserveStage, acct.batchSize)
 	collectors = append(collectors, ext.collectors...)
 	collectors = append(collectors, reap.collectors...)
 	collectors = append(collectors, feed.collectors...)

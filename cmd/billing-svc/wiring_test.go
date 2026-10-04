@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"reflect"
@@ -164,6 +165,12 @@ func TestNewBillingAppBuildsTheWholeGraph(t *testing.T) {
 	}
 	if !slices.ContainsFunc(families, func(f *dto.MetricFamily) bool { return f.GetName() == "billing_events_outbox_lag_seconds" }) {
 		t.Error("billing_events_outbox_lag_seconds is not exposed: nothing would see the events relay stuck")
+	}
+	defaultRows := slices.IndexFunc(families, func(f *dto.MetricFamily) bool { return f.GetName() == "billing_ledger_default_rows" })
+	if defaultRows < 0 {
+		t.Error("billing_ledger_default_rows is not exposed: nothing would see a day written without its partition")
+	} else if v := families[defaultRows].GetMetric()[0].GetGauge().GetValue(); math.IsNaN(v) {
+		t.Error("billing_ledger_default_rows reads NaN against a reachable Postgres")
 	}
 	if !slices.ContainsFunc(families, func(f *dto.MetricFamily) bool { return f.GetName() == "billing_reserve_stage_seconds" }) {
 		t.Error("billing_reserve_stage_seconds is not exposed: a reserve deadline could not be attributed")
