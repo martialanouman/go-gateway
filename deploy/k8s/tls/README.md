@@ -151,6 +151,7 @@ Postgres, Redis, Kafka et ClickHouse ne sont pas dans notre PKI : ce sont des pa
 | Redis | schéma `rediss://` dans `REDIS_URL` | racines système |
 | Kafka | `KAFKA_TLS_ENABLED=true` | `KAFKA_TLS_CA_FILE`, vide = racines système |
 | ClickHouse | `CLICKHOUSE_TLS_ENABLED=true` | `CLICKHOUSE_TLS_CA_FILE`, vide = racines système |
+| JWKS du BFF (admin-api-svc) | `OIDC_JWKS_URL` en `https` | `OIDC_JWKS_CA_FILE`, vide = racines système ; `/etc/gateway/tls/ca.crt` si le BFF est sous la PKI interne, une autre autorité se monte à part |
 
 Les Jobs suivent les mêmes variables : `migrate-clickhouse` et `kafka-provision` composent comme les
 services. Un fichier de CA **remplace** les racines système, il ne s'y ajoute pas. Plancher TLS 1.2, et aucun

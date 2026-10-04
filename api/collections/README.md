@@ -22,9 +22,9 @@ part** as `Authorization: Bearer <token>` — bearer auth is set once at the
 collection level (`request.auth`) as `{{operatorToken}}`, which the `Local` environment
 resolves to `dev-operator-token`. Reads need `admin:read`, mutations `admin:write`.
 Audit rows record the token's fingerprint (`tok_…`), never the token. Static tokens only exist
-outside `ENVIRONMENT=production`: there, set `operatorToken` to a JWT access token from the identity
-provider named by `OIDC_ISSUER`, `OIDC_AUDIENCE` and `OIDC_JWKS_URL`; its scopes come from its `scope`
-claim.
+outside `ENVIRONMENT=production`: there, set `operatorToken` to the personal JWT the dashboard's BFF
+issues you (ADR-0019), verified against `OIDC_ISSUER`, `OIDC_AUDIENCE` and `OIDC_JWKS_URL`; its scopes
+come from its `scope` claim, and what you create records your operator id as `created_by`.
 
 ## Variables
 
