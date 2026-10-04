@@ -14,3 +14,5 @@ func (b *BillingBatcher) AnswerCommitOutcome(status string) {
 func (r *BillingRepo) XactStatus(ctx context.Context, xid string) (string, error) {
 	return r.q.XactStatus(ctx, xid)
 }
+
+const LedgerPartitionLock = ledgerPartitionLock

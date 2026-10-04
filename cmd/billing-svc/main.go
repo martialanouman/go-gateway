@@ -105,6 +105,9 @@ func run() error {
 	g.Add("billing events relay", func(c context.Context) error {
 		return runFold(c, app.eventRelay)
 	})
+	g.Add("ledger partitions", func(c context.Context) error {
+		return runLedgerPartitions(c, app.repo, ledgerPartitionInterval, logger)
+	})
 	if err := g.Run(ctx, logger, cfg.DrainBudget); err != nil {
 		return err
 	}
@@ -244,6 +247,34 @@ func runFold(ctx context.Context, f interface{ DrainOnce(context.Context) }) err
 			return nil
 		case <-ticker.C:
 			f.DrainOnce(ctx)
+		}
+	}
+}
+
+// ledgerPartitionDays is today and the 7 next: a billing-svc down over a long weekend still finds its days.
+// ledgerPartitionInterval is not a multiple of the reaper's and the reconciliation's 5 minutes: started at the
+// same boot, an hourly pass would always land on their unpruned ledger reads, which hold DEFAULT against the
+// ATTACH. At 61 minutes the phase turns by a minute a pass.
+const (
+	ledgerPartitionDays     = 8
+	ledgerPartitionInterval = 61 * time.Minute
+)
+
+// runLedgerPartitions ensures the ledger's daily partitions at boot, then at every tick, until
+// ctx is cancelled. A failed pass waits for the next one: meanwhile DEFAULT takes the writes.
+func runLedgerPartitions(ctx context.Context, repo interface {
+	EnsureLedgerPartitions(context.Context, time.Time, int) error
+}, every time.Duration, logger *slog.Logger) error {
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+	for {
+		if err := repo.EnsureLedgerPartitions(ctx, time.Now(), ledgerPartitionDays); err != nil && ctx.Err() == nil {
+			logger.WarnContext(ctx, "billing: ledger partitions not ensured — retrying next pass", "err", err)
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
 		}
 	}
 }
