@@ -98,7 +98,7 @@ func (r *Router) Run(ctx context.Context) error {
 	return r.deps.Consumer.RunBatch(ctx, r.handleBatch)
 }
 
-// errLaneHalted marks a record left unprocessed because an earlier record in its lane failed.
+// errLaneHalted marks a record left unpublished because an earlier record in its lane failed.
 //
 // It keeps the [kafka.BatchHandler] contract — "fail a record and every LATER record that shares its
 // ordering group" — and makes the returned verdict self-describing. It is deliberately NOT what stops
@@ -107,9 +107,10 @@ func (r *Router) Run(ctx context.Context) error {
 // other.
 var errLaneHalted = errors.New("router: lane halted after an earlier failure")
 
-// laneWindow is how many messages of one lane run the pipeline at once (step-285c): 12 lanes × 8 reserves in
-// flight fill billing-svc's write batches without exceeding the ~100 streams of its one gRPC connection.
-// ponytail: constant; make it a setting if a measurement campaign needs to sweep it.
+// laneWindow is how many messages of one lane run the pipeline at once (step-285c): more reserves in flight
+// grow billing-svc's write batches instead of its commits.
+// ponytail: constant, so reserves in flight scale with TOPIC_PARTITIONS × 8 unbounded; make it a setting if
+// a measurement campaign needs to sweep it.
 const laneWindow = 8
 
 // handleBatch processes a poll batch with ONE goroutine per partition, so the per-message wait — a
@@ -117,7 +118,7 @@ const laneWindow = 8
 // is overlapped across partitions instead of being paid end to end on a single goroutine.
 //
 // The lane is the partition, and that choice is the whole safety argument. A lane owns every record of
-// its partition, so when one fails, the goroutine that stops is the only one that could have touched the
+// its partition, so when one fails, the goroutine that stops is the only one that could have published the
 // records above it: nothing above the failure was ever produced. Those records are not committable
 // ([kafka.RunBatch] commits per partition up to its first failure), and a record that was published but
 // not committed is republished on redelivery — a duplicate SMS on a handset (ADR-0012). Sharding by
@@ -195,7 +196,6 @@ type staged struct {
 	perr      error
 }
 
-// process runs the pipeline for one record, reserve included; it publishes nothing.
 func (r *Router) process(ctx context.Context, rec kafka.Record) *staged {
 	ctx, span := r.deps.Tracer.Start(ctx, "router.process")
 	s := &staged{ctx: ctx, span: span}
