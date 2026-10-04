@@ -1,7 +1,7 @@
 # Le débit d'un client est borné par la latence de sa réserve : partitions ÷ latence
 
 > **Statut :** OUVERTE · **Nature :** technique
-> **Née de :** step-285 (rejeu VPS du 03/10/2026) · **Portée par :** step-287 (mesure), step-409 (verdict)
+> **Née de :** step-285 (rejeu VPS du 03/10/2026) · **Portée par :** step-285b (écritures groupées), step-409 (verdict)
 
 **Ce qu'on a fait à la place.** step-285 a supprimé le crash et le backoff qui figeaient le routeur. Elle
 n'a pas touché au débit : une voie (une partition) réserve un message après l'autre, de façon synchrone,

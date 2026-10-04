@@ -65,6 +65,47 @@ func (q *Queries) ClaimIdempotency(ctx context.Context, arg ClaimIdempotencyPara
 	return result.RowsAffected(), nil
 }
 
+const claimIdempotencyBatch = `-- name: ClaimIdempotencyBatch :many
+INSERT INTO control_plane.billing_idempotency (message_id, entry_type)
+SELECT unnest($1::uuid[]), unnest($2::text[])
+ON CONFLICT (message_id, entry_type) DO NOTHING
+RETURNING message_id, entry_type
+`
+
+type ClaimIdempotencyBatchParams struct {
+	MessageIds []uuid.UUID
+	EntryTypes []string
+}
+
+type ClaimIdempotencyBatchRow struct {
+	MessageID uuid.UUID
+	EntryType string
+}
+
+// ClaimIdempotency for a batch of movements in one statement: it returns the (message_id, entry_type) pairs it
+// inserted, so a pair absent from the result was already recorded. A pair twice in the batch comes back once
+// and both copies read as claimed; the ledger's unique index then refuses the second (one transaction, one
+// now()).
+func (q *Queries) ClaimIdempotencyBatch(ctx context.Context, arg ClaimIdempotencyBatchParams) ([]ClaimIdempotencyBatchRow, error) {
+	rows, err := q.db.Query(ctx, claimIdempotencyBatch, arg.MessageIds, arg.EntryTypes)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ClaimIdempotencyBatchRow{}
+	for rows.Next() {
+		var i ClaimIdempotencyBatchRow
+		if err := rows.Scan(&i.MessageID, &i.EntryType); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const consumedCredits = `-- name: ConsumedCredits :one
 SELECT COALESCE(-SUM(l.credits), 0)::bigint AS consumed
 FROM control_plane.billing_ledger l
@@ -86,6 +127,37 @@ func (q *Queries) ConsumedCredits(ctx context.Context, customerID uuid.UUID) (in
 	var consumed int64
 	err := row.Scan(&consumed)
 	return consumed, err
+}
+
+type CopyBalanceDeltasParams struct {
+	OwnerType string
+	OwnerID   uuid.UUID
+	Direction string
+	Credits   int32
+}
+
+type CopyLedgerEntriesParams struct {
+	OwnerType    string
+	OwnerID      uuid.UUID
+	Direction    string
+	CustomerID   uuid.UUID
+	AccountID    *uuid.UUID
+	MessageID    *uuid.UUID
+	EntryType    string
+	Credits      int32
+	BalanceAfter int32
+	Reference    *string
+}
+
+const currentXactID = `-- name: CurrentXactID :one
+SELECT pg_current_xact_id()::text AS xid
+`
+
+func (q *Queries) CurrentXactID(ctx context.Context) (string, error) {
+	row := q.db.QueryRow(ctx, currentXactID)
+	var xid string
+	err := row.Scan(&xid)
+	return xid, err
 }
 
 const foldBalanceDeltas = `-- name: FoldBalanceDeltas :one
@@ -645,4 +717,16 @@ func (q *Queries) UpdateBalanceScope(ctx context.Context, arg UpdateBalanceScope
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const xactStatus = `-- name: XactStatus :one
+SELECT pg_xact_status(CAST(CAST($1 AS text) AS xid8))::text AS status
+`
+
+// committed, aborted or in progress; NULL once the id is too old for the commit log to remember.
+func (q *Queries) XactStatus(ctx context.Context, xid string) (string, error) {
+	row := q.db.QueryRow(ctx, xactStatus, xid)
+	var status string
+	err := row.Scan(&status)
+	return status, err
 }

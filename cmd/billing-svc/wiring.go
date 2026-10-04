@@ -99,6 +99,7 @@ func newBillingApp(ctx context.Context, cfg config.Config, logger *slog.Logger) 
 	if err != nil {
 		return nil, err
 	}
+	a.onClose("ledger batch", acct.batcher.Close)
 	a.repo = acct.repo
 	a.configProvider = acct.configProvider
 
@@ -130,8 +131,8 @@ func newBillingApp(ctx context.Context, cfg config.Config, logger *slog.Logger) 
 		Help: "Age of the oldest balance delta not yet folded into balances (ADR-0022); 0 when none waits.",
 	})
 	a.folder = billing.NewFolder(a.repo, a.foldLag, logger)
-	collectors := make([]prometheus.Collector, 0, 2+len(ext.collectors)+len(reap.collectors)+len(feed.collectors))
-	collectors = append(collectors, a.foldLag, acct.reserveStage)
+	collectors := make([]prometheus.Collector, 0, 3+len(ext.collectors)+len(reap.collectors)+len(feed.collectors))
+	collectors = append(collectors, a.foldLag, acct.reserveStage, acct.batchSize)
 	collectors = append(collectors, ext.collectors...)
 	collectors = append(collectors, reap.collectors...)
 	collectors = append(collectors, feed.collectors...)
@@ -188,8 +189,10 @@ func (s *stores) close() {
 type accountant struct {
 	acc            *billing.Accountant
 	repo           *postgres.BillingRepo
+	batcher        *postgres.BillingBatcher
 	configProvider *billing.ConfigProvider
 	reserveStage   *prometheus.HistogramVec
+	batchSize      prometheus.Histogram
 }
 
 // newAccountant builds the core and loads its first config snapshot.
@@ -197,7 +200,7 @@ type accountant struct {
 // The initial load is deliberately fatal: without it every customer's overdraft and MO floor would
 // silently fall back to strict prepaid until the first refresh tick. A LATER refresh failure is not
 // fatal — the previous snapshot keeps serving (see runConfigRefresh).
-func newAccountant(ctx context.Context, pool *pgxpool.Pool, rdb *goredis.Client, logger *slog.Logger) (*accountant, error) {
+func newAccountant(ctx context.Context, pool *pgxpool.Pool, rdb *goredis.Client, logger *slog.Logger) (_ *accountant, err error) {
 	a := &accountant{
 		repo:           postgres.NewBillingRepo(pool),
 		configProvider: &billing.ConfigProvider{},
@@ -207,8 +210,20 @@ func newAccountant(ctx context.Context, pool *pgxpool.Pool, rdb *goredis.Client,
 			// Around the router's 200 ms reserve deadline, which the gRPC context carries into both stages.
 			Buckets: []float64{.001, .005, .01, .025, .05, .1, .2, .5},
 		}, []string{"stage"}),
+		batchSize: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "billing_durable_batch_size",
+			Help:    "Hot-path ledger movements per batch attempt; a failed attempt replays them one by one.",
+			Buckets: []float64{1, 2, 4, 8, 16, 32, 64, 128, 256},
+		}),
 	}
-	a.acc = billing.New(rdb, a.repo, billing.WithConfigSource(a.configProvider), billing.WithLogger(logger),
+	//nolint:contextcheck // A batch serves many callers: it must not die with the context of whichever queued first.
+	a.batcher = postgres.NewBillingBatcher(a.repo, a.batchSize)
+	defer func() {
+		if err != nil {
+			a.batcher.Close()
+		}
+	}()
+	a.acc = billing.New(rdb, a.batcher, billing.WithConfigSource(a.configProvider), billing.WithLogger(logger),
 		billing.WithReserveTimers(a.reserveStage.WithLabelValues("total"), a.reserveStage.WithLabelValues("durable")))
 	if err := a.acc.EnsureNonClustered(ctx); err != nil {
 		return nil, err

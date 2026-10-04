@@ -121,6 +121,34 @@ INSERT INTO control_plane.billing_idempotency (message_id, entry_type)
 VALUES (@message_id, @entry_type)
 ON CONFLICT (message_id, entry_type) DO NOTHING;
 
+-- name: ClaimIdempotencyBatch :many
+-- ClaimIdempotency for a batch of movements in one statement: it returns the (message_id, entry_type) pairs it
+-- inserted, so a pair absent from the result was already recorded. A pair twice in the batch comes back once
+-- and both copies read as claimed; the ledger's unique index then refuses the second (one transaction, one
+-- now()).
+INSERT INTO control_plane.billing_idempotency (message_id, entry_type)
+SELECT unnest(@message_ids::uuid[]), unnest(@entry_types::text[])
+ON CONFLICT (message_id, entry_type) DO NOTHING
+RETURNING message_id, entry_type;
+
+-- name: CurrentXactID :one
+SELECT pg_current_xact_id()::text AS xid;
+
+-- name: XactStatus :one
+-- committed, aborted or in progress; NULL once the id is too old for the commit log to remember.
+SELECT pg_xact_status(CAST(CAST(sqlc.arg(xid) AS text) AS xid8))::text AS status;
+
+-- name: CopyBalanceDeltas :copyfrom
+INSERT INTO control_plane.balance_deltas (owner_type, owner_id, direction, credits)
+VALUES ($1, $2, $3, $4);
+
+-- name: CopyLedgerEntries :copyfrom
+-- COPY rather than a multi-row INSERT: the nullable account_id and reference do not ride typed unnest arrays.
+INSERT INTO control_plane.billing_ledger
+  (owner_type, owner_id, direction, customer_id, account_id, message_id, entry_type, credits,
+   balance_after, reference)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);
+
 -- name: InsertLedgerEntry :one
 -- Append one ledger row and return its generated id and created_at. The ledger is APPEND-ONLY (§6.9): a row
 -- is never updated once written, so the history is immutable and auditable. balance_after is supplied by the
