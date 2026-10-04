@@ -91,6 +91,16 @@ seul un COMMIT en vol reste ambigu, comme sur le chemin unitaire. Contrat : `Rec
 l'échéance de l'appelant, pas à son annulation. Plafond connu : une entrée empoisonnée dans un lot de 256
 coûte 256 transactions unitaires, bornées par l'échéance de chacune (cas rare : client supprimé).
 
+**Amendement du 04/10/2026, décision humaine — l'ambiguïté du COMMIT se lève au lieu de se subir.** Un
+COMMIT sans réponse rendait l'erreur aux N membres du lot : N réserves rejouées, N captures laissées au
+reaper, N fenêtres de course capture/libération. Le lot lit son identifiant de transaction
+(`pg_current_xact_id()`) avant le COMMIT ; sur un COMMIT en échec, il demande `pg_xact_status()` sur une
+autre connexion, hors du contexte expiré, en sondant tant que la transaction est « en cours » (budget
+`commitResolveBudget`, 500 ms, sous la marge entre `terminalCriticalTimeout` et le TTL du verrou) :
+« committed » rend les résultats du lot, « aborted » rejoue chaque mouvement seul, tout le reste garde
+l'ambiguïté (`errBatchCommit`). Un COMMIT jamais envoyé se résout donc en « aborted ». Reste hors du lot,
+fiché : `debts/capture-et-liberation-commitees-apres-un-accuse-perdu.md`.
+
 ## Definition of Done
 
 - [ ] N écritures concurrentes : N lignes au grand livre, sa somme égale le solde
@@ -101,3 +111,4 @@ coûte 256 transactions unitaires, bornées par l'échéance de chacune (cas rar
 - [ ] VPS, même protocole que l'A/B (backlog mono-client, pool à 10) : réserves/s et durée de l'étape
       durable comparées à 273/s et 26,9 ms ; part `WALWrite`/`WalSync` relevée
 - [ ] fiche de dette des lectures préalables de la capture
+- [ ] fiche de dette de la course capture/libération sur le chemin unitaire
