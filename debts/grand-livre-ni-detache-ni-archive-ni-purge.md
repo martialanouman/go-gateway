@@ -1,9 +1,9 @@
 # Le grand livre crée ses partitions mais ne les détache, n'archive ni ne purge jamais
 
 > **Statut :** OUVERTE · **Nature :** technique
-> **Née de :** step-408 (`internal/storage/postgres/billing.go`, `EnsureLedgerPartitions`) · **Portée par :** —
+> **Née de :** step-408 (`db/schema_passerelle_sms.sql:785`) · **Portée par :** —
 
-step-408 crée les partitions journalières de `control_plane.billing_ledger` d'avance, et rien d'autre : aucune
+**Ce qu'on a fait à la place.** step-408 crée les partitions journalières de `control_plane.billing_ledger` d'avance, et rien d'autre : aucune
 partition n'est détachée, archivée vers le stockage objet, ni supprimée. Le grand livre grandit d'une
 partition par jour, sans fin.
 

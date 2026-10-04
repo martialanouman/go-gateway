@@ -14,3 +14,6 @@ func (b *BillingBatcher) AnswerCommitOutcome(status string) {
 func (r *BillingRepo) XactStatus(ctx context.Context, xid string) (string, error) {
 	return r.q.XactStatus(ctx, xid)
 }
+
+// LedgerPartitionLock is the advisory lock replicas take to create ledger partitions.
+const LedgerPartitionLock = ledgerPartitionLock

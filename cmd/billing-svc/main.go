@@ -106,7 +106,7 @@ func run() error {
 		return runFold(c, app.eventRelay)
 	})
 	g.Add("ledger partitions", func(c context.Context) error {
-		return runLedgerPartitions(c, app.repo, logger)
+		return runLedgerPartitions(c, app.repo, ledgerPartitionInterval, logger)
 	})
 	if err := g.Run(ctx, logger, cfg.DrainBudget); err != nil {
 		return err
@@ -257,12 +257,12 @@ const (
 	ledgerPartitionInterval = time.Hour
 )
 
-// runLedgerPartitions ensures the ledger's daily partitions at boot, then every ledgerPartitionInterval, until
+// runLedgerPartitions ensures the ledger's daily partitions at boot, then at every tick, until
 // ctx is cancelled. A failed pass waits for the next one: meanwhile DEFAULT takes the writes.
 func runLedgerPartitions(ctx context.Context, repo interface {
 	EnsureLedgerPartitions(context.Context, time.Time, int) error
-}, logger *slog.Logger) error {
-	ticker := time.NewTicker(ledgerPartitionInterval)
+}, every time.Duration, logger *slog.Logger) error {
+	ticker := time.NewTicker(every)
 	defer ticker.Stop()
 	for {
 		if err := repo.EnsureLedgerPartitions(ctx, time.Now(), ledgerPartitionDays); err != nil && ctx.Err() == nil {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -11,36 +12,57 @@ type ensureCall struct {
 	days int
 }
 
-type fakeEnsurer struct{ calls chan ensureCall }
-
-func (f fakeEnsurer) EnsureLedgerPartitions(_ context.Context, from time.Time, days int) error {
-	f.calls <- ensureCall{from: from, days: days}
-	return nil
+// fakeEnsurer fails its first pass, as a day whose range DEFAULT already holds would.
+type fakeEnsurer struct {
+	calls chan ensureCall
+	done  <-chan struct{}
 }
 
-// TestLedgerPartitionsAreEnsuredAtBoot: the first pass cannot wait for the hourly tick, or a fresh deployment
-// writes its first hour into DEFAULT, where the ATTACH of that day then refuses it.
-func TestLedgerPartitionsAreEnsuredAtBoot(t *testing.T) {
+func (f fakeEnsurer) EnsureLedgerPartitions(_ context.Context, from time.Time, days int) error {
+	select {
+	case f.calls <- ensureCall{from: from, days: days}:
+	case <-f.done:
+	}
+	return errors.New("partition of the day overlaps rows in DEFAULT")
+}
+
+// TestLedgerPartitionsAreEnsuredAtBootThenAgain: the first pass cannot wait for the hourly tick, or a fresh
+// deployment writes its first hour into DEFAULT; and a failed pass must neither stop the loop nor the
+// service, nor freeze the days it covers.
+func TestLedgerPartitionsAreEnsuredAtBootThenAgain(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	f := fakeEnsurer{calls: make(chan ensureCall, 1)}
+	f := fakeEnsurer{calls: make(chan ensureCall), done: ctx.Done()}
 	done := make(chan error, 1)
 	before := time.Now()
-	go func() { done <- runLedgerPartitions(ctx, f, silentLogger()) }()
+	const every = 300 * time.Millisecond
+	go func() { done <- runLedgerPartitions(ctx, f, every, silentLogger()) }()
 
-	select {
-	case c := <-f.calls:
-		if c.from.Before(before) || c.from.After(time.Now()) {
-			t.Errorf("first pass starts at %v, want now", c.from)
+	next := func() ensureCall {
+		t.Helper()
+		select {
+		case c := <-f.calls:
+			return c
+		case <-time.After(5 * time.Second):
+			t.Fatal("no pass")
+			return ensureCall{}
 		}
-		if c.days != 8 {
-			t.Errorf("first pass covers %d days, want today and the 7 next", c.days)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("no pass at boot")
+	}
+	first := next()
+	if waited := time.Since(before); waited >= every/2 {
+		t.Errorf("first pass came after %v, at the tick: none at boot", waited)
+	}
+	if first.from.Before(before) || first.from.After(time.Now()) {
+		t.Errorf("first pass starts at %v, want now", first.from)
+	}
+	if first.days != 8 {
+		t.Errorf("first pass covers %d days, want today and the 7 next", first.days)
+	}
+	if second := next(); !second.from.After(first.from) {
+		t.Errorf("second pass starts at %v, not after the first (%v): the days never move", second.from, first.from)
 	}
 	cancel()
 	if err := <-done; err != nil {
-		t.Errorf("runLedgerPartitions returned %v on cancellation", err)
+		t.Errorf("runLedgerPartitions returned %v", err)
 	}
 }

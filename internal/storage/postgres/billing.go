@@ -656,8 +656,6 @@ func (r *BillingRepo) EnsureLedgerPartitions(ctx context.Context, from time.Time
 
 func (r *BillingRepo) ensureLedgerPartition(ctx context.Context, day time.Time) error {
 	return pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-		// lock_timeout bounds the waits for the advisory lock and for DEFAULT, during which reads queue behind the
-		// ATTACH; not the scan of DEFAULT that follows, which only an empty DEFAULT keeps instant.
 		if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '1s'`); err != nil {
 			return err
 		}
@@ -665,12 +663,17 @@ func (r *BillingRepo) ensureLedgerPartition(ctx context.Context, day time.Time) 
 			return err
 		}
 		name := "control_plane.billing_ledger_" + day.Format("20060102")
-		var exists bool
-		if err := tx.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, name).Scan(&exists); err != nil || exists {
+		// A table of that name that is not attached is not the day's partition: the CREATE below fails on it, loudly.
+		var attached bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_inherits
+			WHERE inhparent = 'control_plane.billing_ledger'::regclass AND inhrelid = to_regclass($1))`, name).Scan(&attached); err != nil || attached {
 			return err
 		}
 		for _, stmt := range []string{
 			`CREATE TABLE ` + name + ` (LIKE control_plane.billing_ledger INCLUDING DEFAULTS INCLUDING CONSTRAINTS)`,
+			// The capture's ledger reads cannot be pruned and hold DEFAULT: those arriving while the ATTACH waits for
+			// DEFAULT queue behind it, then wait out its scan of DEFAULT. Both together stay under 200ms.
+			`SET LOCAL statement_timeout = '200ms'`,
 			fmt.Sprintf(`ALTER TABLE control_plane.billing_ledger ATTACH PARTITION %s FOR VALUES FROM ('%s 00:00:00+00') TO ('%s 00:00:00+00')`,
 				name, day.Format(time.DateOnly), day.AddDate(0, 0, 1).Format(time.DateOnly)),
 		} {

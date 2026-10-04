@@ -779,8 +779,9 @@ CREATE UNIQUE INDEX billing_ledger_idem_idx
 CREATE INDEX billing_ledger_customer_idx ON control_plane.billing_ledger(customer_id, created_at);
 
 -- The daily partitions (billing_ledger_YYYYMMDD, UTC, today to today+7) are created by billing-svc at boot and
--- hourly (step-408), by ATTACH PARTITION so the hot path's writes never wait. DEFAULT is the safety net and must
--- stay empty: every ATTACH scans it, and refuses a day it already holds rows for (billing_ledger_default_rows).
+-- hourly (step-408), by ATTACH PARTITION so the hot path's writes never wait on the parent. DEFAULT is the
+-- safety net and must stay empty: every ATTACH scans it, and refuses a day it already holds rows for
+-- (billing_ledger_default_rows).
 -- Nothing detaches, archives or purges yet (debts/grand-livre-ni-detache-ni-archive-ni-purge.md).
 CREATE TABLE control_plane.billing_ledger_default
   PARTITION OF control_plane.billing_ledger DEFAULT;

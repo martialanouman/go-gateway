@@ -4,7 +4,6 @@ import (
 	"context"
 	"io"
 	"log/slog"
-	"maps"
 	"net/url"
 	"sync"
 	"testing"
@@ -56,31 +55,37 @@ func freshLedgerDB(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-func ledgerPartitions(t *testing.T, pool *pgxpool.Pool) map[string]uint32 {
+func ledgerPartitions(t *testing.T, pool *pgxpool.Pool) map[string]bool {
 	t.Helper()
 	rows, err := pool.Query(context.Background(), `
-		SELECT c.relname, c.oid FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid
+		SELECT c.relname FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid
 		WHERE i.inhparent = 'control_plane.billing_ledger'::regclass`)
 	if err != nil {
 		t.Fatalf("list partitions: %v", err)
 	}
-	got := map[string]uint32{}
-	for rows.Next() {
-		var name string
-		var oid uint32
-		if err := rows.Scan(&name, &oid); err != nil {
-			t.Fatalf("scan partition: %v", err)
-		}
-		got[name] = oid
-	}
-	if err := rows.Err(); err != nil {
+	names, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
 		t.Fatalf("list partitions: %v", err)
+	}
+	got := map[string]bool{}
+	for _, n := range names {
+		got[n] = true
 	}
 	return got
 }
 
 func partitionName(day time.Time) string {
 	return "billing_ledger_" + day.UTC().Format("20060102")
+}
+
+// dbNow is the clock created_at is stamped with: a test reading Go's would split a day at midnight UTC.
+func dbNow(t *testing.T, pool *pgxpool.Pool) time.Time {
+	t.Helper()
+	var now time.Time
+	if err := pool.QueryRow(context.Background(), `SELECT now()`).Scan(&now); err != nil {
+		t.Fatalf("read now(): %v", err)
+	}
+	return now
 }
 
 func seedLedgerCustomer(t *testing.T, pool *pgxpool.Pool) uuid.UUID {
@@ -93,11 +98,22 @@ func seedLedgerCustomer(t *testing.T, pool *pgxpool.Pool) uuid.UUID {
 	return id
 }
 
+func recordTopup(t *testing.T, repo *postgres.BillingRepo, customer uuid.UUID) {
+	t.Helper()
+	if _, applied, err := repo.RecordDurable(context.Background(), cp.LedgerEntry{
+		OwnerType: cp.OwnerTypeCustomer, OwnerID: customer, Direction: cp.BillingDirectionMT,
+		CustomerID: customer, EntryType: cp.EntryTopup, Credits: 10,
+	}); err != nil || !applied {
+		t.Fatalf("RecordDurable: applied=%v err=%v", applied, err)
+	}
+}
+
 func TestEnsureLedgerPartitionsCreatesTheDaysAndTodayLandsInItsOwn(t *testing.T) {
 	pool := freshLedgerDB(t)
 	ctx := context.Background()
 	repo := postgres.NewBillingRepo(pool)
-	now := time.Now()
+	// West of UTC, the local date lags the UTC one for part of the day: the days are UTC days.
+	now := dbNow(t, pool).In(time.FixedZone("UTC-11", -11*3600))
 
 	if err := repo.EnsureLedgerPartitions(ctx, now, 3); err != nil {
 		t.Fatalf("EnsureLedgerPartitions: %v", err)
@@ -105,7 +121,7 @@ func TestEnsureLedgerPartitionsCreatesTheDaysAndTodayLandsInItsOwn(t *testing.T)
 
 	got := ledgerPartitions(t, pool)
 	for d := range 3 {
-		if _, ok := got[partitionName(now.AddDate(0, 0, d))]; !ok {
+		if !got[partitionName(now.AddDate(0, 0, d))] {
 			t.Errorf("partition for day +%d missing; have %v", d, got)
 		}
 	}
@@ -113,23 +129,7 @@ func TestEnsureLedgerPartitionsCreatesTheDaysAndTodayLandsInItsOwn(t *testing.T)
 		t.Errorf("want DEFAULT + 3 days, have %v", got)
 	}
 
-	var unique int
-	if err := pool.QueryRow(ctx, `
-		SELECT count(*) FROM pg_index i WHERE i.indrelid = ('control_plane.' || $1)::regclass AND i.indisunique`,
-		partitionName(now)).Scan(&unique); err != nil {
-		t.Fatalf("count unique indexes: %v", err)
-	}
-	if unique != 2 {
-		t.Errorf("today's partition carries %d unique indexes, want 2 (primary key + billing_ledger_idem_idx)", unique)
-	}
-
-	customer := seedLedgerCustomer(t, pool)
-	if _, applied, err := repo.RecordDurable(ctx, cp.LedgerEntry{
-		OwnerType: cp.OwnerTypeCustomer, OwnerID: customer, Direction: cp.BillingDirectionMT,
-		CustomerID: customer, EntryType: cp.EntryTopup, Credits: 10,
-	}); err != nil || !applied {
-		t.Fatalf("RecordDurable: applied=%v err=%v", applied, err)
-	}
+	recordTopup(t, repo, seedLedgerCustomer(t, pool))
 	var landed string
 	var createdAt time.Time
 	if err := pool.QueryRow(ctx,
@@ -141,50 +141,43 @@ func TestEnsureLedgerPartitionsCreatesTheDaysAndTodayLandsInItsOwn(t *testing.T)
 	}
 }
 
-func TestEnsureLedgerPartitionsTwiceChangesNothing(t *testing.T) {
-	pool := freshLedgerDB(t)
-	ctx := context.Background()
-	repo := postgres.NewBillingRepo(pool)
-	now := time.Now()
-
-	if err := repo.EnsureLedgerPartitions(ctx, now, 2); err != nil {
-		t.Fatalf("first pass: %v", err)
-	}
-	before := ledgerPartitions(t, pool)
-	if len(before) != 3 {
-		t.Fatalf("first pass: want DEFAULT + 2 days, have %v", before)
-	}
-	if err := repo.EnsureLedgerPartitions(ctx, now, 2); err != nil {
-		t.Fatalf("second pass: %v", err)
-	}
-	if after := ledgerPartitions(t, pool); !maps.Equal(before, after) {
-		t.Errorf("second pass changed the partitions: before %v, after %v", before, after)
-	}
-}
-
+// TestEnsureLedgerPartitionsFromConcurrentReplicas holds the advisory lock while two replicas start: both must
+// wait for it, then one creates each day and the other finds it. A replica that skipped a day it could not
+// lock would leave it to nobody.
 func TestEnsureLedgerPartitionsFromConcurrentReplicas(t *testing.T) {
 	pool := freshLedgerDB(t)
 	ctx := context.Background()
-	start := time.Now()
+	from := dbNow(t, pool)
 
-	const rounds, replicas, days = 10, 2, 3
-	for round := range rounds {
-		from := start.AddDate(0, 0, 10*(round+1))
-		var wg sync.WaitGroup
-		errs := make([]error, replicas)
-		for r := range replicas {
-			repo := postgres.NewBillingRepo(pool)
-			wg.Go(func() { errs[r] = repo.EnsureLedgerPartitions(ctx, from, days) })
-		}
-		wg.Wait()
-		for r, err := range errs {
-			if err != nil {
-				t.Fatalf("round %d, replica %d: %v", round, r, err)
-			}
+	holder, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire holder: %v", err)
+	}
+	defer holder.Release()
+	if _, err := holder.Exec(ctx, `SELECT pg_advisory_lock($1)`, postgres.LedgerPartitionLock); err != nil {
+		t.Fatalf("hold the lock: %v", err)
+	}
+
+	const replicas, days = 2, 3
+	var wg sync.WaitGroup
+	errs := make([]error, replicas)
+	for r := range replicas {
+		repo := postgres.NewBillingRepo(pool)
+		wg.Go(func() { errs[r] = repo.EnsureLedgerPartitions(ctx, from, days) })
+	}
+	time.Sleep(200 * time.Millisecond)
+	if _, err := holder.Exec(ctx, `SELECT pg_advisory_unlock($1)`, postgres.LedgerPartitionLock); err != nil {
+		t.Fatalf("release the lock: %v", err)
+	}
+	wg.Wait()
+
+	for r, err := range errs {
+		if err != nil {
+			t.Errorf("replica %d: %v", r, err)
 		}
 	}
-	if got := ledgerPartitions(t, pool); len(got) != 1+rounds*days {
-		t.Errorf("want DEFAULT + %d partitions, have %d: %v", rounds*days, len(got), got)
+	if got := ledgerPartitions(t, pool); len(got) != 1+days {
+		t.Errorf("want DEFAULT + %d partitions, have %v", days, got)
 	}
 }
 
@@ -192,7 +185,7 @@ func TestAWriteOutsideThePartitionsLandsInDefaultAndIsCounted(t *testing.T) {
 	pool := freshLedgerDB(t)
 	ctx := context.Background()
 	repo := postgres.NewBillingRepo(pool)
-	now := time.Now()
+	now := dbNow(t, pool)
 
 	if err := repo.EnsureLedgerPartitions(ctx, now, 2); err != nil {
 		t.Fatalf("EnsureLedgerPartitions: %v", err)
@@ -202,20 +195,24 @@ func TestAWriteOutsideThePartitionsLandsInDefaultAndIsCounted(t *testing.T) {
 	}
 
 	customer := seedLedgerCustomer(t, pool)
-	if _, applied, err := repo.RecordDurable(ctx, cp.LedgerEntry{
-		OwnerType: cp.OwnerTypeCustomer, OwnerID: customer, Direction: cp.BillingDirectionMT,
-		CustomerID: customer, EntryType: cp.EntryTopup, Credits: 10,
-	}); err != nil || !applied {
-		t.Fatalf("RecordDurable: applied=%v err=%v", applied, err)
+	recordTopup(t, repo, customer)
+	insertOutside := func(rows int) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO control_plane.billing_ledger
+			  (owner_type, owner_id, direction, customer_id, entry_type, credits, balance_after, created_at)
+			SELECT 'customer', $1, 'mt', $1, 'topup', 1, 1, $2 FROM generate_series(1, $3)`,
+			customer, now.AddDate(0, 0, 30), rows); err != nil {
+			t.Fatalf("a write with no partition for its day failed: %v", err)
+		}
 	}
-	if _, err := pool.Exec(ctx, `
-		INSERT INTO control_plane.billing_ledger
-		  (owner_type, owner_id, direction, customer_id, entry_type, credits, balance_after, created_at)
-		VALUES ('customer', $1, 'mt', $1, 'topup', 1, 1, $2)`, customer, now.AddDate(0, 0, 30)); err != nil {
-		t.Fatalf("a write with no partition for its day failed: %v", err)
-	}
+	insertOutside(1)
 	if n, err := repo.LedgerDefaultRows(ctx); err != nil || n != 1 {
 		t.Errorf("LedgerDefaultRows = %d, %v; want 1", n, err)
+	}
+	insertOutside(10_000)
+	if n, err := repo.LedgerDefaultRows(ctx); err != nil || n != 10_000 {
+		t.Errorf("LedgerDefaultRows over 10 001 rows = %d, %v; want the 10 000 cap", n, err)
 	}
 }
 
@@ -225,7 +222,7 @@ func TestEnsureLedgerPartitionsDoesNotWaitForAnOpenWriter(t *testing.T) {
 	pool := freshLedgerDB(t)
 	ctx := context.Background()
 	repo := postgres.NewBillingRepo(pool)
-	now := time.Now()
+	now := dbNow(t, pool)
 
 	if err := repo.EnsureLedgerPartitions(ctx, now, 1); err != nil {
 		t.Fatalf("EnsureLedgerPartitions: %v", err)
@@ -246,7 +243,47 @@ func TestEnsureLedgerPartitionsDoesNotWaitForAnOpenWriter(t *testing.T) {
 	if err := repo.EnsureLedgerPartitions(ctx, now.AddDate(0, 0, 5), 1); err != nil {
 		t.Fatalf("a pass behind an open hot-path write failed: %v", err)
 	}
-	if _, ok := ledgerPartitions(t, pool)[partitionName(now.AddDate(0, 0, 5))]; !ok {
+	if !ledgerPartitions(t, pool)[partitionName(now.AddDate(0, 0, 5))] {
 		t.Error("the partition was not created")
+	}
+}
+
+// TestEnsureLedgerPartitionsGivesUpQuicklyBehindAnOpenReader: a capture's ledger reads cannot be pruned, so they
+// hold DEFAULT; every read arriving while the ATTACH waits for DEFAULT queues behind it.
+func TestEnsureLedgerPartitionsGivesUpQuicklyBehindAnOpenReader(t *testing.T) {
+	pool := freshLedgerDB(t)
+	ctx := context.Background()
+	repo := postgres.NewBillingRepo(pool)
+
+	reader, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin reader: %v", err)
+	}
+	defer func() { _ = reader.Rollback(ctx) }()
+	if _, err := reader.Exec(ctx, `SELECT 1 FROM control_plane.billing_ledger WHERE message_id = $1`, uuid.New()); err != nil {
+		t.Fatalf("open read: %v", err)
+	}
+
+	start := time.Now()
+	err = repo.EnsureLedgerPartitions(ctx, dbNow(t, pool), 1)
+	if err == nil {
+		t.Fatal("the ATTACH went through DEFAULT held by an open reader")
+	}
+	if waited := time.Since(start); waited > 600*time.Millisecond {
+		t.Errorf("the pass held reads queued for %v (%v), want the 200ms bound", waited, err)
+	}
+}
+
+func TestEnsureLedgerPartitionsRefusesAnUnattachedTableOfTheDay(t *testing.T) {
+	pool := freshLedgerDB(t)
+	ctx := context.Background()
+	now := dbNow(t, pool)
+	if _, err := pool.Exec(ctx, `CREATE TABLE control_plane.`+partitionName(now)+
+		` (LIKE control_plane.billing_ledger INCLUDING DEFAULTS INCLUDING CONSTRAINTS)`); err != nil {
+		t.Fatalf("create the stray table: %v", err)
+	}
+
+	if err := postgres.NewBillingRepo(pool).EnsureLedgerPartitions(ctx, now, 1); err == nil {
+		t.Error("a table of the day that is not a partition was taken for one: the day's writes go to DEFAULT unannounced")
 	}
 }

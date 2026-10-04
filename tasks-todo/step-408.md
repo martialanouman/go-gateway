@@ -75,7 +75,17 @@ se fait **avant le merge**.
   réplique un jour que l'autre ne tient pas encore. Elle saute X+1 pendant que l'autre crée X, puis l'autre
   saute X+1 pendant qu'elle crée X+2 : X+1 n'est créé par personne (vu : 2 jours manquants sur 30). Le verrou
   devient **bloquant** (`pg_advisory_xact_lock`), après `SET LOCAL lock_timeout`, qui borne aussi cette
-  attente : le perdant attend le commit du gagnant, puis `to_regclass` voit la table. La transaction unique supprime la fenêtre « créée mais pas
+  attente : le perdant attend le commit du gagnant, puis `to_regclass` voit la table.
+  **Amendé après revue (04/10, arbitré par Fable)** :
+  - `SET LOCAL statement_timeout = '200ms'` juste avant l'ATTACH, `lock_timeout` de 1 s gardé pour le verrou
+    consultatif. Un lecteur non élagué du chemin chaud (`LedgerEntryExists`, `GetReserveEntry` de la capture)
+    qui arrive pendant l'attente de l'ACCESS EXCLUSIVE sur `DEFAULT` se range derrière elle, et le parcours qui
+    suit n'était borné par rien : un seul réglage borne les deux à 200 ms. Sur un `DEFAULT` gros, l'ATTACH
+    échoue à chaque passe, ce que l'alerte signale déjà. Écartés : une CHECK validée sur `DEFAULT` (trois
+    instructions de plus, une contrainte par jour qui s'accumule) ; refuser tout ATTACH si `DEFAULT` n'est pas
+    vide (un jour en retard en mettrait tous les jours en retard).
+  - « déjà là » se lit dans `pg_inherits` (attachée au parent), plus par `to_regclass` : une table du bon nom
+    existante mais non attachée fait échouer le CREATE à chaque passe, au lieu d'être ignorée en silence. La transaction unique supprime la fenêtre « créée mais pas
   attachée » ; le verrou consultatif rend `to_regclass` fiable sans distinguer les codes d'erreur.
 - **Frontière** : UTC (`created_at` est un instant ; jours de 24 h, sans DST). Nom `billing_ledger_YYYYMMDD`,
   layout `20060102` comme `partitionDayLayout` des CDR. Les littéraux sortent de `time.Format`, jamais d'une
@@ -96,27 +106,38 @@ se fait **avant le merge**.
 - **Vidage du VPS : opération manuelle, jamais une migration.** Une migration de vidage resterait dans
   l'historique, tournerait pendant que les anciens pods écrivent, et ne toucherait pas Redis : elle casserait
   l'invariant qu'elle prétend garder. Procédure (lancée par l'humain, **avant le merge**) :
-  1. `kubectl scale deploy/billing-svc --replicas=0` ; aucune opération de facturation Admin pendant
-     l'opération (topup/transfer écrivent `balances` et le grand livre) ;
+  1. `kubectl scale deploy/billing-svc deploy/admin-api-svc --replicas=0` : admin-api-svc écrit lui aussi le
+     grand livre (topup/transfer), et un seul topup entre le vidage et le déploiement mettrait une ligne du
+     jour dans `DEFAULT`, sur laquelle l'ATTACH du jour échouerait toute la journée ;
   2. une transaction : `TRUNCATE control_plane.billing_ledger, control_plane.billing_idempotency,
      control_plane.balances, control_plane.balance_deltas, control_plane.billing_events_outbox` — le grand
      livre et le solde valent 0 tous deux ; sans `billing_idempotency`, des réclamations sans mouvement ;
      sans l'outbox, des planchers d'un monde disparu ;
   3. Redis : `SCAN` + `UNLINK` de `billing:*` (pas `FLUSHALL`) ; garder `billing:balance:*` rendrait du crédit
      fantôme jusqu'au TTL de 10 min ;
-  4. merge : le CD déploie billing-svc step-408, qui crée J..J+7 au démarrage sur un `DEFAULT` vide ;
-  5. recréditer les clients de test par l'API Admin (topup : solde et mouvement dans la même transaction).
+  4. juste avant le merge, `SELECT count(*) FROM control_plane.billing_ledger_default` rend 0 ;
+  5. merge : le CD déploie billing-svc step-408, qui crée J..J+7 au démarrage sur un `DEFAULT` vide, et son
+     `kubectl apply` remet les deux déploiements à leurs répliques. **Si le CD échoue avant la phase des
+     applications**, les remettre à la main (`kubectl scale … --replicas=<manifeste>`) : sinon la facturation
+     reste arrêtée ;
+  6. recréditer les clients de test par l'API Admin (topup : solde et mouvement dans la même transaction).
 
   Résidu toléré sur un VPS de test : une capture dont la réserve a précédé l'arrêt tombe sur un grand livre
   vide (chemin « capture sans réserve », Warn). Pour zéro résidu, couper aussi l'ingress avant l'étape 1.
 - **Tests** (intégration, une base migrée fraîche par test : la base partagée du processus a des lignes du
   jour dans `DEFAULT`, sur lesquelles l'ATTACH du jour échouerait) :
-  1. une passe crée les N partitions (`pg_inherits`), avec PK et index hérités ; une ligne du jour atterrit
-     dans sa partition, pas dans `DEFAULT` ;
-  2. une seconde passe ne change rien ;
-  3. deux passes concurrentes réussissent toutes deux, chaque partition une fois ;
-  4. une écriture hors horizon réussit, atterrit dans `DEFAULT`, et la jauge la compte ;
-  5. une passe réussit pendant qu'une transaction d'écriture du jour reste ouverte (mutation : `PARTITION OF`
-     doit la faire tomber sur `lock_timeout`).
+  1. une passe crée les N partitions (`pg_inherits`), jours UTC même pour un instant à UTC-11 ; une ligne du
+     jour atterrit dans sa partition, pas dans `DEFAULT` ;
+  2. deux réplicas lancées pendant qu'une troisième connexion tient le verrou attendent, puis réussissent
+     toutes deux, chaque partition une fois — la seconde passe par le chemin « déjà là » (couvre « une
+     seconde passe ne fait rien ») ;
+  3. une écriture hors horizon réussit, atterrit dans `DEFAULT`, la jauge la compte, plafonnée à 10 000 ;
+  4. une passe réussit pendant qu'une transaction d'écriture du jour reste ouverte ;
+  5. une passe abandonne en moins de 600 ms derrière un lecteur ouvert qui tient `DEFAULT` ;
+  6. une table du jour existante mais non attachée fait échouer la passe.
 
-  Plus la boucle : une passe au démarrage, avant le premier tick (unité, store factice).
+  Plus la boucle (unité, store factice qui échoue) : une passe au démarrage, avant le premier tick, puis une
+  autre, d'un `from` plus tardif, malgré l'échec de la première.
+
+  Après revue : le test « seconde passe » (couvert par 2) et l'assertion sur les index uniques (elle testait
+  Postgres, aucune mutation du code ne la changeait) sont coupés ; 15 mutations, 15 tuées.
