@@ -1,6 +1,6 @@
 # step-400 — `billing.events` durable : de l'affichage à la détection
 
-> **Jalon :** M11, dette découverte après coup (§15 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
+> **Jalon :** M11, dette découverte après coup (§15 `docs/plan-execution-passerelle.md`) · **Statut :** LIVRÉE
 > **Dépend de :** step-143, step-184 · **Bloque :** l'alerting métier du tableau de bord (dépôt séparé), **avec step-401**
 
 ## But
@@ -121,9 +121,9 @@ puis Fable, qui a tranché chaque point sans heurter la spec.
   rend NaN si Postgres ne répond pas, et monte aussi si la boucle n'a jamais démarré.
 - **Ordre entre propriétaires non garanti** entre répliques ou après un échec partiel : `occurred_at`
   le rend lisible au consommateur.
-- **La condition du point 10 doit aussi s'écrire dans step-285b.md**, pour que celle qui merge en second
-  ne dépende pas d'une fiche qu'elle ne lit pas. Cette fiche n'existe que non commitée sur la branche
-  `step-285b-design` : le report y est à faire par sa session.
+- **Point 10 appliqué ici** : step-285b a mergé la première (#255), step-400 porte donc la garde
+  (`BillingBatcher.RecordDurable` écarte une entrée dont `MOFloorReached != nil`) et son test
+  (`TestBatcherKeepsTheFloorEvent`, vu rouge sans la garde : 0 ligne d'outbox au lieu de 1).
 
 ## Fichiers touchés
 `db/schema_passerelle_sms.sql` + `migrations/0028_*` · `internal/controlplane/billing.go` (champ) ·
