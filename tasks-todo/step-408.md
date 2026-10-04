@@ -147,3 +147,17 @@ se fait **avant le merge**.
 
   Après revue : le test « seconde passe » (couvert par 2) et l'assertion sur les index uniques (elle testait
   Postgres, aucune mutation du code ne la changeait) sont coupés ; 15 mutations, 15 tuées.
+
+## Definition of Done
+
+- [x] une écriture du jour atterrit dans sa partition, pas dans `DEFAULT` (test 1) ;
+- [x] une seconde passe ne fait rien (test 2, chemin « déjà là » de la seconde réplique) ;
+- [x] deux réplicas concurrents ne se gênent pas, et n'en laissent aucun jour sans créateur (test 2) ;
+- [x] une partition manquante ne fait pas échouer une écriture (test 3) ;
+- [x] la jauge `DEFAULT` remonte, plafonnée, exposée par billing-svc (test 3, `TestNewBillingAppBuildsTheWholeGraph`) ;
+- [x] une passe ne fait jamais attendre une écriture, et rend la main en 200 ms derrière une lecture (tests 4 et 5) ;
+- [x] expressions d'alerte au guide §13, checklist §15 ; schéma corrigé, aucune migration ;
+- [x] trois fiches de dette : archivage et purge, lectures non élaguées, `DEFAULT` sans procédure ;
+- [x] 15 mutations, 15 tuées ; deux tours de revue (mécanisme · tests · code en trop, puis les correctifs) ;
+- [ ] **sur le VPS** : procédure de vidage exécutée avant le merge, puis après déploiement les partitions
+      J..J+7 existent et `DEFAULT` est vide, et le reste (à consigner ici avec la date et le résidu observé).
