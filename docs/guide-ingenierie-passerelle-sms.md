@@ -380,6 +380,14 @@ max(queue_depth_records{queue="mt.outcome"}) / sum(rate(cdr_outcome_projected_to
 
 Le numérateur vient du broker par une boucle indépendante du projecteur, le dénominateur du projecteur lui-même — donc un projecteur **mort** donne `rate → 0` et fait partir l'alerte, là où une jauge d'âge qu'il poserait lui-même se figerait à sa dernière valeur saine. **Les deux côtés doivent être agrégés** (`max` sur une jauge de groupe, `sum` sur un compteur par pod) : sans cela l'expression apparie deux jeux de labels différents et ne rend jamais rien. Deux règles compagnes (`absent()`, et la croissance monotone du backlog seul) complètent le quotient. Détail et alternatives écartées : ADR-0012, « Surveiller le lag de statut ».
 
+**Partitions du grand livre** (step-408). billing-svc crée les partitions journalières de `billing_ledger` d'avance (aujourd'hui à J+7, au démarrage puis chaque heure). Une écriture dont le jour n'a pas de partition tombe dans `DEFAULT` sans échouer, et y reste :
+
+```promql
+max(billing_ledger_default_rows) > 0   # for: 5m
+```
+
+Jauge de groupe (même valeur sur chaque réplique), d'où `max`. L'alerte ne se résout pas seule : rien ne sort une ligne de `DEFAULT`, et un `DEFAULT` non vide rend chaque création de partition coûteuse (parcours sous verrou exclusif), voire impossible pour le jour qu'il contient.
+
 **Stream temps réel** : gateway WebSocket/SSE alimentée par un topic de métriques Kafka, pour le tableau de bord (`/admin/stream/metrics`, `/sessions`, `/billing-alerts`).
 
 **Logs** : JSON structuré → Loki/ELK. **Le corps du message n'apparaît jamais** (§6.11).
@@ -416,7 +424,7 @@ CDR (ClickHouse) et grand livre (Postgres) partitionnés par jour ; audit mensue
 
 ## 15. Checklist de mise en production
 
-Avant d'exposer un connecteur ou un client en production, vérifier : identifiants stockés en hash uniquement ; TLS actif sur REST et SMPP-TLS où requis ; `throughput_limit_per_sec` renseigné et `rate_limits` cohérents ; auto-reconnexion activée sur tout connecteur s'appuyant sur le disjoncteur ; sender IDs approuvés ; politique de contenu et clé de chiffrement provisionnées ; webhooks signés HMAC et testés ; partitions Kafka dimensionnées pour `bind_pool_size` ; partition du jour créée dans `billing_ledger` ; alerting Alertmanager indépendant du dashboard ; **règle de lag de projection du statut posée** (§13, expression d'ADR-0012 : sans elle, un projecteur arrêté laisse les messages en `accepted` sans que rien ne le signale) ; échantillonnage de trace 100 % sur les échecs ; test de bascule `fallback_chain` ; test de rotation d'identifiant avec grâce ; vérification que le corps n'apparaît dans aucun log ni span (test d'invariant).
+Avant d'exposer un connecteur ou un client en production, vérifier : identifiants stockés en hash uniquement ; TLS actif sur REST et SMPP-TLS où requis ; `throughput_limit_per_sec` renseigné et `rate_limits` cohérents ; auto-reconnexion activée sur tout connecteur s'appuyant sur le disjoncteur ; sender IDs approuvés ; politique de contenu et clé de chiffrement provisionnées ; webhooks signés HMAC et testés ; partitions Kafka dimensionnées pour `bind_pool_size` ; partitions de `billing_ledger` créées jusqu'à J+7 par billing-svc, `billing_ledger_default_rows` à 0 et sa règle posée (§13) ; alerting Alertmanager indépendant du dashboard ; **règle de lag de projection du statut posée** (§13, expression d'ADR-0012 : sans elle, un projecteur arrêté laisse les messages en `accepted` sans que rien ne le signale) ; échantillonnage de trace 100 % sur les échecs ; test de bascule `fallback_chain` ; test de rotation d'identifiant avec grâce ; vérification que le corps n'apparaît dans aucun log ni span (test d'invariant).
 
 ---
 

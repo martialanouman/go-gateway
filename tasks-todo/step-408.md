@@ -70,7 +70,12 @@ se fait **avant le merge**.
   `SET LOCAL lock_timeout = '1s'` ; `to_regclass(...)` non nul → rien à faire ;
   `CREATE TABLE billing_ledger_YYYYMMDD (LIKE billing_ledger INCLUDING DEFAULTS INCLUDING CONSTRAINTS)` ;
   `ALTER TABLE billing_ledger ATTACH PARTITION … FOR VALUES FROM ('J 00:00:00+00') TO ('J+1 00:00:00+00')` ;
-  commit. Les échecs de jour sont joints et rendus. La transaction unique supprime la fenêtre « créée mais pas
+  commit. Les échecs de jour sont joints et rendus.
+  **Rectifié par le test 3 (04/10)** : la clé est la même pour tous les jours, donc `try` fait sauter à une
+  réplique un jour que l'autre ne tient pas encore. Elle saute X+1 pendant que l'autre crée X, puis l'autre
+  saute X+1 pendant qu'elle crée X+2 : X+1 n'est créé par personne (vu : 2 jours manquants sur 30). Le verrou
+  devient **bloquant** (`pg_advisory_xact_lock`), après `SET LOCAL lock_timeout`, qui borne aussi cette
+  attente : le perdant attend le commit du gagnant, puis `to_regclass` voit la table. La transaction unique supprime la fenêtre « créée mais pas
   attachée » ; le verrou consultatif rend `to_regclass` fiable sans distinguer les codes d'erreur.
 - **Frontière** : UTC (`created_at` est un instant ; jours de 24 h, sans DST). Nom `billing_ledger_YYYYMMDD`,
   layout `20060102` comme `partitionDayLayout` des CDR. Les littéraux sortent de `time.Format`, jamais d'une

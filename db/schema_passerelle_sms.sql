@@ -778,16 +778,12 @@ CREATE UNIQUE INDEX billing_ledger_idem_idx
   WHERE message_id IS NOT NULL;
 CREATE INDEX billing_ledger_customer_idx ON control_plane.billing_ledger(customer_id, created_at);
 
--- Seed partitions. In production a scheduler (pg_partman / cron) creates the next day's partition ahead
--- of time and detaches old ones to object storage (§6.14.2). Two examples + a catch-all default:
+-- The daily partitions (billing_ledger_YYYYMMDD, UTC, today to today+7) are created by billing-svc at boot and
+-- hourly (step-408), by ATTACH PARTITION so the hot path's writes never wait. DEFAULT is the safety net and must
+-- stay empty: every ATTACH scans it, and refuses a day it already holds rows for (billing_ledger_default_rows).
+-- Nothing detaches, archives or purges yet (debts/grand-livre-ni-detache-ni-archive-ni-purge.md).
 CREATE TABLE control_plane.billing_ledger_default
   PARTITION OF control_plane.billing_ledger DEFAULT;
-CREATE TABLE control_plane.billing_ledger_2026_07_14
-  PARTITION OF control_plane.billing_ledger
-  FOR VALUES FROM ('2026-07-14 00:00:00+00') TO ('2026-07-15 00:00:00+00');
-CREATE TABLE control_plane.billing_ledger_2026_07_15
-  PARTITION OF control_plane.billing_ledger
-  FOR VALUES FROM ('2026-07-15 00:00:00+00') TO ('2026-07-16 00:00:00+00');
 
 -- -----------------------------------------------------------------------------------------------------
 -- 24b. Billing idempotency (§6.9, invariant c) — AUTHORITATIVE cross-partition guard, NOT partitioned.
