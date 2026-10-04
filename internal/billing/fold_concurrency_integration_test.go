@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	redis "github.com/redis/go-redis/v9"
 
 	"github.com/martialanouman/go-gateway/internal/billing"
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
@@ -322,16 +324,14 @@ func closeOnce(ch chan struct{}) {
 	}
 }
 
-// TestConcurrentDuplicateRepairLeavesNoPhantomCredit: attempt A has debited the cache and is still writing its
-// reserve when its duplicate B finds A's hold, sees no durable entry yet, and repairs it. A then loses the
-// idempotency claim; refunding the cache for that loss would hand back a credit the ledger keeps debited.
-func TestConcurrentDuplicateRepairLeavesNoPhantomCredit(t *testing.T) {
-	h := newBillingHarness(t, 1)
+// raceDuplicateRepair reserves messageID twice: attempt A debits the cache and is still writing its reserve
+// when its duplicate B finds A's hold, sees no durable entry yet, and repairs it; A then loses the claim.
+func raceDuplicateRepair(t *testing.T, h *billingHarness, messageID uuid.UUID) {
+	t.Helper()
 	ctx := context.Background()
 	store := &blockingStore{LedgerStore: h.repo, entered: make(chan struct{}), release: make(chan struct{})}
 	t.Cleanup(func() { closeOnce(store.release) })
 	original := billing.New(h.rdb, store, billing.WithHoldTTL(time.Minute), billing.WithConfigSource(h.cfg))
-	messageID := uuid.New()
 
 	first := make(chan error, 1)
 	go func() {
@@ -357,11 +357,163 @@ func TestConcurrentDuplicateRepairLeavesNoPhantomCredit(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("original Reserve never returned")
 	}
+}
+
+// TestConcurrentDuplicateRepairLeavesNoPhantomCredit: refunding the cache for the original attempt's lost
+// claim would hand back a credit the ledger keeps debited.
+func TestConcurrentDuplicateRepairLeavesNoPhantomCredit(t *testing.T) {
+	h := newBillingHarness(t, 1)
+	raceDuplicateRepair(t, h, uuid.New())
 
 	if bal := h.balance(t); bal != 0 {
 		t.Fatalf("durable balance = %d, want 0: the one credit is reserved", bal)
 	}
-	if _, err := h.acc.Reserve(ctx, h.owner, uuid.New(), 1); !errors.Is(err, errs.ErrInsufficientCredit) {
+	if _, err := h.acc.Reserve(context.Background(), h.owner, uuid.New(), 1); !errors.Is(err, errs.ErrInsufficientCredit) {
 		t.Fatalf("Reserve of another message = %v, want ErrInsufficientCredit: the only credit is reserved", err)
+	}
+}
+
+// TestRepairMarkIsConsumedByTheUndo: the mark spares one undo, not every undo of the message for the hold
+// TTL. A replay after the capture debits the cache again and must still be refunded.
+func TestRepairMarkIsConsumedByTheUndo(t *testing.T) {
+	h := newBillingHarness(t, 2)
+	ctx := context.Background()
+	messageID := uuid.New()
+	raceDuplicateRepair(t, h, messageID)
+	if _, err := h.acc.Capture(ctx, h.owner, messageID); err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	if _, err := h.acc.Reserve(ctx, h.owner, messageID, 1); err != nil {
+		t.Fatalf("Reserve replayed after the capture: %v", err)
+	}
+	if _, err := h.acc.Reserve(ctx, h.owner, uuid.New(), 1); err != nil {
+		t.Fatalf("Reserve of the credit left = %v, want success: the replay's debit must have been refunded", err)
+	}
+}
+
+// TestRepairCoversItsOwnCommit: the original attempt's in-flight field is past the hold age and purged, while
+// its hold still stands and a duplicate is writing the repair. Until that commit lands, only the repair's
+// own field keeps a rehydration from selling the credit again.
+func TestRepairCoversItsOwnCommit(t *testing.T) {
+	h := newBillingHarness(t, 1)
+	ctx := context.Background()
+	messageID := uuid.New()
+	ikey := "billing:inflight:mt:" + h.owner.Type + ":" + h.owner.ID.String()
+	longAgo := time.Now().Add(-2 * time.Minute).UnixMilli()
+	if err := h.rdb.Set(ctx, "billing:balance:mt:"+h.owner.Type+":"+h.owner.ID.String(), 0, time.Minute).Err(); err != nil {
+		t.Fatalf("seed debited cache: %v", err)
+	}
+	if err := h.rdb.Set(ctx, "billing:reservation:"+messageID.String(), 1, time.Minute).Err(); err != nil {
+		t.Fatalf("seed hold: %v", err)
+	}
+	if err := h.rdb.HSet(ctx, ikey, messageID.String(), "1:"+strconv.FormatInt(longAgo, 10)).Err(); err != nil {
+		t.Fatalf("seed stale field: %v", err)
+	}
+
+	store := &blockingStore{LedgerStore: h.repo, entered: make(chan struct{}), release: make(chan struct{})}
+	t.Cleanup(func() { closeOnce(store.release) })
+	duplicate := billing.New(h.rdb, store, billing.WithHoldTTL(time.Minute), billing.WithConfigSource(h.cfg))
+	repaired := make(chan error, 1)
+	go func() {
+		_, err := duplicate.Reserve(ctx, h.owner, messageID, 1)
+		repaired <- err
+	}()
+	select {
+	case <-store.entered:
+	case err := <-repaired:
+		t.Fatalf("duplicate Reserve returned before its repair: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("duplicate Reserve never reached its repair")
+	}
+	h.dropCachedBalance(t)
+
+	_, err := h.acc.Reserve(ctx, h.owner, uuid.New(), 1)
+	closeOnce(store.release)
+	if rerr := <-repaired; rerr != nil {
+		t.Fatalf("duplicate Reserve: %v", rerr)
+	}
+	if !errors.Is(err, errs.ErrInsufficientCredit) {
+		t.Fatalf("Reserve while the repair commits = %v, want ErrInsufficientCredit", err)
+	}
+}
+
+// failingReserveStore holds the first reserve's durable write, then fails it for real (nothing committed).
+type failingReserveStore struct {
+	billing.LedgerStore
+	entered chan struct{}
+	fail    chan struct{}
+}
+
+func (s *failingReserveStore) RecordDurable(context.Context, cp.LedgerEntry) (int, bool, error) {
+	close(s.entered)
+	<-s.fail
+	return 0, false, errors.New("postgres unreachable")
+}
+
+// beforeRepairHook runs once, just before the duplicate's repair script reaches Redis.
+type beforeRepairHook struct {
+	once sync.Once
+	fn   func()
+}
+
+func (*beforeRepairHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+
+func (h *beforeRepairHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		for _, arg := range cmd.Args() {
+			if s, ok := arg.(string); ok && strings.HasSuffix(s, ":repair") {
+				h.once.Do(h.fn)
+			}
+		}
+		return next(ctx, cmd)
+	}
+}
+
+func (*beforeRepairHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return next
+}
+
+// TestRepairYieldsToAnUndoneHold: the duplicate saw the original attempt's hold, but before it repairs, that
+// attempt's durable write fails for real and its undo refunds the cache. A repair written now would debit
+// the ledger for a credit the cache has handed back.
+func TestRepairYieldsToAnUndoneHold(t *testing.T) {
+	h := newBillingHarness(t, 1)
+	ctx := context.Background()
+	messageID := uuid.New()
+	store := &failingReserveStore{LedgerStore: h.repo, entered: make(chan struct{}), fail: make(chan struct{})}
+	t.Cleanup(func() { closeOnce(store.fail) })
+	original := billing.New(h.rdb, store, billing.WithHoldTTL(time.Minute), billing.WithConfigSource(h.cfg))
+
+	first := make(chan error, 1)
+	go func() {
+		_, err := original.Reserve(ctx, h.owner, messageID, 1)
+		first <- err
+	}()
+	select {
+	case <-store.entered:
+	case err := <-first:
+		t.Fatalf("original Reserve returned before its durable write: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("original Reserve never reached its durable write")
+	}
+
+	hooked := redis.NewClient(h.rdb.Options())
+	t.Cleanup(func() { _ = hooked.Close() })
+	hooked.AddHook(&beforeRepairHook{fn: func() {
+		closeOnce(store.fail)
+		if err := <-first; err == nil {
+			t.Error("original Reserve on a failed durable write succeeded")
+		}
+	}})
+	duplicate := billing.New(hooked, h.repo, billing.WithHoldTTL(time.Minute), billing.WithConfigSource(h.cfg))
+	if _, err := duplicate.Reserve(ctx, h.owner, messageID, 1); err != nil {
+		t.Fatalf("duplicate Reserve: %v", err)
+	}
+
+	if bal := h.balance(t); bal != 0 {
+		t.Fatalf("durable balance = %d, want 0: the duplicate holds the one credit", bal)
+	}
+	if _, err := h.acc.Reserve(ctx, h.owner, uuid.New(), 1); !errors.Is(err, errs.ErrInsufficientCredit) {
+		t.Fatalf("Reserve of another message = %v, want ErrInsufficientCredit", err)
 	}
 }

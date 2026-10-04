@@ -46,9 +46,13 @@ var rehydrateSrc string
 //go:embed lua/invalidate.lua
 var invalidateSrc string
 
+//go:embed lua/repair.lua
+var repairSrc string
+
 var (
 	rehydrateScript  = redis.NewScript(rehydrateSrc)
 	invalidateScript = redis.NewScript(invalidateSrc)
+	repairScript     = redis.NewScript(repairSrc)
 )
 
 //go:embed lua/recordmo.lua
@@ -302,6 +306,12 @@ func reservationKey(messageID uuid.UUID) string {
 	return "billing:reservation:" + messageID.String()
 }
 
+// repairedKey marks a hold whose durable reserve a duplicate wrote, so the original attempt, beaten to the
+// idempotency claim, does not refund a debit the ledger keeps.
+func repairedKey(messageID uuid.UUID) string {
+	return "billing:repaired:" + messageID.String()
+}
+
 func moSeenKey(messageID uuid.UUID) string {
 	return "billing:mo-seen:" + messageID.String()
 }
@@ -343,7 +353,7 @@ func (a *Accountant) Reserve(ctx context.Context, owner Owner, messageID uuid.UU
 		}
 		switch status := res[0].(string); status {
 		case "reserved":
-			defer a.forgetInFlight(ctx, ikey, messageID)
+			defer a.forgetInFlight(ctx, ikey, messageID.String())
 			decided := toInt(res[1])
 			dctx, cancel := context.WithTimeout(ctx, reserveDurableTimeout)
 			defer cancel()
@@ -377,6 +387,16 @@ func (a *Accountant) Reserve(ctx context.Context, owner Owner, messageID uuid.UU
 			}
 			// Self-repair: a crash between reserve.lua and the durable write can leave a live hold with no
 			// durable reserve entry. Write it now (idempotent) so the durable authority reflects the hold.
+			repairField := messageID.String() + ":repair"
+			covered, err := repairScript.Run(ctx, a.rdb, []string{rkey, ikey, repairedKey(messageID)}, repairField,
+				strconv.Itoa(credits)+":"+strconv.FormatInt(time.Now().UnixMilli(), 10), a.holdTTL.Milliseconds()).Int()
+			if err != nil {
+				return 0, fmt.Errorf("billing: reserve replay cover: %w", err)
+			}
+			if covered == 0 {
+				continue
+			}
+			defer a.forgetInFlight(ctx, ikey, repairField)
 			_, _, found, err := a.store.ReserveEntry(ctx, messageID)
 			if err != nil {
 				return 0, fmt.Errorf("billing: reserve replay lookup: %w", err)
@@ -386,6 +406,9 @@ func (a *Accountant) Reserve(ctx context.Context, owner Owner, messageID uuid.UU
 				defer cancel()
 				newBalance, _, err := a.store.RecordDurable(dctx, a.entry(owner, &messageID, cp.EntryReserve, -credits, nil))
 				if err != nil {
+					if _, balanceAfter, found, ferr := a.store.ReserveEntry(context.WithoutCancel(ctx), messageID); ferr == nil && found {
+						return balanceAfter, nil
+					}
 					return 0, fmt.Errorf("billing: reserve replay repair: %w", err)
 				}
 				return newBalance, nil
@@ -689,16 +712,19 @@ func (a *Accountant) undoMOCacheDebit(ctx context.Context, bkey, skey string, cr
 // the fresh hold in place if it is still live ("released"); if a concurrent actor already consumed the
 // hold (e.g. a duplicate capture), the debit cannot be refunded in place, so the cache is DROPPED and the
 // next reserve rehydrates from the durable authority. Any brief cache/durable divergence this leaves is
-// bounded by the balance cache's TTL (step-142b); the durable ledger is never touched here.
+// bounded by the balance cache's TTL (step-142b); the durable ledger is never touched here. A duplicate that
+// repaired this very hold's durable debit left a mark: then nothing is undone (step-286).
 func (a *Accountant) undoReserveCacheDebit(ctx context.Context, bkey, rkey string, messageID uuid.UUID) {
 	ctx = context.WithoutCancel(ctx) // a cancelled/timed-out request must still undo the cache debit
-	res, err := a.release.Run(ctx, a.rdb, []string{bkey, rkey}).Slice()
+	res, err := a.release.Run(ctx, a.rdb, []string{bkey, rkey, repairedKey(messageID)}).Slice()
 	if err != nil {
 		a.logger.ErrorContext(ctx, "billing: reserve cache undo failed — cache may drift until rehydration",
 			"message_id", messageID, "err", err)
 		return
 	}
-	if status, _ := res[0].(string); status != "released" {
+	switch status, _ := res[0].(string); status {
+	case "released", "repaired":
+	default:
 		// The fresh hold was gone (consumed concurrently, or the cache had lapsed): the debit could not be
 		// refunded in place. Drop the cache so it rehydrates from the durable authority, not a stuck value.
 		a.dropBalanceCache(ctx, bkey, messageID, "reserve cache debit could not be undone in place")
@@ -794,10 +820,10 @@ func (a *Accountant) inFlightCredits(ctx context.Context, ikey string) (int, err
 // forgetInFlight removes a reserve from the in-flight set once its outcome is durable (or undone). It runs
 // detached: a request that timed out must still clear it. A failure leaves the field to be subtracted until
 // it ages out — an underestimate, never an overdraft.
-func (a *Accountant) forgetInFlight(ctx context.Context, ikey string, messageID uuid.UUID) {
+func (a *Accountant) forgetInFlight(ctx context.Context, ikey, field string) {
 	ctx = context.WithoutCancel(ctx)
-	if err := a.rdb.HDel(ctx, ikey, messageID.String()).Err(); err != nil {
-		a.logger.WarnContext(ctx, "billing: could not clear an in-flight reserve", "message_id", messageID, "err", err)
+	if err := a.rdb.HDel(ctx, ikey, field).Err(); err != nil {
+		a.logger.WarnContext(ctx, "billing: could not clear an in-flight reserve", "field", field, "err", err)
 	}
 }
 
