@@ -1,6 +1,6 @@
 # step-285c — Plusieurs réserves en vol par voie du routeur, publiées dans l'ordre
 
-> **Jalon :** M12 · **Statut :** EN COURS (code livré, mesure VPS à faire après merge)
+> **Jalon :** M12 · **Statut :** FAIT (#258)
 > **Dépend de :** step-285b · **Bloque :** step-286, step-287
 > Porte `debts/debit-par-client-borne-par-la-latence-de-la-reserve.md` ; décision humaine du 04/10/2026 ;
 > lettre faute d'unité libre avant step-286.
@@ -34,7 +34,7 @@ les commits.
 - [x] design arrêté et commité, arbitré (spec → Fable → humain)
 - [x] rien n'est publié au-dessus du premier échec d'une voie, prouvé par un test qui tombe sous mutation
 - [x] la publication suit l'ordre des offsets d'une voie, même quand les réserves finissent dans le désordre
-- [ ] VPS, même protocole que step-285b (backlog mono-client) : réserves/s, taille moyenne des lots,
+- [x] VPS, même protocole que step-285b (backlog mono-client) : réserves/s, taille moyenne des lots,
       CPU de Postgres, comparés à 294/s, 8,4 et 622 m
 
 ## Design arrêté
@@ -97,3 +97,30 @@ Arbitré par Fable le 04/10/2026 (spec muette sur le parallélisme intra-voie et
 - Avec une règle de doublon `block`, le même `message_id` évalué deux fois n'est pas un doublon ; un autre
   `message_id` avec le même contenu l'est.
 - La vélocité ne compte pas deux fois un rejeu.
+
+## Journal
+
+**04/10/2026 — mesure VPS.** Même protocole que step-285b (backlog mono-client, k6 `sustained` 300 s, puis
+180 s d'échantillonnage). step-408 avait été déployée entre-temps : la référence est remesurée juste avant,
+sur le même cluster (`aa2744c`), en ne changeant que l'image du routeur (`83a55b5`, même code routeur que
+`b7035f7`). Aucun vidage entre les deux runs.
+
+| | référence (sans fenêtre) | step-285c | |
+|---|---|---|---|
+| Réserves/s | 301 | **951** | ×3,2 |
+| Mouvements par lot | 8,9 | **33,9** | ×3,8 |
+| Lots/s | 67 | 33 | |
+| Écriture durable / réserve totale | 25,8 / 31,7 ms | 58,4 / 71,7 ms | |
+| CPU de Postgres (instantané `k top`) | 929 m | 1 077 m | +16 % |
+| Lag `mt.inbound` sur 180 s | −55 k | −172 k | |
+
+- Le plafond par client passe de ~300 à ~950 réserves/s. Il reste borné par voies × 8 ÷ latence : la
+  latence d'une réserve double (les lots sont 4 fois plus gros, et `LWLock:WALWrite` apparaît dans les
+  attentes, 9 échantillons sur 65).
+- Les lots font 34 mouvements, pas les 50-90 estimés au design : 96 réserves en vol se répartissent sur
+  ~2 lots concurrents.
+- Réserve : le run de référence a tourné avec 1 réplica de router-svc, celui de step-285c avec 2 (HPA).
+  Sans effet attendu sur le plafond, qui tient aux 12 partitions et pas aux pods ; le routeur de
+  référence n'apparaissait pas parmi les 6 pods les plus chargés.
+- Non mesuré : la latence du produce synchrone (§6). Aucune métrique ne l'expose, et le plafond observé
+  s'explique déjà par la latence de la réserve.
