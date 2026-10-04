@@ -1,7 +1,7 @@
 # Les lectures du grand livre par message_id parcourent toutes les partitions
 
 > **Statut :** OUVERTE · **Nature :** technique
-> **Née de :** step-408 (`internal/storage/postgres/queries/billing.sql:104`) · **Portée par :** —
+> **Née de :** step-408 (`internal/storage/postgres/queries/billing.sql:104`) · **Portée par :** step-408b
 
 **Ce qu'on a fait à la place.** step-408 crée une partition du grand livre par jour, sans toucher aux lectures
 qui le consultent par `message_id` seul : `LedgerEntryExists` (`queries/billing.sql:104`) et

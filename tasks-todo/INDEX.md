@@ -429,11 +429,13 @@ l'autorisation de la moitié des opérations, et le tableau de bord génère ses
       step-420 ; unité faute de multiple de dix libre
 - [x] step-408 — Le grand livre se partitionne vraiment : billing-svc crée les partitions journalières, `DEFAULT`
       reste un filet surveillé ⛓ step-141 — unité faute de multiple de dix libre avant step-409
+- [ ] step-408b — Les lectures du grand livre par `message_id` élaguent, ou ne lisent plus le grand livre
+      ⛓ step-408 — ouverte par la revue de step-408 ; suffixe faute de numéro libre avant step-410
 - [ ] step-409 — Campagne NFR pleine échelle sur environnement représentatif : le verdict ⛓ step-280, step-285, step-287,
       step-270b, step-408 — l'ancienne step-280 ; unité faute de multiple de dix libre
 - [ ] step-410 — **GO-LIVE** : dérouler la checklist de mise en production
       ⛓ step-260, step-270, step-280, step-409, step-290, step-310, step-320, step-397, step-398, step-405, step-407,
-      step-286, step-401, step-408
+      step-286, step-401, step-408, step-408b
 
 ## Après le go-live
 - [ ] step-420 — Exporter les CDR archivés (lecture de l'archive froide par l'export asynchrone)
