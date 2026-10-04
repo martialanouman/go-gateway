@@ -82,7 +82,9 @@ qu'un mouvement pouvait survivre à son appelant : rendu `ctx.Err()` par `Record
 jusqu'à ~8 s plus tard, verrou terminal déjà relâché. Une libération qui expire et une capture qui passe
 pouvaient alors commiter toutes les deux : un message livré gratuit. Règle :
 le contexte d'un lot est borné par `batchWriteTimeout` **et par la plus proche échéance de ses membres** ;
-une entrée déjà finie à la collecte est rendue en erreur sans être écrite ; une fois remise, une entrée
+une entrée déjà finie n'est pas remise au lot (contrôle avant l'envoi : le `select` tirerait au hasard
+entre l'envoi et `ctx.Done`, et une échéance passée condamnerait tout le lot) ; un contexte sans échéance
+reçoit `batchWriteTimeout` à l'entrée, sans quoi son repli ne serait borné par rien ; une fois remise, une entrée
 attend la réponse de son lot, que son échéance borne ; un lot qui échoue avant le COMMIT rejoue chaque
 entrée seule **sous son propre contexte**. Au retour de `RecordDurable`, le sort du mouvement est scellé :
 seul un COMMIT en vol reste ambigu, comme sur le chemin unitaire. Contrat : `RecordDurable` rend la main à
