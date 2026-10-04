@@ -99,7 +99,7 @@ func TestNewBillingAppReleasesInDependencyOrder(t *testing.T) {
 		t.Fatalf("newBillingApp: %v", err)
 	}
 
-	want := []string{"alerts", "reaper", "ledger batch", "stores"}
+	want := []string{"billing events", "alerts", "reaper", "ledger batch", "stores"}
 	if got := releaseOrder(app); !slices.Equal(got, want) {
 		t.Errorf("release order is %v, want %v", got, want)
 	}
@@ -149,6 +149,7 @@ func TestNewBillingAppBuildsTheWholeGraph(t *testing.T) {
 		"reaper":         app.reaper,
 		"foldLag":        app.foldLag,
 		"folder":         app.folder,
+		"eventRelay":     app.eventRelay,
 	} {
 		if component == nil || reflect.ValueOf(component).IsNil() {
 			t.Errorf("component %q was not wired", name)
@@ -160,6 +161,9 @@ func TestNewBillingAppBuildsTheWholeGraph(t *testing.T) {
 	}
 	if !slices.ContainsFunc(families, func(f *dto.MetricFamily) bool { return f.GetName() == "billing_balance_deltas_lag_seconds" }) {
 		t.Error("billing_balance_deltas_lag_seconds is not exposed: nothing would see the fold falling behind")
+	}
+	if !slices.ContainsFunc(families, func(f *dto.MetricFamily) bool { return f.GetName() == "billing_events_outbox_lag_seconds" }) {
+		t.Error("billing_events_outbox_lag_seconds is not exposed: nothing would see the events relay stuck")
 	}
 	if !slices.ContainsFunc(families, func(f *dto.MetricFamily) bool { return f.GetName() == "billing_reserve_stage_seconds" }) {
 		t.Error("billing_reserve_stage_seconds is not exposed: a reserve deadline could not be attributed")

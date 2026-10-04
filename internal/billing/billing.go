@@ -640,7 +640,11 @@ func (a *Accountant) RecordMO(ctx context.Context, owner Owner, messageID uuid.U
 
 		case "charged":
 			newBalance, crossed := toInt(res[1]), toInt(res[2]) == 1
-			_, applied, err := a.store.RecordDurable(ctx, a.moEntry(owner, messageID, -credits, &newBalance))
+			entry := a.moEntry(owner, messageID, -credits, &newBalance)
+			if crossed {
+				entry.MOFloorReached = &floor
+			}
+			_, applied, err := a.store.RecordDurable(ctx, entry)
 			if err != nil {
 				// Undo the speculative cache debit on an un-cancellable context, then fail closed. INCRBY
 				// preserves the key's TTL; DEL of the seen-key lets a legitimate retry re-accrue.

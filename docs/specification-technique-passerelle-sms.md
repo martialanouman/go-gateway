@@ -439,6 +439,13 @@ mo.inbound        -- raw deliver_sm from SMSC connectors, pre-routing to account
 dlr.events        -- delivery receipt events, correlated to original message ID
 mt.dead-letter / mo.dead-letter   -- failed/expired after retry exhaustion (incl. exhausted fallback_chain, §6.15)
 mt.reroute-park   -- durable parking for the overflow of a large fallback reroute burst; drained rate-limited (§6.15)
+billing.events    -- billing TRANSITIONS for the dashboard BFF to detect (not a ledger journal): today only
+                     mo_balance_floor_reached. Relayed by billing-svc from a Postgres outbox written in the
+                     mo_charge transaction -> never lost, possibly delivered more than once (a crash, or
+                     two replicas relaying the same row): deduplicate on event_id. No order across owners.
+                     Keyed by owner_type:owner_id. Value v1: {v, event_id, event, customer_id, owner_type,
+                     owner_id, direction, balance_after, floor, occurred_at}. Retention is the operator's
+                     (ADR-0018) and must exceed the outage the BFF tolerates — 7 days recommended.
 ```
 
 ### 3.4 Magasin CDR / analytique (columnar — ClickHouse ou équivalent)

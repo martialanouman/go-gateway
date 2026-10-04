@@ -42,8 +42,9 @@ type billingApp struct {
 	reaper         *billing.Reaper
 	// foldLag is the age of the oldest unfolded balance delta (ADR-0022): past ~30s the fold is not keeping
 	// up, and every durable balance read sums a growing backlog.
-	foldLag prometheus.Gauge
-	folder  *billing.Folder
+	foldLag    prometheus.Gauge
+	folder     *billing.Folder
+	eventRelay *billing.EventRelay
 
 	// closers release what was opened, in reverse order of opening — the exact LIFO the deferred Closes
 	// in run() used to provide. They are named because that order is the property worth guarding,
@@ -124,6 +125,20 @@ func newBillingApp(ctx context.Context, cfg config.Config, logger *slog.Logger) 
 	}
 	a.onClose("alerts", feed.close)
 
+	// The durable producer connects lazily, like the alert feed's: Kafka stays out of the boot and out of
+	// readiness, and a broker outage only grows the outbox.
+	eventsProducer, err := kafka.NewProducer(cfg.Kafka)
+	if err != nil {
+		return nil, fmt.Errorf("kafka billing events producer: %w", err)
+	}
+	a.onClose("billing events", eventsProducer.Close)
+	//nolint:contextcheck // A scrape carries no context: the boot context has no business inside it.
+	eventRelayLag := prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Name: "billing_events_outbox_lag_seconds",
+		Help: "Age of the oldest billing event not yet relayed to billing.events (step-400); 0 when none waits, NaN when unreadable.",
+	}, billing.OutboxLag(acct.repo, cfg.Postgres.Timeout))
+	a.eventRelay = billing.NewEventRelay(acct.repo, eventsProducer, logger)
+
 	pb.RegisterBillingServer(a.grpc, billing.NewServer(ext.biller, acct.repo, feed.alerts))
 
 	a.foldLag = prometheus.NewGauge(prometheus.GaugeOpts{
@@ -131,8 +146,8 @@ func newBillingApp(ctx context.Context, cfg config.Config, logger *slog.Logger) 
 		Help: "Age of the oldest balance delta not yet folded into balances (ADR-0022); 0 when none waits.",
 	})
 	a.folder = billing.NewFolder(a.repo, a.foldLag, logger)
-	collectors := make([]prometheus.Collector, 0, 3+len(ext.collectors)+len(reap.collectors)+len(feed.collectors))
-	collectors = append(collectors, a.foldLag, acct.reserveStage, acct.batchSize)
+	collectors := make([]prometheus.Collector, 0, 4+len(ext.collectors)+len(reap.collectors)+len(feed.collectors))
+	collectors = append(collectors, a.foldLag, eventRelayLag, acct.reserveStage, acct.batchSize)
 	collectors = append(collectors, ext.collectors...)
 	collectors = append(collectors, reap.collectors...)
 	collectors = append(collectors, feed.collectors...)

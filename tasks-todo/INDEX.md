@@ -417,7 +417,9 @@ l'autorisation de la moitié des opérations, et le tableau de bord génère ses
       trouvé en ouvrant step-399 ; unité faute de multiple de dix libre
 - [x] step-399 — Une invalidation perdue laisse une config périmée sans borne : resynchroniser
       périodiquement ⛓ step-395, step-398 — ouverte par step-395 ; unité faute de multiple de dix libre
-- [ ] step-400 — `billing.events` durable : le BFF doit pouvoir détecter, pas seulement afficher
+- [x] step-400 — `billing.events` durable : le BFF doit pouvoir détecter, pas seulement afficher
+- [ ] step-401 — Le MO n'est compté nulle part : câbler `RecordMO` dans mo-dlr-router-svc ⛓ step-143 —
+      ouverte par step-400 ; unité faute de multiple de dix libre
 - [x] step-405 — La passerelle accepte les jetons du BFF : ancre du JWKS, contrat honnête, `created_by`
       rempli ⛓ step-310, ADR-0019 — ouverte par ADR-0019 ; unité faute de multiple de dix libre
 - [x] step-407 — La production archive ses CDR avant de les supprimer : aucune destination objet, aucun
@@ -427,7 +429,7 @@ l'autorisation de la moitié des opérations, et le tableau de bord génère ses
       step-270b — l'ancienne step-280 ; unité faute de multiple de dix libre
 - [ ] step-410 — **GO-LIVE** : dérouler la checklist de mise en production
       ⛓ step-260, step-270, step-280, step-409, step-290, step-310, step-320, step-397, step-398, step-405, step-407,
-      step-286
+      step-286, step-401
 
 ## Après le go-live
 - [ ] step-420 — Exporter les CDR archivés (lecture de l'archive froide par l'export asynchrone)

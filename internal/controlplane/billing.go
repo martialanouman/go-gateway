@@ -174,4 +174,18 @@ type LedgerEntry struct {
 	// BalanceAfter is the balance Redis computed when it took this credit decision (ADR-0022). nil makes
 	// the store read the durable balance instead, which sums the owner's unfolded deltas.
 	BalanceAfter *int
+	// MOFloorReached is the floor this MO charge crossed, nil when it crossed none. The store queues the
+	// billing.events transition in the same transaction, so a replay can neither lose nor repeat it.
+	MOFloorReached *int
+}
+
+// BillingEvent is an MO floor crossing waiting in the outbox for the billing.events topic (step-400).
+type BillingEvent struct {
+	ID           uuid.UUID
+	OwnerType    string
+	OwnerID      uuid.UUID
+	CustomerID   uuid.UUID
+	BalanceAfter int
+	Floor        int
+	CreatedAt    time.Time
 }

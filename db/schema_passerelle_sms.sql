@@ -806,6 +806,21 @@ CREATE TABLE control_plane.billing_idempotency (
 CREATE INDEX billing_idempotency_created_idx ON control_plane.billing_idempotency(created_at);
 
 -- -----------------------------------------------------------------------------------------------------
+-- 24c. Billing events outbox (step-400) — transitions waiting for the billing.events topic. RecordDurable
+-- inserts a row in the same tx as the mo_charge that crossed the MO floor, after the idempotency claim, so
+-- a replay adds none; billing-svc relays each row to Kafka and deletes it. Nearly always empty.
+-- -----------------------------------------------------------------------------------------------------
+CREATE TABLE control_plane.billing_events_outbox (
+  id            uuid NOT NULL DEFAULT uuidv7() PRIMARY KEY,  -- the event_id consumers deduplicate on
+  owner_type    text NOT NULL CHECK (owner_type IN ('customer','smpp_account')),
+  owner_id      uuid NOT NULL,
+  customer_id   uuid NOT NULL,
+  balance_after integer NOT NULL,
+  floor         integer NOT NULL,
+  created_at    timestamptz NOT NULL DEFAULT now()
+);
+
+-- -----------------------------------------------------------------------------------------------------
 -- 25. updated_at triggers
 -- -----------------------------------------------------------------------------------------------------
 DO $$
