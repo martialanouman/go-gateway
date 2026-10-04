@@ -70,12 +70,13 @@ se fait **avant le merge**.
   `SET LOCAL lock_timeout = '1s'` ; `to_regclass(...)` non nul → rien à faire ;
   `CREATE TABLE billing_ledger_YYYYMMDD (LIKE billing_ledger INCLUDING DEFAULTS INCLUDING CONSTRAINTS)` ;
   `ALTER TABLE billing_ledger ATTACH PARTITION … FOR VALUES FROM ('J 00:00:00+00') TO ('J+1 00:00:00+00')` ;
-  commit. Les échecs de jour sont joints et rendus.
+  commit. Les échecs de jour sont joints et rendus. La transaction unique supprime la fenêtre « créée mais
+  pas attachée ».
   **Rectifié par le test 3 (04/10)** : la clé est la même pour tous les jours, donc `try` fait sauter à une
   réplique un jour que l'autre ne tient pas encore. Elle saute X+1 pendant que l'autre crée X, puis l'autre
   saute X+1 pendant qu'elle crée X+2 : X+1 n'est créé par personne (vu : 2 jours manquants sur 30). Le verrou
   devient **bloquant** (`pg_advisory_xact_lock`), après `SET LOCAL lock_timeout`, qui borne aussi cette
-  attente : le perdant attend le commit du gagnant, puis `to_regclass` voit la table.
+  attente : le perdant attend le commit du gagnant, puis voit la partition.
   **Amendé après revue (04/10, arbitré par Fable)** :
   - `SET LOCAL statement_timeout = '200ms'` juste avant l'ATTACH, `lock_timeout` de 1 s gardé pour le verrou
     consultatif. Un lecteur non élagué du chemin chaud (`LedgerEntryExists`, `GetReserveEntry` de la capture)
@@ -85,14 +86,19 @@ se fait **avant le merge**.
     instructions de plus, une contrainte par jour qui s'accumule) ; refuser tout ATTACH si `DEFAULT` n'est pas
     vide (un jour en retard en mettrait tous les jours en retard).
   - « déjà là » se lit dans `pg_inherits` (attachée au parent), plus par `to_regclass` : une table du bon nom
-    existante mais non attachée fait échouer le CREATE à chaque passe, au lieu d'être ignorée en silence. La transaction unique supprime la fenêtre « créée mais pas
-  attachée » ; le verrou consultatif rend `to_regclass` fiable sans distinguer les codes d'erreur.
+    existante mais non attachée fait échouer le CREATE à chaque passe, au lieu d'être ignorée en silence.
+  **Amendé au second tour de revue (04/10)** : l'intervalle passe de 1 h à **61 min**. 1 h vaut 12 ticks de
+  5 min, et les tickers du reaper et de la réconciliation partent au même démarrage : chaque passe horaire
+  tombait sur leurs lectures non élaguées, qui tiennent `DEFAULT`. Dès qu'elles dépasseraient 200 ms, l'ATTACH
+  de J+7 échouerait à toutes les passes, puis le jour courant n'aurait plus de partition. À 61 min, la phase
+  tourne d'une minute par passe. Et l'expression compagne est `absent(billing_ledger_default_rows >= 0)` :
+  une jauge à NaN reste une série présente, que `absent()` seul ne voit pas.
 - **Frontière** : UTC (`created_at` est un instant ; jours de 24 h, sans DST). Nom `billing_ledger_YYYYMMDD`,
   layout `20060102` comme `partitionDayLayout` des CDR. Les littéraux sortent de `time.Format`, jamais d'une
   entrée : le `Sprintf` du DDL n'est pas injectable.
 - **Boucle** : `runLedgerPartitions` dans `cmd/billing-svc/main.go`, une passe immédiate au démarrage puis
   toutes les heures, Warn sur erreur, dans la `supervisor.Group`. Constantes `ledgerPartitionDays = 8`
-  (aujourd'hui + 7) et `ledgerPartitionInterval = time.Hour`, pas de variable d'environnement. Pas de type
+  (aujourd'hui + 7) et `ledgerPartitionInterval` (61 min, voir l'amendement), pas de variable d'environnement. Pas de type
   `billing.Partitioner` : il n'envelopperait qu'un appel.
 - **Jauge** : `billing_ledger_default_rows`, `GaugeFunc` lue au scrape sur le modèle d'`OutboxLag` (une jauge
   posée par la passe se figerait si elle pend), comptage plafonné

@@ -386,7 +386,7 @@ Le numérateur vient du broker par une boucle indépendante du projecteur, le d�
 max(billing_ledger_default_rows) > 0   # for: 5m
 ```
 
-Jauge de groupe (même valeur sur chaque réplique), d'où `max`. Elle vaut NaN quand Postgres est illisible, et `max` ignore NaN : une règle compagne `absent(billing_ledger_default_rows)` couvre la jauge muette. L'alerte ne se résout pas seule : rien ne sort une ligne de `DEFAULT` (`debts/default-du-grand-livre-sans-procedure-de-vidage.md`), et un `DEFAULT` non vide fait échouer la création de la partition du jour qu'il contient, puis de toutes une fois son parcours au-delà de 200 ms.
+Jauge de groupe (même valeur sur chaque réplique), d'où `max`. Elle vaut NaN quand Postgres est illisible, et `max` ignore NaN : une règle compagne `absent(billing_ledger_default_rows >= 0)` couvre la jauge muette (le `>= 0` écarte NaN, que `absent()` seul tiendrait pour une série présente). L'alerte ne se résout pas seule : rien ne sort une ligne de `DEFAULT` (`debts/default-du-grand-livre-sans-procedure-de-vidage.md`), et un `DEFAULT` non vide fait échouer la création de la partition du jour qu'il contient, puis de toutes une fois son parcours au-delà de 200 ms.
 
 **Stream temps réel** : gateway WebSocket/SSE alimentée par un topic de métriques Kafka, pour le tableau de bord (`/admin/stream/metrics`, `/sessions`, `/billing-alerts`).
 

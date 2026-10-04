@@ -252,9 +252,12 @@ func runFold(ctx context.Context, f interface{ DrainOnce(context.Context) }) err
 }
 
 // ledgerPartitionDays is today and the 7 next: a billing-svc down over a long weekend still finds its days.
+// ledgerPartitionInterval is not a multiple of the reaper's and the reconciliation's 5 minutes: started at the
+// same boot, an hourly pass would always land on their unpruned ledger reads, which hold DEFAULT against the
+// ATTACH. At 61 minutes the phase turns by a minute a pass.
 const (
 	ledgerPartitionDays     = 8
-	ledgerPartitionInterval = time.Hour
+	ledgerPartitionInterval = 61 * time.Minute
 )
 
 // runLedgerPartitions ensures the ledger's daily partitions at boot, then at every tick, until

@@ -12,7 +12,7 @@ type ensureCall struct {
 	days int
 }
 
-// fakeEnsurer fails its first pass, as a day whose range DEFAULT already holds would.
+// fakeEnsurer fails every pass, as a day whose range DEFAULT already holds would.
 type fakeEnsurer struct {
 	calls chan ensureCall
 	done  <-chan struct{}

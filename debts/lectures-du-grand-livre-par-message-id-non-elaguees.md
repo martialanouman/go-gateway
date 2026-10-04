@@ -13,14 +13,17 @@ verrouille chaque partition et ses trois index.
 `billing_idempotency` (non partitionnée) suppose que la réclamation implique le mouvement, or
 `ClaimIdempotency` la prend *avant* lui. Borner `created_at` depuis l'horodatage de l'UUIDv7 du `message_id`
 est un autre choix, avec ses propres cas limites. Arbitré par Fable en revue de step-408 : une step à part, pas
-une ligne de step-408.
+une ligne de step-408. Ce sont les mêmes lectures que
+`debts/capture-lit-le-grand-livre-trois-fois-avant-d-ecrire.md` (portée par step-409) : un redesign qui
+paie l'une doit dire s'il paie l'autre.
 
 **Ce qu'il en coûte.** Le temps de planification croît linéairement avec le nombre de partitions (doc PG18,
-ddl-partitioning). Et les verrous : vers 100 partitions, environ 400 verrous par lecture. Une vingtaine de
-lectures concurrentes (2 réplicas × 10 connexions) dépasseraient la table partagée des défauts PG
-(`max_locks_per_transaction` 64 × `max_connections` 100 = 6 400) : « out of shared memory » sur les captures.
-**Estimation non mesurée** : le dépôt ne fixe aucun des deux réglages. Comme rien n'est purgé
-(`debts/grand-livre-ni-detache-ni-archive-ni-purge.md`), on y arrive vers 90 jours de production. Monter
+ddl-partitioning). Et les verrous, quatre relations par partition : en ordre de grandeur, vers une centaine
+de partitions, quelque 400 verrous par lecture, dont 64 au plus logent hors de la table partagée (fast-path).
+Une vingtaine de lectures concurrentes (2 réplicas × 10 connexions) dépasseraient la table partagée des défauts
+PG (`max_locks_per_transaction` 64 × `max_connections` 100 = 6 400) : « out of shared memory » sur les
+captures. **Estimation non mesurée** : le dépôt ne fixe aucun des deux réglages. Comme rien n'est purgé
+(`debts/grand-livre-ni-detache-ni-archive-ni-purge.md`), on y arrive en quelques mois de production. Monter
 `max_locks_per_transaction` recule le plafond, pas le coût de planification.
 
 **À payer** avant le go-live, ou avant 60 jours de production au plus tard. On reconnaîtra l'urgence à la

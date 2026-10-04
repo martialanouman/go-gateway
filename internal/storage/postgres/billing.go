@@ -656,6 +656,7 @@ func (r *BillingRepo) EnsureLedgerPartitions(ctx context.Context, from time.Time
 
 func (r *BillingRepo) ensureLedgerPartition(ctx context.Context, day time.Time) error {
 	return pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		// Not the ATTACH's 200ms: the losing replica waits here for the winner's whole transaction.
 		if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '1s'`); err != nil {
 			return err
 		}

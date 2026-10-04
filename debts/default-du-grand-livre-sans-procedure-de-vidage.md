@@ -1,7 +1,7 @@
 # Un DEFAULT du grand livre qui a reçu des lignes n'a pas de procédure pour être vidé
 
 > **Statut :** OUVERTE · **Nature :** technique
-> **Née de :** step-408 (`docs/guide-ingenierie-passerelle-sms.md:383`) · **Portée par :** —
+> **Née de :** step-408 (`docs/guide-ingenierie-passerelle-sms.md:389`) · **Portée par :** —
 
 **Ce qu'on a fait à la place.** step-408 laisse `billing_ledger_default` en filet : une écriture dont le jour n'a
 pas de partition y tombe sans échouer. L'alerte `max(billing_ledger_default_rows) > 0` le signale, mais rien ne

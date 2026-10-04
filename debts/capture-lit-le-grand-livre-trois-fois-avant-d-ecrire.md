@@ -22,3 +22,6 @@ de connecteurs.
 
 Sources : `internal/billing/billing.go` (`resolveTerminal`, `Capture`) ·
 `internal/storage/postgres/billing_batch.go`
+
+**Voir aussi** `debts/lectures-du-grand-livre-par-message-id-non-elaguees.md` (step-408) : depuis que le grand
+livre a une partition par jour, ces trois lectures verrouillent chacune toutes les partitions.
