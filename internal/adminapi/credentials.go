@@ -2,6 +2,7 @@ package adminapi
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"time"
@@ -99,7 +100,7 @@ func registerCredentials(api huma.API, creds CredentialStore, accounts AccountSt
 		Path:    "/admin/smpp-accounts/{id}/credentials/{credId}/rotate",
 		Summary: "Rotate a credential (new secret returned once)", Tags: []string{"Credentials"},
 		Security: scopeSecurity(auth.ScopeAdminWrite),
-		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity},
+		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity, http.StatusConflict},
 	}, h.rotate)
 }
 
@@ -220,12 +221,18 @@ func (h *credentialHandlers) updateStatus(ctx context.Context, in *updateCredent
 	}
 	status := cp.CredentialStatus(in.Body.Status)
 	c, err := h.creds.SetStatus(ctx, accountID, credID, status)
+	if errors.Is(err, errs.ErrNotFound) {
+		if _, getErr := h.creds.Get(ctx, accountID, credID); getErr == nil {
+			return nil, humaerr.FailValidation("a revoked credential comes back through rotate, with a new secret",
+				humaerr.FieldError{Field: "status", Message: "a revoked credential can only stay revoked"})
+		}
+	}
 	if err != nil {
 		return nil, humaerr.FromError(err)
 	}
 	// A credential that is no longer active must not keep its live binds open (step-032). Re-activating
 	// one, by contrast, closes nothing.
-	if status != cp.CredentialActive {
+	if status != cp.CredentialActive && c.Type == cp.CredentialSMPPBind {
 		disconnectAccount(ctx, h.disc, h.logger, accountID, "credential_"+string(status))
 	}
 	return &credentialOutput{Body: toCredentialDTO(c)}, nil
@@ -242,11 +249,14 @@ func (h *credentialHandlers) revoke(ctx context.Context, in *credentialIDInput) 
 		return nil, err
 	}
 	// Revoke keeps the row and flips the status; the slot stays occupied.
-	if _, err := h.creds.SetStatus(ctx, accountID, credID, cp.CredentialRevoked); err != nil {
+	c, err := h.creds.SetStatus(ctx, accountID, credID, cp.CredentialRevoked)
+	if err != nil {
 		return nil, humaerr.FromError(err)
 	}
 	// The revoked credential's live binds must fall, not just the next one be refused (step-032).
-	disconnectAccount(ctx, h.disc, h.logger, accountID, "credential_revoked")
+	if c.Type == cp.CredentialSMPPBind {
+		disconnectAccount(ctx, h.disc, h.logger, accountID, "credential_revoked")
+	}
 	return &deleteOutput{}, nil
 }
 
@@ -274,20 +284,29 @@ func (h *credentialHandlers) rotate(ctx context.Context, in *rotateCredentialInp
 		return nil, humaerr.FromError(err)
 	}
 
+	rot := cp.CredentialRotation{}
+	if in.Body != nil && in.Body.GracePeriodSec != nil && *in.Body.GracePeriodSec > 0 {
+		grace := time.Duration(*in.Body.GracePeriodSec) * time.Second
+		rot.Grace = &grace
+	}
+	if rot.Grace != nil && existing.Status == cp.CredentialRevoked {
+		return nil, humaerr.FailValidation("a revoked credential cannot be rotated with a grace window",
+			humaerr.FieldError{Field: "grace_period_sec", Message: "must be absent, null or 0 when the credential is revoked"})
+	}
+
 	minted, secret, err := buildCredential(accountID, existing.Type, existing.SystemID)
 	if err != nil {
 		return nil, err
 	}
-
-	rot := cp.CredentialRotation{NewHash: hashOf(minted)}
-	if in.Body != nil && in.Body.GracePeriodSec != nil {
-		grace := time.Duration(*in.Body.GracePeriodSec) * time.Second
-		rot.Grace = &grace
-	}
+	rot.NewHash = hashOf(minted)
 
 	rotated, err := h.creds.Rotate(ctx, accountID, credID, rot)
 	if err != nil {
 		return nil, humaerr.FromError(err)
+	}
+	// Rotating without grace presumes the old secret leaked: a session bound with it must fall too.
+	if rot.Grace == nil && rotated.Type == cp.CredentialSMPPBind {
+		disconnectAccount(ctx, h.disc, h.logger, accountID, "credential_rotated")
 	}
 	return &credentialWithSecretOutput{Body: credentialWithSecretDTO{
 		CredentialDTO: toCredentialDTO(rotated),

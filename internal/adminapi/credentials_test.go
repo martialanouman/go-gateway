@@ -163,18 +163,8 @@ func TestListCredentialsNeverReturnsASecret(t *testing.T) {
 func createCredForRotation(t *testing.T) (*fakeCredentialStore, http.Handler, string, string) {
 	t.Helper()
 	store := newFakeCredentialStore()
-	accountID := uuid.New()
 	api := credAPI(t, store, newFakeAccountStore())
-
-	w := httptest.NewRecorder()
-	api.ServeHTTP(w, authed(t, http.MethodPost,
-		"/v1/admin/smpp-accounts/"+accountID.String()+"/credentials", `{"type":"api_key"}`))
-	if w.Code != http.StatusCreated {
-		t.Fatalf("seed create: status = %d, body=%s", w.Code, w.Body)
-	}
-	var got map[string]any
-	_ = json.Unmarshal(w.Body.Bytes(), &got)
-	credID, _ := got["id"].(string)
+	accountID, _, credID := seedCredential(t, api, apiKeyBody)
 	return store, api, accountID.String(), credID
 }
 
@@ -193,7 +183,7 @@ func TestRotateTranslatesGracePeriodSecondsToADuration(t *testing.T) {
 		want *time.Duration
 	}{
 		{"seconds become the matching duration", `{"grace_period_sec":600}`, ptr(10 * time.Minute)},
-		{"a zero window is a zero duration, not absent", `{"grace_period_sec":0}`, ptr(time.Duration(0))},
+		{"a zero window is an immediate cutover, not a 0 s window", `{"grace_period_sec":0}`, nil},
 		{"an omitted field is an immediate cutover", `{}`, nil},
 		{"an absent body is an immediate cutover", ``, nil},
 	}
@@ -234,6 +224,79 @@ func TestRotateRejectsAnUnboundedGraceWindow(t *testing.T) {
 	}
 	if store.lastRotation != nil {
 		t.Error("a rejected rotation still reached the store")
+	}
+}
+
+// TestUpdateStatusRefusesToLeaveRevoked: a PATCH that left revoked would revive the revoked secret; the
+// way back is rotate, which issues a new one.
+func TestUpdateStatusRefusesToLeaveRevoked(t *testing.T) {
+	_, api, accountID, credID := createCredForRotation(t)
+	revokeCred(t, api, accountID, credID)
+
+	for _, status := range []string{"active", "disabled"} {
+		w := httptest.NewRecorder()
+		api.ServeHTTP(w, authed(t, http.MethodPatch,
+			"/v1/admin/smpp-accounts/"+accountID+"/credentials/"+credID, `{"status":"`+status+`"}`))
+		if w.Code != http.StatusUnprocessableEntity {
+			t.Errorf("revoked -> %s: status = %d, want 422; body=%s", status, w.Code, w.Body)
+		}
+		if !strings.Contains(w.Body.String(), `"status"`) {
+			t.Errorf("422 does not name the status field: %s", w.Body)
+		}
+	}
+}
+
+// TestUpdateStatusOfAnUnknownCredentialIs404 pins the other side of the revoked guard: a missing row
+// is still a 404, not mistaken for a refused transition.
+func TestUpdateStatusOfAnUnknownCredentialIs404(t *testing.T) {
+	_, api, accountID, _ := createCredForRotation(t)
+	w := httptest.NewRecorder()
+	api.ServeHTTP(w, authed(t, http.MethodPatch,
+		"/v1/admin/smpp-accounts/"+accountID+"/credentials/"+uuid.NewString(), `{"status":"active"}`))
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404; body=%s", w.Code, w.Body)
+	}
+}
+
+// TestRotateRevokedCredentialRefusesAGraceWindow: a grace window on a revoked credential would make its
+// revoked, possibly leaked, secret valid again for the window's length.
+func TestRotateRevokedCredentialRefusesAGraceWindow(t *testing.T) {
+	store, api, accountID, credID := createCredForRotation(t)
+	revokeCred(t, api, accountID, credID)
+
+	w := httptest.NewRecorder()
+	api.ServeHTTP(w, authed(t, http.MethodPost, rotatePath(accountID, credID), `{"grace_period_sec":600}`))
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body=%s", w.Code, w.Body)
+	}
+	if !strings.Contains(w.Body.String(), `"grace_period_sec"`) {
+		t.Errorf("422 does not name grace_period_sec: %s", w.Body)
+	}
+	if store.lastRotation != nil {
+		t.Error("a rejected rotation still reached the store")
+	}
+}
+
+// TestRotateRevokedCredentialWithoutGraceIsAccepted keeps revoke-credential's promise, "use rotate to
+// issue a new secret". The reactivation itself is the store's, proven against Postgres.
+func TestRotateRevokedCredentialWithoutGraceIsAccepted(t *testing.T) {
+	_, api, accountID, credID := createCredForRotation(t)
+	revokeCred(t, api, accountID, credID)
+
+	w := httptest.NewRecorder()
+	api.ServeHTTP(w, authed(t, http.MethodPost, rotatePath(accountID, credID), ``))
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200; body=%s", w.Code, w.Body)
+	}
+}
+
+func revokeCred(t *testing.T, api http.Handler, accountID, credID string) {
+	t.Helper()
+	w := httptest.NewRecorder()
+	api.ServeHTTP(w, authed(t, http.MethodDelete, "/v1/admin/smpp-accounts/"+accountID+"/credentials/"+credID, ""))
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("revoke status = %d; body=%s", w.Code, w.Body)
 	}
 }
 
