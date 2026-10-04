@@ -21,8 +21,8 @@ import (
 const laneWindow = 8
 
 // windowReserver holds the first laneWindow reserves until all of them have arrived (or a guard elapses), so
-// the peak it records is the window itself and not whatever overlap the scheduler happened to allow. Later
-// reserves take a per-message delay.
+// the peak it records is the window itself and not whatever overlap the scheduler happened to allow. Past the
+// barrier, every reserve takes its per-message delay.
 type windowReserver struct {
 	delay    map[uuid.UUID]time.Duration // written before Run, only read during it
 	calls    atomic.Int32
@@ -109,7 +109,7 @@ func TestALanePublishesInOffsetOrderWhenReservesFinishOutOfOrder(t *testing.T) {
 }
 
 // TestAFailedLaneStopsReservingAboveIt: the produce of offset 3 fails. What precedes it is published; nothing
-// above it is, and the lane launches nothing new: only the window already in flight was reserved. The
+// above it is, and the lane launches nothing new after it. The
 // router.process span of every record already through the pipeline still ends, marked failed: an unended one
 // would leave its stage spans exported without their parent.
 func TestAFailedLaneStopsReservingAboveIt(t *testing.T) {

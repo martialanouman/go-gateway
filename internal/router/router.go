@@ -110,7 +110,7 @@ var errLaneHalted = errors.New("router: lane halted after an earlier failure")
 // laneWindow is how many messages of one lane run the pipeline at once (step-285c): more reserves in flight
 // grow billing-svc's write batches instead of its commits.
 // ponytail: constant, so reserves in flight scale with TOPIC_PARTITIONS × 8 unbounded; make it a setting if
-// a measurement campaign needs to sweep it.
+// a measurement campaign needs to sweep it, or past 32 partitions (256 = billing-svc's batch cap).
 const laneWindow = 8
 
 // handleBatch processes a poll batch with ONE goroutine per partition, so the per-message wait — a

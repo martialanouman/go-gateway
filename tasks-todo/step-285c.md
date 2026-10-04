@@ -1,6 +1,6 @@
 # step-285c — Plusieurs réserves en vol par voie du routeur, publiées dans l'ordre
 
-> **Jalon :** M12 · **Statut :** À FAIRE
+> **Jalon :** M12 · **Statut :** EN COURS (code livré, mesure VPS à faire après merge)
 > **Dépend de :** step-285b · **Bloque :** step-286, step-287
 > Porte `debts/debit-par-client-borne-par-la-latence-de-la-reserve.md` ; décision humaine du 04/10/2026 ;
 > lettre faute d'unité libre avant step-286.
@@ -31,9 +31,9 @@ les commits.
 
 ## Definition of Done
 
-- [ ] design arrêté et commité, arbitré (spec → Fable → humain)
-- [ ] rien n'est publié au-dessus du premier échec d'une voie, prouvé par un test qui tombe sous mutation
-- [ ] la publication suit l'ordre des offsets d'une voie, même quand les réserves finissent dans le désordre
+- [x] design arrêté et commité, arbitré (spec → Fable → humain)
+- [x] rien n'est publié au-dessus du premier échec d'une voie, prouvé par un test qui tombe sous mutation
+- [x] la publication suit l'ordre des offsets d'une voie, même quand les réserves finissent dans le désordre
 - [ ] VPS, même protocole que step-285b (backlog mono-client) : réserves/s, taille moyenne des lots,
       CPU de Postgres, comparés à 294/s, 8,4 et 622 m
 
@@ -85,7 +85,8 @@ Arbitré par Fable le 04/10/2026 (spec muette sur le parallélisme intra-voie et
    - Le span `router.process` englobe désormais pipeline, attente de tour et publication. L'attente
      apparaît comme un trou entre `pipeline.credit` et le produce.
    - `pipeline_duration_seconds` inclut la contention de 8 Process concurrents (du vrai temps de
-     pipeline), et observe deux fois un record arrêté puis rejoué (rare : faute d'infra).
+     pipeline), et observe deux fois un record arrêté puis rejoué : après une faute d'infra, et à chaque arrêt du
+     service (jusqu'à 8 records par voie).
 7. **Mesure contre step-408.** Si step-408 (vidage de `DEFAULT`) est déployée avant la mesure, on remesure
    la référence sans step-285c juste avant, sans aucun vidage entre les deux runs. Sinon, 294/s reste la
    référence.
