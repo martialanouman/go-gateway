@@ -19,7 +19,6 @@ BEGIN;
 SET client_min_messages = warning;
 
 CREATE SCHEMA IF NOT EXISTS control_plane;
-CREATE SCHEMA IF NOT EXISTS dashboard;   -- operators live here; defined in full by the dashboard spec
 
 SET search_path = control_plane, public;
 
@@ -45,19 +44,6 @@ BEGIN
   RETURN NEW;
 END$$;
 
--- -----------------------------------------------------------------------------------------------------
--- 0b. External stub — operators (owned by the dashboard schema/spec; stubbed here so FKs resolve)
--- -----------------------------------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS dashboard.operators (
-  id          uuid PRIMARY KEY DEFAULT uuidv7(),
-  email       text NOT NULL UNIQUE,
-  display_name text,
-  status      text NOT NULL DEFAULT 'active' CHECK (status IN ('active','disabled')),
-  created_at  timestamptz NOT NULL DEFAULT now()
-);
-COMMENT ON TABLE dashboard.operators IS
-  'STUB — canonical definition lives in the Admin Dashboard spec. Present only to satisfy created_by FKs.';
-
 -- =====================================================================================================
 -- DOMAIN MODEL — a CUSTOMER owns one or more SMPP ACCOUNTS.
 --   customer_groups 1 ─ N customers 1 ─ N smpp_accounts 1 ─ 2 credentials (1 smpp_bind + 1 api_key)
@@ -74,7 +60,7 @@ CREATE TABLE control_plane.customer_groups (
   name        text NOT NULL UNIQUE,
   description text,
   status      text NOT NULL DEFAULT 'active' CHECK (status IN ('active','archived')),
-  created_by  uuid REFERENCES dashboard.operators(id),
+  created_by  uuid,             -- the BFF's operator id (ADR-0019), no FK: the BFF owns its operators
   created_at  timestamptz NOT NULL DEFAULT now(),
   updated_at  timestamptz NOT NULL DEFAULT now()
 );
@@ -399,7 +385,7 @@ CREATE TABLE control_plane.sender_ids (
   address     text NOT NULL,          -- alphanumeric or MSISDN
   status      text NOT NULL DEFAULT 'pending_carrier_approval'
                 CHECK (status IN ('pending_carrier_approval','active','disabled')),
-  created_by  uuid REFERENCES dashboard.operators(id),
+  created_by  uuid,             -- the BFF's operator id (ADR-0019), no FK: the BFF owns its operators
   approved_at timestamptz,
   first_used_at timestamptz,          -- set once from mt.outcome; a used sender ID is never deleted (ADR-0023)
   created_at  timestamptz NOT NULL DEFAULT now(),
@@ -522,7 +508,7 @@ CREATE TABLE control_plane.routing_scripts (
   timeout_ms       integer NOT NULL DEFAULT 2 CHECK (timeout_ms > 0 AND timeout_ms <= 20),  -- hard cap ~20ms
   max_instructions bigint,
   max_memory_kb    integer,
-  created_by       uuid REFERENCES dashboard.operators(id),
+  created_by       uuid,          -- the BFF's operator id (ADR-0019), no FK
   created_at       timestamptz NOT NULL DEFAULT now(),
   published_at     timestamptz,
   CONSTRAINT routing_scripts_scope_ck CHECK (
@@ -606,7 +592,7 @@ CREATE TABLE control_plane.sender_id_rewrite_rules (
   priority             integer NOT NULL DEFAULT 100,
   reason               text,
   status               text NOT NULL DEFAULT 'active' CHECK (status IN ('active','disabled')),
-  created_by           uuid REFERENCES dashboard.operators(id),
+  created_by           uuid,          -- the BFF's operator id (ADR-0019), no FK
   created_at           timestamptz NOT NULL DEFAULT now(),
   updated_at           timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT sender_rewrite_scope_ck CHECK (

@@ -21,6 +21,7 @@ import (
 
 	"github.com/martialanouman/go-gateway/internal/auth"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
+	"github.com/martialanouman/go-gateway/internal/testutil/tlstest"
 )
 
 const (
@@ -28,6 +29,8 @@ const (
 	testAudience = "gateway-admin"
 	testKeyID    = "k1"
 	testECKeyID  = "k2"
+	// testSubject is an operator id, the only sub ADR-0019 lets the BFF sign.
+	testSubject = "0199a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b"
 )
 
 type idp struct {
@@ -57,8 +60,18 @@ func newIDP(t *testing.T) *idp {
 	return p
 }
 
-func (p *idp) verifier() *auth.OIDCVerifier {
-	return auth.NewOIDCVerifier(context.Background(), discard(), testIssuer, testAudience, p.srv.URL)
+func (p *idp) verifier(t *testing.T) *auth.OIDCVerifier {
+	t.Helper()
+	return newVerifier(t, discard(), p.srv.URL, "")
+}
+
+func newVerifier(t *testing.T, logger *slog.Logger, jwksURL, jwksCAFile string) *auth.OIDCVerifier {
+	t.Helper()
+	v, err := auth.NewOIDCVerifier(context.Background(), logger, testIssuer, testAudience, jwksURL, jwksCAFile)
+	if err != nil {
+		t.Fatalf("NewOIDCVerifier: %v", err)
+	}
+	return v
 }
 
 func discard() *slog.Logger { return slog.New(slog.DiscardHandler) }
@@ -67,7 +80,7 @@ func validClaims() map[string]any {
 	return map[string]any{
 		"iss":   testIssuer,
 		"aud":   testAudience,
-		"sub":   "7d1c2f0e-service-account",
+		"sub":   testSubject,
 		"exp":   time.Now().Add(time.Hour).Unix(),
 		"iat":   time.Now().Unix(),
 		"scope": "admin:read email profile",
@@ -112,11 +125,11 @@ func TestOIDCVerifierKeepsTheKnownScopesOfAValidToken(t *testing.T) {
 			claims := validClaims()
 			claims["scope"] = tt.scope
 
-			got, err := p.verifier().Verify(context.Background(), sign(t, jose.RS256, p.key, testKeyID, claims))
+			got, err := p.verifier(t).Verify(context.Background(), sign(t, jose.RS256, p.key, testKeyID, claims))
 			if err != nil {
 				t.Fatalf("Verify() error = %v", err)
 			}
-			if got.Subject != "7d1c2f0e-service-account" {
+			if got.Subject != testSubject {
 				t.Errorf("Subject = %q, want the token's sub", got.Subject)
 			}
 			if !slices.Equal(got.Scopes, tt.want) {
@@ -129,7 +142,7 @@ func TestOIDCVerifierKeepsTheKnownScopesOfAValidToken(t *testing.T) {
 func TestOIDCVerifierAcceptsAnECSignedToken(t *testing.T) {
 	p := newIDP(t)
 
-	if _, err := p.verifier().Verify(context.Background(), sign(t, jose.ES256, p.ecKey, testECKeyID, validClaims())); err != nil {
+	if _, err := p.verifier(t).Verify(context.Background(), sign(t, jose.ES256, p.ecKey, testECKeyID, validClaims())); err != nil {
 		t.Errorf("Verify() error = %v, want ES256 accepted for a provider with EC keys", err)
 	}
 }
@@ -162,11 +175,32 @@ func TestOIDCVerifierRejectsAnInvalidToken(t *testing.T) {
 		{"not a jwt", "opaque-token"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := p.verifier().Verify(context.Background(), tt.token)
+			_, err := p.verifier(t).Verify(context.Background(), tt.token)
 			if !errors.Is(err, errs.ErrUnauthenticated) {
 				t.Errorf("Verify() error = %v, want ErrUnauthenticated", err)
 			}
 		})
+	}
+}
+
+// TestOIDCVerifierRefusesASubjectThatIsNotAnOperatorID: ADR-0019 makes every sub the BFF signs an
+// operator id. Any other is a misconfigured issuer, refused on every call rather than recorded nowhere,
+// and logged, which the bare 401 is not.
+func TestOIDCVerifierRefusesASubjectThatIsNotAnOperatorID(t *testing.T) {
+	p := newIDP(t)
+	var logged bytes.Buffer
+	v := newVerifier(t, slog.New(slog.NewTextHandler(&logged, nil)), p.srv.URL, "")
+	claims := validClaims()
+	claims["sub"] = "service-account-dashboard"
+
+	_, err := v.Verify(context.Background(), sign(t, jose.RS256, p.key, testKeyID, claims))
+	if !errors.Is(err, errs.ErrUnauthenticated) {
+		t.Errorf("Verify() error = %v, want ErrUnauthenticated", err)
+	}
+	// The issuer names the misconfiguration; the sub is left out, since a misconfigured provider puts an
+	// email there.
+	if !strings.Contains(logged.String(), testIssuer) || strings.Contains(logged.String(), "service-account-dashboard") {
+		t.Errorf("log = %q, want the issuer named and the sub left out", logged.String())
 	}
 }
 
@@ -199,8 +233,7 @@ func TestOIDCVerifierReportsAnUnreachableKeySetAsUnavailable(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			p := newIDP(t)
 			var logged bytes.Buffer
-			v := auth.NewOIDCVerifier(context.Background(), slog.New(slog.NewTextHandler(&logged, nil)),
-				testIssuer, testAudience, tt.keySet(t))
+			v := newVerifier(t, slog.New(slog.NewTextHandler(&logged, nil)), tt.keySet(t), "")
 
 			_, err := v.Verify(context.Background(), sign(t, jose.RS256, p.key, testKeyID, validClaims()))
 			if !errors.Is(err, errs.ErrServiceUnavailable) {
@@ -223,10 +256,10 @@ func TestOIDCVerifierBoundsAHangingKeySet(t *testing.T) {
 	p := newIDP(t)
 
 	token := sign(t, jose.RS256, p.key, testKeyID, validClaims())
+	v := newVerifier(t, discard(), hanging.URL, "")
 	done := make(chan error, 1)
 	go func() {
-		_, err := auth.NewOIDCVerifier(context.Background(), discard(), testIssuer, testAudience, hanging.URL).
-			Verify(context.Background(), token)
+		_, err := v.Verify(context.Background(), token)
 		done <- err
 	}()
 
@@ -245,8 +278,43 @@ func TestOIDCVerifierFollowsARedirectedKeySet(t *testing.T) {
 	redirect := httptest.NewServer(http.RedirectHandler(p.srv.URL, http.StatusFound))
 	defer redirect.Close()
 
-	v := auth.NewOIDCVerifier(context.Background(), discard(), testIssuer, testAudience, redirect.URL)
+	v := newVerifier(t, discard(), redirect.URL, "")
 	if _, err := v.Verify(context.Background(), sign(t, jose.RS256, p.key, testKeyID, validClaims())); err != nil {
 		t.Errorf("Verify() error = %v, want the redirect followed", err)
+	}
+}
+
+// TestOIDCVerifierTrustsTheConfiguredAuthorityForTheKeySet: the BFF serves its JWKS under the operator's
+// internal PKI (ADR-0019), which the system roots do not know.
+func TestOIDCVerifierTrustsTheConfiguredAuthorityForTheKeySet(t *testing.T) {
+	p := newIDP(t)
+	ca := tlstest.NewCA(t)
+	jwksURL := ca.HTTPSServer(t, p.srv.Config.Handler)
+	token := sign(t, jose.RS256, p.key, testKeyID, validClaims())
+
+	if _, err := newVerifier(t, discard(), jwksURL, ca.CAFile).Verify(context.Background(), token); err != nil {
+		t.Errorf("Verify() under the configured authority error = %v", err)
+	}
+	_, err := newVerifier(t, discard(), jwksURL, "").Verify(context.Background(), token)
+	if !errors.Is(err, errs.ErrServiceUnavailable) {
+		t.Errorf("Verify() on the system roots error = %v, want ErrServiceUnavailable", err)
+	}
+}
+
+// TestOIDCVerifierRefusesAKeySetRedirectedToPlaintext proves, through NewOIDCVerifier, what
+// TestKeySetRedirectsNeverDowngradeToPlaintext proves of the policy alone: the verifier fetches with it.
+func TestOIDCVerifierRefusesAKeySetRedirectedToPlaintext(t *testing.T) {
+	p := newIDP(t)
+	ca := tlstest.NewCA(t)
+	downgrade := ca.HTTPSServer(t, http.RedirectHandler(p.srv.URL, http.StatusFound))
+	var logged bytes.Buffer
+
+	_, err := newVerifier(t, slog.New(slog.NewTextHandler(&logged, nil)), downgrade, ca.CAFile).
+		Verify(context.Background(), sign(t, jose.RS256, p.key, testKeyID, validClaims()))
+	if !errors.Is(err, errs.ErrServiceUnavailable) {
+		t.Errorf("Verify() error = %v, want ErrServiceUnavailable: the plaintext key set must not be read", err)
+	}
+	if !strings.Contains(logged.String(), "redirected from https") {
+		t.Errorf("log = %q, want the downgrade named as the cause", logged.String())
 	}
 }

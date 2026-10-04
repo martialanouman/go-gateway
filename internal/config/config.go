@@ -543,9 +543,10 @@ type ContentKey struct {
 // tokens must carry, and the JWKS they are signed with. All empty is the laptop setting, where the
 // static verifier stands in; production requires all three (step-310).
 type OIDC struct {
-	Issuer   string `env:"ISSUER"`
-	Audience string `env:"AUDIENCE"`
-	JWKSURL  string `env:"JWKS_URL"`
+	Issuer     string `env:"ISSUER"`
+	Audience   string `env:"AUDIENCE"`
+	JWKSURL    string `env:"JWKS_URL"`
+	JWKSCAFile string `env:"JWKS_CA_FILE"`
 }
 
 // TLS is the pod's transport identity: one certificate for every surface it serves and every service it
@@ -1419,6 +1420,9 @@ func (c Config) oidcProblems() []string {
 		}
 	}
 	if len(missing) == len(fields) && !c.Environment.IsProduction() {
+		if c.OIDC.JWKSCAFile != "" {
+			return []string{"OIDC_JWKS_CA_FILE is set but OIDC_ISSUER is not: it would have no effect"}
+		}
 		return nil
 	}
 

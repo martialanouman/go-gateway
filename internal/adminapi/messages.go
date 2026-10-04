@@ -158,6 +158,17 @@ func (h *messageHandlers) ok(messageID uuid.UUID, text string, enc clickhouse.En
 	return &messageContentOutput{Body: dto}
 }
 
+// operatorID is the principal's subject when it is an operator id (ADR-0019), for created_by. A static
+// token's tok_… fingerprint is not one, and records nothing.
+func operatorID(ctx context.Context) *uuid.UUID {
+	p, _ := auth.PrincipalFrom(ctx)
+	id, err := uuid.Parse(p.Subject)
+	if err != nil {
+		return nil
+	}
+	return &id
+}
+
 // operatorSubject is the audited operator identity — the authenticated principal's subject.
 func operatorSubject(ctx context.Context) string {
 	if p, ok := auth.PrincipalFrom(ctx); ok && p.Subject != "" {

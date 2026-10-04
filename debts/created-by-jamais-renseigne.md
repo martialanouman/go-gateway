@@ -1,7 +1,13 @@
 # `created_by` est publié par le contrat et reste nul pour toujours
 
-> **Statut :** OUVERTE · **Nature :** produit
-> **Née de :** step-310 · **Portée par :** step-405 (ADR-0019 la rend payable : `sub` = `dashboard.operators.id`)
+> **Statut :** PAYÉE le 2026-10-04 · **Nature :** produit
+> **Née de :** step-310 · **Payée par :** step-405 (#254)
+
+**Payée.** ADR-0019 fait du BFF l'émetteur des jetons, `sub` = l'`operator_id` de l'humain connecté. Les
+quatre créations écrivent ce `sub` dans `created_by`, et rien sous un jeton statique `tok_…`. Le vérifieur
+refuse un `sub` qui n'est pas un uuid. La FK vers le stub `dashboard.operators` est tombée avec le stub et
+le schéma `dashboard` (migration `0027`) : le BFF garde ses opérateurs dans sa propre base, et c'est à lui
+de traduire l'id en nom. Ni en-tête de confiance ni rupture de contrat. Ce qui suit est l'aveu d'origine.
 
 **Ce qu'on a fait à la place.** Quatre tables du plan de contrôle portent `created_by uuid REFERENCES
 dashboard.operators(id)` (`db/schema_passerelle_sms.sql:77`, `:375`, `:497`, `:581`), et le contrat Admin
@@ -23,4 +29,4 @@ ressource. Il faudra alors choisir : soit le BFF transmet l'identifiant de l'op�
 passerelle croit parce que le mTLS authentifie le BFF, soit le champ sort du contrat, ce qui est une rupture et
 donc un bump MAJEUR.
 
-Source : `internal/adminapi/customer_groups.go:16`
+Source : `internal/adminapi/messages.go` (`operatorID`), `migrations/0027_created_by_without_operators_stub.up.sql`

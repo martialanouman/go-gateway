@@ -133,7 +133,7 @@ func (h *senderIDHandlers) create(ctx context.Context, in *createSenderIDInput) 
 		return nil, humaerr.FailValidation("invalid customer id",
 			humaerr.FieldError{Field: "id", Message: "must be a UUID"})
 	}
-	s, err := h.senders.Create(ctx, cp.NewSenderID{CustomerID: customerID, Address: in.Body.Address})
+	s, err := h.senders.Create(ctx, cp.NewSenderID{CustomerID: customerID, Address: in.Body.Address, CreatedBy: operatorID(ctx)})
 	if err != nil {
 		return nil, humaerr.FromError(err)
 	}

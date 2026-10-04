@@ -8,3 +8,4 @@ data:
   OIDC_ISSUER: ""
   OIDC_AUDIENCE: ""
   OIDC_JWKS_URL: ""
+  OIDC_JWKS_CA_FILE: ""

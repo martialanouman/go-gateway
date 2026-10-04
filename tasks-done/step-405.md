@@ -1,6 +1,6 @@
 # step-405 — La passerelle accepte les jetons du BFF : ancre du JWKS, contrat honnête, `created_by` rempli
 
-> **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
+> **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** LIVRÉE (#254)
 > **Dépend de :** step-310, ADR-0019 (`Accepted`) · **Bloque :** step-410
 
 ## Pourquoi cette fiche existe
@@ -55,6 +55,51 @@ fonctionne en production, et aucune step ne les porte :
   `NewOIDCVerifier` n'est pas prouvé. Avec une ancre configurable, un test https de bout en bout (httptest
   TLS + CA de `tlstest`) peut enfin le prouver, y compris le refus d'une redirection de https vers http.
 
+## Design arrêté
+
+Arbitrage Fable du 2026-10-04 sur les deux points ouverts. La spec ne tranchait ni l'un ni l'autre ; seule
+contrainte : une variable TLS porte un CHEMIN, jamais du PEM (`internal/config/config.go`, type `TLS`).
+
+**Ancre : une clé de plus dans `gateway-oidc`, aucun volume neuf.** `OIDC_JWKS_CA_FILE` est lue par
+`configMapKeyRef` comme les trois autres, vide dans `deploy/test/gateway-oidc.yaml` (le ConfigMap est lu
+sans `optional`, la clé doit exister). ADR-0019 sert le JWKS « sous une autorité interne » : c'est la PKI de
+step-300, déjà montée en `/etc/gateway/tls/ca.crt`. step-410 y écrit ce chemin. Une autorité tierce
+exigerait un montage ajouté par l'exploitant, comme `KAFKA_TLS_CA_FILE` de step-305 ; une ligne au tableau
+de `deploy/k8s/tls/README.md` le dit. Un volume dédié serait spéculatif ; du PEM dans le ConfigMap, du bruit.
+`config.Load` refuse `OIDC_JWKS_CA_FILE` sans `OIDC_ISSUER` (« would have no effect »), comme Kafka et
+ClickHouse.
+
+**Client du JWKS.** `NewOIDCVerifier` prend le fichier de CA et rend une erreur : il appelle
+`tlsconf.StoreClientConfig`, et le transport du `keySetClient` est un clone de `http.DefaultTransport` qui
+porte cette config. Une CA illisible remonte de `newVerifier` et fait échouer `newAdminApp`, donc le boot.
+Vide, les racines système restent, avec le plancher TLS 1.2 de `StoreClientConfig`. Le résidu de step-310
+se ferme par un test https de bout en bout (`httptest` TLS sous une CA `tlstest`) : accepté avec l'ancre,
+503 sans elle, 503 sur une redirection de https vers http.
+
+**Un `sub` qui n'est pas un uuid est refusé par le vérifieur.** `OIDCVerifier.Verify` rend
+`ErrUnauthenticated` et un WARN qui nomme `iss` et `sub` (des identifiants, pas des secrets). ADR-0019 fait
+de `sub` un `operator_id` pour tout jeton du BFF : un autre format est un émetteur mal configuré, une panne
+de déploiement qui doit se voir à la première requête. Écrire NULL rouvrirait en silence la dette que cette
+step paie ; ne refuser que les créations donnerait « lectures OK, créations 401 » pour une seule faute.
+
+**`created_by` = `uuid.Parse(principal.Subject)`, nil sinon.** Un seul helper dans `internal/adminapi`,
+appelé par les quatre handlers de création (groupes, scripts — une version EST une ligne de script —,
+règles de réécriture, sender IDs). Ce sont les seuls écrivains de ces tables. `tok_…` ne se parse pas, donc
+NULL ; `declared:…` (`mt-replay`) ne passe jamais par l'API Admin et ne se parserait pas non plus. Les
+requêtes sqlc des groupes et des règles de réécriture prennent la colonne (les scripts et les sender IDs la
+prennent déjà), puis sqlc se régénère.
+
+**Schéma.** Migration `0027` : retrait des quatre FK, de `dashboard.operators`, puis du schéma `dashboard`.
+La down les recrée, FK en `NOT VALID` : des `created_by` réels ne référencent aucun opérateur du stub, et
+une FK validée rendrait la down impossible.
+
+**Contrat.** La description d'`OperatorBearer` dit que le BFF émet le jeton (ADR-0019), que le `tokenUrl`
+n'est servi par personne et ne reste que parce qu'un flux OAuth2 l'exige, et donne les claims (`iss`, `aud`,
+`sub` uuid, `scope` en chaîne séparée par des espaces, `exp`). Le type ne change pas (ADR-0019 : ce serait
+une rupture). **En plus de la fiche :** le schéma déclare `cdr:export_bulk`, que des opérations exigent déjà
+sans que le schéma le liste ; c'est additif. Bump MINEUR `6.11.0 → 6.12.0`. Le miroir Go
+(`operatorSecurityScheme`) porte la même description.
+
 ## Tests (écrits dans la même PR)
 
 - Un JWKS servi sous une CA de `tlstest` est lu avec `OIDC_JWKS_CA_FILE`, et refusé (503) sans elle.
@@ -64,12 +109,12 @@ fonctionne en production, et aucune step ne les porte :
 
 ## Definition of Done
 
-- [ ] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts
-- [ ] `debts/jwks-joint-par-les-seules-racines-systeme.md` passe à `PAYÉE`, avec la date et la PR
-- [ ] `debts/created-by-jamais-renseigne.md` passe à `PAYÉE` ; FK et stub `dashboard.operators` retirés
+- [x] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts
+- [x] `debts/jwks-joint-par-les-seules-racines-systeme.md` passe à `PAYÉE`, avec la date et la PR
+- [x] `debts/created-by-jamais-renseigne.md` passe à `PAYÉE` ; FK et stub `dashboard.operators` retirés
   (schéma + migration)
-- [ ] contrat `OperatorBearer` à jour, `api/package.json` bumpé en MINEUR
-- [ ] le résidu `keySetClient()` de step-310 est prouvé, ou sa raison est écrite
+- [x] contrat `OperatorBearer` à jour, `api/package.json` bumpé en MINEUR
+- [x] le résidu `keySetClient()` de step-310 est prouvé, ou sa raison est écrite
 
 ## Hors périmètre
 

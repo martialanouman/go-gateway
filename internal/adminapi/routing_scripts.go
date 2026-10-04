@@ -431,6 +431,7 @@ func (h *routingScriptHandlers) create(ctx context.Context, in *createRoutingScr
 		TimeoutMs:       timeout,
 		MaxInstructions: in.Body.MaxInstructions,
 		MaxMemoryKB:     in.Body.MaxMemoryKB,
+		CreatedBy:       operatorID(ctx),
 	})
 	if err != nil {
 		return nil, humaerr.FromError(err)

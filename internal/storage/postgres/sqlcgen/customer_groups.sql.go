@@ -12,14 +12,15 @@ import (
 )
 
 const createCustomerGroup = `-- name: CreateCustomerGroup :one
-INSERT INTO control_plane.customer_groups AS g (name, description)
-VALUES ($1, $2)
+INSERT INTO control_plane.customer_groups AS g (name, description, created_by)
+VALUES ($1, $2, $3)
 RETURNING g.id, g.name, g.description, g.status, g.created_by, g.created_at, g.updated_at, (SELECT count(*) FROM control_plane.customers c WHERE c.group_id = g.id)::bigint AS member_count
 `
 
 type CreateCustomerGroupParams struct {
 	Name        string
 	Description *string
+	CreatedBy   *uuid.UUID
 }
 
 type CreateCustomerGroupRow struct {
@@ -27,10 +28,10 @@ type CreateCustomerGroupRow struct {
 	MemberCount               int64
 }
 
-// status falls back to the DDL default ('active'), and created_by stays NULL until real operator
-// auth lands (step-310) — the column exists to satisfy the FK to the dashboard.operators stub.
+// status falls back to the DDL default ('active'). created_by is the BFF's operator id (ADR-0019), NULL
+// under a static token.
 func (q *Queries) CreateCustomerGroup(ctx context.Context, arg CreateCustomerGroupParams) (CreateCustomerGroupRow, error) {
-	row := q.db.QueryRow(ctx, createCustomerGroup, arg.Name, arg.Description)
+	row := q.db.QueryRow(ctx, createCustomerGroup, arg.Name, arg.Description, arg.CreatedBy)
 	var i CreateCustomerGroupRow
 	err := row.Scan(
 		&i.ControlPlaneCustomerGroup.ID,

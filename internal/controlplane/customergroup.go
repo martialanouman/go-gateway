@@ -21,10 +21,11 @@ type CustomerGroup struct {
 }
 
 // NewCustomerGroup is the input to create a group. No status: creation is always active, the DDL
-// default. No CreatedBy: the operator identity arrives with step-310.
+// default.
 type NewCustomerGroup struct {
 	Name        string
 	Description *string
+	CreatedBy   *uuid.UUID
 }
 
 // CustomerGroupPatch is a partial update of a group. A nil field is left unchanged.

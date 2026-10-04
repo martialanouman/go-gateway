@@ -195,6 +195,7 @@ func (s *fakeCustomerGroupStore) Create(_ context.Context, in cp.NewCustomerGrou
 		Name:        in.Name,
 		Description: in.Description,
 		Status:      cp.CustomerGroupActive,
+		CreatedBy:   in.CreatedBy,
 	}
 	s.byID[g.ID] = g
 	s.order = append(s.order, g.ID)
@@ -780,7 +781,7 @@ func (s *fakeSenderIDStore) Create(_ context.Context, in cp.NewSenderID) (cp.Sen
 	}
 	sid := cp.SenderID{
 		ID: uuid.New(), CustomerID: in.CustomerID, Address: in.Address,
-		Status: cp.SenderIDPendingCarrierApproval,
+		Status: cp.SenderIDPendingCarrierApproval, CreatedBy: in.CreatedBy,
 	}
 	s.byID[sid.ID] = sid
 	return sid, nil

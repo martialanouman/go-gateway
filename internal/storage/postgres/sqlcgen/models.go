@@ -445,12 +445,3 @@ type ControlPlaneWebhook struct {
 	SecretSealed    []byte
 	SecretKmsKeyRef string
 }
-
-// STUB — canonical definition lives in the Admin Dashboard spec. Present only to satisfy created_by FKs.
-type DashboardOperator struct {
-	ID          uuid.UUID
-	Email       string
-	DisplayName *string
-	Status      string
-	CreatedAt   pgtype.Timestamptz
-}

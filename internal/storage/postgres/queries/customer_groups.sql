@@ -1,8 +1,8 @@
 -- name: CreateCustomerGroup :one
--- status falls back to the DDL default ('active'), and created_by stays NULL until real operator
--- auth lands (step-310) — the column exists to satisfy the FK to the dashboard.operators stub.
-INSERT INTO control_plane.customer_groups AS g (name, description)
-VALUES (@name, sqlc.narg('description'))
+-- status falls back to the DDL default ('active'). created_by is the BFF's operator id (ADR-0019), NULL
+-- under a static token.
+INSERT INTO control_plane.customer_groups AS g (name, description, created_by)
+VALUES (@name, sqlc.narg('description'), sqlc.narg('created_by'))
 RETURNING sqlc.embed(g), (SELECT count(*) FROM control_plane.customers c WHERE c.group_id = g.id)::bigint AS member_count;
 
 -- name: GetCustomerGroup :one

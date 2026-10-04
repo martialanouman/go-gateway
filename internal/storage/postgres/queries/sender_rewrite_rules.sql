@@ -13,11 +13,11 @@ SELECT * FROM control_plane.sender_id_rewrite_rules WHERE id = @id;
 -- name: CreateSenderRewriteRule :one
 INSERT INTO control_plane.sender_id_rewrite_rules (
     scope, scope_id, match_sender_pattern, match_dest_pattern, rewrite_type, rewrite_to,
-    fallback_pool_json, max_length, sanitize_charset_json, priority, reason
+    fallback_pool_json, max_length, sanitize_charset_json, priority, reason, created_by
 ) VALUES (
     @scope, sqlc.narg('scope_id'), sqlc.narg('match_sender_pattern'), sqlc.narg('match_dest_pattern'),
     @rewrite_type, sqlc.narg('rewrite_to'), sqlc.narg('fallback_pool_json'), sqlc.narg('max_length'),
-    sqlc.narg('sanitize_charset_json'), @priority, sqlc.narg('reason')
+    sqlc.narg('sanitize_charset_json'), @priority, sqlc.narg('reason'), sqlc.narg('created_by')
 )
 RETURNING *;
 

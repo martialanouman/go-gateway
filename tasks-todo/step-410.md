@@ -57,7 +57,8 @@ chaque item et matérialiser la porte de go-live.
 - Item explicite : **auth opérateur réelle active** (le stub M1 n'est plus câblé).
 - **L'émetteur des jetons est le BFF** (ADR-0019, step-405) : le ConfigMap `gateway-oidc` porte
   `OIDC_ISSUER` (l'URL du BFF), `OIDC_AUDIENCE=gateway-admin`, `OIDC_JWKS_URL` (le JWKS du BFF), et l'ancre
-  `OIDC_JWKS_CA_FILE` si ce JWKS est servi sous une autorité interne.
+  `OIDC_JWKS_CA_FILE` si ce JWKS est servi sous une autorité interne (`/etc/gateway/tls/ca.crt` pour la PKI
+  de step-300, déjà montée). Le BFF signe un `sub` uuid : tout autre est refusé en 401.
 - Artefact documentaire (pas de code) : ne PAS inventer d'items — reprendre §15 du guide.
 
 ## Tests (écrits dans la même PR)

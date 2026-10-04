@@ -14,8 +14,7 @@ import (
 )
 
 // customerGroupDTO is the wire form of a CustomerGroup (contract schema CustomerGroup). created_by
-// is read-only and stays null: it names a dashboard operator, and the Admin API only ever sees a
-// service token (debts/created-by-jamais-renseigne.md).
+// is read-only: the operator id the BFF's token carried (ADR-0019), null under a static token.
 type customerGroupDTO struct {
 	ID          string    `json:"id" format:"uuid"`
 	Name        string    `json:"name"`
@@ -156,7 +155,7 @@ type createCustomerGroupInput struct{ Body customerGroupCreateBody }
 type customerGroupOutput struct{ Body customerGroupDTO }
 
 func (h *customerGroupHandlers) create(ctx context.Context, in *createCustomerGroupInput) (*customerGroupOutput, error) {
-	g, err := h.groups.Create(ctx, cp.NewCustomerGroup{Name: in.Body.Name, Description: in.Body.Description})
+	g, err := h.groups.Create(ctx, cp.NewCustomerGroup{Name: in.Body.Name, Description: in.Body.Description, CreatedBy: operatorID(ctx)})
 	if err != nil {
 		return nil, humaerr.FromError(err)
 	}

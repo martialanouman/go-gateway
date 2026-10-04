@@ -216,6 +216,7 @@ func (h *senderRewriteHandlers) create(ctx context.Context, in *createSenderRewr
 		SanitizeCharset:    charset,
 		Priority:           *b.Priority,
 		Reason:             b.Reason,
+		CreatedBy:          operatorID(ctx),
 	}
 	if err := validateRewrite(cp.SenderRewriteRule{
 		MatchSenderPattern: rule.MatchSenderPattern, MatchDestPattern: rule.MatchDestPattern,
