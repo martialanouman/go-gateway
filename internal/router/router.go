@@ -20,6 +20,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/observability/metrics"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
+	pipeenc "github.com/martialanouman/go-gateway/internal/pipeline/encoding"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 	"github.com/martialanouman/go-gateway/internal/platform/msg"
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
@@ -97,7 +98,7 @@ func (r *Router) Run(ctx context.Context) error {
 	return r.deps.Consumer.RunBatch(ctx, r.handleBatch)
 }
 
-// errLaneHalted marks a record left unprocessed because an earlier record in its lane failed.
+// errLaneHalted marks a record left unpublished because an earlier record in its lane failed.
 //
 // It keeps the [kafka.BatchHandler] contract — "fail a record and every LATER record that shares its
 // ordering group" — and makes the returned verdict self-describing. It is deliberately NOT what stops
@@ -106,12 +107,18 @@ func (r *Router) Run(ctx context.Context) error {
 // other.
 var errLaneHalted = errors.New("router: lane halted after an earlier failure")
 
+// laneWindow is how many messages of one lane run the pipeline at once (step-285c): more reserves in flight
+// grow billing-svc's write batches instead of its commits.
+// ponytail: constant, so reserves in flight scale with TOPIC_PARTITIONS × 8 unbounded; make it a setting if
+// a measurement campaign needs to sweep it, or past 32 partitions (256 = billing-svc's batch cap).
+const laneWindow = 8
+
 // handleBatch processes a poll batch with ONE goroutine per partition, so the per-message wait — a
 // synchronous acks=all produce, which step-201d measured at ~97% of the router's wall time per message —
 // is overlapped across partitions instead of being paid end to end on a single goroutine.
 //
 // The lane is the partition, and that choice is the whole safety argument. A lane owns every record of
-// its partition, so when one fails, the goroutine that stops is the only one that could have touched the
+// its partition, so when one fails, the goroutine that stops is the only one that could have published the
 // records above it: nothing above the failure was ever produced. Those records are not committable
 // ([kafka.RunBatch] commits per partition up to its first failure), and a record that was published but
 // not committed is republished on redelivery — a duplicate SMS on a handset (ADR-0012). Sharding by
@@ -131,21 +138,7 @@ func (r *Router) handleBatch(ctx context.Context, recs []kafka.Record) []error {
 
 	var wg sync.WaitGroup
 	for _, idxs := range lanes {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for pos, i := range idxs {
-				if err := r.handle(ctx, recs[i]); err != nil {
-					results[i] = err
-					// Stop this lane: every later record of it stays unprocessed and uncommitted, so
-					// redelivery replays them in order behind the failure. Other lanes are unaffected.
-					for _, j := range idxs[pos+1:] {
-						results[j] = errLaneHalted
-					}
-					return
-				}
-			}
-		}()
+		wg.Go(func() { r.runLane(ctx, recs, idxs, results) })
 	}
 	wg.Wait()
 	// Each index belongs to exactly one lane, so results needs no lock: no two goroutines ever write the
@@ -153,31 +146,91 @@ func (r *Router) handleBatch(ctx context.Context, recs []kafka.Record) []error {
 	return results
 }
 
-// handle processes one mt.inbound record. Returning nil commits the offset; returning an error
+// runLane runs the pipeline for up to laneWindow records of one lane at once, and publishes them one by one in
+// offset order. Only the publication decides the safety rule above: a record whose pipeline ran is still
+// neither published nor committed above a failure. Its reserve is replayed as already held on redelivery, so
+// in-flight records are left to finish, never cancelled (a cancelled reserve takes billing-svc's ambiguous
+// path).
+func (r *Router) runLane(ctx context.Context, recs []kafka.Record, idxs []int, results []error) {
+	staging := make([]chan *staged, len(idxs))
+	launch := func(pos int) {
+		ch := make(chan *staged, 1)
+		staging[pos] = ch
+		go func() { ch <- r.process(ctx, recs[idxs[pos]]) }()
+	}
+	for pos := range min(laneWindow, len(idxs)) {
+		launch(pos)
+	}
+	for pos, i := range idxs {
+		if err := r.publish(<-staging[pos]); err != nil {
+			results[i] = err
+			// Stop this lane: every later record of it stays unpublished and uncommitted, so redelivery
+			// replays them in order behind the failure. Other lanes are unaffected.
+			for _, j := range idxs[pos+1:] {
+				results[j] = errLaneHalted
+			}
+			for _, ch := range staging[pos+1:] {
+				if ch != nil {
+					s := <-ch
+					observability.RecordSpanError(s.span, errLaneHalted)
+					s.span.End()
+				}
+			}
+			return
+		}
+		if next := pos + laneWindow; next < len(idxs) {
+			launch(next)
+		}
+	}
+}
+
+// staged is one mt.inbound record past the pipeline, waiting for its turn in its lane's ordered publication.
+// Its router.process span stays open until then.
+type staged struct {
+	ctx       context.Context
+	span      trace.Span
+	in        pipeline.InboundMT
+	routed    pipeline.RoutedMT
+	segments  []pipeenc.Segment
+	decodeErr error
+	perr      error
+}
+
+func (r *Router) process(ctx context.Context, rec kafka.Record) *staged {
+	ctx, span := r.deps.Tracer.Start(ctx, "router.process")
+	s := &staged{ctx: ctx, span: span}
+	var err error
+	if s.in, err = pipeline.DecodeInbound(rec); err != nil {
+		// A malformed record is a poison message; there is no dead-letter path until M7, so fail and
+		// let the operator see it rather than silently drop work.
+		s.decodeErr = fmt.Errorf("router: decode mt.inbound: %w", err)
+		return s
+	}
+
+	started := time.Now()
+	s.routed, s.segments, s.perr = r.deps.Pipeline.Process(ctx, s.in)
+	elapsed := time.Since(started).Seconds()
+	r.stream(func(s StreamEmitter) { s.Observe("pipeline_duration_seconds", nil, elapsed) })
+	if r.deps.Metrics != nil {
+		r.deps.Metrics.PipelineDuration.Observe(elapsed)
+	}
+	return s
+}
+
+// publish finishes one processed record. Returning nil commits the offset; returning an error
 // leaves it uncommitted for reprocessing (at-least-once). A pipeline rejection is a terminal
 // outcome — the CDR row is written and the offset committed; only an infrastructure fault (produce
 // or CDR write failure) returns an error.
-func (r *Router) handle(ctx context.Context, rec kafka.Record) (err error) {
-	ctx, span := r.deps.Tracer.Start(ctx, "router.process")
+func (r *Router) publish(s *staged) (err error) {
+	ctx, span, in, routed, segments, perr := s.ctx, s.span, s.in, s.routed, s.segments, s.perr
 	defer span.End()
 	// The service root span must carry the failure too, not only the stage that produced it: with
 	// error-biased sampling an unmarked parent is dropped by the ratio, leaving the stage span orphaned
 	// with a parent_span_id resolving to nothing — and get-message-trace (step-185) reads that chain.
 	defer func() { observability.RecordSpanError(span, err) }()
 
-	in, err := pipeline.DecodeInbound(rec)
-	if err != nil {
-		// A malformed record is a poison message; there is no dead-letter path until M7, so fail and
-		// let the operator see it rather than silently drop work.
-		return fmt.Errorf("router: decode mt.inbound: %w", err)
-	}
-
-	started := time.Now()
-	routed, segments, perr := r.deps.Pipeline.Process(ctx, in)
-	elapsed := time.Since(started).Seconds()
-	r.stream(func(s StreamEmitter) { s.Observe("pipeline_duration_seconds", nil, elapsed) })
-	if r.deps.Metrics != nil {
-		r.deps.Metrics.PipelineDuration.Observe(elapsed)
+	if s.decodeErr != nil {
+		return s.decodeErr
 	}
 	if perr != nil {
 		code, ok := errs.CodeOf(perr)

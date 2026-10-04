@@ -50,7 +50,7 @@ type stubAntispam struct {
 	err    error
 }
 
-func (s stubAntispam) Evaluate(context.Context, uuid.UUID, uuid.UUID, string, string, []byte) (cp.AntispamAction, error) {
+func (s stubAntispam) Evaluate(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, string, string, []byte) (cp.AntispamAction, error) {
 	return s.action, s.err
 }
 
@@ -262,6 +262,28 @@ func TestPipelineForwardsOptOutIdentifiers(t *testing.T) {
 	}
 	if spy.dest != "2250700000000" {
 		t.Errorf("dest forwarded = %q, want the normalized destination", spy.dest)
+	}
+}
+
+type capturingAntispam struct{ messageID uuid.UUID }
+
+func (s *capturingAntispam) Evaluate(_ context.Context, messageID, _, _ uuid.UUID, _, _ string, _ []byte) (cp.AntispamAction, error) {
+	s.messageID = messageID
+	return "", nil
+}
+
+// TestPipelineForwardsMessageIDToAntispam: the anti-spam state is keyed by message_id so a redelivered
+// message is not its own duplicate (step-285c); that only holds if the pipeline hands over the real one.
+func TestPipelineForwardsMessageIDToAntispam(t *testing.T) {
+	spy := &capturingAntispam{}
+	deps := testDeps(observability.Tracer(otelrec.New(t).Provider(), "router"))
+	deps.Antispam = spy
+	in := inbound("+2250700000000")
+	if _, _, err := pipeline.New(deps).Process(context.Background(), in); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if spy.messageID != in.MessageID {
+		t.Errorf("messageID forwarded = %s, want %s", spy.messageID, in.MessageID)
 	}
 }
 

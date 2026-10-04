@@ -39,8 +39,8 @@ type RuleLister interface {
 // velocity counters, and reputation scores. *RedisState satisfies it. A nil store disables every
 // Redis-backed rule (content rules still apply).
 type StateStore interface {
-	Seen(ctx context.Context, fingerprint string, window time.Duration) (bool, error)
-	Hit(ctx context.Context, key string, window time.Duration) (int, error)
+	Seen(ctx context.Context, fingerprint string, messageID uuid.UUID, window time.Duration) (bool, error)
+	Hit(ctx context.Context, key string, messageID uuid.UUID, window time.Duration) (int, error)
 	Reputation(ctx context.Context, source string) (score int, found bool, err error)
 }
 
@@ -155,7 +155,7 @@ func New(ctx context.Context, lister RuleLister, state StateStore, metric Metric
 // OPEN: a store fault does not block or error, it flags the message (§1.5, availability first) while
 // the content rules stay in force. The returned action is the most restrictive that applied. The
 // error return is retained for interface stability; it is currently always nil.
-func (e *Engine) Evaluate(ctx context.Context, accountID, customerID uuid.UUID, from, dest string, body []byte) (cp.AntispamAction, error) {
+func (e *Engine) Evaluate(ctx context.Context, messageID, accountID, customerID uuid.UUID, from, dest string, body []byte) (cp.AntispamAction, error) {
 	scopes := []string{scopeKey(cp.AntispamScopeAccount, &accountID), scopeKey(cp.AntispamScopeCustomer, &customerID), globalKey}
 
 	action := contentAction(e.content, scopes, body)
@@ -176,8 +176,8 @@ func (e *Engine) Evaluate(ctx context.Context, accountID, customerID uuid.UUID, 
 
 	// Each Redis-backed rule can only raise the action; a block from any of them is terminal, so stop
 	// once reached to avoid side-effecting the remaining checks for an already-rejected message.
-	if action = moreRestrictive(action, e.evalDuplicate(ctx, scopes, dest, body, fail)); action != cp.AntispamActionBlock {
-		if action = moreRestrictive(action, e.evalVelocity(ctx, scopes, source, accountID, fail)); action != cp.AntispamActionBlock {
+	if action = moreRestrictive(action, e.evalDuplicate(ctx, scopes, messageID, dest, body, fail)); action != cp.AntispamActionBlock {
+		if action = moreRestrictive(action, e.evalVelocity(ctx, scopes, messageID, source, accountID, fail)); action != cp.AntispamActionBlock {
 			action = moreRestrictive(action, e.evalReputation(ctx, scopes, source, fail))
 		}
 	}
@@ -194,13 +194,13 @@ func (e *Engine) Evaluate(ctx context.Context, accountID, customerID uuid.UUID, 
 // evalDuplicate returns the action of the most-specific applicable duplicate rule when the message is
 // a duplicate, or "". The fingerprint is namespaced by the rule's scope key, so a tenant-scoped rule
 // deduplicates only within its own tenant. On a store fault it calls fail and returns "".
-func (e *Engine) evalDuplicate(ctx context.Context, scopes []string, dest string, body []byte, fail func()) cp.AntispamAction {
+func (e *Engine) evalDuplicate(ctx context.Context, scopes []string, messageID uuid.UUID, dest string, body []byte, fail func()) cp.AntispamAction {
 	for _, sk := range scopes {
 		dr, ok := e.dup[sk]
 		if !ok {
 			continue
 		}
-		seen, err := e.state.Seen(ctx, fingerprint(sk, dest, body), dr.window)
+		seen, err := e.state.Seen(ctx, fingerprint(sk, dest, body), messageID, dr.window)
 		if err != nil {
 			e.logger.WarnContext(ctx, "antispam: duplicate check failed open", "err", err)
 			fail()
@@ -217,13 +217,13 @@ func (e *Engine) evalDuplicate(ctx context.Context, scopes []string, dest string
 // evalVelocity returns the action of the most-specific applicable velocity rule when the source (or
 // account) exceeds its sliding-window limit, or "". The counter key is namespaced by the rule's scope
 // so tenants are isolated; a global "by source" rule shares the key inbound MO counting writes to.
-func (e *Engine) evalVelocity(ctx context.Context, scopes []string, from string, accountID uuid.UUID, fail func()) cp.AntispamAction {
+func (e *Engine) evalVelocity(ctx context.Context, scopes []string, messageID uuid.UUID, from string, accountID uuid.UUID, fail func()) cp.AntispamAction {
 	for _, sk := range scopes {
 		vr, ok := e.velocity[sk]
 		if !ok {
 			continue
 		}
-		n, err := e.state.Hit(ctx, velocityKey(sk, vr.bySource, from, accountID), vr.window)
+		n, err := e.state.Hit(ctx, velocityKey(sk, vr.bySource, from, accountID), messageID, vr.window)
 		if err != nil {
 			e.logger.WarnContext(ctx, "antispam: velocity check failed open", "err", err)
 			fail()
