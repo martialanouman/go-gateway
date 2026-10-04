@@ -212,7 +212,7 @@ func newAccountant(ctx context.Context, pool *pgxpool.Pool, rdb *goredis.Client,
 		}, []string{"stage"}),
 		batchSize: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name:    "billing_durable_batch_size",
-			Help:    "Ledger movements written per transaction (step-285b).",
+			Help:    "Hot-path ledger movements per batch attempt; a failed attempt replays them one by one.",
 			Buckets: []float64{1, 2, 4, 8, 16, 32, 64, 128, 256},
 		}),
 	}

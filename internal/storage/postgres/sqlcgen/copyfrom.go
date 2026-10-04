@@ -81,6 +81,7 @@ func (r iteratorForCopyLedgerEntries) Err() error {
 	return nil
 }
 
+// COPY rather than a multi-row INSERT: the nullable account_id and reference do not ride typed unnest arrays.
 func (q *Queries) CopyLedgerEntries(ctx context.Context, arg []CopyLedgerEntriesParams) (int64, error) {
 	return q.db.CopyFrom(ctx, []string{"control_plane", "billing_ledger"}, []string{"owner_type", "owner_id", "direction", "customer_id", "account_id", "message_id", "entry_type", "credits", "balance_after", "reference"}, &iteratorForCopyLedgerEntries{rows: arg})
 }

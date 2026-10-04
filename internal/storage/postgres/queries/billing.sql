@@ -125,7 +125,7 @@ ON CONFLICT (message_id, entry_type) DO NOTHING;
 -- ClaimIdempotency for a batch of movements in one statement: it returns the (message_id, entry_type) pairs it
 -- inserted, so a pair absent from the result was already recorded. A pair twice in the batch comes back once
 -- and both copies read as claimed; the ledger's unique index then refuses the second (one transaction, one
--- now()), and the batch is replayed one movement at a time.
+-- now()).
 INSERT INTO control_plane.billing_idempotency (message_id, entry_type)
 SELECT unnest(@message_ids::uuid[]), unnest(@entry_types::text[])
 ON CONFLICT (message_id, entry_type) DO NOTHING
@@ -136,6 +136,7 @@ INSERT INTO control_plane.balance_deltas (owner_type, owner_id, direction, credi
 VALUES ($1, $2, $3, $4);
 
 -- name: CopyLedgerEntries :copyfrom
+-- COPY rather than a multi-row INSERT: the nullable account_id and reference do not ride typed unnest arrays.
 INSERT INTO control_plane.billing_ledger
   (owner_type, owner_id, direction, customer_id, account_id, message_id, entry_type, credits,
    balance_after, reference)

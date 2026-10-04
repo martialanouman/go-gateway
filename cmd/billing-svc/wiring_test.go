@@ -376,6 +376,7 @@ func TestAccountantTimesItsReservesIntoTheExposedHistogram(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newAccountant: %v", err)
 	}
+	t.Cleanup(acct.batcher.Close)
 	owner := billing.Owner{Type: cp.OwnerTypeCustomer, ID: uuid.New(), CustomerID: uuid.New()}
 	_, _ = acct.acc.Reserve(ctx, owner, uuid.New(), 1) // an unfunded owner is refused, and still timed
 

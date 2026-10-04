@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,14 +16,15 @@ import (
 
 const (
 	batchCap = 256
-	// batchWriteTimeout bounds one batch whatever its callers' deadlines: the writer serves every caller, so
-	// a hung transaction must not stall them all for longer than the accountant's own durable bound.
+	// batchWriteTimeout bounds a batch whose members carry no earlier deadline. It matches billing's
+	// reserveDurableTimeout: one writer serves every caller, and a hung transaction must not stall them all
+	// for longer than a reserve may wait.
 	batchWriteTimeout = 4 * time.Second
 )
 
 // errBatchCommit marks a batch whose COMMIT failed: it may have landed, so its movements must not be replayed
 // one by one — a replay would answer applied=false for movements that were in fact applied.
-var errBatchCommit = errors.New("commit billing batch")
+var errBatchCommit = errors.New("batch commit failed")
 
 // BatchSizeObserver receives the number of movements one batch wrote. A prometheus.Observer satisfies it.
 type BatchSizeObserver interface {
@@ -29,20 +32,22 @@ type BatchSizeObserver interface {
 }
 
 // BillingBatcher is a BillingRepo whose hot-path RecordDurable shares a transaction with the movements queued
-// beside it: one commit, one WAL flush and one round trip per table for up to batchCap movements, where the
+// beside it: one commit, one WAL flush and one statement per table for up to batchCap movements, where the
 // commit dominated each reserve (step-285b). A batch takes whatever waits while the previous one is written,
 // so an idle store answers with no added latency and a loaded one batches by itself.
 //
 // ponytail: one writer goroutine; several if the measured batch size stays at the cap.
 type BillingBatcher struct {
 	*BillingRepo
-	sizes BatchSizeObserver
-	queue chan batchedEntry
-	stop  chan struct{}
-	done  chan struct{}
+	sizes   BatchSizeObserver
+	waiting atomic.Int32
+	queue   chan batchedEntry
+	stop    chan struct{}
+	done    chan struct{}
 }
 
 type batchedEntry struct {
+	ctx   context.Context
 	entry cp.LedgerEntry
 	reply chan batchResult
 }
@@ -72,24 +77,28 @@ func (b *BillingBatcher) Close() {
 // RecordDurable batches a movement that carries a message and the balance Redis decided. Any other movement
 // reads its balance from the database, which inside a batch would depend on its neighbours, so it is written
 // alone.
+//
+// Once its movement is taken, it returns at ctx's deadline, not at its cancellation: the batch ends by then,
+// so the movement's fate is sealed when the caller learns it — the terminal lock and the reserve's
+// lost-commit check both release or reread right after.
 func (b *BillingBatcher) RecordDurable(ctx context.Context, entry cp.LedgerEntry) (int, bool, error) {
 	if entry.MessageID == nil || entry.BalanceAfter == nil {
 		return b.BillingRepo.RecordDurable(ctx, entry)
 	}
 	reply := make(chan batchResult, 1)
+	b.waiting.Add(1)
 	select {
-	case b.queue <- batchedEntry{entry: entry, reply: reply}:
+	case b.queue <- batchedEntry{ctx: ctx, entry: entry, reply: reply}:
+		b.waiting.Add(-1)
 	case <-b.stop:
+		b.waiting.Add(-1)
 		return b.BillingRepo.RecordDurable(ctx, entry)
 	case <-ctx.Done():
-		return 0, false, ctx.Err()
+		b.waiting.Add(-1)
+		return 0, false, translate("record durable", ctx.Err())
 	}
-	select {
-	case r := <-reply:
-		return r.balance, r.applied, r.err
-	case <-ctx.Done():
-		return 0, false, ctx.Err()
-	}
+	r := <-reply
+	return r.balance, r.applied, r.err
 }
 
 func (b *BillingBatcher) run() {
@@ -115,15 +124,21 @@ func (b *BillingBatcher) run() {
 	}
 }
 
+// write ends the batch at its members' nearest deadline, so no movement can commit after its caller has
+// been answered.
 func (b *BillingBatcher) write(batch []batchedEntry) {
 	b.sizes.Observe(float64(len(batch)))
-	ctx, cancel := context.WithTimeout(context.Background(), batchWriteTimeout)
-	defer cancel()
-
+	deadline := time.Now().Add(batchWriteTimeout)
 	entries := make([]cp.LedgerEntry, len(batch))
 	for i, e := range batch {
+		if d, ok := e.ctx.Deadline(); ok && d.Before(deadline) {
+			deadline = d
+		}
 		entries[i] = e.entry
 	}
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+
 	results, err := b.recordBatch(ctx, entries)
 	switch {
 	case err == nil:
@@ -135,11 +150,17 @@ func (b *BillingBatcher) write(batch []batchedEntry) {
 			e.reply <- batchResult{err: err}
 		}
 	default:
-		// Nothing landed, and one bad movement fails the whole transaction: each one alone gets its own outcome.
+		// Nothing landed, and one bad movement fails the whole transaction: each one alone gets its own outcome,
+		// side by side, so each answer is bounded by its own deadline and not by its neighbours' replays.
+		// ponytail: one poisoned movement costs batchCap unitary transactions; bisect if it stops being rare.
+		var wg sync.WaitGroup
 		for _, e := range batch {
-			balance, applied, err := b.BillingRepo.RecordDurable(ctx, e.entry)
-			e.reply <- batchResult{balance: balance, applied: applied, err: err}
+			wg.Go(func() {
+				balance, applied, err := b.BillingRepo.RecordDurable(e.ctx, e.entry)
+				e.reply <- batchResult{balance: balance, applied: applied, err: err}
+			})
 		}
+		wg.Wait()
 	}
 }
 

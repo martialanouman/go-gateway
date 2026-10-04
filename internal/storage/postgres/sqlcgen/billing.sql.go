@@ -85,7 +85,7 @@ type ClaimIdempotencyBatchRow struct {
 // ClaimIdempotency for a batch of movements in one statement: it returns the (message_id, entry_type) pairs it
 // inserted, so a pair absent from the result was already recorded. A pair twice in the batch comes back once
 // and both copies read as claimed; the ledger's unique index then refuses the second (one transaction, one
-// now()), and the batch is replayed one movement at a time.
+// now()).
 func (q *Queries) ClaimIdempotencyBatch(ctx context.Context, arg ClaimIdempotencyBatchParams) ([]ClaimIdempotencyBatchRow, error) {
 	rows, err := q.db.Query(ctx, claimIdempotencyBatch, arg.MessageIds, arg.EntryTypes)
 	if err != nil {
