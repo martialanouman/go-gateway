@@ -54,70 +54,130 @@ func (f *fakeDisconnector) customerCalls() []disconnectCall {
 	return append([]disconnectCall(nil), f.custs...)
 }
 
-// TestRevokeCredentialTriggersAccountDisconnect pins that revoking a credential force-disconnects the
-// account's live binds, with the revocation reason.
-func TestRevokeCredentialTriggersAccountDisconnect(t *testing.T) {
-	store := newFakeCredentialStore()
-	disc := &fakeDisconnector{}
-	api := newTestAPIWith(t, adminapi.Deps{Credentials: store, Accounts: newFakeAccountStore(), Disconnector: disc})
-
+func seedCredential(t *testing.T, api http.Handler, body string) (uuid.UUID, string, string) {
+	t.Helper()
 	accountID := uuid.New()
-	// Seed a credential to revoke.
 	path := "/v1/admin/smpp-accounts/" + accountID.String() + "/credentials"
 	create := httptest.NewRecorder()
-	api.ServeHTTP(create, authed(t, http.MethodPost, path, `{"type":"api_key"}`))
+	api.ServeHTTP(create, authed(t, http.MethodPost, path, body))
 	if create.Code != http.StatusCreated {
 		t.Fatalf("seed create status = %d; body=%s", create.Code, create.Body)
 	}
-	credID := decodeID(t, create.Body.Bytes())
+	return accountID, path, decodeID(t, create.Body.Bytes())
+}
 
-	w := httptest.NewRecorder()
-	api.ServeHTTP(w, authed(t, http.MethodDelete, path+"/"+credID, ""))
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("revoke status = %d, want 204; body=%s", w.Code, w.Body)
-	}
+const (
+	apiKeyBody   = `{"type":"api_key"}`
+	smppBindBody = `{"type":"smpp_bind","system_id":"esme1"}`
+)
 
-	calls := disc.accountCalls()
-	if len(calls) != 1 {
-		t.Fatalf("account disconnects = %d, want 1", len(calls))
+// TestRevokeCredentialDisconnectsOnlyAnSMPPBind pins that revoking an smpp_bind force-disconnects the
+// account's live binds (step-032), while revoking an api_key closes none: REST calls are stateless, and
+// the account's binds authenticate with the other credential.
+func TestRevokeCredentialDisconnectsOnlyAnSMPPBind(t *testing.T) {
+	tests := []struct {
+		name      string
+		body      string
+		wantCalls int
+	}{
+		{"smpp_bind", smppBindBody, 1},
+		{"api_key", apiKeyBody, 0},
 	}
-	if calls[0].id != accountID || calls[0].reason != "credential_revoked" {
-		t.Errorf("disconnect = %+v, want {%s credential_revoked}", calls[0], accountID)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			disc := &fakeDisconnector{}
+			api := newTestAPIWith(t, adminapi.Deps{Credentials: newFakeCredentialStore(), Accounts: newFakeAccountStore(), Disconnector: disc})
+			accountID, path, credID := seedCredential(t, api, tc.body)
+
+			w := httptest.NewRecorder()
+			api.ServeHTTP(w, authed(t, http.MethodDelete, path+"/"+credID, ""))
+			if w.Code != http.StatusNoContent {
+				t.Fatalf("revoke status = %d, want 204; body=%s", w.Code, w.Body)
+			}
+
+			calls := disc.accountCalls()
+			if len(calls) != tc.wantCalls {
+				t.Fatalf("account disconnects = %+v, want %d", calls, tc.wantCalls)
+			}
+			if tc.wantCalls == 1 && (calls[0].id != accountID || calls[0].reason != "credential_revoked") {
+				t.Errorf("disconnect = %+v, want {%s credential_revoked}", calls[0], accountID)
+			}
+		})
 	}
 }
 
-// TestUpdateCredentialStatusDisabledTriggersDisconnect pins that flipping a credential to a non-active
-// status disconnects, while re-activating one does not.
-func TestUpdateCredentialStatusDisabledTriggersDisconnect(t *testing.T) {
-	store := newFakeCredentialStore()
-	disc := &fakeDisconnector{}
-	api := newTestAPIWith(t, adminapi.Deps{Credentials: store, Accounts: newFakeAccountStore(), Disconnector: disc})
-
-	accountID := uuid.New()
-	path := "/v1/admin/smpp-accounts/" + accountID.String() + "/credentials"
-	create := httptest.NewRecorder()
-	api.ServeHTTP(create, authed(t, http.MethodPost, path, `{"type":"api_key"}`))
-	credID := decodeID(t, create.Body.Bytes())
-
-	// Disable → disconnect.
-	dis := httptest.NewRecorder()
-	api.ServeHTTP(dis, authed(t, http.MethodPatch, path+"/"+credID, `{"status":"disabled"}`))
-	if dis.Code != http.StatusOK {
-		t.Fatalf("disable status = %d; body=%s", dis.Code, dis.Body)
+// TestUpdateCredentialStatusDisconnectsOnlyAnSMPPBind pins that disabling an smpp_bind disconnects
+// while re-activating it does not, and that disabling an api_key disconnects nothing.
+func TestUpdateCredentialStatusDisconnectsOnlyAnSMPPBind(t *testing.T) {
+	tests := []struct {
+		name      string
+		body      string
+		wantCalls int
+	}{
+		{"smpp_bind", smppBindBody, 1},
+		{"api_key", apiKeyBody, 0},
 	}
-	// Re-activate → no further disconnect.
-	act := httptest.NewRecorder()
-	api.ServeHTTP(act, authed(t, http.MethodPatch, path+"/"+credID, `{"status":"active"}`))
-	if act.Code != http.StatusOK {
-		t.Fatalf("activate status = %d; body=%s", act.Code, act.Body)
-	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			disc := &fakeDisconnector{}
+			api := newTestAPIWith(t, adminapi.Deps{Credentials: newFakeCredentialStore(), Accounts: newFakeAccountStore(), Disconnector: disc})
+			_, path, credID := seedCredential(t, api, tc.body)
 
-	calls := disc.accountCalls()
-	if len(calls) != 1 {
-		t.Fatalf("account disconnects = %d, want 1 (only the disable)", len(calls))
+			for _, status := range []string{"disabled", "active"} {
+				w := httptest.NewRecorder()
+				api.ServeHTTP(w, authed(t, http.MethodPatch, path+"/"+credID, `{"status":"`+status+`"}`))
+				if w.Code != http.StatusOK {
+					t.Fatalf("%s status = %d; body=%s", status, w.Code, w.Body)
+				}
+			}
+
+			calls := disc.accountCalls()
+			if len(calls) != tc.wantCalls {
+				t.Fatalf("account disconnects = %+v, want %d (only the disable)", calls, tc.wantCalls)
+			}
+			if tc.wantCalls == 1 && calls[0].reason != "credential_disabled" {
+				t.Errorf("reason = %q, want credential_disabled", calls[0].reason)
+			}
+		})
 	}
-	if calls[0].reason != "credential_disabled" {
-		t.Errorf("reason = %q, want credential_disabled", calls[0].reason)
+}
+
+// TestRotateCredentialDisconnectsOnlyAnSMPPBindCutover pins that a rotation without a grace window cuts
+// the smpp_bind's live binds: a secret rotated without grace is presumed leaked, and a session already
+// bound with it must fall. A grace window is a planned rotation, and an api_key has no bind to cut.
+func TestRotateCredentialDisconnectsOnlyAnSMPPBindCutover(t *testing.T) {
+	tests := []struct {
+		name      string
+		seed      string
+		rotate    string
+		wantCalls int
+	}{
+		{"smpp_bind without body", smppBindBody, ``, 1},
+		{"smpp_bind with null grace", smppBindBody, `{"grace_period_sec":null}`, 1},
+		{"smpp_bind with zero grace", smppBindBody, `{"grace_period_sec":0}`, 1},
+		{"smpp_bind with a grace window", smppBindBody, `{"grace_period_sec":600}`, 0},
+		{"api_key without grace", apiKeyBody, ``, 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			disc := &fakeDisconnector{}
+			api := newTestAPIWith(t, adminapi.Deps{Credentials: newFakeCredentialStore(), Accounts: newFakeAccountStore(), Disconnector: disc})
+			accountID, path, credID := seedCredential(t, api, tc.seed)
+
+			w := httptest.NewRecorder()
+			api.ServeHTTP(w, authed(t, http.MethodPost, path+"/"+credID+"/rotate", tc.rotate))
+			if w.Code != http.StatusOK {
+				t.Fatalf("rotate status = %d, want 200; body=%s", w.Code, w.Body)
+			}
+
+			calls := disc.accountCalls()
+			if len(calls) != tc.wantCalls {
+				t.Fatalf("account disconnects = %+v, want %d", calls, tc.wantCalls)
+			}
+			if tc.wantCalls == 1 && (calls[0].id != accountID || calls[0].reason != "credential_rotated") {
+				t.Errorf("disconnect = %+v, want {%s credential_rotated}", calls[0], accountID)
+			}
+		})
 	}
 }
 
@@ -144,20 +204,17 @@ func TestSuspendCustomerTriggersCustomerDisconnect(t *testing.T) {
 // TestDisconnectFailureDoesNotFailTheMutation pins the best-effort contract: a Disconnector error is
 // swallowed, so the control-plane change (here a revocation) still succeeds.
 func TestDisconnectFailureDoesNotFailTheMutation(t *testing.T) {
-	store := newFakeCredentialStore()
 	disc := &fakeDisconnector{err: errors.New("session-manager down")}
-	api := newTestAPIWith(t, adminapi.Deps{Credentials: store, Accounts: newFakeAccountStore(), Disconnector: disc})
-
-	accountID := uuid.New()
-	path := "/v1/admin/smpp-accounts/" + accountID.String() + "/credentials"
-	create := httptest.NewRecorder()
-	api.ServeHTTP(create, authed(t, http.MethodPost, path, `{"type":"api_key"}`))
-	credID := decodeID(t, create.Body.Bytes())
+	api := newTestAPIWith(t, adminapi.Deps{Credentials: newFakeCredentialStore(), Accounts: newFakeAccountStore(), Disconnector: disc})
+	_, path, credID := seedCredential(t, api, smppBindBody)
 
 	w := httptest.NewRecorder()
 	api.ServeHTTP(w, authed(t, http.MethodDelete, path+"/"+credID, ""))
 	if w.Code != http.StatusNoContent {
 		t.Errorf("revoke status = %d, want 204 despite disconnect failure; body=%s", w.Code, w.Body)
+	}
+	if len(disc.accountCalls()) != 1 {
+		t.Errorf("account disconnects = %d, want 1: the failing disconnector was never reached", len(disc.accountCalls()))
 	}
 }
 
