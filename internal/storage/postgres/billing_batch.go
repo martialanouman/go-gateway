@@ -90,7 +90,9 @@ func (b *BillingBatcher) Close() {
 // so the movement's fate is sealed when the caller learns it — the terminal lock and the reserve's
 // lost-commit check both release or reread right after.
 func (b *BillingBatcher) RecordDurable(ctx context.Context, entry cp.LedgerEntry) (int, bool, error) {
-	if entry.MessageID == nil || entry.BalanceAfter == nil {
+	// A floor crossing is written alone too: the batch writes no billing events outbox (step-400), and a
+	// crossing is rare enough that it costs the batch nothing.
+	if entry.MessageID == nil || entry.BalanceAfter == nil || entry.MOFloorReached != nil {
 		return b.BillingRepo.RecordDurable(ctx, entry)
 	}
 	// Checked before the select, which picks at random when both the queue and Done are ready: one movement

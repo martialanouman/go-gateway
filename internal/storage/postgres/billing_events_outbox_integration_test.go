@@ -60,6 +60,34 @@ func TestRecordDurableWritesTheFloorEventInTheSameTransaction(t *testing.T) {
 	}
 }
 
+// TestBatcherKeepsTheFloorEvent: the crossing mo_charge carries a message and a Redis balance, so it is
+// batchable — yet the batch writes no outbox. billing-svc records through the Batcher, so a crossing it
+// grouped would be charged and never announced.
+func TestBatcherKeepsTheFloorEvent(t *testing.T) {
+	pool := pgtest.Pool(t)
+	ctx := context.Background()
+	batcher := postgres.NewBillingBatcher(postgres.NewBillingRepo(pool), &batchSizes{})
+	t.Cleanup(batcher.Close)
+
+	var customerID uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO control_plane.customers (name) VALUES ('billing-outbox-batch') RETURNING id`).Scan(&customerID); err != nil {
+		t.Fatalf("seed customer: %v", err)
+	}
+	floor := -10
+	if _, applied, err := batcher.RecordDurable(ctx, moCharge(customerID, -12, &floor)); err != nil || !applied {
+		t.Fatalf("record crossing through the batcher = (%v, %v), want applied", applied, err)
+	}
+	var rows int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM control_plane.billing_events_outbox WHERE customer_id = $1`, customerID).Scan(&rows); err != nil {
+		t.Fatalf("count outbox: %v", err)
+	}
+	if rows != 1 {
+		t.Errorf("outbox rows = %d, want 1: the crossing must not lose its event to the batch", rows)
+	}
+}
+
 func TestRecordDurableWritesNoEventWithoutACrossing(t *testing.T) {
 	pool := pgtest.Pool(t)
 	ctx := context.Background()
