@@ -1,6 +1,7 @@
 package postgres_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"sync"
@@ -285,6 +286,11 @@ func (f deltaFixture) foldHeldOpen(t *testing.T) pgx.Tx {
 // statement snapshot and is queued behind the open fold.
 func (f deltaFixture) waitForLockWaiter(t *testing.T) {
 	t.Helper()
+	f.waitForLockWaiters(t, 1)
+}
+
+func (f deltaFixture) waitForLockWaiters(t *testing.T, n int) {
+	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		var waiting int
@@ -293,7 +299,7 @@ func (f deltaFixture) waitForLockWaiter(t *testing.T) {
 			 WHERE wait_event_type = 'Lock' AND datname = current_database() AND query ILIKE '%balances%'`).Scan(&waiting); err != nil {
 			t.Fatalf("read pg_stat_activity: %v", err)
 		}
-		if waiting > 0 {
+		if waiting >= n {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -359,5 +365,59 @@ func TestTopupBalanceAfterUnderAConcurrentFold(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("Topup never returned")
+	}
+}
+
+// TestTransferFromAnUnfoldedSourceDoesNotDeadlockTheFold: the source has credit only in pending deltas, so no
+// balances row exists for the transfer to lock. The fold inserts that row, then waits on the destination the
+// transfer holds; the transfer's own adjust then waits on the fold's insert — 40P01 unless the lock creates it.
+func TestTransferFromAnUnfoldedSourceDoesNotDeadlockTheFold(t *testing.T) {
+	f := newDeltaFixture(t, cp.OwnerTypeSMPPAccount)
+	src, dst := f.account(t), f.account(t)
+	if bytes.Compare(src[:], dst[:]) > 0 {
+		src, dst = dst, src
+	}
+	f.hotPath(t, cp.OwnerTypeSMPPAccount, src, cp.EntryRelease, 10)
+	f.topup(t, cp.OwnerTypeSMPPAccount, dst, 1)
+	f.hotPath(t, cp.OwnerTypeSMPPAccount, dst, cp.EntryRelease, 1)
+
+	ctx := context.Background()
+	gate, err := f.pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin gate: %v", err)
+	}
+	t.Cleanup(func() { _ = gate.Rollback(ctx) })
+	if _, err := gate.Exec(ctx, `SELECT 1 FROM control_plane.balances
+		WHERE owner_type = $1 AND owner_id = $2 AND direction = 'mt' FOR UPDATE`, cp.OwnerTypeSMPPAccount, dst); err != nil {
+		t.Fatalf("lock destination: %v", err)
+	}
+
+	transfer := make(chan error, 1)
+	go func() {
+		debit := f.entry(cp.OwnerTypeSMPPAccount, src, cp.EntryTransfer, -5)
+		credit := f.entry(cp.OwnerTypeSMPPAccount, dst, cp.EntryTransfer, 5)
+		_, _, err := f.repo.Transfer(ctx, debit, credit, uuid.New())
+		transfer <- err
+	}()
+	f.waitForLockWaiters(t, 1)
+	fold := make(chan error, 1)
+	go func() {
+		_, err := f.repo.FoldOnce(ctx, 1000)
+		fold <- err
+	}()
+	f.waitForLockWaiters(t, 2)
+	if err := gate.Commit(ctx); err != nil {
+		t.Fatalf("commit gate: %v", err)
+	}
+
+	for name, ch := range map[string]chan error{"Transfer": transfer, "FoldOnce": fold} {
+		select {
+		case err := <-ch:
+			if err != nil {
+				t.Errorf("%s = %v, want nil", name, err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%s never returned", name)
+		}
 	}
 }

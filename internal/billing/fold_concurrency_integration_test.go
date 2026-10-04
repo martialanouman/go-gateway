@@ -321,3 +321,47 @@ func closeOnce(ch chan struct{}) {
 		close(ch)
 	}
 }
+
+// TestConcurrentDuplicateRepairLeavesNoPhantomCredit: attempt A has debited the cache and is still writing its
+// reserve when its duplicate B finds A's hold, sees no durable entry yet, and repairs it. A then loses the
+// idempotency claim; refunding the cache for that loss would hand back a credit the ledger keeps debited.
+func TestConcurrentDuplicateRepairLeavesNoPhantomCredit(t *testing.T) {
+	h := newBillingHarness(t, 1)
+	ctx := context.Background()
+	store := &blockingStore{LedgerStore: h.repo, entered: make(chan struct{}), release: make(chan struct{})}
+	t.Cleanup(func() { closeOnce(store.release) })
+	original := billing.New(h.rdb, store, billing.WithHoldTTL(time.Minute), billing.WithConfigSource(h.cfg))
+	messageID := uuid.New()
+
+	first := make(chan error, 1)
+	go func() {
+		_, err := original.Reserve(ctx, h.owner, messageID, 1)
+		first <- err
+	}()
+	select {
+	case <-store.entered:
+	case ferr := <-first:
+		t.Fatalf("original Reserve returned before its durable write: %v", ferr)
+	case <-time.After(10 * time.Second):
+		t.Fatal("original Reserve never reached its durable write")
+	}
+	if _, err := h.acc.Reserve(ctx, h.owner, messageID, 1); err != nil {
+		t.Fatalf("duplicate Reserve: %v", err)
+	}
+	closeOnce(store.release)
+	select {
+	case ferr := <-first:
+		if ferr != nil {
+			t.Fatalf("original Reserve: %v", ferr)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("original Reserve never returned")
+	}
+
+	if bal := h.balance(t); bal != 0 {
+		t.Fatalf("durable balance = %d, want 0: the one credit is reserved", bal)
+	}
+	if _, err := h.acc.Reserve(ctx, h.owner, uuid.New(), 1); !errors.Is(err, errs.ErrInsufficientCredit) {
+		t.Fatalf("Reserve of another message = %v, want ErrInsufficientCredit: the only credit is reserved", err)
+	}
+}
