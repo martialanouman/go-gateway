@@ -110,6 +110,10 @@ func New(deps Deps) (*chi.Mux, huma.API) {
 func operatorSecurityScheme() *huma.SecurityScheme {
 	return &huma.SecurityScheme{
 		Type: "oauth2",
+		Description: "Operator bearer token: a JWT the Admin Dashboard's BFF signs on behalf of the signed-in " +
+			"operator (ADR-0019). No service serves the tokenUrl: it stays only because an OAuth2 flow requires one. " +
+			"Expected claims: iss (the BFF), aud (gateway-admin), sub (the operator's UUID, written to created_by; " +
+			"any other sub is refused), scope (one space-separated string), exp.",
 		Flows: &huma.OAuthFlows{
 			//nolint:gosec // G101: a documented token endpoint URL, not an embedded credential.
 			ClientCredentials: &huma.OAuthFlow{

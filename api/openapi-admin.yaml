@@ -1867,9 +1867,18 @@ components:
     OperatorBearer:
       type: oauth2
       description: |
-        Operator bearer token (JWT). Scopes gate sensitive operations: `content:read`, `content:erase`,
-        `gdpr:erase`, plus coarse `admin:read` / `admin:write`. The transport is additionally protected
-        by mTLS on the internal network.
+        Operator bearer token: a JWT the Admin Dashboard's BFF signs on behalf of the signed-in operator
+        (ADR-0019). No service serves the `tokenUrl` below: it stays only because an OAuth2 flow requires
+        one. The gateway verifies the signature (`RS256` or `ES256`) against the BFF's JWKS and expects:
+        - `iss`: the BFF's canonical URL;
+        - `aud`: the gateway's audience, `gateway-admin`;
+        - `sub`: the operator's id, a UUID, written to `created_by` on the resources the call creates; a
+          token whose `sub` is not a UUID is refused;
+        - `scope`: one space-separated string; scopes outside this scheme are ignored;
+        - `exp`: the expiry.
+        Scopes gate sensitive operations: `content:read`, `content:erase`, `gdpr:erase`,
+        `msisdn:reveal`, `cdr:export_bulk`, `audit:read`, plus coarse `admin:read` / `admin:write`. The
+        transport is additionally protected by mTLS on the internal network.
       flows:
         clientCredentials:
           tokenUrl: https://admin.gateway.internal/oauth/token
@@ -1880,6 +1889,7 @@ components:
             content:erase: Crypto-shred customer content.
             gdpr:erase: Execute RGPD erasure.
             msisdn:reveal: See subscriber numbers unmasked (search, trace and export mask them otherwise).
+            cdr:export_bulk: Create and read bulk CDR exports.
             audit:read: Read the operator audit trail.
 
   parameters:
