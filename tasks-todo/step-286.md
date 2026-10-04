@@ -36,6 +36,66 @@ Et deux mineurs :
 Toute baisse du solde MT passe d'abord par un script Redis qui débite le cache atomiquement (comme une
 réserve), puis par Postgres ; le undo d'un `!applied` ne rembourse que si la réserve est bien la sienne.
 
+## Design arrêté
+Arbitrage : spec §6.9 + ADR-0022 → Fable (04/10/2026, approuvé avec six modifications, intégrées ci-dessous).
+Règle : **toute baisse d'un solde MT passe par `reserve.lua` avant Postgres** ; un undo ne rembourse le cache
+que si le débit durable qui l'a battu n'est pas celui de sa propre réservation.
+
+**D1 — Doublon concurrent (dépassement 1, et le mineur « bord de purge »).**
+- Le chemin `held` de `Reserve` passe d'abord par `repair.lua` : si `billing:reservation:{id}` existe encore,
+  il pose la marque `billing:repaired:{id}` (PX holdTTL) et le champ en vol `{id}:repair` = `credits:now`,
+  **avant** le `ReserveEntry`. Réservation disparue → `continue` dans la boucle de 3 essais (`reserve.lua`
+  rendra `reserved`), jamais une erreur.
+- Puis `ReserveEntry` / `RecordDurable` comme aujourd'hui ; HDEL de `{id}:repair` en `defer` détaché. Sur
+  erreur durable, la réparation relit `ReserveEntry` (ack perdu → succès), comme le chemin `reserved`.
+- `release.lua` reçoit une 3ᵉ clé optionnelle, la marque : présente → la **consomme** (DEL) et rend
+  `repaired`, sans rembourser ni supprimer la réservation. `undoReserveCacheDebit` la passe ; `repaired` est
+  un no-op strict (pas de `dropBalanceCache`). `Release` ne la passe pas.
+- Ordre : la marque précède le commit de la réparation, et l'essai d'origine n'a `applied=false` qu'après ce
+  commit → il la voit toujours. La marque n'est **jamais** supprimée sur un échec de la réparation (elle ne
+  distingue pas échec réel et ack perdu) : résidu = sous-estimation bornée par le TTL du cache.
+- Pas d'`INCR seq` dans `repair.lua` : le champ de l'essai d'origine couvre le débit jusqu'au HSET de la
+  réparation, et la réparation exige la réservation vivante.
+- Écarté : comparer `created_at` ou l'âge du champ à l'heure de l'essai (un rejeu après release ou capture
+  rapide passerait pour une réparation ; dépend des horloges). Écarté : invalider sur tout `!applied` (une
+  réhydratation par rejeu post-capture, des milliers sur une redistribution Kafka).
+
+**D2 — Transfert (dépassements 2 et 3).**
+- `direction=mt` seulement : `(*Accountant).DebitMT(ctx, owner, key, credits, write)` débite la source avec
+  `reserve.lua` tel quel, plancher 0 **explicite** (un transfert ne consomme jamais de découvert), réservation
+  `billing:transfer-hold:{idem}`, champ en vol `transfer:{idem}`. La boucle cold/réhydratation est
+  **factorisée** avec `Reserve`, pas copiée. admin-api-svc construit un `billing.Accountant` (même Redis de
+  facturation, `postgres.BillingRepo`) ; interface consommateur à une méthode dans `adminapi/deps.go`.
+- `write` = la tx `Transfer` (garde durable conservée). `applied=true` → DEL réservation + HDEL champ, le
+  cache source reste débité. Toute autre issue (erreur, `applied=false`, ack perdu) → DEL réservation + HDEL
+  champ + `InvalidateBalanceCaches(source)` : la réhydratation `durable − en vol` est juste que la tx ait
+  committé ou non. Nettoyage sur `context.WithoutCancel`.
+- `insufficient` → 402 avant Postgres. `held` → 409 `ErrIdempotencyConflict` **sans rien toucher** (seul
+  l'essai qui a obtenu `reserved` nettoie, sinon il retirerait le champ du gagnant avant son commit) ;
+  message : « transfert en vol ou déjà appliqué ».
+- Le dépassement 3 disparaît : le seul chemin admin qui baisse un solde MT (la source d'un transfert) est
+  débité avant le commit. Topup (≥ 1) et change-scope (soldes nuls) ne baissent rien ; MO inchangé.
+  L'invalidation post-commit des deux jambes reste (destination : cache périmé bas, conservateur).
+- Contrat : le 402 du transfert sort déjà (`humaerr.FromError`) mais n'est pas déclaré → déclaré dans
+  `mutErrs` du transfert et `api/openapi-admin.yaml`, bump mineur de `api/package.json`.
+
+**D3 — Interblocage sur ligne `balances` absente.** `LockBalance` devient
+`INSERT … VALUES (…, 0) ON CONFLICT DO UPDATE SET credits = balances.credits` : verrouille la ligne neuve ou
+existante dans l'ordre du replieur. Requête seule, aucune migration ; une ligne à 0 apparaît pour une jambe
+absente (inoffensif : absent vaut déjà 0).
+
+**Hors correctif, documenté dans l'ADR** : une `Release` de réservation sans entrée durable écrirait un
+`release +c` orphelin, mais aucun appelant ne la rend atteignable (le reaper part des réserves durables) ;
+exiger la réserve sur `released`/`cold` ouvrirait une vraie course.
+
+**Rouges (lus avant correctif)** : (1) doublon orchestré — le `RecordDurable` de A bloqué jusqu'au commit de
+la réparation de B — puis cache == durable − en vol ; (2) réserve de 100 en vol (`RecordDurable` bloqué),
+transfert de 100 → 402 ; (3) transfert dont l'invalidation échoue, cache source chaud → une réserve du
+montant transféré est refusée ; (D3) deux tx orchestrées `lockBalances(absent, Y)` contre le repli → pas de
+40P01. DoD : `TestStrictPrepaidNeverOverdrawsWhileFolding` étendu aux doublons et transferts concurrents.
+
+**PR** : a. design + amendement ADR-0022 + les rouges · b. D1 · c. D2 + contrat · d. D3 + test de charge.
+
 ## Definition of Done
 - [ ] design arrêté + amendement d'ADR-0022
 - [ ] un rouge déterministe par dépassement (1, 2, 3), lu avant correctif

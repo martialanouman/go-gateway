@@ -41,8 +41,9 @@ l'écriture est synchrone. Une réhydratation sur un durable en retard rendrait 
    (`billing:inflight:mt:…`, champ `message_id`), retirée après son commit ; la réhydratation soustrait ce
    HASH, lu avant le durable. Le fail-closed de §6.9 prend la forme d'une sous-estimation transitoire, pas
    d'un blocage. Une réhydratation lente ne doit pas non plus écrire une valeur calculée avant un débit :
-   un compteur de débits par propriétaire (`billing:seq:mt:…`), incrémenté par `reserve.lua` et par toute
-   écriture admin qui baisse le solde, est lu avant tout le reste ; le `SET NX` est refusé s'il a bougé.
+   un compteur de débits par propriétaire (`billing:seq:mt:…`), incrémenté par `reserve.lua` — par où passe
+   toute baisse du solde MT, transfert admin compris (amendement step-286) —, est lu avant tout le reste ; le
+   `SET NX` est refusé s'il a bougé.
 6. **Ordre de déploiement : migration, puis admin-api-svc, puis billing-svc en `Recreate`.** Une version
    antérieure lit `balances` sans les deltas. admin-api-svc (transfert, change-scope, soldes) doit donc
    savoir les lire avant que billing-svc commence à en écrire, et billing-svc ne doit jamais mêler les deux
@@ -63,8 +64,31 @@ l'écriture est synchrone. Une réhydratation sur un durable en retard rendrait 
   statement **suivant** : sous READ COMMITTED, un statement qui attend ce verrou relit la version récente de
   la ligne mais garde son instantané des deltas, et compterait deux fois un delta tout juste replié.
 - Inchangé : transfer et change-scope se sérialisent sur `balances` entre eux et avec le replieur, pas avec
-  le chemin chaud ; le vrai point de sérialisation reste Redis, et la fenêtre entre leur commit et
-  l'invalidation du cache préexiste.
+  le chemin chaud ; le vrai point de sérialisation reste Redis. La fenêtre entre leur commit et
+  l'invalidation du cache est fermée par l'amendement step-286 pour le seul chemin qui baisse un solde MT.
+
+## Amendement step-286 (04/10/2026) : une seule porte pour baisser le solde MT
+
+Trois dépassements antérieurs à cet ADR passaient à côté de `reserve.lua`. Arbitrage Fable du 04/10/2026.
+
+- **Toute baisse d'un solde MT passe par `reserve.lua` avant Postgres.** La source d'un transfert admin
+  (`direction=mt`) est débitée dans Redis, plancher 0, sous une réservation et un champ en vol propres au
+  transfert ; puis la tx `Transfer`. Succès → la réservation et le champ sont retirés, le cache reste débité.
+  Toute autre issue → retrait, puis invalidation de la source (DEL + INCR du compteur) : la réhydratation est
+  juste que la tx ait committé ou non. La garde durable du transfert compte désormais les réserves en vol, et
+  la fenêtre entre commit et invalidation ne peut plus surestimer la source. `invalidate.lua` ne sert plus
+  qu'aux écritures qui ne baissent rien (topup, change-scope, destination) ; son INCR y est superflu, inoffensif.
+- **Un undo ne rembourse que sa propre réservation.** Un doublon qui trouve la réservation d'un essai encore
+  en vol et répare le débit durable pose d'abord, atomiquement, une marque `billing:repaired:{message_id}` et
+  son propre champ en vol. L'essai d'origine, battu (`applied=false`), voit la marque, la consomme et ne
+  rembourse pas : le débit durable est celui de sa réservation. Sans marque (rejeu après expiration, capture
+  ou libération), le remboursement en place reste juste.
+- **Résidus acceptés** (sous-estimations, bornées par le TTL du cache) : une marque non consommée quand
+  l'essai d'origine confirme son succès par la relecture de l'entrée ; une marque laissée par une réparation
+  dont le commit échoue (elle ne distingue pas un échec d'un ack perdu, donc ne la retire jamais).
+- **Non corrigé, inatteignable** : une `Release` d'une réservation sans entrée durable écrirait un `release`
+  orphelin, mais aucun appelant ne tient un succès de `Reserve` sans entrée durable, et le reaper part des
+  réserves durables. Exiger la réserve à la libération ouvrirait une course réelle avec un commit tardif.
 
 ## Alternatives rejetées
 
