@@ -2,7 +2,9 @@ package postgres_test
 
 import (
 	"context"
+	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -353,42 +355,161 @@ func TestBatcherIsolatesAPoisonedMovement(t *testing.T) {
 	}
 }
 
-// A COMMIT that fails may have landed: replaying its movements one by one would answer applied=false for
-// movements that were in fact applied, and the reserve would then refund a debit the ledger keeps.
-func TestBatcherDoesNotReplayABatchWhoseCommitFailed(t *testing.T) {
-	f := newDeltaFixture(t, "customer")
-	b, _ := newBatcher(t, f)
-	refused := uuid.New()
+// atCommit runs body when a transaction that claimed messageID commits: a deferred constraint trigger.
+func atCommit(t *testing.T, f deltaFixture, messageID uuid.UUID, body string) {
+	t.Helper()
 	ctx := context.Background()
-	trigger := "refuse_at_commit_" + refused.String()[:8]
+	name := "at_commit_" + strings.ReplaceAll(messageID.String(), "-", "")
 	for _, stmt := range []string{
-		`CREATE FUNCTION control_plane.` + trigger + `() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'refused at commit'; END $$`,
-		`CREATE CONSTRAINT TRIGGER ` + trigger + ` AFTER INSERT ON control_plane.billing_idempotency
-		 DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (NEW.message_id = '` + refused.String() + `')
-		 EXECUTE FUNCTION control_plane.` + trigger + `()`,
+		`CREATE FUNCTION control_plane.` + name + `() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN ` + body + ` RETURN NULL; END $$`,
+		`CREATE CONSTRAINT TRIGGER ` + name + ` AFTER INSERT ON control_plane.billing_idempotency
+		 DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (NEW.message_id = '` + messageID.String() + `')
+		 EXECUTE FUNCTION control_plane.` + name + `()`,
 	} {
 		if _, err := f.pool.Exec(ctx, stmt); err != nil {
-			t.Fatalf("install commit refusal: %v", err)
+			t.Fatalf("install commit trigger: %v", err)
 		}
 	}
 	t.Cleanup(func() {
-		_, _ = f.pool.Exec(ctx, `DROP TRIGGER `+trigger+` ON control_plane.billing_idempotency`)
-		_, _ = f.pool.Exec(ctx, `DROP FUNCTION control_plane.`+trigger+`()`)
+		_, _ = f.pool.Exec(ctx, `DROP TRIGGER `+name+` ON control_plane.billing_idempotency`)
+		_, _ = f.pool.Exec(ctx, `DROP FUNCTION control_plane.`+name+`()`)
 	})
+}
 
+// commitBatch queues slow (with a deadline the commit will outlive) beside two healthy movements, all in one
+// batch, and returns the three answers in that order.
+func commitBatch(t *testing.T, f deltaFixture, b *postgres.BillingBatcher, slow uuid.UUID, deadline time.Duration) ([]recorded, []uuid.UUID) {
+	t.Helper()
 	release, first := stallFirstBatch(t, f, b)
 	healthy := []uuid.UUID{uuid.New(), uuid.New()}
-	got := recordAll(t, b, release, f.hot(healthy[0], -1, 7), f.hot(refused, -1, 6), f.hot(healthy[1], -1, 5))
-	mustApply(t, "stalled movement", <-first)
+	ctx, cancel := context.WithTimeout(context.Background(), deadline)
+	t.Cleanup(cancel)
+	pending := []<-chan recorded{
+		record(context.Background(), b, f.hot(healthy[0], -1, 7)),
+		record(ctx, b, f.hot(slow, -1, 6)),
+		record(context.Background(), b, f.hot(healthy[1], -1, 5)),
+	}
+	for b.Queued() < len(pending) {
+		time.Sleep(time.Millisecond)
+	}
+	release()
+	mustApply(t, "stalled movement", await(t, first))
+	got := make([]recorded, len(pending))
+	for i, p := range pending {
+		got[i] = await(t, p)
+	}
+	return got, healthy
+}
+
+func TestBatcherReplaysABatchWhoseCommitWasRefused(t *testing.T) {
+	f := newDeltaFixture(t, "customer")
+	b, _ := newBatcher(t, f)
+	refused := uuid.New()
+	atCommit(t, f, refused, `RAISE EXCEPTION 'refused at commit';`)
+
+	got, healthy := commitBatch(t, f, b, refused, 10*time.Second)
+
+	if got[1].err == nil {
+		t.Fatalf("refused movement: %+v, want the commit's error", got[1])
+	}
+	mustApply(t, "healthy movement 0", got[0])
+	mustApply(t, "healthy movement 2", got[2])
+	for _, id := range healthy {
+		if !f.ledgerHas(t, id) {
+			t.Fatal("a healthy movement of the aborted batch was not replayed")
+		}
+	}
+}
+
+// A deadline that cuts the COMMIT while the server still works aborts it: Postgres says so, and the
+// neighbours are replayed instead of being left to the reaper.
+func TestBatcherReplaysTheNeighboursOfACommitCutByADeadline(t *testing.T) {
+	f := newDeltaFixture(t, "customer")
+	b, _ := newBatcher(t, f)
+	slow := uuid.New()
+	atCommit(t, f, slow, `PERFORM pg_sleep(1);`)
+
+	got, healthy := commitBatch(t, f, b, slow, 500*time.Millisecond)
+
+	if got[1].err == nil {
+		t.Fatalf("cut movement: %+v, want its deadline's error", got[1])
+	}
+	mustApply(t, "healthy movement 0", got[0])
+	mustApply(t, "healthy movement 2", got[2])
+	for _, id := range healthy {
+		if !f.ledgerHas(t, id) {
+			t.Fatal("a healthy movement of the cut batch was not replayed")
+		}
+	}
+	if f.ledgerHas(t, slow) {
+		t.Fatal("the movement whose deadline cut the commit was written")
+	}
+}
+
+// Postgres cannot be made to land a commit and lose its answer on demand, so the outcome is answered for it:
+// what the batch does with "committed" is the point, the trigger only makes the COMMIT fail.
+func TestBatcherReportsABatchWhoseCommitLandedAsApplied(t *testing.T) {
+	f := newDeltaFixture(t, "customer")
+	b, _ := newBatcher(t, f)
+	b.AnswerCommitOutcome("committed")
+	refused := uuid.New()
+	atCommit(t, f, refused, `RAISE EXCEPTION 'answer lost';`)
+
+	got, _ := commitBatch(t, f, b, refused, 10*time.Second)
+
+	for i, r := range got {
+		mustApply(t, fmt.Sprintf("movement %d of the landed batch", i), r)
+	}
+}
+
+func TestBatcherKeepsTheAmbiguityOfACommitStillRunning(t *testing.T) {
+	f := newDeltaFixture(t, "customer")
+	b, _ := newBatcher(t, f)
+	b.AnswerCommitOutcome("in progress")
+	refused := uuid.New()
+	atCommit(t, f, refused, `RAISE EXCEPTION 'outcome unknown';`)
+
+	started := time.Now()
+	got, healthy := commitBatch(t, f, b, refused, 10*time.Second)
 
 	for i, r := range got {
 		if r.err == nil {
-			t.Fatalf("movement %d: %+v, want the commit's error", i, r)
+			t.Fatalf("movement %d: %+v, want the commit's ambiguity", i, r)
 		}
 	}
 	for _, id := range healthy {
 		if f.ledgerHas(t, id) {
-			t.Fatal("a movement of the refused batch was written: the batch was replayed one by one")
+			t.Fatal("a member of an ambiguous batch was replayed")
+		}
+	}
+	if waited := time.Since(started); waited > 3*time.Second {
+		t.Fatalf("answered after %v: the outcome is sought within a bounded budget", waited)
+	}
+}
+
+func TestXactStatusReadsTheOutcomeOfAFinishedTransaction(t *testing.T) {
+	f := newDeltaFixture(t, "customer")
+	ctx := context.Background()
+	for _, end := range []string{"commit", "rollback"} {
+		tx, err := f.pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		var xid string
+		if err := tx.QueryRow(ctx, `SELECT pg_current_xact_id()::text`).Scan(&xid); err != nil {
+			t.Fatalf("xid: %v", err)
+		}
+		if end == "commit" {
+			err = tx.Commit(ctx)
+		} else {
+			err = tx.Rollback(ctx)
+		}
+		if err != nil {
+			t.Fatalf("%s: %v", end, err)
+		}
+		want := map[string]string{"commit": "committed", "rollback": "aborted"}[end]
+		if got, err := f.repo.XactStatus(ctx, xid); err != nil || got != want {
+			t.Fatalf("after %s: status %q (%v), want %q", end, got, err, want)
 		}
 	}
 }

@@ -98,7 +98,11 @@ reaper, N fenêtres de course capture/libération. Le lot lit son identifiant de
 autre connexion, hors du contexte expiré, en sondant tant que la transaction est « en cours » (budget
 `commitResolveBudget`, 500 ms, sous la marge entre `terminalCriticalTimeout` et le TTL du verrou) :
 « committed » rend les résultats du lot, « aborted » rejoue chaque mouvement seul, tout le reste garde
-l'ambiguïté (`errBatchCommit`). Un COMMIT jamais envoyé se résout donc en « aborted ». Reste hors du lot,
+l'ambiguïté (`errBatchCommit`). Un COMMIT jamais envoyé se résout donc en « aborted ». Mesuré le
+04/10 sur Postgres 18 : une échéance qui coupe un COMMIT encore au travail (trigger différé) le fait
+**avorter** — Postgres voit la socket fermée. « committed sans réponse » demande une coupure silencieuse
+(partition) ; aucun test ne sait la provoquer, la branche se teste en répondant le statut à la place de
+Postgres (`AnswerCommitOutcome`), la requête de statut l'est contre une vraie transaction. Reste hors du lot,
 fiché : `debts/capture-et-liberation-commitees-apres-un-accuse-perdu.md`.
 
 ## Definition of Done

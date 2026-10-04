@@ -149,6 +149,17 @@ type CopyLedgerEntriesParams struct {
 	Reference    *string
 }
 
+const currentXactID = `-- name: CurrentXactID :one
+SELECT pg_current_xact_id()::text AS xid
+`
+
+func (q *Queries) CurrentXactID(ctx context.Context) (string, error) {
+	row := q.db.QueryRow(ctx, currentXactID)
+	var xid string
+	err := row.Scan(&xid)
+	return xid, err
+}
+
 const foldBalanceDeltas = `-- name: FoldBalanceDeltas :one
 WITH moved AS (
   DELETE FROM control_plane.balance_deltas
@@ -706,4 +717,16 @@ func (q *Queries) UpdateBalanceScope(ctx context.Context, arg UpdateBalanceScope
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const xactStatus = `-- name: XactStatus :one
+SELECT pg_xact_status(CAST(CAST($1 AS text) AS xid8))::text AS status
+`
+
+// committed, aborted or in progress; NULL once the id is too old for the commit log to remember.
+func (q *Queries) XactStatus(ctx context.Context, xid string) (string, error) {
+	row := q.db.QueryRow(ctx, xactStatus, xid)
+	var status string
+	err := row.Scan(&status)
+	return status, err
 }

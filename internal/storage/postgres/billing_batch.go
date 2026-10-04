@@ -20,10 +20,14 @@ const (
 	// billing's reserveDurableTimeout: one writer serves every caller, and a hung transaction must not stall
 	// them all for longer than a reserve may wait.
 	batchWriteTimeout = 4 * time.Second
+	// commitResolveBudget is how long a failed COMMIT's outcome is sought. It fits in the margin billing keeps
+	// between its terminal critical section (4 s) and the terminal lock's TTL (5 s).
+	commitResolveBudget = 500 * time.Millisecond
 )
 
-// errBatchCommit marks a batch whose COMMIT failed: it may have landed, so its movements must not be replayed
-// one by one — a replay would answer applied=false for movements that were in fact applied.
+// errBatchCommit marks a batch whose COMMIT failed and whose outcome could not be read back: it may have
+// landed, so its movements must not be replayed one by one — a replay would answer applied=false for movements
+// that were in fact applied.
 var errBatchCommit = errors.New("batch commit failed")
 
 // BatchSizeObserver receives the number of movements one batch wrote. A prometheus.Observer satisfies it.
@@ -44,6 +48,9 @@ type BillingBatcher struct {
 	queue   chan batchedEntry
 	stop    chan struct{}
 	done    chan struct{}
+	// xactStatus reads a transaction's outcome; a test swaps it for one Postgres cannot be made to give on
+	// demand, a commit that landed while its answer was lost.
+	xactStatus func(ctx context.Context, xid string) (string, error)
 }
 
 type batchedEntry struct {
@@ -63,6 +70,7 @@ func NewBillingBatcher(repo *BillingRepo, sizes BatchSizeObserver) *BillingBatch
 	b := &BillingBatcher{
 		BillingRepo: repo, sizes: sizes,
 		queue: make(chan batchedEntry), stop: make(chan struct{}), done: make(chan struct{}),
+		xactStatus: repo.q.XactStatus,
 	}
 	go b.run()
 	return b
@@ -149,37 +157,63 @@ func (b *BillingBatcher) write(batch []batchedEntry) {
 	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
 
-	results, err := b.recordBatch(ctx, entries)
-	switch {
-	case err == nil:
+	results, xid, err := b.recordBatch(ctx, entries)
+	if errors.Is(err, errBatchCommit) {
+		switch b.commitOutcome(xid) {
+		case "committed":
+			err = nil
+		case "aborted": // nothing landed: replayed below, like a failure before the COMMIT
+		default:
+			for _, e := range batch {
+				e.reply <- batchResult{err: err}
+			}
+			return
+		}
+	}
+	if err == nil {
 		for i, e := range batch {
 			e.reply <- results[i]
 		}
-	case errors.Is(err, errBatchCommit):
-		for _, e := range batch {
-			e.reply <- batchResult{err: err}
+		return
+	}
+	// Nothing landed, and one bad movement fails the whole transaction: each one alone gets its own outcome,
+	// side by side, so each answer is bounded by its own deadline and not by its neighbours' replays.
+	// ponytail: one poisoned movement costs batchCap unitary transactions; bisect if it stops being rare.
+	var wg sync.WaitGroup
+	for _, e := range batch {
+		wg.Go(func() {
+			balance, applied, err := b.BillingRepo.RecordDurable(e.ctx, e.entry)
+			e.reply <- batchResult{balance: balance, applied: applied, err: err}
+		})
+	}
+	wg.Wait()
+}
+
+// commitOutcome asks Postgres, on a fresh connection, what became of a transaction whose COMMIT got no answer.
+// A cut client aborts a commit still at work; one already past its commit record lands. "in progress" is
+// polled until the budget runs out; anything left unanswered is reported as such.
+func (b *BillingBatcher) commitOutcome(xid string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), commitResolveBudget)
+	defer cancel()
+	for {
+		if status, err := b.xactStatus(ctx, xid); err == nil && status != "in progress" {
+			return status
 		}
-	default:
-		// Nothing landed, and one bad movement fails the whole transaction: each one alone gets its own outcome,
-		// side by side, so each answer is bounded by its own deadline and not by its neighbours' replays.
-		// ponytail: one poisoned movement costs batchCap unitary transactions; bisect if it stops being rare.
-		var wg sync.WaitGroup
-		for _, e := range batch {
-			wg.Go(func() {
-				balance, applied, err := b.BillingRepo.RecordDurable(e.ctx, e.entry)
-				e.reply <- batchResult{balance: balance, applied: applied, err: err}
-			})
+		select {
+		case <-ctx.Done():
+			return "unknown"
+		case <-time.After(20 * time.Millisecond):
 		}
-		wg.Wait()
 	}
 }
 
 // recordBatch is RecordDurable for movements that all carry a message and a decided balance, in one
-// transaction. Results are in entries order.
-func (r *BillingRepo) recordBatch(ctx context.Context, entries []cp.LedgerEntry) ([]batchResult, error) {
+// transaction. Results are in entries order. On a failed COMMIT it still returns them, with the transaction's
+// id, for the caller to learn whether they hold.
+func (r *BillingRepo) recordBatch(ctx context.Context, entries []cp.LedgerEntry) ([]batchResult, string, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
-		return nil, translate("begin billing batch", err)
+		return nil, "", translate("begin billing batch", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	qtx := r.q.WithTx(tx)
@@ -192,7 +226,7 @@ func (r *BillingRepo) recordBatch(ctx context.Context, entries []cp.LedgerEntry)
 	}
 	rows, err := qtx.ClaimIdempotencyBatch(ctx, claim)
 	if err != nil {
-		return nil, translate("claim idempotency batch", err)
+		return nil, "", translate("claim idempotency batch", err)
 	}
 	claimed := make(map[sqlcgen.ClaimIdempotencyBatchRow]bool, len(rows))
 	for _, row := range rows {
@@ -207,7 +241,7 @@ func (r *BillingRepo) recordBatch(ctx context.Context, entries []cp.LedgerEntry)
 		if !claimed[key] {
 			bal, _, err := balanceOn(ctx, qtx, e.OwnerType, e.OwnerID, e.Direction)
 			if err != nil {
-				return nil, err
+				return nil, "", err
 			}
 			results[i] = batchResult{balance: bal}
 			continue
@@ -229,16 +263,20 @@ func (r *BillingRepo) recordBatch(ctx context.Context, entries []cp.LedgerEntry)
 	}
 	if len(deltas) > 0 {
 		if _, err := qtx.CopyBalanceDeltas(ctx, deltas); err != nil {
-			return nil, translate("copy balance deltas", err)
+			return nil, "", translate("copy balance deltas", err)
 		}
 	}
 	if len(ledger) > 0 {
 		if _, err := qtx.CopyLedgerEntries(ctx, ledger); err != nil {
-			return nil, translate("copy ledger entries", err)
+			return nil, "", translate("copy ledger entries", err)
 		}
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("%w: %w", errBatchCommit, translate("commit billing batch", err))
+	xid, err := qtx.CurrentXactID(ctx)
+	if err != nil {
+		return nil, "", translate("read batch transaction id", err)
 	}
-	return results, nil
+	if err := tx.Commit(ctx); err != nil {
+		return results, xid, fmt.Errorf("%w: %w", errBatchCommit, translate("commit billing batch", err))
+	}
+	return results, xid, nil
 }

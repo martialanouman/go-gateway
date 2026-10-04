@@ -131,6 +131,13 @@ SELECT unnest(@message_ids::uuid[]), unnest(@entry_types::text[])
 ON CONFLICT (message_id, entry_type) DO NOTHING
 RETURNING message_id, entry_type;
 
+-- name: CurrentXactID :one
+SELECT pg_current_xact_id()::text AS xid;
+
+-- name: XactStatus :one
+-- committed, aborted or in progress; NULL once the id is too old for the commit log to remember.
+SELECT pg_xact_status(CAST(CAST(sqlc.arg(xid) AS text) AS xid8))::text AS status;
+
 -- name: CopyBalanceDeltas :copyfrom
 INSERT INTO control_plane.balance_deltas (owner_type, owner_id, direction, credits)
 VALUES ($1, $2, $3, $4);
