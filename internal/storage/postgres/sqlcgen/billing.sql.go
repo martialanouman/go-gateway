@@ -160,6 +160,15 @@ func (q *Queries) CurrentXactID(ctx context.Context) (string, error) {
 	return xid, err
 }
 
+const deleteBillingEvents = `-- name: DeleteBillingEvents :exec
+DELETE FROM control_plane.billing_events_outbox WHERE id = ANY($1::uuid[])
+`
+
+func (q *Queries) DeleteBillingEvents(ctx context.Context, ids []uuid.UUID) error {
+	_, err := q.db.Exec(ctx, deleteBillingEvents, ids)
+	return err
+}
+
 const foldBalanceDeltas = `-- name: FoldBalanceDeltas :one
 WITH moved AS (
   DELETE FROM control_plane.balance_deltas
@@ -298,6 +307,31 @@ func (q *Queries) InsertBalanceDelta(ctx context.Context, arg InsertBalanceDelta
 		arg.OwnerID,
 		arg.Direction,
 		arg.Credits,
+	)
+	return err
+}
+
+const insertBillingEvent = `-- name: InsertBillingEvent :exec
+INSERT INTO control_plane.billing_events_outbox (owner_type, owner_id, customer_id, balance_after, floor)
+VALUES ($1, $2, $3, $4, $5)
+`
+
+type InsertBillingEventParams struct {
+	OwnerType    string
+	OwnerID      uuid.UUID
+	CustomerID   uuid.UUID
+	BalanceAfter int32
+	Floor        int32
+}
+
+// Queue an MO floor crossing for billing.events (step-400), in the transaction of the mo_charge that crossed.
+func (q *Queries) InsertBillingEvent(ctx context.Context, arg InsertBillingEventParams) error {
+	_, err := q.db.Exec(ctx, insertBillingEvent,
+		arg.OwnerType,
+		arg.OwnerID,
+		arg.CustomerID,
+		arg.BalanceAfter,
+		arg.Floor,
 	)
 	return err
 }
@@ -652,6 +686,41 @@ func (q *Queries) ListOrphanedReservations(ctx context.Context, arg ListOrphaned
 	return items, nil
 }
 
+const listPendingBillingEvents = `-- name: ListPendingBillingEvents :many
+SELECT id, owner_type, owner_id, customer_id, balance_after, floor, created_at
+FROM control_plane.billing_events_outbox
+ORDER BY id
+LIMIT $1
+`
+
+func (q *Queries) ListPendingBillingEvents(ctx context.Context, lim int32) ([]ControlPlaneBillingEventsOutbox, error) {
+	rows, err := q.db.Query(ctx, listPendingBillingEvents, lim)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ControlPlaneBillingEventsOutbox{}
+	for rows.Next() {
+		var i ControlPlaneBillingEventsOutbox
+		if err := rows.Scan(
+			&i.ID,
+			&i.OwnerType,
+			&i.OwnerID,
+			&i.CustomerID,
+			&i.BalanceAfter,
+			&i.Floor,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockBalance = `-- name: LockBalance :exec
 SELECT 1 FROM control_plane.balances
 WHERE owner_type = $1 AND owner_id = $2 AND direction = $3
@@ -692,6 +761,17 @@ SELECT created_at FROM control_plane.balance_deltas ORDER BY id LIMIT 1
 
 func (q *Queries) OldestBalanceDelta(ctx context.Context) (pgtype.Timestamptz, error) {
 	row := q.db.QueryRow(ctx, oldestBalanceDelta)
+	var created_at pgtype.Timestamptz
+	err := row.Scan(&created_at)
+	return created_at, err
+}
+
+const oldestBillingEvent = `-- name: OldestBillingEvent :one
+SELECT created_at FROM control_plane.billing_events_outbox ORDER BY id LIMIT 1
+`
+
+func (q *Queries) OldestBillingEvent(ctx context.Context) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, oldestBillingEvent)
 	var created_at pgtype.Timestamptz
 	err := row.Scan(&created_at)
 	return created_at, err

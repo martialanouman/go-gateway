@@ -246,3 +246,20 @@ SELECT count(*) FROM moved;
 
 -- name: OldestBalanceDelta :one
 SELECT created_at FROM control_plane.balance_deltas ORDER BY id LIMIT 1;
+
+-- name: InsertBillingEvent :exec
+-- Queue an MO floor crossing for billing.events (step-400), in the transaction of the mo_charge that crossed.
+INSERT INTO control_plane.billing_events_outbox (owner_type, owner_id, customer_id, balance_after, floor)
+VALUES (@owner_type, @owner_id, @customer_id, @balance_after, @floor);
+
+-- name: ListPendingBillingEvents :many
+SELECT id, owner_type, owner_id, customer_id, balance_after, floor, created_at
+FROM control_plane.billing_events_outbox
+ORDER BY id
+LIMIT @lim;
+
+-- name: DeleteBillingEvents :exec
+DELETE FROM control_plane.billing_events_outbox WHERE id = ANY(@ids::uuid[]);
+
+-- name: OldestBillingEvent :one
+SELECT created_at FROM control_plane.billing_events_outbox ORDER BY id LIMIT 1;

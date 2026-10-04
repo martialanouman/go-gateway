@@ -516,6 +516,15 @@ func (r *BillingRepo) RecordDurable(ctx context.Context, entry cp.LedgerEntry) (
 	}); err != nil {
 		return 0, false, translate("insert ledger entry", err)
 	}
+	if entry.MOFloorReached != nil {
+		//nolint:gosec // see above: integer credit counts
+		if err := qtx.InsertBillingEvent(ctx, sqlcgen.InsertBillingEventParams{
+			OwnerType: entry.OwnerType, OwnerID: entry.OwnerID, CustomerID: entry.CustomerID,
+			BalanceAfter: int32(balance), Floor: int32(*entry.MOFloorReached),
+		}); err != nil {
+			return 0, false, translate("insert billing event", err)
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, false, translate("commit billing tx", err)
 	}
@@ -541,6 +550,53 @@ func (r *BillingRepo) FoldOnce(ctx context.Context, limit int) (int64, error) {
 		return 0, translate("fold balance deltas", err)
 	}
 	return n, nil
+}
+
+// RelayBillingEvents hands up to limit queued events to publish and deletes them once it returns nil. A
+// failed publish leaves every row queued for the next pass. Returns how many it relayed; fewer than limit
+// means none are left.
+//
+// It holds no transaction and no lock while publish runs: a produce in flight is not bounded by the
+// produce timeout, and a lock held through a broker outage would pin a connection of the pool the hot
+// path shares, and the vacuum horizon with it. The price is that two replicas may publish the same event
+// — consumers deduplicate on its id.
+func (r *BillingRepo) RelayBillingEvents(ctx context.Context, limit int, publish func(context.Context, []cp.BillingEvent) error) (int, error) {
+	//nolint:gosec // the caller's batch size is a small constant
+	rows, err := r.q.ListPendingBillingEvents(ctx, int32(limit))
+	if err != nil {
+		return 0, translate("list billing events", err)
+	}
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	events := make([]cp.BillingEvent, len(rows))
+	ids := make([]uuid.UUID, len(rows))
+	for i, row := range rows {
+		events[i] = cp.BillingEvent{
+			ID: row.ID, OwnerType: row.OwnerType, OwnerID: row.OwnerID, CustomerID: row.CustomerID,
+			BalanceAfter: int(row.BalanceAfter), Floor: int(row.Floor), CreatedAt: tsVal(row.CreatedAt),
+		}
+		ids[i] = row.ID
+	}
+	if err := publish(ctx, events); err != nil {
+		return 0, err
+	}
+	if err := r.q.DeleteBillingEvents(ctx, ids); err != nil {
+		return 0, translate("delete billing events", err)
+	}
+	return len(rows), nil
+}
+
+// OldestPendingBillingEvent returns when the oldest queued billing event was recorded; found=false when none waits.
+func (r *BillingRepo) OldestPendingBillingEvent(ctx context.Context) (time.Time, bool, error) {
+	at, err := r.q.OldestBillingEvent(ctx)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return time.Time{}, false, nil
+	}
+	if err != nil {
+		return time.Time{}, false, translate("oldest billing event", err)
+	}
+	return tsVal(at), true, nil
 }
 
 // OldestPendingDelta returns when the oldest unfolded delta was recorded; found=false when none is pending.

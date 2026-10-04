@@ -75,7 +75,7 @@ puis Fable, qui a tranché chaque point sans heurter la spec.
    Écartés : le producteur direct après commit (c'est la fenêtre de perte de `grpcserver.go:157`) ; un
    relais lisant `billing_ledger` (~250 M lignes/jour, et « franchissement » n'est pas un attribut d'une
    ligne) ; le CDC (une infrastructure neuve pour un événement rare).
-3. **Relais.** Une goroutine de billing-svc, au rythme du replieur (1 s, `runFold`), sur chaque réplique :
+3. **Relais** *(sa transaction et son verrou sont retirés par l'amendement de revue ci-dessous)*. Une goroutine de billing-svc, au rythme du replieur (1 s, `runFold`), sur chaque réplique :
    `SELECT … FOR UPDATE SKIP LOCKED LIMIT n` → `Produce` (producteur durable existant, acks=all
    idempotent, synchrone) → `DELETE` → commit. Au-moins-une-fois côté topic ; le BFF dédoublonne par
    `event_id`. Un Kafka coupé accumule des lignes, il ne touche **aucun** appel de facturation : Kafka reste
@@ -103,6 +103,28 @@ puis Fable, qui a tranché chaque point sans heurter la spec.
     `MOFloorReached != nil` prend le chemin unitaire.** Celle des deux steps qui merge en second ajoute la
     condition et son test (franchissement → une ligne d'outbox).
 
+**Amendements de revue (04/10/2026, arbitrés par Fable) :**
+- **Point 3 : le relais ne tient ni transaction ni verrou.** La revue a montré que la tx `FOR UPDATE`
+  restait ouverte pendant le `Produce`, que `KAFKA_PRODUCE_TIMEOUT` ne borne pas une requête en vol
+  (`internal/storage/kafka/producer.go:62-72`), et qu'un broker coupé gardait donc en permanence une des
+  10 connexions du pool partagé avec le chemin chaud, et un xid qui retient l'horizon de vacuum —
+  l'inverse de « Kafka coupé ne touche aucun appel de facturation ». Désormais : `SELECT … ORDER BY id
+  LIMIT 100` (lecture simple) → `Produce` hors transaction → `DELETE … WHERE id = ANY(ids publiés)`. Chaque
+  réplique peut publier le même événement : des doublons de plus, rares (un franchissement de plancher),
+  absorbés par le dédoublonnage `event_id` déjà exigé. Une ligne insérée entre le SELECT et le DELETE
+  attend la passe suivante. Écartés : borner la tx (`idle_in_transaction_session_timeout`), qui garde la
+  connexion otage pendant la panne ; un bail (`claimed_until`), une colonne et un état à expirer pour des
+  doublons que le consommateur absorbe déjà.
+- **La passe est bornée** comme celle du replieur (10 lots). La boucle est celle de `Folder`, partagée.
+- **La jauge se lit au scrape** (`prometheus.NewGaugeFunc`), pas en fin de passe : un `Produce` en vol
+  n'a pas de borne sur un broker dégradé, et une jauge posée par la passe bloquée resterait figée. Elle
+  rend NaN si Postgres ne répond pas, et monte aussi si la boucle n'a jamais démarré.
+- **Ordre entre propriétaires non garanti** entre répliques ou après un échec partiel : `occurred_at`
+  le rend lisible au consommateur.
+- **La condition du point 10 doit aussi s'écrire dans step-285b.md**, pour que celle qui merge en second
+  ne dépende pas d'une fiche qu'elle ne lit pas. Cette fiche n'existe que non commitée sur la branche
+  `step-285b-design` : le report y est à faire par sa session.
+
 ## Fichiers touchés
 `db/schema_passerelle_sms.sql` + `migrations/0028_*` · `internal/controlplane/billing.go` (champ) ·
 `internal/storage/postgres/billing.go` + requêtes sqlc · `internal/billing/` (`RecordMO`, relais) ·
@@ -110,8 +132,16 @@ puis Fable, qui a tranché chaque point sans heurter la spec.
 boucle) · spec §3.3 · plan §1.6.
 
 ## Definition of Done
-- [ ] franchissement du plancher → exactement une ligne d'outbox, dans la tx du `mo_charge`
-- [ ] rejeu du même `message_id` (au-delà du seen-TTL) → aucune ligne de plus
-- [ ] le relais publie sur `billing.events` (intégration, vrai broker) puis supprime la ligne
-- [ ] Kafka coupé : `RecordMO` répond, la ligne attend, la jauge monte ; Kafka revenu : publiée
-- [ ] mutations vues tomber · revue · coupe · `make check` vert
+- [x] franchissement du plancher → exactement une ligne d'outbox, dans la tx du `mo_charge`
+  (`TestRecordDurableWritesTheFloorEventInTheSameTransaction`, `TestRecordMOFloorStopsAndAlertsOnce`)
+- [x] rejeu du même `message_id` → aucune ligne de plus (même test : second `RecordDurable`, `applied=false`)
+- [x] le relais publie sur `billing.events` (intégration, vrai broker) puis supprime la ligne
+  (`TestEventRelayLandsTheCrossingOnBillingEvents`)
+- [x] Kafka coupé : la ligne attend et la jauge monte (`TestEventRelayKeepsTheCrossingWhileKafkaIsDown`) ;
+  `RecordMO` ne touche pas Kafka, par construction. La reprise après coupure n'a pas de test qui enchaîne
+  les deux : chaque passe relit la file, ce que prouvent séparément le test coupé et le test au broker vivant.
+- [x] mutations vues tomber (18, dont 3 refaites faute d'avoir compilé ; une survivante attendue : un
+  `FOR UPDATE` hors transaction se libère seul — la régression réelle, une transaction remise autour de
+  la publication, tombe) · revue en deux axes puis
+  contre-revue des correctifs · coupe (boucle partagée avec `Folder`, constructeur supprimé) ·
+  `make check` vert (04/10/2026)

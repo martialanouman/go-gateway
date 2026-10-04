@@ -102,6 +102,9 @@ func run() error {
 	g.Add("balance fold", func(c context.Context) error {
 		return runFold(c, app.folder)
 	})
+	g.Add("billing events relay", func(c context.Context) error {
+		return runFold(c, app.eventRelay)
+	})
 	if err := g.Run(ctx, logger, cfg.DrainBudget); err != nil {
 		return err
 	}
@@ -227,12 +230,12 @@ func runGRPC(ctx context.Context, srv *grpc.Server, port int, timeout time.Durat
 	}
 }
 
-// foldInterval paces the balance-delta fold (ADR-0022).
+// foldInterval paces the balance-delta fold (ADR-0022) and the billing events relay (step-400).
 const foldInterval = time.Second
 
-// runFold runs one fold pass every foldInterval until ctx is cancelled. Every replica runs it: SKIP LOCKED
-// splits the rows between them.
-func runFold(ctx context.Context, f *billing.Folder) error {
+// runFold runs one pass every foldInterval until ctx is cancelled. Every replica runs it: SKIP LOCKED
+// splits the fold's rows between them, while replicas may relay the same billing event twice.
+func runFold(ctx context.Context, f interface{ DrainOnce(context.Context) }) error {
 	ticker := time.NewTicker(foldInterval)
 	defer ticker.Stop()
 	for {

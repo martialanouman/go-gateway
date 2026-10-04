@@ -97,6 +97,17 @@ func TestRecordMOFloorStopsAndAlertsOnce(t *testing.T) {
 	if h.moBalance(t) != -12 {
 		t.Errorf("meter after suppressed = %d, want -12 (accrual stopped)", h.moBalance(t))
 	}
+
+	var events, balanceAfter, eventFloor int
+	if err := pgtest.Pool(t).QueryRow(ctx,
+		`SELECT count(*) OVER (), balance_after, floor FROM control_plane.billing_events_outbox
+		  WHERE owner_type = $1 AND owner_id = $2`, h.owner.Type, h.owner.ID).
+		Scan(&events, &balanceAfter, &eventFloor); err != nil {
+		t.Fatalf("read billing events outbox: %v", err)
+	}
+	if events != 1 || balanceAfter != -12 || eventFloor != floor {
+		t.Errorf("outbox = (%d rows, balance %d, floor %d), want (1, -12, %d)", events, balanceAfter, eventFloor, floor)
+	}
 }
 
 // TestRecordMONeverBlocksMT is the cross-axis guard: a meter driven to its floor does not affect the MT

@@ -417,7 +417,7 @@ l'autorisation de la moitié des opérations, et le tableau de bord génère ses
       trouvé en ouvrant step-399 ; unité faute de multiple de dix libre
 - [x] step-399 — Une invalidation perdue laisse une config périmée sans borne : resynchroniser
       périodiquement ⛓ step-395, step-398 — ouverte par step-395 ; unité faute de multiple de dix libre
-- [ ] step-400 — `billing.events` durable : le BFF doit pouvoir détecter, pas seulement afficher
+- [x] step-400 — `billing.events` durable : le BFF doit pouvoir détecter, pas seulement afficher
 - [ ] step-401 — Le MO n'est compté nulle part : câbler `RecordMO` dans mo-dlr-router-svc ⛓ step-143 —
       ouverte par step-400 ; unité faute de multiple de dix libre
 - [x] step-405 — La passerelle accepte les jetons du BFF : ancre du JWKS, contrat honnête, `created_by`

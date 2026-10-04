@@ -43,6 +43,7 @@ func Topics() []string {
 		kafka.TopicWebhookRetry,
 		kafka.TopicWebhookDeadLetter,
 		kafka.TopicMetricsStream,
+		kafka.TopicBillingEvents,
 	}
 	slices.Sort(topics)
 	return topics

@@ -44,6 +44,7 @@ var topics = []string{
 	// The realtime metrics feed (M11): the stream producer is best-effort and drops silently on an unknown
 	// topic, so a test that forgot this would pass while publishing nothing.
 	kafka.TopicMetricsStream,
+	kafka.TopicBillingEvents,
 }
 
 const (

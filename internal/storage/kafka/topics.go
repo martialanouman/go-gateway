@@ -51,6 +51,10 @@ const (
 	TopicMTReroutePark = "mt.reroute-park"
 	// TopicMetricsStream feeds the real-time WebSocket metrics (M11).
 	TopicMetricsStream = "metrics.stream"
+	// TopicBillingEvents carries billing transitions for the dashboard BFF to detect, unlike metrics.stream,
+	// which only displays them (step-400). Relayed from a Postgres outbox, so a transition is never lost but
+	// may arrive twice: consumers deduplicate on event_id. Partition key = owner_type:owner_id.
+	TopicBillingEvents = "billing.events"
 )
 
 // Header keys carried on every pipeline record (§7.3). They are identifiers only — the message

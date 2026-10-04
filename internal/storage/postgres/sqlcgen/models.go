@@ -50,6 +50,16 @@ type ControlPlaneBalanceDelta struct {
 	CreatedAt pgtype.Timestamptz
 }
 
+type ControlPlaneBillingEventsOutbox struct {
+	ID           uuid.UUID
+	OwnerType    string
+	OwnerID      uuid.UUID
+	CustomerID   uuid.UUID
+	BalanceAfter int32
+	Floor        int32
+	CreatedAt    pgtype.Timestamptz
+}
+
 type ControlPlaneBillingIdempotency struct {
 	MessageID uuid.UUID
 	EntryType string
