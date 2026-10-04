@@ -546,6 +546,8 @@ type OIDC struct {
 	Issuer   string `env:"ISSUER"`
 	Audience string `env:"AUDIENCE"`
 	JWKSURL  string `env:"JWKS_URL"`
+	// JWKSCAFile is the path of the authority the key set's server is signed by; empty keeps the system roots.
+	JWKSCAFile string `env:"JWKS_CA_FILE"`
 }
 
 // TLS is the pod's transport identity: one certificate for every surface it serves and every service it
@@ -1419,6 +1421,9 @@ func (c Config) oidcProblems() []string {
 		}
 	}
 	if len(missing) == len(fields) && !c.Environment.IsProduction() {
+		if c.OIDC.JWKSCAFile != "" {
+			return []string{"OIDC_JWKS_CA_FILE is set but OIDC_ISSUER is not: it would have no effect"}
+		}
 		return nil
 	}
 

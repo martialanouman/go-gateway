@@ -68,6 +68,15 @@ func TestOIDCSection(t *testing.T) {
 			env: with(map[string]string{"OIDC_ISSUER": "https://idp.example/realms/gw "}), want: "OIDC_ISSUER",
 		},
 		{
+			name: "an authority for the key set is accepted", environment: "production",
+			env: with(map[string]string{"OIDC_JWKS_CA_FILE": "/etc/gateway/tls/ca.crt"}),
+		},
+		{
+			// Nothing reads it without a provider: the operator would believe the key set anchored.
+			name: "an authority without a provider is refused", environment: "development",
+			env: map[string]string{"OIDC_JWKS_CA_FILE": "/etc/gateway/tls/ca.crt"}, want: "OIDC_JWKS_CA_FILE",
+		},
+		{
 			// Blank reads as unset to a human and as set to the verifier choice.
 			name: "a blank issuer is refused", environment: "development",
 			env: map[string]string{"OIDC_ISSUER": "  "}, want: "OIDC_ISSUER",

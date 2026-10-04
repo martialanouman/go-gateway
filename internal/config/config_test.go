@@ -43,7 +43,7 @@ var knownVars = []string{
 	"CONTENT_KEY_ADDR",
 	"EXACT_CACHE_TTL",
 	"TLS_ENABLED", "TLS_CERT_FILE", "TLS_KEY_FILE", "TLS_CLIENT_CA_FILE", "TLS_ALLOWED_CLIENTS",
-	"OIDC_ISSUER", "OIDC_AUDIENCE", "OIDC_JWKS_URL",
+	"OIDC_ISSUER", "OIDC_AUDIENCE", "OIDC_JWKS_URL", "OIDC_JWKS_CA_FILE",
 }
 
 // setEnv installs a clean environment holding exactly kv. Each variable goes through t.Setenv

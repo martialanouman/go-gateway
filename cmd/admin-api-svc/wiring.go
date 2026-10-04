@@ -472,7 +472,7 @@ func exportSink(cfg config.Config) adminapi.ExportSink {
 // config.Load requires it — and the static tokens otherwise.
 func newVerifier(ctx context.Context, cfg config.Config, logger *slog.Logger) (auth.TokenVerifier, error) {
 	if cfg.OIDC.Issuer != "" {
-		return auth.NewOIDCVerifier(ctx, logger, cfg.OIDC.Issuer, cfg.OIDC.Audience, cfg.OIDC.JWKSURL), nil
+		return auth.NewOIDCVerifier(ctx, logger, cfg.OIDC.Issuer, cfg.OIDC.Audience, cfg.OIDC.JWKSURL, cfg.OIDC.JWKSCAFile)
 	}
 	return auth.NewStaticVerifier(cfg.HTTP.AdminTokens)
 }

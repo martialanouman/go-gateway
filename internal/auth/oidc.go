@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -10,8 +11,10 @@ import (
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/google/uuid"
 
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
+	"github.com/martialanouman/go-gateway/internal/platform/tlsconf"
 )
 
 const keySetFetchTimeout = 5 * time.Second
@@ -24,14 +27,19 @@ type OIDCVerifier struct {
 	logger   *slog.Logger
 }
 
-// NewOIDCVerifier builds a verifier over the JWKS at jwksURL. Nothing is fetched here: the keys load on
-// the first token, so the service boots and passes readiness while the identity provider is down.
-func NewOIDCVerifier(ctx context.Context, logger *slog.Logger, issuer, audience, jwksURL string) *OIDCVerifier {
-	keys := classifyingKeySet{oidc.NewRemoteKeySet(oidc.ClientContext(ctx, keySetClient()), jwksURL)}
+// NewOIDCVerifier builds a verifier over the JWKS at jwksURL, trusting the authority in jwksCAFile, or the
+// system roots when it is empty. Nothing is fetched here: the keys load on the first token, so the service
+// boots and passes readiness while the identity provider is down. An unusable authority file is an error.
+func NewOIDCVerifier(ctx context.Context, logger *slog.Logger, issuer, audience, jwksURL, jwksCAFile string) (*OIDCVerifier, error) {
+	tlsConfig, err := tlsconf.StoreClientConfig(jwksCAFile)
+	if err != nil {
+		return nil, fmt.Errorf("OIDC_JWKS_CA_FILE: %w", err)
+	}
+	keys := classifyingKeySet{oidc.NewRemoteKeySet(oidc.ClientContext(ctx, keySetClient(tlsConfig)), jwksURL)}
 	return &OIDCVerifier{logger: logger, verifier: oidc.NewVerifier(issuer, keys, &oidc.Config{
 		ClientID:             audience,
 		SupportedSigningAlgs: []string{oidc.RS256, oidc.ES256},
-	})}
+	})}, nil
 }
 
 // Verify returns the token's Principal, ErrServiceUnavailable when the key set cannot be fetched — a
@@ -53,6 +61,13 @@ func (v *OIDCVerifier) Verify(ctx context.Context, token string) (Principal, err
 	if idToken.Subject == "" || idToken.Claims(&claims) != nil {
 		return Principal{}, errs.ErrUnauthenticated
 	}
+	// ADR-0019: the BFF signs an operator id. Any other sub is a misconfigured issuer, which would
+	// otherwise reach created_by as nothing at all.
+	if _, err := uuid.Parse(idToken.Subject); err != nil {
+		v.logger.WarnContext(ctx, "operator token refused: its sub is not an operator id",
+			"iss", idToken.Issuer, "sub", idToken.Subject)
+		return Principal{}, errs.ErrUnauthenticated
+	}
 	var scopes []Scope
 	for _, s := range strings.Fields(claims.Scope) {
 		if knownScope(Scope(s)) {
@@ -64,8 +79,10 @@ func (v *OIDCVerifier) Verify(ctx context.Context, token string) (Principal, err
 
 type fetchFailureKey struct{}
 
-func keySetClient() *http.Client {
-	return &http.Client{Timeout: keySetFetchTimeout, CheckRedirect: refuseDowngrade}
+func keySetClient(tlsConfig *tls.Config) *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = tlsConfig
+	return &http.Client{Timeout: keySetFetchTimeout, CheckRedirect: refuseDowngrade, Transport: transport}
 }
 
 // refuseDowngrade keeps a redirect from fetching in plaintext what config required over https; past that it

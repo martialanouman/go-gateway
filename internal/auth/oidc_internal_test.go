@@ -24,7 +24,7 @@ func TestKeySetRedirectsNeverDowngradeToPlaintext(t *testing.T) {
 		{"https://idp/certs", "https://idp/certs/", true},
 		{"http://localhost/certs", "http://localhost/certs/", true},
 	} {
-		err := keySetClient().CheckRedirect(request(tt.to), []*http.Request{request(tt.from)})
+		err := keySetClient(nil).CheckRedirect(request(tt.to), []*http.Request{request(tt.from)})
 		if (err == nil) != tt.allowed {
 			t.Errorf("%s → %s: CheckRedirect() = %v, want allowed=%v", tt.from, tt.to, err, tt.allowed)
 		}
