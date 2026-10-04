@@ -39,7 +39,7 @@ func TestAntispamFlagsInsteadOfBlockingWhenRedisIsCut(t *testing.T) {
 	body := []byte("a message repeated twice " + uuid.NewString())
 	eval := func(b []byte) cp.AntispamAction {
 		t.Helper()
-		action, err := e.Evaluate(ctx, account, customer, src, dest, b)
+		action, err := e.Evaluate(ctx, uuid.New(), account, customer, src, dest, b)
 		if err != nil {
 			t.Fatalf("Evaluate must never error: %v", err)
 		}

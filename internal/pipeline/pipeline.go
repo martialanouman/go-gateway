@@ -77,7 +77,7 @@ type OptOutChecker interface {
 // flags the message rather than blocking it, so the error return is currently always nil (retained
 // for interface stability).
 type AntispamEvaluator interface {
-	Evaluate(ctx context.Context, accountID, customerID uuid.UUID, from, dest string, body []byte) (cp.AntispamAction, error)
+	Evaluate(ctx context.Context, messageID, accountID, customerID uuid.UUID, from, dest string, body []byte) (cp.AntispamAction, error)
 }
 
 // CreditReserver reserves MT credit for a message before the SMSC send (§6.9, step-145). reserved reports
@@ -192,7 +192,7 @@ func (p *Pipeline) Process(ctx context.Context, in InboundMT) (RoutedMT, []pipee
 	// (invariant b). Content is read in memory only — the span carries the action, never the body
 	// (invariant a). block rejects; flag/throttle annotate the span without stopping the message.
 	if err := p.stage(ctx, "pipeline.anti_spam", func(ctx context.Context) error {
-		action, err := p.deps.Antispam.Evaluate(ctx, in.AccountID, in.CustomerID, in.From, out.To, in.Body.Reveal())
+		action, err := p.deps.Antispam.Evaluate(ctx, in.MessageID, in.AccountID, in.CustomerID, in.From, out.To, in.Body.Reveal())
 		if err != nil {
 			return err
 		}

@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/martialanouman/go-gateway/internal/pipeline/antispam"
 	"github.com/martialanouman/go-gateway/internal/testutil/redistest"
 )
@@ -18,15 +20,54 @@ func TestRedisStateDuplicate(t *testing.T) {
 
 	const fp = "abc123fingerprint"
 
-	if seen, err := state.Seen(ctx, fp, 200*time.Millisecond); err != nil || seen {
+	if seen, err := state.Seen(ctx, fp, uuid.New(), 200*time.Millisecond); err != nil || seen {
 		t.Fatalf("first Seen = (%t, %v), want (false, nil)", seen, err)
 	}
-	if seen, err := state.Seen(ctx, fp, 200*time.Millisecond); err != nil || !seen {
+	if seen, err := state.Seen(ctx, fp, uuid.New(), 200*time.Millisecond); err != nil || !seen {
 		t.Fatalf("immediate repeat = (%t, %v), want (true, nil)", seen, err)
 	}
 	time.Sleep(300 * time.Millisecond)
-	if seen, err := state.Seen(ctx, fp, 200*time.Millisecond); err != nil || seen {
+	if seen, err := state.Seen(ctx, fp, uuid.New(), 200*time.Millisecond); err != nil || seen {
 		t.Fatalf("post-expiry Seen = (%t, %v), want (false, nil)", seen, err)
+	}
+}
+
+// TestRedisStateReplayIsNotItsOwnDuplicate proves a redelivered message (same message_id) is not a duplicate
+// of its own first pass, while another message with the same fingerprint still is (step-285c).
+func TestRedisStateReplayIsNotItsOwnDuplicate(t *testing.T) {
+	rdb := redistest.Client(t)
+	ctx := context.Background()
+	state := antispam.NewRedisState(rdb)
+
+	fp, first := uuid.NewString(), uuid.New()
+	for pass := 1; pass <= 2; pass++ {
+		if seen, err := state.Seen(ctx, fp, first, time.Minute); err != nil || seen {
+			t.Fatalf("pass %d of the same message = (%t, %v), want (false, nil)", pass, seen, err)
+		}
+	}
+	if seen, err := state.Seen(ctx, fp, uuid.New(), time.Minute); err != nil || !seen {
+		t.Fatalf("another message, same fingerprint = (%t, %v), want (true, nil)", seen, err)
+	}
+}
+
+// TestRedisStateReplayCountsOnce proves a redelivered message is counted once in a velocity window.
+func TestRedisStateReplayCountsOnce(t *testing.T) {
+	rdb := redistest.Client(t)
+	ctx := context.Background()
+	state := antispam.NewRedisState(rdb)
+
+	key, replayed := "global:source:"+uuid.NewString(), uuid.New()
+	for _, id := range []uuid.UUID{replayed, replayed, uuid.New()} {
+		if _, err := state.Hit(ctx, key, id, time.Minute); err != nil {
+			t.Fatalf("Hit: %v", err)
+		}
+	}
+	n, err := state.Hit(ctx, key, replayed, time.Minute)
+	if err != nil {
+		t.Fatalf("Hit: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("count = %d, want 2 (two distinct messages, one replayed three times)", n)
 	}
 }
 
@@ -39,7 +80,7 @@ func TestRedisStateVelocity(t *testing.T) {
 
 	const key = "global:source:22507000001"
 	for want := 1; want <= 3; want++ {
-		n, err := state.Hit(ctx, key, time.Minute)
+		n, err := state.Hit(ctx, key, uuid.New(), time.Minute)
 		if err != nil {
 			t.Fatalf("Hit %d: %v", want, err)
 		}
@@ -53,7 +94,7 @@ func TestRedisStateVelocity(t *testing.T) {
 	if err := state.Record(ctx, moKey); err != nil {
 		t.Fatalf("Record: %v", err)
 	}
-	n, err := state.Hit(ctx, moKey, time.Minute)
+	n, err := state.Hit(ctx, moKey, uuid.New(), time.Minute)
 	if err != nil {
 		t.Fatalf("Hit after Record: %v", err)
 	}
@@ -70,11 +111,11 @@ func TestRedisStateVelocityWindowTrims(t *testing.T) {
 	state := antispam.NewRedisState(rdb)
 
 	const key = "global:source:22507000005"
-	if _, err := state.Hit(ctx, key, 100*time.Millisecond); err != nil {
+	if _, err := state.Hit(ctx, key, uuid.New(), 100*time.Millisecond); err != nil {
 		t.Fatalf("first Hit: %v", err)
 	}
 	time.Sleep(150 * time.Millisecond)
-	n, err := state.Hit(ctx, key, 100*time.Millisecond)
+	n, err := state.Hit(ctx, key, uuid.New(), 100*time.Millisecond)
 	if err != nil {
 		t.Fatalf("second Hit: %v", err)
 	}

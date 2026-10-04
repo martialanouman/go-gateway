@@ -18,7 +18,7 @@ const (
 )
 
 // slidingWindowSrc is the atomic sliding-window counter (the golden rule forbids a read-modify-write
-// from Go): trim events older than the window, add this event with a unique member, refresh the TTL,
+// from Go): trim events older than the window, add this event (its message_id as member), refresh the TTL,
 // and return the count within the window. KEYS[1]=key; ARGV: now_ms, window_ms, member.
 const slidingWindowSrc = `
 local key = KEYS[1]
@@ -64,22 +64,26 @@ func NewRedisState(rdb *redis.Client) *RedisState {
 	}
 }
 
-// Seen records a duplicate fingerprint for window and reports whether it was ALREADY present (an
-// atomic SET NX EX). The stored value is a constant marker, never the body.
-func (s *RedisState) Seen(ctx context.Context, fingerprint string, window time.Duration) (bool, error) {
-	set, err := s.rdb.SetNX(ctx, dupKeyPrefix+fingerprint, "1", window).Result()
+// Seen records a duplicate fingerprint for window and reports whether ANOTHER message already holds it
+// (an atomic SET NX GET). The stored value is the message_id, never the body: a redelivered message finds
+// its own id and is not its own duplicate.
+func (s *RedisState) Seen(ctx context.Context, fingerprint string, messageID uuid.UUID, window time.Duration) (bool, error) {
+	holder, err := s.rdb.SetArgs(ctx, dupKeyPrefix+fingerprint, messageID.String(), redis.SetArgs{Mode: "NX", Get: true, TTL: window}).Result()
+	if errors.Is(err, redis.Nil) {
+		return false, nil
+	}
 	if err != nil {
 		return false, err
 	}
-	return !set, nil
+	return holder != messageID.String(), nil
 }
 
 // Hit records one event under key in its sliding window and returns the count within the window
-// (including this event). The count is compared against the rule's max by the caller.
-func (s *RedisState) Hit(ctx context.Context, key string, window time.Duration) (int, error) {
+// (including this event). The count is compared against the rule's max by the caller. The member is the
+// message_id, so a redelivered message counts once.
+func (s *RedisState) Hit(ctx context.Context, key string, messageID uuid.UUID, window time.Duration) (int, error) {
 	now := time.Now().UnixMilli()
-	member := strconv.FormatInt(now, 10) + ":" + uuid.NewString()
-	n, err := s.slidingCount.Run(ctx, s.rdb, []string{velKeyPrefix + key}, now, window.Milliseconds(), member).Int()
+	n, err := s.slidingCount.Run(ctx, s.rdb, []string{velKeyPrefix + key}, now, window.Milliseconds(), messageID.String()).Int()
 	if err != nil {
 		return 0, err
 	}

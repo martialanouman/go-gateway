@@ -58,7 +58,7 @@ func (s *spyOptOut) IsOptedOut(context.Context, uuid.UUID, uuid.UUID, string, st
 
 type spyAntispam struct{ calls atomic.Int32 }
 
-func (s *spyAntispam) Evaluate(context.Context, uuid.UUID, uuid.UUID, string, string, []byte) (cp.AntispamAction, error) {
+func (s *spyAntispam) Evaluate(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, string, string, []byte) (cp.AntispamAction, error) {
 	s.calls.Add(1)
 	return cp.AntispamAction(""), nil // empty action passes
 }

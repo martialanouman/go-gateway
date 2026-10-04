@@ -551,7 +551,7 @@ func (ceilOptOut) IsOptedOut(context.Context, uuid.UUID, uuid.UUID, string, stri
 
 type ceilAntispam struct{}
 
-func (ceilAntispam) Evaluate(context.Context, uuid.UUID, uuid.UUID, string, string, []byte) (cp.AntispamAction, error) {
+func (ceilAntispam) Evaluate(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, string, string, []byte) (cp.AntispamAction, error) {
 	return "", nil
 }
 
