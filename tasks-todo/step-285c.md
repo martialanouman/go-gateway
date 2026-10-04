@@ -36,3 +36,51 @@ les commits.
 - [ ] la publication suit l'ordre des offsets d'une voie, même quand les réserves finissent dans le désordre
 - [ ] VPS, même protocole que step-285b (backlog mono-client) : réserves/s, taille moyenne des lots,
       CPU de Postgres, comparés à 294/s, 8,4 et 622 m
+
+## Design arrêté
+
+Arbitré par Fable le 04/10/2026 (spec muette sur le parallélisme intra-voie et le rejeu de l'anti-spam).
+
+1. **Fenêtre par voie.** Dans `handleBatch`, chaque voie lance `Pipeline.Process` (étapes 1-8, réserve
+   comprise) pour au plus `laneWindow` messages devant le message courant, et consomme les résultats
+   **dans l'ordre des offsets**. La suite de `handle` (CDR de rejet, ou produce de chaque segment) reste
+   séquentielle dans cette phase ordonnée. Le CDR de rejet y reste aussi : `CDR.Insert` peut échouer, et
+   c'est un échec de voie.
+2. **Premier échec.** La voie cesse de lancer de nouveaux Process, marque `errLaneHalted` sur tout ce qui
+   est au-dessus (même un Process réussi : rien n'est publié ni écrit au-dessus d'un échec), puis attend
+   les Process en vol **sans annuler leur ctx**. Annuler une réserve en vol la ferait passer par le chemin
+   ambigu de billing-svc ; laissée finir, elle est rejouée en « held » sans coût. `handleBatch` ne laisse
+   aucune goroutine après son retour.
+3. **`laneWindow = 8`, constante.**
+   - 12 voies × 8 = 96 réserves en vol, ce qui donne des lots de ~50-90 (plafond 256).
+   - 96 flux HTTP/2 restent sous le plafond usuel de 100 de la connexion gRPC.
+   - Plafond théorique ≈ 3 000 réserves/s.
+   - `ponytail:` passer à un réglage si la campagne de mesure veut balayer N.
+   - Implémentation : un chan bufferisé comme sémaphore et un chan de résultat par indice.
+     Pas d'`errgroup`.
+4. **L'anti-spam devient rejouable.** Aujourd'hui, un message rejoué retrouve sa propre empreinte de
+   doublon : avec une règle `block`, il est rejeté comme doublon de lui-même, et la vélocité le compte
+   deux fois. Le défaut préexiste (échec de produce après l'anti-spam), mais la fenêtre le multiplie
+   (jusqu'à N-1 messages rejoués au-dessus d'un échec). Corrigé à la racine :
+   - `Evaluate`, `Seen` et `Hit` reçoivent le `message_id` ;
+   - `Seen` fait `SET NX GET` avec le `message_id` en valeur, et ne voit un doublon que si la valeur
+     existante est un **autre** `message_id` ;
+   - `Hit` prend le `message_id` comme membre du ZSET (idempotent) ;
+   - `Record` (MO) ne change pas.
+5. **États non touchés.**
+   - Le round-robin de `routing/snapshot.go` (atomique) : un rejeu peut choisir un autre connecteur, sans
+     conséquence, puisque rien du premier passage n'a été publié.
+   - Sender ID, opt-out, E.164, encodage et segmentation sont purs ou en lecture seule.
+   - La réserve est idempotente par `message_id`.
+6. **Prochain plafond.** Après la fenêtre, c'est le produce synchrone de la phase ordonnée qui bornera la
+   voie. Sa latence se mesure dans le même run, car `pipeline_duration_seconds` l'exclut.
+7. **Mesure contre step-408.** Si step-408 (vidage de `DEFAULT`) est déployée avant la mesure, on remesure
+   la référence sans step-285c juste avant, sans aucun vidage entre les deux runs. Sinon, 294/s reste la
+   référence.
+
+**Tests.**
+- Un producteur factice échoue à l'offset k : aucun produce au-dessus de k, et `errLaneHalted` au-dessus.
+- Un crédit factice finit dans l'ordre inverse : l'ordre de produce reste celui des offsets.
+- Avec une règle de doublon `block`, le même `message_id` évalué deux fois n'est pas un doublon ; un autre
+  `message_id` avec le même contenu l'est.
+- La vélocité ne compte pas deux fois un rejeu.
