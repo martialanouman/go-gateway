@@ -64,6 +64,16 @@ Validé par l'humain le 04/10/2026, après les sondes.
 7. **Instrument :** histogramme `billing_durable_batch_size` (taille des lots écrits), qui prouve le
    regroupement en test et sert à l'exploitation.
 
+**Amendements pendant le TDD (04/10/2026) :**
+- **Un COMMIT qui échoue ne se rejoue pas entrée par entrée** (point 5) : il a pu aboutir, et un rejeu
+  unitaire rendrait `applied=false` à un mouvement appliqué. La réserve rembourserait alors le cache, et
+  ce crédit fantôme pourrait être revendu. Chaque appelant reçoit l'erreur, comme un accusé de commit perdu
+  aujourd'hui : la réserve relit `ReserveEntry`. Seul un échec *avant* le COMMIT déclenche le repli.
+- **Pas de déduplication dans le lot** (point 4) : la mutation qui la retirait a survécu. Deux copies du
+  même mouvement se lisent toutes deux réclamées, l'index unique du grand livre refuse la seconde (une
+  transaction, un seul `now()`), et le lot passe par le repli unitaire. Deux filtres qui se recouvrent :
+  on garde celui que la base impose.
+
 ## Definition of Done
 
 - [ ] N écritures concurrentes : N lignes au grand livre, sa somme égale le solde
