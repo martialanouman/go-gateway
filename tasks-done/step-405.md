@@ -1,6 +1,6 @@
 # step-405 — La passerelle accepte les jetons du BFF : ancre du JWKS, contrat honnête, `created_by` rempli
 
-> **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
+> **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** LIVRÉE (#254)
 > **Dépend de :** step-310, ADR-0019 (`Accepted`) · **Bloque :** step-410
 
 ## Pourquoi cette fiche existe
@@ -109,12 +109,12 @@ sans que le schéma le liste ; c'est additif. Bump MINEUR `6.11.0 → 6.12.0`. L
 
 ## Definition of Done
 
-- [ ] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts
-- [ ] `debts/jwks-joint-par-les-seules-racines-systeme.md` passe à `PAYÉE`, avec la date et la PR
-- [ ] `debts/created-by-jamais-renseigne.md` passe à `PAYÉE` ; FK et stub `dashboard.operators` retirés
+- [x] gofmt/goimports · golangci-lint · `go test -race ./...` · govulncheck verts
+- [x] `debts/jwks-joint-par-les-seules-racines-systeme.md` passe à `PAYÉE`, avec la date et la PR
+- [x] `debts/created-by-jamais-renseigne.md` passe à `PAYÉE` ; FK et stub `dashboard.operators` retirés
   (schéma + migration)
-- [ ] contrat `OperatorBearer` à jour, `api/package.json` bumpé en MINEUR
-- [ ] le résidu `keySetClient()` de step-310 est prouvé, ou sa raison est écrite
+- [x] contrat `OperatorBearer` à jour, `api/package.json` bumpé en MINEUR
+- [x] le résidu `keySetClient()` de step-310 est prouvé, ou sa raison est écrite
 
 ## Hors périmètre
 

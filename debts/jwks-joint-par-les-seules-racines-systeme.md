@@ -1,7 +1,7 @@
 # Le JWKS de l'IdP n'est joignable que sous une autorité des racines système
 
 > **Statut :** PAYÉE le 2026-10-04 · **Nature :** technique
-> **Née de :** step-310 · **Payée par :** step-405 (#PR)
+> **Née de :** step-310 · **Payée par :** step-405 (#254)
 
 **Payée.** `OIDC_JWKS_CA_FILE` désigne l'autorité du JWKS, par `tlsconf.StoreClientConfig` comme
 `KAFKA_TLS_CA_FILE` : vide, les racines système ; renseignée, le seul pool ; illisible, le boot échoue. Le

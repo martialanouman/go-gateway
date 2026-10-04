@@ -1,7 +1,7 @@
 # `created_by` est publié par le contrat et reste nul pour toujours
 
 > **Statut :** PAYÉE le 2026-10-04 · **Nature :** produit
-> **Née de :** step-310 · **Payée par :** step-405 (#PR)
+> **Née de :** step-310 · **Payée par :** step-405 (#254)
 
 **Payée.** ADR-0019 fait du BFF l'émetteur des jetons, `sub` = l'`operator_id` de l'humain connecté. Les
 quatre créations écrivent ce `sub` dans `created_by`, et rien sous un jeton statique `tok_…`. Le vérifieur
