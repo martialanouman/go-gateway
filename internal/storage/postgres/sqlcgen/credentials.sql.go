@@ -243,12 +243,14 @@ UPDATE control_plane.credentials SET
     password_hash = CASE WHEN type = 'smpp_bind' THEN $1 ELSE password_hash END,
     api_key_hash  = CASE WHEN type = 'api_key'   THEN $1 ELSE api_key_hash END,
     previous_secret_hash = CASE
-        WHEN $2::int IS NOT NULL THEN COALESCE(password_hash, api_key_hash)
+        WHEN $2::int IS NOT NULL AND status <> 'revoked'
+            THEN COALESCE(password_hash, api_key_hash)
         ELSE NULL END,
     grace_expires_at = CASE
-        WHEN $2::int IS NOT NULL
+        WHEN $2::int IS NOT NULL AND status <> 'revoked'
             THEN now() + make_interval(secs => $2::int)
         ELSE NULL END,
+    status = CASE WHEN status = 'revoked' THEN 'active' ELSE status END,
     rotated_at = now()
 WHERE account_id = $3 AND id = $4
 RETURNING id, account_id, type, system_id, password_hash, api_key_hash, status, last_used_at, previous_secret_hash, grace_expires_at, created_at, rotated_at
@@ -265,6 +267,8 @@ type RotateCredentialParams struct {
 // period is given, the OLD hash (visible on the right-hand side of the UPDATE) is preserved in
 // previous_secret_hash and grace_expires_at is set now()+grace, so the previous secret keeps working
 // in parallel until it expires; a null grace is an immediate cutover.
+// A revoked credential comes back active, and never with a grace window: the revoked secret may be the
+// leaked one. Re-entering credentials_system_id_uq can then collide with a system_id taken since -> 409.
 func (q *Queries) RotateCredential(ctx context.Context, arg RotateCredentialParams) (ControlPlaneCredential, error) {
 	row := q.db.QueryRow(ctx, rotateCredential,
 		arg.NewHash,
@@ -293,6 +297,7 @@ func (q *Queries) RotateCredential(ctx context.Context, arg RotateCredentialPara
 const setCredentialStatus = `-- name: SetCredentialStatus :one
 UPDATE control_plane.credentials SET status = $1
 WHERE account_id = $2 AND id = $3
+  AND (status <> 'revoked' OR $1 = 'revoked')
 RETURNING id, account_id, type, system_id, password_hash, api_key_hash, status, last_used_at, previous_secret_hash, grace_expires_at, created_at, rotated_at
 `
 
@@ -302,6 +307,8 @@ type SetCredentialStatusParams struct {
 	ID        uuid.UUID
 }
 
+// A revoked row matches only a revocation: leaving revoked here would revive the revoked secret, and the
+// way back is RotateCredential, which replaces it.
 func (q *Queries) SetCredentialStatus(ctx context.Context, arg SetCredentialStatusParams) (ControlPlaneCredential, error) {
 	row := q.db.QueryRow(ctx, setCredentialStatus, arg.Status, arg.AccountID, arg.ID)
 	var i ControlPlaneCredential

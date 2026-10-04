@@ -204,3 +204,187 @@ func TestBindLookupCarriesTheRotationGraceColumns(t *testing.T) {
 			got.PreviousSecretHash, got.GraceExpiresAt)
 	}
 }
+
+// TestRotateRevokedCredentialReactivatesItWithoutAGraceWindow: rotating a revoked credential brings it
+// back to active with the new secret only. Even when a grace window reaches the store (a revocation
+// racing a planned rotation), the revoked secret must not come back for the window's length.
+func TestRotateRevokedCredentialReactivatesItWithoutAGraceWindow(t *testing.T) {
+	pool := pgtest.Pool(t)
+	ctx := context.Background()
+	customers := postgres.NewCustomerRepo(pool)
+	accounts := postgres.NewAccountRepo(pool)
+	creds := postgres.NewCredentialRepo(pool)
+	apikeys := postgres.NewAPIKeyRepo(pool)
+
+	customer, err := customers.Create(ctx, cp.NewCustomer{Name: "ReactivateCo"})
+	if err != nil {
+		t.Fatalf("create customer: %v", err)
+	}
+	account, err := accounts.Create(ctx, cp.NewAccount{CustomerID: customer.ID, Name: "app"})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+
+	oldHash, newHash := "old-"+uuid.NewString(), "new-"+uuid.NewString()
+	cred, err := creds.Create(ctx, cp.NewCredential{
+		AccountID: account.ID, Type: cp.CredentialAPIKey, APIKeyHash: &oldHash,
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := creds.SetStatus(ctx, account.ID, cred.ID, cp.CredentialRevoked); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+
+	grace := 10 * time.Minute
+	rotated, err := creds.Rotate(ctx, account.ID, cred.ID, cp.CredentialRotation{NewHash: newHash, Grace: &grace})
+	if err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+	if rotated.Status != cp.CredentialActive {
+		t.Errorf("status = %q, want active", rotated.Status)
+	}
+	if rotated.GraceExpiresAt != nil {
+		t.Errorf("grace_expires_at = %v, want nil on a reactivation", *rotated.GraceExpiresAt)
+	}
+	var prev *string
+	if err := pool.QueryRow(ctx,
+		`SELECT previous_secret_hash FROM control_plane.credentials WHERE id = $1`, cred.ID).Scan(&prev); err != nil {
+		t.Fatalf("read previous_secret_hash: %v", err)
+	}
+	if prev != nil {
+		t.Errorf("previous_secret_hash = %q, want nil: the revoked secret must not survive", *prev)
+	}
+	if _, found, err := apikeys.PrincipalByAPIKeyHash(ctx, newHash); err != nil || !found {
+		t.Errorf("new secret: found=%v err=%v, want it to authenticate", found, err)
+	}
+	if _, found, err := apikeys.PrincipalByAPIKeyHash(ctx, oldHash); err != nil || found {
+		t.Errorf("revoked secret: found=%v err=%v, want it refused", found, err)
+	}
+}
+
+// TestRevokedCredentialLeavesRevokedOnlyThroughRotate: setting a revoked credential back to active (or
+// to disabled, then active) would revive its old, possibly leaked, secret. Only a rotation brings it
+// back, with a new one; revoking again stays idempotent.
+func TestRevokedCredentialLeavesRevokedOnlyThroughRotate(t *testing.T) {
+	pool := pgtest.Pool(t)
+	ctx := context.Background()
+	customers := postgres.NewCustomerRepo(pool)
+	accounts := postgres.NewAccountRepo(pool)
+	creds := postgres.NewCredentialRepo(pool)
+
+	customer, err := customers.Create(ctx, cp.NewCustomer{Name: "StuckCo"})
+	if err != nil {
+		t.Fatalf("create customer: %v", err)
+	}
+	account, err := accounts.Create(ctx, cp.NewAccount{CustomerID: customer.ID, Name: "app"})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	keyHash := "key-" + uuid.NewString()
+	cred, err := creds.Create(ctx, cp.NewCredential{AccountID: account.ID, Type: cp.CredentialAPIKey, APIKeyHash: &keyHash})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := creds.SetStatus(ctx, account.ID, cred.ID, cp.CredentialRevoked); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+
+	for _, status := range []cp.CredentialStatus{cp.CredentialActive, cp.CredentialDisabled} {
+		_, err := creds.SetStatus(ctx, account.ID, cred.ID, status)
+		if code, _ := errs.CodeOf(err); code != errs.ErrNotFound {
+			t.Errorf("revoked -> %s: code = %q (err=%v), want not_found (no row left revoked)", status, code, err)
+		}
+	}
+	got, err := creds.Get(ctx, account.ID, cred.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Status != cp.CredentialRevoked {
+		t.Errorf("status = %q, want revoked", got.Status)
+	}
+	if _, err := creds.SetStatus(ctx, account.ID, cred.ID, cp.CredentialRevoked); err != nil {
+		t.Errorf("revoking twice: %v, want idempotent", err)
+	}
+}
+
+// TestRotateDisabledCredentialKeepsItDisabled: only a revocation is undone by a rotation; a disabled
+// credential is an operator's pause, and a new secret does not lift it.
+func TestRotateDisabledCredentialKeepsItDisabled(t *testing.T) {
+	pool := pgtest.Pool(t)
+	ctx := context.Background()
+	customers := postgres.NewCustomerRepo(pool)
+	accounts := postgres.NewAccountRepo(pool)
+	creds := postgres.NewCredentialRepo(pool)
+
+	customer, err := customers.Create(ctx, cp.NewCustomer{Name: "DisabledCo"})
+	if err != nil {
+		t.Fatalf("create customer: %v", err)
+	}
+	account, err := accounts.Create(ctx, cp.NewAccount{CustomerID: customer.ID, Name: "app"})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	keyHash := "key-" + uuid.NewString()
+	cred, err := creds.Create(ctx, cp.NewCredential{AccountID: account.ID, Type: cp.CredentialAPIKey, APIKeyHash: &keyHash})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := creds.SetStatus(ctx, account.ID, cred.ID, cp.CredentialDisabled); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+
+	rotated, err := creds.Rotate(ctx, account.ID, cred.ID, cp.CredentialRotation{NewHash: "new-" + uuid.NewString()})
+	if err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+	if rotated.Status != cp.CredentialDisabled {
+		t.Errorf("status = %q, want disabled", rotated.Status)
+	}
+}
+
+// TestReactivatingABindWhoseSystemIDWasTakenConflicts: credentials_system_id_uq only covers live binds,
+// so another account may take a revoked bind's system_id. Reactivating the revoked one then violates the
+// index, and that is the client's conflict (409), not a server fault.
+func TestReactivatingABindWhoseSystemIDWasTakenConflicts(t *testing.T) {
+	pool := pgtest.Pool(t)
+	ctx := context.Background()
+	customers := postgres.NewCustomerRepo(pool)
+	accounts := postgres.NewAccountRepo(pool)
+	creds := postgres.NewCredentialRepo(pool)
+
+	customer, err := customers.Create(ctx, cp.NewCustomer{Name: "TakenCo"})
+	if err != nil {
+		t.Fatalf("create customer: %v", err)
+	}
+	first, err := accounts.Create(ctx, cp.NewAccount{CustomerID: customer.ID, Name: "first"})
+	if err != nil {
+		t.Fatalf("create account first: %v", err)
+	}
+	second, err := accounts.Create(ctx, cp.NewAccount{CustomerID: customer.ID, Name: "second"})
+	if err != nil {
+		t.Fatalf("create account second: %v", err)
+	}
+
+	systemID := strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
+	hash := "bind-hash"
+	revoked, err := creds.Create(ctx, cp.NewCredential{
+		AccountID: first.ID, Type: cp.CredentialSMPPBind, SystemID: &systemID, PasswordHash: &hash,
+	})
+	if err != nil {
+		t.Fatalf("create first bind: %v", err)
+	}
+	if _, err := creds.SetStatus(ctx, first.ID, revoked.ID, cp.CredentialRevoked); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if _, err := creds.Create(ctx, cp.NewCredential{
+		AccountID: second.ID, Type: cp.CredentialSMPPBind, SystemID: &systemID, PasswordHash: &hash,
+	}); err != nil {
+		t.Fatalf("second account takes the system_id: %v", err)
+	}
+
+	_, err = creds.Rotate(ctx, first.ID, revoked.ID, cp.CredentialRotation{NewHash: "new-bind-hash"})
+	if code, _ := errs.CodeOf(err); code != errs.ErrConflict {
+		t.Errorf("reactivation code = %q (err=%v), want conflict", code, err)
+	}
+}

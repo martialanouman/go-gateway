@@ -539,6 +539,7 @@ paths:
       tags: [Credentials]
       summary: Update a credential (status only)
       operationId: update-credential-status
+      description: Disabling or revoking an smpp_bind force-unbinds the account's live sessions; an api_key closes none, since REST calls are stateless. A revoked credential can only stay revoked (422 on status), since leaving revoked would revive its old secret; rotate brings it back with a new one.
       requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { status: { type: string, enum: [active, disabled, revoked] } }, required: [status] } } } }
       security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
@@ -549,10 +550,10 @@ paths:
         '422': { $ref: '#/components/responses/ValidationError' }
     delete:
       tags: [Credentials]
-      summary: Revoke a credential (force-unbinds live sessions)
+      summary: Revoke a credential (an smpp_bind force-unbinds live sessions)
       operationId: revoke-credential
       security: [ { OperatorBearer: [ admin:write ] } ]
-      description: The credential row is retained with status=revoked; re-creating this type on the account conflicts (409). Use rotate to issue a new secret.
+      description: The credential row is retained with status=revoked; re-creating this type on the account conflicts (409). Use rotate to issue a new secret. Revoking an smpp_bind force-unbinds the account's live sessions; revoking an api_key closes none.
       responses:
         '204': { description: Revoked. }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -565,10 +566,17 @@ paths:
       tags: [Credentials]
       summary: Rotate a credential (manual; optional grace window)
       operationId: rotate-credential
+      description: >-
+        Without a grace window (grace_period_sec absent, null or 0) the cutover is immediate, and rotating an smpp_bind
+        force-unbinds the account's live sessions, as for a leaked secret. With a grace window nothing is closed. An api_key
+        rotation closes nothing. Rotating a revoked credential re-activates it with the new secret only: a grace window
+        is refused (422 on grace_period_sec), and an smpp_bind whose system_id another account has since taken conflicts
+        (409). A disabled credential stays disabled.
       requestBody: { required: false, content: { application/json: { schema: { type: object, properties: { grace_period_sec: { type: [integer, "null"], minimum: 0, maximum: 604800, description: 'Old secret stays valid this long in parallel. At most 7 days.' } } } } } }
       security: [ { OperatorBearer: [ admin:write ] } ]
       responses:
         '200': { description: Rotated; new secret present once., content: { application/json: { schema: { $ref: '#/components/schemas/CredentialWithSecret' } } } }
+        '409': { $ref: '#/components/responses/Conflict' }
         '404': { $ref: '#/components/responses/NotFound' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }

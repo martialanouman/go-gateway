@@ -13,8 +13,11 @@ SELECT * FROM control_plane.credentials WHERE account_id = @account_id ORDER BY 
 SELECT * FROM control_plane.credentials WHERE account_id = @account_id AND id = @id;
 
 -- name: SetCredentialStatus :one
+-- A revoked row matches only a revocation: leaving revoked here would revive the revoked secret, and the
+-- way back is RotateCredential, which replaces it.
 UPDATE control_plane.credentials SET status = @status
 WHERE account_id = @account_id AND id = @id
+  AND (status <> 'revoked' OR @status = 'revoked')
 RETURNING *;
 
 -- name: RotateCredential :one
@@ -22,16 +25,20 @@ RETURNING *;
 -- period is given, the OLD hash (visible on the right-hand side of the UPDATE) is preserved in
 -- previous_secret_hash and grace_expires_at is set now()+grace, so the previous secret keeps working
 -- in parallel until it expires; a null grace is an immediate cutover.
+-- A revoked credential comes back active, and never with a grace window: the revoked secret may be the
+-- leaked one. Re-entering credentials_system_id_uq can then collide with a system_id taken since -> 409.
 UPDATE control_plane.credentials SET
     password_hash = CASE WHEN type = 'smpp_bind' THEN @new_hash ELSE password_hash END,
     api_key_hash  = CASE WHEN type = 'api_key'   THEN @new_hash ELSE api_key_hash END,
     previous_secret_hash = CASE
-        WHEN sqlc.narg('grace_seconds')::int IS NOT NULL THEN COALESCE(password_hash, api_key_hash)
+        WHEN sqlc.narg('grace_seconds')::int IS NOT NULL AND status <> 'revoked'
+            THEN COALESCE(password_hash, api_key_hash)
         ELSE NULL END,
     grace_expires_at = CASE
-        WHEN sqlc.narg('grace_seconds')::int IS NOT NULL
+        WHEN sqlc.narg('grace_seconds')::int IS NOT NULL AND status <> 'revoked'
             THEN now() + make_interval(secs => sqlc.narg('grace_seconds')::int)
         ELSE NULL END,
+    status = CASE WHEN status = 'revoked' THEN 'active' ELSE status END,
     rotated_at = now()
 WHERE account_id = @account_id AND id = @id
 RETURNING *;

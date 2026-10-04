@@ -475,7 +475,8 @@ func (s *fakeCredentialStore) SetStatus(_ context.Context, accountID, credID uui
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	c, ok := s.byID[credID]
-	if !ok || c.AccountID != accountID {
+	// Like the SQL guard: a revoked row only stays revoked, and the refusal matches no row.
+	if !ok || c.AccountID != accountID || (c.Status == cp.CredentialRevoked && st != cp.CredentialRevoked) {
 		return cp.Credential{}, errs.ErrNotFound
 	}
 	c.Status = st
@@ -496,7 +497,9 @@ func (s *fakeCredentialStore) Rotate(_ context.Context, accountID, credID uuid.U
 	s.lastRotation = &rot
 	now := time.Now()
 	c.RotatedAt = &now
-	if rot.Grace != nil {
+	if c.Status == cp.CredentialRevoked {
+		c.Status = cp.CredentialActive
+	} else if rot.Grace != nil {
 		expiry := now.Add(*rot.Grace)
 		c.GraceExpiresAt = &expiry
 	}
