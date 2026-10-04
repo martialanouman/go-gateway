@@ -1,6 +1,6 @@
 # step-408 — Le grand livre se partitionne vraiment : billing-svc crée les partitions journalières
 
-> **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
+> **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** FAIT (vérification post-déploiement en clôture)
 > **Dépend de :** step-141 (livrée) · **Bloque :** step-409, step-410
 > Unité faute de multiple de dix libre avant step-409, que la campagne finale doit trouver partitionnée.
 
@@ -159,5 +159,14 @@ se fait **avant le merge**.
 - [x] expressions d'alerte au guide §13, checklist §15 ; schéma corrigé, aucune migration ;
 - [x] trois fiches de dette : archivage et purge, lectures non élaguées, `DEFAULT` sans procédure ;
 - [x] 15 mutations, 15 tuées ; deux tours de revue (mécanisme · tests · code en trop, puis les correctifs) ;
-- [ ] **sur le VPS** : procédure de vidage exécutée avant le merge, puis après déploiement les partitions
-      J..J+7 existent et `DEFAULT` est vide, et le reste (à consigner ici avec la date et le résidu observé).
+- [x] **sur le VPS, avant le merge** (04/10/2026, ~16:30 UTC) : billing-svc et admin-api-svc à 0 ; les cinq
+      tables vidées en une transaction ; Redis : deux clés `billing:seq:mt:customer:*` supprimées (`EXISTS` → 0).
+      Vérifié : `billing_ledger_default`, `billing_ledger`, `billing_idempotency`, `balances`, `balance_deltas`
+      et `billing_events_outbox` à 0 ; `DEFAULT` seule partition. Résidu : aucun observé.
+- [ ] **sur le VPS, après le déploiement** : partitions J..J+7 présentes, `DEFAULT` vide et qui le reste —
+      consigné par un commit de clôture sur `main`, comme step-285b.
+
+Pièges de l'opération, pour la prochaine : `ssh hôte cmd "…;…"` fait relire la commande par le shell distant,
+qui la coupe aux `;` (psql n'a reçu que `BEGIN`) — entourer toute la commande distante de guillemets simples.
+`--scan` parcourt les 3,2 M clés du Redis de test, plus de deux minutes. Et des connexions SSH répétées
+butent sur la limite de poignées de main : passer par une connexion maître (`ssh -MNf -o ControlPath=…`).

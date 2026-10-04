@@ -427,7 +427,7 @@ l'autorisation de la moitié des opérations, et le tableau de bord génère ses
 - [x] step-407 — La production archive ses CDR avant de les supprimer : aucune destination objet, aucun
       `CLICKHOUSE_ARCHIVE_PREFIX` posé, donc chaque partition de 90 jours est perdue ⛓ step-165 — sortie de
       step-420 ; unité faute de multiple de dix libre
-- [ ] step-408 — Le grand livre se partitionne vraiment : billing-svc crée les partitions journalières, `DEFAULT`
+- [x] step-408 — Le grand livre se partitionne vraiment : billing-svc crée les partitions journalières, `DEFAULT`
       reste un filet surveillé ⛓ step-141 — unité faute de multiple de dix libre avant step-409
 - [ ] step-409 — Campagne NFR pleine échelle sur environnement représentatif : le verdict ⛓ step-280, step-285, step-287,
       step-270b, step-408 — l'ancienne step-280 ; unité faute de multiple de dix libre
