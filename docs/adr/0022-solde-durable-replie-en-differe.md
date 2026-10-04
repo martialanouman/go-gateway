@@ -1,6 +1,6 @@
 # ADR-0022 : Le grand livre reste synchrone, le solde durable est replié en différé
 
-**Status:** Proposed
+**Status:** Accepted (04/10/2026 : aucune attente de verrou sous charge mono-client, step-284)
 **Date:** 2026-09-30
 **Deciders:** Équipe plateforme. Décision utilisateur du 29/09/2026 (goulot 3 de step-280) : rendre l'écriture
 durable du solde asynchrone sans dépassement ; design validé le 30/09/2026.
