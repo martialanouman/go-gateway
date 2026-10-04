@@ -124,6 +124,18 @@ func recordAll(t *testing.T, b *postgres.BillingBatcher, release func(), entries
 	return out
 }
 
+// await fails the test instead of hanging it when an answer never comes.
+func await(t *testing.T, ch <-chan recorded) recorded {
+	t.Helper()
+	select {
+	case r := <-ch:
+		return r
+	case <-time.After(15 * time.Second):
+		t.Fatal("no answer within 15s")
+		return recorded{}
+	}
+}
+
 func newBatcher(t *testing.T, f deltaFixture) (*postgres.BillingBatcher, *batchSizes) {
 	t.Helper()
 	sizes := &batchSizes{}
@@ -431,12 +443,11 @@ func TestBatcherReplaysTheNeighboursOfAnExpiredMovement(t *testing.T) {
 	mustApply(t, "stalled movement", <-first)
 	waitOther()
 
-	if r := <-expired; r.err == nil {
+	if r := await(t, expired); r.err == nil {
 		t.Fatalf("expired movement: %+v, want the deadline's error", r)
 	}
-	waitOther() // the patient neighbour, replayed alone, waits on the row again
 	releaseOther()
-	mustApply(t, "patient neighbour", <-kept)
+	mustApply(t, "patient neighbour", await(t, kept))
 
 	if s := sizes.seen(); !slices.Equal(s, []int{1, 2}) {
 		t.Fatalf("batch sizes %v, want [1 2]: both must have shared the batch the deadline ended", s)
@@ -486,5 +497,63 @@ func TestBatcherWritesAMovementWithoutADecidedBalanceAlone(t *testing.T) {
 	}
 	if s := sizes.seen(); len(s) != 0 {
 		t.Fatalf("batch sizes %v: a movement whose balance is read from the database must not be batched", s)
+	}
+}
+
+// A caller that gives up once its movement is in a batch must still learn what happened to it: the batch
+// may commit, and the terminal lock and the reserve's lost-commit check act on the answer.
+func TestBatcherAnswersACancelledCallerWithItsBatchOutcome(t *testing.T) {
+	f := newDeltaFixture(t, "customer")
+	b, _ := newBatcher(t, f)
+
+	release, waitBlocked := holdCustomer(t, f)
+	taken := uuid.New()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := record(ctx, b, f.hot(taken, -1, 9))
+	waitBlocked()
+	cancel()
+	select {
+	case r := <-done:
+		t.Fatalf("answered %+v while its batch was still writing", r)
+	case <-time.After(200 * time.Millisecond):
+	}
+	release()
+	mustApply(t, "cancelled caller", await(t, done))
+	if !f.ledgerHas(t, taken) {
+		t.Fatal("the batch outcome reported is not what landed")
+	}
+}
+
+func TestBatcherDoesNotHandOverAMovementWhoseDeadlinePassed(t *testing.T) {
+	f := newDeltaFixture(t, "customer")
+	b, sizes := newBatcher(t, f)
+
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	for range 20 {
+		if _, _, err := b.RecordDurable(ctx, f.hot(uuid.New(), -1, 9)); err == nil {
+			t.Fatal("a movement past its deadline was recorded")
+		}
+	}
+	if s := sizes.seen(); len(s) != 0 {
+		t.Fatalf("batch sizes %v: a movement past its deadline condemns any batch it joins", s)
+	}
+}
+
+func TestBatcherBoundsAMovementWithoutADeadline(t *testing.T) {
+	f := newDeltaFixture(t, "customer")
+	b, _ := newBatcher(t, f)
+
+	_, waitBlocked := holdCustomer(t, f)
+	unbounded := uuid.New()
+	started := time.Now()
+	done := record(context.Background(), b, f.hot(unbounded, -1, 9))
+	waitBlocked()
+
+	if r := await(t, done); r.err == nil {
+		t.Fatalf("%+v, want the batch bound's error while the row stays locked", r)
+	}
+	if waited := time.Since(started); waited > 6*time.Second {
+		t.Fatalf("answered after %v: a movement without a deadline must still be bounded", waited)
 	}
 }

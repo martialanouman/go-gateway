@@ -16,9 +16,9 @@ import (
 
 const (
 	batchCap = 256
-	// batchWriteTimeout bounds a batch whose members carry no earlier deadline. It matches billing's
-	// reserveDurableTimeout: one writer serves every caller, and a hung transaction must not stall them all
-	// for longer than a reserve may wait.
+	// batchWriteTimeout bounds a movement whose caller set no deadline, and so every batch. It matches
+	// billing's reserveDurableTimeout: one writer serves every caller, and a hung transaction must not stall
+	// them all for longer than a reserve may wait.
 	batchWriteTimeout = 4 * time.Second
 )
 
@@ -84,6 +84,16 @@ func (b *BillingBatcher) Close() {
 func (b *BillingBatcher) RecordDurable(ctx context.Context, entry cp.LedgerEntry) (int, bool, error) {
 	if entry.MessageID == nil || entry.BalanceAfter == nil {
 		return b.BillingRepo.RecordDurable(ctx, entry)
+	}
+	// Checked before the select, which picks at random when both the queue and Done are ready: one movement
+	// past its deadline would end its whole batch at once.
+	if err := ctx.Err(); err != nil {
+		return 0, false, translate("record durable", err)
+	}
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, batchWriteTimeout)
+		defer cancel()
 	}
 	reply := make(chan batchResult, 1)
 	b.waiting.Add(1)
