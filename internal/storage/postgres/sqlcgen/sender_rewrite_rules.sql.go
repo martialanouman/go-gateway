@@ -14,11 +14,11 @@ import (
 const createSenderRewriteRule = `-- name: CreateSenderRewriteRule :one
 INSERT INTO control_plane.sender_id_rewrite_rules (
     scope, scope_id, match_sender_pattern, match_dest_pattern, rewrite_type, rewrite_to,
-    fallback_pool_json, max_length, sanitize_charset_json, priority, reason
+    fallback_pool_json, max_length, sanitize_charset_json, priority, reason, created_by
 ) VALUES (
     $1, $2, $3, $4,
     $5, $6, $7, $8,
-    $9, $10, $11
+    $9, $10, $11, $12
 )
 RETURNING id, scope, scope_id, direction, match_sender_pattern, match_dest_pattern, rewrite_type, rewrite_to, fallback_pool_json, max_length, sanitize_charset_json, priority, reason, status, created_by, created_at, updated_at
 `
@@ -35,6 +35,7 @@ type CreateSenderRewriteRuleParams struct {
 	SanitizeCharsetJson []byte
 	Priority            int32
 	Reason              *string
+	CreatedBy           *uuid.UUID
 }
 
 func (q *Queries) CreateSenderRewriteRule(ctx context.Context, arg CreateSenderRewriteRuleParams) (ControlPlaneSenderIDRewriteRule, error) {
@@ -50,6 +51,7 @@ func (q *Queries) CreateSenderRewriteRule(ctx context.Context, arg CreateSenderR
 		arg.SanitizeCharsetJson,
 		arg.Priority,
 		arg.Reason,
+		arg.CreatedBy,
 	)
 	var i ControlPlaneSenderIDRewriteRule
 	err := row.Scan(

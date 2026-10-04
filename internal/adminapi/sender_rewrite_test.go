@@ -58,7 +58,7 @@ func (s *fakeRewriteStore) Create(_ context.Context, in cp.NewSenderRewriteRule)
 		MatchSenderPattern: in.MatchSenderPattern, MatchDestPattern: in.MatchDestPattern,
 		RewriteType: in.RewriteType, RewriteTo: in.RewriteTo, FallbackPool: in.FallbackPool,
 		MaxLength: in.MaxLength, SanitizeCharset: in.SanitizeCharset, Priority: in.Priority,
-		Reason: in.Reason, Status: "active",
+		Reason: in.Reason, Status: "active", CreatedBy: in.CreatedBy,
 	}
 	s.rows[r.ID] = r
 	return r, nil

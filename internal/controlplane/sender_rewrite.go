@@ -66,6 +66,7 @@ type NewSenderRewriteRule struct {
 	SanitizeCharset    json.RawMessage
 	Priority           int32
 	Reason             *string
+	CreatedBy          *uuid.UUID
 }
 
 // SenderRewriteRulePatch is a partial update of a rewrite rule: a nil field is left unchanged. Scope,

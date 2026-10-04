@@ -49,6 +49,7 @@ func (r *CustomerGroupRepo) Create(ctx context.Context, in cp.NewCustomerGroup) 
 	row, err := r.q.CreateCustomerGroup(ctx, sqlcgen.CreateCustomerGroupParams{
 		Name:        in.Name,
 		Description: in.Description,
+		CreatedBy:   in.CreatedBy,
 	})
 	if err != nil {
 		return cp.CustomerGroup{}, translate("create customer group", err)

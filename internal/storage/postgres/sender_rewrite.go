@@ -61,6 +61,7 @@ func (r *SenderRewriteRuleRepo) Create(ctx context.Context, in cp.NewSenderRewri
 		SanitizeCharsetJson: in.SanitizeCharset,
 		Priority:            in.Priority,
 		Reason:              in.Reason,
+		CreatedBy:           in.CreatedBy,
 	})
 	if err != nil {
 		return cp.SenderRewriteRule{}, translate("create sender rewrite rule", err)
