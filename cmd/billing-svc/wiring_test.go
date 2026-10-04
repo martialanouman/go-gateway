@@ -99,7 +99,7 @@ func TestNewBillingAppReleasesInDependencyOrder(t *testing.T) {
 		t.Fatalf("newBillingApp: %v", err)
 	}
 
-	want := []string{"alerts", "reaper", "stores"}
+	want := []string{"alerts", "reaper", "ledger batch", "stores"}
 	if got := releaseOrder(app); !slices.Equal(got, want) {
 		t.Errorf("release order is %v, want %v", got, want)
 	}
@@ -163,6 +163,9 @@ func TestNewBillingAppBuildsTheWholeGraph(t *testing.T) {
 	}
 	if !slices.ContainsFunc(families, func(f *dto.MetricFamily) bool { return f.GetName() == "billing_reserve_stage_seconds" }) {
 		t.Error("billing_reserve_stage_seconds is not exposed: a reserve deadline could not be attributed")
+	}
+	if !slices.ContainsFunc(families, func(f *dto.MetricFamily) bool { return f.GetName() == "billing_durable_batch_size" }) {
+		t.Error("billing_durable_batch_size is not exposed: nothing would show whether ledger writes batch")
 	}
 
 	// Building the graph must not start serving: both ports are bound by their Run, which only the
@@ -373,6 +376,7 @@ func TestAccountantTimesItsReservesIntoTheExposedHistogram(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newAccountant: %v", err)
 	}
+	t.Cleanup(acct.batcher.Close)
 	owner := billing.Owner{Type: cp.OwnerTypeCustomer, ID: uuid.New(), CustomerID: uuid.New()}
 	_, _ = acct.acc.Reserve(ctx, owner, uuid.New(), 1) // an unfunded owner is refused, and still timed
 
@@ -382,5 +386,38 @@ func TestAccountantTimesItsReservesIntoTheExposedHistogram(t *testing.T) {
 	}
 	if m.GetHistogram().GetSampleCount() != 1 {
 		t.Fatalf("total stage holds %d samples after one reserve: the timer is not wired", m.GetHistogram().GetSampleCount())
+	}
+}
+
+func TestAccountantWritesItsReservesThroughTheBatch(t *testing.T) {
+	ctx := t.Context()
+	pool := pgtest.Pool(t)
+	acct, err := newAccountant(ctx, pool, redistest.Client(t), silentLogger())
+	if err != nil {
+		t.Fatalf("newAccountant: %v", err)
+	}
+	t.Cleanup(acct.batcher.Close)
+	var customerID uuid.UUID
+	if err := pool.QueryRow(ctx, `INSERT INTO control_plane.customers (name) VALUES ($1) RETURNING id`, uuid.NewString()).Scan(&customerID); err != nil {
+		t.Fatalf("seed customer: %v", err)
+	}
+	if _, _, err := acct.repo.Topup(ctx, cp.LedgerEntry{
+		OwnerType: cp.OwnerTypeCustomer, OwnerID: customerID, Direction: cp.BillingDirectionMT,
+		CustomerID: customerID, EntryType: cp.EntryTopup, Credits: 10,
+	}); err != nil {
+		t.Fatalf("topup: %v", err)
+	}
+
+	owner := billing.Owner{Type: cp.OwnerTypeCustomer, ID: customerID, CustomerID: customerID}
+	if _, err := acct.acc.Reserve(ctx, owner, uuid.New(), 1); err != nil {
+		t.Fatalf("reserve: %v", err)
+	}
+
+	var m dto.Metric
+	if err := acct.batchSize.Write(&m); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if m.GetHistogram().GetSampleCount() != 1 {
+		t.Fatalf("%d batches written after one reserve: the accountant does not write through the batch", m.GetHistogram().GetSampleCount())
 	}
 }
