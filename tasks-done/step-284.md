@@ -1,6 +1,6 @@
 # step-284 — L'écriture durable du solde devient asynchrone, le plancher reste atomique
 
-> **Jalon :** M12 · **Statut :** À FAIRE
+> **Jalon :** M12 · **Statut :** FAIT
 > **Dépend de :** step-280 · **Bloque :** step-287
 > Décision humaine du 29/09/2026 (goulot 3 de step-280) ; unité faute de multiple de dix libre.
 
@@ -32,11 +32,11 @@ refus « solde insuffisant » ne dépend pas de Postgres. C'est ce qui rend l'as
   rembourse) à relire : la somme du grand livre doit rester égale au solde, en différé.
 
 ## Definition of Done
-- [ ] design arrêté + ADR
-- [ ] invariant c vert sous double livraison, et un test de réhydratation pendant un retard de persistance
+- [x] design arrêté + ADR
+- [x] invariant c vert sous double livraison, et un test de réhydratation pendant un retard de persistance
       qui échoue sur une implémentation naïve (rouge lu)
-- [ ] aucun dépassement pour un client prépayé strict sous charge concurrente (test d'intégration)
-- [ ] rejouer la mesure mono-client de step-280 : plus de verrou en attente dans `pg_stat_activity`
+- [x] aucun dépassement pour un client prépayé strict sous charge concurrente (test d'intégration)
+- [x] rejouer la mesure mono-client de step-280 : plus de verrou en attente dans `pg_stat_activity`
 
 ## Design arrêté
 Arbitrage : spec §6.9 → Fable (option A retenue, 30/09/2026) → validation humaine du 30/09/2026. ADR-0022.
@@ -114,3 +114,25 @@ toutes les 10 s. **Aucun verdict.** `waiting_on_balances` est resté à 0 sur to
 presque aucune réserve n'a atteint billing-svc (~1 900 envois en 10 min). La DoD « plus de verrou en attente
 sous la charge mono-client de step-280 » n'est pas prouvée : elle attend step-285, et se rejoue dans
 step-287. ADR-0022 reste `Proposed` jusque-là.
+
+## Journal — verdict (04/10/2026)
+
+Le zéro du 30/09 était creux ; step-285 a rendu le routeur stable et step-285b/285c ont rejoué la charge
+mono-client sur le VPS (backlog d'un client, k6 `sustained`, puis 18 échantillons de `pg_stat_activity`
+espacés de 10 s sur les backends clients actifs). **Aucune attente `Lock:*` dans aucun des trois runs** :
+
+| Run | Réserves/s | Attentes relevées (échantillons) |
+|---|---|---|
+| step-285b (`979cfd5`) | 294 | CPU 29 · `IO:WalSync` 4 · `Client:ClientRead` 3 |
+| step-285c, référence (`83a55b5` sur `aa2744c`) | 301 | CPU 39 · `Client:ClientRead` 5 · `LWLock:BufferContent` 2 · `IO:WalSync` 2 |
+| step-285c (`aa2744c`) | 951 | CPU 47 · `LWLock:WALWrite` 9 · `Client:ClientRead` 5 · `IO:WalSync` 4 |
+
+Avant step-284 : 6-7 transactions en attente du verrou de la ligne `balances` du client. Le goulot est passé
+du verrou au WAL. Le protocole diffère de step-280 (`run.sh observe` comptait les sessions en attente sur
+`balances`) mais le prélèvement est plus large : toute attente de verrou, sur toute table, y serait apparue.
+
+Tests de la DoD relancés sur `main` (`5740270`) : `TestIdempotencyInvariantC`,
+`TestRehydrationSeesUnfoldedReserves` (le rouge du design), `TestStrictPrepaidNeverOverdrawsWhileFolding`,
+`TestRehydrationSubtractsInFlightReserves`, `TestStaleRehydrationCannotResurrect*` : verts.
+
+ADR-0022 passe à `Accepted`.

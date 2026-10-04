@@ -215,7 +215,7 @@ qu'on mesure un environnement représentatif.
       faute de multiple de dix libre
 - [x] step-283 — Le débit se refuse avant l'ACK, jamais après — décision humaine ; unité faute de
       multiple de dix libre
-- [ ] step-284 — L'écriture durable du solde devient asynchrone, le plancher reste atomique ⛓ step-280 —
+- [x] step-284 — L'écriture durable du solde devient asynchrone, le plancher reste atomique ⛓ step-280 —
       décision humaine ; unité faute de multiple de dix libre
 - [x] step-285 — Le routeur se tue en boucle sur un backlog quand la facturation est active ⛓ step-280 —
       ouverte par la campagne step-280 ; unité faute de multiple de dix libre
