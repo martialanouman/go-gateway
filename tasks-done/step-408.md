@@ -1,6 +1,6 @@
 # step-408 — Le grand livre se partitionne vraiment : billing-svc crée les partitions journalières
 
-> **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** FAIT (vérification post-déploiement en clôture)
+> **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** FAIT
 > **Dépend de :** step-141 (livrée) · **Bloque :** step-409, step-410
 > Unité faute de multiple de dix libre avant step-409, que la campagne finale doit trouver partitionnée.
 
@@ -163,8 +163,11 @@ se fait **avant le merge**.
       tables vidées en une transaction ; Redis : deux clés `billing:seq:mt:customer:*` supprimées (`EXISTS` → 0).
       Vérifié : `billing_ledger_default`, `billing_ledger`, `billing_idempotency`, `balances`, `balance_deltas`
       et `billing_events_outbox` à 0 ; `DEFAULT` seule partition. Résidu : aucun observé.
-- [ ] **sur le VPS, après le déploiement** : partitions J..J+7 présentes, `DEFAULT` vide et qui le reste —
-      consigné par un commit de clôture sur `main`, comme step-285b.
+- [x] **sur le VPS, après le déploiement** (04/10/2026, 14:55 UTC, run `Deploy test` 37210524745 vert, fumée
+      comprise) : billing-svc et admin-api-svc à 1/1 ; partitions `billing_ledger_20261004` à `…20261011`
+      attachées, bornes `FROM ('J 00:00:00+00') TO ('J+1 00:00:00+00')` ; le grand livre porte 2 lignes (la
+      fumée), `DEFAULT` en porte 0 : elles ont atterri dans la partition du jour. Aucun Warn « ledger
+      partitions » dans les journaux de billing-svc.
 
 Pièges de l'opération, pour la prochaine : `ssh hôte cmd "…;…"` fait relire la commande par le shell distant,
 qui la coupe aux `;` (psql n'a reçu que `BEGIN`) — entourer toute la commande distante de guillemets simples.
