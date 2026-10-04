@@ -221,7 +221,7 @@ qu'on mesure un environnement représentatif.
       ouverte par la campagne step-280 ; unité faute de multiple de dix libre
 - [x] step-285b — billing-svc groupe ses écritures durables : un commit pour N mouvements ⛓ step-285 —
       paie la dette du débit par client ; décision humaine du 04/10/2026
-- [ ] step-285c — Plusieurs réserves en vol par voie du routeur, publiées dans l'ordre ⛓ step-285b —
+- [x] step-285c — Plusieurs réserves en vol par voie du routeur, publiées dans l'ordre ⛓ step-285b —
       porte la dette du débit par client ; décision humaine du 04/10/2026
 - [ ] step-286 — Une seule porte pour baisser le solde MT : Redis, avant Postgres ⛓ step-284 — ouverte par
       la revue de step-284 ; unité faute de multiple de dix libre

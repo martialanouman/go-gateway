@@ -1,7 +1,7 @@
 # Le débit d'un client est borné par la latence de sa réserve : partitions ÷ latence
 
 > **Statut :** OUVERTE · **Nature :** technique
-> **Née de :** step-285 (rejeu VPS du 03/10/2026) · **Portée par :** step-285c (réserves en vol par voie), step-409 (verdict)
+> **Née de :** step-285 (rejeu VPS du 03/10/2026) · **Portée par :** step-409 (verdict)
 
 **Ce qu'on a fait à la place.** step-285 a supprimé le crash et le backoff qui figeaient le routeur. Elle
 n'a pas touché au débit : une voie (une partition) réserve un message après l'autre, de façon synchrone,
@@ -26,6 +26,12 @@ mouvements, CPU de Postgres divisé par deux, attente du WAL de 36 % à 11 % des
 client, lui, n'a presque pas bougé (273 → 294 réserves/s) : il tient maintenant à la concurrence par voie,
 une réserve à la fois, qui ne forme que de petits lots. Relevés : `tasks-done/step-285b.md`, journal.
 
-Sources : `internal/router/router.go` (`handleBatch`, une goroutine par partition, séquentielle) ·
+**Payée en partie par step-285c (#258, 04/10/2026).** Huit réserves en vol par voie, publiées dans
+l'ordre : 301 → 951 réserves/s pour un client, lots de 8,9 → 33,9 mouvements, CPU de Postgres +16 %. Le
+plafond vaut maintenant voies × 8 ÷ latence, et la latence d'une réserve double (58 ms d'écriture durable,
+attente `WALWrite`). Reste ouverte : 951/s contre 8 000/s visés ; le verdict revient à step-409. Relevés :
+`tasks-done/step-285c.md`, journal.
+
+Sources : `internal/router/router.go` (`runLane`, `laneWindow`) ·
 `internal/billing/billing.go` (`Reserve`, `RecordDurable`) · `cmd/billing-svc/wiring.go`
 (`billing_reserve_stage_seconds`)
