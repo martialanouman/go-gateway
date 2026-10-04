@@ -1,7 +1,7 @@
 # step-410 — Dérouler la checklist de mise en production (go-live)
 
 > **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
-> **Dépend de :** step-280, **step-409**, step-260, step-290, step-310, **step-398**, **step-405**, **step-407**, step-270, **step-270b**, step-320, **step-286** · **Bloque :** —
+> **Dépend de :** step-280, **step-409**, step-260, step-290, step-310, **step-398**, **step-405**, **step-407**, step-270, **step-270b**, step-320, **step-286**, **step-401** · **Bloque :** —
 
 ## But
 Clore M12 : dérouler la checklist de mise en production (guide d'ingénierie §15), consigner l'état de
