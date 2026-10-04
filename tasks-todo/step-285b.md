@@ -73,6 +73,21 @@ Validé par l'humain le 04/10/2026, après les sondes.
   même mouvement se lisent toutes deux réclamées, l'index unique du grand livre refuse la seconde (une
   transaction, un seul `now()`), et le lot passe par le repli unitaire. Deux filtres qui se recouvrent :
   on garde celui que la base impose.
+- **`COPY` plutôt qu'INSERT multi-lignes** (point 4) : les colonnes nullables du grand livre
+  (`account_id`, `reference`) ne passent pas par des tableaux `unnest` typés, et `COPY` est le chemin
+  d'insertion en masse de Postgres. La réclamation reste un INSERT, puisqu'il lui faut `ON CONFLICT … RETURNING`.
+
+**Amendement de revue (04/10/2026), arbitré par Fable — remplace la fin du point 5.** La revue a montré
+qu'un mouvement pouvait survivre à son appelant : rendu `ctx.Err()` par `RecordDurable`, il commitait
+jusqu'à ~8 s plus tard, verrou terminal déjà relâché. Une libération qui expire et une capture qui passe
+pouvaient alors commiter toutes les deux : un message livré gratuit. Règle :
+le contexte d'un lot est borné par `batchWriteTimeout` **et par la plus proche échéance de ses membres** ;
+une entrée déjà finie à la collecte est rendue en erreur sans être écrite ; une fois remise, une entrée
+attend la réponse de son lot, que son échéance borne ; un lot qui échoue avant le COMMIT rejoue chaque
+entrée seule **sous son propre contexte**. Au retour de `RecordDurable`, le sort du mouvement est scellé :
+seul un COMMIT en vol reste ambigu, comme sur le chemin unitaire. Contrat : `RecordDurable` rend la main à
+l'échéance de l'appelant, pas à son annulation. Plafond connu : une entrée empoisonnée dans un lot de 256
+coûte 256 transactions unitaires, bornées par l'échéance de chacune (cas rare : client supprimé).
 
 ## Definition of Done
 
