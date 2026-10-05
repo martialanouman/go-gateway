@@ -24,8 +24,10 @@ type Reason string
 
 // The closed set of reasons, mirrored by the Admin contract's enum.
 const (
-	ReasonPasswordMismatch    Reason = "password_mismatch"
-	ReasonCredentialRevoked   Reason = "credential_revoked"
+	ReasonPasswordMismatch Reason = "password_mismatch"
+	//nolint:gosec // G101: a reason label, not a credential.
+	ReasonCredentialRevoked Reason = "credential_revoked"
+	//nolint:gosec // G101: a reason label, not a credential.
 	ReasonCredentialDisabled  Reason = "credential_disabled"
 	ReasonAccountInactive     Reason = "account_inactive"
 	ReasonSMPPChannelDisabled Reason = "smpp_channel_disabled"

@@ -99,7 +99,7 @@ func TestStoredEntryHasOnlyTheDeclaredFields(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw), &entry); err != nil {
 		t.Fatalf("decode %q: %v", raw, err)
 	}
-	var fields []string
+	fields := make([]string, 0, len(entry))
 	for k := range entry {
 		fields = append(fields, k)
 	}
