@@ -1,6 +1,6 @@
 # step-288 — La catégorie de trafic se déclare par sender ID ; `sender_id_policy` disparaît
 
-> **Jalon :** ADR-0020 §1 · **Statut :** À FAIRE
+> **Jalon :** ADR-0020 §1 · **Statut :** LIVRÉE
 > **Dépend de :** — · **Bloque :** step-289, step-291, step-292 ; l'écran sender IDs du tableau de bord
 > (go-gateway-bo step-067)
 > Décision humaine du 05/10/2026 ; unité faute de multiple de dix libre.
@@ -49,3 +49,15 @@ que tout expéditeur soit enregistré, numérique compris. Aujourd'hui, aucune `
   `traffic_category` (ADR-0020 §2-§4, ADR-0021) : **step-292**.
 - La spec passerelle §6.19 et le glossaire passent par la PR qui livre (ADR-0020, action item 6), pour la
   partie sender ID seulement.
+
+## Livré
+- Contrat 7.0.0 (majeure) : `SenderId.traffic_category`, filtre `?traffic_category=` sur `list-sender-ids`,
+  retrait de `set-account-sender-id-policy` et de `sender_id_policy` (Admin et public).
+- Migration 0029 ; `Authorize(ctx, customerID, from)`, sans politique ni `accountID`, qui était devenu
+  mort.
+- Mutations tuées : contournement numérique, défaut du repo, défaut huma, filtre perdu (repo et
+  validation du paramètre), catégorie perdue à la création et à la mise à jour, PATCH de statut qui
+  écrase la catégorie, `CHECK` de la migration élargi, enum du PATCH retiré (garde de contrat).
+- Hors de la garde de contrat (constat de revue) : les paramètres de requête et les `default` ne sont
+  pas comparés (`internal/adminapi/contract_test.go`). Le filtre et le défaut sont prouvés par
+  `TestSenderIDTrafficCategoryIsDeclaredAndFilterable`.
