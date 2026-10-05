@@ -33,7 +33,6 @@ func TestEveryEnumValueMatchesTheDDLCheckConstraint(t *testing.T) {
 		{"customers", "balance_scope", stringify(cp.BalanceScopeCustomer, cp.BalanceScopeSMPPAccount)},
 		{"customers", "content_storage", stringify(cp.ContentInherit, cp.ContentOff, cp.ContentStoredPlaintext, cp.ContentStoredEncrypted)},
 		{"smpp_accounts", "status", stringify(cp.AccountActive, cp.AccountSuspended, cp.AccountClosed)},
-		{"smpp_accounts", "sender_id_policy", stringify(cp.SenderIDStrict, cp.SenderIDAllowUnregisteredNum, cp.SenderIDPolicyDisabled)},
 		{"smpp_accounts", "allowed_bind_types", stringify(cp.BindTX, cp.BindRX, cp.BindTRX)},
 		{"credentials", "type", stringify(cp.CredentialSMPPBind, cp.CredentialAPIKey)},
 		{"credentials", "status", stringify(cp.CredentialActive, cp.CredentialDisabled, cp.CredentialRevoked)},
@@ -59,6 +58,16 @@ func TestEveryEnumValueMatchesTheDDLCheckConstraint(t *testing.T) {
 			assertSameSet(t, want, tc.got)
 		})
 	}
+}
+
+// TestTrafficCategoryMatchesItsMigration extends the guard above to a column added after 0001_init.
+func TestTrafficCategoryMatchesItsMigration(t *testing.T) {
+	raw, err := os.ReadFile("../../migrations/0029_sender_id_traffic_category.up.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	assertSameSet(t, checkInValues(t, string(raw), "traffic_category"),
+		stringify(cp.TrafficOTP, cp.TrafficTransactional, cp.TrafficMarketing))
 }
 
 // tableBlocks maps each control_plane table name to the body of its CREATE TABLE statement.

@@ -327,15 +327,16 @@ type ControlPlaneRoutingScript struct {
 }
 
 type ControlPlaneSenderID struct {
-	ID          uuid.UUID
-	CustomerID  uuid.UUID
-	Address     string
-	Status      string
-	CreatedBy   *uuid.UUID
-	ApprovedAt  pgtype.Timestamptz
-	CreatedAt   pgtype.Timestamptz
-	UpdatedAt   pgtype.Timestamptz
-	FirstUsedAt pgtype.Timestamptz
+	ID              uuid.UUID
+	CustomerID      uuid.UUID
+	Address         string
+	Status          string
+	CreatedBy       *uuid.UUID
+	ApprovedAt      pgtype.Timestamptz
+	CreatedAt       pgtype.Timestamptz
+	UpdatedAt       pgtype.Timestamptz
+	FirstUsedAt     pgtype.Timestamptz
+	TrafficCategory string
 }
 
 type ControlPlaneSenderIDRewriteRule struct {
@@ -365,7 +366,6 @@ type ControlPlaneSmppAccount struct {
 	Status           string
 	SmppEnabled      bool
 	RestEnabled      bool
-	SenderIDPolicy   string
 	QuerySmEnabled   bool
 	CancelSmEnabled  bool
 	AllowedBindTypes string

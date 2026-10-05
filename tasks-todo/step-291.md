@@ -14,7 +14,8 @@ compteur, ni métrique, ni stockage, et le tableau de bord n'a rien à afficher.
 - **Règle `category_mismatch`** : un nouveau `rule_type` (le `CHECK` est étendu par migration, en même temps
   que le schéma). Les portées sont `global`, `customer` et `smpp_account`. Elle s'évalue en mémoire, comme
   les règles de contenu, avant la sortie anticipée de `Evaluate`. La catégorie vient de l'étape sender ID
-  (step-288). Les paramètres, validés par `ValidateRuleConfig` :
+  (step-288 la stocke ; c'est step-291 qui la fait rendre par `Authorize` et la passe à l'anti-spam). Les
+  paramètres, validés par `ValidateRuleConfig` :
   - `otp` : un code de `min_digits` à `max_digits` chiffres (4 et 8 par défaut), aucune URL, au plus
     `max_length` caractères ;
   - `transactional` : aucun des `promo_markers`, une liste configurable ;

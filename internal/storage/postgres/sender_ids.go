@@ -24,13 +24,14 @@ func NewSenderIDRepo(pool *pgxpool.Pool) *SenderIDRepo {
 }
 
 // Create registers a sender ID under a customer. It starts pending carrier approval (the schema
-// default). A duplicate address for the customer violates sender_ids_uq -> conflict (409); an
-// unknown customer violates the FK -> validation (422).
+// default), and marketing when no category is declared. A duplicate address for the customer violates
+// sender_ids_uq -> conflict (409); an unknown customer violates the FK -> validation (422).
 func (r *SenderIDRepo) Create(ctx context.Context, in cp.NewSenderID) (cp.SenderID, error) {
 	row, err := r.q.CreateSenderID(ctx, sqlcgen.CreateSenderIDParams{
-		CustomerID: in.CustomerID,
-		Address:    in.Address,
-		CreatedBy:  in.CreatedBy,
+		CustomerID:      in.CustomerID,
+		Address:         in.Address,
+		TrafficCategory: strPtr(in.TrafficCategory),
+		CreatedBy:       in.CreatedBy,
 	})
 	if err != nil {
 		return cp.SenderID{}, translate("create sender id", err)
@@ -38,9 +39,11 @@ func (r *SenderIDRepo) Create(ctx context.Context, in cp.NewSenderID) (cp.Sender
 	return senderIDFromRow(row), nil
 }
 
-// ListByCustomer returns a customer's sender IDs.
-func (r *SenderIDRepo) ListByCustomer(ctx context.Context, customerID uuid.UUID) ([]cp.SenderID, error) {
-	rows, err := r.q.ListSenderIDsByCustomer(ctx, customerID)
+// ListByCustomer returns a customer's sender IDs, only those of category when it is not nil.
+func (r *SenderIDRepo) ListByCustomer(ctx context.Context, customerID uuid.UUID, category *cp.TrafficCategory) ([]cp.SenderID, error) {
+	rows, err := r.q.ListSenderIDsByCustomer(ctx, sqlcgen.ListSenderIDsByCustomerParams{
+		CustomerID: customerID, TrafficCategory: strPtr(category),
+	})
 	if err != nil {
 		return nil, translate("list sender ids", err)
 	}
@@ -66,12 +69,14 @@ func (r *SenderIDRepo) ListActive(ctx context.Context) ([]cp.SenderID, error) {
 	return out, nil
 }
 
-// Update changes a sender ID's status, scoped to its customer. A missing row is ErrNotFound.
+// Update changes a sender ID's status or traffic category, scoped to its customer. A missing row is
+// ErrNotFound.
 func (r *SenderIDRepo) Update(ctx context.Context, customerID, senderID uuid.UUID, p cp.SenderIDPatch) (cp.SenderID, error) {
 	row, err := r.q.UpdateSenderID(ctx, sqlcgen.UpdateSenderIDParams{
-		CustomerID: customerID,
-		ID:         senderID,
-		Status:     strPtr(p.Status),
+		CustomerID:      customerID,
+		ID:              senderID,
+		Status:          strPtr(p.Status),
+		TrafficCategory: strPtr(p.TrafficCategory),
 	})
 	if err != nil {
 		return cp.SenderID{}, translate("update sender id", err)
@@ -111,14 +116,15 @@ func (r *SenderIDRepo) MarkFirstUsed(ctx context.Context, uses []cp.SenderIDUse)
 
 func senderIDFromRow(row sqlcgen.ControlPlaneSenderID) cp.SenderID {
 	return cp.SenderID{
-		ID:          row.ID,
-		CustomerID:  row.CustomerID,
-		Address:     row.Address,
-		Status:      cp.SenderIDStatus(row.Status),
-		CreatedBy:   row.CreatedBy,
-		ApprovedAt:  tsPtr(row.ApprovedAt),
-		FirstUsedAt: tsPtr(row.FirstUsedAt),
-		CreatedAt:   tsVal(row.CreatedAt),
-		UpdatedAt:   tsVal(row.UpdatedAt),
+		ID:              row.ID,
+		CustomerID:      row.CustomerID,
+		Address:         row.Address,
+		Status:          cp.SenderIDStatus(row.Status),
+		TrafficCategory: cp.TrafficCategory(row.TrafficCategory),
+		CreatedBy:       row.CreatedBy,
+		ApprovedAt:      tsPtr(row.ApprovedAt),
+		FirstUsedAt:     tsPtr(row.FirstUsedAt),
+		CreatedAt:       tsVal(row.CreatedAt),
+		UpdatedAt:       tsVal(row.UpdatedAt),
 	}
 }

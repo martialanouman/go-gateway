@@ -41,7 +41,7 @@ type AccountReader interface {
 
 // SenderIDReader lists a customer's sender IDs for get-account. *postgres.SenderIDRepo satisfies it.
 type SenderIDReader interface {
-	ListByCustomer(ctx context.Context, customerID uuid.UUID) ([]cp.SenderID, error)
+	ListByCustomer(ctx context.Context, customerID uuid.UUID, category *cp.TrafficCategory) ([]cp.SenderID, error)
 }
 
 // RateLimitReader reads the account's throughput limit for get-account. The bool is false when no

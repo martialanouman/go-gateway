@@ -261,7 +261,7 @@ Désactivée, `router-svc`/`connector-pool-svc` sautent l'étape par un contrôl
 
 ### 9.1 Normalisation E.164 & autorisation de sender ID (§6.19)
 
-La destination (et la source pour le MO) sont normalisées E.164 **avant toute autre étape** — sinon déduplication, opt-out et numéro exact seraient contournables par un simple écart de format. L'autorisation de sender ID vérifie que `source_addr` correspond à un `sender_ids` `active` du **client**, selon `sender_id_policy` : `strict` (défaut, rejet sinon), `allow_unregistered_numeric`, ou `disabled` (déconseillé, audité, averti).
+La destination (et la source pour le MO) sont normalisées E.164 **avant toute autre étape** — sinon déduplication, opt-out et numéro exact seraient contournables par un simple écart de format. L'autorisation de sender ID vérifie que `source_addr` correspond à un `sender_ids` `active` du **client**, numérique compris ; sinon, rejet (ADR-0020).
 
 ### 9.2 Opt-out / STOP scopé au canal (§6.20)
 

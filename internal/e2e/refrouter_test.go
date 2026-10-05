@@ -541,7 +541,7 @@ func (r ceilResolver) Resolve(context.Context, pipeline.RouteRequest) (pipeline.
 
 type ceilSenderIDs struct{}
 
-func (ceilSenderIDs) Authorize(context.Context, uuid.UUID, uuid.UUID, string) error { return nil }
+func (ceilSenderIDs) Authorize(context.Context, uuid.UUID, string) error { return nil }
 
 type ceilOptOut struct{}
 

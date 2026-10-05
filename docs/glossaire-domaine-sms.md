@@ -54,7 +54,7 @@ Vocabulaire SMPP / SMS et termes propres au projet. À lire une fois ; sert de r
 
 ## Routage
 
-**Sender ID** (`source_addr`) — l'adresse d'expéditeur affichée : alphanumérique (« ACME ») ou numérique. Doit être **autorisée** (enregistrée pour le client) selon `sender_id_policy`. Un alphanumérique n'a pas de chemin retour (on ne peut pas lui répondre STOP).
+**Sender ID** (`source_addr`) — l'adresse d'expéditeur affichée : alphanumérique (« ACME ») ou numérique. Doit être **autorisée** : enregistrée et active pour le client, numérique compris (ADR-0020). Porte une **catégorie de trafic** déclarée (`otp`, `transactional`, `marketing` par défaut). Un alphanumérique n'a pas de chemin retour (on ne peut pas lui répondre STOP).
 
 **Numéro entrant** (`inbound_numbers`) — shortcode ou long code détenu par le fournisseur, sur lequel arrivent les MO. **Dédié** (tout MO → un compte) ou **partagé** (résolu par mot-clé). Source de vérité du routage MO et de l'opt-out.
 

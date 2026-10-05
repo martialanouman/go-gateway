@@ -149,7 +149,7 @@ type SmppAccount struct {
     ID              uuid.UUID `json:"id"              db:"id"`
     CustomerID      uuid.UUID `json:"customer_id"     db:"customer_id"`
     MaxSessions     int       `json:"max_sessions"    db:"max_sessions"`
-    SenderIDPolicy  string    `json:"sender_id_policy" db:"sender_id_policy"`
+    QuerySMEnabled  bool      `json:"query_sm_enabled" db:"query_sm_enabled"`
 }
 ```
 

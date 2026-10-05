@@ -1,6 +1,6 @@
 # step-288 — La catégorie de trafic se déclare par sender ID ; `sender_id_policy` disparaît
 
-> **Jalon :** ADR-0020 §1 · **Statut :** À FAIRE
+> **Jalon :** ADR-0020 §1 · **Statut :** LIVRÉE
 > **Dépend de :** — · **Bloque :** step-289, step-291, step-292 ; l'écran sender IDs du tableau de bord
 > (go-gateway-bo step-067)
 > Décision humaine du 05/10/2026 ; unité faute de multiple de dix libre.
@@ -19,8 +19,8 @@ que tout expéditeur soit enregistré, numérique compris. Aujourd'hui, aucune `
   l'environnement de test, la PR inventorie les comptes en `allow_unregistered_numeric` ou `disabled` et
   enregistre leurs expéditeurs **avant** de déployer (ADR-0020, Conséquences).
 - **Routeur** : `Authorize` n'a plus de politique. Une ligne `active` du client est exigée, sinon
-  `ErrSenderIDNotAuthorized`. L'étape **rend la catégorie** de la ligne trouvée, que step-291 lit à
-  l'anti-spam. L'ordre du pipeline ne change pas.
+  `ErrSenderIDNotAuthorized`. L'ordre du pipeline ne change pas. *Amendé à l'implémentation* : l'étape
+  ne rend pas encore la catégorie, rien ne la lirait avant step-291, qui l'ajoute avec son consommateur.
 - **Contrat Admin** :
   - `SenderId.traffic_category` est toujours présent ;
   - il est optionnel à `create-sender-id` (défaut `marketing`) et modifiable par `update-sender-id` ;
@@ -36,7 +36,8 @@ que tout expéditeur soit enregistré, numérique compris. Aujourd'hui, aucune `
 ## Tests rouges attendus
 - Un expéditeur numérique non enregistré est rejeté (`ErrSenderIDNotAuthorized`), sur un compte qui était
   autrefois en `allow_unregistered_numeric`.
-- `Authorize` rend la catégorie déclarée, et `marketing` pour une ligne créée sans catégorie.
+- Une ligne créée sans catégorie vaut `marketing`, et un PATCH du seul statut ne touche pas la catégorie.
+  (Que `Authorize` rende la catégorie se teste en step-291.)
 - Le filtre `traffic_category` de `list-sender-ids` exclut les autres catégories. La garde de contrat
   ignore les paramètres de requête (`debts/la-garde-de-contrat-ignore-les-parametres-de-requete.md`) : le
   paramètre se prouve donc par un test de handler, pas par la garde.
@@ -48,3 +49,15 @@ que tout expéditeur soit enregistré, numérique compris. Aujourd'hui, aucune `
   `traffic_category` (ADR-0020 §2-§4, ADR-0021) : **step-292**.
 - La spec passerelle §6.19 et le glossaire passent par la PR qui livre (ADR-0020, action item 6), pour la
   partie sender ID seulement.
+
+## Livré
+- Contrat 7.0.0 (majeure) : `SenderId.traffic_category`, filtre `?traffic_category=` sur `list-sender-ids`,
+  retrait de `set-account-sender-id-policy` et de `sender_id_policy` (Admin et public).
+- Migration 0029 ; `Authorize(ctx, customerID, from)`, sans politique ni `accountID`, qui était devenu
+  mort.
+- Mutations tuées : contournement numérique, défaut du repo, défaut huma, filtre perdu (repo et
+  validation du paramètre), catégorie perdue à la création et à la mise à jour, PATCH de statut qui
+  écrase la catégorie, `CHECK` de la migration élargi, enum du PATCH retiré (garde de contrat).
+- Hors de la garde de contrat (constat de revue) : les paramètres de requête et les `default` ne sont
+  pas comparés (`internal/adminapi/contract_test.go`). Le filtre et le défaut sont prouvés par
+  `TestSenderIDTrafficCategoryIsDeclaredAndFilterable`.

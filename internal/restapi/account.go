@@ -11,15 +11,14 @@ import (
 // AccountInfo is the read-only projection of the caller's own account (api/openapi-public.yaml
 // AccountInfo). It carries no secret: neither the API-key nor the bind-password hash is a field here.
 type AccountInfo struct {
-	AccountID      string             `json:"account_id" format:"uuid"`
-	CustomerID     string             `json:"customer_id" format:"uuid"`
-	Name           string             `json:"name"`
-	Status         string             `json:"status" enum:"active,suspended,closed"`
-	Channels       AccountChannels    `json:"channels"`
-	SenderIDPolicy string             `json:"sender_id_policy" enum:"strict,allow_unregistered_numeric,disabled"`
-	MaxSessions    int                `json:"max_sessions" minimum:"0" doc:"Max concurrent SMPP binds allowed for this account."`
-	SenderIDs      []AccountSenderID  `json:"sender_ids"`
-	RateLimits     *AccountRateLimits `json:"rate_limits"`
+	AccountID   string             `json:"account_id" format:"uuid"`
+	CustomerID  string             `json:"customer_id" format:"uuid"`
+	Name        string             `json:"name"`
+	Status      string             `json:"status" enum:"active,suspended,closed"`
+	Channels    AccountChannels    `json:"channels"`
+	MaxSessions int                `json:"max_sessions" minimum:"0" doc:"Max concurrent SMPP binds allowed for this account."`
+	SenderIDs   []AccountSenderID  `json:"sender_ids"`
+	RateLimits  *AccountRateLimits `json:"rate_limits"`
 }
 
 // AccountChannels reports which delivery channels the account may use.
@@ -63,7 +62,7 @@ func (s *server) getAccount(ctx context.Context, _ *struct{}) (*getAccountOutput
 		return nil, humaerr.FromError(errs.ErrInternal)
 	}
 
-	senderIDs, err := s.deps.SenderIDs.ListByCustomer(ctx, principal.CustomerID)
+	senderIDs, err := s.deps.SenderIDs.ListByCustomer(ctx, principal.CustomerID, nil)
 	if err != nil {
 		s.deps.Logger.ErrorContext(ctx, "list sender ids", "customer_id", principal.CustomerID, "err", err)
 		return nil, humaerr.FromError(errs.ErrInternal)
@@ -87,14 +86,13 @@ func accountInfo(acc cp.Account, senderIDs []cp.SenderID, limit cp.RateLimit, ha
 	}
 
 	info := AccountInfo{
-		AccountID:      acc.ID.String(),
-		CustomerID:     acc.CustomerID.String(),
-		Name:           acc.Name,
-		Status:         string(acc.Status),
-		Channels:       AccountChannels{SMPPEnabled: acc.SMPPEnabled, RESTEnabled: acc.RESTEnabled},
-		SenderIDPolicy: string(acc.SenderIDPolicy),
-		MaxSessions:    acc.MaxSessions,
-		SenderIDs:      ids,
+		AccountID:   acc.ID.String(),
+		CustomerID:  acc.CustomerID.String(),
+		Name:        acc.Name,
+		Status:      string(acc.Status),
+		Channels:    AccountChannels{SMPPEnabled: acc.SMPPEnabled, RESTEnabled: acc.RESTEnabled},
+		MaxSessions: acc.MaxSessions,
+		SenderIDs:   ids,
 	}
 	if hasLimit {
 		info.RateLimits = &AccountRateLimits{
