@@ -430,9 +430,9 @@ paths:
       description: >-
         Newest first. Only a bind whose system_id resolves one of this account's credentials, revoked or
         disabled included, is attributed here: a bind under an unknown system_id belongs to no account and
-        appears nowhere, so this list is not every attempt aimed at the account. The ESME reads
-        ESME_RINVPASWD for an unknown system_id and a wrong password alike (§11.3); only `reason` tells
-        them apart. Retention is 24 hours and at most the 200 latest refusals per account, so a burst can
+        appears nowhere, so this list is not every attempt aimed at the account. ESME_RINVPASWD covers a
+        wrong password, a revoked credential and the throttle alike (§11.3); only `reason` tells them
+        apart. Retention is 24 hours and at most the 200 latest refusals per account, so a burst can
         evict older ones. Never carries the presented secret.
       security: [ { OperatorBearer: [ admin:read ] } ]
       parameters:
@@ -2639,7 +2639,8 @@ components:
           enum: [password_mismatch, credential_revoked, credential_disabled, account_inactive, smpp_channel_disabled, bind_type_not_allowed, max_sessions_exceeded, throttled, registry_unavailable]
           description: >-
             Internal cause. account_inactive covers a suspended or closed account or customer; throttled is
-            the anti-brute-force lockout, answered ESME_RINVPASWD whatever the secret.
+            the anti-brute-force lockout, answered ESME_RINVPASWD whatever the secret; password_mismatch
+            also covers an unreadable stored hash, which the server logs as an error.
       required: [at, remote_ip, bind_type, command_status, reason]
     SessionPage:
       type: object

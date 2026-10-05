@@ -15,4 +15,4 @@ retrouvera jamais, et sur lequel aucune réconciliation de facturation ne tomber
 **À quoi on reconnaîtra qu'il faut la payer.** Le jour où quelqu'un regarde la fidélité des adresses
 en CDR — ou une demande d'effacement qui ne trouve pas ses lignes.
 
-Sources : `internal/smppserver/submit.go` (absence) · `internal/smppserver/bind.go:51` (le garde isolé)
+Sources : `internal/smppserver/submit.go` (absence) · `internal/smppserver/bind.go` `lookupCredential` (le garde isolé)

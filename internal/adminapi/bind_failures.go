@@ -59,7 +59,7 @@ func (h *bindFailureHandlers) list(ctx context.Context, in *listBindFailuresInpu
 	}
 	if since.Before(now.Add(-bindfailure.Retention)) || since.After(now) {
 		return nil, humaerr.FailValidation("since is out of range",
-			humaerr.FieldError{Field: "since", Message: "must fall within the last 24 hours"})
+			humaerr.FieldError{Field: "since", Message: "must fall within the retention window, and not in the future"})
 	}
 	if _, err := h.accounts.Get(ctx, id); err != nil {
 		return nil, humaerr.FromError(err)

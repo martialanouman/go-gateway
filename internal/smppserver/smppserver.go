@@ -34,8 +34,9 @@ import (
 )
 
 // CredentialStore resolves a presented SMPP system_id to its bind credential. It is satisfied by
-// postgres.BindRepo. found is false for an unknown or revoked system_id, which the bind path maps to
-// ESME_RINVPASWD (so a bind cannot enumerate valid system_ids).
+// postgres.BindRepo. found is false for an unknown system_id, which the bind path maps to
+// ESME_RINVPASWD (so a bind cannot enumerate valid system_ids). A revoked credential IS returned, the
+// live one first, so its refusals are attributed to its account: the caller must refuse it.
 type CredentialStore interface {
 	BindCredentialBySystemID(ctx context.Context, systemID string) (cp.BindCredential, bool, error)
 }

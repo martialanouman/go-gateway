@@ -45,11 +45,12 @@ RETURNING *;
 
 -- name: GetBindPrincipal :one
 -- SMPP bind authentication lookup (§1.9, invariant d): the presented system_id resolves the single
--- live bind credential (credentials_system_id_uq), else the latest revoked one, so a refused bind on a
--- revoked credential is still attributed to its account (step-286b); the caller refuses a revoked row
--- before verifying anything. credentials_bind_system_id_idx serves both. The argon2id password_hash is verified in Go by internal/credential (constant time), never in
--- SQL. As with GetAPIKeyPrincipal the credential/channel/account/customer statuses are RETURNED, not
--- filtered, so the caller answers with the right SMPP command_status (ESME_RINVPASWD vs ESME_RBINDFAIL)
+-- live bind credential (credentials_system_id_uq), else the latest revoked one, so a refused bind
+-- on a revoked credential is still attributed to its account (step-286b); the caller refuses a
+-- revoked row before verifying anything. credentials_bind_system_id_idx serves both. The argon2id
+-- password_hash is verified in Go by internal/credential (constant time), never in SQL. As with
+-- GetAPIKeyPrincipal the credential/channel/account/customer statuses are RETURNED, not filtered,
+-- so the caller answers with the right SMPP command_status (ESME_RINVPASWD vs ESME_RBINDFAIL)
 -- rather than a blanket "not found". The rotation grace window is honoured, but UNLIKE
 -- GetAPIKeyPrincipal it cannot be decided here: an argon2id hash is not comparable in SQL, so the
 -- previous hash and its expiry are returned raw and the caller (internal/smppserver) verifies the

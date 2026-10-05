@@ -14,11 +14,13 @@ et mauvais mot de passe rendent tous deux `ESME_RINVPASWD`).
 ## Design arrêté
 
 **Stockage — Redis seul, aucune écriture Postgres.** Une liste par compte `bindfail:log:{account_id}`,
-écrite par un script Lua mono-clé (`LPUSH` + `LTRIM 0 199` + `EXPIRE 86400`). Bornes : **24 h,
+écrite en `MULTI` mono-clé (`LPUSH` + `LTRIM 0 199` + `EXPIRE 86400`). Bornes : **24 h,
 200 entrées par compte**, constantes déclarées au contrat. Une rafale fait tourner la liste, jamais
 grossir ; elle peut évincer les entrées plus anciennes (dit au contrat). Entrée JSON
 `{at, remote_ip, bind_type, command_status, reason}` : le type n'a aucun champ capable de porter le
 secret (invariant a), un test fige l'ensemble des clés. Fail-open : une erreur Redis se journalise.
+L'enregistrement (et, ralenti, sa lecture d'attribution) part **après** la réponse, sur un contexte
+détaché borné à 2 s : l'attendre rendrait au chronomètre la différence révoqué/inconnu (revue).
 
 **Motifs (énumération fermée) → statut rendu :** `password_mismatch` (hash stocké illisible inclus),
 `credential_revoked`, `throttled` → `ESME_RINVPASWD` ; `credential_disabled`, `account_inactive`
@@ -45,7 +47,8 @@ enregistre à ses trois sorties (authorize, throttle, registre) ; câblage `cmd/
 pagination (le plafond suffit). 404 si le compte n'existe pas. La description dit que les `system_id`
 inconnus n'y figurent pas et que la liste est plafonnée.
 
-**Écarté (YAGNI) :** pagination, rétention configurable, attribution des inconnus par IP.
+**Écarté (YAGNI) :** pagination, rétention configurable. Attribution des inconnus : différée, fiche
+`debts/echecs-de-bind-sous-system-id-inconnu-invisibles.md`.
 
 ## Definition of Done
 - [ ] contrat déclaré avant le handler, `api/package.json` bumpé, `make contracts` vert
