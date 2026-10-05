@@ -1,6 +1,6 @@
 # step-286 — Une seule porte pour baisser le solde MT : Redis, avant Postgres
 
-> **Jalon :** M12 · **Statut :** À FAIRE
+> **Jalon :** M12 · **Statut :** LIVRÉE
 > **Dépend de :** step-284, step-285b, step-285c · **Bloque :** step-410
 > Ouverte par la revue de step-284 (30/09/2026), décision humaine : une step dédiée plutôt que la PR2 de
 > step-284 ; unité faute de multiple de dix libre.
@@ -61,7 +61,7 @@ que si le débit durable qui l'a battu n'est pas celui de sa propre réservation
   réhydratation par rejeu post-capture, des milliers sur une redistribution Kafka).
 
 **D2 — Transfert (dépassements 2 et 3).**
-- `direction=mt` seulement : `(*Accountant).DebitMT(ctx, owner, key, credits, write)` débite la source avec
+- `direction=mt` seulement : `(*Accountant).DebitTransfer(ctx, owner, key, credits, write)` débite la source avec
   `reserve.lua` tel quel, plancher 0 **explicite** (un transfert ne consomme jamais de découvert), réservation
   `billing:transfer-hold:{idem}`, champ en vol `transfer:{idem}`. La boucle cold/réhydratation est
   **factorisée** avec `Reserve`, pas copiée. admin-api-svc construit un `billing.Accountant` (même Redis de
@@ -72,7 +72,8 @@ que si le débit durable qui l'a battu n'est pas celui de sa propre réservation
   committé ou non. Nettoyage sur `context.WithoutCancel`.
 - `insufficient` → 402 avant Postgres. `held` → 409 `ErrIdempotencyConflict` **sans rien toucher** (seul
   l'essai qui a obtenu `reserved` nettoie, sinon il retirerait le champ du gagnant avant son commit) ;
-  message : « transfert en vol ou déjà appliqué ».
+  message : « idempotency_key déjà en vol » (un succès retire la réservation : un rejeu après succès passe
+  par `reserved` → `applied=false` → 409 du handler).
 - Le dépassement 3 disparaît : le seul chemin admin qui baisse un solde MT (la source d'un transfert) est
   débité avant le commit. Topup (≥ 1) et change-scope (soldes nuls) ne baissent rien ; MO inchangé.
   L'invalidation post-commit des deux jambes reste (destination : cache périmé bas, conservateur).
@@ -95,8 +96,24 @@ montant transféré est refusée ; (D3) deux tx orchestrées `lockBalances(absen
 40P01. DoD : `TestStrictPrepaidNeverOverdrawsWhileFolding` étendu aux doublons et transferts concurrents.
 
 **PR** : a. design + amendement ADR-0022 + les rouges · b. D1 · c. D2 + contrat · d. D3 + test de charge.
+Réalisé en **une PR** à commits par unité : une PR de rouges seuls casserait `main`.
+
+### Amendement de revue (05/10/2026, Fable)
+- **Champ en vol unique par appel de script** (`{id}:{nonce}`, `{id}:repair:{nonce}`, `transfer:{key}:{nonce}`) :
+  le HDEL différé d'un essai annulé effaçait le champ d'un nouvel essai du même message (dépassement, rouge
+  `TestUndoneAttemptKeepsItsHandsOffARetry`). Côté transfert, l'entrelacement est inatteignable (l'échec
+  invalide avant son HDEL, la nouvelle tentative réhydrate en voyant encore le champ) : nonce par uniformité.
+- **Chemin `held` inversé** : `ReserveEntry` d'abord ; trouvée → solde, sans toucher Redis ; absente →
+  `repair.lua` (réservation absente → `continue` ; HSET du champ ; SET de la marque PX holdTTL) →
+  `RecordDurable` (relecture sur erreur). Sinon un doublon après le commit, le cas courant, laissait une
+  marque qui privait un rejeu post-capture de son remboursement.
+- `write` de `DebitTransfer` borné à `reserveDurableTimeout` ; rejeu d'un transfert appliqué → 402 si la
+  source est passée sous le montant, accepté et noté dans l'ADR.
+- Une première proposition de supprimer le contrôle de la réservation dans `repair.lua` a été refusée par
+  Fable (contre-exemple : l'undo de l'essai d'origine précède la réparation → cache > durable) ; testé par
+  `TestRepairYieldsToAnUndoneHold`.
 
 ## Definition of Done
-- [ ] design arrêté + amendement d'ADR-0022
-- [ ] un rouge déterministe par dépassement (1, 2, 3), lu avant correctif
-- [ ] le test de charge de step-284 étendu aux doublons et aux transferts concurrents, sans dépassement
+- [x] design arrêté + amendement d'ADR-0022
+- [x] un rouge déterministe par dépassement (1, 2, 3), lu avant correctif
+- [x] le test de charge de step-284 étendu aux doublons et aux transferts concurrents, sans dépassement

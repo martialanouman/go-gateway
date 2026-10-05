@@ -370,7 +370,8 @@ func TestTopupBalanceAfterUnderAConcurrentFold(t *testing.T) {
 
 // TestTransferFromAnUnfoldedSourceDoesNotDeadlockTheFold: the source has credit only in pending deltas, so no
 // balances row exists for the transfer to lock. The fold inserts that row, then waits on the destination the
-// transfer holds; the transfer's own adjust then waits on the fold's insert — 40P01 unless the lock creates it.
+// transfer is queued for; the transfer's own adjust then waits on the fold's insert — 40P01 unless the lock
+// creates the row.
 func TestTransferFromAnUnfoldedSourceDoesNotDeadlockTheFold(t *testing.T) {
 	f := newDeltaFixture(t, cp.OwnerTypeSMPPAccount)
 	src, dst := f.account(t), f.account(t)
@@ -419,5 +420,12 @@ func TestTransferFromAnUnfoldedSourceDoesNotDeadlockTheFold(t *testing.T) {
 		case <-time.After(10 * time.Second):
 			t.Fatalf("%s never returned", name)
 		}
+	}
+	f.foldAll(t)
+	if got, _ := f.folded(t, cp.OwnerTypeSMPPAccount, src); got != 5 {
+		t.Errorf("source = %d, want 10 - 5", got)
+	}
+	if got, _ := f.folded(t, cp.OwnerTypeSMPPAccount, dst); got != 7 {
+		t.Errorf("destination = %d, want 1 + 1 + 5", got)
 	}
 }

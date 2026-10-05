@@ -13,6 +13,8 @@
 -- ARGV[4] = ttl_ms     the reservation hold's TTL
 -- ARGV[5] = message_id the in-flight field, removed by the caller once the debit is durable
 -- ARGV[6] = now_ms     when the debit was taken, so a rehydration can drop a field a crash left behind
+-- KEYS[2] and ARGV[5] are a transfer's own hold and field when an admin transfer debits its source (step-286);
+-- every call writes a field of its own, so one attempt never clears another's.
 --
 -- Returns one of:
 --   {"reserved", new_balance}   the hold was placed and the balance debited

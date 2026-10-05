@@ -73,19 +73,31 @@ Trois dépassements antérieurs à cet ADR passaient à côté de `reserve.lua`.
 
 - **Toute baisse d'un solde MT passe par `reserve.lua` avant Postgres.** La source d'un transfert admin
   (`direction=mt`) est débitée dans Redis, plancher 0, sous une réservation et un champ en vol propres au
-  transfert ; puis la tx `Transfer`. Succès → la réservation et le champ sont retirés, le cache reste débité.
-  Toute autre issue → retrait, puis invalidation de la source (DEL + INCR du compteur) : la réhydratation est
-  juste que la tx ait committé ou non. La garde durable du transfert compte désormais les réserves en vol, et
-  la fenêtre entre commit et invalidation ne peut plus surestimer la source. `invalidate.lua` ne sert plus
-  qu'aux écritures qui ne baissent rien (topup, change-scope, destination) ; son INCR y est superflu, inoffensif.
+  transfert, puis la tx `Transfer` s'exécute, bornée comme l'écriture durable d'une réserve. Succès → la
+  réservation et le champ sont retirés. Toute autre issue → invalidation de la source (DEL + INCR du compteur),
+  puis retrait : la réhydratation est juste que la tx ait committé ou non. C'est `reserve.lua`, et non la
+  garde durable de `Transfer` (inchangée), qui compte désormais les réserves en vol. L'invalidation
+  post-commit des deux jambes reste ; pour la source elle est redondante, et la fenêtre entre commit et
+  invalidation ne peut plus la surestimer. Un rejeu d'un transfert déjà appliqué reçoit 402 au lieu de 409 si
+  la source est passée sous le montant : la porte Redis précède la réclamation Postgres (aucun argent en jeu).
+- **Un champ en vol par essai.** Chaque appel de `reserve.lua` et de `repair.lua` écrit un champ unique
+  (`{message_id}:{nonce}`), que seul son auteur retire : un essai qui a annulé son débit ne peut plus effacer
+  le champ d'un nouvel essai qui a réservé le même message entre-temps.
 - **Un undo ne rembourse que sa propre réservation.** Un doublon qui trouve la réservation d'un essai encore
-  en vol et répare le débit durable pose d'abord, atomiquement, une marque `billing:repaired:{message_id}` et
-  son propre champ en vol. L'essai d'origine, battu (`applied=false`), voit la marque, la consomme et ne
-  rembourse pas : le débit durable est celui de sa réservation. Sans marque (rejeu après expiration, capture
-  ou libération), le remboursement en place reste juste.
+  en vol et pas d'entrée durable répare le débit : `repair.lua`, tant que la réservation tient, pose
+  atomiquement une marque `billing:repaired:{message_id}` et son propre champ en vol, avant le commit.
+  L'essai d'origine, battu (`applied=false`), voit la marque, la consomme et ne rembourse pas : le débit
+  durable est celui de sa réservation. Sans marque (rejeu après expiration, capture ou libération), le
+  remboursement en place reste juste. Un doublon qui trouve l'entrée durable ne touche plus à Redis.
 - **Résidus acceptés** (sous-estimations, bornées par le TTL du cache) : une marque non consommée quand
-  l'essai d'origine confirme son succès par la relecture de l'entrée ; une marque laissée par une réparation
-  dont le commit échoue (elle ne distingue pas un échec d'un ack perdu, donc ne la retire jamais).
+  l'essai d'origine confirme son succès par la relecture de l'entrée, ou quand il committe entre la lecture
+  de l'entrée par le doublon et sa marque ; une marque laissée par une réparation dont le commit échoue (elle
+  ne distingue pas un échec d'un ack perdu, donc ne la retire jamais).
+- **Résidu connu, non nouveau** : une réplique dont l'horloge avance peut purger le champ d'un essai quelques
+  secondes avant l'expiration de sa réservation ; une réparation dans cette dérive, suivie d'une réhydratation
+  avant son propre champ, surestimerait. C'est la dépendance aux horloges déjà assumée par la purge.
+- **`LockBalance` crée la ligne absente** (à 0) au lieu de ne rien verrouiller : sans elle, le replieur
+  l'insérait au milieu d'une tx admin et l'interblocage (40P01) suivait. Une ligne à 0 vaut une ligne absente.
 - **Non corrigé, inatteignable** : une `Release` d'une réservation sans entrée durable écrirait un `release`
   orphelin, mais aucun appelant ne tient un succès de `Reserve` sans entrée durable, et le reaper part des
   réserves durables. Exiger la réserve à la libération ouvrirait une course réelle avec un commit tardif.

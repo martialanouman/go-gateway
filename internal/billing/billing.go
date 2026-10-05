@@ -345,13 +345,16 @@ func (a *Accountant) Reserve(ctx context.Context, owner Owner, messageID uuid.UU
 
 	// Two attempts: a duplicate whose hold vanished before its repair reserves anew.
 	for attempt := 0; attempt < 2; attempt++ {
-		res, err := a.debitCache(ctx, owner, rkey, messageID.String(), credits, floorFlag, floor)
+		// Every attempt owns its in-flight field: an attempt that undid its debit must not clear the field
+		// of a retry that has since reserved the same message.
+		field := messageID.String() + ":" + uuid.NewString()
+		res, err := a.debitCache(ctx, owner, rkey, field, credits, floorFlag, floor)
 		if err != nil {
 			return 0, err
 		}
 		switch status := res[0].(string); status {
 		case "reserved":
-			defer a.forgetInFlight(ctx, ikey, messageID.String())
+			defer a.forgetInFlight(ctx, ikey, field)
 			decided := toInt(res[1])
 			dctx, cancel := context.WithTimeout(ctx, reserveDurableTimeout)
 			defer cancel()
@@ -385,21 +388,21 @@ func (a *Accountant) Reserve(ctx context.Context, owner Owner, messageID uuid.UU
 			}
 			// Self-repair: a crash between reserve.lua and the durable write can leave a live hold with no
 			// durable reserve entry. Write it now (idempotent) so the durable authority reflects the hold.
-			repairField := messageID.String() + ":repair"
-			covered, err := repairScript.Run(ctx, a.rdb, []string{rkey, ikey, repairedKey(messageID)}, repairField,
-				strconv.Itoa(credits)+":"+strconv.FormatInt(time.Now().UnixMilli(), 10), a.holdTTL.Milliseconds()).Int()
-			if err != nil {
-				return 0, fmt.Errorf("billing: reserve replay cover: %w", err)
-			}
-			if covered == 0 {
-				continue
-			}
-			defer a.forgetInFlight(ctx, ikey, repairField)
 			_, _, found, err := a.store.ReserveEntry(ctx, messageID)
 			if err != nil {
 				return 0, fmt.Errorf("billing: reserve replay lookup: %w", err)
 			}
 			if !found {
+				repairField := messageID.String() + ":repair:" + uuid.NewString()
+				covered, err := repairScript.Run(ctx, a.rdb, []string{rkey, ikey, repairedKey(messageID)}, repairField,
+					strconv.Itoa(credits)+":"+strconv.FormatInt(time.Now().UnixMilli(), 10), a.holdTTL.Milliseconds()).Int()
+				if err != nil {
+					return 0, fmt.Errorf("billing: reserve replay repair script: %w", err)
+				}
+				if covered == 0 {
+					continue
+				}
+				defer a.forgetInFlight(ctx, ikey, repairField)
 				dctx, cancel := context.WithTimeout(ctx, reserveDurableTimeout)
 				defer cancel()
 				newBalance, _, err := a.store.RecordDurable(dctx, a.entry(owner, &messageID, cp.EntryReserve, -credits, nil))
@@ -446,19 +449,16 @@ func (a *Accountant) debitCache(ctx context.Context, owner Owner, rkey, field st
 			return nil, err
 		}
 	}
-	return nil, fmt.Errorf("billing: reserve %s: still cold after rehydration", field)
+	return nil, fmt.Errorf("billing: debit %s: still cold after rehydration", field)
 }
 
-// DebitTransfer lowers an admin transfer's source MT balance through reserve.lua before write records the
-// transfer durably, so the transfer competes with in-flight reserves for the same cached credit (step-286).
-// The floor is 0 whatever the customer's overdraft: a transfer never spends it. write reports whether it
-// applied the transfer; on any other outcome the source cache is dropped, the durable side being then
-// whatever committed. A transfer already in flight under key is refused, untouched.
+// DebitTransfer debits a transfer's source through reserve.lua, floor 0 (never overdraft), before write commits it.
+// Unless write reports it applied, the source cache is dropped: the durable side is then whatever committed.
 func (a *Accountant) DebitTransfer(ctx context.Context, source Owner, key uuid.UUID, credits int, write func(context.Context) (applied bool, err error)) error {
 	if credits <= 0 {
 		return fmt.Errorf("billing: debit transfer: credits must be positive, got %d", credits)
 	}
-	hold, field := "billing:transfer-hold:"+key.String(), "transfer:"+key.String()
+	hold, field := "billing:transfer-hold:"+key.String(), "transfer:"+key.String()+":"+uuid.NewString()
 	res, err := a.debitCache(ctx, source, hold, field, credits, 1, 0)
 	if err != nil {
 		return err
@@ -466,14 +466,18 @@ func (a *Accountant) DebitTransfer(ctx context.Context, source Owner, key uuid.U
 	switch status := res[0].(string); status {
 	case "reserved":
 	case "insufficient":
-		return fmt.Errorf("billing: transfer source balance %d < %d: %w", toInt(res[1]), credits, errs.ErrInsufficientCredit)
+		return fmt.Errorf("transfer: source balance %d < %d (a replay of an applied transfer also lands here; check the ledger): %w",
+			toInt(res[1]), credits, errs.ErrInsufficientCredit)
 	case "held":
-		return fmt.Errorf("billing: transfer %s in flight or already applied: %w", key, errs.ErrIdempotencyConflict)
+		return fmt.Errorf("transfer: idempotency_key %s already in flight: %w", key, errs.ErrIdempotencyConflict)
 	default:
 		return fmt.Errorf("billing: debit transfer unexpected status %q", status)
 	}
 
-	applied, err := write(ctx)
+	// Bounded like a reserve's durable write: a commit outliving the hold age would no longer be subtracted.
+	wctx, cancel := context.WithTimeout(ctx, reserveDurableTimeout)
+	defer cancel()
+	applied, err := write(wctx)
 	cctx := context.WithoutCancel(ctx)
 	if err != nil || !applied {
 		if ierr := InvalidateBalanceCaches(cctx, a.rdb, balanceKey(source)); ierr != nil {

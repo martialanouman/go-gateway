@@ -28,11 +28,7 @@ func TestStrictPrepaidNeverOverdrawsWhileFolding(t *testing.T) {
 	const funded, workers, perWorker, transfers = 50, 20, 10, 20
 	h := newBillingHarness(t, funded)
 	ctx := context.Background()
-	var sink uuid.UUID
-	if err := pgtest.Pool(t).QueryRow(ctx, `INSERT INTO control_plane.smpp_accounts (customer_id, name) VALUES ($1, $2) RETURNING id`,
-		h.owner.CustomerID, uuid.NewString()).Scan(&sink); err != nil {
-		t.Fatalf("seed transfer destination: %v", err)
-	}
+	sink := seedAccount(t, h.owner.CustomerID)
 	messages := make([]uuid.UUID, workers/2*perWorker)
 	for i := range messages {
 		messages[i] = uuid.New()
@@ -70,10 +66,12 @@ func TestStrictPrepaidNeverOverdrawsWhileFolding(t *testing.T) {
 	var accepted sync.Map
 	var failed, moved atomic.Int64
 	var reservers sync.WaitGroup
+	firstTransfer := make(chan struct{})
 	for w := range workers {
 		reservers.Add(1)
 		go func() {
 			defer reservers.Done()
+			<-firstTransfer
 			for _, messageID := range messages[w/2*perWorker : (w/2+1)*perWorker] {
 				_, err := h.acc.Reserve(ctx, h.owner, messageID, 1)
 				switch {
@@ -91,16 +89,17 @@ func TestStrictPrepaidNeverOverdrawsWhileFolding(t *testing.T) {
 		defer reservers.Done()
 		for range transfers {
 			key := uuid.New()
-			debit := cp.LedgerEntry{OwnerType: h.owner.Type, OwnerID: h.owner.ID, Direction: cp.BillingDirectionMT,
-				CustomerID: h.owner.CustomerID, MessageID: &key, EntryType: cp.EntryTransfer, Credits: -1}
-			credit := cp.LedgerEntry{OwnerType: cp.OwnerTypeSMPPAccount, OwnerID: sink, Direction: cp.BillingDirectionMT,
-				CustomerID: h.owner.CustomerID, AccountID: &sink, MessageID: &key, EntryType: cp.EntryTransfer, Credits: 1}
+			debit, credit := transferLegs(h, sink, key, 1)
 			err := h.acc.DebitTransfer(ctx, h.owner, key, 1, func(ctx context.Context) (bool, error) {
 				_, applied, err := h.repo.Transfer(ctx, debit, credit, key)
 				return applied, err
 			})
-			if err == nil {
+			closeOnce(firstTransfer)
+			switch {
+			case err == nil:
 				moved.Add(1)
+			case !errors.Is(err, errs.ErrInsufficientCredit):
+				failed.Add(1)
 			}
 		}
 	}()
@@ -477,32 +476,40 @@ type failingReserveStore struct {
 }
 
 func (s *failingReserveStore) RecordDurable(context.Context, cp.LedgerEntry) (int, bool, error) {
-	close(s.entered)
+	closeOnce(s.entered)
 	<-s.fail
 	return 0, false, errors.New("postgres unreachable")
 }
 
-// beforeRepairHook runs once, just before the duplicate's repair script reaches Redis.
-type beforeRepairHook struct {
-	once sync.Once
-	fn   func()
+// beforeCommandHook runs fn once, just before the first command that matches reaches Redis.
+type beforeCommandHook struct {
+	match func(redis.Cmder) bool
+	once  sync.Once
+	fn    func()
 }
 
-func (*beforeRepairHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+func (*beforeCommandHook) DialHook(next redis.DialHook) redis.DialHook { return next }
 
-func (h *beforeRepairHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+func (h *beforeCommandHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 	return func(ctx context.Context, cmd redis.Cmder) error {
-		for _, arg := range cmd.Args() {
-			if s, ok := arg.(string); ok && strings.HasSuffix(s, ":repair") {
-				h.once.Do(h.fn)
-			}
+		if h.match(cmd) {
+			h.once.Do(h.fn)
 		}
 		return next(ctx, cmd)
 	}
 }
 
-func (*beforeRepairHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+func (*beforeCommandHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 	return next
+}
+
+func isRepairScript(cmd redis.Cmder) bool {
+	for _, arg := range cmd.Args() {
+		if s, ok := arg.(string); ok && strings.Contains(s, ":repair") {
+			return true
+		}
+	}
+	return false
 }
 
 // TestRepairYieldsToAnUndoneHold: the duplicate saw the original attempt's hold, but before it repairs, that
@@ -531,10 +538,17 @@ func TestRepairYieldsToAnUndoneHold(t *testing.T) {
 
 	hooked := redis.NewClient(h.rdb.Options())
 	t.Cleanup(func() { _ = hooked.Close() })
-	hooked.AddHook(&beforeRepairHook{fn: func() {
+	var fired atomic.Bool
+	hooked.AddHook(&beforeCommandHook{match: isRepairScript, fn: func() {
+		fired.Store(true)
 		closeOnce(store.fail)
-		if err := <-first; err == nil {
-			t.Error("original Reserve on a failed durable write succeeded")
+		select {
+		case err := <-first:
+			if err == nil {
+				t.Error("original Reserve on a failed durable write succeeded")
+			}
+		case <-time.After(10 * time.Second):
+			t.Error("original Reserve never undid its hold")
 		}
 	}})
 	duplicate := billing.New(hooked, h.repo, billing.WithHoldTTL(time.Minute), billing.WithConfigSource(h.cfg))
@@ -542,10 +556,85 @@ func TestRepairYieldsToAnUndoneHold(t *testing.T) {
 		t.Fatalf("duplicate Reserve: %v", err)
 	}
 
+	if !fired.Load() {
+		t.Fatal("the duplicate never ran its repair script: the undo it must yield to never happened")
+	}
 	if bal := h.balance(t); bal != 0 {
 		t.Fatalf("durable balance = %d, want 0: the duplicate holds the one credit", bal)
 	}
 	if _, err := h.acc.Reserve(ctx, h.owner, uuid.New(), 1); !errors.Is(err, errs.ErrInsufficientCredit) {
 		t.Fatalf("Reserve of another message = %v, want ErrInsufficientCredit", err)
+	}
+}
+
+// TestUndoneAttemptKeepsItsHandsOffARetry: attempt A failed durably and undid its debit; before A clears its
+// in-flight field, a retry B of the same message reserves anew and starts writing. A clearing a field B now
+// relies on would let a rehydration sell B's credit again.
+func TestUndoneAttemptKeepsItsHandsOffARetry(t *testing.T) {
+	h := newBillingHarness(t, 1)
+	ctx := context.Background()
+	messageID := uuid.New()
+	retryStore := &blockingStore{LedgerStore: h.repo, entered: make(chan struct{}), release: make(chan struct{})}
+	t.Cleanup(func() { closeOnce(retryStore.release) })
+	retry := billing.New(h.rdb, retryStore, billing.WithHoldTTL(time.Minute), billing.WithConfigSource(h.cfg))
+
+	retried := make(chan error, 1)
+	var fired atomic.Bool
+	hooked := redis.NewClient(h.rdb.Options())
+	t.Cleanup(func() { _ = hooked.Close() })
+	hooked.AddHook(&beforeCommandHook{match: func(cmd redis.Cmder) bool { return cmd.Name() == "hdel" }, fn: func() {
+		fired.Store(true)
+		go func() {
+			_, err := retry.Reserve(ctx, h.owner, messageID, 1)
+			retried <- err
+		}()
+		select {
+		case <-retryStore.entered:
+		case err := <-retried:
+			t.Errorf("retry returned before its durable write: %v", err)
+		case <-time.After(10 * time.Second):
+			t.Error("retry never reached its durable write")
+		}
+	}})
+	failing := &failingReserveStore{LedgerStore: h.repo, entered: make(chan struct{}), fail: make(chan struct{})}
+	closeOnce(failing.fail)
+	original := billing.New(hooked, failing, billing.WithHoldTTL(time.Minute), billing.WithConfigSource(h.cfg))
+	if _, err := original.Reserve(ctx, h.owner, messageID, 1); err == nil {
+		t.Fatal("original Reserve on a failed durable write succeeded")
+	}
+	if !fired.Load() {
+		t.Fatal("the original attempt never cleared its in-flight field")
+	}
+
+	h.dropCachedBalance(t)
+	_, err := h.acc.Reserve(ctx, h.owner, uuid.New(), 1)
+	closeOnce(retryStore.release)
+	if rerr := <-retried; rerr != nil {
+		t.Fatalf("retry Reserve: %v", rerr)
+	}
+	if !errors.Is(err, errs.ErrInsufficientCredit) {
+		t.Fatalf("Reserve while the retry is still writing = %v, want ErrInsufficientCredit", err)
+	}
+}
+
+// TestDuplicateAfterTheCommitLeavesNoMark: most duplicates arrive once the original reserve is durable and
+// repair nothing. Marking the hold anyway would spare a later replay's undo, which must refund.
+func TestDuplicateAfterTheCommitLeavesNoMark(t *testing.T) {
+	h := newBillingHarness(t, 2)
+	ctx := context.Background()
+	messageID := uuid.New()
+	for range 2 {
+		if _, err := h.acc.Reserve(ctx, h.owner, messageID, 1); err != nil {
+			t.Fatalf("Reserve: %v", err)
+		}
+	}
+	if _, err := h.acc.Capture(ctx, h.owner, messageID); err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	if _, err := h.acc.Reserve(ctx, h.owner, messageID, 1); err != nil {
+		t.Fatalf("Reserve replayed after the capture: %v", err)
+	}
+	if _, err := h.acc.Reserve(ctx, h.owner, uuid.New(), 1); err != nil {
+		t.Fatalf("Reserve of the credit left = %v, want success: the replay's debit must have been refunded", err)
 	}
 }
