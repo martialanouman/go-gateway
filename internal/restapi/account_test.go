@@ -29,7 +29,10 @@ type fakeSenderIDReader struct {
 	err error
 }
 
-func (f fakeSenderIDReader) ListByCustomer(context.Context, uuid.UUID) ([]cp.SenderID, error) {
+func (f fakeSenderIDReader) ListByCustomer(_ context.Context, _ uuid.UUID, category *cp.TrafficCategory) ([]cp.SenderID, error) {
+	if category != nil {
+		return nil, errors.New("the account projection lists every sender ID, whatever its category")
+	}
 	return f.ids, f.err
 }
 
@@ -57,14 +60,13 @@ func newAccountHarness(t *testing.T, principals restapi.PrincipalStore, deps res
 
 func sampleAccount() cp.Account {
 	return cp.Account{
-		ID:             uuid.New(),
-		CustomerID:     uuid.New(),
-		Name:           "acme-prod",
-		Status:         cp.AccountActive,
-		SMPPEnabled:    true,
-		RESTEnabled:    true,
-		SenderIDPolicy: cp.SenderIDStrict,
-		MaxSessions:    4,
+		ID:          uuid.New(),
+		CustomerID:  uuid.New(),
+		Name:        "acme-prod",
+		Status:      cp.AccountActive,
+		SMPPEnabled: true,
+		RESTEnabled: true,
+		MaxSessions: 4,
 	}
 }
 
@@ -118,9 +120,6 @@ func TestGetAccountReturnsOwnAccount(t *testing.T) {
 	}
 	if !body.Channels.SMPPEnabled || !body.Channels.RESTEnabled {
 		t.Errorf("channels: got %+v", body.Channels)
-	}
-	if body.SenderIDPolicy != "strict" {
-		t.Errorf("sender_id_policy: got %q", body.SenderIDPolicy)
 	}
 	if body.MaxSessions != 4 {
 		t.Errorf("max_sessions: got %d want 4", body.MaxSessions)

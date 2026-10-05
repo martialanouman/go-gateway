@@ -50,7 +50,6 @@ var m1Operations = []opRef{
 	{"delete-smpp-account", "delete", "/admin/smpp-accounts/{id}"},
 	{"set-account-channels", "patch", "/admin/smpp-accounts/{id}/channels"},
 	{"set-account-session-limits", "patch", "/admin/smpp-accounts/{id}/session-limits"},
-	{"set-account-sender-id-policy", "patch", "/admin/smpp-accounts/{id}/sender-id-policy"},
 	{"set-account-smpp-ops", "patch", "/admin/smpp-accounts/{id}/smpp-ops"},
 	{"suspend-smpp-account", "post", "/admin/smpp-accounts/{id}/suspend"},
 

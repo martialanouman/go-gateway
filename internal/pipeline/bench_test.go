@@ -51,19 +51,11 @@ import (
 // the pipeline.
 const benchBody = "Your one time code is 424242. It expires in ten minutes. Do not share it with anyone, our staff will never ask you for it."
 
-// benchSender mirrors the reference run: a registered, ACTIVE sender ID under an account left on the
-// schema default policy, which is strict. Anything laxer would take a cheaper branch through Authorize
-// than production does.
+// benchSender mirrors the reference run: a registered, ACTIVE sender ID, the only kind Authorize admits.
 const benchSender = "LOADREF"
 
 type benchListers struct {
 	accountID, customerID, connectorID uuid.UUID
-}
-
-func (b benchListers) ListSenderIDPolicies(context.Context) ([]cp.AccountSenderIDPolicy, error) {
-	return []cp.AccountSenderIDPolicy{{
-		AccountID: b.accountID, CustomerID: b.customerID, Policy: cp.SenderIDStrict,
-	}}, nil
 }
 
 func (b benchListers) ListActive(context.Context) ([]cp.SenderID, error) {
@@ -111,7 +103,7 @@ func newBenchStack(tb testing.TB) benchStack {
 	ctx := context.Background()
 	l := benchListers{accountID: uuid.New(), customerID: uuid.New(), connectorID: uuid.New()}
 
-	authorizer, err := senderid.LoadSnapshot(ctx, l, l)
+	authorizer, err := senderid.LoadSnapshot(ctx, l)
 	if err != nil {
 		tb.Fatalf("sender-id snapshot: %v", err)
 	}
@@ -219,7 +211,7 @@ func BenchmarkPipelineStages(b *testing.B) {
 	b.Run("sender_id", func(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
-			if err := s.senderIDs.Authorize(ctx, s.in.AccountID, s.in.CustomerID, benchSender); err != nil {
+			if err := s.senderIDs.Authorize(ctx, s.in.CustomerID, benchSender); err != nil {
 				b.Fatal(err)
 			}
 		}

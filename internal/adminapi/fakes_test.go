@@ -285,7 +285,6 @@ func (s *fakeAccountStore) Create(_ context.Context, in cp.NewAccount) (cp.Accou
 		Status:           cp.AccountActive,
 		SMPPEnabled:      boolOr(in.SMPPEnabled, true),
 		RESTEnabled:      boolOr(in.RESTEnabled, true),
-		SenderIDPolicy:   cp.SenderIDStrict,
 		QuerySMEnabled:   boolOr(in.QuerySMEnabled, true),
 		CancelSMEnabled:  boolOr(in.CancelSMEnabled, true),
 		AllowedBindTypes: cp.BindTRX,
@@ -349,9 +348,6 @@ func (s *fakeAccountStore) Update(_ context.Context, id uuid.UUID, p cp.AccountP
 	}
 	if p.Status != nil {
 		a.Status = *p.Status
-	}
-	if p.SenderIDPolicy != nil {
-		a.SenderIDPolicy = *p.SenderIDPolicy
 	}
 	a.QuerySMEnabled = boolOr(p.QuerySMEnabled, a.QuerySMEnabled)
 	a.CancelSMEnabled = boolOr(p.CancelSMEnabled, a.CancelSMEnabled)
@@ -784,18 +780,21 @@ func (s *fakeSenderIDStore) Create(_ context.Context, in cp.NewSenderID) (cp.Sen
 	}
 	sid := cp.SenderID{
 		ID: uuid.New(), CustomerID: in.CustomerID, Address: in.Address,
-		Status: cp.SenderIDPendingCarrierApproval, CreatedBy: in.CreatedBy,
+		Status: cp.SenderIDPendingCarrierApproval, TrafficCategory: cp.TrafficMarketing, CreatedBy: in.CreatedBy,
+	}
+	if in.TrafficCategory != nil {
+		sid.TrafficCategory = *in.TrafficCategory
 	}
 	s.byID[sid.ID] = sid
 	return sid, nil
 }
 
-func (s *fakeSenderIDStore) ListByCustomer(_ context.Context, customerID uuid.UUID) ([]cp.SenderID, error) {
+func (s *fakeSenderIDStore) ListByCustomer(_ context.Context, customerID uuid.UUID, category *cp.TrafficCategory) ([]cp.SenderID, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]cp.SenderID, 0)
 	for _, sid := range s.byID {
-		if sid.CustomerID == customerID {
+		if sid.CustomerID == customerID && (category == nil || sid.TrafficCategory == *category) {
 			out = append(out, sid)
 		}
 	}
@@ -811,6 +810,9 @@ func (s *fakeSenderIDStore) Update(_ context.Context, customerID, senderID uuid.
 	}
 	if p.Status != nil {
 		sid.Status = *p.Status
+	}
+	if p.TrafficCategory != nil {
+		sid.TrafficCategory = *p.TrafficCategory
 	}
 	s.byID[senderID] = sid
 	return sid, nil

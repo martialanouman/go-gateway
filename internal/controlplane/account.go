@@ -15,7 +15,6 @@ type Account struct {
 	Status          AccountStatus
 	SMPPEnabled     bool
 	RESTEnabled     bool
-	SenderIDPolicy  SenderIDPolicy
 	QuerySMEnabled  bool
 	CancelSMEnabled bool
 	// AllowedBindTypes is a single bind kind despite the plural column name (see BindType).
@@ -32,20 +31,10 @@ type NewAccount struct {
 	Name             string
 	SMPPEnabled      *bool
 	RESTEnabled      *bool
-	SenderIDPolicy   *SenderIDPolicy
 	QuerySMEnabled   *bool
 	CancelSMEnabled  *bool
 	AllowedBindTypes *BindType
 	MaxSessions      *int
-}
-
-// AccountSenderIDPolicy is the account -> (customer, sender-ID policy) projection the sender-ID
-// authorization stage snapshots at startup (step-060): the policy is per account, but the registered
-// sender IDs it is checked against are per customer.
-type AccountSenderIDPolicy struct {
-	AccountID  uuid.UUID
-	CustomerID uuid.UUID
-	Policy     SenderIDPolicy
 }
 
 // AccountPatch is a partial update of an account: a nil field is left unchanged. Channels and session
@@ -53,7 +42,6 @@ type AccountSenderIDPolicy struct {
 type AccountPatch struct {
 	Name            *string
 	Status          *AccountStatus
-	SenderIDPolicy  *SenderIDPolicy
 	QuerySMEnabled  *bool
 	CancelSMEnabled *bool
 }

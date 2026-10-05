@@ -17,37 +17,41 @@ import (
 
 // senderIDDTO is the wire form of a SenderId (contract schema SenderId).
 type senderIDDTO struct {
-	ID          string     `json:"id" format:"uuid"`
-	CustomerID  string     `json:"customer_id" format:"uuid"`
-	Address     string     `json:"address"`
-	Status      string     `json:"status" enum:"pending_carrier_approval,active,disabled"`
-	CreatedBy   *string    `json:"created_by,omitempty" format:"uuid" nullable:"true"`
-	ApprovedAt  *time.Time `json:"approved_at,omitempty" format:"date-time" nullable:"true"`
-	FirstUsedAt *time.Time `json:"first_used_at,omitempty" format:"date-time" nullable:"true"`
-	CreatedAt   time.Time  `json:"created_at" format:"date-time"`
-	UpdatedAt   time.Time  `json:"updated_at" format:"date-time"`
+	ID              string     `json:"id" format:"uuid"`
+	CustomerID      string     `json:"customer_id" format:"uuid"`
+	Address         string     `json:"address"`
+	Status          string     `json:"status" enum:"pending_carrier_approval,active,disabled"`
+	TrafficCategory string     `json:"traffic_category" enum:"otp,transactional,marketing"`
+	CreatedBy       *string    `json:"created_by,omitempty" format:"uuid" nullable:"true"`
+	ApprovedAt      *time.Time `json:"approved_at,omitempty" format:"date-time" nullable:"true"`
+	FirstUsedAt     *time.Time `json:"first_used_at,omitempty" format:"date-time" nullable:"true"`
+	CreatedAt       time.Time  `json:"created_at" format:"date-time"`
+	UpdatedAt       time.Time  `json:"updated_at" format:"date-time"`
 }
 
 func toSenderIDDTO(s cp.SenderID) senderIDDTO {
 	return senderIDDTO{
-		ID:          idString(s.ID),
-		CustomerID:  idString(s.CustomerID),
-		Address:     s.Address,
-		Status:      string(s.Status),
-		CreatedBy:   idPtr(s.CreatedBy),
-		ApprovedAt:  s.ApprovedAt,
-		FirstUsedAt: s.FirstUsedAt,
-		CreatedAt:   s.CreatedAt,
-		UpdatedAt:   s.UpdatedAt,
+		ID:              idString(s.ID),
+		CustomerID:      idString(s.CustomerID),
+		Address:         s.Address,
+		Status:          string(s.Status),
+		TrafficCategory: string(s.TrafficCategory),
+		CreatedBy:       idPtr(s.CreatedBy),
+		ApprovedAt:      s.ApprovedAt,
+		FirstUsedAt:     s.FirstUsedAt,
+		CreatedAt:       s.CreatedAt,
+		UpdatedAt:       s.UpdatedAt,
 	}
 }
 
 type senderIDCreateBody struct {
-	Address string `json:"address" maxLength:"20"`
+	Address         string  `json:"address" maxLength:"20"`
+	TrafficCategory *string `json:"traffic_category,omitempty" enum:"otp,transactional,marketing" default:"marketing"`
 }
 
 type senderIDUpdateBody struct {
-	Status *string `json:"status,omitempty" enum:"pending_carrier_approval,active,disabled"`
+	Status          *string `json:"status,omitempty" enum:"pending_carrier_approval,active,disabled"`
+	TrafficCategory *string `json:"traffic_category,omitempty" enum:"otp,transactional,marketing"`
 }
 
 type senderIDHandlers struct {
@@ -76,7 +80,7 @@ func registerSenderIDs(api huma.API, senders SenderIDStore, customers CustomerSt
 	register(api, huma.Operation{
 		OperationID: "update-sender-id", Method: http.MethodPatch,
 		Path:    "/admin/customers/{id}/sender-ids/{senderId}",
-		Summary: "Update a sender ID's status", Tags: []string{"Sender IDs"},
+		Summary: "Update a sender ID (status, traffic category)", Tags: []string{"Sender IDs"},
 		Security: scopeSecurity(auth.ScopeAdminWrite),
 		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity},
 	}, h.update)
@@ -91,14 +95,15 @@ func registerSenderIDs(api huma.API, senders SenderIDStore, customers CustomerSt
 	}, h.delete)
 }
 
-type customerScopedInput struct {
-	ID string `path:"id" format:"uuid"`
+type listSenderIDsInput struct {
+	ID              string `path:"id" format:"uuid"`
+	TrafficCategory string `query:"traffic_category" enum:"otp,transactional,marketing"`
 }
 type listSenderIDsOutput struct {
 	Body []senderIDDTO
 }
 
-func (h *senderIDHandlers) list(ctx context.Context, in *customerScopedInput) (*listSenderIDsOutput, error) {
+func (h *senderIDHandlers) list(ctx context.Context, in *listSenderIDsInput) (*listSenderIDsOutput, error) {
 	customerID, err := uuid.Parse(in.ID)
 	if err != nil {
 		return nil, notFound("customer")
@@ -107,7 +112,12 @@ func (h *senderIDHandlers) list(ctx context.Context, in *customerScopedInput) (*
 	if _, err := h.customers.Get(ctx, customerID); err != nil {
 		return nil, humaerr.FromError(err)
 	}
-	senders, err := h.senders.ListByCustomer(ctx, customerID)
+	var category *cp.TrafficCategory
+	if in.TrafficCategory != "" {
+		c := cp.TrafficCategory(in.TrafficCategory)
+		category = &c
+	}
+	senders, err := h.senders.ListByCustomer(ctx, customerID, category)
 	if err != nil {
 		return nil, humaerr.FromError(err)
 	}
@@ -133,7 +143,10 @@ func (h *senderIDHandlers) create(ctx context.Context, in *createSenderIDInput) 
 		return nil, humaerr.FailValidation("invalid customer id",
 			humaerr.FieldError{Field: "id", Message: "must be a UUID"})
 	}
-	s, err := h.senders.Create(ctx, cp.NewSenderID{CustomerID: customerID, Address: in.Body.Address, CreatedBy: operatorID(ctx)})
+	s, err := h.senders.Create(ctx, cp.NewSenderID{
+		CustomerID: customerID, Address: in.Body.Address, CreatedBy: operatorID(ctx),
+		TrafficCategory: enumPtr[cp.TrafficCategory](in.Body.TrafficCategory),
+	})
 	if err != nil {
 		return nil, humaerr.FromError(err)
 	}
@@ -152,7 +165,8 @@ func (h *senderIDHandlers) update(ctx context.Context, in *senderIDScopedInput) 
 		return nil, err
 	}
 	s, err := h.senders.Update(ctx, customerID, senderID, cp.SenderIDPatch{
-		Status: enumPtr[cp.SenderIDStatus](in.Body.Status),
+		Status:          enumPtr[cp.SenderIDStatus](in.Body.Status),
+		TrafficCategory: enumPtr[cp.TrafficCategory](in.Body.TrafficCategory),
 	})
 	if err != nil {
 		return nil, humaerr.FromError(err)

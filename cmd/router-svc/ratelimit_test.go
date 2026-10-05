@@ -33,11 +33,13 @@ func TestASaturatedConnectorRejectsNoMessageAtTheRouter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create customer: %v", err)
 	}
-	disabled := cp.SenderIDPolicyDisabled
+	if _, err := pool.Exec(ctx, `INSERT INTO control_plane.sender_ids (customer_id, address, status) VALUES ($1, 'INFO', 'active')`, customer.ID); err != nil {
+		t.Fatalf("register sender: %v", err)
+	}
 	accounts := postgres.NewAccountRepo(pool)
 	newAccount := func(name string) cp.Account {
 		t.Helper()
-		a, err := accounts.Create(ctx, cp.NewAccount{CustomerID: customer.ID, Name: name, SenderIDPolicy: &disabled})
+		a, err := accounts.Create(ctx, cp.NewAccount{CustomerID: customer.ID, Name: name})
 		if err != nil {
 			t.Fatalf("create account %s: %v", name, err)
 		}

@@ -399,7 +399,7 @@ func calibratePeer(t *testing.T, binds int) float64 {
 }
 
 // refSenderID is the sender ID the run submits from; it is registered and activated in the control
-// plane, so the account's strict sender-ID policy authorises the traffic instead of rejecting all of it.
+// plane, so sender-ID authorization admits the traffic instead of rejecting all of it.
 const refSenderID = "LOADREF"
 
 // refStack is the whole MT path in one process, plus the ops endpoint that exposes its catalogue.
@@ -513,7 +513,7 @@ func buildRefStack(
 		resolver,
 	)
 	preflightRefL0(t, l0, shape)
-	authorizer, err := senderid.LoadSnapshot(ctx, postgres.NewAccountRepo(pool), postgres.NewSenderIDRepo(pool))
+	authorizer, err := senderid.LoadSnapshot(ctx, postgres.NewSenderIDRepo(pool))
 	if err != nil {
 		t.Fatalf("load sender-id snapshot: %v", err)
 	}

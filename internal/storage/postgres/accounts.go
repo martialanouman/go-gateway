@@ -28,7 +28,6 @@ func (r *AccountRepo) Create(ctx context.Context, in cp.NewAccount) (cp.Account,
 		Name:             in.Name,
 		SmppEnabled:      in.SMPPEnabled,
 		RestEnabled:      in.RESTEnabled,
-		SenderIDPolicy:   strPtr(in.SenderIDPolicy),
 		QuerySmEnabled:   in.QuerySMEnabled,
 		CancelSmEnabled:  in.CancelSMEnabled,
 		AllowedBindTypes: strPtr(in.AllowedBindTypes),
@@ -75,7 +74,6 @@ func (r *AccountRepo) Update(ctx context.Context, id uuid.UUID, p cp.AccountPatc
 		ID:              id,
 		Name:            p.Name,
 		Status:          strPtr(p.Status),
-		SenderIDPolicy:  strPtr(p.SenderIDPolicy),
 		QuerySmEnabled:  p.QuerySMEnabled,
 		CancelSmEnabled: p.CancelSMEnabled,
 	})
@@ -142,7 +140,6 @@ func accountFromRow(row sqlcgen.ControlPlaneSmppAccount) cp.Account {
 		Status:           cp.AccountStatus(row.Status),
 		SMPPEnabled:      row.SmppEnabled,
 		RESTEnabled:      row.RestEnabled,
-		SenderIDPolicy:   cp.SenderIDPolicy(row.SenderIDPolicy),
 		QuerySMEnabled:   row.QuerySmEnabled,
 		CancelSMEnabled:  row.CancelSmEnabled,
 		AllowedBindTypes: cp.BindType(row.AllowedBindTypes),
@@ -163,24 +160,6 @@ func (r *AccountRepo) ListAccountCustomers(ctx context.Context) (map[uuid.UUID]u
 	out := make(map[uuid.UUID]uuid.UUID, len(rows))
 	for _, row := range rows {
 		out[row.ID] = row.CustomerID
-	}
-	return out, nil
-}
-
-// ListSenderIDPolicies returns every account's sender-ID policy with its owning customer, for the
-// sender-ID authorization snapshot (step-060).
-func (r *AccountRepo) ListSenderIDPolicies(ctx context.Context) ([]cp.AccountSenderIDPolicy, error) {
-	rows, err := r.q.ListAccountSenderIDPolicies(ctx)
-	if err != nil {
-		return nil, translate("list account sender-id policies", err)
-	}
-	out := make([]cp.AccountSenderIDPolicy, 0, len(rows))
-	for _, row := range rows {
-		out = append(out, cp.AccountSenderIDPolicy{
-			AccountID:  row.ID,
-			CustomerID: row.CustomerID,
-			Policy:     cp.SenderIDPolicy(row.SenderIDPolicy),
-		})
 	}
 	return out, nil
 }

@@ -112,3 +112,71 @@ func TestUsedSenderIDCanBeDisabledButNotDeleted(t *testing.T) {
 		t.Fatalf("delete unknown: status = %d, want 404; body=%s", w.Code, w.Body)
 	}
 }
+
+// TestSenderIDTrafficCategoryIsDeclaredAndFilterable drives ADR-0020 §1 through the real repository: the
+// category defaults to marketing, is posed at creation or by PATCH, survives a status-only PATCH, and
+// filters the list.
+func TestSenderIDTrafficCategoryIsDeclaredAndFilterable(t *testing.T) {
+	pool := pgtest.Pool(t)
+	ctx := t.Context()
+	customer, err := postgres.NewCustomerRepo(pool).Create(ctx, newCustomerInput("sender-category-"+uuid.NewString()))
+	if err != nil {
+		t.Fatalf("create customer: %v", err)
+	}
+	api := newTestAPIWith(t, adminapi.Deps{Customers: postgres.NewCustomerRepo(pool), SenderIDs: postgres.NewSenderIDRepo(pool)})
+	base := "/v1/admin/customers/" + customer.ID.String() + "/sender-ids"
+
+	type sender struct {
+		ID              string `json:"id"`
+		Address         string `json:"address"`
+		TrafficCategory string `json:"traffic_category"`
+	}
+	call := func(method, path, body string, want int) []byte {
+		t.Helper()
+		w := httptest.NewRecorder()
+		api.ServeHTTP(w, authed(t, method, path, body))
+		if w.Code != want {
+			t.Fatalf("%s %s: status = %d, want %d; body=%s", method, path, w.Code, want, w.Body)
+		}
+		return w.Body.Bytes()
+	}
+	create := func(body string) sender {
+		t.Helper()
+		var s sender
+		_ = json.Unmarshal(call(http.MethodPost, base, body, http.StatusCreated), &s)
+		return s
+	}
+
+	promo := create(`{"address":"PROMO"}`)
+	if promo.TrafficCategory != "marketing" {
+		t.Fatalf("undeclared category = %q, want marketing", promo.TrafficCategory)
+	}
+	bank := create(`{"address":"BANK","traffic_category":"otp"}`)
+	if bank.TrafficCategory != "otp" {
+		t.Fatalf("declared category = %q, want otp", bank.TrafficCategory)
+	}
+	var statusOnly sender
+	_ = json.Unmarshal(call(http.MethodPatch, base+"/"+bank.ID, `{"status":"active"}`, http.StatusOK), &statusOnly)
+	if statusOnly.TrafficCategory != "otp" {
+		t.Fatalf("category after a status-only PATCH = %q, want otp untouched", statusOnly.TrafficCategory)
+	}
+	var patched sender
+	_ = json.Unmarshal(call(http.MethodPatch, base+"/"+promo.ID, `{"traffic_category":"transactional"}`, http.StatusOK), &patched)
+	if patched.TrafficCategory != "transactional" {
+		t.Fatalf("patched category = %q, want transactional", patched.TrafficCategory)
+	}
+	call(http.MethodPost, base, `{"address":"BAD","traffic_category":"urgent"}`, http.StatusUnprocessableEntity)
+	call(http.MethodPatch, base+"/"+promo.ID, `{"traffic_category":"urgent"}`, http.StatusUnprocessableEntity)
+	call(http.MethodGet, base+"?traffic_category=urgent", "", http.StatusUnprocessableEntity)
+
+	var otp []sender
+	_ = json.Unmarshal(call(http.MethodGet, base+"?traffic_category=otp", "", http.StatusOK), &otp)
+	if len(otp) != 1 || otp[0].Address != "BANK" {
+		t.Fatalf("list ?traffic_category=otp = %+v, want only BANK", otp)
+	}
+	var all []sender
+	_ = json.Unmarshal(call(http.MethodGet, base, "", http.StatusOK), &all)
+	if len(all) != 2 {
+		t.Fatalf("unfiltered list = %+v, want both sender IDs", all)
+	}
+}
