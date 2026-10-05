@@ -3,14 +3,21 @@
 --
 -- KEYS[1] = billing:balance:{direction}:{owner_type}:{owner_id}  (integer credit balance cache)
 -- KEYS[2] = billing:reservation:{message_id}                     (the hold to refund)
+-- KEYS[3] = billing:repaired:{message_id}, optional               (passed only by a reserve undoing its debit)
 --
 -- Returns one of:
 --   {"released", new_balance, credits}  the held credits were added back to the balance
 --   {"cold", credits}            the hold was live but the balance cache had lapsed — the caller refunds
 --                                DURABLY and lets the cache rehydrate from Postgres (INCRBY-from-absent
 --                                would fabricate a balance from 0, so we never touch the balance here)
+--   {"repaired"}                 the mark was there and is consumed: a duplicate wrote the durable debit of
+--                                this very hold, so there is nothing to undo (step-286)
 --   {"no_reservation"}           no live hold — already captured/released, or the hold's TTL lapsed; the
 --                                caller disambiguates via the durable ledger
+if KEYS[3] and redis.call('DEL', KEYS[3]) == 1 then
+  return {'repaired'}
+end
+
 local held = redis.call('GET', KEYS[2])
 if not held then
   return {'no_reservation'}

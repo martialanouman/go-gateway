@@ -49,6 +49,7 @@ type fakeBillingStore struct {
 	scopeErr    error
 	balances    []cp.BalanceRow
 	topupCalls  int
+	transfers   int
 	replay      bool
 	ledgerRows  []cp.LedgerRow
 	ledgerMore  bool
@@ -70,6 +71,7 @@ func (s *fakeBillingStore) Topup(_ context.Context, e cp.LedgerEntry) (cp.Ledger
 	return row, true, nil
 }
 func (s *fakeBillingStore) Transfer(context.Context, cp.LedgerEntry, cp.LedgerEntry, uuid.UUID) ([]cp.LedgerRow, bool, error) {
+	s.transfers++
 	return s.transferRow, true, nil
 }
 func (s *fakeBillingStore) Ledger(_ context.Context, f cp.LedgerFilter) ([]cp.LedgerRow, bool, error) {
@@ -196,5 +198,28 @@ func TestGetBillingProjectsConfig(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &dto)
 	if dto.BillingMode != "prepaid" || !dto.OverdraftEnabled {
 		t.Errorf("billing dto = %+v, want prepaid/overdraft-enabled", dto)
+	}
+}
+
+// TestTransferRefusedWithoutTheBillingGate: a deployment that forgot to wire the debiter must not fall back to
+// a durable-only transfer, which races the reserves in flight (step-286).
+func TestTransferRefusedWithoutTheBillingGate(t *testing.T) {
+	cust := uuid.New()
+	src, dst := uuid.New(), uuid.New()
+	accounts := newFakeAccountStore()
+	accounts.byID[src] = cp.Account{ID: src, CustomerID: cust}
+	accounts.byID[dst] = cp.Account{ID: dst, CustomerID: cust}
+	billing := &fakeBillingStore{}
+	api := newTestAPIWith(t, adminapi.Deps{
+		Customers: fakeBillingCustomerStore{c: cp.Customer{ID: cust, BalanceScope: cp.BalanceScopeSMPPAccount, UpdatedAt: time.Now().UTC()}},
+		Accounts:  accounts, Billing: billing,
+	})
+
+	body := `{"credits":1,"direction":"mt","from_owner_id":"` + src.String() + `","to_owner_id":"` + dst.String() +
+		`","idempotency_key":"` + uuid.NewString() + `"}`
+	w := httptest.NewRecorder()
+	api.ServeHTTP(w, authed(t, http.MethodPost, "/v1/admin/customers/"+cust.String()+"/billing/transfer", body))
+	if w.Code != http.StatusInternalServerError || billing.transfers != 0 {
+		t.Fatalf("transfer without a debiter = %d with %d durable writes, want 500 and none", w.Code, billing.transfers)
 	}
 }

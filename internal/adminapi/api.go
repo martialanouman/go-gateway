@@ -87,7 +87,7 @@ func New(deps Deps) (*chi.Mux, huma.API) {
 	registerExactRoutes(api, deps.ExactRoutes, deps.ExactRouteCache, deps.ConfigChanges,
 		deps.ConfigChannel, deps.Imports, deps.Logger)
 	registerRoutingScripts(api, deps.RoutingScripts)
-	registerBilling(api, deps.Customers, deps.Billing, deps.Accounts, deps.BalanceCache, deps.Logger)
+	registerBilling(api, deps.Customers, deps.Billing, deps.Accounts, deps.BalanceCache, deps.TransferDebiter, deps.Logger)
 	registerBillingAdmin(api, deps.Customers, deps.Billing, deps.RatePlans, deps.BillingProviders, deps.SecretSealer)
 	registerContentKeys(api, deps.ContentKeys, deps.ContentKeyEraser, deps.Logger)
 	registerMessages(api, deps.Messages, deps.ContentKeyReader, deps.ContentAudit, deps.Logger)

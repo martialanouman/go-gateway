@@ -2,6 +2,7 @@ package adminapi
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 
@@ -21,21 +22,32 @@ type noopBalanceCache struct{}
 
 func (noopBalanceCache) Del(context.Context, ...string) error { return nil }
 
+// unwiredDebiter refuses every transfer: without the billing gate a transfer would race the reserves in flight.
+type unwiredDebiter struct{}
+
+func (unwiredDebiter) DebitTransfer(context.Context, billing.Owner, uuid.UUID, int, func(context.Context) (bool, error)) error {
+	return errors.New("billing: transfer debiter not wired")
+}
+
 type billingHandlers struct {
 	customers CustomerStore
 	billing   BillingStore
 	accounts  AccountStore
 	cache     BalanceCacheInvalidator
+	debiter   TransferDebiter
 	logger    *slog.Logger
 }
 
 // registerBilling wires the admin billing endpoints: read/update the reserve-floor config, read balances,
 // top-up, transfer between a customer's own balances, and flip the balance scope (guarded).
-func registerBilling(api huma.API, customers CustomerStore, billingStore BillingStore, accounts AccountStore, cache BalanceCacheInvalidator, logger *slog.Logger) {
+func registerBilling(api huma.API, customers CustomerStore, billingStore BillingStore, accounts AccountStore, cache BalanceCacheInvalidator, debiter TransferDebiter, logger *slog.Logger) {
 	if cache == nil {
 		cache = noopBalanceCache{}
 	}
-	h := &billingHandlers{customers: customers, billing: billingStore, accounts: accounts, cache: cache, logger: logger}
+	if debiter == nil {
+		debiter = unwiredDebiter{}
+	}
+	h := &billingHandlers{customers: customers, billing: billingStore, accounts: accounts, cache: cache, debiter: debiter, logger: logger}
 
 	readErrs := []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity}
 	writeErrs := readErrs
@@ -64,7 +76,7 @@ func registerBilling(api huma.API, customers CustomerStore, billingStore Billing
 	register(api, huma.Operation{
 		OperationID: "transfer-balance", Method: http.MethodPost, Path: "/admin/customers/{id}/billing/transfer",
 		Summary: "Net-zero transfer between the customer's own balances", Tags: []string{"Billing"},
-		Security: scopeSecurity(auth.ScopeAdminWrite), Errors: mutErrs,
+		Security: scopeSecurity(auth.ScopeAdminWrite), Errors: append([]int{http.StatusPaymentRequired}, mutErrs...),
 	}, h.transfer)
 	register(api, huma.Operation{
 		OperationID: "change-balance-scope", Method: http.MethodPost, Path: "/admin/customers/{id}/billing/scope",
@@ -273,8 +285,14 @@ func (h *billingHandlers) transfer(ctx context.Context, in *transferInput) (*led
 	}
 	debit := cp.LedgerEntry{OwnerType: from.OwnerType, OwnerID: from.OwnerID, Direction: in.Body.Direction, CustomerID: c.ID, AccountID: from.AccountID, MessageID: &idem, EntryType: cp.EntryTransfer, Credits: -in.Body.Credits, Reference: nil}
 	credit := cp.LedgerEntry{OwnerType: to.OwnerType, OwnerID: to.OwnerID, Direction: in.Body.Direction, CustomerID: c.ID, AccountID: to.AccountID, MessageID: &idem, EntryType: cp.EntryTransfer, Credits: in.Body.Credits, Reference: nil}
-	rows, applied, err := h.billing.Transfer(ctx, debit, credit, idem)
-	if err != nil {
+	var rows []cp.LedgerRow
+	var applied bool
+	source := billing.Owner{Type: from.OwnerType, ID: from.OwnerID, CustomerID: c.ID, AccountID: from.AccountID}
+	if err := h.debiter.DebitTransfer(ctx, source, idem, in.Body.Credits, func(ctx context.Context) (bool, error) {
+		var werr error
+		rows, applied, werr = h.billing.Transfer(ctx, debit, credit, idem)
+		return applied, werr
+	}); err != nil {
 		return nil, humaerr.FromError(err)
 	}
 	if !applied {

@@ -67,9 +67,10 @@ WHERE l.customer_id = @customer_id AND l.direction = 'mt' AND l.entry_type = 're
 -- the fold; the hot path appends deltas without it, and Redis is its serialisation point. Read the balance
 -- in a LATER statement: under READ COMMITTED a statement that waits on this lock re-reads the row's newest
 -- version but keeps its older snapshot of balance_deltas, and would count a just-folded delta twice.
-SELECT 1 FROM control_plane.balances
-WHERE owner_type = @owner_type AND owner_id = @owner_id AND direction = @direction
-FOR UPDATE;
+-- An absent row is created and locked: otherwise the fold could insert it mid-transaction and deadlock.
+INSERT INTO control_plane.balances (owner_type, owner_id, direction, credits)
+VALUES (@owner_type, @owner_id, @direction, 0)
+ON CONFLICT (owner_type, owner_id, direction) DO UPDATE SET credits = control_plane.balances.credits;
 
 -- name: LockCustomerScope :one
 -- Read a customer's current balance_scope and LOCK the customer row, so two concurrent change-scope admin
