@@ -227,6 +227,14 @@ qu'on mesure un environnement représentatif.
       la revue de step-284 ; unité faute de multiple de dix libre
 - [ ] step-287 — Rejouer la campagne du VPS, injecteur sur une VM séparée ⛓ step-282, step-283, step-284, step-285
       — unité faute de multiple de dix libre
+- [ ] step-288 — La catégorie de trafic se déclare par sender ID ; `sender_id_policy` disparaît (ADR-0020 §1,
+      contrat 7.0.0) — décision humaine du 05/10/2026 ; unité faute de multiple de dix libre
+- [ ] step-289 — Un débit par sender ID, refusé à l'admission (ADR-0021 §3) ⛓ step-283, step-288 — unité faute
+      de multiple de dix libre
+- [ ] step-291 — `category_mismatch` et compteur de signalements par sender ID (ADR-0020 §5) ⛓ step-288 —
+      unité faute de multiple de dix libre
+- [ ] step-292 — Priorité effective, réservation de connecteurs et un topic par catégorie (ADR-0020 §2-§4,
+      ADR-0021) ⛓ step-288, step-289 — place par rapport à step-287 et step-409 à trancher dans la fiche
 
 Le seul **défaut de correction** du lot est clos : step-240 a fermé le rejeu d'un message annulé, et
 step-245 le cas où l'annulation avait gagné son jeton sans jamais écrire sa ligne CDR. step-250 a
