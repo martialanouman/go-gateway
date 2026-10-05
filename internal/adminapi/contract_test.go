@@ -179,6 +179,7 @@ var m1Operations = []opRef{
 	{"list-sessions", "get", "/admin/sessions"},
 	{"disconnect-session", "delete", "/admin/sessions/{id}"},
 	{"list-account-sessions", "get", "/admin/smpp-accounts/{id}/sessions"},
+	{"list-account-bind-failures", "get", "/admin/smpp-accounts/{id}/bind-failures"},
 
 	{"get-platform-content-policy", "get", "/admin/platform/content-policy"},
 	{"update-platform-content-policy", "patch", "/admin/platform/content-policy"},

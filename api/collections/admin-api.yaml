@@ -467,6 +467,13 @@ items:
           method: GET
           url: '{{baseUrl}}/admin/smpp-accounts/{{accountId}}/sessions'
         docs: Live binds vs max_sessions; active can exceed the limit (scope admin:read).
+      - info:
+          name: list-account-bind-failures
+          type: http
+        http:
+          method: GET
+          url: '{{baseUrl}}/admin/smpp-accounts/{{accountId}}/bind-failures'
+        docs: Refused binds of the last 24h, newest first; unknown system_ids are not listed (scope admin:read).
   - info:
       name: Sessions
       type: folder

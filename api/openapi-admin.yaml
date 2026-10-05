@@ -421,6 +421,28 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+  /admin/smpp-accounts/{id}/bind-failures:
+    parameters: [ { $ref: '#/components/parameters/Id' } ]
+    get:
+      tags: [SMPP Accounts]
+      summary: Recent refused binds of this account (§6.14)
+      operationId: list-account-bind-failures
+      description: >-
+        Newest first. Only a bind whose system_id resolves one of this account's credentials, revoked or
+        disabled included, is attributed here: a bind under an unknown system_id belongs to no account and
+        appears nowhere, so this list is not every attempt aimed at the account. The ESME reads
+        ESME_RINVPASWD for an unknown system_id and a wrong password alike (§11.3); only `reason` tells
+        them apart. Retention is 24 hours and at most the 200 latest refusals per account, so a burst can
+        evict older ones. Never carries the presented secret.
+      security: [ { OperatorBearer: [ admin:read ] } ]
+      parameters:
+        - { name: since, in: query, description: 'Inclusive lower bound on at, within the last 24 hours. Defaults to 24 hours ago.', schema: { type: string, format: date-time } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: object, properties: { data: { type: array, items: { $ref: '#/components/schemas/BindFailure' } } }, required: [data] } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
   /admin/smpp-accounts/{id}/sender-id-policy:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
     patch:
@@ -2605,6 +2627,20 @@ components:
         connected_at: { type: string, format: date-time }
         last_enquire_link: { type: [string, "null"], format: date-time }
       required: [id, bind_id, bind_type, pod_id, connected_at]
+    BindFailure:
+      type: object
+      properties:
+        at: { type: string, format: date-time }
+        remote_ip: { type: string }
+        bind_type: { $ref: '#/components/schemas/BindType' }
+        command_status: { type: string, enum: [ESME_RINVPASWD, ESME_RBINDFAIL, ESME_RSYSERR], description: 'What the ESME read.' }
+        reason:
+          type: string
+          enum: [password_mismatch, credential_revoked, credential_disabled, account_inactive, smpp_channel_disabled, bind_type_not_allowed, max_sessions_exceeded, throttled, registry_unavailable]
+          description: >-
+            Internal cause. account_inactive covers a suspended or closed account or customer; throttled is
+            the anti-brute-force lockout, answered ESME_RINVPASWD whatever the secret.
+      required: [at, remote_ip, bind_type, command_status, reason]
     SessionPage:
       type: object
       allOf:

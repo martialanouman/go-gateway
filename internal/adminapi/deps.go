@@ -3,11 +3,13 @@ package adminapi
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/martialanouman/go-gateway/internal/auth"
 	"github.com/martialanouman/go-gateway/internal/billing"
+	"github.com/martialanouman/go-gateway/internal/bindfailure"
 	"github.com/martialanouman/go-gateway/internal/connector/status"
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 )
@@ -179,6 +181,12 @@ type SessionDirectory interface {
 	DisconnectSession(ctx context.Context, bindID, reason string) error
 }
 
+// BindFailureLog reads an account's recent refused binds (step-286b), newest first, at or after since.
+// *bindfailure.Log satisfies it.
+type BindFailureLog interface {
+	List(ctx context.Context, accountID uuid.UUID, since time.Time) ([]bindfailure.Failure, error)
+}
+
 // PlatformContentPolicyStore reads and replaces the platform default an inherit customer resolves to
 // (step-370). Only off and stored_encrypted are storable: the store refuses anything else with
 // ErrValidation. *postgres.CustomerRepo satisfies it.
@@ -216,6 +224,7 @@ type Deps struct {
 	Webhooks              WebhookStore
 	Accounts              AccountStore
 	Sessions              SessionDirectory
+	BindFailures          BindFailureLog
 	Credentials           CredentialStore
 	Connectors            ConnectorStore
 	// SecretSealer is required by the three handlers that write a replayed secret (connectors, billing
