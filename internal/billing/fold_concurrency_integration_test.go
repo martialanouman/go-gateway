@@ -22,10 +22,21 @@ import (
 // TestStrictPrepaidNeverOverdrawsWhileFolding is the step-284 DoD under load: reserves race the fold and a
 // cache that keeps expiring, so every few milliseconds a reserve rehydrates from a durable balance whose
 // deltas are half folded. A strict-prepaid customer must never get one credit more than it paid for.
+// Since step-286 workers come in pairs reserving the same messages, and admin transfers drain the same
+// balance concurrently.
 func TestStrictPrepaidNeverOverdrawsWhileFolding(t *testing.T) {
-	const funded, workers, perWorker = 50, 20, 10
+	const funded, workers, perWorker, transfers = 50, 20, 10, 20
 	h := newBillingHarness(t, funded)
 	ctx := context.Background()
+	var sink uuid.UUID
+	if err := pgtest.Pool(t).QueryRow(ctx, `INSERT INTO control_plane.smpp_accounts (customer_id, name) VALUES ($1, $2) RETURNING id`,
+		h.owner.CustomerID, uuid.NewString()).Scan(&sink); err != nil {
+		t.Fatalf("seed transfer destination: %v", err)
+	}
+	messages := make([]uuid.UUID, workers/2*perWorker)
+	for i := range messages {
+		messages[i] = uuid.New()
+	}
 
 	stop := make(chan struct{})
 	var background sync.WaitGroup
@@ -56,17 +67,18 @@ func TestStrictPrepaidNeverOverdrawsWhileFolding(t *testing.T) {
 		}
 	})
 
-	var accepted, failed atomic.Int64
+	var accepted sync.Map
+	var failed, moved atomic.Int64
 	var reservers sync.WaitGroup
-	for range workers {
+	for w := range workers {
 		reservers.Add(1)
 		go func() {
 			defer reservers.Done()
-			for range perWorker {
-				_, err := h.acc.Reserve(ctx, h.owner, uuid.New(), 1)
+			for _, messageID := range messages[w/2*perWorker : (w/2+1)*perWorker] {
+				_, err := h.acc.Reserve(ctx, h.owner, messageID, 1)
 				switch {
 				case err == nil:
-					accepted.Add(1)
+					accepted.Store(messageID, true)
 				case !errors.Is(err, errs.ErrInsufficientCredit):
 					// A cache dropped between rehydrate and retry refuses the reserve: fail-closed, not an overdraft.
 					failed.Add(1)
@@ -74,14 +86,34 @@ func TestStrictPrepaidNeverOverdrawsWhileFolding(t *testing.T) {
 			}
 		}()
 	}
+	reservers.Add(1)
+	go func() {
+		defer reservers.Done()
+		for range transfers {
+			key := uuid.New()
+			debit := cp.LedgerEntry{OwnerType: h.owner.Type, OwnerID: h.owner.ID, Direction: cp.BillingDirectionMT,
+				CustomerID: h.owner.CustomerID, MessageID: &key, EntryType: cp.EntryTransfer, Credits: -1}
+			credit := cp.LedgerEntry{OwnerType: cp.OwnerTypeSMPPAccount, OwnerID: sink, Direction: cp.BillingDirectionMT,
+				CustomerID: h.owner.CustomerID, AccountID: &sink, MessageID: &key, EntryType: cp.EntryTransfer, Credits: 1}
+			err := h.acc.DebitTransfer(ctx, h.owner, key, 1, func(ctx context.Context) (bool, error) {
+				_, applied, err := h.repo.Transfer(ctx, debit, credit, key)
+				return applied, err
+			})
+			if err == nil {
+				moved.Add(1)
+			}
+		}
+	}()
 	reservers.Wait()
 	close(stop)
 	background.Wait()
 
-	got := int(accepted.Load())
-	if got > funded || got == 0 {
-		t.Errorf("accepted %d reserves of 1 credit against %d funded (%d refused on a dropped cache), want 1..%d",
-			got, funded, failed.Load(), funded)
+	var reserved int
+	accepted.Range(func(any, any) bool { reserved++; return true })
+	got := reserved + int(moved.Load())
+	if got > funded || reserved == 0 || moved.Load() == 0 {
+		t.Errorf("accepted %d reserves and %d transfers of 1 credit against %d funded (%d refused on a dropped cache), want both > 0 and at most %d in all",
+			reserved, moved.Load(), funded, failed.Load(), funded)
 	}
 	if bal := h.balance(t); bal != funded-got {
 		t.Errorf("durable balance = %d, want %d", bal, funded-got)
