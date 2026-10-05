@@ -121,8 +121,9 @@ FROM control_plane.credentials cr
 JOIN control_plane.smpp_accounts a ON a.id = cr.account_id
 JOIN control_plane.customers c ON c.id = a.customer_id
 WHERE cr.type = 'smpp_bind'
-  AND cr.status <> 'revoked'
   AND cr.system_id = $1
+ORDER BY cr.status = 'revoked', cr.created_at DESC
+LIMIT 1
 `
 
 type GetBindPrincipalRow struct {
@@ -142,9 +143,9 @@ type GetBindPrincipalRow struct {
 }
 
 // SMPP bind authentication lookup (§1.9, invariant d): the presented system_id resolves the single
-// live bind credential — the partial unique index credentials_system_id_uq covers exactly
-// type = 'smpp_bind' AND status <> 'revoked', so this WHERE rides that index and can match at most one
-// row. The argon2id password_hash is verified in Go by internal/credential (constant time), never in
+// live bind credential (credentials_system_id_uq), else the latest revoked one, so a refused bind on a
+// revoked credential is still attributed to its account (step-286b); the caller refuses a revoked row
+// before verifying anything. credentials_bind_system_id_idx serves both. The argon2id password_hash is verified in Go by internal/credential (constant time), never in
 // SQL. As with GetAPIKeyPrincipal the credential/channel/account/customer statuses are RETURNED, not
 // filtered, so the caller answers with the right SMPP command_status (ESME_RINVPASWD vs ESME_RBINDFAIL)
 // rather than a blanket "not found". The rotation grace window is honoured, but UNLIKE

@@ -13,6 +13,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/martialanouman/go-gateway/internal/bindfailure"
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	"github.com/martialanouman/go-gateway/internal/credential"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
@@ -56,70 +57,88 @@ func TestAuthorize(t *testing.T) {
 	base := activeCred(t)
 
 	tests := []struct {
-		name  string
-		store fakeStore
-		mode  session.BindMode
-		want  uint32
+		name   string
+		store  fakeStore
+		mode   session.BindMode
+		want   uint32
+		reason bindfailure.Reason
 	}{
 		{
-			name:  "valid transceiver bind",
-			store: fakeStore{cred: base, found: true},
-			mode:  session.BindTransceiver,
-			want:  smpp.StatusOK,
+			name:   "valid transceiver bind",
+			store:  fakeStore{cred: base, found: true},
+			mode:   session.BindTransceiver,
+			want:   smpp.StatusOK,
+			reason: "",
 		},
 		{
-			name:  "unknown system_id is invalid password",
-			store: fakeStore{found: false},
-			mode:  session.BindTransceiver,
-			want:  errs.StatusInvalidPasswd,
+			name:   "unknown system_id is invalid password",
+			store:  fakeStore{found: false},
+			mode:   session.BindTransceiver,
+			want:   errs.StatusInvalidPasswd,
+			reason: "",
 		},
 		{
-			name:  "lookup error is system error",
-			store: fakeStore{err: errors.New("db down")},
-			mode:  session.BindTransceiver,
-			want:  errs.StatusSysErr,
+			name:   "lookup error is system error",
+			store:  fakeStore{err: errors.New("db down")},
+			mode:   session.BindTransceiver,
+			want:   errs.StatusSysErr,
+			reason: "",
 		},
 		{
-			name:  "wrong password is invalid password",
-			store: fakeStore{cred: base, found: true},
-			mode:  session.BindTransceiver,
-			want:  errs.StatusInvalidPasswd,
+			name:   "wrong password is invalid password",
+			store:  fakeStore{cred: base, found: true},
+			mode:   session.BindTransceiver,
+			want:   errs.StatusInvalidPasswd,
+			reason: bindfailure.ReasonPasswordMismatch,
 		},
 		{
-			name:  "malformed stored hash is invalid password",
-			store: fakeStore{cred: mutate(base, func(c *cp.BindCredential) { c.PasswordHash = "not-a-phc" }), found: true},
-			mode:  session.BindTransceiver,
-			want:  errs.StatusInvalidPasswd,
+			name:   "malformed stored hash is invalid password",
+			store:  fakeStore{cred: mutate(base, func(c *cp.BindCredential) { c.PasswordHash = "not-a-phc" }), found: true},
+			mode:   session.BindTransceiver,
+			want:   errs.StatusInvalidPasswd,
+			reason: bindfailure.ReasonPasswordMismatch,
 		},
 		{
-			name:  "disabled credential is bind fail",
-			store: fakeStore{cred: mutate(base, func(c *cp.BindCredential) { c.CredentialStatus = cp.CredentialDisabled }), found: true},
-			mode:  session.BindTransceiver,
-			want:  errs.StatusBindFail,
+			name:   "disabled credential is bind fail",
+			store:  fakeStore{cred: mutate(base, func(c *cp.BindCredential) { c.CredentialStatus = cp.CredentialDisabled }), found: true},
+			mode:   session.BindTransceiver,
+			want:   errs.StatusBindFail,
+			reason: bindfailure.ReasonCredentialDisabled,
 		},
 		{
-			name:  "smpp channel disabled is bind fail",
-			store: fakeStore{cred: mutate(base, func(c *cp.BindCredential) { c.SMPPEnabled = false }), found: true},
-			mode:  session.BindTransceiver,
-			want:  errs.StatusBindFail,
+			name:   "smpp channel disabled is bind fail",
+			store:  fakeStore{cred: mutate(base, func(c *cp.BindCredential) { c.SMPPEnabled = false }), found: true},
+			mode:   session.BindTransceiver,
+			want:   errs.StatusBindFail,
+			reason: bindfailure.ReasonSMPPChannelDisabled,
 		},
 		{
-			name:  "suspended account is bind fail",
-			store: fakeStore{cred: mutate(base, func(c *cp.BindCredential) { c.AccountStatus = cp.AccountSuspended }), found: true},
-			mode:  session.BindTransceiver,
-			want:  errs.StatusBindFail,
+			name:   "suspended account is bind fail",
+			store:  fakeStore{cred: mutate(base, func(c *cp.BindCredential) { c.AccountStatus = cp.AccountSuspended }), found: true},
+			mode:   session.BindTransceiver,
+			want:   errs.StatusBindFail,
+			reason: bindfailure.ReasonAccountInactive,
 		},
 		{
-			name:  "suspended customer is bind fail",
-			store: fakeStore{cred: mutate(base, func(c *cp.BindCredential) { c.CustomerStatus = cp.CustomerSuspended }), found: true},
-			mode:  session.BindTransceiver,
-			want:  errs.StatusBindFail,
+			name:   "suspended customer is bind fail",
+			store:  fakeStore{cred: mutate(base, func(c *cp.BindCredential) { c.CustomerStatus = cp.CustomerSuspended }), found: true},
+			mode:   session.BindTransceiver,
+			want:   errs.StatusBindFail,
+			reason: bindfailure.ReasonAccountInactive,
 		},
 		{
-			name:  "bind type mismatch is bind fail",
-			store: fakeStore{cred: base, found: true}, // account is trx
-			mode:  session.BindTransmitter,
-			want:  errs.StatusBindFail,
+			name:   "bind type mismatch is bind fail",
+			store:  fakeStore{cred: base, found: true}, // account is trx
+			mode:   session.BindTransmitter,
+			want:   errs.StatusBindFail,
+			reason: bindfailure.ReasonBindTypeNotAllowed,
+		},
+		{
+			name:   "revoked credential is invalid password even with the right secret",
+			store:  fakeStore{cred: mutate(base, func(c *cp.BindCredential) { c.CredentialStatus = cp.CredentialRevoked }), found: true},
+			mode:   session.BindTransceiver,
+			want:   errs.StatusInvalidPasswd,
+			reason: bindfailure.ReasonCredentialRevoked,
 		},
 	}
 
@@ -130,13 +149,16 @@ func TestAuthorize(t *testing.T) {
 			if tc.name == "wrong password is invalid password" {
 				pw = "wrong"
 			}
-			_, got, _ := l.authorize(context.Background(), session.BindRequest{
+			_, got, reason, _ := l.authorize(context.Background(), session.BindRequest{
 				Mode:     tc.mode,
 				SystemID: "sid-1",
 				Password: pw,
 			})
 			if got != tc.want {
 				t.Errorf("authorize() status = %#x, want %#x", got, tc.want)
+			}
+			if reason != tc.reason {
+				t.Errorf("authorize() reason = %q, want %q", reason, tc.reason)
 			}
 		})
 	}
@@ -243,7 +265,7 @@ func TestAuthorizeRotationGrace(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			opts := Options{Now: func() time.Time { return graceNow }}
 			l := New(fakeStore{cred: tc.cred, found: true}, nil, nil, opts, slog.New(slog.DiscardHandler))
-			_, got, _ := l.authorize(context.Background(), session.BindRequest{
+			_, got, _, _ := l.authorize(context.Background(), session.BindRequest{
 				Mode:     session.BindTransceiver,
 				SystemID: "sid-1",
 				Password: tc.password,
@@ -378,7 +400,7 @@ func TestAuthorizeNeverQueriesOnAMalformedSystemID(t *testing.T) {
 			store := &countingStore{fakeStore: fakeStore{found: false}}
 			l := New(store, nil, nil, Options{}, discardLog())
 
-			_, cmdStatus, _ := l.authorize(context.Background(), session.BindRequest{
+			_, cmdStatus, _, _ := l.authorize(context.Background(), session.BindRequest{
 				SystemID: tc.systemID, Password: testPassword,
 			})
 

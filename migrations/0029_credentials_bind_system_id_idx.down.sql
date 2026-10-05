@@ -1,0 +1,1 @@
+DROP INDEX control_plane.credentials_bind_system_id_idx;

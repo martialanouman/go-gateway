@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/martialanouman/go-gateway/internal/bindfailure"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 	"github.com/martialanouman/go-gateway/internal/session/disconnect"
 	registrypb "github.com/martialanouman/go-gateway/internal/session/pb"
@@ -188,10 +189,11 @@ func (l *Listener) onBind(ctx context.Context, st *connState, clientIP string, o
 		// wrong password, so an attacker cannot detect the lockout (consistent with authorize's
 		// anti-enumeration posture). This deliberately departs from step-026's literal ESME_RBINDFAIL.
 		if l.throttleBlocks(bctx, req.SystemID, clientIP) {
+			l.recordThrottled(bctx, req, clientIP)
 			return session.BindResult{Status: errs.StatusInvalidPasswd}
 		}
 
-		cred, cmdStatus, viaGrace := l.authorize(bctx, req)
+		cred, cmdStatus, reason, viaGrace := l.authorize(bctx, req)
 		if cmdStatus != smpp.StatusOK {
 			// An authentication or authorisation failure feeds the throttle; a registry quota rejection
 			// (below) does not, since valid credentials over max_sessions are no brute-force signal.
@@ -212,6 +214,7 @@ func (l *Listener) onBind(ctx context.Context, st *connState, clientIP string, o
 				l.recordBindFailure(bctx, req.SystemID, clientIP)
 			}
 			l.logger.InfoContext(bctx, "smpp bind rejected", "mode", req.Mode, "command_status", cmdStatus)
+			l.recordRefusal(bctx, cred.AccountID, req.Mode, clientIP, cmdStatus, reason)
 			return session.BindResult{Status: cmdStatus}
 		}
 
@@ -221,11 +224,17 @@ func (l *Listener) onBind(ctx context.Context, st *connState, clientIP string, o
 			cmdStatus := registryBindStatus(err)
 			l.logger.InfoContext(bctx, "smpp bind refused by registry",
 				"account_id", cred.AccountID, "mode", req.Mode, "command_status", cmdStatus)
+			reason := bindfailure.ReasonRegistryUnavailable
+			if cmdStatus == errs.StatusBindFail {
+				reason = bindfailure.ReasonMaxSessions
+			}
+			l.recordRefusal(bctx, cred.AccountID, req.Mode, clientIP, cmdStatus, reason)
 			return session.BindResult{Status: cmdStatus}
 		}
 		if !resp.GetAccepted() {
 			// The server rejects a quota breach with an error, not accepted=false; guard defensively so a
 			// contract drift can never over-admit past max_sessions.
+			l.recordRefusal(bctx, cred.AccountID, req.Mode, clientIP, errs.StatusBindFail, bindfailure.ReasonMaxSessions)
 			return session.BindResult{Status: errs.StatusBindFail}
 		}
 
@@ -300,6 +309,41 @@ func (l *Listener) recordBindFailure(ctx context.Context, systemID, clientIP str
 	if err := l.opts.Throttle.RecordFailure(ctx, systemID, clientIP); err != nil {
 		l.logger.WarnContext(ctx, "smpp bind throttle record failed", "err", err)
 	}
+}
+
+// recordThrottled attributes a throttled bind to its account. The lookup runs after the backoff and
+// costs no more than the unthrottled attempt would have: the throttle spares argon2id, not the lookup.
+func (l *Listener) recordThrottled(ctx context.Context, req session.BindRequest, clientIP string) {
+	if l.opts.BindFailures == nil {
+		return
+	}
+	cred, found, err := l.lookupCredential(ctx, req.SystemID)
+	if err != nil || !found {
+		return
+	}
+	l.recordRefusal(ctx, cred.AccountID, req.Mode, clientIP, errs.StatusInvalidPasswd, bindfailure.ReasonThrottled)
+}
+
+// recordRefusal is fail-open, like the throttle. An empty reason means the system_id resolved no
+// account: such a bind is recorded nowhere.
+func (l *Listener) recordRefusal(ctx context.Context, accountID uuid.UUID, mode session.BindMode, clientIP string, cmdStatus uint32, reason bindfailure.Reason) {
+	if l.opts.BindFailures == nil || reason == "" {
+		return
+	}
+	f := bindfailure.Failure{
+		At: l.opts.Now(), RemoteIP: clientIP, BindType: string(bindTypeForMode(mode)),
+		CommandStatus: bindStatusName[cmdStatus], Reason: reason,
+	}
+	if err := l.opts.BindFailures.Record(ctx, accountID, f); err != nil {
+		l.logger.WarnContext(ctx, "smpp bind failure record failed", "err", err)
+	}
+}
+
+// bindStatusName names the only statuses a refused bind answers, as the Admin contract spells them.
+var bindStatusName = map[uint32]string{
+	errs.StatusInvalidPasswd: "ESME_RINVPASWD",
+	errs.StatusBindFail:      "ESME_RBINDFAIL",
+	errs.StatusSysErr:        "ESME_RSYSERR",
 }
 
 // resetThrottle clears a system_id's failure counter after a successful bind. A nil throttle is a

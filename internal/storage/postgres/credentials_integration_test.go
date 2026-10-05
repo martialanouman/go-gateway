@@ -388,3 +388,64 @@ func TestReactivatingABindWhoseSystemIDWasTakenConflicts(t *testing.T) {
 		t.Errorf("reactivation code = %q (err=%v), want conflict", code, err)
 	}
 }
+
+// A revoked bind still resolves, so its refused binds are attributed to its account (step-286b); a live
+// credential that took the system_id since wins over every revoked one.
+func TestBindLookupResolvesRevokedButPrefersTheLiveCredential(t *testing.T) {
+	pool := pgtest.Pool(t)
+	ctx := context.Background()
+	customers := postgres.NewCustomerRepo(pool)
+	accounts := postgres.NewAccountRepo(pool)
+	creds := postgres.NewCredentialRepo(pool)
+	binds := postgres.NewBindRepo(pool)
+
+	customer, err := customers.Create(ctx, cp.NewCustomer{Name: "RevokedLookupCo"})
+	if err != nil {
+		t.Fatalf("create customer: %v", err)
+	}
+	systemID := strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
+	hash := "bind-hash"
+	bindOn := func(name string) cp.Credential {
+		t.Helper()
+		account, err := accounts.Create(ctx, cp.NewAccount{CustomerID: customer.ID, Name: name})
+		if err != nil {
+			t.Fatalf("create account %s: %v", name, err)
+		}
+		cred, err := creds.Create(ctx, cp.NewCredential{
+			AccountID: account.ID, Type: cp.CredentialSMPPBind, SystemID: &systemID, PasswordHash: &hash,
+		})
+		if err != nil {
+			t.Fatalf("create bind %s: %v", name, err)
+		}
+		return cred
+	}
+
+	first := bindOn("first")
+	if _, err := creds.SetStatus(ctx, first.AccountID, first.ID, cp.CredentialRevoked); err != nil {
+		t.Fatalf("revoke first: %v", err)
+	}
+	got, found, err := binds.BindCredentialBySystemID(ctx, systemID)
+	if err != nil || !found {
+		t.Fatalf("revoked lookup found=%v err=%v, want found", found, err)
+	}
+	if got.AccountID != first.AccountID || got.CredentialStatus != cp.CredentialRevoked {
+		t.Fatalf("revoked lookup = account %s status %q, want %s revoked", got.AccountID, got.CredentialStatus, first.AccountID)
+	}
+
+	second := bindOn("second")
+	got, found, err = binds.BindCredentialBySystemID(ctx, systemID)
+	if err != nil || !found {
+		t.Fatalf("live lookup found=%v err=%v, want found", found, err)
+	}
+	if got.AccountID != second.AccountID || got.CredentialStatus != cp.CredentialActive {
+		t.Fatalf("live lookup = account %s status %q, want %s active", got.AccountID, got.CredentialStatus, second.AccountID)
+	}
+
+	if _, err := creds.SetStatus(ctx, second.AccountID, second.ID, cp.CredentialRevoked); err != nil {
+		t.Fatalf("revoke second: %v", err)
+	}
+	got, _, err = binds.BindCredentialBySystemID(ctx, systemID)
+	if err != nil || got.AccountID != second.AccountID {
+		t.Fatalf("two revoked: account %s err=%v, want the latest revoked %s", got.AccountID, err, second.AccountID)
+	}
+}

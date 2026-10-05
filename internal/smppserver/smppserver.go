@@ -24,6 +24,7 @@ import (
 	"go.opentelemetry.io/otel/trace/noop"
 	"google.golang.org/grpc"
 
+	"github.com/martialanouman/go-gateway/internal/bindfailure"
 	"github.com/martialanouman/go-gateway/internal/bindthrottle"
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
@@ -57,6 +58,12 @@ type BindThrottle interface {
 	Check(ctx context.Context, systemID, ip string) (bindthrottle.Decision, error)
 	RecordFailure(ctx context.Context, systemID, ip string) error
 	Reset(ctx context.Context, systemID string) error
+}
+
+// BindFailureLog keeps an account's refused binds for the Admin API (step-286b). *bindfailure.Log
+// satisfies it; nil disables it. The caller treats an error as fail-open.
+type BindFailureLog interface {
+	Record(ctx context.Context, accountID uuid.UUID, f bindfailure.Failure) error
 }
 
 // Ingestor runs the shared MT ingestion sequence for a submit_sm: encode the envelope, produce it
@@ -142,6 +149,8 @@ type Options struct {
 	// ("system_id" or "ip" — both bounded, never the value). Nil skips the metric, so tests need not
 	// wire a registry.
 	ThrottleBlocked *prometheus.CounterVec
+	// BindFailures records each refused bind whose system_id resolves a credential. Nil disables it.
+	BindFailures BindFailureLog
 	// MaxConns caps concurrent accepted connections, bounding the goroutines and file descriptors an
 	// unauthenticated peer can pin — in particular under the throttle's tarpit backoff. Zero uses
 	// defaultMaxConns. It is a hard ceiling: beyond it, new connections wait in the kernel backlog.
