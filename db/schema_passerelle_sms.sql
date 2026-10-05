@@ -319,8 +319,6 @@ CREATE TABLE control_plane.smpp_accounts (
                        CHECK (status IN ('active','suspended','closed')),  -- effective = min(customer, this)
   smpp_enabled       boolean NOT NULL DEFAULT true,        -- may open SMPP binds?
   rest_enabled       boolean NOT NULL DEFAULT true,        -- may call the REST API?
-  sender_id_policy   text NOT NULL DEFAULT 'strict'
-                       CHECK (sender_id_policy IN ('strict','allow_unregistered_numeric','disabled')),  -- §6.19
   query_sm_enabled   boolean NOT NULL DEFAULT true,        -- optional SMPP op (§6.22)
   cancel_sm_enabled  boolean NOT NULL DEFAULT true,
   allowed_bind_types text NOT NULL DEFAULT 'trx'
@@ -388,6 +386,8 @@ CREATE TABLE control_plane.sender_ids (
   address     text NOT NULL,          -- alphanumeric or MSISDN
   status      text NOT NULL DEFAULT 'pending_carrier_approval'
                 CHECK (status IN ('pending_carrier_approval','active','disabled')),
+  traffic_category text NOT NULL DEFAULT 'marketing'   -- declared by the operator, never inferred (ADR-0020)
+                CONSTRAINT sender_ids_traffic_category_check CHECK (traffic_category IN ('otp','transactional','marketing')),
   created_by  uuid,             -- the BFF's operator id (ADR-0019), no FK: the BFF owns its operators
   approved_at timestamptz,
   first_used_at timestamptz,          -- set once from mt.outcome; a used sender ID is never deleted (ADR-0023)

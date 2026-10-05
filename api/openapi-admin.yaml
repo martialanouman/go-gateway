@@ -236,6 +236,8 @@ paths:
       tags: [Sender IDs]
       summary: List a customer's sender IDs
       operationId: list-sender-ids
+      parameters:
+        - { name: traffic_category, in: query, schema: { $ref: '#/components/schemas/TrafficCategory' } }
       security: [ { OperatorBearer: [ admin:read ] } ]
       responses:
         '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/SenderId' } } } } }
@@ -246,6 +248,9 @@ paths:
     post:
       tags: [Sender IDs]
       summary: Register a sender ID (starts pending carrier approval)
+      description: >-
+        Every sender address must be registered, numeric ones included: a message whose source address
+        has no active sender ID of its customer is rejected (ADR-0020).
       operationId: create-sender-id
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/SenderIdCreate' } } } }
       security: [ { OperatorBearer: [ admin:write ] } ]
@@ -259,7 +264,7 @@ paths:
     parameters: [ { $ref: '#/components/parameters/Id' }, { $ref: '#/components/parameters/SenderId' } ]
     patch:
       tags: [Sender IDs]
-      summary: Update a sender ID (status)
+      summary: Update a sender ID (status, traffic category)
       operationId: update-sender-id
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/SenderIdUpdate' } } } }
       security: [ { OperatorBearer: [ admin:write ] } ]
@@ -442,21 +447,6 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
-        '422': { $ref: '#/components/responses/ValidationError' }
-  /admin/smpp-accounts/{id}/sender-id-policy:
-    parameters: [ { $ref: '#/components/parameters/Id' } ]
-    patch:
-      tags: [SMPP Accounts]
-      summary: Set sender-ID authorization policy (§6.19)
-      description: Takes effect on the next message, live sessions included; no rebind.
-      operationId: set-account-sender-id-policy
-      security: [ { OperatorBearer: [ admin:write ] } ]
-      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { sender_id_policy: { $ref: '#/components/schemas/SenderIdPolicy' } }, required: [sender_id_policy] } } } }
-      responses:
-        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SmppAccount' } } } }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '404': { $ref: '#/components/responses/NotFound' }
         '422': { $ref: '#/components/responses/ValidationError' }
   /admin/smpp-accounts/{id}/smpp-ops:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
@@ -2052,7 +2042,12 @@ components:
     # ---- enums (aligned with the DDL) ----
     Direction: { type: string, enum: [mt, mo] }
     BalanceScope: { type: string, enum: [customer, smpp_account] }
-    SenderIdPolicy: { type: string, enum: [strict, allow_unregistered_numeric, disabled] }
+    TrafficCategory:
+      type: string
+      enum: [otp, transactional, marketing]
+      description: >-
+        What the customer commits to send under a sender ID (ADR-0020). marketing is the default and the
+        most constrained category; any other value is an explicit declaration.
     ContentStorage: { type: string, enum: [inherit, off, stored_plaintext, stored_encrypted] }
     DistributionStrategy: { type: string, enum: [static, round_robin, weighted, failover_priority, least_loaded, hash_based] }
     BindType: { type: string, enum: [tx, rx, trx] }
@@ -2170,6 +2165,7 @@ components:
         customer_id: { type: string, format: uuid }
         address: { type: string }
         status: { type: string, enum: [pending_carrier_approval, active, disabled] }
+        traffic_category: { $ref: '#/components/schemas/TrafficCategory' }
         created_by: { type: [string, "null"], format: uuid }
         approved_at: { type: [string, "null"], format: date-time }
         first_used_at:
@@ -2181,18 +2177,20 @@ components:
             set, the sender ID can no longer be deleted (409), only disabled.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
-      required: [id, customer_id, address, status, created_at, updated_at]
+      required: [id, customer_id, address, status, traffic_category, created_at, updated_at]
     SenderIdCreate:
       type: object
       additionalProperties: false
       properties:
         address: { type: string, maxLength: 20 }
+        traffic_category: { $ref: '#/components/schemas/TrafficCategory', default: marketing }
       required: [address]
     SenderIdUpdate:
       type: object
       additionalProperties: false
       properties:
         status: { type: string, enum: [pending_carrier_approval, active, disabled] }
+        traffic_category: { $ref: '#/components/schemas/TrafficCategory' }
 
     # ---- smpp accounts ----
     SmppAccount:
@@ -2204,14 +2202,13 @@ components:
         status: { type: string, enum: [active, suspended, closed] }
         smpp_enabled: { type: boolean }
         rest_enabled: { type: boolean }
-        sender_id_policy: { $ref: '#/components/schemas/SenderIdPolicy' }
         query_sm_enabled: { type: boolean }
         cancel_sm_enabled: { type: boolean }
         allowed_bind_types: { $ref: '#/components/schemas/BindType' }
         max_sessions: { type: integer, minimum: 0 }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
-      required: [id, customer_id, name, status, smpp_enabled, rest_enabled, sender_id_policy, allowed_bind_types, max_sessions, created_at, updated_at]
+      required: [id, customer_id, name, status, smpp_enabled, rest_enabled, allowed_bind_types, max_sessions, created_at, updated_at]
     SmppAccountCreate:
       type: object
       additionalProperties: false
@@ -2220,7 +2217,6 @@ components:
         name: { type: string }
         smpp_enabled: { type: boolean, default: true }
         rest_enabled: { type: boolean, default: true }
-        sender_id_policy: { $ref: '#/components/schemas/SenderIdPolicy' }
         query_sm_enabled: { type: boolean, default: true }
         cancel_sm_enabled: { type: boolean, default: true }
         allowed_bind_types: { $ref: '#/components/schemas/BindType' }

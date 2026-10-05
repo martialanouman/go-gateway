@@ -50,20 +50,18 @@ type Resolver interface {
 	Resolve(ctx context.Context, req RouteRequest) (Route, error)
 }
 
-// SenderIDAuthorizer authorizes a message's source address against the account's sender-ID policy and
-// its customer's registered sender IDs (spec §6.19). It is implemented over an immutable snapshot
+// SenderIDAuthorizer authorizes a message's source address against its customer's active registered
+// sender IDs (spec §6.19, ADR-0020). It is implemented over an immutable snapshot
 // (internal/pipeline/senderid); the interface lives here, consumer-side. A rejection returns
 // errs.ErrSenderIDNotAuthorized.
 type SenderIDAuthorizer interface {
-	Authorize(ctx context.Context, accountID, customerID uuid.UUID, from string) error
+	Authorize(ctx context.Context, customerID uuid.UUID, from string) error
 }
 
 // OptOutChecker reports whether an MT's destination is suppressed (opted out) in any scope applicable
 // to the message — platform, customer, account, or the sending inbound number (spec §6.20). It is
 // implemented over an immutable Bloom snapshot with exact confirmation (internal/pipeline/optout);
-// the interface lives here, consumer-side. dest is the normalized destination. The (accountID,
-// customerID) order matches SenderIDAuthorizer.Authorize so the two compliance stages read alike. A
-// non-nil error is a transient fault (the exact confirmation store) the caller must not treat as
+// the interface lives here, consumer-side. dest is the normalized destination. A non-nil error is a transient fault (the exact confirmation store) the caller must not treat as
 // "not suppressed".
 type OptOutChecker interface {
 	IsOptedOut(ctx context.Context, accountID, customerID uuid.UUID, from, dest string) (bool, error)
@@ -167,7 +165,7 @@ func (p *Pipeline) Process(ctx context.Context, in InboundMT) (RoutedMT, []pipee
 	// 2. Sender-ID authorization (§6.19). A frozen compliance stage: never short-circuited by an exact
 	// route (invariant b). The span carries only the rejection code, never the body (invariant a).
 	if err := p.stage(ctx, "pipeline.sender_id", func(ctx context.Context) error {
-		return p.deps.SenderIDs.Authorize(ctx, in.AccountID, in.CustomerID, in.From)
+		return p.deps.SenderIDs.Authorize(ctx, in.CustomerID, in.From)
 	}); err != nil {
 		return RoutedMT{}, nil, err
 	}

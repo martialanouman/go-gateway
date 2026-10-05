@@ -135,7 +135,7 @@ func buildStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg config
 	if err != nil {
 		t.Fatalf("load route snapshot: %v", err)
 	}
-	authorizer, err := senderid.LoadSnapshot(context.Background(), postgres.NewAccountRepo(pool), postgres.NewSenderIDRepo(pool))
+	authorizer, err := senderid.LoadSnapshot(context.Background(), postgres.NewSenderIDRepo(pool))
 	if err != nil {
 		t.Fatalf("load sender-id snapshot: %v", err)
 	}
@@ -238,8 +238,8 @@ func seedControlPlane(t *testing.T, pool *pgxpool.Pool) string {
 		t.Fatalf("create account: %v", err)
 	}
 
-	// Register and activate the sender ID the client submits from ("ACME"), so the account's default
-	// strict sender-ID policy (§6.19) authorizes the MT rather than rejecting it.
+	// Register and activate the sender ID the client submits from ("ACME"), so sender-ID authorization
+	// (§6.19) admits the MT rather than rejecting it.
 	senderIDs := postgres.NewSenderIDRepo(pool)
 	sid, err := senderIDs.Create(ctx, cp.NewSenderID{CustomerID: customer.ID, Address: "ACME"})
 	if err != nil {

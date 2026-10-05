@@ -286,9 +286,9 @@ func loadBootSnapshots(ctx context.Context, pool *pgxpool.Pool, logger *slog.Log
 		return nil, fmt.Errorf("load route snapshot: %w", err)
 	}
 
-	// The sender-ID authorization snapshot (§6.19): the account policies and the customers' active
-	// sender IDs, indexed once for lock-free per-message checks.
-	senderSnap, err := loadSenderIDSnapshotWithRetry(ctx, postgres.NewAccountRepo(pool), postgres.NewSenderIDRepo(pool), logger)
+	// The sender-ID authorization snapshot (§6.19): the customers' active sender IDs, indexed once for
+	// lock-free per-message checks.
+	senderSnap, err := loadSenderIDSnapshotWithRetry(ctx, postgres.NewSenderIDRepo(pool), logger)
 	if err != nil {
 		return nil, fmt.Errorf("load sender-id snapshot: %w", err)
 	}
@@ -763,7 +763,7 @@ func newSnapshotWatcher(
 			}
 			blooms.set("optout", boot.optOut.CapacityBits())
 
-			senderSnap, err := senderid.LoadSnapshot(ctx, postgres.NewAccountRepo(pool), postgres.NewSenderIDRepo(pool))
+			senderSnap, err := senderid.LoadSnapshot(ctx, postgres.NewSenderIDRepo(pool))
 			if err != nil {
 				return err
 			}
@@ -833,9 +833,9 @@ func loadSnapshotWithRetry(ctx context.Context, lister routing.RouteLister, logg
 // loadSenderIDSnapshotWithRetry loads the sender-ID authorization snapshot, retrying transient
 // failures with capped exponential backoff until it succeeds or ctx is cancelled — the same boot
 // discipline as the route snapshot (Postgres is a hard boot dependency).
-func loadSenderIDSnapshotWithRetry(ctx context.Context, policies senderid.PolicyLister, ids senderid.ActiveSenderIDLister, logger *slog.Logger) (*senderid.Authorizer, error) {
+func loadSenderIDSnapshotWithRetry(ctx context.Context, ids senderid.ActiveSenderIDLister, logger *slog.Logger) (*senderid.Authorizer, error) {
 	return loadWithRetry(ctx, logger, "sender-id snapshot", func(ctx context.Context) (*senderid.Authorizer, error) {
-		return senderid.LoadSnapshot(ctx, policies, ids)
+		return senderid.LoadSnapshot(ctx, ids)
 	})
 }
 

@@ -123,7 +123,7 @@ type RouteStore interface {
 // customer, so update and delete are scoped by the customer id.
 type SenderIDStore interface {
 	Create(ctx context.Context, in cp.NewSenderID) (cp.SenderID, error)
-	ListByCustomer(ctx context.Context, customerID uuid.UUID) ([]cp.SenderID, error)
+	ListByCustomer(ctx context.Context, customerID uuid.UUID, category *cp.TrafficCategory) ([]cp.SenderID, error)
 	Update(ctx context.Context, customerID, senderID uuid.UUID, p cp.SenderIDPatch) (cp.SenderID, error)
 	Delete(ctx context.Context, customerID, senderID uuid.UUID) error
 }

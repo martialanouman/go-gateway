@@ -19,10 +19,10 @@ import (
 	"github.com/martialanouman/go-gateway/internal/testutil/redistest"
 )
 
-// TestAHardenedSenderIDPolicyReachesTheRunningRouter: the policy is checked per message, so a router that
+// TestADisabledSenderIDReachesTheRunningRouter: registrations are checked per message, so a router that
 // refuses after the change refuses on every session already open. Before step-390 the snapshot was loaded
 // at boot only and a PATCH was true in the database and false in production.
-func TestAHardenedSenderIDPolicyReachesTheRunningRouter(t *testing.T) {
+func TestADisabledSenderIDReachesTheRunningRouter(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
@@ -31,11 +31,8 @@ func TestAHardenedSenderIDPolicyReachesTheRunningRouter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create customer: %v", err)
 	}
-	disabled := cp.SenderIDPolicyDisabled
-	accounts := postgres.NewAccountRepo(pool)
-	account, err := accounts.Create(ctx, cp.NewAccount{CustomerID: customer.ID, Name: "390", SenderIDPolicy: &disabled})
-	if err != nil {
-		t.Fatalf("create account: %v", err)
+	if _, err := pool.Exec(ctx, `INSERT INTO control_plane.sender_ids (customer_id, address, status) VALUES ($1, 'PROMO', 'active')`, customer.ID); err != nil {
+		t.Fatalf("register sender: %v", err)
 	}
 
 	cfg := testConfig()
@@ -53,13 +50,13 @@ func TestAHardenedSenderIDPolicyReachesTheRunningRouter(t *testing.T) {
 		app.close()
 	})
 
-	authorize := func() error { return app.senderIDs.Authorize(ctx, account.ID, customer.ID, "PROMO") }
+	authorize := func() error { return app.senderIDs.Authorize(ctx, customer.ID, "PROMO") }
 	if err := authorize(); err != nil {
-		t.Fatalf("an unregistered sender under the disabled policy = %v, want accepted — the control failed", err)
+		t.Fatalf("an active registered sender = %v, want accepted — the control failed", err)
 	}
 
-	if _, err := pool.Exec(ctx, `UPDATE control_plane.smpp_accounts SET sender_id_policy = 'strict' WHERE id = $1`, account.ID); err != nil {
-		t.Fatalf("harden the policy: %v", err)
+	if _, err := pool.Exec(ctx, `UPDATE control_plane.sender_ids SET status = 'disabled' WHERE customer_id = $1`, customer.ID); err != nil {
+		t.Fatalf("disable the sender: %v", err)
 	}
 	pub := redisstore.NewPubSubPublisher(redistest.Client(t))
 	deadline := time.Now().Add(15 * time.Second)
@@ -68,7 +65,7 @@ func TestAHardenedSenderIDPolicyReachesTheRunningRouter(t *testing.T) {
 			t.Fatalf("publish invalidation: %v", err)
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("the running router still accepts the sender after the policy became strict")
+			t.Fatal("the running router still accepts the sender after it was disabled")
 		}
 		time.Sleep(300 * time.Millisecond)
 	}

@@ -13,21 +13,27 @@ import (
 )
 
 const createSenderID = `-- name: CreateSenderID :one
-INSERT INTO control_plane.sender_ids (customer_id, address, created_by)
-VALUES ($1, $2, $3)
-RETURNING id, customer_id, address, status, created_by, approved_at, created_at, updated_at, first_used_at
+INSERT INTO control_plane.sender_ids (customer_id, address, traffic_category, created_by)
+VALUES ($1, $2, COALESCE($3::text, 'marketing'), $4)
+RETURNING id, customer_id, address, status, created_by, approved_at, created_at, updated_at, first_used_at, traffic_category
 `
 
 type CreateSenderIDParams struct {
-	CustomerID uuid.UUID
-	Address    string
-	CreatedBy  *uuid.UUID
+	CustomerID      uuid.UUID
+	Address         string
+	TrafficCategory *string
+	CreatedBy       *uuid.UUID
 }
 
 // The customer_id comes from the path; an unknown one violates the FK -> 422. A duplicate address
 // for the customer violates sender_ids_uq -> 409.
 func (q *Queries) CreateSenderID(ctx context.Context, arg CreateSenderIDParams) (ControlPlaneSenderID, error) {
-	row := q.db.QueryRow(ctx, createSenderID, arg.CustomerID, arg.Address, arg.CreatedBy)
+	row := q.db.QueryRow(ctx, createSenderID,
+		arg.CustomerID,
+		arg.Address,
+		arg.TrafficCategory,
+		arg.CreatedBy,
+	)
 	var i ControlPlaneSenderID
 	err := row.Scan(
 		&i.ID,
@@ -39,6 +45,7 @@ func (q *Queries) CreateSenderID(ctx context.Context, arg CreateSenderIDParams) 
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.FirstUsedAt,
+		&i.TrafficCategory,
 	)
 	return i, err
 }
@@ -63,7 +70,7 @@ func (q *Queries) DeleteSenderID(ctx context.Context, arg DeleteSenderIDParams) 
 }
 
 const getSenderID = `-- name: GetSenderID :one
-SELECT id, customer_id, address, status, created_by, approved_at, created_at, updated_at, first_used_at FROM control_plane.sender_ids WHERE customer_id = $1 AND id = $2
+SELECT id, customer_id, address, status, created_by, approved_at, created_at, updated_at, first_used_at, traffic_category FROM control_plane.sender_ids WHERE customer_id = $1 AND id = $2
 `
 
 type GetSenderIDParams struct {
@@ -84,12 +91,13 @@ func (q *Queries) GetSenderID(ctx context.Context, arg GetSenderIDParams) (Contr
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.FirstUsedAt,
+		&i.TrafficCategory,
 	)
 	return i, err
 }
 
 const listActiveSenderIDs = `-- name: ListActiveSenderIDs :many
-SELECT id, customer_id, address, status, created_by, approved_at, created_at, updated_at, first_used_at FROM control_plane.sender_ids WHERE status = 'active'
+SELECT id, customer_id, address, status, created_by, approved_at, created_at, updated_at, first_used_at, traffic_category FROM control_plane.sender_ids WHERE status = 'active'
 `
 
 // All active sender IDs across customers, for the sender-ID authorization snapshot (step-060). Only
@@ -113,6 +121,7 @@ func (q *Queries) ListActiveSenderIDs(ctx context.Context) ([]ControlPlaneSender
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.FirstUsedAt,
+			&i.TrafficCategory,
 		); err != nil {
 			return nil, err
 		}
@@ -125,11 +134,19 @@ func (q *Queries) ListActiveSenderIDs(ctx context.Context) ([]ControlPlaneSender
 }
 
 const listSenderIDsByCustomer = `-- name: ListSenderIDsByCustomer :many
-SELECT id, customer_id, address, status, created_by, approved_at, created_at, updated_at, first_used_at FROM control_plane.sender_ids WHERE customer_id = $1 ORDER BY address
+SELECT id, customer_id, address, status, created_by, approved_at, created_at, updated_at, first_used_at, traffic_category FROM control_plane.sender_ids
+WHERE customer_id = $1
+  AND ($2::text IS NULL OR traffic_category = $2)
+ORDER BY address
 `
 
-func (q *Queries) ListSenderIDsByCustomer(ctx context.Context, customerID uuid.UUID) ([]ControlPlaneSenderID, error) {
-	rows, err := q.db.Query(ctx, listSenderIDsByCustomer, customerID)
+type ListSenderIDsByCustomerParams struct {
+	CustomerID      uuid.UUID
+	TrafficCategory *string
+}
+
+func (q *Queries) ListSenderIDsByCustomer(ctx context.Context, arg ListSenderIDsByCustomerParams) ([]ControlPlaneSenderID, error) {
+	rows, err := q.db.Query(ctx, listSenderIDsByCustomer, arg.CustomerID, arg.TrafficCategory)
 	if err != nil {
 		return nil, err
 	}
@@ -147,6 +164,7 @@ func (q *Queries) ListSenderIDsByCustomer(ctx context.Context, customerID uuid.U
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.FirstUsedAt,
+			&i.TrafficCategory,
 		); err != nil {
 			return nil, err
 		}
@@ -177,19 +195,27 @@ func (q *Queries) MarkSenderIDsFirstUsed(ctx context.Context, arg MarkSenderIDsF
 }
 
 const updateSenderID = `-- name: UpdateSenderID :one
-UPDATE control_plane.sender_ids SET status = COALESCE($1, status)
-WHERE customer_id = $2 AND id = $3
-RETURNING id, customer_id, address, status, created_by, approved_at, created_at, updated_at, first_used_at
+UPDATE control_plane.sender_ids SET
+    status           = COALESCE($1, status),
+    traffic_category = COALESCE($2, traffic_category)
+WHERE customer_id = $3 AND id = $4
+RETURNING id, customer_id, address, status, created_by, approved_at, created_at, updated_at, first_used_at, traffic_category
 `
 
 type UpdateSenderIDParams struct {
-	Status     *string
-	CustomerID uuid.UUID
-	ID         uuid.UUID
+	Status          *string
+	TrafficCategory *string
+	CustomerID      uuid.UUID
+	ID              uuid.UUID
 }
 
 func (q *Queries) UpdateSenderID(ctx context.Context, arg UpdateSenderIDParams) (ControlPlaneSenderID, error) {
-	row := q.db.QueryRow(ctx, updateSenderID, arg.Status, arg.CustomerID, arg.ID)
+	row := q.db.QueryRow(ctx, updateSenderID,
+		arg.Status,
+		arg.TrafficCategory,
+		arg.CustomerID,
+		arg.ID,
+	)
 	var i ControlPlaneSenderID
 	err := row.Scan(
 		&i.ID,
@@ -201,6 +227,7 @@ func (q *Queries) UpdateSenderID(ctx context.Context, arg UpdateSenderIDParams) 
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.FirstUsedAt,
+		&i.TrafficCategory,
 	)
 	return i, err
 }

@@ -550,7 +550,6 @@ components:
             smpp_enabled: { type: boolean }
             rest_enabled: { type: boolean }
           required: [smpp_enabled, rest_enabled]
-        sender_id_policy: { type: string, enum: [strict, allow_unregistered_numeric, disabled] }
         max_sessions:
           type: integer
           minimum: 0
@@ -569,7 +568,7 @@ components:
             max_per_sec: { type: [integer, "null"] }
             max_per_day: { type: [integer, "null"] }
             burst_capacity: { type: [integer, "null"] }
-      required: [account_id, customer_id, name, status, channels, sender_id_policy, max_sessions, sender_ids]
+      required: [account_id, customer_id, name, status, channels, max_sessions, sender_ids]
     Health:
       type: object
       properties:

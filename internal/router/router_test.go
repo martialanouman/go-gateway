@@ -93,7 +93,7 @@ func inbound(to string) pipeline.InboundMT {
 // outcomes without a sender-ID policy in the way (that stage is covered in the pipeline tests).
 type allowAllSenderIDs struct{}
 
-func (allowAllSenderIDs) Authorize(context.Context, uuid.UUID, uuid.UUID, string) error { return nil }
+func (allowAllSenderIDs) Authorize(context.Context, uuid.UUID, string) error { return nil }
 
 // allowAllOptOut passes every message; opt-out enforcement is covered in the pipeline/optout tests.
 type allowAllOptOut struct{}
