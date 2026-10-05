@@ -505,7 +505,7 @@ func (*beforeCommandHook) ProcessPipelineHook(next redis.ProcessPipelineHook) re
 
 func isRepairScript(cmd redis.Cmder) bool {
 	for _, arg := range cmd.Args() {
-		if s, ok := arg.(string); ok && strings.Contains(s, ":repair") {
+		if s, ok := arg.(string); ok && strings.Contains(s, ":repair:") {
 			return true
 		}
 	}

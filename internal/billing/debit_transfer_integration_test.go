@@ -118,9 +118,11 @@ func transferLegs(h *billingHarness, sink, key uuid.UUID, credits int) (debit, c
 // after its in-flight field ages out would no longer be subtracted by a rehydration.
 func TestDebitTransferBoundsItsWrite(t *testing.T) {
 	h := newBillingHarness(t, 10)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
 	done := make(chan error, 1)
 	go func() {
-		done <- h.acc.DebitTransfer(context.Background(), h.owner, uuid.New(), 1, func(ctx context.Context) (bool, error) {
+		done <- h.acc.DebitTransfer(ctx, h.owner, uuid.New(), 1, func(ctx context.Context) (bool, error) {
 			<-ctx.Done()
 			return false, ctx.Err()
 		})
