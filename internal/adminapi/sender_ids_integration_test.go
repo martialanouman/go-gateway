@@ -180,3 +180,105 @@ func TestSenderIDTrafficCategoryIsDeclaredAndFilterable(t *testing.T) {
 		t.Fatalf("unfiltered list = %+v, want both sender IDs", all)
 	}
 }
+
+// TestSenderIDRateLimitIsSetReadAndRemoved drives the sender ID's own limit (ADR-0021 §3) through the real
+// repository: it is read in the list without a call per row, defaults its burst to the rate, is scoped to
+// the customer, and leaves no orphan rate_limits row behind a deleted sender ID or customer.
+func TestSenderIDRateLimitIsSetReadAndRemoved(t *testing.T) {
+	pool := pgtest.Pool(t)
+	ctx := t.Context()
+	customers := postgres.NewCustomerRepo(pool)
+	customer, err := customers.Create(ctx, newCustomerInput("sender-limit-"+uuid.NewString()))
+	if err != nil {
+		t.Fatalf("create customer: %v", err)
+	}
+	other, err := customers.Create(ctx, newCustomerInput("sender-limit-other-"+uuid.NewString()))
+	if err != nil {
+		t.Fatalf("create other customer: %v", err)
+	}
+	api := newTestAPIWith(t, adminapi.Deps{Customers: customers, SenderIDs: postgres.NewSenderIDRepo(pool)})
+	base := "/v1/admin/customers/" + customer.ID.String() + "/sender-ids"
+
+	type limit struct {
+		MaxPerSec     int `json:"max_per_sec"`
+		BurstCapacity int `json:"burst_capacity"`
+	}
+	type sender struct {
+		ID        string `json:"id"`
+		Address   string `json:"address"`
+		RateLimit *limit `json:"rate_limit"`
+	}
+	call := func(method, path, body string, want int) []byte {
+		t.Helper()
+		w := httptest.NewRecorder()
+		api.ServeHTTP(w, authed(t, method, path, body))
+		if w.Code != want {
+			t.Fatalf("%s %s: status = %d, want %d; body=%s", method, path, w.Code, want, w.Body)
+		}
+		return w.Body.Bytes()
+	}
+	listed := func() map[string]*limit {
+		t.Helper()
+		var list []sender
+		_ = json.Unmarshal(call(http.MethodGet, base, "", http.StatusOK), &list)
+		out := map[string]*limit{}
+		for _, s := range list {
+			out[s.Address] = s.RateLimit
+		}
+		return out
+	}
+	var otp, promo sender
+	_ = json.Unmarshal(call(http.MethodPost, base, `{"address":"OTP"}`, http.StatusCreated), &otp)
+	_ = json.Unmarshal(call(http.MethodPost, base, `{"address":"PROMO"}`, http.StatusCreated), &promo)
+	if otp.RateLimit != nil {
+		t.Fatalf("a new sender ID has rate_limit %+v, want null", otp.RateLimit)
+	}
+
+	var set sender
+	_ = json.Unmarshal(call(http.MethodPut, base+"/"+otp.ID+"/rate-limit", `{"max_per_sec":50}`, http.StatusOK), &set)
+	if set.RateLimit == nil || *set.RateLimit != (limit{MaxPerSec: 50, BurstCapacity: 50}) {
+		t.Fatalf("PUT without a burst = %+v, want {50 50}", set.RateLimit)
+	}
+	call(http.MethodPut, base+"/"+promo.ID+"/rate-limit", `{"max_per_sec":5,"burst_capacity":20}`, http.StatusOK)
+	got := listed()
+	if got["OTP"] == nil || *got["OTP"] != (limit{50, 50}) || got["PROMO"] == nil || *got["PROMO"] != (limit{5, 20}) {
+		t.Fatalf("listed limits = OTP %+v PROMO %+v, want {50 50} and {5 20}", got["OTP"], got["PROMO"])
+	}
+
+	call(http.MethodPut, base+"/"+otp.ID+"/rate-limit", `{"max_per_sec":0}`, http.StatusUnprocessableEntity)
+	call(http.MethodPut, base+"/"+otp.ID+"/rate-limit", `{"max_per_sec":5,"burst_capacity":0}`, http.StatusUnprocessableEntity)
+	otherBase := "/v1/admin/customers/" + other.ID.String() + "/sender-ids/"
+	call(http.MethodPut, otherBase+otp.ID+"/rate-limit", `{"max_per_sec":1}`, http.StatusNotFound)
+	call(http.MethodDelete, otherBase+otp.ID+"/rate-limit", "", http.StatusNotFound)
+	call(http.MethodPut, base+"/"+uuid.NewString()+"/rate-limit", `{"max_per_sec":1}`, http.StatusNotFound)
+	if got := listed(); got["OTP"] == nil || *got["OTP"] != (limit{50, 50}) {
+		t.Fatalf("after another customer's PUT, OTP = %+v, want {50 50} untouched", got["OTP"])
+	}
+
+	call(http.MethodDelete, base+"/"+otp.ID+"/rate-limit", "", http.StatusNoContent)
+	call(http.MethodDelete, base+"/"+otp.ID+"/rate-limit", "", http.StatusNoContent)
+	if got := listed(); got["OTP"] != nil || got["PROMO"] == nil {
+		t.Fatalf("after DELETE: OTP %+v PROMO %+v, want OTP null and PROMO untouched", got["OTP"], got["PROMO"])
+	}
+
+	orphans := func(id string) int {
+		t.Helper()
+		var n int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM control_plane.rate_limits
+			WHERE entity_type = 'sender_id' AND entity_id = $1`, id).Scan(&n); err != nil {
+			t.Fatalf("count rate limits: %v", err)
+		}
+		return n
+	}
+	call(http.MethodPut, base+"/"+otp.ID+"/rate-limit", `{"max_per_sec":1}`, http.StatusOK)
+	call(http.MethodDelete, base+"/"+otp.ID, "", http.StatusNoContent)
+	if n := orphans(otp.ID); n != 0 {
+		t.Fatalf("deleting the sender ID left %d rate_limits rows", n)
+	}
+	if err := customers.Delete(ctx, customer.ID); err != nil {
+		t.Fatalf("delete customer: %v", err)
+	}
+	if n := orphans(promo.ID); n != 0 {
+		t.Fatalf("deleting the customer left %d rate_limits rows for its sender IDs", n)
+	}
+}

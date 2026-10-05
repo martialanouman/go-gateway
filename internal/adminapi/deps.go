@@ -122,6 +122,8 @@ type RouteStore interface {
 type SenderIDStore interface {
 	Create(ctx context.Context, in cp.NewSenderID) (cp.SenderID, error)
 	ListByCustomer(ctx context.Context, customerID uuid.UUID, category *cp.TrafficCategory) ([]cp.SenderID, error)
+	SetRateLimit(ctx context.Context, customerID, senderID uuid.UUID, l cp.SenderIDRateLimit) (cp.SenderID, error)
+	DeleteRateLimit(ctx context.Context, customerID, senderID uuid.UUID) error
 	Update(ctx context.Context, customerID, senderID uuid.UUID, p cp.SenderIDPatch) (cp.SenderID, error)
 	Delete(ctx context.Context, customerID, senderID uuid.UUID) error
 }

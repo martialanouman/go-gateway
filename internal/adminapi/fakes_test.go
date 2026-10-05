@@ -818,6 +818,30 @@ func (s *fakeSenderIDStore) Update(_ context.Context, customerID, senderID uuid.
 	return sid, nil
 }
 
+func (s *fakeSenderIDStore) SetRateLimit(_ context.Context, customerID, senderID uuid.UUID, l cp.SenderIDRateLimit) (cp.SenderID, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sid, ok := s.byID[senderID]
+	if !ok || sid.CustomerID != customerID {
+		return cp.SenderID{}, errs.ErrNotFound
+	}
+	sid.RateLimit = &l
+	s.byID[senderID] = sid
+	return sid, nil
+}
+
+func (s *fakeSenderIDStore) DeleteRateLimit(_ context.Context, customerID, senderID uuid.UUID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sid, ok := s.byID[senderID]
+	if !ok || sid.CustomerID != customerID {
+		return errs.ErrNotFound
+	}
+	sid.RateLimit = nil
+	s.byID[senderID] = sid
+	return nil
+}
+
 func (s *fakeSenderIDStore) Delete(_ context.Context, customerID, senderID uuid.UUID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

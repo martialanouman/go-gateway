@@ -69,6 +69,15 @@ func (q *Queries) DeleteSenderID(ctx context.Context, arg DeleteSenderIDParams) 
 	return result.RowsAffected(), nil
 }
 
+const deleteSenderIDRateLimit = `-- name: DeleteSenderIDRateLimit :exec
+DELETE FROM control_plane.rate_limits WHERE entity_type = 'sender_id' AND entity_id = $1
+`
+
+func (q *Queries) DeleteSenderIDRateLimit(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, deleteSenderIDRateLimit, id)
+	return err
+}
+
 const getSenderID = `-- name: GetSenderID :one
 SELECT id, customer_id, address, status, created_by, approved_at, created_at, updated_at, first_used_at, traffic_category FROM control_plane.sender_ids WHERE customer_id = $1 AND id = $2
 `
@@ -92,6 +101,44 @@ func (q *Queries) GetSenderID(ctx context.Context, arg GetSenderIDParams) (Contr
 		&i.UpdatedAt,
 		&i.FirstUsedAt,
 		&i.TrafficCategory,
+	)
+	return i, err
+}
+
+const getSenderIDWithRateLimit = `-- name: GetSenderIDWithRateLimit :one
+SELECT s.id, s.customer_id, s.address, s.status, s.created_by, s.approved_at, s.created_at, s.updated_at, s.first_used_at, s.traffic_category, rl.max_per_sec AS rate_max_per_sec, rl.burst_capacity AS rate_burst_capacity
+FROM control_plane.sender_ids s
+LEFT JOIN control_plane.rate_limits rl ON rl.entity_type = 'sender_id' AND rl.entity_id = s.id
+WHERE s.customer_id = $1 AND s.id = $2
+`
+
+type GetSenderIDWithRateLimitParams struct {
+	CustomerID uuid.UUID
+	ID         uuid.UUID
+}
+
+type GetSenderIDWithRateLimitRow struct {
+	ControlPlaneSenderID ControlPlaneSenderID
+	RateMaxPerSec        *int32
+	RateBurstCapacity    *int32
+}
+
+func (q *Queries) GetSenderIDWithRateLimit(ctx context.Context, arg GetSenderIDWithRateLimitParams) (GetSenderIDWithRateLimitRow, error) {
+	row := q.db.QueryRow(ctx, getSenderIDWithRateLimit, arg.CustomerID, arg.ID)
+	var i GetSenderIDWithRateLimitRow
+	err := row.Scan(
+		&i.ControlPlaneSenderID.ID,
+		&i.ControlPlaneSenderID.CustomerID,
+		&i.ControlPlaneSenderID.Address,
+		&i.ControlPlaneSenderID.Status,
+		&i.ControlPlaneSenderID.CreatedBy,
+		&i.ControlPlaneSenderID.ApprovedAt,
+		&i.ControlPlaneSenderID.CreatedAt,
+		&i.ControlPlaneSenderID.UpdatedAt,
+		&i.ControlPlaneSenderID.FirstUsedAt,
+		&i.ControlPlaneSenderID.TrafficCategory,
+		&i.RateMaxPerSec,
+		&i.RateBurstCapacity,
 	)
 	return i, err
 }
@@ -134,10 +181,12 @@ func (q *Queries) ListActiveSenderIDs(ctx context.Context) ([]ControlPlaneSender
 }
 
 const listSenderIDsByCustomer = `-- name: ListSenderIDsByCustomer :many
-SELECT id, customer_id, address, status, created_by, approved_at, created_at, updated_at, first_used_at, traffic_category FROM control_plane.sender_ids
-WHERE customer_id = $1
-  AND ($2::text IS NULL OR traffic_category = $2)
-ORDER BY address
+SELECT s.id, s.customer_id, s.address, s.status, s.created_by, s.approved_at, s.created_at, s.updated_at, s.first_used_at, s.traffic_category, rl.max_per_sec AS rate_max_per_sec, rl.burst_capacity AS rate_burst_capacity
+FROM control_plane.sender_ids s
+LEFT JOIN control_plane.rate_limits rl ON rl.entity_type = 'sender_id' AND rl.entity_id = s.id
+WHERE s.customer_id = $1
+  AND ($2::text IS NULL OR s.traffic_category = $2)
+ORDER BY s.address
 `
 
 type ListSenderIDsByCustomerParams struct {
@@ -145,26 +194,34 @@ type ListSenderIDsByCustomerParams struct {
 	TrafficCategory *string
 }
 
-func (q *Queries) ListSenderIDsByCustomer(ctx context.Context, arg ListSenderIDsByCustomerParams) ([]ControlPlaneSenderID, error) {
+type ListSenderIDsByCustomerRow struct {
+	ControlPlaneSenderID ControlPlaneSenderID
+	RateMaxPerSec        *int32
+	RateBurstCapacity    *int32
+}
+
+func (q *Queries) ListSenderIDsByCustomer(ctx context.Context, arg ListSenderIDsByCustomerParams) ([]ListSenderIDsByCustomerRow, error) {
 	rows, err := q.db.Query(ctx, listSenderIDsByCustomer, arg.CustomerID, arg.TrafficCategory)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ControlPlaneSenderID{}
+	items := []ListSenderIDsByCustomerRow{}
 	for rows.Next() {
-		var i ControlPlaneSenderID
+		var i ListSenderIDsByCustomerRow
 		if err := rows.Scan(
-			&i.ID,
-			&i.CustomerID,
-			&i.Address,
-			&i.Status,
-			&i.CreatedBy,
-			&i.ApprovedAt,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.FirstUsedAt,
-			&i.TrafficCategory,
+			&i.ControlPlaneSenderID.ID,
+			&i.ControlPlaneSenderID.CustomerID,
+			&i.ControlPlaneSenderID.Address,
+			&i.ControlPlaneSenderID.Status,
+			&i.ControlPlaneSenderID.CreatedBy,
+			&i.ControlPlaneSenderID.ApprovedAt,
+			&i.ControlPlaneSenderID.CreatedAt,
+			&i.ControlPlaneSenderID.UpdatedAt,
+			&i.ControlPlaneSenderID.FirstUsedAt,
+			&i.ControlPlaneSenderID.TrafficCategory,
+			&i.RateMaxPerSec,
+			&i.RateBurstCapacity,
 		); err != nil {
 			return nil, err
 		}
@@ -192,6 +249,35 @@ type MarkSenderIDsFirstUsedParams struct {
 func (q *Queries) MarkSenderIDsFirstUsed(ctx context.Context, arg MarkSenderIDsFirstUsedParams) error {
 	_, err := q.db.Exec(ctx, markSenderIDsFirstUsed, arg.CustomerIds, arg.Addresses, arg.UsedAts)
 	return err
+}
+
+const setSenderIDRateLimit = `-- name: SetSenderIDRateLimit :execrows
+INSERT INTO control_plane.rate_limits (entity_type, entity_id, max_per_sec, burst_capacity)
+SELECT 'sender_id', s.id, $1, $2
+FROM control_plane.sender_ids s WHERE s.customer_id = $3 AND s.id = $4
+ON CONFLICT (entity_type, entity_id)
+DO UPDATE SET max_per_sec = EXCLUDED.max_per_sec, burst_capacity = EXCLUDED.burst_capacity
+`
+
+type SetSenderIDRateLimitParams struct {
+	MaxPerSec     *int32
+	BurstCapacity *int32
+	CustomerID    uuid.UUID
+	ID            uuid.UUID
+}
+
+// Zero rows: no such sender ID under this customer.
+func (q *Queries) SetSenderIDRateLimit(ctx context.Context, arg SetSenderIDRateLimitParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setSenderIDRateLimit,
+		arg.MaxPerSec,
+		arg.BurstCapacity,
+		arg.CustomerID,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const updateSenderID = `-- name: UpdateSenderID :one
