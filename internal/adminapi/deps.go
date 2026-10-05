@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/martialanouman/go-gateway/internal/auth"
+	"github.com/martialanouman/go-gateway/internal/billing"
 	"github.com/martialanouman/go-gateway/internal/connector/status"
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 )
@@ -247,6 +248,7 @@ type Deps struct {
 	Disconnector     Disconnector
 	Billing          BillingStore
 	BalanceCache     BalanceCacheInvalidator
+	TransferDebiter  TransferDebiter
 	RatePlans        RatePlanStore
 	BillingProviders BillingProviderStore
 	ContentKeys      ContentKeyRotator
@@ -306,6 +308,12 @@ type BillingProviderStore interface {
 // satisfies it; registerExactRoutes defaults a nil one to a no-op. Declared consumer-side.
 type ExactRouteCacheInvalidator interface {
 	Invalidate(ctx context.Context, msisdns ...string) error
+}
+
+// TransferDebiter lowers a transfer's source MT balance through the billing gate before write records the
+// transfer durably (step-286); *billing.Accountant satisfies it.
+type TransferDebiter interface {
+	DebitTransfer(ctx context.Context, source billing.Owner, key uuid.UUID, credits int, write func(context.Context) (applied bool, err error)) error
 }
 
 // BalanceCacheInvalidator deletes the Redis balance-cache keys of the owners an admin money op just changed

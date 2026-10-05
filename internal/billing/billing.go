@@ -343,13 +343,11 @@ func (a *Accountant) Reserve(ctx context.Context, owner Owner, messageID uuid.UU
 		floorFlag = 1
 	}
 
-	// Three attempts: a cold cache rehydrates, a debit racing that rehydration refuses it once, and the last
-	// attempt reserves against whatever another replica warmed.
-	for attempt := 0; attempt < 3; attempt++ {
-		res, err := a.reserve.Run(ctx, a.rdb, []string{bkey, rkey, ikey, debitSeqKey(bkey)}, credits, floorFlag, floor,
-			a.holdTTL.Milliseconds(), messageID.String(), time.Now().UnixMilli()).Slice()
+	// Two attempts: a duplicate whose hold vanished before its repair reserves anew.
+	for attempt := 0; attempt < 2; attempt++ {
+		res, err := a.debitCache(ctx, owner, rkey, messageID.String(), credits, floorFlag, floor)
 		if err != nil {
-			return 0, fmt.Errorf("billing: reserve script: %w", err)
+			return 0, err
 		}
 		switch status := res[0].(string); status {
 		case "reserved":
@@ -419,12 +417,6 @@ func (a *Accountant) Reserve(ctx context.Context, owner Owner, messageID uuid.UU
 			}
 			return bal, nil
 
-		case "cold":
-			if err := a.rehydrate(ctx, bkey, ikey, owner); err != nil {
-				return 0, err // fail-closed
-			}
-			continue // retry with the warm cache
-
 		case "insufficient":
 			return toInt(res[1]), errs.ErrInsufficientCredit
 
@@ -432,7 +424,67 @@ func (a *Accountant) Reserve(ctx context.Context, owner Owner, messageID uuid.UU
 			return 0, fmt.Errorf("billing: reserve unexpected status %q", status)
 		}
 	}
-	return 0, fmt.Errorf("billing: reserve %s: still cold after rehydration", messageID)
+	return 0, fmt.Errorf("billing: reserve %s: hold vanished twice before its repair", messageID)
+}
+
+// debitCache runs reserve.lua for a hold key and in-flight field until it decides; a cold cache is
+// rehydrated (fail-closed) and the script retried. It never returns "cold".
+func (a *Accountant) debitCache(ctx context.Context, owner Owner, rkey, field string, credits, floorFlag, floor int) ([]any, error) {
+	bkey, ikey := balanceKey(owner), inFlightKey(owner)
+	// Three attempts: a cold cache rehydrates, a debit racing that rehydration refuses it once, and the last
+	// attempt reserves against whatever another replica warmed.
+	for attempt := 0; attempt < 3; attempt++ {
+		res, err := a.reserve.Run(ctx, a.rdb, []string{bkey, rkey, ikey, debitSeqKey(bkey)}, credits, floorFlag, floor,
+			a.holdTTL.Milliseconds(), field, time.Now().UnixMilli()).Slice()
+		if err != nil {
+			return nil, fmt.Errorf("billing: reserve script: %w", err)
+		}
+		if res[0] != "cold" {
+			return res, nil
+		}
+		if err := a.rehydrate(ctx, bkey, ikey, owner); err != nil {
+			return nil, err
+		}
+	}
+	return nil, fmt.Errorf("billing: reserve %s: still cold after rehydration", field)
+}
+
+// DebitTransfer lowers an admin transfer's source MT balance through reserve.lua before write records the
+// transfer durably, so the transfer competes with in-flight reserves for the same cached credit (step-286).
+// The floor is 0 whatever the customer's overdraft: a transfer never spends it. write reports whether it
+// applied the transfer; on any other outcome the source cache is dropped, the durable side being then
+// whatever committed. A transfer already in flight under key is refused, untouched.
+func (a *Accountant) DebitTransfer(ctx context.Context, source Owner, key uuid.UUID, credits int, write func(context.Context) (applied bool, err error)) error {
+	if credits <= 0 {
+		return fmt.Errorf("billing: debit transfer: credits must be positive, got %d", credits)
+	}
+	hold, field := "billing:transfer-hold:"+key.String(), "transfer:"+key.String()
+	res, err := a.debitCache(ctx, source, hold, field, credits, 1, 0)
+	if err != nil {
+		return err
+	}
+	switch status := res[0].(string); status {
+	case "reserved":
+	case "insufficient":
+		return fmt.Errorf("billing: transfer source balance %d < %d: %w", toInt(res[1]), credits, errs.ErrInsufficientCredit)
+	case "held":
+		return fmt.Errorf("billing: transfer %s in flight or already applied: %w", key, errs.ErrIdempotencyConflict)
+	default:
+		return fmt.Errorf("billing: debit transfer unexpected status %q", status)
+	}
+
+	applied, err := write(ctx)
+	cctx := context.WithoutCancel(ctx)
+	if err != nil || !applied {
+		if ierr := InvalidateBalanceCaches(cctx, a.rdb, balanceKey(source)); ierr != nil {
+			a.logger.ErrorContext(cctx, "billing: could not drop the transfer source's cache", "transfer", key, "err", ierr)
+		}
+	}
+	if derr := a.rdb.Del(cctx, hold).Err(); derr != nil {
+		a.logger.WarnContext(cctx, "billing: could not clear a transfer hold", "transfer", key, "err", derr)
+	}
+	a.forgetInFlight(cctx, inFlightKey(source), field)
+	return err
 }
 
 // terminalOutcome is how a durable terminal (capture/release) resolution ended.

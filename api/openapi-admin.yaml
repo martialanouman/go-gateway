@@ -1410,6 +1410,7 @@ paths:
       responses:
         '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/LedgerEntry' } } } } }
         '404': { $ref: '#/components/responses/NotFound' }
+        '402': { $ref: '#/components/responses/InsufficientCredit' }
         '409': { $ref: '#/components/responses/Conflict' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -1947,6 +1948,9 @@ components:
       content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
     ValidationError:
       description: Semantic validation failed; see errors[].
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    InsufficientCredit:
+      description: The source MT balance, counting its reserves in flight, cannot cover the amount (`insufficient_credit`).
       content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
     ServiceUnavailable:
       description: A dependency (e.g. billing-svc) is unreachable or timed out; retry once it recovers.

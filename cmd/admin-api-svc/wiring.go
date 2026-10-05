@@ -368,6 +368,7 @@ func adminDeps(
 	verifier auth.TokenVerifier,
 	sink adminapi.ExportSink,
 ) adminapi.Deps {
+	billingRepo := postgres.NewBillingRepo(st.pg)
 	return adminapi.Deps{
 		StreamHub:             feed.hub,
 		Trace:                 clickhouse.NewCDRReader(st.ch),
@@ -397,8 +398,9 @@ func adminDeps(
 		Imports:               runners.imports,
 		Disconnector:          adminapi.NewGRPCDisconnector(registrypb.NewSessionRegistryClient(clients.registry)),
 		Sessions:              adminapi.NewGRPCSessions(registrypb.NewSessionRegistryClient(clients.registry)),
-		Billing:               postgres.NewBillingRepo(st.pg),
+		Billing:               billingRepo,
 		BalanceCache:          redisBalanceCache{rdb: rdb},
+		TransferDebiter:       billing.New(rdb, billingRepo, billing.WithLogger(logger)),
 		RatePlans:             postgres.NewRatePlanRepo(st.pg),
 		BillingProviders:      postgres.NewExternalBillingProviderRepo(st.pg),
 		ContentKeys:           adminapi.NewGRPCContentKeyRotator(contentkeypb.NewContentKeysClient(clients.contentKey)),

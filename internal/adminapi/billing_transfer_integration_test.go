@@ -65,6 +65,7 @@ func (f transferFixture) transfer(t *testing.T, cache adminapi.BalanceCacheInval
 	t.Helper()
 	api := newTestAPIWith(t, adminapi.Deps{
 		Customers: fakeBillingCustomerStore{c: f.customer}, Accounts: f.accounts, Billing: f.repo, BalanceCache: cache,
+		TransferDebiter: billing.New(f.rdb, f.repo, billing.WithHoldTTL(time.Minute)),
 	})
 	body := `{"credits":` + strconv.Itoa(credits) + `,"direction":"mt","from_owner_id":"` + f.src.String() +
 		`","to_owner_id":"` + f.dst.String() + `","idempotency_key":"` + uuid.NewString() + `"}`
