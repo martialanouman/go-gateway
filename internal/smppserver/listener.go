@@ -336,12 +336,20 @@ func (l *Listener) recordRefusal(ctx context.Context, accountID uuid.UUID, mode 
 	l.detached(ctx, func(ctx context.Context) { l.writeRefusal(ctx, accountID, f) })
 }
 
-// detached runs a record after the bind has answered: waiting on it would let its round trip tell a
-// known system_id from an unknown one (§11.3). l.wg makes Run's drain wait for it.
+// detached runs a record the bind's answer does not wait for: waiting on it would let its round trip
+// tell a known system_id from an unknown one (§11.3). l.wg makes Run's drain wait for it. Past
+// maxDetachedRecords in flight the record is dropped, so a flood against a stalled store cannot queue
+// in front of the legitimate binds sharing its pool.
 func (l *Listener) detached(parent context.Context, record func(ctx context.Context)) {
+	select {
+	case l.recordSlots <- struct{}{}:
+	default:
+		return
+	}
 	l.wg.Add(1)
 	go func() {
 		defer l.wg.Done()
+		defer func() { <-l.recordSlots }()
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), bindFailureRecordTimeout)
 		defer cancel()
 		record(ctx)

@@ -99,6 +99,9 @@ const registryCallTimeout = 5 * time.Second
 // cannot pile up goroutines past the rate of refusals times this bound.
 const bindFailureRecordTimeout = 2 * time.Second
 
+// maxDetachedRecords caps the records in flight; past it a record is dropped rather than queued.
+const maxDetachedRecords = 64
+
 // cdrLookupTimeout bounds the ClickHouse work of a query_sm or cancel_sm. Both run on the session's read
 // goroutine, and the client's default read timeout (5 min) would freeze the whole bind behind one slow read.
 const cdrLookupTimeout = 5 * time.Second
@@ -207,7 +210,8 @@ type Listener struct {
 	opts     Options
 	logger   *slog.Logger
 
-	wg sync.WaitGroup
+	wg          sync.WaitGroup
+	recordSlots chan struct{}
 
 	// sessMu guards sessions, the pod-local registry of live binds keyed by bind_id. It backs the
 	// downward force-disconnect (step-032): a Disconnect order iterates it to close the sessions this
@@ -244,13 +248,14 @@ func New(creds CredentialStore, registry Registry, ingestor Ingestor, opts Optio
 		opts.MaxConns = defaultMaxConns
 	}
 	return &Listener{
-		creds:    creds,
-		registry: registry,
-		ingestor: ingestor,
-		opts:     opts,
-		logger:   logger,
-		sessions: make(map[string]*liveSession),
-		ready:    make(chan struct{}),
+		creds:       creds,
+		registry:    registry,
+		ingestor:    ingestor,
+		opts:        opts,
+		logger:      logger,
+		sessions:    make(map[string]*liveSession),
+		ready:       make(chan struct{}),
+		recordSlots: make(chan struct{}, maxDetachedRecords),
 	}
 }
 

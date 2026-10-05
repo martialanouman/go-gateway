@@ -19,8 +19,9 @@ et mauvais mot de passe rendent tous deux `ESME_RINVPASWD`).
 grossir ; elle peut évincer les entrées plus anciennes (dit au contrat). Entrée JSON
 `{at, remote_ip, bind_type, command_status, reason}` : le type n'a aucun champ capable de porter le
 secret (invariant a), un test fige l'ensemble des clés. Fail-open : une erreur Redis se journalise.
-L'enregistrement (et, ralenti, sa lecture d'attribution) part **après** la réponse, sur un contexte
-détaché borné à 2 s : l'attendre rendrait au chronomètre la différence révoqué/inconnu (revue).
+L'enregistrement (et, ralenti, sa lecture d'attribution) n'est **pas attendu** par la réponse : contexte
+détaché borné à 2 s, au plus 64 en vol (au-delà, abandonné). L'attendre rendrait au chronomètre la
+différence révoqué/inconnu (revue).
 
 **Motifs (énumération fermée) → statut rendu :** `password_mismatch` (hash stocké illisible inclus),
 `credential_revoked`, `throttled` → `ESME_RINVPASWD` ; `credential_disabled`, `account_inactive`

@@ -3,6 +3,7 @@ package smppserver
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -188,12 +189,12 @@ func TestOnBindFailureLogOutageLeavesTheAnswerUnchanged(t *testing.T) {
 
 type blockingFailureLog struct {
 	release chan struct{}
-	records int
+	records atomic.Int32
 }
 
 func (b *blockingFailureLog) Record(context.Context, uuid.UUID, bindfailure.Failure) error {
 	<-b.release
-	b.records++
+	b.records.Add(1)
 	return nil
 }
 
@@ -229,8 +230,8 @@ func TestOnBindAnswersBeforeRecordingTheRefusal(t *testing.T) {
 	}
 	close(log.release)
 	l.wg.Wait()
-	if log.records != 1 {
-		t.Fatalf("records = %d, want 1 once released", log.records)
+	if log.records.Load() != 1 {
+		t.Fatalf("records = %d, want 1 once released", log.records.Load())
 	}
 }
 
@@ -270,5 +271,24 @@ func TestThrottledMalformedSystemIDNeverReachesTheStore(t *testing.T) {
 
 	if store.calls != 0 || len(log.records) != 0 {
 		t.Fatalf("store calls = %d records = %d, want 0 and 0", store.calls, len(log.records))
+	}
+}
+
+// A flood of refusals against a stalled Redis or PostgreSQL must not queue unboundedly in front of the
+// legitimate binds sharing that pool: past the cap, a record is dropped, fail-open like any other.
+func TestDetachedRecordsAreCappedInFlight(t *testing.T) {
+	cred := mutate(activeCred(t), func(c *cp.BindCredential) { c.CredentialStatus = cp.CredentialDisabled })
+	log := &blockingFailureLog{release: make(chan struct{})}
+	l := New(fakeStore{cred: cred, found: true}, nil, nil, Options{BindFailures: log}, discardLog())
+
+	for range maxDetachedRecords + 5 {
+		l.onBind(context.Background(), &connState{bindID: "b1"}, "203.0.113.7", nil)(
+			context.Background(), session.BindRequest{SystemID: "sid-1", Password: testPassword, Mode: session.BindTransceiver})
+	}
+	close(log.release)
+	l.wg.Wait()
+
+	if got := log.records.Load(); got != maxDetachedRecords {
+		t.Fatalf("records = %d, want the in-flight cap %d", got, maxDetachedRecords)
 	}
 }

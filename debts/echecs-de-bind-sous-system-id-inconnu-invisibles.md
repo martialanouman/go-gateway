@@ -12,7 +12,8 @@ l'écran ne promette pas l'exhaustivité.
 
 **Ce qu'il en coûte.** La faute de frappe sur le `system_id` est la première cause d'un ESME qui ne
 binde pas : l'opérateur voit une liste vide, à raison, et ne sait rien de plus que l'ESME
-(`ESME_RINVPASWD`, §11.3). Le journal `smpp bind rejected` ne porte pas le `system_id` (§1.9).
+(`ESME_RINVPASWD`, §11.3). Le journal `smpp bind rejected` ne porte pas le `system_id` (§1.9) ; seul
+`smpp bind throttled` le porte, donc un inconnu ne se lit dans les journaux qu'une fois ralenti.
 
 **À quoi on reconnaîtra qu'il faut la payer.** Un ticket « mon ESME ne binde pas » où le tableau de
 bord est vide. Piste : un journal par IP source, plafonné globalement.
