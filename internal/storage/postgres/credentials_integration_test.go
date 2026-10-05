@@ -448,4 +448,13 @@ func TestBindLookupResolvesRevokedButPrefersTheLiveCredential(t *testing.T) {
 	if err != nil || got.AccountID != second.AccountID {
 		t.Fatalf("two revoked: account %s err=%v, want the latest revoked %s", got.AccountID, err, second.AccountID)
 	}
+
+	// A rotation revives the OLDER row: live must still win over the newer revoked one.
+	if _, err := creds.Rotate(ctx, first.AccountID, first.ID, cp.CredentialRotation{NewHash: "new-bind-hash"}); err != nil {
+		t.Fatalf("revive first: %v", err)
+	}
+	got, _, err = binds.BindCredentialBySystemID(ctx, systemID)
+	if err != nil || got.AccountID != first.AccountID || got.CredentialStatus != cp.CredentialActive {
+		t.Fatalf("revived: account %s status %q err=%v, want %s active", got.AccountID, got.CredentialStatus, err, first.AccountID)
+	}
 }

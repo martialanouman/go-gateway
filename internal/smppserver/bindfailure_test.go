@@ -60,91 +60,98 @@ func TestOnBindRecordsEachRefusalAgainstItsAccount(t *testing.T) {
 	account := uuid.New()
 	resolved := activeCred(t)
 	resolved.AccountID = account
+	with := func(fn func(*cp.BindCredential)) fakeStore { return fakeStore{cred: mutate(resolved, fn), found: true} }
+	refused := func(bindType, cmdStatus string, reason bindfailure.Reason) []recordedFailure {
+		return []recordedFailure{{account, bindfailure.Failure{At: failureNow, RemoteIP: "203.0.113.7", BindType: bindType,
+			CommandStatus: cmdStatus, Reason: reason}}}
+	}
 
 	tests := []struct {
-		name       string
-		store      fakeStore
-		throttle   bindthrottle.Decision
-		registry   Registry
-		password   string
-		wantStatus uint32
-		want       []recordedFailure
+		name        string
+		store       fakeStore
+		throttle    bindthrottle.Decision
+		registry    Registry
+		transmitter bool
+		password    string
+		wantStatus  uint32
+		want        []recordedFailure
+		// counted is what the anti-brute-force counter receives: unchanged by step-286b.
+		counted int
 	}{
 		{
-			name:       "authorize refusal",
-			store:      fakeStore{cred: mutate(resolved, func(c *cp.BindCredential) { c.SMPPEnabled = false }), found: true},
-			password:   testPassword,
-			wantStatus: errs.StatusBindFail,
-			want: []recordedFailure{{account, bindfailure.Failure{At: failureNow, RemoteIP: "203.0.113.7", BindType: "trx",
-				CommandStatus: "ESME_RBINDFAIL", Reason: bindfailure.ReasonSMPPChannelDisabled}}},
+			name: "wrong password", store: fakeStore{cred: resolved, found: true}, password: "wrong",
+			wantStatus: errs.StatusInvalidPasswd, want: refused("trx", "ESME_RINVPASWD", bindfailure.ReasonPasswordMismatch), counted: 1,
 		},
 		{
-			name:       "wrong password",
-			store:      fakeStore{cred: resolved, found: true},
-			password:   "wrong",
-			wantStatus: errs.StatusInvalidPasswd,
-			want: []recordedFailure{{account, bindfailure.Failure{At: failureNow, RemoteIP: "203.0.113.7", BindType: "trx",
-				CommandStatus: "ESME_RINVPASWD", Reason: bindfailure.ReasonPasswordMismatch}}},
+			name: "unreadable stored hash", store: with(func(c *cp.BindCredential) { c.PasswordHash = "not-a-phc" }),
+			wantStatus: errs.StatusInvalidPasswd, want: refused("trx", "ESME_RINVPASWD", bindfailure.ReasonPasswordMismatch), counted: 1,
 		},
 		{
-			name:       "throttled bind, even with the right secret",
-			store:      fakeStore{cred: resolved, found: true},
+			name: "revoked credential", store: with(func(c *cp.BindCredential) { c.CredentialStatus = cp.CredentialRevoked }),
+			wantStatus: errs.StatusInvalidPasswd, want: refused("trx", "ESME_RINVPASWD", bindfailure.ReasonCredentialRevoked), counted: 1,
+		},
+		{
+			name: "disabled credential", store: with(func(c *cp.BindCredential) { c.CredentialStatus = cp.CredentialDisabled }),
+			wantStatus: errs.StatusBindFail, want: refused("trx", "ESME_RBINDFAIL", bindfailure.ReasonCredentialDisabled), counted: 1,
+		},
+		{
+			name: "smpp channel disabled", store: with(func(c *cp.BindCredential) { c.SMPPEnabled = false }),
+			wantStatus: errs.StatusBindFail, want: refused("trx", "ESME_RBINDFAIL", bindfailure.ReasonSMPPChannelDisabled), counted: 1,
+		},
+		{
+			name: "suspended customer", store: with(func(c *cp.BindCredential) { c.CustomerStatus = cp.CustomerSuspended }),
+			wantStatus: errs.StatusBindFail, want: refused("trx", "ESME_RBINDFAIL", bindfailure.ReasonAccountInactive), counted: 1,
+		},
+		{
+			name: "bind type not allowed", store: fakeStore{cred: resolved, found: true}, transmitter: true,
+			wantStatus: errs.StatusBindFail, want: refused("tx", "ESME_RBINDFAIL", bindfailure.ReasonBindTypeNotAllowed), counted: 1,
+		},
+		{
+			name: "throttled bind, even with the right secret", store: fakeStore{cred: resolved, found: true},
 			throttle:   bindthrottle.Decision{Blocked: true},
-			password:   testPassword,
-			wantStatus: errs.StatusInvalidPasswd,
-			want: []recordedFailure{{account, bindfailure.Failure{At: failureNow, RemoteIP: "203.0.113.7", BindType: "trx",
-				CommandStatus: "ESME_RINVPASWD", Reason: bindfailure.ReasonThrottled}}},
+			wantStatus: errs.StatusInvalidPasswd, want: refused("trx", "ESME_RINVPASWD", bindfailure.ReasonThrottled),
 		},
 		{
-			name:       "max_sessions reached",
-			store:      fakeStore{cred: resolved, found: true},
-			registry:   erroringRegistry{err: maxSessionsError(t)},
-			password:   testPassword,
-			wantStatus: errs.StatusBindFail,
-			want: []recordedFailure{{account, bindfailure.Failure{At: failureNow, RemoteIP: "203.0.113.7", BindType: "trx",
-				CommandStatus: "ESME_RBINDFAIL", Reason: bindfailure.ReasonMaxSessions}}},
+			name: "max_sessions reached", store: fakeStore{cred: resolved, found: true}, registry: erroringRegistry{err: maxSessionsError(t)},
+			wantStatus: errs.StatusBindFail, want: refused("trx", "ESME_RBINDFAIL", bindfailure.ReasonMaxSessions),
 		},
 		{
-			name:       "registry unavailable",
-			store:      fakeStore{cred: resolved, found: true},
-			registry:   erroringRegistry{err: status.Error(codes.Unavailable, "down")},
-			password:   testPassword,
-			wantStatus: errs.StatusSysErr,
-			want: []recordedFailure{{account, bindfailure.Failure{At: failureNow, RemoteIP: "203.0.113.7", BindType: "trx",
-				CommandStatus: "ESME_RSYSERR", Reason: bindfailure.ReasonRegistryUnavailable}}},
+			name: "registry refusal without error", store: fakeStore{cred: resolved, found: true}, registry: &fakeRegistry{accepted: false},
+			wantStatus: errs.StatusBindFail, want: refused("trx", "ESME_RBINDFAIL", bindfailure.ReasonMaxSessions),
 		},
 		{
-			name:       "unknown system_id belongs to no account",
-			store:      fakeStore{found: false},
-			password:   testPassword,
-			wantStatus: errs.StatusInvalidPasswd,
+			name: "registry unavailable", store: fakeStore{cred: resolved, found: true}, registry: erroringRegistry{err: status.Error(codes.Unavailable, "down")},
+			wantStatus: errs.StatusSysErr, want: refused("trx", "ESME_RSYSERR", bindfailure.ReasonRegistryUnavailable),
 		},
 		{
-			name:       "throttled unknown system_id belongs to no account",
-			store:      fakeStore{found: false},
-			throttle:   bindthrottle.Decision{Blocked: true},
-			password:   testPassword,
-			wantStatus: errs.StatusInvalidPasswd,
+			name: "unknown system_id belongs to no account", store: fakeStore{found: false},
+			wantStatus: errs.StatusInvalidPasswd, counted: 1,
 		},
 		{
-			name:       "lookup outage resolves nothing",
-			store:      fakeStore{err: errors.New("db down")},
-			password:   testPassword,
+			name: "throttled unknown system_id belongs to no account", store: fakeStore{found: false},
+			throttle: bindthrottle.Decision{Blocked: true}, wantStatus: errs.StatusInvalidPasswd,
+		},
+		{
+			name: "lookup outage resolves nothing", store: fakeStore{err: errors.New("db down")},
 			wantStatus: errs.StatusSysErr,
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			log := &fakeFailureLog{}
-			opts := Options{
-				Throttle:     &fakeThrottle{dec: tc.throttle},
-				BindFailures: log,
-				Now:          func() time.Time { return failureNow },
+			if tc.password == "" {
+				tc.password = testPassword
 			}
+			mode := session.BindTransceiver
+			if tc.transmitter {
+				mode = session.BindTransmitter
+			}
+			log := &fakeFailureLog{}
+			throttle := &fakeThrottle{dec: tc.throttle}
+			opts := Options{Throttle: throttle, BindFailures: log, Now: func() time.Time { return failureNow }}
 			l := New(tc.store, tc.registry, nil, opts, discardLog())
 
 			res := l.onBind(context.Background(), &connState{bindID: "b1"}, "203.0.113.7", nil)(
-				context.Background(), session.BindRequest{SystemID: "sid-1", Password: tc.password, Mode: session.BindTransceiver})
+				context.Background(), session.BindRequest{SystemID: "sid-1", Password: tc.password, Mode: mode})
 			l.wg.Wait()
 
 			if res.Status != tc.wantStatus {
@@ -157,6 +164,9 @@ func TestOnBindRecordsEachRefusalAgainstItsAccount(t *testing.T) {
 				if log.records[i] != tc.want[i] {
 					t.Fatalf("record = %+v, want %+v", log.records[i], tc.want[i])
 				}
+			}
+			if throttle.records != tc.counted {
+				t.Fatalf("anti-brute-force counter fed %d times, want %d", throttle.records, tc.counted)
 			}
 		})
 	}
@@ -246,5 +256,19 @@ func TestThrottledBindAnswersBeforeItsAttributingLookup(t *testing.T) {
 	l.wg.Wait()
 	if len(log.records) != 1 || log.records[0].failure.Reason != bindfailure.ReasonThrottled {
 		t.Fatalf("records = %+v, want one throttled", log.records)
+	}
+}
+
+func TestThrottledMalformedSystemIDNeverReachesTheStore(t *testing.T) {
+	store := &countingStore{fakeStore: fakeStore{cred: activeCred(t), found: true}}
+	log := &fakeFailureLog{}
+	l := New(store, nil, nil, Options{Throttle: &fakeThrottle{dec: bindthrottle.Decision{Blocked: true}}, BindFailures: log}, discardLog())
+
+	l.onBind(context.Background(), &connState{bindID: "b1"}, "203.0.113.7", nil)(
+		context.Background(), session.BindRequest{SystemID: "\xff", Password: testPassword, Mode: session.BindTransceiver})
+	l.wg.Wait()
+
+	if store.calls != 0 || len(log.records) != 0 {
+		t.Fatalf("store calls = %d records = %d, want 0 and 0", store.calls, len(log.records))
 	}
 }

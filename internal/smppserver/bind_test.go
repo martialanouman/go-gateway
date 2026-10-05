@@ -140,6 +140,13 @@ func TestAuthorize(t *testing.T) {
 			want:   errs.StatusInvalidPasswd,
 			reason: bindfailure.ReasonCredentialRevoked,
 		},
+		{
+			name:   "revoked credential with an unreadable hash is refused before verifying it",
+			store:  fakeStore{cred: mutate(base, func(c *cp.BindCredential) { c.CredentialStatus = cp.CredentialRevoked; c.PasswordHash = "not-a-phc" }), found: true},
+			mode:   session.BindTransceiver,
+			want:   errs.StatusInvalidPasswd,
+			reason: bindfailure.ReasonCredentialRevoked,
+		},
 	}
 
 	for _, tc := range tests {
