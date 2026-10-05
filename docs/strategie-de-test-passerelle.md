@@ -75,7 +75,7 @@ Priorité absolue. Ils sont posés tôt (voir la colonne « jalon ») et ne doiv
 
 Cible : `internal/pipeline` (chaque étape), `internal/routing` (résolution 3 niveaux, stratégies), `internal/…/encoding` (segmentation, encodage), `internal/billing` (formule de crédit, réserve/capture). Tests **purs**, sans I/O, avec dépendances injectées (fakes écrits à la main). Table-driven idiomatique.
 
-Exemples de cas : normalisation E.164 (formats variés → forme canonique) ; autorisation sender ID par politique (`strict`/`allow_unregistered_numeric`/`disabled`) ; opt-out sur union de portées ; `segment_count` pour GSM-7/UCS-2 aux frontières (160/153, 70/67 caractères) ; `credits = segment_count × credits_per_segment` ; chaque stratégie de distribution (`weighted`/`hash_based` déterministes).
+Exemples de cas : normalisation E.164 (formats variés → forme canonique) ; autorisation sender ID (tout expéditeur enregistré et actif, numérique compris) ; opt-out sur union de portées ; `segment_count` pour GSM-7/UCS-2 aux frontières (160/153, 70/67 caractères) ; `credits = segment_count × credits_per_segment` ; chaque stratégie de distribution (`weighted`/`hash_based` déterministes).
 
 ### 4.2 Codec SMPP (unitaire + fuzzing)
 

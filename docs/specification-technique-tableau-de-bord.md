@@ -14,7 +14,7 @@
 
 - **Gestion des clients et de leurs comptes SMPP (admin)** — navigation à deux niveaux suivant le modèle de la passerelle (§6.18 compagnon) : un **client** détient un ou plusieurs **comptes SMPP**. Les clients n'ont aucun accès à la plateforme ; les admins créent/modifient/suspendent les deux niveaux et gèrent chaque sous-ressource.
   - **Au niveau client** : identité, statut (suspendre un client suspend tous ses comptes), **sender IDs**, **facturation** (soldes MT et MO, plan tarifaire, découvert, `balance_scope`), **politique de stockage de contenu**, appartenance à un **groupe**.
-  - **Au niveau compte SMPP** : **identifiant de bind SMPP + une clé API** (création, rotation manuelle avec fenêtre de grâce, révocation), **canaux** (SMPP/REST), **politique d'autorisation de sender ID**, bascules **`query_sm`/`cancel_sm`**, **quotas/limites de débit**, `max_sessions`, **webhook MO/DLR**.
+  - **Au niveau compte SMPP** : **identifiant de bind SMPP + une clé API** (création, rotation manuelle avec fenêtre de grâce, révocation), **canaux** (SMPP/REST), bascules **`query_sm`/`cancel_sm`**, **quotas/limites de débit**, `max_sessions`, **webhook MO/DLR**.
 - **UI de groupes de clients (organisationnel)** — CRUD des groupes pour segmenter la base (par secteur, région, revendeur), affectation de clients, et filtrage par groupe partout où les clients/comptes apparaissent. Un groupe ne porte ni solde, ni quota, ni règle de configuration (§6.17 compagnon).
 - **UI de gestion des connecteurs** — CRUD des connecteurs SMSC, formulaire à divulgation progressive (champs requis d'abord, section « Avancé » pour l'ensemble SMPP), statut de bind en direct, **`link_status` et `breaker_state` distincts** (§6.5), configuration du pool de binds, rebind/déconnexion forcée, débit/taux d'erreur.
 - **UI de gestion des routes** — constructeur visuel des règles déclaratives (priorité, glisser-déposer, conditions), sélecteur de stratégie de distribution, plus le **routage par numéro exact** (§6.7).
@@ -247,7 +247,6 @@ POST                    /smpp-accounts/{id}/suspend       # cascade descendante 
 PATCH                   /smpp-accounts/{id}/channels
 PATCH                   /smpp-accounts/{id}/session-limits
 GET                     /smpp-accounts/{id}/sessions      # binds vivants vs max_sessions — alimente l'écart de §6.5
-PATCH                   /smpp-accounts/{id}/sender-id-policy
 PATCH                   /smpp-accounts/{id}/smpp-ops       # query_sm / cancel_sm toggles
 GET/POST/PATCH/DELETE  /smpp-accounts/{id}/webhooks
 GET     /smpp-accounts/{id}/credentials                  # masked
