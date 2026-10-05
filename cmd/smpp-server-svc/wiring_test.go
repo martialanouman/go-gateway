@@ -127,12 +127,17 @@ func TestNewSMPPAppBuildsTheWholeGraph(t *testing.T) {
 		}
 	}
 
-	reader := reflect.ValueOf(app.listener).Elem().FieldByName("opts").FieldByName("MessageReader")
-	switch {
-	case !reader.IsValid():
-		t.Error("smppserver.Listener has no opts.MessageReader field: update this wiring check")
-	case reader.IsNil():
-		t.Error("query_sm has no MessageReader: every query_sm would answer ESME_RQUERYFAIL")
+	for field, consequence := range map[string]string{
+		"MessageReader": "every query_sm would answer ESME_RQUERYFAIL",
+		"BindFailures":  "no refused bind would reach the Admin diagnostic",
+	} {
+		opt := reflect.ValueOf(app.listener).Elem().FieldByName("opts").FieldByName(field)
+		switch {
+		case !opt.IsValid():
+			t.Errorf("smppserver.Listener has no opts.%s field: update this wiring check", field)
+		case opt.IsNil():
+			t.Errorf("opts.%s is nil: %s", field, consequence)
+		}
 	}
 
 	for name, port := range map[string]int{"ops": cfg.OpsPort, "smpp": cfg.SMPP.Port, "grpc": cfg.GRPC.Port} {

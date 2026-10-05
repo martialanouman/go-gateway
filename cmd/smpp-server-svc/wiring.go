@@ -15,6 +15,7 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
 
+	"github.com/martialanouman/go-gateway/internal/bindfailure"
 	"github.com/martialanouman/go-gateway/internal/bindthrottle"
 	"github.com/martialanouman/go-gateway/internal/cancel"
 	"github.com/martialanouman/go-gateway/internal/config"
@@ -309,6 +310,7 @@ func newListener(cfg config.Config, st *stores, admission ingest.Admission, logg
 			Tracer:          observability.Tracer(nil, serviceName),
 			Throttle:        throttle,
 			ThrottleBlocked: l.throttleBlocked,
+			BindFailures:    bindfailure.New(st.rdb),
 			MaxConns:        cfg.SMPP.MaxConns,
 			Canceller:       canceller,
 			MessageReader:   cdrReader,
