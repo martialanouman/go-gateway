@@ -20,7 +20,7 @@
 - **SMS MT (Mobile Terminated)** — messages des clients (SMPP ou REST), routés vers un SMSC.
 - **SMS MO (Mobile Originated)** — messages arrivant d'un SMSC, routés vers le bon compte SMPP via le numéro entrant/mot-clé (§6.21). Facturé sur un compteur MO distinct (§6.9).
 - **Moteur de routage** — sélection du connecteur SMSC sortant en trois niveaux de priorité décroissante (§6.1) : (0) correspondance de numéro exact (portabilité/MNP, prioritaire et court-circuitant), (1) script de routage admin, (2) matching déclaratif (compte, client, sender ID, préfixe MSISDN/MCC-MNC, contenu, heure, priorité), avec route de repli.
-- **Autorisation de sender ID (admin uniquement)** — le `source_addr` soumis doit correspondre à un sender ID approuvé du client, selon la politique du compte (§6.19).
+- **Autorisation de sender ID (admin uniquement)** — le `source_addr` soumis doit correspondre à un sender ID approuvé et actif du client, numérique compris (§6.19, ADR-0020).
 - **Règles de réécriture de sender ID (admin uniquement)** — réécriture à la volée de l'adresse source, à portée plateforme/client/compte/connecteur, évaluée juste avant l'envoi (§6.16).
 - **Scripts de routage personnalisés (admin uniquement)** — le fournisseur peut écrire un script isolé (JavaScript ou Lua) qui reçoit les données d'un SMS et retourne l'ID d'une route, en alternative au matching déclaratif. Scopé compte/plateforme, jamais attaché à une route, exécuté sous limites strictes (§6.2).
 - **Désabonnement (opt-out / STOP)** — liste de suppression scopée au canal (numéro entrant) ; une étape MT bloquante empêche l'envoi vers un destinataire désabonné (§6.20).
@@ -162,7 +162,6 @@ smpp_accounts                         -- one technical account of a customer (e.
   smpp_enabled         (bool, default true)        -- may open SMPP binds?
   rest_enabled         (bool, default true)        -- may call the REST API?
   CHECK (smpp_enabled OR rest_enabled)
-  sender_id_policy     (strict|allow_unregistered_numeric|disabled, default strict)  -- sender-ID authorization (§6.19)
   query_sm_enabled     (bool, default true)        -- optional SMPP op (§6.22)
   cancel_sm_enabled    (bool, default true)
   allowed_bind_types   (tx|rx|trx)
@@ -189,6 +188,7 @@ sender_ids                          -- CUSTOMER-level; carrier/regulatory regist
   customer_id (fk -> customers)
   address              (alphanumeric or MSISDN)
   status               (pending_carrier_approval|active|disabled)
+  traffic_category     (otp|transactional|marketing, default marketing)  -- declared, never inferred (ADR-0020)
   created_by (fk -> operators), approved_at
   first_used_at        (set once from mt.outcome; a used sender ID is disabled, never deleted — ADR-0023)
   -- Enforced at ingestion by sender-ID authorization (§6.19).
@@ -592,7 +592,6 @@ PATCH                   /admin/smpp-accounts/{id}/channels        # { smppEnable
 PATCH                   /admin/smpp-accounts/{id}/session-limits  # { maxSessions, allowedBindTypes }
 GET                     /admin/smpp-accounts/{id}/sessions        # live binds vs maxSessions
 GET/POST/PATCH/DELETE  /admin/smpp-accounts/{id}/webhooks
-PATCH                   /admin/smpp-accounts/{id}/sender-id-policy # strict | allow_unregistered_numeric | disabled
 PATCH                   /admin/smpp-accounts/{id}/smpp-ops        # { querySmEnabled, cancelSmEnabled }
 
 # Credentials — exactly 1 smpp_bind + 1 api_key per account (§6.3/§6.18)
@@ -979,11 +978,9 @@ Un **client** détient 1..N **comptes SMPP**.
 
 **Normalisation E.164** : à l'ingestion, destination (et source pour le MO) normalisées avant toute autre étape — sinon la déduplication, l'opt-out et la correspondance de numéro exact seraient contournables par un simple écart de format.
 
-**Autorisation de sender ID** : dans `router-svc`, avant le routage et la facturation. Le `source_addr` doit correspondre à un `sender_ids` `active` du **client** (§6.18). Politique par compte (`sender_id_policy`) :
+**Autorisation de sender ID** : dans `router-svc`, avant le routage et la facturation. Le `source_addr` doit correspondre exactement à un `sender_ids` `active` du **client** (§6.18), numérique compris ; sinon rejet (REST `403`, SMPP `ESME_RINVSRCADR`). Il n'y a plus de politique par compte : un expéditeur inconnu est toujours rejeté (ADR-0020).
 
-- `strict` (défaut) — correspondance obligatoire, sinon rejet (REST `403`, SMPP `ESME_RINVSRCADR`).
-- `allow_unregistered_numeric` — alphanumériques enregistrés obligatoires, expéditeur numérique libre toléré.
-- `disabled` — aucun contrôle. Déconseillé, audité, signalé par un avertissement UI (rouvre l'usurpation).
+**Catégorie de trafic** : chaque sender ID porte une `traffic_category` (`otp | transactional | marketing`, `marketing` par défaut), que l'opérateur déclare. C'est un engagement du client sur ce qu'il envoie sous ce nom, pas une inférence de la passerelle (ADR-0020).
 
 ### 6.20 Désabonnement (opt-out / STOP) — par canal
 
