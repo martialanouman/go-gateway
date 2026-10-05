@@ -1,6 +1,6 @@
 # step-286b — Échecs de bind récents d'un compte SMPP, lisibles à l'Admin API
 
-> **Jalon :** M3 (diagnostic) · **Statut :** À FAIRE
+> **Jalon :** M3 (diagnostic) · **Statut :** FAIT
 > **Dépend de :** step-026 · **Bloque :** go-gateway-bo step-069
 > Demande humaine du 05/10/2026 (spec BO §6.14 : « diagnostic d'échec de bind, échecs d'auth récents ») ;
 > unité faute de multiple de dix libre avant step-287.
@@ -52,10 +52,10 @@ inconnus n'y figurent pas et que la liste est plafonnée.
 `debts/echecs-de-bind-sous-system-id-inconnu-invisibles.md`.
 
 ## Definition of Done
-- [ ] contrat déclaré avant le handler, `api/package.json` bumpé, `make contracts` vert
-- [ ] schéma + migration de l'index, `GetBindPrincipal` révoqué-compris, vivant prioritaire (intégration)
-- [ ] `internal/bindfailure` : plafond, TTL, ordre, `since`, clés fermées (intégration Redis)
-- [ ] chaque sortie de `onBind` enregistre son motif, l'inconnu n'écrit rien, fil inchangé
-- [ ] handler : 200 ordonné, 404, 422, scope `admin:read` ; collection Admin régénérée
-- [ ] une mutation tombée par point d'enregistrement
-- [ ] revue (dont un axe « code en trop »), coupe, `make check`
+- [x] contrat déclaré avant le handler, `api/package.json` bumpé, `make contracts` vert
+- [x] schéma + migration de l'index, `GetBindPrincipal` révoqué-compris, vivant prioritaire (intégration)
+- [x] `internal/bindfailure` : plafond, TTL, ordre, `since`, clés fermées (intégration Redis)
+- [x] chaque sortie de `onBind` enregistre son motif, l'inconnu n'écrit rien, fil inchangé
+- [x] handler : 200 ordonné, 404, 422, scope `admin:read` ; collection Admin régénérée
+- [x] une mutation tombée par point d'enregistrement
+- [x] revue (dont un axe « code en trop »), coupe, `make check`

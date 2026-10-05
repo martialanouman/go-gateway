@@ -225,7 +225,7 @@ qu'on mesure un environnement représentatif.
       porte la dette du débit par client ; décision humaine du 04/10/2026
 - [x] step-286 — Une seule porte pour baisser le solde MT : Redis, avant Postgres ⛓ step-284 — ouverte par
       la revue de step-284 ; unité faute de multiple de dix libre
-- [ ] step-286b — Échecs de bind récents d'un compte SMPP, lisibles à l'Admin API ⛓ step-026 — demande
+- [x] step-286b — Échecs de bind récents d'un compte SMPP, lisibles à l'Admin API ⛓ step-026 — demande
       humaine du 05/10/2026 (BO step-069) ; unité faute de multiple de dix libre
 - [ ] step-287 — Rejouer la campagne du VPS, injecteur sur une VM séparée ⛓ step-282, step-283, step-284, step-285
       — unité faute de multiple de dix libre
