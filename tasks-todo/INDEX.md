@@ -227,7 +227,7 @@ qu'on mesure un environnement représentatif.
       la revue de step-284 ; unité faute de multiple de dix libre
 - [ ] step-287 — Rejouer la campagne du VPS, injecteur sur une VM séparée ⛓ step-282, step-283, step-284, step-285
       — unité faute de multiple de dix libre
-- [ ] step-288 — La catégorie de trafic se déclare par sender ID ; `sender_id_policy` disparaît (ADR-0020 §1,
+- [x] step-288 — La catégorie de trafic se déclare par sender ID ; `sender_id_policy` disparaît (ADR-0020 §1,
       contrat 7.0.0) — décision humaine du 05/10/2026 ; unité faute de multiple de dix libre
 - [ ] step-289 — Un débit par sender ID, refusé à l'admission (ADR-0021 §3) ⛓ step-283, step-288 — unité faute
       de multiple de dix libre
