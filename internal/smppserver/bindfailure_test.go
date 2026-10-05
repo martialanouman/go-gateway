@@ -145,6 +145,7 @@ func TestOnBindRecordsEachRefusalAgainstItsAccount(t *testing.T) {
 
 			res := l.onBind(context.Background(), &connState{bindID: "b1"}, "203.0.113.7", nil)(
 				context.Background(), session.BindRequest{SystemID: "sid-1", Password: tc.password, Mode: session.BindTransceiver})
+			l.wg.Wait()
 
 			if res.Status != tc.wantStatus {
 				t.Fatalf("status = %#x, want %#x", res.Status, tc.wantStatus)
@@ -168,8 +169,82 @@ func TestOnBindFailureLogOutageLeavesTheAnswerUnchanged(t *testing.T) {
 
 	res := l.onBind(context.Background(), &connState{bindID: "b1"}, "203.0.113.7", nil)(
 		context.Background(), session.BindRequest{SystemID: "sid-1", Password: testPassword, Mode: session.BindTransceiver})
+	l.wg.Wait()
 
 	if res.Status != errs.StatusBindFail || len(log.records) != 1 {
 		t.Fatalf("status = %#x records = %d, want ESME_RBINDFAIL and one attempt", res.Status, len(log.records))
+	}
+}
+
+type blockingFailureLog struct {
+	release chan struct{}
+	records int
+}
+
+func (b *blockingFailureLog) Record(context.Context, uuid.UUID, bindfailure.Failure) error {
+	<-b.release
+	b.records++
+	return nil
+}
+
+type blockingStore struct {
+	cred    cp.BindCredential
+	release chan struct{}
+}
+
+func (b blockingStore) BindCredentialBySystemID(context.Context, string) (cp.BindCredential, bool, error) {
+	<-b.release
+	return b.cred, true, nil
+}
+
+// The design keeps the wire unchanged, timing included: a refused bind answers before its record is
+// written, or a Redis round trip would tell a revoked system_id from an unknown one (§11.3).
+func TestOnBindAnswersBeforeRecordingTheRefusal(t *testing.T) {
+	revoked := mutate(activeCred(t), func(c *cp.BindCredential) { c.CredentialStatus = cp.CredentialRevoked })
+	log := &blockingFailureLog{release: make(chan struct{})}
+	l := New(fakeStore{cred: revoked, found: true}, nil, nil, Options{BindFailures: log}, discardLog())
+
+	answered := make(chan uint32)
+	go func() {
+		answered <- l.onBind(context.Background(), &connState{bindID: "b1"}, "203.0.113.7", nil)(
+			context.Background(), session.BindRequest{SystemID: "sid-1", Password: testPassword, Mode: session.BindTransceiver}).Status
+	}()
+	select {
+	case st := <-answered:
+		if st != errs.StatusInvalidPasswd {
+			t.Fatalf("status = %#x, want ESME_RINVPASWD", st)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the bind waited for its failure record")
+	}
+	close(log.release)
+	l.wg.Wait()
+	if log.records != 1 {
+		t.Fatalf("records = %d, want 1 once released", log.records)
+	}
+}
+
+// A throttled bind answered after its backoff alone before step-286b, whatever the system_id: the
+// attributing lookup must not reopen that timing difference.
+func TestThrottledBindAnswersBeforeItsAttributingLookup(t *testing.T) {
+	store := blockingStore{cred: activeCred(t), release: make(chan struct{})}
+	log := &fakeFailureLog{}
+	l := New(store, nil, nil, Options{Throttle: &fakeThrottle{dec: bindthrottle.Decision{Blocked: true}}, BindFailures: log}, discardLog())
+
+	answered := make(chan struct{})
+	go func() {
+		l.onBind(context.Background(), &connState{bindID: "b1"}, "203.0.113.7", nil)(
+			context.Background(), session.BindRequest{SystemID: "sid-1", Password: testPassword, Mode: session.BindTransceiver})
+		close(answered)
+	}()
+	select {
+	case <-answered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the throttled bind waited for its attributing lookup")
+	}
+	close(store.release)
+	l.wg.Wait()
+	if len(log.records) != 1 || log.records[0].failure.Reason != bindfailure.ReasonThrottled {
+		t.Fatalf("records = %+v, want one throttled", log.records)
 	}
 }

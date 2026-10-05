@@ -94,6 +94,10 @@ type MessageReader interface {
 // already cancelled by then).
 const registryCallTimeout = 5 * time.Second
 
+// bindFailureRecordTimeout bounds a refused bind's detached record, so a Redis or PostgreSQL stall
+// cannot pile up goroutines past the rate of refusals times this bound.
+const bindFailureRecordTimeout = 2 * time.Second
+
 // cdrLookupTimeout bounds the ClickHouse work of a query_sm or cancel_sm. Both run on the session's read
 // goroutine, and the client's default read timeout (5 min) would freeze the whole bind behind one slow read.
 const cdrLookupTimeout = 5 * time.Second
