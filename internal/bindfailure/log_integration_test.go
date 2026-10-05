@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/martialanouman/go-gateway/internal/bindfailure"
 	"github.com/martialanouman/go-gateway/internal/testutil/redistest"
@@ -33,7 +34,7 @@ func TestListReturnsNewestFirstFromSince(t *testing.T) {
 		t.Fatalf("record other account: %v", err)
 	}
 
-	got, err := log.List(ctx, account, now.Add(-90*time.Minute))
+	got, err := log.List(ctx, account, now.Add(-time.Hour))
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -73,14 +74,37 @@ func TestRecordCapsTheListAndBoundsItsLifetime(t *testing.T) {
 	if err != nil || len(keys) != 1 {
 		t.Fatalf("keys = %v (%v), want exactly one", keys, err)
 	}
-	ttl, err := rdb.TTL(ctx, keys[0]).Result()
-	if err != nil || ttl <= 0 || ttl > bindfailure.Retention {
-		t.Fatalf("ttl = %v (%v), want within (0, %v]", ttl, err, bindfailure.Retention)
+	assertFullRetention(t, rdb, keys[0])
+
+	if err := rdb.Expire(ctx, keys[0], 10*time.Second).Err(); err != nil {
+		t.Fatalf("shorten ttl: %v", err)
+	}
+	if err := log.Record(ctx, account, failureAt(now, bindfailure.ReasonThrottled)); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	assertFullRetention(t, rdb, keys[0])
+}
+
+func assertFullRetention(t *testing.T, rdb *redis.Client, key string) {
+	t.Helper()
+	ttl, err := rdb.TTL(context.Background(), key).Result()
+	if err != nil || ttl < bindfailure.Retention-time.Minute || ttl > bindfailure.Retention {
+		t.Fatalf("ttl = %v (%v), want the retention %v refreshed by the latest failure", ttl, err, bindfailure.Retention)
 	}
 }
 
-// Invariant a: the stored entry carries exactly these fields, none able to hold the presented secret.
+// Invariant a: the type and the stored entry carry exactly these fields, none able to hold the
+// presented secret.
 func TestStoredEntryHasOnlyTheDeclaredFields(t *testing.T) {
+	typ := reflect.TypeFor[bindfailure.Failure]()
+	declared := make([]string, 0, typ.NumField())
+	for i := range typ.NumField() {
+		declared = append(declared, typ.Field(i).Name)
+	}
+	if want := []string{"At", "RemoteIP", "BindType", "CommandStatus", "Reason"}; !reflect.DeepEqual(declared, want) {
+		t.Fatalf("Failure fields = %v, want %v", declared, want)
+	}
+
 	rdb := redistest.Client(t)
 	ctx := context.Background()
 	account := uuid.New()
