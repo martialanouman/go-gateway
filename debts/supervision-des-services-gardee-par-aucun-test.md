@@ -20,4 +20,11 @@ STOP appliqué seulement à la prochaine mutation Admin.
 **À quoi on reconnaîtra qu'il faut la payer.** Le premier composant oublié dans un `g.Add`, ou la prochaine
 step qui ajoute un composant supervisé à un service.
 
+**Déclencheur atteint (step-289, 05/10/2026).** step-289 ajoute un watcher de limites de débit à
+`rest-api-svc` et `smpp-server-svc` (`g.Add("rate-limit watcher", …)`). Les tests le lancent eux-mêmes
+(`cmd/rest-api-svc/ratelimit_test.go`), donc supprimer la ligne `g.Add` ne fait tomber aucun test : une
+limite réglée au tableau de bord ne s'appliquerait plus qu'au redémarrage du pod. La dette n'a pas été
+payée dans step-289, dont ce n'est pas le sujet ; elle attend une step dédiée.
+
 Source : `cmd/router-svc/main.go` (`g.Add("opt-out watcher", …)`)
+Source : `cmd/rest-api-svc/main.go`, `cmd/smpp-server-svc/main.go` (`g.Add("rate-limit watcher", …)`)
