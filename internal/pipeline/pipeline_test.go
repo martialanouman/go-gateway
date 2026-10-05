@@ -32,7 +32,7 @@ func (s stubResolver) Resolve(context.Context, pipeline.RouteRequest) (pipeline.
 // allows everything.
 type stubAuthorizer struct{ err error }
 
-func (s stubAuthorizer) Authorize(context.Context, uuid.UUID, uuid.UUID, string) error { return s.err }
+func (s stubAuthorizer) Authorize(context.Context, uuid.UUID, string) error { return s.err }
 
 // stubOptOut answers the opt-out check with fixed values. The zero value passes every message.
 type stubOptOut struct {

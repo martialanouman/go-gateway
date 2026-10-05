@@ -196,26 +196,16 @@ func (b BindType) Valid() bool {
 	}
 }
 
-// SenderIDPolicy is an account's sender-ID enforcement policy
-// (control_plane.smpp_accounts.sender_id_policy).
-type SenderIDPolicy string
+// TrafficCategory is what a customer commits to send under a sender ID
+// (control_plane.sender_ids.traffic_category, ADR-0020).
+type TrafficCategory string
 
-// The sender-ID policies.
+// The traffic categories.
 const (
-	SenderIDStrict               SenderIDPolicy = "strict"
-	SenderIDAllowUnregisteredNum SenderIDPolicy = "allow_unregistered_numeric"
-	SenderIDPolicyDisabled       SenderIDPolicy = "disabled"
+	TrafficOTP           TrafficCategory = "otp"
+	TrafficTransactional TrafficCategory = "transactional"
+	TrafficMarketing     TrafficCategory = "marketing"
 )
-
-// Valid reports whether p is a published sender-ID policy.
-func (p SenderIDPolicy) Valid() bool {
-	switch p {
-	case SenderIDStrict, SenderIDAllowUnregisteredNum, SenderIDPolicyDisabled:
-		return true
-	default:
-		return false
-	}
-}
 
 // SenderIDStatus is the carrier-approval state of a sender ID (control_plane.sender_ids.status).
 type SenderIDStatus string

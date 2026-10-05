@@ -1,13 +1,12 @@
 -- name: CreateAccount :one
 INSERT INTO control_plane.smpp_accounts (
-    customer_id, name, smpp_enabled, rest_enabled, sender_id_policy,
+    customer_id, name, smpp_enabled, rest_enabled,
     query_sm_enabled, cancel_sm_enabled, allowed_bind_types, max_sessions
 ) VALUES (
     @customer_id,
     @name,
     COALESCE(sqlc.narg('smpp_enabled')::boolean, true),
     COALESCE(sqlc.narg('rest_enabled')::boolean, true),
-    COALESCE(sqlc.narg('sender_id_policy')::text, 'strict'),
     COALESCE(sqlc.narg('query_sm_enabled')::boolean, true),
     COALESCE(sqlc.narg('cancel_sm_enabled')::boolean, true),
     COALESCE(sqlc.narg('allowed_bind_types')::text, 'trx'),
@@ -36,7 +35,6 @@ LIMIT @lim;
 UPDATE control_plane.smpp_accounts SET
     name              = COALESCE(sqlc.narg('name'), name),
     status            = COALESCE(sqlc.narg('status'), status),
-    sender_id_policy  = COALESCE(sqlc.narg('sender_id_policy'), sender_id_policy),
     query_sm_enabled  = COALESCE(sqlc.narg('query_sm_enabled'), query_sm_enabled),
     cancel_sm_enabled = COALESCE(sqlc.narg('cancel_sm_enabled'), cancel_sm_enabled)
 WHERE id = @id
@@ -62,9 +60,3 @@ UPDATE control_plane.smpp_accounts SET status = 'suspended' WHERE id = @id RETUR
 -- Lightweight account -> customer projection for the MO router's snapshot (step-045): resolving an
 -- inbound number or keyword to an account needs the owning customer for the routed envelope.
 SELECT id, customer_id FROM control_plane.smpp_accounts;
-
--- name: ListAccountSenderIDPolicies :many
--- account -> (customer, sender_id_policy) projection for the sender-ID authorization snapshot
--- (step-060). The policy is per account; the registered sender IDs it is checked against are per
--- customer.
-SELECT id, customer_id, sender_id_policy FROM control_plane.smpp_accounts;

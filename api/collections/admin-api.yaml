@@ -276,9 +276,10 @@ items:
             type: json
             data: |
               {
-                "address": "ACME"
+                "address": "ACME",
+                "traffic_category": "transactional"
               }
-        docs: Register a sender ID (starts pending carrier approval).
+        docs: Register a sender ID (starts pending carrier approval; traffic_category defaults to marketing).
       - info:
           name: update-sender-id
           type: http
@@ -351,7 +352,6 @@ items:
                 "name": "acme-primary",
                 "smpp_enabled": true,
                 "rest_enabled": true,
-                "sender_id_policy": "strict",
                 "allowed_bind_types": "trx",
                 "max_sessions": 4
               }
@@ -421,22 +421,6 @@ items:
                 "allowed_bind_types": "trx"
               }
         docs: Set max_sessions and allowed bind types.
-      - info:
-          name: set-account-sender-id-policy
-          type: http
-        http:
-          method: PATCH
-          url: '{{baseUrl}}/admin/smpp-accounts/{{accountId}}/sender-id-policy'
-          headers:
-            - name: Content-Type
-              value: application/json
-          body:
-            type: json
-            data: |
-                {
-                  "sender_id_policy": "strict"
-                }
-        docs: Applies to the next message, live sessions included (scope admin:write).
       - info:
           name: set-account-smpp-ops
           type: http

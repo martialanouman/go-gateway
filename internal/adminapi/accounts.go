@@ -24,7 +24,6 @@ type accountDTO struct {
 	Status           string    `json:"status" enum:"active,suspended,closed"`
 	SMPPEnabled      bool      `json:"smpp_enabled"`
 	RESTEnabled      bool      `json:"rest_enabled"`
-	SenderIDPolicy   string    `json:"sender_id_policy" enum:"strict,allow_unregistered_numeric,disabled"`
 	QuerySMEnabled   *bool     `json:"query_sm_enabled,omitempty"`
 	CancelSMEnabled  *bool     `json:"cancel_sm_enabled,omitempty"`
 	AllowedBindTypes string    `json:"allowed_bind_types" enum:"tx,rx,trx"`
@@ -43,7 +42,6 @@ func toAccountDTO(a cp.Account) accountDTO {
 		Status:           string(a.Status),
 		SMPPEnabled:      a.SMPPEnabled,
 		RESTEnabled:      a.RESTEnabled,
-		SenderIDPolicy:   string(a.SenderIDPolicy),
 		QuerySMEnabled:   &querySM,
 		CancelSMEnabled:  &cancelSM,
 		AllowedBindTypes: string(a.AllowedBindTypes),
@@ -58,7 +56,6 @@ type accountCreateBody struct {
 	Name             string  `json:"name"`
 	SMPPEnabled      *bool   `json:"smpp_enabled,omitempty"`
 	RESTEnabled      *bool   `json:"rest_enabled,omitempty"`
-	SenderIDPolicy   *string `json:"sender_id_policy,omitempty" enum:"strict,allow_unregistered_numeric,disabled"`
 	QuerySMEnabled   *bool   `json:"query_sm_enabled,omitempty"`
 	CancelSMEnabled  *bool   `json:"cancel_sm_enabled,omitempty"`
 	AllowedBindTypes *string `json:"allowed_bind_types,omitempty" enum:"tx,rx,trx"`
@@ -76,7 +73,6 @@ func (b accountCreateBody) toNew() (cp.NewAccount, error) {
 		Name:             b.Name,
 		SMPPEnabled:      b.SMPPEnabled,
 		RESTEnabled:      b.RESTEnabled,
-		SenderIDPolicy:   enumPtr[cp.SenderIDPolicy](b.SenderIDPolicy),
 		QuerySMEnabled:   b.QuerySMEnabled,
 		CancelSMEnabled:  b.CancelSMEnabled,
 		AllowedBindTypes: enumPtr[cp.BindType](b.AllowedBindTypes),
@@ -164,13 +160,6 @@ func registerAccounts(api huma.API, store AccountStore, customers CustomerStore,
 		Security: scopeSecurity(auth.ScopeAdminWrite),
 		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity},
 	}, h.setSessionLimits)
-
-	register(api, huma.Operation{
-		OperationID: "set-account-sender-id-policy", Method: http.MethodPatch, Path: "/admin/smpp-accounts/{id}/sender-id-policy",
-		Summary: "Set sender-ID authorization policy (§6.19)", Tags: []string{"SMPP Accounts"},
-		Security: scopeSecurity(auth.ScopeAdminWrite),
-		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity},
-	}, h.setSenderIDPolicy)
 
 	register(api, huma.Operation{
 		OperationID: "set-account-smpp-ops", Method: http.MethodPatch, Path: "/admin/smpp-accounts/{id}/smpp-ops",
@@ -355,28 +344,6 @@ func (h *accountHandlers) setSessionLimits(ctx context.Context, in *setSessionLi
 		return nil, notFound("smpp account")
 	}
 	a, err := h.store.SetSessionLimits(ctx, id, in.Body.MaxSessions, cp.BindType(in.Body.AllowedBindTypes))
-	if err != nil {
-		return nil, humaerr.FromError(err)
-	}
-	return &accountOutput{Body: toAccountDTO(a)}, nil
-}
-
-type senderIDPolicyBody struct {
-	SenderIDPolicy string `json:"sender_id_policy" enum:"strict,allow_unregistered_numeric,disabled"`
-}
-
-type setSenderIDPolicyInput struct {
-	ID   string `path:"id" format:"uuid"`
-	Body senderIDPolicyBody
-}
-
-func (h *accountHandlers) setSenderIDPolicy(ctx context.Context, in *setSenderIDPolicyInput) (*accountOutput, error) {
-	id, err := uuid.Parse(in.ID)
-	if err != nil {
-		return nil, notFound("smpp account")
-	}
-	policy := cp.SenderIDPolicy(in.Body.SenderIDPolicy)
-	a, err := h.store.Update(ctx, id, cp.AccountPatch{SenderIDPolicy: &policy})
 	if err != nil {
 		return nil, humaerr.FromError(err)
 	}

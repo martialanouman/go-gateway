@@ -41,7 +41,7 @@ func (r routeList) List(context.Context) ([]cp.Route, error) { return r.routes, 
 // The compliance spies: each counts its invocations. optedOut lets a test block at the opt-out stage.
 type spyAuthorizer struct{ calls atomic.Int32 }
 
-func (s *spyAuthorizer) Authorize(context.Context, uuid.UUID, uuid.UUID, string) error {
+func (s *spyAuthorizer) Authorize(context.Context, uuid.UUID, string) error {
 	s.calls.Add(1)
 	return nil
 }

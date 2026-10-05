@@ -31,29 +31,6 @@ func call(t *testing.T, api http.Handler, method, path, body string) (int, map[s
 	return w.Code, out
 }
 
-func TestSetSenderIDPolicyChangesItWithoutDisconnecting(t *testing.T) {
-	store, disc := newFakeAccountStore(), &fakeDisconnector{}
-	a := seedCustomerAccount(t, store, uuid.New())
-	api := newTestAPIWith(t, adminapi.Deps{Accounts: store, Disconnector: disc})
-
-	code, body := call(t, api, http.MethodPatch, "smpp-accounts/"+a.ID.String()+"/sender-id-policy", `{"sender_id_policy":"disabled"}`)
-	if code != http.StatusOK || body["sender_id_policy"] != "disabled" {
-		t.Fatalf("status = %d policy = %v, want 200 disabled", code, body["sender_id_policy"])
-	}
-	if got, _ := store.Get(context.Background(), a.ID); got.SenderIDPolicy != cp.SenderIDPolicyDisabled {
-		t.Fatalf("stored policy = %s, want disabled", got.SenderIDPolicy)
-	}
-	if calls := disc.accountCalls(); len(calls) != 0 {
-		t.Fatalf("disconnects = %+v, want none: the policy is checked per message", calls)
-	}
-	if code, _ := call(t, api, http.MethodPatch, "smpp-accounts/"+a.ID.String()+"/sender-id-policy", `{"sender_id_policy":"lenient"}`); code != http.StatusUnprocessableEntity {
-		t.Fatalf("unknown policy: status = %d, want 422", code)
-	}
-	if code, _ := call(t, api, http.MethodPatch, "smpp-accounts/"+uuid.NewString()+"/sender-id-policy", `{"sender_id_policy":"strict"}`); code != http.StatusNotFound {
-		t.Fatalf("unknown account: status = %d, want 404", code)
-	}
-}
-
 func TestSetSmppOpsDisconnectsTheAccountSoItRebindsUnderTheNewFlags(t *testing.T) {
 	store, disc := newFakeAccountStore(), &fakeDisconnector{}
 	a := seedCustomerAccount(t, store, uuid.New())

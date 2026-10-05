@@ -12,26 +12,19 @@ import (
 	"github.com/martialanouman/go-gateway/internal/testutil/pgtest"
 )
 
-// TestSnapshotAgainstPostgres proves the snapshot loads real control-plane rows: an account's policy
-// and only its customer's ACTIVE sender IDs. It exercises the new ListActive / ListSenderIDPolicies
-// queries end to end (catching a mis-qualified schema or projection).
+// TestSnapshotAgainstPostgres proves the snapshot loads real control-plane rows: only the customer's
+// ACTIVE sender IDs. It exercises the ListActive query end to end (catching a mis-qualified schema or
+// projection).
 func TestSnapshotAgainstPostgres(t *testing.T) {
 	pool := pgtest.Pool(t)
 	ctx := context.Background()
 
 	customers := postgres.NewCustomerRepo(pool)
-	accounts := postgres.NewAccountRepo(pool)
 	senderIDs := postgres.NewSenderIDRepo(pool)
 
 	customer, err := customers.Create(ctx, cp.NewCustomer{Name: "SenderIDCo"})
 	if err != nil {
 		t.Fatalf("create customer: %v", err)
-	}
-
-	strict := cp.SenderIDStrict
-	strictAcct, err := accounts.Create(ctx, cp.NewAccount{CustomerID: customer.ID, Name: "sid-strict", SenderIDPolicy: &strict})
-	if err != nil {
-		t.Fatalf("create strict account: %v", err)
 	}
 
 	// One active sender ID (approved) and one still pending — only the active one must authorize.
@@ -47,18 +40,18 @@ func TestSnapshotAgainstPostgres(t *testing.T) {
 		t.Fatalf("create pending sender id: %v", err)
 	}
 
-	a, err := senderid.LoadSnapshot(ctx, accounts, senderIDs)
+	a, err := senderid.LoadSnapshot(ctx, senderIDs)
 	if err != nil {
 		t.Fatalf("LoadSnapshot: %v", err)
 	}
 
-	if err := a.Authorize(ctx, strictAcct.ID, customer.ID, "BANK"); err != nil {
-		t.Errorf("strict + active registered sender = %v, want authorized", err)
+	if err := a.Authorize(ctx, customer.ID, "BANK"); err != nil {
+		t.Errorf("active registered sender = %v, want authorized", err)
 	}
-	if err := a.Authorize(ctx, strictAcct.ID, customer.ID, "PENDING"); !errors.Is(err, errs.ErrSenderIDNotAuthorized) {
-		t.Errorf("strict + pending sender = %v, want rejected (not active)", err)
+	if err := a.Authorize(ctx, customer.ID, "PENDING"); !errors.Is(err, errs.ErrSenderIDNotAuthorized) {
+		t.Errorf("pending sender = %v, want rejected (not active)", err)
 	}
-	if err := a.Authorize(ctx, strictAcct.ID, customer.ID, "36000"); !errors.Is(err, errs.ErrSenderIDNotAuthorized) {
-		t.Errorf("strict + unregistered numeric = %v, want rejected", err)
+	if err := a.Authorize(ctx, customer.ID, "36000"); !errors.Is(err, errs.ErrSenderIDNotAuthorized) {
+		t.Errorf("unregistered numeric = %v, want rejected", err)
 	}
 }

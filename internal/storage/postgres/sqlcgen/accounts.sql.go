@@ -13,20 +13,19 @@ import (
 
 const createAccount = `-- name: CreateAccount :one
 INSERT INTO control_plane.smpp_accounts (
-    customer_id, name, smpp_enabled, rest_enabled, sender_id_policy,
+    customer_id, name, smpp_enabled, rest_enabled,
     query_sm_enabled, cancel_sm_enabled, allowed_bind_types, max_sessions
 ) VALUES (
     $1,
     $2,
     COALESCE($3::boolean, true),
     COALESCE($4::boolean, true),
-    COALESCE($5::text, 'strict'),
+    COALESCE($5::boolean, true),
     COALESCE($6::boolean, true),
-    COALESCE($7::boolean, true),
-    COALESCE($8::text, 'trx'),
-    COALESCE($9::integer, 1)
+    COALESCE($7::text, 'trx'),
+    COALESCE($8::integer, 1)
 )
-RETURNING id, customer_id, name, status, smpp_enabled, rest_enabled, sender_id_policy, query_sm_enabled, cancel_sm_enabled, allowed_bind_types, max_sessions, created_at, updated_at
+RETURNING id, customer_id, name, status, smpp_enabled, rest_enabled, query_sm_enabled, cancel_sm_enabled, allowed_bind_types, max_sessions, created_at, updated_at
 `
 
 type CreateAccountParams struct {
@@ -34,7 +33,6 @@ type CreateAccountParams struct {
 	Name             string
 	SmppEnabled      *bool
 	RestEnabled      *bool
-	SenderIDPolicy   *string
 	QuerySmEnabled   *bool
 	CancelSmEnabled  *bool
 	AllowedBindTypes *string
@@ -47,7 +45,6 @@ func (q *Queries) CreateAccount(ctx context.Context, arg CreateAccountParams) (C
 		arg.Name,
 		arg.SmppEnabled,
 		arg.RestEnabled,
-		arg.SenderIDPolicy,
 		arg.QuerySmEnabled,
 		arg.CancelSmEnabled,
 		arg.AllowedBindTypes,
@@ -61,7 +58,6 @@ func (q *Queries) CreateAccount(ctx context.Context, arg CreateAccountParams) (C
 		&i.Status,
 		&i.SmppEnabled,
 		&i.RestEnabled,
-		&i.SenderIDPolicy,
 		&i.QuerySmEnabled,
 		&i.CancelSmEnabled,
 		&i.AllowedBindTypes,
@@ -85,7 +81,7 @@ func (q *Queries) DeleteAccount(ctx context.Context, id uuid.UUID) (int64, error
 }
 
 const getAccount = `-- name: GetAccount :one
-SELECT id, customer_id, name, status, smpp_enabled, rest_enabled, sender_id_policy, query_sm_enabled, cancel_sm_enabled, allowed_bind_types, max_sessions, created_at, updated_at FROM control_plane.smpp_accounts WHERE id = $1
+SELECT id, customer_id, name, status, smpp_enabled, rest_enabled, query_sm_enabled, cancel_sm_enabled, allowed_bind_types, max_sessions, created_at, updated_at FROM control_plane.smpp_accounts WHERE id = $1
 `
 
 func (q *Queries) GetAccount(ctx context.Context, id uuid.UUID) (ControlPlaneSmppAccount, error) {
@@ -98,7 +94,6 @@ func (q *Queries) GetAccount(ctx context.Context, id uuid.UUID) (ControlPlaneSmp
 		&i.Status,
 		&i.SmppEnabled,
 		&i.RestEnabled,
-		&i.SenderIDPolicy,
 		&i.QuerySmEnabled,
 		&i.CancelSmEnabled,
 		&i.AllowedBindTypes,
@@ -140,41 +135,8 @@ func (q *Queries) ListAccountCustomers(ctx context.Context) ([]ListAccountCustom
 	return items, nil
 }
 
-const listAccountSenderIDPolicies = `-- name: ListAccountSenderIDPolicies :many
-SELECT id, customer_id, sender_id_policy FROM control_plane.smpp_accounts
-`
-
-type ListAccountSenderIDPoliciesRow struct {
-	ID             uuid.UUID
-	CustomerID     uuid.UUID
-	SenderIDPolicy string
-}
-
-// account -> (customer, sender_id_policy) projection for the sender-ID authorization snapshot
-// (step-060). The policy is per account; the registered sender IDs it is checked against are per
-// customer.
-func (q *Queries) ListAccountSenderIDPolicies(ctx context.Context) ([]ListAccountSenderIDPoliciesRow, error) {
-	rows, err := q.db.Query(ctx, listAccountSenderIDPolicies)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListAccountSenderIDPoliciesRow{}
-	for rows.Next() {
-		var i ListAccountSenderIDPoliciesRow
-		if err := rows.Scan(&i.ID, &i.CustomerID, &i.SenderIDPolicy); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listAccounts = `-- name: ListAccounts :many
-SELECT a.id, a.customer_id, a.name, a.status, a.smpp_enabled, a.rest_enabled, a.sender_id_policy, a.query_sm_enabled, a.cancel_sm_enabled, a.allowed_bind_types, a.max_sessions, a.created_at, a.updated_at FROM control_plane.smpp_accounts a
+SELECT a.id, a.customer_id, a.name, a.status, a.smpp_enabled, a.rest_enabled, a.query_sm_enabled, a.cancel_sm_enabled, a.allowed_bind_types, a.max_sessions, a.created_at, a.updated_at FROM control_plane.smpp_accounts a
 WHERE ($1::uuid IS NULL OR a.customer_id = $1)
   AND ($2::text     IS NULL OR a.status      = $2)
   AND ($3::uuid      IS NULL OR a.id          > $3)
@@ -218,7 +180,6 @@ func (q *Queries) ListAccounts(ctx context.Context, arg ListAccountsParams) ([]C
 			&i.Status,
 			&i.SmppEnabled,
 			&i.RestEnabled,
-			&i.SenderIDPolicy,
 			&i.QuerySmEnabled,
 			&i.CancelSmEnabled,
 			&i.AllowedBindTypes,
@@ -239,7 +200,7 @@ func (q *Queries) ListAccounts(ctx context.Context, arg ListAccountsParams) ([]C
 const setAccountChannels = `-- name: SetAccountChannels :one
 UPDATE control_plane.smpp_accounts SET smpp_enabled = $1, rest_enabled = $2
 WHERE id = $3
-RETURNING id, customer_id, name, status, smpp_enabled, rest_enabled, sender_id_policy, query_sm_enabled, cancel_sm_enabled, allowed_bind_types, max_sessions, created_at, updated_at
+RETURNING id, customer_id, name, status, smpp_enabled, rest_enabled, query_sm_enabled, cancel_sm_enabled, allowed_bind_types, max_sessions, created_at, updated_at
 `
 
 type SetAccountChannelsParams struct {
@@ -258,7 +219,6 @@ func (q *Queries) SetAccountChannels(ctx context.Context, arg SetAccountChannels
 		&i.Status,
 		&i.SmppEnabled,
 		&i.RestEnabled,
-		&i.SenderIDPolicy,
 		&i.QuerySmEnabled,
 		&i.CancelSmEnabled,
 		&i.AllowedBindTypes,
@@ -272,7 +232,7 @@ func (q *Queries) SetAccountChannels(ctx context.Context, arg SetAccountChannels
 const setAccountSessionLimits = `-- name: SetAccountSessionLimits :one
 UPDATE control_plane.smpp_accounts SET max_sessions = $1, allowed_bind_types = $2
 WHERE id = $3
-RETURNING id, customer_id, name, status, smpp_enabled, rest_enabled, sender_id_policy, query_sm_enabled, cancel_sm_enabled, allowed_bind_types, max_sessions, created_at, updated_at
+RETURNING id, customer_id, name, status, smpp_enabled, rest_enabled, query_sm_enabled, cancel_sm_enabled, allowed_bind_types, max_sessions, created_at, updated_at
 `
 
 type SetAccountSessionLimitsParams struct {
@@ -291,7 +251,6 @@ func (q *Queries) SetAccountSessionLimits(ctx context.Context, arg SetAccountSes
 		&i.Status,
 		&i.SmppEnabled,
 		&i.RestEnabled,
-		&i.SenderIDPolicy,
 		&i.QuerySmEnabled,
 		&i.CancelSmEnabled,
 		&i.AllowedBindTypes,
@@ -303,7 +262,7 @@ func (q *Queries) SetAccountSessionLimits(ctx context.Context, arg SetAccountSes
 }
 
 const suspendAccount = `-- name: SuspendAccount :one
-UPDATE control_plane.smpp_accounts SET status = 'suspended' WHERE id = $1 RETURNING id, customer_id, name, status, smpp_enabled, rest_enabled, sender_id_policy, query_sm_enabled, cancel_sm_enabled, allowed_bind_types, max_sessions, created_at, updated_at
+UPDATE control_plane.smpp_accounts SET status = 'suspended' WHERE id = $1 RETURNING id, customer_id, name, status, smpp_enabled, rest_enabled, query_sm_enabled, cancel_sm_enabled, allowed_bind_types, max_sessions, created_at, updated_at
 `
 
 func (q *Queries) SuspendAccount(ctx context.Context, id uuid.UUID) (ControlPlaneSmppAccount, error) {
@@ -316,7 +275,6 @@ func (q *Queries) SuspendAccount(ctx context.Context, id uuid.UUID) (ControlPlan
 		&i.Status,
 		&i.SmppEnabled,
 		&i.RestEnabled,
-		&i.SenderIDPolicy,
 		&i.QuerySmEnabled,
 		&i.CancelSmEnabled,
 		&i.AllowedBindTypes,
@@ -331,17 +289,15 @@ const updateAccount = `-- name: UpdateAccount :one
 UPDATE control_plane.smpp_accounts SET
     name              = COALESCE($1, name),
     status            = COALESCE($2, status),
-    sender_id_policy  = COALESCE($3, sender_id_policy),
-    query_sm_enabled  = COALESCE($4, query_sm_enabled),
-    cancel_sm_enabled = COALESCE($5, cancel_sm_enabled)
-WHERE id = $6
-RETURNING id, customer_id, name, status, smpp_enabled, rest_enabled, sender_id_policy, query_sm_enabled, cancel_sm_enabled, allowed_bind_types, max_sessions, created_at, updated_at
+    query_sm_enabled  = COALESCE($3, query_sm_enabled),
+    cancel_sm_enabled = COALESCE($4, cancel_sm_enabled)
+WHERE id = $5
+RETURNING id, customer_id, name, status, smpp_enabled, rest_enabled, query_sm_enabled, cancel_sm_enabled, allowed_bind_types, max_sessions, created_at, updated_at
 `
 
 type UpdateAccountParams struct {
 	Name            *string
 	Status          *string
-	SenderIDPolicy  *string
 	QuerySmEnabled  *bool
 	CancelSmEnabled *bool
 	ID              uuid.UUID
@@ -351,7 +307,6 @@ func (q *Queries) UpdateAccount(ctx context.Context, arg UpdateAccountParams) (C
 	row := q.db.QueryRow(ctx, updateAccount,
 		arg.Name,
 		arg.Status,
-		arg.SenderIDPolicy,
 		arg.QuerySmEnabled,
 		arg.CancelSmEnabled,
 		arg.ID,
@@ -364,7 +319,6 @@ func (q *Queries) UpdateAccount(ctx context.Context, arg UpdateAccountParams) (C
 		&i.Status,
 		&i.SmppEnabled,
 		&i.RestEnabled,
-		&i.SenderIDPolicy,
 		&i.QuerySmEnabled,
 		&i.CancelSmEnabled,
 		&i.AllowedBindTypes,
