@@ -73,7 +73,7 @@ type connectorDTO struct {
 	ThroughputLimitPerSec       *int           `json:"throughput_limit_per_sec,omitempty" minimum:"1" nullable:"true"`
 	TLSEnabled                  *bool          `json:"tls_enabled,omitempty"`
 	TLSConfigJSON               map[string]any `json:"tls_config_json,omitempty" nullable:"true"`
-	PriorityTier                *int           `json:"priority_tier,omitempty"`
+	PriorityTier                *int           `json:"priority_tier,omitempty" minimum:"0" maximum:"2"`
 	Status                      string         `json:"status" enum:"active,degraded,disabled"`
 	AutoReconnectEnabled        bool           `json:"auto_reconnect_enabled"`
 	ReconnectInitialDelayMs     *int           `json:"reconnect_initial_delay_ms,omitempty" minimum:"1"`
@@ -147,7 +147,7 @@ type connectorCreateBody struct {
 	ThroughputLimitPerSec *int           `json:"throughput_limit_per_sec,omitempty" minimum:"1" nullable:"true"`
 	TLSEnabled            *bool          `json:"tls_enabled,omitempty"`
 	TLSConfigJSON         map[string]any `json:"tls_config_json,omitempty" nullable:"true"`
-	PriorityTier          *int           `json:"priority_tier,omitempty"`
+	PriorityTier          *int           `json:"priority_tier,omitempty" minimum:"0" maximum:"2"`
 	AutoReconnectEnabled  *bool          `json:"auto_reconnect_enabled,omitempty"`
 	PriorityFlagDefault   *int           `json:"priority_flag_default,omitempty" minimum:"0" maximum:"3"`
 }
@@ -165,7 +165,7 @@ type connectorUpdateBody struct {
 	ThroughputLimitPerSec *int           `json:"throughput_limit_per_sec,omitempty" minimum:"1" nullable:"true"`
 	TLSEnabled            *bool          `json:"tls_enabled,omitempty"`
 	TLSConfigJSON         map[string]any `json:"tls_config_json,omitempty" nullable:"true"`
-	PriorityTier          *int           `json:"priority_tier,omitempty"`
+	PriorityTier          *int           `json:"priority_tier,omitempty" minimum:"0" maximum:"2"`
 	Status                *string        `json:"status,omitempty" enum:"active,degraded,disabled"`
 	PriorityFlagDefault   *int           `json:"priority_flag_default,omitempty" minimum:"0" maximum:"3"`
 }

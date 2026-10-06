@@ -245,3 +245,20 @@ func TestConnectorPriorityFlagDefaultRoundTripsAndIsBounded(t *testing.T) {
 		t.Errorf("priority_flag_default = 4: err = %v, want a CHECK violation (23514)", err)
 	}
 }
+
+// TestConnectorPriorityTierIsBoundedBySchema: the tier reaches the router from SQL as well as the API.
+func TestConnectorPriorityTierIsBoundedBySchema(t *testing.T) {
+	pool := pgtest.Pool(t)
+	ctx := context.Background()
+	created, err := postgres.NewConnectorRepo(pool).Create(ctx, cp.NewConnector{
+		Name: "smsc-tier-" + uuid.NewString(), Host: "h", Port: 2775, BindType: cp.BindTRX, SystemID: "s",
+		Password: cp.SealedSecret{Sealed: []byte{1}, KMSKeyRef: "test/v1"},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	_, err = pool.Exec(ctx, `UPDATE control_plane.smsc_connectors SET priority_tier = 3 WHERE id = $1`, created.ID)
+	if pgErr := (*pgconn.PgError)(nil); !errors.As(err, &pgErr) || pgErr.Code != "23514" {
+		t.Errorf("priority_tier = 3: err = %v, want a CHECK violation (23514)", err)
+	}
+}

@@ -440,7 +440,7 @@ CREATE TABLE control_plane.smsc_connectors (
 
   tls_enabled                     boolean NOT NULL DEFAULT false,
   tls_config_json                 jsonb,
-  priority_tier                   integer NOT NULL DEFAULT 0,
+  priority_tier                   integer NOT NULL DEFAULT 0 CHECK (priority_tier BETWEEN 0 AND 2),  -- lowest category rank accepted (ADR-0020 §4)
 
   -- coarse config status. Live health is reported at runtime via link_status + breaker_state, NEVER conflated.
   status                          text NOT NULL DEFAULT 'active'

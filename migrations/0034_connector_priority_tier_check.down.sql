@@ -1,0 +1,1 @@
+ALTER TABLE control_plane.smsc_connectors DROP CONSTRAINT smsc_connectors_priority_tier_check;

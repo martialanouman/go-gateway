@@ -246,3 +246,21 @@ func TestConnectorPriorityFlagDefaultIsWritable(t *testing.T) {
 		t.Errorf("create with priority_flag_default 4: status = %d, want 422; body=%s", w.Code, w.Body)
 	}
 }
+
+// TestConnectorPriorityTierIsBounded: a tier above 2 reserves the connector for a rank no category has, so
+// every message routed to it would fail (ADR-0020 §4); the API refuses it.
+func TestConnectorPriorityTierIsBounded(t *testing.T) {
+	api := newTestAPIWith(t, adminapi.Deps{Connectors: newFakeConnectorStore()})
+
+	w := httptest.NewRecorder()
+	api.ServeHTTP(w, authed(t, http.MethodPost, "/v1/admin/connectors",
+		`{"name":"smsc-1","host":"h","port":2775,"bind_type":"trx","system_id":"s","password":"p","priority_tier":3}`))
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("create with priority_tier 3: status = %d, want 422; body=%s", w.Code, w.Body)
+	}
+	w = httptest.NewRecorder()
+	api.ServeHTTP(w, authed(t, http.MethodPatch, "/v1/admin/connectors/"+uuid.NewString(), `{"priority_tier":3}`))
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("update with priority_tier 3: status = %d, want 422; body=%s", w.Code, w.Body)
+	}
+}
