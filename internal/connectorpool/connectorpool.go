@@ -62,9 +62,10 @@ type Service struct {
 	// poolSize and reconnectCfg are the live config for the current dial cycle, refreshed from the
 	// control plane before each cycle (step-128b). They are read and written only from the single Run
 	// goroutine, sequentially between cycles, so they need no synchronisation.
-	poolSize     int
-	reconnectCfg reconnect.Config
-	podID        string
+	poolSize            int
+	reconnectCfg        reconnect.Config
+	priorityFlagDefault uint8
+	podID               string
 
 	// retryFirstFail records, per (partition, offset), when a message first hit a connector-health
 	// failure, so the retry window can dead-letter a message that keeps failing past RetryWindow

@@ -62,15 +62,16 @@ func (s *Service) reloadConfig(ctx context.Context) {
 	if s.deps.ConfigSource == nil {
 		return // static config (already seeded in New)
 	}
-	n, rc, err := s.deps.ConfigSource.Load(ctx, s.deps.ConnectorID)
+	live, err := s.deps.ConfigSource.Load(ctx, s.deps.ConnectorID)
 	if err != nil {
 		s.deps.Logger.WarnContext(ctx, "connector: config reload failed, keeping current config", "err", err)
 		return
 	}
-	if n >= 1 {
-		s.poolSize = n
+	if live.BindPoolSize >= 1 {
+		s.poolSize = live.BindPoolSize
 	}
-	s.reconnectCfg = rc
+	s.reconnectCfg = live.Reconnect
+	s.priorityFlagDefault = live.PriorityFlagDefault
 }
 
 // park keeps the pod alive with a down link, polling the reconfigure generation until it changes (an

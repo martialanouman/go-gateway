@@ -564,16 +564,16 @@ func newDrainer(cfg config.Config, st *stores, limiter *ratelimit.Enforcer, conn
 	return d, nil
 }
 
-// connectorConfigSource re-reads a connector's live bind_pool_size + reconnect policy from Postgres so an
+// connectorConfigSource re-reads a connector's live bind_pool_size, reconnect policy and priority_flag_default from Postgres so an
 // Admin resize / policy change takes effect on the next re-dial (step-128b). The bind endpoint
 // (addr/password) still comes from env — not because the password is unreadable (since step-295 it is
 // sealed, not hashed), but because this service reads no bind column at all; see main.go.
 type connectorConfigSource struct{ repo *postgres.ConnectorRepo }
 
-func (c connectorConfigSource) Load(ctx context.Context, connectorID uuid.UUID) (int, reconnect.Config, error) {
+func (c connectorConfigSource) Load(ctx context.Context, connectorID uuid.UUID) (connectorpool.LiveConfig, error) {
 	conn, err := c.repo.Get(ctx, connectorID)
 	if err != nil {
-		return 0, reconnect.Config{}, err
+		return connectorpool.LiveConfig{}, err
 	}
 	rc := reconnect.Config{
 		Enabled:      conn.AutoReconnectEnabled,
@@ -583,7 +583,11 @@ func (c connectorConfigSource) Load(ctx context.Context, connectorID uuid.UUID) 
 		JitterPct:    conn.ReconnectJitterPct,
 		MaxAttempts:  conn.ReconnectMaxAttempts,
 	}
-	return conn.BindPoolSize, rc, nil
+	return connectorpool.LiveConfig{
+		BindPoolSize:        conn.BindPoolSize,
+		Reconnect:           rc,
+		PriorityFlagDefault: uint8(min(max(conn.PriorityFlagDefault, 0), 3)), //nolint:gosec // clamped to the SMPP range
+	}, nil
 }
 
 // throttleMetric adapts the Prometheus gauge/counter to connectorpool.ThrottleMetric.

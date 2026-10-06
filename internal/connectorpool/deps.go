@@ -149,11 +149,19 @@ type noopSettler struct{}
 func (noopSettler) Capture(context.Context, pipeline.RoutedMT) (bool, *int32) { return false, nil }
 func (noopSettler) Release(context.Context, pipeline.RoutedMT)                {}
 
-// ConfigSource loads a connector's live pool config (bind_pool_size + reconnect policy) from the control
-// plane, so a rebind / resize / policy change takes effect on the next re-dial (step-128b). A nil
-// ConfigSource keeps the static BindConfig.BindPoolSize + Deps.Reconnect (no hot reload).
+// LiveConfig is the part of a connector's configuration the pool re-reads on each (re)dial.
+type LiveConfig struct {
+	BindPoolSize int
+	Reconnect    reconnect.Config
+	// PriorityFlagDefault is the priority_flag sent when the message's effective priority is 0 (ADR-0020 §3).
+	PriorityFlagDefault uint8
+}
+
+// ConfigSource loads a connector's live pool config from the control plane, so a rebind / resize / policy
+// change takes effect on the next re-dial (step-128b). A nil ConfigSource keeps the static
+// BindConfig.BindPoolSize + Deps.Reconnect (no hot reload) and a zero priority_flag_default.
 type ConfigSource interface {
-	Load(ctx context.Context, connectorID uuid.UUID) (bindPoolSize int, rc reconnect.Config, err error)
+	Load(ctx context.Context, connectorID uuid.UUID) (LiveConfig, error)
 }
 
 // StatusControl is the runtime-status side of the pool (step-128b): it publishes this pod's per-bind

@@ -21,8 +21,9 @@ import (
 // the resolved encoding), so the connector no longer encodes: it puts the bytes on the wire verbatim.
 // Revealing the body here is an audited egress (like the Kafka payload): the plaintext goes onto the
 // SMSC wire, never into a log or span. When the segment begins with a UDH, esm_class's UDH indicator is
-// set so the SMSC and the handset parse and reassemble it.
-func buildSubmit(r pipeline.RoutedMT) *smpp.SubmitSM {
+// set so the SMSC and the handset parse and reassemble it. priority_flag is the effective priority, or the
+// connector's default when that is 0 (ADR-0020 §3).
+func buildSubmit(r pipeline.RoutedMT, priorityFlagDefault uint8) *smpp.SubmitSM {
 	source, sourceTON, sourceNPI := sourceAddr(r.From)
 	sm := &smpp.SubmitSM{SMFields: smpp.SMFields{
 		SourceAddr:      source,
@@ -36,6 +37,10 @@ func buildSubmit(r pipeline.RoutedMT) *smpp.SubmitSM {
 	}
 	if r.HasUDH {
 		sm.ESMClass = smpp.ESMClassUDHIndicator
+	}
+	sm.PriorityFlag = priorityFlagDefault
+	if r.Priority > 0 && r.Priority <= 3 {
+		sm.PriorityFlag = uint8(r.Priority)
 	}
 	// The SMPP validity_period is a 16-char C-Octet String; a longer value would marshal a PDU with no
 	// NUL terminator, which the SMSC rejects by dropping the connection — poisoning the partition on

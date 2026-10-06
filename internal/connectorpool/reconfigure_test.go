@@ -21,8 +21,8 @@ type fakeConfigSource struct {
 	rc   reconnect.Config
 }
 
-func (c *fakeConfigSource) Load(_ context.Context, _ uuid.UUID) (int, reconnect.Config, error) {
-	return int(c.size.Load()), c.rc, nil
+func (c *fakeConfigSource) Load(_ context.Context, _ uuid.UUID) (connectorpool.LiveConfig, error) {
+	return connectorpool.LiveConfig{BindPoolSize: int(c.size.Load()), Reconnect: c.rc}, nil
 }
 
 // fakeStatusControl exposes a settable reconfigure generation and records published link statuses.

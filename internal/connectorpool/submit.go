@@ -146,7 +146,7 @@ func (s *Service) processOne(ctx context.Context, b *bind, bindIndex int, rec ka
 	var pinned bool
 	sent.From, pinned = s.senderFor(ctx, routed)
 
-	resp, err := b.Submit(ctx, buildSubmit(sent))
+	resp, err := b.Submit(ctx, buildSubmit(sent, s.priorityFlagDefault))
 	if err != nil {
 		// A dead bind, a write failure or a timeout is transient and a connector-health failure for the
 		// breaker (no response came back). With a fallback chain, reroute to the next connector; without
