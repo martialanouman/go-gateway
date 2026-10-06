@@ -2,6 +2,7 @@ package ratelimit
 
 import (
 	"context"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -13,11 +14,12 @@ import (
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 )
 
-// The rate_limits entity kinds (control_plane.rate_limits.entity_type). The account is admitted before
-// the acknowledgement, the connector paces the send (spec §6.4).
+// The rate_limits entity kinds (control_plane.rate_limits.entity_type). The sender ID and the account are
+// admitted before the acknowledgement, the connector paces the send (spec §6.4, ADR-0021 §3).
 const (
 	EntityAccount   = "smpp_account"
 	EntityConnector = "connector"
+	EntitySenderID  = "sender_id"
 )
 
 // The bucket windows. A reroute's republication is paced on its own budget, so a rerouted message pays
@@ -37,18 +39,19 @@ type Lister interface {
 }
 
 // ConnectorLister loads the connectors, for their throughput_limit_per_sec hard ceiling.
-// *postgres.ConnectorRepo satisfies it.
+// *postgres.ConnectorRepo satisfies it. The ingestion passes nil: admission never reads a connector.
 type ConnectorLister interface {
 	List(ctx context.Context) ([]cp.Connector, error)
 }
 
-// Snapshot is the immutable rate-limit configuration loaded once at boot (a hot reload is a later
-// milestone), indexed by (entity_type, entity_id). A connector with no explicit operational limit gets
+// Snapshot is an immutable rate-limit configuration, indexed by (entity_type, entity_id); Reload swaps a
+// fresh one in where a config watcher calls it (the ingestion), the pool keeps its boot one. A connector with no explicit operational limit gets
 // one derived from its throughput_limit_per_sec, so the hard technical ceiling bounds it (spec §6.4,
 // §10); a connector that also has no throughput_limit_per_sec (the column is nullable) has no ceiling
 // and is not rate-limited — an operator that sets neither has opted out of throttling that connector.
 type Snapshot struct {
-	limits map[string]cp.RateLimit
+	limits  map[string]cp.RateLimit
+	senders map[cp.SenderAddress]uuid.UUID
 }
 
 // LoadSnapshot builds the rate-limit snapshot from the operational limits and the connectors' hard
@@ -60,10 +63,17 @@ func LoadSnapshot(ctx context.Context, rates Lister, connectors ConnectorLister)
 		return nil, err
 	}
 	limits := make(map[string]cp.RateLimit, len(entries))
+	senders := make(map[cp.SenderAddress]uuid.UUID)
 	for _, e := range entries {
 		limits[key(e.EntityType, e.EntityID)] = e.Limit
+		if e.Sender != nil {
+			senders[*e.Sender] = e.EntityID
+		}
 	}
 
+	if connectors == nil {
+		return &Snapshot{limits: limits, senders: senders}, nil
+	}
 	conns, err := connectors.List(ctx)
 	if err != nil {
 		return nil, err
@@ -77,7 +87,7 @@ func LoadSnapshot(ctx context.Context, rates Lister, connectors ConnectorLister)
 			limits[k] = cp.RateLimit{MaxPerSec: c.ThroughputLimitPerSec}
 		}
 	}
-	return &Snapshot{limits: limits}, nil
+	return &Snapshot{limits: limits, senders: senders}, nil
 }
 
 func key(entityType string, id uuid.UUID) string { return entityType + ":" + id.String() }
@@ -87,24 +97,49 @@ func (s *Snapshot) limit(entityType string, id uuid.UUID) (cp.RateLimit, bool) {
 	return l, ok
 }
 
-// Enforcer applies the account and connector limits, consuming a message's segment count from the
-// applicable bucket. The account is checked at admission, the connector at the send.
+// Enforcer applies the sender ID, account and connector limits, consuming a message's segment count from
+// the applicable bucket. The sender ID and the account are checked at admission, the connector at the send.
 type Enforcer struct {
-	snap    *Snapshot
+	snap    atomic.Pointer[Snapshot]
 	limiter *Limiter
 }
 
 // NewEnforcer builds an Enforcer over a boot snapshot and the token-bucket limiter.
 func NewEnforcer(snap *Snapshot, limiter *Limiter) *Enforcer {
-	return &Enforcer{snap: snap, limiter: limiter}
+	e := &Enforcer{limiter: limiter}
+	e.snap.Store(snap)
+	return e
 }
 
-// AdmitAccount consumes `segments` tokens from the account's bucket before the submission is
-// acknowledged, and returns errs.ErrRateLimited when the account is over its limit. An account with no
-// configured limit is admitted. A Redis outage does not surface here: the limiter fails closed against a
-// per-pod ceiling (step-084).
-func (e *Enforcer) AdmitAccount(ctx context.Context, accountID uuid.UUID, segments int) error {
-	if !e.allow(ctx, EntityAccount, accountID, windowSend, segments) {
+// Reload returns the config-watcher rebuild that swaps in a fresh snapshot; on a load failure the current
+// one keeps serving and the watcher retries.
+func (e *Enforcer) Reload(rates Lister, connectors ConnectorLister) func(ctx context.Context) error {
+	return func(ctx context.Context) error {
+		snap, err := LoadSnapshot(ctx, rates, connectors)
+		if err != nil {
+			return err
+		}
+		e.snap.Store(snap)
+		return nil
+	}
+}
+
+// Admit consumes `segments` tokens from the sender ID's bucket, then from the account's, before the
+// submission is acknowledged, and returns errs.ErrRateLimited when either is over its limit. The sender
+// goes first so that a flow its own limit refuses does not spend the account tokens the customer's other
+// flows need. An entity with no configured limit is admitted. A Redis outage does not surface here: the
+// limiter fails closed against a per-pod ceiling (step-084).
+func (e *Enforcer) Admit(ctx context.Context, accountID, customerID uuid.UUID, from string, segments int) error {
+	snap := e.snap.Load()
+	if sender, ok := snap.senders[cp.SenderAddress{CustomerID: customerID, Address: from}]; ok {
+		if !e.allow(ctx, snap, EntitySenderID, sender, windowSend, segments) {
+			return errs.ErrRateLimited
+		}
+	}
+	// ponytail: an account refusal does not refund the sender's tokens just spent. While the account is
+	// saturated, a retrying sender can drain its own bucket without sending anything, then wait up to a
+	// burst once the account frees up. A Lua script debiting both buckets atomically is the upgrade.
+	if !e.allow(ctx, snap, EntityAccount, accountID, windowSend, segments) {
 		return errs.ErrRateLimited
 	}
 	return nil
@@ -114,7 +149,8 @@ func (e *Enforcer) AdmitAccount(ctx context.Context, accountID uuid.UUID, segmen
 // past the ceiling is slowed rather than refused (spec §6.4 backpressure). It returns ctx.Err() when ctx
 // ends first. A connector with no configured limit never waits.
 func (e *Enforcer) WaitConnector(ctx context.Context, connectorID uuid.UUID) error {
-	limit, ok := e.snap.limit(EntityConnector, connectorID)
+	snap := e.snap.Load()
+	limit, ok := snap.limit(EntityConnector, connectorID)
 	if !ok {
 		return nil
 	}
@@ -124,7 +160,7 @@ func (e *Enforcer) WaitConnector(ctx context.Context, connectorID uuid.UUID) err
 	}
 	retry := max(time.Second/time.Duration(rate), minWaitRetry)
 	for {
-		allowed := e.allow(ctx, EntityConnector, connectorID, windowSend, 1)
+		allowed := e.allow(ctx, snap, EntityConnector, connectorID, windowSend, 1)
 		// A dead ctx fails the Redis call, and the per-pod fallback may still grant the token.
 		if err := ctx.Err(); err != nil {
 			return err
@@ -146,11 +182,11 @@ func (e *Enforcer) WaitConnector(ctx context.Context, connectorID uuid.UUID) err
 // the replay against the same rate. It is a budget of its own: the send pays the connector's ceiling
 // again at the target. A connector with no configured limit is always allowed.
 func (e *Enforcer) AllowConnector(ctx context.Context, connectorID uuid.UUID) bool {
-	return e.allow(ctx, EntityConnector, connectorID, windowReroute, 1)
+	return e.allow(ctx, e.snap.Load(), EntityConnector, connectorID, windowReroute, 1)
 }
 
-func (e *Enforcer) allow(ctx context.Context, entityType string, id uuid.UUID, window string, segments int) bool {
-	limit, ok := e.snap.limit(entityType, id)
+func (e *Enforcer) allow(ctx context.Context, snap *Snapshot, entityType string, id uuid.UUID, window string, segments int) bool {
+	limit, ok := snap.limit(entityType, id)
 	if !ok {
 		return true // no limit configured for this entity
 	}

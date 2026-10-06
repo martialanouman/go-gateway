@@ -32,8 +32,9 @@ import (
 // Every step that can fail returns an error rather than ending the process, so a boot failure is a value
 // the caller (or a test) can inspect.
 type restAPIApp struct {
-	ops  *observability.OpsServer
-	http *http.Server
+	ops     *observability.OpsServer
+	http    *http.Server
+	watcher *config.Watcher
 
 	// closers release what was opened, in reverse order of opening — the exact LIFO the deferred Closes
 	// in run() used to provide. They are named because that order is the property worth guarding,
@@ -80,11 +81,18 @@ func newRestAPIApp(ctx context.Context, cfg config.Config, logger *slog.Logger) 
 	}
 	a.onClose("stores", st.close)
 
-	rateSnap, err := ratelimit.LoadSnapshot(ctx, postgres.NewRateLimitRepo(st.pg), postgres.NewConnectorRepo(st.pg))
+	rateSnap, err := ratelimit.LoadSnapshot(ctx, postgres.NewRateLimitRepo(st.pg), nil)
 	if err != nil {
 		return nil, fmt.Errorf("load rate-limit snapshot: %w", err)
 	}
 	admission := ratelimit.NewEnforcer(rateSnap, ratelimit.NewLimiter(st.rdb))
+	a.watcher = config.NewWatcher(
+		func(ctx context.Context) (config.Stream, error) {
+			return redisstore.Subscribe(ctx, st.rdb, config.ChannelSnapshotInvalidation), nil
+		},
+		admission.Reload(postgres.NewRateLimitRepo(st.pg), nil),
+		config.WithResync(cfg.ConfigResyncInterval), config.WithLogger(logger),
+	)
 
 	//nolint:contextcheck // The boot context has no business inside a request handler: the API-key
 	// middleware authenticates on the REQUEST context (ctx.Context()), which is the only correct one —

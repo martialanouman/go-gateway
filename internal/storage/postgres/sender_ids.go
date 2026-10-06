@@ -49,7 +49,7 @@ func (r *SenderIDRepo) ListByCustomer(ctx context.Context, customerID uuid.UUID,
 	}
 	out := make([]cp.SenderID, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, senderIDFromRow(row))
+		out = append(out, withRateLimit(senderIDFromRow(row.ControlPlaneSenderID), row.RateMaxPerSec, row.RateBurstCapacity))
 	}
 	return out, nil
 }
@@ -81,7 +81,53 @@ func (r *SenderIDRepo) Update(ctx context.Context, customerID, senderID uuid.UUI
 	if err != nil {
 		return cp.SenderID{}, translate("update sender id", err)
 	}
-	return senderIDFromRow(row), nil
+	return r.get(ctx, row.CustomerID, row.ID)
+}
+
+// SetRateLimit sets the sender ID's own limit, replacing any previous one. An unknown sender ID, or one of
+// another customer, is ErrNotFound.
+func (r *SenderIDRepo) SetRateLimit(ctx context.Context, customerID, senderID uuid.UUID, l cp.SenderIDRateLimit) (cp.SenderID, error) {
+	n, err := r.q.SetSenderIDRateLimit(ctx, sqlcgen.SetSenderIDRateLimitParams{
+		CustomerID: customerID, ID: senderID, MaxPerSec: i32ptr(&l.MaxPerSec), BurstCapacity: i32ptr(&l.BurstCapacity),
+	})
+	if err != nil {
+		return cp.SenderID{}, translate("set sender id rate limit", err)
+	}
+	if n == 0 {
+		return cp.SenderID{}, fmt.Errorf("set sender id rate limit: %w", errs.ErrNotFound)
+	}
+	return r.get(ctx, customerID, senderID)
+}
+
+// DeleteRateLimit removes the sender ID's own limit; removing an absent one succeeds. An unknown sender
+// ID, or one of another customer, is ErrNotFound.
+func (r *SenderIDRepo) DeleteRateLimit(ctx context.Context, customerID, senderID uuid.UUID) error {
+	if _, err := r.q.GetSenderID(ctx, sqlcgen.GetSenderIDParams{CustomerID: customerID, ID: senderID}); err != nil {
+		return translate("delete sender id rate limit", err)
+	}
+	return translate("delete sender id rate limit", r.q.DeleteSenderIDRateLimit(ctx, senderID))
+}
+
+func (r *SenderIDRepo) get(ctx context.Context, customerID, senderID uuid.UUID) (cp.SenderID, error) {
+	row, err := r.q.GetSenderIDWithRateLimit(ctx, sqlcgen.GetSenderIDWithRateLimitParams{CustomerID: customerID, ID: senderID})
+	if err != nil {
+		return cp.SenderID{}, translate("get sender id", err)
+	}
+	return withRateLimit(senderIDFromRow(row.ControlPlaneSenderID), row.RateMaxPerSec, row.RateBurstCapacity), nil
+}
+
+// withRateLimit attaches the sender ID's own limit read by a LEFT JOIN; a NULL rate is no row at all. A
+// NULL burst (a row not written by SetRateLimit) means one second's worth, as the admission bucket reads it.
+func withRateLimit(s cp.SenderID, rate, burst *int32) cp.SenderID {
+	if rate == nil {
+		return s
+	}
+	l := cp.SenderIDRateLimit{MaxPerSec: int(*rate), BurstCapacity: int(*rate)}
+	if burst != nil && *burst > 0 {
+		l.BurstCapacity = int(*burst)
+	}
+	s.RateLimit = &l
+	return s
 }
 
 // Delete removes a sender ID scoped to its customer. A missing row is ErrNotFound; one that has already

@@ -229,7 +229,7 @@ qu'on mesure un environnement représentatif.
       — unité faute de multiple de dix libre
 - [x] step-288 — La catégorie de trafic se déclare par sender ID ; `sender_id_policy` disparaît (ADR-0020 §1,
       contrat 7.0.0) — décision humaine du 05/10/2026 ; unité faute de multiple de dix libre
-- [ ] step-289 — Un débit par sender ID, refusé à l'admission (ADR-0021 §3) ⛓ step-283, step-288 — unité faute
+- [x] step-289 — Un débit par sender ID, refusé à l'admission (ADR-0021 §3) ⛓ step-283, step-288 — unité faute
       de multiple de dix libre
 - [ ] step-291 — `category_mismatch` et compteur de signalements par sender ID (ADR-0020 §5) ⛓ step-288 —
       unité faute de multiple de dix libre
