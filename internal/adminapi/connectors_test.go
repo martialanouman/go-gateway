@@ -237,6 +237,12 @@ func TestConnectorPriorityFlagDefaultIsWritable(t *testing.T) {
 	w = httptest.NewRecorder()
 	api.ServeHTTP(w, authed(t, http.MethodPatch, "/v1/admin/connectors/"+id, `{"priority_flag_default":4}`))
 	if w.Code != http.StatusUnprocessableEntity {
-		t.Errorf("priority_flag_default 4: status = %d, want 422; body=%s", w.Code, w.Body)
+		t.Errorf("update with priority_flag_default 4: status = %d, want 422; body=%s", w.Code, w.Body)
+	}
+	w = httptest.NewRecorder()
+	api.ServeHTTP(w, authed(t, http.MethodPost, "/v1/admin/connectors",
+		`{"name":"smsc-2","host":"h","port":2775,"bind_type":"trx","system_id":"s","password":"p","priority_flag_default":4}`))
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("create with priority_flag_default 4: status = %d, want 422; body=%s", w.Code, w.Body)
 	}
 }

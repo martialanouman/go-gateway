@@ -58,6 +58,7 @@ type CreateConnectorParams struct {
 // Only the columns ConnectorCreate settles are set here; the SMPP wire-parameter block and the
 // reconnect tuning knobs take their DDL defaults. A duplicate name violates the inline UNIQUE on
 // name -> 409.
+// priority_flag_default is the one wire parameter ConnectorCreate settles (step-294).
 func (q *Queries) CreateConnector(ctx context.Context, arg CreateConnectorParams) (ControlPlaneSmscConnector, error) {
 	row := q.db.QueryRow(ctx, createConnector,
 		arg.Name,

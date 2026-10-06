@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
@@ -239,7 +240,8 @@ func TestConnectorPriorityFlagDefaultRoundTripsAndIsBounded(t *testing.T) {
 	if updated.PriorityFlagDefault != 1 {
 		t.Errorf("updated priority_flag_default = %d, want 1", updated.PriorityFlagDefault)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE control_plane.smsc_connectors SET priority_flag_default = 4 WHERE id = $1`, created.ID); err == nil {
-		t.Error("priority_flag_default = 4 was accepted; want a CHECK violation")
+	_, err = pool.Exec(ctx, `UPDATE control_plane.smsc_connectors SET priority_flag_default = 4 WHERE id = $1`, created.ID)
+	if pgErr := (*pgconn.PgError)(nil); !errors.As(err, &pgErr) || pgErr.Code != "23514" {
+		t.Errorf("priority_flag_default = 4: err = %v, want a CHECK violation (23514)", err)
 	}
 }

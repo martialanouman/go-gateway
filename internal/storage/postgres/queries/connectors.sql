@@ -2,6 +2,7 @@
 -- Only the columns ConnectorCreate settles are set here; the SMPP wire-parameter block and the
 -- reconnect tuning knobs take their DDL defaults. A duplicate name violates the inline UNIQUE on
 -- name -> 409.
+-- priority_flag_default is the one wire parameter ConnectorCreate settles (step-294).
 INSERT INTO control_plane.smsc_connectors (
     name, host, port, bind_type, system_id, password_sealed, password_kms_key_ref, vendor_profile,
     interface_version, data_coding_default, window_size, bind_pool_size,
