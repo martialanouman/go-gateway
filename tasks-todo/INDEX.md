@@ -237,7 +237,7 @@ qu'on mesure un environnement représentatif.
       unité faute de multiple de dix libre
 - [ ] step-292 — Priorité effective et réservation de connecteurs (ADR-0020 §2-§4) ⛓ step-288, step-289
       — unité faute de multiple de dix libre
-- [ ] step-293 — La catégorie du CDR servie à l'Admin, et portée par les rejets ⛓ step-292, step-294 — paie
+- [x] step-293 — La catégorie du CDR servie à l'Admin, et portée par les rejets ⛓ step-292, step-294 — paie
       une dette de step-292 ; demande humaine du 06/10/2026
 - [x] step-294 — `priority_flag_default` modifiable à l'Admin API ⛓ step-292 — paie une dette de step-292 ;
       demande humaine du 06/10/2026

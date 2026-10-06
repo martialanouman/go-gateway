@@ -1,6 +1,6 @@
 # step-293 — La catégorie du CDR servie à l'Admin, et portée par les rejets
 
-> **Jalon :** ADR-0020 · **Statut :** EN COURS
+> **Jalon :** ADR-0020 · **Statut :** LIVRÉE
 > **Dépend de :** step-292 (PR1, #273), step-294 · **Bloque :** l'écran CDR Explorer (§6.4 du tableau de bord)
 > Paie `debts/categorie-du-cdr-ni-servie-ni-sur-les-rejets.md`. Demande humaine du 06/10/2026 ; unité
 > faute de multiple de dix libre.
