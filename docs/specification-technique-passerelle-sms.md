@@ -302,7 +302,7 @@ rate_limits                         -- operational governor, always below the co
 
 antispam_rules
   id (uuidv7, pk)
-  rule_type            (velocity|content_blacklist|duplicate|reputation)
+  rule_type            (velocity|content_blacklist|duplicate|reputation|category_mismatch)
   scope                (global|customer|smpp_account)   -- resolution: smpp_account -> customer -> global
   config_json
   action               (block|flag|throttle)
@@ -806,7 +806,9 @@ Pour la logique que les règles déclaratives ne peuvent exprimer, le fournisseu
 - **Contenu** : liste noire mot-clé/regex, par compte/client/globale ; motifs raccourcisseur/phishing.
 - **Doublons** : hash(source+dest+contenu) avec fenêtre TTL courte dans Redis.
 - **Réputation** : score glissant par client (taux de blocage/plainte/échec DLR) ; franchir un seuil déclenche throttling ou revue.
-- **Actions** : `block` / `flag` / `throttle`.
+- **Conformité à la catégorie déclarée** (`category_mismatch`, ADR-0020 §5) : un expéditeur `otp` doit porter un code de 4 à 8 chiffres, sans URL, dans un corps court ; un `transactional`, aucun marqueur promotionnel de la liste de la règle ; un `marketing` n'est jamais vérifié. La catégorie est lue à l'étape d'autorisation du sender ID, qui précède l'anti-spam. Chaque correspondance incrémente un compteur horaire par expéditeur (24 h, servi par `list-sender-ids`) et la métrique `anti_spam_category_mismatch_total{action}` ; ni le corps ni le marqueur trouvé ne sortent du moteur.
+- **Actions** : `block` / `flag` / `throttle` ; `flag` par défaut à la création d'une règle.
+- Les règles se rechargent sur l'invalidation de configuration : une règle créée par l'API Admin s'applique au message suivant.
 - **Politique de panne Redis (anti-spam)** : dégradation graduée — les vérifications à état partagé (dédup, vélocité, réputation) basculent en **fail-open avec flag** (message journalisé/marqué) ; les règles de contenu statiques continuent de s'appliquer. Configurable par règle.
 
 ### 6.6 Encodage & segmentation
