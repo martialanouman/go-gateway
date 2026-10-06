@@ -160,7 +160,9 @@ func TestTierReachesEveryResolutionLevel(t *testing.T) {
 	decl := tierResolver(t, []cp.Route{reservedRoute, fallback, scriptRoute, scriptFallback},
 		map[uuid.UUID]int{reserved: rankOTP, scriptReserved: rankOTP})
 	scripts, err := routing.BuildScriptSnapshot(context.Background(), fakeActiveScripts{scripts: []script.Script{
-		{Name: "p", Language: script.LanguageJS, Scope: script.ScopePlatform, Source: jsReturning(scriptRoute.ID)},
+		// The default 2 ms budget trips under -race, and a timed-out script falls back to the declarative
+		// level: the test would then assert on the wrong level.
+		{Name: "p", Language: script.LanguageJS, Scope: script.ScopePlatform, Source: jsReturning(scriptRoute.ID), TimeoutMs: 1000},
 	}}, nil)
 	if err != nil {
 		t.Fatalf("BuildScriptSnapshot: %v", err)
