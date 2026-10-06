@@ -211,7 +211,7 @@ func BenchmarkPipelineStages(b *testing.B) {
 	b.Run("sender_id", func(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
-			if err := s.senderIDs.Authorize(ctx, s.in.CustomerID, benchSender); err != nil {
+			if _, err := s.senderIDs.Authorize(ctx, s.in.CustomerID, benchSender); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -227,7 +227,7 @@ func BenchmarkPipelineStages(b *testing.B) {
 	b.Run("anti_spam", func(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
-			if _, err := s.antispam.Evaluate(ctx, s.in.MessageID, s.in.AccountID, s.in.CustomerID, benchSender, "2250700000000", s.body); err != nil {
+			if _, err := s.antispam.Evaluate(ctx, s.in.MessageID, s.in.AccountID, s.in.CustomerID, benchSender, cp.TrafficMarketing, "2250700000000", s.body); err != nil {
 				b.Fatal(err)
 			}
 		}

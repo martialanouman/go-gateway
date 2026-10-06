@@ -1,11 +1,12 @@
 // Package antispam is the real implementation behind the frozen pipeline.anti_spam stage. It
 // evaluates a message against the active anti-spam rules — content blacklists (precompiled regex,
 // matched in memory), duplicates (a fingerprint recorded in Redis with a TTL), velocity (sliding
-// window per source/account, atomic Lua) and reputation (a per-source score) — and reports the action
-// to take: block, flag or throttle. Rules are compiled once at startup and resolved most specific
+// window per source/account, atomic Lua), reputation (a per-source score) and category_mismatch (the
+// traffic against its sender's declared category, ADR-0020 §5) — and reports the action to take: block,
+// flag or throttle. Rules are recompiled on each config invalidation (Holder) and resolved most specific
 // first (account, then customer, then global).
 //
-// Content rules are always enforced. The Redis-backed rules FAIL OPEN (§1.5, availability first): a
+// Content and category_mismatch rules are always enforced. The Redis-backed rules FAIL OPEN (§1.5, availability first): a
 // store fault flags the message rather than blocking it, and never errors, while the content rules
 // stay in force. This is the opposite of the rate-limit stage, which is fail-closed (M6).
 //
@@ -14,6 +15,7 @@
 package antispam
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -22,7 +24,10 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"strings"
+	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -42,6 +47,9 @@ type StateStore interface {
 	Seen(ctx context.Context, fingerprint string, messageID uuid.UUID, window time.Duration) (bool, error)
 	Hit(ctx context.Context, key string, messageID uuid.UUID, window time.Duration) (int, error)
 	Reputation(ctx context.Context, source string) (score int, found bool, err error)
+	// CountCategoryMismatch counts messageID once in the sender's recent matches; counted is false for a
+	// message already counted (a redelivery).
+	CountCategoryMismatch(ctx context.Context, messageID, customerID uuid.UUID, address string) (counted bool, err error)
 }
 
 // Metric counts anti-spam events with bounded labels — never the body or a MSISDN (invariant a). A
@@ -50,11 +58,14 @@ type Metric interface {
 	// FailOpen records that a Redis-backed check could not run and the message was let through
 	// (flagged) rather than blocked (§1.5: velocity anti-spam is fail-open).
 	FailOpen()
+	// CategoryMismatch records that a category_mismatch rule matched, with the action it took.
+	CategoryMismatch(action cp.AntispamAction)
 }
 
 type noopMetric struct{}
 
-func (noopMetric) FailOpen() {}
+func (noopMetric) FailOpen()                          {}
+func (noopMetric) CategoryMismatch(cp.AntispamAction) {}
 
 type contentRule struct {
 	action   cp.AntispamAction
@@ -79,6 +90,14 @@ type reputationRule struct {
 	minScore int
 }
 
+// categoryRule checks a sender's traffic against the category it declares (ADR-0020 §5).
+type categoryRule struct {
+	action       cp.AntispamAction
+	otpCode      *regexp.Regexp
+	otpMaxLength int
+	promoMarkers []string // lower-cased
+}
+
 // Engine evaluates a message against the compiled rules. It is immutable after New (safe for
 // concurrent reads); the Redis-backed checks (duplicate, velocity, reputation) delegate to the state
 // store and FAIL OPEN — a store fault flags the message rather than blocking it (§1.5).
@@ -87,6 +106,7 @@ type Engine struct {
 	dup        map[string]duplicateRule  // most-specific duplicate rule per scope key
 	velocity   map[string]velocityRule   // most-specific velocity rule per scope key
 	reputation map[string]reputationRule // most-specific reputation rule per scope key
+	category   map[string]categoryRule   // most-specific category_mismatch rule per scope key
 	state      StateStore
 	metric     Metric
 	logger     *slog.Logger
@@ -113,6 +133,7 @@ func New(ctx context.Context, lister RuleLister, state StateStore, metric Metric
 		dup:        make(map[string]duplicateRule),
 		velocity:   make(map[string]velocityRule),
 		reputation: make(map[string]reputationRule),
+		category:   make(map[string]categoryRule),
 		state:      state,
 		metric:     metric,
 		logger:     logger,
@@ -144,21 +165,34 @@ func New(ctx context.Context, lister RuleLister, state StateStore, metric Metric
 					e.reputation[key] = rr
 				}
 			}
+		case cp.AntispamCategoryMismatch:
+			if cr, ok := compileCategory(logger, r); ok {
+				if _, exists := e.category[key]; !exists {
+					e.category[key] = cr
+				}
+			}
 		}
 	}
 	return e, nil
 }
 
-// Evaluate returns the action to take for a message from the given sender (from) and (accountID,
-// customerID) to dest with the given body. Content rules (static, in memory) are always enforced. The
+// Evaluate returns the action to take for a message from the given sender (from), declared under
+// category, and (accountID, customerID) to dest with the given body. Content and category_mismatch rules
+// (static, in memory) are always enforced. The
 // Redis-backed rules — duplicate, velocity, reputation — are evaluated most-specific first and FAIL
 // OPEN: a store fault does not block or error, it flags the message (§1.5, availability first) while
 // the content rules stay in force. The returned action is the most restrictive that applied. The
 // error return is retained for interface stability; it is currently always nil.
-func (e *Engine) Evaluate(ctx context.Context, messageID, accountID, customerID uuid.UUID, from, dest string, body []byte) (cp.AntispamAction, error) {
+func (e *Engine) Evaluate(ctx context.Context, messageID, accountID, customerID uuid.UUID, from string, category cp.TrafficCategory, dest string, body []byte) (cp.AntispamAction, error) {
 	scopes := []string{scopeKey(cp.AntispamScopeAccount, &accountID), scopeKey(cp.AntispamScopeCustomer, &customerID), globalKey}
 
 	action := contentAction(e.content, scopes, body)
+	if mismatch := e.categoryMismatch(scopes, category, body); mismatch != "" {
+		if e.countMismatch(ctx, messageID, customerID, from) {
+			e.metric.CategoryMismatch(mismatch)
+		}
+		action = moreRestrictive(action, mismatch)
+	}
 
 	// A content block is the most restrictive outcome — no Redis-backed rule can change it, and
 	// skipping them avoids side-effecting state (a fingerprint / velocity hit) for a rejected message.
@@ -189,6 +223,74 @@ func (e *Engine) Evaluate(ctx context.Context, messageID, accountID, customerID 
 		action = moreRestrictive(action, cp.AntispamActionFlag)
 	}
 	return action, nil
+}
+
+// categoryMismatch returns the action of the most-specific category_mismatch rule when the body does not
+// look like the sender's declared category, or "".
+func (e *Engine) categoryMismatch(scopes []string, category cp.TrafficCategory, body []byte) cp.AntispamAction {
+	for _, sk := range scopes {
+		cr, ok := e.category[sk]
+		if !ok {
+			continue
+		}
+		if cr.mismatches(category, body) {
+			return cr.action
+		}
+		return ""
+	}
+	return ""
+}
+
+// urlPattern also catches a link without a scheme ("bit.ly/x9"): a dotted name ending in a 2+ letter
+// label, followed by a path or the end of a word.
+var urlPattern = regexp.MustCompile(`(?i)(https?://|www\.)\S|\b[a-z][a-z0-9-]*(\.[a-z0-9-]+)*\.[a-z]{2,}(/|$)`)
+
+// mismatches says whether body does not look like category. Marketing, the most constrained category, is
+// never checked; neither is a message with no category.
+func (c categoryRule) mismatches(category cp.TrafficCategory, body []byte) bool {
+	switch category {
+	case cp.TrafficOTP:
+		return !c.otpCode.Match(joinDigitGroups(body)) || urlPattern.Match(body) ||
+			utf8.RuneCount(body) > c.otpMaxLength
+	case cp.TrafficTransactional:
+		lower := strings.ToLower(string(body))
+		for _, m := range c.promoMarkers {
+			if strings.Contains(lower, m) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// joinDigitGroups drops a single space or dash between two digits, so a code written "123 456" or
+// "123-456" is read as the 6-digit code it is.
+func joinDigitGroups(body []byte) []byte {
+	out := make([]byte, 0, len(body))
+	for i, b := range body {
+		if (b == ' ' || b == '-') && i > 0 && i+1 < len(body) && isDigit(body[i-1]) && isDigit(body[i+1]) {
+			continue
+		}
+		out = append(out, b)
+	}
+	return out
+}
+
+func isDigit(b byte) bool { return b >= '0' && b <= '9' }
+
+// countMismatch adds the match to the sender's recent counter and reports whether the metric should count
+// it too: not for a redelivered message, already counted. It fails open — the counter is a signal for the
+// operator, and a store fault must not hold the message back nor hide the match from the metric.
+func (e *Engine) countMismatch(ctx context.Context, messageID, customerID uuid.UUID, from string) bool {
+	if e.state == nil {
+		return true
+	}
+	counted, err := e.state.CountCategoryMismatch(ctx, messageID, customerID, from)
+	if err != nil {
+		e.logger.WarnContext(ctx, "antispam: category mismatch count failed", "err", err)
+		return true
+	}
+	return counted
 }
 
 // evalDuplicate returns the action of the most-specific applicable duplicate rule when the message is
@@ -461,6 +563,10 @@ func ValidateRuleConfig(ruleType cp.AntispamRuleType, config json.RawMessage) er
 		if cfg.By != "" && cfg.By != "source" && cfg.By != "account" {
 			return errors.New(`velocity rule: "by" must be "source" or "account"`)
 		}
+	case cp.AntispamCategoryMismatch:
+		if _, err := parseCategoryConfig(config); err != nil {
+			return err
+		}
 	case cp.AntispamReputation:
 		var cfg reputationConfig
 		if err := json.Unmarshal(config, &cfg); err != nil {
@@ -492,4 +598,75 @@ func compileReputation(logger *slog.Logger, r cp.AntispamRule) (reputationRule, 
 		return reputationRule{}, false
 	}
 	return reputationRule{action: r.Action, minScore: *cfg.MinScore}, true
+}
+
+// maxOTPCodeDigits bounds the code length a rule may ask for, far below RE2's repeat limit of 1000: past
+// it, building the code pattern panics, and one bad row would stop the router.
+const maxOTPCodeDigits = 32
+
+type categoryConfig struct {
+	OTPCodeMinDigits *int     `json:"otp_code_min_digits"`
+	OTPCodeMaxDigits *int     `json:"otp_code_max_digits"`
+	OTPMaxLength     *int     `json:"otp_max_length"`
+	PromoMarkers     []string `json:"promo_markers"`
+}
+
+// parseCategoryConfig applies the ADR-0020 §5 defaults (a 4-8 digit code, 160 characters, no marker) and
+// rejects what would make the rule meaningless.
+func parseCategoryConfig(raw json.RawMessage) (categoryRule, error) {
+	var cfg categoryConfig
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&cfg); err != nil {
+		return categoryRule{}, fmt.Errorf("category_mismatch rule: invalid config: %w", err)
+	}
+	minDigits, maxDigits, maxLength := 4, 8, 160
+	if cfg.OTPCodeMinDigits != nil {
+		minDigits = *cfg.OTPCodeMinDigits
+	}
+	if cfg.OTPCodeMaxDigits != nil {
+		maxDigits = *cfg.OTPCodeMaxDigits
+	}
+	if cfg.OTPMaxLength != nil {
+		maxLength = *cfg.OTPMaxLength
+	}
+	if minDigits <= 0 || maxDigits < minDigits || maxDigits > maxOTPCodeDigits {
+		return categoryRule{}, fmt.Errorf("category_mismatch rule: otp code digits must satisfy 0 < min <= max <= %d", maxOTPCodeDigits)
+	}
+	if maxLength <= 0 {
+		return categoryRule{}, errors.New("category_mismatch rule: otp_max_length must be positive")
+	}
+	markers := make([]string, 0, len(cfg.PromoMarkers))
+	for _, m := range cfg.PromoMarkers {
+		if strings.TrimSpace(m) == "" {
+			return categoryRule{}, errors.New("category_mismatch rule: a promo marker must not be empty")
+		}
+		markers = append(markers, strings.ToLower(m))
+	}
+	code := regexp.MustCompile(fmt.Sprintf(`(?:^|\D)\d{%d,%d}(?:\D|$)`, minDigits, maxDigits))
+	return categoryRule{otpCode: code, otpMaxLength: maxLength, promoMarkers: markers}, nil
+}
+
+func compileCategory(logger *slog.Logger, r cp.AntispamRule) (categoryRule, bool) {
+	cr, err := parseCategoryConfig(r.ConfigJSON)
+	if err != nil {
+		logger.Warn("antispam: dropping category_mismatch rule with bad config", "rule_id", r.ID, "err", err)
+		return categoryRule{}, false
+	}
+	cr.action = r.Action
+	return cr, true
+}
+
+// Holder keeps the current Engine behind an atomic pointer: built at boot, swapped on each config
+// invalidation, so a rule created from the dashboard reaches the next message.
+type Holder struct {
+	engine atomic.Pointer[Engine]
+}
+
+// Store swaps in a freshly built engine.
+func (h *Holder) Store(e *Engine) { h.engine.Store(e) }
+
+// Evaluate checks against the current engine.
+func (h *Holder) Evaluate(ctx context.Context, messageID, accountID, customerID uuid.UUID, from string, category cp.TrafficCategory, dest string, body []byte) (cp.AntispamAction, error) {
+	return h.engine.Load().Evaluate(ctx, messageID, accountID, customerID, from, category, dest, body)
 }

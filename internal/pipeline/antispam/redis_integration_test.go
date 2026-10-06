@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 
+	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	"github.com/martialanouman/go-gateway/internal/pipeline/antispam"
 	"github.com/martialanouman/go-gateway/internal/testutil/redistest"
 )
@@ -140,5 +141,44 @@ func TestRedisStateReputation(t *testing.T) {
 	score, found, err := state.Reputation(ctx, "22507000006")
 	if err != nil || !found || score != 42 {
 		t.Errorf("scored source = (%d, %t, %v), want (42, true, nil)", score, found, err)
+	}
+}
+
+// TestRedisStateCountsCategoryMismatchesOverTwentyFourHours proves the per-sender counter against real
+// Redis: a match lands in the current hour, the 23 previous hours still count, the one before does not, a
+// redelivered message is counted once, and the counts come back in the order of the senders asked for,
+// another customer's same address apart.
+func TestRedisStateCountsCategoryMismatchesOverTwentyFourHours(t *testing.T) {
+	rdb := redistest.Client(t)
+	ctx := context.Background()
+	state := antispam.NewRedisState(rdb)
+	now := time.Date(2026, 10, 6, 10, 5, 0, 0, time.UTC)
+	state.SetClock(func() time.Time { return now })
+	customer, other := uuid.New(), uuid.New()
+
+	replayed := uuid.New()
+	for _, id := range []uuid.UUID{replayed, replayed, uuid.New()} {
+		if _, err := state.CountCategoryMismatch(ctx, id, customer, "BANK"); err != nil {
+			t.Fatalf("CountCategoryMismatch: %v", err)
+		}
+	}
+	if err := rdb.Set(ctx, antispam.CategoryMismatchKey(customer, "BANK", now.Add(-23*time.Hour)), 3, time.Hour).Err(); err != nil {
+		t.Fatalf("seed the 23rd hour back: %v", err)
+	}
+	if err := rdb.Set(ctx, antispam.CategoryMismatchKey(customer, "BANK", now.Add(-24*time.Hour)), 100, time.Hour).Err(); err != nil {
+		t.Fatalf("seed the 24th hour back: %v", err)
+	}
+	if ttl := rdb.TTL(ctx, antispam.CategoryMismatchKey(customer, "BANK", now)).Val(); ttl <= 24*time.Hour || ttl > 25*time.Hour {
+		t.Errorf("current bucket TTL = %v, want just over 24h so the window outlives it", ttl)
+	}
+
+	got, err := state.RecentCategoryMismatches(ctx, []cp.SenderAddress{
+		{CustomerID: other, Address: "BANK"}, {CustomerID: customer, Address: "BANK"},
+	})
+	if err != nil {
+		t.Fatalf("RecentCategoryMismatches: %v", err)
+	}
+	if len(got) != 2 || got[0] != 0 || got[1] != 5 {
+		t.Fatalf("counts = %v, want [0 5]: two messages now (one replayed), three 23h back, none 24h back", got)
 	}
 }

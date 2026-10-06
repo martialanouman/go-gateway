@@ -77,7 +77,7 @@ func New(deps Deps) (*chi.Mux, huma.API) {
 	registerWebhooks(api, deps.Webhooks, deps.Accounts, deps.SecretSealer)
 	registerConnectors(api, deps.Connectors, deps.ConnectorControl, deps.SecretSealer)
 	registerRoutes(api, deps.Routes)
-	registerSenderIDs(api, deps.SenderIDs, deps.Customers)
+	registerSenderIDs(api, deps.SenderIDs, deps.Customers, deps.CategoryMismatches, deps.Logger)
 	registerInboundNumbers(api, deps.InboundNumbers)
 	registerInboundKeywords(api, deps.InboundKeywords)
 	registerUnroutedMO(api, deps.UnroutedMO)

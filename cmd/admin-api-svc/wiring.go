@@ -23,6 +23,7 @@ import (
 	contentkeypb "github.com/martialanouman/go-gateway/internal/contentkeys/pb"
 	"github.com/martialanouman/go-gateway/internal/grpctls"
 	"github.com/martialanouman/go-gateway/internal/observability"
+	"github.com/martialanouman/go-gateway/internal/pipeline/antispam"
 	"github.com/martialanouman/go-gateway/internal/platform/async"
 	"github.com/martialanouman/go-gateway/internal/platform/tlsconf"
 	"github.com/martialanouman/go-gateway/internal/realtime"
@@ -384,6 +385,7 @@ func adminDeps(
 		ConnectorControl:      status.NewReader(rdb),
 		Routes:                postgres.NewRouteRepo(st.pg),
 		SenderIDs:             postgres.NewSenderIDRepo(st.pg),
+		CategoryMismatches:    antispam.NewRedisState(rdb),
 		InboundNumbers:        postgres.NewInboundNumberRepo(st.pg),
 		InboundKeywords:       postgres.NewInboundKeywordRepo(st.pg),
 		UnroutedMO:            postgres.NewUnroutedMORepo(st.pg),

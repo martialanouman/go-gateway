@@ -24,7 +24,7 @@ type ActiveSenderIDLister interface {
 // Authorizer answers whether a source address is permitted for a customer, against an immutable
 // snapshot. It is safe for concurrent reads: nothing mutates after LoadSnapshot.
 type Authorizer struct {
-	activeByCustomer map[uuid.UUID]map[string]struct{}
+	activeByCustomer map[uuid.UUID]map[string]cp.TrafficCategory
 }
 
 // LoadSnapshot reads the active sender IDs once and indexes them for per-message lookup. An empty
@@ -35,7 +35,7 @@ func LoadSnapshot(ctx context.Context, ids ActiveSenderIDLister) (*Authorizer, e
 		return nil, fmt.Errorf("senderid: load active sender ids: %w", err)
 	}
 
-	a := &Authorizer{activeByCustomer: make(map[uuid.UUID]map[string]struct{})}
+	a := &Authorizer{activeByCustomer: make(map[uuid.UUID]map[string]cp.TrafficCategory)}
 	for _, s := range active {
 		// Defense in depth over the query's WHERE clause: only 'active' registrations authorize.
 		if s.Status != cp.SenderIDActive {
@@ -43,27 +43,27 @@ func LoadSnapshot(ctx context.Context, ids ActiveSenderIDLister) (*Authorizer, e
 		}
 		set := a.activeByCustomer[s.CustomerID]
 		if set == nil {
-			set = make(map[string]struct{})
+			set = make(map[string]cp.TrafficCategory)
 			a.activeByCustomer[s.CustomerID] = set
 		}
-		set[s.Address] = struct{}{}
+		set[s.Address] = s.TrafficCategory
 	}
 	return a, nil
 }
 
-// Authorize returns nil if from is an active registered sender ID of the customer, else
-// ErrSenderIDNotAuthorized.
-func (a *Authorizer) Authorize(_ context.Context, customerID uuid.UUID, from string) error {
+// Authorize returns the traffic category declared for from when it is an active registered sender ID of
+// the customer, else ErrSenderIDNotAuthorized.
+func (a *Authorizer) Authorize(_ context.Context, customerID uuid.UUID, from string) (cp.TrafficCategory, error) {
 	// The match is exact (byte-for-byte, case- and whitespace-sensitive): the source_addr placed on the
 	// wire must be exactly a carrier-approved sender ID. A case variant ("Bank" vs the approved "BANK")
 	// or a padded value is deliberately rejected — the schema registers addresses case-sensitively
 	// (sender_ids_uq), so a customer may hold "ACME" and "acme" as distinct IDs, and authorizing a
 	// casing that was not approved would let an unapproved sender ID reach the operator. From is never
 	// rewritten here (that is §6.16, pre-dispatch), so we never authorize one value and send another.
-	if _, registered := a.activeByCustomer[customerID][from]; registered {
-		return nil
+	if category, registered := a.activeByCustomer[customerID][from]; registered {
+		return category, nil
 	}
-	return errs.ErrSenderIDNotAuthorized
+	return "", errs.ErrSenderIDNotAuthorized
 }
 
 // Holder keeps the current Authorizer behind an atomic pointer: loaded at boot, swapped on each
@@ -76,6 +76,6 @@ type Holder struct {
 func (h *Holder) Store(a *Authorizer) { h.snap.Store(a) }
 
 // Authorize checks against the current snapshot.
-func (h *Holder) Authorize(ctx context.Context, customerID uuid.UUID, from string) error {
+func (h *Holder) Authorize(ctx context.Context, customerID uuid.UUID, from string) (cp.TrafficCategory, error) {
 	return h.snap.Load().Authorize(ctx, customerID, from)
 }

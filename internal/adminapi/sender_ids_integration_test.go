@@ -12,8 +12,10 @@ import (
 
 	"github.com/martialanouman/go-gateway/internal/adminapi"
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
+	"github.com/martialanouman/go-gateway/internal/pipeline/antispam"
 	"github.com/martialanouman/go-gateway/internal/storage/postgres"
 	"github.com/martialanouman/go-gateway/internal/testutil/pgtest"
+	"github.com/martialanouman/go-gateway/internal/testutil/redistest"
 )
 
 // TestUsedSenderIDCanBeDisabledButNotDeleted drives ADR-0023 through the real repository: the mark is
@@ -288,5 +290,50 @@ func TestSenderIDRateLimitIsSetReadAndRemoved(t *testing.T) {
 	}
 	if n := orphans(promo.ID); n != 0 {
 		t.Fatalf("deleting the customer left %d rate_limits rows for its sender IDs", n)
+	}
+}
+
+// TestSenderIDListCarriesItsRecentCategoryMismatches: the list reads the per-sender counter the router
+// writes (ADR-0020 §5), every row from the same read, with zero for a sender nothing matched.
+func TestSenderIDListCarriesItsRecentCategoryMismatches(t *testing.T) {
+	pool := pgtest.Pool(t)
+	ctx := t.Context()
+	customer, err := postgres.NewCustomerRepo(pool).Create(ctx, newCustomerInput("sender-mismatch-"+uuid.NewString()))
+	if err != nil {
+		t.Fatalf("create customer: %v", err)
+	}
+	counter := antispam.NewRedisState(redistest.Client(t))
+	api := newTestAPIWith(t, adminapi.Deps{
+		Customers: postgres.NewCustomerRepo(pool), SenderIDs: postgres.NewSenderIDRepo(pool), CategoryMismatches: counter,
+	})
+	base := "/v1/admin/customers/" + customer.ID.String() + "/sender-ids"
+	for _, address := range []string{"BANK", "SHOP"} {
+		w := httptest.NewRecorder()
+		api.ServeHTTP(w, authed(t, http.MethodPost, base, `{"address":"`+address+`"}`))
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create %s: status = %d; body=%s", address, w.Code, w.Body)
+		}
+	}
+	for range 2 {
+		if _, err := counter.CountCategoryMismatch(ctx, uuid.New(), customer.ID, "BANK"); err != nil {
+			t.Fatalf("count: %v", err)
+		}
+	}
+
+	w := httptest.NewRecorder()
+	api.ServeHTTP(w, authed(t, http.MethodGet, base, ""))
+	var list []struct {
+		Address    string `json:"address"`
+		Mismatches *int   `json:"recent_category_mismatches_24h"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil {
+		t.Fatalf("list: %v; body=%s", err, w.Body)
+	}
+	got := map[string]*int{}
+	for _, s := range list {
+		got[s.Address] = s.Mismatches
+	}
+	if got["BANK"] == nil || *got["BANK"] != 2 || got["SHOP"] == nil || *got["SHOP"] != 0 {
+		t.Fatalf("mismatches = BANK %v SHOP %v, want 2 and 0", got["BANK"], got["SHOP"])
 	}
 }

@@ -555,7 +555,7 @@ CREATE TRIGGER sender_ids_drop_rate_limit AFTER DELETE ON control_plane.sender_i
 -- -----------------------------------------------------------------------------------------------------
 CREATE TABLE control_plane.antispam_rules (
   id          uuid PRIMARY KEY DEFAULT uuidv7(),
-  rule_type   text NOT NULL CHECK (rule_type IN ('velocity','content_blacklist','duplicate','reputation')),
+  rule_type   text NOT NULL CHECK (rule_type IN ('velocity','content_blacklist','duplicate','reputation','category_mismatch')),
   scope       text NOT NULL CHECK (scope IN ('global','customer','smpp_account')),  -- resolve acct->cust->global
   scope_id    uuid,      -- polymorphic; null for global
   config_json jsonb NOT NULL DEFAULT '{}'::jsonb,

@@ -23,13 +23,15 @@ func (f fakeRuleLister) ListActive(context.Context) ([]cp.AntispamRule, error) {
 // sliding-window hit counter keyed by message_id, and a reputation map. A preset err drives the fail-open
 // path on every operation.
 type fakeState struct {
-	seen     map[string]uuid.UUID
-	counts   map[string]map[uuid.UUID]bool
-	scores   map[string]int
-	err      error
-	lastDup  string
-	lastHit  string
-	hitCalls int
+	mismatches      []cp.SenderAddress
+	countedMessages map[uuid.UUID]bool
+	seen            map[string]uuid.UUID
+	counts          map[string]map[uuid.UUID]bool
+	scores          map[string]int
+	err             error
+	lastDup         string
+	lastHit         string
+	hitCalls        int
 }
 
 func newFakeState() *fakeState {
@@ -69,9 +71,31 @@ func (s *fakeState) Reputation(_ context.Context, source string) (int, bool, err
 	return score, ok, nil
 }
 
-type fakeMetric struct{ failOpens int }
+type fakeMetric struct {
+	failOpens  int
+	mismatches []cp.AntispamAction
+}
 
 func (m *fakeMetric) FailOpen() { m.failOpens++ }
+
+func (m *fakeMetric) CategoryMismatch(action cp.AntispamAction) {
+	m.mismatches = append(m.mismatches, action)
+}
+
+func (s *fakeState) CountCategoryMismatch(_ context.Context, messageID, customerID uuid.UUID, address string) (bool, error) {
+	if s.err != nil {
+		return false, s.err
+	}
+	if s.countedMessages == nil {
+		s.countedMessages = map[uuid.UUID]bool{}
+	}
+	if s.countedMessages[messageID] {
+		return false, nil
+	}
+	s.countedMessages[messageID] = true
+	s.mismatches = append(s.mismatches, cp.SenderAddress{CustomerID: customerID, Address: address})
+	return true, nil
+}
 
 func contentRule(scope cp.AntispamScope, scopeID *uuid.UUID, action cp.AntispamAction, patterns ...string) cp.AntispamRule {
 	cfg, _ := json.Marshal(map[string]any{"patterns": patterns})
@@ -105,21 +129,21 @@ func engineWith(t *testing.T, state antispam.StateStore, metric antispam.Metric,
 func TestContentBlacklistBlocks(t *testing.T) {
 	e := engineWith(t, nil, nil, contentRule(cp.AntispamScopeGlobal, nil, cp.AntispamActionBlock, `(?i)\bviagra\b`, `(?i)loan`))
 
-	action, err := e.Evaluate(context.Background(), uuid.New(), uuid.New(), uuid.New(), src, "2250700000001", []byte("cheap VIAGRA now"))
+	action, err := e.Evaluate(context.Background(), uuid.New(), uuid.New(), uuid.New(), src, "", "2250700000001", []byte("cheap VIAGRA now"))
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}
 	if action != cp.AntispamActionBlock {
 		t.Errorf("action = %q, want block", action)
 	}
-	if action, _ := e.Evaluate(context.Background(), uuid.New(), uuid.New(), uuid.New(), src, "2250700000001", []byte("your appointment is confirmed")); action != "" {
+	if action, _ := e.Evaluate(context.Background(), uuid.New(), uuid.New(), uuid.New(), src, "", "2250700000001", []byte("your appointment is confirmed")); action != "" {
 		t.Errorf("clean message action = %q, want none", action)
 	}
 }
 
 func TestContentFlagDoesNotBlock(t *testing.T) {
 	e := engineWith(t, nil, nil, contentRule(cp.AntispamScopeGlobal, nil, cp.AntispamActionFlag, `(?i)promo`))
-	action, _ := e.Evaluate(context.Background(), uuid.New(), uuid.New(), uuid.New(), src, "2250700000001", []byte("PROMO code inside"))
+	action, _ := e.Evaluate(context.Background(), uuid.New(), uuid.New(), uuid.New(), src, "", "2250700000001", []byte("PROMO code inside"))
 	if action != cp.AntispamActionFlag {
 		t.Errorf("action = %q, want flag (non-blocking)", action)
 	}
@@ -129,13 +153,13 @@ func TestDuplicateWithinWindow(t *testing.T) {
 	e := engineWith(t, newFakeState(), nil, dupRule(cp.AntispamScopeGlobal, nil, cp.AntispamActionBlock, 60))
 	acct, cust := uuid.New(), uuid.New()
 	body := []byte("identical body")
-	if action, _ := e.Evaluate(context.Background(), uuid.New(), acct, cust, src, "2250700000001", body); action != "" {
+	if action, _ := e.Evaluate(context.Background(), uuid.New(), acct, cust, src, "", "2250700000001", body); action != "" {
 		t.Errorf("first sighting action = %q, want none", action)
 	}
-	if action, _ := e.Evaluate(context.Background(), uuid.New(), acct, cust, src, "2250700000001", body); action != cp.AntispamActionBlock {
+	if action, _ := e.Evaluate(context.Background(), uuid.New(), acct, cust, src, "", "2250700000001", body); action != cp.AntispamActionBlock {
 		t.Errorf("duplicate action = %q, want block", action)
 	}
-	if action, _ := e.Evaluate(context.Background(), uuid.New(), acct, cust, src, "2250700000002", body); action != "" {
+	if action, _ := e.Evaluate(context.Background(), uuid.New(), acct, cust, src, "", "2250700000002", body); action != "" {
 		t.Errorf("different-dest action = %q, want none", action)
 	}
 }
@@ -147,13 +171,13 @@ func TestDuplicateIsolatedPerAccountScope(t *testing.T) {
 		dupRule(cp.AntispamScopeAccount, &acctY, cp.AntispamActionBlock, 60),
 	)
 	body := []byte("Merci de votre visite")
-	if action, _ := e.Evaluate(context.Background(), uuid.New(), acctX, uuid.New(), src, "2250700000001", body); action != "" {
+	if action, _ := e.Evaluate(context.Background(), uuid.New(), acctX, uuid.New(), src, "", "2250700000001", body); action != "" {
 		t.Fatalf("X first send action = %q, want none", action)
 	}
-	if action, _ := e.Evaluate(context.Background(), uuid.New(), acctY, uuid.New(), src, "2250700000001", body); action != "" {
+	if action, _ := e.Evaluate(context.Background(), uuid.New(), acctY, uuid.New(), src, "", "2250700000001", body); action != "" {
 		t.Errorf("Y first send action = %q, want none (cross-tenant isolation)", action)
 	}
-	if action, _ := e.Evaluate(context.Background(), uuid.New(), acctY, uuid.New(), src, "2250700000001", body); action != cp.AntispamActionBlock {
+	if action, _ := e.Evaluate(context.Background(), uuid.New(), acctY, uuid.New(), src, "", "2250700000001", body); action != cp.AntispamActionBlock {
 		t.Errorf("Y repeat action = %q, want block", action)
 	}
 }
@@ -164,10 +188,10 @@ func TestScopePrecedence(t *testing.T) {
 		contentRule(cp.AntispamScopeGlobal, nil, cp.AntispamActionBlock, `(?i)deal`),
 		contentRule(cp.AntispamScopeAccount, &acct, cp.AntispamActionFlag, `(?i)deal`),
 	)
-	if action, _ := e.Evaluate(context.Background(), uuid.New(), acct, uuid.New(), src, "2250700000001", []byte("great DEAL")); action != cp.AntispamActionFlag {
+	if action, _ := e.Evaluate(context.Background(), uuid.New(), acct, uuid.New(), src, "", "2250700000001", []byte("great DEAL")); action != cp.AntispamActionFlag {
 		t.Errorf("action = %q, want flag (account rule outranks global)", action)
 	}
-	if action, _ := e.Evaluate(context.Background(), uuid.New(), uuid.New(), uuid.New(), src, "2250700000001", []byte("great DEAL")); action != cp.AntispamActionBlock {
+	if action, _ := e.Evaluate(context.Background(), uuid.New(), uuid.New(), uuid.New(), src, "", "2250700000001", []byte("great DEAL")); action != cp.AntispamActionBlock {
 		t.Errorf("action = %q, want block (global applies)", action)
 	}
 }
@@ -180,7 +204,7 @@ func TestReplayedMessageIsNeitherItsOwnDuplicateNorCountedTwice(t *testing.T) {
 		velRule(cp.AntispamScopeGlobal, nil, cp.AntispamActionThrottle, 1, 60, "source"))
 	msgID, acct, cust := uuid.New(), uuid.New(), uuid.New()
 	for pass := 1; pass <= 2; pass++ {
-		if action, _ := e.Evaluate(context.Background(), msgID, acct, cust, src, "2250700000001", []byte("hi")); action != "" {
+		if action, _ := e.Evaluate(context.Background(), msgID, acct, cust, src, "", "2250700000001", []byte("hi")); action != "" {
 			t.Errorf("pass %d action = %q, want none", pass, action)
 		}
 	}
@@ -195,12 +219,12 @@ func TestVelocityOverThreshold(t *testing.T) {
 
 	// Hits 1 and 2 are within the limit (max=2).
 	for i := 1; i <= 2; i++ {
-		if action, _ := e.Evaluate(context.Background(), uuid.New(), acct, cust, from, "2250700000001", []byte("hi")); action != "" {
+		if action, _ := e.Evaluate(context.Background(), uuid.New(), acct, cust, from, "", "2250700000001", []byte("hi")); action != "" {
 			t.Errorf("hit %d action = %q, want none (under limit)", i, action)
 		}
 	}
 	// Hit 3 exceeds max → throttle.
-	if action, _ := e.Evaluate(context.Background(), uuid.New(), acct, cust, from, "2250700000001", []byte("hi")); action != cp.AntispamActionThrottle {
+	if action, _ := e.Evaluate(context.Background(), uuid.New(), acct, cust, from, "", "2250700000001", []byte("hi")); action != cp.AntispamActionThrottle {
 		t.Errorf("over-limit action = %q, want throttle", action)
 	}
 }
@@ -213,11 +237,11 @@ func TestReputationBelowThreshold(t *testing.T) {
 	state.scores[badSource] = 10
 	e := engineWith(t, state, nil, repRule(cp.AntispamScopeGlobal, nil, cp.AntispamActionBlock, 50))
 
-	if action, _ := e.Evaluate(context.Background(), uuid.New(), uuid.New(), uuid.New(), badSource, "2250700000001", []byte("hi")); action != cp.AntispamActionBlock {
+	if action, _ := e.Evaluate(context.Background(), uuid.New(), uuid.New(), uuid.New(), badSource, "", "2250700000001", []byte("hi")); action != cp.AntispamActionBlock {
 		t.Errorf("low-reputation action = %q, want block", action)
 	}
 	// An unscored source passes.
-	if action, _ := e.Evaluate(context.Background(), uuid.New(), uuid.New(), uuid.New(), "22507000003", "2250700000001", []byte("hi")); action != "" {
+	if action, _ := e.Evaluate(context.Background(), uuid.New(), uuid.New(), uuid.New(), "22507000003", "", "2250700000001", []byte("hi")); action != "" {
 		t.Errorf("unscored source action = %q, want none", action)
 	}
 }
@@ -234,7 +258,7 @@ func TestFailOpenOnRedisFault(t *testing.T) {
 	)
 
 	// A clean message under a Redis fault: fail open → flagged, not blocked; metric counted.
-	action, err := e.Evaluate(context.Background(), uuid.New(), uuid.New(), uuid.New(), src, "2250700000001", []byte("hello"))
+	action, err := e.Evaluate(context.Background(), uuid.New(), uuid.New(), uuid.New(), src, "", "2250700000001", []byte("hello"))
 	if err != nil {
 		t.Fatalf("fail-open must not return an error: %v", err)
 	}
@@ -245,7 +269,7 @@ func TestFailOpenOnRedisFault(t *testing.T) {
 		t.Error("a fail-open must be counted")
 	}
 	// Content rules still apply even under a Redis fault: a spam body is still blocked.
-	if action, _ := e.Evaluate(context.Background(), uuid.New(), uuid.New(), uuid.New(), src, "2250700000001", []byte("buy SPAM")); action != cp.AntispamActionBlock {
+	if action, _ := e.Evaluate(context.Background(), uuid.New(), uuid.New(), uuid.New(), src, "", "2250700000001", []byte("buy SPAM")); action != cp.AntispamActionBlock {
 		t.Errorf("action = %q, want block (content stays in force under fail-open)", action)
 	}
 }
@@ -254,7 +278,7 @@ func TestFingerprintIsNotTheBody(t *testing.T) {
 	state := newFakeState()
 	e := engineWith(t, state, nil, dupRule(cp.AntispamScopeGlobal, nil, cp.AntispamActionFlag, 60))
 	const secret = "topsecretbody"
-	if _, err := e.Evaluate(context.Background(), uuid.New(), uuid.New(), uuid.New(), src, "2250700000001", []byte(secret)); err != nil {
+	if _, err := e.Evaluate(context.Background(), uuid.New(), uuid.New(), uuid.New(), src, "", "2250700000001", []byte(secret)); err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}
 	if state.lastDup == "" {
@@ -270,7 +294,7 @@ func TestBadConfigRuleDropped(t *testing.T) {
 		contentRule(cp.AntispamScopeGlobal, nil, cp.AntispamActionBlock, `[unclosed`),
 		contentRule(cp.AntispamScopeGlobal, nil, cp.AntispamActionBlock, `(?i)spam`),
 	)
-	if action, _ := e.Evaluate(context.Background(), uuid.New(), uuid.New(), uuid.New(), src, "2250700000001", []byte("this is SPAM")); action != cp.AntispamActionBlock {
+	if action, _ := e.Evaluate(context.Background(), uuid.New(), uuid.New(), uuid.New(), src, "", "2250700000001", []byte("this is SPAM")); action != cp.AntispamActionBlock {
 		t.Errorf("action = %q, want block (the valid rule still applies)", action)
 	}
 }
@@ -283,7 +307,7 @@ func TestMOSourceVelocityKeyMatchesGlobalSourceRule(t *testing.T) {
 	e := engineWith(t, state, nil, velRule(cp.AntispamScopeGlobal, nil, cp.AntispamActionThrottle, 10, 60, "source"))
 
 	// An MT evaluation hits the source's velocity key…
-	if _, err := e.Evaluate(context.Background(), uuid.New(), uuid.New(), uuid.New(), from, "2250700000001", []byte("hi")); err != nil {
+	if _, err := e.Evaluate(context.Background(), uuid.New(), uuid.New(), uuid.New(), from, "", "2250700000001", []byte("hi")); err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}
 	// …which must equal the exported MO-recording key (namespaced with the velocity prefix at the store
@@ -301,7 +325,7 @@ func TestVelocitySourceNormalized(t *testing.T) {
 	e := engineWith(t, state, nil, velRule(cp.AntispamScopeGlobal, nil, cp.AntispamActionThrottle, 10, 60, "source"))
 
 	// MT from the "+"-prefixed spelling.
-	if _, err := e.Evaluate(context.Background(), uuid.New(), uuid.New(), uuid.New(), "+2250700000001", "36000", []byte("hi")); err != nil {
+	if _, err := e.Evaluate(context.Background(), uuid.New(), uuid.New(), uuid.New(), "+2250700000001", "", "36000", []byte("hi")); err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}
 	// The MO path records the canonical spelling.

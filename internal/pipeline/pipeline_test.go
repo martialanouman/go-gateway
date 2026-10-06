@@ -13,6 +13,7 @@ import (
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
+	"github.com/martialanouman/go-gateway/internal/pipeline/antispam"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 	"github.com/martialanouman/go-gateway/internal/platform/msg"
 	"github.com/martialanouman/go-gateway/internal/smpp"
@@ -28,11 +29,16 @@ func (s stubResolver) Resolve(context.Context, pipeline.RouteRequest) (pipeline.
 	return s.route, s.err
 }
 
-// stubAuthorizer authorizes a source address, or rejects it with a fixed error. The zero value
-// allows everything.
-type stubAuthorizer struct{ err error }
+// stubAuthorizer authorizes a source address under a fixed category, or rejects it with a fixed error. The
+// zero value allows everything.
+type stubAuthorizer struct {
+	category cp.TrafficCategory
+	err      error
+}
 
-func (s stubAuthorizer) Authorize(context.Context, uuid.UUID, string) error { return s.err }
+func (s stubAuthorizer) Authorize(context.Context, uuid.UUID, string) (cp.TrafficCategory, error) {
+	return s.category, s.err
+}
 
 // stubOptOut answers the opt-out check with fixed values. The zero value passes every message.
 type stubOptOut struct {
@@ -44,13 +50,18 @@ func (s stubOptOut) IsOptedOut(context.Context, uuid.UUID, uuid.UUID, string, st
 	return s.optedOut, s.err
 }
 
-// stubAntispam returns a fixed anti-spam action. The zero value passes every message (empty action).
+// stubAntispam returns a fixed anti-spam action and records the category it was asked to check against.
+// The zero value passes every message (empty action).
 type stubAntispam struct {
-	action cp.AntispamAction
-	err    error
+	action   cp.AntispamAction
+	err      error
+	category *cp.TrafficCategory
 }
 
-func (s stubAntispam) Evaluate(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, string, string, []byte) (cp.AntispamAction, error) {
+func (s stubAntispam) Evaluate(_ context.Context, _, _, _ uuid.UUID, _ string, category cp.TrafficCategory, _ string, _ []byte) (cp.AntispamAction, error) {
+	if s.category != nil {
+		*s.category = category
+	}
 	return s.action, s.err
 }
 
@@ -267,7 +278,7 @@ func TestPipelineForwardsOptOutIdentifiers(t *testing.T) {
 
 type capturingAntispam struct{ messageID uuid.UUID }
 
-func (s *capturingAntispam) Evaluate(_ context.Context, messageID, _, _ uuid.UUID, _, _ string, _ []byte) (cp.AntispamAction, error) {
+func (s *capturingAntispam) Evaluate(_ context.Context, messageID, _, _ uuid.UUID, _ string, _ cp.TrafficCategory, _ string, _ []byte) (cp.AntispamAction, error) {
 	s.messageID = messageID
 	return "", nil
 }
@@ -323,6 +334,23 @@ func TestPipelineSpamFlagDoesNotBlock(t *testing.T) {
 	}
 	if !rec.Recorded("pipeline.route") {
 		t.Error("a flagged message must reach route resolution")
+	}
+	rec.AssertNoBody(t, "topsecretbody")
+}
+
+// TestPipelineChecksTheTrafficAgainstTheSendersCategory: anti-spam judges a message by the category its
+// sender ID declares (ADR-0020 §5), read at the sender-ID stage that runs before it.
+func TestPipelineChecksTheTrafficAgainstTheSendersCategory(t *testing.T) {
+	deps := testDeps(observability.Tracer(otelrec.New(t).Provider(), "router"))
+	deps.SenderIDs = stubAuthorizer{category: cp.TrafficOTP}
+	var seen cp.TrafficCategory
+	deps.Antispam = stubAntispam{category: &seen}
+
+	if _, _, err := pipeline.New(deps).Process(context.Background(), inbound("+2250700000000")); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if seen != cp.TrafficOTP {
+		t.Fatalf("anti-spam checked against %q, want the sender's otp", seen)
 	}
 }
 
@@ -553,4 +581,45 @@ func TestSegmentCountIsThePipelinesOwn(t *testing.T) {
 			}
 		})
 	}
+}
+
+type mismatchRules struct{}
+
+func (mismatchRules) ListActive(context.Context) ([]cp.AntispamRule, error) {
+	return []cp.AntispamRule{{
+		ID: uuid.New(), RuleType: cp.AntispamCategoryMismatch, Scope: cp.AntispamScopeGlobal,
+		ConfigJSON: []byte(`{"promo_markers":["jackpot"]}`), Action: cp.AntispamActionFlag, Status: cp.AntispamRuleActive,
+	}}, nil
+}
+
+// TestPipelineCategoryMismatchLeaksNothingIntoTheSpans: invariant (a) through the real engine — a flagged
+// transactional message leaves neither its body nor the marker it matched on any span.
+func TestPipelineCategoryMismatchLeaksNothingIntoTheSpans(t *testing.T) {
+	rec := otelrec.New(t)
+	deps := testDeps(observability.Tracer(rec.Provider(), "router"))
+	deps.SenderIDs = stubAuthorizer{category: cp.TrafficTransactional}
+	engine, err := antispam.New(context.Background(), mismatchRules{}, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("antispam.New: %v", err)
+	}
+	deps.Antispam = engine
+	in := inbound("+2250700000000")
+	in.Body = msg.NewBodyString("topsecretbody jackpot")
+
+	if _, _, err := pipeline.New(deps).Process(context.Background(), in); err != nil {
+		t.Fatalf("a flagged message must still route: %v", err)
+	}
+	flagged := false
+	for _, span := range rec.Ended() {
+		for _, kv := range span.Attributes() {
+			if kv.Key == "anti_spam.action" && kv.Value.AsString() == "flag" {
+				flagged = true
+			}
+		}
+	}
+	if !flagged {
+		t.Fatal("the message was not flagged — the leak check would be vacuous")
+	}
+	rec.AssertNoBody(t, "topsecretbody")
+	rec.AssertNoBody(t, "jackpot")
 }
