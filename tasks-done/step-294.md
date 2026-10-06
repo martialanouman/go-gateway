@@ -1,6 +1,6 @@
 # step-294 — `priority_flag_default` modifiable à l'Admin API
 
-> **Jalon :** ADR-0020 §3 · **Statut :** EN COURS
+> **Jalon :** ADR-0020 §3 · **Statut :** LIVRÉE
 > **Dépend de :** step-292 (PR1, #273) · **Bloque :** —
 > Paie `debts/defauts-smpp-du-connecteur-non-modifiables.md`. Demande humaine du 06/10/2026 ; unité faute
 > de multiple de dix libre.

@@ -239,7 +239,7 @@ qu'on mesure un environnement représentatif.
       — unité faute de multiple de dix libre
 - [ ] step-293 — La catégorie du CDR servie à l'Admin, et portée par les rejets ⛓ step-292, step-294 — paie
       une dette de step-292 ; demande humaine du 06/10/2026
-- [ ] step-294 — `priority_flag_default` modifiable à l'Admin API ⛓ step-292 — paie une dette de step-292 ;
+- [x] step-294 — `priority_flag_default` modifiable à l'Admin API ⛓ step-292 — paie une dette de step-292 ;
       demande humaine du 06/10/2026
 - [ ] step-292b — Un topic par catégorie, un consommateur par topic, priorité bornée par bind (ADR-0021)
       ⛓ step-292, step-287 — née du découpage de step-292 ; bloque step-409
