@@ -1,0 +1,11 @@
+# Campagne step-287 : rest-api-svc joignable depuis l'injecteur externe. Posé et retiré par run.sh, jamais
+# dans deploy/test. Le port n'est ouvert qu'à l'IP de l'injecteur par une règle firewalld (run.sh expose).
+apiVersion: v1
+kind: Service
+metadata:
+  name: rest-api-svc-load
+spec:
+  type: NodePort
+  selector: { app: rest-api-svc }
+  ports:
+    - { name: https, port: 8080, targetPort: 8080, nodePort: 30880 }

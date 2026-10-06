@@ -6,6 +6,10 @@
 #                                          clients de charge (24 par défaut) ; clés dans le Secret k6-load
 #   run.sh HOST ceiling VERSION            plafond du simulateur, dans le cluster
 #   run.sh HOST k6 PROFILE IDEMPOTENCY DURATION
+#   run.sh HOST expose INJECTOR_IP         NodePort 30880 + règle firewalld limitée à INJECTOR_IP (step-287)
+#   run.sh HOST unexpose INJECTOR_IP
+#   run.sh HOST k6-remote INJECTOR PROFILE IDEMPOTENCY DURATION
+#                                          k6 lancé depuis l'hôte ssh INJECTOR, visant le NodePort
 #   run.sh HOST observe MINUTES            toutes les 10 s : sessions Postgres en attente d'un verrou sur
 #                                          balances, et submits_total cumulé du pool (step-284)
 set -euo pipefail
@@ -73,6 +77,35 @@ case $action in
     kubectl create configmap k6-script --from-file="$root/test/load/k6/messages.js" --dry-run=client -o yaml | kube apply -f -
     run_job k6-load "$(sed -e "s/@PROFILE@/$3/" -e "s/@IDEMPOTENCY@/$4/" -e "s/@DURATION@/$5/" "$here/k6.yaml")"
     ;;
+  # Le NodePort n'est ouvert qu'à l'injecteur. La règle se pose AVANT le Service, pour que le port ne soit
+  # jamais exposé sans elle, et se retire après lui.
+  expose)
+    rule="rule family=ipv4 source address=$3 port port=30880 protocol=tcp accept"
+    ssh -o ControlMaster=auto -o ControlPath="$HOME/.ssh/cm-%C" -o ControlPersist=10m "$host" \
+      "firewall-cmd --add-rich-rule=$(printf '%q' "$rule")"
+    kube apply -f - <"$here/rest-api-nodeport.yaml"
+    ;;
+  unexpose)
+    rule="rule family=ipv4 source address=$3 port port=30880 protocol=tcp accept"
+    kube delete service rest-api-svc-load --ignore-not-found
+    ssh -o ControlMaster=auto -o ControlPath="$HOME/.ssh/cm-%C" -o ControlPersist=10m "$host" \
+      "firewall-cmd --remove-rich-rule=$(printf '%q' "$rule")"
+    ;;
+  # Même script et même environnement que le Job k6-load ; seule la machine change. Les clés passent par
+  # un tube vers un fichier 0600, jamais par une ligne de commande. L'injecteur rend son vmstat à côté.
+  k6-remote)
+    injector=$3
+    inject() { ssh -o ControlMaster=auto -o ControlPath="$HOME/.ssh/cm-%C" -o ControlPersist=10m "$injector" "$@"; }
+    target=$(ssh -G "$host" | awk '$1 == "hostname" {print $2}')
+    keys=$(kube get secret k6-load -o jsonpath='{.data.API_KEYS}' | base64 -d)
+    inject 'umask 077; cat >/root/k6.env' <<<"API_KEYS=$keys"
+    inject 'cat >/root/messages.js' <"$root/test/load/k6/messages.js"
+    echo "image: $(kube get deploy rest-api-svc -o jsonpath='{.spec.template.spec.containers[0].image}')"
+    inject "vmstat 10 > /root/vmstat-injector.log & vm=\$!; set -a; . /root/k6.env; set +a;
+      BASE_URL=https://$target:30880 K6_INSECURE_SKIP_TLS_VERIFY=true SENDER_ID=TEST \
+      PROFILE=$(printf '%q' "$4") IDEMPOTENCY=$(printf '%q' "$5") DURATION=$(printf '%q' "$6") \
+      k6 run /root/messages.js; rc=\$?; kill \$vm; cat /root/vmstat-injector.log; exit \$rc"
+    ;;
   # Le relevé de step-284 : la ligne de solde d'un client ne doit plus faire attendre personne. Le débit de
   # traversée est la pente de submits_total entre deux lignes, lu par le proxy de l'API (pas de curl dans
   # les images distroless).
@@ -93,7 +126,7 @@ case $action in
     done
     ;;
   *)
-    echo "usage: run.sh HOST apply|seed|ceiling|k6|observe …" >&2
+    echo "usage: run.sh HOST apply|seed|ceiling|k6|k6-remote|expose|unexpose|observe …" >&2
     exit 2
     ;;
 esac
