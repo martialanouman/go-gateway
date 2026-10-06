@@ -2388,7 +2388,7 @@ components:
         registered_delivery_default: { type: integer }
         replace_if_present_flag_default: { type: integer }
         esm_class_default: { type: integer }
-        priority_flag_default: { type: integer }
+        priority_flag_default: { type: integer, description: 'SMPP priority_flag sent when the message effective priority is 0 (a marketing message).' }
         validity_period_default: { type: [string, "null"] }
         sm_default_msg_id: { type: integer }
         enquire_link_interval_sec: { type: integer, minimum: 1 }

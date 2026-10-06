@@ -459,6 +459,11 @@ components:
           minimum: 0
           maximum: 3
           default: 0
+          description: >-
+            Requested priority, bounded by the traffic category declared on the sender ID. The effective
+            priority is min(max(priority, category default), category ceiling): marketing 0 (ceiling 0),
+            transactional 1 (ceiling 2), otp 3 (ceiling 3). It is sent to the carrier as the SMPP
+            priority_flag.
         client_ref:
           type: [string, "null"]
           description: Free-form client reference echoed back on status and DLR.
