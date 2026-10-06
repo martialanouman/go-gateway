@@ -1,6 +1,6 @@
 # step-291 — Le trafic d'un expéditeur est contrôlé contre sa catégorie déclarée ; les signalements se comptent
 
-> **Jalon :** ADR-0020 §5 · **Statut :** À FAIRE
+> **Jalon :** ADR-0020 §5 · **Statut :** LIVRÉE
 > **Dépend de :** step-288 · **Bloque :** le compteur de signalements de l'écran sender IDs du tableau de bord
 > (go-gateway-bo step-067)
 > Décision humaine du 05/10/2026 (métrique + compteur Redis) ; unité faute de multiple de dix libre.
@@ -69,3 +69,34 @@ La spec v2.1 du tableau de bord (go-gateway-bo, `1c29fa6`) ne nomme aucune métr
   pointer.
 - `debts/signalements-n-alimentent-pas-la-reputation.md` : ADR-0020 §5 dit que le flag alimente la
   réputation, et personne n'écrit `antispam:rep:`.
+
+## Livré
+- Contrat 7.2.0 (mineure) : `category_mismatch` dans `rule_type`, `action` optionnelle (`default: flag`),
+  `config_json` documenté pour ce type, `SenderId.recent_category_mismatches_24h` (entier ≥ 0 ou `null`).
+- Migration 0031 : `category_mismatch` dans le `CHECK`, `action` à `'flag'` par défaut en base.
+- `Authorize` rend la catégorie, le pipeline la passe à `Evaluate` ; la règle tourne en mémoire, à côté des
+  règles de contenu, et compte chaque correspondance (Redis, tranches horaires, TTL 25 h, fail-open) et la
+  métrique `anti_spam_category_mismatch_total{action}`.
+- Le moteur anti-spam se recharge sur l'invalidation de configuration (`antispam.Holder`).
+- `list-sender-ids` lit les compteurs de toute la liste en un seul `MGET` ; une lecture en échec sert `null`
+  sans faire échouer la liste.
+- Mutations tuées : marketing vérifié, URL ignorée, longueur ignorée, marqueurs sensibles à la casse,
+  correspondance non comptée, métrique absente, extrait du corps journalisé, catégorie perdue à
+  l'autorisation puis au pipeline, rechargement du moteur absent, fenêtre de 25 tranches, tranche sans
+  TTL, compteur ignoré par l'Admin, zéro servi au lieu de `null`, défaut d'action à `block`.
+- Revue (06/10/2026) :
+  - un `otp_code_max_digits` au-delà de 1000 faisait paniquer la regex, donc l'Admin (500) et le routeur au
+    démarrage : plafond à 32, une ligne hors borne est écartée par le moteur ;
+  - le compteur et la métrique comptent chaque message **une fois** (marqueur par `message_id` dans le même
+    script Lua), comme les règles duplicate et velocity : un rejeu ne gonfle plus l'alerte ;
+  - un lien sans schéma (`bit.ly/x9`) est détecté ; un code écrit `123 456` ou `123-456` n'est plus
+    signalé ; une clé de config inconnue est refusée ;
+  - l'horloge du compteur est injectable : le test ne chevauche plus un changement d'heure ;
+  - la fenêtre est décrite telle qu'elle est (l'heure en cours et les 23 précédentes) ;
+  - le `DEFAULT 'flag'` en base, jamais atteint, est retiré : l'API pose le défaut ; `AntispamRuleType.Valid`,
+    sans appelant, est supprimée ;
+  - le moteur se recharge en dernier, pour qu'une table de règles illisible ne retienne pas la politique de
+    contenu.
+- Laissés de côté, sans effet aujourd'hui : `throttle` accepté pour ce type (aucune conséquence au-delà d'un
+  label borné), la garde d'un `Holder` vide (toujours rempli au câblage), la factorisation des quatre
+  résolutions de portée (code existant).

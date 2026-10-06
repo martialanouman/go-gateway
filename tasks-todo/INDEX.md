@@ -233,7 +233,7 @@ qu'on mesure un environnement représentatif.
       contrat 7.0.0) — décision humaine du 05/10/2026 ; unité faute de multiple de dix libre
 - [x] step-289 — Un débit par sender ID, refusé à l'admission (ADR-0021 §3) ⛓ step-283, step-288 — unité faute
       de multiple de dix libre
-- [ ] step-291 — `category_mismatch` et compteur de signalements par sender ID (ADR-0020 §5) ⛓ step-288 —
+- [x] step-291 — `category_mismatch` et compteur de signalements par sender ID (ADR-0020 §5) ⛓ step-288 —
       unité faute de multiple de dix libre
 - [ ] step-292 — Priorité effective, réservation de connecteurs et un topic par catégorie (ADR-0020 §2-§4,
       ADR-0021) ⛓ step-288, step-289 — place par rapport à step-287 et step-409 à trancher dans la fiche
