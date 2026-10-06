@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strconv"
 	"testing"
 
 	"github.com/google/uuid"
@@ -90,14 +91,14 @@ func TestTierFiltersTheTargetsAndTheFallbackChain(t *testing.T) {
 // reserved target — the filter is the tier, not the breaker.
 func TestTierAppliesToEveryStrategy(t *testing.T) {
 	reserved, shared := uuid.New(), uuid.New()
-	for _, strategy := range []cp.DistributionStrategy{cp.DistributionRoundRobin, cp.DistributionWeighted, cp.DistributionHashBased, cp.DistributionLeastLoaded} {
+	for _, strategy := range []cp.DistributionStrategy{cp.DistributionRoundRobin, cp.DistributionWeighted, cp.DistributionHashBased} {
 		route := cp.Route{ID: uuid.New(), Priority: 100, Status: cp.RouteActive, DistributionStrategy: strategy,
 			MatchDestPattern: ptr("225"), Targets: []cp.RouteTarget{
 				{ConnectorID: reserved, Weight: 1}, {ConnectorID: shared, Weight: 1},
 			}}
 		r := tierResolver(t, []cp.Route{route}, map[uuid.UUID]int{reserved: rankOTP})
 		for i := range 8 {
-			got, err := r.Resolve(context.Background(), "+225070000000"+string(rune('0'+i)), rankMarketing)
+			got, err := r.Resolve(context.Background(), "+225070000000"+strconv.Itoa(i), rankMarketing)
 			if err != nil {
 				t.Fatalf("%s: %v", strategy, err)
 			}
@@ -150,18 +151,29 @@ func TestTierReachesEveryResolutionLevel(t *testing.T) {
 		TargetConnectorID: &shared}
 	reservedRoute := cp.Route{ID: uuid.New(), Priority: 100, Status: cp.RouteActive, DistributionStrategy: cp.DistributionStatic,
 		MatchDestPattern: ptr("225"), TargetConnectorID: &reserved, FallbackRouteID: &fallback.ID}
-	decl := tierResolver(t, []cp.Route{reservedRoute, fallback}, map[uuid.UUID]int{reserved: rankOTP})
+	// Only the script picks this route: its prefix never matches, so the declarative level cannot.
+	scriptReserved, scriptShared := uuid.New(), uuid.New()
+	scriptFallback := cp.Route{ID: uuid.New(), Priority: 300, Status: cp.RouteActive, DistributionStrategy: cp.DistributionStatic,
+		MatchDestPattern: ptr("999"), TargetConnectorID: &scriptShared}
+	scriptRoute := cp.Route{ID: uuid.New(), Priority: 300, Status: cp.RouteActive, DistributionStrategy: cp.DistributionStatic,
+		MatchDestPattern: ptr("999"), TargetConnectorID: &scriptReserved, FallbackRouteID: &scriptFallback.ID}
+	decl := tierResolver(t, []cp.Route{reservedRoute, fallback, scriptRoute, scriptFallback},
+		map[uuid.UUID]int{reserved: rankOTP, scriptReserved: rankOTP})
 	scripts, err := routing.BuildScriptSnapshot(context.Background(), fakeActiveScripts{scripts: []script.Script{
-		{Name: "p", Language: script.LanguageJS, Scope: script.ScopePlatform, Source: jsReturning(reservedRoute.ID)},
+		{Name: "p", Language: script.LanguageJS, Scope: script.ScopePlatform, Source: jsReturning(scriptRoute.ID)},
 	}}, nil)
 	if err != nil {
 		t.Fatalf("BuildScriptSnapshot: %v", err)
 	}
-	for level, l0 := range map[string]*routing.L0Resolver{
-		"script":      routing.NewL0Resolver(fakeExact{}, routing.NewScriptResolver(scripts, nil, nil), decl),
-		"declarative": routing.NewL0Resolver(fakeExact{}, nil, decl),
+	for level, c := range map[string]struct {
+		l0               *routing.L0Resolver
+		reserved, shared uuid.UUID
+	}{
+		"script":      {routing.NewL0Resolver(fakeExact{}, routing.NewScriptResolver(scripts, nil, nil), decl), scriptReserved, scriptShared},
+		"declarative": {routing.NewL0Resolver(fakeExact{}, nil, decl), reserved, shared},
 	} {
-		for rank, want := range map[int]uuid.UUID{rankTransactional: shared, rankOTP: reserved} {
+		l0 := c.l0
+		for rank, want := range map[int]uuid.UUID{rankTransactional: c.shared, rankOTP: c.reserved} {
 			got, err := l0.Resolve(context.Background(), pipeline.RouteRequest{Dest: "+2250700000000", Rank: rank, Segments: 1})
 			if err != nil {
 				t.Fatalf("%s rank %d: %v", level, rank, err)

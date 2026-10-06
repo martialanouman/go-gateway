@@ -45,7 +45,6 @@ type Snapshot struct {
 	tiers map[uuid.UUID]int
 }
 
-// accepts reports whether a connector takes a message of the given category rank.
 func (s *Snapshot) accepts(connectorID uuid.UUID, rank int) bool {
 	return s.tiers[connectorID] <= rank
 }

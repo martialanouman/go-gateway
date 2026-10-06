@@ -45,6 +45,7 @@ func (r *L0Resolver) Resolve(ctx context.Context, req pipeline.RouteRequest) (pi
 			return route, nil
 		}
 		// Override points at a route no longer in the snapshot: fall through (spec §6.1).
+		// A connector reserved above the message's rank falls through the same way (ADR-0020 §4).
 	}
 
 	// L1 — routing script (scope-resolved). A picked route id is resolved to its connector via the

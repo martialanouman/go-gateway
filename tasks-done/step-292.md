@@ -79,10 +79,18 @@ de cette fiche ne touchent pas la topologie : elles n'attendent pas step-287.
 - Spec §6.1 (définition de `priority_tier`, à côté des stratégies, plutôt qu'en §6.8 comme le disait l'ADR) et
   §3.1, dans la même PR. PR1 porte §3.4 (CDR), §6.19
   (priorité effective) et §6.20 (catégorie de la réponse au STOP).
-- Invariant b : la garde s'applique **après** la résolution et ne court-circuite aucune étape. Un test de
+- Invariant b : la garde s'applique **dans** la résolution, après l'autorisation, et ne court-circuite aucune étape. Un test de
   l'invariant b le prouve sur un message L0 refusé par le tier puis routé en L2.
 - La réponse au STOP n'est pas résolue (`ConnectorID` = connecteur du MO) et la garde ne s'y applique pas.
   C'est accepté : il s'agit d'un seul message, vers le lien qui vient de livrer le MO.
+
+### Déploiement et limites (PR2)
+- Toute valeur non nulle de `priority_tier` déjà en base, inerte jusqu'ici, devient active au déploiement.
+  Vérifier avant : `SELECT name, priority_tier FROM control_plane.smsc_connectors WHERE priority_tier <> 0`.
+- La `fallback_chain` est figée au routage : un message parqué ou en dead-letter qu'on rejoue après avoir
+  relevé le tier d'un connecteur peut encore y partir. C'est la même fenêtre qu'avec un connecteur désactivé.
+- Le round-robin partage un compteur par route entre les rangs. Sur une route mêlant un connecteur réservé et
+  un connecteur partagé, la répartition d'un rang peut se biaiser : `debts/round-robin-biaise-par-le-tier.md`.
 
 ### Ordre de déploiement (PR1)
 La migration ClickHouse 0007 passe d'abord : tout écrivain du CDR nomme les deux colonnes. Ensuite, un

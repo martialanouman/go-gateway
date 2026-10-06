@@ -131,7 +131,7 @@ func buildStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg config
 		t.Fatalf("accepted consumer: %v", err)
 	}
 	acceptedProjector := ingest.NewAcceptedConsumer(acceptedConsumer, cdrWriter, nil, nil)
-	resolver, err := routing.LoadSnapshot(context.Background(), postgres.NewRouteRepo(pool), nil)
+	resolver, err := routing.LoadSnapshot(context.Background(), postgres.NewRouteRepo(pool), postgres.NewConnectorRepo(pool))
 	if err != nil {
 		t.Fatalf("load route snapshot: %v", err)
 	}
