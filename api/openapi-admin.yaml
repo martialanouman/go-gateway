@@ -2196,6 +2196,12 @@ components:
         address: { type: string }
         status: { type: string, enum: [pending_carrier_approval, active, disabled] }
         traffic_category: { $ref: '#/components/schemas/TrafficCategory' }
+        recent_category_mismatches_24h:
+          type: [integer, "null"]
+          minimum: 0
+          description: >-
+            Messages from this sender ID that a category_mismatch rule matched (flagged or blocked) over the
+            last 24 hours, counted per hour. Null when the counter store cannot be read: unknown, not zero.
         rate_limit:
           type: [object, "null"]
           description: The sender ID's own limit; null when it has none and only its account's limit applies.
@@ -2214,7 +2220,7 @@ components:
             set, the sender ID can no longer be deleted (409), only disabled.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
-      required: [id, customer_id, address, status, traffic_category, rate_limit, created_at, updated_at]
+      required: [id, customer_id, address, status, traffic_category, recent_category_mismatches_24h, rate_limit, created_at, updated_at]
     SenderIdCreate:
       type: object
       additionalProperties: false
@@ -2699,7 +2705,7 @@ components:
       type: object
       properties:
         id: { type: string, format: uuid }
-        rule_type: { type: string, enum: [velocity, content_blacklist, duplicate, reputation] }
+        rule_type: { type: string, enum: [velocity, content_blacklist, duplicate, reputation, category_mismatch] }
         scope: { type: string, enum: [global, customer, smpp_account] }
         scope_id: { type: [string, "null"], format: uuid }
         config_json: { type: object, additionalProperties: true }
@@ -2712,12 +2718,19 @@ components:
       type: object
       additionalProperties: false
       properties:
-        rule_type: { type: string, enum: [velocity, content_blacklist, duplicate, reputation] }
+        rule_type: { type: string, enum: [velocity, content_blacklist, duplicate, reputation, category_mismatch] }
         scope: { type: string, enum: [global, customer, smpp_account] }
         scope_id: { type: [string, "null"], format: uuid }
-        config_json: { type: object, additionalProperties: true }
-        action: { type: string, enum: [block, flag, throttle] }
-      required: [rule_type, scope, action]
+        config_json:
+          type: object
+          additionalProperties: true
+          description: >-
+            Per rule type. category_mismatch (ADR-0020 §5), every field optional: otp_code_min_digits (4) and
+            otp_code_max_digits (8) bound the code an otp sender's message must carry, otp_max_length (160
+            characters) bounds its body, which must hold no URL; promo_markers ([]) are the case-insensitive
+            words a transactional sender's message must not contain. A marketing sender is never checked.
+        action: { type: string, enum: [block, flag, throttle], default: flag }
+      required: [rule_type, scope]
     AntispamRuleUpdate:
       type: object
       additionalProperties: false
