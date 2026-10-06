@@ -86,7 +86,10 @@ case $action in
     kube delete service rest-api-svc-load --ignore-not-found
     ;;
   # Même script et même environnement que le Job k6-load ; seule la machine change. Les clés passent par
-  # un tube vers un fichier 0600, jamais par une ligne de commande. L'injecteur rend son vmstat à côté.
+  # un tube vers un fichier 0600, jamais par une ligne de commande. k6 et le vmstat de l'injecteur tournent
+  # dans une unité systemd détachée : une coupure ssh du poste ne tue plus le run (perdu à 6 min 53 s le
+  # 06/10/2026). Le poste ne fait que sonder, puis rapatrier le résumé. Les clés sont lues par le shell de
+  # l'unité : SELinux refuse à systemd un EnvironmentFile pris dans /root.
   k6-remote)
     injector=$3
     inject() { ssh -o ControlMaster=auto -o ControlPath="$HOME/.ssh/cm-%C" -o ControlPersist=10m "$injector" "$@"; }
@@ -95,10 +98,19 @@ case $action in
     inject 'umask 077; cat >/root/k6.env' <<<"API_KEYS=$keys"
     inject 'cat >/root/messages.js' <"$root/test/load/k6/messages.js"
     echo "image: $(kube get deploy rest-api-svc -o jsonpath='{.spec.template.spec.containers[0].image}')"
-    inject "vmstat 10 > /root/vmstat-injector.log & vm=\$!; set -a; . /root/k6.env; set +a;
-      BASE_URL=https://$target:30880 K6_INSECURE_SKIP_TLS_VERIFY=true SENDER_ID=TEST \
-      PROFILE=$(printf '%q' "$4") IDEMPOTENCY=$(printf '%q' "$5") DURATION=$(printf '%q' "$6") \
-      k6 run /root/messages.js; rc=\$?; kill \$vm; cat /root/vmstat-injector.log; exit \$rc"
+    inject "rm -f /root/k6-summary.json /root/k6.log /root/vmstat-injector.log; systemctl reset-failed k6-load 2>/dev/null;
+      systemd-run --unit k6-load --collect \
+        -E BASE_URL=https://$target:30880 -E K6_INSECURE_SKIP_TLS_VERIFY=true -E SENDER_ID=TEST \
+        -E PROFILE=$(printf '%q' "$4") -E IDEMPOTENCY=$(printf '%q' "$5") -E DURATION=$(printf '%q' "$6") \
+        /bin/sh -c 'set -a; . /root/k6.env; set +a; vmstat 10 >/root/vmstat-injector.log & k6 run --summary-export /root/k6-summary.json /root/messages.js >/root/k6.log 2>&1; rc=\$?; kill %1; exit \$rc'"
+    # Une coupure pendant l'attente n'abat que la sonde : on relance la sonde, pas le run.
+    while true; do
+      rc=0
+      inject 'systemctl is-active --quiet k6-load' 2>/dev/null || rc=$?
+      ((rc == 0 || rc == 255)) || break # 0 : en cours ; 255 : ssh coupé, on resonde
+      sleep 30
+    done
+    inject 'tail -60 /root/k6.log; echo "--- vmstat injecteur"; cat /root/vmstat-injector.log; echo "--- résumé"; cat /root/k6-summary.json'
     ;;
   # Le relevé de step-284 : la ligne de solde d'un client ne doit plus faire attendre personne. Le débit de
   # traversée est la pente de submits_total entre deux lignes, lu par le proxy de l'API (pas de curl dans
