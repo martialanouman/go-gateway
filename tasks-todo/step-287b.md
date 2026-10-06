@@ -51,8 +51,8 @@ Séparer les magasins sur un autre serveur ne ferait que déplacer ce gaspillage
   interdit à Claude).
 
 ## Definition of Done
-- [ ] `modlrrouter` écrit un lot de poll en un `InsertBatch` ; un échec d'écriture fait échouer et
+- [x] `modlrrouter` écrit un lot de poll en un `InsertBatch` ; un échec d'écriture fait échouer et
       rejouer tout le lot (tests, mutation)
-- [ ] fichier de configuration ClickHouse versionné, monté sur le VPS et en local
+- [x] fichier de configuration ClickHouse versionné, monté sur le VPS et en local
 - [ ] sur le VPS, après déploiement : CPU de ClickHouse à vide et taille moyenne des inserts `cdr`
       sous un flux de DLR, mesurées avant et après

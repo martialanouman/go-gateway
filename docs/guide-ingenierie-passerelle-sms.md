@@ -408,6 +408,14 @@ Les changements de configuration (routes, connecteurs, anti-spam, sender IDs, su
 
 CDR (ClickHouse) et grand livre (Postgres) partitionnés par jour ; audit mensuel ; plan de contrôle non partitionné. Tiering : chaud 0–7 j (SSD), tiède 8–90 j (objet + Parquet, partitions détachées), froid > 90 j (archive immuable). Rétentions différenciées : corps `content_retention_days` (ex. 7 j) < métadonnées CDR (90 j) < grand livre (13 mois+) < audit (1–7 ans) ; suppressions **sans expiration**. Purge par **drop de partition**, jamais `DELETE WHERE`.
 
+**ClickHouse : journaux système bornés (step-287b).** L'image officielle se journalise en `Trace` et garde
+ses tables système sans limite. Sur le VPS de test, cela faisait 33 Go et plusieurs cœurs occupés, sans
+aucun trafic. La passerelle ne déploie pas le ClickHouse de production : l'exploitant y pose l'équivalent de
+`deploy/test/deps/clickhouse-system-logs.xml`, c'est-à-dire `logger` en `warning`, `text_log` au niveau
+`warning`, `processors_profile_log` retiré, et un TTL court sur `query_log`, `part_log`, `trace_log`,
+`metric_log` et `asynchronous_metric_log`. Une table système dont la définition change est renommée en
+`<table>_0`, et l'ancienne ne se purge pas d'elle-même.
+
 ### 13.3 Runbook — opérations courantes
 
 **Onboarding d'un client B2B.** Créer le client (plan tarifaire, `billing_enabled`, `balance_scope`, politique de contenu) → créer un ou plusieurs comptes SMPP (canaux, `max_sessions`, types de bind) → générer les identifiants (bind + clé API, secret révélé une fois) → enregistrer les sender IDs (approbation opérateur) → configurer webhooks MO/DLR → si numéros entrants dédiés, les assigner. Aucun libre-service : tout passe par l'API/Tableau de bord Admin.

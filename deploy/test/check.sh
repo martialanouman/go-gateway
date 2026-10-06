@@ -55,7 +55,7 @@ grep -B3 '^  name: gateway-config$' "$all" | grep -q 'gateway.test/phase: deps' 
   || fail "gateway-config n'est pas en phase deps : les Jobs (envFrom non optional) resteraient en CreateContainerConfigError"
 # 6 Services, 5 StatefulSets, le Deployment du simulateur, le ConfigMap des droits ClickHouse, le
 # ConfigMap gateway-config.
-[[ $(grep -c 'gateway.test/phase: deps$' "$all") -eq 14 ]] || fail "une dépendance n'est pas en phase deps : elle partirait avec l'application"
+[[ $(grep -c 'gateway.test/phase: deps$' "$all") -eq 15 ]] || fail "une dépendance n'est pas en phase deps : elle partirait avec l'application"
 
 # shellcheck disable=SC2016 # backticks littéraux : la règle Traefik Host(`...`) rendue par kustomize
 grep -q 'Host(`api-test.manouman.com`)' "$all" || fail "l'API REST n'est pas routée"
