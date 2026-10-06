@@ -209,6 +209,6 @@ func outcomeRow(r pipeline.RoutedMT, status clickhouse.Status, reason errs.Code)
 		Encoding:        clickhouse.EncodingOf(r.Encoding),
 		Billed:          false,
 		TrafficCategory: string(r.TrafficCategory),
-		Priority:        clickhouse.PriorityOf(r.Priority),
+		Priority:        r.Priority,
 	}
 }

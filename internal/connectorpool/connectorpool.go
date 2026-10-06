@@ -62,8 +62,10 @@ type Service struct {
 	// poolSize and reconnectCfg are the live config for the current dial cycle, refreshed from the
 	// control plane before each cycle (step-128b). They are read and written only from the single Run
 	// goroutine, sequentially between cycles, so they need no synchronisation.
-	poolSize            int
-	reconnectCfg        reconnect.Config
+	poolSize     int
+	reconnectCfg reconnect.Config
+	// priorityFlagDefault is reloaded with them, but read by the shard goroutines: RunBatch starts those
+	// after the reload and runOnce waits for them before the next one, so it needs no synchronisation either.
 	priorityFlagDefault uint8
 	podID               string
 

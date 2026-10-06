@@ -53,7 +53,7 @@ type routedWire struct {
 	ValidityPeriod     *string    `json:"validity_period,omitempty"`
 	DataCoding         *int       `json:"data_coding,omitempty"`
 	TrafficCategory    string     `json:"traffic_category"`
-	Priority           int        `json:"priority"`
+	Priority           uint8      `json:"priority"`
 	ConnectorID        uuid.UUID  `json:"connector_id"`
 	RouteID            *uuid.UUID `json:"route_id,omitempty"`
 	SegmentSeq         int        `json:"segment_seq"`
@@ -238,8 +238,8 @@ type outcomeWire struct {
 	ErrorCode       *string    `json:"error_code,omitempty"`
 	Billed          bool       `json:"billed"`
 	CreditsCharged  *int32     `json:"credits_charged,omitempty"`
-	TrafficCategory string     `json:"traffic_category,omitempty"`
-	Priority        int        `json:"priority,omitempty"`
+	TrafficCategory string     `json:"traffic_category"`
+	Priority        uint8      `json:"priority"`
 }
 
 // EncodeOutcome builds the mt.outcome record for env, keyed by the logical message id — the same key

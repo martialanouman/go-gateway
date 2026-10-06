@@ -95,11 +95,6 @@ func EncodingOf(requested string) Encoding {
 	}
 }
 
-// PriorityOf projects an effective priority onto the cdr.priority column, clamped to the SMPP range.
-func PriorityOf(priority int) uint8 {
-	return uint8(min(max(priority, 0), 3)) //nolint:gosec // clamped to 0..3
-}
-
 // CDRRow is one CDR row: one lifecycle snapshot of a message. Every status change writes a new row
 // carrying the same message_id and immutable submitted_at; the writer derives `version` from
 // Status, so callers never set it. content_ciphertext/content_key_id exist for stored content and
@@ -350,6 +345,8 @@ const cdrStatusPrecedence = `multiIf(
 // source_addr likewise prefers a dispatched segment: once the pool rewrites the sender (§6.16) the
 // placeholder holds the client's address and a submitted segment the one sent. A segment the pool
 // dead-lettered without submitting keeps the client's, with no original beside it.
+// traffic_category and priority come from the segment rows: the message-level rows (the placeholder, the
+// Canceller's cancelled row) are written without them, and an empty string is not NULL to anyIf.
 const cdrAggMessageCols = `message_id, submitted_at,
 	any(trace_id) AS trace_id, any(account_id) AS account_id, any(customer_id) AS customer_id,
 	any(direction) AS direction, argMax(source_addr, ` + cdrDispatched + `) AS source_addr, any(dest_addr) AS dest_addr,
@@ -360,8 +357,7 @@ const cdrAggMessageCols = `message_id, submitted_at,
 	any(encoding) AS encoding, any(content_ciphertext) AS content_ciphertext,
 	any(content_key_id) AS content_key_id, maxIf(latency_ms, ` + cdrDispatched + `) AS latency_ms,
 	max(billed) AS billed, any(credits_charged) AS credits_charged,
-	anyIf(traffic_category, ` + cdrDispatched + `) AS traffic_category,
-	anyIf(priority, ` + cdrDispatched + `) AS priority,
+	anyIf(traffic_category, traffic_category != '') AS traffic_category, max(priority) AS priority,
 	` + cdrStatusCounts + `,
 	maxIf(delivered_at, status = 'delivered') AS delivered_at_max,
 	argMinIf(error_code, segment_seq, status IN ('failed', 'expired', 'rejected')) AS error_code`

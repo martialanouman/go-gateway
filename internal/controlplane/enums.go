@@ -207,21 +207,8 @@ const (
 	TrafficMarketing     TrafficCategory = "marketing"
 )
 
-// Rank orders the categories for connector reservation (priority_tier, ADR-0020 §4). An unknown category
-// ranks as marketing, the most constrained.
-func (c TrafficCategory) Rank() int {
-	switch c {
-	case TrafficOTP:
-		return 2
-	case TrafficTransactional:
-		return 1
-	default:
-		return 0
-	}
-}
-
 // EffectivePriority bounds a requested priority by the category's default and ceiling (ADR-0020 §2).
-func (c TrafficCategory) EffectivePriority(requested int) int {
+func (c TrafficCategory) EffectivePriority(requested int) uint8 {
 	floor, ceiling := 0, 0
 	switch c {
 	case TrafficOTP:
@@ -229,7 +216,7 @@ func (c TrafficCategory) EffectivePriority(requested int) int {
 	case TrafficTransactional:
 		floor, ceiling = 1, 2
 	}
-	return min(max(requested, floor), ceiling)
+	return uint8(min(max(requested, floor), ceiling)) //nolint:gosec // bounded to 0..3 by the table above
 }
 
 // SenderIDStatus is the carrier-approval state of a sender ID (control_plane.sender_ids.status).

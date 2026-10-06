@@ -6,19 +6,12 @@
 > Sortie de la livraison sender ID du 05/10/2026 (step-288, 289, 291) ; unité faute de multiple de dix libre.
 
 ## Pourquoi
-step-288, 289 et 291 livrent ce dont l'écran des sender IDs a besoin. Le reste des deux ADR, qui donne à
-la catégorie son effet sur l'acheminement, n'a pas de step (ADR-0021, action item 10).
+step-288, 289 et 291 livrent ce dont l'écran des sender IDs a besoin. Le reste d'ADR-0020 donne à la
+catégorie son effet sur l'acheminement : la priorité effective et la réservation de connecteurs. ADR-0021
+va à step-292b.
 
-## Arbitrages à trancher (dans la fiche, avant tout code)
-- **Découpage** : cette fiche est sans doute trop grosse pour une PR. Une découpe naturelle :
-  1. priorité effective sur `mt.routed`, `priority_flag` écrit par `buildSubmit`, et CDR
-     `traffic_category`/`priority` ;
-  2. garde `priority_tier` aux trois niveaux et sur la `fallback_chain` ;
-  3. les six topics et un consommateur par topic, au routeur puis au pool ;
-  4. l'ordonnanceur par bind et `CONNECTOR_MARKETING_MIN_SHARE`.
-- **Place par rapport au go-live** : avant step-409, la campagne mesurerait la topologie finale. Après,
-  step-409 mesure deux topics qui disparaîtront.
-- **Ordre avec step-287** : la campagne du VPS mesure-t-elle l'ancienne topologie ?
+## Arbitrages
+Tranchés le 06/10/2026, voir ci-dessous.
 
 ## Design arrêté (06/10/2026)
 
@@ -37,7 +30,7 @@ de la clé `message_id` de step-282, référence qui calibre les partitions et l
 de cette fiche ne touchent pas la topologie : elles n'attendent pas step-287.
 
 ### PR1 — priorité effective portée jusqu'au SMSC et au CDR
-- `cp.EffectivePriority(category, requested)` : fonction pure à côté de `TrafficCategory`, la table
+- `TrafficCategory.EffectivePriority(requested)` : méthode pure du type, la table
   d'ADR-0020 §2 : `min(max(requested, défaut), plafond)`. Appelée dans `Pipeline.Process` après
   `senderid.Authorize`. `RoutedMT` gagne `TrafficCategory` et `Priority` (effective).
 - `mt.routed` (`routedWire`) : `traffic_category` et `priority`. Décodage tolérant : champ absent →
@@ -72,7 +65,7 @@ de cette fiche ne touchent pas la topologie : elles n'attendent pas step-287.
   bâtie par `BuildSnapshot` et rebâtie au même rechargement que les routes. C'est de la configuration,
   pas de l'état volatil : il n'a rien à faire dans l'overlay du disjoncteur. À vérifier au plan :
   l'invalidation de `smsc_connectors` reconstruit-elle l'instantané du routeur ?
-- Rang = `cp.TrafficCategory.Rank()` (0/1/2). Un connecteur dont `tier > rang` est sauté :
+- Rang = une méthode `TrafficCategory.Rank()` (0/1/2), qui arrive avec cette PR. Un connecteur dont `tier > rang` est sauté :
   - **L0** : cible vérifiée avant retour, sinon chute vers L1/L2 (ADR-0004) ;
   - **script** : filtré sur sa sortie ;
   - **déclaratif** : dans chaque stratégie, et dans le repli de route ;
@@ -80,11 +73,18 @@ de cette fiche ne touchent pas la topologie : elles n'attendent pas step-287.
 
   Il ne reste rien → `ErrNoRoute`. Aucun code d'erreur neuf, aucune métrique neuve (ADR-0020 renvoie la
   mauvaise configuration au simulateur de route).
-- Spec §6.1 et §6.8 (définition de `priority_tier`) dans la même PR.
+- Spec §6.1 et §6.8 (définition de `priority_tier`) dans la même PR. PR1 porte §3.4 (CDR), §6.19
+  (priorité effective) et §6.20 (catégorie de la réponse au STOP).
 - Invariant b : la garde s'applique **après** la résolution et ne court-circuite aucune étape. Un test de
   l'invariant b le prouve sur un message L0 refusé par le tier puis routé en L2.
 - La réponse au STOP n'est pas résolue (`ConnectorID` = connecteur du MO) et la garde ne s'y applique pas.
   C'est accepté : il s'agit d'un seul message, vers le lien qui vient de livrer le MO.
+
+### Ordre de déploiement (PR1)
+Un ancien `mo-dlr-router-svc` ou un ancien projecteur `mt.outcome` ignore les champs neufs et écrit la ligne
+la plus haute du segment sans catégorie. Il faut donc déployer ces deux consommateurs avant
+`connector-pool-svc`. L'ordre inverse est sûr : un ancien enregistrement lu par le nouveau code donne
+`marketing`/0. Seul l'environnement de test existe aujourd'hui (ADR-0021, *Conséquences*).
 
 ### Hors de cette fiche
 Topics, consommateurs, ordonnanceur, lag par catégorie, `deploy/k8s` et la ligne « ordre du pipeline » de

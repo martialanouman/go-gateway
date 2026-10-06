@@ -157,9 +157,10 @@ type LiveConfig struct {
 	PriorityFlagDefault uint8
 }
 
-// ConfigSource loads a connector's live pool config from the control plane, so a rebind / resize / policy
-// change takes effect on the next re-dial (step-128b). A nil ConfigSource keeps the static
-// BindConfig.BindPoolSize + Deps.Reconnect (no hot reload) and a zero priority_flag_default.
+// ConfigSource loads a connector's live pool config (bind_pool_size + reconnect policy) from the control
+// plane, so a rebind / resize / policy change takes effect on the next re-dial (step-128b). A nil
+// ConfigSource keeps the static BindConfig.BindPoolSize + Deps.Reconnect (no hot reload).
+// A nil ConfigSource also leaves priority_flag_default at 0.
 type ConfigSource interface {
 	Load(ctx context.Context, connectorID uuid.UUID) (LiveConfig, error)
 }

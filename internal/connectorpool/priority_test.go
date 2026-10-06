@@ -28,11 +28,12 @@ func (c flagConfigSource) Load(context.Context, uuid.UUID) (connectorpool.LiveCo
 func TestSubmitCarriesThePriorityFlag(t *testing.T) {
 	for _, c := range []struct {
 		name     string
-		priority int
+		category cp.TrafficCategory
+		priority uint8
 		want     uint8
 	}{
-		{"marketing takes the connector default", 0, 2},
-		{"a non-zero effective priority wins", 3, 3},
+		{"marketing takes the connector default", cp.TrafficMarketing, 0, 2},
+		{"a non-zero effective priority wins", cp.TrafficOTP, 3, 3},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			got := make(chan uint8, 1)
@@ -41,7 +42,7 @@ func TestSubmitCarriesThePriorityFlag(t *testing.T) {
 				return fakesmsc.OK()
 			}})
 			r := routed()
-			r.TrafficCategory, r.Priority = cp.TrafficOTP, c.priority
+			r.TrafficCategory, r.Priority = c.category, c.priority
 			rec, err := pipeline.EncodeRouted(r)
 			if err != nil {
 				t.Fatalf("encode routed: %v", err)

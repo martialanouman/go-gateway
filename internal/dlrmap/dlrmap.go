@@ -62,8 +62,8 @@ type mapping struct {
 	SegmentSeq         int       `json:"segment_seq"`
 	Encoding           string    `json:"encoding"`
 	SubmittedAt        time.Time `json:"submitted_at"`
-	TrafficCategory    string    `json:"traffic_category,omitempty"`
-	Priority           int       `json:"priority,omitempty"`
+	TrafficCategory    string    `json:"traffic_category"`
+	Priority           uint8     `json:"priority"`
 }
 
 // Mapping is the resolved DLR correlation the return-path router reads back (step-044): the full CDR
@@ -83,9 +83,9 @@ type Mapping struct {
 	SegmentSeq         int
 	Encoding           string
 	SubmittedAt        time.Time
-	// TrafficCategory and Priority must reach the DLR row, the highest version of its segment (step-292).
+	// TrafficCategory and Priority reach the DLR row (see clickhouse.CDRRow).
 	TrafficCategory string
-	Priority        int
+	Priority        uint8
 }
 
 // key scopes an entry by (connector_id, smsc_msg_id): connector_id disambiguates the same

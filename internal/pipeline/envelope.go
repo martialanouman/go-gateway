@@ -59,7 +59,7 @@ type RoutedMT struct {
 	// TrafficCategory is the category declared on the sender ID (ADR-0020 §1); Priority is the effective
 	// priority it bounds (§2), sent as the SMPP priority_flag.
 	TrafficCategory cp.TrafficCategory
-	Priority        int
+	Priority        uint8
 	ConnectorID     uuid.UUID
 	RouteID         *uuid.UUID
 	// FallbackChain is the ordered list of connectors this message may be rerouted through when its
@@ -144,10 +144,9 @@ type OutcomeMT struct {
 	// when nothing was captured (billing disabled, no reservation, or a fail-open capture).
 	Billed         bool
 	CreditsCharged *int32
-	// TrafficCategory and Priority are copied from the routed message: the outcome row supersedes the
-	// placeholder and is superseded by the DLR row, and each must carry them (step-292).
+	// TrafficCategory and Priority are copied from the routed message (see clickhouse.CDRRow).
 	TrafficCategory string
-	Priority        int
+	Priority        uint8
 }
 
 // MOInbound is a mobile-originated message a SMSC delivered to one of our inbound numbers, carried on

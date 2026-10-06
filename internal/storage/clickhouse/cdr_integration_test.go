@@ -806,9 +806,10 @@ func TestCDRRewrittenSenderReadsTheSentAddress(t *testing.T) {
 	}
 }
 
-// TestCDRCarriesTheTrafficCategory: the placeholder is written before the sender ID is authorized, so
-// only the dispatched rows know the category; the message read must take it from them (step-292). Ten
-// messages, because a read that took any row of the message would still land on a dispatched one by luck.
+// TestCDRCarriesTheTrafficCategory: the message-level rows (segment_seq 0) are written without the
+// category — the accepted placeholder before the sender ID is authorized, the Canceller's cancelled row
+// copied from it — so the message read must take it from the segment rows (step-292). Ten messages,
+// because a read that took any row of the message could still land on a segment row by luck.
 func TestCDRCarriesTheTrafficCategory(t *testing.T) {
 	conn, err := clickhouse.NewConn(chtest.Config(t))
 	if err != nil {
@@ -820,32 +821,37 @@ func TestCDRCarriesTheTrafficCategory(t *testing.T) {
 	customerID, accountID := uuid.New(), uuid.New()
 	at := time.Now().UTC().Truncate(time.Millisecond)
 
-	for range 10 {
-		id := uuid.New()
-		row := func(status clickhouse.Status, seq uint16, category string, priority uint8) clickhouse.CDRRow {
-			return clickhouse.CDRRow{
-				MessageID: id, TraceID: uuid.New(), AccountID: accountID, CustomerID: customerID,
-				Direction: clickhouse.DirectionMT, SourceAddr: "BANK", DestAddr: "2250700000000",
-				SubmittedAt: at, Status: status, SegmentCount: 1, SegmentSeq: seq, Encoding: clickhouse.EncodingGSM7,
-				TrafficCategory: category, Priority: priority,
+	for _, final := range []clickhouse.Status{clickhouse.StatusDelivered, clickhouse.StatusCancelled} {
+		for range 10 {
+			id := uuid.New()
+			row := func(status clickhouse.Status, seq uint16, category string, priority uint8) clickhouse.CDRRow {
+				return clickhouse.CDRRow{
+					MessageID: id, TraceID: uuid.New(), AccountID: accountID, CustomerID: customerID,
+					Direction: clickhouse.DirectionMT, SourceAddr: "BANK", DestAddr: "2250700000000",
+					SubmittedAt: at, Status: status, SegmentCount: 1, SegmentSeq: seq, Encoding: clickhouse.EncodingGSM7,
+					TrafficCategory: category, Priority: priority,
+				}
 			}
-		}
-		// The placeholder goes first, in its own part, as in production.
-		if err := writer.Insert(ctx, row(clickhouse.StatusAccepted, 0, "", 0)); err != nil {
-			t.Fatalf("insert placeholder: %v", err)
-		}
-		if err := writer.InsertBatch(ctx, []clickhouse.CDRRow{
-			row(clickhouse.StatusEnroute, 1, "otp", 3),
-			row(clickhouse.StatusDelivered, 1, "otp", 3),
-		}); err != nil {
-			t.Fatalf("insert: %v", err)
-		}
-		got, found, err := reader.Current(ctx, customerID, accountID, id)
-		if err != nil || !found {
-			t.Fatalf("read: found=%v err=%v", found, err)
-		}
-		if got.TrafficCategory != "otp" || got.Priority != 3 {
-			t.Errorf("message %s category/priority = %q/%d, want otp/3", id, got.TrafficCategory, got.Priority)
+			messageLevel := []clickhouse.CDRRow{row(clickhouse.StatusAccepted, 0, "", 0)}
+			if final == clickhouse.StatusCancelled {
+				messageLevel = append(messageLevel, row(clickhouse.StatusCancelled, 0, "", 0))
+			}
+			if err := writer.InsertBatch(ctx, messageLevel); err != nil {
+				t.Fatalf("insert message-level rows: %v", err)
+			}
+			if err := writer.InsertBatch(ctx, []clickhouse.CDRRow{
+				row(clickhouse.StatusEnroute, 1, "transactional", 2),
+				row(final, 1, "transactional", 2),
+			}); err != nil {
+				t.Fatalf("insert segment rows: %v", err)
+			}
+			got, found, err := reader.Current(ctx, customerID, accountID, id)
+			if err != nil || !found {
+				t.Fatalf("read: found=%v err=%v", found, err)
+			}
+			if got.TrafficCategory != "transactional" || got.Priority != 2 {
+				t.Errorf("%s message category/priority = %q/%d, want transactional/2", final, got.TrafficCategory, got.Priority)
+			}
 		}
 	}
 }

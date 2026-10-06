@@ -564,10 +564,11 @@ func newDrainer(cfg config.Config, st *stores, limiter *ratelimit.Enforcer, conn
 	return d, nil
 }
 
-// connectorConfigSource re-reads a connector's live bind_pool_size, reconnect policy and priority_flag_default from Postgres so an
+// connectorConfigSource re-reads a connector's live bind_pool_size + reconnect policy from Postgres so an
 // Admin resize / policy change takes effect on the next re-dial (step-128b). The bind endpoint
 // (addr/password) still comes from env — not because the password is unreadable (since step-295 it is
 // sealed, not hashed), but because this service reads no bind column at all; see main.go.
+// It also reads priority_flag_default, which buildSubmit sends for a message of effective priority 0.
 type connectorConfigSource struct{ repo *postgres.ConnectorRepo }
 
 func (c connectorConfigSource) Load(ctx context.Context, connectorID uuid.UUID) (connectorpool.LiveConfig, error) {

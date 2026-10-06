@@ -274,3 +274,16 @@ func TestRoutedWithoutCategoryDecodesAsMarketing(t *testing.T) {
 		t.Errorf("legacy record decoded as %q/%d, want marketing/0", out.TrafficCategory, out.Priority)
 	}
 }
+
+// mt.outcome crosses services deployed one after the other: pin the field names, not only a round trip.
+func TestOutcomeCarriesCategoryAndPriority(t *testing.T) {
+	rec, err := pipeline.EncodeOutcome(pipeline.OutcomeMT{MessageID: uuid.New(), TrafficCategory: "transactional", Priority: 2})
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	for _, want := range []string{`"traffic_category":"transactional"`, `"priority":2`} {
+		if !strings.Contains(string(rec.Value), want) {
+			t.Errorf("mt.outcome value lacks %s: %s", want, rec.Value)
+		}
+	}
+}

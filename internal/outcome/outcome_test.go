@@ -91,8 +91,8 @@ func enrouteEvent() pipeline.OutcomeMT {
 		SubmittedAt:  submittedAt,
 		Status:       string(clickhouse.StatusEnroute),
 		// The enroute row supersedes nothing on its segment, but the DLR row after it must not erase it.
-		TrafficCategory: "otp",
-		Priority:        3,
+		TrafficCategory: "transactional",
+		Priority:        2,
 	}
 }
 
@@ -129,8 +129,8 @@ func TestProjectorWritesTheRowTheConnectorUsedToWrite(t *testing.T) {
 		SegmentCount:    3,
 		SegmentSeq:      2,
 		Encoding:        clickhouse.EncodingUCS2,
-		TrafficCategory: "otp",
-		Priority:        3,
+		TrafficCategory: "transactional",
+		Priority:        2,
 	}
 	if !reflect.DeepEqual(rows[0], want) {
 		t.Errorf("row = %+v, want %+v", rows[0], want)

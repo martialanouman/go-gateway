@@ -468,6 +468,8 @@ cdr
   content_key_id        (nullable)       -- which content_keys row decrypts it; destroyed key = body unreadable
   latency_ms
   billed (bool), credits_charged (integer, nullable)
+  traffic_category, priority             -- sender ID category and effective priority (§6.19, ADR-0020); '' and 0
+                                            on the message-level rows, written before the sender ID is authorized
 ```
 
 Partitionné par jour (`PARTITION BY toDate(submitted_at)`), avec tiering TTL (§6.14). Interrogé par le tableau de bord pour recherche, traçage et réconciliation. `message_id`/`trace_id` étant déjà des UUIDv7 générés à l'ingestion, le sink CDR porte la valeur sans en générer.
@@ -985,11 +987,16 @@ Un **client** détient 1..N **comptes SMPP**.
 
 **Catégorie de trafic** : chaque sender ID porte une `traffic_category` (`otp | transactional | marketing`, `marketing` par défaut), que l'opérateur déclare. C'est un engagement du client sur ce qu'il envoie sous ce nom, pas une inférence de la passerelle (ADR-0020).
 
+**Priorité effective** : la catégorie borne la priorité demandée (REST `priority`, SMPP `priority_flag`) :
+`min(max(demandée, défaut), plafond)`, avec `marketing` 0/0, `transactional` 1/2, `otp` 3/3 (défaut/plafond).
+Elle part au SMSC comme `priority_flag` ; à 0, c'est le `priority_flag_default` du connecteur qui part
+(ADR-0020 §2-§3). Elle est portée sur `mt.routed` et au CDR avec la catégorie.
+
 ### 6.20 Désabonnement (opt-out / STOP) — par canal
 
 **Le désabonnement vise le CANAL** (le numéro entrant auquel le destinataire a répondu STOP) — pas la plateforme ni le client en bloc. Portée par défaut d'un STOP : `inbound_number` ; portées plus larges disponibles (`smpp_account`, `customer`, `platform`).
 
-**Chemin entrant** : un MO arrive sur un numéro entrant (§6.21) ; son corps est comparé aux `opt_out_keywords` du pays. `suppress` (STOP…) écrit une ligne `suppressions` scopée sur le numéro entrant reçu ; `unsuppress` (START…) la retire ; `help` déclenche une auto-réponse. Le MO d'opt-out est toujours remis au client et jamais facturé ; les auto-réponses sont des MT jamais facturés.
+**Chemin entrant** : un MO arrive sur un numéro entrant (§6.21) ; son corps est comparé aux `opt_out_keywords` du pays. `suppress` (STOP…) écrit une ligne `suppressions` scopée sur le numéro entrant reçu ; `unsuppress` (START…) la retire ; `help` déclenche une auto-réponse. Le MO d'opt-out est toujours remis au client et jamais facturé ; les auto-réponses sont des MT jamais facturés, de catégorie `transactional` (priorité 1) : une confirmation réglementaire n'attend pas derrière le marketing du lien qui vient de livrer le STOP.
 
 **Chemin sortant** : étape **bloquante** dans `router-svc`, avant anti-spam/routage/facturation. Le **canal** du MT est déduit de son `source_addr` (si ce sender ID est aussi un `inbound_numbers.address`). Blocage si le destinataire figure dans **l'une quelconque** des portées applicables (`platform` OU `customer` OU `smpp_account` OU `inbound_number(source_addr)`). Rejet explicite (REST `403 recipient_opted_out`, SMPP `ESME_RSUBMITFAIL`), CDR `status=rejected`, `error_code=opted_out`.
 

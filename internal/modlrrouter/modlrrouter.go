@@ -202,7 +202,7 @@ func buildCDRRow(dlr pipeline.DLREvent, m dlrmap.Mapping, status clickhouse.Stat
 		Encoding:        clickhouse.EncodingOf(m.Encoding),
 		Billed:          false,
 		TrafficCategory: m.TrafficCategory,
-		Priority:        clickhouse.PriorityOf(m.Priority),
+		Priority:        m.Priority,
 	}
 	if m.OriginalSourceAddr != "" {
 		original := m.OriginalSourceAddr

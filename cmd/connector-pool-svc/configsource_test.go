@@ -22,7 +22,7 @@ func TestConfigSourceLoadsThePriorityFlagDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create connector: %v", err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE control_plane.smsc_connectors SET priority_flag_default = 2 WHERE id = $1`, conn.ID); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE control_plane.smsc_connectors SET priority_flag_default = 7 WHERE id = $1`, conn.ID); err != nil {
 		t.Fatalf("set priority_flag_default: %v", err)
 	}
 
@@ -30,7 +30,8 @@ func TestConfigSourceLoadsThePriorityFlagDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if live.PriorityFlagDefault != 2 {
-		t.Errorf("PriorityFlagDefault = %d, want 2", live.PriorityFlagDefault)
+	// The column has no CHECK: an out-of-range value set in SQL is clamped to the SMPP range, not wrapped.
+	if live.PriorityFlagDefault != 3 {
+		t.Errorf("PriorityFlagDefault = %d, want 3", live.PriorityFlagDefault)
 	}
 }

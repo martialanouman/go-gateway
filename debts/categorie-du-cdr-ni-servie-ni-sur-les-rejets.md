@@ -4,7 +4,7 @@
 > **Née de :** step-292 (PR1) · **Portée par :** —
 
 **Ce qu'on a fait à la place.** `cdr.traffic_category` et `cdr.priority` sont écrits par chaque ligne
-postérieure à l'autorisation du sender ID, et lus par l'agrégat (`internal/storage/clickhouse/cdr.go`,
+postérieure à l'autorisation du sender ID, et lus par l'agrégat (`internal/storage/clickhouse/cdr.go:134`,
 `CDRRow.TrafficCategory`). Mais aucune réponse d'API ne les sert : ni `messageFromRow`
 (`internal/restapi/messages.go:282`), ni `toMessageSummaryDTO` (`internal/adminapi/messages_search.go:256`),
 et aucun filtre de la recherche Admin ne les accepte. La ligne `rejected` du routeur
