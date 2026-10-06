@@ -165,12 +165,12 @@ détecte, et là qu'on le sanctionne sans couper les autres flux du client.
 
 1. [ ] Schéma et migration : `sender_ids.traffic_category` ; suppression de `smpp_accounts.sender_id_policy`. Anti-spam : `rule_type` `category_mismatch`.
    CDR ClickHouse : `traffic_category` et `priority` (livré par step-292).
-2. [ ] Contrat Admin : `traffic_category` sur le sender ID (optionnel avec défaut, bump MINEUR),
+2. [x] Contrat Admin : `traffic_category` sur le sender ID (optionnel avec défaut, bump MINEUR),
    descriptions de `priority_flag_default` et `priority_tier`, `category_mismatch` dans l'enum des règles
    anti-spam. Suppression de `set-account-sender-id-policy` et du champ `sender_id_policy` du compte
    (bump MAJEUR). Contrat public : description de `priority` (défaut et plafond par catégorie, bump MINEUR).
    Contrats déclarés **avant** l'implémentation.
-3. [ ] Routeur : catégorie lue à l'autorisation du sender ID ; priorité effective calculée et portée sur
+3. [x] Routeur : catégorie lue à l'autorisation du sender ID ; priorité effective calculée et portée sur
    `mt.routed` ; garde `priority_tier` aux trois niveaux et sur la `fallback_chain`.
 4. [x] Pool : `buildSubmit` écrit le `priority_flag` (effective, sinon `priority_flag_default`) — step-292.
 5. [ ] Anti-spam : règle `category_mismatch`, avec un garde d'invariant a (aucun extrait du corps dans le

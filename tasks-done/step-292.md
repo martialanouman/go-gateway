@@ -1,6 +1,6 @@
 # step-292 — Priorité effective et réservation de connecteurs (ADR-0020 §2-§4)
 
-> **Jalon :** ADR-0020 §2-§4 · **Statut :** EN COURS
+> **Jalon :** ADR-0020 §2-§4 · **Statut :** LIVRÉE
 > **Dépend de :** step-288, step-289 · **Bloque :** step-292b, les écrans connecteurs et simulateur de route
 > du tableau de bord
 > Sortie de la livraison sender ID du 05/10/2026 (step-288, 289, 291) ; unité faute de multiple de dix libre.
@@ -64,7 +64,8 @@ de cette fiche ne touchent pas la topologie : elles n'attendent pas step-287.
 - Le routeur lit `priority_tier` dans le **`Snapshot` immuable**, sous forme d'une map `connectorID → tier`
   bâtie par `BuildSnapshot` et rebâtie au même rechargement que les routes. C'est de la configuration,
   pas de l'état volatil : il n'a rien à faire dans l'overlay du disjoncteur. À vérifier au plan :
-  l'invalidation de `smsc_connectors` reconstruit-elle l'instantané du routeur ?
+  l'invalidation de `smsc_connectors` reconstruit-elle l'instantané du routeur ? **Oui** : toute mutation
+  Admin réussie publie une invalidation (`PublishConfigChanges`), et le routeur y reconstruit l'instantané.
 - Rang = une méthode `TrafficCategory.Rank()` (0/1/2), qui arrive avec cette PR. Un connecteur dont `tier > rang` est sauté :
   - **L0** : cible vérifiée avant retour, sinon chute vers L1/L2 (ADR-0004) ;
   - **script** : filtré sur sa sortie ;
@@ -75,7 +76,8 @@ de cette fiche ne touchent pas la topologie : elles n'attendent pas step-287.
   mauvaise configuration au simulateur de route).
 - `priority_tier` borné (`0..2` au contrat, `CHECK` en base) : il n'a aujourd'hui ni l'un ni l'autre
   (relevé par step-294).
-- Spec §6.1 et §6.8 (définition de `priority_tier`) dans la même PR. PR1 porte §3.4 (CDR), §6.19
+- Spec §6.1 (définition de `priority_tier`, à côté des stratégies, plutôt qu'en §6.8 comme le disait l'ADR) et
+  §3.1, dans la même PR. PR1 porte §3.4 (CDR), §6.19
   (priorité effective) et §6.20 (catégorie de la réponse au STOP).
 - Invariant b : la garde s'applique **après** la résolution et ne court-circuite aucune étape. Un test de
   l'invariant b le prouve sur un message L0 refusé par le tier puis routé en L2.
@@ -95,3 +97,8 @@ Topics, consommateurs, ordonnanceur, lag par catégorie, `deploy/k8s` et la lign
 
 ## Hors périmètre
 Tout ce que step-288, 289 et 291 livrent.
+
+## Livraison
+- PR1 #273 : priorité effective, `priority_flag`, catégorie et priorité au CDR (contrat 7.3.1). Ses deux dettes
+  ont été payées par step-294 (#274) et step-293 (#275).
+- PR2 : garde `priority_tier` (contrat 7.6.0, migration 0034).
