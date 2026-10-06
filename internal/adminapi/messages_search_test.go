@@ -188,6 +188,7 @@ func TestSearchPassesEveryFilterToTheStore(t *testing.T) {
 	q.Set("status", "delivered")
 	q.Set("direction", "mt")
 	q.Set("msisdn", "+33 6 12 34 56 78")
+	q.Set("traffic_category", "transactional")
 
 	if code, _, raw := doSearch(t, adminapi.Deps{MessageSearch: store}, "admin:read", q); code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (%s)", code, raw)
@@ -212,6 +213,39 @@ func TestSearchPassesEveryFilterToTheStore(t *testing.T) {
 	// must not be compared literally.
 	if got.MSISDN == nil || *got.MSISDN != "33612345678" {
 		t.Errorf("MSISDN = %v, want the normalised 33612345678", got.MSISDN)
+	}
+	if got.TrafficCategory == nil || *got.TrafficCategory != "transactional" {
+		t.Errorf("TrafficCategory = %v, want transactional", got.TrafficCategory)
+	}
+}
+
+// TestSearchServesTheTrafficCategory: the category and priority of an authorized message are served, and
+// a message with none (an MO, a rejection before the sender ID was authorized) reads null, not an empty
+// string the enum would refuse (step-293).
+func TestSearchServesTheTrafficCategory(t *testing.T) {
+	known := searchRowFixture("33612345678")
+	known.TrafficCategory, known.Priority = "transactional", 2
+	unknown := searchRowFixture("33612345679")
+	store := &fakeSearchStore{rows: []clickhouse.CDRRow{known, unknown}}
+
+	code, _, raw := doSearch(t, adminapi.Deps{MessageSearch: store}, "admin:read", searchWindow())
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%s)", code, raw)
+	}
+	var body struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(raw), &body); err != nil || len(body.Data) != 2 {
+		t.Fatalf("decode: %v (%s)", err, raw)
+	}
+	if body.Data[0]["traffic_category"] != "transactional" || body.Data[0]["priority"] != float64(2) {
+		t.Errorf("known message = %v, want transactional/2", body.Data[0])
+	}
+	if c, present := body.Data[1]["traffic_category"]; present && c != nil {
+		t.Errorf("unknown message traffic_category = %v, want null or absent", c)
+	}
+	if p, present := body.Data[1]["priority"]; present && p != nil {
+		t.Errorf("unknown message priority = %v, want null or absent", p)
 	}
 }
 

@@ -384,7 +384,7 @@ Le client envoie `{"action":"subscribe","topics":[...]}` au montage et `unsubscr
 
 ### 6.4 CDR Explorer
 
-- Barre de filtre (**client**, **compte SMPP**, **groupe**, date, statut, source/dest, connecteur, route) avec vues sauvegardées ; le filtre par groupe est résolu vers les clients membres courants.
+- Barre de filtre (**client**, **compte SMPP**, **groupe**, date, statut, **catégorie de trafic**, source/dest, connecteur, route) avec vues sauvegardées ; le filtre par groupe est résolu vers les clients membres courants. La catégorie est celle du sender ID au moment de l'autorisation (ADR-0020) ; un MO, ou un MT rejeté avant l'autorisation de son expéditeur, n'en a pas. La table et l'export portent la catégorie et la priorité effective.
 - Table de résultats virtualisée, pagination côté serveur.
 - Panneau de détail : chronologie complète (soumis → routé → SMSC → DLR → remis), route/script/connecteur/décision de facturation, rendu en cascade de spans.
 - **Corps du message (dégradation propre)** : affiché uniquement si (a) la politique du client le stocke et (b) l'opérateur a `content:read` ; sinon un état explicite (« non stocké », « expiré », « effacé », « non autorisé »). Afficher le corps déclenche un appel `content:read` **audité** — mention « lecture journalisée » à côté du bouton.

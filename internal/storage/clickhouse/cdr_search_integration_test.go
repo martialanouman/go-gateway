@@ -233,3 +233,44 @@ func TestSearchByARewrittenSenderKeepsTheMessageStatus(t *testing.T) {
 		}
 	}
 }
+
+// TestSearchFiltersOnTheTrafficCategory: the category is a message-level value, read from whichever row
+// carries it (a segment row, or a rejection after the sender ID was authorized), never from the empty
+// placeholder (step-293).
+func TestSearchFiltersOnTheTrafficCategory(t *testing.T) {
+	writer, reader := searchReader(t)
+	ctx := context.Background()
+	customerID, accountID := uuid.New(), uuid.New()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	withCategory := func(row clickhouse.CDRRow, status clickhouse.Status, seq uint16, category string) clickhouse.CDRRow {
+		row.Status, row.SegmentSeq, row.TrafficCategory = status, seq, category
+		return row
+	}
+	sent := searchRow(customerID, accountID, now.Add(-time.Hour), searchMSISDN())
+	rejected := searchRow(customerID, accountID, now.Add(-time.Hour), searchMSISDN())
+	marketing := searchRow(customerID, accountID, now.Add(-time.Hour), searchMSISDN())
+	if err := writer.InsertBatch(ctx, []clickhouse.CDRRow{
+		sent, withCategory(sent, clickhouse.StatusEnroute, 1, "transactional"),
+		rejected, withCategory(rejected, clickhouse.StatusRejected, 0, "transactional"),
+		marketing, withCategory(marketing, clickhouse.StatusEnroute, 1, "marketing"),
+	}); err != nil {
+		t.Fatalf("InsertBatch: %v", err)
+	}
+
+	transactional := "transactional"
+	rows, err := reader.Search(ctx, clickhouse.CDRSearchFilter{
+		FromDate: now.Add(-24 * time.Hour), ToDate: now.Add(time.Minute),
+		CustomerIDs: []uuid.UUID{customerID}, TrafficCategory: &transactional,
+	}, 50)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	got := map[uuid.UUID]bool{}
+	for _, r := range rows {
+		got[r.MessageID] = true
+	}
+	if len(rows) != 2 || !got[sent.MessageID] || !got[rejected.MessageID] {
+		t.Fatalf("got %v, want the sent and the rejected transactional messages only", searchMessageIDs(rows))
+	}
+}

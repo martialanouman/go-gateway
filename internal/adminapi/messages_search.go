@@ -40,6 +40,7 @@ type searchMessagesInput struct {
 	GroupID    string    `query:"groupId" format:"uuid" doc:"Restrict to the customers currently in this group."`
 	Status     string    `query:"status" enum:"accepted,enroute,delivered,failed,expired,rejected,rerouted,cancelled" doc:"Filter by current lifecycle status."`
 	Direction  string    `query:"direction" enum:"mt,mo" doc:"Filter by direction."`
+	Category   string    `query:"traffic_category" enum:"otp,transactional,marketing" doc:"Filter by the sender ID's traffic category."`
 	MSISDN     string    `query:"msisdn" doc:"Exact E.164 match on either address."`
 	FromDate   time.Time `query:"from_date" required:"true" format:"date-time" doc:"Inclusive lower bound on submitted_at (RFC 3339)."`
 	ToDate     time.Time `query:"to_date" required:"true" format:"date-time" doc:"Exclusive upper bound on submitted_at (RFC 3339)."`
@@ -86,6 +87,7 @@ func (h *searchHandler) search(ctx context.Context, in *searchMessagesInput) (*s
 		GroupID:    in.GroupID,
 		Status:     in.Status,
 		Direction:  in.Direction,
+		Category:   in.Category,
 		MSISDN:     in.MSISDN,
 		FromDate:   in.FromDate,
 		ToDate:     in.ToDate,
@@ -125,7 +127,7 @@ func (h *searchHandler) search(ctx context.Context, in *searchMessagesInput) (*s
 // a second copy of the rules would drift the day one of them gains a filter.
 type searchPredicates struct {
 	TraceID, AccountID, CustomerID, GroupID string
-	Status, Direction, MSISDN               string
+	Status, Direction, Category, MSISDN     string
 	FromDate, ToDate                        time.Time
 	// Cursor is search-only: an export streams every page itself.
 	Cursor string
@@ -183,6 +185,9 @@ func buildCDRSearchFilter(ctx context.Context, p searchPredicates, customers Cus
 	if p.Direction != "" {
 		dir := clickhouse.Direction(p.Direction)
 		filter.Direction = &dir
+	}
+	if p.Category != "" {
+		filter.TrafficCategory = &p.Category
 	}
 
 	tenants, empty, err := tenantIDs(ctx, p, customers)
@@ -281,6 +286,10 @@ func toMessageSummaryDTO(row clickhouse.CDRRow, reveal bool) messageSummaryDTO {
 	if row.Encoding != "" {
 		enc := string(row.Encoding)
 		out.Encoding = &enc
+	}
+	if row.TrafficCategory != "" {
+		out.TrafficCategory = &row.TrafficCategory
+		out.Priority = ptr(int(row.Priority))
 	}
 	if row.LatencyMs != nil {
 		ms := int(*row.LatencyMs)

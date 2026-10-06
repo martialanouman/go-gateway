@@ -128,9 +128,10 @@ type CDRRow struct {
 	LatencyMs         *uint32
 	Billed            bool
 	CreditsCharged    *int32
-	// TrafficCategory and Priority are known only once the sender ID is authorized (ADR-0020). The
-	// message-level rows (accepted, rejected, the Canceller's cancelled) are written without them; every
-	// segment row must carry them, since ReplacingMergeTree keeps the highest-version row whole.
+	// TrafficCategory and Priority are known only once the sender ID is authorized (ADR-0020). The accepted
+	// placeholder and the Canceller's cancelled row are written without them, a rejection carries them once
+	// they are known; every segment row must carry them, since ReplacingMergeTree keeps the highest-version
+	// row whole.
 	TrafficCategory string
 	Priority        uint8
 }
@@ -610,6 +611,8 @@ type CDRSearchFilter struct {
 	Status    *Status
 	Direction *Direction
 	After     *CDRKey
+	// TrafficCategory, like Status, is a message-level value read from the aggregate (step-293).
+	TrafficCategory *string
 }
 
 // Search returns a page of MESSAGES (aggregated across their segments) ACROSS tenants, newest first —
@@ -663,10 +666,14 @@ func (r *CDRReader) Search(ctx context.Context, f CDRSearchFilter, limit int) ([
 		args = append(args, ms, ms, f.After.MessageID)
 	}
 
-	query := `SELECT ` + cdrColumns + ` FROM (` + cdrAggregateSearch(inner) + `)`
+	query := `SELECT ` + cdrColumns + ` FROM (` + cdrAggregateSearch(inner) + `) WHERE 1`
 	if f.Status != nil {
-		query += ` WHERE status = ?`
+		query += ` AND status = ?`
 		args = append(args, string(*f.Status))
+	}
+	if f.TrafficCategory != nil {
+		query += ` AND traffic_category = ?`
+		args = append(args, *f.TrafficCategory)
 	}
 	query += `
 		ORDER BY submitted_at DESC, message_id DESC

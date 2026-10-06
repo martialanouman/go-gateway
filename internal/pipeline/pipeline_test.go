@@ -381,6 +381,42 @@ func TestPipelineCarriesTheEffectivePriority(t *testing.T) {
 	}
 }
 
+// TestPipelineRejectionCarriesTheCategoryOnceKnown: a rejection after the sender-ID stage returns the
+// category and priority with its error, so the rejected CDR row can be filtered by category (step-293);
+// one before it has nothing to return.
+func TestPipelineRejectionCarriesTheCategoryOnceKnown(t *testing.T) {
+	for name, c := range map[string]struct {
+		reject func(*pipeline.Deps)
+		code   errs.Code
+	}{
+		"opt-out":   {func(d *pipeline.Deps) { d.OptOut = stubOptOut{optedOut: true} }, errs.ErrRecipientOptedOut},
+		"anti-spam": {func(d *pipeline.Deps) { d.Antispam = stubAntispam{action: cp.AntispamActionBlock} }, errs.ErrContentBlocked},
+		"route":     {func(d *pipeline.Deps) { d.Resolver = stubResolver{err: errs.ErrNoRoute} }, errs.ErrNoRoute},
+		"credit":    {func(d *pipeline.Deps) { d.Credit = &stubReserver{err: errs.ErrInsufficientCredit} }, errs.ErrInsufficientCredit},
+	} {
+		deps := testDeps(observability.Tracer(otelrec.New(t).Provider(), "router"))
+		deps.SenderIDs = stubAuthorizer{category: cp.TrafficTransactional}
+		c.reject(&deps)
+		in := inbound("+2250700000000")
+		in.Priority = 3
+
+		routed, _, err := pipeline.New(deps).Process(context.Background(), in)
+		if code, _ := errs.CodeOf(err); code != c.code {
+			t.Fatalf("%s: err = %v, want %s", name, err, c.code)
+		}
+		if routed.TrafficCategory != cp.TrafficTransactional || routed.Priority != 2 {
+			t.Errorf("%s: rejected category/priority = %q/%d, want transactional/2", name, routed.TrafficCategory, routed.Priority)
+		}
+	}
+
+	deps := testDeps(observability.Tracer(otelrec.New(t).Provider(), "router"))
+	deps.SenderIDs = stubAuthorizer{err: errs.ErrSenderIDNotAuthorized}
+	routed, _, _ := pipeline.New(deps).Process(context.Background(), inbound("+2250700000000"))
+	if routed.TrafficCategory != "" {
+		t.Errorf("a sender-ID rejection carries category %q, want none", routed.TrafficCategory)
+	}
+}
+
 func TestPipelineRejectsNoRoute(t *testing.T) {
 	rec := otelrec.New(t)
 	tracer := observability.Tracer(rec.Provider(), "router")

@@ -302,6 +302,44 @@ func TestRouterWritesRejectedCDROnPipelineRejection(t *testing.T) {
 	}
 }
 
+type transactionalSenderIDs struct{}
+
+func (transactionalSenderIDs) Authorize(context.Context, uuid.UUID, string) (cp.TrafficCategory, error) {
+	return cp.TrafficTransactional, nil
+}
+
+// TestRouterRejectedRowCarriesTheCategory: a message rejected after its sender ID was authorized is
+// recorded with its category and effective priority, so the CDR Explorer can filter it (step-293).
+func TestRouterRejectedRowCarriesTheCategory(t *testing.T) {
+	in := inbound("+2250700000000")
+	in.Priority = 3
+	inRec, err := pipeline.EncodeInbound(in)
+	if err != nil {
+		t.Fatalf("encode inbound: %v", err)
+	}
+	cdr := &fakeCDR{}
+	tracer := observability.Tracer(otelrec.New(t).Provider(), "router")
+	r := router.New(router.Deps{
+		Consumer: &fakeConsumer{records: []kafka.Record{inRec}},
+		Producer: &fakeProducer{},
+		Pipeline: pipeline.New(pipeline.Deps{
+			Tracer: tracer, Resolver: stubResolver{err: errs.ErrNoRoute}, SenderIDs: transactionalSenderIDs{},
+			OptOut: allowAllOptOut{}, Antispam: allowAllAntispam{},
+		}),
+		CDR:    cdr,
+		Tracer: tracer,
+	})
+	if err := r.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(cdr.rows) != 1 {
+		t.Fatalf("expected 1 rejected CDR row, got %d", len(cdr.rows))
+	}
+	if row := cdr.rows[0]; row.TrafficCategory != "transactional" || row.Priority != 2 {
+		t.Errorf("rejected row category/priority = %q/%d, want transactional/2", row.TrafficCategory, row.Priority)
+	}
+}
+
 // TestRouterPublishesBilledRoutedOnReserve: a billed customer whose reserve succeeds is published to
 // mt.routed carrying Billable=true and the resolved OwnerType, the settlement contract connector-pool reads
 // to capture the identical balance key (step-146). Closes the reserve→publish loop end-to-end at the router.

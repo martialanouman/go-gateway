@@ -48,6 +48,7 @@ type messageExportFiltersDTO struct {
 	GroupID    string    `json:"groupId,omitempty" format:"uuid"`
 	Status     string    `json:"status,omitempty" enum:"accepted,enroute,delivered,failed,expired,rejected,rerouted,cancelled"`
 	Direction  string    `json:"direction,omitempty" enum:"mt,mo"`
+	Category   string    `json:"traffic_category,omitempty" enum:"otp,transactional,marketing"`
 	MSISDN     string    `json:"msisdn,omitempty"`
 	FromDate   time.Time `json:"from_date" format:"date-time"`
 	ToDate     time.Time `json:"to_date" format:"date-time"`
@@ -147,6 +148,7 @@ func (h *exportHandlers) create(ctx context.Context, in *createExportInput) (*ex
 		GroupID:    in.Body.Filters.GroupID,
 		Status:     in.Body.Filters.Status,
 		Direction:  in.Body.Filters.Direction,
+		Category:   in.Body.Filters.Category,
 		MSISDN:     in.Body.Filters.MSISDN,
 		FromDate:   in.Body.Filters.FromDate,
 		ToDate:     in.Body.Filters.ToDate,

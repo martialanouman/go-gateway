@@ -38,6 +38,8 @@ type messageSummaryDTO struct {
 	LatencyMs          *int       `json:"latency_ms,omitempty" nullable:"true"`
 	Billed             bool       `json:"billed,omitempty"`
 	CreditsCharged     *int       `json:"credits_charged,omitempty" nullable:"true"`
+	TrafficCategory    *string    `json:"traffic_category,omitempty" enum:"otp,transactional,marketing" nullable:"true"`
+	Priority           *int       `json:"priority,omitempty" minimum:"0" maximum:"3" nullable:"true"`
 }
 
 // toUnroutedSummaryDTO projects an unrouted MO onto a MessageSummary. An unrouted MO reached no

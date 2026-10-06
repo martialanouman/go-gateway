@@ -1,6 +1,6 @@
 # step-293 — La catégorie du CDR servie à l'Admin, et portée par les rejets
 
-> **Jalon :** ADR-0020 · **Statut :** À FAIRE
+> **Jalon :** ADR-0020 · **Statut :** LIVRÉE
 > **Dépend de :** step-292 (PR1, #273), step-294 · **Bloque :** l'écran CDR Explorer (§6.4 du tableau de bord)
 > Paie `debts/categorie-du-cdr-ni-servie-ni-sur-les-rejets.md`. Demande humaine du 06/10/2026 ; unité
 > faute de multiple de dix libre.
@@ -21,5 +21,7 @@ L'arbitrage a été rendu par Fable, sans contradiction avec la spec.
   priorité. Pas d'erreur typée.
 
 ## Definition of Done
-- [ ] un rejet `category_mismatch` en `block` se retrouve par le filtre de catégorie
-- [ ] fiche de dette passée en PAYÉE
+- [x] un rejet `category_mismatch` en `block` se retrouve par le filtre de catégorie : prouvé par maillons
+  (rejet anti-spam au pipeline, ligne `rejected` au routeur, filtre ClickHouse sur placeholder + rejet), sans
+  test de bout en bout
+- [x] fiche de dette passée en PAYÉE
