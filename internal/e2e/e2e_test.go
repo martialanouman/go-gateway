@@ -131,7 +131,7 @@ func buildStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg config
 		t.Fatalf("accepted consumer: %v", err)
 	}
 	acceptedProjector := ingest.NewAcceptedConsumer(acceptedConsumer, cdrWriter, nil, nil)
-	resolver, err := routing.LoadSnapshot(context.Background(), postgres.NewRouteRepo(pool))
+	resolver, err := routing.LoadSnapshot(context.Background(), postgres.NewRouteRepo(pool), nil)
 	if err != nil {
 		t.Fatalf("load route snapshot: %v", err)
 	}
@@ -378,5 +378,5 @@ func ensureNever(t *testing.T, s *stack, id, status string, window time.Duration
 type declarativeResolver struct{ *routing.SnapshotResolver }
 
 func (d declarativeResolver) Resolve(ctx context.Context, req pipeline.RouteRequest) (pipeline.Route, error) {
-	return d.SnapshotResolver.Resolve(ctx, req.Dest)
+	return d.SnapshotResolver.Resolve(ctx, req.Dest, req.Rank)
 }

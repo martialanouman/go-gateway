@@ -123,7 +123,7 @@ func newBenchStack(tb testing.TB) benchStack {
 	if err != nil {
 		tb.Fatalf("anti-spam engine: %v", err)
 	}
-	resolver, err := routing.LoadSnapshot(ctx, routeLister{l})
+	resolver, err := routing.LoadSnapshot(ctx, routeLister{l}, nil)
 	if err != nil {
 		tb.Fatalf("route snapshot: %v", err)
 	}
@@ -158,7 +158,7 @@ func newBenchStack(tb testing.TB) benchStack {
 type benchResolver struct{ *routing.SnapshotResolver }
 
 func (r benchResolver) Resolve(ctx context.Context, req pipeline.RouteRequest) (pipeline.Route, error) {
-	return r.SnapshotResolver.Resolve(ctx, req.Dest)
+	return r.SnapshotResolver.Resolve(ctx, req.Dest, req.Rank)
 }
 
 // BenchmarkPipelineProcess is the whole ordered pipeline, one message per iteration. Compare its ns/op
@@ -235,7 +235,7 @@ func BenchmarkPipelineStages(b *testing.B) {
 	b.Run("route", func(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
-			if _, err := s.resolver.Resolve(ctx, "2250700000000"); err != nil {
+			if _, err := s.resolver.Resolve(ctx, "2250700000000", 0); err != nil {
 				b.Fatal(err)
 			}
 		}

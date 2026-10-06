@@ -442,7 +442,7 @@ func TestNewRouterAppRoutesLeastLoadedOnThePublishedGauge(t *testing.T) {
 	}
 	defer app.close()
 
-	got, err := app.routes.Resolve(ctx, dial)
+	got, err := app.routes.Resolve(ctx, dial, 0)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -453,7 +453,7 @@ func TestNewRouterAppRoutesLeastLoadedOnThePublishedGauge(t *testing.T) {
 	publish(a.ID, 0)
 	publish(b.ID, 20)
 	time.Sleep(1100 * time.Millisecond) // the wired reader caches for 1 s; wait it out, do not bypass it
-	got, err = app.routes.Resolve(ctx, dial)
+	got, err = app.routes.Resolve(ctx, dial, 0)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}

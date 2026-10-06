@@ -28,18 +28,18 @@ func TestResolveWeightedRoute(t *testing.T) {
 	connA, connB := uuid.New(), uuid.New()
 	r, err := routing.LoadSnapshot(context.Background(), fakeLister{routes: []cp.Route{
 		nonStaticRoute(cp.DistributionWeighted, connA, connB, [2]int{70, 30}),
-	}})
+	}}, nil)
 	if err != nil {
 		t.Fatalf("LoadSnapshot: %v", err)
 	}
 	valid := map[uuid.UUID]bool{connA: true, connB: true}
 
-	got, err := r.Resolve(context.Background(), "+2250700000001")
+	got, err := r.Resolve(context.Background(), "+2250700000001", 0)
 	if err != nil || !valid[got.ConnectorID] {
 		t.Fatalf("weighted resolve = (%s, %v), want a target connector", got.ConnectorID, err)
 	}
 	// Deterministic: the same destination resolves identically.
-	again, _ := r.Resolve(context.Background(), "+2250700000001")
+	again, _ := r.Resolve(context.Background(), "+2250700000001", 0)
 	if again.ConnectorID != got.ConnectorID {
 		t.Errorf("weighted not deterministic per destination: %s != %s", got.ConnectorID, again.ConnectorID)
 	}
@@ -51,14 +51,14 @@ func TestResolveRoundRobinRoute(t *testing.T) {
 	connA, connB := uuid.New(), uuid.New()
 	r, err := routing.LoadSnapshot(context.Background(), fakeLister{routes: []cp.Route{
 		nonStaticRoute(cp.DistributionRoundRobin, connA, connB, [2]int{1, 1}),
-	}})
+	}}, nil)
 	if err != nil {
 		t.Fatalf("LoadSnapshot: %v", err)
 	}
 
 	seen := map[uuid.UUID]int{}
 	for i := 0; i < 10; i++ {
-		got, err := r.Resolve(context.Background(), "+2250700000001")
+		got, err := r.Resolve(context.Background(), "+2250700000001", 0)
 		if err != nil {
 			t.Fatalf("resolve %d: %v", i, err)
 		}
@@ -74,13 +74,13 @@ func TestResolveHashBasedRoute(t *testing.T) {
 	connA, connB := uuid.New(), uuid.New()
 	r, err := routing.LoadSnapshot(context.Background(), fakeLister{routes: []cp.Route{
 		nonStaticRoute(cp.DistributionHashBased, connA, connB, [2]int{1, 1}),
-	}})
+	}}, nil)
 	if err != nil {
 		t.Fatalf("LoadSnapshot: %v", err)
 	}
-	first, _ := r.Resolve(context.Background(), "+2250700000042")
+	first, _ := r.Resolve(context.Background(), "+2250700000042", 0)
 	for i := 0; i < 5; i++ {
-		again, _ := r.Resolve(context.Background(), "+2250700000042")
+		again, _ := r.Resolve(context.Background(), "+2250700000042", 0)
 		if again.ConnectorID != first.ConnectorID {
 			t.Fatalf("hash_based not stable: %s != %s", again.ConnectorID, first.ConnectorID)
 		}
@@ -96,13 +96,13 @@ func TestHashMappingStableAcrossReload(t *testing.T) {
 	reverse := forward
 	reverse.Targets = []cp.RouteTarget{{ConnectorID: connB, Weight: 1}, {ConnectorID: connA, Weight: 1}}
 
-	r1, _ := routing.LoadSnapshot(context.Background(), fakeLister{routes: []cp.Route{forward}})
-	r2, _ := routing.LoadSnapshot(context.Background(), fakeLister{routes: []cp.Route{reverse}})
+	r1, _ := routing.LoadSnapshot(context.Background(), fakeLister{routes: []cp.Route{forward}}, nil)
+	r2, _ := routing.LoadSnapshot(context.Background(), fakeLister{routes: []cp.Route{reverse}}, nil)
 
 	for i := 0; i < 20; i++ {
 		dest := "+225070000" + string(rune('0'+i%10)) + "000"
-		g1, _ := r1.Resolve(context.Background(), dest)
-		g2, _ := r2.Resolve(context.Background(), dest)
+		g1, _ := r1.Resolve(context.Background(), dest, 0)
+		g2, _ := r2.Resolve(context.Background(), dest, 0)
 		if g1.ConnectorID != g2.ConnectorID {
 			t.Fatalf("hash mapping changed with target order for %s: %s != %s", dest, g1.ConnectorID, g2.ConnectorID)
 		}
@@ -114,18 +114,18 @@ func TestHashMappingStableAcrossReload(t *testing.T) {
 func TestRoundRobinCounterPersistsAcrossSwap(t *testing.T) {
 	connA, connB := uuid.New(), uuid.New()
 	route := nonStaticRoute(cp.DistributionRoundRobin, connA, connB, [2]int{1, 1})
-	r, _ := routing.LoadSnapshot(context.Background(), fakeLister{routes: []cp.Route{route}})
+	r, _ := routing.LoadSnapshot(context.Background(), fakeLister{routes: []cp.Route{route}}, nil)
 
-	first, _ := r.Resolve(context.Background(), "+2250700000001") // counter 0 → A
+	first, _ := r.Resolve(context.Background(), "+2250700000001", 0) // counter 0 → A
 
 	// Rebuild the SAME route (same id) and swap it in.
-	snap, err := routing.BuildSnapshot(context.Background(), fakeLister{routes: []cp.Route{route}})
+	snap, err := routing.BuildSnapshot(context.Background(), fakeLister{routes: []cp.Route{route}}, nil)
 	if err != nil {
 		t.Fatalf("BuildSnapshot: %v", err)
 	}
 	r.Swap(snap)
 
-	second, _ := r.Resolve(context.Background(), "+2250700000001") // counter 1 → B (not reset to A)
+	second, _ := r.Resolve(context.Background(), "+2250700000001", 0) // counter 1 → B (not reset to A)
 	if first.ConnectorID == second.ConnectorID {
 		t.Errorf("round-robin reset across swap: both resolved to %s", first.ConnectorID)
 	}
@@ -146,9 +146,9 @@ func TestResolveFailoverPriority(t *testing.T) {
 			{ConnectorID: secondary, Priority: 2},
 			{ConnectorID: primary, Priority: 1},
 		}}
-	r, _ := routing.LoadSnapshot(context.Background(), fakeLister{routes: []cp.Route{route}})
+	r, _ := routing.LoadSnapshot(context.Background(), fakeLister{routes: []cp.Route{route}}, nil)
 
-	got, err := r.Resolve(context.Background(), "+2250700000001")
+	got, err := r.Resolve(context.Background(), "+2250700000001", 0)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -164,10 +164,10 @@ func TestResolveLeastLoaded(t *testing.T) {
 	route := cp.Route{ID: uuid.New(), Priority: 100, Status: cp.RouteActive, DistributionStrategy: cp.DistributionLeastLoaded,
 		MatchDestPattern: ptr("225"),
 		Targets:          []cp.RouteTarget{{ConnectorID: busy, Weight: 1}, {ConnectorID: idle, Weight: 1}}}
-	r, _ := routing.LoadSnapshot(context.Background(), fakeLister{routes: []cp.Route{route}})
+	r, _ := routing.LoadSnapshot(context.Background(), fakeLister{routes: []cp.Route{route}}, nil)
 	r.UseLoadReader(fakeLoad{busy: 100, idle: 3})
 
-	got, err := r.Resolve(context.Background(), "+2250700000001")
+	got, err := r.Resolve(context.Background(), "+2250700000001", 0)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -184,9 +184,9 @@ func TestFallbackRoute(t *testing.T) {
 		TargetConnectorID: &fallbackConn} // catch-all fallback
 	primary := cp.Route{ID: uuid.New(), Priority: 50, Status: cp.RouteActive, DistributionStrategy: cp.DistributionWeighted,
 		MatchDestPattern: ptr("225"), Targets: nil, FallbackRouteID: &fallback.ID} // no targets → falls back
-	r, _ := routing.LoadSnapshot(context.Background(), fakeLister{routes: []cp.Route{primary, fallback}})
+	r, _ := routing.LoadSnapshot(context.Background(), fakeLister{routes: []cp.Route{primary, fallback}}, nil)
 
-	got, err := r.Resolve(context.Background(), "+2250700000001")
+	got, err := r.Resolve(context.Background(), "+2250700000001", 0)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -207,8 +207,8 @@ func TestFallbackToDisabledRouteFallsThrough(t *testing.T) {
 	catch := cp.Route{ID: uuid.New(), Priority: 100, Status: cp.RouteActive, DistributionStrategy: cp.DistributionStatic,
 		TargetConnectorID: &catchConn} // catch-all
 
-	r, _ := routing.LoadSnapshot(context.Background(), fakeLister{routes: []cp.Route{primary, disabled, catch}})
-	got, err := r.Resolve(context.Background(), "+2250700000001")
+	r, _ := routing.LoadSnapshot(context.Background(), fakeLister{routes: []cp.Route{primary, disabled, catch}}, nil)
+	got, err := r.Resolve(context.Background(), "+2250700000001", 0)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -228,8 +228,8 @@ func TestFallbackCycleTerminates(t *testing.T) {
 		MatchDestPattern: ptr("2250"), FallbackRouteID: &idA}
 	catch := cp.Route{ID: uuid.New(), Priority: 100, Status: cp.RouteActive, DistributionStrategy: cp.DistributionStatic, TargetConnectorID: &catchConn}
 
-	r, _ := routing.LoadSnapshot(context.Background(), fakeLister{routes: []cp.Route{a, b, catch}})
-	got, err := r.Resolve(context.Background(), "+2250700000001")
+	r, _ := routing.LoadSnapshot(context.Background(), fakeLister{routes: []cp.Route{a, b, catch}}, nil)
+	got, err := r.Resolve(context.Background(), "+2250700000001", 0)
 	if err != nil {
 		t.Fatalf("resolve (cycle must not hang): %v", err)
 	}
@@ -244,13 +244,13 @@ func TestLeastLoadedNilReaderIsDeterministic(t *testing.T) {
 	c1, c2 := uuid.New(), uuid.New()
 	route := cp.Route{ID: uuid.New(), Priority: 100, Status: cp.RouteActive, DistributionStrategy: cp.DistributionLeastLoaded,
 		MatchDestPattern: ptr("225"), Targets: []cp.RouteTarget{{ConnectorID: c1}, {ConnectorID: c2}}}
-	r, _ := routing.LoadSnapshot(context.Background(), fakeLister{routes: []cp.Route{route}})
+	r, _ := routing.LoadSnapshot(context.Background(), fakeLister{routes: []cp.Route{route}}, nil)
 	// No UseLoadReader call → nil reader.
-	first, err := r.Resolve(context.Background(), "+2250700000001")
+	first, err := r.Resolve(context.Background(), "+2250700000001", 0)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	again, _ := r.Resolve(context.Background(), "+2250700000001")
+	again, _ := r.Resolve(context.Background(), "+2250700000001", 0)
 	if first.ConnectorID != again.ConnectorID {
 		t.Errorf("least_loaded with nil reader not deterministic: %s != %s", first.ConnectorID, again.ConnectorID)
 	}

@@ -17,7 +17,7 @@ func snapshotFor(t *testing.T, conn uuid.UUID) *routing.Snapshot {
 	snap, err := routing.BuildSnapshot(context.Background(), fakeLister{routes: []cp.Route{
 		{ID: uuid.New(), Priority: 100, DistributionStrategy: cp.DistributionStatic, Status: cp.RouteActive,
 			MatchDestPattern: ptr("225"), TargetConnectorID: &conn},
-	}})
+	}}, nil)
 	if err != nil {
 		t.Fatalf("BuildSnapshot: %v", err)
 	}
@@ -29,14 +29,14 @@ func TestSwapChangesResolution(t *testing.T) {
 	connA, connB := uuid.New(), uuid.New()
 	r := routing.NewResolver(snapshotFor(t, connA))
 
-	got, err := r.Resolve(context.Background(), "+2250700000000")
+	got, err := r.Resolve(context.Background(), "+2250700000000", 0)
 	if err != nil || got.ConnectorID != connA {
 		t.Fatalf("before swap = (%s, %v), want connA %s", got.ConnectorID, err, connA)
 	}
 
 	r.Swap(snapshotFor(t, connB))
 
-	got, err = r.Resolve(context.Background(), "+2250700000000")
+	got, err = r.Resolve(context.Background(), "+2250700000000", 0)
 	if err != nil || got.ConnectorID != connB {
 		t.Fatalf("after swap = (%s, %v), want connB %s", got.ConnectorID, err, connB)
 	}
@@ -65,7 +65,7 @@ func TestConcurrentReadsDuringSwap(t *testing.T) {
 					return
 				default:
 				}
-				got, err := r.Resolve(context.Background(), "+2250700000000")
+				got, err := r.Resolve(context.Background(), "+2250700000000", 0)
 				if err != nil || !valid[got.ConnectorID] {
 					t.Errorf("read during swap = (%s, %v), want a valid connector", got.ConnectorID, err)
 					return

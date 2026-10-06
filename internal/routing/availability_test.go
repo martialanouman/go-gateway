@@ -44,13 +44,13 @@ func failoverRoute(primary, secondary uuid.UUID) cp.Route {
 func TestFailoverPriorityExcludesOpen(t *testing.T) {
 	ctx := context.Background()
 	primary, secondary := uuid.New(), uuid.New()
-	r, _ := routing.LoadSnapshot(ctx, fakeLister{routes: []cp.Route{failoverRoute(primary, secondary)}})
+	r, _ := routing.LoadSnapshot(ctx, fakeLister{routes: []cp.Route{failoverRoute(primary, secondary)}}, nil)
 
 	avail := &fakeAvail{open: map[uuid.UUID]bool{primary: true}}
 	if err := r.RefreshAvailability(ctx, avail); err != nil {
 		t.Fatalf("refresh: %v", err)
 	}
-	got, err := r.Resolve(ctx, "+2250700000001")
+	got, err := r.Resolve(ctx, "+2250700000001", 0)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestFailoverPriorityExcludesOpen(t *testing.T) {
 	if err := r.RefreshAvailability(ctx, avail); err != nil {
 		t.Fatalf("refresh 2: %v", err)
 	}
-	got, err = r.Resolve(ctx, "+2250700000001")
+	got, err = r.Resolve(ctx, "+2250700000001", 0)
 	if err != nil {
 		t.Fatalf("resolve 2: %v", err)
 	}
@@ -80,13 +80,13 @@ func TestLeastLoadedExcludesOpen(t *testing.T) {
 	route := cp.Route{ID: uuid.New(), Priority: 100, Status: cp.RouteActive, DistributionStrategy: cp.DistributionLeastLoaded,
 		MatchDestPattern: ptr("225"),
 		Targets:          []cp.RouteTarget{{ConnectorID: busy, Weight: 1}, {ConnectorID: idle, Weight: 1}}}
-	r, _ := routing.LoadSnapshot(ctx, fakeLister{routes: []cp.Route{route}})
+	r, _ := routing.LoadSnapshot(ctx, fakeLister{routes: []cp.Route{route}}, nil)
 	r.UseLoadReader(fakeLoad{busy: 100, idle: 3})
 	if err := r.RefreshAvailability(ctx, &fakeAvail{open: map[uuid.UUID]bool{idle: true}}); err != nil {
 		t.Fatalf("refresh: %v", err)
 	}
 
-	got, err := r.Resolve(ctx, "+2250700000001")
+	got, err := r.Resolve(ctx, "+2250700000001", 0)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestLeastLoadedExcludesOpen(t *testing.T) {
 func TestResolveDoesNotReadAvailabilityPerMessage(t *testing.T) {
 	ctx := context.Background()
 	primary, secondary := uuid.New(), uuid.New()
-	r, _ := routing.LoadSnapshot(ctx, fakeLister{routes: []cp.Route{failoverRoute(primary, secondary)}})
+	r, _ := routing.LoadSnapshot(ctx, fakeLister{routes: []cp.Route{failoverRoute(primary, secondary)}}, nil)
 	avail := &fakeAvail{open: map[uuid.UUID]bool{primary: true}}
 	if err := r.RefreshAvailability(ctx, avail); err != nil {
 		t.Fatalf("refresh: %v", err)
@@ -110,7 +110,7 @@ func TestResolveDoesNotReadAvailabilityPerMessage(t *testing.T) {
 	}
 
 	for i := 0; i < 100; i++ {
-		if _, err := r.Resolve(ctx, "+2250700000001"); err != nil {
+		if _, err := r.Resolve(ctx, "+2250700000001", 0); err != nil {
 			t.Fatalf("resolve %d: %v", i, err)
 		}
 	}
@@ -124,12 +124,12 @@ func TestResolveDoesNotReadAvailabilityPerMessage(t *testing.T) {
 func TestAllTargetsOpenYieldsNoRoute(t *testing.T) {
 	ctx := context.Background()
 	primary, secondary := uuid.New(), uuid.New()
-	r, _ := routing.LoadSnapshot(ctx, fakeLister{routes: []cp.Route{failoverRoute(primary, secondary)}})
+	r, _ := routing.LoadSnapshot(ctx, fakeLister{routes: []cp.Route{failoverRoute(primary, secondary)}}, nil)
 	if err := r.RefreshAvailability(ctx, &fakeAvail{open: map[uuid.UUID]bool{primary: true, secondary: true}}); err != nil {
 		t.Fatalf("refresh: %v", err)
 	}
 
-	_, err := r.Resolve(ctx, "+2250700000001")
+	_, err := r.Resolve(ctx, "+2250700000001", 0)
 	if !errors.Is(err, errs.ErrNoRoute) {
 		t.Errorf("all-open resolve error = %v, want ErrNoRoute", err)
 	}
@@ -140,7 +140,7 @@ func TestAllTargetsOpenYieldsNoRoute(t *testing.T) {
 func TestReaderErrorKeepsLastAvailability(t *testing.T) {
 	ctx := context.Background()
 	primary, secondary := uuid.New(), uuid.New()
-	r, _ := routing.LoadSnapshot(ctx, fakeLister{routes: []cp.Route{failoverRoute(primary, secondary)}})
+	r, _ := routing.LoadSnapshot(ctx, fakeLister{routes: []cp.Route{failoverRoute(primary, secondary)}}, nil)
 	if err := r.RefreshAvailability(ctx, &fakeAvail{open: map[uuid.UUID]bool{primary: true}}); err != nil {
 		t.Fatalf("refresh: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestReaderErrorKeepsLastAvailability(t *testing.T) {
 	}
 
 	// Primary must still be excluded (previous availability preserved).
-	got, err := r.Resolve(ctx, "+2250700000001")
+	got, err := r.Resolve(ctx, "+2250700000001", 0)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -167,12 +167,12 @@ func TestWeightedIgnoresBreaker(t *testing.T) {
 	route := cp.Route{ID: uuid.New(), Priority: 100, Status: cp.RouteActive, DistributionStrategy: cp.DistributionWeighted,
 		MatchDestPattern: ptr("225"),
 		Targets:          []cp.RouteTarget{{ConnectorID: only, Weight: 1}}}
-	r, _ := routing.LoadSnapshot(ctx, fakeLister{routes: []cp.Route{route}})
+	r, _ := routing.LoadSnapshot(ctx, fakeLister{routes: []cp.Route{route}}, nil)
 	if err := r.RefreshAvailability(ctx, &fakeAvail{open: map[uuid.UUID]bool{only: true}}); err != nil {
 		t.Fatalf("refresh: %v", err)
 	}
 
-	got, err := r.Resolve(ctx, "+2250700000001")
+	got, err := r.Resolve(ctx, "+2250700000001", 0)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}

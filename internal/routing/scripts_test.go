@@ -55,7 +55,7 @@ func declSnapshotWith(t *testing.T, declRoute, declConn uuid.UUID, routes map[uu
 		list = append(list, cp.Route{ID: routeID, Priority: 50, DistributionStrategy: cp.DistributionStatic,
 			Status: cp.RouteActive, MatchDestPattern: ptr("999"), TargetConnectorID: &c})
 	}
-	snap, err := routing.LoadSnapshot(context.Background(), fakeLister{routes: list})
+	snap, err := routing.LoadSnapshot(context.Background(), fakeLister{routes: list}, nil)
 	if err != nil {
 		t.Fatalf("LoadSnapshot: %v", err)
 	}

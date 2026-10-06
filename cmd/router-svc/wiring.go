@@ -285,7 +285,7 @@ type bootSnapshots struct {
 // blip cannot brick a (re)starting pod.
 func loadBootSnapshots(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger) (*bootSnapshots, error) {
 	// The route snapshot is loaded once at startup; config-sync's hot reload swaps it later.
-	routes, err := loadSnapshotWithRetry(ctx, postgres.NewRouteRepo(pool), logger)
+	routes, err := loadSnapshotWithRetry(ctx, postgres.NewRouteRepo(pool), postgres.NewConnectorRepo(pool), logger)
 	if err != nil {
 		return nil, fmt.Errorf("load route snapshot: %w", err)
 	}
@@ -758,7 +758,7 @@ func newSnapshotWatcher(
 			return redisstore.Subscribe(ctx, rdb, config.ChannelSnapshotInvalidation), nil
 		},
 		catalog.ObserveConfigRebuild(func(ctx context.Context) error {
-			snap, err := routing.BuildSnapshot(ctx, postgres.NewRouteRepo(pool))
+			snap, err := routing.BuildSnapshot(ctx, postgres.NewRouteRepo(pool), postgres.NewConnectorRepo(pool))
 			if err != nil {
 				return err
 			}
@@ -849,9 +849,9 @@ func newOptOutWatcher(pool *pgxpool.Pool, rdb *goredis.Client, boot *bootSnapsho
 // exponential backoff until it succeeds or ctx is cancelled. Postgres is a hard boot dependency —
 // the router cannot route without routes — so retrying (rather than exiting on the first error)
 // keeps a (re)starting pod from being bricked by a transient Postgres outage.
-func loadSnapshotWithRetry(ctx context.Context, lister routing.RouteLister, logger *slog.Logger) (*routing.SnapshotResolver, error) {
+func loadSnapshotWithRetry(ctx context.Context, lister routing.RouteLister, connectors routing.ConnectorLister, logger *slog.Logger) (*routing.SnapshotResolver, error) {
 	return loadWithRetry(ctx, logger, "route snapshot", func(ctx context.Context) (*routing.SnapshotResolver, error) {
-		return routing.LoadSnapshot(ctx, lister)
+		return routing.LoadSnapshot(ctx, lister, connectors)
 	})
 }
 

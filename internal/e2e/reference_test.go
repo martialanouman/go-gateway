@@ -477,7 +477,7 @@ func buildRefStack(
 	outcomeProjector := outcome.NewProjector(outcomeConsumer, cdrWriter, nil, nil)
 
 	ctx := context.Background()
-	resolver, err := routing.LoadSnapshot(ctx, postgres.NewRouteRepo(pool))
+	resolver, err := routing.LoadSnapshot(ctx, postgres.NewRouteRepo(pool), postgres.NewConnectorRepo(pool))
 	if err != nil {
 		t.Fatalf("load route snapshot: %v", err)
 	}
@@ -1059,7 +1059,7 @@ func preflightRefL0(t *testing.T, l0 *routing.L0Resolver, shape l0Shape) {
 type refResolver struct{ *routing.SnapshotResolver }
 
 func (r refResolver) Resolve(ctx context.Context, req pipeline.RouteRequest) (pipeline.Route, error) {
-	return r.SnapshotResolver.Resolve(ctx, req.Dest)
+	return r.SnapshotResolver.Resolve(ctx, req.Dest, req.Rank)
 }
 
 func envFloat(t *testing.T, name string, def float64) float64 {

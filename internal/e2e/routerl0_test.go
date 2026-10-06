@@ -210,7 +210,7 @@ func newL0Fixture(t *testing.T, rdb *redis.Client, share float64, portedPool int
 	if err != nil {
 		t.Fatalf("load exact-route bloom: %v", err)
 	}
-	snapshot, err := routing.LoadSnapshot(ctx, postgres.NewRouteRepo(pool))
+	snapshot, err := routing.LoadSnapshot(ctx, postgres.NewRouteRepo(pool), postgres.NewConnectorRepo(pool))
 	if err != nil {
 		t.Fatalf("load route snapshot: %v", err)
 	}

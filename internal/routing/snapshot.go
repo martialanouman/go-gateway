@@ -10,6 +10,7 @@ package routing
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -29,11 +30,33 @@ type RouteLister interface {
 	List(ctx context.Context) ([]cp.Route, error)
 }
 
+// ConnectorLister loads the connectors, for their priority_tier. *postgres.ConnectorRepo satisfies it.
+type ConnectorLister interface {
+	List(ctx context.Context) ([]cp.Connector, error)
+}
+
 // Snapshot is an immutable, compiled set of routes. Nothing mutates it after BuildSnapshot, so a
 // reader that has it in hand always sees a consistent whole; evolution is a NEW Snapshot swapped in,
 // never an in-place write. Safe for concurrent reads.
 type Snapshot struct {
 	routes []compiledRoute
+	// tiers holds the reserved connectors (priority_tier > 0, ADR-0020 §4). It is configuration, not
+	// volatile state, so it is compiled here rather than read from the availability overlay.
+	tiers map[uuid.UUID]int
+}
+
+// accepts reports whether a connector takes a message of the given category rank.
+func (s *Snapshot) accepts(connectorID uuid.UUID, rank int) bool {
+	return s.tiers[connectorID] <= rank
+}
+
+// acceptedTargets drops the targets reserved above rank. Like availableTargets, the common case — no
+// reserved target — returns the original slice with no allocation.
+func (s *Snapshot) acceptedTargets(targets []strategy.Target, rank int) []strategy.Target {
+	if !slices.ContainsFunc(targets, func(t strategy.Target) bool { return !s.accepts(t.ConnectorID, rank) }) {
+		return targets
+	}
+	return slices.DeleteFunc(slices.Clone(targets), func(t strategy.Target) bool { return !s.accepts(t.ConnectorID, rank) })
 }
 
 type compiledRoute struct {
@@ -135,10 +158,23 @@ func (r *SnapshotResolver) availableTargets(targets []strategy.Target) []strateg
 // route compiles to its single connector; a non-static route compiles its route_targets (sorted by
 // connector id for a stable weighted/hash_based mapping). failover_priority/least_loaded are compiled
 // but selected in step-114.
-func BuildSnapshot(ctx context.Context, lister RouteLister) (*Snapshot, error) {
+// A nil connectors lister reserves no connector (every priority_tier reads 0).
+func BuildSnapshot(ctx context.Context, lister RouteLister, connectors ConnectorLister) (*Snapshot, error) {
 	all, err := lister.List(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("routing: load routes: %w", err)
+	}
+	tiers := map[uuid.UUID]int{}
+	if connectors != nil {
+		conns, err := connectors.List(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("routing: load connector tiers: %w", err)
+		}
+		for _, c := range conns {
+			if c.PriorityTier > 0 {
+				tiers[c.ID] = c.PriorityTier
+			}
+		}
 	}
 
 	var compiled []compiledRoute
@@ -189,7 +225,7 @@ func BuildSnapshot(ctx context.Context, lister RouteLister) (*Snapshot, error) {
 		return compiled[i].priority < compiled[j].priority
 	})
 
-	return &Snapshot{routes: compiled}, nil
+	return &Snapshot{routes: compiled, tiers: tiers}, nil
 }
 
 // canSelect reports whether a route can pick a connector directly (a static connector or at least one
@@ -249,8 +285,8 @@ func NewResolver(snap *Snapshot) *SnapshotResolver {
 
 // LoadSnapshot builds the first snapshot and returns a resolver serving it. It is the boot path;
 // config-sync uses BuildSnapshot + Swap thereafter.
-func LoadSnapshot(ctx context.Context, lister RouteLister) (*SnapshotResolver, error) {
-	snap, err := BuildSnapshot(ctx, lister)
+func LoadSnapshot(ctx context.Context, lister RouteLister, connectors ConnectorLister) (*SnapshotResolver, error) {
+	snap, err := BuildSnapshot(ctx, lister, connectors)
 	if err != nil {
 		return nil, err
 	}
@@ -269,31 +305,32 @@ func (r *SnapshotResolver) Swap(snap *Snapshot) {
 // retains no target). dest is the E.164 form ("+225…"); matching is on its digits, so a "225" prefix
 // matches "+225…". A non-static route selects a connector from its targets via its distribution
 // strategy (dest is the hash/weight key, so all segments of a message route alike).
-func (r *SnapshotResolver) Resolve(ctx context.Context, dest string) (pipeline.Route, error) {
+// rank is the message's traffic category rank: a connector reserved above it is skipped (ADR-0020 §4).
+func (r *SnapshotResolver) Resolve(ctx context.Context, dest string, rank int) (pipeline.Route, error) {
 	snap := r.current.Load()
 	cr, ok := snap.match(dest)
 	if !ok {
 		return pipeline.Route{}, errs.ErrNoRoute
 	}
-	return r.resolveFrom(ctx, snap, cr, dest, map[uuid.UUID]bool{})
+	return r.resolveFrom(ctx, snap, cr, dest, rank, map[uuid.UUID]bool{})
 }
 
 // resolveFrom selects a connector for cr, chaining to its fallback_route when it retains no target
 // (spec §6.1: route-level fallback). visited guards against a fallback cycle.
-func (r *SnapshotResolver) resolveFrom(ctx context.Context, snap *Snapshot, cr *compiledRoute, dest string, visited map[uuid.UUID]bool) (pipeline.Route, error) {
+func (r *SnapshotResolver) resolveFrom(ctx context.Context, snap *Snapshot, cr *compiledRoute, dest string, rank int, visited map[uuid.UUID]bool) (pipeline.Route, error) {
 	if visited[cr.routeID] {
 		return pipeline.Route{}, errs.ErrNoRoute // fallback cycle
 	}
 	visited[cr.routeID] = true
 
-	if conn, ok := r.selectConnector(ctx, cr, dest); ok {
+	if conn, ok := r.selectConnector(ctx, snap, cr, dest, rank); ok {
 		routeID := cr.routeID
-		return pipeline.Route{ConnectorID: conn, RouteID: &routeID, FallbackChain: r.fallbackChain(ctx, cr)}, nil
+		return pipeline.Route{ConnectorID: conn, RouteID: &routeID, FallbackChain: r.fallbackChain(ctx, snap, cr, rank)}, nil
 	}
 	// No target retained → follow the route-level fallback if configured.
 	if cr.fallbackRouteID != nil {
 		if fb, ok := snap.findByID(*cr.fallbackRouteID); ok {
-			return r.resolveFrom(ctx, snap, fb, dest, visited)
+			return r.resolveFrom(ctx, snap, fb, dest, rank, visited)
 		}
 	}
 	return pipeline.Route{}, errs.ErrNoRoute
@@ -303,23 +340,25 @@ func (r *SnapshotResolver) resolveFrom(ctx context.Context, snap *Snapshot, cr *
 // round_robin uses the mutable per-route counter; weighted/hash_based are deterministic in dest;
 // failover_priority picks the lowest-priority target; least_loaded reads the connector-load overlay.
 // ok is false only when the route retains no target (an empty target set) → the caller falls back.
-func (r *SnapshotResolver) selectConnector(ctx context.Context, cr *compiledRoute, dest string) (uuid.UUID, bool) {
+// A connector reserved above rank counts as no target, for every strategy.
+func (r *SnapshotResolver) selectConnector(ctx context.Context, snap *Snapshot, cr *compiledRoute, dest string, rank int) (uuid.UUID, bool) {
+	targets := snap.acceptedTargets(cr.targets, rank)
 	switch cr.strategy {
 	case cp.DistributionStatic:
-		return cr.connectorID, true
+		return cr.connectorID, snap.accepts(cr.connectorID, rank)
 	case cp.DistributionRoundRobin:
-		return strategy.RoundRobin(cr.targets, r.rrNext(cr.routeID))
+		return strategy.RoundRobin(targets, r.rrNext(cr.routeID))
 	case cp.DistributionWeighted:
-		return strategy.Weighted(cr.targets, dest)
+		return strategy.Weighted(targets, dest)
 	case cp.DistributionHashBased:
-		return strategy.HashBased(cr.targets, dest)
+		return strategy.HashBased(targets, dest)
 	case cp.DistributionFailoverPriority:
 		// Breaker-aware (step-123): exclude open connectors so failover moves to a healthy target. A
 		// half_open connector stays selectable — its trickle of probe traffic is bounded downstream by
 		// the breaker's half-open probe quota, not here.
-		return strategy.FailoverPriority(r.availableTargets(cr.targets))
+		return strategy.FailoverPriority(r.availableTargets(targets))
 	case cp.DistributionLeastLoaded:
-		return strategy.LeastLoaded(r.availableTargets(cr.targets), func(id uuid.UUID) int { return r.inFlight(ctx, id) })
+		return strategy.LeastLoaded(r.availableTargets(targets), func(id uuid.UUID) int { return r.inFlight(ctx, id) })
 	default:
 		return uuid.Nil, false
 	}
@@ -330,12 +369,15 @@ func (r *SnapshotResolver) selectConnector(ctx context.Context, cr *compiledRout
 // ordered target list (not availability-filtered): the pool re-checks each connector's breaker at
 // reroute time and skips the open ones, so a connector that recovers can still serve as a later
 // fallback. Other strategies get no chain — a single terminal outcome, no reroute.
-func (r *SnapshotResolver) fallbackChain(ctx context.Context, cr *compiledRoute) []uuid.UUID {
+// It is tier-filtered, unlike availability: a reserved connector never recovers for a lower rank, and the
+// reroute, the parking drainer and mt-replay all inherit this chain.
+func (r *SnapshotResolver) fallbackChain(ctx context.Context, snap *Snapshot, cr *compiledRoute, rank int) []uuid.UUID {
+	targets := snap.acceptedTargets(cr.targets, rank)
 	switch cr.strategy {
 	case cp.DistributionFailoverPriority:
-		return strategy.FailoverPriorityChain(cr.targets)
+		return strategy.FailoverPriorityChain(targets)
 	case cp.DistributionLeastLoaded:
-		return strategy.LeastLoadedChain(cr.targets, func(id uuid.UUID) int { return r.inFlight(ctx, id) })
+		return strategy.LeastLoadedChain(targets, func(id uuid.UUID) int { return r.inFlight(ctx, id) })
 	default:
 		return nil
 	}
@@ -368,14 +410,15 @@ func (r *SnapshotResolver) rrNext(routeID uuid.UUID) uint64 {
 // so this mirrors the declarative resolver. A dangling connector is caught downstream at send time.
 // Why that stays true for a target read from Redis — and what would reopen it — is the 2026-09-17
 // addendum to ADR-0015.
-func (r *SnapshotResolver) routeForTarget(ctx context.Context, t exact.Target, dest string) (pipeline.Route, bool) {
+// A connector target reserved above rank is not matched either, so the caller falls through.
+func (r *SnapshotResolver) routeForTarget(ctx context.Context, t exact.Target, dest string, rank int) (pipeline.Route, bool) {
+	snap := r.current.Load()
 	switch t.Type {
 	case exact.TargetConnector:
-		return pipeline.Route{ConnectorID: t.ID}, true
+		return pipeline.Route{ConnectorID: t.ID}, snap.accepts(t.ID, rank)
 	case exact.TargetRoute:
-		snap := r.current.Load()
 		if cr, ok := snap.findByID(t.ID); ok {
-			route, err := r.resolveFrom(ctx, snap, cr, dest, map[uuid.UUID]bool{})
+			route, err := r.resolveFrom(ctx, snap, cr, dest, rank, map[uuid.UUID]bool{})
 			return route, err == nil
 		}
 	}
@@ -385,8 +428,8 @@ func (r *SnapshotResolver) routeForTarget(ctx context.Context, t exact.Target, d
 // routeByID resolves a route id (as a routing script returns) to a connector via that route's strategy
 // (with its fallback chain). matched is false when the id is not an active route in the snapshot or
 // retains no target.
-func (r *SnapshotResolver) routeByID(ctx context.Context, routeID uuid.UUID, dest string) (pipeline.Route, bool) {
-	return r.routeForTarget(ctx, exact.Target{Type: exact.TargetRoute, ID: routeID}, dest)
+func (r *SnapshotResolver) routeByID(ctx context.Context, routeID uuid.UUID, dest string, rank int) (pipeline.Route, bool) {
+	return r.routeForTarget(ctx, exact.Target{Type: exact.TargetRoute, ID: routeID}, dest, rank)
 }
 
 // match returns the first compiled route whose prefix matches dest's digits (most specific first).

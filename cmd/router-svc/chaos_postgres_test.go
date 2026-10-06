@@ -124,7 +124,7 @@ func TestRouterConfigSnapshotsDegradeSilentlyWhenPostgresIsCut(t *testing.T) {
 		}
 		resolved := func() uuid.UUID {
 			t.Helper()
-			got, rerr := app.routes.Resolve(ctx, dial)
+			got, rerr := app.routes.Resolve(ctx, dial, 0)
 			if rerr != nil {
 				t.Fatalf("Resolve(%s) with a snapshot in hand = %v: a rebuild failure must never empty "+
 					"the snapshot, and ErrNoRoute here would route by default — for a ported number, to "+
@@ -254,7 +254,7 @@ func TestRouterConfigSnapshotsDegradeSilentlyWhenPostgresIsCut(t *testing.T) {
 		// the only thing that tells them apart.
 		logs := &syncBuffer{}
 		go func() {
-			r, err := loadSnapshotWithRetry(ctx, postgres.NewRouteRepo(pool), slog.New(slog.NewTextHandler(logs, nil)))
+			r, err := loadSnapshotWithRetry(ctx, postgres.NewRouteRepo(pool), postgres.NewConnectorRepo(pool), slog.New(slog.NewTextHandler(logs, nil)))
 			done <- result{r, err}
 		}()
 
