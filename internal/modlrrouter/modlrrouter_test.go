@@ -3,6 +3,7 @@ package modlrrouter_test
 import (
 	"context"
 	"errors"
+	"go.opentelemetry.io/otel/codes"
 	"sync"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/smpp"
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
+	"github.com/martialanouman/go-gateway/internal/testutil/otelrec"
 )
 
 // fakeConsumer serves the per-record consumers record by record, and the CDR projection as ONE poll
@@ -280,7 +282,8 @@ func TestRouterFailsTheWholeBatchOnAWriteFailure(t *testing.T) {
 	m := sampleMapping()
 	cons := &fakeConsumer{records: []kafka.Record{
 		dlrRecord(t, m.ConnectorID, "smsc-1", smpp.MessageStateDelivered),
-		dlrRecord(t, m.ConnectorID, "smsc-2", smpp.MessageStateDelivered),
+		dlrRecord(t, m.ConnectorID, "smsc-2", smpp.MessageStateEnroute),
+		dlrRecord(t, m.ConnectorID, "smsc-3", smpp.MessageStateDelivered),
 	}}
 	router := modlrrouter.New(modlrrouter.Deps{
 		Consumer: cons, Resolver: fakeResolver{m: m, found: true}, CDR: &fakeCDR{err: errors.New("clickhouse down")},
@@ -289,9 +292,65 @@ func TestRouterFailsTheWholeBatchOnAWriteFailure(t *testing.T) {
 	if err := router.Run(context.Background()); err == nil {
 		t.Fatal("a failed insert must fail the batch, got nil")
 	}
-	for i, err := range cons.results {
-		if err == nil {
-			t.Errorf("record %d would be committed although its row was never written", i)
+	if cons.results[0] == nil || cons.results[2] == nil {
+		t.Errorf("a record whose row was never written would be committed: %v", cons.results)
+	}
+	if cons.results[1] != nil {
+		t.Errorf("a non-terminal receipt wrote nothing and must keep its own outcome, got %v", cons.results[1])
+	}
+}
+
+// resolverBySMSCID fails the receipts it is told to and maps the others.
+type resolverBySMSCID struct {
+	m    dlrmap.Mapping
+	fail map[string]bool
+}
+
+func (r resolverBySMSCID) Get(_ context.Context, _ uuid.UUID, smscID string) (dlrmap.Mapping, bool, error) {
+	if r.fail[smscID] {
+		return dlrmap.Mapping{}, false, errors.New("redis down")
+	}
+	return r.m, true, nil
+}
+
+// TestRouterFailsOnlyTheReceiptRedisCouldNotResolve: a Redis fault fails its own receipt, which is
+// replayed; the receipts it could resolve are written in the same insert.
+func TestRouterFailsOnlyTheReceiptRedisCouldNotResolve(t *testing.T) {
+	m := sampleMapping()
+	cdr := &fakeCDR{}
+	cons := &fakeConsumer{records: []kafka.Record{
+		dlrRecord(t, m.ConnectorID, "smsc-1", smpp.MessageStateDelivered),
+		dlrRecord(t, m.ConnectorID, "smsc-2", smpp.MessageStateDelivered),
+		dlrRecord(t, m.ConnectorID, "smsc-3", smpp.MessageStateDelivered),
+	}}
+	router := modlrrouter.New(modlrrouter.Deps{
+		Consumer: cons, Resolver: resolverBySMSCID{m: m, fail: map[string]bool{"smsc-2": true}}, CDR: cdr,
+		Tracer: observability.Tracer(nil, "test"),
+	})
+	_ = router.Run(context.Background())
+	if cons.results[0] != nil || cons.results[1] == nil || cons.results[2] != nil {
+		t.Errorf("results = %v, want only the unresolved receipt failed", cons.results)
+	}
+	if cdr.batches != 1 || len(cdr.rows) != 2 {
+		t.Errorf("wrote %d rows in %d inserts, want the 2 resolved receipts in 1", len(cdr.rows), cdr.batches)
+	}
+}
+
+// TestRouterMarksAClickHouseFailureOnASpan: the insert is the batch's own step, so a ClickHouse fault must
+// mark a span — an unmarked failure is dropped by head sampling and invisible to get-message-trace.
+func TestRouterMarksAClickHouseFailureOnASpan(t *testing.T) {
+	m := sampleMapping()
+	rec := otelrec.New(t)
+	router := modlrrouter.New(modlrrouter.Deps{
+		Consumer: &fakeConsumer{records: []kafka.Record{dlrRecord(t, m.ConnectorID, "smsc-1", smpp.MessageStateDelivered)}},
+		Resolver: fakeResolver{m: m, found: true}, CDR: &fakeCDR{err: errors.New("clickhouse down")},
+		Tracer: observability.Tracer(rec.Provider(), "test"),
+	})
+	_ = router.Run(context.Background())
+	for _, span := range rec.Ended() {
+		if span.Status().Code == codes.Error {
+			return
 		}
 	}
+	t.Errorf("no span marks the failed ClickHouse insert; spans: %v", rec.Names())
 }

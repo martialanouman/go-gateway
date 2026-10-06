@@ -40,7 +40,7 @@ type Resolver interface {
 	Get(ctx context.Context, connectorID uuid.UUID, smscMsgID string) (dlrmap.Mapping, bool, error)
 }
 
-// CDRWriter records the delivery outcomes. *clickhouse.CDRWriter satisfies it.
+// CDRWriter records the delivery outcome. *clickhouse.CDRWriter satisfies it.
 type CDRWriter interface {
 	InsertBatch(ctx context.Context, rows []clickhouse.CDRRow) error
 }
@@ -106,13 +106,24 @@ func (s *Service) handleBatch(ctx context.Context, recs []kafka.Record) []error 
 	if len(rows) == 0 {
 		return results
 	}
-	if err := s.deps.CDR.InsertBatch(ctx, rows); err != nil {
-		err = fmt.Errorf("modlrrouter: write %d dlr cdr rows: %w", len(rows), err)
+	if err := s.writeRows(ctx, rows); err != nil {
 		for _, i := range contributed {
 			results[i] = err
 		}
 	}
 	return results
+}
+
+// writeRows is the batch's ClickHouse step, under its own span so a failed insert is marked where the
+// correlation spans cannot see it.
+func (s *Service) writeRows(ctx context.Context, rows []clickhouse.CDRRow) (err error) {
+	ctx, span := s.deps.Tracer.Start(ctx, "dlr.cdr_write")
+	defer span.End()
+	defer func() { observability.RecordSpanError(span, err) }()
+	if err := s.deps.CDR.InsertBatch(ctx, rows); err != nil {
+		return fmt.Errorf("modlrrouter: write %d dlr cdr rows: %w", len(rows), err)
+	}
+	return nil
 }
 
 // correlate turns one receipt into its CDR row. ok is false when there is nothing to write; err is
@@ -125,6 +136,7 @@ func (s *Service) correlate(ctx context.Context, rec kafka.Record) (row clickhou
 	defer span.End()
 	// A Redis or ClickHouse fault leaves the record uncommitted; it is the signal an operator hunts
 	// for, and it was producing a perfectly green span.
+	// Since step-287b the ClickHouse fault is the batch's, marked on its dlr.cdr_write span.
 	defer func() { observability.RecordSpanError(span, err) }()
 
 	dlr, err := pipeline.DecodeDLR(rec)
