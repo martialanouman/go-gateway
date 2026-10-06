@@ -6,8 +6,9 @@
 #                                          clients de charge (24 par défaut) ; clés dans le Secret k6-load
 #   run.sh HOST ceiling VERSION            plafond du simulateur, dans le cluster
 #   run.sh HOST k6 PROFILE IDEMPOTENCY DURATION
-#   run.sh HOST expose INJECTOR_IP         NodePort 30880 + règle firewalld limitée à INJECTOR_IP (step-287)
-#   run.sh HOST unexpose INJECTOR_IP
+#   run.sh HOST expose                     NodePort 30880, joignable des seuls hôtes de la zone firewalld
+#                                          test-peers (step-287)
+#   run.sh HOST unexpose
 #   run.sh HOST k6-remote INJECTOR PROFILE IDEMPOTENCY DURATION
 #                                          k6 lancé depuis l'hôte ssh INJECTOR, visant le NodePort
 #   run.sh HOST observe MINUTES            toutes les 10 s : sessions Postgres en attente d'un verrou sur
@@ -77,19 +78,13 @@ case $action in
     kubectl create configmap k6-script --from-file="$root/test/load/k6/messages.js" --dry-run=client -o yaml | kube apply -f -
     run_job k6-load "$(sed -e "s/@PROFILE@/$3/" -e "s/@IDEMPOTENCY@/$4/" -e "s/@DURATION@/$5/" "$here/k6.yaml")"
     ;;
-  # Le NodePort n'est ouvert qu'à l'injecteur. La règle se pose AVANT le Service, pour que le port ne soit
-  # jamais exposé sans elle, et se retire après lui.
+  # Le NodePort n'est joignable que des hôtes de la zone firewalld permanente test-peers, posée sur l'hôte
+  # (README §11). Le Service ne vit que le temps de la campagne.
   expose)
-    rule="rule family=ipv4 source address=$3 port port=30880 protocol=tcp accept"
-    ssh -o ControlMaster=auto -o ControlPath="$HOME/.ssh/cm-%C" -o ControlPersist=10m "$host" \
-      "firewall-cmd --add-rich-rule=$(printf '%q' "$rule")"
     kube apply -f - <"$here/rest-api-nodeport.yaml"
     ;;
   unexpose)
-    rule="rule family=ipv4 source address=$3 port port=30880 protocol=tcp accept"
     kube delete service rest-api-svc-load --ignore-not-found
-    ssh -o ControlMaster=auto -o ControlPath="$HOME/.ssh/cm-%C" -o ControlPersist=10m "$host" \
-      "firewall-cmd --remove-rich-rule=$(printf '%q' "$rule")"
     ;;
   # Même script et même environnement que le Job k6-load ; seule la machine change. Les clés passent par
   # un tube vers un fichier 0600, jamais par une ligne de commande. L'injecteur rend son vmstat à côté.

@@ -24,13 +24,14 @@ topologie (`mt.inbound`/`mt.routed`) qui sert de référence à ADR-0021.
 - **Hôtes.** Passerelle : `contabo169` (169.58.63.248, k3s, 8 vCPU). Injecteur : `contabo75`
   (75.119.149.218, Rocky 10.2, 8 vCPU, 23 Go), qui n'a rien d'autre à faire. RTT mesuré ~5 ms.
 - **Chemin réseau.** Un Service `rest-api-svc-load` de type `NodePort` (port fixe 30880 → 8080, en TLS
-  comme le Service interne), posé et retiré par `run.sh`, jamais dans `deploy/test`. Une règle riche
-  firewalld sur `contabo169` n'accepte que la source 75.119.149.218 sur ce port. Il n'y a ni Cloudflare ni
+  comme le Service interne), posé et retiré par `run.sh`, jamais dans `deploy/test`. Une zone firewalld permanente
+  `test-peers` (cible ACCEPT) accepte les hôtes de test sur les deux machines : 75.119.149.218 sur la
+  passerelle, 169.58.63.248 sur l'injecteur. C'est une demande de l'utilisateur du 06/10/2026, pour des tests
+  futurs ; un autre serveur s'y ajoutera. Il n'y a ni Cloudflare ni
   Traefik : le budget est l'ingestion.
   **Preuve exigée avant le premier run.** Avec k3s, le DNAT de kube-proxy passe avant le filtre d'entrée de
-  firewalld, si bien qu'un NodePort peut être joignable sans règle. On vérifie donc trois cas : refusé
-  depuis un tiers avec la règle, accepté depuis l'injecteur avec la règle, refusé depuis l'injecteur sans la
-  règle. Si un tiers passe, on ne lance pas : on remplace par une règle iptables `raw`/`mangle` sur la
+  firewalld, si bien qu'un NodePort peut être joignable sans règle. On vérifie donc deux cas : accepté depuis
+  l'injecteur, refusé depuis un tiers. Si un tiers passe, on ne lance pas : on remplace par une règle iptables `raw`/`mangle` sur la
   source, ou par le réseau privé Contabo.
 - **k6 sur l'injecteur.** Binaire k6 1.3.0, la version de l'image du Job, téléchargé depuis la release
   GitHub et vérifié par somme SHA-256. Le script et l'environnement sont identiques au Job `k6-load` :

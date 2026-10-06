@@ -218,3 +218,24 @@ de son client : un seul client mesure une ligne, pas la passerelle.
 relever côte à côte les 202 de k6, les `submit_sm` servis par le simulateur, les CDR, le lag des
 consumers (`rpk group describe`), `kubectl top pod` et `iostat` sur le nœud. Latence bout-en-bout :
 `e2e-budget` par `port-forward` sur le port 9090 d'un pod `connector-pool-svc`, via le tunnel du §8.
+
+**Injecteur externe (step-287).** k6 tourne sur un hôte à part, pour ne plus prendre de cœurs à la
+passerelle. Les hôtes de test se font confiance par une zone firewalld **permanente** `test-peers` (cible
+`ACCEPT`), posée sur chacun avec l'adresse des autres comme source. Tout autre trafic reste soumis à la zone
+`public`.
+
+```bash
+firewall-cmd --permanent --new-zone=test-peers
+firewall-cmd --permanent --zone=test-peers --set-target=ACCEPT
+firewall-cmd --permanent --zone=test-peers --add-source=<IP de l'autre hôte>   # une ligne par hôte
+firewall-cmd --reload
+```
+
+Hôtes au 06/10/2026 : passerelle 169.58.63.248, injecteur 75.119.149.218. L'injecteur porte k6 1.3.0, la
+version de l'image du Job.
+
+```bash
+deploy/test-load/run.sh $H expose                                  # NodePort 30880, zone test-peers seule
+deploy/test-load/run.sh $H k6-remote root@INJECTEUR sustained off 10m
+deploy/test-load/run.sh $H unexpose
+```

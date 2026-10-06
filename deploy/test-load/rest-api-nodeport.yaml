@@ -1,5 +1,5 @@
 # Campagne step-287 : rest-api-svc joignable depuis l'injecteur externe. Posé et retiré par run.sh, jamais
-# dans deploy/test. Le port n'est ouvert qu'à l'IP de l'injecteur par une règle firewalld (run.sh expose).
+# dans deploy/test. Seuls les hôtes de la zone firewalld test-peers le joignent (README §11).
 apiVersion: v1
 kind: Service
 metadata:
