@@ -22,7 +22,8 @@ import (
 // Revealing the body here is an audited egress (like the Kafka payload): the plaintext goes onto the
 // SMSC wire, never into a log or span. When the segment begins with a UDH, esm_class's UDH indicator is
 // set so the SMSC and the handset parse and reassemble it.
-func buildSubmit(r pipeline.RoutedMT) *smpp.SubmitSM {
+// priority_flag is the effective priority, or the connector's default when that is 0 (ADR-0020 §3).
+func buildSubmit(r pipeline.RoutedMT, priorityFlagDefault uint8) *smpp.SubmitSM {
 	source, sourceTON, sourceNPI := sourceAddr(r.From)
 	sm := &smpp.SubmitSM{SMFields: smpp.SMFields{
 		SourceAddr:      source,
@@ -36,6 +37,10 @@ func buildSubmit(r pipeline.RoutedMT) *smpp.SubmitSM {
 	}
 	if r.HasUDH {
 		sm.ESMClass = smpp.ESMClassUDHIndicator
+	}
+	sm.PriorityFlag = priorityFlagDefault
+	if r.Priority > 0 {
+		sm.PriorityFlag = r.Priority
 	}
 	// The SMPP validity_period is a 16-char C-Octet String; a longer value would marshal a PDU with no
 	// NUL terminator, which the SMSC rejects by dropping the connection — poisoning the partition on
@@ -81,20 +86,22 @@ func submitDataCoding(r pipeline.RoutedMT) uint8 {
 func submitOutcome(r pipeline.RoutedMT, resp smpp.PDU) pipeline.OutcomeMT {
 	status, errorCode := outcome(resp.Status)
 	return pipeline.OutcomeMT{
-		MessageID:    r.MessageID,
-		TraceID:      r.TraceID,
-		AccountID:    r.AccountID,
-		CustomerID:   r.CustomerID,
-		ConnectorID:  r.ConnectorID,
-		RouteID:      r.RouteID,
-		From:         r.From,
-		To:           r.To,
-		Encoding:     r.Encoding,
-		SegmentSeq:   int(segmentSeq(r.SegmentSeq)),
-		SegmentCount: int(segmentCount(r.SegmentCount)),
-		SubmittedAt:  r.SubmittedAt,
-		Status:       string(status),
-		ErrorCode:    errorCode,
+		MessageID:       r.MessageID,
+		TraceID:         r.TraceID,
+		AccountID:       r.AccountID,
+		CustomerID:      r.CustomerID,
+		ConnectorID:     r.ConnectorID,
+		RouteID:         r.RouteID,
+		From:            r.From,
+		To:              r.To,
+		Encoding:        r.Encoding,
+		SegmentSeq:      int(segmentSeq(r.SegmentSeq)),
+		SegmentCount:    int(segmentCount(r.SegmentCount)),
+		SubmittedAt:     r.SubmittedAt,
+		Status:          string(status),
+		ErrorCode:       errorCode,
+		TrafficCategory: string(r.TrafficCategory),
+		Priority:        r.Priority,
 	}
 }
 
@@ -104,19 +111,21 @@ func submitOutcome(r pipeline.RoutedMT, resp smpp.PDU) pipeline.OutcomeMT {
 // ReplacingMergeTree (same ORDER BY key and rank), it closes the crash window between flag and row.
 func cancelledRow(r pipeline.RoutedMT) clickhouse.CDRRow {
 	return clickhouse.CDRRow{
-		MessageID:    r.MessageID,
-		TraceID:      r.TraceID,
-		AccountID:    r.AccountID,
-		CustomerID:   r.CustomerID,
-		Direction:    clickhouse.DirectionMT,
-		SourceAddr:   r.From,
-		DestAddr:     r.To,
-		SubmittedAt:  r.SubmittedAt,
-		Status:       clickhouse.StatusCancelled,
-		SegmentCount: segmentCount(r.SegmentCount),
-		SegmentSeq:   segmentSeq(r.SegmentSeq),
-		Encoding:     clickhouse.EncodingOf(r.Encoding),
-		Billed:       false,
+		MessageID:       r.MessageID,
+		TraceID:         r.TraceID,
+		AccountID:       r.AccountID,
+		CustomerID:      r.CustomerID,
+		Direction:       clickhouse.DirectionMT,
+		SourceAddr:      r.From,
+		DestAddr:        r.To,
+		SubmittedAt:     r.SubmittedAt,
+		Status:          clickhouse.StatusCancelled,
+		SegmentCount:    segmentCount(r.SegmentCount),
+		SegmentSeq:      segmentSeq(r.SegmentSeq),
+		Encoding:        clickhouse.EncodingOf(r.Encoding),
+		Billed:          false,
+		TrafficCategory: string(r.TrafficCategory),
+		Priority:        r.Priority,
 	}
 }
 

@@ -235,8 +235,10 @@ qu'on mesure un environnement représentatif.
       de multiple de dix libre
 - [x] step-291 — `category_mismatch` et compteur de signalements par sender ID (ADR-0020 §5) ⛓ step-288 —
       unité faute de multiple de dix libre
-- [ ] step-292 — Priorité effective, réservation de connecteurs et un topic par catégorie (ADR-0020 §2-§4,
-      ADR-0021) ⛓ step-288, step-289 — place par rapport à step-287 et step-409 à trancher dans la fiche
+- [ ] step-292 — Priorité effective et réservation de connecteurs (ADR-0020 §2-§4) ⛓ step-288, step-289
+      — unité faute de multiple de dix libre
+- [ ] step-292b — Un topic par catégorie, un consommateur par topic, priorité bornée par bind (ADR-0021)
+      ⛓ step-292, step-287 — née du découpage de step-292 ; bloque step-409
 
 Le seul **défaut de correction** du lot est clos : step-240 a fermé le rejeu d'un message annulé, et
 step-245 le cas où l'annulation avait gagné son jeton sans jamais écrire sa ligne CDR. step-250 a

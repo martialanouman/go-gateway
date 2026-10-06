@@ -58,19 +58,21 @@ func (s *Service) Run(ctx context.Context) error {
 // reloadConfig refreshes the pool size and reconnect policy from the control plane. On a load error it
 // KEEPS the current (last-good) config — set in New to the env defaults and updated only on success — so
 // a transient Postgres blip during a reconfigure never silently reverts a live-configured pool to env.
+// priority_flag_default is refreshed with them.
 func (s *Service) reloadConfig(ctx context.Context) {
 	if s.deps.ConfigSource == nil {
 		return // static config (already seeded in New)
 	}
-	n, rc, err := s.deps.ConfigSource.Load(ctx, s.deps.ConnectorID)
+	live, err := s.deps.ConfigSource.Load(ctx, s.deps.ConnectorID)
 	if err != nil {
 		s.deps.Logger.WarnContext(ctx, "connector: config reload failed, keeping current config", "err", err)
 		return
 	}
-	if n >= 1 {
-		s.poolSize = n
+	if live.BindPoolSize >= 1 {
+		s.poolSize = live.BindPoolSize
 	}
-	s.reconnectCfg = rc
+	s.reconnectCfg = live.Reconnect
+	s.priorityFlagDefault = live.PriorityFlagDefault
 }
 
 // park keeps the pod alive with a down link, polling the reconfigure generation until it changes (an

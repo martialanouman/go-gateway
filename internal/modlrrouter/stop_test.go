@@ -178,6 +178,10 @@ func TestStopSuppressesAndAutoReplies(t *testing.T) {
 	if string(reply.Body.Reveal()) != "You are unsubscribed" {
 		t.Errorf("auto-reply body = %q, want the template", reply.Body.Reveal())
 	}
+	// A regulatory confirmation, not a campaign: it must not queue behind marketing (step-292).
+	if reply.TrafficCategory != cp.TrafficTransactional || reply.Priority != 1 {
+		t.Errorf("auto-reply category/priority = %q/%d, want transactional/1", reply.TrafficCategory, reply.Priority)
+	}
 }
 
 func TestStopIsIdempotentAndDeterministic(t *testing.T) {

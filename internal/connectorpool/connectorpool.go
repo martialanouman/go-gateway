@@ -64,7 +64,10 @@ type Service struct {
 	// goroutine, sequentially between cycles, so they need no synchronisation.
 	poolSize     int
 	reconnectCfg reconnect.Config
-	podID        string
+	// priorityFlagDefault is reloaded with them, but read by the shard goroutines: RunBatch starts those
+	// after the reload and runOnce waits for them before the next one, so it needs no synchronisation either.
+	priorityFlagDefault uint8
+	podID               string
 
 	// retryFirstFail records, per (partition, offset), when a message first hit a connector-health
 	// failure, so the retry window can dead-letter a message that keeps failing past RetryWindow

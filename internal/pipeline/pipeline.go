@@ -173,6 +173,8 @@ func (p *Pipeline) Process(ctx context.Context, in InboundMT) (RoutedMT, []pipee
 	}); err != nil {
 		return RoutedMT{}, nil, err
 	}
+	out.TrafficCategory = category
+	out.Priority = category.EffectivePriority(in.Priority)
 
 	// 3. Opt-out / suppression (§6.20). A frozen compliance stage, never short-circuited by an exact
 	// route (invariant b). Blocks if the destination is suppressed in ANY applicable scope. The span

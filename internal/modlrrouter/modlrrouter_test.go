@@ -58,16 +58,18 @@ func (c *fakeCounter) Inc() { c.n++ }
 // sampleMapping is a resolved correlation with a submit time 5s before delivery.
 func sampleMapping() dlrmap.Mapping {
 	return dlrmap.Mapping{
-		MessageID:    uuid.New(),
-		TraceID:      uuid.New(),
-		AccountID:    uuid.New(),
-		CustomerID:   uuid.New(),
-		SourceAddr:   "GATEWAY",
-		DestAddr:     "+22507000000",
-		ConnectorID:  uuid.New(),
-		SegmentCount: 1,
-		Encoding:     "gsm7",
-		SubmittedAt:  time.Now().UTC().Add(-5 * time.Second),
+		MessageID:       uuid.New(),
+		TraceID:         uuid.New(),
+		AccountID:       uuid.New(),
+		CustomerID:      uuid.New(),
+		SourceAddr:      "GATEWAY",
+		DestAddr:        "+22507000000",
+		ConnectorID:     uuid.New(),
+		SegmentCount:    1,
+		Encoding:        "gsm7",
+		SubmittedAt:     time.Now().UTC().Add(-5 * time.Second),
+		TrafficCategory: "transactional",
+		Priority:        2,
 	}
 }
 
@@ -125,7 +127,8 @@ func TestRouterWritesDeliveredCDR(t *testing.T) {
 	}
 	// The projection columns come from the mapping so the delivered row does not blank them.
 	if row.MessageID != m.MessageID || row.AccountID != m.AccountID || row.CustomerID != m.CustomerID ||
-		row.SourceAddr != m.SourceAddr || row.DestAddr != m.DestAddr || row.Direction != clickhouse.DirectionMT {
+		row.SourceAddr != m.SourceAddr || row.DestAddr != m.DestAddr || row.Direction != clickhouse.DirectionMT ||
+		row.TrafficCategory != "transactional" || row.Priority != 2 {
 		t.Errorf("row projection = %+v, want mapping %+v", row, m)
 	}
 }

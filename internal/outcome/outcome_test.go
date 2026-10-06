@@ -90,6 +90,9 @@ func enrouteEvent() pipeline.OutcomeMT {
 		SegmentCount: 3,
 		SubmittedAt:  submittedAt,
 		Status:       string(clickhouse.StatusEnroute),
+		// The enroute row supersedes nothing on its segment, but the DLR row after it must not erase it.
+		TrafficCategory: "transactional",
+		Priority:        2,
 	}
 }
 
@@ -112,20 +115,22 @@ func TestProjectorWritesTheRowTheConnectorUsedToWrite(t *testing.T) {
 	}
 	connectorID := event.ConnectorID
 	want := clickhouse.CDRRow{
-		MessageID:    event.MessageID,
-		TraceID:      event.TraceID,
-		AccountID:    event.AccountID,
-		CustomerID:   event.CustomerID,
-		Direction:    clickhouse.DirectionMT,
-		SourceAddr:   event.From,
-		DestAddr:     event.To,
-		ConnectorID:  &connectorID,
-		RouteID:      event.RouteID,
-		SubmittedAt:  event.SubmittedAt,
-		Status:       clickhouse.StatusEnroute,
-		SegmentCount: 3,
-		SegmentSeq:   2,
-		Encoding:     clickhouse.EncodingUCS2,
+		MessageID:       event.MessageID,
+		TraceID:         event.TraceID,
+		AccountID:       event.AccountID,
+		CustomerID:      event.CustomerID,
+		Direction:       clickhouse.DirectionMT,
+		SourceAddr:      event.From,
+		DestAddr:        event.To,
+		ConnectorID:     &connectorID,
+		RouteID:         event.RouteID,
+		SubmittedAt:     event.SubmittedAt,
+		Status:          clickhouse.StatusEnroute,
+		SegmentCount:    3,
+		SegmentSeq:      2,
+		Encoding:        clickhouse.EncodingUCS2,
+		TrafficCategory: "transactional",
+		Priority:        2,
 	}
 	if !reflect.DeepEqual(rows[0], want) {
 		t.Errorf("row = %+v, want %+v", rows[0], want)

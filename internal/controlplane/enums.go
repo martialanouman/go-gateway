@@ -207,6 +207,18 @@ const (
 	TrafficMarketing     TrafficCategory = "marketing"
 )
 
+// EffectivePriority bounds a requested priority by the category's default and ceiling (ADR-0020 §2).
+func (c TrafficCategory) EffectivePriority(requested int) uint8 {
+	floor, ceiling := 0, 0
+	switch c {
+	case TrafficOTP:
+		floor, ceiling = 3, 3
+	case TrafficTransactional:
+		floor, ceiling = 1, 2
+	}
+	return uint8(min(max(requested, floor), ceiling)) //nolint:gosec // bounded to 0..3 by the table above
+}
+
 // SenderIDStatus is the carrier-approval state of a sender ID (control_plane.sender_ids.status).
 type SenderIDStatus string
 

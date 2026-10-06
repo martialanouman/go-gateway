@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/twmb/franz-go/pkg/kgo"
 
+	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	"github.com/martialanouman/go-gateway/internal/platform/msg"
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
@@ -228,5 +229,61 @@ func TestDecodeChainToleratesMalformed(t *testing.T) {
 	got, _ := pipeline.DecodeRouted(rec)
 	if len(got.FallbackChain) != 1 || got.FallbackChain[0] != good {
 		t.Errorf("chain = %v, want [%s] (bad skipped, dup dropped)", got.FallbackChain, good)
+	}
+}
+
+// The category and effective priority must survive every republish of mt.routed (reroute, parking,
+// replay), and the pool reads them by their JSON names: assert the bytes, not only a round trip.
+func TestRoutedCarriesCategoryAndPriority(t *testing.T) {
+	in := routedFixture()
+	in.TrafficCategory = cp.TrafficTransactional
+	in.Priority = 2
+	rec, err := pipeline.EncodeRouted(in)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	for _, want := range []string{`"traffic_category":"transactional"`, `"priority":2`} {
+		if !strings.Contains(string(rec.Value), want) {
+			t.Errorf("mt.routed value lacks %s: %s", want, rec.Value)
+		}
+	}
+	out, err := pipeline.DecodeRouted(rec)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.TrafficCategory != cp.TrafficTransactional || out.Priority != 2 {
+		t.Errorf("decoded category/priority = %q/%d, want transactional/2", out.TrafficCategory, out.Priority)
+	}
+}
+
+// A record produced before the fields existed decodes as marketing, priority 0: the most constrained.
+func TestRoutedWithoutCategoryDecodesAsMarketing(t *testing.T) {
+	rec, err := pipeline.EncodeRouted(routedFixture())
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	rec.Value = []byte(strings.NewReplacer(`"traffic_category":"",`, "", `"priority":0,`, "").Replace(string(rec.Value)))
+	if strings.Contains(string(rec.Value), "traffic_category") {
+		t.Fatalf("fixture still carries the field: %s", rec.Value)
+	}
+	out, err := pipeline.DecodeRouted(rec)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.TrafficCategory != cp.TrafficMarketing || out.Priority != 0 {
+		t.Errorf("legacy record decoded as %q/%d, want marketing/0", out.TrafficCategory, out.Priority)
+	}
+}
+
+// mt.outcome crosses services deployed one after the other: pin the field names, not only a round trip.
+func TestOutcomeCarriesCategoryAndPriority(t *testing.T) {
+	rec, err := pipeline.EncodeOutcome(pipeline.OutcomeMT{MessageID: uuid.New(), TrafficCategory: "transactional", Priority: 2})
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	for _, want := range []string{`"traffic_category":"transactional"`, `"priority":2`} {
+		if !strings.Contains(string(rec.Value), want) {
+			t.Errorf("mt.outcome value lacks %s: %s", want, rec.Value)
+		}
 	}
 }

@@ -1,7 +1,7 @@
 # step-409 — Campagne NFR pleine échelle sur environnement représentatif
 
 > **Jalon :** M12 (§16 `docs/plan-execution-passerelle.md`) · **Statut :** À FAIRE
-> **Dépend de :** **step-280**, **step-285**, **step-287**, step-270, **step-270b**, **step-408** · **Bloque :** step-410
+> **Dépend de :** **step-280**, **step-285**, **step-287**, **step-292b**, step-270, **step-270b**, **step-408** · **Bloque :** step-410
 > Unité faute de multiple de dix libre.
 
 > **Origine (28/09/2026).** Cette fiche est l'ancienne step-280. Décision humaine : la campagne se fait

@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	"github.com/martialanouman/go-gateway/internal/platform/msg"
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
 )
@@ -51,6 +52,8 @@ type routedWire struct {
 	RegisteredDelivery bool       `json:"registered_delivery"`
 	ValidityPeriod     *string    `json:"validity_period,omitempty"`
 	DataCoding         *int       `json:"data_coding,omitempty"`
+	TrafficCategory    string     `json:"traffic_category"`
+	Priority           uint8      `json:"priority"`
 	ConnectorID        uuid.UUID  `json:"connector_id"`
 	RouteID            *uuid.UUID `json:"route_id,omitempty"`
 	SegmentSeq         int        `json:"segment_seq"`
@@ -134,6 +137,8 @@ func EncodeRouted(env RoutedMT) (kafka.Record, error) {
 		RegisteredDelivery: env.RegisteredDelivery,
 		ValidityPeriod:     env.ValidityPeriod,
 		DataCoding:         env.DataCoding,
+		TrafficCategory:    string(env.TrafficCategory),
+		Priority:           env.Priority,
 		ConnectorID:        env.ConnectorID,
 		RouteID:            env.RouteID,
 		SegmentSeq:         env.SegmentSeq,
@@ -160,6 +165,14 @@ func EncodeRouted(env RoutedMT) (kafka.Record, error) {
 		Value:   value,
 		Headers: headers,
 	}, nil
+}
+
+// routedCategory reads a record produced before the field existed as marketing, the most constrained.
+func routedCategory(raw string) cp.TrafficCategory {
+	if raw == "" {
+		return cp.TrafficMarketing
+	}
+	return cp.TrafficCategory(raw)
 }
 
 // DecodeRouted parses an mt.routed record, re-wrapping the body into msg.Body immediately.
@@ -190,6 +203,8 @@ func DecodeRouted(rec kafka.Record) (RoutedMT, error) {
 		RegisteredDelivery: w.RegisteredDelivery,
 		ValidityPeriod:     w.ValidityPeriod,
 		DataCoding:         w.DataCoding,
+		TrafficCategory:    routedCategory(w.TrafficCategory),
+		Priority:           w.Priority,
 		ConnectorID:        w.ConnectorID,
 		RouteID:            w.RouteID,
 		FallbackChain:      chain,
@@ -206,23 +221,25 @@ func DecodeRouted(rec kafka.Record) (RoutedMT, error) {
 // outcomeWire is the JSON body of an mt.outcome record. There is deliberately no body field: the CDR
 // outcome row stores no content (invariant a) — see OutcomeMT.
 type outcomeWire struct {
-	MessageID      uuid.UUID  `json:"message_id"`
-	TraceID        uuid.UUID  `json:"trace_id"`
-	AccountID      uuid.UUID  `json:"account_id"`
-	CustomerID     uuid.UUID  `json:"customer_id"`
-	ConnectorID    uuid.UUID  `json:"connector_id"`
-	RouteID        *uuid.UUID `json:"route_id,omitempty"`
-	From           string     `json:"from"`
-	OriginalFrom   string     `json:"original_from,omitempty"`
-	To             string     `json:"to"`
-	Encoding       string     `json:"encoding"`
-	SegmentSeq     int        `json:"segment_seq"`
-	SegmentCount   int        `json:"segment_count"`
-	SubmittedAt    time.Time  `json:"submitted_at"`
-	Status         string     `json:"status"`
-	ErrorCode      *string    `json:"error_code,omitempty"`
-	Billed         bool       `json:"billed"`
-	CreditsCharged *int32     `json:"credits_charged,omitempty"`
+	MessageID       uuid.UUID  `json:"message_id"`
+	TraceID         uuid.UUID  `json:"trace_id"`
+	AccountID       uuid.UUID  `json:"account_id"`
+	CustomerID      uuid.UUID  `json:"customer_id"`
+	ConnectorID     uuid.UUID  `json:"connector_id"`
+	RouteID         *uuid.UUID `json:"route_id,omitempty"`
+	From            string     `json:"from"`
+	OriginalFrom    string     `json:"original_from,omitempty"`
+	To              string     `json:"to"`
+	Encoding        string     `json:"encoding"`
+	SegmentSeq      int        `json:"segment_seq"`
+	SegmentCount    int        `json:"segment_count"`
+	SubmittedAt     time.Time  `json:"submitted_at"`
+	Status          string     `json:"status"`
+	ErrorCode       *string    `json:"error_code,omitempty"`
+	Billed          bool       `json:"billed"`
+	CreditsCharged  *int32     `json:"credits_charged,omitempty"`
+	TrafficCategory string     `json:"traffic_category"`
+	Priority        uint8      `json:"priority"`
 }
 
 // EncodeOutcome builds the mt.outcome record for env, keyed by the logical message id — the same key

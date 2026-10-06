@@ -805,3 +805,53 @@ func TestCDRRewrittenSenderReadsTheSentAddress(t *testing.T) {
 		}
 	}
 }
+
+// TestCDRCarriesTheTrafficCategory: the message-level rows (segment_seq 0) are written without the
+// category — the accepted placeholder before the sender ID is authorized, the Canceller's cancelled row
+// copied from it — so the message read must take it from the segment rows (step-292). Ten messages,
+// because a read that took any row of the message could still land on a segment row by luck.
+func TestCDRCarriesTheTrafficCategory(t *testing.T) {
+	conn, err := clickhouse.NewConn(chtest.Config(t))
+	if err != nil {
+		t.Fatalf("new conn: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	writer, reader := clickhouse.NewCDRWriter(conn), clickhouse.NewCDRReader(conn)
+	ctx := context.Background()
+	customerID, accountID := uuid.New(), uuid.New()
+	at := time.Now().UTC().Truncate(time.Millisecond)
+
+	for _, final := range []clickhouse.Status{clickhouse.StatusDelivered, clickhouse.StatusCancelled} {
+		for range 10 {
+			id := uuid.New()
+			row := func(status clickhouse.Status, seq uint16, category string, priority uint8) clickhouse.CDRRow {
+				return clickhouse.CDRRow{
+					MessageID: id, TraceID: uuid.New(), AccountID: accountID, CustomerID: customerID,
+					Direction: clickhouse.DirectionMT, SourceAddr: "BANK", DestAddr: "2250700000000",
+					SubmittedAt: at, Status: status, SegmentCount: 1, SegmentSeq: seq, Encoding: clickhouse.EncodingGSM7,
+					TrafficCategory: category, Priority: priority,
+				}
+			}
+			messageLevel := []clickhouse.CDRRow{row(clickhouse.StatusAccepted, 0, "", 0)}
+			if final == clickhouse.StatusCancelled {
+				messageLevel = append(messageLevel, row(clickhouse.StatusCancelled, 0, "", 0))
+			}
+			if err := writer.InsertBatch(ctx, messageLevel); err != nil {
+				t.Fatalf("insert message-level rows: %v", err)
+			}
+			if err := writer.InsertBatch(ctx, []clickhouse.CDRRow{
+				row(clickhouse.StatusEnroute, 1, "transactional", 2),
+				row(final, 1, "transactional", 2),
+			}); err != nil {
+				t.Fatalf("insert segment rows: %v", err)
+			}
+			got, found, err := reader.Current(ctx, customerID, accountID, id)
+			if err != nil || !found {
+				t.Fatalf("read: found=%v err=%v", found, err)
+			}
+			if got.TrafficCategory != "transactional" || got.Priority != 2 {
+				t.Errorf("%s message category/priority = %q/%d, want transactional/2", final, got.TrafficCategory, got.Priority)
+			}
+		}
+	}
+}

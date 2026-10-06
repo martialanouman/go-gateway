@@ -128,6 +128,11 @@ type CDRRow struct {
 	LatencyMs         *uint32
 	Billed            bool
 	CreditsCharged    *int32
+	// TrafficCategory and Priority are known only once the sender ID is authorized (ADR-0020). The
+	// message-level rows (accepted, rejected, the Canceller's cancelled) are written without them; every
+	// segment row must carry them, since ReplacingMergeTree keeps the highest-version row whole.
+	TrafficCategory string
+	Priority        uint8
 }
 
 // cdrColumns is the explicit column list, in table order, shared by the insert and select
@@ -135,7 +140,7 @@ type CDRRow struct {
 const cdrColumns = `message_id, trace_id, account_id, customer_id, direction, source_addr, dest_addr,
 	original_source_addr, connector_id, route_id, routing_script_id, submitted_at, delivered_at,
 	status, error_code, segment_count, segment_seq, encoding, content_ciphertext, content_key_id,
-	latency_ms, billed, credits_charged, version`
+	latency_ms, billed, credits_charged, traffic_category, priority, version`
 
 // CDRWriter appends CDR rows.
 type CDRWriter struct {
@@ -268,7 +273,7 @@ func appendCDR(batch driver.Batch, row CDRRow) error {
 		row.ConnectorID, row.RouteID, row.RoutingScriptID, row.SubmittedAt, row.DeliveredAt,
 		string(row.Status), row.ErrorCode, row.SegmentCount, row.SegmentSeq, string(row.Encoding),
 		row.ContentCiphertext, row.ContentKeyID, row.LatencyMs, boolToUint8(row.Billed),
-		row.CreditsCharged, row.Status.Rank(),
+		row.CreditsCharged, row.TrafficCategory, row.Priority, row.Status.Rank(),
 	)
 }
 
@@ -302,7 +307,8 @@ const cdrAggInnerCols = `customer_id, account_id, direction, submitted_at, messa
 	argMax(error_code, version) AS error_code, argMax(segment_count, version) AS segment_count,
 	argMax(encoding, version) AS encoding, argMax(content_ciphertext, version) AS content_ciphertext,
 	argMax(content_key_id, version) AS content_key_id, argMax(latency_ms, version) AS latency_ms,
-	argMax(billed, version) AS billed, argMax(credits_charged, version) AS credits_charged`
+	argMax(billed, version) AS billed, argMax(credits_charged, version) AS credits_charged,
+	argMax(traffic_category, version) AS traffic_category, argMax(priority, version) AS priority`
 
 // cdrDispatched is the predicate for "this collapsed row is a dispatched segment outcome, not the
 // message-level placeholder": a status other than accepted/rejected. It is used INSTEAD of
@@ -339,6 +345,8 @@ const cdrStatusPrecedence = `multiIf(
 // source_addr likewise prefers a dispatched segment: once the pool rewrites the sender (§6.16) the
 // placeholder holds the client's address and a submitted segment the one sent. A segment the pool
 // dead-lettered without submitting keeps the client's, with no original beside it.
+// traffic_category and priority come from the segment rows: the message-level rows (the placeholder, the
+// Canceller's cancelled row) are written without them, and an empty string is not NULL to anyIf.
 const cdrAggMessageCols = `message_id, submitted_at,
 	any(trace_id) AS trace_id, any(account_id) AS account_id, any(customer_id) AS customer_id,
 	any(direction) AS direction, argMax(source_addr, ` + cdrDispatched + `) AS source_addr, any(dest_addr) AS dest_addr,
@@ -349,6 +357,7 @@ const cdrAggMessageCols = `message_id, submitted_at,
 	any(encoding) AS encoding, any(content_ciphertext) AS content_ciphertext,
 	any(content_key_id) AS content_key_id, maxIf(latency_ms, ` + cdrDispatched + `) AS latency_ms,
 	max(billed) AS billed, any(credits_charged) AS credits_charged,
+	anyIf(traffic_category, traffic_category != '') AS traffic_category, max(priority) AS priority,
 	` + cdrStatusCounts + `,
 	maxIf(delivered_at, status = 'delivered') AS delivered_at_max,
 	argMinIf(error_code, segment_seq, status IN ('failed', 'expired', 'rejected')) AS error_code`
@@ -366,7 +375,8 @@ const cdrAggOuterCols = `message_id, trace_id, account_id, customer_id, directio
 	if(dispatched_total > 0 AND delivered_segs = dispatched_total, delivered_at_max, NULL) AS delivered_at,
 	` + cdrStatusPrecedence + ` AS status,
 	error_code, greatest(dispatched_total, 1) AS segment_count, toUInt16(0) AS segment_seq,
-	encoding, content_ciphertext, content_key_id, latency_ms, billed, credits_charged, toUInt64(0) AS version`
+	encoding, content_ciphertext, content_key_id, latency_ms, billed, credits_charged, traffic_category,
+	priority, toUInt64(0) AS version`
 
 // cdrAggregate assembles the three levels (per-segment collapse → per-message aggregates → status
 // decision) around an inner WHERE tail (added filters/keyset, bound positionally by the caller). The
@@ -479,7 +489,7 @@ func scanCDRRow(scan func(dest ...any) error) (CDRRow, error) {
 		&out.ConnectorID, &out.RouteID, &out.RoutingScriptID, &out.SubmittedAt, &out.DeliveredAt,
 		&status, &out.ErrorCode, &out.SegmentCount, &out.SegmentSeq, &encoding,
 		&out.ContentCiphertext, &out.ContentKeyID, &out.LatencyMs, &billed,
-		&out.CreditsCharged, &version,
+		&out.CreditsCharged, &out.TrafficCategory, &out.Priority, &version,
 	); err != nil {
 		return CDRRow{}, err
 	}
