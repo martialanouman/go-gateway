@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/codes"
 
 	"github.com/martialanouman/go-gateway/internal/dlrmap"
 	"github.com/martialanouman/go-gateway/internal/modlrrouter"
@@ -16,13 +17,29 @@ import (
 	"github.com/martialanouman/go-gateway/internal/smpp"
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
+	"github.com/martialanouman/go-gateway/internal/testutil/otelrec"
 )
 
-type fakeConsumer struct{ records []kafka.Record }
+// fakeConsumer serves the per-record consumers record by record, and the CDR projection as ONE poll
+// batch, returning the first per-record error — what makes RunBatch leave that offset uncommitted.
+type fakeConsumer struct {
+	records []kafka.Record
+	results []error
+}
 
 func (f *fakeConsumer) Run(ctx context.Context, handle kafka.Handler) error {
 	for _, r := range f.records {
 		if err := handle(ctx, r); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (f *fakeConsumer) RunBatch(ctx context.Context, handle kafka.BatchHandler) error {
+	f.results = handle(ctx, f.records)
+	for _, err := range f.results {
+		if err != nil {
 			return err
 		}
 	}
@@ -40,14 +57,20 @@ func (f fakeResolver) Get(context.Context, uuid.UUID, string) (dlrmap.Mapping, b
 }
 
 type fakeCDR struct {
-	mu   sync.Mutex
-	rows []clickhouse.CDRRow
+	mu      sync.Mutex
+	rows    []clickhouse.CDRRow
+	batches int
+	err     error
 }
 
-func (f *fakeCDR) Insert(_ context.Context, row clickhouse.CDRRow) error {
+func (f *fakeCDR) InsertBatch(_ context.Context, rows []clickhouse.CDRRow) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.rows = append(f.rows, row)
+	if f.err != nil {
+		return f.err
+	}
+	f.batches++
+	f.rows = append(f.rows, rows...)
 	return nil
 }
 
@@ -90,7 +113,12 @@ func dlrRecord(t *testing.T, connectorID uuid.UUID, smscID string, state uint8) 
 
 func runOne(t *testing.T, deps modlrrouter.Deps, rec kafka.Record) error {
 	t.Helper()
-	deps.Consumer = &fakeConsumer{records: []kafka.Record{rec}}
+	return runBatch(t, deps, []kafka.Record{rec})
+}
+
+func runBatch(t *testing.T, deps modlrrouter.Deps, recs []kafka.Record) error {
+	t.Helper()
+	deps.Consumer = &fakeConsumer{records: recs}
 	if deps.Tracer == nil {
 		deps.Tracer = observability.Tracer(nil, "test")
 	}
@@ -227,4 +255,102 @@ func TestRouterSkipsUndecodableRecord(t *testing.T) {
 	if len(cdr.rows) != 0 || counter.n != 0 {
 		t.Errorf("undecodable record should do nothing: rows=%d count=%d", len(cdr.rows), counter.n)
 	}
+}
+
+// TestRouterWritesAPollBatchInOneInsert: the receipts of one poll go to ClickHouse in ONE insert (step-287b).
+// Writing them one by one made a part per receipt, and the merges never caught up.
+func TestRouterWritesAPollBatchInOneInsert(t *testing.T) {
+	m := sampleMapping()
+	cdr := &fakeCDR{}
+	recs := []kafka.Record{
+		dlrRecord(t, m.ConnectorID, "smsc-1", smpp.MessageStateDelivered),
+		dlrRecord(t, m.ConnectorID, "smsc-2", smpp.MessageStateUndeliverable),
+		dlrRecord(t, m.ConnectorID, "smsc-3", smpp.MessageStateEnroute),
+		dlrRecord(t, m.ConnectorID, "smsc-4", smpp.MessageStateExpired),
+	}
+	if err := runBatch(t, modlrrouter.Deps{Resolver: fakeResolver{m: m, found: true}, CDR: cdr}, recs); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if cdr.batches != 1 || len(cdr.rows) != 3 {
+		t.Errorf("wrote %d rows in %d inserts, want the 3 terminal receipts in 1", len(cdr.rows), cdr.batches)
+	}
+}
+
+// TestRouterFailsTheWholeBatchOnAWriteFailure: one insert carries every row of the poll, so a failed
+// insert must leave every record that contributed a row uncommitted, to be replayed.
+func TestRouterFailsTheWholeBatchOnAWriteFailure(t *testing.T) {
+	m := sampleMapping()
+	cons := &fakeConsumer{records: []kafka.Record{
+		dlrRecord(t, m.ConnectorID, "smsc-1", smpp.MessageStateDelivered),
+		dlrRecord(t, m.ConnectorID, "smsc-2", smpp.MessageStateEnroute),
+		dlrRecord(t, m.ConnectorID, "smsc-3", smpp.MessageStateDelivered),
+	}}
+	router := modlrrouter.New(modlrrouter.Deps{
+		Consumer: cons, Resolver: fakeResolver{m: m, found: true}, CDR: &fakeCDR{err: errors.New("clickhouse down")},
+		Tracer: observability.Tracer(nil, "test"),
+	})
+	if err := router.Run(context.Background()); err == nil {
+		t.Fatal("a failed insert must fail the batch, got nil")
+	}
+	if cons.results[0] == nil || cons.results[2] == nil {
+		t.Errorf("a record whose row was never written would be committed: %v", cons.results)
+	}
+	if cons.results[1] != nil {
+		t.Errorf("a non-terminal receipt wrote nothing and must keep its own outcome, got %v", cons.results[1])
+	}
+}
+
+// resolverBySMSCID fails the receipts it is told to and maps the others.
+type resolverBySMSCID struct {
+	m    dlrmap.Mapping
+	fail map[string]bool
+}
+
+func (r resolverBySMSCID) Get(_ context.Context, _ uuid.UUID, smscID string) (dlrmap.Mapping, bool, error) {
+	if r.fail[smscID] {
+		return dlrmap.Mapping{}, false, errors.New("redis down")
+	}
+	return r.m, true, nil
+}
+
+// TestRouterFailsOnlyTheReceiptRedisCouldNotResolve: a Redis fault fails its own receipt, which is
+// replayed; the receipts it could resolve are written in the same insert.
+func TestRouterFailsOnlyTheReceiptRedisCouldNotResolve(t *testing.T) {
+	m := sampleMapping()
+	cdr := &fakeCDR{}
+	cons := &fakeConsumer{records: []kafka.Record{
+		dlrRecord(t, m.ConnectorID, "smsc-1", smpp.MessageStateDelivered),
+		dlrRecord(t, m.ConnectorID, "smsc-2", smpp.MessageStateDelivered),
+		dlrRecord(t, m.ConnectorID, "smsc-3", smpp.MessageStateDelivered),
+	}}
+	router := modlrrouter.New(modlrrouter.Deps{
+		Consumer: cons, Resolver: resolverBySMSCID{m: m, fail: map[string]bool{"smsc-2": true}}, CDR: cdr,
+		Tracer: observability.Tracer(nil, "test"),
+	})
+	_ = router.Run(context.Background())
+	if cons.results[0] != nil || cons.results[1] == nil || cons.results[2] != nil {
+		t.Errorf("results = %v, want only the unresolved receipt failed", cons.results)
+	}
+	if cdr.batches != 1 || len(cdr.rows) != 2 {
+		t.Errorf("wrote %d rows in %d inserts, want the 2 resolved receipts in 1", len(cdr.rows), cdr.batches)
+	}
+}
+
+// TestRouterMarksAClickHouseFailureOnASpan: the insert is the batch's own step, so a ClickHouse fault must
+// mark a span — an unmarked failure is dropped by head sampling and invisible to get-message-trace.
+func TestRouterMarksAClickHouseFailureOnASpan(t *testing.T) {
+	m := sampleMapping()
+	rec := otelrec.New(t)
+	router := modlrrouter.New(modlrrouter.Deps{
+		Consumer: &fakeConsumer{records: []kafka.Record{dlrRecord(t, m.ConnectorID, "smsc-1", smpp.MessageStateDelivered)}},
+		Resolver: fakeResolver{m: m, found: true}, CDR: &fakeCDR{err: errors.New("clickhouse down")},
+		Tracer: observability.Tracer(rec.Provider(), "test"),
+	})
+	_ = router.Run(context.Background())
+	for _, span := range rec.Ended() {
+		if span.Status().Code == codes.Error {
+			return
+		}
+	}
+	t.Errorf("no span marks the failed ClickHouse insert; spans: %v", rec.Names())
 }

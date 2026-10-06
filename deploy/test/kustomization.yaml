@@ -13,6 +13,12 @@ resources:
   - deps/smsc-simulator.yaml
   - jobs/test-seed.yaml
   - jobs/smoke.yaml
+configMapGenerator:
+  - name: clickhouse-system-logs
+    files: [deps/clickhouse-system-logs.xml]
+    options:
+      disableNameSuffixHash: true
+      labels: {app.kubernetes.io/part-of: test-deps, gateway.test/phase: deps}
 patches:
   - path: patches/gateway-config.yaml
   - path: patches/smpp-server-svc.yaml

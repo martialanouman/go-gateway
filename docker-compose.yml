@@ -92,6 +92,7 @@ services:
       - "9000:9000" # native protocol
     volumes:
       - clickhouse-data:/var/lib/clickhouse
+      - ./deploy/test/deps/clickhouse-system-logs.xml:/etc/clickhouse-server/config.d/system-logs.xml:ro
     ulimits:
       # ClickHouse opens a lot of files; the Docker default is too low and it fails at startup.
       nofile:
