@@ -1,7 +1,7 @@
 # Défauts SMPP du connecteur non modifiables à l'Admin API
 
 > **Statut :** OUVERTE · **Nature :** produit
-> **Née de :** step-292 (PR1) · **Portée par :** —
+> **Née de :** step-292 (PR1) · **Portée par :** step-294
 
 **Ce qu'on a fait à la place.** `priority_flag_default` est lu par le pool depuis step-292
 (`cmd/connector-pool-svc/wiring.go:574`, `connectorConfigSource.Load`) et envoyé quand la priorité effective

@@ -1,7 +1,7 @@
 # Catégorie du CDR : ni servie, ni sur les rejets
 
 > **Statut :** OUVERTE · **Nature :** produit
-> **Née de :** step-292 (PR1) · **Portée par :** —
+> **Née de :** step-292 (PR1) · **Portée par :** step-293
 
 **Ce qu'on a fait à la place.** `cdr.traffic_category` et `cdr.priority` sont écrits par chaque ligne
 postérieure à l'autorisation du sender ID, et lus par l'agrégat (`internal/storage/clickhouse/cdr.go:134`,
