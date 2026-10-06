@@ -30,14 +30,19 @@ type Consumer interface {
 	Run(ctx context.Context, handle kafka.Handler) error
 }
 
+// BatchConsumer reads dlr.events a poll batch at a time. *kafka.Consumer satisfies it.
+type BatchConsumer interface {
+	RunBatch(ctx context.Context, handle kafka.BatchHandler) error
+}
+
 // Resolver looks a receipt's smsc_msg_id up in the dlrmap. *dlrmap.RedisMap satisfies it.
 type Resolver interface {
 	Get(ctx context.Context, connectorID uuid.UUID, smscMsgID string) (dlrmap.Mapping, bool, error)
 }
 
-// CDRWriter records the delivery outcome. *clickhouse.CDRWriter satisfies it.
+// CDRWriter records the delivery outcomes. *clickhouse.CDRWriter satisfies it.
 type CDRWriter interface {
-	Insert(ctx context.Context, row clickhouse.CDRRow) error
+	InsertBatch(ctx context.Context, rows []clickhouse.CDRRow) error
 }
 
 // UnmappedCounter counts receipts with no mapping. A prometheus.Counter satisfies it; New defaults a
@@ -52,7 +57,7 @@ func (noopCounter) Inc() {}
 
 // Deps are the router's collaborators.
 type Deps struct {
-	Consumer Consumer
+	Consumer BatchConsumer
 	Resolver Resolver
 	CDR      CDRWriter
 	Unmapped UnmappedCounter
@@ -78,63 +83,88 @@ func New(deps Deps) *Service {
 
 // Run consumes dlr.events until ctx is cancelled.
 func (s *Service) Run(ctx context.Context) error {
-	return s.deps.Consumer.Run(ctx, s.handler())
+	return s.deps.Consumer.RunBatch(ctx, s.handleBatch)
 }
 
-func (s *Service) handler() kafka.Handler {
-	return func(ctx context.Context, rec kafka.Record) (err error) {
-		// dlr.correlate, not modlrrouter.dlr: a span is named for the DOMAIN step it represents, not for
-		// the binary that happens to run it, so a reader can follow a message across services without
-		// knowing the deployment (§12).
-		ctx, span := s.deps.Tracer.Start(ctx, "dlr.correlate")
-		defer span.End()
-		// A Redis or ClickHouse fault leaves the record uncommitted; it is the signal an operator hunts
-		// for, and it was producing a perfectly green span.
-		defer func() { observability.RecordSpanError(span, err) }()
-
-		dlr, err := pipeline.DecodeDLR(rec)
-		if err != nil {
-			// A record we cannot decode is permanently bad: returning an error would redeliver it
-			// forever and wedge the partition. Log and commit — it is not thrown away silently.
-			observability.RecordSpanError(span, err)
-			s.deps.Logger.ErrorContext(ctx, "modlrrouter: undecodable dlr.events record, skipping", "err", err)
-			return nil
+// handleBatch correlates a poll batch and writes its CDR rows in ONE insert (step-287b): an insert per
+// receipt made a ClickHouse part per receipt, and the merges never caught up. The write is the batch's
+// single point of failure, so it fails every record that contributed a row — none is committed, all are
+// replayed, and the rows are idempotent (same key, same rank). A record that wrote nothing keeps its own
+// outcome.
+func (s *Service) handleBatch(ctx context.Context, recs []kafka.Record) []error {
+	results := make([]error, len(recs))
+	rows := make([]clickhouse.CDRRow, 0, len(recs))
+	contributed := make([]int, 0, len(recs))
+	for i, rec := range recs {
+		row, ok, err := s.correlate(ctx, rec)
+		results[i] = err
+		if ok {
+			rows = append(rows, row)
+			contributed = append(contributed, i)
 		}
-
-		status, ok := terminalStatus(dlr.State)
-		if !ok {
-			// A non-terminal receipt (enroute/accepted/unknown) has no final outcome to record yet.
-			return nil
-		}
-
-		m, found, err := s.deps.Resolver.Get(ctx, dlr.ConnectorID, dlr.SMSCMessageID)
-		if err != nil {
-			// A Redis infrastructure error is transient: do not commit, so the receipt is reprocessed
-			// once Redis recovers (the mapping outlives it, TTL 72h). Redis is deliberately kept out of
-			// readiness — a blip self-heals here rather than flapping the pod.
-			return fmt.Errorf("modlrrouter: resolve %s/%s: %w", dlr.ConnectorID, dlr.SMSCMessageID, err)
-		}
-		if !found {
-			// No mapping: an expired or unknown smsc_msg_id. Count and log — never dropped silently —
-			// then commit (there is nothing to correlate; redelivery would not help).
-			//
-			// An ATTRIBUTE, not an error status: a Redis failover or a mass TTL expiry makes every receipt
-			// miss at once, and an error status would export all of them outside the ratio — flooding the
-			// trace pipeline exactly when the system is already degraded. The Unmapped counter carries the
-			// alert; the attribute lets a sampled trace explain itself.
-			span.SetAttributes(attribute.String("dlr.mapping", "miss"))
-			s.deps.Unmapped.Inc()
-			s.deps.Logger.WarnContext(ctx, "modlrrouter: dlr without mapping, counted",
-				"connector_id", dlr.ConnectorID, "smsc_message_id", dlr.SMSCMessageID, "state", dlr.State)
-			return nil
-		}
-
-		row := buildCDRRow(dlr, m, status)
-		if err := s.deps.CDR.Insert(ctx, row); err != nil {
-			return fmt.Errorf("modlrrouter: write delivered cdr for %s: %w", m.MessageID, err)
-		}
-		return nil
 	}
+	if len(rows) == 0 {
+		return results
+	}
+	if err := s.deps.CDR.InsertBatch(ctx, rows); err != nil {
+		err = fmt.Errorf("modlrrouter: write %d dlr cdr rows: %w", len(rows), err)
+		for _, i := range contributed {
+			results[i] = err
+		}
+	}
+	return results
+}
+
+// correlate turns one receipt into its CDR row. ok is false when there is nothing to write; err is
+// non-nil only for a transient fault the record must be replayed for.
+func (s *Service) correlate(ctx context.Context, rec kafka.Record) (row clickhouse.CDRRow, ok bool, err error) {
+	// dlr.correlate, not modlrrouter.dlr: a span is named for the DOMAIN step it represents, not for
+	// the binary that happens to run it, so a reader can follow a message across services without
+	// knowing the deployment (§12).
+	ctx, span := s.deps.Tracer.Start(ctx, "dlr.correlate")
+	defer span.End()
+	// A Redis or ClickHouse fault leaves the record uncommitted; it is the signal an operator hunts
+	// for, and it was producing a perfectly green span.
+	defer func() { observability.RecordSpanError(span, err) }()
+
+	dlr, err := pipeline.DecodeDLR(rec)
+	if err != nil {
+		// A record we cannot decode is permanently bad: returning an error would redeliver it
+		// forever and wedge the partition. Log and commit — it is not thrown away silently.
+		observability.RecordSpanError(span, err)
+		s.deps.Logger.ErrorContext(ctx, "modlrrouter: undecodable dlr.events record, skipping", "err", err)
+		return clickhouse.CDRRow{}, false, nil
+	}
+
+	status, ok := terminalStatus(dlr.State)
+	if !ok {
+		// A non-terminal receipt (enroute/accepted/unknown) has no final outcome to record yet.
+		return clickhouse.CDRRow{}, false, nil
+	}
+
+	m, found, err := s.deps.Resolver.Get(ctx, dlr.ConnectorID, dlr.SMSCMessageID)
+	if err != nil {
+		// A Redis infrastructure error is transient: do not commit, so the receipt is reprocessed
+		// once Redis recovers (the mapping outlives it, TTL 72h). Redis is deliberately kept out of
+		// readiness — a blip self-heals here rather than flapping the pod.
+		return clickhouse.CDRRow{}, false, fmt.Errorf("modlrrouter: resolve %s/%s: %w", dlr.ConnectorID, dlr.SMSCMessageID, err)
+	}
+	if !found {
+		// No mapping: an expired or unknown smsc_msg_id. Count and log — never dropped silently —
+		// then commit (there is nothing to correlate; redelivery would not help).
+		//
+		// An ATTRIBUTE, not an error status: a Redis failover or a mass TTL expiry makes every receipt
+		// miss at once, and an error status would export all of them outside the ratio — flooding the
+		// trace pipeline exactly when the system is already degraded. The Unmapped counter carries the
+		// alert; the attribute lets a sampled trace explain itself.
+		span.SetAttributes(attribute.String("dlr.mapping", "miss"))
+		s.deps.Unmapped.Inc()
+		s.deps.Logger.WarnContext(ctx, "modlrrouter: dlr without mapping, counted",
+			"connector_id", dlr.ConnectorID, "smsc_message_id", dlr.SMSCMessageID, "state", dlr.State)
+		return clickhouse.CDRRow{}, false, nil
+	}
+
+	return buildCDRRow(dlr, m, status), true, nil
 }
 
 // terminalStatus maps an SMPP message_state to the terminal CDR status it records. ok is false for a
