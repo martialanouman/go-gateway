@@ -1,7 +1,7 @@
 # Pas de file prioritaire sur un connecteur partagé
 
 > **Statut :** OUVERTE · **Nature :** technique
-> **Née de :** `docs/adr/0020-categorie-de-trafic-declaree-et-priorite-sortante.md` (option D) · **Portée par :** ADR-0021, step-292
+> **Née de :** `docs/adr/0020-categorie-de-trafic-declaree-et-priorite-sortante.md` (option D) · **Portée par :** ADR-0021, step-292b
 
 **Ce qu'on a fait à la place.** La priorité d'un OTP s'obtient en lui **réservant** des connecteurs
 (`priority_tier`). Sur un connecteur qui accepte tout (`priority_tier = 0`), OTP et marketing partagent la
