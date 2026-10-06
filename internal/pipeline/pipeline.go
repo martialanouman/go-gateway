@@ -51,11 +51,11 @@ type Resolver interface {
 }
 
 // SenderIDAuthorizer authorizes a message's source address against its customer's active registered
-// sender IDs (spec §6.19, ADR-0020). It is implemented over an immutable snapshot
-// (internal/pipeline/senderid); the interface lives here, consumer-side. A rejection returns
-// errs.ErrSenderIDNotAuthorized.
+// sender IDs (spec §6.19, ADR-0020) and returns the traffic category declared for it. It is implemented
+// over an immutable snapshot (internal/pipeline/senderid); the interface lives here, consumer-side. A
+// rejection returns errs.ErrSenderIDNotAuthorized.
 type SenderIDAuthorizer interface {
-	Authorize(ctx context.Context, customerID uuid.UUID, from string) error
+	Authorize(ctx context.Context, customerID uuid.UUID, from string) (cp.TrafficCategory, error)
 }
 
 // OptOutChecker reports whether an MT's destination is suppressed (opted out) in any scope applicable
@@ -69,13 +69,14 @@ type OptOutChecker interface {
 
 // AntispamEvaluator evaluates a message against the active anti-spam rules and returns the action to
 // take — block, flag, throttle, or empty (no match) — per spec §6.20. It is implemented over an
-// immutable rule snapshot with Redis-backed velocity/duplicate/reputation checks
+// immutable rule snapshot with Redis-backed velocity/duplicate/reputation checks, and checks the traffic
+// against the sender's declared category (category_mismatch)
 // (internal/pipeline/antispam); the interface lives here, consumer-side. body is the revealed message
 // body, read in memory only (invariant a). The Redis-backed checks FAIL OPEN (§1.5): a store fault
 // flags the message rather than blocking it, so the error return is currently always nil (retained
 // for interface stability).
 type AntispamEvaluator interface {
-	Evaluate(ctx context.Context, messageID, accountID, customerID uuid.UUID, from, dest string, body []byte) (cp.AntispamAction, error)
+	Evaluate(ctx context.Context, messageID, accountID, customerID uuid.UUID, from string, category cp.TrafficCategory, dest string, body []byte) (cp.AntispamAction, error)
 }
 
 // CreditReserver reserves MT credit for a message before the SMSC send (§6.9, step-145). reserved reports
@@ -164,8 +165,11 @@ func (p *Pipeline) Process(ctx context.Context, in InboundMT) (RoutedMT, []pipee
 
 	// 2. Sender-ID authorization (§6.19). A frozen compliance stage: never short-circuited by an exact
 	// route (invariant b). The span carries only the rejection code, never the body (invariant a).
+	var category cp.TrafficCategory
 	if err := p.stage(ctx, "pipeline.sender_id", func(ctx context.Context) error {
-		return p.deps.SenderIDs.Authorize(ctx, in.CustomerID, in.From)
+		var err error
+		category, err = p.deps.SenderIDs.Authorize(ctx, in.CustomerID, in.From)
+		return err
 	}); err != nil {
 		return RoutedMT{}, nil, err
 	}
@@ -190,7 +194,7 @@ func (p *Pipeline) Process(ctx context.Context, in InboundMT) (RoutedMT, []pipee
 	// (invariant b). Content is read in memory only — the span carries the action, never the body
 	// (invariant a). block rejects; flag/throttle annotate the span without stopping the message.
 	if err := p.stage(ctx, "pipeline.anti_spam", func(ctx context.Context) error {
-		action, err := p.deps.Antispam.Evaluate(ctx, in.MessageID, in.AccountID, in.CustomerID, in.From, out.To, in.Body.Reveal())
+		action, err := p.deps.Antispam.Evaluate(ctx, in.MessageID, in.AccountID, in.CustomerID, in.From, category, out.To, in.Body.Reveal())
 		if err != nil {
 			return err
 		}

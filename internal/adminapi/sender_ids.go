@@ -3,6 +3,7 @@ package adminapi
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -22,6 +23,7 @@ type senderIDDTO struct {
 	Address         string                `json:"address"`
 	Status          string                `json:"status" enum:"pending_carrier_approval,active,disabled"`
 	TrafficCategory string                `json:"traffic_category" enum:"otp,transactional,marketing"`
+	Mismatches      *int                  `json:"recent_category_mismatches_24h" minimum:"0" doc:"Messages from this sender ID that a category_mismatch rule matched (flagged or blocked) in the current hour and the 23 before it, each message counted once. Null when the counter store cannot be read: unknown, not zero."`
 	RateLimit       *senderIDRateLimitDTO `json:"rate_limit" doc:"The sender ID's own limit; null when it has none and only its account's limit applies."`
 	CreatedBy       *string               `json:"created_by,omitempty" format:"uuid" nullable:"true"`
 	ApprovedAt      *time.Time            `json:"approved_at,omitempty" format:"date-time" nullable:"true"`
@@ -30,13 +32,14 @@ type senderIDDTO struct {
 	UpdatedAt       time.Time             `json:"updated_at" format:"date-time"`
 }
 
-func toSenderIDDTO(s cp.SenderID) senderIDDTO {
+func toSenderIDDTO(s cp.SenderID, mismatches *int) senderIDDTO {
 	return senderIDDTO{
 		ID:              idString(s.ID),
 		CustomerID:      idString(s.CustomerID),
 		Address:         s.Address,
 		Status:          string(s.Status),
 		TrafficCategory: string(s.TrafficCategory),
+		Mismatches:      mismatches,
 		RateLimit:       toSenderIDRateLimitDTO(s.RateLimit),
 		CreatedBy:       idPtr(s.CreatedBy),
 		ApprovedAt:      s.ApprovedAt,
@@ -75,12 +78,14 @@ type senderIDUpdateBody struct {
 }
 
 type senderIDHandlers struct {
-	senders   SenderIDStore
-	customers CustomerStore
+	senders    SenderIDStore
+	customers  CustomerStore
+	mismatches CategoryMismatchCounter
+	logger     *slog.Logger
 }
 
-func registerSenderIDs(api huma.API, senders SenderIDStore, customers CustomerStore) {
-	h := &senderIDHandlers{senders: senders, customers: customers}
+func registerSenderIDs(api huma.API, senders SenderIDStore, customers CustomerStore, mismatches CategoryMismatchCounter, logger *slog.Logger) {
+	h := &senderIDHandlers{senders: senders, customers: customers, mismatches: mismatches, logger: logger}
 
 	register(api, huma.Operation{
 		OperationID: "list-sender-ids", Method: http.MethodGet, Path: "/admin/customers/{id}/sender-ids",
@@ -158,11 +163,7 @@ func (h *senderIDHandlers) list(ctx context.Context, in *listSenderIDsInput) (*l
 	if err != nil {
 		return nil, humaerr.FromError(err)
 	}
-	out := &listSenderIDsOutput{Body: make([]senderIDDTO, 0, len(senders))}
-	for _, s := range senders {
-		out.Body = append(out.Body, toSenderIDDTO(s))
-	}
-	return out, nil
+	return &listSenderIDsOutput{Body: h.dtos(ctx, senders)}, nil
 }
 
 type createSenderIDInput struct {
@@ -187,7 +188,7 @@ func (h *senderIDHandlers) create(ctx context.Context, in *createSenderIDInput) 
 	if err != nil {
 		return nil, humaerr.FromError(err)
 	}
-	return &senderIDOutput{Body: toSenderIDDTO(s)}, nil
+	return &senderIDOutput{Body: h.dtos(ctx, []cp.SenderID{s})[0]}, nil
 }
 
 type senderIDScopedInput struct {
@@ -208,7 +209,7 @@ func (h *senderIDHandlers) update(ctx context.Context, in *senderIDScopedInput) 
 	if err != nil {
 		return nil, humaerr.FromError(err)
 	}
-	return &senderIDOutput{Body: toSenderIDDTO(s)}, nil
+	return &senderIDOutput{Body: h.dtos(ctx, []cp.SenderID{s})[0]}, nil
 }
 
 type deleteSenderIDInput struct {
@@ -249,7 +250,7 @@ func (h *senderIDHandlers) setRateLimit(ctx context.Context, in *setSenderIDRate
 	if err != nil {
 		return nil, humaerr.FromError(err)
 	}
-	return &senderIDOutput{Body: toSenderIDDTO(s)}, nil
+	return &senderIDOutput{Body: h.dtos(ctx, []cp.SenderID{s})[0]}, nil
 }
 
 func (h *senderIDHandlers) deleteRateLimit(ctx context.Context, in *deleteSenderIDInput) (*deleteOutput, error) {
@@ -261,6 +262,32 @@ func (h *senderIDHandlers) deleteRateLimit(ctx context.Context, in *deleteSender
 		return nil, humaerr.FromError(err)
 	}
 	return &deleteOutput{}, nil
+}
+
+// dtos reads every sender's recent category_mismatch count in one call. A failed read serves the counts
+// null rather than failing the response the operator came for.
+func (h *senderIDHandlers) dtos(ctx context.Context, senders []cp.SenderID) []senderIDDTO {
+	var counts []int
+	if h.mismatches != nil {
+		keys := make([]cp.SenderAddress, len(senders))
+		for i, s := range senders {
+			keys[i] = cp.SenderAddress{CustomerID: s.CustomerID, Address: s.Address}
+		}
+		var err error
+		if counts, err = h.mismatches.RecentCategoryMismatches(ctx, keys); err != nil || len(counts) != len(senders) {
+			h.logger.WarnContext(ctx, "read category mismatch counts", "err", err)
+			counts = nil
+		}
+	}
+	out := make([]senderIDDTO, len(senders))
+	for i, s := range senders {
+		var n *int
+		if counts != nil {
+			n = &counts[i]
+		}
+		out[i] = toSenderIDDTO(s, n)
+	}
+	return out
 }
 
 func parseCustomerAndSender(customerIDStr, senderIDStr string) (uuid.UUID, uuid.UUID, error) {

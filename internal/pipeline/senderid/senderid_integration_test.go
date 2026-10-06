@@ -45,13 +45,13 @@ func TestSnapshotAgainstPostgres(t *testing.T) {
 		t.Fatalf("LoadSnapshot: %v", err)
 	}
 
-	if err := a.Authorize(ctx, customer.ID, "BANK"); err != nil {
+	if _, err := a.Authorize(ctx, customer.ID, "BANK"); err != nil {
 		t.Errorf("active registered sender = %v, want authorized", err)
 	}
-	if err := a.Authorize(ctx, customer.ID, "PENDING"); !errors.Is(err, errs.ErrSenderIDNotAuthorized) {
+	if _, err := a.Authorize(ctx, customer.ID, "PENDING"); !errors.Is(err, errs.ErrSenderIDNotAuthorized) {
 		t.Errorf("pending sender = %v, want rejected (not active)", err)
 	}
-	if err := a.Authorize(ctx, customer.ID, "36000"); !errors.Is(err, errs.ErrSenderIDNotAuthorized) {
+	if _, err := a.Authorize(ctx, customer.ID, "36000"); !errors.Is(err, errs.ErrSenderIDNotAuthorized) {
 		t.Errorf("unregistered numeric = %v, want rejected", err)
 	}
 }

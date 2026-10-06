@@ -2200,8 +2200,9 @@ components:
           type: [integer, "null"]
           minimum: 0
           description: >-
-            Messages from this sender ID that a category_mismatch rule matched (flagged or blocked) over the
-            last 24 hours, counted per hour. Null when the counter store cannot be read: unknown, not zero.
+            Messages from this sender ID that a category_mismatch rule matched (flagged or blocked) in the
+            current hour and the 23 before it, each message counted once. Null when the counter store cannot
+            be read: unknown, not zero.
         rate_limit:
           type: [object, "null"]
           description: The sender ID's own limit; null when it has none and only its account's limit applies.
@@ -2725,10 +2726,12 @@ components:
           type: object
           additionalProperties: true
           description: >-
-            Per rule type. category_mismatch (ADR-0020 §5), every field optional: otp_code_min_digits (4) and
-            otp_code_max_digits (8) bound the code an otp sender's message must carry, otp_max_length (160
-            characters) bounds its body, which must hold no URL; promo_markers ([]) are the case-insensitive
-            words a transactional sender's message must not contain. A marketing sender is never checked.
+            Per rule type. category_mismatch (ADR-0020 §5), every field optional and no other accepted:
+            otp_code_min_digits (4) and otp_code_max_digits (8, at most 32) bound the code an otp sender's
+            message must carry, a single space or dash between its digits allowed; otp_max_length (160
+            characters) bounds its body, which must hold no link, with or without a scheme; promo_markers
+            ([]) are the case-insensitive words a transactional sender's message must not contain. A
+            marketing sender is never checked.
         action: { type: string, enum: [block, flag, throttle], default: flag }
       required: [rule_type, scope]
     AntispamRuleUpdate:

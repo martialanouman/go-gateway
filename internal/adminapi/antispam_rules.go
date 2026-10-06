@@ -20,7 +20,7 @@ import (
 // free-form, rule-type-specific object.
 type antispamRuleDTO struct {
 	ID         string         `json:"id" format:"uuid"`
-	RuleType   string         `json:"rule_type" enum:"velocity,content_blacklist,duplicate,reputation"`
+	RuleType   string         `json:"rule_type" enum:"velocity,content_blacklist,duplicate,reputation,category_mismatch"`
 	Scope      string         `json:"scope" enum:"global,customer,smpp_account"`
 	ScopeID    *string        `json:"scope_id,omitempty" format:"uuid" nullable:"true"`
 	ConfigJSON map[string]any `json:"config_json,omitempty"`
@@ -58,11 +58,11 @@ func rawToMap(raw json.RawMessage) map[string]any {
 }
 
 type antispamRuleCreateBody struct {
-	RuleType   string         `json:"rule_type" enum:"velocity,content_blacklist,duplicate,reputation"`
+	RuleType   string         `json:"rule_type" enum:"velocity,content_blacklist,duplicate,reputation,category_mismatch"`
 	Scope      string         `json:"scope" enum:"global,customer,smpp_account"`
 	ScopeID    *string        `json:"scope_id,omitempty" format:"uuid" nullable:"true"`
 	ConfigJSON map[string]any `json:"config_json,omitempty"`
-	Action     string         `json:"action" enum:"block,flag,throttle"`
+	Action     string         `json:"action,omitempty" enum:"block,flag,throttle" default:"flag"`
 }
 
 type antispamRuleUpdateBody struct {

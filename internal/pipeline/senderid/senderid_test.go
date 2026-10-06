@@ -54,7 +54,7 @@ func TestEverySenderMustBeRegistered(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := a.Authorize(context.Background(), cust, tc.from)
+			_, err := a.Authorize(context.Background(), cust, tc.from)
 			if tc.wantErr {
 				if !errors.Is(err, errs.ErrSenderIDNotAuthorized) {
 					t.Fatalf("Authorize(%q) = %v, want ErrSenderIDNotAuthorized", tc.from, err)
@@ -73,7 +73,22 @@ func TestEverySenderMustBeRegistered(t *testing.T) {
 func TestSnapshotExcludesNonActiveSenderIDs(t *testing.T) {
 	cust := uuid.New()
 	a := buildAuthorizer(t, []cp.SenderID{{CustomerID: cust, Address: "PENDING", Status: cp.SenderIDDisabled}})
-	if err := a.Authorize(context.Background(), cust, "PENDING"); !errors.Is(err, errs.ErrSenderIDNotAuthorized) {
+	if _, err := a.Authorize(context.Background(), cust, "PENDING"); !errors.Is(err, errs.ErrSenderIDNotAuthorized) {
 		t.Fatalf("non-active sender id authorized %v, want rejection", err)
+	}
+}
+
+// TestAuthorizeReturnsTheDeclaredCategory: the category is read where the sender is authorized, so the
+// anti-spam stage that follows judges the traffic against it (ADR-0020 §5).
+func TestAuthorizeReturnsTheDeclaredCategory(t *testing.T) {
+	cust := uuid.New()
+	a := buildAuthorizer(t, []cp.SenderID{
+		{CustomerID: cust, Address: "BANK", Status: cp.SenderIDActive, TrafficCategory: cp.TrafficOTP},
+		{CustomerID: cust, Address: "SHOP", Status: cp.SenderIDActive, TrafficCategory: cp.TrafficTransactional},
+	})
+	for from, want := range map[string]cp.TrafficCategory{"BANK": cp.TrafficOTP, "SHOP": cp.TrafficTransactional} {
+		if got, err := a.Authorize(context.Background(), cust, from); err != nil || got != want {
+			t.Errorf("Authorize(%s) = (%q, %v), want (%q, nil)", from, got, err, want)
+		}
 	}
 }

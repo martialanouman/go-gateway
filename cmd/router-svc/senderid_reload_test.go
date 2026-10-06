@@ -50,7 +50,7 @@ func TestADisabledSenderIDReachesTheRunningRouter(t *testing.T) {
 		app.close()
 	})
 
-	authorize := func() error { return app.senderIDs.Authorize(ctx, customer.ID, "PROMO") }
+	authorize := func() error { _, err := app.senderIDs.Authorize(ctx, customer.ID, "PROMO"); return err }
 	if err := authorize(); err != nil {
 		t.Fatalf("an active registered sender = %v, want accepted — the control failed", err)
 	}

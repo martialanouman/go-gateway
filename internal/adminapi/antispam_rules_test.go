@@ -193,3 +193,26 @@ func TestDeleteAntispamRuleUnknownIs404(t *testing.T) {
 		t.Fatalf("status = %d, want 404; body=%s", w.Code, w.Body)
 	}
 }
+
+// TestCreateCategoryMismatchRuleFlagsByDefault: a category_mismatch rule declared without an action flags
+// (ADR-0020 §5), and an invalid config is refused at write time like every other type.
+func TestCreateCategoryMismatchRuleFlagsByDefault(t *testing.T) {
+	api := newTestAPIWith(t, adminapi.Deps{AntispamRules: newFakeAntispamStore()})
+	w := httptest.NewRecorder()
+	api.ServeHTTP(w, authed(t, http.MethodPost, "/v1/admin/antispam-rules", `{"rule_type":"category_mismatch","scope":"global"}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body=%s", w.Code, w.Body)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &got)
+	if got["action"] != "flag" || got["rule_type"] != "category_mismatch" {
+		t.Fatalf("rule = %v, want a category_mismatch rule that flags", got)
+	}
+
+	w = httptest.NewRecorder()
+	api.ServeHTTP(w, authed(t, http.MethodPost, "/v1/admin/antispam-rules",
+		`{"rule_type":"category_mismatch","scope":"global","config_json":{"otp_code_min_digits":0}}`))
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("invalid config: status = %d, want 422; body=%s", w.Code, w.Body)
+	}
+}

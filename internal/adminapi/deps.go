@@ -119,6 +119,12 @@ type RouteStore interface {
 	Reorder(ctx context.Context, ids []uuid.UUID) ([]cp.Route, error)
 }
 
+// CategoryMismatchCounter reads how many category_mismatch matches each sender had over the last 24 hours,
+// in the order asked for. *antispam.RedisState satisfies it.
+type CategoryMismatchCounter interface {
+	RecentCategoryMismatches(ctx context.Context, senders []cp.SenderAddress) ([]int, error)
+}
+
 // SenderIDStore is the persistence the sender-ID handlers need. Sender IDs are nested under a
 // customer, so update and delete are scoped by the customer id.
 type SenderIDStore interface {
@@ -231,10 +237,12 @@ type Deps struct {
 	Connectors            ConnectorStore
 	// SecretSealer is required by the three handlers that write a replayed secret (connectors, billing
 	// providers, webhooks): without it they refuse rather than store something unusable.
-	SecretSealer       SecretSealer
-	ConnectorControl   ConnectorControl
-	Routes             RouteStore
-	SenderIDs          SenderIDStore
+	SecretSealer     SecretSealer
+	ConnectorControl ConnectorControl
+	Routes           RouteStore
+	SenderIDs        SenderIDStore
+	// CategoryMismatches feeds SenderId.recent_category_mismatches_24h; nil serves it null.
+	CategoryMismatches CategoryMismatchCounter
 	InboundNumbers     InboundNumberStore
 	InboundKeywords    InboundKeywordStore
 	UnroutedMO         UnroutedMOStore

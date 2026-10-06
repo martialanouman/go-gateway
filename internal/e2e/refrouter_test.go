@@ -541,7 +541,9 @@ func (r ceilResolver) Resolve(context.Context, pipeline.RouteRequest) (pipeline.
 
 type ceilSenderIDs struct{}
 
-func (ceilSenderIDs) Authorize(context.Context, uuid.UUID, string) error { return nil }
+func (ceilSenderIDs) Authorize(context.Context, uuid.UUID, string) (cp.TrafficCategory, error) {
+	return cp.TrafficMarketing, nil
+}
 
 type ceilOptOut struct{}
 
@@ -551,7 +553,7 @@ func (ceilOptOut) IsOptedOut(context.Context, uuid.UUID, uuid.UUID, string, stri
 
 type ceilAntispam struct{}
 
-func (ceilAntispam) Evaluate(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, string, string, []byte) (cp.AntispamAction, error) {
+func (ceilAntispam) Evaluate(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, string, cp.TrafficCategory, string, []byte) (cp.AntispamAction, error) {
 	return "", nil
 }
 

@@ -19,6 +19,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/connector/status"
 	"github.com/martialanouman/go-gateway/internal/content"
 	contentkeypb "github.com/martialanouman/go-gateway/internal/contentkeys/pb"
+	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	"github.com/martialanouman/go-gateway/internal/grpctls"
 	"github.com/martialanouman/go-gateway/internal/ingest"
 	"github.com/martialanouman/go-gateway/internal/metricstream"
@@ -64,6 +65,8 @@ type routerApp struct {
 	routes *routing.SnapshotResolver
 	// senderIDs is the authorizer the pipeline checks every message against, kept for the same reason.
 	senderIDs pipeline.SenderIDAuthorizer
+	// antispam is the engine the pipeline checks every message against, kept for the same reason.
+	antispam pipeline.AntispamEvaluator
 	// optOut is the enforcer the pipeline checks every message against, kept for the same reason.
 	optOut *optout.Enforcer
 	// optOutWatcher reloads the opt-out filter alone on a STOP announcement (step-398) and on its resync.
@@ -153,6 +156,7 @@ func newRouterApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 		return nil, err
 	}
 	a.onClose("pipeline", stack.close)
+	a.antispam = stack.antispam
 
 	proj, err := newAcceptedProjector(ctx, cfg, st.pg, st.ch, logger, dial)
 	if err != nil {
@@ -320,8 +324,12 @@ type pipelineStack struct {
 	creditHolder   *credit.Holder
 	breakerAvail   breakerAvailability
 
-	failOpenTotal prometheus.Counter
-	billingConn   *grpc.ClientConn
+	failOpenTotal  prometheus.Counter
+	mismatchTotal  *prometheus.CounterVec
+	antispam       *antispam.Holder
+	antispamState  antispam.StateStore
+	antispamMetric antispam.Metric
+	billingConn    *grpc.ClientConn
 }
 
 // close releases the billing connection; every other field is in-memory state.
@@ -372,11 +380,21 @@ func newPipelineStack(
 		Name: "anti_spam_fail_open_total",
 		Help: "Messages passed (flagged) because a Redis-backed anti-spam check failed open.",
 	})
-	// The anti-spam engine (§6.20): content rules compiled once at boot, duplicates checked in Redis.
-	spam, err := loadAntispamWithRetry(ctx, postgres.NewAntispamRuleRepo(pool), antispam.NewRedisState(rdb), failOpenMetric{c: p.failOpenTotal}, logger)
+	// anti_spam_category_mismatch_total: one bounded label, the action the rule took (ADR-0020 §5). It is what
+	// Alertmanager watches, since the per-sender counter cannot carry a sender label.
+	p.mismatchTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "anti_spam_category_mismatch_total",
+		Help: "Messages a category_mismatch rule matched, by the action it took.",
+	}, []string{"action"})
+	// The anti-spam engine (§6.20): recompiled on each config invalidation (newSnapshotWatcher).
+	p.antispamState = antispam.NewRedisState(rdb)
+	p.antispamMetric = antispamMetric{failOpen: p.failOpenTotal, mismatch: p.mismatchTotal}
+	spam, err := loadAntispamWithRetry(ctx, postgres.NewAntispamRuleRepo(pool), p.antispamState, p.antispamMetric, logger)
 	if err != nil {
 		return nil, fmt.Errorf("load anti-spam engine: %w", err)
 	}
+	p.antispam = &antispam.Holder{}
+	p.antispam.Store(spam)
 
 	// The L0 exact-number short-cut (§6.1): an in-memory Bloom over every exact_routes MSISDN, loaded
 	// at boot and hot-swapped by Reload on each invalidation, in front of the exactroute:{msisdn}
@@ -440,7 +458,7 @@ func newPipelineStack(
 		Resolver:  resolver,
 		SenderIDs: boot.senderIDs,
 		OptOut:    boot.optOut,
-		Antispam:  spam,
+		Antispam:  p.antispam,
 		Credit:    reserver,
 	})
 	return p, nil
@@ -682,7 +700,7 @@ func newOpsServer(
 	if err != nil {
 		return nil, bloomGauges{}, fmt.Errorf("init ops server: %w", err)
 	}
-	ops.Registry().MustRegister(stack.failOpenTotal, proj.dropped, outc.projected)
+	ops.Registry().MustRegister(stack.failOpenTotal, stack.mismatchTotal, proj.dropped, outc.projected)
 	// Only the catalogue metrics this service actually feeds. Registering Collectors() wholesale would both
 	// panic on the duplicate and expose always-zero series, which read as "measured, and nothing happened"
 	// rather than "not measured here".
@@ -793,6 +811,13 @@ func newSnapshotWatcher(
 				return err
 			}
 			proj.policy.Store(csnap)
+
+			// Last, so a rule table that cannot be read does not hold back the content policy above.
+			spam, err := antispam.New(ctx, postgres.NewAntispamRuleRepo(pool), stack.antispamState, stack.antispamMetric, logger)
+			if err != nil {
+				return err
+			}
+			stack.antispam.Store(spam)
 			return nil
 		}),
 		config.WithResync(resync),
@@ -897,10 +922,17 @@ func loadWithRetry[T any](ctx context.Context, logger *slog.Logger, what string,
 	}
 }
 
-// failOpenMetric adapts a Prometheus counter to antispam.Metric.
-type failOpenMetric struct{ c prometheus.Counter }
+// antispamMetric adapts the anti-spam counters to antispam.Metric.
+type antispamMetric struct {
+	failOpen prometheus.Counter
+	mismatch *prometheus.CounterVec
+}
 
-func (m failOpenMetric) FailOpen() { m.c.Inc() }
+func (m antispamMetric) FailOpen() { m.failOpen.Inc() }
+
+func (m antispamMetric) CategoryMismatch(action cp.AntispamAction) {
+	m.mismatch.WithLabelValues(string(action)).Inc()
+}
 
 // lookupMeter adapts the L0 lookup counter to exact.LookupMeter (one bounded label: outcome).
 type lookupMeter struct{ c *prometheus.CounterVec }

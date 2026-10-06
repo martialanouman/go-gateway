@@ -93,7 +93,9 @@ func inbound(to string) pipeline.InboundMT {
 // outcomes without a sender-ID policy in the way (that stage is covered in the pipeline tests).
 type allowAllSenderIDs struct{}
 
-func (allowAllSenderIDs) Authorize(context.Context, uuid.UUID, string) error { return nil }
+func (allowAllSenderIDs) Authorize(context.Context, uuid.UUID, string) (cp.TrafficCategory, error) {
+	return cp.TrafficMarketing, nil
+}
 
 // allowAllOptOut passes every message; opt-out enforcement is covered in the pipeline/optout tests.
 type allowAllOptOut struct{}
@@ -105,7 +107,7 @@ func (allowAllOptOut) IsOptedOut(context.Context, uuid.UUID, uuid.UUID, string, 
 // allowAllAntispam passes every message; anti-spam is covered in the pipeline/antispam tests.
 type allowAllAntispam struct{}
 
-func (allowAllAntispam) Evaluate(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, string, string, []byte) (cp.AntispamAction, error) {
+func (allowAllAntispam) Evaluate(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, string, cp.TrafficCategory, string, []byte) (cp.AntispamAction, error) {
 	return "", nil
 }
 

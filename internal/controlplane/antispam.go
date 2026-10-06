@@ -7,8 +7,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// AntispamRuleType is the family of an anti-spam rule (control_plane.antispam_rules.rule_type). M5
-// implements content_blacklist and duplicate; velocity and reputation land in step-066.
+// AntispamRuleType is the family of an anti-spam rule (control_plane.antispam_rules.rule_type).
 type AntispamRuleType string
 
 // The anti-spam rule types.
@@ -17,17 +16,8 @@ const (
 	AntispamDuplicate        AntispamRuleType = "duplicate"
 	AntispamVelocity         AntispamRuleType = "velocity"
 	AntispamReputation       AntispamRuleType = "reputation"
+	AntispamCategoryMismatch AntispamRuleType = "category_mismatch"
 )
-
-// Valid reports whether t is a published rule type.
-func (t AntispamRuleType) Valid() bool {
-	switch t {
-	case AntispamContentBlacklist, AntispamDuplicate, AntispamVelocity, AntispamReputation:
-		return true
-	default:
-		return false
-	}
-}
 
 // AntispamScope is a rule's scope (control_plane.antispam_rules.scope), resolved most-specific first:
 // smpp_account, then customer, then global.
