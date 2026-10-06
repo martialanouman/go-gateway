@@ -41,22 +41,23 @@ func (r *L0Resolver) Resolve(ctx context.Context, req pipeline.RouteRequest) (pi
 		return pipeline.Route{}, err
 	}
 	if ok {
-		if route, matched := r.declarative.routeForTarget(ctx, target, req.Dest); matched {
+		if route, matched := r.declarative.routeForTarget(ctx, target, req.Dest, req.Rank); matched {
 			return route, nil
 		}
 		// Override points at a route no longer in the snapshot: fall through (spec §6.1).
+		// A connector reserved above the message's rank falls through the same way (ADR-0020 §4).
 	}
 
 	// L1 — routing script (scope-resolved). A picked route id is resolved to its connector via the
 	// snapshot; a script route id absent from the snapshot falls through to declarative.
 	if r.script != nil {
 		if routeID, picked := r.script.resolve(ctx, req); picked {
-			if route, matched := r.declarative.routeByID(ctx, routeID, req.Dest); matched {
+			if route, matched := r.declarative.routeByID(ctx, routeID, req.Dest, req.Rank); matched {
 				return route, nil
 			}
 		}
 	}
 
 	// L2 — declarative.
-	return r.declarative.Resolve(ctx, req.Dest)
+	return r.declarative.Resolve(ctx, req.Dest, req.Rank)
 }

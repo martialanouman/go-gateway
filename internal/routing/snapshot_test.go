@@ -36,13 +36,13 @@ func TestSnapshotLongestPrefixWins(t *testing.T) {
 			MatchDestPattern: ptr("2250"), TargetConnectorID: &nonStaticConn}, // non-static: ignored in M2
 	}}
 
-	resolver, err := routing.LoadSnapshot(context.Background(), lister)
+	resolver, err := routing.LoadSnapshot(context.Background(), lister, nil)
 	if err != nil {
 		t.Fatalf("LoadSnapshot: %v", err)
 	}
 
 	// A number under the specific prefix routes to the specific connector.
-	got, err := resolver.Resolve(context.Background(), "+22507000000")
+	got, err := resolver.Resolve(context.Background(), "+22507000000", 0)
 	if err != nil {
 		t.Fatalf("resolve specific: %v", err)
 	}
@@ -51,7 +51,7 @@ func TestSnapshotLongestPrefixWins(t *testing.T) {
 	}
 
 	// A number outside the specific prefix falls through to the catch-all.
-	got, err = resolver.Resolve(context.Background(), "+22501000000")
+	got, err = resolver.Resolve(context.Background(), "+22501000000", 0)
 	if err != nil {
 		t.Fatalf("resolve catch-all: %v", err)
 	}
@@ -66,12 +66,12 @@ func TestSnapshotNoRouteWhenNoCatchAll(t *testing.T) {
 		{ID: uuid.New(), Priority: 100, DistributionStrategy: cp.DistributionStatic, Status: cp.RouteActive,
 			MatchDestPattern: ptr("225"), TargetConnectorID: &conn},
 	}}
-	resolver, err := routing.LoadSnapshot(context.Background(), lister)
+	resolver, err := routing.LoadSnapshot(context.Background(), lister, nil)
 	if err != nil {
 		t.Fatalf("LoadSnapshot: %v", err)
 	}
 
-	if _, err := resolver.Resolve(context.Background(), "+33123456789"); err != errs.ErrNoRoute {
+	if _, err := resolver.Resolve(context.Background(), "+33123456789", 0); err != errs.ErrNoRoute {
 		t.Fatalf("got %v, want ErrNoRoute", err)
 	}
 }

@@ -25,3 +25,11 @@ func TestEffectivePriority(t *testing.T) {
 		}
 	}
 }
+
+func TestRank(t *testing.T) {
+	for category, want := range map[TrafficCategory]int{TrafficMarketing: 0, TrafficTransactional: 1, TrafficOTP: 2, "": 0} {
+		if got := category.Rank(); got != want {
+			t.Errorf("%q.Rank() = %d, want %d", category, got, want)
+		}
+	}
+}

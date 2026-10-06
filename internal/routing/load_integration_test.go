@@ -25,7 +25,7 @@ func TestLeastLoadedFollowsThePublishedGauge(t *testing.T) {
 	route := cp.Route{ID: uuid.New(), Priority: 100, Status: cp.RouteActive, DistributionStrategy: cp.DistributionLeastLoaded,
 		MatchDestPattern: ptr("225"),
 		Targets:          []cp.RouteTarget{{ConnectorID: a, Weight: 1}, {ConnectorID: b, Weight: 1}}}
-	r, err := routing.LoadSnapshot(ctx, fakeLister{routes: []cp.Route{route}})
+	r, err := routing.LoadSnapshot(ctx, fakeLister{routes: []cp.Route{route}}, nil)
 	if err != nil {
 		t.Fatalf("LoadSnapshot: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestLeastLoadedFollowsThePublishedGauge(t *testing.T) {
 
 	publish(a, 10)
 	publish(b, 1)
-	got, err := r.Resolve(ctx, "+2250700000001")
+	got, err := r.Resolve(ctx, "+2250700000001", 0)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestLeastLoadedFollowsThePublishedGauge(t *testing.T) {
 
 	publish(a, 0)
 	publish(b, 20)
-	got, err = r.Resolve(ctx, "+2250700000001")
+	got, err = r.Resolve(ctx, "+2250700000001", 0)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestLeastLoadedReadsTheGaugeThroughItsCache(t *testing.T) {
 	route := cp.Route{ID: uuid.New(), Priority: 100, Status: cp.RouteActive, DistributionStrategy: cp.DistributionLeastLoaded,
 		MatchDestPattern: ptr("225"),
 		Targets:          []cp.RouteTarget{{ConnectorID: a, Weight: 1}, {ConnectorID: b, Weight: 1}}}
-	r, _ := routing.LoadSnapshot(ctx, fakeLister{routes: []cp.Route{route}})
+	r, _ := routing.LoadSnapshot(ctx, fakeLister{routes: []cp.Route{route}}, nil)
 	now := time.Unix(1_700_000_000, 0)
 	r.UseLoadReader(status.NewLoadReader(rdb, status.WithLoadCacheTTL(time.Second),
 		status.WithLoadClock(func() time.Time { return now })))
@@ -86,7 +86,7 @@ func TestLeastLoadedReadsTheGaugeThroughItsCache(t *testing.T) {
 	}
 	resolve := func() uuid.UUID {
 		t.Helper()
-		got, err := r.Resolve(ctx, "+2250700000001")
+		got, err := r.Resolve(ctx, "+2250700000001", 0)
 		if err != nil {
 			t.Fatalf("resolve: %v", err)
 		}

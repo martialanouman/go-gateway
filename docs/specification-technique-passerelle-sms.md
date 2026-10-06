@@ -256,7 +256,7 @@ smsc_connectors                     -- name/host/port/bind_type/system_id/passwo
   bind_pool_size       (default 1, max 32)  -- independent parallel SMPP binds for this connector (§6.8)
   throughput_limit_per_sec (nullable) -- absolute technical ceiling (e.g. carrier contract)
   tls_enabled (bool, default false), tls_config_json (nullable)
-  priority_tier        (default 0)
+  priority_tier        (default 0, 0..2)  -- lowest category rank accepted (§6.1, ADR-0020 §4)
   status               (active|degraded|disabled)   -- coarse config status. Live health is reported via two separate
                                         -- runtime fields: link_status (up|reconnecting|down) and
                                         -- breaker_state (closed|open|half_open) — never conflated (§6.13/§6.15)
@@ -721,6 +721,7 @@ WS      /admin/stream/billing-alerts                    # MT low-balance / MT ov
                         distribution_strategy: static|round_robin|weighted
                                              |failover_priority|least_loaded|hash_based
                         (open-breaker / disabled connectors excluded, §6.15)
+                        (priority_tier above the category rank excluded, ADR-0020 §4)
 ============ back to the common pipeline — NOTHING is skipped ================
                         [ 6. ENCODING / UDH SEGMENTATION ] -> segment_count   (§6.6)
                         [ 7. MT CREDIT RESERVE ] on billing:balance:mt:{owner} (§6.9)
@@ -758,6 +759,19 @@ L'**exécution** de la route (cibles multi-connecteurs, chaîne de repli) est id
 | `hash_based` | Choisit déterministement en hachant une clé (MSISDN dest par défaut). | Cohérence d'affectation par abonné. |
 
 Toutes n'opèrent que parmi les cibles passant le contrôle disjoncteur/désactivé.
+
+**Réservation par `priority_tier` (ADR-0020 §4).** `priority_tier` est le rang de catégorie minimal qu'un
+connecteur accepte : `0` accepte tout, `1` le transactionnel et l'OTP, `2` l'OTP seul (rang : `marketing` 0,
+`transactional` 1, `otp` 2, lu sur le sender ID, §6.19). Un connecteur dont le `priority_tier` dépasse le rang
+du message est traité comme indisponible, aux trois niveaux :
+- L0 : la cible est sautée et la résolution retombe sur L1/L2 ;
+- L1 et L2 : la cible est sautée par toute stratégie ; une route statique sans cible retenue suit son repli de
+  route ;
+- la `fallback_chain` ne la contient pas, donc le reroute, le parking et le rejeu en héritent.
+
+S'il ne reste rien, la réponse est `no_route`, sans code d'erreur nouveau. La garde s'applique après
+l'autorisation et ne court-circuite aucune étape de conformité. Un connecteur réservé n'a pas de backlog
+marketing devant lui : c'est ce qui donne à l'OTP une vraie priorité tant que `mt.routed` est une file unique.
 
 Rechargement à chaud : `config-sync` pousse les diffs de routes/scripts vers `router-svc`, qui garde un instantané immuable échangé atomiquement. L'état volatil (disjoncteur agrégé, charge connecteur) vit dans une **surcouche mutable séparée** (mise à jour par pointeur atomique sur `breaker:events`), pour ne pas rebâtir l'instantané immuable à chaque transition.
 

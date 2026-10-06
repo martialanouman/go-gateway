@@ -34,7 +34,7 @@ func buildSnapshot(t *testing.T, declRoute, declConn uuid.UUID) *routing.Snapsho
 	snap, err := routing.LoadSnapshot(context.Background(), fakeLister{routes: []cp.Route{
 		{ID: declRoute, Priority: 100, DistributionStrategy: cp.DistributionStatic, Status: cp.RouteActive,
 			MatchDestPattern: ptr("225"), TargetConnectorID: &declConn},
-	}})
+	}}, nil)
 	if err != nil {
 		t.Fatalf("LoadSnapshot: %v", err)
 	}

@@ -276,7 +276,7 @@ func newL0WithBloom(ctx context.Context, t *testing.T, bloom *exact.Bloom, rdb *
 	decl, err := routing.LoadSnapshot(ctx, routeLister{routes: []cp.Route{{
 		ID: declRoute, Priority: 100, DistributionStrategy: cp.DistributionStatic, Status: cp.RouteActive,
 		MatchDestPattern: strptr("225"), TargetConnectorID: &declConn,
-	}}})
+	}}}, nil)
 	if err != nil {
 		t.Fatalf("LoadSnapshot: %v", err)
 	}

@@ -35,6 +35,8 @@ type RouteRequest struct {
 	From       string
 	AccountID  uuid.UUID
 	CustomerID uuid.UUID
+	// Rank is the traffic category rank (ADR-0020 §4): a connector reserved above it is skipped.
+	Rank int
 	// Segments is always 1 at route resolution: segmentation runs later in the pipeline (frozen order,
 	// §6.1), so the real segment count is not yet known. A script must not route on it.
 	Segments int
@@ -217,7 +219,7 @@ func (p *Pipeline) Process(ctx context.Context, in InboundMT) (RoutedMT, []pipee
 	// stage, never the compliance stages above (spec §6.1).
 	if err := p.stage(ctx, "pipeline.route", func(ctx context.Context) error {
 		route, err := p.deps.Resolver.Resolve(ctx, RouteRequest{
-			Dest: out.To, From: in.From, AccountID: in.AccountID, CustomerID: in.CustomerID,
+			Dest: out.To, From: in.From, AccountID: in.AccountID, CustomerID: in.CustomerID, Rank: category.Rank(),
 			Segments: out.SegmentCount, ReceivedAtMs: in.SubmittedAt.UnixMilli(),
 		})
 		if err != nil {

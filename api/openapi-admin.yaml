@@ -2401,7 +2401,7 @@ components:
         throughput_limit_per_sec: { type: [integer, "null"], minimum: 1 }
         tls_enabled: { type: boolean }
         tls_config_json: { type: [object, "null"], additionalProperties: true }
-        priority_tier: { type: integer }
+        priority_tier: { type: integer, minimum: 0, maximum: 2, description: 'Lowest traffic category rank this connector accepts (ADR-0020 §4): 0 accepts all, 1 transactional and otp only, 2 otp only. A connector above a message rank is skipped at route resolution, as if unavailable.' }
         status: { type: string, enum: [active, degraded, disabled] }
         auto_reconnect_enabled: { type: boolean }
         reconnect_initial_delay_ms: { type: integer, minimum: 1 }
@@ -2431,7 +2431,7 @@ components:
         tls_enabled: { type: boolean, default: false }
         tls_config_json: { type: [object, "null"], additionalProperties: true }
         priority_flag_default: { type: integer, minimum: 0, maximum: 3, default: 0, description: 'SMPP priority_flag sent when the message effective priority is 0 (a marketing message).' }
-        priority_tier: { type: integer, default: 0 }
+        priority_tier: { type: integer, minimum: 0, maximum: 2, default: 0, description: 'Lowest traffic category rank this connector accepts (ADR-0020 §4): 0 accepts all, 1 transactional and otp only, 2 otp only. A connector above a message rank is skipped at route resolution, as if unavailable.' }
         auto_reconnect_enabled: { type: boolean, default: false }
       required: [name, host, port, bind_type, system_id, password]
     ConnectorUpdate:
@@ -2452,7 +2452,7 @@ components:
         tls_enabled: { type: boolean }
         tls_config_json: { type: [object, "null"], additionalProperties: true }
         priority_flag_default: { type: integer, minimum: 0, maximum: 3, description: 'Applied at the next bind; rebind-connector applies it at once.' }
-        priority_tier: { type: integer }
+        priority_tier: { type: integer, minimum: 0, maximum: 2, description: 'Lowest traffic category rank this connector accepts (ADR-0020 §4): 0 accepts all, 1 transactional and otp only, 2 otp only. A connector above a message rank is skipped at route resolution, as if unavailable.' }
         status: { type: string, enum: [active, degraded, disabled] }
     ReconnectPolicy:
       type: object

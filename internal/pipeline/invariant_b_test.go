@@ -73,7 +73,7 @@ func l0Pipeline(t *testing.T, ex routing.ExactResolver, opt *spyOptOut) (*pipeli
 	decl, err := routing.LoadSnapshot(context.Background(), routeList{routes: []cp.Route{
 		{ID: uuid.New(), Priority: 100, Status: cp.RouteActive, DistributionStrategy: cp.DistributionStatic,
 			MatchDestPattern: &prefix, TargetConnectorID: &declConn},
-	}})
+	}}, nil)
 	if err != nil {
 		t.Fatalf("LoadSnapshot: %v", err)
 	}
@@ -152,5 +152,61 @@ func TestInvariantBOptOutBeatsL0(t *testing.T) {
 	}
 	if ex.calls.Load() != 0 {
 		t.Errorf("route resolution ran despite the opt-out block (exact consulted %d times, want 0)", ex.calls.Load())
+	}
+}
+
+type connectorTiers map[uuid.UUID]int
+
+func (c connectorTiers) List(context.Context) ([]cp.Connector, error) {
+	out := make([]cp.Connector, 0, len(c))
+	for id, tier := range c {
+		out = append(out, cp.Connector{ID: id, PriorityTier: tier})
+	}
+	return out, nil
+}
+
+// TestInvariantBTierFallsThroughAfterCompliance: an exact route to a connector reserved above the
+// message's category is skipped (ADR-0020 §4) — resolution falls through to the declarative level — and
+// every compliance stage still ran: the tier guard applies after resolution, never instead of a check.
+func TestInvariantBTierFallsThroughAfterCompliance(t *testing.T) {
+	reserved, declConn := uuid.New(), uuid.New()
+	prefix := "225"
+	decl, err := routing.LoadSnapshot(context.Background(), routeList{routes: []cp.Route{
+		{ID: uuid.New(), Priority: 100, Status: cp.RouteActive, DistributionStrategy: cp.DistributionStatic,
+			MatchDestPattern: &prefix, TargetConnectorID: &declConn},
+	}}, connectorTiers{reserved: 2})
+	if err != nil {
+		t.Fatalf("LoadSnapshot: %v", err)
+	}
+	ex := &countingExact{hits: map[string]exact.Target{"2250700000001": {Type: exact.TargetConnector, ID: reserved}}}
+	sender, opt, antispam := &spyAuthorizer{}, &spyOptOut{}, &spyAntispam{}
+	p := pipeline.New(pipeline.Deps{
+		Tracer: observability.Tracer(nil, "test"), Resolver: routing.NewL0Resolver(ex, nil, decl),
+		SenderIDs: sender, OptOut: opt, Antispam: antispam,
+	})
+
+	out, _, err := p.Process(context.Background(), inbound("+2250700000001"))
+	if err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if out.ConnectorID != declConn {
+		t.Errorf("a marketing message routed to %s, want the declarative %s, not the otp-reserved %s", out.ConnectorID, declConn, reserved)
+	}
+	if ex.calls.Load() != 1 || sender.calls.Load() != 1 || opt.calls.Load() != 1 || antispam.calls.Load() != 1 {
+		t.Errorf("exact/sender/opt-out/anti-spam ran %d/%d/%d/%d times, want 1 each",
+			ex.calls.Load(), sender.calls.Load(), opt.calls.Load(), antispam.calls.Load())
+	}
+
+	// The reservation is for otp: a message of that category does reach the reserved connector.
+	otp := pipeline.New(pipeline.Deps{
+		Tracer: observability.Tracer(nil, "test"), Resolver: routing.NewL0Resolver(ex, nil, decl),
+		SenderIDs: stubAuthorizer{category: cp.TrafficOTP}, OptOut: opt, Antispam: antispam,
+	})
+	out, _, err = otp.Process(context.Background(), inbound("+2250700000001"))
+	if err != nil {
+		t.Fatalf("Process otp: %v", err)
+	}
+	if out.ConnectorID != reserved {
+		t.Errorf("an otp message routed to %s, want the otp-reserved %s", out.ConnectorID, reserved)
 	}
 }
