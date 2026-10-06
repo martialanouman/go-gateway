@@ -43,7 +43,7 @@ compte et ne crée aucune clé. Une panne du lookup Postgres ne résout rien, do
 enregistre à ses trois sorties (authorize, throttle, registre) ; câblage `cmd/smpp-server-svc`. Admin :
 `BindFailureLog` dans `deps.go`, handler sur le modèle de `sessions.go`, câblage `cmd/admin-api-svc`.
 
-**Contrat (mineur, 7.1.0 ; 6.15.0 avant le merge de #268).** `GET /admin/smpp-accounts/{id}/bind-failures?since=`, `admin:read`.
+**Contrat (mineur, 7.2.0 ; renuméroté après #268 et #269).** `GET /admin/smpp-accounts/{id}/bind-failures?since=`, `admin:read`.
 `since` par défaut `now − 24h` ; hors `[now − 24h, now]` → 422. Du plus récent au plus ancien, sans
 pagination (le plafond suffit). 404 si le compte n'existe pas. La description dit que les `system_id`
 inconnus n'y figurent pas et que la liste est plafonnée.
