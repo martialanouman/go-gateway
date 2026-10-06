@@ -73,7 +73,7 @@ La spec v2.1 du tableau de bord (go-gateway-bo, `1c29fa6`) ne nomme aucune métr
 ## Livré
 - Contrat 7.3.0 (mineure) : `category_mismatch` dans `rule_type`, `action` optionnelle (`default: flag`),
   `config_json` documenté pour ce type, `SenderId.recent_category_mismatches_24h` (entier ≥ 0 ou `null`).
-- Migration 0031 : `category_mismatch` dans le `CHECK`, `action` à `'flag'` par défaut en base.
+- Migration 0032 (0031 était prise par #267) : `category_mismatch` dans le `CHECK` ; le défaut d'`action` est posé par l'API seule.
 - `Authorize` rend la catégorie, le pipeline la passe à `Evaluate` ; la règle tourne en mémoire, à côté des
   règles de contenu, et compte chaque correspondance (Redis, tranches horaires, TTL 25 h, fail-open) et la
   métrique `anti_spam_category_mismatch_total{action}`.
