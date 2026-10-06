@@ -360,7 +360,7 @@ func TestPipelineCarriesTheEffectivePriority(t *testing.T) {
 	deps := testDeps(observability.Tracer(otelrec.New(t).Provider(), "router"))
 	deps.SenderIDs = stubAuthorizer{category: cp.TrafficTransactional}
 	in := inbound("+2250700000000")
-	in.Priority = 2
+	in.Priority = 3 // above the transactional ceiling: neither the request nor the default may pass through
 
 	routed, _, err := pipeline.New(deps).Process(context.Background(), in)
 	if err != nil {
