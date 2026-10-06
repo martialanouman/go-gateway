@@ -49,7 +49,7 @@ de cette fiche ne touchent pas la topologie : elles n'attendent pas step-287.
   - `rerouted` et `failed` au pool ;
   - `OutcomeMT` sur `mt.outcome`, qui gagne les deux champs ;
   - **la ligne DLR** (`modlrrouter.buildCDRRow`, rang 40, la plus haute en régime nominal) : `dlrmap.Mapping`
-    gagne les deux champs (JSON, `omitempty`). Fable avait omis cet écrivain ; c'est le seul écart.
+    gagne les deux champs (JSON). Fable avait omis cet écrivain ; c'est le seul écart.
 
   La ligne `accepted`, projetée depuis `mt.inbound` avant l'autorisation, reste à `''`/0 : elle est
   supplantée par la suivante. La ligne `rejected` aussi, et c'est un écart à la première version de ce
@@ -81,7 +81,8 @@ de cette fiche ne touchent pas la topologie : elles n'attendent pas step-287.
   C'est accepté : il s'agit d'un seul message, vers le lien qui vient de livrer le MO.
 
 ### Ordre de déploiement (PR1)
-Un ancien `mo-dlr-router-svc` ou un ancien projecteur `mt.outcome` ignore les champs neufs et écrit la ligne
+La migration ClickHouse 0007 passe d'abord : tout écrivain du CDR nomme les deux colonnes. Ensuite, un
+ancien `mo-dlr-router-svc` ou un ancien projecteur `mt.outcome` ignore les champs neufs et écrit la ligne
 la plus haute du segment sans catégorie. Il faut donc déployer ces deux consommateurs avant
 `connector-pool-svc`. L'ordre inverse est sûr : un ancien enregistrement lu par le nouveau code donne
 `marketing`/0. Seul l'environnement de test existe aujourd'hui (ADR-0021, *Conséquences*).

@@ -58,6 +58,7 @@ func (s *Service) Run(ctx context.Context) error {
 // reloadConfig refreshes the pool size and reconnect policy from the control plane. On a load error it
 // KEEPS the current (last-good) config — set in New to the env defaults and updated only on success — so
 // a transient Postgres blip during a reconfigure never silently reverts a live-configured pool to env.
+// priority_flag_default is refreshed with them.
 func (s *Service) reloadConfig(ctx context.Context) {
 	if s.deps.ConfigSource == nil {
 		return // static config (already seeded in New)
