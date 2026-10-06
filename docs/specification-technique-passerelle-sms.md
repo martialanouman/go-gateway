@@ -469,7 +469,8 @@ cdr
   latency_ms
   billed (bool), credits_charged (integer, nullable)
   traffic_category, priority             -- sender ID category and effective priority (§6.19, ADR-0020); every
-                                            segment row carries them, the message-level rows are written without them
+                                            segment row carries them, and so does a rejection after the sender ID
+                                            is authorized; the accepted placeholder and the Canceller's row do not
 ```
 
 Partitionné par jour (`PARTITION BY toDate(submitted_at)`), avec tiering TTL (§6.14). Interrogé par le tableau de bord pour recherche, traçage et réconciliation. `message_id`/`trace_id` étant déjà des UUIDv7 générés à l'ingestion, le sink CDR porte la valeur sans en générer.

@@ -252,7 +252,7 @@ func TestSearchFiltersOnTheTrafficCategory(t *testing.T) {
 	marketing := searchRow(customerID, accountID, now.Add(-time.Hour), searchMSISDN())
 	if err := writer.InsertBatch(ctx, []clickhouse.CDRRow{
 		sent, withCategory(sent, clickhouse.StatusEnroute, 1, "transactional"),
-		withCategory(rejected, clickhouse.StatusRejected, 0, "transactional"),
+		rejected, withCategory(rejected, clickhouse.StatusRejected, 0, "transactional"),
 		marketing, withCategory(marketing, clickhouse.StatusEnroute, 1, "marketing"),
 	}); err != nil {
 		t.Fatalf("InsertBatch: %v", err)

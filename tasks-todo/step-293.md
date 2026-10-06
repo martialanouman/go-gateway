@@ -21,5 +21,7 @@ L'arbitrage a été rendu par Fable, sans contradiction avec la spec.
   priorité. Pas d'erreur typée.
 
 ## Definition of Done
-- [x] un rejet `category_mismatch` en `block` se retrouve par le filtre de catégorie
+- [x] un rejet `category_mismatch` en `block` se retrouve par le filtre de catégorie : prouvé par maillons
+  (rejet anti-spam au pipeline, ligne `rejected` au routeur, filtre ClickHouse sur placeholder + rejet), sans
+  test de bout en bout
 - [x] fiche de dette passée en PAYÉE

@@ -128,9 +128,10 @@ type CDRRow struct {
 	LatencyMs         *uint32
 	Billed            bool
 	CreditsCharged    *int32
-	// TrafficCategory and Priority are known only once the sender ID is authorized (ADR-0020). The
-	// message-level rows (accepted, rejected, the Canceller's cancelled) are written without them; every
-	// segment row must carry them, since ReplacingMergeTree keeps the highest-version row whole.
+	// TrafficCategory and Priority are known only once the sender ID is authorized (ADR-0020). The accepted
+	// placeholder and the Canceller's cancelled row are written without them, a rejection carries them once
+	// they are known; every segment row must carry them, since ReplacingMergeTree keeps the highest-version
+	// row whole.
 	TrafficCategory string
 	Priority        uint8
 }
