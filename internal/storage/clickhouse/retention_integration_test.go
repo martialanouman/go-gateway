@@ -52,11 +52,12 @@ func seedDay(t *testing.T, conn *clickhouse.Conn, daysAgo, n int) time.Time {
 	return day
 }
 
-// countDay returns how many CDR rows remain in a day's partition.
+// countDay returns how many CDR rows remain in a day's partition, as a merge leaves them: FINAL, so a
+// background merge collapsing two versions of a message does not change the count.
 func countDay(t *testing.T, conn *clickhouse.Conn, day time.Time) uint64 {
 	t.Helper()
 	var n uint64
-	q := fmt.Sprintf("SELECT count() FROM cdr WHERE toDate(submitted_at) = '%s'", day.Format("2006-01-02"))
+	q := fmt.Sprintf("SELECT count() FROM cdr FINAL WHERE toDate(submitted_at) = '%s'", day.Format("2006-01-02"))
 	if err := conn.QueryRow(context.Background(), q).Scan(&n); err != nil {
 		t.Fatalf("count day %s: %v", day.Format("2006-01-02"), err)
 	}
@@ -73,6 +74,22 @@ func TestRetainerDropsExpiredPartitionKeepsActive(t *testing.T) {
 	// absolute count: what matters is that the purge leaves it exactly as it found it.
 	old := seedDay(t, conn, 80, 3)
 	today := seedDay(t, conn, 0, 2)
+	// A message reaching a later stage leaves two versions in today's partition until a merge collapses
+	// them; a background merge may run at any instant, so this one is forced after the first count.
+	later := clickhouse.CDRRow{
+		MessageID: uuid.New(), AccountID: uuid.New(), CustomerID: uuid.New(),
+		Direction: clickhouse.DirectionMT, SourceAddr: "GATEWAY", DestAddr: "22507000000",
+		SubmittedAt: today.Add(time.Hour), Status: clickhouse.StatusAccepted,
+		SegmentCount: 1, Encoding: clickhouse.EncodingGSM7,
+	}
+	writer := clickhouse.NewCDRWriter(conn)
+	if err := writer.Insert(ctx, later); err != nil {
+		t.Fatalf("insert accepted stage: %v", err)
+	}
+	later.Status = clickhouse.StatusDelivered
+	if err := writer.Insert(ctx, later); err != nil {
+		t.Fatalf("insert delivered stage: %v", err)
+	}
 	todayBefore := countDay(t, conn, today)
 	if countDay(t, conn, old) != 3 || todayBefore < 2 {
 		t.Fatalf("seed failed: old=%d today=%d", countDay(t, conn, old), todayBefore)
@@ -100,6 +117,9 @@ func TestRetainerDropsExpiredPartitionKeepsActive(t *testing.T) {
 	report, err := retainer.Purge(ctx)
 	if err != nil {
 		t.Fatalf("Purge: %v", err)
+	}
+	if err := conn.Exec(ctx, fmt.Sprintf("OPTIMIZE TABLE cdr PARTITION '%s' FINAL", today.Format("2006-01-02"))); err != nil {
+		t.Fatalf("merge today's partition: %v", err)
 	}
 	if report.Dropped < 1 {
 		t.Errorf("dropped %d partitions, want at least the expired one", report.Dropped)
