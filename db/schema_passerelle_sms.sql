@@ -364,6 +364,9 @@ CREATE TABLE control_plane.credentials (
 -- system_id must be globally unique among live bind credentials (bind auth resolves by system_id)
 CREATE UNIQUE INDEX credentials_system_id_uq
   ON control_plane.credentials(system_id) WHERE type = 'smpp_bind' AND status <> 'revoked';
+-- the bind lookup also resolves a revoked system_id, to attribute its refused binds (step-286b)
+CREATE INDEX credentials_bind_system_id_idx
+  ON control_plane.credentials(system_id) WHERE type = 'smpp_bind';
 -- REST auth resolves BY the key hash, on every request (plan §1.9). Two indexes because the lookup is an
 -- OR: the live hash, or the previous one during a rotation grace window (§6.3). Partial on NOT NULL, and
 -- the two predicates differ in reach: api_key_hash is confined to api_key rows by credentials_shape_ck,

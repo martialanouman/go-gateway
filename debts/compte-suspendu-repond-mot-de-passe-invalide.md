@@ -15,4 +15,7 @@ n'existe pas.
 **À quoi on reconnaîtra qu'il faut la payer.** Un ticket support qui commence par « nos identifiants
 ne marchent plus » alors que le compte est simplement suspendu.
 
-Source : `internal/smppserver/listener.go:202`
+**Atténuée côté support par step-286b.** `list-account-bind-failures` montre `account_inactive` puis
+`throttled` : l'opérateur tranche le ticket d'un coup d'œil. L'ESME, lui, lit toujours le faux motif.
+
+Source : `internal/smppserver/listener.go` `onBind` (`recordBindFailure` hors `ESME_RSYSERR`)

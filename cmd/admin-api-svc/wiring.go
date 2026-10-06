@@ -16,6 +16,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/adminapi"
 	"github.com/martialanouman/go-gateway/internal/auth"
 	"github.com/martialanouman/go-gateway/internal/billing"
+	"github.com/martialanouman/go-gateway/internal/bindfailure"
 	"github.com/martialanouman/go-gateway/internal/config"
 	configsecretspb "github.com/martialanouman/go-gateway/internal/configsecrets/pb"
 	"github.com/martialanouman/go-gateway/internal/connector/status"
@@ -398,6 +399,7 @@ func adminDeps(
 		Imports:               runners.imports,
 		Disconnector:          adminapi.NewGRPCDisconnector(registrypb.NewSessionRegistryClient(clients.registry)),
 		Sessions:              adminapi.NewGRPCSessions(registrypb.NewSessionRegistryClient(clients.registry)),
+		BindFailures:          bindfailure.New(rdb),
 		Billing:               billingRepo,
 		BalanceCache:          redisBalanceCache{rdb: rdb},
 		TransferDebiter:       billing.New(rdb, billingRepo, billing.WithLogger(logger)),

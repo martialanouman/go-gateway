@@ -13,8 +13,8 @@ import (
 )
 
 // BindRepo resolves a presented SMPP system_id to its bind credential. It is the read side of SMPP
-// bind authentication (§1.9): the system_id is looked up on the partial unique index over live bind
-// credentials, and the argon2id password is verified by the caller (internal/credential), not in SQL.
+// bind authentication (§1.9): the system_id is looked up on credentials_bind_system_id_idx, live
+// credential first, and the argon2id password is verified by the caller (internal/credential), not in SQL.
 type BindRepo struct {
 	q *sqlcgen.Queries
 }
@@ -24,10 +24,10 @@ func NewBindRepo(pool *pgxpool.Pool) *BindRepo {
 	return &BindRepo{q: sqlcgen.New(pool)}
 }
 
-// BindCredentialBySystemID returns the bind credential behind a system_id. found is false when no
-// live bind credential matches — an unknown or revoked system_id — which the caller maps to
-// ESME_RINVPASWD (deliberately not distinguishing an unknown system_id from a wrong password, so a
-// bind cannot enumerate valid system_ids). A row is returned even when the channel is disabled or the
+// BindCredentialBySystemID returns the bind credential behind a system_id. found is false for an
+// unknown system_id, which the caller maps to ESME_RINVPASWD (deliberately not distinguishing an
+// unknown system_id from a wrong password, so a bind cannot enumerate valid system_ids). A revoked
+// credential is returned, the live one first, for the caller to refuse. A row is returned even when the channel is disabled or the
 // account is suspended, so the caller can answer ESME_RBINDFAIL for those rather than a blanket miss.
 // A credential whose password_hash is unexpectedly null (a shape the DDL forbids for smpp_bind) is
 // treated as not found rather than trusted. A genuine database error is returned as-is.

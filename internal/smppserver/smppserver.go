@@ -24,6 +24,7 @@ import (
 	"go.opentelemetry.io/otel/trace/noop"
 	"google.golang.org/grpc"
 
+	"github.com/martialanouman/go-gateway/internal/bindfailure"
 	"github.com/martialanouman/go-gateway/internal/bindthrottle"
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
@@ -33,8 +34,9 @@ import (
 )
 
 // CredentialStore resolves a presented SMPP system_id to its bind credential. It is satisfied by
-// postgres.BindRepo. found is false for an unknown or revoked system_id, which the bind path maps to
-// ESME_RINVPASWD (so a bind cannot enumerate valid system_ids).
+// postgres.BindRepo. found is false for an unknown system_id, which the bind path maps to
+// ESME_RINVPASWD (so a bind cannot enumerate valid system_ids). A revoked credential IS returned, the
+// live one first, so its refusals are attributed to its account: the caller must refuse it.
 type CredentialStore interface {
 	BindCredentialBySystemID(ctx context.Context, systemID string) (cp.BindCredential, bool, error)
 }
@@ -57,6 +59,12 @@ type BindThrottle interface {
 	Check(ctx context.Context, systemID, ip string) (bindthrottle.Decision, error)
 	RecordFailure(ctx context.Context, systemID, ip string) error
 	Reset(ctx context.Context, systemID string) error
+}
+
+// BindFailureLog keeps an account's refused binds for the Admin API (step-286b). *bindfailure.Log
+// satisfies it; nil disables it. The caller treats an error as fail-open.
+type BindFailureLog interface {
+	Record(ctx context.Context, accountID uuid.UUID, f bindfailure.Failure) error
 }
 
 // Ingestor runs the shared MT ingestion sequence for a submit_sm: encode the envelope, produce it
@@ -86,6 +94,13 @@ type MessageReader interface {
 // fresh context so a token is released even while the pod is draining (the connection's own context is
 // already cancelled by then).
 const registryCallTimeout = 5 * time.Second
+
+// bindFailureRecordTimeout bounds a refused bind's detached record, so a Redis or PostgreSQL stall
+// cannot pile up goroutines past the rate of refusals times this bound.
+const bindFailureRecordTimeout = 2 * time.Second
+
+// maxDetachedRecords caps the records in flight; past it a record is dropped rather than queued.
+const maxDetachedRecords = 64
 
 // cdrLookupTimeout bounds the ClickHouse work of a query_sm or cancel_sm. Both run on the session's read
 // goroutine, and the client's default read timeout (5 min) would freeze the whole bind behind one slow read.
@@ -142,6 +157,8 @@ type Options struct {
 	// ("system_id" or "ip" — both bounded, never the value). Nil skips the metric, so tests need not
 	// wire a registry.
 	ThrottleBlocked *prometheus.CounterVec
+	// BindFailures records each refused bind whose system_id resolves a credential. Nil disables it.
+	BindFailures BindFailureLog
 	// MaxConns caps concurrent accepted connections, bounding the goroutines and file descriptors an
 	// unauthenticated peer can pin — in particular under the throttle's tarpit backoff. Zero uses
 	// defaultMaxConns. It is a hard ceiling: beyond it, new connections wait in the kernel backlog.
@@ -193,7 +210,8 @@ type Listener struct {
 	opts     Options
 	logger   *slog.Logger
 
-	wg sync.WaitGroup
+	wg          sync.WaitGroup
+	recordSlots chan struct{}
 
 	// sessMu guards sessions, the pod-local registry of live binds keyed by bind_id. It backs the
 	// downward force-disconnect (step-032): a Disconnect order iterates it to close the sessions this
@@ -230,13 +248,14 @@ func New(creds CredentialStore, registry Registry, ingestor Ingestor, opts Optio
 		opts.MaxConns = defaultMaxConns
 	}
 	return &Listener{
-		creds:    creds,
-		registry: registry,
-		ingestor: ingestor,
-		opts:     opts,
-		logger:   logger,
-		sessions: make(map[string]*liveSession),
-		ready:    make(chan struct{}),
+		creds:       creds,
+		registry:    registry,
+		ingestor:    ingestor,
+		opts:        opts,
+		logger:      logger,
+		sessions:    make(map[string]*liveSession),
+		ready:       make(chan struct{}),
+		recordSlots: make(chan struct{}, maxDetachedRecords),
 	}
 }
 
