@@ -55,8 +55,8 @@ trafic gonflé sans toucher aux autres flux du client. Aujourd'hui, `rate_limits
 Le topic par catégorie et le choix du topic à l'ingestion (ADR-0021 §1-§2) : **step-292**.
 
 ## Livré
-- Contrat 7.1.0 (mineure) : `SenderId.rate_limit` (nullable, lu dans la liste par un LEFT JOIN, sans appel
-  par ligne), `set-sender-id-rate-limit` (PUT, rafale = `max_per_sec` par défaut) et
+- Contrat 7.1.0 (mineure) : `SenderId.rate_limit` (nullable, lu dans la liste par un LEFT JOIN de la même
+  requête ; aucun test ne compte les requêtes, c'est la forme de la requête qui le garantit), `set-sender-id-rate-limit` (PUT, rafale = `max_per_sec` par défaut) et
   `delete-sender-id-rate-limit` (DELETE, idempotent).
 - Migration 0030 : `sender_id` dans le `CHECK` ; **un trigger** supprime la limite d'un sender ID supprimé.
   *Amendé à l'implémentation* : le design prévoyait une suppression dans la même transaction, mais un
@@ -65,7 +65,9 @@ Le topic par catégorie et le choix du topic à l'ingestion (ADR-0021 §1-§2) :
   le compte. Le snapshot est remplaçable à chaud (`Enforcer.Reload`), câblé sur l'invalidation de
   configuration dans `rest-api-svc` et `smpp-server-svc`.
 - SMPP : même `Ingestor`, même mapping `ErrRateLimited` → `ESME_RTHROTTLED` (déjà prouvé par
-  `TestOnSubmitIngestErrorMapsToCommandStatus`) ; le test d'intégration du sender est côté REST.
+  `TestOnSubmitIngestErrorMapsToCommandStatus`) ; le rechargement à chaud est prouvé dans les deux pods.
+- Revue : `FOR KEY SHARE` à l'insertion de la limite (un PUT croisant la suppression du sender laissait
+  une ligne orpheline) ; l'ingestion ne charge plus les connecteurs, dont elle ne lit jamais la limite.
 - Mutations tuées : contrôle du sender sauté, sender non indexé, compte débité d'abord, rechargement qui
   ne remplace pas, `From` perdu à l'ingestion, trigger retiré, défaut de rafale, PUT d'un autre client
   (trouvé par la mutation : le 404 venait de la relecture, l'écriture avait eu lieu), DELETE d'un autre
