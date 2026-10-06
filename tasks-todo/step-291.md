@@ -20,14 +20,21 @@ compteur, ni métrique, ni stockage, et le tableau de bord n'a rien à afficher.
     `max_length` caractères ;
   - `transactional` : aucun des `promo_markers`, une liste configurable ;
   - `marketing` : rien à vérifier.
-- **Action** : `flag` par défaut, `block` configurable. Au contrat, `action` sort de `required` pour
-  `category_mismatch` et prend `default: flag`. Les autres types restent inchangés, ce qui se tranche au
-  design du contrat sans en faire une rupture.
-- **Le verdict porte l'identifiant de la règle.** Seuls l'identifiant de règle et le verdict sortent du
-  moteur, dans un log, une métrique ou un span (invariant a).
-- **Métrique** `antispam_verdicts_total{rule_type, action}`, pour `flag` et `block`, sans label
-  d'expéditeur ni de client (garde des labels). Alertmanager s'en sert, et l'alerte persiste côté tableau
-  de bord dans `notifications` : c'est là qu'une alerte ratée par un opérateur reste non lue.
+- **Action** : `flag` par défaut, `block` configurable. *Amendé le 06/10/2026* : un schéma OpenAPI simple
+  ne porte pas de défaut propre à un seul `rule_type`, donc `action` sort de `required` avec
+  `default: flag` **pour tous les types**. C'est un relâchement, pas une rupture : une action omise était
+  un 422, elle devient `flag`, l'action la moins sévère.
+- **Rien du corps ne sort du moteur** (invariant a) : ni log, ni métrique, ni span ne porte un extrait ou
+  un marqueur trouvé. *Amendé le 06/10/2026* : le verdict ne porte pas l'identifiant de règle. L'ADR
+  borne ce qui peut sortir (« seuls l'identifiant de règle et le verdict »), il n'exige pas de l'émettre ;
+  le porter refondrait `Evaluate` pour tous les types sans aucun consommateur.
+- **Métrique** `anti_spam_category_mismatch_total{action}` (`flag` ou `block`), sans label d'expéditeur ni
+  de client (garde des labels), nommée comme sa voisine `anti_spam_fail_open_total`. *Amendé le
+  06/10/2026* : le design prévoyait `antispam_verdicts_total{rule_type, action}` sur toutes les règles ;
+  compter par règle exigerait de suivre quelle règle décide dans chaque évaluateur, et la spec du tableau
+  de bord ne parle que des signalements `category_mismatch`. Alertmanager s'en sert, et l'alerte persiste
+  côté tableau de bord dans `notifications` : c'est là qu'une alerte ratée par un opérateur reste non
+  lue.
 - **Compteur par sender ID** : chaque correspondance `category_mismatch` (en `flag` comme en `block`) fait
   un `INCR` sur une tranche horaire Redis, clé `(customer_id, address)` + heure, TTL 25 h. L'écriture est
   en fail-open : une panne Redis ne retient pas le message. *Amendé le 06/10/2026* : le design comptait
