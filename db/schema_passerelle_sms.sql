@@ -898,6 +898,8 @@ CREATE TABLE cdr
     latency_ms            Nullable(UInt32),
     billed                UInt8,                -- 0/1
     credits_charged       Nullable(Int32),
+    traffic_category      LowCardinality(String) DEFAULT '',  -- sender ID category (ADR-0020); '' on the accepted placeholder
+    priority              UInt8 DEFAULT 0,      -- effective priority (ADR-0020 §2), the SMPP priority_flag sent
     version               UInt64                -- lifecycle rank; ReplacingMergeTree keeps the max
 )
 ENGINE = ReplacingMergeTree(version)

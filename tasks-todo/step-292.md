@@ -53,16 +53,19 @@ de cette fiche ne touchent pas la topologie : elles n'attendent pas step-287.
   **Point porteur.** `cdr` est `ReplacingMergeTree(version)`, et la fusion garde la *ligne* de plus haute
   version entière. Toute ligne écrite après l'autorisation doit donc porter les deux champs, faute de quoi
   la ligne finale les efface. Cela concerne :
-  - `rejected` au routeur, quand la catégorie est connue ;
   - `rerouted` et `failed` au pool ;
   - `OutcomeMT` sur `mt.outcome`, qui gagne les deux champs ;
   - **la ligne DLR** (`modlrrouter.buildCDRRow`, rang 40, la plus haute en régime nominal) : `dlrmap.Mapping`
     gagne les deux champs (JSON, `omitempty`). Fable avait omis cet écrivain ; c'est le seul écart.
 
   La ligne `accepted`, projetée depuis `mt.inbound` avant l'autorisation, reste à `''`/0 : elle est
-  supplantée par la suivante.
-- L'Admin API ne sert pas encore ces colonnes : l'ADR ne demande aucun champ de contrat CDR. Une fiche
-  `debts/` le porte, pour l'écran CDR Explorer de step-067 BO.
+  supplantée par la suivante. La ligne `rejected` aussi, et c'est un écart à la première version de ce
+  design, décidé à l'implémentation. La ligne est terminale, donc rien ne l'efface ; la porter obligerait
+  `Process` à rendre un gabarit partiel avec son erreur. Le coût est consigné dans
+  `debts/categorie-du-cdr-ni-servie-ni-sur-les-rejets.md`.
+- L'Admin API ne sert pas encore ces colonnes : l'ADR ne demande aucun champ de contrat CDR (même fiche).
+- `priority_flag_default` n'est modifiable par aucune opération Admin, pas plus que ses voisins `*_default` :
+  `debts/defauts-smpp-du-connecteur-non-modifiables.md`.
 
 ### PR2 — `priority_tier` : un connecteur réservé est indisponible au rang inférieur
 - Le routeur lit `priority_tier` dans le **`Snapshot` immuable**, sous forme d'une map `connectorID → tier`

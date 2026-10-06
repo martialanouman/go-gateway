@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	"github.com/martialanouman/go-gateway/internal/dlrmap"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	"github.com/martialanouman/go-gateway/internal/platform/msg"
@@ -43,6 +44,7 @@ func TestRedisMapPutGetRoundTrip(t *testing.T) {
 	smscID := "00000000000000ab"
 	vp := "000001000000000R" // 1 day, relative
 	r := routedFixture(connectorID, &vp)
+	r.TrafficCategory, r.Priority = cp.TrafficOTP, 3
 
 	if err := store.Put(ctx, smscID, r, "ACME-ORIGINAL"); err != nil {
 		t.Fatalf("Put: %v", err)
@@ -60,6 +62,10 @@ func TestRedisMapPutGetRoundTrip(t *testing.T) {
 		got.SourceAddr != r.From || got.DestAddr != r.To || got.SegmentCount != r.SegmentCount ||
 		got.Encoding != r.Encoding || !got.SubmittedAt.Equal(r.SubmittedAt) {
 		t.Errorf("mapping = %+v, want projection of %+v", got, r)
+	}
+	// The DLR row is the highest version of its segment: without these it would erase them (step-292).
+	if got.TrafficCategory != "otp" || got.Priority != 3 {
+		t.Errorf("mapping category/priority = %q/%d, want otp/3", got.TrafficCategory, got.Priority)
 	}
 	if got.OriginalSourceAddr != "ACME-ORIGINAL" {
 		t.Errorf("original source = %q, want ACME-ORIGINAL", got.OriginalSourceAddr)

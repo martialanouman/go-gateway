@@ -86,20 +86,22 @@ func submitDataCoding(r pipeline.RoutedMT) uint8 {
 func submitOutcome(r pipeline.RoutedMT, resp smpp.PDU) pipeline.OutcomeMT {
 	status, errorCode := outcome(resp.Status)
 	return pipeline.OutcomeMT{
-		MessageID:    r.MessageID,
-		TraceID:      r.TraceID,
-		AccountID:    r.AccountID,
-		CustomerID:   r.CustomerID,
-		ConnectorID:  r.ConnectorID,
-		RouteID:      r.RouteID,
-		From:         r.From,
-		To:           r.To,
-		Encoding:     r.Encoding,
-		SegmentSeq:   int(segmentSeq(r.SegmentSeq)),
-		SegmentCount: int(segmentCount(r.SegmentCount)),
-		SubmittedAt:  r.SubmittedAt,
-		Status:       string(status),
-		ErrorCode:    errorCode,
+		MessageID:       r.MessageID,
+		TraceID:         r.TraceID,
+		AccountID:       r.AccountID,
+		CustomerID:      r.CustomerID,
+		ConnectorID:     r.ConnectorID,
+		RouteID:         r.RouteID,
+		From:            r.From,
+		To:              r.To,
+		Encoding:        r.Encoding,
+		SegmentSeq:      int(segmentSeq(r.SegmentSeq)),
+		SegmentCount:    int(segmentCount(r.SegmentCount)),
+		SubmittedAt:     r.SubmittedAt,
+		Status:          string(status),
+		ErrorCode:       errorCode,
+		TrafficCategory: string(r.TrafficCategory),
+		Priority:        r.Priority,
 	}
 }
 
@@ -109,19 +111,21 @@ func submitOutcome(r pipeline.RoutedMT, resp smpp.PDU) pipeline.OutcomeMT {
 // ReplacingMergeTree (same ORDER BY key and rank), it closes the crash window between flag and row.
 func cancelledRow(r pipeline.RoutedMT) clickhouse.CDRRow {
 	return clickhouse.CDRRow{
-		MessageID:    r.MessageID,
-		TraceID:      r.TraceID,
-		AccountID:    r.AccountID,
-		CustomerID:   r.CustomerID,
-		Direction:    clickhouse.DirectionMT,
-		SourceAddr:   r.From,
-		DestAddr:     r.To,
-		SubmittedAt:  r.SubmittedAt,
-		Status:       clickhouse.StatusCancelled,
-		SegmentCount: segmentCount(r.SegmentCount),
-		SegmentSeq:   segmentSeq(r.SegmentSeq),
-		Encoding:     clickhouse.EncodingOf(r.Encoding),
-		Billed:       false,
+		MessageID:       r.MessageID,
+		TraceID:         r.TraceID,
+		AccountID:       r.AccountID,
+		CustomerID:      r.CustomerID,
+		Direction:       clickhouse.DirectionMT,
+		SourceAddr:      r.From,
+		DestAddr:        r.To,
+		SubmittedAt:     r.SubmittedAt,
+		Status:          clickhouse.StatusCancelled,
+		SegmentCount:    segmentCount(r.SegmentCount),
+		SegmentSeq:      segmentSeq(r.SegmentSeq),
+		Encoding:        clickhouse.EncodingOf(r.Encoding),
+		Billed:          false,
+		TrafficCategory: string(r.TrafficCategory),
+		Priority:        clickhouse.PriorityOf(r.Priority),
 	}
 }
 

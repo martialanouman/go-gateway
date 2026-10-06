@@ -144,6 +144,10 @@ type OutcomeMT struct {
 	// when nothing was captured (billing disabled, no reservation, or a fail-open capture).
 	Billed         bool
 	CreditsCharged *int32
+	// TrafficCategory and Priority are copied from the routed message: the outcome row supersedes the
+	// placeholder and is superseded by the DLR row, and each must carry them (step-292).
+	TrafficCategory string
+	Priority        int
 }
 
 // MOInbound is a mobile-originated message a SMSC delivered to one of our inbound numbers, carried on

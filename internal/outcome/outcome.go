@@ -173,6 +173,8 @@ func row(env pipeline.OutcomeMT, status clickhouse.Status) clickhouse.CDRRow {
 		Billed:             env.Billed,
 		CreditsCharged:     env.CreditsCharged,
 		OriginalSourceAddr: nonEmpty(env.OriginalFrom),
+		TrafficCategory:    env.TrafficCategory,
+		Priority:           clickhouse.PriorityOf(env.Priority),
 	}
 }
 

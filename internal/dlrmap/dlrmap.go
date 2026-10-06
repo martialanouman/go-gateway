@@ -62,6 +62,8 @@ type mapping struct {
 	SegmentSeq         int       `json:"segment_seq"`
 	Encoding           string    `json:"encoding"`
 	SubmittedAt        time.Time `json:"submitted_at"`
+	TrafficCategory    string    `json:"traffic_category,omitempty"`
+	Priority           int       `json:"priority,omitempty"`
 }
 
 // Mapping is the resolved DLR correlation the return-path router reads back (step-044): the full CDR
@@ -81,6 +83,9 @@ type Mapping struct {
 	SegmentSeq         int
 	Encoding           string
 	SubmittedAt        time.Time
+	// TrafficCategory and Priority must reach the DLR row, the highest version of its segment (step-292).
+	TrafficCategory string
+	Priority        int
 }
 
 // key scopes an entry by (connector_id, smsc_msg_id): connector_id disambiguates the same
@@ -119,6 +124,8 @@ func (m *RedisMap) Put(ctx context.Context, smscMsgID string, r pipeline.RoutedM
 		SegmentSeq:         r.SegmentSeq,
 		Encoding:           r.Encoding,
 		SubmittedAt:        r.SubmittedAt,
+		TrafficCategory:    string(r.TrafficCategory),
+		Priority:           r.Priority,
 	})
 	if err != nil {
 		return fmt.Errorf("dlrmap: marshal %s: %w", r.MessageID, err)
@@ -195,6 +202,8 @@ func (w mapping) resolve() (Mapping, error) {
 		SegmentSeq:         w.SegmentSeq,
 		Encoding:           w.Encoding,
 		SubmittedAt:        w.SubmittedAt,
+		TrafficCategory:    w.TrafficCategory,
+		Priority:           w.Priority,
 	}, nil
 }
 
