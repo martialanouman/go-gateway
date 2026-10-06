@@ -51,6 +51,46 @@ topologie (`mt.inbound`/`mt.routed`) qui sert de référence à ADR-0021.
   `vmstat`, CPU par pod, `observe`. On y ajoute `vmstat` côté injecteur, qui prouve que k6 n'est plus le
   goulot.
 
+## Journal de la campagne (06-07/10/2026, VPS de test 8 vCPU, injecteur `contabo75` 8 vCPU)
+
+**Aucun verdict n'est rendu ici (→ step-409).**
+
+**Run 1a, `sustained` sans idempotence, image `84b18e7` : perdu à 6 min 53 s.** Une coupure ssh du poste a
+tué k6 et les relevés distants. `k6-remote` tourne depuis sous `systemd-run` sur l'injecteur. Le backlog
+laissé par ce run (environ 450 000 messages au routeur et 355 000 au pool) a été vidé par l'utilisateur
+(seek des groupes à la fin).
+
+**Ce que l'écoulement de ce backlog a montré.** Sans aucune ingestion, l'hôte restait à 96 % de CPU, et
+ClickHouse prenait 1,9 cœur, puis 4,6 cœurs à vide. On a trouvé deux causes, payées par **step-287b**
+(#278) : les CDR des DLR écrits un accusé à la fois, et des journaux système en `Trace` (33 Go). Après
+step-287b, ClickHouse est à 0,2 cœur au repos et l'hôte à 93-94 % d'idle.
+
+**Run 1b, `sustained` sans idempotence, 10 min, image `032721a` (avec step-287b) :**
+
+| Mesure | Valeur |
+|---|---:|
+| req/s tenues (8 000 visées) | **2 626** |
+| 202 | 100 % (1 581 291) |
+| p99 / médiane | 3,47 s / 1,47 s |
+| itérations abandonnées | 5 346/s (4 000 VUs, le maximum) |
+| CPU de l'injecteur | 79 % idle : **l'injecteur n'est plus le goulot** |
+| CPU de la passerelle (vmstat, moyenne) | 58 % us, **37 % sy**, 5 % idle |
+| `submit_sm` du pool | 79 650 en 600 s, soit **~133/s**, à 0,13 cœur par pod |
+| inserts `cdr` | **126 lignes en moyenne** (contre 1 avant step-287b), ~99 ms chacun |
+
+CPU moyen par pod : Postgres 1,9 cœur (l'authentification REST fait une requête Postgres par appel, piège
+(i) de step-280), ClickHouse 1,3, `rest-api-svc` 2 × 0,7, billing-svc 0,4, Redpanda 0,36, Redis 0,35,
+routeur 2 × 0,23.
+
+**Trouvé en le faisant tourner.** billing-svc lit le CDR en boucle : 1 307 requêtes `ByMessageID` en
+20 min, à environ 400 ms chacune, soit le reaper de facturation qui interroge `message_id` hors de la clé de
+tri. Une partie de ce volume vient des réservations orphelines laissées par le seek du backlog.
+
+**Ce que le run ne dit pas encore.** Le pool envoie 133 `submit_sm`/s alors qu'il est presque oisif : il
+attend quelque chose. Comme l'hôte est saturé (37 % de temps système), il est impossible de dire si
+cette attente vient de la contention ou d'une étape sérielle par message. Les trois autres runs
+mesureraient la même saturation.
+
 ## Definition of Done
 - [ ] les quatre runs faits, chacun avec les relevés de step-280, verdict toujours non rendu (→ step-409)
 - [ ] la traversée mesurée avec 24 clients, et le goulot suivant nommé
