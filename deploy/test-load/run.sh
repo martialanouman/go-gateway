@@ -6,8 +6,7 @@
 #                                          clients de charge (24 par défaut) ; clés dans le Secret k6-load
 #   run.sh HOST ceiling VERSION            plafond du simulateur, dans le cluster
 #   run.sh HOST k6 PROFILE IDEMPOTENCY DURATION
-#   run.sh HOST expose                     NodePort 30880, joignable des seuls hôtes de la zone firewalld
-#                                          test-peers (step-287)
+#   run.sh HOST expose                     port 30880, joignable des seuls hôtes de test (step-287)
 #   run.sh HOST unexpose
 #   run.sh HOST k6-remote INJECTOR PROFILE IDEMPOTENCY DURATION
 #                                          k6 lancé depuis l'hôte ssh INJECTOR, visant le NodePort
@@ -78,10 +77,10 @@ case $action in
     kubectl create configmap k6-script --from-file="$root/test/load/k6/messages.js" --dry-run=client -o yaml | kube apply -f -
     run_job k6-load "$(sed -e "s/@PROFILE@/$3/" -e "s/@IDEMPOTENCY@/$4/" -e "s/@DURATION@/$5/" "$here/k6.yaml")"
     ;;
-  # Le NodePort n'est joignable que des hôtes de la zone firewalld permanente test-peers, posée sur l'hôte
-  # (README §11). Le Service ne vit que le temps de la campagne.
+  # Le Service filtre lui-même la source (rest-api-load.yaml) : la zone firewalld ne protège pas un
+  # Service k3s (README §11). Il ne vit que le temps de la campagne.
   expose)
-    kube apply -f - <"$here/rest-api-nodeport.yaml"
+    kube apply -f - <"$here/rest-api-load.yaml"
     ;;
   unexpose)
     kube delete service rest-api-svc-load --ignore-not-found

@@ -1,0 +1,19 @@
+# Campagne step-287 : rest-api-svc joignable depuis les hôtes de test seuls. Posé et retiré par run.sh,
+# jamais dans deploy/test.
+#
+# Un NodePort ne convient pas : le DNAT de kube-proxy passe avant le filtre d'entrée de firewalld, et un
+# tiers l'atteignait malgré la zone test-peers (prouvé le 06/10/2026). servicelb (klipper-lb) filtre la
+# source lui-même, avant toute traduction, et allocateLoadBalancerNodePorts: false empêche le NodePort
+# qu'un LoadBalancer alloue sinon, et qui rouvrirait la même porte.
+# La liste reprend les sources de la zone test-peers : un hôte ajouté à l'une s'ajoute à l'autre.
+apiVersion: v1
+kind: Service
+metadata:
+  name: rest-api-svc-load
+spec:
+  type: LoadBalancer
+  allocateLoadBalancerNodePorts: false
+  loadBalancerSourceRanges: [75.119.149.218/32]
+  selector: { app: rest-api-svc }
+  ports:
+    - { name: https, port: 30880, targetPort: 8080 }
