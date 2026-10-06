@@ -1,7 +1,14 @@
 # La liste des composants supervisés d'un service n'est gardée par aucun test
 
-> **Statut :** OUVERTE · **Nature :** technique
-> **Née de :** step-398 · **Portée par :** —
+> **Statut :** PAYÉE le 2026-10-06 · **Nature :** technique
+> **Née de :** step-398 · **Payée par :** #272
+
+**Payée.** `internal/platform/supervisor/components_guard_test.go` vérifie le type de chaque `cmd/` supervisé.
+Tout champ d'une struct `*App` dont le type a une méthode `Run(context.Context, …)` doit apparaître dans un
+argument d'un `Add` du superviseur, sinon le test tombe. Elle couvre l'oubli d'un ajout aussi bien qu'une
+suppression, et les dix `main.go` restent inchangés. Prouvée en retirant les lignes `g.Add` du watcher de
+débit (`rest-api-svc`), du watcher opt-out (`router-svc`) et du watcher de réécriture (`connector-pool-svc`).
+Ce qui suit est l'aveu d'origine.
 
 **Ce qu'on a fait à la place.** step-398 ajoute à `router-svc` un second watcher de config, qui recharge
 l'opt-out sur une annonce STOP. Les tests prouvent qu'il est construit et qu'il fonctionne quand on le lance
