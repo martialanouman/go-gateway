@@ -71,7 +71,7 @@ La spec v2.1 du tableau de bord (go-gateway-bo, `1c29fa6`) ne nomme aucune métr
   réputation, et personne n'écrit `antispam:rep:`.
 
 ## Livré
-- Contrat 7.2.0 (mineure) : `category_mismatch` dans `rule_type`, `action` optionnelle (`default: flag`),
+- Contrat 7.3.0 (mineure) : `category_mismatch` dans `rule_type`, `action` optionnelle (`default: flag`),
   `config_json` documenté pour ce type, `SenderId.recent_category_mismatches_24h` (entier ≥ 0 ou `null`).
 - Migration 0031 : `category_mismatch` dans le `CHECK`, `action` à `'flag'` par défaut en base.
 - `Authorize` rend la catégorie, le pipeline la passe à `Evaluate` ; la règle tourne en mémoire, à côté des
