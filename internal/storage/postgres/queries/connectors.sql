@@ -2,10 +2,12 @@
 -- Only the columns ConnectorCreate settles are set here; the SMPP wire-parameter block and the
 -- reconnect tuning knobs take their DDL defaults. A duplicate name violates the inline UNIQUE on
 -- name -> 409.
+-- priority_flag_default is the one wire parameter ConnectorCreate settles (step-294).
 INSERT INTO control_plane.smsc_connectors (
     name, host, port, bind_type, system_id, password_sealed, password_kms_key_ref, vendor_profile,
     interface_version, data_coding_default, window_size, bind_pool_size,
-    throughput_limit_per_sec, tls_enabled, tls_config_json, priority_tier, auto_reconnect_enabled
+    throughput_limit_per_sec, tls_enabled, tls_config_json, priority_tier, auto_reconnect_enabled,
+    priority_flag_default
 ) VALUES (
     @name, @host, @port, @bind_type, @system_id, @password_sealed, @password_kms_key_ref, sqlc.narg('vendor_profile'),
     COALESCE(sqlc.narg('interface_version')::smallint, 52),
@@ -16,7 +18,8 @@ INSERT INTO control_plane.smsc_connectors (
     COALESCE(sqlc.narg('tls_enabled')::boolean, false),
     sqlc.narg('tls_config_json'),
     COALESCE(sqlc.narg('priority_tier')::integer, 0),
-    COALESCE(sqlc.narg('auto_reconnect_enabled')::boolean, false)
+    COALESCE(sqlc.narg('auto_reconnect_enabled')::boolean, false),
+    COALESCE(sqlc.narg('priority_flag_default')::smallint, 0)
 )
 RETURNING *;
 
@@ -42,7 +45,8 @@ UPDATE control_plane.smsc_connectors SET
     tls_enabled              = COALESCE(sqlc.narg('tls_enabled'), tls_enabled),
     tls_config_json          = COALESCE(sqlc.narg('tls_config_json'), tls_config_json),
     priority_tier            = COALESCE(sqlc.narg('priority_tier'), priority_tier),
-    status                   = COALESCE(sqlc.narg('status'), status)
+    status                   = COALESCE(sqlc.narg('status'), status),
+    priority_flag_default    = COALESCE(sqlc.narg('priority_flag_default'), priority_flag_default)
 WHERE id = @id
 RETURNING *;
 

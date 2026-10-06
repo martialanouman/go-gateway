@@ -2385,12 +2385,12 @@ components:
         dest_addr_ton: { type: integer }
         dest_addr_npi: { type: integer }
         data_coding_default: { type: [integer, "null"] }
-        registered_delivery_default: { type: integer }
-        replace_if_present_flag_default: { type: integer }
-        esm_class_default: { type: integer }
+        registered_delivery_default: { type: integer, description: 'Read-only: stored and served, but no runtime code reads it yet.' }
+        replace_if_present_flag_default: { type: integer, description: 'Read-only: stored and served, but no runtime code reads it yet.' }
+        esm_class_default: { type: integer, description: 'Read-only: stored and served, but no runtime code reads it yet.' }
         priority_flag_default: { type: integer, description: 'SMPP priority_flag sent when the message effective priority is 0 (a marketing message).' }
-        validity_period_default: { type: [string, "null"] }
-        sm_default_msg_id: { type: integer }
+        validity_period_default: { type: [string, "null"], description: 'Read-only: stored and served, but no runtime code reads it yet.' }
+        sm_default_msg_id: { type: integer, description: 'Read-only: stored and served, but no runtime code reads it yet.' }
         enquire_link_interval_sec: { type: integer, minimum: 1 }
         enquire_link_max_missed: { type: integer, minimum: 1 }
         bind_timeout_ms: { type: integer, minimum: 1 }
@@ -2429,6 +2429,7 @@ components:
         throughput_limit_per_sec: { type: [integer, "null"], minimum: 1 }
         tls_enabled: { type: boolean, default: false }
         tls_config_json: { type: [object, "null"], additionalProperties: true }
+        priority_flag_default: { type: integer, minimum: 0, maximum: 3, default: 0, description: 'SMPP priority_flag sent when the message effective priority is 0 (a marketing message).' }
         priority_tier: { type: integer, default: 0 }
         auto_reconnect_enabled: { type: boolean, default: false }
       required: [name, host, port, bind_type, system_id, password]
@@ -2449,6 +2450,7 @@ components:
         throughput_limit_per_sec: { type: [integer, "null"], minimum: 1 }
         tls_enabled: { type: boolean }
         tls_config_json: { type: [object, "null"], additionalProperties: true }
+        priority_flag_default: { type: integer, minimum: 0, maximum: 3, description: 'Applied at the next bind; rebind-connector applies it at once.' }
         priority_tier: { type: integer }
         status: { type: string, enum: [active, degraded, disabled] }
     ReconnectPolicy:

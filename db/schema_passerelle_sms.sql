@@ -426,7 +426,7 @@ CREATE TABLE control_plane.smsc_connectors (
   registered_delivery_default     smallint NOT NULL DEFAULT 1,   -- request DLR
   replace_if_present_flag_default smallint NOT NULL DEFAULT 0,
   esm_class_default               smallint NOT NULL DEFAULT 0,
-  priority_flag_default           smallint NOT NULL DEFAULT 0,
+  priority_flag_default           smallint NOT NULL DEFAULT 0 CHECK (priority_flag_default BETWEEN 0 AND 3),  -- ADR-0020 §3
   validity_period_default         text,
   sm_default_msg_id               smallint NOT NULL DEFAULT 0,
 

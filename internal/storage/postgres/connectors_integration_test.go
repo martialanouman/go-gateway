@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
@@ -211,5 +212,36 @@ func TestConnectorRepoIgnoresAHalfFilledSealedPassword(t *testing.T) {
 			t.Errorf("%s: the row became %x / %q, want the stored pair %x / %q untouched",
 				name, got.Password.Sealed, got.Password.KMSKeyRef, stored.Sealed, stored.KMSKeyRef)
 		}
+	}
+}
+
+// TestConnectorPriorityFlagDefaultRoundTripsAndIsBounded: written by create and update, and bounded by the
+// schema too, since SQL was the only way to set it before step-294.
+func TestConnectorPriorityFlagDefaultRoundTripsAndIsBounded(t *testing.T) {
+	pool := pgtest.Pool(t)
+	repo := postgres.NewConnectorRepo(pool)
+	ctx := context.Background()
+	two, one := 2, 1
+
+	created, err := repo.Create(ctx, cp.NewConnector{
+		Name: "smsc-flag-" + uuid.NewString(), Host: "h", Port: 2775, BindType: cp.BindTRX, SystemID: "s",
+		Password: cp.SealedSecret{Sealed: []byte{1}, KMSKeyRef: "test/v1"}, PriorityFlagDefault: &two,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if created.PriorityFlagDefault != 2 {
+		t.Errorf("created priority_flag_default = %d, want 2", created.PriorityFlagDefault)
+	}
+	updated, err := repo.Update(ctx, created.ID, cp.ConnectorPatch{PriorityFlagDefault: &one})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if updated.PriorityFlagDefault != 1 {
+		t.Errorf("updated priority_flag_default = %d, want 1", updated.PriorityFlagDefault)
+	}
+	_, err = pool.Exec(ctx, `UPDATE control_plane.smsc_connectors SET priority_flag_default = 4 WHERE id = $1`, created.ID)
+	if pgErr := (*pgconn.PgError)(nil); !errors.As(err, &pgErr) || pgErr.Code != "23514" {
+		t.Errorf("priority_flag_default = 4: err = %v, want a CHECK violation (23514)", err)
 	}
 }

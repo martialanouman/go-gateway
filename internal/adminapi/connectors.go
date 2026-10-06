@@ -149,6 +149,7 @@ type connectorCreateBody struct {
 	TLSConfigJSON         map[string]any `json:"tls_config_json,omitempty" nullable:"true"`
 	PriorityTier          *int           `json:"priority_tier,omitempty"`
 	AutoReconnectEnabled  *bool          `json:"auto_reconnect_enabled,omitempty"`
+	PriorityFlagDefault   *int           `json:"priority_flag_default,omitempty" minimum:"0" maximum:"3"`
 }
 
 type connectorUpdateBody struct {
@@ -166,6 +167,7 @@ type connectorUpdateBody struct {
 	TLSConfigJSON         map[string]any `json:"tls_config_json,omitempty" nullable:"true"`
 	PriorityTier          *int           `json:"priority_tier,omitempty"`
 	Status                *string        `json:"status,omitempty" enum:"active,degraded,disabled"`
+	PriorityFlagDefault   *int           `json:"priority_flag_default,omitempty" minimum:"0" maximum:"3"`
 }
 
 type connectorHandlers struct {
@@ -286,6 +288,7 @@ func (h *connectorHandlers) create(ctx context.Context, in *createConnectorInput
 		TLSConfigJSON:         in.Body.TLSConfigJSON,
 		PriorityTier:          in.Body.PriorityTier,
 		AutoReconnectEnabled:  in.Body.AutoReconnectEnabled,
+		PriorityFlagDefault:   in.Body.PriorityFlagDefault,
 	})
 	if err != nil {
 		return nil, humaerr.FromError(err)
@@ -339,6 +342,7 @@ func (h *connectorHandlers) update(ctx context.Context, in *updateConnectorInput
 		TLSConfigJSON:         in.Body.TLSConfigJSON,
 		PriorityTier:          in.Body.PriorityTier,
 		Status:                enumPtr[cp.ConnectorStatus](in.Body.Status),
+		PriorityFlagDefault:   in.Body.PriorityFlagDefault,
 	}
 	if in.Body.Password != nil {
 		sealed, err := sealSecret(ctx, h.sealer, "connector password", *in.Body.Password)

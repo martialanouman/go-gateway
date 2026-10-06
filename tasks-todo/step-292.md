@@ -73,6 +73,8 @@ de cette fiche ne touchent pas la topologie : elles n'attendent pas step-287.
 
   Il ne reste rien → `ErrNoRoute`. Aucun code d'erreur neuf, aucune métrique neuve (ADR-0020 renvoie la
   mauvaise configuration au simulateur de route).
+- `priority_tier` borné (`0..2` au contrat, `CHECK` en base) : il n'a aujourd'hui ni l'un ni l'autre
+  (relevé par step-294).
 - Spec §6.1 et §6.8 (définition de `priority_tier`) dans la même PR. PR1 porte §3.4 (CDR), §6.19
   (priorité effective) et §6.20 (catégorie de la réponse au STOP).
 - Invariant b : la garde s'applique **après** la résolution et ne court-circuite aucune étape. Un test de

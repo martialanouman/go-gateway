@@ -204,3 +204,45 @@ func TestSetReconnectPolicyPersistsAndSignals(t *testing.T) {
 		t.Errorf("reconfigure signals = %d, want 1", control.reconfigs)
 	}
 }
+
+// TestConnectorPriorityFlagDefaultIsWritable: the pool sends it for a message of effective priority 0
+// (ADR-0020 §3), so create and update must reach the store with it, and the SMPP range bounds it.
+func TestConnectorPriorityFlagDefaultIsWritable(t *testing.T) {
+	store := newFakeConnectorStore()
+	api := newTestAPIWith(t, adminapi.Deps{Connectors: store})
+
+	w := httptest.NewRecorder()
+	api.ServeHTTP(w, authed(t, http.MethodPost, "/v1/admin/connectors",
+		`{"name":"smsc-1","host":"h","port":2775,"bind_type":"trx","system_id":"s","password":"p","priority_flag_default":2}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, want 201; body=%s", w.Code, w.Body)
+	}
+	if store.created.PriorityFlagDefault == nil || *store.created.PriorityFlagDefault != 2 {
+		t.Errorf("created priority_flag_default = %v, want 2", store.created.PriorityFlagDefault)
+	}
+
+	var id string
+	for k := range store.byID {
+		id = k.String()
+	}
+	w = httptest.NewRecorder()
+	api.ServeHTTP(w, authed(t, http.MethodPatch, "/v1/admin/connectors/"+id, `{"priority_flag_default":1}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("update status = %d, want 200; body=%s", w.Code, w.Body)
+	}
+	if store.patched.PriorityFlagDefault == nil || *store.patched.PriorityFlagDefault != 1 {
+		t.Errorf("patched priority_flag_default = %v, want 1", store.patched.PriorityFlagDefault)
+	}
+
+	w = httptest.NewRecorder()
+	api.ServeHTTP(w, authed(t, http.MethodPatch, "/v1/admin/connectors/"+id, `{"priority_flag_default":4}`))
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("update with priority_flag_default 4: status = %d, want 422; body=%s", w.Code, w.Body)
+	}
+	w = httptest.NewRecorder()
+	api.ServeHTTP(w, authed(t, http.MethodPost, "/v1/admin/connectors",
+		`{"name":"smsc-2","host":"h","port":2775,"bind_type":"trx","system_id":"s","password":"p","priority_flag_default":4}`))
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("create with priority_flag_default 4: status = %d, want 422; body=%s", w.Code, w.Body)
+	}
+}
