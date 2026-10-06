@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	"github.com/martialanouman/go-gateway/internal/platform/msg"
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
 )
@@ -51,6 +52,8 @@ type routedWire struct {
 	RegisteredDelivery bool       `json:"registered_delivery"`
 	ValidityPeriod     *string    `json:"validity_period,omitempty"`
 	DataCoding         *int       `json:"data_coding,omitempty"`
+	TrafficCategory    string     `json:"traffic_category"`
+	Priority           int        `json:"priority"`
 	ConnectorID        uuid.UUID  `json:"connector_id"`
 	RouteID            *uuid.UUID `json:"route_id,omitempty"`
 	SegmentSeq         int        `json:"segment_seq"`
@@ -134,6 +137,8 @@ func EncodeRouted(env RoutedMT) (kafka.Record, error) {
 		RegisteredDelivery: env.RegisteredDelivery,
 		ValidityPeriod:     env.ValidityPeriod,
 		DataCoding:         env.DataCoding,
+		TrafficCategory:    string(env.TrafficCategory),
+		Priority:           env.Priority,
 		ConnectorID:        env.ConnectorID,
 		RouteID:            env.RouteID,
 		SegmentSeq:         env.SegmentSeq,
@@ -160,6 +165,14 @@ func EncodeRouted(env RoutedMT) (kafka.Record, error) {
 		Value:   value,
 		Headers: headers,
 	}, nil
+}
+
+// routedCategory reads a record produced before the field existed as marketing, the most constrained.
+func routedCategory(raw string) cp.TrafficCategory {
+	if raw == "" {
+		return cp.TrafficMarketing
+	}
+	return cp.TrafficCategory(raw)
 }
 
 // DecodeRouted parses an mt.routed record, re-wrapping the body into msg.Body immediately.
@@ -190,6 +203,8 @@ func DecodeRouted(rec kafka.Record) (RoutedMT, error) {
 		RegisteredDelivery: w.RegisteredDelivery,
 		ValidityPeriod:     w.ValidityPeriod,
 		DataCoding:         w.DataCoding,
+		TrafficCategory:    routedCategory(w.TrafficCategory),
+		Priority:           w.Priority,
 		ConnectorID:        w.ConnectorID,
 		RouteID:            w.RouteID,
 		FallbackChain:      chain,

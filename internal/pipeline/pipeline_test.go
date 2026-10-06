@@ -354,6 +354,23 @@ func TestPipelineChecksTheTrafficAgainstTheSendersCategory(t *testing.T) {
 	}
 }
 
+// TestPipelineCarriesTheEffectivePriority: the requested priority survives the pipeline, bounded by the
+// sender's category (ADR-0020 §2), and the category travels with it to mt.routed.
+func TestPipelineCarriesTheEffectivePriority(t *testing.T) {
+	deps := testDeps(observability.Tracer(otelrec.New(t).Provider(), "router"))
+	deps.SenderIDs = stubAuthorizer{category: cp.TrafficTransactional}
+	in := inbound("+2250700000000")
+	in.Priority = 2
+
+	routed, _, err := pipeline.New(deps).Process(context.Background(), in)
+	if err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if routed.TrafficCategory != cp.TrafficTransactional || routed.Priority != 2 {
+		t.Errorf("routed category/priority = %q/%d, want transactional/2", routed.TrafficCategory, routed.Priority)
+	}
+}
+
 func TestPipelineRejectsNoRoute(t *testing.T) {
 	rec := otelrec.New(t)
 	tracer := observability.Tracer(rec.Provider(), "router")

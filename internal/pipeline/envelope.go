@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	"github.com/martialanouman/go-gateway/internal/platform/msg"
 )
 
@@ -55,8 +56,12 @@ type RoutedMT struct {
 	RegisteredDelivery bool
 	ValidityPeriod     *string
 	DataCoding         *int // client data_coding override, carried through to the SMSC (nil = derive from Encoding)
-	ConnectorID        uuid.UUID
-	RouteID            *uuid.UUID
+	// TrafficCategory is the category declared on the sender ID (ADR-0020 §1); Priority is the effective
+	// priority it bounds (§2), sent as the SMPP priority_flag.
+	TrafficCategory cp.TrafficCategory
+	Priority        int
+	ConnectorID     uuid.UUID
+	RouteID         *uuid.UUID
 	// FallbackChain is the ordered list of connectors this message may be rerouted through when its
 	// current target degrades (breaker open or a connector-health rejection), computed by the router
 	// from the route's strategy (step-114/125). It travels in the fallback_chain HEADER (routing
