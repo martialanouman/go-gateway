@@ -78,6 +78,7 @@ func (r *ConnectorRepo) Create(ctx context.Context, in cp.NewConnector) (cp.Conn
 		TlsConfigJson:         tls,
 		PriorityTier:          i32ptr(in.PriorityTier),
 		AutoReconnectEnabled:  in.AutoReconnectEnabled,
+		PriorityFlagDefault:   i16ptr(in.PriorityFlagDefault),
 	})
 	if err != nil {
 		return cp.Connector{}, translate("create connector", err)
@@ -135,6 +136,7 @@ func (r *ConnectorRepo) Update(ctx context.Context, id uuid.UUID, p cp.Connector
 		TlsConfigJson:         tls,
 		PriorityTier:          i32ptr(p.PriorityTier),
 		Status:                strPtr(p.Status),
+		PriorityFlagDefault:   i16ptr(p.PriorityFlagDefault),
 	})
 	if err != nil {
 		return cp.Connector{}, translate("update connector", err)

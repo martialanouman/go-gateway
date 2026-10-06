@@ -26,6 +26,6 @@ L'arbitrage a été rendu par Fable, sans contradiction avec la spec.
   sémantique.
 
 ## Definition of Done
-- [ ] contrat déclaré avant le handler, bump MINEUR
-- [ ] création et mise à jour écrivent la valeur ; 4 refusé en 422 ; le `CHECK` refuse 4 en SQL
-- [ ] fiche de dette passée en PAYÉE
+- [x] contrat déclaré avant le handler, bump MINEUR
+- [x] création et mise à jour écrivent la valeur ; 4 refusé en 422 ; le `CHECK` refuse 4 en SQL
+- [x] fiche de dette passée en PAYÉE

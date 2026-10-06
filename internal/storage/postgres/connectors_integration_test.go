@@ -213,3 +213,33 @@ func TestConnectorRepoIgnoresAHalfFilledSealedPassword(t *testing.T) {
 		}
 	}
 }
+
+// TestConnectorPriorityFlagDefaultRoundTripsAndIsBounded: written by create and update, and bounded by the
+// schema too, since SQL was the only way to set it before step-294.
+func TestConnectorPriorityFlagDefaultRoundTripsAndIsBounded(t *testing.T) {
+	pool := pgtest.Pool(t)
+	repo := postgres.NewConnectorRepo(pool)
+	ctx := context.Background()
+	two, one := 2, 1
+
+	created, err := repo.Create(ctx, cp.NewConnector{
+		Name: "smsc-flag-" + uuid.NewString(), Host: "h", Port: 2775, BindType: cp.BindTRX, SystemID: "s",
+		Password: cp.SealedSecret{Sealed: []byte{1}, KMSKeyRef: "test/v1"}, PriorityFlagDefault: &two,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if created.PriorityFlagDefault != 2 {
+		t.Errorf("created priority_flag_default = %d, want 2", created.PriorityFlagDefault)
+	}
+	updated, err := repo.Update(ctx, created.ID, cp.ConnectorPatch{PriorityFlagDefault: &one})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if updated.PriorityFlagDefault != 1 {
+		t.Errorf("updated priority_flag_default = %d, want 1", updated.PriorityFlagDefault)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE control_plane.smsc_connectors SET priority_flag_default = 4 WHERE id = $1`, created.ID); err == nil {
+		t.Error("priority_flag_default = 4 was accepted; want a CHECK violation")
+	}
+}

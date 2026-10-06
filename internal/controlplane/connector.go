@@ -85,6 +85,7 @@ type NewConnector struct {
 	TLSConfigJSON         map[string]any
 	PriorityTier          *int
 	AutoReconnectEnabled  *bool
+	PriorityFlagDefault   *int
 }
 
 // ConnectorPatch is a partial update of a connector, limited to the fields the contract's
@@ -105,6 +106,7 @@ type ConnectorPatch struct {
 	TLSConfigJSON         map[string]any
 	PriorityTier          *int
 	Status                *ConnectorStatus
+	PriorityFlagDefault   *int
 }
 
 // ReconnectPolicy is a partial update of a connector's auto-reconnection policy (step-128, §6.13).

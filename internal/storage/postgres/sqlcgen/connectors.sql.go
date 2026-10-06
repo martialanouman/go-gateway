@@ -16,7 +16,8 @@ const createConnector = `-- name: CreateConnector :one
 INSERT INTO control_plane.smsc_connectors (
     name, host, port, bind_type, system_id, password_sealed, password_kms_key_ref, vendor_profile,
     interface_version, data_coding_default, window_size, bind_pool_size,
-    throughput_limit_per_sec, tls_enabled, tls_config_json, priority_tier, auto_reconnect_enabled
+    throughput_limit_per_sec, tls_enabled, tls_config_json, priority_tier, auto_reconnect_enabled,
+    priority_flag_default
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8,
     COALESCE($9::smallint, 52),
@@ -27,7 +28,8 @@ INSERT INTO control_plane.smsc_connectors (
     COALESCE($14::boolean, false),
     $15,
     COALESCE($16::integer, 0),
-    COALESCE($17::boolean, false)
+    COALESCE($17::boolean, false),
+    COALESCE($18::smallint, 0)
 )
 RETURNING id, name, host, port, bind_type, system_id, vendor_profile, system_type, interface_version, addr_ton, addr_npi, address_range, source_addr_ton, source_addr_npi, dest_addr_ton, dest_addr_npi, data_coding_default, registered_delivery_default, replace_if_present_flag_default, esm_class_default, priority_flag_default, validity_period_default, sm_default_msg_id, enquire_link_interval_sec, enquire_link_max_missed, bind_timeout_ms, response_timeout_ms, window_size, bind_pool_size, throughput_limit_per_sec, tls_enabled, tls_config_json, priority_tier, status, auto_reconnect_enabled, reconnect_initial_delay_ms, reconnect_multiplier, reconnect_max_delay_ms, reconnect_jitter_pct, reconnect_max_attempts, created_at, updated_at, password_sealed, password_kms_key_ref
 `
@@ -50,6 +52,7 @@ type CreateConnectorParams struct {
 	TlsConfigJson         []byte
 	PriorityTier          *int32
 	AutoReconnectEnabled  *bool
+	PriorityFlagDefault   *int16
 }
 
 // Only the columns ConnectorCreate settles are set here; the SMPP wire-parameter block and the
@@ -74,6 +77,7 @@ func (q *Queries) CreateConnector(ctx context.Context, arg CreateConnectorParams
 		arg.TlsConfigJson,
 		arg.PriorityTier,
 		arg.AutoReconnectEnabled,
+		arg.PriorityFlagDefault,
 	)
 	var i ControlPlaneSmscConnector
 	err := row.Scan(
@@ -278,8 +282,9 @@ UPDATE control_plane.smsc_connectors SET
     tls_enabled              = COALESCE($12, tls_enabled),
     tls_config_json          = COALESCE($13, tls_config_json),
     priority_tier            = COALESCE($14, priority_tier),
-    status                   = COALESCE($15, status)
-WHERE id = $16
+    status                   = COALESCE($15, status),
+    priority_flag_default    = COALESCE($16, priority_flag_default)
+WHERE id = $17
 RETURNING id, name, host, port, bind_type, system_id, vendor_profile, system_type, interface_version, addr_ton, addr_npi, address_range, source_addr_ton, source_addr_npi, dest_addr_ton, dest_addr_npi, data_coding_default, registered_delivery_default, replace_if_present_flag_default, esm_class_default, priority_flag_default, validity_period_default, sm_default_msg_id, enquire_link_interval_sec, enquire_link_max_missed, bind_timeout_ms, response_timeout_ms, window_size, bind_pool_size, throughput_limit_per_sec, tls_enabled, tls_config_json, priority_tier, status, auto_reconnect_enabled, reconnect_initial_delay_ms, reconnect_multiplier, reconnect_max_delay_ms, reconnect_jitter_pct, reconnect_max_attempts, created_at, updated_at, password_sealed, password_kms_key_ref
 `
 
@@ -299,6 +304,7 @@ type UpdateConnectorParams struct {
 	TlsConfigJson         []byte
 	PriorityTier          *int32
 	Status                *string
+	PriorityFlagDefault   *int16
 	ID                    uuid.UUID
 }
 
@@ -319,6 +325,7 @@ func (q *Queries) UpdateConnector(ctx context.Context, arg UpdateConnectorParams
 		arg.TlsConfigJson,
 		arg.PriorityTier,
 		arg.Status,
+		arg.PriorityFlagDefault,
 		arg.ID,
 	)
 	var i ControlPlaneSmscConnector

@@ -587,7 +587,7 @@ func (c connectorConfigSource) Load(ctx context.Context, connectorID uuid.UUID) 
 	return connectorpool.LiveConfig{
 		BindPoolSize:        conn.BindPoolSize,
 		Reconnect:           rc,
-		PriorityFlagDefault: uint8(min(max(conn.PriorityFlagDefault, 0), 3)), //nolint:gosec // clamped to the SMPP range
+		PriorityFlagDefault: uint8(conn.PriorityFlagDefault), //nolint:gosec // CHECK (priority_flag_default BETWEEN 0 AND 3)
 	}, nil
 }
 

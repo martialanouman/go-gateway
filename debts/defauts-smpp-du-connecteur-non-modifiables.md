@@ -1,6 +1,6 @@
 # Défauts SMPP du connecteur non modifiables à l'Admin API
 
-> **Statut :** OUVERTE · **Nature :** produit
+> **Statut :** PAYÉE (06/10/2026, step-294) · **Nature :** produit
 > **Née de :** step-292 (PR1) · **Portée par :** step-294
 
 **Ce qu'on a fait à la place.** `priority_flag_default` est lu par le pool depuis step-292
@@ -20,3 +20,8 @@ attend une autre valeur passe par la base.
 
 **À quoi on reconnaîtra qu'il faut la payer.** Le formulaire de connecteur du tableau de bord expose
 `priority_flag_default` (ADR-0020, action item 8), ou un opérateur de réseau exige un autre défaut.
+
+**Payée.** `priority_flag_default` s'écrit à la création et à la mise à jour (contrat 7.4.0, `0..3`), et un
+`CHECK` le borne en base (migration 0033). Les autres `*_default` restent en lecture seule. Leur description
+au contrat dit qu'aucun code d'exécution ne les lit. Les ouvrir promettrait un effet qui n'existe pas, et les
+faire envoyer par le pool serait une fonctionnalité, avec son ADR.
