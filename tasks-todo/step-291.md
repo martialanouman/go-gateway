@@ -28,19 +28,22 @@ compteur, ni métrique, ni stockage, et le tableau de bord n'a rien à afficher.
 - **Métrique** `antispam_verdicts_total{rule_type, action}`, pour `flag` et `block`, sans label
   d'expéditeur ni de client (garde des labels). Alertmanager s'en sert, et l'alerte persiste côté tableau
   de bord dans `notifications` : c'est là qu'une alerte ratée par un opérateur reste non lue.
-- **Compteur par sender ID** : chaque `flag`, quelle que soit la règle, fait un `INCR` sur une tranche
-  horaire Redis, clé `(customer_id, address)` + heure, TTL 25 h. L'écriture est en fail-open : une panne
-  Redis ne retient pas le message.
-- **Contrat Admin, bump MINEUR** : `SenderId.recent_flags_24h` est la somme des 24 dernières tranches,
+- **Compteur par sender ID** : chaque correspondance `category_mismatch` (en `flag` comme en `block`) fait
+  un `INCR` sur une tranche horaire Redis, clé `(customer_id, address)` + heure, TTL 25 h. L'écriture est
+  en fail-open : une panne Redis ne retient pas le message. *Amendé le 06/10/2026* : le design comptait
+  tout `flag`, quelle que soit la règle ; la spec du tableau de bord v2.1 (§6.19, go-gateway-bo) demande
+  un « compteur de signalements `category_mismatch` récents par expéditeur ». La spec l'emporte.
+- **Contrat Admin, bump MINEUR** : `SenderId.recent_category_mismatches_24h` est la somme des 24 dernières
+  tranches,
   servie par `list-sender-ids` en **un seul `MGET`** pour toute la liste. La fenêtre de 24 h glissantes est
   déclarée dans le nom et la description. `null` si Redis ne répond pas : le compte est inconnu, pas nul.
 - **Rechargement à chaud des règles** : le moteur anti-spam est chargé une seule fois au démarrage du
   routeur (`cmd/router-svc/wiring.go:375-379`). Il rejoint le watcher de snapshot du routeur, sans quoi
   une règle `category_mismatch` créée au tableau de bord ne s'appliquerait qu'au prochain redémarrage.
 
-## À vérifier avant le contrat
-Si la spec v2.1 du tableau de bord (go-gateway-bo) nomme déjà une métrique anti-spam dans `alert_rules`,
-la métrique en reprend le nom.
+## Vérifié avant le contrat (06/10/2026)
+La spec v2.1 du tableau de bord (go-gateway-bo, `1c29fa6`) ne nomme aucune métrique anti-spam dans
+`alert_rules` : le nom `antispam_verdicts_total` est libre.
 
 ## Tests rouges attendus
 - Un OTP déclaré qui porte une URL est signalé. Le même corps envoyé sous un expéditeur `marketing` ne
@@ -50,7 +53,8 @@ la métrique en reprend le nom.
 - **Invariant a** : les logs capturés du moteur, les attributs de span et les labels de métrique ne
   contiennent aucun extrait du corps ni aucun marqueur trouvé. `AssertNoBody` est ajouté à
   `TestPipelineSpamFlagDoesNotBlock`, qui ne l'appelle pas aujourd'hui.
-- `recent_flags_24h` compte un signalement de l'heure courante et oublie une tranche de plus de 24 h.
+- `recent_category_mismatches_24h` compte une correspondance de l'heure courante et oublie une tranche
+  de plus de 24 h ; un `flag` d'une autre règle n'y entre pas.
 - Une règle créée par l'API Admin s'applique sans redémarrage du routeur.
 
 ## Dettes ouvertes par ce design
