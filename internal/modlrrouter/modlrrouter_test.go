@@ -3,12 +3,12 @@ package modlrrouter_test
 import (
 	"context"
 	"errors"
-	"go.opentelemetry.io/otel/codes"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/codes"
 
 	"github.com/martialanouman/go-gateway/internal/dlrmap"
 	"github.com/martialanouman/go-gateway/internal/modlrrouter"
