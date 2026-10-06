@@ -1,6 +1,6 @@
 # Catégorie du CDR : ni servie, ni sur les rejets
 
-> **Statut :** OUVERTE · **Nature :** produit
+> **Statut :** PAYÉE (06/10/2026, step-293) · **Nature :** produit
 > **Née de :** step-292 (PR1) · **Portée par :** step-293
 
 **Ce qu'on a fait à la place.** `cdr.traffic_category` et `cdr.priority` sont écrits par chaque ligne
@@ -22,3 +22,8 @@ justement un rejet par catégorie.
 
 **À quoi on reconnaîtra qu'il faut la payer.** Le tableau de bord ouvre le filtre par catégorie du CDR
 Explorer (§6.4), ou le trafic temps réel la ventilation par catégorie (§6.3).
+
+**Payée.** `search-messages` et l'export Admin servent `traffic_category` et `priority`, et filtrent sur
+la catégorie (contrat 7.5.0). Un rejet postérieur à l'autorisation porte les deux : `Pipeline.Process`
+rend son gabarit partiel avec l'erreur. L'API publique et le flux temps réel ne les servent pas : aucun
+écran ne les lit, et le flux reste porté par ADR-0020, action item 8.

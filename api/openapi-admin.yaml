@@ -1777,6 +1777,7 @@ paths:
           schema: { type: string, format: uuid }
         - { name: status, in: query, schema: { $ref: '#/components/schemas/CdrStatus' } }
         - { name: direction, in: query, schema: { $ref: '#/components/schemas/Direction' } }
+        - { name: traffic_category, in: query, schema: { $ref: '#/components/schemas/TrafficCategory' } }
         - name: msisdn
           in: query
           description: Exact E.164 match on either address. Never a prefix — that would allow enumeration.
@@ -3151,6 +3152,17 @@ components:
         latency_ms: { type: [integer, "null"] }
         billed: { type: boolean }
         credits_charged: { type: [integer, "null"] }
+        traffic_category:
+          type: [string, "null"]
+          enum: [otp, transactional, marketing, null]
+          description: >-
+            Category of the sender ID, read when the message was authorized (ADR-0020). Null for an MO, and
+            for an MT rejected before its sender ID was authorized.
+        priority:
+          type: [integer, "null"]
+          minimum: 0
+          maximum: 3
+          description: Effective priority the category allowed (ADR-0020 §2). Null when traffic_category is.
       required: [message_id, trace_id, account_id, customer_id, direction, source_addr, dest_addr, status, segment_count, submitted_at]
     MessageSummaryPage:
       type: object
@@ -3209,6 +3221,7 @@ components:
         groupId: { type: string, format: uuid }
         status: { $ref: '#/components/schemas/CdrStatus' }
         direction: { $ref: '#/components/schemas/Direction' }
+        traffic_category: { $ref: '#/components/schemas/TrafficCategory' }
         msisdn: { type: string, description: Exact E.164 match on either address. }
         from_date: { type: string, format: date-time }
         to_date: { type: string, format: date-time }

@@ -238,7 +238,7 @@ func (r *Router) publish(s *staged) (err error) {
 			// No platform code means an unexpected internal fault: treat as transient and retry.
 			return fmt.Errorf("router: pipeline: %w", perr)
 		}
-		row := rejectedRow(in, code)
+		row := rejectedRow(in, code, routed)
 		// Seal the body into the rejected row per the customer's content policy (same as an accepted row).
 		// Fail-open: an unavailable data key stores no content, never fails the rejection.
 		if r.deps.Sealer != nil {
@@ -307,21 +307,24 @@ func (r *Router) stream(fn func(StreamEmitter)) {
 // submitted_at from ingestion and the addresses as they stood at rejection (the destination may be
 // un-normalised when E.164 itself failed). The body is not set here; the caller seals it into the content
 // column per the customer's content policy (invariant a: the body reaches only that column, never a log).
-func rejectedRow(in pipeline.InboundMT, code errs.Code) clickhouse.CDRRow {
+// routed is the pipeline's partial template: past the sender-ID stage it holds the category and priority.
+func rejectedRow(in pipeline.InboundMT, code errs.Code, routed pipeline.RoutedMT) clickhouse.CDRRow {
 	errorCode := string(code)
 	return clickhouse.CDRRow{
-		MessageID:    in.MessageID,
-		TraceID:      in.TraceID,
-		AccountID:    in.AccountID,
-		CustomerID:   in.CustomerID,
-		Direction:    clickhouse.DirectionMT,
-		SourceAddr:   in.From,
-		DestAddr:     in.To,
-		SubmittedAt:  in.SubmittedAt,
-		Status:       clickhouse.StatusRejected,
-		ErrorCode:    &errorCode,
-		SegmentCount: 1,
-		Encoding:     clickhouse.EncodingOf(in.Encoding),
-		Billed:       false,
+		MessageID:       in.MessageID,
+		TraceID:         in.TraceID,
+		AccountID:       in.AccountID,
+		CustomerID:      in.CustomerID,
+		Direction:       clickhouse.DirectionMT,
+		SourceAddr:      in.From,
+		DestAddr:        in.To,
+		SubmittedAt:     in.SubmittedAt,
+		Status:          clickhouse.StatusRejected,
+		ErrorCode:       &errorCode,
+		SegmentCount:    1,
+		Encoding:        clickhouse.EncodingOf(in.Encoding),
+		Billed:          false,
+		TrafficCategory: string(routed.TrafficCategory),
+		Priority:        routed.Priority,
 	}
 }

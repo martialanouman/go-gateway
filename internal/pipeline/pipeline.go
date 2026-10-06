@@ -130,6 +130,8 @@ func New(deps Deps) *Pipeline {
 // publish. The returned template's own Body is the original message; each segment carries its own wire
 // short_message in Segment.Payload. The body is read in memory only for encoding and segmentation and
 // never appears in a span (invariant a).
+// With the error, the template carries what was known up to the failing stage: from the sender-ID stage
+// on, the category and effective priority the rejected CDR row records (step-293).
 func (p *Pipeline) Process(ctx context.Context, in InboundMT) (RoutedMT, []pipeenc.Segment, error) {
 	out := RoutedMT{
 		MessageID:          in.MessageID,
@@ -189,7 +191,7 @@ func (p *Pipeline) Process(ctx context.Context, in InboundMT) (RoutedMT, []pipee
 		}
 		return nil
 	}); err != nil {
-		return RoutedMT{}, nil, err
+		return out, nil, err
 	}
 
 	// 4. Anti-spam (§6.20). A frozen compliance stage, never short-circuited by an exact route
@@ -208,7 +210,7 @@ func (p *Pipeline) Process(ctx context.Context, in InboundMT) (RoutedMT, []pipee
 		}
 		return nil
 	}); err != nil {
-		return RoutedMT{}, nil, err
+		return out, nil, err
 	}
 
 	// 5. Route resolution (declarative static only in M2). A short-cut here would skip only this
@@ -226,7 +228,7 @@ func (p *Pipeline) Process(ctx context.Context, in InboundMT) (RoutedMT, []pipee
 		out.FallbackChain = route.FallbackChain
 		return nil
 	}); err != nil {
-		return RoutedMT{}, nil, err
+		return out, nil, err
 	}
 
 	// 6. Encoding (§6.6). Resolve the wire encoding (GSM-7 / UCS-2 / binary) and count the segments.
@@ -240,7 +242,7 @@ func (p *Pipeline) Process(ctx context.Context, in InboundMT) (RoutedMT, []pipee
 		out.Encoding = wireEncoding(in, body)
 		return nil
 	}); err != nil {
-		return RoutedMT{}, nil, err
+		return out, nil, err
 	}
 
 	// 7. Segmentation (§6.6). Split the body into the concatenated segments the SMSC wire carries, one
@@ -253,7 +255,7 @@ func (p *Pipeline) Process(ctx context.Context, in InboundMT) (RoutedMT, []pipee
 		trace.SpanFromContext(ctx).SetAttributes(attribute.Int("segment.count", len(segments)))
 		return nil
 	}); err != nil {
-		return RoutedMT{}, nil, err
+		return out, nil, err
 	}
 
 	// 8. Credit reserve (§6.9). Reserve this message's segments against the customer's balance, AFTER
@@ -277,7 +279,7 @@ func (p *Pipeline) Process(ctx context.Context, in InboundMT) (RoutedMT, []pipee
 		}
 		return nil
 	}); err != nil {
-		return RoutedMT{}, nil, err
+		return out, nil, err
 	}
 
 	return out, segments, nil

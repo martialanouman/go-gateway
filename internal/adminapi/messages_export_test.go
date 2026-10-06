@@ -99,12 +99,14 @@ func (refusingRunner) Go(string, func(ctx context.Context) error) error { return
 
 // pagingSearchStore answers keyset pages from a fixed set of rows, like the real store.
 type pagingSearchStore struct {
-	rows  []clickhouse.CDRRow
-	calls int
+	rows       []clickhouse.CDRRow
+	calls      int
+	lastFilter clickhouse.CDRSearchFilter
 }
 
 func (s *pagingSearchStore) Search(_ context.Context, f clickhouse.CDRSearchFilter, limit int) ([]clickhouse.CDRRow, error) {
 	s.calls++
+	s.lastFilter = f
 	start := 0
 	if f.After != nil {
 		for i, r := range s.rows {
@@ -433,5 +435,27 @@ func TestGetExportJobUnknownIs404(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", rec.Code)
+	}
+}
+
+// TestExportCarriesTheTrafficCategory: the export filters on the category like the search, and the
+// artefact carries it as a column (step-293).
+func TestExportCarriesTheTrafficCategory(t *testing.T) {
+	row := searchRowFixture("33612345678")
+	row.TrafficCategory, row.Priority = "transactional", 2
+	deps, _, dir := exportDeps(t, []clickhouse.CDRRow{row})
+	now := time.Now().UTC()
+	body := `{"filters":{"from_date":"` + now.Add(-24*time.Hour).Format(time.RFC3339) + `","to_date":"` +
+		now.Format(time.RFC3339) + `","traffic_category":"transactional"}}`
+
+	if code, _, raw := postExport(t, deps, "cdr:export_bulk", body); code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202 (%s)", code, raw)
+	}
+	if got := deps.MessageSearch.(*pagingSearchStore).lastFilter.TrafficCategory; got == nil || *got != "transactional" {
+		t.Errorf("filter TrafficCategory = %v, want transactional", got)
+	}
+	lines := strings.Split(strings.TrimSpace(onlyArtefact(t, dir)), "\n")
+	if !strings.HasSuffix(lines[0], ",traffic_category,priority") || !strings.HasSuffix(lines[1], ",transactional,2") {
+		t.Errorf("artefact does not carry the category columns:\n%s", strings.Join(lines, "\n"))
 	}
 }

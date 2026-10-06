@@ -119,6 +119,7 @@ var csvExportColumns = []string{
 	"source_addr", "dest_addr", "original_source_addr", "connector_id", "route_id",
 	"status", "error_code", "segment_count", "encoding",
 	"submitted_at", "delivered_at", "latency_ms", "billed", "credits_charged",
+	"traffic_category", "priority",
 }
 
 type csvExportWriter struct{ w *csv.Writer }
@@ -138,6 +139,7 @@ func (c *csvExportWriter) Write(row messageSummaryDTO) error {
 		row.Status, derefString(row.ErrorCode), strconv.Itoa(row.SegmentCount), derefString(row.Encoding),
 		row.SubmittedAt.Format(time.RFC3339), formatTimePtr(row.DeliveredAt),
 		formatIntPtr(row.LatencyMs), strconv.FormatBool(row.Billed), formatIntPtr(row.CreditsCharged),
+		derefString(row.TrafficCategory), formatIntPtr(row.Priority),
 	})
 }
 
