@@ -255,6 +255,7 @@ const setSenderIDRateLimit = `-- name: SetSenderIDRateLimit :execrows
 INSERT INTO control_plane.rate_limits (entity_type, entity_id, max_per_sec, burst_capacity)
 SELECT 'sender_id', s.id, $1, $2
 FROM control_plane.sender_ids s WHERE s.customer_id = $3 AND s.id = $4
+FOR KEY SHARE
 ON CONFLICT (entity_type, entity_id)
 DO UPDATE SET max_per_sec = EXCLUDED.max_per_sec, burst_capacity = EXCLUDED.burst_capacity
 `
@@ -266,7 +267,8 @@ type SetSenderIDRateLimitParams struct {
 	ID            uuid.UUID
 }
 
-// Zero rows: no such sender ID under this customer.
+// Zero rows: no such sender ID under this customer. FOR KEY SHARE makes a concurrent delete of the sender
+// wait for this insert, so its trigger sees the row it must remove instead of leaving an orphan.
 func (q *Queries) SetSenderIDRateLimit(ctx context.Context, arg SetSenderIDRateLimitParams) (int64, error) {
 	result, err := q.db.Exec(ctx, setSenderIDRateLimit,
 		arg.MaxPerSec,

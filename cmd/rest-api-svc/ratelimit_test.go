@@ -98,8 +98,8 @@ func TestASubmissionBeyondTheAccountRateIsRefusedBeforeTheAck(t *testing.T) {
 	t.Fatal("five submissions past the account's 1/s were all acknowledged, want 429 before the acknowledgement")
 }
 
-// step-289: a sender ID's own limit is refused at admission like the account's (ADR-0021 §3), it caps that
-// flow alone, and it reaches a pod that booted before it was set.
+// step-289: a sender ID's own limit is refused at admission like the account's (ADR-0021 §3), it caps
+// that flow alone, and it reaches a pod that booted before it was set.
 func TestASenderLimitSetAfterBootIsRefusedBeforeTheAck(t *testing.T) {
 	cfg := testConfig()
 	cfg.Postgres = pgtest.Config(t)
@@ -130,6 +130,10 @@ func TestASenderLimitSetAfterBootIsRefusedBeforeTheAck(t *testing.T) {
 	if err := pool.QueryRow(ctx, `INSERT INTO control_plane.sender_ids (customer_id, address, status)
 		VALUES ($1, 'OTP', 'active') RETURNING id`, customer.ID).Scan(&otp); err != nil {
 		t.Fatalf("register sender: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO control_plane.sender_ids (customer_id, address, status)
+		VALUES ($1, 'PROMO', 'active')`, customer.ID); err != nil {
+		t.Fatalf("register the second sender: %v", err)
 	}
 
 	app, err := newRestAPIApp(ctx, cfg, silentLogger())
@@ -180,6 +184,6 @@ func TestASenderLimitSetAfterBootIsRefusedBeforeTheAck(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 	}
 	if got := submit("PROMO"); got != http.StatusAccepted {
-		t.Fatalf("another sender of the same account = %d, want 202: the limit belongs to the OTP flow", got)
+		t.Fatalf("another registered sender of the account = %d, want 202: the limit belongs to the OTP flow", got)
 	}
 }

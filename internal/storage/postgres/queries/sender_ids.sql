@@ -46,10 +46,12 @@ LEFT JOIN control_plane.rate_limits rl ON rl.entity_type = 'sender_id' AND rl.en
 WHERE s.customer_id = @customer_id AND s.id = @id;
 
 -- name: SetSenderIDRateLimit :execrows
--- Zero rows: no such sender ID under this customer.
+-- Zero rows: no such sender ID under this customer. FOR KEY SHARE makes a concurrent delete of the sender
+-- wait for this insert, so its trigger sees the row it must remove instead of leaving an orphan.
 INSERT INTO control_plane.rate_limits (entity_type, entity_id, max_per_sec, burst_capacity)
 SELECT 'sender_id', s.id, @max_per_sec, @burst_capacity
 FROM control_plane.sender_ids s WHERE s.customer_id = @customer_id AND s.id = @id
+FOR KEY SHARE
 ON CONFLICT (entity_type, entity_id)
 DO UPDATE SET max_per_sec = EXCLUDED.max_per_sec, burst_capacity = EXCLUDED.burst_capacity;
 

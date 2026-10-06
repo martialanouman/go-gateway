@@ -96,7 +96,7 @@ func newSMPPApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (_ 
 	a.onClose("stores", st.close)
 	a.rdb = st.rdb
 
-	rateSnap, err := ratelimit.LoadSnapshot(ctx, postgres.NewRateLimitRepo(st.pg), postgres.NewConnectorRepo(st.pg))
+	rateSnap, err := ratelimit.LoadSnapshot(ctx, postgres.NewRateLimitRepo(st.pg), nil)
 	if err != nil {
 		return nil, fmt.Errorf("load rate-limit snapshot: %w", err)
 	}
@@ -105,7 +105,7 @@ func newSMPPApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (_ 
 		func(ctx context.Context) (config.Stream, error) {
 			return redisstore.Subscribe(ctx, st.rdb, config.ChannelSnapshotInvalidation), nil
 		},
-		admission.Reload(postgres.NewRateLimitRepo(st.pg), postgres.NewConnectorRepo(st.pg)),
+		admission.Reload(postgres.NewRateLimitRepo(st.pg), nil),
 		config.WithResync(cfg.ConfigResyncInterval), config.WithLogger(logger),
 	)
 

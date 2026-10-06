@@ -81,7 +81,7 @@ func newRestAPIApp(ctx context.Context, cfg config.Config, logger *slog.Logger) 
 	}
 	a.onClose("stores", st.close)
 
-	rateSnap, err := ratelimit.LoadSnapshot(ctx, postgres.NewRateLimitRepo(st.pg), postgres.NewConnectorRepo(st.pg))
+	rateSnap, err := ratelimit.LoadSnapshot(ctx, postgres.NewRateLimitRepo(st.pg), nil)
 	if err != nil {
 		return nil, fmt.Errorf("load rate-limit snapshot: %w", err)
 	}
@@ -90,7 +90,7 @@ func newRestAPIApp(ctx context.Context, cfg config.Config, logger *slog.Logger) 
 		func(ctx context.Context) (config.Stream, error) {
 			return redisstore.Subscribe(ctx, st.rdb, config.ChannelSnapshotInvalidation), nil
 		},
-		admission.Reload(postgres.NewRateLimitRepo(st.pg), postgres.NewConnectorRepo(st.pg)),
+		admission.Reload(postgres.NewRateLimitRepo(st.pg), nil),
 		config.WithResync(cfg.ConfigResyncInterval), config.WithLogger(logger),
 	)
 

@@ -39,13 +39,13 @@ type Lister interface {
 }
 
 // ConnectorLister loads the connectors, for their throughput_limit_per_sec hard ceiling.
-// *postgres.ConnectorRepo satisfies it.
+// *postgres.ConnectorRepo satisfies it. The ingestion passes nil: admission never reads a connector.
 type ConnectorLister interface {
 	List(ctx context.Context) ([]cp.Connector, error)
 }
 
-// Snapshot is an immutable rate-limit configuration, indexed by (entity_type, entity_id); the Enforcer
-// swaps a fresh one in on each config invalidation. A connector with no explicit operational limit gets
+// Snapshot is an immutable rate-limit configuration, indexed by (entity_type, entity_id); Reload swaps a
+// fresh one in where a config watcher calls it (the ingestion), the pool keeps its boot one. A connector with no explicit operational limit gets
 // one derived from its throughput_limit_per_sec, so the hard technical ceiling bounds it (spec §6.4,
 // §10); a connector that also has no throughput_limit_per_sec (the column is nullable) has no ceiling
 // and is not rate-limited — an operator that sets neither has opted out of throttling that connector.
@@ -66,11 +66,14 @@ func LoadSnapshot(ctx context.Context, rates Lister, connectors ConnectorLister)
 	senders := make(map[cp.SenderAddress]uuid.UUID)
 	for _, e := range entries {
 		limits[key(e.EntityType, e.EntityID)] = e.Limit
-		if e.EntityType == EntitySenderID && e.Sender != nil {
+		if e.Sender != nil {
 			senders[*e.Sender] = e.EntityID
 		}
 	}
 
+	if connectors == nil {
+		return &Snapshot{limits: limits, senders: senders}, nil
+	}
 	conns, err := connectors.List(ctx)
 	if err != nil {
 		return nil, err
@@ -133,8 +136,9 @@ func (e *Enforcer) Admit(ctx context.Context, accountID, customerID uuid.UUID, f
 			return errs.ErrRateLimited
 		}
 	}
-	// ponytail: an account refusal does not refund the sender's tokens just spent; at most one message's
-	// segments per refusal. A Lua script debiting both buckets atomically is the upgrade if it ever shows.
+	// ponytail: an account refusal does not refund the sender's tokens just spent. While the account is
+	// saturated, a retrying sender can drain its own bucket without sending anything, then wait up to a
+	// burst once the account frees up. A Lua script debiting both buckets atomically is the upgrade.
 	if !e.allow(ctx, snap, EntityAccount, accountID, windowSend, segments) {
 		return errs.ErrRateLimited
 	}

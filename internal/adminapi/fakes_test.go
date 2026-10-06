@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/martialanouman/go-gateway/internal/adminapi"
 	"github.com/martialanouman/go-gateway/internal/connector/status"
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
@@ -763,6 +764,8 @@ func (s *fakeRouteStore) Reorder(_ context.Context, ids []uuid.UUID) ([]cp.Route
 
 // fakeSenderIDStore is an in-memory SenderIDStore for handler unit tests.
 type fakeSenderIDStore struct {
+	// The rate-limit methods are exercised against the real repository only; a call here panics.
+	adminapi.SenderIDStore
 	mu        sync.Mutex
 	byID      map[uuid.UUID]cp.SenderID
 	createErr error
@@ -816,30 +819,6 @@ func (s *fakeSenderIDStore) Update(_ context.Context, customerID, senderID uuid.
 	}
 	s.byID[senderID] = sid
 	return sid, nil
-}
-
-func (s *fakeSenderIDStore) SetRateLimit(_ context.Context, customerID, senderID uuid.UUID, l cp.SenderIDRateLimit) (cp.SenderID, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	sid, ok := s.byID[senderID]
-	if !ok || sid.CustomerID != customerID {
-		return cp.SenderID{}, errs.ErrNotFound
-	}
-	sid.RateLimit = &l
-	s.byID[senderID] = sid
-	return sid, nil
-}
-
-func (s *fakeSenderIDStore) DeleteRateLimit(_ context.Context, customerID, senderID uuid.UUID) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	sid, ok := s.byID[senderID]
-	if !ok || sid.CustomerID != customerID {
-		return errs.ErrNotFound
-	}
-	sid.RateLimit = nil
-	s.byID[senderID] = sid
-	return nil
 }
 
 func (s *fakeSenderIDStore) Delete(_ context.Context, customerID, senderID uuid.UUID) error {

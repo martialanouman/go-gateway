@@ -537,8 +537,8 @@ CREATE TABLE control_plane.rate_limits (
 -- NOTE (§6.4): for entity_type='connector', max_per_sec MUST be <= smsc_connectors.throughput_limit_per_sec
 -- when the latter is set. Enforced in the application on write (cross-table CHECKs are not portable here).
 
--- entity_id is polymorphic, so no FK can cascade; a sender ID also goes with its customer (ON DELETE CASCADE),
--- which no application path sees.
+-- entity_id is polymorphic, so no FK can cascade; a sender ID also goes with its customer
+-- (ON DELETE CASCADE), which no application path sees.
 CREATE FUNCTION control_plane.sender_id_drops_its_rate_limit() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   DELETE FROM control_plane.rate_limits WHERE entity_type = 'sender_id' AND entity_id = OLD.id;

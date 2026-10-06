@@ -37,9 +37,8 @@ type Admission interface {
 
 // Ingestor performs the shared ingestion sequence for one submission: it admits it against its sender
 // ID's and account's throughput, encodes the envelope and produces it durably to mt.inbound (the boundary
-// that earns the acknowledgement). The accepted CDR row is NOT written
-// here — it is projected off the durable mt.inbound topic by AcceptedConsumer (step-101), so it can never be
-// lost on the request path.
+// that earns the acknowledgement). The accepted CDR row is NOT written here — it is projected off the
+// durable mt.inbound topic by AcceptedConsumer (step-101), so it can never be lost on the request path.
 type Ingestor struct {
 	producer  Producer
 	admission Admission

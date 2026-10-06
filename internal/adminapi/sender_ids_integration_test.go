@@ -182,8 +182,8 @@ func TestSenderIDTrafficCategoryIsDeclaredAndFilterable(t *testing.T) {
 }
 
 // TestSenderIDRateLimitIsSetReadAndRemoved drives the sender ID's own limit (ADR-0021 §3) through the real
-// repository: it is read in the list without a call per row, defaults its burst to the rate, is scoped to
-// the customer, and leaves no orphan rate_limits row behind a deleted sender ID or customer.
+// repository: it is read in the list and after a PATCH, defaults its burst to the rate, is scoped to the
+// customer, and leaves no orphan rate_limits row behind a deleted sender ID or customer.
 func TestSenderIDRateLimitIsSetReadAndRemoved(t *testing.T) {
 	pool := pgtest.Pool(t)
 	ctx := t.Context()
@@ -240,6 +240,11 @@ func TestSenderIDRateLimitIsSetReadAndRemoved(t *testing.T) {
 		t.Fatalf("PUT without a burst = %+v, want {50 50}", set.RateLimit)
 	}
 	call(http.MethodPut, base+"/"+promo.ID+"/rate-limit", `{"max_per_sec":5,"burst_capacity":20}`, http.StatusOK)
+	var patched sender
+	_ = json.Unmarshal(call(http.MethodPatch, base+"/"+promo.ID, `{"status":"active"}`, http.StatusOK), &patched)
+	if patched.RateLimit == nil || *patched.RateLimit != (limit{5, 20}) {
+		t.Fatalf("rate_limit in a PATCH response = %+v, want {5 20}", patched.RateLimit)
+	}
 	got := listed()
 	if got["OTP"] == nil || *got["OTP"] != (limit{50, 50}) || got["PROMO"] == nil || *got["PROMO"] != (limit{5, 20}) {
 		t.Fatalf("listed limits = OTP %+v PROMO %+v, want {50 50} and {5 20}", got["OTP"], got["PROMO"])
@@ -257,8 +262,8 @@ func TestSenderIDRateLimitIsSetReadAndRemoved(t *testing.T) {
 
 	call(http.MethodDelete, base+"/"+otp.ID+"/rate-limit", "", http.StatusNoContent)
 	call(http.MethodDelete, base+"/"+otp.ID+"/rate-limit", "", http.StatusNoContent)
-	if got := listed(); got["OTP"] != nil || got["PROMO"] == nil {
-		t.Fatalf("after DELETE: OTP %+v PROMO %+v, want OTP null and PROMO untouched", got["OTP"], got["PROMO"])
+	if got := listed(); got["OTP"] != nil || got["PROMO"] == nil || *got["PROMO"] != (limit{5, 20}) {
+		t.Fatalf("after DELETE: OTP %+v PROMO %+v, want OTP null and PROMO {5 20}", got["OTP"], got["PROMO"])
 	}
 
 	orphans := func(id string) int {
@@ -271,6 +276,9 @@ func TestSenderIDRateLimitIsSetReadAndRemoved(t *testing.T) {
 		return n
 	}
 	call(http.MethodPut, base+"/"+otp.ID+"/rate-limit", `{"max_per_sec":1}`, http.StatusOK)
+	if n := orphans(otp.ID); n != 1 {
+		t.Fatalf("before deleting the sender ID: %d rate_limits rows, want 1", n)
+	}
 	call(http.MethodDelete, base+"/"+otp.ID, "", http.StatusNoContent)
 	if n := orphans(otp.ID); n != 0 {
 		t.Fatalf("deleting the sender ID left %d rate_limits rows", n)
