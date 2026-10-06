@@ -48,8 +48,8 @@ func (r *RateLimitRepo) RateLimit(ctx context.Context, accountID uuid.UUID) (cp.
 }
 
 // List returns every configured throughput limit, for the cold-loaded rate-limit snapshot of the
-// ingestion and the connector pool (step-283). It reads both entity kinds (smpp_account/connector); an
-// empty result is a valid "nothing configured" state, not an error.
+// ingestion and the connector pool (step-283). An empty result is a valid "nothing configured" state, not
+// an error.
 func (r *RateLimitRepo) List(ctx context.Context) ([]cp.RateLimitEntry, error) {
 	rows, err := r.q.ListRateLimits(ctx)
 	if err != nil {
@@ -60,6 +60,7 @@ func (r *RateLimitRepo) List(ctx context.Context) ([]cp.RateLimitEntry, error) {
 		out[i] = cp.RateLimitEntry{
 			EntityType: row.EntityType,
 			EntityID:   row.EntityID,
+			Sender:     senderAddress(row.SenderCustomerID, row.SenderAddress),
 			Limit: cp.RateLimit{
 				MaxPerSec:     intptr(row.MaxPerSec),
 				MaxPerDay:     intptr(row.MaxPerDay),
@@ -68,4 +69,11 @@ func (r *RateLimitRepo) List(ctx context.Context) ([]cp.RateLimitEntry, error) {
 		}
 	}
 	return out, nil
+}
+
+func senderAddress(customerID *uuid.UUID, address *string) *cp.SenderAddress {
+	if customerID == nil || address == nil {
+		return nil
+	}
+	return &cp.SenderAddress{CustomerID: *customerID, Address: *address}
 }

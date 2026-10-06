@@ -286,6 +286,36 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/ValidationError' }
+  /admin/customers/{id}/sender-ids/{senderId}/rate-limit:
+    parameters: [ { $ref: '#/components/parameters/Id' }, { $ref: '#/components/parameters/SenderId' } ]
+    put:
+      tags: [Sender IDs]
+      summary: Set a sender ID's own rate limit
+      description: >-
+        Checked at admission, before the acknowledgement and next to the account's limit: past it the
+        submission is refused (429, ESME_RTHROTTLED) and no CDR is written (ADR-0021). Applies to the next
+        message, live sessions included.
+      operationId: set-sender-id-rate-limit
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/SenderIdRateLimitSet' } } } }
+      security: [ { OperatorBearer: [ admin:write ] } ]
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SenderId' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+    delete:
+      tags: [Sender IDs]
+      summary: Remove a sender ID's own rate limit
+      description: The sender ID is then bounded by its account's limit only. Removing an absent limit is a 204.
+      operationId: delete-sender-id-rate-limit
+      security: [ { OperatorBearer: [ admin:write ] } ]
+      responses:
+        '204': { description: Removed. }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
   /admin/customers/{id}/smpp-accounts:
     parameters: [ { $ref: '#/components/parameters/Id' } ]
     get:
@@ -2166,6 +2196,13 @@ components:
         address: { type: string }
         status: { type: string, enum: [pending_carrier_approval, active, disabled] }
         traffic_category: { $ref: '#/components/schemas/TrafficCategory' }
+        rate_limit:
+          type: [object, "null"]
+          description: The sender ID's own limit; null when it has none and only its account's limit applies.
+          properties:
+            max_per_sec: { type: integer, minimum: 1, maximum: 2147483647 }
+            burst_capacity: { type: integer, minimum: 1, maximum: 2147483647 }
+          required: [max_per_sec, burst_capacity]
         created_by: { type: [string, "null"], format: uuid }
         approved_at: { type: [string, "null"], format: date-time }
         first_used_at:
@@ -2177,7 +2214,7 @@ components:
             set, the sender ID can no longer be deleted (409), only disabled.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
-      required: [id, customer_id, address, status, traffic_category, created_at, updated_at]
+      required: [id, customer_id, address, status, traffic_category, rate_limit, created_at, updated_at]
     SenderIdCreate:
       type: object
       additionalProperties: false
@@ -2185,6 +2222,17 @@ components:
         address: { type: string, maxLength: 20 }
         traffic_category: { $ref: '#/components/schemas/TrafficCategory', default: marketing }
       required: [address]
+    SenderIdRateLimitSet:
+      type: object
+      additionalProperties: false
+      properties:
+        max_per_sec: { type: integer, minimum: 1, maximum: 2147483647 }
+        burst_capacity:
+          type: integer
+          minimum: 1
+          maximum: 2147483647
+          description: Messages admitted at once before max_per_sec paces them. Defaults to max_per_sec.
+      required: [max_per_sec]
     SenderIdUpdate:
       type: object
       additionalProperties: false

@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/martialanouman/go-gateway/internal/adminapi"
 	"github.com/martialanouman/go-gateway/internal/connector/status"
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
@@ -763,6 +764,8 @@ func (s *fakeRouteStore) Reorder(_ context.Context, ids []uuid.UUID) ([]cp.Route
 
 // fakeSenderIDStore is an in-memory SenderIDStore for handler unit tests.
 type fakeSenderIDStore struct {
+	// The rate-limit methods are exercised against the real repository only; a call here panics.
+	adminapi.SenderIDStore
 	mu        sync.Mutex
 	byID      map[uuid.UUID]cp.SenderID
 	createErr error

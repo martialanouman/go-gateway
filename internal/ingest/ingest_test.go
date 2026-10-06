@@ -51,10 +51,12 @@ func (p *countingProducer) Produce(_ context.Context, rec kafka.Record) error {
 type stubAdmission struct {
 	err      error
 	segments []int
+	senders  []string
 }
 
-func (a *stubAdmission) AdmitAccount(_ context.Context, _ uuid.UUID, segments int) error {
+func (a *stubAdmission) Admit(_ context.Context, _, customerID uuid.UUID, from string, segments int) error {
 	a.segments = append(a.segments, segments)
+	a.senders = append(a.senders, customerID.String()+"/"+from)
 	return a.err
 }
 
@@ -95,5 +97,20 @@ func TestAdmissionPaysTheSegmentsTheMessageWillSend(t *testing.T) {
 	}
 	if len(producer.produced) != 1 {
 		t.Errorf("an admitted submission produced %d records, want 1", len(producer.produced))
+	}
+}
+
+// TestAdmissionIsAskedForTheSubmittedSender: the sender's bucket is keyed by the address the client
+// submitted under its customer, before any rewrite (ADR-0020 §1).
+func TestAdmissionIsAskedForTheSubmittedSender(t *testing.T) {
+	admission := &stubAdmission{}
+	i := ingest.NewIngestor(&countingProducer{}, admission, nil)
+	env := envelope("hello")
+
+	if err := i.Accept(context.Background(), env); err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+	if want := env.CustomerID.String() + "/INFO"; len(admission.senders) != 1 || admission.senders[0] != want {
+		t.Errorf("admission asked for %v, want [%s]", admission.senders, want)
 	}
 }

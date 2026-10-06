@@ -528,7 +528,7 @@ CREATE UNIQUE INDEX routing_scripts_one_active_idx
 -- -----------------------------------------------------------------------------------------------------
 CREATE TABLE control_plane.rate_limits (
   id             uuid PRIMARY KEY DEFAULT uuidv7(),
-  entity_type    text NOT NULL CHECK (entity_type IN ('smpp_account','connector')),  -- no customer/group; no route (step-283)
+  entity_type    text NOT NULL CHECK (entity_type IN ('smpp_account','connector','sender_id')),  -- no customer/group; no route (step-283)
   entity_id      uuid NOT NULL,      -- polymorphic -> no single FK
   max_per_sec    integer CHECK (max_per_sec IS NULL OR max_per_sec > 0),
   max_per_day    integer CHECK (max_per_day IS NULL OR max_per_day > 0),
@@ -539,6 +539,16 @@ CREATE TABLE control_plane.rate_limits (
 );
 -- NOTE (§6.4): for entity_type='connector', max_per_sec MUST be <= smsc_connectors.throughput_limit_per_sec
 -- when the latter is set. Enforced in the application on write (cross-table CHECKs are not portable here).
+
+-- entity_id is polymorphic, so no FK can cascade; a sender ID also goes with its customer
+-- (ON DELETE CASCADE), which no application path sees.
+CREATE FUNCTION control_plane.sender_id_drops_its_rate_limit() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  DELETE FROM control_plane.rate_limits WHERE entity_type = 'sender_id' AND entity_id = OLD.id;
+  RETURN OLD;
+END $$;
+CREATE TRIGGER sender_ids_drop_rate_limit AFTER DELETE ON control_plane.sender_ids
+  FOR EACH ROW EXECUTE FUNCTION control_plane.sender_id_drops_its_rate_limit();
 
 -- -----------------------------------------------------------------------------------------------------
 -- 14. Anti-spam rules (§6.5)

@@ -295,7 +295,7 @@ routing_scripts                     -- admin-authored; NOT bound to a route (§6
   created_by (fk -> operators), created_at, published_at
 
 rate_limits                         -- operational governor, always below the connector's technical ceiling (§6.4)
-  entity_type          (smpp_account|connector|route)   -- no customer/group level (§6.18)
+  entity_type          (smpp_account|connector|sender_id)   -- no customer/group level (§6.18), no route (step-283)
   entity_id
   max_per_sec          -- for connector: MUST be <= smsc_connectors.throughput_limit_per_sec when set
   max_per_day, burst_capacity
@@ -790,7 +790,8 @@ Pour la logique que les règles déclaratives ne peuvent exprimer, le fournisseu
 
 ### 6.4 Gestion du débit
 
-- Deux niveaux : (1) fenêtre SMPP au protocole par session, (2) token-bucket métier par compte SMPP et par connecteur dans Redis (Lua atomique). Il n'y a pas de seau par route.
+- Deux niveaux : (1) fenêtre SMPP au protocole par session, (2) token-bucket métier par sender ID, par compte SMPP et par connecteur dans Redis (Lua atomique). Il n'y a pas de seau par route.
+- **Seau par sender ID** (ADR-0021 §3) : vérifié à l'ingestion, avant celui du compte, avec le même coût en segments. C'est l'engagement contractuel d'un flux : il plafonne un expéditeur (une fraude à l'OTP, par exemple) sans toucher aux autres flux du client. Un sender ID sans limite propre n'est plafonné que par son compte. Une limite réglée par l'API Admin s'applique sans redémarrage : l'ingestion recharge ses limites sur l'invalidation de configuration.
 - **Le débit se refuse avant l'ACK, jamais après.** Le seau du compte s'applique à l'ingestion, avant l'écriture dans `mt.inbound` : au-delà, `429` en REST, `ESME_RTHROTTLED` en SMPP, et rien n'entre dans la file partagée — un client n'y fait pas entrer plus que son contrat. Une soumission coûte son nombre exact de segments, calculé par l'encodage et la segmentation mêmes du pipeline. Une fois acquitté, un message peut être ralenti par le débit, jamais rejeté.
 - **Précédence** : `smsc_connectors.throughput_limit_per_sec` est le plafond technique absolu ; une ligne `rate_limits` pour ce connecteur est un gouverneur opérationnel qui ne peut jamais le dépasser (validation à l'écriture). Le débit effectif est le minimum des deux.
 - **Backpressure** : chaque `submit_sm` de `connector-pool-svc` attend son jeton du seau du connecteur, partagé entre pods ; un connecteur saturé ralentit la consommation de `mt.routed` et les messages restent durablement en file. L'attente précède l'écriture du PDU et n'occupe aucune place de la fenêtre SMPP. Le parking et le draineur de reroute (§6.15) paient un budget de republication distinct, au même débit : un message rerouté ne paie le plafond du connecteur qu'une fois, à l'envoi.

@@ -6,10 +6,12 @@ VALUES (@customer_id, @address, COALESCE(sqlc.narg('traffic_category')::text, 'm
 RETURNING *;
 
 -- name: ListSenderIDsByCustomer :many
-SELECT * FROM control_plane.sender_ids
-WHERE customer_id = @customer_id
-  AND (sqlc.narg('traffic_category')::text IS NULL OR traffic_category = sqlc.narg('traffic_category'))
-ORDER BY address;
+SELECT sqlc.embed(s), rl.max_per_sec AS rate_max_per_sec, rl.burst_capacity AS rate_burst_capacity
+FROM control_plane.sender_ids s
+LEFT JOIN control_plane.rate_limits rl ON rl.entity_type = 'sender_id' AND rl.entity_id = s.id
+WHERE s.customer_id = @customer_id
+  AND (sqlc.narg('traffic_category')::text IS NULL OR s.traffic_category = sqlc.narg('traffic_category'))
+ORDER BY s.address;
 
 -- name: ListActiveSenderIDs :many
 -- All active sender IDs across customers, for the sender-ID authorization snapshot (step-060). Only
@@ -36,3 +38,22 @@ UPDATE control_plane.sender_ids s SET first_used_at = u.used_at
 FROM (SELECT unnest(@customer_ids::uuid[]) AS customer_id, unnest(@addresses::text[]) AS address,
              unnest(@used_ats::timestamptz[]) AS used_at) u
 WHERE s.customer_id = u.customer_id AND s.address = u.address AND s.first_used_at IS NULL;
+
+-- name: GetSenderIDWithRateLimit :one
+SELECT sqlc.embed(s), rl.max_per_sec AS rate_max_per_sec, rl.burst_capacity AS rate_burst_capacity
+FROM control_plane.sender_ids s
+LEFT JOIN control_plane.rate_limits rl ON rl.entity_type = 'sender_id' AND rl.entity_id = s.id
+WHERE s.customer_id = @customer_id AND s.id = @id;
+
+-- name: SetSenderIDRateLimit :execrows
+-- Zero rows: no such sender ID under this customer. FOR KEY SHARE makes a concurrent delete of the sender
+-- wait for this insert, so its trigger sees the row it must remove instead of leaving an orphan.
+INSERT INTO control_plane.rate_limits (entity_type, entity_id, max_per_sec, burst_capacity)
+SELECT 'sender_id', s.id, @max_per_sec, @burst_capacity
+FROM control_plane.sender_ids s WHERE s.customer_id = @customer_id AND s.id = @id
+FOR KEY SHARE
+ON CONFLICT (entity_type, entity_id)
+DO UPDATE SET max_per_sec = EXCLUDED.max_per_sec, burst_capacity = EXCLUDED.burst_capacity;
+
+-- name: DeleteSenderIDRateLimit :exec
+DELETE FROM control_plane.rate_limits WHERE entity_type = 'sender_id' AND entity_id = @id;

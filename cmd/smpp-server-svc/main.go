@@ -85,6 +85,7 @@ func run() error {
 	var g supervisor.Ordered
 	g.OnDrain(app.ops.DrainHook(cfg.DrainDelay))
 	g.Add("ops server", func(c context.Context) error { return app.ops.Run(c, cfg.ShutdownTimeout) })
+	g.Add("rate-limit watcher", app.watcher.Run)
 	g.Add("smpp listener", app.listener.Run)
 	// The disconnect subscriber force-closes this pod's sessions when a revocation or suspension is
 	// fanned out by session-manager (step-032). It is fail-open (a Redis blip degrades disconnects, not

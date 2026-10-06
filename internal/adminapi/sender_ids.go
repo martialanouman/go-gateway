@@ -17,16 +17,17 @@ import (
 
 // senderIDDTO is the wire form of a SenderId (contract schema SenderId).
 type senderIDDTO struct {
-	ID              string     `json:"id" format:"uuid"`
-	CustomerID      string     `json:"customer_id" format:"uuid"`
-	Address         string     `json:"address"`
-	Status          string     `json:"status" enum:"pending_carrier_approval,active,disabled"`
-	TrafficCategory string     `json:"traffic_category" enum:"otp,transactional,marketing"`
-	CreatedBy       *string    `json:"created_by,omitempty" format:"uuid" nullable:"true"`
-	ApprovedAt      *time.Time `json:"approved_at,omitempty" format:"date-time" nullable:"true"`
-	FirstUsedAt     *time.Time `json:"first_used_at,omitempty" format:"date-time" nullable:"true"`
-	CreatedAt       time.Time  `json:"created_at" format:"date-time"`
-	UpdatedAt       time.Time  `json:"updated_at" format:"date-time"`
+	ID              string                `json:"id" format:"uuid"`
+	CustomerID      string                `json:"customer_id" format:"uuid"`
+	Address         string                `json:"address"`
+	Status          string                `json:"status" enum:"pending_carrier_approval,active,disabled"`
+	TrafficCategory string                `json:"traffic_category" enum:"otp,transactional,marketing"`
+	RateLimit       *senderIDRateLimitDTO `json:"rate_limit" doc:"The sender ID's own limit; null when it has none and only its account's limit applies."`
+	CreatedBy       *string               `json:"created_by,omitempty" format:"uuid" nullable:"true"`
+	ApprovedAt      *time.Time            `json:"approved_at,omitempty" format:"date-time" nullable:"true"`
+	FirstUsedAt     *time.Time            `json:"first_used_at,omitempty" format:"date-time" nullable:"true"`
+	CreatedAt       time.Time             `json:"created_at" format:"date-time"`
+	UpdatedAt       time.Time             `json:"updated_at" format:"date-time"`
 }
 
 func toSenderIDDTO(s cp.SenderID) senderIDDTO {
@@ -36,12 +37,31 @@ func toSenderIDDTO(s cp.SenderID) senderIDDTO {
 		Address:         s.Address,
 		Status:          string(s.Status),
 		TrafficCategory: string(s.TrafficCategory),
+		RateLimit:       toSenderIDRateLimitDTO(s.RateLimit),
 		CreatedBy:       idPtr(s.CreatedBy),
 		ApprovedAt:      s.ApprovedAt,
 		FirstUsedAt:     s.FirstUsedAt,
 		CreatedAt:       s.CreatedAt,
 		UpdatedAt:       s.UpdatedAt,
 	}
+}
+
+type senderIDRateLimitDTO struct {
+	_             struct{} `nullable:"true"`
+	MaxPerSec     int      `json:"max_per_sec" minimum:"1" maximum:"2147483647"`
+	BurstCapacity int      `json:"burst_capacity" minimum:"1" maximum:"2147483647"`
+}
+
+func toSenderIDRateLimitDTO(l *cp.SenderIDRateLimit) *senderIDRateLimitDTO {
+	if l == nil {
+		return nil
+	}
+	return &senderIDRateLimitDTO{MaxPerSec: l.MaxPerSec, BurstCapacity: l.BurstCapacity}
+}
+
+type senderIDRateLimitSetBody struct {
+	MaxPerSec     int  `json:"max_per_sec" minimum:"1" maximum:"2147483647"`
+	BurstCapacity *int `json:"burst_capacity,omitempty" minimum:"1" maximum:"2147483647" doc:"Messages admitted at once before max_per_sec paces them. Defaults to max_per_sec."`
 }
 
 type senderIDCreateBody struct {
@@ -93,6 +113,23 @@ func registerSenderIDs(api huma.API, senders SenderIDStore, customers CustomerSt
 		Security: scopeSecurity(auth.ScopeAdminWrite),
 		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusConflict, http.StatusUnprocessableEntity},
 	}, h.delete)
+
+	register(api, huma.Operation{
+		OperationID: "set-sender-id-rate-limit", Method: http.MethodPut,
+		Path:    "/admin/customers/{id}/sender-ids/{senderId}/rate-limit",
+		Summary: "Set a sender ID's own rate limit", Tags: []string{"Sender IDs"},
+		Security: scopeSecurity(auth.ScopeAdminWrite),
+		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity},
+	}, h.setRateLimit)
+
+	register(api, huma.Operation{
+		OperationID: "delete-sender-id-rate-limit", Method: http.MethodDelete,
+		Path:          "/admin/customers/{id}/sender-ids/{senderId}/rate-limit",
+		DefaultStatus: http.StatusNoContent,
+		Summary:       "Remove a sender ID's own rate limit", Tags: []string{"Sender IDs"},
+		Security: scopeSecurity(auth.ScopeAdminWrite),
+		Errors:   []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity},
+	}, h.deleteRateLimit)
 }
 
 type listSenderIDsInput struct {
@@ -188,6 +225,39 @@ func (h *senderIDHandlers) delete(ctx context.Context, in *deleteSenderIDInput) 
 		if errors.Is(err, errs.ErrConflict) {
 			return nil, humaerr.Fail(errs.ErrConflict, "sender id has already been used to send messages and cannot be deleted; disable it instead")
 		}
+		return nil, humaerr.FromError(err)
+	}
+	return &deleteOutput{}, nil
+}
+
+type setSenderIDRateLimitInput struct {
+	ID       string `path:"id" format:"uuid"`
+	SenderID string `path:"senderId" format:"uuid"`
+	Body     senderIDRateLimitSetBody
+}
+
+func (h *senderIDHandlers) setRateLimit(ctx context.Context, in *setSenderIDRateLimitInput) (*senderIDOutput, error) {
+	customerID, senderID, err := parseCustomerAndSender(in.ID, in.SenderID)
+	if err != nil {
+		return nil, err
+	}
+	l := cp.SenderIDRateLimit{MaxPerSec: in.Body.MaxPerSec, BurstCapacity: in.Body.MaxPerSec}
+	if in.Body.BurstCapacity != nil {
+		l.BurstCapacity = *in.Body.BurstCapacity
+	}
+	s, err := h.senders.SetRateLimit(ctx, customerID, senderID, l)
+	if err != nil {
+		return nil, humaerr.FromError(err)
+	}
+	return &senderIDOutput{Body: toSenderIDDTO(s)}, nil
+}
+
+func (h *senderIDHandlers) deleteRateLimit(ctx context.Context, in *deleteSenderIDInput) (*deleteOutput, error) {
+	customerID, senderID, err := parseCustomerAndSender(in.ID, in.SenderID)
+	if err != nil {
+		return nil, err
+	}
+	if err := h.senders.DeleteRateLimit(ctx, customerID, senderID); err != nil {
 		return nil, humaerr.FromError(err)
 	}
 	return &deleteOutput{}, nil

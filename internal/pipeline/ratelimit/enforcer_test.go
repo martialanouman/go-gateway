@@ -43,7 +43,7 @@ func admitted(t *testing.T, e *ratelimit.Enforcer, account uuid.UUID, n int) int
 	t.Helper()
 	ok := 0
 	for i := 0; i < n; i++ {
-		err := e.AdmitAccount(context.Background(), account, 1)
+		err := e.Admit(context.Background(), account, uuid.Nil, "", 1)
 		if err == nil {
 			ok++
 			continue
@@ -87,6 +87,60 @@ func TestEnforcerAccountLimitRefuses(t *testing.T) {
 	}
 }
 
+// TestEnforcerSenderLimitRefusesOnlyItsOwnFlow: a sender ID's bucket caps that flow alone (ADR-0021 §3):
+// another sender of the same account, and the same address under another customer, keep their room.
+func TestEnforcerSenderLimitRefusesOnlyItsOwnFlow(t *testing.T) {
+	account, customer, otherCustomer, otp := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	e := newEnforcer(t, []cp.RateLimitEntry{{
+		EntityType: ratelimit.EntitySenderID, EntityID: otp,
+		Sender: &cp.SenderAddress{CustomerID: customer, Address: "OTP"},
+		Limit:  cp.RateLimit{MaxPerSec: iptr(2)},
+	}}, nil)
+
+	admit := func(customerID uuid.UUID, from string) error {
+		return e.Admit(context.Background(), account, customerID, from, 1)
+	}
+	for i := range 2 {
+		if err := admit(customer, "OTP"); err != nil {
+			t.Fatalf("submission %d within the sender's limit = %v, want admitted", i+1, err)
+		}
+	}
+	if err := admit(customer, "OTP"); !errors.Is(err, errs.ErrRateLimited) {
+		t.Fatalf("submission past the sender's limit = %v, want rate_limited", err)
+	}
+	if err := admit(customer, "PROMO"); err != nil {
+		t.Errorf("another sender of the account = %v, want admitted", err)
+	}
+	if err := admit(otherCustomer, "OTP"); err != nil {
+		t.Errorf("the same address under another customer = %v, want admitted", err)
+	}
+}
+
+// TestEnforcerSenderRefusalSparesTheAccountBucket: the sender is checked first, so a message its sender
+// refuses does not spend the account's tokens that the customer's other flows need.
+func TestEnforcerSenderRefusalSparesTheAccountBucket(t *testing.T) {
+	account, customer, otp := uuid.New(), uuid.New(), uuid.New()
+	e := newEnforcer(t, []cp.RateLimitEntry{
+		{EntityType: ratelimit.EntityAccount, EntityID: account, Limit: cp.RateLimit{MaxPerSec: iptr(2)}},
+		{
+			EntityType: ratelimit.EntitySenderID, EntityID: otp,
+			Sender: &cp.SenderAddress{CustomerID: customer, Address: "OTP"},
+			Limit:  cp.RateLimit{MaxPerSec: iptr(1)},
+		},
+	}, nil)
+
+	ctx := context.Background()
+	if err := e.Admit(ctx, account, customer, "OTP", 1); err != nil {
+		t.Fatalf("first OTP = %v, want admitted", err)
+	}
+	if err := e.Admit(ctx, account, customer, "OTP", 1); !errors.Is(err, errs.ErrRateLimited) {
+		t.Fatalf("second OTP = %v, want refused by its sender", err)
+	}
+	if err := e.Admit(ctx, account, customer, "PROMO", 1); err != nil {
+		t.Fatalf("PROMO after a sender refusal = %v, want admitted on the account's last token", err)
+	}
+}
+
 // TestEnforcerConnectorThroughputFallback: a connector with NO operational rate_limit is still bounded
 // by its throughput_limit_per_sec hard ceiling — a connector is never left un-limited.
 func TestEnforcerConnectorThroughputFallback(t *testing.T) {
@@ -122,7 +176,7 @@ func TestEnforcerLongMessageExceedingBurstIsAdmitted(t *testing.T) {
 	e := newEnforcer(t, []cp.RateLimitEntry{
 		{EntityType: ratelimit.EntityAccount, EntityID: account, Limit: cp.RateLimit{MaxPerSec: iptr(3)}},
 	}, nil)
-	if err := e.AdmitAccount(context.Background(), account, 6); err != nil {
+	if err := e.Admit(context.Background(), account, uuid.Nil, "", 6); err != nil {
 		t.Errorf("a 6-segment submission against an account burst of 3 must be admitted, got %v", err)
 	}
 }

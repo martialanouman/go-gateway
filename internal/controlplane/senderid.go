@@ -14,6 +14,7 @@ type SenderID struct {
 	Address         string
 	Status          SenderIDStatus
 	TrafficCategory TrafficCategory
+	RateLimit       *SenderIDRateLimit
 	CreatedBy       *uuid.UUID
 	ApprovedAt      *time.Time
 	// FirstUsedAt is set once a message from this address reached a carrier SMSC; a used sender ID can
@@ -21,6 +22,13 @@ type SenderID struct {
 	FirstUsedAt *time.Time
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+}
+
+// SenderIDRateLimit is a sender ID's own throughput limit, applied at admission next to its account's
+// (ADR-0021 §3).
+type SenderIDRateLimit struct {
+	MaxPerSec     int
+	BurstCapacity int
 }
 
 // SenderIDUse records that a customer submitted a message from address, at UsedAt.

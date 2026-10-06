@@ -303,6 +303,30 @@ items:
           method: DELETE
           url: '{{baseUrl}}/admin/customers/{{customerId}}/sender-ids/{{senderId}}'
         docs: Delete a sender ID.
+      - info:
+          name: set-sender-id-rate-limit
+          type: http
+        http:
+          method: PUT
+          url: '{{baseUrl}}/admin/customers/{{customerId}}/sender-ids/{{senderId}}/rate-limit'
+          headers:
+            - name: Content-Type
+              value: application/json
+          body:
+            type: json
+            data: |
+              {
+                "max_per_sec": 50,
+                "burst_capacity": 100
+              }
+        docs: Set the sender ID's own limit, refused at admission (burst_capacity defaults to max_per_sec).
+      - info:
+          name: delete-sender-id-rate-limit
+          type: http
+        http:
+          method: DELETE
+          url: '{{baseUrl}}/admin/customers/{{customerId}}/sender-ids/{{senderId}}/rate-limit'
+        docs: Remove the sender ID's own limit; its account's limit still applies.
   - info:
       name: SMPP Accounts
       type: folder

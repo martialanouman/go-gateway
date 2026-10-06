@@ -85,6 +85,8 @@ var m1Operations = []opRef{
 	{"create-sender-id", "post", "/admin/customers/{id}/sender-ids"},
 	{"update-sender-id", "patch", "/admin/customers/{id}/sender-ids/{senderId}"},
 	{"delete-sender-id", "delete", "/admin/customers/{id}/sender-ids/{senderId}"},
+	{"set-sender-id-rate-limit", "put", "/admin/customers/{id}/sender-ids/{senderId}/rate-limit"},
+	{"delete-sender-id-rate-limit", "delete", "/admin/customers/{id}/sender-ids/{senderId}/rate-limit"},
 
 	{"list-inbound-numbers", "get", "/admin/inbound-numbers"},
 	{"create-inbound-number", "post", "/admin/inbound-numbers"},

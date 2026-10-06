@@ -46,6 +46,7 @@ type smppApp struct {
 	listener *smppserver.Listener
 	grpc     *grpc.Server
 	rdb      *goredis.Client
+	watcher  *config.Watcher
 	// ingestor is the listener's, kept so a wiring test can submit through the admission the graph installs.
 	ingestor *ingest.Ingestor
 
@@ -96,11 +97,18 @@ func newSMPPApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (_ 
 	a.onClose("stores", st.close)
 	a.rdb = st.rdb
 
-	rateSnap, err := ratelimit.LoadSnapshot(ctx, postgres.NewRateLimitRepo(st.pg), postgres.NewConnectorRepo(st.pg))
+	rateSnap, err := ratelimit.LoadSnapshot(ctx, postgres.NewRateLimitRepo(st.pg), nil)
 	if err != nil {
 		return nil, fmt.Errorf("load rate-limit snapshot: %w", err)
 	}
 	admission := ratelimit.NewEnforcer(rateSnap, ratelimit.NewLimiter(st.rdb))
+	a.watcher = config.NewWatcher(
+		func(ctx context.Context) (config.Stream, error) {
+			return redisstore.Subscribe(ctx, st.rdb, config.ChannelSnapshotInvalidation), nil
+		},
+		admission.Reload(postgres.NewRateLimitRepo(st.pg), nil),
+		config.WithResync(cfg.ConfigResyncInterval), config.WithLogger(logger),
+	)
 
 	stack, err := newListener(cfg, st, admission, logger)
 	if err != nil {
