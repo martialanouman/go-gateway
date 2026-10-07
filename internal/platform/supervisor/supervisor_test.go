@@ -506,14 +506,19 @@ func TestOrderedStillBoundsTheDrainAfterATieOnAnEarlierComponent(t *testing.T) {
 	// least once for the drain to reach the state under test.
 	for range 50 {
 		var o supervisor.Ordered
-		o.Add("deaf", func(context.Context) error { select {} })      // registered first, drained LAST
-		o.Add("punctual", func(context.Context) error { return nil }) // registered last, drained FIRST
+		o.Add("deaf", func(context.Context) error { select {} }) // registered first, drained LAST
+		returned := make(chan struct{})
+		o.Add("punctual", func(context.Context) error { close(returned); return nil }) // registered last, drained FIRST
 
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan error, 1)
 		// "punctual" has long since returned when the drain starts, and a 1 ns budget makes the
 		// deadline ready too: both arms are live on the first component of the sequence.
 		go func() { done <- o.Run(ctx, quietLogger(), time.Nanosecond) }()
+		// Waited for, not slept on: under -race the goroutine may not have run within the millisecond, and
+		// the drain then rightly names "punctual" (CI, 07/10/2026). The millisecond stays for the
+		// supervisor's own deferred close after the return (debts/test-du-budget-de-drain-…).
+		<-returned
 		time.Sleep(time.Millisecond)
 		cancel()
 
