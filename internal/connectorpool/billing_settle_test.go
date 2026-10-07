@@ -2,16 +2,11 @@ package connectorpool_test
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
-	"google.golang.org/grpc"
-
-	"github.com/martialanouman/go-gateway/internal/billing/pb"
 	"github.com/martialanouman/go-gateway/internal/cancel"
 	"github.com/martialanouman/go-gateway/internal/connectorpool"
-	"github.com/martialanouman/go-gateway/internal/connectorpool/settle"
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
@@ -22,46 +17,13 @@ import (
 	"github.com/martialanouman/go-gateway/internal/testutil/otelrec"
 )
 
-// spySettler counts Capture/Release calls and returns a canned capture result, so a test can assert which
+// spySettler counts Release calls, so a test can assert which
 // settle path a send outcome takes without a real billing service.
 type spySettler struct {
-	captureCalls, releaseCalls int
-	billed                     bool
-	charged                    *int32
-}
-
-func (s *spySettler) Capture(context.Context, pipeline.RoutedMT) (bool, *int32) {
-	s.captureCalls++
-	return s.billed, s.charged
+	releaseCalls int
 }
 
 func (s *spySettler) Release(context.Context, pipeline.RoutedMT) { s.releaseCalls++ }
-
-// failingBilling is a billing gRPC client whose Capture/Release always error, to prove the real settler
-// fails open through the connector pool (a billing fault never redelivers a sent message).
-type failingBilling struct{}
-
-func (failingBilling) Capture(context.Context, *pb.CaptureRequest, ...grpc.CallOption) (*pb.CaptureResponse, error) {
-	return nil, errors.New("billing-svc unavailable")
-}
-
-func (failingBilling) Release(context.Context, *pb.ReleaseRequest, ...grpc.CallOption) (*pb.ReleaseResponse, error) {
-	return nil, errors.New("billing-svc unavailable")
-}
-
-// countingBilling records how many capture/release RPCs actually reached the wire, so a test can prove a
-// billing-disabled message makes ZERO calls even with the real settler wired.
-type countingBilling struct{ captures, releases int }
-
-func (c *countingBilling) Capture(context.Context, *pb.CaptureRequest, ...grpc.CallOption) (*pb.CaptureResponse, error) {
-	c.captures++
-	return &pb.CaptureResponse{Captured: true, CreditsCharged: 1}, nil
-}
-
-func (c *countingBilling) Release(context.Context, *pb.ReleaseRequest, ...grpc.CallOption) (*pb.ReleaseResponse, error) {
-	c.releases++
-	return &pb.ReleaseResponse{}, nil
-}
 
 func billableRouted() pipeline.RoutedMT {
 	r := routed()
@@ -97,40 +59,39 @@ func runWithBilling(t *testing.T, resp func(smpp.SubmitSM) fakesmsc.Resp, settle
 	return sink, svc.Run(context.Background())
 }
 
-// TestConnectorCapturesOnEnroute: a sent billable message captures its reservation once and stamps
-// billed/credits_charged from the capture onto the enroute CDR row.
-func TestConnectorCapturesOnEnroute(t *testing.T) {
-	charged := int32(3)
-	spy := &spySettler{billed: true, charged: &charged}
-	sink, err := runWithBilling(t, func(smpp.SubmitSM) fakesmsc.Resp { return fakesmsc.OK() }, spy, nil, billableRouted())
+// TestConnectorNeverSettlesASentMessage: billing-svc settles a submitted message from mt.outcome
+// (step-287d), so the send path makes no billing call — the call that cost ~173 ms a message and timed out
+// four times in five. The outcome carries the reservation instead, and no billing figure the pool no
+// longer knows.
+func TestConnectorNeverSettlesASentMessage(t *testing.T) {
+	spy := &spySettler{}
+	r := billableRouted()
+	sink, err := runWithBilling(t, func(smpp.SubmitSM) fakesmsc.Resp { return fakesmsc.OK() }, spy, nil, r)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if spy.captureCalls != 1 || spy.releaseCalls != 0 {
-		t.Errorf("settle calls = (capture %d, release %d), want (1, 0)", spy.captureCalls, spy.releaseCalls)
+	if spy.releaseCalls != 0 {
+		t.Errorf("release calls = %d, want none on the send path", spy.releaseCalls)
 	}
 	got := sink.outcome(t)
-	if got.Status != string(clickhouse.StatusEnroute) {
-		t.Fatalf("outcome status = %q, want enroute", got.Status)
-	}
-	if !got.Billed || got.CreditsCharged == nil || *got.CreditsCharged != 3 {
-		t.Errorf("outcome billing = (billed %v, charged %v), want (true, &3)", got.Billed, got.CreditsCharged)
+	if got.Status != string(clickhouse.StatusEnroute) || !got.Billable || got.OwnerType != r.OwnerType {
+		t.Errorf("outcome = (status %q, billable %v, owner %q), want (enroute, true, %q)", got.Status, got.Billable, got.OwnerType, r.OwnerType)
 	}
 }
 
-// TestConnectorReleasesOnPermanentFailure: a permanently-rejected message releases its reservation once and
-// writes a failed row (unbilled).
-func TestConnectorReleasesOnPermanentFailure(t *testing.T) {
+// TestConnectorLeavesAPermanentFailureToBilling: a permanently-rejected message is released by billing-svc
+// from its failed outcome, not by the pool.
+func TestConnectorLeavesAPermanentFailureToBilling(t *testing.T) {
 	spy := &spySettler{}
 	sink, err := runWithBilling(t, func(smpp.SubmitSM) fakesmsc.Resp { return fakesmsc.SubmitFailed() }, spy, nil, billableRouted())
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if spy.releaseCalls != 1 || spy.captureCalls != 0 {
-		t.Errorf("settle calls = (capture %d, release %d), want (0, 1)", spy.captureCalls, spy.releaseCalls)
+	if spy.releaseCalls != 0 {
+		t.Errorf("release calls = %d, want none on the send path", spy.releaseCalls)
 	}
-	if got := sink.outcome(t); got.Status != string(clickhouse.StatusFailed) || got.Billed {
-		t.Errorf("outcome = (status %q, billed %v), want (failed, false)", got.Status, got.Billed)
+	if got := sink.outcome(t); got.Status != string(clickhouse.StatusFailed) || !got.Billable {
+		t.Errorf("outcome = (status %q, billable %v), want (failed, true)", got.Status, got.Billable)
 	}
 }
 
@@ -142,8 +103,8 @@ func TestConnectorNoSettleOnTransientReject(t *testing.T) {
 	if err == nil {
 		t.Fatal("a transient reject must redeliver (non-nil Run error)")
 	}
-	if spy.captureCalls != 0 || spy.releaseCalls != 0 {
-		t.Errorf("a transient reject must not settle, got (capture %d, release %d)", spy.captureCalls, spy.releaseCalls)
+	if spy.releaseCalls != 0 {
+		t.Errorf("a transient reject must not settle, got %d releases", spy.releaseCalls)
 	}
 }
 
@@ -154,48 +115,10 @@ func TestConnectorReleasesOnCancel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if spy.releaseCalls != 1 || spy.captureCalls != 0 {
-		t.Errorf("a cancelled message must release once, got (capture %d, release %d)", spy.captureCalls, spy.releaseCalls)
+	if spy.releaseCalls != 1 {
+		t.Errorf("a cancelled message must release once, got %d releases", spy.releaseCalls)
 	}
 	if rows := sink.rows(); len(rows) != 1 || rows[0].Status != clickhouse.StatusCancelled {
 		t.Errorf("expected one cancelled row, got %+v", rows)
-	}
-}
-
-// TestConnectorCaptureFailOpenCommits proves the no-error-leak invariant end-to-end: with the REAL settler
-// over a billing client that always errors, a sent message still commits (Run nil) and writes an unbilled
-// enroute row — a billing fault must never redeliver a sent message (which would be a duplicate SMS).
-func TestConnectorCaptureFailOpenCommits(t *testing.T) {
-	settler := settle.NewSettler(failingBilling{})
-	sink, err := runWithBilling(t, func(smpp.SubmitSM) fakesmsc.Resp { return fakesmsc.OK() }, settler, nil, billableRouted())
-	if err != nil {
-		t.Fatalf("a billing fault must not redeliver a sent message: %v", err)
-	}
-	got := sink.outcome(t)
-	if got.Status != string(clickhouse.StatusEnroute) {
-		t.Fatalf("outcome status = %q, want enroute", got.Status)
-	}
-	if got.Billed || got.CreditsCharged != nil {
-		t.Errorf("a fail-open capture must leave the outcome unbilled, got billed=%v charged=%v",
-			got.Billed, got.CreditsCharged)
-	}
-}
-
-// TestConnectorZeroBillingCallWhenNotBillable is the zero-network-call invariant at the wiring level: a sent
-// message with no reservation (billing disabled) makes NO billing RPC, even though the connector always
-// delegates to the settler — the settler's Billable gate short-circuits before the wire.
-func TestConnectorZeroBillingCallWhenNotBillable(t *testing.T) {
-	client := &countingBilling{}
-	settler := settle.NewSettler(client)
-	r := routed() // Billable defaults to false
-	sink, err := runWithBilling(t, func(smpp.SubmitSM) fakesmsc.Resp { return fakesmsc.OK() }, settler, nil, r)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if client.captures != 0 || client.releases != 0 {
-		t.Errorf("a non-billable message must make zero billing calls, got (capture %d, release %d)", client.captures, client.releases)
-	}
-	if got := sink.outcome(t); got.Status != string(clickhouse.StatusEnroute) || got.Billed {
-		t.Errorf("outcome = (status %q, billed %v), want (enroute, false)", got.Status, got.Billed)
 	}
 }

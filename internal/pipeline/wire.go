@@ -236,8 +236,6 @@ type outcomeWire struct {
 	SubmittedAt     time.Time  `json:"submitted_at"`
 	Status          string     `json:"status"`
 	ErrorCode       *string    `json:"error_code,omitempty"`
-	Billed          bool       `json:"billed"`
-	CreditsCharged  *int32     `json:"credits_charged,omitempty"`
 	TrafficCategory string     `json:"traffic_category"`
 	Priority        uint8      `json:"priority"`
 	Billable        bool       `json:"billable"`

@@ -341,23 +341,14 @@ func (s *Service) settleOutcome(ctx context.Context, span trace.Span, bindIndex 
 		s.timeStage("pin", start)
 	}
 
-	// Settle the reservation on the terminal outcome (step-146): capture a sent message, release a
-	// permanently-failed one. Both FAIL OPEN — neither returns an error — so a billing fault can never turn
-	// this committed outcome into a redelivery that re-submits the message (a duplicate SMS). A
-	// billing-disabled message makes no call. Capture fills billed/credits_charged on the outcome; the
-	// failed path leaves them false/nil (the reserve refund happens durably in billing-svc, not here).
+	// No billing call here: billing-svc captures or releases from this outcome (step-287d, ADR-0024).
 	event := submitOutcome(sent, resp)
 	event.OriginalFrom = originalFrom
-	start = time.Now()
-	if resp.Status == smpp.StatusOK {
-		event.Billed, event.CreditsCharged = s.deps.Billing.Capture(ctx, routed)
-	} else {
+	if resp.Status != smpp.StatusOK {
 		// A permanent SMSC rejection: a failed CDR is written and the offset commits, so this is the only
 		// place the span learns the message was refused.
 		observability.RecordSpanError(span, code)
-		s.deps.Billing.Release(ctx, routed)
 	}
-	s.timeStage("capture", start)
 	s.observeSubmit(resp, code, e2e)
 	// Publish the outcome instead of writing the CDR here (step-201c, D1). The row is now a PROJECTION:
 	// a dedicated consumer batches mt.outcome into ClickHouse, which is what moves the batching to where a

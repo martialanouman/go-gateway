@@ -379,9 +379,8 @@ func newThrottleMetrics(bindEnv connectorEnv) *throttleMetrics {
 type settler struct {
 	settler *settle.Settler
 
-	// captureFailed / releaseFailed count the fail-open events so an alert can fire (no labels — one
-	// connector per pod, never a message id or MSISDN).
-	captureFailed prometheus.Counter
+	// releaseFailed counts the fail-open releases so an alert can fire (no labels — one connector per pod,
+	// never a message id or MSISDN). A sent message is settled by billing-svc (step-287d).
 	releaseFailed prometheus.Counter
 
 	conn *grpc.ClientConn
@@ -395,10 +394,6 @@ func (s *settler) close() {
 
 func newSettler(cfg config.Config, logger *slog.Logger) (_ *settler, err error) {
 	s := &settler{
-		captureFailed: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "billing_capture_failed_total",
-			Help: "MT credit captures that failed and were left for reconciliation (fail-open).",
-		}),
 		releaseFailed: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "billing_release_failed_total",
 			Help: "MT credit releases that failed and were left for reconciliation (fail-open).",
@@ -416,7 +411,7 @@ func newSettler(cfg config.Config, logger *slog.Logger) (_ *settler, err error) 
 	}
 	s.settler = settle.NewSettler(pb.NewBillingClient(s.conn),
 		settle.WithTimeout(cfg.Billing.SettleTimeout),
-		settle.WithMetric(settleMetric{captureFailed: s.captureFailed, releaseFailed: s.releaseFailed}),
+		settle.WithMetric(settleMetric{releaseFailed: s.releaseFailed}),
 		settle.WithLogger(logger))
 	return s, nil
 }
@@ -501,7 +496,7 @@ func newOpsServer(
 		return 0
 	})
 	ops.Registry().MustRegister(throttle.sendRate, throttle.throttledTotal, throttle.deadLetterTotal, linkUp,
-		billing.captureFailed, billing.releaseFailed)
+		billing.releaseFailed)
 	ops.Registry().MustRegister(poolCatalogueCollectors(catalog)...)
 	ops.Registry().MustRegister(stream.dropped...)
 	return ops, nil
@@ -606,10 +601,9 @@ type deadLetterMetric struct{ counter *prometheus.CounterVec }
 
 func (m deadLetterMetric) Inc(reason string) { m.counter.WithLabelValues(reason).Inc() }
 
-// settleMetric adapts the fail-open capture/release counters to settle.Metric (bounded, no labels).
-type settleMetric struct{ captureFailed, releaseFailed prometheus.Counter }
+// settleMetric adapts the fail-open release counter to settle.Metric (bounded, no labels).
+type settleMetric struct{ releaseFailed prometheus.Counter }
 
-func (m settleMetric) CaptureFailed() { m.captureFailed.Inc() }
 func (m settleMetric) ReleaseFailed() { m.releaseFailed.Inc() }
 
 // breakerStateReader reads a connector's breaker aggregate (breaker:state:{id}) so a reroute can skip a

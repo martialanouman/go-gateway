@@ -51,6 +51,6 @@ L'arbitrage a été rendu par Fable, qui s'appuie sur ADR-0012 §2 (« la seule 
 - [x] PR1 : un `enroute` est capturé, un `failed` est libéré, un `billable=false` ne coûte aucun appel ; un
       échec de facturation fait échouer le record ; le double règlement avec le pool reste une seule
       entrée (intégration)
-- [ ] PR2 : `settleOutcome` ne fait plus d'appel de facturation ; ADR-0024 ; spec amendée
+- [x] PR2 : `settleOutcome` ne fait plus d'appel de facturation ; ADR-0024 ; spec amendée
 - [ ] sur le VPS : le temps de `capture` disparaît du pool, et la traversée est relevée dans le journal de
       step-287

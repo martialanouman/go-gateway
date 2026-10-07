@@ -131,14 +131,12 @@ type noopDeadLetter struct{}
 
 func (noopDeadLetter) Inc(string) {}
 
-// BillingSettler closes the MT billing loop (step-146): Capture confirms the reservation of a sent message
-// (returning billed + credits_charged for the CDR), Release refunds it when a message terminally fails or is
-// cancelled. It gates on the reservation flag pinned on mt.routed (billing disabled → ZERO billing call) and
-// FAILS OPEN — neither method returns an error, so a billing fault can never leak into processOne's transient
-// contract and redeliver a sent message (a duplicate SMS). *settle.Settler satisfies it; New defaults a nil
+// BillingSettler releases the reservation of a message that never reached the SMSC (a cancellation, a
+// dead-letter); a sent or refused message is settled by billing-svc from its mt.outcome (step-287d). It gates
+// on the reservation flag pinned on mt.routed (billing disabled → ZERO billing call) and FAILS OPEN — Release
+// returns no error, so a billing fault can never leak into processOne's transient contract. *settle.Settler satisfies it; New defaults a nil
 // one to a no-op so a pool with no billing wired never bills. Declared consumer-side (convention §2).
 type BillingSettler interface {
-	Capture(ctx context.Context, r pipeline.RoutedMT) (billed bool, creditsCharged *int32)
 	Release(ctx context.Context, r pipeline.RoutedMT)
 }
 
@@ -146,8 +144,7 @@ type BillingSettler interface {
 // do not exercise billing rely on it.
 type noopSettler struct{}
 
-func (noopSettler) Capture(context.Context, pipeline.RoutedMT) (bool, *int32) { return false, nil }
-func (noopSettler) Release(context.Context, pipeline.RoutedMT)                {}
+func (noopSettler) Release(context.Context, pipeline.RoutedMT) {}
 
 // LiveConfig is the part of a connector's configuration the pool re-reads on each (re)dial.
 type LiveConfig struct {

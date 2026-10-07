@@ -65,7 +65,7 @@ func TestSubmitStagesAreTimed(t *testing.T) {
 			}
 		}
 	}
-	for _, stage := range []string{"limit", "claim", "sender", "submit", "dlrmap", "pin", "capture", "outcome", "shard", "batch"} {
+	for _, stage := range []string{"limit", "claim", "sender", "submit", "dlrmap", "pin", "outcome", "shard", "batch"} {
 		if counts[stage] != 1 {
 			t.Errorf("stage %q observed %d times, want 1 (all: %v)", stage, counts[stage], counts)
 		}

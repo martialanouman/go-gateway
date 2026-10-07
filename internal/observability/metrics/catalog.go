@@ -185,7 +185,7 @@ func NewCatalog() *Catalog {
 
 		ConnectorSubmitStage: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name: "connector_submit_stage_seconds",
-			Help: "Time a connector-pool submit_sm spends in each stage (limit|claim|throttle|sender|submit|dlrmap|pin|capture|outcome), and a poll batch in total (batch) and per shard (shard).",
+			Help: "Time a connector-pool submit_sm spends in each stage (limit|claim|throttle|sender|submit|dlrmap|pin|outcome), and a poll batch in total (batch) and per shard (shard).",
 			// 0.5 ms … ~16 s: a Redis round trip at the bottom, a whole poll batch at the top.
 			Buckets:                         prometheus.ExponentialBuckets(0.0005, 2, 16),
 			NativeHistogramBucketFactor:     nativeBucketFactor,
