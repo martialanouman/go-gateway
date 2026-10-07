@@ -210,6 +210,30 @@ func TestOpsExposesTheOutcomeProjectionDrainRate(t *testing.T) {
 	}
 }
 
+// TestOpsExposesThePipelineStageTimes: the router spends ~226 ms a message (step-287 run 2), and this is the
+// metric that says in which stage (step-287e). Seeded at boot, it is on /metrics before the first message.
+func TestOpsExposesThePipelineStageTimes(t *testing.T) {
+	cfg := testConfig()
+	cfg.Postgres = pgtest.Config(t)
+	cfg.Redis = redistest.Config(t)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	app, err := newRouterApp(ctx, cfg, silentLogger())
+	if err != nil {
+		t.Fatalf("newRouterApp: %v", err)
+	}
+	defer app.close()
+
+	rec := httptest.NewRecorder()
+	promhttp.HandlerFor(app.ops.Registry(), promhttp.HandlerOpts{}).
+		ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if !strings.Contains(rec.Body.String(), `pipeline_stage_seconds_bucket{stage="credit"`) {
+		t.Error("pipeline_stage_seconds is not exposed on /metrics with its credit stage")
+	}
+}
+
 // TestOpsExposesTheExactRouteLookupCounter guards the metric step-250e shipped to make its two
 // deferred decisions decidable — a negative cache, judged on pg_miss, and the TTL, judged on pg_hit.
 //

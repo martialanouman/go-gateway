@@ -460,6 +460,7 @@ func newPipelineStack(
 		OptOut:    boot.optOut,
 		Antispam:  p.antispam,
 		Credit:    reserver,
+		Stages:    stageTimer{v: catalog.PipelineStage},
 	})
 	return p, nil
 }
@@ -705,7 +706,7 @@ func newOpsServer(
 	// panic on the duplicate and expose always-zero series, which read as "measured, and nothing happened"
 	// rather than "not measured here".
 	ops.Registry().MustRegister(catalog.RoutingScriptFailures, catalog.QueueDepth,
-		catalog.MessagesTotal, catalog.RejectedTotal, catalog.PipelineDuration,
+		catalog.MessagesTotal, catalog.RejectedTotal, catalog.PipelineDuration, catalog.PipelineStage,
 		catalog.ExactRouteLookups, catalog.ExactRouteCacheCorrupt,
 		catalog.ConfigRebuilds, catalog.ConfigRebuildLastSuccess)
 	ops.Registry().MustRegister(stream.dropped...)
@@ -728,6 +729,9 @@ func newOpsServer(
 	// no denominator until the first message of each kind happened by.
 	for _, outcome := range exact.LookupOutcomes() {
 		catalog.ExactRouteLookups.WithLabelValues(outcome)
+	}
+	for _, stage := range pipeline.StageNames() {
+		catalog.PipelineStage.WithLabelValues(stage)
 	}
 	blooms.set("exact", stack.exactBloom.CapacityBits())
 	blooms.set("optout", boot.optOut.CapacityBits())
@@ -982,4 +986,11 @@ func (b breakerAvailability) Unavailable(ctx context.Context, connectorIDs []uui
 		}
 	}
 	return open, nil
+}
+
+// stageTimer adapts the pipeline stage histogram to pipeline.StageObserver.
+type stageTimer struct{ v *prometheus.HistogramVec }
+
+func (t stageTimer) Observe(stage string, d time.Duration) {
+	t.v.WithLabelValues(stage).Observe(d.Seconds())
 }

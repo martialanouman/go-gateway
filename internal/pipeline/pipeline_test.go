@@ -686,3 +686,30 @@ func TestPipelineCategoryMismatchLeaksNothingIntoTheSpans(t *testing.T) {
 	rec.AssertNoBody(t, "topsecretbody")
 	rec.AssertNoBody(t, "jackpot")
 }
+
+// stageTimes counts the pipeline stages observed, by name.
+type stageTimes map[string]int
+
+func (s stageTimes) Observe(stage string, _ time.Duration) { s[stage]++ }
+
+// TestPipelineTimesEachStage: the router spends ~226 ms a message (run 2 of step-287), and nothing said in
+// which stage. Each one is timed, under the name its span carries (step-287e).
+func TestPipelineTimesEachStage(t *testing.T) {
+	deps := testDeps(observability.Tracer(otelrec.New(t).Provider(), "router"))
+	deps.Credit = &stubReserver{}
+	times := stageTimes{}
+	deps.Stages = times
+
+	if _, _, err := pipeline.New(deps).Process(context.Background(), inbound("+2250700000000")); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	for _, stage := range pipeline.StageNames() {
+		if times[stage] != 1 {
+			t.Errorf("stage %q observed %d times, want 1 (all: %v)", stage, times[stage], times)
+		}
+	}
+	// The router seeds the histogram from StageNames: a stage timed under any other name would never be.
+	if len(times) != len(pipeline.StageNames()) {
+		t.Errorf("observed stages %v, want exactly StageNames() %v", times, pipeline.StageNames())
+	}
+}

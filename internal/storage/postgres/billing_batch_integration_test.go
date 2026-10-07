@@ -678,3 +678,45 @@ func TestBatcherBoundsAMovementWithoutADeadline(t *testing.T) {
 		t.Fatalf("answered after %v: a movement without a deadline must still be bounded", waited)
 	}
 }
+
+// batchStages counts the stages the batcher observes, by name.
+type batchStages struct {
+	mu sync.Mutex
+	n  map[string]int
+}
+
+func (s *batchStages) Observe(stage string, _ time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.n == nil {
+		s.n = map[string]int{}
+	}
+	s.n[stage]++
+}
+
+func (s *batchStages) count(stage string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.n[stage]
+}
+
+// TestBatcherTimesItsStages: a movement waits to be handed to the single writer, then for its batch's
+// write, and the batch makes four round trips. Each is timed, so the run-2 185 ms of a durable write can
+// be named (step-287e).
+func TestBatcherTimesItsStages(t *testing.T) {
+	f := newDeltaFixture(t, "customer")
+	stages := &batchStages{}
+	b := postgres.NewBillingBatcher(f.repo, &batchSizes{}, postgres.WithBatchStages(stages))
+	t.Cleanup(b.Close)
+
+	entry := f.hot(uuid.New(), -2, 998)
+	entry.EntryType = cp.EntryCapture
+	if _, applied, err := b.RecordDurable(context.Background(), entry); err != nil || !applied {
+		t.Fatalf("RecordDurable = (applied %v, %v), want applied", applied, err)
+	}
+	for _, stage := range []string{"handoff", "reply", "begin", "claim", "copy", "commit"} {
+		if stages.count(stage) != 1 {
+			t.Errorf("stage %q observed %d times, want 1", stage, stages.count(stage))
+		}
+	}
+}
