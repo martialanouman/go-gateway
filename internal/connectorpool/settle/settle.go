@@ -1,6 +1,6 @@
-// Package settle closes the MT billing loop in the connector pool (step-146): it CAPTURES the reserved
-// credit when a message is sent and RELEASES it when a message terminally fails, through the billing gRPC
-// service. It gates on the reservation flag pinned on mt.routed (billing disabled → ZERO billing call) and
+// Package settle releases, through the billing gRPC service, the reserved credit of a message the connector
+// pool never sent (a cancellation, a dead-letter). A sent or refused message is settled by billing-svc from
+// its mt.outcome (step-287d, ADR-0024). It gates on the reservation flag pinned on mt.routed (billing disabled → ZERO billing call) and
 // resolves the balance owner from the owner_type the router pinned, so a capture hits the identical key the
 // reserve used (step-145). Every billing fault FAILS OPEN: the error is logged and counted, never returned —
 // a propagated error would redeliver the record and re-submit the SMS (a duplicate), and the reserve debit
@@ -22,7 +22,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 )
 
-// defaultSettleTimeout bounds a single capture/release RPC. It is short so a slow billing-svc degrades to a
+// defaultSettleTimeout bounds a single release RPC. It is short so a slow billing-svc degrades to a
 // fast fail-open rather than stalling the send pipeline (a down billing-svc fails even faster — connection
 // refused). billing-svc does a synchronous durable write, so the deadline must stay above its commit
 // latency; it is configurable (BILLING_SETTLE_TIMEOUT) so ops can widen it without a redeploy.
@@ -44,7 +44,7 @@ type nopMetric struct{}
 
 func (nopMetric) ReleaseFailed() {}
 
-// Settler captures/releases MT reservations through billing-svc. It holds no balance itself — billing-svc
+// Settler releases MT reservations through billing-svc. It holds no balance itself — billing-svc
 // owns the atomic, idempotent accounting keyed by message_id.
 type Settler struct {
 	client  BillingClient
@@ -56,7 +56,7 @@ type Settler struct {
 // Option configures a Settler.
 type Option func(*Settler)
 
-// WithTimeout overrides the per-call capture/release deadline (default 200ms).
+// WithTimeout overrides the per-call release deadline (default 200ms).
 func WithTimeout(d time.Duration) Option {
 	return func(s *Settler) {
 		if d > 0 {

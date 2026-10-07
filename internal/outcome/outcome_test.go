@@ -137,16 +137,12 @@ func TestProjectorWritesTheRowTheConnectorUsedToWrite(t *testing.T) {
 	}
 }
 
-// TestProjectorCarriesTheFailedOutcome: a permanent SMSC rejection projects its gateway error code and
-// its settlement, unchanged.
+// TestProjectorCarriesTheFailedOutcome: a permanent SMSC rejection projects its gateway error code, unchanged.
 func TestProjectorCarriesTheFailedOutcome(t *testing.T) {
 	code := "smsc_rejected"
-	charged := int32(4)
 	event := enrouteEvent()
 	event.Status = string(clickhouse.StatusFailed)
 	event.ErrorCode = &code
-	event.Billed = true
-	event.CreditsCharged = &charged
 
 	cdr := &fakeCDR{}
 	cons := &capturingConsumer{recs: []kafka.Record{outcomeRec(t, event)}}
@@ -164,12 +160,6 @@ func TestProjectorCarriesTheFailedOutcome(t *testing.T) {
 	}
 	if got.ErrorCode == nil || *got.ErrorCode != code {
 		t.Errorf("ErrorCode = %v, want %v", got.ErrorCode, code)
-	}
-	if !got.Billed {
-		t.Errorf("Billed = %v, want true", got.Billed)
-	}
-	if got.CreditsCharged == nil || *got.CreditsCharged != charged {
-		t.Errorf("CreditsCharged = %v, want %v", got.CreditsCharged, charged)
 	}
 }
 

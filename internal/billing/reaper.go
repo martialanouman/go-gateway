@@ -99,7 +99,7 @@ func decideFromStatus(status string) reaperAction {
 	}
 }
 
-// Reaper reconciles reservations the MT settle loop left open (step-190). connector-pool settles
+// Reaper reconciles reservations the MT settle loop left open (step-190). connector-pool releases
 // FAIL-OPEN — a billing fault there is logged and swallowed, never returned, because propagating it would
 // redeliver the record and re-send the SMS — which means a billing outage leaves reserve debits standing
 // with nothing to close them: the customer stays charged for a message that may never have been sent.

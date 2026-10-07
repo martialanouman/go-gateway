@@ -14,7 +14,8 @@ de la facturation, ce qu'ADR-0023 a écarté. Et un montant qui survive au DLR d
 règlement dans le modèle versionné du CDR. Aucun écran ne l'a demandé.
 
 **Ce qu'il en coûte.** Le CDR Explorer ne peut pas afficher ce qu'un message a coûté : il faut lire le grand
-livre à côté.
+livre à côté. Côté client, `get-message`/`list-messages` (`internal/restapi/messages.go:243`) rendent désormais
+`credits_charged: null` pour un message resté `enroute` aussi, et plus seulement pour un message livré.
 
 **À quoi on reconnaîtra qu'il faut la payer.** Le tableau de bord demande le coût par message dans le CDR
 Explorer ou dans l'export.

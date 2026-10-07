@@ -36,7 +36,16 @@ est fail-closed et acquitté avant le commit, et porte désormais `billable` et 
 - Il démarre au dernier offset : un premier déploiement ne règle pas toute la rétention de `mt.outcome`.
 
 **3. Les chemins sans envoi gardent le `Release` gRPC fail-open du pool** : `cancelBeforeDispatch` et la
-chaîne de repli épuisée. Ils ne passent pas par `mt.outcome` (ADR-0023 §3), et ils sont rares.
+lettre morte (chaîne de repli épuisée, `retries_exhausted`, `delivery_expired`). Ils ne passent pas par
+`mt.outcome` (ADR-0023 §3), et ils sont rares.
+
+**Résidu accepté : un SMS parti peut être libéré.** Si le `submit_sm` réussit et que la publication de
+`mt.outcome` échoue, ou que le pod tombe avant l'ack, le record est relivré. Sa relivraison peut alors finir
+en lettre morte (`delivery_expired`, `retries_exhausted`) ou en rejet permanent, ce qui libère la réservation
+d'un SMS déjà parti. Le reaper ne rattrape rien : la réservation est fermée. C'est la fenêtre de duplication
+bornée qu'ADR-0012 accepte déjà, et elle est plus courte qu'avant : la capture de ~173 ms ne s'intercale plus
+avant la publication. Avant cet ADR, la même fuite passait par une capture en fail-open (80 % des cas mesurés).
+Elle reste bornée par une panne Kafka plus longue que l'âge maximum d'un message.
 
 **4. Le CDR ne porte plus de montant de règlement venu du pool.** `billed`/`credits_charged` ne faisaient
 déjà pas autorité : la ligne DLR (rang 40, `Billed: false`) les écrase pour tout message livré. Le grand
@@ -65,7 +74,8 @@ après le DLR.
 - La spec nommait le pool comme acteur de la capture (§4.2, §6.9 point 3). Elle est amendée ; les garanties
   de §6.9 sont conservées.
 - Le retard de règlement devient visible par le lag du groupe `billing-svc-settle` sur `mt.outcome`.
-- `billing_capture_failed_total` disparaît du pool.
+- `billing_capture_failed_total` disparaît du pool. Aucune règle d'alerte n'existe dans `deploy/` : le lag
+  de `billing-svc-settle` sur `mt.outcome` est le signal à brancher quand les alertes y viendront.
 - Un CDR qui dirait vrai sur la facturation demanderait un rang de règlement :
   `debts/cdr-sans-montant-de-reglement.md`.
 - **Ordre de déploiement :** le groupe `billing-svc-settle` est déployé avant que le pool cesse de capturer.

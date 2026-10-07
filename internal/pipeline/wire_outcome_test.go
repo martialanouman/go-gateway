@@ -17,25 +17,22 @@ import (
 func outcomeFixture() pipeline.OutcomeMT {
 	routeID := uuid.New()
 	code := "submit_failed"
-	charged := int32(3)
 	return pipeline.OutcomeMT{
-		MessageID:      uuid.New(),
-		TraceID:        uuid.New(),
-		AccountID:      uuid.New(),
-		CustomerID:     uuid.New(),
-		ConnectorID:    uuid.New(),
-		RouteID:        &routeID,
-		From:           "GATEWAY",
-		OriginalFrom:   "+22507000001",
-		To:             "+22507000000",
-		Encoding:       "ucs2",
-		SegmentSeq:     2,
-		SegmentCount:   3,
-		SubmittedAt:    time.Now().UTC().Truncate(time.Millisecond),
-		Status:         "failed",
-		ErrorCode:      &code,
-		Billed:         true,
-		CreditsCharged: &charged,
+		MessageID:    uuid.New(),
+		TraceID:      uuid.New(),
+		AccountID:    uuid.New(),
+		CustomerID:   uuid.New(),
+		ConnectorID:  uuid.New(),
+		RouteID:      &routeID,
+		From:         "GATEWAY",
+		OriginalFrom: "+22507000001",
+		To:           "+22507000000",
+		Encoding:     "ucs2",
+		SegmentSeq:   2,
+		SegmentCount: 3,
+		SubmittedAt:  time.Now().UTC().Truncate(time.Millisecond),
+		Status:       "failed",
+		ErrorCode:    &code,
 	}
 }
 
@@ -86,17 +83,13 @@ func TestOutcomeRoundTrip(t *testing.T) {
 	if out.Status != in.Status || out.ErrorCode == nil || *out.ErrorCode != *in.ErrorCode {
 		t.Errorf("outcome = (%q, %v), want (%q, %v)", out.Status, out.ErrorCode, in.Status, in.ErrorCode)
 	}
-	if !out.Billed || out.CreditsCharged == nil || *out.CreditsCharged != *in.CreditsCharged {
-		t.Errorf("billing = (%v, %v), want (%v, %v)",
-			out.Billed, out.CreditsCharged, in.Billed, in.CreditsCharged)
-	}
 }
 
-// TestOutcomeOmitsNilOptionals: a nil route id / error code / capture result decodes back to nil rather
+// TestOutcomeOmitsNilOptionals: a nil route id / error code decodes back to nil rather
 // than to a zero uuid or an empty-string code, which the CDR would store as a real value.
 func TestOutcomeOmitsNilOptionals(t *testing.T) {
 	in := outcomeFixture()
-	in.RouteID, in.ErrorCode, in.CreditsCharged, in.Billed = nil, nil, nil, false
+	in.RouteID, in.ErrorCode = nil, nil
 	in.Status = "enroute"
 
 	rec, err := pipeline.EncodeOutcome(in)
@@ -107,9 +100,8 @@ func TestOutcomeOmitsNilOptionals(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if out.RouteID != nil || out.ErrorCode != nil || out.CreditsCharged != nil || out.Billed {
-		t.Errorf("optionals = (route %v, code %v, charged %v, billed %v), want all nil/false",
-			out.RouteID, out.ErrorCode, out.CreditsCharged, out.Billed)
+	if out.RouteID != nil || out.ErrorCode != nil {
+		t.Errorf("optionals = (route %v, code %v), want both nil", out.RouteID, out.ErrorCode)
 	}
 }
 

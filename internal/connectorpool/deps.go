@@ -132,9 +132,9 @@ type noopDeadLetter struct{}
 func (noopDeadLetter) Inc(string) {}
 
 // BillingSettler releases the reservation of a message that never reached the SMSC (a cancellation, a
-// dead-letter). A sent or refused message is settled by billing-svc from its mt.outcome (step-287d). It gates on the reservation flag pinned on mt.routed (billing disabled → ZERO billing call) and
-// FAILS OPEN — neither method returns an error, so a billing fault can never leak into processOne's transient
-// contract and redeliver a sent message (a duplicate SMS). *settle.Settler satisfies it; New defaults a nil
+// dead-letter); a sent or refused message is settled by billing-svc from its mt.outcome (step-287d). It gates
+// on the reservation flag pinned on mt.routed (billing disabled → ZERO billing call) and FAILS OPEN — Release
+// returns no error, so a billing fault can never leak into processOne's transient contract. *settle.Settler satisfies it; New defaults a nil
 // one to a no-op so a pool with no billing wired never bills. Declared consumer-side (convention §2).
 type BillingSettler interface {
 	Release(ctx context.Context, r pipeline.RoutedMT)

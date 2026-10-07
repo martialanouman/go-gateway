@@ -170,8 +170,6 @@ func row(env pipeline.OutcomeMT, status clickhouse.Status) clickhouse.CDRRow {
 		//nolint:gosec // idem.
 		SegmentSeq:         uint16(env.SegmentSeq),
 		Encoding:           clickhouse.EncodingOf(env.Encoding),
-		Billed:             env.Billed,
-		CreditsCharged:     env.CreditsCharged,
 		OriginalSourceAddr: nonEmpty(env.OriginalFrom),
 		TrafficCategory:    env.TrafficCategory,
 		Priority:           env.Priority,

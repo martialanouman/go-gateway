@@ -481,7 +481,8 @@ type Billing struct {
 	// on redelivery without double-charging.
 	ReserveTimeout time.Duration `env:"RESERVE_TIMEOUT" envDefault:"1s"`
 
-	// SettleTimeout bounds a single capture/release RPC in the connector pool (step-146). Like
+	// SettleTimeout bounds a single release RPC in the connector pool (step-146; capture left the pool with
+	// step-287d). Like
 	// ReserveTimeout it is short so a slow billing-svc degrades to a fast fail-open rather than stalling the
 	// send pipeline; capture/release do a synchronous durable write, so it must stay above that commit
 	// latency, and is a knob ops can widen without a redeploy. Capture/release are idempotent by message_id.

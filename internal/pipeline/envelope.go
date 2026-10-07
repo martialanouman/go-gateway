@@ -113,8 +113,8 @@ type RoutedMT struct {
 // command_status: the connector owns the SMPP vocabulary and resolves it once, so the projection maps
 // a status onto a row without re-deriving it — and a status it does not know is a corrupt record, not
 // a silent rank-0 row. ErrorCode is a gateway code from the shared platform/errors contract, nil when
-// the send succeeded. Billed/CreditsCharged are the settlement the connector captured; they are
-// carried rather than recomputed because only the connector saw the reservation.
+// the send succeeded. Billable/OwnerType
+// say whether a reservation exists and on which balance, for billing-svc to settle (step-287d).
 //
 // DELIVERY GUARANTEE: at-least-once. The projection is idempotent — `cdr` is a
 // ReplacingMergeTree keyed by the row's identity and versioned by the status rank, so a replayed
@@ -140,10 +140,6 @@ type OutcomeMT struct {
 	Status string
 	// ErrorCode is the gateway error code for a failed outcome, nil for enroute.
 	ErrorCode *string
-	// Billed and CreditsCharged are the capture result for a sent billable message (step-146); false/nil
-	// when nothing was captured (billing disabled, no reservation, or a fail-open capture).
-	Billed         bool
-	CreditsCharged *int32
 	// TrafficCategory and Priority are copied from the routed message (see clickhouse.CDRRow).
 	TrafficCategory string
 	Priority        uint8

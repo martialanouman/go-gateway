@@ -59,11 +59,11 @@ func reserveFor(t *testing.T, h *billingHarness, accountID, messageID uuid.UUID,
 	}
 }
 
-// TestSettlerCaptureIdempotentUnderDoubleDelivery is invariant (c) for capture: a redelivered sent message
+// TestGRPCCaptureIdempotentUnderDoubleDelivery is invariant (c) for capture: a redelivered sent message
 // captures against the same message_id and adds EXACTLY ONE capture ledger entry, with a stable
 // credits_charged. The balance is deliberately NOT the assertion here — capture entries are credits=0, so a
 // buggy double-capture would move the balance zero times either way; only the ledger entry count catches it.
-func TestSettlerCaptureIdempotentUnderDoubleDelivery(t *testing.T) {
+func TestGRPCCaptureIdempotentUnderDoubleDelivery(t *testing.T) {
 	h := newBillingHarness(t, 100)
 	client := newBillingGRPCClient(t, h)
 	ctx := context.Background()

@@ -77,9 +77,6 @@ func TestConnectorNeverSettlesASentMessage(t *testing.T) {
 	if got.Status != string(clickhouse.StatusEnroute) || !got.Billable || got.OwnerType != r.OwnerType {
 		t.Errorf("outcome = (status %q, billable %v, owner %q), want (enroute, true, %q)", got.Status, got.Billable, got.OwnerType, r.OwnerType)
 	}
-	if got.Billed || got.CreditsCharged != nil {
-		t.Errorf("outcome billing = (billed %v, charged %v), want none: the pool no longer settles", got.Billed, got.CreditsCharged)
-	}
 }
 
 // TestConnectorLeavesAPermanentFailureToBilling: a permanently-rejected message is released by billing-svc
