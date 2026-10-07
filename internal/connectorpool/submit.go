@@ -144,9 +144,13 @@ func (s *Service) processOne(ctx context.Context, b *bind, bindIndex int, rec ka
 	// redelivery or a dead-letter must carry on.
 	sent := routed
 	var pinned bool
+	start := time.Now()
 	sent.From, pinned = s.senderFor(ctx, routed)
+	s.timeStage("sender", start)
 
+	start = time.Now()
 	resp, err := b.Submit(ctx, buildSubmit(sent, s.priorityFlagDefault))
+	s.timeStage("submit", start)
 	if err != nil {
 		// A dead bind, a write failure or a timeout is transient and a connector-health failure for the
 		// breaker (no response came back). With a fallback chain, reroute to the next connector; without
@@ -214,7 +218,10 @@ func (s *Service) preDispatch(ctx context.Context, span trace.Span, bindIndex in
 	// consumption instead of rejecting. Before the claim, so a message held here can still be cancelled;
 	// a wait cut short leaves the record uncommitted.
 	if s.deps.SendLimiter != nil {
-		if err := s.deps.SendLimiter.WaitConnector(ctx, routed.ConnectorID); err != nil {
+		start := time.Now()
+		err := s.deps.SendLimiter.WaitConnector(ctx, routed.ConnectorID)
+		s.timeStage("limit", start)
+		if err != nil {
 			return true, fmt.Errorf("connectorpool: connector ceiling wait: %w", err)
 		}
 	}
@@ -233,7 +240,9 @@ func (s *Service) preDispatch(ctx context.Context, span trace.Span, bindIndex in
 	// cannot be recalled), so a claim failure fails OPEN — we log and dispatch rather than halt all
 	// outbound delivery on a Redis outage. Residual, accepted: the cancel_sm may then win a token it
 	// should not have and write the wrong row again, bounded to Redis outages.
+	start := time.Now()
 	holder, cerr := s.deps.CancelFlags.Claim(ctx, routed.MessageID, cancel.HolderDispatched)
+	s.timeStage("claim", start)
 	if cerr != nil {
 		s.deps.Logger.WarnContext(ctx, "connector: cancel-token claim failed, dispatching anyway",
 			"message_id", routed.MessageID, "err", cerr)
@@ -253,7 +262,10 @@ func (s *Service) preDispatch(ctx context.Context, span trace.Span, bindIndex in
 	// so a throttled SMSC slows our outbound rather than being hammered. It blocks at most one send
 	// interval and honours ctx; it NEVER cuts the bind (that is the circuit breaker's job, M8).
 	if s.aimd != nil {
-		if err := s.aimd.acquire(ctx); err != nil {
+		start := time.Now()
+		err := s.aimd.acquire(ctx)
+		s.timeStage("throttle", start)
+		if err != nil {
 			return true, fmt.Errorf("connectorpool: throttle wait: %w", err)
 		}
 	}
@@ -320,9 +332,13 @@ func (s *Service) settleOutcome(ctx context.Context, span trace.Span, bindIndex 
 	if sent.From != routed.From {
 		originalFrom = routed.From
 	}
+	start := time.Now()
 	s.recordDLRMapping(ctx, sent, originalFrom, resp)
+	s.timeStage("dlrmap", start)
 	if !pinned {
+		start = time.Now()
 		s.pinSender(ctx, sent, resp)
+		s.timeStage("pin", start)
 	}
 
 	// Settle the reservation on the terminal outcome (step-146): capture a sent message, release a
@@ -332,6 +348,7 @@ func (s *Service) settleOutcome(ctx context.Context, span trace.Span, bindIndex 
 	// failed path leaves them false/nil (the reserve refund happens durably in billing-svc, not here).
 	event := submitOutcome(sent, resp)
 	event.OriginalFrom = originalFrom
+	start = time.Now()
 	if resp.Status == smpp.StatusOK {
 		event.Billed, event.CreditsCharged = s.deps.Billing.Capture(ctx, routed)
 	} else {
@@ -340,6 +357,7 @@ func (s *Service) settleOutcome(ctx context.Context, span trace.Span, bindIndex 
 		observability.RecordSpanError(span, code)
 		s.deps.Billing.Release(ctx, routed)
 	}
+	s.timeStage("capture", start)
 	s.observeSubmit(resp, code, e2e)
 	// Publish the outcome instead of writing the CDR here (step-201c, D1). The row is now a PROJECTION:
 	// a dedicated consumer batches mt.outcome into ClickHouse, which is what moves the batching to where a
@@ -355,7 +373,10 @@ func (s *Service) settleOutcome(ctx context.Context, span trace.Span, bindIndex 
 	if err != nil {
 		return fmt.Errorf("connectorpool: encode mt.outcome: %w", err)
 	}
-	if err := s.deps.Producer.Produce(ctx, outRec); err != nil {
+	start = time.Now()
+	err = s.deps.Producer.Produce(ctx, outRec)
+	s.timeStage("outcome", start)
+	if err != nil {
 		return fmt.Errorf("connectorpool: publish mt.outcome: %w", err)
 	}
 	return nil

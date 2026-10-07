@@ -522,6 +522,7 @@ func poolCatalogueCollectors(catalog *metrics.Catalog) []prometheus.Collector {
 		catalog.SubmitsTotal,
 		catalog.SubmitRejectedTotal,
 		catalog.MessageE2EDuration,
+		catalog.ConnectorSubmitStage,
 		catalog.ConfigRebuilds,
 		catalog.ConfigRebuildLastSuccess,
 	}

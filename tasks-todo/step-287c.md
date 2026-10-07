@@ -18,7 +18,8 @@ sérielle à corriger dans le code.
   fermé tiré du code :
   - par message, dans l'ordre de `processOne` : `limit` (jeton du connecteur, Redis), `claim` (claim
     d'annulation, Redis), `throttle` (pacing AIMD), `sender` (épinglage de l'expéditeur), `submit`
-    (aller-retour SMPP), `dlrmap` (correspondance DLR, Redis), `capture` (capture ou libération de
+    (aller-retour SMPP), `dlrmap` (correspondance DLR, Redis), `pin` (épinglage de l'expéditeur réécrit,
+    Redis), `capture` (capture ou libération de
     facturation), `outcome` (publication `mt.outcome`) ;
   - par lot de poll : `shard` (durée de traitement d'un shard) et `batch` (durée du lot entier). L'écart
     entre les deux mesure la barrière : un lot attend son shard le plus lent.
@@ -28,7 +29,7 @@ sérielle à corriger dans le code.
   ralentira.
 
 ## Definition of Done
-- [ ] chaque étape d'un envoi réussi est observée une fois, `shard` et `batch` une fois par lot (test,
+- [x] chaque étape d'un envoi réussi est observée une fois, `shard` et `batch` une fois par lot (test,
       mutation)
-- [ ] métrique exposée par le pool (`TestOpsExposesTheMetricsThisServiceFeeds`)
+- [x] métrique exposée par le pool (`TestOpsExposesTheMetricsThisServiceFeeds`)
 - [ ] un run de 10 min sur le VPS, avec la répartition par étape relevée dans le journal de step-287

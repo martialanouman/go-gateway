@@ -43,3 +43,10 @@ func (s *Service) observeSubmit(resp smpp.PDU, code errs.Code, e2e time.Duration
 		}
 	}
 }
+
+// timeStage records how long a submit stage or a poll batch took, from start (step-287c).
+func (s *Service) timeStage(stage string, start time.Time) {
+	if s.deps.Metrics != nil {
+		s.deps.Metrics.ConnectorSubmitStage.WithLabelValues(s.deps.ConnectorID.String(), stage).Observe(time.Since(start).Seconds())
+	}
+}
