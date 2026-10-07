@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -148,7 +149,16 @@ func newBillingApp(ctx context.Context, cfg config.Config, logger *slog.Logger) 
 		return nil, fmt.Errorf("kafka mt.outcome settle consumer: %w", err)
 	}
 	a.onClose("outcome settlement", settleConsumer.Close)
-	a.settle = billing.NewSettleConsumer(settleConsumer, ext.biller, logger)
+	settleSeconds := prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name: "billing_settle_seconds",
+		Help: "Time a settlement from mt.outcome takes (capture|release), terminal lock and durable write included.",
+		// Same span as the durable stages: a settlement is at least one ledger write.
+		Buckets: prometheus.ExponentialBuckets(0.0001, 2, 15),
+	}, []string{"action"})
+	for _, action := range []string{"capture", "release"} {
+		settleSeconds.WithLabelValues(action)
+	}
+	a.settle = billing.NewSettleConsumer(settleConsumer, ext.biller, logger, billing.WithSettleTimes(durationVec{settleSeconds}))
 	//nolint:contextcheck // A scrape carries no context: the boot context has no business inside it.
 	ledgerDefaultRows := prometheus.NewGaugeFunc(prometheus.GaugeOpts{
 		Name: "billing_ledger_default_rows",
@@ -171,7 +181,8 @@ func newBillingApp(ctx context.Context, cfg config.Config, logger *slog.Logger) 
 	})
 	a.folder = billing.NewFolder(a.repo, a.foldLag, logger)
 	collectors := make([]prometheus.Collector, 0, 5+len(ext.collectors)+len(reap.collectors)+len(feed.collectors))
-	collectors = append(collectors, a.foldLag, eventRelayLag, ledgerDefaultRows, acct.reserveStage, acct.batchSize)
+	collectors = append(collectors, a.foldLag, eventRelayLag, ledgerDefaultRows, acct.reserveStage, acct.batchSize,
+		acct.durableStage, settleSeconds)
 	collectors = append(collectors, ext.collectors...)
 	collectors = append(collectors, reap.collectors...)
 	collectors = append(collectors, feed.collectors...)
@@ -232,6 +243,7 @@ type accountant struct {
 	configProvider *billing.ConfigProvider
 	reserveStage   *prometheus.HistogramVec
 	batchSize      prometheus.Histogram
+	durableStage   *prometheus.HistogramVec
 }
 
 // newAccountant builds the core and loads its first config snapshot.
@@ -254,9 +266,18 @@ func newAccountant(ctx context.Context, pool *pgxpool.Pool, rdb *goredis.Client,
 			Help:    "Hot-path ledger movements per batch attempt; a failed attempt replays them one by one.",
 			Buckets: []float64{1, 2, 4, 8, 16, 32, 64, 128, 256},
 		}),
+		durableStage: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name: "billing_durable_stage_seconds",
+			Help: "Time a batched ledger write spends per movement (handoff|reply) and per batch (begin|claim|copy|commit).",
+			// 0.1 ms … ~3 s: a round trip at the bottom, a batch held behind a slow commit at the top.
+			Buckets: prometheus.ExponentialBuckets(0.0001, 2, 15),
+		}, []string{"stage"}),
+	}
+	for _, stage := range []string{"handoff", "reply", "begin", "claim", "copy", "commit"} {
+		a.durableStage.WithLabelValues(stage)
 	}
 	//nolint:contextcheck // A batch serves many callers: it must not die with the context of whichever queued first.
-	a.batcher = postgres.NewBillingBatcher(a.repo, a.batchSize)
+	a.batcher = postgres.NewBillingBatcher(a.repo, a.batchSize, postgres.WithBatchStages(durationVec{a.durableStage}))
 	defer func() {
 		if err != nil {
 			a.batcher.Close()
@@ -452,4 +473,11 @@ func streamDropCollectors(transport metrics.DropCounter, alerts *metricstream.Ev
 		metrics.StreamDropCollector("buffer", transport),
 		metrics.StreamDropCollector("encode", metrics.DropCounterFunc(alerts.DroppedUnserializable)),
 	}
+}
+
+// durationVec adapts a one-label histogram vector to the stage and settlement timers.
+type durationVec struct{ v *prometheus.HistogramVec }
+
+func (d durationVec) Observe(label string, elapsed time.Duration) {
+	d.v.WithLabelValues(label).Observe(elapsed.Seconds())
 }

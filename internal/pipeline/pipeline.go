@@ -2,6 +2,8 @@ package pipeline
 
 import (
 	"context"
+	"strings"
+	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -94,6 +96,16 @@ type CreditReserver interface {
 	Reserve(ctx context.Context, accountID, customerID, messageID uuid.UUID, segments int) (reserved bool, ownerType string, err error)
 }
 
+// StageNames are the stages Process times, under the name StageObserver receives.
+func StageNames() []string {
+	return []string{"e164", "sender_id", "opt_out", "anti_spam", "route", "encoding", "segment", "credit"}
+}
+
+// StageObserver times a pipeline stage. A Prometheus histogram vector adapter satisfies it.
+type StageObserver interface {
+	Observe(stage string, d time.Duration)
+}
+
 // Deps are the pipeline's collaborators, one per stage that needs one. They are named rather than
 // positional on purpose: a nil Credit turns its stage into a pass-through, and as positional arguments
 // such a nil was indistinguishable from padding — the reference load harness
@@ -101,6 +113,8 @@ type CreditReserver interface {
 // anti-spam stages, and measured it as if it were production (step-201d). Tracer is required; the
 // others are required unless their godoc says otherwise.
 type Deps struct {
+	// Stages times each stage under its span's name without the "pipeline." prefix (step-287e). Optional.
+	Stages    StageObserver
 	Tracer    trace.Tracer
 	Resolver  Resolver
 	SenderIDs SenderIDAuthorizer
@@ -325,6 +339,11 @@ func requestedEncoding(in InboundMT) string {
 func (p *Pipeline) stage(ctx context.Context, name string, fn func(context.Context) error) error {
 	ctx, span := p.deps.Tracer.Start(ctx, name)
 	defer span.End()
+	if p.deps.Stages != nil {
+		defer func(start time.Time) {
+			p.deps.Stages.Observe(strings.TrimPrefix(name, "pipeline."), time.Since(start))
+		}(time.Now())
+	}
 	if err := fn(ctx); err != nil {
 		observability.RecordSpanError(span, err)
 		return err

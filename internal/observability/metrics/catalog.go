@@ -85,6 +85,9 @@ type Catalog struct {
 	// PipelineDuration is the time the MT pipeline itself takes, excluding queueing. It separates "we are
 	// slow" from "we are behind", which MessageE2EDuration alone cannot.
 	PipelineDuration prometheus.Histogram
+	// PipelineStage times each stage of the MT pipeline (step-287e): the router spent ~226 ms a message on
+	// the test VPS, and PipelineDuration alone could not say where.
+	PipelineStage *prometheus.HistogramVec
 
 	// SubmitsTotal counts SMSC submissions by connector and outcome; SubmitRejectedTotal breaks the
 	// rejections down by code, mirroring the MessagesTotal/RejectedTotal pair so both legs of a message
@@ -225,6 +228,15 @@ func NewCatalog() *Catalog {
 			Help: "Messages rejected by the MT pipeline, by flat error code.",
 		}, []string{"code"}),
 
+		PipelineStage: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:                            "pipeline_stage_seconds",
+			Help:                            "Time an MT spends in each pipeline stage (e164|sender_id|opt_out|anti_spam|route|encoding|segment|credit).",
+			Buckets:                         prometheus.ExponentialBuckets(0.0001, 2, 16),
+			NativeHistogramBucketFactor:     nativeBucketFactor,
+			NativeHistogramMaxBucketNumber:  nativeMaxBucketNumber,
+			NativeHistogramMinResetDuration: nativeMinResetDuration,
+		}, []string{"stage"}),
+
 		PipelineDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name: "pipeline_duration_seconds",
 			Help: "Time the MT pipeline spends on one message, excluding queueing.",
@@ -296,6 +308,7 @@ func (c *Catalog) Collectors() []prometheus.Collector {
 		c.MessagesTotal,
 		c.RejectedTotal,
 		c.PipelineDuration,
+		c.PipelineStage,
 		c.SubmitsTotal,
 		c.SubmitRejectedTotal,
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -28,15 +29,33 @@ type OutcomeBatchConsumer interface {
 type SettleConsumer struct {
 	consumer OutcomeBatchConsumer
 	settler  ReaperSettler
+	times    SettleTimes
 	logger   *slog.Logger
 }
 
+// SettleTimes times one settlement by action (capture|release), lock and durable write included (step-287e).
+type SettleTimes interface {
+	Observe(action string, d time.Duration)
+}
+
+// SettleOption configures a SettleConsumer.
+type SettleOption func(*SettleConsumer)
+
+// WithSettleTimes wires the settlement timer; without it nothing is timed.
+func WithSettleTimes(t SettleTimes) SettleOption {
+	return func(c *SettleConsumer) { c.times = t }
+}
+
 // NewSettleConsumer builds the consumer. A nil logger defaults to slog.Default.
-func NewSettleConsumer(consumer OutcomeBatchConsumer, settler ReaperSettler, logger *slog.Logger) *SettleConsumer {
+func NewSettleConsumer(consumer OutcomeBatchConsumer, settler ReaperSettler, logger *slog.Logger, opts ...SettleOption) *SettleConsumer {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &SettleConsumer{consumer: consumer, settler: settler, logger: logger}
+	c := &SettleConsumer{consumer: consumer, settler: settler, logger: logger}
+	for _, o := range opts {
+		o(c)
+	}
+	return c
 }
 
 // Run consumes mt.outcome until ctx is cancelled.
@@ -74,11 +93,15 @@ func (c *SettleConsumer) handleBatch(ctx context.Context, recs []kafka.Record) [
 
 func (c *SettleConsumer) settle(ctx context.Context, action reaperAction, ev pipeline.OutcomeMT) error {
 	owner := ownerOf(ev.OwnerType, ev.CustomerID, ev.AccountID)
+	start := time.Now()
 	var err error
 	if action == actionCapture {
 		_, err = c.settler.Capture(ctx, owner, ev.MessageID)
 	} else {
 		err = c.settler.Release(ctx, owner, ev.MessageID)
+	}
+	if c.times != nil {
+		c.times.Observe(action.String(), time.Since(start))
 	}
 	if err != nil && ctx.Err() == nil {
 		c.logger.WarnContext(ctx, "billing: settlement from mt.outcome failed; will reprocess",

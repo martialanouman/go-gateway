@@ -35,6 +35,20 @@ type BatchSizeObserver interface {
 	Observe(float64)
 }
 
+// BatchStageObserver times the stages of a durable write (step-287e): per movement, handoff (waiting for the
+// single writer to take it) and reply (its batch's write); per batch, begin, claim, copy and commit.
+type BatchStageObserver interface {
+	Observe(stage string, d time.Duration)
+}
+
+// BatcherOption configures a BillingBatcher.
+type BatcherOption func(*BillingBatcher)
+
+// WithBatchStages wires the stage timer; without it nothing is timed.
+func WithBatchStages(o BatchStageObserver) BatcherOption {
+	return func(b *BillingBatcher) { b.stages = o }
+}
+
 // BillingBatcher is a BillingRepo whose hot-path RecordDurable shares a transaction with the movements queued
 // beside it: one commit, one WAL flush and one statement per table for up to batchCap movements, where the
 // commit dominated each reserve (step-285b). A batch takes whatever waits while the previous one is written,
@@ -44,6 +58,7 @@ type BatchSizeObserver interface {
 type BillingBatcher struct {
 	*BillingRepo
 	sizes   BatchSizeObserver
+	stages  BatchStageObserver
 	waiting atomic.Int32
 	queue   chan batchedEntry
 	stop    chan struct{}
@@ -66,11 +81,14 @@ type batchResult struct {
 }
 
 // NewBillingBatcher starts the batch writer over repo. Close stops it.
-func NewBillingBatcher(repo *BillingRepo, sizes BatchSizeObserver) *BillingBatcher {
+func NewBillingBatcher(repo *BillingRepo, sizes BatchSizeObserver, opts ...BatcherOption) *BillingBatcher {
 	b := &BillingBatcher{
 		BillingRepo: repo, sizes: sizes,
 		queue: make(chan batchedEntry), stop: make(chan struct{}), done: make(chan struct{}),
 		xactStatus: repo.q.XactStatus,
+	}
+	for _, o := range opts {
+		o(b)
 	}
 	go b.run()
 	return b
@@ -107,9 +125,11 @@ func (b *BillingBatcher) RecordDurable(ctx context.Context, entry cp.LedgerEntry
 	}
 	reply := make(chan batchResult, 1)
 	b.waiting.Add(1)
+	start := time.Now()
 	select {
 	case b.queue <- batchedEntry{ctx: ctx, entry: entry, reply: reply}:
 		b.waiting.Add(-1)
+		b.time("handoff", start)
 	case <-b.stop:
 		b.waiting.Add(-1)
 		return b.BillingRepo.RecordDurable(ctx, entry)
@@ -117,8 +137,16 @@ func (b *BillingBatcher) RecordDurable(ctx context.Context, entry cp.LedgerEntry
 		b.waiting.Add(-1)
 		return 0, false, translate("record durable", ctx.Err())
 	}
+	start = time.Now()
 	r := <-reply
+	b.time("reply", start)
 	return r.balance, r.applied, r.err
+}
+
+func (b *BillingBatcher) time(stage string, start time.Time) {
+	if b.stages != nil {
+		b.stages.Observe(stage, time.Since(start))
+	}
 }
 
 func (b *BillingBatcher) run() {
@@ -159,7 +187,7 @@ func (b *BillingBatcher) write(batch []batchedEntry) {
 	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
 
-	results, xid, err := b.recordBatch(ctx, entries)
+	results, xid, err := b.recordBatch(ctx, entries, b.time)
 	if errors.Is(err, errBatchCommit) {
 		switch b.commitOutcome(xid) {
 		case "committed":
@@ -212,8 +240,10 @@ func (b *BillingBatcher) commitOutcome(xid string) string {
 // recordBatch is RecordDurable for movements that all carry a message and a decided balance, in one
 // transaction. Results are in entries order. On a failed COMMIT it still returns them, with the transaction's
 // id, for the caller to learn whether they hold.
-func (r *BillingRepo) recordBatch(ctx context.Context, entries []cp.LedgerEntry) ([]batchResult, string, error) {
+func (r *BillingRepo) recordBatch(ctx context.Context, entries []cp.LedgerEntry, timed func(string, time.Time)) ([]batchResult, string, error) {
+	start := time.Now()
 	tx, err := r.pool.Begin(ctx)
+	timed("begin", start)
 	if err != nil {
 		return nil, "", translate("begin billing batch", err)
 	}
@@ -226,7 +256,9 @@ func (r *BillingRepo) recordBatch(ctx context.Context, entries []cp.LedgerEntry)
 	for i, e := range entries {
 		claim.MessageIds[i], claim.EntryTypes[i] = *e.MessageID, string(e.EntryType)
 	}
+	start = time.Now()
 	rows, err := qtx.ClaimIdempotencyBatch(ctx, claim)
+	timed("claim", start)
 	if err != nil {
 		return nil, "", translate("claim idempotency batch", err)
 	}
@@ -263,6 +295,7 @@ func (r *BillingRepo) recordBatch(ctx context.Context, entries []cp.LedgerEntry)
 			Reference: e.Reference,
 		})
 	}
+	start = time.Now()
 	if len(deltas) > 0 {
 		if _, err := qtx.CopyBalanceDeltas(ctx, deltas); err != nil {
 			return nil, "", translate("copy balance deltas", err)
@@ -273,11 +306,15 @@ func (r *BillingRepo) recordBatch(ctx context.Context, entries []cp.LedgerEntry)
 			return nil, "", translate("copy ledger entries", err)
 		}
 	}
+	timed("copy", start)
 	xid, err := qtx.CurrentXactID(ctx)
 	if err != nil {
 		return nil, "", translate("read batch transaction id", err)
 	}
-	if err := tx.Commit(ctx); err != nil {
+	start = time.Now()
+	err = tx.Commit(ctx)
+	timed("commit", start)
+	if err != nil {
 		return results, xid, fmt.Errorf("%w: %w", errBatchCommit, translate("commit billing batch", err))
 	}
 	return results, xid, nil

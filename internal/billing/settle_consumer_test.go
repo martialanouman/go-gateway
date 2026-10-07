@@ -118,3 +118,32 @@ func TestSettleConsumerReplaysAFailedSettlement(t *testing.T) {
 		t.Errorf("results = %v, want only the failed settlement to be replayed", cons.results)
 	}
 }
+
+type settleTimes struct {
+	mu sync.Mutex
+	n  map[string]int
+}
+
+func (s *settleTimes) Observe(action string, _ time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.n == nil {
+		s.n = map[string]int{}
+	}
+	s.n[action]++
+}
+
+// TestSettleConsumerTimesEachSettlement: the consumer settled ~85 messages/s for 275 published (step-287
+// run 2); each settlement is timed by action, lock and durable write included (step-287e).
+func TestSettleConsumerTimesEachSettlement(t *testing.T) {
+	sent, _ := outcomeRecord(t, "enroute", true, cp.OwnerTypeCustomer)
+	refused, _ := outcomeRecord(t, "failed", true, cp.OwnerTypeCustomer)
+	times := &settleTimes{}
+	cons := &batchOnce{recs: []kafka.Record{sent, refused}}
+	if err := billing.NewSettleConsumer(cons, &syncSettler{}, nil, billing.WithSettleTimes(times)).Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if times.n["capture"] != 1 || times.n["release"] != 1 {
+		t.Errorf("timed %v, want one capture and one release", times.n)
+	}
+}
