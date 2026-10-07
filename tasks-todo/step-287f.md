@@ -37,7 +37,7 @@ L'arbitrage a été rendu par Fable, sans contradiction avec la spec ni avec ADR
   montre encore une pression, on abaisse cette constante.
 
 ## Definition of Done
-- [ ] PR1 : 4 écrivains. Une écriture qui bloque sur une clé en vol n'arrête pas les autres (tombe sous
+- [x] PR1 : 4 écrivains. Une écriture qui bloque sur une clé en vol n'arrête pas les autres (tombe sous
       `batchWriters = 1`) et rend `applied=false` une fois la clé commitée. Somme du grand livre = solde sous
       concurrence ; `-race`.
 - [ ] PR2 : CTE unique ; les tests du batcher restent verts sans changement de contrat.

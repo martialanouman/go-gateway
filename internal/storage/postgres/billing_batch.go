@@ -16,6 +16,10 @@ import (
 
 const (
 	batchCap = 256
+	// batchWriters write batches in parallel (step-287f): one writer was ~95 % busy at 370 writes/s on the
+	// test VPS and made every movement wait for the batch before it. The primary key of billing_idempotency
+	// arbitrates concurrent transactions, as it did when every movement was its own transaction.
+	batchWriters = 4
 	// batchWriteTimeout bounds a movement whose caller set no deadline, and so every batch. It matches
 	// billing's reserveDurableTimeout: one writer serves every caller, and a hung transaction must not stall
 	// them all for longer than a reserve may wait.
@@ -62,7 +66,7 @@ type BillingBatcher struct {
 	waiting atomic.Int32
 	queue   chan batchedEntry
 	stop    chan struct{}
-	done    chan struct{}
+	done    sync.WaitGroup
 	// xactStatus reads a transaction's outcome; a test swaps it for one Postgres cannot be made to give on
 	// demand, a commit that landed while its answer was lost.
 	xactStatus func(ctx context.Context, xid string) (string, error)
@@ -82,22 +86,29 @@ type batchResult struct {
 
 // NewBillingBatcher starts the batch writer over repo. Close stops it.
 func NewBillingBatcher(repo *BillingRepo, sizes BatchSizeObserver, opts ...BatcherOption) *BillingBatcher {
+	return newBillingBatcher(repo, sizes, batchWriters, opts...)
+}
+
+func newBillingBatcher(repo *BillingRepo, sizes BatchSizeObserver, writers int, opts ...BatcherOption) *BillingBatcher {
 	b := &BillingBatcher{
 		BillingRepo: repo, sizes: sizes,
-		queue: make(chan batchedEntry), stop: make(chan struct{}), done: make(chan struct{}),
+		queue: make(chan batchedEntry), stop: make(chan struct{}),
 		xactStatus: repo.q.XactStatus,
 	}
 	for _, o := range opts {
 		o(b)
 	}
-	go b.run()
+	for range writers {
+		b.done.Add(1)
+		go b.run()
+	}
 	return b
 }
 
 // Close stops the writer after the batch in flight; later movements are written one by one.
 func (b *BillingBatcher) Close() {
 	close(b.stop)
-	<-b.done
+	b.done.Wait()
 }
 
 // RecordDurable batches a movement that carries a message and the balance Redis decided. Any other movement
@@ -150,7 +161,7 @@ func (b *BillingBatcher) time(stage string, start time.Time) {
 }
 
 func (b *BillingBatcher) run() {
-	defer close(b.done)
+	defer b.done.Done()
 	for {
 		var batch []batchedEntry
 		select {

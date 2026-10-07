@@ -127,8 +127,10 @@ ON CONFLICT (message_id, entry_type) DO NOTHING;
 -- inserted, so a pair absent from the result was already recorded. A pair twice in the batch comes back once
 -- and both copies read as claimed; the ledger's unique index then refuses the second (one transaction, one
 -- now()).
+-- Inserted in key order: two concurrent batches holding the same pairs in opposite orders would otherwise
+-- deadlock (step-287f, several writers).
 INSERT INTO control_plane.billing_idempotency (message_id, entry_type)
-SELECT unnest(@message_ids::uuid[]), unnest(@entry_types::text[])
+SELECT m, e FROM (SELECT unnest(@message_ids::uuid[]) AS m, unnest(@entry_types::text[]) AS e) AS t ORDER BY m, e
 ON CONFLICT (message_id, entry_type) DO NOTHING
 RETURNING message_id, entry_type;
 

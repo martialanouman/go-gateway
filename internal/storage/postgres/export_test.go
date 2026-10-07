@@ -16,3 +16,10 @@ func (r *BillingRepo) XactStatus(ctx context.Context, xid string) (string, error
 }
 
 const LedgerPartitionLock = ledgerPartitionLock
+
+// NewBillingBatcherWithWriters builds a batcher with a chosen number of writers. A test of what ONE batch
+// does (its cap, a duplicate inside it, a poisoned movement) needs one writer: with several, the movements
+// it queues go to whichever writer is free, and no batch has a predictable content.
+func NewBillingBatcherWithWriters(repo *BillingRepo, sizes BatchSizeObserver, writers int, opts ...BatcherOption) *BillingBatcher {
+	return newBillingBatcher(repo, sizes, writers, opts...)
+}
