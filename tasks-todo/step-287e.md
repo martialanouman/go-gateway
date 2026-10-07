@@ -30,6 +30,6 @@ span neuf. Le label `stage` est déjà autorisé par la garde.
 - Un observateur nil n'observe rien : les tests et les binaires qui ne le câblent pas ne changent pas.
 
 ## Definition of Done
-- [ ] chaque étape est observée (tests, mutation) et exposée par son service (tests d'exposition)
+- [x] chaque étape est observée (tests, mutation) et exposée par son service (tests d'exposition)
 - [ ] un run de 10 min sur le VPS, avec la répartition relevée dans le journal de step-287 et le goulot de
       la facturation durable nommé

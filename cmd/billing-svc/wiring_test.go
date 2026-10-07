@@ -151,6 +151,7 @@ func TestNewBillingAppBuildsTheWholeGraph(t *testing.T) {
 		"foldLag":        app.foldLag,
 		"folder":         app.folder,
 		"eventRelay":     app.eventRelay,
+		"settle":         app.settle,
 	} {
 		if component == nil || reflect.ValueOf(component).IsNil() {
 			t.Errorf("component %q was not wired", name)
@@ -177,6 +178,13 @@ func TestNewBillingAppBuildsTheWholeGraph(t *testing.T) {
 	}
 	if !slices.ContainsFunc(families, func(f *dto.MetricFamily) bool { return f.GetName() == "billing_durable_batch_size" }) {
 		t.Error("billing_durable_batch_size is not exposed: nothing would show whether ledger writes batch")
+	}
+	// The durable write cost ~185 ms on the test VPS and nothing could say where (step-287e).
+	if !slices.ContainsFunc(families, func(f *dto.MetricFamily) bool { return f.GetName() == "billing_durable_stage_seconds" }) {
+		t.Error("billing_durable_stage_seconds is not exposed: the durable write could not be attributed")
+	}
+	if !slices.ContainsFunc(families, func(f *dto.MetricFamily) bool { return f.GetName() == "billing_settle_seconds" }) {
+		t.Error("billing_settle_seconds is not exposed: a settlement falling behind could not be attributed")
 	}
 
 	// Building the graph must not start serving: both ports are bound by their Run, which only the
