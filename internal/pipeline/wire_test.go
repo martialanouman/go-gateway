@@ -287,3 +287,17 @@ func TestOutcomeCarriesCategoryAndPriority(t *testing.T) {
 		}
 	}
 }
+
+// billing-svc settles from mt.outcome (step-287d): it needs to know a reservation exists and against which
+// balance, under the field names it decodes.
+func TestOutcomeCarriesTheReservation(t *testing.T) {
+	rec, err := pipeline.EncodeOutcome(pipeline.OutcomeMT{MessageID: uuid.New(), Billable: true, OwnerType: "smpp_account"})
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	for _, want := range []string{`"billable":true`, `"owner_type":"smpp_account"`} {
+		if !strings.Contains(string(rec.Value), want) {
+			t.Errorf("mt.outcome value lacks %s: %s", want, rec.Value)
+		}
+	}
+}

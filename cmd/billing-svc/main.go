@@ -105,6 +105,7 @@ func run() error {
 	g.Add("billing events relay", func(c context.Context) error {
 		return runFold(c, app.eventRelay)
 	})
+	g.Add("outcome settlement", app.settle.Run)
 	g.Add("ledger partitions", func(c context.Context) error {
 		return runLedgerPartitions(c, app.repo, ledgerPartitionInterval, logger)
 	})

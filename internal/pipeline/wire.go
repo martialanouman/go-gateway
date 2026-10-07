@@ -240,6 +240,8 @@ type outcomeWire struct {
 	CreditsCharged  *int32     `json:"credits_charged,omitempty"`
 	TrafficCategory string     `json:"traffic_category"`
 	Priority        uint8      `json:"priority"`
+	Billable        bool       `json:"billable"`
+	OwnerType       string     `json:"owner_type,omitempty"`
 }
 
 // EncodeOutcome builds the mt.outcome record for env, keyed by the logical message id — the same key

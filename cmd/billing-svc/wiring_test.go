@@ -100,7 +100,7 @@ func TestNewBillingAppReleasesInDependencyOrder(t *testing.T) {
 		t.Fatalf("newBillingApp: %v", err)
 	}
 
-	want := []string{"billing events", "alerts", "reaper", "ledger batch", "stores"}
+	want := []string{"outcome settlement", "billing events", "alerts", "reaper", "ledger batch", "stores"}
 	if got := releaseOrder(app); !slices.Equal(got, want) {
 		t.Errorf("release order is %v, want %v", got, want)
 	}
