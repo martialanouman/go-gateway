@@ -14,9 +14,15 @@ import (
 	"github.com/martialanouman/go-gateway/internal/testutil/kafkatest"
 )
 
+// testProduceTimeout bounds every produce of these tests. Without it a produce to a broker that stops
+// answering waits for ever: TestConsumerReplaysAFailedRecordInPlace sat 9 minutes in kgo's waitUnknownTopic,
+// twice on main's CI (07/10/2026), until the package timeout. A paused broker reproduces it locally; bounded,
+// the produce fails after the timeout with "records have timed out".
+const testProduceTimeout = 15 * time.Second
+
 func TestProduceConsumeRoundTrip(t *testing.T) {
 	brokers := kafkatest.Brokers(t)
-	cfg := config.Kafka{Brokers: brokers, Timeout: 3 * time.Second}
+	cfg := config.Kafka{Brokers: brokers, Timeout: 3 * time.Second, ProduceTimeout: testProduceTimeout}
 
 	producer, err := kafka.NewProducer(cfg)
 	if err != nil {
@@ -80,7 +86,7 @@ func TestProduceConsumeRoundTrip(t *testing.T) {
 
 func TestConsumerCommitsAfterProcessing(t *testing.T) {
 	brokers := kafkatest.Brokers(t)
-	cfg := config.Kafka{Brokers: brokers, Timeout: 3 * time.Second}
+	cfg := config.Kafka{Brokers: brokers, Timeout: 3 * time.Second, ProduceTimeout: testProduceTimeout}
 	const group = "test-commit-after"
 
 	producer, err := kafka.NewProducer(cfg)
@@ -165,7 +171,7 @@ func TestConsumerCommitsAfterProcessing(t *testing.T) {
 // attempted.
 func TestConsumerCommitsHandledRecordsOnShutdown(t *testing.T) {
 	brokers := kafkatest.Brokers(t)
-	cfg := config.Kafka{Brokers: brokers, Timeout: 3 * time.Second}
+	cfg := config.Kafka{Brokers: brokers, Timeout: 3 * time.Second, ProduceTimeout: testProduceTimeout}
 	group := "test-commit-on-shutdown-" + strconv.FormatInt(time.Now().UnixNano(), 36)
 
 	producer, err := kafka.NewProducer(cfg)
@@ -253,7 +259,7 @@ func TestConsumerCommitsHandledRecordsOnShutdown(t *testing.T) {
 // supervisor took the whole process down with it. The consumer now replays the record itself, and commits it.
 func TestConsumerReplaysAFailedRecordInPlace(t *testing.T) {
 	brokers := kafkatest.Brokers(t)
-	cfg := config.Kafka{Brokers: brokers, Timeout: 3 * time.Second}
+	cfg := config.Kafka{Brokers: brokers, Timeout: 3 * time.Second, ProduceTimeout: testProduceTimeout}
 	producer, err := kafka.NewProducer(cfg)
 	if err != nil {
 		t.Fatalf("new producer: %v", err)
@@ -353,7 +359,7 @@ func TestConsumerReplaysAFailedRecordInPlace(t *testing.T) {
 // bind drop cancels it. The fetch cursor is already past the records the cancelled call left uncommitted; a
 // next call that polled first would commit past them.
 func TestConsumerResumesAnAbandonedReplay(t *testing.T) {
-	cfg := config.Kafka{Brokers: kafkatest.Brokers(t), Timeout: 3 * time.Second}
+	cfg := config.Kafka{Brokers: kafkatest.Brokers(t), Timeout: 3 * time.Second, ProduceTimeout: testProduceTimeout}
 	producer, err := kafka.NewProducer(cfg)
 	if err != nil {
 		t.Fatalf("new producer: %v", err)
@@ -432,7 +438,7 @@ func TestConsumerResumesAnAbandonedReplay(t *testing.T) {
 // TestConsumerDoesNotStallOnSporadicFailures is the step-285 VPS run: 2 % of reserves outran their deadline,
 // and a backoff that grew with every failure of a batch held all of its partitions for 30 s at a time.
 func TestConsumerDoesNotStallOnSporadicFailures(t *testing.T) {
-	cfg := config.Kafka{Brokers: kafkatest.Brokers(t), Timeout: 3 * time.Second}
+	cfg := config.Kafka{Brokers: kafkatest.Brokers(t), Timeout: 3 * time.Second, ProduceTimeout: testProduceTimeout}
 	producer, err := kafka.NewProducer(cfg)
 	if err != nil {
 		t.Fatalf("new producer: %v", err)
@@ -486,7 +492,7 @@ func TestConsumerDoesNotStallOnSporadicFailures(t *testing.T) {
 // TestConsumerBacksOffARecordThatNeverPasses: only an attempt that handled something replays at once. A record
 // that fails for good must still wait between attempts, or an outage is hammered at CPU speed.
 func TestConsumerBacksOffARecordThatNeverPasses(t *testing.T) {
-	cfg := config.Kafka{Brokers: kafkatest.Brokers(t), Timeout: 3 * time.Second}
+	cfg := config.Kafka{Brokers: kafkatest.Brokers(t), Timeout: 3 * time.Second, ProduceTimeout: testProduceTimeout}
 	producer, err := kafka.NewProducer(cfg)
 	if err != nil {
 		t.Fatalf("new producer: %v", err)
