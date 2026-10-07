@@ -14,11 +14,20 @@ import (
 	"github.com/martialanouman/go-gateway/internal/routing/script"
 )
 
-// fakeActiveScripts is an ActiveScriptLister returning a fixed set of active scripts.
+// fakeActiveScripts is an ActiveScriptLister returning a fixed set of active scripts. A script with no
+// budget gets a generous one: the 2 ms default trips under -race, and a timed-out script falls back to
+// the declarative level, so a test would assert on the wrong level (main's CI, 06-07/10/2026).
 type fakeActiveScripts struct{ scripts []script.Script }
 
 func (f fakeActiveScripts) ListActive(context.Context) ([]script.Script, error) {
-	return f.scripts, nil
+	out := make([]script.Script, len(f.scripts))
+	for i, s := range f.scripts {
+		if s.TimeoutMs == 0 {
+			s.TimeoutMs = 1000
+		}
+		out[i] = s
+	}
+	return out, nil
 }
 
 // countingMeter records script failures by reason.
