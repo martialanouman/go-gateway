@@ -6,6 +6,10 @@
 #                                          clients de charge (24 par défaut) ; clés dans le Secret k6-load
 #   run.sh HOST ceiling VERSION            plafond du simulateur, dans le cluster
 #   run.sh HOST k6 PROFILE IDEMPOTENCY DURATION
+#   run.sh HOST expose                     port 30880, joignable des seuls hôtes de test (step-287)
+#   run.sh HOST unexpose
+#   run.sh HOST k6-remote INJECTOR PROFILE IDEMPOTENCY DURATION
+#                                          k6 lancé depuis l'hôte ssh INJECTOR, visant le NodePort
 #   run.sh HOST observe MINUTES            toutes les 10 s : sessions Postgres en attente d'un verrou sur
 #                                          balances, et submits_total cumulé du pool (step-284)
 set -euo pipefail
@@ -73,6 +77,41 @@ case $action in
     kubectl create configmap k6-script --from-file="$root/test/load/k6/messages.js" --dry-run=client -o yaml | kube apply -f -
     run_job k6-load "$(sed -e "s/@PROFILE@/$3/" -e "s/@IDEMPOTENCY@/$4/" -e "s/@DURATION@/$5/" "$here/k6.yaml")"
     ;;
+  # Le Service filtre lui-même la source (rest-api-load.yaml) : la zone firewalld ne protège pas un
+  # Service k3s (README §11). Il ne vit que le temps de la campagne.
+  expose)
+    kube apply -f - <"$here/rest-api-load.yaml"
+    ;;
+  unexpose)
+    kube delete service rest-api-svc-load --ignore-not-found
+    ;;
+  # Même script et même environnement que le Job k6-load ; seule la machine change. Les clés passent par
+  # un tube vers un fichier 0600, jamais par une ligne de commande. k6 et le vmstat de l'injecteur tournent
+  # dans une unité systemd détachée : une coupure ssh du poste ne tue plus le run (perdu à 6 min 53 s le
+  # 06/10/2026). Le poste ne fait que sonder, puis rapatrier le résumé. Les clés sont lues par le shell de
+  # l'unité : SELinux refuse à systemd un EnvironmentFile pris dans /root.
+  k6-remote)
+    injector=$3
+    inject() { ssh -o ControlMaster=auto -o ControlPath="$HOME/.ssh/cm-%C" -o ControlPersist=10m "$injector" "$@"; }
+    target=$(ssh -G "$host" | awk '$1 == "hostname" {print $2}')
+    keys=$(kube get secret k6-load -o jsonpath='{.data.API_KEYS}' | base64 -d)
+    inject 'umask 077; cat >/root/k6.env' <<<"API_KEYS=$keys"
+    inject 'cat >/root/messages.js' <"$root/test/load/k6/messages.js"
+    echo "image: $(kube get deploy rest-api-svc -o jsonpath='{.spec.template.spec.containers[0].image}')"
+    inject "rm -f /root/k6-summary.json /root/k6.log /root/vmstat-injector.log; systemctl reset-failed k6-load 2>/dev/null;
+      systemd-run --unit k6-load --collect \
+        -E BASE_URL=https://$target:30880 -E K6_INSECURE_SKIP_TLS_VERIFY=true -E SENDER_ID=TEST \
+        -E PROFILE=$(printf '%q' "$4") -E IDEMPOTENCY=$(printf '%q' "$5") -E DURATION=$(printf '%q' "$6") \
+        /bin/sh -c 'set -a; . /root/k6.env; set +a; vmstat 10 >/root/vmstat-injector.log & k6 run --summary-export /root/k6-summary.json /root/messages.js >/root/k6.log 2>&1; rc=\$?; kill %1; exit \$rc'"
+    # Une coupure pendant l'attente n'abat que la sonde : on relance la sonde, pas le run.
+    while true; do
+      rc=0
+      inject 'systemctl is-active --quiet k6-load' 2>/dev/null || rc=$?
+      ((rc == 0 || rc == 255)) || break # 0 : en cours ; 255 : ssh coupé, on resonde
+      sleep 30
+    done
+    inject 'tail -60 /root/k6.log; echo "--- vmstat injecteur"; cat /root/vmstat-injector.log; echo "--- résumé"; cat /root/k6-summary.json'
+    ;;
   # Le relevé de step-284 : la ligne de solde d'un client ne doit plus faire attendre personne. Le débit de
   # traversée est la pente de submits_total entre deux lignes, lu par le proxy de l'API (pas de curl dans
   # les images distroless).
@@ -93,7 +132,7 @@ case $action in
     done
     ;;
   *)
-    echo "usage: run.sh HOST apply|seed|ceiling|k6|observe …" >&2
+    echo "usage: run.sh HOST apply|seed|ceiling|k6|k6-remote|expose|unexpose|observe …" >&2
     exit 2
     ;;
 esac

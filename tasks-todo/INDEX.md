@@ -235,7 +235,7 @@ qu'on mesure un environnement représentatif.
       step-287 ; bloque sa reprise
 - [ ] step-287d — La capture quitte le chemin chaud du pool ⛓ step-287c — née de la campagne step-287 ;
       bloque sa reprise
-- [ ] step-287e — Chronomètres du chemin chaud : facturation durable, pipeline du routeur, règlement ⛓ step-287d
+- [x] step-287e — Chronomètres du chemin chaud : facturation durable, pipeline du routeur, règlement ⛓ step-287d
       — demande humaine du 07/10/2026 ; bloque la reprise de step-287
 - [x] step-288 — La catégorie de trafic se déclare par sender ID ; `sender_id_policy` disparaît (ADR-0020 §1,
       contrat 7.0.0) — décision humaine du 05/10/2026 ; unité faute de multiple de dix libre
