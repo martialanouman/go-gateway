@@ -1,6 +1,6 @@
 # step-287e — Chronomètres du chemin chaud : facturation durable, pipeline du routeur, règlement
 
-> **Jalon :** M12 · **Statut :** EN COURS
+> **Jalon :** M12 · **Statut :** LIVRÉE
 > **Dépend de :** step-287d · **Bloque :** step-287 (reprise de la campagne)
 > Demande humaine du 07/10/2026 : « instrumente RecordDurable et tout composant critique le temps du
 > développement » ; unité faute de multiple de dix libre.
@@ -31,5 +31,10 @@ span neuf. Le label `stage` est déjà autorisé par la garde.
 
 ## Definition of Done
 - [x] chaque étape est observée (tests, mutation) et exposée par son service (tests d'exposition)
-- [ ] un run de 10 min sur le VPS, avec la répartition relevée dans le journal de step-287 et le goulot de
+- [x] un run de 10 min sur le VPS, avec la répartition relevée dans le journal de step-287 et le goulot de
       la facturation durable nommé
+
+## Livraison
+#284. Le run 3 de step-287 (journal de step-287) nomme le goulot : l'écrivain unique du `BillingBatcher`,
+avec 67 ms d'attente et 86 ms de Postgres par lot, en quatre allers-retours en série. Le correctif est porté
+par step-287f.

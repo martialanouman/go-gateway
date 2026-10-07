@@ -91,6 +91,38 @@ attend quelque chose. Comme l'hôte est saturé (37 % de temps système), il est
 cette attente vient de la contention ou d'une étape sérielle par message. Les trois autres runs
 mesureraient la même saturation.
 
+**Ce que le chronomètre de step-287c a montré (07/10/2026, `8a2cc4b`, écoulement sans ingestion).** Sur environ
+200 ms par message dans le pool, **172,7 ms** partaient dans la capture de facturation, contre 7,7 ms pour le
+`submit_sm`. Environ 80 % des captures expiraient à 200 ms (fail-open). La capture a quitté le chemin chaud
+avec **step-287d** (#280, #281, ADR-0024).
+
+**Run 2, `sustained` sans idempotence, 10 min, image `1df24e2` (pool sans capture) :**
+- 2 395 req/s, p99 2,54 s, 0 erreur ;
+- le pool envoie **~275 `submit_sm`/s**, en 67 ms par message, avec un lag de 245 : il n'est plus le goulot ;
+- le routeur passe 226 ms par message, et son lag atteint 1,26 M ;
+- le consommateur `billing-svc-settle` règle environ 85 messages/s.
+
+**Run 3, mêmes conditions, image `600d5c0` (chronomètres de step-287e) : le goulot suivant est nommé.**
+
+| Étape | Moyenne |
+|---|---:|
+| `credit` (réservation, au routeur) | 226,6 ms |
+| dont écriture durable (billing-svc) | 184,2 ms |
+| — `handoff` (attente de l'écrivain unique du `BillingBatcher`) | 67 ms |
+| — `reply` (écriture de son lot) | 110 ms |
+| par lot : `begin` 13 + `claim` 17 + `copy` 43 + `commit` 13 | 86 ms |
+| toutes les autres étapes du pipeline | < 4 ms |
+
+**Le goulot : l'écrivain unique du `BillingBatcher`.** Il fait 11 lots/s de ~35 écritures, avec quatre
+allers-retours Postgres en série par lot, et il est occupé environ 95 % du temps : il plafonne vers
+400 écritures/s. Les réservations (270/s) partagent sa file avec les captures du règlement (~100/s, 310 ms
+chacune). Le pool envoie 269 `submit_sm`/s sans peine. Le correctif est porté par **step-287f**.
+
+**Trouvé en le faisant tourner.** Les DLR des 24 clients de charge, sans bind ni webhook, partaient en lettre
+morte un par un, à ~18/s. Ils ont accumulé 1,1 M de retard et fait échouer deux fois le smoke du déploiement :
+`debts/dlr-d-un-client-injoignable-retarde-tous-les-autres.md`. Le groupe a été ramené à la fin par
+l'utilisateur.
+
 ## Definition of Done
 - [ ] les quatre runs faits, chacun avec les relevés de step-280, verdict toujours non rendu (→ step-409)
 - [ ] la traversée mesurée avec 24 clients, et le goulot suivant nommé
