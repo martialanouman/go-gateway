@@ -54,6 +54,9 @@ type Catalog struct {
 	// drained message past the top bucket. The clock stops on the submit_sm_resp: the billing settle and
 	// the CDR write that follow are our bookkeeping, not delivery latency.
 	MessageE2EDuration *prometheus.HistogramVec
+	// ConnectorSubmitStage times each stage of a submit_sm in the connector pool, and each poll batch
+	// (step-287c): the campaign saw ~390 ms per message for a 5 ms SMSC, and nothing said where.
+	ConnectorSubmitStage *prometheus.HistogramVec
 
 	// QueueDepth is the lag of a Kafka topic, sampled by whoever consumes it. Rising depth with flat
 	// ingestion is the signature of a slow connector.
@@ -180,6 +183,16 @@ func NewCatalog() *Catalog {
 			NativeHistogramMinResetDuration: nativeMinResetDuration,
 		}, []string{"connector_id", "status"}),
 
+		ConnectorSubmitStage: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name: "connector_submit_stage_seconds",
+			Help: "Time a connector-pool submit_sm spends in each stage (limit|claim|throttle|sender|submit|dlrmap|pin|capture|outcome), and a poll batch in total (batch) and per shard (shard).",
+			// 0.5 ms … ~16 s: a Redis round trip at the bottom, a whole poll batch at the top.
+			Buckets:                         prometheus.ExponentialBuckets(0.0005, 2, 16),
+			NativeHistogramBucketFactor:     nativeBucketFactor,
+			NativeHistogramMaxBucketNumber:  nativeMaxBucketNumber,
+			NativeHistogramMinResetDuration: nativeMinResetDuration,
+		}, []string{"connector_id", "stage"}),
+
 		QueueDepth: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "queue_depth_records",
 			Help: "Consumer lag of a Kafka topic, in records.",
@@ -270,6 +283,7 @@ func (c *Catalog) Collectors() []prometheus.Collector {
 	return []prometheus.Collector{
 		c.IngestDuration,
 		c.MessageE2EDuration,
+		c.ConnectorSubmitStage,
 		c.QueueDepth,
 		c.ConnectorBreakerState,
 		c.BalanceCacheAge,

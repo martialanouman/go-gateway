@@ -276,6 +276,7 @@ func (s *Service) runStatusHeartbeat(ctx context.Context, binds []*bind, onRecon
 func (s *Service) batchHandler(binds []*bind) kafka.BatchHandler {
 	n := len(binds)
 	return func(ctx context.Context, recs []kafka.Record) []error {
+		defer s.timeStage("batch", time.Now())
 		results := make([]error, len(recs))
 		shards := make(map[int][]int, n) // shard index -> record indices, in batch (offset) order
 		for i, rec := range recs {
@@ -287,6 +288,7 @@ func (s *Service) batchHandler(binds []*bind) kafka.BatchHandler {
 			wg.Add(1)
 			go func(sh int, idxs []int) {
 				defer wg.Done()
+				defer s.timeStage("shard", time.Now())
 				for pos, i := range idxs {
 					if err := s.processOne(ctx, binds[sh], sh, recs[i]); err != nil {
 						results[i] = err

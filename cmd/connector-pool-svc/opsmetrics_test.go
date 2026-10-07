@@ -35,6 +35,7 @@ func TestOpsExposesTheMetricsThisServiceFeeds(t *testing.T) {
 	catalog.SubmitsTotal.WithLabelValues(connector, "ok").Inc()
 	catalog.SubmitRejectedTotal.WithLabelValues(connector, "submit_failed").Inc()
 	catalog.MessageE2EDuration.WithLabelValues(connector, "ok").Observe(0.05)
+	catalog.ConnectorSubmitStage.WithLabelValues(connector, "submit").Observe(0.005)
 	catalog.SeedConfigRebuild()
 
 	rec := httptest.NewRecorder()
@@ -52,6 +53,8 @@ func TestOpsExposesTheMetricsThisServiceFeeds(t *testing.T) {
 		// The NFR budget (spec §1.2) is read off this one by test/load/gatewaymetrics. Unregistered, it
 		// reports nothing and a load run would score a budget it never measured.
 		"message_e2e_duration_seconds",
+		// Where a submit_sm spends its time (step-287c): the campaign reads it to name the pool's bottleneck.
+		"connector_submit_stage_seconds",
 		// The sender-rewrite rules are a masked degradation: a failed reload keeps the last rules and
 		// readiness stays green, so these are the only signal besides a log line (step-395).
 		"config_rebuild_total",
