@@ -67,7 +67,7 @@ func (q *Queries) ClaimIdempotency(ctx context.Context, arg ClaimIdempotencyPara
 
 const claimIdempotencyBatch = `-- name: ClaimIdempotencyBatch :many
 INSERT INTO control_plane.billing_idempotency (message_id, entry_type)
-SELECT unnest($1::uuid[]), unnest($2::text[])
+SELECT m, e FROM (SELECT unnest($1::uuid[]) AS m, unnest($2::text[]) AS e) AS t ORDER BY m, e
 ON CONFLICT (message_id, entry_type) DO NOTHING
 RETURNING message_id, entry_type
 `
@@ -86,6 +86,8 @@ type ClaimIdempotencyBatchRow struct {
 // inserted, so a pair absent from the result was already recorded. A pair twice in the batch comes back once
 // and both copies read as claimed; the ledger's unique index then refuses the second (one transaction, one
 // now()).
+// Inserted in key order: two concurrent batches holding the same pairs in opposite orders would otherwise
+// deadlock (step-287f, several writers).
 func (q *Queries) ClaimIdempotencyBatch(ctx context.Context, arg ClaimIdempotencyBatchParams) ([]ClaimIdempotencyBatchRow, error) {
 	rows, err := q.db.Query(ctx, claimIdempotencyBatch, arg.MessageIds, arg.EntryTypes)
 	if err != nil {

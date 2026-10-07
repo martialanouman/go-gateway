@@ -141,7 +141,7 @@ func await(t *testing.T, ch <-chan recorded) recorded {
 func newBatcher(t *testing.T, f deltaFixture) (*postgres.BillingBatcher, *batchSizes) {
 	t.Helper()
 	sizes := &batchSizes{}
-	b := postgres.NewBillingBatcher(f.repo, sizes)
+	b := postgres.NewBillingBatcherWithWriters(f.repo, sizes, 1)
 	t.Cleanup(b.Close)
 	return b, sizes
 }
@@ -718,5 +718,47 @@ func TestBatcherTimesItsStages(t *testing.T) {
 		if stages.count(stage) != 1 {
 			t.Errorf("stage %q observed %d times, want 1", stage, stages.count(stage))
 		}
+	}
+}
+
+// TestBatcherWritesPastAMovementBlockedOnAnInFlightKey: the batcher runs several writers (step-287f), so a
+// movement whose idempotency key another transaction holds in flight no longer stops every other movement.
+// Once that transaction commits, the blocked movement finds the key taken and is not applied twice
+// (invariant c, arbitrated by the primary key of billing_idempotency).
+func TestBatcherWritesPastAMovementBlockedOnAnInFlightKey(t *testing.T) {
+	f := newDeltaFixture(t, "customer")
+	b := postgres.NewBillingBatcher(f.repo, &batchSizes{})
+	t.Cleanup(b.Close)
+	ctx := context.Background()
+
+	blocked := uuid.New()
+	holder, err := f.pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	t.Cleanup(func() { _ = holder.Rollback(ctx) })
+	if _, err := holder.Exec(ctx, `INSERT INTO control_plane.billing_idempotency (message_id, entry_type) VALUES ($1, 'capture')`, blocked); err != nil {
+		t.Fatalf("hold key: %v", err)
+	}
+
+	first := f.hot(blocked, -2, 998)
+	first.EntryType = cp.EntryCapture
+	stuck := record(ctx, b, first)
+	time.Sleep(200 * time.Millisecond) // let a writer take it and block on the key
+	other := f.hot(uuid.New(), -2, 996)
+	other.EntryType = cp.EntryCapture
+	start := time.Now()
+	mustApply(t, "a movement behind the blocked one", await(t, record(ctx, b, other)))
+	// Well under batchWriteTimeout (4 s): a single writer answers it too, but only once the blocked batch
+	// has given up.
+	if waited := time.Since(start); waited > time.Second {
+		t.Errorf("the movement behind the blocked one waited %s, want another writer to take it at once", waited)
+	}
+
+	if err := holder.Commit(ctx); err != nil {
+		t.Fatalf("commit holder: %v", err)
+	}
+	if r := await(t, stuck); r.err != nil || r.applied {
+		t.Errorf("blocked movement = %+v, want answered and not applied: its key was taken in flight", r)
 	}
 }
