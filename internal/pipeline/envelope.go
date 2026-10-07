@@ -147,6 +147,10 @@ type OutcomeMT struct {
 	// TrafficCategory and Priority are copied from the routed message (see clickhouse.CDRRow).
 	TrafficCategory string
 	Priority        uint8
+	// Billable and OwnerType are copied from the routed message: billing-svc settles the reservation from
+	// this event (step-287d).
+	Billable  bool
+	OwnerType string
 }
 
 // MOInbound is a mobile-originated message a SMSC delivered to one of our inbound numbers, carried on

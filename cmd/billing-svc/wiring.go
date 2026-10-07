@@ -46,6 +46,8 @@ type billingApp struct {
 	foldLag    prometheus.Gauge
 	folder     *billing.Folder
 	eventRelay *billing.EventRelay
+	// settle captures and releases from mt.outcome (step-287d), off the connector pool's send path.
+	settle *billing.SettleConsumer
 
 	// closers release what was opened, in reverse order of opening — the exact LIFO the deferred Closes
 	// in run() used to provide. They are named because that order is the property worth guarding,
@@ -139,6 +141,14 @@ func newBillingApp(ctx context.Context, cfg config.Config, logger *slog.Logger) 
 		Help: "Age of the oldest billing event not yet relayed to billing.events (step-400); 0 when none waits, NaN when unreadable.",
 	}, billing.OutboxLag(acct.repo, cfg.Postgres.Timeout))
 	a.eventRelay = billing.NewEventRelay(acct.repo, eventsProducer, logger)
+	// From the latest offset: a message sent before this group existed was settled by the pool, and the reaper
+	// is the net for any other. From the start, a first deploy would re-settle all of mt.outcome's retention.
+	settleConsumer, err := kafka.NewConsumerFromLatest(cfg.Kafka, "billing-svc-settle", kafka.TopicMTOutcome)
+	if err != nil {
+		return nil, fmt.Errorf("kafka mt.outcome settle consumer: %w", err)
+	}
+	a.onClose("outcome settlement", settleConsumer.Close)
+	a.settle = billing.NewSettleConsumer(settleConsumer, ext.biller, logger)
 	//nolint:contextcheck // A scrape carries no context: the boot context has no business inside it.
 	ledgerDefaultRows := prometheus.NewGaugeFunc(prometheus.GaugeOpts{
 		Name: "billing_ledger_default_rows",

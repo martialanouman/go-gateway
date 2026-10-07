@@ -48,7 +48,7 @@ L'arbitrage a été rendu par Fable, qui s'appuie sur ADR-0012 §2 (« la seule 
     point 3, et la fiche de dette du CDR.
 
 ## Definition of Done
-- [ ] PR1 : un `enroute` est capturé, un `failed` est libéré, un `billable=false` ne coûte aucun appel ; un
+- [x] PR1 : un `enroute` est capturé, un `failed` est libéré, un `billable=false` ne coûte aucun appel ; un
       échec de facturation fait échouer le record ; le double règlement avec le pool reste une seule
       entrée (intégration)
 - [ ] PR2 : `settleOutcome` ne fait plus d'appel de facturation ; ADR-0024 ; spec amendée

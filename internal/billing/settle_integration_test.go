@@ -11,6 +11,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/connectorpool/settle"
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
+	"github.com/martialanouman/go-gateway/internal/storage/kafka"
 	"github.com/martialanouman/go-gateway/internal/testutil/pgtest"
 )
 
@@ -102,5 +103,41 @@ func TestSettlerReleaseIdempotentUnderDoubleDelivery(t *testing.T) {
 	}
 	if n := countLedger(t, msg, cp.EntryRelease); n != 1 {
 		t.Errorf("release ledger entries = %d, want exactly 1 (a double release mints free credit)", n)
+	}
+}
+
+// TestPoolAndConsumerSettleOnce is the step-287d transition: while the pool still captures over gRPC, the
+// mt.outcome consumer captures the same message too. The ledger must keep exactly one capture, and the
+// consumer must settle the balance the reservation was made on.
+func TestPoolAndConsumerSettleOnce(t *testing.T) {
+	h := newBillingHarness(t, 100)
+	pool := settle.NewSettler(newBillingGRPCClient(t, h), settle.WithTimeout(5*time.Second))
+	account := seedAccount(t, h.owner.CustomerID)
+	msg := uuid.New()
+	reserveFor(t, h, account, msg, 3)
+	r := settledRouted(h, account, msg)
+
+	if billed, _ := pool.Capture(context.Background(), r); !billed {
+		t.Fatal("the pool's capture did not bill")
+	}
+	rec, err := pipeline.EncodeOutcome(pipeline.OutcomeMT{
+		MessageID: msg, CustomerID: h.owner.CustomerID, AccountID: account, Status: "enroute",
+		Billable: true, OwnerType: cp.OwnerTypeCustomer,
+	})
+	if err != nil {
+		t.Fatalf("encode outcome: %v", err)
+	}
+	cons := &batchOnce{recs: []kafka.Record{rec}}
+	if err := billing.NewSettleConsumer(cons, h.acc, nil).Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if cons.results[0] != nil {
+		t.Fatalf("the consumer's capture failed: %v", cons.results[0])
+	}
+	if n := countLedger(t, msg, cp.EntryCapture); n != 1 {
+		t.Errorf("capture ledger entries = %d, want exactly 1 (pool and consumer settle the same message)", n)
+	}
+	if got := h.balance(t); got != 97 {
+		t.Errorf("balance = %d, want 97 (one debit, captured once)", got)
 	}
 }

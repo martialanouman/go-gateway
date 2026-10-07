@@ -19,11 +19,15 @@ func TestEveryPoolRowCarriesTheCategory(t *testing.T) {
 	r := pipeline.RoutedMT{
 		MessageID: uuid.New(), ConnectorID: uuid.New(), SegmentSeq: 1, SegmentCount: 1, SubmittedAt: time.Now(),
 		TrafficCategory: cp.TrafficTransactional, Priority: 2,
+		Billable: true, OwnerType: cp.OwnerTypeSMPPAccount,
 	}
 
 	out := submitOutcome(r, smpp.PDU{})
 	if out.TrafficCategory != "transactional" || out.Priority != 2 {
 		t.Errorf("outcome category/priority = %q/%d, want transactional/2", out.TrafficCategory, out.Priority)
+	}
+	if !out.Billable || out.OwnerType != cp.OwnerTypeSMPPAccount {
+		t.Errorf("outcome billable/owner = %v/%q, want true/smpp_account (billing-svc settles from it)", out.Billable, out.OwnerType)
 	}
 	for name, row := range map[string]clickhouse.CDRRow{
 		"rerouted":  reroutedRow(r, errs.ErrServiceUnavailable),

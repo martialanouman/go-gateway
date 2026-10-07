@@ -102,6 +102,8 @@ func submitOutcome(r pipeline.RoutedMT, resp smpp.PDU) pipeline.OutcomeMT {
 		ErrorCode:       errorCode,
 		TrafficCategory: string(r.TrafficCategory),
 		Priority:        r.Priority,
+		Billable:        r.Billable,
+		OwnerType:       r.OwnerType,
 	}
 }
 
