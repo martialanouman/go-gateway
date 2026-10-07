@@ -14,6 +14,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	"github.com/martialanouman/go-gateway/internal/smpp"
+	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
 	"github.com/martialanouman/go-gateway/internal/testutil/fakesmsc"
 	"github.com/martialanouman/go-gateway/internal/testutil/otelrec"
@@ -38,11 +39,6 @@ func (s *settleLog) record(id uuid.UUID, op string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.ops[id] = append(s.ops[id], op)
-}
-
-func (s *settleLog) Capture(_ context.Context, r pipeline.RoutedMT) (bool, *int32) {
-	s.record(r.MessageID, "capture")
-	return true, nil
 }
 
 func (s *settleLog) Release(_ context.Context, r pipeline.RoutedMT) { s.record(r.MessageID, "release") }
@@ -351,9 +347,25 @@ func TestFlappingConnectorSettlesEachMessageExactlyOnce(t *testing.T) {
 			"never exercised the at-least-once hop that makes double-billing possible")
 	}
 
-	// Invariant (c), per message: at most one settle, and never both legs. Two captures double-charge; a
-	// capture AND a release charge and refund the same message, leaving the CDR contradicting itself.
+	// Invariant (c), per message: at most one settlement, and never both legs. Since step-287d a sent or
+	// refused message is settled by billing-svc from its mt.outcome, and only a message that never reached
+	// the SMSC (a dead-letter, a cancellation) is released by the pool itself — so a settlement is either a
+	// pool release or a published outcome, and a message must have at most one of them.
 	ops := settles.snapshot()
+	for _, rec := range prod.records() {
+		if rec.Topic != kafka.TopicMTOutcome {
+			continue
+		}
+		out, err := pipeline.DecodeOutcome(rec)
+		if err != nil {
+			t.Fatalf("decode outcome: %v", err)
+		}
+		leg := "release"
+		if out.Status == string(clickhouse.StatusEnroute) {
+			leg = "capture"
+		}
+		ops[out.MessageID] = append(ops[out.MessageID], leg)
+	}
 	for id, got := range ops {
 		if len(got) > 1 {
 			t.Errorf("message %s was settled %d times (%v): billing must be idempotent by message_id "+

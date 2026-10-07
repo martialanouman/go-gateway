@@ -301,11 +301,6 @@ func (s slowCDR) Insert(context.Context, clickhouse.CDRRow) error {
 // under test.
 type slowSettler struct{ delay time.Duration }
 
-func (s slowSettler) Capture(context.Context, pipeline.RoutedMT) (bool, *int32) {
-	time.Sleep(s.delay)
-	return true, nil
-}
-
 func (s slowSettler) Release(context.Context, pipeline.RoutedMT) { time.Sleep(s.delay) }
 
 // TestE2ELatencyClampsAClockThatRanBackwards guards the direction that lies in our favour. The accept

@@ -251,22 +251,17 @@ func TestConnectorRedeliversWhenOutcomePublishFails(t *testing.T) {
 	}
 }
 
-// TestConnectorOutcomeCarriesTheCaptureResult: billed/credits_charged are known only to the connector
-// (it holds the reservation), so they travel on the event rather than being recomputed downstream.
-func TestConnectorOutcomeCarriesTheCaptureResult(t *testing.T) {
-	charged := int32(3)
-	spy := &spySettler{billed: true, charged: &charged}
+// TestConnectorOutcomeCarriesTheReservation: billing-svc settles from the outcome (step-287d), so the event
+// carries whether a reservation exists and against which balance.
+func TestConnectorOutcomeCarriesTheReservation(t *testing.T) {
 	prod := &outcomeProducer{}
-	_, _, err := runOutcome(t, func(smpp.SubmitSM) fakesmsc.Resp { return fakesmsc.OK() }, billableRouted(), prod, spy)
+	r := billableRouted()
+	_, _, err := runOutcome(t, func(smpp.SubmitSM) fakesmsc.Resp { return fakesmsc.OK() }, r, prod, &spySettler{})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if spy.captureCalls != 1 {
-		t.Fatalf("capture calls = %d, want 1 — the fixture never reached the settle site", spy.captureCalls)
-	}
-	got := prod.only(t)
-	if !got.Billed || got.CreditsCharged == nil || *got.CreditsCharged != 3 {
-		t.Errorf("billing = (billed %v, charged %v), want (true, &3)", got.Billed, got.CreditsCharged)
+	if got := prod.only(t); !got.Billable || got.OwnerType != r.OwnerType {
+		t.Errorf("outcome reservation = (billable %v, owner %q), want (true, %q)", got.Billable, got.OwnerType, r.OwnerType)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/martialanouman/go-gateway/internal/billing"
+	"github.com/martialanouman/go-gateway/internal/billing/pb"
 	"github.com/martialanouman/go-gateway/internal/connectorpool/settle"
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
@@ -26,6 +27,14 @@ func countLedger(t *testing.T, messageID uuid.UUID, entryType cp.EntryType) int 
 		t.Fatalf("count ledger %s: %v", entryType, err)
 	}
 	return n
+}
+
+// captureRequest is the gRPC capture the pool used to send for a customer-scoped reservation.
+func captureRequest(h *billingHarness, accountID, messageID uuid.UUID) *pb.CaptureRequest {
+	return &pb.CaptureRequest{MessageId: messageID.String(), Owner: &pb.Owner{
+		OwnerType: pb.OwnerType_OWNER_TYPE_CUSTOMER, OwnerId: h.owner.CustomerID.String(),
+		CustomerId: h.owner.CustomerID.String(), AccountId: accountID.String(),
+	}}
 }
 
 // settledRouted builds the mt.routed the settler reads: a customer-scoped billable message keyed to the
@@ -56,23 +65,21 @@ func reserveFor(t *testing.T, h *billingHarness, accountID, messageID uuid.UUID,
 // buggy double-capture would move the balance zero times either way; only the ledger entry count catches it.
 func TestSettlerCaptureIdempotentUnderDoubleDelivery(t *testing.T) {
 	h := newBillingHarness(t, 100)
-	// A generous deadline: these settle over bufconn + a testcontainer Postgres durable write, so the tight
-	// production default could fail-open on a slow CI commit and turn an idempotency assertion flaky.
-	settler := settle.NewSettler(newBillingGRPCClient(t, h), settle.WithTimeout(5*time.Second))
+	client := newBillingGRPCClient(t, h)
 	ctx := context.Background()
 	account := seedAccount(t, h.owner.CustomerID)
 	msg := uuid.New()
 	reserveFor(t, h, account, msg, 3)
-	r := settledRouted(h, account, msg)
+	req := captureRequest(h, account, msg)
 
-	billed, charged := settler.Capture(ctx, r)
-	if !billed || charged == nil || *charged != 3 {
-		t.Fatalf("first Capture = (%v, %v), want (true, &3)", billed, charged)
+	first, err := client.Capture(ctx, req)
+	if err != nil || first.GetCreditsCharged() != 3 {
+		t.Fatalf("first Capture = (%v, %v), want 3 credits charged", first, err)
 	}
-	// Redelivery of the same message_id: still reports charged=3, but adds no second entry.
-	billed2, charged2 := settler.Capture(ctx, r)
-	if !billed2 || charged2 == nil || *charged2 != 3 {
-		t.Fatalf("redelivered Capture = (%v, %v), want (true, &3) — stable", billed2, charged2)
+	// Redelivery of the same message_id: still reports 3 charged, but adds no second entry.
+	second, err := client.Capture(ctx, req)
+	if err != nil || second.GetCreditsCharged() != 3 {
+		t.Fatalf("redelivered Capture = (%v, %v), want 3 credits charged — stable", second, err)
 	}
 	if n := countLedger(t, msg, cp.EntryCapture); n != 1 {
 		t.Errorf("capture ledger entries = %d, want exactly 1 (idempotent under double delivery)", n)
@@ -106,19 +113,18 @@ func TestSettlerReleaseIdempotentUnderDoubleDelivery(t *testing.T) {
 	}
 }
 
-// TestPoolAndConsumerSettleOnce is the step-287d transition: while the pool still captures over gRPC, the
-// mt.outcome consumer captures the same message too. The ledger must keep exactly one capture, and the
-// consumer must settle the balance the reservation was made on.
+// TestPoolAndConsumerSettleOnce: a capture over gRPC (the pool before step-287d, or the reaper) and the
+// mt.outcome consumer settle the same message. The ledger must keep exactly one capture, and the consumer
+// must settle the balance the reservation was made on.
 func TestPoolAndConsumerSettleOnce(t *testing.T) {
 	h := newBillingHarness(t, 100)
-	pool := settle.NewSettler(newBillingGRPCClient(t, h), settle.WithTimeout(5*time.Second))
 	account := seedAccount(t, h.owner.CustomerID)
 	msg := uuid.New()
 	reserveFor(t, h, account, msg, 3)
-	r := settledRouted(h, account, msg)
 
-	if billed, _ := pool.Capture(context.Background(), r); !billed {
-		t.Fatal("the pool's capture did not bill")
+	if resp, err := newBillingGRPCClient(t, h).Capture(context.Background(), captureRequest(h, account, msg)); err != nil ||
+		resp.GetCreditsCharged() != 3 {
+		t.Fatalf("the gRPC capture = (%v, %v), want 3 credits charged", resp, err)
 	}
 	rec, err := pipeline.EncodeOutcome(pipeline.OutcomeMT{
 		MessageID: msg, CustomerID: h.owner.CustomerID, AccountID: account, Status: "enroute",
