@@ -241,6 +241,8 @@ qu'on mesure un environnement représentatif.
       — née du run 3 de step-287 ; bloque sa reprise
 - [x] step-287g — Les dépendances quittent l'hôte de la passerelle : second nœud k3s sur le VPC ⛓ step-287f —
       née du run 4 de step-287 ; bloque sa reprise
+- [ ] step-287h — L'environnement de test passe en OIDC : l'Admin API accepte les JWT du BFF ⛓ step-287,
+      step-310 — demande humaine du 09/10/2026
 - [x] step-288 — La catégorie de trafic se déclare par sender ID ; `sender_id_policy` disparaît (ADR-0020 §1,
       contrat 7.0.0) — décision humaine du 05/10/2026 ; unité faute de multiple de dix libre
 - [x] step-289 — Un débit par sender ID, refusé à l'admission (ADR-0021 §3) ⛓ step-283, step-288 — unité faute
