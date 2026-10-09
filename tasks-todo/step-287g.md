@@ -35,8 +35,8 @@ Latence mesurée le 09/10/2026 entre les deux hôtes (200 pings) : réseau publi
   l'injecteur au run 4 ; les relevés de chaque run donnent le CPU des deux hôtes.
 
 ## Definition of Done
-- [ ] `check.sh` : les 4 StatefulSets portent sélecteur et tolérance, Redis ni l'un ni l'autre (garde vue
+- [x] `check.sh` : les 4 StatefulSets portent sélecteur et tolérance, Redis ni l'un ni l'autre (garde vue
       rouge avant le patch)
-- [ ] `install.sh server|agent`, README §3 à jour
-- [ ] les deux hôtes réinstallés, premier déploiement et smoke verts, dépendances sur contabo75
+- [x] `install.sh server|agent`, README §3 à jour
+- [ ] les deux hôtes réinstallés (fait le 09/10 : 2 nœuds Ready sur 10.0.0.0/22, teinte posée), premier déploiement et smoke verts, dépendances sur contabo75
 - [ ] run 5 au protocole du run 4, CPU des deux hôtes relevé, journal de step-287 à jour
