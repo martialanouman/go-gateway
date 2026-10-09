@@ -122,35 +122,45 @@ INSERT INTO control_plane.billing_idempotency (message_id, entry_type)
 VALUES (@message_id, @entry_type)
 ON CONFLICT (message_id, entry_type) DO NOTHING;
 
--- name: ClaimIdempotencyBatch :many
--- ClaimIdempotency for a batch of movements in one statement: it returns the (message_id, entry_type) pairs it
--- inserted, so a pair absent from the result was already recorded. A pair twice in the batch comes back once
--- and both copies read as claimed; the ledger's unique index then refuses the second (one transaction, one
--- now()).
--- Inserted in key order: two concurrent batches holding the same pairs in opposite orders would otherwise
--- deadlock (step-287f, several writers).
-INSERT INTO control_plane.billing_idempotency (message_id, entry_type)
-SELECT m, e FROM (SELECT unnest(@message_ids::uuid[]) AS m, unnest(@entry_types::text[]) AS e) AS t ORDER BY m, e
-ON CONFLICT (message_id, entry_type) DO NOTHING
-RETURNING message_id, entry_type;
-
--- name: CurrentXactID :one
-SELECT pg_current_xact_id()::text AS xid;
-
 -- name: XactStatus :one
 -- committed, aborted or in progress; NULL once the id is too old for the commit log to remember.
 SELECT pg_xact_status(CAST(CAST(sqlc.arg(xid) AS text) AS xid8))::text AS status;
 
--- name: CopyBalanceDeltas :copyfrom
-INSERT INTO control_plane.balance_deltas (owner_type, owner_id, direction, credits)
-VALUES ($1, $2, $3, $4);
-
--- name: CopyLedgerEntries :copyfrom
--- COPY rather than a multi-row INSERT: the nullable account_id and reference do not ride typed unnest arrays.
-INSERT INTO control_plane.billing_ledger
-  (owner_type, owner_id, direction, customer_id, account_id, message_id, entry_type, credits,
-   balance_after, reference)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);
+-- name: WriteBillingBatch :one
+-- RecordDurable for a whole batch in one statement (step-287f): every round trip pays the network to Postgres.
+-- The claim returns the (message_id, entry_type) pairs it inserted, and only those reach the deltas and the
+-- ledger; claimed lists their positions in the batch. A pair twice in the batch is claimed once but joins
+-- both copies, and the ledger's unique index then refuses the second, as one transaction has one now().
+-- Claimed in key order: two concurrent batches holding the same pairs in opposite orders would otherwise
+-- deadlock. The transaction id comes back with the write, before the COMMIT that may go unanswered.
+WITH input AS (
+  SELECT (e->>'ord')::int AS ord, e->>'owner_type' AS owner_type, (e->>'owner_id')::uuid AS owner_id,
+    e->>'direction' AS direction, (e->>'customer_id')::uuid AS customer_id,
+    (e->>'account_id')::uuid AS account_id, (e->>'message_id')::uuid AS message_id,
+    e->>'entry_type' AS entry_type, (e->>'credits')::int AS credits,
+    (e->>'balance_after')::int AS balance_after, e->>'reference' AS reference
+  FROM jsonb_array_elements(@entries::jsonb) AS e
+), claimed AS (
+  INSERT INTO control_plane.billing_idempotency (message_id, entry_type)
+  SELECT input.message_id, input.entry_type FROM input ORDER BY input.message_id, input.entry_type
+  ON CONFLICT (message_id, entry_type) DO NOTHING
+  RETURNING message_id, entry_type
+), fresh AS (
+  SELECT input.ord, input.owner_type, input.owner_id, input.direction, input.customer_id, input.account_id,
+    input.message_id, input.entry_type, input.credits, input.balance_after, input.reference
+  FROM input JOIN claimed USING (message_id, entry_type)
+), deltas AS (
+  INSERT INTO control_plane.balance_deltas (owner_type, owner_id, direction, credits)
+  SELECT fresh.owner_type, fresh.owner_id, fresh.direction, fresh.credits FROM fresh WHERE fresh.credits <> 0
+), ledger AS (
+  INSERT INTO control_plane.billing_ledger
+    (owner_type, owner_id, direction, customer_id, account_id, message_id, entry_type, credits,
+     balance_after, reference)
+  SELECT fresh.owner_type, fresh.owner_id, fresh.direction, fresh.customer_id, fresh.account_id,
+    fresh.message_id, fresh.entry_type, fresh.credits, fresh.balance_after, fresh.reference
+  FROM fresh
+)
+SELECT pg_current_xact_id()::text AS xid, ARRAY(SELECT fresh.ord FROM fresh)::int[] AS claimed;
 
 -- name: InsertLedgerEntry :one
 -- Append one ledger row and return its generated id and created_at. The ledger is APPEND-ONLY (§6.9): a row

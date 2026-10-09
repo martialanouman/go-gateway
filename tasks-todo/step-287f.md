@@ -40,5 +40,11 @@ L'arbitrage a été rendu par Fable, sans contradiction avec la spec ni avec ADR
 - [x] PR1 : 4 écrivains. Une écriture qui bloque sur une clé en vol n'arrête pas les autres (tombe sous
       `batchWriters = 1`) et rend `applied=false` une fois la clé commitée. Somme du grand livre = solde sous
       concurrence ; `-race`.
-- [ ] PR2 : CTE unique ; les tests du batcher restent verts sans changement de contrat.
+- [x] PR2 : CTE unique ; les tests du batcher restent verts sans changement de contrat.
+  - **Écart arbitré par Fable (09/10/2026).** Le solde rendu à un rejeu inclut maintenant les voisins du même
+    lot (le solde durable au COMMIT), et non plus le solde lu avant les deltas du lot. Aucun appelant ne le
+    lit (`credit/reserver.go` ne lit que `GetReserved`), et avec 4 écrivains un voisin d'un autre lot
+    l'incluait déjà. `TestBatcherAnswersAReplayWithTheDurableBalance` attend -6.
+  - **`jsonb_array_elements` plutôt que `jsonb_to_recordset`.** sqlc 1.30 ne résout pas les colonnes d'une
+    liste de définition (`column "ord" does not exist`).
 - [ ] VPS après chaque PR : `billing_durable_stage_seconds`, lots/s et taille, réservations/s, CPU Postgres.
