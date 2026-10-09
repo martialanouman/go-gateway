@@ -19,3 +19,10 @@ conteneur au moment du gel, que la CI ne garde pas.
 
 **À quoi on reconnaîtra qu'il faut la payer.** Une récidive malgré la borne (le test échoue alors en 15 s,
 avec l'erreur) : il faudra faire parler le conteneur, en déversant `docker logs` dans le job en cas d'échec.
+
+**Récidive du 09/10/2026, malgré la borne (run 37964516445, PR #288).** Le même test est resté 9 minutes dans
+`kgo.(*Client).ProduceSync` (`producer.go:78`), appelé depuis le `Produce` de la ligne 332 du test, pas
+depuis le premier. `testProduceTimeout` n'a rien borné. Le délai d'un enregistrement ne coupe pas un lot déjà
+parti vers le broker. Le paragraphe « Ce qu'on a fait à la place » se trompe donc sur ce point : une
+récidive gèle toujours le paquet pendant 10 minutes. Le signal de paiement est atteint. Il faut un `ctx` à
+échéance autour de chaque `Produce` des tests, et les logs du conteneur en cas d'échec.
