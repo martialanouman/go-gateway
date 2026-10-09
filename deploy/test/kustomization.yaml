@@ -24,6 +24,10 @@ patches:
   - path: patches/smpp-server-svc.yaml
   - path: patches/connector-pool-svc.yaml
   - path: patches/admin-api-svc.yaml
+  - path: patches/deps-node.yaml
+    target:
+      kind: StatefulSet
+      name: postgres|redpanda|clickhouse|rustfs
   - path: patches/scale-down.yaml
     target:
       kind: Deployment

@@ -2,7 +2,8 @@
 
 ## 1. Ce que c'est
 
-Un environnement de **test**, pas la production : un seul nœud k3s sur un VPS, dimensionné pour
+Un environnement de **test**, pas la production : deux nœuds k3s sur deux VPS reliés par un VPC (la
+passerelle, et un nœud teinté pour Postgres, Redpanda, ClickHouse et RustFS — step-287g), dimensionné pour
 prouver que le pipeline tourne, pas pour tenir 8 000 SMS/s. C'est un overlay kustomize qui **rejoue**
 `deploy/k8s/` sans le modifier — patches (proxy CIDRs, admin token, réplicas, HPA), Jobs par phase,
 dépendances (`deps/`), Ingress Traefik. `make test-env` rend l'overlay avec un tag fictif et vérifie
@@ -38,8 +39,22 @@ en échec fait échouer le workflow **Deploy test**.
 ```bash
 ssh-keygen -t ed25519 -f cd-key -N ''
 scp deploy/test/host/install.sh deploy/test/host/gateway-deploy root@IP:/root/
-ssh root@IP bash /root/install.sh "$(cat cd-key.pub)"
+ssh root@IP bash /root/install.sh server eth1 "$(cat cd-key.pub)"
 ```
+
+`eth1` est l'interface du VPC sur les deux hôtes (Contabo) : k3s y prend l'adresse de chaque nœud et y fait
+passer le trafic des pods. Le nœud des dépendances se prépare ensuite, avec le jeton du serveur sur l'entrée
+standard (jamais en argument) :
+
+```bash
+scp deploy/test/host/install.sh root@IP_DEPS:/root/
+ssh root@IP cat /var/lib/rancher/k3s/server/node-token \
+  | ssh root@IP_DEPS bash /root/install.sh agent eth1 IP_VPC_DU_SERVEUR
+```
+
+Il est teinté `gateway.test/role=deps:NoSchedule` : seules les dépendances épinglées par
+`patches/deps-node.yaml` y tournent ; Redis reste sur la passerelle, qu'il sert plusieurs fois par message.
+Sans ce nœud, ces quatre StatefulSets restent en Pending.
 
 `install.sh` active firewalld (SSH, 80/443, 2775 et les réseaux pods/Services de k3s ; cockpit fermé), installe k3s, crée le namespace
 `gateway` (étiqueté `pod-security.kubernetes.io/enforce=baseline` : une clé de CD fuitée ne peut pas y

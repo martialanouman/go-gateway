@@ -1,8 +1,18 @@
 #!/usr/bin/env bash
 # Préparation d'un VPS Rocky Linux 10 neuf, en root, une fois : k3s, pare-feu, compte de CD.
-# usage : install.sh "<clé publique ssh de la CD>"
+# usage : install.sh server IFACE "<clé publique ssh de la CD>"
+#         install.sh agent IFACE SERVER_IP < node-token     (nœud des dépendances, step-287g)
+# IFACE est l'interface du VPC : tout le trafic entre nœuds y passe, jamais par l'IP publique.
 set -euo pipefail
-pubkey=${1:?"usage: $0 <clé publique ssh de la CD>"}
+usage="usage: $0 server IFACE <clé CD> | agent IFACE SERVER_IP < node-token"
+role=${1:?$usage} iface=${2:?$usage}
+case $role in
+  server) pubkey=${3:?$usage} ;;
+  agent) server_ip=${3:?$usage}; token=$(cat); [[ -n $token ]] || { echo "$usage" >&2; exit 1; } ;;
+  *) echo "$usage" >&2; exit 1 ;;
+esac
+node_ip=$(ip -4 -br addr show "$iface" | awk '{sub(/\/.*/, "", $3); print $3}')
+[[ -n $node_ip ]] || { echo "install.sh: aucune IPv4 sur $iface" >&2; exit 1; }
 here=$(cd "$(dirname "$0")" && pwd)
 
 # kernel-modules-extra (exigé par k3s sur RHEL 10) porte xt_conntrack, xt_comment et br_netfilter. Sans
@@ -10,12 +20,17 @@ here=$(cd "$(dirname "$0")" && pwd)
 # échouent alors en silence et aucun pod ne joint l'API ni l'extérieur.
 dnf install -y -q firewalld container-selinux "kernel-modules-extra-$(uname -r)"
 systemctl enable --now firewalld
-firewall-cmd --permanent --zone=public --add-service=ssh --add-service=http --add-service=https
+firewall-cmd --permanent --zone=public --add-service=ssh
+if [[ $role == server ]]; then
+  firewall-cmd --permanent --zone=public --add-service=http --add-service=https
+  firewall-cmd --permanent --zone=public --add-port=2775/tcp
+fi
 # La zone public de Rocky ouvre cockpit (9090) par défaut.
 firewall-cmd --permanent --zone=public --remove-service=cockpit
-firewall-cmd --permanent --zone=public --add-port=2775/tcp
 # Réseaux des pods et des Services de k3s (docs k3s) : sans eux, firewalld coupe le trafic entre pods.
 firewall-cmd --permanent --zone=trusted --add-source=10.42.0.0/16 --add-source=10.43.0.0/16
+# Le VPC ne relie que nos hôtes : API (6443), kubelet (10250) et vxlan de flannel (8472/udp) y passent.
+firewall-cmd --permanent --zone=trusted --change-interface="$iface"
 firewall-cmd --reload
 # 50-cloud-init.conf pose PasswordAuthentication yes, et le premier réglage lu gagne : un fichier trié
 # avant lui (00-) prend la priorité.
@@ -30,7 +45,17 @@ systemctl reload sshd
 # Traefik bundlé : ServersTransport.spec.rootCAs (utilisé par ingress.yaml) exige Traefik >= 3.2.
 # v1.36.4+k3s1 est la tête du canal "stable" de k3s (update.k3s.io/v1-release/channels) et embarque
 # Traefik v3.7.8. INSTALL_K3S_VERSION doit atteindre le script get.k3s.io (le "sh"), pas "curl".
-curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=v1.36.4+k3s1 sh -s - --write-kubeconfig-mode 600
+if [[ $role == agent ]]; then
+  # La teinte écarte de ce nœud tout ce qui ne la tolère pas : seules les dépendances épinglées par
+  # deploy/test/patches/deps-node.yaml y tournent.
+  curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=v1.36.4+k3s1 K3S_URL="https://$server_ip:6443" \
+    K3S_TOKEN="$token" sh -s - agent --node-ip "$node_ip" --flannel-iface "$iface" \
+    --node-label gateway.test/role=deps --node-taint gateway.test/role=deps:NoSchedule
+  echo "install.sh: agent prêt ($node_ip)"
+  exit 0
+fi
+curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=v1.36.4+k3s1 sh -s - --write-kubeconfig-mode 600 \
+  --node-ip "$node_ip" --flannel-iface "$iface"
 until kubectl get nodes >/dev/null 2>&1; do sleep 2; done
 systemctl show k3s -p LimitNOFILE
 
