@@ -65,49 +65,6 @@ func (q *Queries) ClaimIdempotency(ctx context.Context, arg ClaimIdempotencyPara
 	return result.RowsAffected(), nil
 }
 
-const claimIdempotencyBatch = `-- name: ClaimIdempotencyBatch :many
-INSERT INTO control_plane.billing_idempotency (message_id, entry_type)
-SELECT m, e FROM (SELECT unnest($1::uuid[]) AS m, unnest($2::text[]) AS e) AS t ORDER BY m, e
-ON CONFLICT (message_id, entry_type) DO NOTHING
-RETURNING message_id, entry_type
-`
-
-type ClaimIdempotencyBatchParams struct {
-	MessageIds []uuid.UUID
-	EntryTypes []string
-}
-
-type ClaimIdempotencyBatchRow struct {
-	MessageID uuid.UUID
-	EntryType string
-}
-
-// ClaimIdempotency for a batch of movements in one statement: it returns the (message_id, entry_type) pairs it
-// inserted, so a pair absent from the result was already recorded. A pair twice in the batch comes back once
-// and both copies read as claimed; the ledger's unique index then refuses the second (one transaction, one
-// now()).
-// Inserted in key order: two concurrent batches holding the same pairs in opposite orders would otherwise
-// deadlock (step-287f, several writers).
-func (q *Queries) ClaimIdempotencyBatch(ctx context.Context, arg ClaimIdempotencyBatchParams) ([]ClaimIdempotencyBatchRow, error) {
-	rows, err := q.db.Query(ctx, claimIdempotencyBatch, arg.MessageIds, arg.EntryTypes)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ClaimIdempotencyBatchRow{}
-	for rows.Next() {
-		var i ClaimIdempotencyBatchRow
-		if err := rows.Scan(&i.MessageID, &i.EntryType); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const consumedCredits = `-- name: ConsumedCredits :one
 SELECT COALESCE(-SUM(l.credits), 0)::bigint AS consumed
 FROM control_plane.billing_ledger l
@@ -129,37 +86,6 @@ func (q *Queries) ConsumedCredits(ctx context.Context, customerID uuid.UUID) (in
 	var consumed int64
 	err := row.Scan(&consumed)
 	return consumed, err
-}
-
-type CopyBalanceDeltasParams struct {
-	OwnerType string
-	OwnerID   uuid.UUID
-	Direction string
-	Credits   int32
-}
-
-type CopyLedgerEntriesParams struct {
-	OwnerType    string
-	OwnerID      uuid.UUID
-	Direction    string
-	CustomerID   uuid.UUID
-	AccountID    *uuid.UUID
-	MessageID    *uuid.UUID
-	EntryType    string
-	Credits      int32
-	BalanceAfter int32
-	Reference    *string
-}
-
-const currentXactID = `-- name: CurrentXactID :one
-SELECT pg_current_xact_id()::text AS xid
-`
-
-func (q *Queries) CurrentXactID(ctx context.Context) (string, error) {
-	row := q.db.QueryRow(ctx, currentXactID)
-	var xid string
-	err := row.Scan(&xid)
-	return xid, err
 }
 
 const deleteBillingEvents = `-- name: DeleteBillingEvents :exec
@@ -800,6 +726,55 @@ func (q *Queries) UpdateBalanceScope(ctx context.Context, arg UpdateBalanceScope
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const writeBillingBatch = `-- name: WriteBillingBatch :one
+WITH input AS (
+  SELECT (e->>'ord')::int AS ord, e->>'owner_type' AS owner_type, (e->>'owner_id')::uuid AS owner_id,
+    e->>'direction' AS direction, (e->>'customer_id')::uuid AS customer_id,
+    (e->>'account_id')::uuid AS account_id, (e->>'message_id')::uuid AS message_id,
+    e->>'entry_type' AS entry_type, (e->>'credits')::int AS credits,
+    (e->>'balance_after')::int AS balance_after, e->>'reference' AS reference
+  FROM jsonb_array_elements($1::jsonb) AS e
+), claimed AS (
+  INSERT INTO control_plane.billing_idempotency (message_id, entry_type)
+  SELECT input.message_id, input.entry_type FROM input ORDER BY input.message_id, input.entry_type
+  ON CONFLICT (message_id, entry_type) DO NOTHING
+  RETURNING message_id, entry_type
+), fresh AS (
+  SELECT input.ord, input.owner_type, input.owner_id, input.direction, input.customer_id, input.account_id,
+    input.message_id, input.entry_type, input.credits, input.balance_after, input.reference
+  FROM input JOIN claimed USING (message_id, entry_type)
+), deltas AS (
+  INSERT INTO control_plane.balance_deltas (owner_type, owner_id, direction, credits)
+  SELECT fresh.owner_type, fresh.owner_id, fresh.direction, fresh.credits FROM fresh WHERE fresh.credits <> 0
+), ledger AS (
+  INSERT INTO control_plane.billing_ledger
+    (owner_type, owner_id, direction, customer_id, account_id, message_id, entry_type, credits,
+     balance_after, reference)
+  SELECT fresh.owner_type, fresh.owner_id, fresh.direction, fresh.customer_id, fresh.account_id,
+    fresh.message_id, fresh.entry_type, fresh.credits, fresh.balance_after, fresh.reference
+  FROM fresh
+)
+SELECT pg_current_xact_id()::text AS xid, ARRAY(SELECT fresh.ord FROM fresh)::int[] AS claimed
+`
+
+type WriteBillingBatchRow struct {
+	Xid     string
+	Claimed []int32
+}
+
+// RecordDurable for a whole batch in one statement (step-287f): every round trip pays the network to Postgres.
+// The claim returns the (message_id, entry_type) pairs it inserted, and only those reach the deltas and the
+// ledger; claimed lists their positions in the batch. A pair twice in the batch is claimed once but joins
+// both copies, and the ledger's unique index then refuses the second, as one transaction has one now().
+// Claimed in key order: two concurrent batches holding the same pairs in opposite orders would otherwise
+// deadlock. The transaction id comes back with the write, before the COMMIT that may go unanswered.
+func (q *Queries) WriteBillingBatch(ctx context.Context, entries []byte) (WriteBillingBatchRow, error) {
+	row := q.db.QueryRow(ctx, writeBillingBatch, entries)
+	var i WriteBillingBatchRow
+	err := row.Scan(&i.Xid, &i.Claimed)
+	return i, err
 }
 
 const xactStatus = `-- name: XactStatus :one

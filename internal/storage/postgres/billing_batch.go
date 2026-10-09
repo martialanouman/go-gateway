@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -11,7 +12,6 @@ import (
 	"github.com/google/uuid"
 
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
-	"github.com/martialanouman/go-gateway/internal/storage/postgres/sqlcgen"
 )
 
 const (
@@ -248,6 +248,21 @@ func (b *BillingBatcher) commitOutcome(xid string) string {
 	}
 }
 
+// batchRow is one movement as WriteBillingBatch reads it; Ord is its position in the batch.
+type batchRow struct {
+	Ord          int        `json:"ord"`
+	OwnerType    string     `json:"owner_type"`
+	OwnerID      uuid.UUID  `json:"owner_id"`
+	Direction    string     `json:"direction"`
+	CustomerID   uuid.UUID  `json:"customer_id"`
+	AccountID    *uuid.UUID `json:"account_id"`
+	MessageID    *uuid.UUID `json:"message_id"`
+	EntryType    string     `json:"entry_type"`
+	Credits      int        `json:"credits"`
+	BalanceAfter int        `json:"balance_after"`
+	Reference    *string    `json:"reference"`
+}
+
 // recordBatch is RecordDurable for movements that all carry a message and a decided balance, in one
 // transaction. Results are in entries order. On a failed COMMIT it still returns them, with the transaction's
 // id, for the caller to learn whether they hold.
@@ -261,67 +276,40 @@ func (r *BillingRepo) recordBatch(ctx context.Context, entries []cp.LedgerEntry,
 	defer func() { _ = tx.Rollback(ctx) }()
 	qtx := r.q.WithTx(tx)
 
-	claim := sqlcgen.ClaimIdempotencyBatchParams{
-		MessageIds: make([]uuid.UUID, len(entries)), EntryTypes: make([]string, len(entries)),
-	}
+	rows := make([]batchRow, len(entries))
 	for i, e := range entries {
-		claim.MessageIds[i], claim.EntryTypes[i] = *e.MessageID, string(e.EntryType)
+		rows[i] = batchRow{
+			Ord: i, OwnerType: e.OwnerType, OwnerID: e.OwnerID, Direction: e.Direction, CustomerID: e.CustomerID,
+			AccountID: e.AccountID, MessageID: e.MessageID, EntryType: string(e.EntryType), Credits: e.Credits,
+			BalanceAfter: *e.BalanceAfter, Reference: e.Reference,
+		}
+	}
+	payload, err := json.Marshal(rows)
+	if err != nil {
+		return nil, "", fmt.Errorf("encode billing batch: %w", err)
 	}
 	start = time.Now()
-	rows, err := qtx.ClaimIdempotencyBatch(ctx, claim)
-	timed("claim", start)
+	written, err := qtx.WriteBillingBatch(ctx, payload)
+	timed("write", start)
 	if err != nil {
-		return nil, "", translate("claim idempotency batch", err)
-	}
-	claimed := make(map[sqlcgen.ClaimIdempotencyBatchRow]bool, len(rows))
-	for _, row := range rows {
-		claimed[row] = true
+		return nil, "", translate("write billing batch", err)
 	}
 
 	results := make([]batchResult, len(entries))
-	var deltas []sqlcgen.CopyBalanceDeltasParams
-	var ledger []sqlcgen.CopyLedgerEntriesParams
+	for _, ord := range written.Claimed {
+		results[ord] = batchResult{balance: *entries[ord].BalanceAfter, applied: true}
+	}
 	for i, e := range entries {
-		key := sqlcgen.ClaimIdempotencyBatchRow{MessageID: *e.MessageID, EntryType: string(e.EntryType)}
-		if !claimed[key] {
-			bal, _, err := balanceOn(ctx, qtx, e.OwnerType, e.OwnerID, e.Direction)
-			if err != nil {
-				return nil, "", err
-			}
-			results[i] = batchResult{balance: bal}
+		if results[i].applied {
 			continue
 		}
-		results[i] = batchResult{balance: *e.BalanceAfter, applied: true}
-		//nolint:gosec // credit counts and balances are integer credits, well within int32
-		if e.Credits != 0 {
-			deltas = append(deltas, sqlcgen.CopyBalanceDeltasParams{
-				OwnerType: e.OwnerType, OwnerID: e.OwnerID, Direction: e.Direction, Credits: int32(e.Credits),
-			})
+		bal, _, err := balanceOn(ctx, qtx, e.OwnerType, e.OwnerID, e.Direction)
+		if err != nil {
+			return nil, "", err
 		}
-		//nolint:gosec // see above
-		ledger = append(ledger, sqlcgen.CopyLedgerEntriesParams{
-			OwnerType: e.OwnerType, OwnerID: e.OwnerID, Direction: e.Direction,
-			CustomerID: e.CustomerID, AccountID: e.AccountID, MessageID: e.MessageID,
-			EntryType: string(e.EntryType), Credits: int32(e.Credits), BalanceAfter: int32(*e.BalanceAfter),
-			Reference: e.Reference,
-		})
+		results[i] = batchResult{balance: bal}
 	}
-	start = time.Now()
-	if len(deltas) > 0 {
-		if _, err := qtx.CopyBalanceDeltas(ctx, deltas); err != nil {
-			return nil, "", translate("copy balance deltas", err)
-		}
-	}
-	if len(ledger) > 0 {
-		if _, err := qtx.CopyLedgerEntries(ctx, ledger); err != nil {
-			return nil, "", translate("copy ledger entries", err)
-		}
-	}
-	timed("copy", start)
-	xid, err := qtx.CurrentXactID(ctx)
-	if err != nil {
-		return nil, "", translate("read batch transaction id", err)
-	}
+	xid := written.Xid
 	start = time.Now()
 	err = tx.Commit(ctx)
 	timed("commit", start)

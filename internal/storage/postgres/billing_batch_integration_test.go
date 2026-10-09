@@ -323,9 +323,10 @@ func TestBatcherAnswersAReplayWithTheDurableBalance(t *testing.T) {
 		t.Fatalf("batch sizes %v, want [1 2]", s)
 	}
 	mustApply(t, "fresh neighbour", got[1])
-	// Read before this batch's own deltas land: the original reserve and the stalled one.
-	if got[0].err != nil || got[0].applied || got[0].balance != -5 {
-		t.Fatalf("replay: %+v, want not applied and the durable balance -5", got[0])
+	// The durable balance at this batch's COMMIT: the original reserve, the stalled one and the fresh neighbour
+	// written by the same statement (step-287f).
+	if got[0].err != nil || got[0].applied || got[0].balance != -6 {
+		t.Fatalf("replay: %+v, want not applied and the durable balance -6", got[0])
 	}
 	if rows, sum := f.ledgerRows(t); rows != 3 || sum != -6 {
 		t.Fatalf("ledger holds %d rows summing %d, want 3 rows summing -6: the replay must not debit twice", rows, sum)
@@ -700,9 +701,9 @@ func (s *batchStages) count(stage string) int {
 	return s.n[stage]
 }
 
-// TestBatcherTimesItsStages: a movement waits to be handed to the single writer, then for its batch's
-// write, and the batch makes four round trips. Each is timed, so the run-2 185 ms of a durable write can
-// be named (step-287e).
+// TestBatcherTimesItsStages: a movement waits to be handed to a writer, then for its batch's write. The batch
+// is one statement between BEGIN and COMMIT (step-287f), each timed, so a durable write's latency can be named
+// (step-287e). The claim and the COPYs are gone: every round trip pays the network to Postgres.
 func TestBatcherTimesItsStages(t *testing.T) {
 	f := newDeltaFixture(t, "customer")
 	stages := &batchStages{}
@@ -714,9 +715,14 @@ func TestBatcherTimesItsStages(t *testing.T) {
 	if _, applied, err := b.RecordDurable(context.Background(), entry); err != nil || !applied {
 		t.Fatalf("RecordDurable = (applied %v, %v), want applied", applied, err)
 	}
-	for _, stage := range []string{"handoff", "reply", "begin", "claim", "copy", "commit"} {
+	for _, stage := range []string{"handoff", "reply", "begin", "write", "commit"} {
 		if stages.count(stage) != 1 {
 			t.Errorf("stage %q observed %d times, want 1", stage, stages.count(stage))
+		}
+	}
+	for _, stage := range []string{"claim", "copy"} {
+		if n := stages.count(stage); n != 0 {
+			t.Errorf("stage %q observed %d times: the batch still makes its own round trip for it", stage, n)
 		}
 	}
 }
