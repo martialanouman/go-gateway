@@ -57,6 +57,19 @@ grep -B3 '^  name: gateway-config$' "$all" | grep -q 'gateway.test/phase: deps' 
 # ConfigMap gateway-config.
 # Et le ConfigMap des journaux système ClickHouse (step-287b).
 [[ $(grep -c 'gateway.test/phase: deps$' "$all") -eq 15 ]] || fail "une dépendance n'est pas en phase deps : elle partirait avec l'application"
+# step-287g : un document par StatefulSet, son nom et sa place (sélecteur, tolérance) sur une ligne.
+placed=$(awk '
+  /^---/ { if (sts) print name, sel, tol; sts = 0; name = ""; sel = 0; tol = 0; next }
+  /^kind: StatefulSet$/ { sts = 1 }
+  /^  name: / && !name { name = $2 }
+  /gateway.test\/role: deps/ { sel = 1 }
+  /key: gateway.test\/role/ { tol = 1 }
+  END { if (sts) print name, sel, tol }
+' "$all")
+for dep in postgres redpanda clickhouse rustfs; do
+  grep -qx "$dep 1 1" <<<"$placed" || fail "$dep n'est pas épinglé au nœud de dépendances (sélecteur et tolérance)"
+done
+grep -qx "redis 0 0" <<<"$placed" || fail "redis quitte la passerelle : chaque message lui fait plusieurs allers-retours"
 
 # shellcheck disable=SC2016 # backticks littéraux : la règle Traefik Host(`...`) rendue par kustomize
 grep -q 'Host(`api-test.manouman.com`)' "$all" || fail "l'API REST n'est pas routée"

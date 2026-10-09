@@ -1,0 +1,11 @@
+# step-287g : les dépendances lourdes vivent sur le nœud teinté du VPC, la passerelle garde le reste.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: deps
+spec:
+  template:
+    spec:
+      nodeSelector: {gateway.test/role: deps}
+      tolerations:
+        - {key: gateway.test/role, operator: Equal, value: deps, effect: NoSchedule}
