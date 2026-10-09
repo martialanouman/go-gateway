@@ -268,12 +268,12 @@ func newAccountant(ctx context.Context, pool *pgxpool.Pool, rdb *goredis.Client,
 		}),
 		durableStage: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name: "billing_durable_stage_seconds",
-			Help: "Time a batched ledger write spends per movement (handoff|reply) and per batch (begin|claim|copy|commit).",
+			Help: "Time a batched ledger write spends per movement (handoff|reply) and per batch (begin|write|commit).",
 			// 0.1 ms … ~3 s: a round trip at the bottom, a batch held behind a slow commit at the top.
 			Buckets: prometheus.ExponentialBuckets(0.0001, 2, 15),
 		}, []string{"stage"}),
 	}
-	for _, stage := range []string{"handoff", "reply", "begin", "claim", "copy", "commit"} {
+	for _, stage := range []string{"handoff", "reply", "begin", "write", "commit"} {
 		a.durableStage.WithLabelValues(stage)
 	}
 	//nolint:contextcheck // A batch serves many callers: it must not die with the context of whichever queued first.
