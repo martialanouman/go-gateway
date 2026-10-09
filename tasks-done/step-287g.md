@@ -38,5 +38,6 @@ Latence mesurée le 09/10/2026 entre les deux hôtes (200 pings) : réseau publi
 - [x] `check.sh` : les 4 StatefulSets portent sélecteur et tolérance, Redis ni l'un ni l'autre (garde vue
       rouge avant le patch)
 - [x] `install.sh server|agent`, README §3 à jour
-- [ ] les deux hôtes réinstallés (fait le 09/10 : 2 nœuds Ready sur 10.0.0.0/22, teinte posée), premier déploiement et smoke verts, dépendances sur contabo75
-- [ ] run 5 au protocole du run 4, CPU des deux hôtes relevé, journal de step-287 à jour
+- [x] les deux hôtes réinstallés (09/10 : 2 nœuds Ready sur 10.0.0.0/22, teinte posée), premier déploiement
+      et smoke verts (`c3ee79a`), dépendances sur contabo75
+- [x] run 5 au protocole du run 4, CPU des deux hôtes relevé, journal de step-287 à jour

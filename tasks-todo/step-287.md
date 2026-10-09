@@ -123,6 +123,22 @@ morte un par un, à ~18/s. Ils ont accumulé 1,1 M de retard et fait échouer de
 `debts/dlr-d-un-client-injoignable-retarde-tous-les-autres.md`. Le groupe a été ramené à la fin par
 l'utilisateur.
 
+**Run 4, mêmes conditions, image `0397227` (4 écrivains, step-287f PR1) : l'hôte est saturé.**
+- 1 382 req/s, p99 4,43 s ; le pool envoie **348 `submit_sm`/s** (269 au run 3) ;
+- `handoff` passe de 67 à 19 ms, un lot de 86 à 62 ms, `credit` de 226,6 à 158,6 ms, 488 écritures durables/s ;
+- l'admission HTTP recule pourtant : l'hôte n'a que 6,6 % de CPU libre, et ce que la facturation et le routeur
+  gagnent, le service REST le perd (1 366 → 950m). ClickHouse 1,6 cœur, Postgres 1,3. Les dépendances
+  passent sur un second nœud : **step-287g**.
+
+**Run 5, mêmes conditions, image `c3ee79a` (dépendances sur contabo75 par le VPC, step-287g) : la latence
+de l'écriture durable borne le routeur.**
+- 1 971 req/s (+43 %), p99 4,97 s, 22 erreurs sur 1,2 M ; **404 `submit_sm`/s** (+16 %) ;
+- CPU libre : passerelle 38 %, contabo75 (dépendances et k6) 26 % ;
+- `credit` 154 ms, dont 137 ms d'écriture durable. Un lot coûte 83 ms (`begin` 28, `claim` 11,5, `copy` 25,
+  `commit` 18), contre 62 ms au run 4 : chaque aller-retour paie le VPC. Le routeur a un nombre fixe de
+  messages en vol, donc son débit est ce nombre divisé par la latence : le CPU libéré ne change rien. Lag du
+  routeur 765 000 en fin de run. Le levier suivant est le lot en un seul statement (step-287f PR2).
+
 ## Definition of Done
 - [ ] les quatre runs faits, chacun avec les relevés de step-280, verdict toujours non rendu (→ step-409)
 - [ ] la traversée mesurée avec 24 clients, et le goulot suivant nommé

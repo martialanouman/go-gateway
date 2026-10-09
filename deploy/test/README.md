@@ -251,8 +251,14 @@ un `NodePort` est joignable de partout, zone ou pas (constaté le 06/10/2026). `
 `LoadBalancer` servicelb avec `loadBalancerSourceRanges`, qui filtre la source lui-même. Un hôte ajouté à la
 zone s'ajoute aussi à `deploy/test-load/rest-api-load.yaml`.
 
-Hôtes au 06/10/2026 : passerelle 169.58.63.248, injecteur 75.119.149.218. L'injecteur porte k6 1.3.0, la
-version de l'image du Job.
+Hôtes au 09/10/2026 : passerelle 169.58.63.248 (VPC 10.0.0.2), injecteur et nœud des dépendances
+75.119.149.218 (VPC 10.0.0.1). L'injecteur porte k6 1.3.0, la version de l'image du Job. Une réinstallation
+l'efface :
+
+```bash
+ssh root@INJECTEUR 'cd /tmp && curl -sfL https://github.com/grafana/k6/releases/download/v1.3.0/k6-v1.3.0-linux-amd64.tar.gz \
+  | tar xz && install -m 755 k6-v1.3.0-linux-amd64/k6 /usr/local/bin/k6'
+```
 
 ```bash
 deploy/test-load/run.sh $H expose                                  # port 30880, hôtes de test seuls

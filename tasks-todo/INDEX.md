@@ -239,7 +239,7 @@ qu'on mesure un environnement représentatif.
       — demande humaine du 07/10/2026 ; bloque la reprise de step-287
 - [ ] step-287f — Le grand livre s'écrit à quatre : écrivains parallèles et lot en un seul statement ⛓ step-287e
       — née du run 3 de step-287 ; bloque sa reprise
-- [ ] step-287g — Les dépendances quittent l'hôte de la passerelle : second nœud k3s sur le VPC ⛓ step-287f —
+- [x] step-287g — Les dépendances quittent l'hôte de la passerelle : second nœud k3s sur le VPC ⛓ step-287f —
       née du run 4 de step-287 ; bloque sa reprise
 - [x] step-288 — La catégorie de trafic se déclare par sender ID ; `sender_id_policy` disparaît (ADR-0020 §1,
       contrat 7.0.0) — décision humaine du 05/10/2026 ; unité faute de multiple de dix libre
