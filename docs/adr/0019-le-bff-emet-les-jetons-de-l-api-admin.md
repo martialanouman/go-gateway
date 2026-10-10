@@ -55,6 +55,10 @@ Le BFF est l'**émetteur** des jetons de l'API Admin. Il n'y a pas d'IdP sépar�
   prévue (arbitrage utilisateur, 2026-09-27). Le BFF délivre à un opérateur
   authentifié, MFA comprise, un **jeton personnel** à son `sub`, dont les scopes sont inclus dans les siens et
   dont la durée est d'une heure au plus. Tout appel reste imputé à une personne.
+- **Flux temps réel du tableau de bord** *(amendement du 2026-10-10, go-gateway-bo step-070)*. Les trois
+  flux `/admin/stream/*` sont ouverts par le BFF, une connexion par cluster, sans opérateur derrière :
+  le jeton porte un `sub` constant (un UUID fixe du BFF, sans ligne en base) et `admin:read` seul. Ce
+  n'est pas un compte de service : il ne lit que les flux, n'écrit rien et ne sort pas du BFF.
 - **Transport.** Le mTLS de step-300 reste la preuve de *quelle machine* appelle. Le jeton est la preuve de
   *qui*, et avec quels droits.
 
