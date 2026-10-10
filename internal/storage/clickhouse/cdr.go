@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"time"
 
+	chgo "github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/google/uuid"
 
@@ -186,7 +187,7 @@ func NewCDRWriter(c *Conn, opts ...CDRWriterOption) *CDRWriter {
 // is committed (§7.3); high-volume callers off the request path use InsertBatch instead. It is a
 // one-row batch, so the single- and batch-write paths share one implementation.
 func (w *CDRWriter) Insert(ctx context.Context, row CDRRow) error {
-	return w.InsertBatch(ctx, []CDRRow{row})
+	return w.insert(ctx, []CDRRow{row})
 }
 
 // InsertBatch writes multiple CDR rows as one batch — a single prepare and a single send instead of
@@ -194,6 +195,18 @@ func (w *CDRWriter) Insert(ctx context.Context, row CDRRow) error {
 // all-or-nothing like Insert: a bad row aborts the batch, and the (best-effort) caller logs and
 // drops it. An empty slice is a no-op.
 func (w *CDRWriter) InsertBatch(ctx context.Context, rows []CDRRow) error {
+	return w.insert(asyncButDurable(ctx), rows)
+}
+
+// asyncButDurable has the server buffer a poll batch with every other writer's and merge them into one part
+// (step-287m), while the call still returns only once the rows are written: the Kafka offset is committed
+// after a durable write (D6/D8). Fixed here, never taken from config, so wait_for_async_insert cannot be
+// turned off.
+func asyncButDurable(ctx context.Context) context.Context {
+	return chgo.Context(ctx, chgo.WithSettings(chgo.Settings{"async_insert": 1, "wait_for_async_insert": 1}))
+}
+
+func (w *CDRWriter) insert(ctx context.Context, rows []CDRRow) error {
 	if len(rows) == 0 {
 		return nil
 	}

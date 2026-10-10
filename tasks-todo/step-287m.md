@@ -40,5 +40,5 @@ pod, médiane 51 lignes. `Insert` (une ligne) ne sert qu'aux chemins rares : rej
 - [x] PR1 : `MessageStatus` avec compte ne trouve pas le CDR d'un autre compte ni d'un autre client, et trouve
       le sien ; sans compte, il trouve par `message_id` (intégration ClickHouse, 3 mutations tuées)
 - [x] PR1 : le reaper passe le client et le compte de la réservation (test unitaire, 2 mutations tuées)
-- [ ] PR2 : design arrêté puis livré
+- [x] PR2 : design arrêté puis livré ; lots en async avec attente, ligne seule synchrone (intégration, 4 mutations tuées)
 - [ ] mesuré à un run : `ByMessageID` sort du `query_log` du reaper, parts neuves et fusions en baisse
