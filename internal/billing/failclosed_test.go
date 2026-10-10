@@ -9,6 +9,7 @@ import (
 
 	"github.com/martialanouman/go-gateway/internal/billing"
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
+	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 	"github.com/martialanouman/go-gateway/internal/testutil/redistest"
 )
 
@@ -24,6 +25,7 @@ import (
 type failingStore struct {
 	balanceErr   error
 	recordCalled bool
+	entries      cp.MessageEntries
 }
 
 func (f *failingStore) Balance(context.Context, string, uuid.UUID, string) (int, bool, error) {
@@ -35,8 +37,8 @@ func (f *failingStore) RecordDurable(context.Context, cp.LedgerEntry) (int, bool
 	return 0, true, nil
 }
 
-func (f *failingStore) LedgerEntryExists(context.Context, uuid.UUID, cp.EntryType) (bool, error) {
-	return false, nil
+func (f *failingStore) MessageEntries(context.Context, uuid.UUID) (cp.MessageEntries, error) {
+	return f.entries, nil
 }
 
 func (f *failingStore) ReserveEntry(context.Context, uuid.UUID) (int, int, bool, error) {
@@ -68,5 +70,37 @@ func TestReserveFailsClosedWhenAuthorityDown(t *testing.T) {
 	// No hold was placed: the reservation key must be absent.
 	if n, err := rdb.Exists(ctx, "billing:reservation:"+messageID.String()).Result(); err != nil || n != 0 {
 		t.Errorf("reservation key exists=%d (err=%v), want absent — no hold on a fail-closed reserve", n, err)
+	}
+}
+
+// TestCaptureWithNoDurableReserveIsRefused: a capture whose message has no reserve in the ledger is an
+// invariant anomaly — it is refused as a conflict and writes nothing, rather than recording a capture that
+// charges for a reservation that never was.
+func TestCaptureWithNoDurableReserveIsRefused(t *testing.T) {
+	store := &failingStore{}
+	acc := billing.New(redistest.Client(t), store)
+	owner := billing.Owner{Type: cp.OwnerTypeCustomer, ID: uuid.New(), CustomerID: uuid.New()}
+
+	_, err := acc.Capture(context.Background(), owner, uuid.New())
+	if !errors.Is(err, errs.ErrConflict) {
+		t.Fatalf("Capture error = %v, want ErrConflict: no durable reserve to capture", err)
+	}
+	if store.recordCalled {
+		t.Error("a capture with no durable reserve must not write a ledger entry")
+	}
+}
+
+// TestARedeliveredCaptureWritesNothing: the ledger already holds this message's capture, so a redelivery is
+// settled on the read alone — no second write, not even one RecordDurable would turn into a no-op.
+func TestARedeliveredCaptureWritesNothing(t *testing.T) {
+	store := &failingStore{entries: cp.MessageEntries{Reserve: true, Capture: true}}
+	acc := billing.New(redistest.Client(t), store)
+	owner := billing.Owner{Type: cp.OwnerTypeCustomer, ID: uuid.New(), CustomerID: uuid.New()}
+
+	if _, err := acc.Capture(context.Background(), owner, uuid.New()); err != nil {
+		t.Fatalf("Capture of an already captured message = %v, want nil (idempotent)", err)
+	}
+	if store.recordCalled {
+		t.Error("a redelivered capture reached RecordDurable, want it settled on the ledger read")
 	}
 }

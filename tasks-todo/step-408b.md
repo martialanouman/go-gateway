@@ -8,8 +8,8 @@
 
 step-408 a donné au grand livre une partition par jour. Les lectures qui le consultent par `message_id` seul
 ne bornent pas `created_at` et n'élaguent donc rien : chacune planifie et verrouille **chaque partition et ses
-trois index**. Ce sont `LedgerEntryExists` (`internal/storage/postgres/queries/billing.sql:104`) et
-`GetReserveEntry` (`:175`), deux à trois fois par capture, la LATERAL de `ListOrphanedReservations` (`:186`)
+trois index**. Ce sont `GetMessageEntries` (`internal/storage/postgres/queries/billing.sql`, step-287k) et
+`GetReserveEntry` (`:175`, quand la réservation Redis a expiré), la LATERAL de `ListOrphanedReservations` (`:186`)
 et `ConsumedCredits` (`:50`). Avant step-408, il n'y avait qu'une partition, et le coût n'existait pas.
 
 En ordre de grandeur, **estimation non mesurée** : vers une centaine de partitions, environ 400 verrous par

@@ -191,6 +191,31 @@ func (q *Queries) GetBillingCustomer(ctx context.Context, customerID uuid.UUID) 
 	return i, err
 }
 
+const getMessageEntries = `-- name: GetMessageEntries :one
+SELECT
+  COALESCE(bool_or(entry_type = 'reserve'), false)::bool AS has_reserve,
+  COALESCE(bool_or(entry_type = 'capture'), false)::bool AS has_capture,
+  COALESCE(bool_or(entry_type = 'release'), false)::bool AS has_release
+FROM control_plane.billing_ledger
+WHERE message_id = $1 AND entry_type IN ('reserve', 'capture', 'release')
+`
+
+type GetMessageEntriesRow struct {
+	HasReserve bool
+	HasCapture bool
+	HasRelease bool
+}
+
+// Which MT lifecycle entries exist for message_id, in ONE read across every partition (step-287k): the
+// capture and release paths decide on it under their terminal lock. Replaces two entry-existence reads and a
+// reserve read; spans every partition, since the ledger's own unique index cannot (§6.9).
+func (q *Queries) GetMessageEntries(ctx context.Context, messageID *uuid.UUID) (GetMessageEntriesRow, error) {
+	row := q.db.QueryRow(ctx, getMessageEntries, messageID)
+	var i GetMessageEntriesRow
+	err := row.Scan(&i.HasReserve, &i.HasCapture, &i.HasRelease)
+	return i, err
+}
+
 const getReserveEntry = `-- name: GetReserveEntry :one
 SELECT credits, balance_after
 FROM control_plane.billing_ledger
@@ -311,29 +336,6 @@ func (q *Queries) InsertLedgerEntry(ctx context.Context, arg InsertLedgerEntryPa
 	var i InsertLedgerEntryRow
 	err := row.Scan(&i.ID, &i.CreatedAt)
 	return i, err
-}
-
-const ledgerEntryExists = `-- name: LedgerEntryExists :one
-SELECT EXISTS (
-  SELECT 1 FROM control_plane.billing_ledger
-  WHERE message_id = $1 AND entry_type = $2
-) AS entry_exists
-`
-
-type LedgerEntryExistsParams struct {
-	MessageID *uuid.UUID
-	EntryType string
-}
-
-// The AUTHORITATIVE cross-partition idempotency guard (§6.9): whether a ledger entry of entry_type
-// already exists for message_id. Read before a capture so a redelivery of the same message_id never
-// double-charges. The unique index billing_ledger_idem_idx is only a same-day backstop and must not be
-// relied on alone at a day boundary — hence this explicit check, which spans every partition.
-func (q *Queries) LedgerEntryExists(ctx context.Context, arg LedgerEntryExistsParams) (bool, error) {
-	row := q.db.QueryRow(ctx, ledgerEntryExists, arg.MessageID, arg.EntryType)
-	var entry_exists bool
-	err := row.Scan(&entry_exists)
-	return entry_exists, err
 }
 
 const listBillingCustomers = `-- name: ListBillingCustomers :many

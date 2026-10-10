@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -311,7 +312,7 @@ func TestBillingRepoConsumedCredits(t *testing.T) {
 
 // TestBillingRepoRecordAndIdempotency proves the durable write path: RecordDurable appends the ledger AND
 // reconciles the balance in one transaction, the ledger is append-only (every entry accumulates, none is
-// updated), and LedgerEntryExists is the cross-partition idempotency guard the capture path reads.
+// updated), and MessageEntries is the cross-partition idempotency guard the capture path reads.
 func TestBillingRepoRecordAndIdempotency(t *testing.T) {
 	pool := pgtest.Pool(t)
 	ctx := context.Background()
@@ -346,11 +347,8 @@ func TestBillingRepoRecordAndIdempotency(t *testing.T) {
 	}
 
 	// Pre-capture idempotency guard: reserve exists, capture does not yet.
-	if ok, err := repo.LedgerEntryExists(ctx, messageID, cp.EntryReserve); err != nil || !ok {
-		t.Fatalf("LedgerEntryExists(reserve) = (%v, %v), want (true, nil)", ok, err)
-	}
-	if ok, err := repo.LedgerEntryExists(ctx, messageID, cp.EntryCapture); err != nil || ok {
-		t.Fatalf("LedgerEntryExists(capture, pre) = (%v, %v), want (false, nil)", ok, err)
+	if got, err := repo.MessageEntries(ctx, messageID); err != nil || got != (cp.MessageEntries{Reserve: true}) {
+		t.Fatalf("MessageEntries pre-capture = (%+v, %v), want reserve only", got, err)
 	}
 
 	// Replaying the SAME reserve is idempotent: no second debit, no second row, applied=false, balance held.
@@ -363,8 +361,8 @@ func TestBillingRepoRecordAndIdempotency(t *testing.T) {
 	if bal, applied, err := repo.RecordDurable(ctx, entry(cp.EntryCapture, &messageID, 0)); err != nil || bal != 97 || !applied {
 		t.Fatalf("record capture = (%d, %v, %v), want (97, true, nil)", bal, applied, err)
 	}
-	if ok, err := repo.LedgerEntryExists(ctx, messageID, cp.EntryCapture); err != nil || !ok {
-		t.Fatalf("LedgerEntryExists(capture, post) = (%v, %v), want (true, nil)", ok, err)
+	if got, err := repo.MessageEntries(ctx, messageID); err != nil || got != (cp.MessageEntries{Reserve: true, Capture: true}) {
+		t.Fatalf("MessageEntries post-capture = (%+v, %v), want reserve and capture", got, err)
 	}
 	if credits, _, _ := repo.Balance(ctx, cp.OwnerTypeCustomer, customerID, cp.BillingDirectionMT); credits != 97 {
 		t.Errorf("Balance after capture = %d, want 97 (capture must not double-debit)", credits)
@@ -451,5 +449,66 @@ func TestRecordDurableLeavesBalancesRowUntouched(t *testing.T) {
 	}
 	if bal, found, err := repo.Balance(ctx, cp.OwnerTypeCustomer, customerID, cp.BillingDirectionMT); err != nil || !found || bal != 97 {
 		t.Errorf("Balance = (%d, %v, %v), want (97, true, nil)", bal, found, err)
+	}
+}
+
+// TestBillingRepoMessageEntriesReportsEachTypeAlone: the capture path decides on one read (step-287k), so
+// each of reserve, capture and release must be reported on its own — and across day partitions, since the
+// ledger's own unique index cannot span them.
+func TestBillingRepoMessageEntriesReportsEachTypeAlone(t *testing.T) {
+	pool := pgtest.Pool(t)
+	ctx := context.Background()
+	repo := postgres.NewBillingRepo(pool)
+
+	var customerID uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO control_plane.customers (name) VALUES ('message-entries-test') RETURNING id`).Scan(&customerID); err != nil {
+		t.Fatalf("seed customer: %v", err)
+	}
+	// Far-future days: no other test writes there, so their partitions attach cleanly and each row lands in its
+	// own day partition rather than in DEFAULT.
+	firstDay := time.Now().UTC().AddDate(0, 0, 300)
+	if err := repo.EnsureLedgerPartitions(ctx, firstDay, 2); err != nil {
+		t.Fatalf("ensure partitions: %v", err)
+	}
+	insert := func(messageID uuid.UUID, et cp.EntryType, dayOffset int) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, `INSERT INTO control_plane.billing_ledger
+			(owner_type, owner_id, direction, customer_id, message_id, entry_type, credits, balance_after, created_at)
+			VALUES ('customer', $1, 'mt', $1, $2, $3, 0, 0, $4)`,
+			customerID, messageID, string(et), firstDay.AddDate(0, 0, dayOffset)); err != nil {
+			t.Fatalf("insert %s: %v", et, err)
+		}
+	}
+
+	none := uuid.New()
+	if got, err := repo.MessageEntries(ctx, none); err != nil || got != (cp.MessageEntries{}) {
+		t.Errorf("MessageEntries(no entry) = (%+v, %v), want none", got, err)
+	}
+	for _, tc := range []struct {
+		et   cp.EntryType
+		want cp.MessageEntries
+	}{
+		{cp.EntryReserve, cp.MessageEntries{Reserve: true}},
+		{cp.EntryCapture, cp.MessageEntries{Capture: true}},
+		{cp.EntryRelease, cp.MessageEntries{Release: true}},
+		{cp.EntryRefund, cp.MessageEntries{}},
+	} {
+		id := uuid.New()
+		insert(id, tc.et, 0)
+		if got, err := repo.MessageEntries(ctx, id); err != nil || got != tc.want {
+			t.Errorf("MessageEntries(only %s) = (%+v, %v), want %+v", tc.et, got, err, tc.want)
+		}
+	}
+
+	split := uuid.New()
+	insert(split, cp.EntryReserve, 0)
+	insert(split, cp.EntryRelease, 1)
+	var partitions int
+	if err := pool.QueryRow(ctx, `SELECT count(DISTINCT tableoid) FROM control_plane.billing_ledger WHERE message_id = $1`, split).Scan(&partitions); err != nil || partitions != 2 {
+		t.Fatalf("the two entries sit in %d partition(s) (err %v), want 2: the read must be proven across partitions", partitions, err)
+	}
+	if got, err := repo.MessageEntries(ctx, split); err != nil || got != (cp.MessageEntries{Reserve: true, Release: true}) {
+		t.Errorf("MessageEntries(reserve on one day, release the next) = (%+v, %v), want both", got, err)
 	}
 }

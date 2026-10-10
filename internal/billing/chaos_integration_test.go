@@ -7,7 +7,6 @@ import (
 
 	"github.com/google/uuid"
 
-	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 	"github.com/martialanouman/go-gateway/internal/testutil/pgtest"
 	"github.com/martialanouman/go-gateway/internal/testutil/redistest"
@@ -66,9 +65,9 @@ func TestReserveFailsClosedWhenRedisIsCut(t *testing.T) {
 	if got := h.balance(t); got != initial-3 {
 		t.Errorf("durable balance = %d, want %d: a refused reserve must not touch the ledger", got, initial-3)
 	}
-	if exists, err := h.verify.LedgerEntryExists(ctx, during, cp.EntryReserve); err != nil {
-		t.Fatalf("LedgerEntryExists: %v", err)
-	} else if exists {
+	if entries, err := h.verify.MessageEntries(ctx, during); err != nil {
+		t.Fatalf("MessageEntries: %v", err)
+	} else if entries.Reserve {
 		t.Error("a reserve refused during the outage still wrote a ledger entry")
 	}
 

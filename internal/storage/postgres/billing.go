@@ -379,17 +379,14 @@ func (r *BillingRepo) Topup(ctx context.Context, entry cp.LedgerEntry) (row cp.L
 	return row, true, nil
 }
 
-// LedgerEntryExists reports whether a ledger entry of entryType already exists for messageID. It is the
-// authoritative cross-partition idempotency guard (§6.9): the capture path reads it before committing so
-// a redelivered message_id never double-charges, since the same-day unique index cannot span partitions.
-func (r *BillingRepo) LedgerEntryExists(ctx context.Context, messageID uuid.UUID, entryType cp.EntryType) (bool, error) {
-	exists, err := r.q.LedgerEntryExists(ctx, sqlcgen.LedgerEntryExistsParams{
-		MessageID: &messageID, EntryType: string(entryType),
-	})
+// MessageEntries reads which MT lifecycle entries the ledger holds for messageID, in one round trip across
+// every partition (step-287k).
+func (r *BillingRepo) MessageEntries(ctx context.Context, messageID uuid.UUID) (cp.MessageEntries, error) {
+	row, err := r.q.GetMessageEntries(ctx, &messageID)
 	if err != nil {
-		return false, translate("ledger entry exists", err)
+		return cp.MessageEntries{}, translate("message entries", err)
 	}
-	return exists, nil
+	return cp.MessageEntries{Reserve: row.HasReserve, Capture: row.HasCapture, Release: row.HasRelease}, nil
 }
 
 // maxOrphanBatch caps one reaper sweep whatever the caller asks for. It keeps the row cap inside int32 (the

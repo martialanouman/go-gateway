@@ -235,12 +235,12 @@ func (e *expiringStore) RecordDurable(_ context.Context, entry cp.LedgerEntry) (
 	return e.balance, true, nil
 }
 
-func (e *expiringStore) LedgerEntryExists(context.Context, uuid.UUID, cp.EntryType) (bool, error) {
+func (e *expiringStore) MessageEntries(context.Context, uuid.UUID) (cp.MessageEntries, error) {
 	if e.armed {
 		e.cancel()
-		return false, context.Canceled
+		return cp.MessageEntries{}, context.Canceled
 	}
-	return false, nil
+	return cp.MessageEntries{}, nil
 }
 
 func (e *expiringStore) ReserveEntry(context.Context, uuid.UUID) (int, int, bool, error) {
