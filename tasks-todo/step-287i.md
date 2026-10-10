@@ -22,8 +22,8 @@ d'exécution Go montre ce que fait la goroutine entre la réponse de Postgres et
 - Hors périmètre : l'optimisation elle-même, choisie sur la trace, dans une step suivante.
 
 ## Definition of Done
-- [ ] `/debug/pprof/` répond 404 sans `OPS_PPROF`, 200 avec (test, muté)
-- [ ] `OPS_PPROF` lu par `config.Load`, faux par défaut (test)
-- [ ] activé dans `deploy/test`, rendu à jour
+- [x] `/debug/pprof/` répond 404 sans `OPS_PPROF`, 200 avec (test, 2 mutations tuées)
+- [x] `OPS_PPROF` lu par `config.Load`, faux par défaut (test, 2 mutations tuées)
+- [x] activé dans `deploy/test`, `check.sh` vert
 - [ ] run 9 : trace de 5 s et profil CPU de 30 s de billing-svc sous charge, lus et versés au journal de
       step-287

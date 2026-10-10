@@ -9,3 +9,4 @@ data:
   KAFKA_BROKERS: redpanda:9092
   KAFKA_TOPIC_REPLICATION_FACTOR: "1"
   OTEL_SDK_DISABLED: "true"
+  OPS_PPROF: "true"

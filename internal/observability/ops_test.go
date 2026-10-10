@@ -39,8 +39,13 @@ func discardLogger() *slog.Logger {
 // the server does not come up, and stops it on cleanup.
 func startOps(t *testing.T, checks ...observability.ReadinessCheck) string {
 	t.Helper()
+	return startOpsWith(t, testConfig(t), checks...)
+}
 
-	ops, err := observability.NewOpsServer(testConfig(t), discardLogger(), checks...)
+func startOpsWith(t *testing.T, cfg config.Config, checks ...observability.ReadinessCheck) string {
+	t.Helper()
+
+	ops, err := observability.NewOpsServer(cfg, discardLogger(), checks...)
 	if err != nil {
 		t.Fatalf("NewOpsServer() error = %v", err)
 	}
@@ -624,5 +629,22 @@ func TestDrainHookMarksNotReadyThenWaits(t *testing.T) {
 		t.Errorf("drain hook returned after %v, want at least %v: without the wait the listener "+
 			"closes before kube-proxy has removed the endpoint, and the flip buys nothing",
 			elapsed, delay)
+	}
+}
+
+// TestPprofOnlyWhenEnabled: a profile is served on demand only (step-287i) — a production pod exposes
+// none unless OPS_PPROF says so.
+func TestPprofOnlyWhenEnabled(t *testing.T) {
+	if code, _ := get(t, startOps(t)+"/debug/pprof/"); code != http.StatusNotFound {
+		t.Errorf("GET /debug/pprof/ without OPS_PPROF = %d, want 404", code)
+	}
+
+	cfg := testConfig(t)
+	cfg.OpsPprof = true
+	base := startOpsWith(t, cfg)
+	for _, path := range []string{"/debug/pprof/", "/debug/pprof/goroutine?debug=1", "/debug/pprof/trace?seconds=0.1"} {
+		if code, body := get(t, base+path); code != http.StatusOK {
+			t.Errorf("GET %s with OPS_PPROF = %d, want 200: %s", path, code, truncate(string(body), 200))
+		}
 	}
 }
