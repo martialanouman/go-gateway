@@ -4,8 +4,8 @@
 > **Née de :** step-408 (`internal/storage/postgres/queries/billing.sql:104`) · **Portée par :** step-408b
 
 **Ce qu'on a fait à la place.** step-408 crée une partition du grand livre par jour, sans toucher aux lectures
-qui le consultent par `message_id` seul : `LedgerEntryExists` (`queries/billing.sql:104`) et
-`GetReserveEntry` (`:175`), deux à trois fois par capture, la LATERAL de `ListOrphanedReservations` (`:186`)
+qui le consultent par `message_id` seul : `GetMessageEntries` (une fois par capture depuis step-287k) et
+`GetReserveEntry` (`:175`, quand la réservation Redis a expiré), la LATERAL de `ListOrphanedReservations` (`:186`)
 et `ConsumedCredits` (`:50`). Aucune ne borne `created_at`, donc aucune n'élague : chacune planifie et
 verrouille chaque partition et ses trois index.
 

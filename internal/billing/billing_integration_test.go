@@ -135,11 +135,11 @@ func (h *billingHarness) moBalance(t *testing.T) int {
 
 func (h *billingHarness) ledgerCount(t *testing.T, entryType cp.EntryType, messageID uuid.UUID) int {
 	t.Helper()
-	ok, err := h.verify.LedgerEntryExists(context.Background(), messageID, entryType)
+	entries, err := h.verify.MessageEntries(context.Background(), messageID)
 	if err != nil {
-		t.Fatalf("ledger exists: %v", err)
+		t.Fatalf("message entries: %v", err)
 	}
-	if ok {
+	if entries.Has(entryType) {
 		return 1
 	}
 	return 0

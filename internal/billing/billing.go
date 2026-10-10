@@ -103,8 +103,9 @@ type LedgerStore interface {
 	// applies nothing and returns applied=false with the current balance (so the caller can undo a
 	// speculative cache change); a first application returns applied=true with the balance after it.
 	RecordDurable(ctx context.Context, entry cp.LedgerEntry) (newBalance int, applied bool, err error)
-	// LedgerEntryExists is the authoritative cross-partition idempotency guard.
-	LedgerEntryExists(ctx context.Context, messageID uuid.UUID, entryType cp.EntryType) (bool, error)
+	// MessageEntries is the authoritative cross-partition idempotency guard: which of reserve, capture and
+	// release the ledger holds for messageID, in one read.
+	MessageEntries(ctx context.Context, messageID uuid.UUID) (cp.MessageEntries, error)
 	// ReserveEntry reads a message's reserve entry (signed credits, balance after) so capture/release can
 	// recover the amount when the Redis hold has lapsed.
 	ReserveEntry(ctx context.Context, messageID uuid.UUID) (credits, balanceAfter int, found bool, err error)
@@ -516,25 +517,20 @@ func oppositeTerminal(et cp.EntryType) cp.EntryType {
 func (a *Accountant) resolveTerminal(ctx context.Context, owner Owner, messageID uuid.UUID, entryType cp.EntryType, delta int, balanceAfter *int, requireReserve bool) (terminalOutcome, error) {
 	outcome := outcomeRecorded
 	err := a.withTerminalLock(ctx, messageID, func(lctx context.Context) error {
-		if ok, e := a.store.LedgerEntryExists(lctx, messageID, entryType); e != nil {
+		entries, e := a.store.MessageEntries(lctx, messageID)
+		if e != nil {
 			return e
-		} else if ok {
+		}
+		switch {
+		case entries.Has(entryType):
 			outcome = outcomeAlreadyDone
 			return nil
-		}
-		if ok, e := a.store.LedgerEntryExists(lctx, messageID, oppositeTerminal(entryType)); e != nil {
-			return e
-		} else if ok {
+		case entries.Has(oppositeTerminal(entryType)):
 			outcome = outcomeYielded
 			return nil
-		}
-		if requireReserve {
-			if _, _, found, e := a.store.ReserveEntry(lctx, messageID); e != nil {
-				return e
-			} else if !found {
-				outcome = outcomeNoReserve
-				return nil
-			}
+		case requireReserve && !entries.Reserve:
+			outcome = outcomeNoReserve
+			return nil
 		}
 		// RecordDurable is itself idempotent by (message_id, entry_type); applied=false means a concurrent
 		// attempt already recorded this terminal between our check and our write — a no-op, not an error.

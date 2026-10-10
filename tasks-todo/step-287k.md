@@ -27,8 +27,10 @@ lecture avec son propre acquire : `LedgerEntryExists(capture)`, `LedgerEntryExis
   `ReserveEntry` pour le montant ; elles ne servent que si la réservation Redis a expiré.
 
 ## Definition of Done
-- [ ] `GetMessageEntries` : chaque type présent ou absent, isolément, y compris sur deux partitions
-      (intégration, mutations du SQL généré)
-- [ ] `resolveTerminal` ne lit plus qu'une fois ; les tests existants (idempotence, cession, absence de
-      réserve, concurrence capture/libération) restent verts et tuent les mutations de la décision
+- [x] `GetMessageEntries` : chaque type présent ou absent, isolément, y compris sur deux partitions
+      (intégration, 5 mutations du SQL généré et du repo)
+- [x] `resolveTerminal` ne lit plus qu'une fois ; tests existants verts, 5 mutations de la décision et de
+      `Has` tuées. Deux survivaient avant cette step (capture sans réserve, capture redélivrée) : deux tests
+      unitaires les tuent désormais
+- [x] dette `capture-lit-le-grand-livre-trois-fois-avant-d-ecrire` passée à PAYÉE
 - [ ] mesuré à un run de step-287 : l'attente du pool par `Capture` baisse dans la trace

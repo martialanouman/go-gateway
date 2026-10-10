@@ -102,15 +102,16 @@ WHERE customer_id = @customer_id
 ORDER BY created_at DESC, id DESC
 LIMIT @lim;
 
--- name: LedgerEntryExists :one
--- The AUTHORITATIVE cross-partition idempotency guard (§6.9): whether a ledger entry of entry_type
--- already exists for message_id. Read before a capture so a redelivery of the same message_id never
--- double-charges. The unique index billing_ledger_idem_idx is only a same-day backstop and must not be
--- relied on alone at a day boundary — hence this explicit check, which spans every partition.
-SELECT EXISTS (
-  SELECT 1 FROM control_plane.billing_ledger
-  WHERE message_id = @message_id AND entry_type = @entry_type
-) AS entry_exists;
+-- name: GetMessageEntries :one
+-- Which MT lifecycle entries exist for message_id, in ONE read across every partition (step-287k): the
+-- capture and release paths decide on it under their terminal lock. Replaces two entry-existence reads and a
+-- reserve read; spans every partition, since the ledger's own unique index cannot (§6.9).
+SELECT
+  COALESCE(bool_or(entry_type = 'reserve'), false)::bool AS has_reserve,
+  COALESCE(bool_or(entry_type = 'capture'), false)::bool AS has_capture,
+  COALESCE(bool_or(entry_type = 'release'), false)::bool AS has_release
+FROM control_plane.billing_ledger
+WHERE message_id = @message_id AND entry_type IN ('reserve', 'capture', 'release');
 
 -- name: ClaimIdempotency :execrows
 -- Claim (message_id, entry_type) in the partition-free idempotency table BEFORE applying a movement

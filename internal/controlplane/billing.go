@@ -29,6 +29,26 @@ const (
 	EntryTransfer EntryType = "transfer"
 )
 
+// MessageEntries says which MT lifecycle entries the ledger holds for one message_id, across every day
+// partition. The capture and release paths decide on it in one read (step-287k).
+type MessageEntries struct {
+	Reserve, Capture, Release bool
+}
+
+// Has reports whether an entry of type et is present; false for any type outside the MT lifecycle.
+func (m MessageEntries) Has(et EntryType) bool {
+	switch et {
+	case EntryReserve:
+		return m.Reserve
+	case EntryCapture:
+		return m.Capture
+	case EntryRelease:
+		return m.Release
+	default:
+		return false
+	}
+}
+
 // Valid reports whether e is a known entry type.
 func (e EntryType) Valid() bool {
 	switch e {
