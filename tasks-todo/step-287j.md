@@ -35,10 +35,10 @@ génération côté admin.
   Au pire on retombe sur le coût d'aujourd'hui.
 
 ## Definition of Done
-- [ ] entrée servie depuis le cache sans relire le store (test, muté)
-- [ ] `Flush` vide ; une lecture commencée avant un `Flush` n'est pas insérée (test, muté)
-- [ ] expiration à 30 s et à `grace_expires_at` (test, muté)
-- [ ] clé inconnue et erreur du store jamais en cache (test, muté)
-- [ ] `grace_expires_at` rendu par `GetAPIKeyPrincipal` sur l'ancienne clé seulement (intégration)
-- [ ] câblage : le rebuild du Watcher de rest-api-svc vide le cache (test)
+- [x] entrée servie depuis le cache sans relire le store (test, muté)
+- [x] `Flush` vide ; une lecture commencée avant un `Flush` n'est pas insérée (test, muté)
+- [x] expiration à 30 s et à `grace_expires_at` (test, borne comprise, muté)
+- [x] clé inconnue et erreur du store jamais en cache (test, muté)
+- [x] `grace_expires_at` rendu par `GetAPIKeyPrincipal` sur l'ancienne clé seulement (intégration, 3 mutations du SQL généré et du repo)
+- [x] câblage : une clé révoquée passe encore depuis le cache, puis 401 après l'annonce (test du service, 2 mutations)
 - [ ] mesuré à un run de step-287 : `GetAPIKeyPrincipal` sort des requêtes actives de Postgres
