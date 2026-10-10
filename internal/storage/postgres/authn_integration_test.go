@@ -3,6 +3,7 @@ package postgres_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	"github.com/martialanouman/go-gateway/internal/credential"
@@ -113,5 +114,49 @@ func TestAPIKeyRepoReflectsRestDisabled(t *testing.T) {
 	}
 	if principal.RESTEnabled {
 		t.Error("rest_enabled should be false after disabling the REST channel")
+	}
+}
+
+// TestAPIKeyRepoReportsTheGraceDeadlineOfThePreviousKey: during a rotation grace window the old key
+// still resolves, and carries its deadline so a cache cannot keep it past it (step-287j). The new key
+// carries none.
+func TestAPIKeyRepoReportsTheGraceDeadlineOfThePreviousKey(t *testing.T) {
+	pool := pgtest.Pool(t)
+	ctx := context.Background()
+	customer, err := postgres.NewCustomerRepo(pool).Create(ctx, cp.NewCustomer{Name: "GraceCo"})
+	if err != nil {
+		t.Fatalf("create customer: %v", err)
+	}
+	account, err := postgres.NewAccountRepo(pool).Create(ctx, cp.NewAccount{CustomerID: customer.ID, Name: "rest-app"})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	creds := postgres.NewCredentialRepo(pool)
+	oldKey, oldHash, _ := credential.GenerateAPIKey()
+	cred, err := creds.Create(ctx, cp.NewCredential{AccountID: account.ID, Type: cp.CredentialAPIKey, APIKeyHash: &oldHash})
+	if err != nil {
+		t.Fatalf("create credential: %v", err)
+	}
+	newKey, newHash, _ := credential.GenerateAPIKey()
+	grace := 10 * time.Minute
+	rotated, err := creds.Rotate(ctx, account.ID, cred.ID, cp.CredentialRotation{NewHash: newHash, Grace: &grace})
+	if err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+
+	apikeys := postgres.NewAPIKeyRepo(pool)
+	old, found, err := apikeys.PrincipalByAPIKeyHash(ctx, credential.HashAPIKey(oldKey))
+	if err != nil || !found {
+		t.Fatalf("old key during grace: found=%v err=%v, want it to resolve", found, err)
+	}
+	if !old.GraceExpiresAt.Equal(*rotated.GraceExpiresAt) {
+		t.Errorf("old key GraceExpiresAt = %v, want the credential's grace_expires_at %v", old.GraceExpiresAt, *rotated.GraceExpiresAt)
+	}
+	current, found, err := apikeys.PrincipalByAPIKeyHash(ctx, credential.HashAPIKey(newKey))
+	if err != nil || !found {
+		t.Fatalf("new key: found=%v err=%v, want it to resolve", found, err)
+	}
+	if !current.GraceExpiresAt.IsZero() {
+		t.Errorf("new key GraceExpiresAt = %v, want zero: only the previous secret has a deadline", current.GraceExpiresAt)
 	}
 }

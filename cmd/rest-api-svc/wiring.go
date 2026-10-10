@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
@@ -86,18 +87,23 @@ func newRestAPIApp(ctx context.Context, cfg config.Config, logger *slog.Logger) 
 		return nil, fmt.Errorf("load rate-limit snapshot: %w", err)
 	}
 	admission := ratelimit.NewEnforcer(rateSnap, ratelimit.NewLimiter(st.rdb))
+	principals := restapi.NewPrincipalCache(postgres.NewAPIKeyRepo(st.pg), restapi.PrincipalCacheTTL, time.Now)
+	reloadLimits := admission.Reload(postgres.NewRateLimitRepo(st.pg), nil)
 	a.watcher = config.NewWatcher(
 		func(ctx context.Context) (config.Stream, error) {
 			return redisstore.Subscribe(ctx, st.rdb, config.ChannelSnapshotInvalidation), nil
 		},
-		admission.Reload(postgres.NewRateLimitRepo(st.pg), nil),
+		func(ctx context.Context) error {
+			principals.Flush()
+			return reloadLimits(ctx)
+		},
 		config.WithResync(cfg.ConfigResyncInterval), config.WithLogger(logger),
 	)
 
 	//nolint:contextcheck // The boot context has no business inside a request handler: the API-key
 	// middleware authenticates on the REQUEST context (ctx.Context()), which is the only correct one —
 	// a lookup must be cancelled when its client hangs up, not when the process shuts down.
-	a.http, err = newHTTPServer(cfg, st, admission, logger)
+	a.http, err = newHTTPServer(cfg, st, admission, principals, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -171,11 +177,11 @@ func (s *stores) close() {
 
 // newHTTPServer assembles the public API surface over the stores. It binds nothing: the listener opens
 // in runHTTP.
-func newHTTPServer(cfg config.Config, st *stores, admission ingest.Admission, logger *slog.Logger) (*http.Server, error) {
+func newHTTPServer(cfg config.Config, st *stores, admission ingest.Admission, principals restapi.PrincipalStore, logger *slog.Logger) (*http.Server, error) {
 	// The second return is the huma API handle, which nothing here needs: the routes are already
 	// registered on the mux by then.
 	handler, _ := restapi.New(restapi.Deps{
-		Principals:  postgres.NewAPIKeyRepo(st.pg),
+		Principals:  principals,
 		Ingestor:    ingest.NewIngestor(st.producer, admission, logger),
 		CDRReader:   clickhouse.NewCDRReader(st.ch),
 		Accounts:    postgres.NewAccountRepo(st.pg),

@@ -43,5 +43,6 @@ func (r *APIKeyRepo) PrincipalByAPIKeyHash(ctx context.Context, hash string) (cp
 		AccountStatus:  cp.AccountStatus(row.AccountStatus),
 		CustomerStatus: cp.CustomerStatus(row.CustomerStatus),
 		RESTEnabled:    row.RestEnabled,
+		GraceExpiresAt: row.GraceExpiresAt.Time,
 	}, true, nil
 }

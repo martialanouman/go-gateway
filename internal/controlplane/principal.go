@@ -19,6 +19,9 @@ type APIKeyPrincipal struct {
 	AccountStatus  AccountStatus
 	CustomerStatus CustomerStatus
 	RESTEnabled    bool
+	// GraceExpiresAt is set only when the presented key is the previous secret of a rotation: past it, that
+	// key stops working. Zero otherwise.
+	GraceExpiresAt time.Time
 }
 
 // EffectiveStatus is the status the caller actually experiences: the more restrictive of the

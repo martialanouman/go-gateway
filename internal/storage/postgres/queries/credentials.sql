@@ -89,7 +89,9 @@ SELECT
     a.customer_id AS customer_id,
     a.status      AS account_status,
     a.rest_enabled AS rest_enabled,
-    c.status      AS customer_status
+    c.status      AS customer_status,
+    -- Only the previous secret has a deadline; a cache must not keep it past it (step-287j).
+    (CASE WHEN cr.api_key_hash = @api_key_hash THEN NULL ELSE cr.grace_expires_at END)::timestamptz AS grace_expires_at
 FROM control_plane.credentials cr
 JOIN control_plane.smpp_accounts a ON a.id = cr.account_id
 JOIN control_plane.customers c ON c.id = a.customer_id
