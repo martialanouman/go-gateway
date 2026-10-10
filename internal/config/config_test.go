@@ -19,7 +19,7 @@ import (
 // knownVars is every variable Config reads. Tests clear them all so a developer's own shell
 // cannot leak into a result.
 var knownVars = []string{
-	"ENVIRONMENT", "LOG_LEVEL", "OPS_PORT", "OPS_PPROF", "SHUTDOWN_TIMEOUT", "DRAIN_DELAY", "DRAIN_BUDGET",
+	"ENVIRONMENT", "LOG_LEVEL", "OPS_PORT", "OPS_PPROF", "ROUTER_LANE_WINDOW", "SHUTDOWN_TIMEOUT", "DRAIN_DELAY", "DRAIN_BUDGET",
 	"CONFIG_RESYNC_INTERVAL",
 	"SERVICE_NAME",
 	"OTEL_SDK_DISABLED", "OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_INSECURE",
@@ -83,6 +83,9 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.OpsPprof {
 		t.Error("OpsPprof = true by default, want false: no profile unless asked for")
+	}
+	if cfg.RouterLaneWindow != 8 {
+		t.Errorf("RouterLaneWindow = %d, want 8 (step-285c)", cfg.RouterLaneWindow)
 	}
 	if cfg.LogLevel != "info" {
 		t.Errorf("LogLevel = %q, want info", cfg.LogLevel)
@@ -150,6 +153,7 @@ func TestLoadFromEnvironment(t *testing.T) {
 		"LOG_LEVEL":                   "warn",
 		"OPS_PORT":                    "9191",
 		"OPS_PPROF":                   "true",
+		"ROUTER_LANE_WINDOW":          "16",
 		"SHUTDOWN_TIMEOUT":            "45s",
 		"OTEL_EXPORTER_OTLP_ENDPOINT": "collector:4317",
 		"OTEL_EXPORTER_OTLP_INSECURE": "false",
@@ -230,6 +234,9 @@ func TestLoadFromEnvironment(t *testing.T) {
 	}
 	if !cfg.OpsPprof {
 		t.Error("OpsPprof = false, want true from OPS_PPROF")
+	}
+	if cfg.RouterLaneWindow != 16 {
+		t.Errorf("RouterLaneWindow = %d, want 16 from ROUTER_LANE_WINDOW", cfg.RouterLaneWindow)
 	}
 	if cfg.ShutdownTimeout != 45*time.Second {
 		t.Errorf("ShutdownTimeout = %s, want 45s", cfg.ShutdownTimeout)
@@ -637,10 +644,11 @@ func TestDisabledOTelSkipsExporterValidation(t *testing.T) {
 // list at once, not one problem per restart.
 func TestValidateReportsEveryProblem(t *testing.T) {
 	setEnv(t, map[string]string{
-		"ENVIRONMENT":  "nope",
-		"LOG_LEVEL":    "loud",
-		"OPS_PORT":     "99999",
-		"POSTGRES_URL": " ",
+		"ENVIRONMENT":        "nope",
+		"LOG_LEVEL":          "loud",
+		"OPS_PORT":           "99999",
+		"ROUTER_LANE_WINDOW": "0",
+		"POSTGRES_URL":       " ",
 	})
 
 	_, err := config.Load("router-svc")
@@ -648,7 +656,7 @@ func TestValidateReportsEveryProblem(t *testing.T) {
 		t.Fatal("Load() succeeded on a thoroughly broken config")
 	}
 
-	for _, want := range []string{"ENVIRONMENT", "LOG_LEVEL", "OPS_PORT", "POSTGRES_URL"} {
+	for _, want := range []string{"ENVIRONMENT", "LOG_LEVEL", "OPS_PORT", "ROUTER_LANE_WINDOW", "POSTGRES_URL"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q omits %s; all problems should be reported at once", err, want)
 		}

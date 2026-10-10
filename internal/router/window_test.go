@@ -29,17 +29,20 @@ type windowReserver struct {
 	inFlight atomic.Int32
 	peak     atomic.Int32
 	full     chan struct{}
+	window   int32
 }
 
-func newWindowReserver() *windowReserver {
-	return &windowReserver{delay: map[uuid.UUID]time.Duration{}, full: make(chan struct{})}
+func newWindowReserver() *windowReserver { return newWindowReserverOf(laneWindow) }
+
+func newWindowReserverOf(window int32) *windowReserver {
+	return &windowReserver{delay: map[uuid.UUID]time.Duration{}, full: make(chan struct{}), window: window}
 }
 
 func (s *windowReserver) Reserve(_ context.Context, _, _, messageID uuid.UUID, _ int) (bool, string, error) {
 	cur := s.inFlight.Add(1)
 	for old := s.peak.Load(); cur > old && !s.peak.CompareAndSwap(old, cur); old = s.peak.Load() {
 	}
-	if s.calls.Add(1) == laneWindow {
+	if s.calls.Add(1) == s.window {
 		close(s.full)
 	}
 	select {
@@ -161,5 +164,24 @@ func TestAFailedLaneStopsReservingAboveIt(t *testing.T) {
 	if ended != laneWindow+failAt || failed != laneWindow {
 		t.Errorf("router.process spans ended = %d (failed %d), want %d (failed %d): the failure and every record staged above it",
 			ended, failed, laneWindow+failAt, laneWindow)
+	}
+}
+
+// TestALaneWindowIsTheConfiguredOne: ROUTER_LANE_WINDOW reaches the lane (step-287l), so a campaign can sweep
+// it without a rebuild.
+func TestALaneWindowIsTheConfiguredOne(t *testing.T) {
+	const window = 3
+	_, recs := onePartition(t, 4*window)
+	res := newWindowReserverOf(window)
+	prod := &fakeProducer{}
+	cons := &oneBatchConsumer{records: recs}
+	if err := newRouterWithWindow(t, stubResolver{conn: uuid.New()}, res, prod, &fakeCDR{}, cons, window).Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := len(prod.produced); got != len(recs) {
+		t.Fatalf("produced %d records, want %d", got, len(recs))
+	}
+	if peak := res.peak.Load(); peak != window {
+		t.Errorf("peak concurrent reserves in one lane = %d, want the configured window %d", peak, window)
 	}
 }

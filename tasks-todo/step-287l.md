@@ -22,7 +22,7 @@ campagne de mesure doit la balayer ». Des fenêtres plus larges grossissent aus
 - Hors périmètre : lever la barrière de lot, publier en asynchrone, ajouter des partitions.
 
 ## Definition of Done
-- [ ] `ROUTER_LANE_WINDOW` lu, 8 par défaut, refusé sous 1 (test de config, muté)
-- [ ] la lane lance au plus `LaneWindow` messages à la fois (test du routeur, muté sur 8 et sur la valeur)
-- [ ] câblé dans router-svc
+- [x] `ROUTER_LANE_WINDOW` lu, 8 par défaut, refusé sous 1 (test de config, 3 mutations tuées)
+- [x] la lane lance au plus `LaneWindow` messages à la fois (test du routeur, 4 mutations tuées)
+- [x] câblé dans router-svc ; prouvé par le run 11 (plus de 96 messages en vol n'est possible qu'à travers lui)
 - [ ] runs 11 et 12 versés au journal de step-287, avec une trace du routeur
