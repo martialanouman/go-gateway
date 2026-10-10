@@ -249,6 +249,8 @@ qu'on mesure un environnement représentatif.
       ⛓ step-260c, step-395 — demande humaine du 10/10/2026, née du run 8 de step-287
 - [x] step-287k — Une capture lit le grand livre une fois, pas trois ⛓ step-287i — née du run 9 de
       step-287 ; bloque sa reprise
+- [ ] step-287l — La fenêtre du routeur devient un réglage, pour la balayer en campagne ⛓ step-285c — née
+      du run 10 de step-287 ; bloque sa reprise
 - [x] step-288 — La catégorie de trafic se déclare par sender ID ; `sender_id_policy` disparaît (ADR-0020 §1,
       contrat 7.0.0) — décision humaine du 05/10/2026 ; unité faute de multiple de dix libre
 - [x] step-289 — Un débit par sender ID, refusé à l'admission (ADR-0021 §3) ⛓ step-283, step-288 — unité faute

@@ -68,6 +68,9 @@ type Deps struct {
 	// set of names (step-180): a live dashboard and Grafana disagreeing on what a number is called makes it
 	// impossible to correlate a spike with its history. Optional; nil disables it.
 	Metrics *metrics.Catalog
+	// LaneWindow is how many messages of one lane run the pipeline at once (ROUTER_LANE_WINDOW, step-287l).
+	// Zero means defaultLaneWindow.
+	LaneWindow int
 }
 
 // StreamEmitter records live figures for the realtime feed. It is declared here, consumer-side, and
@@ -89,6 +92,9 @@ func New(deps Deps) *Router {
 	if deps.Logger == nil {
 		deps.Logger = slog.Default()
 	}
+	if deps.LaneWindow <= 0 {
+		deps.LaneWindow = defaultLaneWindow
+	}
 	return &Router{deps: deps}
 }
 
@@ -107,11 +113,9 @@ func (r *Router) Run(ctx context.Context) error {
 // other.
 var errLaneHalted = errors.New("router: lane halted after an earlier failure")
 
-// laneWindow is how many messages of one lane run the pipeline at once (step-285c): more reserves in flight
-// grow billing-svc's write batches instead of its commits.
-// ponytail: constant, so reserves in flight scale with TOPIC_PARTITIONS × 8 unbounded; make it a setting if
-// a measurement campaign needs to sweep it, or past 32 partitions (256 = billing-svc's batch cap).
-const laneWindow = 8
+// defaultLaneWindow is the lane window when Deps leaves it unset (step-285c): more reserves in flight grow
+// billing-svc's write batches instead of its commits. Reserves in flight scale with TOPIC_PARTITIONS × window.
+const defaultLaneWindow = 8
 
 // handleBatch processes a poll batch with ONE goroutine per partition, so the per-message wait — a
 // synchronous acks=all produce, which step-201d measured at ~97% of the router's wall time per message —
@@ -146,7 +150,7 @@ func (r *Router) handleBatch(ctx context.Context, recs []kafka.Record) []error {
 	return results
 }
 
-// runLane runs the pipeline for up to laneWindow records of one lane at once, and publishes them one by one in
+// runLane runs the pipeline for up to Deps.LaneWindow records of one lane at once, and publishes them one by one in
 // offset order. Only the publication decides the safety rule above: a record whose pipeline ran is still
 // neither published nor committed above a failure. Its reserve is replayed as already held on redelivery, so
 // in-flight records are left to finish, never cancelled (a cancelled reserve takes billing-svc's ambiguous
@@ -158,7 +162,7 @@ func (r *Router) runLane(ctx context.Context, recs []kafka.Record, idxs []int, r
 		staging[pos] = ch
 		go func() { ch <- r.process(ctx, recs[idxs[pos]]) }()
 	}
-	for pos := range min(laneWindow, len(idxs)) {
+	for pos := range min(r.deps.LaneWindow, len(idxs)) {
 		launch(pos)
 	}
 	for pos, i := range idxs {
@@ -178,7 +182,7 @@ func (r *Router) runLane(ctx context.Context, recs []kafka.Record, idxs []int, r
 			}
 			return
 		}
-		if next := pos + laneWindow; next < len(idxs) {
+		if next := pos + r.deps.LaneWindow; next < len(idxs) {
 			launch(next)
 		}
 	}

@@ -62,6 +62,10 @@ type Config struct {
 	// OpsPprof mounts net/http/pprof under /debug/pprof/ on the ops port (step-287i). Off by default.
 	OpsPprof bool `env:"OPS_PPROF"`
 
+	// RouterLaneWindow is how many messages of one mt.inbound partition router-svc runs at once (step-287l):
+	// reserves in flight are KAFKA_TOPIC_PARTITIONS × this.
+	RouterLaneWindow int `env:"ROUTER_LANE_WINDOW" envDefault:"8"`
+
 	// ShutdownTimeout bounds ONE component's own teardown: an HTTP or gRPC server's graceful stop, the
 	// ops server's, the span exporter's flush. It is not the budget of the drain as a whole — see
 	// DrainBudget, which must stay above it.
@@ -811,6 +815,9 @@ func (c Config) coreProblems() []string {
 	}
 	if c.OpsPort < 1 || c.OpsPort > 65535 {
 		problems = append(problems, fmt.Sprintf("OPS_PORT %d is outside 1-65535", c.OpsPort))
+	}
+	if c.RouterLaneWindow < 1 {
+		problems = append(problems, fmt.Sprintf("ROUTER_LANE_WINDOW %d must be at least 1: a lane would never run a message", c.RouterLaneWindow))
 	}
 	// Zero is legal and means "do not wait" — a service with no load balancer in front of it, or a
 	// test. Negative is a typo, and silently accepting it would make the drain skip the wait it was

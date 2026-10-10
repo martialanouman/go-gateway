@@ -130,6 +130,11 @@ func newRouter(t *testing.T, resolver pipeline.Resolver, prod router.Producer, c
 
 func newRouterWithReserver(t *testing.T, resolver pipeline.Resolver, reserver pipeline.CreditReserver, prod router.Producer, cdr router.CDRWriter, cons router.Consumer) *router.Router {
 	t.Helper()
+	return newRouterWithWindow(t, resolver, reserver, prod, cdr, cons, 0)
+}
+
+func newRouterWithWindow(t *testing.T, resolver pipeline.Resolver, reserver pipeline.CreditReserver, prod router.Producer, cdr router.CDRWriter, cons router.Consumer, window int) *router.Router {
+	t.Helper()
 	rec := otelrec.New(t)
 	tracer := observability.Tracer(rec.Provider(), "router")
 	return router.New(router.Deps{
@@ -139,8 +144,9 @@ func newRouterWithReserver(t *testing.T, resolver pipeline.Resolver, reserver pi
 			Tracer: tracer, Resolver: resolver, SenderIDs: allowAllSenderIDs{},
 			OptOut: allowAllOptOut{}, Antispam: allowAllAntispam{}, Credit: reserver,
 		}),
-		CDR:    cdr,
-		Tracer: tracer,
+		CDR:        cdr,
+		Tracer:     tracer,
+		LaneWindow: window,
 	})
 }
 

@@ -187,15 +187,16 @@ func newRouterApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 	a.emitter = stream.emitter
 
 	a.router = router.New(router.Deps{
-		Consumer: st.consumer,
-		Producer: st.producer,
-		Pipeline: stack.pipeline,
-		CDR:      clickhouse.NewCDRWriter(st.ch),
-		Sealer:   proj.sealer,
-		Tracer:   tracer,
-		Logger:   logger,
-		Stream:   stream.emitter,
-		Metrics:  a.catalog,
+		Consumer:   st.consumer,
+		Producer:   st.producer,
+		Pipeline:   stack.pipeline,
+		CDR:        clickhouse.NewCDRWriter(st.ch),
+		Sealer:     proj.sealer,
+		Tracer:     tracer,
+		Logger:     logger,
+		Stream:     stream.emitter,
+		Metrics:    a.catalog,
+		LaneWindow: cfg.RouterLaneWindow,
 	})
 
 	ops, blooms, err := newOpsServer(cfg, logger, st.consumer, a.catalog, stack, proj, outc, stream, boot)
