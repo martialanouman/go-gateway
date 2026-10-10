@@ -22,13 +22,23 @@ Postgres et Redpanda, dont il allonge les allers-retours. Ses tables système, s
 - Un CDR dont le compte diffère de celui de la réservation n'est plus trouvé : la réservation reste intacte et
   compte comme `Unresolvable`, ce qui est déjà le sort d'un message sans CDR. Jamais de remboursement deviné.
 
-**PR2 — les CDR s'insèrent en asynchrone.** Design arrêté avant le code de PR2 : quelles connexions, quels
-réglages (`async_insert`, `wait_for_async_insert=1` pour garder l'acquittement après écriture), et ce que
-l'attente du serveur coûte aux boucles qui écrivent les CDR.
+**PR2 — les lots de CDR s'insèrent en asynchrone.** Au run 12, 98 % des insertions viennent des projections de
+router-svc (`ingest/accepted.go`, `outcome/outcome.go`) : `InsertBatch` à chaque poll, ~10 par seconde et par
+pod, médiane 51 lignes. `Insert` (une ligne) ne sert qu'aux chemins rares : rejet, annulation, reroutage.
+- `InsertBatch` et le miroir `cdr_events` passent `async_insert=1` et **`wait_for_async_insert=1`** par
+  `clickhouse.WithSettings` dans le contexte de l'appel : le serveur regroupe les lots de tous les écrivains,
+  et l'appel ne rend la main qu'une fois les lignes écrites. L'offset Kafka reste commité après une écriture
+  durable (D6/D8) ; les réglages sont fixés dans le writer, pas transmis depuis la config.
+- `Insert` reste synchrone : une ligne sur un chemin rare n'a rien à regrouper, et n'attendrait que le délai
+  du tampon serveur.
+- Le coût : un lot attend que le tampon serveur se vide (adaptatif, 200 ms au plus en 24.8). Les projections
+  sont des boucles de poll : un lot plus lent rend le suivant plus gros, sans toucher au chemin du message.
+- Test d'intégration : les lignes d'un `InsertBatch` sont lisibles dès son retour, et le `query_log` montre
+  l'insertion avec `async_insert=1` et `wait_for_async_insert=1` ; un `Insert` n'y apparaît pas en async.
 
 ## Definition of Done
 - [x] PR1 : `MessageStatus` avec compte ne trouve pas le CDR d'un autre compte ni d'un autre client, et trouve
       le sien ; sans compte, il trouve par `message_id` (intégration ClickHouse, 3 mutations tuées)
 - [x] PR1 : le reaper passe le client et le compte de la réservation (test unitaire, 2 mutations tuées)
-- [ ] PR2 : design arrêté puis livré
+- [x] PR2 : design arrêté puis livré ; lots en async avec attente, ligne seule synchrone (intégration, 4 mutations tuées)
 - [ ] mesuré à un run : `ByMessageID` sort du `query_log` du reaper, parts neuves et fusions en baisse
