@@ -19,7 +19,7 @@ import (
 // knownVars is every variable Config reads. Tests clear them all so a developer's own shell
 // cannot leak into a result.
 var knownVars = []string{
-	"ENVIRONMENT", "LOG_LEVEL", "OPS_PORT", "SHUTDOWN_TIMEOUT", "DRAIN_DELAY", "DRAIN_BUDGET",
+	"ENVIRONMENT", "LOG_LEVEL", "OPS_PORT", "OPS_PPROF", "SHUTDOWN_TIMEOUT", "DRAIN_DELAY", "DRAIN_BUDGET",
 	"CONFIG_RESYNC_INTERVAL",
 	"SERVICE_NAME",
 	"OTEL_SDK_DISABLED", "OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_INSECURE",
@@ -80,6 +80,9 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.OpsPort != 9090 {
 		t.Errorf("OpsPort = %d, want 9090 (plan §1.4)", cfg.OpsPort)
+	}
+	if cfg.OpsPprof {
+		t.Error("OpsPprof = true by default, want false: no profile unless asked for")
 	}
 	if cfg.LogLevel != "info" {
 		t.Errorf("LogLevel = %q, want info", cfg.LogLevel)
@@ -146,6 +149,7 @@ func TestLoadFromEnvironment(t *testing.T) {
 		"ENVIRONMENT":                 "production",
 		"LOG_LEVEL":                   "warn",
 		"OPS_PORT":                    "9191",
+		"OPS_PPROF":                   "true",
 		"SHUTDOWN_TIMEOUT":            "45s",
 		"OTEL_EXPORTER_OTLP_ENDPOINT": "collector:4317",
 		"OTEL_EXPORTER_OTLP_INSECURE": "false",
@@ -223,6 +227,9 @@ func TestLoadFromEnvironment(t *testing.T) {
 	}
 	if cfg.OpsPort != 9191 {
 		t.Errorf("OpsPort = %d, want 9191", cfg.OpsPort)
+	}
+	if !cfg.OpsPprof {
+		t.Error("OpsPprof = false, want true from OPS_PPROF")
 	}
 	if cfg.ShutdownTimeout != 45*time.Second {
 		t.Errorf("ShutdownTimeout = %s, want 45s", cfg.ShutdownTimeout)

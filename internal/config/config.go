@@ -59,6 +59,8 @@ type Config struct {
 	// OpsPort serves /metrics, /healthz and /readyz. Internal only — never exposed publicly and
 	// absent from the OpenAPI contracts (plan §1.4).
 	OpsPort int `env:"OPS_PORT" envDefault:"9090"`
+	// OpsPprof mounts net/http/pprof under /debug/pprof/ on the ops port (step-287i). Off by default.
+	OpsPprof bool `env:"OPS_PPROF"`
 
 	// ShutdownTimeout bounds ONE component's own teardown: an HTTP or gRPC server's graceful stop, the
 	// ops server's, the span exporter's flush. It is not the budget of the drain as a whole — see
