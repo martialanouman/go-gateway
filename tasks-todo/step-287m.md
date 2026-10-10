@@ -27,8 +27,8 @@ réglages (`async_insert`, `wait_for_async_insert=1` pour garder l'acquittement 
 l'attente du serveur coûte aux boucles qui écrivent les CDR.
 
 ## Definition of Done
-- [ ] PR1 : `MessageStatus` avec compte ne trouve pas le CDR d'un autre compte, et trouve le sien (intégration
-      ClickHouse, muté) ; sans compte, il trouve par `message_id` (intégration)
-- [ ] PR1 : le reaper passe le client et le compte de la réservation (test unitaire, muté)
+- [x] PR1 : `MessageStatus` avec compte ne trouve pas le CDR d'un autre compte ni d'un autre client, et trouve
+      le sien ; sans compte, il trouve par `message_id` (intégration ClickHouse, 3 mutations tuées)
+- [x] PR1 : le reaper passe le client et le compte de la réservation (test unitaire, 2 mutations tuées)
 - [ ] PR2 : design arrêté puis livré
 - [ ] mesuré à un run : `ByMessageID` sort du `query_log` du reaper, parts neuves et fusions en baisse

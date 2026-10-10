@@ -420,14 +420,26 @@ func cdrAggregateSearch(innerWhereTail string) string {
 	)`
 }
 
-// MessageStatus returns the CURRENT lifecycle status of a message by id alone — what the billing reaper
-// needs to decide whether an orphaned reservation must be captured or released (step-190). It reuses the
-// same cross-tenant aggregation as ByMessageID, so the status is resolved on the highest `version`
-// (argMax): a naive read of this ReplacingMergeTree would return the initial `accepted` of a message long
-// since delivered. found=false means no CDR row exists for the message — the reaper treats that as
-// "outcome unknown" and leaves the money untouched rather than guessing.
-func (r *CDRReader) MessageStatus(ctx context.Context, messageID uuid.UUID) (string, bool, error) {
-	row, found, err := r.ByMessageID(ctx, messageID)
+// MessageStatus returns the CURRENT lifecycle status of a message — what the billing reaper needs to decide
+// whether an orphaned reservation must be captured or released (step-190). The status is resolved on the
+// highest `version` (argMax): a naive read of this ReplacingMergeTree would return the initial `accepted` of a
+// message long since delivered. found=false means no CDR row exists for the message in that account — the
+// reaper treats that as "outcome unknown" and leaves the money untouched rather than guessing.
+//
+// With the reservation's account the read stays on the sorting-key prefix; by message id alone it scans
+// every CDR (11,7 M rows per call at step-287m), so that path is kept for a reservation whose account was
+// deleted.
+func (r *CDRReader) MessageStatus(ctx context.Context, customerID uuid.UUID, accountID *uuid.UUID, messageID uuid.UUID) (string, bool, error) {
+	var (
+		row   CDRRow
+		found bool
+		err   error
+	)
+	if accountID != nil {
+		row, found, err = r.Current(ctx, customerID, *accountID, messageID)
+	} else {
+		row, found, err = r.ByMessageID(ctx, messageID)
+	}
 	if err != nil || !found {
 		return "", false, err
 	}

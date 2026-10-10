@@ -57,7 +57,7 @@ func TestMessageStatusResolvesLatestVersion(t *testing.T) {
 		t.Fatalf("insert delivered: %v", err)
 	}
 
-	status, found, err := reader.MessageStatus(ctx, messageID)
+	status, found, err := reader.MessageStatus(ctx, base.CustomerID, &base.AccountID, messageID)
 	if err != nil {
 		t.Fatalf("MessageStatus: %v", err)
 	}
@@ -81,11 +81,49 @@ func TestMessageStatusUnknownMessage(t *testing.T) {
 	}
 	defer func() { _ = conn.Close() }()
 
-	_, found, err := clickhouse.NewCDRReader(conn).MessageStatus(context.Background(), uuid.New())
+	_, found, err := clickhouse.NewCDRReader(conn).MessageStatus(context.Background(), uuid.New(), nil, uuid.New())
 	if err != nil {
 		t.Fatalf("MessageStatus(unknown) errored: %v", err)
 	}
 	if found {
 		t.Error("MessageStatus(unknown) found=true, want false")
+	}
+}
+
+// TestMessageStatusReadsWithinTheReservationsAccount: the reaper knows the customer and account of the
+// reservation, so the read stays on the sorting-key prefix instead of scanning every CDR (step-287m). A CDR
+// of another account is not this reservation's outcome; without an account (deleted, set to NULL by the
+// ledger's FK), the read falls back to the message id alone.
+func TestMessageStatusReadsWithinTheReservationsAccount(t *testing.T) {
+	conn, err := clickhouse.NewConn(chtest.Config(t))
+	if err != nil {
+		t.Fatalf("new conn: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	reader := clickhouse.NewCDRReader(conn)
+	ctx := context.Background()
+
+	row := clickhouse.CDRRow{
+		MessageID: uuid.New(), TraceID: uuid.New(), AccountID: uuid.New(), CustomerID: uuid.New(),
+		Direction: clickhouse.DirectionMT, SourceAddr: "GATEWAY", DestAddr: "22507000000",
+		SubmittedAt: time.Now().UTC().Truncate(time.Millisecond), SegmentCount: 1,
+		Encoding: clickhouse.EncodingGSM7, Status: clickhouse.StatusFailed,
+	}
+	if err := clickhouse.NewCDRWriter(conn).Insert(ctx, row); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	if status, found, err := reader.MessageStatus(ctx, row.CustomerID, &row.AccountID, row.MessageID); err != nil || !found || status != string(clickhouse.StatusFailed) {
+		t.Errorf("MessageStatus(own account) = (%q, %v, %v), want (failed, true, nil)", status, found, err)
+	}
+	otherAccount := uuid.New()
+	if _, found, err := reader.MessageStatus(ctx, row.CustomerID, &otherAccount, row.MessageID); err != nil || found {
+		t.Errorf("MessageStatus(another account) = (found %v, %v), want not found", found, err)
+	}
+	if _, found, err := reader.MessageStatus(ctx, uuid.New(), &row.AccountID, row.MessageID); err != nil || found {
+		t.Errorf("MessageStatus(another customer) = (found %v, %v), want not found", found, err)
+	}
+	if status, found, err := reader.MessageStatus(ctx, row.CustomerID, nil, row.MessageID); err != nil || !found || status != string(clickhouse.StatusFailed) {
+		t.Errorf("MessageStatus(no account) = (%q, %v, %v), want (failed, true, nil) by message id", status, found, err)
 	}
 }
