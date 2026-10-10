@@ -139,6 +139,14 @@ de l'écriture durable borne le routeur.**
   messages en vol, donc son débit est ce nombre divisé par la latence : le CPU libéré ne change rien. Lag du
   routeur 765 000 en fin de run. Le levier suivant est le lot en un seul statement (step-287f PR2).
 
+**Run 6, mêmes conditions, image `362f850` (lot en un seul statement, step-287f PR2) : le lot coûte 64 ms.**
+- 1 913 req/s, p99 4,15 s, 0 erreur sur 1,17 M ; **480 `submit_sm`/s** (+19 %) ;
+- `credit` 118,6 ms, dont 98,8 ms d'écriture durable (137 au run 5) ; un lot : `begin` 26,7, `write` 18,8,
+  `commit` 19,0 ms ; 616 écritures durables/s en lots de 10,4 ;
+- CPU libre : passerelle 33 %, contabo75 23 % ; Postgres 2 cœurs, ClickHouse 1,9 ;
+- `begin` est devenu la plus grosse étape d'un lot alors qu'un BEGIN fait un aller-retour (~1 ms sur le VPC) :
+  l'attente d'une connexion du pool (10) n'est pas séparée du BEGIN. Lag du routeur 678 000 en fin de run.
+
 ## Definition of Done
 - [ ] les quatre runs faits, chacun avec les relevés de step-280, verdict toujours non rendu (→ step-409)
 - [ ] la traversée mesurée avec 24 clients, et le goulot suivant nommé
