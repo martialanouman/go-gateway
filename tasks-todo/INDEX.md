@@ -251,6 +251,8 @@ qu'on mesure un environnement représentatif.
       step-287 ; bloque sa reprise
 - [ ] step-287l — La fenêtre du routeur devient un réglage, pour la balayer en campagne ⛓ step-285c — née
       du run 10 de step-287 ; bloque sa reprise
+- [ ] step-287m — ClickHouse sobre sous charge : le reaper lit par compte, les CDR s'insèrent en async ⛓
+      step-190, step-287b — née du diagnostic ClickHouse après le run 12 de step-287
 - [x] step-288 — La catégorie de trafic se déclare par sender ID ; `sender_id_policy` disparaît (ADR-0020 §1,
       contrat 7.0.0) — décision humaine du 05/10/2026 ; unité faute de multiple de dix libre
 - [x] step-289 — Un débit par sender ID, refusé à l'admission (ADR-0021 §3) ⛓ step-283, step-288 — unité faute
