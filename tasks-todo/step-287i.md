@@ -1,6 +1,6 @@
 # step-287i — Profiler un service sous charge : `pprof` sur le port d'exploitation
 
-> **Jalon :** M12 · **Statut :** EN COURS
+> **Jalon :** M12 · **Statut :** LIVRÉE
 > **Dépend de :** step-287f · **Bloque :** la reprise de step-287
 > Demande humaine du 10/10/2026, née du run 8 de step-287 : mesurer billing-svc avant de l'optimiser.
 
@@ -25,5 +25,5 @@ d'exécution Go montre ce que fait la goroutine entre la réponse de Postgres et
 - [x] `/debug/pprof/` répond 404 sans `OPS_PPROF`, 200 avec (test, 2 mutations tuées)
 - [x] `OPS_PPROF` lu par `config.Load`, faux par défaut (test, 2 mutations tuées)
 - [x] activé dans `deploy/test`, `check.sh` vert
-- [ ] run 9 : trace de 5 s et profil CPU de 30 s de billing-svc sous charge, lus et versés au journal de
-      step-287
+- [x] run 9 : trace de 5 s et profil CPU de 30 s de billing-svc sous charge, lus et versés au journal de
+      step-287 (goulot : `Capture`, d'où step-287k)

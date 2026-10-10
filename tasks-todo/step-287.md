@@ -147,6 +147,30 @@ de l'écriture durable borne le routeur.**
 - `begin` est devenu la plus grosse étape d'un lot alors qu'un BEGIN fait un aller-retour (~1 ms sur le VPC) :
   l'attente d'une connexion du pool (10) n'est pas séparée du BEGIN. Lag du routeur 678 000 en fin de run.
 
+**Run 7, image `93c2884` (code du run 6), pool de billing-svc à 30 : le pool n'était qu'une partie de `begin`.**
+- 1 533 req/s, **457 `submit_sm`/s** ; `begin` 26,7 → 12,5 ms, mais `write` 22,1 et `commit` 21,9 ms ;
+- les connexions en plus vont au règlement (captures +41 %), pas à la réservation. Pool remis à 10.
+
+**Run 8, mêmes conditions que le run 6, relevé `pg_stat_activity` par seconde : Postgres attend la passerelle.**
+- 1 343 req/s, **323 `submit_sm`/s** (écart au run 6 inexpliqué ; le reaper libérait les réservations
+  sautées par le vidage des files) ; ~43 connexions au repos en `ClientRead`, ~1,7 en exécution ;
+- en transaction, 1,8 connexion attend billing-svc contre 0,35 qui exécute `WriteBillingBatch` ;
+- première consommatrice de CPU de Postgres : `GetAPIKeyPrincipal`, une lecture par requête REST.
+  Deux steps : **step-287i** (pprof pour profiler billing-svc), **step-287j** (cache des principaux).
+
+**Run 9, image `399879b` (step-287i et step-287j) : le règlement monopolise le pool.**
+- **5 863 req/s** (×4,4 ; 779 échecs sur 3,7 M), 374 `submit_sm`/s ; `GetAPIKeyPrincipal` sort des
+  requêtes actives, Postgres 2,1 → 0,9 cœur ;
+- trace de billing-svc (5 s) : 53 s d'attente cumulée d'une connexion, ~10 goroutines pour un pool de 10,
+  dont 93 % dans `Capture` → `resolveTerminal` (trois lectures du grand livre par message). **step-287k**.
+
+**Run 10, image `855b9ef` (step-287k, une lecture par capture) : meilleur run de la campagne.**
+- **6 729 req/s**, p99 1,69 s, 135 échecs sur 4,2 M ; **565 `submit_sm`/s** (+18 % sur le run 6) ;
+- `credit` 100,4 ms ; un lot : `begin` 9,5, `write` 12,3, `commit` 11,8 ms, ~8 écritures par lot ;
+  captures ×2,2 (129 000) ; attente du pool 53 → 13,6 s par trace de 5 s ;
+- l'attente dominante dans billing-svc est la file devant les 4 écrivains du lot
+  (`BillingBatcher.RecordDurable`). Lag du routeur 3 M en fin de run : le routeur est le sujet suivant.
+
 ## Definition of Done
 - [ ] les quatre runs faits, chacun avec les relevés de step-280, verdict toujours non rendu (→ step-409)
 - [ ] la traversée mesurée avec 24 clients, et le goulot suivant nommé

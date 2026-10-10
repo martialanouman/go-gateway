@@ -1,6 +1,6 @@
 # step-287j — Le principal d'une clé d'API se garde en mémoire, vidé à chaque annonce de config
 
-> **Jalon :** M12 · **Statut :** EN COURS
+> **Jalon :** M12 · **Statut :** LIVRÉE
 > **Dépend de :** step-260c (politique fail-closed de l'auth REST), step-395 (Watcher et resync)
 > Demande humaine du 10/10/2026, née du run 8 de step-287 : `GetAPIKeyPrincipal` est la requête qui coûte
 > le plus de CPU à Postgres (une lecture par requête REST authentifiée).
@@ -41,4 +41,4 @@ génération côté admin.
 - [x] clé inconnue et erreur du store jamais en cache (test, muté)
 - [x] `grace_expires_at` rendu par `GetAPIKeyPrincipal` sur l'ancienne clé seulement (intégration, 3 mutations du SQL généré et du repo)
 - [x] câblage : une clé révoquée passe encore depuis le cache, puis 401 après l'annonce (test du service, 2 mutations)
-- [ ] mesuré à un run de step-287 : `GetAPIKeyPrincipal` sort des requêtes actives de Postgres
+- [x] mesuré au run 9 de step-287 : `GetAPIKeyPrincipal` sort des requêtes actives de Postgres (0,73 → 0)
