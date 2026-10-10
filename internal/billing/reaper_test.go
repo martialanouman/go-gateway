@@ -29,9 +29,13 @@ func (f *fakeOrphanSource) OrphanedReservations(_ context.Context, olderThan tim
 type fakeOutcomeReader struct {
 	status map[uuid.UUID]string
 	err    error
+	// customerID and accountID record the scope of the last read.
+	customerID uuid.UUID
+	accountID  *uuid.UUID
 }
 
-func (f *fakeOutcomeReader) MessageStatus(_ context.Context, messageID uuid.UUID) (string, bool, error) {
+func (f *fakeOutcomeReader) MessageStatus(_ context.Context, customerID uuid.UUID, accountID *uuid.UUID, messageID uuid.UUID) (string, bool, error) {
+	f.customerID, f.accountID = customerID, accountID
 	if f.err != nil {
 		return "", false, f.err
 	}
@@ -285,5 +289,26 @@ func TestReaperSourceFailureIsReturned(t *testing.T) {
 	r := billing.NewReaper(src, &fakeOutcomeReader{}, &fakeSettler{})
 	if err := r.ReapOnce(context.Background()); err == nil {
 		t.Fatal("ReapOnce = nil, want the detection failure surfaced")
+	}
+}
+
+// TestReaperReadsTheOutcomeWithinTheReservationsAccount: the reservation knows its customer and account, and
+// the outcome read gets them both, so it stays on the CDR's sorting-key prefix instead of scanning every CDR
+// (step-287m).
+func TestReaperReadsTheOutcomeWithinTheReservationsAccount(t *testing.T) {
+	id, accountID := uuid.New(), uuid.New()
+	o := orphan(id)
+	o.OwnerType, o.OwnerID, o.AccountID = cp.OwnerTypeSMPPAccount, accountID, &accountID
+	src := &fakeOrphanSource{rows: []cp.OrphanedReservation{o}}
+	out := &fakeOutcomeReader{status: map[uuid.UUID]string{id: "delivered"}}
+
+	if err := billing.NewReaper(src, out, &fakeSettler{}).ReapOnce(context.Background()); err != nil {
+		t.Fatalf("ReapOnce: %v", err)
+	}
+	if out.customerID != o.CustomerID {
+		t.Errorf("outcome read for customer %s, want the reservation's %s", out.customerID, o.CustomerID)
+	}
+	if out.accountID == nil || *out.accountID != accountID {
+		t.Errorf("outcome read for account %v, want the reservation's %s", out.accountID, accountID)
 	}
 }

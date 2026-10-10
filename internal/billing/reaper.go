@@ -31,7 +31,8 @@ type OrphanSource interface {
 // highest version — reading a stale row would hand the reaper the initial `accepted` of a message long
 // since delivered. found=false means no CDR row exists for the message at all.
 type OutcomeReader interface {
-	MessageStatus(ctx context.Context, messageID uuid.UUID) (status string, found bool, err error)
+	// A nil accountID reads by message id alone: a full scan, kept for a reservation whose account was deleted.
+	MessageStatus(ctx context.Context, customerID uuid.UUID, accountID *uuid.UUID, messageID uuid.UUID) (status string, found bool, err error)
 }
 
 // ReaperSettler closes the money. *Accountant satisfies it: capture and release are idempotent and
@@ -187,7 +188,7 @@ func (r *Reaper) ReapOnce(ctx context.Context) error {
 // settleOne resolves and settles a single orphaned reservation. Every path that cannot establish the
 // outcome with certainty leaves the money exactly as it is.
 func (r *Reaper) settleOne(ctx context.Context, o cp.OrphanedReservation) {
-	status, found, err := r.outcomes.MessageStatus(ctx, o.MessageID)
+	status, found, err := r.outcomes.MessageStatus(ctx, o.CustomerID, o.AccountID, o.MessageID)
 	if err != nil {
 		// The outcome store is unreachable. Do NOT guess: skip and let a later pass resolve it.
 		r.logger.WarnContext(ctx, "reaper: outcome read failed; leaving reservation intact",
