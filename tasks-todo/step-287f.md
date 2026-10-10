@@ -47,4 +47,4 @@ L'arbitrage a été rendu par Fable, sans contradiction avec la spec ni avec ADR
     l'incluait déjà. `TestBatcherAnswersAReplayWithTheDurableBalance` attend -6.
   - **`jsonb_array_elements` plutôt que `jsonb_to_recordset`.** sqlc 1.30 ne résout pas les colonnes d'une
     liste de définition (`column "ord" does not exist`).
-- [ ] VPS après chaque PR : `billing_durable_stage_seconds`, lots/s et taille, réservations/s, CPU Postgres.
+- [x] VPS après chaque PR (runs 4 et 6 de step-287) : `billing_durable_stage_seconds`, lots/s et taille, réservations/s, CPU Postgres.
