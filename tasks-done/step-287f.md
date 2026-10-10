@@ -1,6 +1,6 @@
 # step-287f — Le grand livre s'écrit à quatre : écrivains parallèles et lot en un seul statement
 
-> **Jalon :** M12 · **Statut :** EN COURS
+> **Jalon :** M12 · **Statut :** LIVRÉE
 > **Dépend de :** step-287e · **Bloque :** step-287 (reprise de la campagne)
 > Née du run 3 de step-287 (07/10/2026), demande humaine du même jour ; unité faute de multiple de dix libre.
 
