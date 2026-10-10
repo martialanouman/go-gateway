@@ -243,11 +243,11 @@ qu'on mesure un environnement représentatif.
       née du run 4 de step-287 ; bloque sa reprise
 - [ ] step-287h — L'environnement de test passe en OIDC : l'Admin API accepte les JWT du BFF ⛓ step-287,
       step-310 — demande humaine du 09/10/2026
-- [ ] step-287i — Profiler un service sous charge : `pprof` sur le port d'exploitation ⛓ step-287f — née du
+- [x] step-287i — Profiler un service sous charge : `pprof` sur le port d'exploitation ⛓ step-287f — née du
       run 8 de step-287 ; bloque sa reprise
-- [ ] step-287j — Le principal d'une clé d'API se garde en mémoire, vidé à chaque annonce de config
+- [x] step-287j — Le principal d'une clé d'API se garde en mémoire, vidé à chaque annonce de config
       ⛓ step-260c, step-395 — demande humaine du 10/10/2026, née du run 8 de step-287
-- [ ] step-287k — Une capture lit le grand livre une fois, pas trois ⛓ step-287i — née du run 9 de
+- [x] step-287k — Une capture lit le grand livre une fois, pas trois ⛓ step-287i — née du run 9 de
       step-287 ; bloque sa reprise
 - [x] step-288 — La catégorie de trafic se déclare par sender ID ; `sender_id_policy` disparaît (ADR-0020 §1,
       contrat 7.0.0) — décision humaine du 05/10/2026 ; unité faute de multiple de dix libre

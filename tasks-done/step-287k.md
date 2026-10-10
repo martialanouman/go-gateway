@@ -1,6 +1,6 @@
 # step-287k — Une capture lit le grand livre une fois, pas trois
 
-> **Jalon :** M12 · **Statut :** EN COURS
+> **Jalon :** M12 · **Statut :** LIVRÉE
 > **Dépend de :** step-287i (trace du run 9) · **Bloque :** la reprise de step-287
 > Demande humaine du 10/10/2026, née du run 9 de step-287.
 
@@ -33,4 +33,4 @@ lecture avec son propre acquire : `LedgerEntryExists(capture)`, `LedgerEntryExis
       `Has` tuées. Deux survivaient avant cette step (capture sans réserve, capture redélivrée) : deux tests
       unitaires les tuent désormais
 - [x] dette `capture-lit-le-grand-livre-trois-fois-avant-d-ecrire` passée à PAYÉE
-- [ ] mesuré à un run de step-287 : l'attente du pool par `Capture` baisse dans la trace
+- [x] mesuré au run 10 de step-287 : attente du pool 53,3 → 13,6 s par trace de 5 s, 565 `submit_sm`/s
