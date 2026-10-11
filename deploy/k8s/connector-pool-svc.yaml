@@ -4,7 +4,7 @@
 # (probes, ops port, grace period, secrets by reference). Run `make manifests` for schema validation.
 #
 # This file is an INSTANCE TEMPLATE. One connector per pod (cmd/connector-pool-svc/wiring.go), each
-# with its own consumer group `connector-pool-svc-<CONNECTOR_ID>`: copy it per connector, renaming the
+# with its own three consumer groups `connector-pool-svc-<CONNECTOR_ID>-<category>`: copy it per connector, renaming the
 # Deployment `connector-pool-svc-<connector>` and setting CONNECTOR_ID and CONNECTOR_ADDR. Keep
 # replicas equal to the connector's bind_pool_size — each mt.routed.<category> topic is sharded one
 # partition per bind.

@@ -110,7 +110,7 @@ func run() error {
 			return err
 		}
 		defer consumer.Close()
-		logger.InfoContext(ctx, "replaying mt.dead-letter into mt.routed; interrupt to stop",
+		logger.InfoContext(ctx, "replaying mt.dead-letter into mt.routed.<category>; interrupt to stop",
 			"operator", operator, "run_id", runID)
 		return replayer.Run(ctx, consumer)
 	})
