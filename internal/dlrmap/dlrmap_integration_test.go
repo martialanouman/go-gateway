@@ -37,7 +37,7 @@ func routedFixture(connectorID uuid.UUID, vp *string) pipeline.RoutedMT {
 // derived from the validity_period, and Get reads it back — without the body.
 func TestRedisMapPutGetRoundTrip(t *testing.T) {
 	rdb := redistest.Client(t)
-	store := dlrmap.NewRedisMap(rdb)
+	store := dlrmap.NewRedisMap(rdb, 24*time.Hour)
 	ctx := context.Background()
 
 	connectorID := uuid.New()
@@ -90,7 +90,7 @@ func TestRedisMapPutGetRoundTrip(t *testing.T) {
 // TestRedisMapGetMissing: an unknown (connector, smsc id) is a clean miss — found=false, nil error.
 func TestRedisMapGetMissing(t *testing.T) {
 	rdb := redistest.Client(t)
-	store := dlrmap.NewRedisMap(rdb)
+	store := dlrmap.NewRedisMap(rdb, 24*time.Hour)
 
 	_, found, err := store.Get(context.Background(), uuid.New(), "does-not-exist")
 	if err != nil {
@@ -105,7 +105,7 @@ func TestRedisMapGetMissing(t *testing.T) {
 // distinct mappings, because connector_id is part of the key.
 func TestRedisMapPutScopesByConnector(t *testing.T) {
 	rdb := redistest.Client(t)
-	store := dlrmap.NewRedisMap(rdb)
+	store := dlrmap.NewRedisMap(rdb, 24*time.Hour)
 	ctx := context.Background()
 
 	smscID := "deadbeefdeadbeef"

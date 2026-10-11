@@ -2,7 +2,7 @@
 // SMSC returns an assigned smsc_msg_id, it remembers smsc_msg_id -> {message_id, trace_id} in Redis
 // so a later deliver_sm (a delivery receipt) can be correlated back to the original message
 // (step-044 reads it). The entry is written with a TTL derived from the message's validity_period,
-// past which no SMSC will still emit a receipt.
+// past which no SMSC will still emit a receipt, and the configured retention when it has none (step-287o).
 package dlrmap
 
 import (
@@ -21,9 +21,9 @@ import (
 // The TTL bounds. maxTTL mirrors cancel.flagTTL: 72h covers the maximum SMS validity, past which no
 // SMSC emits a receipt, so a longer mapping would only leak keys. minTTL floors the derived value so
 // a very short validity_period cannot orphan a receipt that arrives slightly late. ttlMargin is added
-// to a derived validity to cover the gap between expiry and the final receipt. The guiding rule: when
-// in doubt, expire too late, never too early — an over-long TTL is harmless (the key just lingers), a
-// too-short one loses the correlation.
+// to a derived validity to cover the gap between expiry and the final receipt. A message without a
+// validity keeps the configured retention instead (step-287o): 72h of mappings at the target rate is
+// billions of Redis keys, and a receipt later than the retention is deliberately not returned.
 const (
 	maxTTL    = 72 * time.Hour
 	minTTL    = 1 * time.Hour
@@ -33,12 +33,14 @@ const (
 // RedisMap is the Redis-backed DLR correlation store. Each entry is a single key, so Cluster never
 // sees a multi-key op.
 type RedisMap struct {
-	rdb *redis.Client
+	rdb       *redis.Client
+	retention time.Duration
 }
 
-// NewRedisMap builds a DLR map store over rdb.
-func NewRedisMap(rdb *redis.Client) *RedisMap {
-	return &RedisMap{rdb: rdb}
+// NewRedisMap builds a DLR map store over rdb; retention is how long a mapping lives when its message asked
+// for no relative validity (DLR_RETENTION).
+func NewRedisMap(rdb *redis.Client, retention time.Duration) *RedisMap {
+	return &RedisMap{rdb: rdb, retention: retention}
 }
 
 // mapping is the stored JSON value: the full CDR projection a later delivery receipt needs to write
@@ -130,7 +132,7 @@ func (m *RedisMap) Put(ctx context.Context, smscMsgID string, r pipeline.RoutedM
 	if err != nil {
 		return fmt.Errorf("dlrmap: marshal %s: %w", r.MessageID, err)
 	}
-	if err := m.rdb.Set(ctx, key(r.ConnectorID, smscMsgID), value, ttlForValidity(r.ValidityPeriod)).Err(); err != nil {
+	if err := m.rdb.Set(ctx, key(r.ConnectorID, smscMsgID), value, ttlForValidity(r.ValidityPeriod, m.retention)).Err(); err != nil {
 		return fmt.Errorf("dlrmap: put %s/%s: %w", r.ConnectorID, smscMsgID, err)
 	}
 	return nil
@@ -208,19 +210,26 @@ func (w mapping) resolve() (Mapping, error) {
 }
 
 // ttlForValidity derives an entry's TTL from the SMPP validity_period. A parsable relative period is
-// used (plus a margin, clamped to [minTTL, maxTTL]); everything else — nil, empty, an absolute period,
-// or an unparsable value — falls back to maxTTL. Absolute periods are deliberately not parsed: they
-// are rare on MT submits and would drag in SMSC-vs-local clock skew, and the fail-long fallback is
-// free here (an over-long TTL is harmless).
-func ttlForValidity(validityPeriod *string) time.Duration {
+// used (plus a margin, clamped to [minTTL, maxTTL]) even past the retention: the client asked for it. An
+// absolute period keeps maxTTL: it is deliberately not parsed — rare on MT submits, and it would drag in
+// SMSC-vs-local clock skew. Anything else — nil, empty, unparsable — keeps the retention.
+func ttlForValidity(validityPeriod *string, retention time.Duration) time.Duration {
 	if validityPeriod == nil {
+		return retention
+	}
+	if isAbsoluteValidity(*validityPeriod) {
 		return maxTTL
 	}
 	d, ok := parseRelativeValidity(*validityPeriod)
 	if !ok {
-		return maxTTL
+		return retention
 	}
 	return clamp(d+ttlMargin, minTTL, maxTTL)
+}
+
+// isAbsoluteValidity reports an SMPP v3.4 absolute time format: 16 characters ending in the UTC offset sign.
+func isAbsoluteValidity(s string) bool {
+	return len(s) == 16 && (s[15] == '+' || s[15] == '-')
 }
 
 // parseRelativeValidity parses a relative SMPP v3.4 validity_period ("YYMMDDhhmmsstnnp" with a final
