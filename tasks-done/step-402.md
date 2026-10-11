@@ -1,6 +1,6 @@
 # step-402 — Débit MO par tranche : `mo_received` dans `TrafficMetrics` et compteur MO temps réel
 
-> **Jalon :** M9, demandé par le tableau de bord (go-gateway-bo step-081) · **Statut :** EN COURS
+> **Jalon :** M9, demandé par le tableau de bord (go-gateway-bo step-081) · **Statut :** LIVRÉE
 > **Dépend de :** step-380 · **Bloque :** go-gateway-bo step-081
 
 ## Le constat
