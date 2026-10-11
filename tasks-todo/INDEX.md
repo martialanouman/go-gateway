@@ -468,7 +468,7 @@ l'autorisation de la moitié des opérations, et le tableau de bord génère ses
       ouverte par step-400 ; unité faute de multiple de dix libre
 - [x] step-402 — Le débit MO par tranche : `mo_received` dans `TrafficMetrics` et `mo_received_total` sur le
       flux ⛓ step-380 — demandée par le tableau de bord (step-081) ; unité faute de multiple de dix libre
-- [ ] step-403 — Le trafic par canal d'entrée (`groupBy=channel`) et `active_sessions` dans les métriques Admin
+- [x] step-403 — Le trafic par canal d'entrée (`groupBy=channel`) et `active_sessions` dans les métriques Admin
       ⛓ step-380, step-402 — demandée par le tableau de bord ; unité faute de multiple de dix libre
 - [x] step-405 — La passerelle accepte les jetons du BFF : ancre du JWKS, contrat honnête, `created_by`
       rempli ⛓ step-310, ADR-0019 — ouverte par ADR-0019 ; unité faute de multiple de dix libre
