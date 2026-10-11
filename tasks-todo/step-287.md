@@ -171,6 +171,37 @@ de l'écriture durable borne le routeur.**
 - l'attente dominante dans billing-svc est la file devant les 4 écrivains du lot
   (`BillingBatcher.RecordDurable`). Lag du routeur 3 M en fin de run : le routeur est le sujet suivant.
 
+**Runs 11 et 12, image de step-287l (`ROUTER_LANE_WINDOW`) : le routeur attend la réserve, pas l'inverse.**
+- fenêtre 16 : **441 `submit_sm`/s**, `credit` 154,8 ms ; plus de messages en vol, chacun plus lent ;
+- fenêtre 8 : **419 `submit_sm`/s**, `credit` 126,3 ms ; lag du routeur ~2,8-3 M en fin de run dans les deux ;
+- trace du routeur : 56 % de l'attente est `Reserve`. Élargir la fenêtre déplace la file dans billing-svc.
+  L'écart au run 10 (565/s, même code à fenêtre 8) dit une variance forte entre runs ;
+- ping VPC sous charge p90 19 ms, p99 78 ms pour 15 Mbit/s ; contabo75 a une file d'exécution de 9 à 23 pour
+  8 cœurs (ClickHouse, Redpanda, Postgres et k6) : l'hôte des dépendances est en contention CPU. ClickHouse en
+  est le premier consommateur (2,2 cœurs) : **step-287m**.
+
+**Run 13, image de step-287m (reaper par compte, CDR en async) : ClickHouse 2,2 → 0,8 cœur, pas de débit.**
+- 6 474 req/s, **355 `submit_sm`/s**, `credit` 147,5 ms ;
+- 11 322 insertions donnent 5 835 parts neuves (le serveur regroupe les lots) ; `ByMessageID` sort du
+  `query_log` du reaper ;
+- le reaper lit pourtant ~1,5 M lignes par lecture : 844 lectures, 1,23 milliard de lignes, 172 s de CPU sur
+  483 pour tout ClickHouse. Le préfixe de tri ne retient que le compte, et le banc n'a qu'un compte :
+  **step-287n** (index bloom sur `message_id`) ;
+- profil de rest-api-svc : 25 % du temps en écriture TLS, rien à gagner.
+
+**Run 14, base vidée (CDR, grand livre, soldes, cache de facturation), image `a09e7a8` (step-287n) : le volume
+n'était pas en cause.**
+- 5 900 req/s, **310 `submit_sm`/s**, `credit` 166,8 ms ; un lot : `begin` 18,2, `write` 17,2,
+  `commit` 19,0 ms ;
+- ClickHouse 278 s de CPU, aucune lecture du reaper (base vide, aucune réservation orpheline). Mesuré à la main
+  sur la base du run 13 : une lecture par `Current` lit 8 167 lignes au lieu de 193 846 (÷24) ;
+- le goulot est le coût fixe d'une transaction de facturation (~62 transactions/s de ~8 écritures), pas la
+  taille des tables. Les écarts entre les runs 10 à 14 (565 → 310/s) restent dans la contention de contabo75.
+- Redis porte 12,5 M clés `dlrmap:*` à 72 h : **step-287o** (`DLR_RETENTION`, 24 h par défaut).
+
+**Décision du 11/10/2026 : les optimisations sont suspendues jusqu'au run à 3 serveurs** (k6 sur un troisième
+hôte). Sur deux, l'injecteur partage l'hôte des dépendances et chaque mesure en porte la contention.
+
 ## Definition of Done
 - [ ] les quatre runs faits, chacun avec les relevés de step-280, verdict toujours non rendu (→ step-409)
 - [ ] la traversée mesurée avec 24 clients, et le goulot suivant nommé
