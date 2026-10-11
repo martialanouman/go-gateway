@@ -108,7 +108,7 @@ func run() error {
 	// mt.outcome joined mt.inbound here in step-201c: the outcome projection is what now decides how long a
 	// message reads "accepted" before it reads "enroute", so its backlog is the status lag itself (D13).
 	g.Add("queue depth", func(c context.Context) error {
-		pollQueueDepth(c, []lagReader{app.consumer, app.outcome.kafka}, app.emitter, app.catalog, logger)
+		pollQueueDepth(c, queueDepthReaders(app), app.emitter, app.catalog, logger)
 		return nil
 	})
 	if err := g.Run(ctx, logger, cfg.DrainBudget); err != nil {
@@ -151,6 +151,15 @@ const metricStreamInterval = time.Second
 // queueDepthInterval is slower than the snapshot tick because each poll is a broker round-trip. At 5 s the
 // depth is still fresh enough to read a backlog forming, and the cost stays negligible.
 const queueDepthInterval = 5 * time.Second
+
+func queueDepthReaders(app *routerApp) []lagReader {
+	readers := make([]lagReader, 0, 1+len(app.consumers))
+	readers = append(readers, app.outcome.kafka)
+	for _, c := range app.consumers {
+		readers = append(readers, c)
+	}
+	return readers
+}
 
 // lagReader is a consumer group whose backlog can be read from the broker. *kafka.Consumer satisfies it;
 // declared here, consumer-side, so the polling loop is testable without a broker.

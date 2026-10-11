@@ -66,8 +66,10 @@ func TestRouterReadinessFollowsTheFailurePolicy(t *testing.T) {
 			t.Fatalf("with kafka unreachable /readyz = %d %v, want 503: Kafka IS vital — a router that "+
 				"cannot consume mt.inbound must leave the load balancer", status, body)
 		}
-		if _, named := body["kafka"]; !named {
-			t.Errorf("the readyz body must name the dependency that failed, got %v", body)
+		for _, check := range []string{"kafka-otp", "kafka-transactional", "kafka-marketing"} {
+			if _, named := body[check]; !named {
+				t.Errorf("the readyz body must name %q among the dependencies that failed, got %v", check, body)
+			}
 		}
 	})
 }

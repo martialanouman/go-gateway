@@ -147,7 +147,7 @@ func TestNewRouterAppBuildsTheWholeGraph(t *testing.T) {
 			"first joined stays deletable")
 	}
 
-	// The accepted projection joins topics the routers create at the same rollout (ADR-0021): a group
+	// The accepted projection joins topics the provisioning job creates at the same rollout (ADR-0021): a group
 	// starting at the end would skip every submission accepted before it first joined.
 	if app.projections == nil || app.projections.kafka.StartsFromEnd() {
 		t.Error("the accepted CDR projection starts at the end of mt.inbound.*: a submission accepted before " +
@@ -160,6 +160,19 @@ func TestNewRouterAppBuildsTheWholeGraph(t *testing.T) {
 		t.Error("the MO CDR projection is not wired to start at the end of mo.routed")
 	}
 
+	wantGroups := map[string]bool{
+		"router-svc-otp":           true,
+		"router-svc-transactional": true,
+		"router-svc-marketing":     true,
+	}
+	gotGroups := map[string]bool{}
+	for _, c := range app.consumers {
+		gotGroups[c.Group()] = true
+	}
+	if len(app.consumers) != len(kafka.MTInboundTopics()) || !reflect.DeepEqual(gotGroups, wantGroups) {
+		t.Errorf("consumer groups = %v (%d consumers), want one per category topic %v", gotGroups, len(app.consumers), wantGroups)
+	}
+
 	for name, component := range map[string]any{
 		"ops":      app.ops,
 		"router":   app.router,
@@ -168,7 +181,6 @@ func TestNewRouterAppBuildsTheWholeGraph(t *testing.T) {
 		"outcome":  app.outcome,
 		"watcher":  app.watcher,
 		"emitter":  app.emitter,
-		"consumer": app.consumer,
 		"catalog":  app.catalog,
 	} {
 		if component == nil || reflect.ValueOf(component).IsNil() {
