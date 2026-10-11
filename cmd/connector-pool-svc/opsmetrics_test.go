@@ -36,6 +36,7 @@ func TestOpsExposesTheMetricsThisServiceFeeds(t *testing.T) {
 	catalog.SubmitRejectedTotal.WithLabelValues(connector, "submit_failed").Inc()
 	catalog.MessageE2EDuration.WithLabelValues(connector, "ok").Observe(0.05)
 	catalog.ConnectorSubmitStage.WithLabelValues(connector, "submit").Observe(0.005)
+	catalog.MOReceivedTotal.WithLabelValues(connector).Inc()
 	catalog.SeedConfigRebuild()
 
 	rec := httptest.NewRecorder()
@@ -59,6 +60,7 @@ func TestOpsExposesTheMetricsThisServiceFeeds(t *testing.T) {
 		// readiness stays green, so these are the only signal besides a log line (step-395).
 		"config_rebuild_total",
 		"config_rebuild_last_success_timestamp_seconds",
+		"mo_received_total",
 	} {
 		if !strings.Contains(body, name+"{") && !strings.Contains(body, name+"_bucket{") &&
 			!strings.Contains(body, "\n"+name+" ") {

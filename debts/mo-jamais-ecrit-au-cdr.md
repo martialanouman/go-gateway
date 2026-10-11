@@ -13,15 +13,16 @@ connector-pool.
 **Pourquoi.** La spec le demande (§4.3, `docs/specification-technique-passerelle-sms.md:554`, « → CDR
 écrit »). Mais écrire la ligne MO suppose d'arrêter son statut, son idempotence quand `mo.inbound` est
 relivré, et le chiffrement de son corps. Cela doublait une PR dont le sujet est un contrat de lecture,
-qui ne dépend pas de l'écrivain. Le défaut existait avant step-402 : le résumé lisait déjà 0.
+qui ne dépend pas de l'écrivain.
 
 **Ce qu'il en coûte si on ne la paie jamais.** Les graphiques MO du tableau de bord restent plats au
 chargement et sur toute plage passée, alors que le flux temps réel montre du MO. Le CDR Explorer et
 l'export n'ont aucun MO non plus.
 
 **Ce que la payer demande.** Que l'écrivain renseigne `connector_id` (le connecteur qui a reçu le MO)
-et le `customer_id` du compte résolu. La lecture rattache déjà le connecteur quel que soit le statut
-écrit. Un MO non routé n'a pas de client et reste hors du CDR.
+et le `customer_id` du compte résolu, sous un `message_id` propre au MO (les métriques groupent par
+direction, l'explorateur non). Un MO sans `connector_id` disparaît de la vue par connecteur. Un MO non
+routé n'a pas de client et reste hors du CDR.
 
 **À quoi on reconnaîtra qu'il faut la payer.** Au premier écran Trafic du tableau de bord
 (go-gateway-bo step-081) qui trace le MO sur une plage passée. Au plus tard au go-live (step-410).

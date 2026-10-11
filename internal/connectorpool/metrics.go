@@ -44,7 +44,6 @@ func (s *Service) observeSubmit(resp smpp.PDU, code errs.Code, e2e time.Duration
 	}
 }
 
-// observeMO counts an MO published to mo.inbound on both sinks, under the connector that received it.
 func (s *Service) observeMO() {
 	connectorID := s.deps.ConnectorID.String()
 	s.stream(func(e StreamEmitter) {

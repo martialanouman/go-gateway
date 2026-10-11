@@ -9,11 +9,8 @@ L'écran Trafic annonce des « compteurs/graphiques MT/MO » (spécification du 
 `direction = 'mt'` (`internal/storage/clickhouse/metrics.go`). Le flux `stream-metrics` n'a aucun
 compteur MO.
 
-## Design arrêté
-Les arbitrages ont été rendus par Fable le 2026-10-11, sans contredire la spec.
-
+## Design arrêté (arbitrage Fable, 2026-10-11)
 1. **Contrat (mineur, 7.6.0 → 7.7.0).** `mo_received` (integer) est ajouté aux points, hors de `required`.
-   La description de l'opération dit « messages », plus seulement « MT messages submitted ».
 2. **Une seule requête.** `Traffic` compte les deux directions. Comme `MetricsSummary`, chacun des
    compteurs MT est restreint à `direction = 'mt'`, et `mo_received` vaut `countIf(direction = 'mo')`.
    Sans cette restriction, un MO `delivered` compterait dans `delivered`.
@@ -27,8 +24,7 @@ Les arbitrages ont été rendus par Fable le 2026-10-11, sans contredire la spec
    `UnroutedMetric` et listés par `list-unrouted-mo`. `other` et `ungrouped` gardent leur sens.
 5. **Classement du top 20 : `submitted + mo_received`.** Une clé qui ne reçoit que du MO garde sa
    série. Tant que le CDR n'a pas de MO, l'ordre ne change pas.
-6. **`maxRows` inchangé.** La requête reste groupée par (tranche, clé) ; le MO n'ajoute que les couples
-   où il est seul, sous la même borne de 100 000 lignes et la même réponse 503 au-delà.
+6. **`maxRows` inchangé.** La requête reste groupée par (tranche, clé).
 7. **Temps réel.** `mo_received_total{connector_id}` est ajouté au catalogue. Il est incrémenté dans
    `connectorpool.handleDeliver`, sur la branche MO, après la publication réussie sur `mo.inbound`. Il
    est émis sur le flux et sur Prometheus, sur le modèle de `observeSubmit`. L'unité est le

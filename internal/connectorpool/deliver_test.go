@@ -114,9 +114,8 @@ type failingProducer struct{}
 
 func (failingProducer) Produce(context.Context, kafka.Record) error { return errors.New("broker down") }
 
-// TestMOReceivedCountsAnMOOnceItIsPublished: the realtime MO counter moves only for an MO that reached
-// mo.inbound, on the stream and on Prometheus alike. A receipt is not an MO, and an MO whose publication
-// failed is withheld from the SMSC, which will deliver it again.
+// TestMOReceivedCountsAnMOOnceItIsPublished: an MO whose publication failed is withheld from the SMSC,
+// which will deliver it again, so counting it would count it twice.
 func TestMOReceivedCountsAnMOOnceItIsPublished(t *testing.T) {
 	connectorID := uuid.New()
 	emitter := &recordingEmitter{}

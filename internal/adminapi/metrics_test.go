@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -193,13 +192,8 @@ func TestTrafficRanksAKeyByItsMTAndMOTogether(t *testing.T) {
 	}
 	api := newTestAPIWith(t, adminapi.Deps{Metrics: fake})
 
-	w := httptest.NewRecorder()
-	api.ServeHTTP(w, authed(t, http.MethodGet, "/v1/admin/metrics/traffic?groupBy=customer", ""))
-	if !strings.Contains(w.Body.String(), `"mo_received":500`) {
-		t.Fatalf("body = %s, want mo_received serialized", w.Body.String())
-	}
 	var body trafficBody
-	_ = json.Unmarshal(w.Body.Bytes(), &body)
+	getMetrics(t, api, "traffic?groupBy=customer", &body)
 	mo := map[string]int{}
 	for _, s := range body.Series {
 		for _, p := range s.Points {

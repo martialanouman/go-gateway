@@ -137,7 +137,7 @@ func TestTrafficBucketsDispatchedMessagesByConnector(t *testing.T) {
 	}
 	want := map[[2]string]clickhouse.TrafficPoint{
 		{from.String(), a.String()}:                  {Submitted: 2, Delivered: 1, Failed: 1},
-		{from.Add(time.Minute).String(), a.String()}: {Submitted: 1},
+		{from.Add(time.Minute).String(), a.String()}: {Submitted: 1, MOReceived: 1},
 		{from.Add(time.Minute).String(), b.String()}: {Submitted: 1, Failed: 1},
 	}
 	if len(points) != len(want) {
@@ -145,15 +145,12 @@ func TestTrafficBucketsDispatchedMessagesByConnector(t *testing.T) {
 	}
 	for _, p := range points {
 		w, ok := want[[2]string{p.Bucket.UTC().String(), p.Key.String()}]
-		if !ok || p.Submitted != w.Submitted || p.Delivered != w.Delivered || p.Failed != w.Failed {
-			t.Errorf("point %s %s = %d/%d/%d, want %+v (present=%v)", p.Bucket.UTC(), p.Key, p.Submitted, p.Delivered, p.Failed, w, ok)
+		if !ok || p.Submitted != w.Submitted || p.Delivered != w.Delivered || p.Failed != w.Failed || p.MOReceived != w.MOReceived {
+			t.Errorf("point %s %s = %+v, want %+v (present=%v)", p.Bucket.UTC(), p.Key, p, w, ok)
 		}
 	}
 }
 
-// TestTrafficCountsEachDirectionInItsBucket: an MO counts as mo_received in its own bucket, under the
-// connector that received it and the customer it was routed to, whatever its status, and never as a
-// submission or a delivery.
 func TestTrafficCountsEachDirectionInItsBucket(t *testing.T) {
 	writer, reader := searchReader(t)
 	from, to := metricsWindow()
@@ -161,8 +158,8 @@ func TestTrafficCountsEachDirectionInItsBucket(t *testing.T) {
 	f := &metricsFixture{writer: writer}
 	f.message(c1, clickhouse.DirectionMT, from, &a, 10, clickhouse.StatusEnroute, clickhouse.StatusDelivered)
 	f.message(c1, clickhouse.DirectionMO, from.Add(time.Second), &a, 0, clickhouse.StatusDelivered)
+	f.message(c1, clickhouse.DirectionMO, from.Add(2*time.Second), &a, 0, clickhouse.StatusFailed)
 	f.message(c2, clickhouse.DirectionMO, from.Add(2*time.Minute), &b, 0, clickhouse.StatusAccepted)
-	f.message(c1, clickhouse.DirectionMO, from.Add(3*time.Minute), &a, 0, clickhouse.StatusDelivered)
 	f.flush(t)
 
 	for _, tc := range []struct {
@@ -170,14 +167,12 @@ func TestTrafficCountsEachDirectionInItsBucket(t *testing.T) {
 		want map[[2]string]clickhouse.TrafficPoint
 	}{
 		{clickhouse.TrafficByConnector, map[[2]string]clickhouse.TrafficPoint{
-			{from.String(), a.String()}:                      {Submitted: 1, Delivered: 1, MOReceived: 1},
+			{from.String(), a.String()}:                      {Submitted: 1, Delivered: 1, MOReceived: 2},
 			{from.Add(2 * time.Minute).String(), b.String()}: {MOReceived: 1},
-			{from.Add(3 * time.Minute).String(), a.String()}: {MOReceived: 1},
 		}},
 		{clickhouse.TrafficByCustomer, map[[2]string]clickhouse.TrafficPoint{
-			{from.String(), c1.String()}:                      {Submitted: 1, Delivered: 1, MOReceived: 1},
+			{from.String(), c1.String()}:                      {Submitted: 1, Delivered: 1, MOReceived: 2},
 			{from.Add(2 * time.Minute).String(), c2.String()}: {MOReceived: 1},
-			{from.Add(3 * time.Minute).String(), c1.String()}: {MOReceived: 1},
 		}},
 	} {
 		points, err := reader.Traffic(context.Background(), from, to, time.Minute, tc.dim, 100)
