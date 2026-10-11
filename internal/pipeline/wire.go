@@ -387,6 +387,7 @@ type moRoutedWire struct {
 	Encoding        string    `json:"encoding"`
 	ESMClass        uint8     `json:"esm_class,omitempty"`
 	ReceivedAt      time.Time `json:"received_at"`
+	SegmentCount    uint16    `json:"segment_count,omitempty"`
 }
 
 // EncodeMORouted builds the mo.routed record for env, keyed by the resolved account so one account's
@@ -406,6 +407,7 @@ func EncodeMORouted(env MORouted) (kafka.Record, error) {
 		Encoding:        env.Encoding,
 		ESMClass:        env.ESMClass,
 		ReceivedAt:      env.ReceivedAt,
+		SegmentCount:    env.SegmentCount,
 	})
 	if err != nil {
 		return kafka.Record{}, fmt.Errorf("pipeline: encode mo.routed: %w", err)
@@ -439,6 +441,7 @@ func DecodeMORouted(rec kafka.Record) (MORouted, error) {
 		Encoding:        w.Encoding,
 		ESMClass:        w.ESMClass,
 		ReceivedAt:      w.ReceivedAt,
+		SegmentCount:    max(w.SegmentCount, 1),
 	}, nil
 }
 

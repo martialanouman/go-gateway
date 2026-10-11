@@ -147,10 +147,17 @@ func TestNewRouterAppBuildsTheWholeGraph(t *testing.T) {
 			"first joined stays deletable")
 	}
 
+	// The MO projection starts at the end of mo.routed, like the accepted one: replaying the retained topic
+	// would re-insert history and storm content-key-svc for data keys.
+	if app.projections == nil || !app.projections.moKafka.StartsFromEnd() {
+		t.Error("the MO CDR projection is not wired to start at the end of mo.routed")
+	}
+
 	for name, component := range map[string]any{
 		"ops":      app.ops,
 		"router":   app.router,
 		"accepted": app.accepted,
+		"mo cdr":   app.moCDR,
 		"outcome":  app.outcome,
 		"watcher":  app.watcher,
 		"emitter":  app.emitter,

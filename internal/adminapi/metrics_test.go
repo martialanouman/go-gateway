@@ -105,10 +105,11 @@ type trafficBody struct {
 	Series  []struct {
 		Key    string `json:"key"`
 		Points []struct {
-			T         time.Time `json:"t"`
-			Submitted int       `json:"submitted"`
-			Delivered int       `json:"delivered"`
-			Failed    int       `json:"failed"`
+			T          time.Time `json:"t"`
+			Submitted  int       `json:"submitted"`
+			Delivered  int       `json:"delivered"`
+			Failed     int       `json:"failed"`
+			MOReceived int       `json:"mo_received"`
 		} `json:"points"`
 	} `json:"series"`
 }
@@ -177,6 +178,30 @@ func TestTrafficKeepsTheTopTwentyAndSumsTheRestUnderOther(t *testing.T) {
 	}
 	if fake.step != 10*time.Second || fake.dimension != clickhouse.TrafficByCustomer {
 		t.Fatalf("read by %v per %s, want 10s per customer", fake.step, fake.dimension)
+	}
+}
+
+// TestTrafficRanksAKeyByItsMTAndMOTogether: a key that only receives MO still gets its own series, and
+// the MO of the keys past the top twenty is summed under other with their MT.
+func TestTrafficRanksAKeyByItsMTAndMOTogether(t *testing.T) {
+	bucket := time.Date(2026, 9, 26, 10, 0, 0, 0, time.UTC)
+	moOnly := uuid.New()
+	fake := &fakeMetrics{points: []clickhouse.TrafficPoint{{Bucket: bucket, Key: moOnly, MOReceived: 500}}}
+	for i := range 21 {
+		fake.points = append(fake.points, clickhouse.TrafficPoint{Bucket: bucket, Key: uuid.New(), Submitted: int64(100 - i), MOReceived: 7})
+	}
+	api := newTestAPIWith(t, adminapi.Deps{Metrics: fake})
+
+	var body trafficBody
+	getMetrics(t, api, "traffic?groupBy=customer", &body)
+	mo := map[string]int{}
+	for _, s := range body.Series {
+		for _, p := range s.Points {
+			mo[s.Key] += p.MOReceived
+		}
+	}
+	if len(body.Series) != 21 || mo[moOnly.String()] != 500 || mo["other"] != 14 {
+		t.Fatalf("mo by key = %v over %d series, want %s=500 in the top twenty and other=14", mo, len(body.Series), moOnly)
 	}
 }
 

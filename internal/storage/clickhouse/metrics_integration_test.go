@@ -137,16 +137,56 @@ func TestTrafficBucketsDispatchedMessagesByConnector(t *testing.T) {
 	}
 	want := map[[2]string]clickhouse.TrafficPoint{
 		{from.String(), a.String()}:                  {Submitted: 2, Delivered: 1, Failed: 1},
-		{from.Add(time.Minute).String(), a.String()}: {Submitted: 1},
+		{from.Add(time.Minute).String(), a.String()}: {Submitted: 1, MOReceived: 1},
 		{from.Add(time.Minute).String(), b.String()}: {Submitted: 1, Failed: 1},
 	}
 	if len(points) != len(want) {
-		t.Fatalf("points = %+v, want %d (the rejected MT and the MO in none)", points, len(want))
+		t.Fatalf("points = %+v, want %d (the rejected MT in none)", points, len(want))
 	}
 	for _, p := range points {
 		w, ok := want[[2]string{p.Bucket.UTC().String(), p.Key.String()}]
-		if !ok || p.Submitted != w.Submitted || p.Delivered != w.Delivered || p.Failed != w.Failed {
-			t.Errorf("point %s %s = %d/%d/%d, want %+v (present=%v)", p.Bucket.UTC(), p.Key, p.Submitted, p.Delivered, p.Failed, w, ok)
+		if !ok || p.Submitted != w.Submitted || p.Delivered != w.Delivered || p.Failed != w.Failed || p.MOReceived != w.MOReceived {
+			t.Errorf("point %s %s = %+v, want %+v (present=%v)", p.Bucket.UTC(), p.Key, p, w, ok)
+		}
+	}
+}
+
+func TestTrafficCountsEachDirectionInItsBucket(t *testing.T) {
+	writer, reader := searchReader(t)
+	from, to := metricsWindow()
+	c1, c2, a, b := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	f := &metricsFixture{writer: writer}
+	f.message(c1, clickhouse.DirectionMT, from, &a, 10, clickhouse.StatusEnroute, clickhouse.StatusDelivered)
+	f.message(c1, clickhouse.DirectionMO, from.Add(time.Second), &a, 0, clickhouse.StatusDelivered)
+	f.message(c1, clickhouse.DirectionMO, from.Add(2*time.Second), &a, 0, clickhouse.StatusFailed)
+	f.message(c2, clickhouse.DirectionMO, from.Add(2*time.Minute), &b, 0, clickhouse.StatusAccepted)
+	f.flush(t)
+
+	for _, tc := range []struct {
+		dim  clickhouse.TrafficDimension
+		want map[[2]string]clickhouse.TrafficPoint
+	}{
+		{clickhouse.TrafficByConnector, map[[2]string]clickhouse.TrafficPoint{
+			{from.String(), a.String()}:                      {Submitted: 1, Delivered: 1, MOReceived: 2},
+			{from.Add(2 * time.Minute).String(), b.String()}: {MOReceived: 1},
+		}},
+		{clickhouse.TrafficByCustomer, map[[2]string]clickhouse.TrafficPoint{
+			{from.String(), c1.String()}:                      {Submitted: 1, Delivered: 1, MOReceived: 2},
+			{from.Add(2 * time.Minute).String(), c2.String()}: {MOReceived: 1},
+		}},
+	} {
+		points, err := reader.Traffic(context.Background(), from, to, time.Minute, tc.dim, 100)
+		if err != nil {
+			t.Fatalf("Traffic by %s: %v", tc.dim, err)
+		}
+		if len(points) != len(tc.want) {
+			t.Errorf("by %s: points = %+v, want %d", tc.dim, points, len(tc.want))
+		}
+		for _, p := range points {
+			w, ok := tc.want[[2]string{p.Bucket.UTC().String(), p.Key.String()}]
+			if !ok || p.Submitted != w.Submitted || p.Delivered != w.Delivered || p.Failed != w.Failed || p.MOReceived != w.MOReceived {
+				t.Errorf("by %s: point %s %s = %+v, want %+v (present=%v)", tc.dim, p.Bucket.UTC(), p.Key, p, w, ok)
+			}
 		}
 	}
 }
@@ -179,5 +219,32 @@ func TestTrafficRefusesMoreRowsThanItMayReturn(t *testing.T) {
 
 	if _, err := reader.Traffic(context.Background(), from, to, time.Minute, clickhouse.TrafficByCustomer, 1); !errors.Is(err, errs.ErrServiceUnavailable) {
 		t.Fatalf("err = %v, want ErrServiceUnavailable rather than a silently truncated series", err)
+	}
+}
+
+// TestTheExplorerReadsAnMOWithItsConnectorAndSegments: an MO has no dispatch, so its single accepted row is
+// the one that carries its connector and segment count; the explorer reads them as the metrics do.
+func TestTheExplorerReadsAnMOWithItsConnectorAndSegments(t *testing.T) {
+	writer, reader := searchReader(t)
+	ctx := context.Background()
+	connector := uuid.New()
+	mo := clickhouse.CDRRow{
+		MessageID: uuid.New(), TraceID: uuid.New(), AccountID: uuid.New(), CustomerID: uuid.New(),
+		Direction: clickhouse.DirectionMO, SourceAddr: searchMSISDN(), DestAddr: "36000", ConnectorID: &connector,
+		SubmittedAt: time.Now().UTC().Truncate(time.Millisecond), Status: clickhouse.StatusAccepted,
+		SegmentCount: 3, SegmentSeq: 1, Encoding: clickhouse.EncodingUCS2,
+	}
+	if err := writer.InsertBatch(ctx, []clickhouse.CDRRow{mo}); err != nil {
+		t.Fatalf("InsertBatch: %v", err)
+	}
+
+	got, found, err := reader.Current(ctx, mo.CustomerID, mo.AccountID, mo.MessageID)
+	if err != nil || !found {
+		t.Fatalf("Current: found=%v err=%v", found, err)
+	}
+	if got.ConnectorID == nil || *got.ConnectorID != connector || got.SegmentCount != 3 ||
+		got.Status != clickhouse.StatusAccepted || got.Direction != clickhouse.DirectionMO {
+		t.Fatalf("explorer row = connector %v, %d segments, %s %s; want %s, 3, accepted mo",
+			got.ConnectorID, got.SegmentCount, got.Status, got.Direction, connector)
 	}
 }

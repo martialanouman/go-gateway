@@ -2,10 +2,15 @@ package connectorpool
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
+	"github.com/martialanouman/go-gateway/internal/observability/metrics"
 	"github.com/martialanouman/go-gateway/internal/smpp"
 
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
@@ -104,3 +109,39 @@ func TestBuildMOUsesMessagePayloadWhenShortMessageEmpty(t *testing.T) {
 type discardProducer struct{}
 
 func (discardProducer) Produce(context.Context, kafka.Record) error { return nil }
+
+type failingProducer struct{}
+
+func (failingProducer) Produce(context.Context, kafka.Record) error { return errors.New("broker down") }
+
+// TestMOReceivedCountsAnMOOnceItIsPublished: an MO whose publication failed is withheld from the SMSC,
+// which will deliver it again, so counting it would count it twice.
+func TestMOReceivedCountsAnMOOnceItIsPublished(t *testing.T) {
+	connectorID := uuid.New()
+	emitter := &recordingEmitter{}
+	catalog := metrics.NewCatalog()
+	deps := Deps{Producer: discardProducer{}, ConnectorID: connectorID, Stream: emitter, Metrics: catalog}
+	mo := &smpp.DeliverSM{}
+	mo.SourceAddr, mo.DestinationAddr, mo.ShortMessage = "22507000001", "36000", []byte("hello")
+	dlr := &smpp.DeliverSM{}
+	dlr.ESMClass = smpp.ESMClassMCDeliveryReceipt
+	dlr.ShortMessage = []byte("id:abc stat:DELIVRD err:000")
+
+	for _, ds := range []*smpp.DeliverSM{mo, dlr} {
+		if err := New(deps).handleDeliver(context.Background(), ds); err != nil {
+			t.Fatalf("handleDeliver: %v", err)
+		}
+	}
+	deps.Producer = failingProducer{}
+	if err := New(deps).handleDeliver(context.Background(), mo); err == nil {
+		t.Fatal("handleDeliver with a failing producer = nil, want the error that withholds the deliver_sm_resp")
+	}
+
+	key := "mo_received_total{connector_id=" + connectorID.String() + ",status=,code=}"
+	if got := emitter.adds[key]; got != 1 || len(emitter.adds) != 1 {
+		t.Errorf("stream adds = %v, want only %s = 1", emitter.adds, key)
+	}
+	if got := testutil.ToFloat64(catalog.MOReceivedTotal.WithLabelValues(connectorID.String())); got != 1 {
+		t.Errorf("prometheus mo_received_total = %v, want 1", got)
+	}
+}

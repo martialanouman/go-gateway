@@ -6,6 +6,7 @@ import (
 
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	"github.com/martialanouman/go-gateway/internal/platform/e164"
+	"github.com/martialanouman/go-gateway/internal/platform/msg"
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
 )
@@ -39,18 +40,70 @@ type AcceptedConsumer struct {
 	cdr      CDRWriter
 	sealer   *ContentSealer
 	logger   *slog.Logger
+	project  func(kafka.Record) (clickhouse.CDRRow, msg.Body, error)
 }
 
 // NewAcceptedConsumer wires the consumer. sealer may be nil: content storage is then disabled (no body is
 // ever written), the row is still projected durably.
 func NewAcceptedConsumer(consumer BatchConsumer, cdr CDRWriter, sealer *ContentSealer, logger *slog.Logger) *AcceptedConsumer {
+	return newAcceptedConsumer(consumer, cdr, sealer, logger, projectInbound)
+}
+
+// NewMOCDRConsumer projects the CDR row of each routed MO off mo.routed, with the same durability as the
+// MT accepted row. It is written there and not after delivery: a ClickHouse fault on the delivery path
+// would replay the delivery, and hand the MO to the account twice.
+func NewMOCDRConsumer(consumer BatchConsumer, cdr CDRWriter, sealer *ContentSealer, logger *slog.Logger) *AcceptedConsumer {
+	return newAcceptedConsumer(consumer, cdr, sealer, logger, projectMORouted)
+}
+
+func newAcceptedConsumer(consumer BatchConsumer, cdr CDRWriter, sealer *ContentSealer, logger *slog.Logger,
+	project func(kafka.Record) (clickhouse.CDRRow, msg.Body, error)) *AcceptedConsumer {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &AcceptedConsumer{consumer: consumer, cdr: cdr, sealer: sealer, logger: logger}
+	return &AcceptedConsumer{consumer: consumer, cdr: cdr, sealer: sealer, logger: logger, project: project}
 }
 
-// Run consumes mt.inbound and writes accepted rows until ctx is cancelled. It is one supervised goroutine.
+func projectInbound(rec kafka.Record) (clickhouse.CDRRow, msg.Body, error) {
+	env, err := pipeline.DecodeInbound(rec)
+	if err != nil {
+		return clickhouse.CDRRow{}, msg.Body{}, err
+	}
+	row := AcceptedRow(env)
+	// The heavy phone parse the request path deferred: normalize to the canonical form the router stores,
+	// so a message spells its destination the same across all its lifecycle rows. Best-effort — a number
+	// that fails to parse keeps its raw form (the router is the single rejection authority).
+	if norm, nerr := e164.Normalize(row.DestAddr); nerr == nil {
+		row.DestAddr = norm
+	}
+	return row, env.Body, nil
+}
+
+// projectMORouted writes the MO as accepted (debts/issue-de-remise-mo-non-projetee.md).
+func projectMORouted(rec kafka.Record) (clickhouse.CDRRow, msg.Body, error) {
+	mo, err := pipeline.DecodeMORouted(rec)
+	if err != nil {
+		return clickhouse.CDRRow{}, msg.Body{}, err
+	}
+	connectorID := mo.ConnectorID
+	return clickhouse.CDRRow{
+		MessageID:    mo.MessageID,
+		TraceID:      mo.TraceID,
+		AccountID:    mo.AccountID,
+		CustomerID:   mo.CustomerID,
+		Direction:    clickhouse.DirectionMO,
+		SourceAddr:   mo.From,
+		DestAddr:     mo.To,
+		ConnectorID:  &connectorID,
+		SubmittedAt:  mo.ReceivedAt,
+		Status:       clickhouse.StatusAccepted,
+		SegmentCount: mo.SegmentCount,
+		SegmentSeq:   1,
+		Encoding:     clickhouse.EncodingOf(mo.Encoding),
+	}, mo.Body, nil
+}
+
+// Run consumes its topic and writes accepted rows until ctx is cancelled. It is one supervised goroutine.
 func (c *AcceptedConsumer) Run(ctx context.Context) error {
 	return c.consumer.RunBatch(ctx, c.handleBatch)
 }
@@ -69,21 +122,14 @@ func (c *AcceptedConsumer) handleBatch(ctx context.Context, recs []kafka.Record)
 	results := make([]error, len(recs))
 	rows := make([]clickhouse.CDRRow, 0, len(recs))
 	for _, rec := range recs {
-		env, err := pipeline.DecodeInbound(rec)
+		row, body, err := c.project(rec)
 		if err != nil {
 			// A corrupt record can never become valid; skip it rather than stall the stream forever.
-			c.logger.ErrorContext(ctx, "decode mt.inbound for accepted CDR: skipping corrupt record", "err", err)
+			c.logger.ErrorContext(ctx, "decode record for accepted CDR: skipping corrupt record", "err", err)
 			continue
 		}
-		row := AcceptedRow(env)
-		// The heavy phone parse the request path deferred: normalize to the canonical form the router stores,
-		// so a message spells its destination the same across all its lifecycle rows. Best-effort — a number
-		// that fails to parse keeps its raw form (the router is the single rejection authority).
-		if norm, nerr := e164.Normalize(row.DestAddr); nerr == nil {
-			row.DestAddr = norm
-		}
 		if c.sealer != nil {
-			c.sealer.Seal(ctx, &row, env.Body, env.CustomerID)
+			c.sealer.Seal(ctx, &row, body, row.CustomerID)
 		}
 		rows = append(rows, row)
 	}
@@ -91,10 +137,11 @@ func (c *AcceptedConsumer) handleBatch(ctx context.Context, recs []kafka.Record)
 		return results // nothing decodable in this batch; all offsets committable
 	}
 	if err := c.cdr.InsertBatch(ctx, rows); err != nil {
-		if ctx.Err() != nil {
-			return results // graceful shutdown mid-batch: let the supervisor stop cleanly
+		// A write cut short by shutdown may not have landed either: the batch stays uncommitted and the
+		// consumer stops without replaying it.
+		if ctx.Err() == nil {
+			c.logger.ErrorContext(ctx, "accepted-row batch write failed; will reprocess", "rows", len(rows), "err", err)
 		}
-		c.logger.ErrorContext(ctx, "accepted-row batch write failed; will reprocess", "rows", len(rows), "err", err)
 		for i := range results {
 			results[i] = err // fail the whole poll batch → nothing commits → reprocess
 		}

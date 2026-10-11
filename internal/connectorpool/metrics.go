@@ -44,6 +44,16 @@ func (s *Service) observeSubmit(resp smpp.PDU, code errs.Code, e2e time.Duration
 	}
 }
 
+func (s *Service) observeMO() {
+	connectorID := s.deps.ConnectorID.String()
+	s.stream(func(e StreamEmitter) {
+		e.Add("mo_received_total", metricstream.Labels{"connector_id": connectorID}, 1)
+	})
+	if s.deps.Metrics != nil {
+		s.deps.Metrics.MOReceivedTotal.WithLabelValues(connectorID).Inc()
+	}
+}
+
 // timeStage records how long a submit stage or a poll batch took, from start (step-287c).
 func (s *Service) timeStage(stage string, start time.Time) {
 	if s.deps.Metrics != nil {

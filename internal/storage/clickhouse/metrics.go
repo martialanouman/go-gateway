@@ -33,8 +33,8 @@ func metricsMessages(innerFilter string) string {
 	return `SELECT submitted_at, customer_id, direction, connector_id, latency_ms,
 	` + cdrStatusPrecedence + ` AS status
 FROM (
-	SELECT submitted_at, message_id, any(customer_id) AS customer_id, any(direction) AS direction,
-		anyIf(connector_id, ` + cdrDispatched + `) AS connector_id,
+	SELECT submitted_at, message_id, any(customer_id) AS customer_id, direction,
+		anyIf(connector_id, ` + cdrCarriesSegments + `) AS connector_id,
 		maxIf(latency_ms, ` + cdrDispatched + `) AS latency_ms,
 		` + cdrStatusCounts + `
 	FROM (
@@ -44,7 +44,7 @@ FROM (
 		FROM cdr
 		WHERE submitted_at >= ? AND submitted_at < ?` + innerFilter + `
 		GROUP BY customer_id, direction, submitted_at, message_id, segment_seq
-	) GROUP BY submitted_at, message_id
+	) GROUP BY submitted_at, message_id, direction
 )`
 }
 
@@ -99,18 +99,19 @@ const (
 	TrafficByCustomer  TrafficDimension = "customer"
 )
 
-// TrafficPoint is one bucket of one key's MT traffic.
+// TrafficPoint is one bucket of one key's traffic: the MT submitted and their outcomes, and the MO received.
 type TrafficPoint struct {
-	Bucket    time.Time
-	Key       uuid.UUID
-	Submitted int64
-	Delivered int64
-	Failed    int64
+	Bucket     time.Time
+	Key        uuid.UUID
+	Submitted  int64
+	Delivered  int64
+	Failed     int64
+	MOReceived int64
 }
 
-// Traffic buckets the MT messages submitted in [from, to) by step and dimension. A message never dispatched
-// has no connector and appears in no connector series. More than maxRows points is refused as
-// ErrServiceUnavailable rather than returned truncated.
+// Traffic buckets the MT submitted and the MO received in [from, to) by step and dimension. An MT never
+// dispatched has no connector and appears in no connector series; an MO belongs to the connector that
+// received it. More than maxRows points is refused as ErrServiceUnavailable rather than returned truncated.
 func (r *CDRReader) Traffic(ctx context.Context, from, to time.Time, step time.Duration, dim TrafficDimension, maxRows int) ([]TrafficPoint, error) {
 	key, where := `customer_id`, ``
 	if dim == TrafficByConnector {
@@ -118,8 +119,9 @@ func (r *CDRReader) Traffic(ctx context.Context, from, to time.Time, step time.D
 	WHERE connector_id IS NOT NULL`
 	}
 	query := `SELECT toStartOfInterval(submitted_at, toIntervalSecond(?)) AS bucket, ` + key + ` AS key,
-		toInt64(count()), toInt64(countIf(status = 'delivered')), toInt64(countIf(` + metricsFailed + `))
-	FROM (` + metricsMessages(` AND direction = 'mt'`) + `)` + where + `
+		toInt64(countIf(direction = 'mt')), toInt64(countIf(direction = 'mt' AND status = 'delivered')),
+		toInt64(countIf(direction = 'mt' AND ` + metricsFailed + `)), toInt64(countIf(direction = 'mo'))
+	FROM (` + metricsMessages(``) + `)` + where + `
 	GROUP BY bucket, key
 	ORDER BY bucket, key
 	LIMIT ?`
@@ -133,7 +135,7 @@ func (r *CDRReader) Traffic(ctx context.Context, from, to time.Time, step time.D
 	var out []TrafficPoint
 	for rows.Next() {
 		var p TrafficPoint
-		if err := rows.Scan(&p.Bucket, &p.Key, &p.Submitted, &p.Delivered, &p.Failed); err != nil {
+		if err := rows.Scan(&p.Bucket, &p.Key, &p.Submitted, &p.Delivered, &p.Failed, &p.MOReceived); err != nil {
 			return nil, fmt.Errorf("clickhouse: scan traffic: %w", err)
 		}
 		out = append(out, p)

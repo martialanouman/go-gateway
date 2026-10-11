@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
+	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	"github.com/martialanouman/go-gateway/internal/ingest"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	"github.com/martialanouman/go-gateway/internal/platform/msg"
@@ -97,4 +99,68 @@ func TestAcceptedConsumerSkipsCorruptRecord(t *testing.T) {
 			t.Errorf("record %d result = %v, want nil", i, r)
 		}
 	}
+}
+
+// TestMOCDRConsumerProjectsTheRoutedMO: one accepted row per routed MO, attributed to the connector that
+// received it and the customer it was routed to, its body sealed by the customer's content policy.
+func TestMOCDRConsumerProjectsTheRoutedMO(t *testing.T) {
+	mo := pipeline.MORouted{
+		MessageID: uuid.New(), TraceID: uuid.New(), AccountID: uuid.New(), CustomerID: uuid.New(),
+		ConnectorID: uuid.New(), From: "+22507000001", To: "36000", Body: msg.NewBodyString("hello"),
+		Encoding: "ucs2", ReceivedAt: time.Date(2026, 10, 11, 9, 0, 0, 0, time.UTC), SegmentCount: 3,
+	}
+	rec, err := pipeline.EncodeMORouted(mo)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	cdr := &fakeCDR{}
+	sealer := ingest.NewContentSealer(policyOf{mo.CustomerID: cp.ContentStoredPlaintext}, fakeKeys{}, nil, nil)
+	cons := &capturingConsumer{recs: []kafka.Record{{Value: []byte("not json")}, rec}}
+
+	if err := ingest.NewMOCDRConsumer(cons, cdr, sealer, nil).Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(cdr.rows) != 1 {
+		t.Fatalf("wrote %d rows, want 1 (the corrupt record skipped)", len(cdr.rows))
+	}
+	got := cdr.rows[0]
+	if got.MessageID != mo.MessageID || got.TraceID != mo.TraceID || got.AccountID != mo.AccountID ||
+		got.CustomerID != mo.CustomerID || got.ConnectorID == nil || *got.ConnectorID != mo.ConnectorID ||
+		got.Direction != clickhouse.DirectionMO || got.Status != clickhouse.StatusAccepted ||
+		got.SourceAddr != mo.From || got.DestAddr != mo.To || !got.SubmittedAt.Equal(mo.ReceivedAt) ||
+		got.SegmentCount != 3 || got.SegmentSeq != 1 || got.Encoding != clickhouse.EncodingUCS2 {
+		t.Errorf("row = %+v, want the routed MO projected as accepted", got)
+	}
+	if got.ContentCiphertext == nil || *got.ContentCiphertext != "hello" {
+		t.Errorf("content = %v, want the body stored per the plaintext policy", got.ContentCiphertext)
+	}
+	for i, r := range cons.results {
+		if r != nil {
+			t.Errorf("record %d result = %v, want nil (committable)", i, r)
+		}
+	}
+}
+
+// TestAcceptedConsumerKeepsTheBatchWhenStoppedMidWrite: a write cut short by shutdown may never have reached
+// ClickHouse, so the batch stays uncommitted and is read again on restart, where the rows dedup.
+func TestAcceptedConsumerKeepsTheBatchWhenStoppedMidWrite(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cons := &capturingConsumer{recs: []kafka.Record{inboundRec(t, uuid.New())}}
+	if err := ingest.NewAcceptedConsumer(cons, errCDR{err: context.Canceled}, nil, nil).Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if cons.results[0] == nil {
+		t.Error("the record committed although its write was cancelled: its row may be lost")
+	}
+}
+
+// policyOf stores content for the customers it names only, so a body sealed under the wrong customer reads off.
+type policyOf map[uuid.UUID]cp.ContentStorage
+
+func (p policyOf) For(id uuid.UUID) cp.ContentStorage {
+	if s, ok := p[id]; ok {
+		return s
+	}
+	return cp.ContentOff
 }

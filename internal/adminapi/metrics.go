@@ -63,10 +63,11 @@ type trafficInput struct {
 }
 
 type trafficPointDTO struct {
-	T         time.Time `json:"t"`
-	Submitted int64     `json:"submitted" required:"false"`
-	Delivered int64     `json:"delivered" required:"false"`
-	Failed    int64     `json:"failed" required:"false"`
+	T          time.Time `json:"t"`
+	Submitted  int64     `json:"submitted" required:"false"`
+	Delivered  int64     `json:"delivered" required:"false"`
+	Failed     int64     `json:"failed" required:"false"`
+	MOReceived int64     `json:"mo_received" required:"false"`
 }
 
 type trafficSeriesDTO struct {
@@ -181,8 +182,8 @@ func (h *metricsHandlers) groupOfEachCustomer(ctx context.Context) (map[uuid.UUI
 	}
 }
 
-// foldSeries groups the points by key, keeps the trafficTopSeries keys with the most submissions and sums
-// the rest under trafficOtherKey, so the series still add up to the whole traffic.
+// foldSeries groups the points by key, keeps the trafficTopSeries keys with the most messages, MT and MO,
+// and sums the rest under trafficOtherKey, so the series still add up to the whole traffic.
 func foldSeries(points []clickhouse.TrafficPoint, keyOf func(uuid.UUID) string) []trafficSeriesDTO {
 	byKey := map[string]map[time.Time]*trafficPointDTO{}
 	totals := map[string]int64{}
@@ -200,7 +201,8 @@ func foldSeries(points []clickhouse.TrafficPoint, keyOf func(uuid.UUID) string) 
 		b.Submitted += p.Submitted
 		b.Delivered += p.Delivered
 		b.Failed += p.Failed
-		totals[key] += p.Submitted
+		b.MOReceived += p.MOReceived
+		totals[key] += p.Submitted + p.MOReceived
 	}
 	for _, p := range points {
 		add(keyOf(p.Key), p)
@@ -214,7 +216,7 @@ func foldSeries(points []clickhouse.TrafficPoint, keyOf func(uuid.UUID) string) 
 	if len(keys) > trafficTopSeries {
 		for _, k := range keys[trafficTopSeries:] {
 			for _, b := range byKey[k] {
-				add(trafficOtherKey, clickhouse.TrafficPoint{Bucket: b.T, Submitted: b.Submitted, Delivered: b.Delivered, Failed: b.Failed})
+				add(trafficOtherKey, clickhouse.TrafficPoint{Bucket: b.T, Submitted: b.Submitted, Delivered: b.Delivered, Failed: b.Failed, MOReceived: b.MOReceived})
 			}
 		}
 		keys = append(keys[:trafficTopSeries], trafficOtherKey)

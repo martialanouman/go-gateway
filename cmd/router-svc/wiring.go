@@ -51,6 +51,11 @@ type routerApp struct {
 	ops      *observability.OpsServer
 	router   *router.Router
 	accepted *ingest.AcceptedConsumer
+	// moCDR projects the CDR row of each routed MO. It lives here, not in mo-dlr-router-svc, because
+	// content-key-svc gives the content data key to router-svc only (step-295b, ADR-0016). projections
+	// keeps its wrapper, whose consumer start offset a test asserts.
+	moCDR       *ingest.AcceptedConsumer
+	projections *acceptedProjector
 	// Kept as the wrapper, not just the projector: it owns the consumer whose start offset is a
 	// durability property a test must be able to assert (step-201c D9).
 	outcome  *outcomeProjector
@@ -164,6 +169,7 @@ func newRouterApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 	}
 	a.onClose("accepted", proj.close)
 	a.accepted = proj.consumer
+	a.moCDR, a.projections = proj.mo, proj
 
 	outc, err := newOutcomeProjector(cfg, st.ch, logger)
 	if err != nil {
@@ -484,9 +490,15 @@ type acceptedProjector struct {
 
 	kafka *kafka.Consumer
 	conn  *grpc.ClientConn
+
+	mo      *ingest.AcceptedConsumer
+	moKafka *kafka.Consumer
 }
 
 func (p *acceptedProjector) close() {
+	if p.moKafka != nil {
+		p.moKafka.Close()
+	}
 	if p.kafka != nil {
 		p.kafka.Close()
 	}
@@ -533,6 +545,12 @@ func newAcceptedProjector(ctx context.Context, cfg config.Config, pool *pgxpool.
 		return nil, fmt.Errorf("kafka accepted-cdr consumer: %w", err)
 	}
 	p.consumer = ingest.NewAcceptedConsumer(p.kafka, clickhouse.NewCDRWriter(ch), p.sealer, logger)
+
+	p.moKafka, err = kafka.NewConsumerFromLatest(cfg.Kafka, serviceName+"-mo-cdr", kafka.TopicMORouted)
+	if err != nil {
+		return nil, fmt.Errorf("kafka mo-cdr consumer: %w", err)
+	}
+	p.mo = ingest.NewMOCDRConsumer(p.moKafka, clickhouse.NewCDRWriter(ch), p.sealer, logger)
 	return p, nil
 }
 

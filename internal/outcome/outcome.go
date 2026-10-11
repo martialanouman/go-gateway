@@ -126,10 +126,11 @@ func (p *Projector) handleBatch(ctx context.Context, recs []kafka.Record) []erro
 		return results // nothing writable in this batch; all offsets committable
 	}
 	if err := p.cdr.InsertBatch(ctx, rows); err != nil {
-		if ctx.Err() != nil {
-			return results // graceful shutdown mid-batch: let the supervisor stop cleanly
+		// A write cut short by shutdown may not have landed either: the batch stays uncommitted and the
+		// consumer stops without replaying it.
+		if ctx.Err() == nil {
+			p.logger.ErrorContext(ctx, "outcome-row batch write failed; will reprocess", "rows", len(rows), "err", err)
 		}
-		p.logger.ErrorContext(ctx, "outcome-row batch write failed; will reprocess", "rows", len(rows), "err", err)
 		for i := range results {
 			results[i] = err // fail the whole poll batch → nothing commits → reprocess
 		}

@@ -43,6 +43,7 @@ func TestCatalogRegistersAndExposesEveryMetric(t *testing.T) {
 		c.ExactRouteLookups.WithLabelValues("pg_hit").Inc()
 		c.ExactRouteCacheCorrupt.Inc()
 		c.ConnectorLoadReads.WithLabelValues("missing").Inc()
+		c.MOReceivedTotal.WithLabelValues("00000000-0000-0000-0000-000000000001").Inc()
 	})
 
 	for _, name := range []string{
@@ -55,6 +56,7 @@ func TestCatalogRegistersAndExposesEveryMetric(t *testing.T) {
 		"exact_route_lookups_total",
 		"exact_route_cache_corrupt_total",
 		"routing_connector_load_reads_total",
+		"mo_received_total",
 	} {
 		if !strings.Contains(body, name+"{") && !strings.Contains(body, name+"_bucket{") &&
 			!strings.Contains(body, "\n"+name+" ") {

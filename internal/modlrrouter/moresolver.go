@@ -97,27 +97,27 @@ func (r *MORouter) Run(ctx context.Context) error {
 // single logical MO with its body assembled and the UDH indicator cleared. An MO whose UDH is not a
 // concatenation (a malformed or non-concat header) is passed through unchanged as a complete message.
 // The body is revealed for header parsing only and never logged (invariant a).
-func (r *MORouter) reassemble(ctx context.Context, mo pipeline.MOInbound) (pipeline.MOInbound, bool, error) {
+func (r *MORouter) reassemble(ctx context.Context, mo pipeline.MOInbound) (_ pipeline.MOInbound, segments uint16, complete bool, err error) {
 	concat, content, hasConcat, err := smpp.ParseUDH(mo.Body.Reveal())
 	if err != nil || !hasConcat {
-		return mo, true, nil
+		return mo, 1, true, nil
 	}
 	// The concatenation header comes from an untrusted peer (a deliver_sm) and is not bounds-checked by
 	// ParseUDH: a malformed total/sequence (0, or sequence past total) must not be buffered — it would
 	// either route a phantom empty message or wait forever for parts that cannot arrive. Treat it as a
 	// single, complete message instead.
 	if concat.Total < 1 || concat.Sequence < 1 || concat.Sequence > concat.Total {
-		return mo, true, nil
+		return mo, 1, true, nil
 	}
 	assembled, complete, err := r.deps.Reassembler.Offer(ctx, mo.From, mo.To, mo.ConnectorID,
 		concat.Reference, int(concat.Total), int(concat.Sequence), content)
 	if err != nil || !complete {
-		return pipeline.MOInbound{}, complete, err
+		return pipeline.MOInbound{}, 0, complete, err
 	}
 	out := mo
 	out.Body = msg.NewBody(assembled)
 	out.ESMClass = mo.ESMClass &^ smpp.ESMClassUDHIndicator // the reassembled MO carries no UDH
-	return out, true, nil
+	return out, uint16(concat.Total), true, nil
 }
 
 func (r *MORouter) handler() kafka.Handler {
@@ -139,8 +139,9 @@ func (r *MORouter) handler() kafka.Handler {
 		// deliver_sm, one segment each, so buffer them by reference and only process the complete logical
 		// message. A segment that does not yet complete the group is committed (durably buffered in Redis)
 		// and waits for the rest; a transient buffer fault returns so the segment is reprocessed.
+		segments := uint16(1)
 		if r.deps.Reassembler != nil && mo.ESMClass&smpp.ESMClassUDHIndicator != 0 {
-			assembled, complete, err := r.reassemble(ctx, mo)
+			assembled, n, complete, err := r.reassemble(ctx, mo)
 			if err != nil {
 				return err
 			}
@@ -148,7 +149,7 @@ func (r *MORouter) handler() kafka.Handler {
 				span.SetAttributes(attribute.Bool("mo.segment_buffered", true))
 				return nil
 			}
-			mo = assembled
+			mo, segments = assembled, n
 		}
 
 		dest := normalizeAddr(mo.To)
@@ -203,6 +204,7 @@ func (r *MORouter) handler() kafka.Handler {
 			Encoding:        encodingOf(mo.DataCoding),
 			ESMClass:        mo.ESMClass,
 			ReceivedAt:      mo.ReceivedAt,
+			SegmentCount:    segments,
 		}
 		out, err := pipeline.EncodeMORouted(routed)
 		if err != nil {

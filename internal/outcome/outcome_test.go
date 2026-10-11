@@ -344,10 +344,10 @@ func TestProjectorCommitsABatchWithNothingToWrite(t *testing.T) {
 	}
 }
 
-// TestProjectorTreatsACancelledContextAsAGracefulStop: a write that fails because the process is
-// shutting down is not a fault — reporting it would make the supervisor log a crash on every SIGTERM.
-// The offsets stay committable; the rows are rewritten idempotently on the next start if they were lost.
-func TestProjectorTreatsACancelledContextAsAGracefulStop(t *testing.T) {
+// TestProjectorKeepsTheBatchWhenStoppedMidWrite: a write cut short by shutdown may never have reached
+// ClickHouse, so the batch stays uncommitted and is read again on restart, where the rows dedup. The stop
+// is still quiet: Run returns nil, the consumer does not replay on a cancelled context.
+func TestProjectorKeepsTheBatchWhenStoppedMidWrite(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	cons := &capturingConsumer{recs: []kafka.Record{outcomeRec(t, enrouteEvent())}}
@@ -355,10 +355,8 @@ func TestProjectorTreatsACancelledContextAsAGracefulStop(t *testing.T) {
 	if err := outcome.NewProjector(cons, cancellingCDR{cancel: cancel}, nil, nil).Run(ctx); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	for i, r := range cons.results {
-		if r != nil {
-			t.Errorf("record %d result = %v, want nil (graceful stop, not a fault)", i, r)
-		}
+	if cons.results[0] == nil {
+		t.Error("the record committed although its write was cancelled: its row may be lost")
 	}
 }
 

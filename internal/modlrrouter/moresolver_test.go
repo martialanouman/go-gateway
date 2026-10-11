@@ -289,7 +289,7 @@ func TestMORouterRoutesReassembledMessage(t *testing.T) {
 
 	_, err := runMO(t, modlrrouter.MODeps{Snapshot: snap, Producer: prod, Unrouted: &fakeUnrouted{}, Reassembler: reasm},
 		moConcatRecord(t, connector, "22507000001", "36000",
-			smpp.Concat{Reference: 9, Total: 2, Sequence: 2, Ref16: true}, "last part"))
+			smpp.Concat{Reference: 9, Total: 2, Sequence: 1, Ref16: true}, "first part, arriving last"))
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -305,6 +305,9 @@ func TestMORouterRoutesReassembledMessage(t *testing.T) {
 	}
 	if routed.ESMClass&smpp.ESMClassUDHIndicator != 0 {
 		t.Errorf("the reassembled MO must clear the UDH indicator, esm_class = %#x", routed.ESMClass)
+	}
+	if routed.SegmentCount != 2 {
+		t.Errorf("segment count = %d, want the 2 segments the concatenation header announced", routed.SegmentCount)
 	}
 }
 
@@ -330,6 +333,9 @@ func TestMORouterRejectsMalformedConcatHeader(t *testing.T) {
 		t.Error("a malformed concat header must not reach the reassembler")
 	}
 	if len(prod.recs) != 1 {
-		t.Errorf("a malformed concat must route as a single message, got %d records", len(prod.recs))
+		t.Fatalf("a malformed concat must route as a single message, got %d records", len(prod.recs))
+	}
+	if routed, err := pipeline.DecodeMORouted(prod.recs[0]); err != nil || routed.SegmentCount != 1 {
+		t.Errorf("segment count = %d (err %v), want 1 for a message routed as a single one", routed.SegmentCount, err)
 	}
 }

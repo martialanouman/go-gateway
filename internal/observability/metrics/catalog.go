@@ -95,6 +95,10 @@ type Catalog struct {
 	SubmitsTotal        *prometheus.CounterVec
 	SubmitRejectedTotal *prometheus.CounterVec
 
+	// MOReceivedTotal counts the MO a connector accepted from its SMSC, one per deliver_sm like SubmitsTotal
+	// on the MT leg: the CDR counts messages, so a concatenated MO reads N here and 1 there.
+	MOReceivedTotal *prometheus.CounterVec
+
 	// RoutingScriptFailures counts routing scripts that fell back to declarative resolution, by runtime and
 	// reason — "timeout" being the wall-clock trip, the guard that actually protects the pod (§6.12). The
 	// catalogue adopts the metric router-svc already exposed rather than adding a second, near-duplicate
@@ -258,6 +262,11 @@ func NewCatalog() *Catalog {
 			Help: "SMSC submissions refused, by connector and flat error code.",
 		}, []string{"connector_id", "code"}),
 
+		MOReceivedTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "mo_received_total",
+			Help: "MO deliver_sm published to mo.inbound, by receiving connector; a concatenated MO counts once per segment.",
+		}, []string{"connector_id"}),
+
 		RoutingScriptFailures: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "routing_script_failures_total",
 			Help: "Routing scripts that fell back to declarative resolution, by runtime and reason.",
@@ -311,6 +320,7 @@ func (c *Catalog) Collectors() []prometheus.Collector {
 		c.PipelineStage,
 		c.SubmitsTotal,
 		c.SubmitRejectedTotal,
+		c.MOReceivedTotal,
 	}
 }
 

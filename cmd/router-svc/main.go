@@ -82,6 +82,9 @@ func run() error {
 	g.Add("accepted cdr", func(c context.Context) error {
 		return runResilient(c, "accepted-cdr projector", app.accepted.Run, logger)
 	})
+	g.Add("mo cdr", func(c context.Context) error {
+		return runResilient(c, "mo-cdr projector", app.moCDR.Run, logger)
+	})
 	// The outcome-CDR projector (step-201c) is self-restarting for the same reason, and one more: it is now
 	// the ONLY writer of the enroute/failed row, so tearing it down on a ClickHouse blip would stop the
 	// lifecycle advancing for the whole fleet. Reprocessing from the last commit is safe — the row is
