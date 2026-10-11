@@ -249,9 +249,9 @@ qu'on mesure un environnement représentatif.
       ⛓ step-260c, step-395 — demande humaine du 10/10/2026, née du run 8 de step-287
 - [x] step-287k — Une capture lit le grand livre une fois, pas trois ⛓ step-287i — née du run 9 de
       step-287 ; bloque sa reprise
-- [ ] step-287l — La fenêtre du routeur devient un réglage, pour la balayer en campagne ⛓ step-285c — née
+- [x] step-287l — La fenêtre du routeur devient un réglage, pour la balayer en campagne ⛓ step-285c — née
       du run 10 de step-287 ; bloque sa reprise
-- [ ] step-287m — ClickHouse sobre sous charge : le reaper lit par compte, les CDR s'insèrent en async ⛓
+- [x] step-287m — ClickHouse sobre sous charge : le reaper lit par compte, les CDR s'insèrent en async ⛓
       step-190, step-287b — née du diagnostic ClickHouse après le run 12 de step-287
 - [ ] step-287n — Lire un message dans un gros compte sans parcourir le compte : index bloom sur `message_id`
       ⛓ step-287m — née du run 13 de step-287

@@ -30,4 +30,6 @@ débit du banc, lui, est attendu sous la variance (~0,3 cœur de contabo75).
 - [x] migration `0008` up/down, annexe A du schéma à jour
 - [x] `Current` dans un compte de 4 granules n'en lit pas plus de 2 (intégration ; rouge sans la migration : 32 768
       lignes lues ; mutation `GRANULARITY 4` tuée)
-- [ ] mesuré à un run : `read_rows` par lecture du reaper, CPU des SELECT de ClickHouse
+- [ ] mesuré à un run : `read_rows` par lecture du reaper, CPU des SELECT de ClickHouse. Au run 14 (base
+      vidée), le reaper n'a rien lu ; à la main sur la base du run 13, `Current` lit 8 167 lignes au lieu de
+      193 846. Reste à le voir sous charge, au run à 3 serveurs.

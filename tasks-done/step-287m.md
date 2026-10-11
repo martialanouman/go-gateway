@@ -1,6 +1,6 @@
 # step-287m — ClickHouse sobre sous charge : le reaper lit par compte, les CDR s'insèrent en async
 
-> **Jalon :** M12 · **Statut :** EN COURS
+> **Jalon :** M12 · **Statut :** LIVRÉE
 > **Dépend de :** step-190 (reaper), step-287b (CDR des DLR par lot de poll)
 > Demande humaine du 10/10/2026, née du diagnostic ClickHouse après le run 12 de step-287.
 
@@ -41,4 +41,5 @@ pod, médiane 51 lignes. `Insert` (une ligne) ne sert qu'aux chemins rares : rej
       le sien ; sans compte, il trouve par `message_id` (intégration ClickHouse, 3 mutations tuées)
 - [x] PR1 : le reaper passe le client et le compte de la réservation (test unitaire, 2 mutations tuées)
 - [x] PR2 : design arrêté puis livré ; lots en async avec attente, ligne seule synchrone (intégration, 4 mutations tuées)
-- [ ] mesuré à un run : `ByMessageID` sort du `query_log` du reaper, parts neuves et fusions en baisse
+- [x] mesuré au run 13 : `ByMessageID` sort du `query_log` du reaper, 11 322 insertions pour 5 835 parts
+      neuves, ClickHouse 2,2 → 0,8 cœur ; le reaper parcourt encore le compte → step-287n
