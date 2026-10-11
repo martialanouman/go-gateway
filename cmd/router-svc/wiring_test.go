@@ -173,6 +173,21 @@ func TestNewRouterAppBuildsTheWholeGraph(t *testing.T) {
 		t.Errorf("consumer groups = %v (%d consumers), want one per category topic %v", gotGroups, len(app.consumers), wantGroups)
 	}
 
+	if len(app.inbound) != len(kafka.MTInboundTopics()) {
+		t.Errorf("router.Deps.Consumer runs %d consumers, want one per category topic (%d)", len(app.inbound), len(kafka.MTInboundTopics()))
+	}
+
+	readers := queueDepthReaders(app)
+	if len(readers) != 1+len(kafka.MTInboundTopics()) {
+		t.Errorf("queue depth polls %d groups, want the outcome group plus one per category topic", len(readers))
+	}
+	wantReaders := append([]*kafka.Consumer{app.outcome.kafka}, app.consumers...)
+	for _, want := range wantReaders {
+		if !slices.Contains(readers, lagReader(want)) {
+			t.Errorf("queue depth does not poll group %q", want.Group())
+		}
+	}
+
 	for name, component := range map[string]any{
 		"ops":      app.ops,
 		"router":   app.router,

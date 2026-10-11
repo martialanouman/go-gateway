@@ -28,3 +28,12 @@ func (f FanIn) RunBatch(ctx context.Context, handle BatchHandler) error {
 	}
 	return first
 }
+
+// FanInOf runs the given consumers as one [FanIn].
+func FanInOf(cs []*Consumer) FanIn {
+	out := make(FanIn, len(cs))
+	for i, c := range cs {
+		out[i] = c
+	}
+	return out
+}

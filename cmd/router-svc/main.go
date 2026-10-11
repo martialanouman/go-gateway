@@ -102,7 +102,7 @@ func run() error {
 		return nil
 	})
 	// Queue depth is polled, not counted: it is the broker's view of how far each group is behind. It runs on
-	// its own slower tick because it costs a broker round-trip, and router-svc is the ONE owner of both these
+	// its own slower tick because it costs a broker round-trip, and router-svc is the ONE owner of these
 	// topics' depth — two services reporting the same topic would double-count (step-180).
 	//
 	// mt.outcome joined mt.inbound here in step-201c: the outcome projection is what now decides how long a

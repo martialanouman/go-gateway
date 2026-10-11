@@ -64,6 +64,7 @@ type routerApp struct {
 	watcher   *config.Watcher
 	emitter   *metricstream.Emitter
 	consumers []*kafka.Consumer
+	inbound   kafka.FanIn
 	catalog   *metrics.Catalog
 	producer  *kafka.Producer
 	// routes is the graph's route resolver, kept so a wiring test can resolve through the overlays the
@@ -125,6 +126,7 @@ func newRouterApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 	}
 	a.onClose("stores", st.close)
 	a.consumers = st.consumers
+	a.inbound = kafka.FanInOf(st.consumers)
 	a.producer = st.producer
 
 	boot, err := loadBootSnapshots(ctx, st.pg, logger)
@@ -194,7 +196,7 @@ func newRouterApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 	a.emitter = stream.emitter
 
 	a.router = router.New(router.Deps{
-		Consumer:   fanIn(st.consumers),
+		Consumer:   a.inbound,
 		Producer:   st.producer,
 		Pipeline:   stack.pipeline,
 		CDR:        clickhouse.NewCDRWriter(st.ch),
@@ -281,14 +283,6 @@ func (s *stores) close() {
 	if s.pg != nil {
 		s.pg.Close()
 	}
-}
-
-func fanIn(cs []*kafka.Consumer) kafka.FanIn {
-	out := make(kafka.FanIn, len(cs))
-	for i, c := range cs {
-		out[i] = c
-	}
-	return out
 }
 
 // bootSnapshots are the immutable control-plane snapshots loaded once at boot from Postgres. Each is
