@@ -18,3 +18,9 @@ Sources : `internal/observability/metrics/catalog.go:39` · `:158`
 
 **Suite (step-380).** `get-metrics-summary` publie `ingest_latency_ms_p50/p99` à `null` pour la même
 raison : ni l'exposition ni le CDR ne portent cette latence. Payer cette dette rend le champ servable.
+
+**Suite (step-403).** Ni le flux temps réel ni la synthèse par canal ne l'ont : `stream-metrics` n'émet pas
+`ingest_duration_seconds`, et le contrat le dit (`MetricSample`). Même payée, la dette ne remplirait pas
+`ingest_latency_ms_p50/p99` : un histogramme voyage sur le flux en `_count`/`_sum` (moyenne seule), et la
+synthèse lit ClickHouse, où la latence d'admission ne peut pas s'écrire (la ligne accepted est projetée
+d'un enregistrement produit avant l'ACK).
