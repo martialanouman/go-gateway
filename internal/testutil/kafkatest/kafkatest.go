@@ -31,7 +31,7 @@ const image = "redpandadata/redpanda:v24.2.18"
 // topics are pre-created with several partitions so partition keying (mt.routed keyed by logical
 // message id, §7.3) is actually exercised rather than degenerating to a single partition.
 var topics = []string{
-	kafka.TopicMTInbound, kafka.TopicMTRouted,
+	kafka.TopicMTInbound, kafka.TopicMTRoutedOTP, kafka.TopicMTRoutedTransactional, kafka.TopicMTRoutedMarketing,
 	kafka.TopicMOInbound, kafka.TopicDLREvents,
 	// Resilience data-plane topics (M7/M8): the connector pool produces reroutes and dead-letters here,
 	// so a test exercising fallback/park/replay or dead-lettering needs them pre-created — otherwise the

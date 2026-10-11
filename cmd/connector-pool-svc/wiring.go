@@ -287,7 +287,7 @@ func openStores(ctx context.Context, cfg config.Config, connectorID uuid.UUID) (
 	// — neither the old nor the new group reads it. Safe on a greenfield/zero-traffic cutover only; a
 	// cutover with live traffic MUST first drain mt.routed or seed the new group's offsets from the old
 	// group's committed offsets. See docs runbook before the first production deploy.
-	s.consumer, err = kafka.NewConsumerFromLatest(cfg.Kafka, serviceName+"-"+connectorID.String(), kafka.TopicMTRouted)
+	s.consumer, err = kafka.NewConsumerFromLatest(cfg.Kafka, serviceName+"-"+connectorID.String(), kafka.MTRoutedTopics()...)
 	if err != nil {
 		return nil, fmt.Errorf("kafka consumer: %w", err)
 	}

@@ -71,7 +71,7 @@ func TestUndecodableRecordIsNotCommitted(t *testing.T) {
 		return fakesmsc.OK()
 	}})
 
-	results := runOneBatch(t, smsc, uuid.Nil, nil, []kafka.Record{{Topic: kafka.TopicMTRouted, Value: []byte("{")}})
+	results := runOneBatch(t, smsc, uuid.Nil, nil, []kafka.Record{{Topic: kafka.TopicMTRoutedMarketing, Value: []byte("{")}})
 
 	if len(results) != 1 || results[0] == nil {
 		t.Fatalf("results = %v, want one non-nil error: an undecodable record must not be committed", results)

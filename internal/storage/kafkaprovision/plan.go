@@ -29,9 +29,8 @@ import (
 // internal/storage/kafka, not the shorter list the test harness pre-creates: a topic missing here is a
 // topic whose first producer would find nothing, or whatever a broker auto-creates.
 func Topics() []string {
-	topics := []string{
+	topics := slices.Concat(kafka.MTRoutedTopics(), []string{
 		kafka.TopicMTInbound,
-		kafka.TopicMTRouted,
 		kafka.TopicMTOutcome,
 		kafka.TopicMTReroutePark,
 		kafka.TopicMTDeadLetter,
@@ -44,7 +43,7 @@ func Topics() []string {
 		kafka.TopicWebhookDeadLetter,
 		kafka.TopicMetricsStream,
 		kafka.TopicBillingEvents,
-	}
+	})
 	slices.Sort(topics)
 	return topics
 }

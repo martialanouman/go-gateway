@@ -90,7 +90,7 @@ func startSimPool(t *testing.T, cfg simPoolConfig) *simPool {
 	// mt.routed history other tests left on the shared topic. A record is injected only after
 	// waitGroupStable, so FromLatest loses nothing.
 	group := "sim-conn-" + connID.String()
-	consumer, err := kafka.NewConsumerFromLatest(kafkaCfg, group, kafka.TopicMTRouted)
+	consumer, err := kafka.NewConsumerFromLatest(kafkaCfg, group, kafka.MTRoutedTopics()...)
 	if err != nil {
 		t.Fatalf("kafka consumer: %v", err)
 	}

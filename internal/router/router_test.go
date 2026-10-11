@@ -169,7 +169,7 @@ func TestRouterPublishesRoutedOnSuccess(t *testing.T) {
 	if len(prod.produced) != 1 {
 		t.Fatalf("expected 1 mt.routed record, got %d", len(prod.produced))
 	}
-	if prod.produced[0].Topic != kafka.TopicMTRouted {
+	if prod.produced[0].Topic != kafka.TopicMTRoutedMarketing {
 		t.Errorf("topic: got %q", prod.produced[0].Topic)
 	}
 	routed, err := pipeline.DecodeRouted(prod.produced[0])

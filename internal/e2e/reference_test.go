@@ -462,7 +462,7 @@ func buildRefStack(
 
 	routerConsumer := newConsumer(t, kafkaCfg, "loadref-router", kafka.TopicMTInbound)
 	acceptedConsumer := newConsumer(t, kafkaCfg, "loadref-accepted", kafka.TopicMTInbound)
-	connConsumer := newConsumer(t, kafkaCfg, "loadref-connector", kafka.TopicMTRouted)
+	connConsumer := newConsumer(t, kafkaCfg, "loadref-connector", kafka.MTRoutedTopics()...)
 
 	acceptedProjector := ingest.NewAcceptedConsumer(acceptedConsumer, cdrWriter, nil, nil)
 
@@ -610,8 +610,10 @@ func buildRefStack(
 	return &refStack{
 		rest: restSrv, ops: ops, apiKeys: apiKeys, registry: registry, connector: connectorID, lookups: lookups,
 		consumers: map[string]*kafka.Consumer{
-			kafka.TopicMTInbound: routerConsumer,
-			kafka.TopicMTRouted:  connConsumer,
+			kafka.TopicMTInbound:             routerConsumer,
+			kafka.TopicMTRoutedOTP:           connConsumer,
+			kafka.TopicMTRoutedTransactional: connConsumer,
+			kafka.TopicMTRoutedMarketing:     connConsumer,
 			// The projection lag is the backlog step-201c introduces: it is the only writer of the
 			// enroute row, so a flat mt.routed with a climbing mt.outcome is a pipeline that sends
 			// without recording. D2's steady-state clause has to see it.
@@ -642,9 +644,9 @@ func waitBound(t *testing.T, smsc *fakesmsc.Server, want int) {
 	t.Fatalf("only %d of the %d binds came up within 30s", smsc.ConnCount(), want)
 }
 
-func newConsumer(t *testing.T, cfg config.Kafka, group, topic string) *kafka.Consumer {
+func newConsumer(t *testing.T, cfg config.Kafka, group string, topics ...string) *kafka.Consumer {
 	t.Helper()
-	c, err := kafka.NewConsumer(cfg, group, topic)
+	c, err := kafka.NewConsumer(cfg, group, topics...)
 	if err != nil {
 		t.Fatalf("kafka consumer %s: %v", group, err)
 	}
@@ -691,7 +693,7 @@ func (l *lagTrace) breakdown(from, to time.Time) string {
 		return "no reading inside the window"
 	}
 	out := ""
-	for _, topic := range []string{kafka.TopicMTInbound, kafka.TopicMTRouted, kafka.TopicMTOutcome} {
+	for _, topic := range append(append([]string{kafka.TopicMTInbound}, kafka.MTRoutedTopics()...), kafka.TopicMTOutcome) {
 		if out != "" {
 			out += " · "
 		}

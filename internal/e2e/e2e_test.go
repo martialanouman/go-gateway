@@ -168,7 +168,7 @@ func buildStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg config
 		Tracer: routerTracer,
 	})
 
-	connConsumer, err := kafka.NewConsumer(kafkaCfg, "e2e-connector", kafka.TopicMTRouted)
+	connConsumer, err := kafka.NewConsumer(kafkaCfg, "e2e-connector", kafka.MTRoutedTopics()...)
 	if err != nil {
 		t.Fatalf("connector consumer: %v", err)
 	}

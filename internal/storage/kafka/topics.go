@@ -11,9 +11,13 @@ const (
 	// TopicMTInbound carries raw submissions (SMPP/REST), pre-routing. A REST 202 is earned by a
 	// durable write here (§6.7). Partition key = the message id.
 	TopicMTInbound = "mt.inbound"
-	// TopicMTRouted carries routed messages, one per logical message. Partition key = the logical
-	// message id, so every UDH segment of a message lands on the same partition, in order (§7.3).
-	TopicMTRouted = "mt.routed"
+	// TopicMTRoutedOTP, TopicMTRoutedTransactional and TopicMTRoutedMarketing carry routed messages, one
+	// topic per traffic category (ADR-0021), so a marketing backlog never sits in front of an OTP.
+	// Partition key = the logical message id, so every UDH segment of a message lands on the same
+	// partition, in order (§7.3).
+	TopicMTRoutedOTP           = "mt.routed.otp"
+	TopicMTRoutedTransactional = "mt.routed.transactional"
+	TopicMTRoutedMarketing     = "mt.routed.marketing"
 	// TopicMTOutcome carries the terminal outcome of one submitted MT segment — enroute or failed — for
 	// the CDR projection to write (step-201c, D1). The connector pool used to write that row to
 	// ClickHouse itself, on the consumption path, before committing the offset; batching it there would
@@ -74,3 +78,8 @@ const (
 	// instantly re-expired on its immutable submitted_at.
 	HeaderReplayedAt = "replayed_at"
 )
+
+// MTRoutedTopics lists the routed topics, most urgent category first.
+func MTRoutedTopics() []string {
+	return []string{TopicMTRoutedOTP, TopicMTRoutedTransactional, TopicMTRoutedMarketing}
+}

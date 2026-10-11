@@ -200,7 +200,7 @@ func TestReplayReinjectsCorrelated(t *testing.T) {
 	}
 
 	recs := prod.records()
-	if len(recs) != 1 || recs[0].Topic != kafka.TopicMTRouted {
+	if len(recs) != 1 || recs[0].Topic != kafka.TopicMTRoutedMarketing {
 		t.Fatalf("produced %+v, want one mt.routed record", recs)
 	}
 	if _, ok := recs[0].Header(kafka.HeaderDeadLetterReason); ok {
@@ -239,7 +239,7 @@ func TestReplaySkipsUndecodable(t *testing.T) {
 		t.Errorf("Replayed() = %d, want 1 (corrupt skipped, good replayed)", got)
 	}
 	recs := prod.records()
-	if len(recs) != 1 || recs[0].Topic != kafka.TopicMTRouted {
+	if len(recs) != 1 || recs[0].Topic != kafka.TopicMTRoutedMarketing {
 		t.Fatalf("produced %+v, want one mt.routed record", recs)
 	}
 }
