@@ -900,7 +900,8 @@ CREATE TABLE cdr
     credits_charged       Nullable(Int32),
     traffic_category      LowCardinality(String) DEFAULT '',  -- sender ID category (ADR-0020); '' on the accepted placeholder
     priority              UInt8 DEFAULT 0,      -- effective priority (ADR-0020 §2), the SMPP priority_flag sent
-    version               UInt64                -- lifecycle rank; ReplacingMergeTree keeps the max
+    version               UInt64,               -- lifecycle rank; ReplacingMergeTree keeps the max
+    INDEX message_id_bloom message_id TYPE bloom_filter(0.01) GRANULARITY 1  -- a lookup skips the rest of its account (step-287n)
 )
 ENGINE = ReplacingMergeTree(version)
 PARTITION BY toDate(submitted_at)               -- daily partitions, TTL tiering (§6.14)

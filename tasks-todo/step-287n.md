@@ -27,6 +27,7 @@ débit du banc, lui, est attendu sous la variance (~0,3 cœur de contabo75).
   2 granules (`read_rows` du `query_log`), contre les 4 sans l'index.
 
 ## Definition of Done
-- [ ] migration `0008` up/down, annexe A du schéma à jour
-- [ ] `Current` dans un compte de 4 granules n'en lit pas plus de 2 (intégration ; rouge sans la migration)
+- [x] migration `0008` up/down, annexe A du schéma à jour
+- [x] `Current` dans un compte de 4 granules n'en lit pas plus de 2 (intégration ; rouge sans la migration : 32 768
+      lignes lues ; mutation `GRANULARITY 4` tuée)
 - [ ] mesuré à un run : `read_rows` par lecture du reaper, CPU des SELECT de ClickHouse
