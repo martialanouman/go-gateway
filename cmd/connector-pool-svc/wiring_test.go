@@ -114,23 +114,35 @@ func TestNewPoolAppBuildsTheWholeGraph(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 
-	app, err := newPoolApp(ctx, cfg, testBindEnv(), silentLogger())
+	bind := testBindEnv()
+	app, err := newPoolApp(ctx, cfg, bind, silentLogger())
 	if err != nil {
 		t.Fatalf("newPoolApp: %v", err)
 	}
 	defer app.close()
 
 	for name, component := range map[string]any{
-		"ops":      app.ops,
-		"pool":     app.pool,
-		"drainer":  app.drainer,
-		"emitter":  app.emitter,
-		"consumer": app.consumer,
-		"catalog":  app.catalog,
+		"ops":     app.ops,
+		"pool":    app.pool,
+		"drainer": app.drainer,
+		"emitter": app.emitter,
+		"catalog": app.catalog,
 	} {
 		if component == nil || reflect.ValueOf(component).IsNil() {
 			t.Errorf("component %q was not wired", name)
 		}
+	}
+
+	wantGroups := map[string]bool{}
+	for _, topic := range kafka.MTRoutedTopics() {
+		wantGroups["connector-pool-svc-"+bind.ID.String()+"-"+strings.TrimPrefix(topic, "mt.routed.")] = true
+	}
+	gotGroups := map[string]bool{}
+	for _, c := range app.consumers {
+		gotGroups[c.Group()] = true
+	}
+	if len(app.consumers) != len(wantGroups) || !reflect.DeepEqual(gotGroups, wantGroups) {
+		t.Errorf("consumer groups = %v (%d consumers), want one per category topic %v", gotGroups, len(app.consumers), wantGroups)
 	}
 
 	// Fail-closed producer (mt.outcome after submit_sm): the constant, never the env (step-260e).

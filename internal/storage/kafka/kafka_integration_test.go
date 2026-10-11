@@ -96,13 +96,13 @@ func TestConsumerCommitsAfterProcessing(t *testing.T) {
 	defer producer.Close()
 
 	ctx := context.Background()
-	if err := producer.Produce(ctx, kafka.Record{Topic: kafka.TopicMTRouted, Key: []byte("k"), Value: []byte("v1")}); err != nil {
+	if err := producer.Produce(ctx, kafka.Record{Topic: kafka.TopicMTRoutedMarketing, Key: []byte("k"), Value: []byte("v1")}); err != nil {
 		t.Fatalf("produce: %v", err)
 	}
 
 	// First consumer instance: handle the record, commit, then stop.
 	consume := func(handle kafka.Handler) {
-		c, err := kafka.NewConsumer(cfg, group, kafka.TopicMTRouted)
+		c, err := kafka.NewConsumer(cfg, group, kafka.TopicMTRoutedMarketing)
 		if err != nil {
 			t.Fatalf("new consumer: %v", err)
 		}
@@ -126,7 +126,7 @@ func TestConsumerCommitsAfterProcessing(t *testing.T) {
 
 	// Produce a second record; a fresh consumer in the SAME group must resume past the committed
 	// first offset and see only the new record, proving the offset was committed.
-	if err := producer.Produce(ctx, kafka.Record{Topic: kafka.TopicMTRouted, Key: []byte("k"), Value: []byte("v2")}); err != nil {
+	if err := producer.Produce(ctx, kafka.Record{Topic: kafka.TopicMTRoutedMarketing, Key: []byte("k"), Value: []byte("v2")}); err != nil {
 		t.Fatalf("produce v2: %v", err)
 	}
 
@@ -181,13 +181,13 @@ func TestConsumerCommitsHandledRecordsOnShutdown(t *testing.T) {
 	defer producer.Close()
 
 	ctx := context.Background()
-	if err := producer.Produce(ctx, kafka.Record{Topic: kafka.TopicMTRouted, Key: []byte("k"), Value: []byte("shutdown-v1")}); err != nil {
+	if err := producer.Produce(ctx, kafka.Record{Topic: kafka.TopicMTRoutedMarketing, Key: []byte("k"), Value: []byte("shutdown-v1")}); err != nil {
 		t.Fatalf("produce: %v", err)
 	}
 
 	// First instance: the handler succeeds at the very moment the drain begins, so the commit that
 	// follows it runs on a cancelled context — the SIGTERM race, made deterministic.
-	first, err := kafka.NewConsumer(cfg, group, kafka.TopicMTRouted)
+	first, err := kafka.NewConsumer(cfg, group, kafka.TopicMTRoutedMarketing)
 	if err != nil {
 		t.Fatalf("new consumer: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestConsumerCommitsHandledRecordsOnShutdown(t *testing.T) {
 	first.Close()
 
 	// Second instance, same group: it must resume PAST the handled record.
-	second, err := kafka.NewConsumer(cfg, group, kafka.TopicMTRouted)
+	second, err := kafka.NewConsumer(cfg, group, kafka.TopicMTRoutedMarketing)
 	if err != nil {
 		t.Fatalf("new consumer 2: %v", err)
 	}
@@ -287,11 +287,11 @@ func TestConsumerReplaysAFailedRecordInPlace(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			group := "test-replay-" + name + "-" + strconv.FormatInt(time.Now().UnixNano(), 36)
 			marker := []byte(group)
-			if err := producer.Produce(t.Context(), kafka.Record{Topic: kafka.TopicMTRouted, Key: []byte("k"), Value: marker}); err != nil {
+			if err := producer.Produce(t.Context(), kafka.Record{Topic: kafka.TopicMTRoutedMarketing, Key: []byte("k"), Value: marker}); err != nil {
 				t.Fatalf("produce: %v", err)
 			}
 
-			consumer, err := kafka.NewConsumer(cfg, group, kafka.TopicMTRouted)
+			consumer, err := kafka.NewConsumer(cfg, group, kafka.TopicMTRoutedMarketing)
 			if err != nil {
 				t.Fatalf("new consumer: %v", err)
 			}
@@ -329,10 +329,10 @@ func TestConsumerReplaysAFailedRecordInPlace(t *testing.T) {
 
 			// A record produced after the replay proves the next member is reading before it is asked what it saw.
 			after := group + "-after"
-			if err := producer.Produce(t.Context(), kafka.Record{Topic: kafka.TopicMTRouted, Key: []byte("k"), Value: []byte(after)}); err != nil {
+			if err := producer.Produce(t.Context(), kafka.Record{Topic: kafka.TopicMTRoutedMarketing, Key: []byte("k"), Value: []byte(after)}); err != nil {
 				t.Fatalf("produce: %v", err)
 			}
-			again, err := kafka.NewConsumer(cfg, group, kafka.TopicMTRouted)
+			again, err := kafka.NewConsumer(cfg, group, kafka.TopicMTRoutedMarketing)
 			if err != nil {
 				t.Fatalf("new consumer: %v", err)
 			}
@@ -389,10 +389,10 @@ func TestConsumerResumesAnAbandonedReplay(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			group := "test-abandoned-" + name + "-" + strconv.FormatInt(time.Now().UnixNano(), 36)
 			marker, after := group, group+"-after"
-			if err := producer.Produce(t.Context(), kafka.Record{Topic: kafka.TopicMTRouted, Key: []byte("k"), Value: []byte(marker)}); err != nil {
+			if err := producer.Produce(t.Context(), kafka.Record{Topic: kafka.TopicMTRoutedMarketing, Key: []byte("k"), Value: []byte(marker)}); err != nil {
 				t.Fatalf("produce: %v", err)
 			}
-			consumer, err := kafka.NewConsumer(cfg, group, kafka.TopicMTRouted)
+			consumer, err := kafka.NewConsumer(cfg, group, kafka.TopicMTRoutedMarketing)
 			if err != nil {
 				t.Fatalf("new consumer: %v", err)
 			}
@@ -410,7 +410,7 @@ func TestConsumerResumesAnAbandonedReplay(t *testing.T) {
 				t.Fatalf("cancelled %s = %v, want nil", name, err)
 			}
 
-			if err := producer.Produce(t.Context(), kafka.Record{Topic: kafka.TopicMTRouted, Key: []byte("k"), Value: []byte(after)}); err != nil {
+			if err := producer.Produce(t.Context(), kafka.Record{Topic: kafka.TopicMTRoutedMarketing, Key: []byte("k"), Value: []byte(after)}); err != nil {
 				t.Fatalf("produce: %v", err)
 			}
 			ctx, cancel = context.WithTimeout(t.Context(), 20*time.Second)
@@ -449,11 +449,11 @@ func TestConsumerDoesNotStallOnSporadicFailures(t *testing.T) {
 	for i := range records {
 		v := group + "-" + strconv.Itoa(i)
 		key := []byte("sporadic-" + strconv.Itoa(i)) // fixed, so the failures land on the same partitions every run
-		if err := producer.Produce(t.Context(), kafka.Record{Topic: kafka.TopicMTRouted, Key: key, Value: []byte(v)}); err != nil {
+		if err := producer.Produce(t.Context(), kafka.Record{Topic: kafka.TopicMTRoutedMarketing, Key: key, Value: []byte(v)}); err != nil {
 			t.Fatalf("produce: %v", err)
 		}
 	}
-	consumer, err := kafka.NewConsumer(cfg, group, kafka.TopicMTRouted)
+	consumer, err := kafka.NewConsumer(cfg, group, kafka.TopicMTRoutedMarketing)
 	if err != nil {
 		t.Fatalf("new consumer: %v", err)
 	}
@@ -514,10 +514,10 @@ func TestConsumerBacksOffARecordThatNeverPasses(t *testing.T) {
 	for name, runner := range run {
 		t.Run(name, func(t *testing.T) {
 			group := "test-backoff-" + name + "-" + strconv.FormatInt(time.Now().UnixNano(), 36)
-			if err := producer.Produce(t.Context(), kafka.Record{Topic: kafka.TopicMTRouted, Key: []byte("k"), Value: []byte(group)}); err != nil {
+			if err := producer.Produce(t.Context(), kafka.Record{Topic: kafka.TopicMTRoutedMarketing, Key: []byte("k"), Value: []byte(group)}); err != nil {
 				t.Fatalf("produce: %v", err)
 			}
-			consumer, err := kafka.NewConsumer(cfg, group, kafka.TopicMTRouted)
+			consumer, err := kafka.NewConsumer(cfg, group, kafka.TopicMTRoutedMarketing)
 			if err != nil {
 				t.Fatalf("new consumer: %v", err)
 			}

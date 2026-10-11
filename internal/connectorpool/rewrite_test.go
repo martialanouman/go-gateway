@@ -129,7 +129,7 @@ func TestRerouteAfterARewrittenSubmitCarriesTheOriginal(t *testing.T) {
 	}
 	var rerouted []pipeline.RoutedMT
 	for _, rec := range run.out.records() {
-		if rec.Topic == kafka.TopicMTRouted {
+		if rec.Topic == kafka.TopicMTRoutedMarketing {
 			got, err := pipeline.DecodeRouted(rec)
 			if err != nil {
 				t.Fatalf("decode: %v", err)

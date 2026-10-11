@@ -158,12 +158,12 @@ func TestStopSuppressesAndAutoReplies(t *testing.T) {
 		t.Errorf("suppression = %+v, want inbound_number/%s/2250700000001/mo_stop", s, inbID)
 	}
 
-	// An auto-reply MT to mt.routed, never billed, from the inbound number to the sender, body = template.
+	// An auto-reply MT to mt.routed.transactional, never billed, from the inbound number to the sender, body = template.
 	if len(prod.recs) != 1 {
 		t.Fatalf("expected 1 auto-reply, got %d", len(prod.recs))
 	}
-	if prod.recs[0].Topic != kafka.TopicMTRouted {
-		t.Errorf("auto-reply topic = %q, want mt.routed", prod.recs[0].Topic)
+	if prod.recs[0].Topic != kafka.TopicMTRoutedTransactional {
+		t.Errorf("auto-reply topic = %q, want mt.routed.transactional", prod.recs[0].Topic)
 	}
 	reply, err := pipeline.DecodeRouted(prod.recs[0])
 	if err != nil {
@@ -278,7 +278,7 @@ func TestMOStillDeliveredOnStop(t *testing.T) {
 		switch r.Topic {
 		case kafka.TopicMORouted:
 			moRouted++
-		case kafka.TopicMTRouted:
+		case kafka.TopicMTRoutedTransactional:
 			autoReply++
 		}
 	}

@@ -4,9 +4,11 @@
 # (probes, ops port, grace period, secrets by reference). Run `make manifests` for schema validation.
 #
 # This file is an INSTANCE TEMPLATE. One connector per pod (cmd/connector-pool-svc/wiring.go), each
-# with its own consumer group `connector-pool-svc-<CONNECTOR_ID>`: copy it per connector, renaming the
+# with its own three consumer groups `connector-pool-svc-<CONNECTOR_ID>-<category>`: copy it per connector, renaming the
 # Deployment `connector-pool-svc-<connector>` and setting CONNECTOR_ID and CONNECTOR_ADDR. Keep
-# replicas equal to the connector's bind_pool_size — mt.routed is sharded one partition per bind.
+# replicas equal to the connector's bind_pool_size. mt.routed.otp and mt.routed.transactional are 4 wide
+# (one partition per bind at maxReplicas 4), mt.routed.marketing takes the shared default (12);
+# maxReplicas stays at or below the narrowest.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -132,8 +134,8 @@ metadata:
   labels:
     app: connector-pool-svc
 spec:
-  # mt.routed is partitioned per connector (KAFKA_TOPIC_PARTITIONS_OVERRIDES), not by the shared
-  # default, so keep maxReplicas at or below this connector's bind_pool_size: a pod without a bind of
+  # mt.routed.otp and mt.routed.transactional are partitioned per connector (KAFKA_TOPIC_PARTITIONS_OVERRIDES),
+  # not by the shared default, so keep maxReplicas at or below this connector's bind_pool_size: a pod without a bind of
   # its own is a pod that stays not-ready.
   scaleTargetRef:
     apiVersion: apps/v1
@@ -141,14 +143,17 @@ spec:
     name: connector-pool-svc
   minReplicas: 2
   maxReplicas: 4
+  # The HPA sums the series the selector retains (Kubernetes docs, External metrics).
   metrics:
     - type: External
       external:
         metric:
           name: queue_depth_records
           selector:
-            matchLabels:
-              queue: mt.routed
+            matchExpressions:
+              - key: queue
+                operator: In
+                values: [mt.routed.otp, mt.routed.transactional, mt.routed.marketing]
         target:
           type: AverageValue
           averageValue: "5000"

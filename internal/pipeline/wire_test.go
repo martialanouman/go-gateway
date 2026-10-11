@@ -123,7 +123,7 @@ func TestRoutedRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	if rec.Topic != kafka.TopicMTRouted {
+	if rec.Topic != kafka.TopicMTRoutedMarketing {
 		t.Errorf("topic: got %q", rec.Topic)
 	}
 	// Keyed by the logical message id so every segment reaches the same bind (§7.3).
@@ -299,5 +299,29 @@ func TestOutcomeCarriesTheReservation(t *testing.T) {
 		if !strings.Contains(string(rec.Value), want) {
 			t.Errorf("mt.outcome value lacks %s: %s", want, rec.Value)
 		}
+	}
+}
+
+func TestEncodeRoutedPicksTheCategoryTopic(t *testing.T) {
+	for cat, want := range map[cp.TrafficCategory]string{
+		cp.TrafficOTP:           kafka.TopicMTRoutedOTP,
+		cp.TrafficTransactional: kafka.TopicMTRoutedTransactional,
+		cp.TrafficMarketing:     kafka.TopicMTRoutedMarketing,
+		"":                      kafka.TopicMTRoutedMarketing,
+	} {
+		rec, err := pipeline.EncodeRouted(pipeline.RoutedMT{MessageID: uuid.New(), TrafficCategory: cat, Body: msg.NewBodyString("x")})
+		if err != nil {
+			t.Fatalf("%q: encode: %v", cat, err)
+		}
+		if rec.Topic != want {
+			t.Errorf("category %q went to %q, want %q", cat, rec.Topic, want)
+		}
+	}
+}
+
+func TestEncodeRoutedRefusesAnUnknownCategory(t *testing.T) {
+	_, err := pipeline.EncodeRouted(pipeline.RoutedMT{MessageID: uuid.New(), TrafficCategory: "promo", Body: msg.NewBodyString("x")})
+	if err == nil {
+		t.Fatal("an unknown category was encoded onto some topic")
 	}
 }

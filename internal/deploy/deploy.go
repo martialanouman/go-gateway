@@ -77,7 +77,15 @@ type Strategy struct {
 
 // Selector is a Deployment's or a PDB's label selector.
 type Selector struct {
-	MatchLabels map[string]string `yaml:"matchLabels"`
+	MatchLabels      map[string]string `yaml:"matchLabels"`
+	MatchExpressions []MatchExpression `yaml:"matchExpressions"`
+}
+
+// MatchExpression is one set-based requirement of a Selector.
+type MatchExpression struct {
+	Key      string   `yaml:"key"`
+	Operator string   `yaml:"operator"`
+	Values   []string `yaml:"values"`
 }
 
 // ServicePort is one entry of a Service's spec.ports.

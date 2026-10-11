@@ -289,7 +289,8 @@ type Kafka struct {
 	// migration, never by a racing replica at startup.
 	TopicPartitions int32 `env:"TOPIC_PARTITIONS" envDefault:"12"`
 
-	// TopicPartitionsOverrides raises TopicPartitions for named topics, as "topic=n,topic=n" — the hot
+	// TopicPartitionsOverrides sets the width of named topics in place of TopicPartitions, as
+	// "topic=n,topic=n", and never shrinks an existing topic — the hot
 	// topics of the MT path do not need the same width as, say, a dead-letter topic. Empty (the default)
 	// means every topic gets TopicPartitions.
 	//

@@ -122,9 +122,19 @@ func DecodeInbound(rec kafka.Record) (InboundMT, error) {
 	}, nil
 }
 
+var routedTopics = map[cp.TrafficCategory]string{
+	cp.TrafficOTP:           kafka.TopicMTRoutedOTP,
+	cp.TrafficTransactional: kafka.TopicMTRoutedTransactional,
+	cp.TrafficMarketing:     kafka.TopicMTRoutedMarketing,
+}
+
 // EncodeRouted builds the mt.routed record for env, keyed by the logical message id so every
 // segment reaches the same connector bind in order (§7.3).
 func EncodeRouted(env RoutedMT) (kafka.Record, error) {
+	topic, ok := routedTopics[routedCategory(string(env.TrafficCategory))]
+	if !ok {
+		return kafka.Record{}, fmt.Errorf("pipeline: mt.routed: unknown traffic category %q", env.TrafficCategory)
+	}
 	value, err := json.Marshal(routedWire{
 		MessageID:          env.MessageID,
 		TraceID:            env.TraceID,
@@ -160,7 +170,7 @@ func EncodeRouted(env RoutedMT) (kafka.Record, error) {
 		headers = append(headers, kafka.Header{Key: kafka.HeaderReplayedAt, Value: []byte(env.ReplayedAt.UTC().Format(time.RFC3339Nano))})
 	}
 	return kafka.Record{
-		Topic:   kafka.TopicMTRouted,
+		Topic:   topic,
 		Key:     key[:],
 		Value:   value,
 		Headers: headers,

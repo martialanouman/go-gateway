@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -51,7 +52,7 @@ type poolApp struct {
 	pool           *connectorpool.Service
 	drainer        *connectorpool.Drainer
 	emitter        *metricstream.Emitter
-	consumer       *kafka.Consumer
+	consumers      []*kafka.Consumer
 	catalog        *metrics.Catalog
 	producer       *kafka.Producer
 	rewriter       *senderrewrite.Holder
@@ -121,7 +122,7 @@ func newPoolApp(ctx context.Context, cfg config.Config, bindEnv connectorEnv, lo
 		return nil, err
 	}
 	a.onClose("stores", st.close)
-	a.consumer = st.consumer
+	a.consumers = st.consumers
 	a.producer = st.producer
 
 	throttle := newThrottleMetrics(bindEnv)
@@ -180,7 +181,7 @@ func newPoolApp(ctx context.Context, cfg config.Config, bindEnv connectorEnv, lo
 	)
 
 	a.pool = connectorpool.New(connectorpool.Deps{
-		Consumer:       st.consumer,
+		Consumer:       fanIn(st.consumers),
 		Stream:         stream.emitter,
 		BreakerGauge:   a.catalog,
 		Metrics:        a.catalog,
@@ -248,11 +249,11 @@ func newPoolApp(ctx context.Context, cfg config.Config, bindEnv connectorEnv, lo
 // stores are the external connections connector-pool-svc opens at boot and holds for its whole
 // lifetime.
 type stores struct {
-	ch       *clickhouse.Conn
-	pg       *pgxpool.Pool
-	consumer *kafka.Consumer
-	producer *kafka.Producer
-	rdb      *goredis.Client
+	ch        *clickhouse.Conn
+	pg        *pgxpool.Pool
+	consumers []*kafka.Consumer
+	producer  *kafka.Producer
+	rdb       *goredis.Client
 }
 
 // openStores opens them in the order a degraded dependency must surface, releasing what it already
@@ -282,14 +283,15 @@ func openStores(ctx context.Context, cfg config.Config, connectorID uuid.UUID) (
 	// so a brand-new per-connector group does not replay the whole retained topic (mass re-send); a
 	// restart still resumes from its committed offset.
 	//
-	// MIGRATION HAZARD: renaming the group from "connector-pool-svc" to per-connector, with FromLatest,
-	// silently DROPS any mt.routed produced-but-not-yet-consumed at cutover (offset old-commit → head)
-	// — neither the old nor the new group reads it. Safe on a greenfield/zero-traffic cutover only; a
-	// cutover with live traffic MUST first drain mt.routed or seed the new group's offsets from the old
-	// group's committed offsets. See docs runbook before the first production deploy.
-	s.consumer, err = kafka.NewConsumerFromLatest(cfg.Kafka, serviceName+"-"+connectorID.String(), kafka.TopicMTRouted)
-	if err != nil {
-		return nil, fmt.Errorf("kafka consumer: %w", err)
+	// MIGRATION HAZARD: the old mt.routed topic and per-connector groups are abandoned, not migrated, and
+	// FromLatest drops anything left there — safe only without live traffic (ADR-0021).
+	for _, topic := range kafka.MTRoutedTopics() {
+		group := serviceName + "-" + connectorID.String() + "-" + strings.TrimPrefix(topic, routedTopicPrefix)
+		c, err := kafka.NewConsumerFromLatest(cfg.Kafka, group, topic)
+		if err != nil {
+			return nil, fmt.Errorf("kafka consumer %s: %w", topic, err)
+		}
+		s.consumers = append(s.consumers, c)
 	}
 
 	// The producer publishes the return path (mo.inbound, dlr.events) durably (acks=all): a deliver_sm
@@ -314,6 +316,16 @@ func openStores(ctx context.Context, cfg config.Config, connectorID uuid.UUID) (
 	return s, nil
 }
 
+const routedTopicPrefix = "mt.routed."
+
+func fanIn(cs []*kafka.Consumer) connectorpool.FanIn {
+	out := make(connectorpool.FanIn, len(cs))
+	for i, c := range cs {
+		out[i] = c
+	}
+	return out
+}
+
 // close releases the connections in reverse order of opening; a nil field is one that was never
 // opened.
 func (s *stores) close() {
@@ -323,8 +335,8 @@ func (s *stores) close() {
 	if s.producer != nil {
 		s.producer.Close()
 	}
-	if s.consumer != nil {
-		s.consumer.Close()
+	for _, c := range s.consumers {
+		c.Close()
 	}
 	if s.pg != nil {
 		s.pg.Close()
@@ -475,12 +487,16 @@ func newOpsServer(
 	billing *settler,
 	stream *metricStream,
 ) (*observability.OpsServer, error) {
-	ops, err := observability.NewOpsServer(cfg, logger,
-		st.consumer.ReadyCheck("kafka", cfg.Kafka.Timeout),
+	checks := make([]observability.ReadinessCheck, 0, len(st.consumers))
+	for _, c := range st.consumers {
+		category := c.Group()[strings.LastIndex(c.Group(), "-")+1:]
+		checks = append(checks, c.ReadyCheck("kafka-"+category, cfg.Kafka.Timeout))
+	}
+	ops, err := observability.NewOpsServer(cfg, logger, append(checks,
 		st.producer.ReadyCheck("kafka-producer", cfg.Kafka.Timeout),
 		st.ch.ReadyCheck("clickhouse", cfg.ClickHouse.Timeout),
 		observability.ReadinessCheck{Name: "smsc-bind", Probe: svc.BindReady},
-	)
+	)...)
 	if err != nil {
 		return nil, fmt.Errorf("init ops server: %w", err)
 	}

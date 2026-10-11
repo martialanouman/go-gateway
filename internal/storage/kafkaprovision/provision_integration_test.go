@@ -28,11 +28,11 @@ func TestProvisionAgainstBroker(t *testing.T) {
 
 	cfg := kafkaprovision.Config{
 		Partitions:        12,
-		Overrides:         map[string]int32{kafka.TopicMTRouted: 16},
+		Overrides:         map[string]int32{kafka.TopicMTRoutedMarketing: 16},
 		ReplicationFactor: 1, // single-broker container
 	}
 	want := func(topic string) int32 {
-		if topic == kafka.TopicMTRouted {
+		if topic == kafka.TopicMTRoutedMarketing {
 			return 16
 		}
 		return 12
@@ -40,9 +40,9 @@ func TestProvisionAgainstBroker(t *testing.T) {
 
 	// The fixture is only worth something if it starts from a state the run has to change.
 	before := observe(ctx, t, brokers)
-	if got := before[kafka.TopicMTRouted]; got != 4 {
+	if got := before[kafka.TopicMTRoutedMarketing]; got != 4 {
 		t.Fatalf("fixture: %s starts at %d partitions, want 4 — this test would not exercise an expansion",
-			kafka.TopicMTRouted, got)
+			kafka.TopicMTRoutedMarketing, got)
 	}
 	if _, exists := before[kafka.TopicMORouted]; exists {
 		t.Fatalf("fixture: %s already exists — this test would not exercise a creation", kafka.TopicMORouted)
@@ -105,7 +105,7 @@ func TestProvisionAgainstBroker(t *testing.T) {
 		// this subtest would pass without the unknown-topic check existing at all.
 		typo := kafkaprovision.Config{
 			Partitions:        12,
-			Overrides:         map[string]int32{kafka.TopicMTRouted: 16, "mt.inbund": 48},
+			Overrides:         map[string]int32{kafka.TopicMTRoutedMarketing: 16, "mt.inbund": 48},
 			ReplicationFactor: 1,
 		}
 

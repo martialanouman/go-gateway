@@ -68,8 +68,8 @@ func TestDrainerReplaysToRouted(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	recs := prod.records()
-	if len(recs) != 1 || recs[0].Topic != kafka.TopicMTRouted {
-		t.Fatalf("produced %+v, want one mt.routed replay", recs)
+	if len(recs) != 1 || recs[0].Topic != kafka.TopicMTRoutedMarketing {
+		t.Fatalf("produced %+v, want one mt.routed.marketing replay", recs)
 	}
 	got, _ := pipeline.DecodeRouted(recs[0])
 	if got.ConnectorID != b {

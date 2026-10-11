@@ -105,7 +105,7 @@ func (p *collectingProducer) records() []kafka.Record {
 // It mints new work rather than replaying a fixed list because the run has to OUTLAST several breaker
 // cooldowns: once the connector recovers, the backlog commits and drains, and a fixed list would empty
 // long before the breaker could close and reopen. Each record gets its own offset — retryKey is
-// (partition, offset), so records sharing one would share a single retry-window entry and the first
+// (topic, partition, offset), so records sharing one would share a single retry-window entry and the first
 // message's failure clock would govern every other message.
 type flapFeeder struct {
 	pause    time.Duration

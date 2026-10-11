@@ -86,8 +86,8 @@ func fullState(n int32, rf int16) map[string]kafkaprovision.TopicState {
 
 func TestProvisionCreatesAbsentAndExpandsShort(t *testing.T) {
 	adm := &fakeAdmin{state: map[string]kafkaprovision.TopicState{
-		kafka.TopicMTInbound: {Partitions: 12, ReplicationFactor: 1},
-		kafka.TopicMTRouted:  {Partitions: 4, ReplicationFactor: 1},
+		kafka.TopicMTInbound:         {Partitions: 12, ReplicationFactor: 1},
+		kafka.TopicMTRoutedMarketing: {Partitions: 4, ReplicationFactor: 1},
 	}}
 
 	plan, err := kafkaprovision.Provision(context.Background(), adm,
@@ -109,15 +109,15 @@ func TestProvisionCreatesAbsentAndExpandsShort(t *testing.T) {
 	if len(created) != len(kafkaprovision.Topics())-2 {
 		t.Errorf("created %d topics (%v), want %d", len(created), created, len(kafkaprovision.Topics())-2)
 	}
-	if slices.Contains(created, kafka.TopicMTInbound) || slices.Contains(created, kafka.TopicMTRouted) {
+	if slices.Contains(created, kafka.TopicMTInbound) || slices.Contains(created, kafka.TopicMTRoutedMarketing) {
 		t.Errorf("created = %v, want it to skip the topics that already exist", created)
 	}
 
 	if len(adm.updates) != 1 {
 		t.Fatalf("len(updates) = %d, want 1: %+v", len(adm.updates), adm.updates)
 	}
-	if adm.updates[0].set != 12 || !slices.Equal(adm.updates[0].topics, []string{kafka.TopicMTRouted}) {
-		t.Errorf("update = %+v, want set 12 on [%s]", adm.updates[0], kafka.TopicMTRouted)
+	if adm.updates[0].set != 12 || !slices.Equal(adm.updates[0].topics, []string{kafka.TopicMTRoutedMarketing}) {
+		t.Errorf("update = %+v, want set 12 on [%s]", adm.updates[0], kafka.TopicMTRoutedMarketing)
 	}
 	if plan.Pending() != len(kafkaprovision.Topics())-1 {
 		t.Errorf("plan.Pending() = %d, want %d", plan.Pending(), len(kafkaprovision.Topics())-1)
@@ -222,7 +222,7 @@ func TestProvisionSurfacesMetadataFailure(t *testing.T) {
 // itself.
 func TestDryRunTouchesNothing(t *testing.T) {
 	adm := &fakeAdmin{state: map[string]kafkaprovision.TopicState{
-		kafka.TopicMTRouted: {Partitions: 4, ReplicationFactor: 1},
+		kafka.TopicMTRoutedMarketing: {Partitions: 4, ReplicationFactor: 1},
 	}}
 
 	plan, err := kafkaprovision.DryRun(context.Background(), adm,
@@ -246,7 +246,7 @@ func TestProvisionGroupsExpansionsByTargetWidth(t *testing.T) {
 
 	if _, err := kafkaprovision.Provision(context.Background(), adm, kafkaprovision.Config{
 		Partitions:        12,
-		Overrides:         map[string]int32{kafka.TopicMTRouted: 48},
+		Overrides:         map[string]int32{kafka.TopicMTRoutedMarketing: 48},
 		ReplicationFactor: 1,
 	}); err != nil {
 		t.Fatalf("Provision() error = %v, want nil", err)
@@ -261,8 +261,8 @@ func TestProvisionGroupsExpansionsByTargetWidth(t *testing.T) {
 			got[topic] = call.set
 		}
 	}
-	if got[kafka.TopicMTRouted] != 48 {
-		t.Errorf("%s was set to %d partitions, want 48", kafka.TopicMTRouted, got[kafka.TopicMTRouted])
+	if got[kafka.TopicMTRoutedMarketing] != 48 {
+		t.Errorf("%s was set to %d partitions, want 48", kafka.TopicMTRoutedMarketing, got[kafka.TopicMTRoutedMarketing])
 	}
 	if got[kafka.TopicMTInbound] != 12 {
 		t.Errorf("%s was set to %d partitions, want 12", kafka.TopicMTInbound, got[kafka.TopicMTInbound])

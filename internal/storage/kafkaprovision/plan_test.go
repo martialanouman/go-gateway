@@ -76,8 +76,8 @@ func declaredTopicConstants(t *testing.T) []string {
 
 func TestBuildPlanClassifiesEveryTopic(t *testing.T) {
 	current := map[string]kafkaprovision.TopicState{
-		kafka.TopicMTInbound: {Partitions: 12, ReplicationFactor: 1},
-		kafka.TopicMTRouted:  {Partitions: 4, ReplicationFactor: 1},
+		kafka.TopicMTInbound:         {Partitions: 12, ReplicationFactor: 1},
+		kafka.TopicMTRoutedMarketing: {Partitions: 4, ReplicationFactor: 1},
 	}
 
 	plan, err := kafkaprovision.BuildPlan(kafkaprovision.Config{Partitions: 12, ReplicationFactor: 1}, current)
@@ -97,8 +97,8 @@ func TestBuildPlanClassifiesEveryTopic(t *testing.T) {
 	if got := byTopic[kafka.TopicMTInbound]; got.Action != kafkaprovision.ActionUnchanged || got.Have != 12 || got.Want != 12 {
 		t.Errorf("change for %s = %+v, want unchanged 12->12", kafka.TopicMTInbound, got)
 	}
-	if got := byTopic[kafka.TopicMTRouted]; got.Action != kafkaprovision.ActionExpand || got.Have != 4 || got.Want != 12 {
-		t.Errorf("change for %s = %+v, want expand 4->12", kafka.TopicMTRouted, got)
+	if got := byTopic[kafka.TopicMTRoutedMarketing]; got.Action != kafkaprovision.ActionExpand || got.Have != 4 || got.Want != 12 {
+		t.Errorf("change for %s = %+v, want expand 4->12", kafka.TopicMTRoutedMarketing, got)
 	}
 	// mo.routed is one of the five topics kafkatest never pre-creates: absent means create, not expand.
 	if got := byTopic[kafka.TopicMORouted]; got.Action != kafkaprovision.ActionCreate || got.Have != 0 || got.Want != 12 {
@@ -109,7 +109,7 @@ func TestBuildPlanClassifiesEveryTopic(t *testing.T) {
 func TestBuildPlanHonoursPerTopicOverride(t *testing.T) {
 	cfg := kafkaprovision.Config{
 		Partitions:        12,
-		Overrides:         map[string]int32{kafka.TopicMTRouted: 48},
+		Overrides:         map[string]int32{kafka.TopicMTRoutedMarketing: 48},
 		ReplicationFactor: 3,
 	}
 
@@ -120,7 +120,7 @@ func TestBuildPlanHonoursPerTopicOverride(t *testing.T) {
 
 	for _, change := range plan.Changes {
 		want := int32(12)
-		if change.Topic == kafka.TopicMTRouted {
+		if change.Topic == kafka.TopicMTRoutedMarketing {
 			want = 48
 		}
 		if change.Want != want {
@@ -136,7 +136,7 @@ func TestBuildPlanHonoursPerTopicOverride(t *testing.T) {
 func TestBuildPlanRefusesUnknownOverrideTopic(t *testing.T) {
 	cfg := kafkaprovision.Config{
 		Partitions:        12,
-		Overrides:         map[string]int32{"mt.inbund": 48, kafka.TopicMTRouted: 24},
+		Overrides:         map[string]int32{"mt.inbund": 48, kafka.TopicMTRoutedMarketing: 24},
 		ReplicationFactor: 1,
 	}
 
@@ -147,8 +147,8 @@ func TestBuildPlanRefusesUnknownOverrideTopic(t *testing.T) {
 	if !strings.Contains(err.Error(), "mt.inbund") {
 		t.Errorf("BuildPlan() error = %q, want it to name the unknown topic %q", err, "mt.inbund")
 	}
-	if strings.Contains(err.Error(), "\""+kafka.TopicMTRouted+"\"") {
-		t.Errorf("BuildPlan() error = %q, want it NOT to blame the valid override %q", err, kafka.TopicMTRouted)
+	if strings.Contains(err.Error(), "\""+kafka.TopicMTRoutedMarketing+"\"") {
+		t.Errorf("BuildPlan() error = %q, want it NOT to blame the valid override %q", err, kafka.TopicMTRoutedMarketing)
 	}
 	if len(plan.Changes) != 0 {
 		t.Errorf("len(plan.Changes) = %d, want 0 — a refused plan must carry nothing to apply", len(plan.Changes))
@@ -159,16 +159,16 @@ func TestBuildPlanRefusesUnknownOverrideTopic(t *testing.T) {
 // topic already has must fail loudly, never be applied and never be quietly ignored.
 func TestBuildPlanRefusesShrink(t *testing.T) {
 	current := map[string]kafkaprovision.TopicState{
-		kafka.TopicMTInbound: {Partitions: 24, ReplicationFactor: 1},
-		kafka.TopicMTRouted:  {Partitions: 48, ReplicationFactor: 1},
-		kafka.TopicMOInbound: {Partitions: 12, ReplicationFactor: 1},
+		kafka.TopicMTInbound:         {Partitions: 24, ReplicationFactor: 1},
+		kafka.TopicMTRoutedMarketing: {Partitions: 48, ReplicationFactor: 1},
+		kafka.TopicMOInbound:         {Partitions: 12, ReplicationFactor: 1},
 	}
 
 	plan, err := kafkaprovision.BuildPlan(kafkaprovision.Config{Partitions: 12, ReplicationFactor: 1}, current)
 	if err == nil {
 		t.Fatalf("BuildPlan() error = nil, want a refusal (plan = %+v)", plan)
 	}
-	for _, want := range []string{kafka.TopicMTInbound, kafka.TopicMTRouted, "24", "48", "12"} {
+	for _, want := range []string{kafka.TopicMTInbound, kafka.TopicMTRoutedMarketing, "24", "48", "12"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("BuildPlan() error = %q, want it to mention %q", err, want)
 		}
@@ -186,8 +186,8 @@ func TestBuildPlanRefusesShrink(t *testing.T) {
 // leaving a durability hole invisible.
 func TestBuildPlanWarnsOnReplicationMismatch(t *testing.T) {
 	current := map[string]kafkaprovision.TopicState{
-		kafka.TopicMTInbound: {Partitions: 12, ReplicationFactor: 1},
-		kafka.TopicMTRouted:  {Partitions: 12, ReplicationFactor: 3},
+		kafka.TopicMTInbound:         {Partitions: 12, ReplicationFactor: 1},
+		kafka.TopicMTRoutedMarketing: {Partitions: 12, ReplicationFactor: 3},
 	}
 
 	plan, err := kafkaprovision.BuildPlan(kafkaprovision.Config{Partitions: 12, ReplicationFactor: 3}, current)
@@ -231,7 +231,7 @@ func TestPlanPendingReportsOnlyWork(t *testing.T) {
 		t.Errorf("plan.Pending() = %d, want 0 when every topic already matches", plan.Pending())
 	}
 
-	current[kafka.TopicMTRouted] = kafkaprovision.TopicState{Partitions: 4, ReplicationFactor: 1}
+	current[kafka.TopicMTRoutedMarketing] = kafkaprovision.TopicState{Partitions: 4, ReplicationFactor: 1}
 	delete(current, kafka.TopicMORouted)
 
 	plan, err = kafkaprovision.BuildPlan(kafkaprovision.Config{Partitions: 12, ReplicationFactor: 1}, current)

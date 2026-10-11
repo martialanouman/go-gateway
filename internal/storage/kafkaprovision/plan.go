@@ -29,9 +29,8 @@ import (
 // internal/storage/kafka, not the shorter list the test harness pre-creates: a topic missing here is a
 // topic whose first producer would find nothing, or whatever a broker auto-creates.
 func Topics() []string {
-	topics := []string{
+	topics := slices.Concat(kafka.MTRoutedTopics(), []string{
 		kafka.TopicMTInbound,
-		kafka.TopicMTRouted,
 		kafka.TopicMTOutcome,
 		kafka.TopicMTReroutePark,
 		kafka.TopicMTDeadLetter,
@@ -44,7 +43,7 @@ func Topics() []string {
 		kafka.TopicWebhookDeadLetter,
 		kafka.TopicMetricsStream,
 		kafka.TopicBillingEvents,
-	}
+	})
 	slices.Sort(topics)
 	return topics
 }
@@ -103,7 +102,7 @@ type Change struct {
 	Want   int32
 }
 
-// String renders one plan line, e.g. "EXPAND mt.routed 4 -> 12 partitions".
+// String renders one plan line, e.g. "EXPAND mt.routed.marketing 4 -> 12 partitions".
 func (c Change) String() string {
 	if c.Action == ActionCreate {
 		return fmt.Sprintf("%-6s %-20s -> %d partitions", c.Action, c.Topic, c.Want)

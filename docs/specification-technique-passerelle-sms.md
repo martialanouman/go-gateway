@@ -431,7 +431,8 @@ optout:changed                       -- pub/sub channel: a STOP received as an M
 
 ```
 mt.inbound        -- raw submissions (SMPP/REST), pre-routing. Partitioned by message_id.
-mt.routed         -- post-routing, ready for dispatch. Partitioned by message_id, the LOGICAL message id: all UDH
+mt.routed.otp / mt.routed.transactional / mt.routed.marketing
+                  -- post-routing, ready for dispatch, one topic per traffic category. Partitioned by message_id, the LOGICAL message id: all UDH
                      segments share it -> same partition. connector-pool-svc shards a batch by
                      hash(message_id) % bind_pool_size (§6.8) -> same bind, in order (§6.1/C-segment note).
                      Each message carries a fallback_chain header for unilateral reroute by connector-pool-svc (§6.15).
@@ -771,7 +772,7 @@ du message est traité comme indisponible, aux trois niveaux :
 
 S'il ne reste rien, la réponse est `no_route`, sans code d'erreur nouveau. La garde s'applique après
 l'autorisation et ne court-circuite aucune étape de conformité. Un connecteur réservé n'a pas de backlog
-marketing devant lui : c'est ce qui donne à l'OTP une vraie priorité tant que `mt.routed` est une file unique.
+marketing devant lui : c'est ce qui donne à l'OTP une vraie priorité tant que le pool n'ordonne pas les catégories entre elles (step-292b PR4).
 
 Rechargement à chaud : `config-sync` pousse les diffs de routes/scripts vers `router-svc`, qui garde un instantané immuable échangé atomiquement. L'état volatil (disjoncteur agrégé, charge connecteur) vit dans une **surcouche mutable séparée** (mise à jour par pointeur atomique sur `breaker:events`), pour ne pas rebâtir l'instantané immuable à chaque transition.
 
