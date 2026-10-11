@@ -114,7 +114,8 @@ func TestNewPoolAppBuildsTheWholeGraph(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 
-	app, err := newPoolApp(ctx, cfg, testBindEnv(), silentLogger())
+	bind := testBindEnv()
+	app, err := newPoolApp(ctx, cfg, bind, silentLogger())
 	if err != nil {
 		t.Fatalf("newPoolApp: %v", err)
 	}
@@ -132,8 +133,16 @@ func TestNewPoolAppBuildsTheWholeGraph(t *testing.T) {
 		}
 	}
 
-	if got, want := len(app.consumers), len(kafka.MTRoutedTopics()); got != want {
-		t.Errorf("consumers = %d, want one per category topic (%d)", got, want)
+	wantGroups := map[string]bool{}
+	for _, topic := range kafka.MTRoutedTopics() {
+		wantGroups["connector-pool-svc-"+bind.ID.String()+"-"+strings.TrimPrefix(topic, "mt.routed.")] = true
+	}
+	gotGroups := map[string]bool{}
+	for _, c := range app.consumers {
+		gotGroups[c.Group()] = true
+	}
+	if len(app.consumers) != len(wantGroups) || !reflect.DeepEqual(gotGroups, wantGroups) {
+		t.Errorf("consumer groups = %v (%d consumers), want one per category topic %v", gotGroups, len(app.consumers), wantGroups)
 	}
 
 	// Fail-closed producer (mt.outcome after submit_sm): the constant, never the env (step-260e).
@@ -387,12 +396,5 @@ func TestNewPoolAppRefusesTheOutboundTLSFlagWithoutThePodIdentity(t *testing.T) 
 	}
 	if !strings.Contains(err.Error(), "CONNECTOR_TLS_ENABLED") {
 		t.Fatalf("boot error = %v, want the guard's refusal, not a store failure", err)
-	}
-}
-
-func TestRoutedGroupIsPerConnectorAndCategory(t *testing.T) {
-	id := uuid.MustParse("00000000-0000-0000-0000-000000000001")
-	if got := routedGroup(id, kafka.TopicMTRoutedOTP); got != "connector-pool-svc-"+id.String()+"-otp" {
-		t.Errorf("group = %q", got)
 	}
 }

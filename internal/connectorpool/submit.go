@@ -89,7 +89,7 @@ func (s *Service) cancelBeforeDispatch(ctx context.Context, r pipeline.RoutedMT)
 //
 // Redelivery is the consumer replaying the record in place, after a backoff of one to 30 seconds (step-285),
 // or the reconnect/re-dial cycle when the bind dropped — so no pacing is needed here. The first-failure time is keyed by the
-// record's immutable (partition, offset) and accumulates across redeliveries for as long as this Service
+// record's immutable (topic, partition, offset) and accumulates across redeliveries for as long as this Service
 // lives (a re-dial keeps it; a process restart resets the window). A zero RetryWindow disables
 // dead-lettering, and the max-age SLA is the ultimate backstop in every case.
 func (s *Service) healthRetry(ctx context.Context, rec kafka.Record, r pipeline.RoutedMT, cause error) error {
@@ -102,14 +102,14 @@ func (s *Service) healthRetry(ctx context.Context, rec kafka.Record, r pipeline.
 	return fmt.Errorf("connectorpool: connector-health redelivery: %w", cause)
 }
 
-// retryKey identifies a record for the retry window by its immutable (partition, offset).
+// retryKey identifies a record for the retry window by its immutable (topic, partition, offset).
 type retryKey struct {
-	partition int32
-	offset    int64
+	pk     kafka.PartitionKey
+	offset int64
 }
 
 func retryKeyOf(rec kafka.Record) retryKey {
-	return retryKey{partition: rec.Partition, offset: rec.Offset}
+	return retryKey{pk: rec.PartitionKey(), offset: rec.Offset}
 }
 
 // processOne submits a single routed segment on the given bind and records its outcome. It returns a

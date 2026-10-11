@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -68,5 +69,20 @@ func TestFanInStopsEveryConsumerOnTheFirstError(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("a failed consumer left the others running: FanIn never returned")
+	}
+}
+
+func TestFanInWaitsForEveryConsumerBeforeReturning(t *testing.T) {
+	var slowStopped atomic.Bool
+	slow := feederConsumer{fn: func(ctx context.Context, _ kafka.BatchHandler) error {
+		<-ctx.Done()
+		time.Sleep(50 * time.Millisecond)
+		slowStopped.Store(true)
+		return nil
+	}}
+	fan := connectorpool.FanIn(failing{errors.New("boom")}, slow)
+	_ = fan.RunBatch(t.Context(), func(context.Context, []kafka.Record) []error { return nil })
+	if !slowStopped.Load() {
+		t.Error("FanIn returned while a consumer was still running")
 	}
 }

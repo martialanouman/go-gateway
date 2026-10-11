@@ -361,6 +361,9 @@ func (c *Consumer) ReadyCheck(name string, timeout time.Duration) observability.
 // durability property can be asserted instead of merely commented.
 func (c *Consumer) StartsFromEnd() bool { return c.fromEnd }
 
+// Group returns the consumer group the consumer joined.
+func (c *Consumer) Group() string { return c.group }
+
 // Close leaves the group and releases the client. Because offsets are committed synchronously as
 // records are handled, there is nothing to flush.
 func (c *Consumer) Close() { c.cl.Close() }

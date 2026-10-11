@@ -280,3 +280,29 @@ spec:
   selector:
     matchLabels:
       app: smpp-server-svc
+---
+# An HPA that selects its queue through matchExpressions: the partition ceiling cannot be read off a
+# set-based selector, so anything but connector-pool-svc doing it is a blind spot the guard reports.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: expr-hpa
+spec:
+  scaleTargetRef:
+    kind: Deployment
+    name: rest-api-svc
+  minReplicas: 2
+  maxReplicas: 3
+  metrics:
+    - type: External
+      external:
+        metric:
+          name: queue_depth_records
+          selector:
+            matchExpressions:
+              - key: queue
+                operator: In
+                values: [mt.inbound]
+        target:
+          type: AverageValue
+          averageValue: "10000"

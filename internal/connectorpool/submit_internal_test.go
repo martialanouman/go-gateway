@@ -81,13 +81,19 @@ func TestUndecodableRecordIsNotCommitted(t *testing.T) {
 	}
 }
 
-// TestRetryKeyDistinguishesPartitions: the retry window is keyed by (partition, offset); two partitions
-// share every offset value, so a key on the offset alone would merge their windows.
+// TestRetryKeyDistinguishesPartitions: the retry window is keyed by (topic, partition, offset); two
+// partitions share every offset value, and so do the three mt.routed topics (ADR-0021), so a key missing
+// either would merge their windows.
 func TestRetryKeyDistinguishesPartitions(t *testing.T) {
 	p0 := kafka.Record{Partition: 0, Offset: 5}
 	p1 := kafka.Record{Partition: 1, Offset: 5}
 	if retryKeyOf(p0) == retryKeyOf(p1) {
 		t.Errorf("retryKeyOf(%v) == retryKeyOf(%v): the partition is ignored", p0, p1)
+	}
+	otp := kafka.Record{Topic: "mt.routed.otp", Partition: 2, Offset: 57}
+	marketing := kafka.Record{Topic: "mt.routed.marketing", Partition: 2, Offset: 57}
+	if retryKeyOf(otp) == retryKeyOf(marketing) {
+		t.Errorf("retryKeyOf(%v) == retryKeyOf(%v): the topic is ignored", otp, marketing)
 	}
 	if retryKeyOf(p0) != retryKeyOf(kafka.Record{Partition: 0, Offset: 5}) {
 		t.Errorf("retryKey is not stable for the same record")

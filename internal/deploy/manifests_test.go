@@ -1,7 +1,6 @@
 package deploy_test
 
 import (
-	"cmp"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -450,22 +449,28 @@ func inspectDownwardAPIFields(m deploy.Manifest, c deploy.Container, svc string)
 func inspectHPA(m deploy.Manifest, env map[string]string, deployments map[string]deploy.Manifest,
 	configMaps map[string]map[string]string,
 ) []violation {
+	fail := func(format string, args ...any) []violation {
+		return []violation{{rule: "hpa-max-replicas", msg: fmt.Sprintf(format, args...)}}
+	}
+
 	var queue string
 	for _, metric := range m.Spec.Metrics {
-		// connector-pool-svc selects its topics by matchExpressions and sizes them by
-		// KAFKA_TOPIC_PARTITIONS_OVERRIDES, which this rule does not cover. A CPU-only HPA has no
-		// queue at all and is not bounded by partitions either.
+		// A CPU-only HPA has no queue at all and is not bounded by partitions either.
 		if q := metric.External.Metric.Selector.MatchLabels["queue"]; q != "" {
 			queue = q
 			break
 		}
+		for _, e := range metric.External.Metric.Selector.MatchExpressions {
+			// connector-pool-svc's RunBatch has no per-partition lanes, so the ADR-0014 ceiling does not apply.
+			if e.Key == "queue" && m.Metadata.Name != "connector-pool-svc" {
+				return fail("%s: HPA %q selects its queue through matchExpressions — this rule reads the "+
+					"partition count of a single matchLabels queue, so maxReplicas %d goes unbounded",
+					m.Source, m.Metadata.Name, m.Spec.MaxReplicas)
+			}
+		}
 	}
 	if queue == "" {
 		return nil
-	}
-
-	fail := func(format string, args ...any) []violation {
-		return []violation{{rule: "hpa-max-replicas", msg: fmt.Sprintf(format, args...)}}
 	}
 
 	// The count must come from what is DEPLOYED, not from config's envDefault: the two agree today,
@@ -873,6 +878,20 @@ func TestHPAWithNoResolvableTargetIsReported(t *testing.T) {
 		"an unreadable ceiling is a finding, not a pass")
 }
 
+// TestHPASelectingAQueueByExpressionIsReported: inspectHPA reads the queue from matchLabels only, so an
+// HPA selecting it through matchExpressions used to clear the ceiling without being weighed at all.
+func TestHPASelectingAQueueByExpressionIsReported(t *testing.T) {
+	t.Parallel()
+
+	for _, v := range inspect(t, filepath.Join("testdata", "broken")) {
+		if v.rule == "hpa-max-replicas" && strings.Contains(v.msg, `"expr-hpa"`) {
+			return
+		}
+	}
+	t.Error("HPA \"expr-hpa\" selects its queue through matchExpressions and nothing was reported — " +
+		"a ceiling the guard cannot read is a finding, not a pass")
+}
+
 // TestGracePeriodCoversTheSlowestContainer: durationEnv let each container overwrite the last, so a
 // pod's drain budget was whichever container happened to be written last in the YAML. The grace
 // period has to cover the container that takes LONGEST to go — the kubelet SIGKILLs the whole pod on
@@ -941,19 +960,24 @@ func TestConnectorPoolScalesOnTheRoutedTopicsItPartitions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var overrides string
+	env := envSpecs(t)
+	configMaps := map[string]map[string]string{}
+	var provision deploy.Manifest
 	var selected []string
+	maxReplicas := 0
 	for _, m := range manifests {
-		if m.Kind == "ConfigMap" {
-			overrides = cmp.Or(overrides, m.Data["KAFKA_TOPIC_PARTITIONS_OVERRIDES"])
-		}
-		if m.Kind != "HorizontalPodAutoscaler" || m.Spec.ScaleTargetRef.Name != "connector-pool-svc" {
-			continue
-		}
-		for _, metric := range m.Spec.Metrics {
-			for _, e := range metric.External.Metric.Selector.MatchExpressions {
-				if e.Key == "queue" && e.Operator == "In" {
-					selected = e.Values
+		switch {
+		case m.Kind == "ConfigMap":
+			configMaps[m.Metadata.Name] = m.Data
+		case m.Kind == "Job" && m.Metadata.Name == "kafka-provision":
+			provision = m
+		case m.Kind == "HorizontalPodAutoscaler" && m.Spec.ScaleTargetRef.Name == "connector-pool-svc":
+			maxReplicas = m.Spec.MaxReplicas
+			for _, metric := range m.Spec.Metrics {
+				for _, e := range metric.External.Metric.Selector.MatchExpressions {
+					if e.Key == "queue" && e.Operator == "In" {
+						selected = e.Values
+					}
 				}
 			}
 		}
@@ -963,9 +987,28 @@ func TestConnectorPoolScalesOnTheRoutedTopicsItPartitions(t *testing.T) {
 		t.Errorf("connector-pool-svc HPA selects queues %v, want exactly %v — a topic left out of the sum "+
 			"is lag the autoscaler never sees", selected, kafka.MTRoutedTopics())
 	}
-	for _, want := range []string{"mt.routed.otp=4", "mt.routed.transactional=4"} {
-		if !slices.Contains(strings.Split(overrides, ","), want) {
-			t.Errorf("KAFKA_TOPIC_PARTITIONS_OVERRIDES = %q, want it to hold %s", overrides, want)
+	if provision.Metadata.Name == "" || maxReplicas == 0 {
+		t.Fatalf("kafka-provision Job found: %t, pool HPA maxReplicas %d — nothing to weigh", provision.Metadata.Name != "", maxReplicas)
+	}
+
+	width, err := strconv.Atoi(deployedEnv(provision, env, configMaps, "KAFKA_TOPIC_PARTITIONS"))
+	if err != nil {
+		t.Fatalf("kafka-provision KAFKA_TOPIC_PARTITIONS: %v", err)
+	}
+	overrides, err := config.Kafka{
+		TopicPartitionsOverrides: deployedEnv(provision, env, configMaps, "KAFKA_TOPIC_PARTITIONS_OVERRIDES"),
+	}.PartitionOverrides()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, topic := range kafka.MTRoutedTopics() {
+		partitions := width
+		if n, ok := overrides[topic]; ok {
+			partitions = int(n)
+		}
+		if maxReplicas > partitions {
+			t.Errorf("connector-pool-svc HPA maxReplicas %d exceeds the %d partitions kafka-provision gives %s — "+
+				"the extra pods join the group with nothing assigned", maxReplicas, partitions, topic)
 		}
 	}
 }

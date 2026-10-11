@@ -289,7 +289,8 @@ func openStores(ctx context.Context, cfg config.Config, connectorID uuid.UUID) (
 	// ADR-0021 declares no production and the old topics are deleted without drain; a cutover with
 	// live traffic MUST first drain them or seed the new groups' offsets.
 	for _, topic := range kafka.MTRoutedTopics() {
-		c, err := kafka.NewConsumerFromLatest(cfg.Kafka, routedGroup(connectorID, topic), topic)
+		group := serviceName + "-" + connectorID.String() + "-" + strings.TrimPrefix(topic, routedTopicPrefix)
+		c, err := kafka.NewConsumerFromLatest(cfg.Kafka, group, topic)
 		if err != nil {
 			return nil, fmt.Errorf("kafka consumer %s: %w", topic, err)
 		}
@@ -319,11 +320,6 @@ func openStores(ctx context.Context, cfg config.Config, connectorID uuid.UUID) (
 }
 
 const routedTopicPrefix = "mt.routed."
-
-// routedGroup is the consumer group of one connector on one category topic.
-func routedGroup(connectorID uuid.UUID, topic string) string {
-	return serviceName + "-" + connectorID.String() + "-" + strings.TrimPrefix(topic, routedTopicPrefix)
-}
 
 func consumerList(cs []*kafka.Consumer) []connectorpool.Consumer {
 	out := make([]connectorpool.Consumer, len(cs))
