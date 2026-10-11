@@ -42,7 +42,7 @@ func TestInboundRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	if rec.Topic != kafka.TopicMTInbound {
+	if rec.Topic != kafka.TopicMTInboundMarketing {
 		t.Errorf("topic: got %q", rec.Topic)
 	}
 	if !bytes.Equal(rec.Key, in.MessageID[:]) {
@@ -83,7 +83,7 @@ func routedFixture() pipeline.RoutedMT {
 // StickyKeyPartitioner wraps; the default itself panics when called outside a client.
 func TestInboundSingleAccountSpreadsOverEveryPartition(t *testing.T) {
 	const partitions = 12
-	partitioner := kgo.StickyKeyPartitioner(nil).ForTopic(kafka.TopicMTInbound)
+	partitioner := kgo.StickyKeyPartitioner(nil).ForTopic(kafka.TopicMTInboundMarketing)
 	account := uuid.New()
 	hit := map[int]bool{}
 	for range 20 * partitions {
@@ -321,6 +321,30 @@ func TestEncodeRoutedPicksTheCategoryTopic(t *testing.T) {
 
 func TestEncodeRoutedRefusesAnUnknownCategory(t *testing.T) {
 	_, err := pipeline.EncodeRouted(pipeline.RoutedMT{MessageID: uuid.New(), TrafficCategory: "promo", Body: msg.NewBodyString("x")})
+	if err == nil {
+		t.Fatal("an unknown category was encoded onto some topic")
+	}
+}
+
+func TestEncodeInboundPicksTheCategoryTopic(t *testing.T) {
+	for cat, want := range map[cp.TrafficCategory]string{
+		cp.TrafficOTP:           kafka.TopicMTInboundOTP,
+		cp.TrafficTransactional: kafka.TopicMTInboundTransactional,
+		cp.TrafficMarketing:     kafka.TopicMTInboundMarketing,
+		"":                      kafka.TopicMTInboundMarketing,
+	} {
+		rec, err := pipeline.EncodeInbound(pipeline.InboundMT{MessageID: uuid.New(), TrafficCategory: cat, Body: msg.NewBodyString("x")})
+		if err != nil {
+			t.Fatalf("%q: encode: %v", cat, err)
+		}
+		if rec.Topic != want {
+			t.Errorf("category %q went to %q, want %q", cat, rec.Topic, want)
+		}
+	}
+}
+
+func TestEncodeInboundRefusesAnUnknownCategory(t *testing.T) {
+	_, err := pipeline.EncodeInbound(pipeline.InboundMT{MessageID: uuid.New(), TrafficCategory: "promo", Body: msg.NewBodyString("x")})
 	if err == nil {
 		t.Fatal("an unknown category was encoded onto some topic")
 	}

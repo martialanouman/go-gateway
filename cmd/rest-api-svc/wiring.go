@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/ingest"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/pipeline/ratelimit"
+	"github.com/martialanouman/go-gateway/internal/pipeline/senderid"
 	"github.com/martialanouman/go-gateway/internal/platform/buildinfo"
 	"github.com/martialanouman/go-gateway/internal/platform/tlsconf"
 	"github.com/martialanouman/go-gateway/internal/restapi"
@@ -36,6 +38,8 @@ type restAPIApp struct {
 	ops     *observability.OpsServer
 	http    *http.Server
 	watcher *config.Watcher
+	// ingestor is the API's, kept so a wiring test can submit through what the graph installs.
+	ingestor *ingest.Ingestor
 
 	// closers release what was opened, in reverse order of opening — the exact LIFO the deferred Closes
 	// in run() used to provide. They are named because that order is the property worth guarding,
@@ -87,6 +91,11 @@ func newRestAPIApp(ctx context.Context, cfg config.Config, logger *slog.Logger) 
 		return nil, fmt.Errorf("load rate-limit snapshot: %w", err)
 	}
 	admission := ratelimit.NewEnforcer(rateSnap, ratelimit.NewLimiter(st.rdb))
+	senderIDs := &senderid.Holder{}
+	reloadSenderIDs := senderIDs.Reload(postgres.NewSenderIDRepo(st.pg))
+	if err := reloadSenderIDs(ctx); err != nil {
+		return nil, fmt.Errorf("load sender-id snapshot: %w", err)
+	}
 	principals := restapi.NewPrincipalCache(postgres.NewAPIKeyRepo(st.pg), restapi.PrincipalCacheTTL, time.Now)
 	reloadLimits := admission.Reload(postgres.NewRateLimitRepo(st.pg), nil)
 	a.watcher = config.NewWatcher(
@@ -95,15 +104,17 @@ func newRestAPIApp(ctx context.Context, cfg config.Config, logger *slog.Logger) 
 		},
 		func(ctx context.Context) error {
 			principals.Flush()
-			return reloadLimits(ctx)
+			return errors.Join(reloadLimits(ctx), reloadSenderIDs(ctx))
 		},
 		config.WithResync(cfg.ConfigResyncInterval), config.WithLogger(logger),
 	)
 
+	a.ingestor = ingest.NewIngestor(st.producer, admission, senderIDs, logger)
+
 	//nolint:contextcheck // The boot context has no business inside a request handler: the API-key
 	// middleware authenticates on the REQUEST context (ctx.Context()), which is the only correct one —
 	// a lookup must be cancelled when its client hangs up, not when the process shuts down.
-	a.http, err = newHTTPServer(cfg, st, admission, principals, logger)
+	a.http, err = newHTTPServer(cfg, st, a.ingestor, principals, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -177,12 +188,12 @@ func (s *stores) close() {
 
 // newHTTPServer assembles the public API surface over the stores. It binds nothing: the listener opens
 // in runHTTP.
-func newHTTPServer(cfg config.Config, st *stores, admission ingest.Admission, principals restapi.PrincipalStore, logger *slog.Logger) (*http.Server, error) {
+func newHTTPServer(cfg config.Config, st *stores, ingestor *ingest.Ingestor, principals restapi.PrincipalStore, logger *slog.Logger) (*http.Server, error) {
 	// The second return is the huma API handle, which nothing here needs: the routes are already
 	// registered on the mux by then.
 	handler, _ := restapi.New(restapi.Deps{
 		Principals:  principals,
-		Ingestor:    ingest.NewIngestor(st.producer, admission, logger),
+		Ingestor:    ingestor,
 		CDRReader:   clickhouse.NewCDRReader(st.ch),
 		Accounts:    postgres.NewAccountRepo(st.pg),
 		SenderIDs:   postgres.NewSenderIDRepo(st.pg),

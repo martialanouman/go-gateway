@@ -29,8 +29,7 @@ import (
 // internal/storage/kafka, not the shorter list the test harness pre-creates: a topic missing here is a
 // topic whose first producer would find nothing, or whatever a broker auto-creates.
 func Topics() []string {
-	topics := slices.Concat(kafka.MTRoutedTopics(), []string{
-		kafka.TopicMTInbound,
+	topics := slices.Concat(kafka.MTInboundTopics(), kafka.MTRoutedTopics(), []string{
 		kafka.TopicMTOutcome,
 		kafka.TopicMTReroutePark,
 		kafka.TopicMTDeadLetter,

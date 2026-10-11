@@ -76,8 +76,8 @@ func declaredTopicConstants(t *testing.T) []string {
 
 func TestBuildPlanClassifiesEveryTopic(t *testing.T) {
 	current := map[string]kafkaprovision.TopicState{
-		kafka.TopicMTInbound:         {Partitions: 12, ReplicationFactor: 1},
-		kafka.TopicMTRoutedMarketing: {Partitions: 4, ReplicationFactor: 1},
+		kafka.TopicMTInboundMarketing: {Partitions: 12, ReplicationFactor: 1},
+		kafka.TopicMTRoutedMarketing:  {Partitions: 4, ReplicationFactor: 1},
 	}
 
 	plan, err := kafkaprovision.BuildPlan(kafkaprovision.Config{Partitions: 12, ReplicationFactor: 1}, current)
@@ -94,8 +94,8 @@ func TestBuildPlanClassifiesEveryTopic(t *testing.T) {
 		byTopic[change.Topic] = change
 	}
 
-	if got := byTopic[kafka.TopicMTInbound]; got.Action != kafkaprovision.ActionUnchanged || got.Have != 12 || got.Want != 12 {
-		t.Errorf("change for %s = %+v, want unchanged 12->12", kafka.TopicMTInbound, got)
+	if got := byTopic[kafka.TopicMTInboundMarketing]; got.Action != kafkaprovision.ActionUnchanged || got.Have != 12 || got.Want != 12 {
+		t.Errorf("change for %s = %+v, want unchanged 12->12", kafka.TopicMTInboundMarketing, got)
 	}
 	if got := byTopic[kafka.TopicMTRoutedMarketing]; got.Action != kafkaprovision.ActionExpand || got.Have != 4 || got.Want != 12 {
 		t.Errorf("change for %s = %+v, want expand 4->12", kafka.TopicMTRoutedMarketing, got)
@@ -159,16 +159,16 @@ func TestBuildPlanRefusesUnknownOverrideTopic(t *testing.T) {
 // topic already has must fail loudly, never be applied and never be quietly ignored.
 func TestBuildPlanRefusesShrink(t *testing.T) {
 	current := map[string]kafkaprovision.TopicState{
-		kafka.TopicMTInbound:         {Partitions: 24, ReplicationFactor: 1},
-		kafka.TopicMTRoutedMarketing: {Partitions: 48, ReplicationFactor: 1},
-		kafka.TopicMOInbound:         {Partitions: 12, ReplicationFactor: 1},
+		kafka.TopicMTInboundMarketing: {Partitions: 24, ReplicationFactor: 1},
+		kafka.TopicMTRoutedMarketing:  {Partitions: 48, ReplicationFactor: 1},
+		kafka.TopicMOInbound:          {Partitions: 12, ReplicationFactor: 1},
 	}
 
 	plan, err := kafkaprovision.BuildPlan(kafkaprovision.Config{Partitions: 12, ReplicationFactor: 1}, current)
 	if err == nil {
 		t.Fatalf("BuildPlan() error = nil, want a refusal (plan = %+v)", plan)
 	}
-	for _, want := range []string{kafka.TopicMTInbound, kafka.TopicMTRoutedMarketing, "24", "48", "12"} {
+	for _, want := range []string{kafka.TopicMTInboundMarketing, kafka.TopicMTRoutedMarketing, "24", "48", "12"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("BuildPlan() error = %q, want it to mention %q", err, want)
 		}
@@ -186,8 +186,8 @@ func TestBuildPlanRefusesShrink(t *testing.T) {
 // leaving a durability hole invisible.
 func TestBuildPlanWarnsOnReplicationMismatch(t *testing.T) {
 	current := map[string]kafkaprovision.TopicState{
-		kafka.TopicMTInbound:         {Partitions: 12, ReplicationFactor: 1},
-		kafka.TopicMTRoutedMarketing: {Partitions: 12, ReplicationFactor: 3},
+		kafka.TopicMTInboundMarketing: {Partitions: 12, ReplicationFactor: 1},
+		kafka.TopicMTRoutedMarketing:  {Partitions: 12, ReplicationFactor: 3},
 	}
 
 	plan, err := kafkaprovision.BuildPlan(kafkaprovision.Config{Partitions: 12, ReplicationFactor: 3}, current)
@@ -197,8 +197,8 @@ func TestBuildPlanWarnsOnReplicationMismatch(t *testing.T) {
 	if len(plan.Warnings) != 1 {
 		t.Fatalf("len(plan.Warnings) = %d, want 1: %v", len(plan.Warnings), plan.Warnings)
 	}
-	if !strings.Contains(plan.Warnings[0], kafka.TopicMTInbound) {
-		t.Errorf("warning = %q, want it to name %q", plan.Warnings[0], kafka.TopicMTInbound)
+	if !strings.Contains(plan.Warnings[0], kafka.TopicMTInboundMarketing) {
+		t.Errorf("warning = %q, want it to name %q", plan.Warnings[0], kafka.TopicMTInboundMarketing)
 	}
 }
 

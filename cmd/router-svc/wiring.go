@@ -251,7 +251,7 @@ func openStores(ctx context.Context, cfg config.Config) (_ *stores, err error) {
 		return nil, fmt.Errorf("kafka producer: %w", err)
 	}
 
-	s.consumer, err = kafka.NewConsumer(cfg.Kafka, serviceName, kafka.TopicMTInbound)
+	s.consumer, err = kafka.NewConsumer(cfg.Kafka, serviceName, kafka.MTInboundTopics()...)
 	if err != nil {
 		return nil, fmt.Errorf("kafka consumer: %w", err)
 	}
@@ -507,9 +507,9 @@ func (p *acceptedProjector) close() {
 	}
 }
 
-// newAcceptedProjector wires the projection. A fresh group starts at the LATEST offset — replaying
-// the whole retained topic would re-insert every historical accepted row and storm billing for DEKs —
-// so the deploy pins the start offset (runbook).
+// newAcceptedProjector wires the projection. A fresh group starts at the START of mt.inbound.*: the topics
+// are born with this rollout (ADR-0021), so there is no history to replay, and a record produced before the
+// group first joins still gets its accepted row.
 func newAcceptedProjector(ctx context.Context, cfg config.Config, pool *pgxpool.Pool, ch *clickhouse.Conn, logger *slog.Logger, dial grpctls.Dial) (_ *acceptedProjector, err error) {
 	p := &acceptedProjector{}
 	defer func() {
@@ -540,7 +540,7 @@ func newAcceptedProjector(ctx context.Context, cfg config.Config, pool *pgxpool.
 	})
 	p.sealer = ingest.NewContentSealer(p.policy, dekCache, p.dropped, logger)
 
-	p.kafka, err = kafka.NewConsumerFromLatest(cfg.Kafka, serviceName+"-accepted-cdr", kafka.TopicMTInbound)
+	p.kafka, err = kafka.NewConsumer(cfg.Kafka, serviceName+"-accepted-cdr", kafka.MTInboundTopics()...)
 	if err != nil {
 		return nil, fmt.Errorf("kafka accepted-cdr consumer: %w", err)
 	}

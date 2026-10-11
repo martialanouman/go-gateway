@@ -258,7 +258,7 @@ func TestTheSMPPServerRefusesToBootOnAnUnreadableIdentity(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			cfg := tlsTestConfig(t)
 			breakIt(&cfg.TLS)
-			_, err := newListener(cfg, &stores{}, nil, silentLogger())
+			_, err := newListener(cfg, &stores{}, nil, nil, silentLogger())
 			if err == nil {
 				t.Fatal("a missing file booted: the failure must be a value, not a handshake at 3am")
 			}

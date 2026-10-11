@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	"github.com/martialanouman/go-gateway/internal/ingest"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
@@ -48,6 +49,14 @@ func (p *countingProducer) Produce(_ context.Context, rec kafka.Record) error {
 	return nil
 }
 
+func (p *countingProducer) topics() []string {
+	topics := make([]string, 0, len(p.produced))
+	for _, rec := range p.produced {
+		topics = append(topics, rec.Topic)
+	}
+	return topics
+}
+
 type stubAdmission struct {
 	err      error
 	segments []int
@@ -71,7 +80,7 @@ func envelope(text string) pipeline.InboundMT {
 // submission the client was refused never reaches mt.inbound (step-283).
 func TestASubmissionBeyondItsAccountRateIsNeverWritten(t *testing.T) {
 	producer := &countingProducer{}
-	i := ingest.NewIngestor(producer, &stubAdmission{err: errs.ErrRateLimited}, nil)
+	i := ingest.NewIngestor(producer, &stubAdmission{err: errs.ErrRateLimited}, nil, nil)
 
 	err := i.Accept(context.Background(), envelope("hello"))
 	if code, _ := errs.CodeOf(err); code != errs.ErrRateLimited {
@@ -87,7 +96,7 @@ func TestASubmissionBeyondItsAccountRateIsNeverWritten(t *testing.T) {
 func TestAdmissionPaysTheSegmentsTheMessageWillSend(t *testing.T) {
 	admission := &stubAdmission{}
 	producer := &countingProducer{}
-	i := ingest.NewIngestor(producer, admission, nil)
+	i := ingest.NewIngestor(producer, admission, nil, nil)
 
 	if err := i.Accept(context.Background(), envelope(strings.Repeat("ê", 160))); err != nil {
 		t.Fatalf("Accept: %v", err)
@@ -104,7 +113,7 @@ func TestAdmissionPaysTheSegmentsTheMessageWillSend(t *testing.T) {
 // submitted under its customer, before any rewrite (ADR-0020 §1).
 func TestAdmissionIsAskedForTheSubmittedSender(t *testing.T) {
 	admission := &stubAdmission{}
-	i := ingest.NewIngestor(&countingProducer{}, admission, nil)
+	i := ingest.NewIngestor(&countingProducer{}, admission, nil, nil)
 	env := envelope("hello")
 
 	if err := i.Accept(context.Background(), env); err != nil {
@@ -112,5 +121,54 @@ func TestAdmissionIsAskedForTheSubmittedSender(t *testing.T) {
 	}
 	if want := env.CustomerID.String() + "/INFO"; len(admission.senders) != 1 || admission.senders[0] != want {
 		t.Errorf("admission asked for %v, want [%s]", admission.senders, want)
+	}
+}
+
+type stubCategories struct {
+	category cp.TrafficCategory
+	err      error
+}
+
+func (c stubCategories) Authorize(context.Context, uuid.UUID, string) (cp.TrafficCategory, error) {
+	return c.category, c.err
+}
+
+func TestAKnownSenderIsWrittenToItsCategoryTopic(t *testing.T) {
+	producer := &countingProducer{}
+	i := ingest.NewIngestor(producer, nil, stubCategories{category: cp.TrafficOTP}, nil)
+
+	if err := i.Accept(context.Background(), envelope("123456")); err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+	if len(producer.produced) != 1 || producer.produced[0].Topic != kafka.TopicMTInboundOTP {
+		t.Errorf("produced on %v, want one record on %s", producer.topics(), kafka.TopicMTInboundOTP)
+	}
+}
+
+// TestAnUnauthorizedSenderIsAcceptedOntoMarketing: ingestion never refuses on sender-ID grounds, the
+// router does (ADR-0021 §2).
+func TestAnUnauthorizedSenderIsAcceptedOntoMarketing(t *testing.T) {
+	producer := &countingProducer{}
+	i := ingest.NewIngestor(producer, nil, stubCategories{category: cp.TrafficOTP, err: errs.ErrSenderIDNotAuthorized}, nil)
+
+	if err := i.Accept(context.Background(), envelope("hello")); err != nil {
+		t.Fatalf("Accept refused an unauthorized sender at ingestion: %v", err)
+	}
+	if len(producer.produced) != 1 || producer.produced[0].Topic != kafka.TopicMTInboundMarketing {
+		t.Errorf("produced on %v, want one record on %s", producer.topics(), kafka.TopicMTInboundMarketing)
+	}
+}
+
+func TestWithoutCategoriesEverySubmissionGoesToMarketing(t *testing.T) {
+	producer := &countingProducer{}
+	i := ingest.NewIngestor(producer, nil, nil, nil)
+	env := envelope("hello")
+	env.TrafficCategory = cp.TrafficOTP
+
+	if err := i.Accept(context.Background(), env); err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+	if len(producer.produced) != 1 || producer.produced[0].Topic != kafka.TopicMTInboundMarketing {
+		t.Errorf("produced on %v, want one record on %s", producer.topics(), kafka.TopicMTInboundMarketing)
 	}
 }

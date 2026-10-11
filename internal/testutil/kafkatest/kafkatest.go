@@ -8,6 +8,7 @@
 package kafkatest
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -31,7 +32,8 @@ const image = "redpandadata/redpanda:v24.2.18"
 // topics are pre-created with several partitions so partition keying (mt.routed keyed by logical
 // message id, §7.3) is actually exercised rather than degenerating to a single partition.
 var topics = []string{
-	kafka.TopicMTInbound, kafka.TopicMTRoutedOTP, kafka.TopicMTRoutedTransactional, kafka.TopicMTRoutedMarketing,
+	kafka.TopicMTInboundOTP, kafka.TopicMTInboundTransactional, kafka.TopicMTInboundMarketing,
+	kafka.TopicMTRoutedOTP, kafka.TopicMTRoutedTransactional, kafka.TopicMTRoutedMarketing,
 	kafka.TopicMOInbound, kafka.TopicDLREvents,
 	// Resilience data-plane topics (M7/M8): the connector pool produces reroutes and dead-letters here,
 	// so a test exercising fallback/park/replay or dead-lettering needs them pre-created — otherwise the
@@ -119,6 +121,33 @@ func AdminAPI(t *testing.T) string {
 		t.Fatalf("kafkatest: admin API of shared redpanda: %v", e.adminErr)
 	}
 	return e.admin
+}
+
+// TopicOfKey reads topics from their start and returns the one carrying a record keyed by key, failing the
+// test when none does within 20 seconds.
+func TopicOfKey(t *testing.T, key []byte, topics ...string) string {
+	t.Helper()
+	cl, err := kgo.NewClient(kgo.SeedBrokers(Brokers(t)...), kgo.ConsumeTopics(topics...),
+		kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()))
+	if err != nil {
+		t.Fatalf("kafkatest: reader client: %v", err)
+	}
+	defer cl.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	for ctx.Err() == nil {
+		var found string
+		cl.PollFetches(ctx).EachRecord(func(r *kgo.Record) {
+			if bytes.Equal(r.Key, key) {
+				found = r.Topic
+			}
+		})
+		if found != "" {
+			return found
+		}
+	}
+	t.Fatalf("kafkatest: no record keyed %x on %v", key, topics)
+	return ""
 }
 
 func ensure(t *testing.T) endpoints {

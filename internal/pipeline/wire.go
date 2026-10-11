@@ -64,9 +64,19 @@ type routedWire struct {
 	OwnerType          string     `json:"owner_type,omitempty"`
 }
 
+var inboundTopics = map[cp.TrafficCategory]string{
+	cp.TrafficOTP:           kafka.TopicMTInboundOTP,
+	cp.TrafficTransactional: kafka.TopicMTInboundTransactional,
+	cp.TrafficMarketing:     kafka.TopicMTInboundMarketing,
+}
+
 // EncodeInbound builds the mt.inbound record for env, keyed by message so one account spreads over every
 // router lane: per-account order is not required. The headers carry ids only.
 func EncodeInbound(env InboundMT) (kafka.Record, error) {
+	topic, ok := inboundTopics[routedCategory(string(env.TrafficCategory))]
+	if !ok {
+		return kafka.Record{}, fmt.Errorf("pipeline: mt.inbound: unknown traffic category %q", env.TrafficCategory)
+	}
 	value, err := json.Marshal(inboundWire{
 		MessageID:          env.MessageID,
 		TraceID:            env.TraceID,
@@ -89,7 +99,7 @@ func EncodeInbound(env InboundMT) (kafka.Record, error) {
 	}
 	key := env.MessageID
 	return kafka.Record{
-		Topic:   kafka.TopicMTInbound,
+		Topic:   topic,
 		Key:     key[:],
 		Value:   value,
 		Headers: idHeaders(env.MessageID, env.TraceID, env.AccountID, env.CustomerID),

@@ -14,6 +14,9 @@ import (
 	"github.com/martialanouman/go-gateway/internal/config"
 	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	"github.com/martialanouman/go-gateway/internal/credential"
+	"github.com/martialanouman/go-gateway/internal/pipeline"
+	"github.com/martialanouman/go-gateway/internal/platform/msg"
+	"github.com/martialanouman/go-gateway/internal/storage/kafka"
 	"github.com/martialanouman/go-gateway/internal/storage/postgres"
 	redisstore "github.com/martialanouman/go-gateway/internal/storage/redis"
 	"github.com/martialanouman/go-gateway/internal/testutil/kafkatest"
@@ -185,5 +188,61 @@ func TestASenderLimitSetAfterBootIsRefusedBeforeTheAck(t *testing.T) {
 	}
 	if got := submit("PROMO"); got != http.StatusAccepted {
 		t.Fatalf("another registered sender of the account = %d, want 202: the limit belongs to the OTP flow", got)
+	}
+}
+
+// ADR-0021 §2: the ingestion the graph installs reads the sender's category to pick the mt.inbound topic,
+// and a sender registered after boot reaches it through the watcher.
+func TestASenderRegisteredAfterBootIsWrittenToItsCategoryTopic(t *testing.T) {
+	cfg := testConfig()
+	cfg.Postgres = pgtest.Config(t)
+	cfg.Redis = redistest.Config(t)
+	cfg.Kafka.Brokers = kafkatest.Brokers(t)
+	pool := pgtest.Pool(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
+	defer cancel()
+
+	customer, err := postgres.NewCustomerRepo(pool).Create(ctx, cp.NewCustomer{Name: "292b-" + uuid.NewString()})
+	if err != nil {
+		t.Fatalf("create customer: %v", err)
+	}
+	app, err := newRestAPIApp(ctx, cfg, silentLogger())
+	if err != nil {
+		t.Fatalf("newRestAPIApp: %v", err)
+	}
+	watchCtx, stopWatch := context.WithCancel(ctx)
+	watcherDone := make(chan error, 1)
+	go func() { watcherDone <- app.watcher.Run(watchCtx) }()
+	t.Cleanup(func() {
+		stopWatch()
+		<-watcherDone
+		app.close()
+	})
+
+	if _, err := pool.Exec(ctx, `INSERT INTO control_plane.sender_ids (customer_id, address, status, traffic_category)
+		VALUES ($1, 'OTP', 'active', 'otp')`, customer.ID); err != nil {
+		t.Fatalf("register sender: %v", err)
+	}
+	pub := redisstore.NewPubSubPublisher(redistest.Client(t))
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		id := uuid.New()
+		if err := app.ingestor.Accept(ctx, pipeline.InboundMT{
+			MessageID: id, TraceID: uuid.New(), AccountID: uuid.New(), CustomerID: customer.ID,
+			From: "OTP", To: "+2250700000001", Body: msg.NewBodyString("hello"), Encoding: "auto",
+			SubmittedAt: time.Now(),
+		}); err != nil {
+			t.Fatalf("Accept: %v", err)
+		}
+		if kafkatest.TopicOfKey(t, id[:], kafka.MTInboundTopics()...) == kafka.TopicMTInboundOTP {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("an otp sender is still written to marketing, want %s", kafka.TopicMTInboundOTP)
+		}
+		if err := pub.Publish(ctx, config.ChannelSnapshotInvalidation, []byte(`{"reason":"config"}`)); err != nil {
+			t.Fatalf("publish invalidation: %v", err)
+		}
+		time.Sleep(200 * time.Millisecond)
 	}
 }

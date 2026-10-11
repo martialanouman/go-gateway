@@ -127,7 +127,7 @@ func buildHarness(t *testing.T, principals restapi.PrincipalStore, reader restap
 
 	mux, _ := restapi.New(restapi.Deps{
 		Principals:  principals,
-		Ingestor:    ingest.NewIngestor(producer, nil, nil),
+		Ingestor:    ingest.NewIngestor(producer, nil, nil, nil),
 		CDRReader:   reader,
 		Idempotency: idem,
 		Tracer:      observability.Tracer(rec.Provider(), "rest-api"),
@@ -241,7 +241,7 @@ func TestSubmitAcceptedAndDurable(t *testing.T) {
 		t.Fatalf("expected 1 mt.inbound record, got %d", h.producer.count())
 	}
 	rec := h.producer.records[0]
-	if rec.Topic != kafka.TopicMTInbound {
+	if rec.Topic != kafka.TopicMTInboundMarketing {
 		t.Errorf("topic: got %q", rec.Topic)
 	}
 	env, err := pipeline.DecodeInbound(rec)

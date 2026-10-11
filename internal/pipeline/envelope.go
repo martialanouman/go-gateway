@@ -36,6 +36,8 @@ type InboundMT struct {
 	ClientRef          *string
 	DataCoding         *int
 	SubmittedAt        time.Time
+	// TrafficCategory only picks the mt.inbound topic; it is not carried, the router recomputes it (ADR-0021 §2).
+	TrafficCategory cp.TrafficCategory
 }
 
 // RoutedMT is ONE segment of a message after the router's pipeline: destination normalised to E.164,

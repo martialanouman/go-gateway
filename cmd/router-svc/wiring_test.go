@@ -147,8 +147,15 @@ func TestNewRouterAppBuildsTheWholeGraph(t *testing.T) {
 			"first joined stays deletable")
 	}
 
-	// The MO projection starts at the end of mo.routed, like the accepted one: replaying the retained topic
-	// would re-insert history and storm content-key-svc for data keys.
+	// The accepted projection joins topics the routers create at the same rollout (ADR-0021): a group
+	// starting at the end would skip every submission accepted before it first joined.
+	if app.projections == nil || app.projections.kafka.StartsFromEnd() {
+		t.Error("the accepted CDR projection starts at the end of mt.inbound.*: a submission accepted before " +
+			"this group first joined never gets its accepted row")
+	}
+
+	// The MO projection starts at the end of mo.routed: replaying the retained topic would re-insert history
+	// and storm content-key-svc for data keys.
 	if app.projections == nil || !app.projections.moKafka.StartsFromEnd() {
 		t.Error("the MO CDR projection is not wired to start at the end of mo.routed")
 	}

@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 
+	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
@@ -35,22 +36,30 @@ type Admission interface {
 	Admit(ctx context.Context, accountID, customerID uuid.UUID, from string, segments int) error
 }
 
+// Categories reads the traffic category of a sender ID, which picks the mt.inbound topic.
+// *senderid.Holder satisfies it.
+type Categories interface {
+	Authorize(ctx context.Context, customerID uuid.UUID, from string) (cp.TrafficCategory, error)
+}
+
 // Ingestor performs the shared ingestion sequence for one submission: it admits it against its sender
 // ID's and account's throughput, encodes the envelope and produces it durably to mt.inbound (the boundary
 // that earns the acknowledgement). The accepted CDR row is NOT written here — it is projected off the
 // durable mt.inbound topic by AcceptedConsumer (step-101), so it can never be lost on the request path.
 type Ingestor struct {
-	producer  Producer
-	admission Admission
-	logger    *slog.Logger
+	producer   Producer
+	admission  Admission
+	categories Categories
+	logger     *slog.Logger
 }
 
-// NewIngestor wires an Ingestor over the durable producer. A nil admission admits every submission.
-func NewIngestor(producer Producer, admission Admission, logger *slog.Logger) *Ingestor {
+// NewIngestor wires an Ingestor over the durable producer. A nil admission admits every submission; nil
+// categories send every submission to the marketing topic.
+func NewIngestor(producer Producer, admission Admission, categories Categories, logger *slog.Logger) *Ingestor {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Ingestor{producer: producer, admission: admission, logger: logger}
+	return &Ingestor{producer: producer, admission: admission, categories: categories, logger: logger}
 }
 
 // Accept admits env against its sender ID's and account's throughput, encodes it, produces it to
@@ -64,6 +73,13 @@ func (i *Ingestor) Accept(ctx context.Context, env pipeline.InboundMT) error {
 	if i.admission != nil {
 		if err := i.admission.Admit(ctx, env.AccountID, env.CustomerID, env.From, pipeline.SegmentCount(env)); err != nil {
 			return err
+		}
+	}
+
+	env.TrafficCategory = cp.TrafficMarketing
+	if i.categories != nil {
+		if cat, err := i.categories.Authorize(ctx, env.CustomerID, env.From); err == nil {
+			env.TrafficCategory = cat
 		}
 	}
 
