@@ -709,7 +709,7 @@ func (g bloomGauges) set(filter string, capacityBits uint) {
 // newOpsServer builds the ops listener (not yet bound) and registers exactly the metrics this
 // service feeds.
 //
-// Vital dependency (plan §1.5): Kafka alone. The router's core job — consume mt.inbound, normalise,
+// Vital dependency (plan §1.5): Kafka alone. The router's core job — consume mt.inbound.<category>, normalise,
 // route, publish mt.routed — needs only Kafka and the in-memory snapshot. ClickHouse is touched only
 // to write a rejected CDR row, and Postgres is startup-only (immutable snapshot); gating readiness on
 // either would drain healthy pods over a store the happy path does not use.

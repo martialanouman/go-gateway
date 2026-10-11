@@ -106,7 +106,8 @@ metadata:
   labels:
     app: router-svc
 spec:
-  # maxReplicas must stay UNDER the partition count of mt.inbound (KAFKA_TOPIC_PARTITIONS, 12). The
+  # maxReplicas must stay UNDER the partition count of the widest topic it consumes (mt.inbound.marketing,
+  # KAFKA_TOPIC_PARTITIONS 12; otp and transactional are overridden to 4). The
   # router opens one goroutine per partition ASSIGNED TO ITS POD (step-201d): at one pod per partition
   # every pod is down to a single lane, so the fan-out disappears exactly when the load calls for it
   # and the HPA keeps growing without buying anything (ADR-0014). The measured figure belongs to
@@ -129,8 +130,10 @@ spec:
         metric:
           name: queue_depth_records
           selector:
-            matchLabels:
-              queue: mt.inbound
+            matchExpressions:
+              - key: queue
+                operator: In
+                values: [mt.inbound.otp, mt.inbound.transactional, mt.inbound.marketing]
         target:
           type: AverageValue
           averageValue: "10000"

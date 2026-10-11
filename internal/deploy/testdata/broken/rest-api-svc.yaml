@@ -36,6 +36,9 @@ spec:
             # default of 10 it looks fine, which is the same trap as the partition count above.
             - name: POSTGRES_MAX_CONNS
               value: "2"
+            # Narrows one topic only, so widest-hpa below selects two widths: 2 and the 6 above.
+            - name: KAFKA_TOPIC_PARTITIONS_OVERRIDES
+              value: mt.inbound.otp=2
             - name: POSTGRE_URL
               value: typo
           volumeMounts:
@@ -281,8 +284,8 @@ spec:
     matchLabels:
       app: smpp-server-svc
 ---
-# An HPA that selects its queue through matchExpressions: the partition ceiling cannot be read off a
-# set-based selector, so anything but connector-pool-svc doing it is a blind spot the guard reports.
+# An HPA that selects its queues through a NotIn expression: the topics it scales on cannot be
+# listed, so the partition ceiling cannot be read — a blind spot the guard reports.
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
@@ -301,8 +304,56 @@ spec:
           selector:
             matchExpressions:
               - key: queue
-                operator: In
+                operator: NotIn
                 values: [mt.inbound]
         target:
           type: AverageValue
           averageValue: "10000"
+---
+# Violates exactly one rule, hpa-max-replicas: maxReplicas 6 equals the WIDEST selected topic
+# (mt.inbound.marketing, 6) and clears the narrow one only if the guard weighs the first value. The
+# floor of 6 pods keeps the lanes at 1 + 1 against POSTGRES_MAX_CONNS 2, so pool-covers-lanes stays quiet.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: widest-hpa
+spec:
+  scaleTargetRef:
+    kind: Deployment
+    name: rest-api-svc
+  minReplicas: 6
+  maxReplicas: 6
+  metrics:
+    - type: External
+      external:
+        metric:
+          name: queue_depth_records
+          selector:
+            matchExpressions:
+              - key: queue
+                operator: In
+                values: [mt.inbound.otp, mt.inbound.marketing]
+---
+# Violates exactly one rule, pool-covers-lanes: three 12-partition topics over a floor of 2 pods hand
+# one pod 6 lanes per topic, 18 in all, against not-a-service's default POSTGRES_MAX_CONNS of 10.
+# Each topic alone (6) fits the pool; only the SUM does not.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: sum-hpa
+spec:
+  scaleTargetRef:
+    kind: Deployment
+    name: not-a-service
+  minReplicas: 2
+  maxReplicas: 3
+  metrics:
+    - type: External
+      external:
+        metric:
+          name: queue_depth_records
+          selector:
+            matchExpressions:
+              - key: queue
+                operator: In
+                values: [mt.inbound.otp, mt.inbound.transactional, mt.inbound.marketing]

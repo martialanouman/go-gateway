@@ -2,7 +2,7 @@
 // connections, authenticates each bind against the control plane (PostgreSQL), enforces
 // allowed_bind_types, and reserves a session token against the SessionRegistry gRPC service so
 // max_sessions is honoured (invariant d). A bound ESME's submit_sm travels the same MT pipeline as a
-// REST submit: it is produced durably to mt.inbound (the boundary that earns the submit_sm_resp) and
+// REST submit: it is produced durably to mt.inbound.<category> (the boundary that earns the submit_sm_resp) and
 // its accepted CDR row is written off the connection's path (step-025).
 //
 // It follows the canonical service lifecycle of cmd/rest-api-svc: PostgreSQL for auth, a gRPC client
@@ -46,7 +46,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
 
-	// PostgreSQL (bind auth), Kafka (produce mt.inbound), ClickHouse (CDR) and Redis. Two gRPC surfaces
+	// PostgreSQL (bind auth), Kafka (produce mt.inbound.<category>), ClickHouse (CDR) and Redis. Two gRPC surfaces
 	// meet here, which is how SectionGRPC came to be missing: the CLIENT dial to session-manager for
 	// max_sessions travels in SectionSMPP (SMPP_SESSION_MANAGER_ADDR), while this pod's OWN Deliver
 	// server listens on cfg.GRPC.Port (step-048) — declaring SectionGRPC is what gets that port checked

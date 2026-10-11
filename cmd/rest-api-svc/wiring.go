@@ -127,7 +127,7 @@ func newRestAPIApp(ctx context.Context, cfg config.Config, logger *slog.Logger) 
 }
 
 // stores are the external connections rest-api-svc opens at boot and holds for its whole lifetime:
-// Postgres (API-key lookup), ClickHouse (CDR reads for get-message), Kafka (produce mt.inbound) and
+// Postgres (API-key lookup), ClickHouse (CDR reads for get-message), Kafka (produce mt.inbound.<category>) and
 // Redis (the Idempotency-Key window).
 type stores struct {
 	pg       *pgxpool.Pool

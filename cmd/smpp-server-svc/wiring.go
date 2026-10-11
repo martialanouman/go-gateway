@@ -143,7 +143,7 @@ func newSMPPApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (_ 
 }
 
 // stores are the external connections smpp-server-svc opens at boot and holds for its whole
-// lifetime: PostgreSQL (bind auth), Kafka (produce mt.inbound), ClickHouse (cancel_sm reads and
+// lifetime: PostgreSQL (bind auth), Kafka (produce mt.inbound.<category>), ClickHouse (cancel_sm reads and
 // writes the CDR), gRPC to session-manager (max_sessions) and Redis (bind throttle).
 type stores struct {
 	pg       *pgxpool.Pool

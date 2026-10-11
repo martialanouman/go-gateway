@@ -2,6 +2,7 @@ package deploy_test
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -453,23 +454,27 @@ func inspectHPA(m deploy.Manifest, env map[string]string, deployments map[string
 		return []violation{{rule: "hpa-max-replicas", msg: fmt.Sprintf(format, args...)}}
 	}
 
-	var queue string
+	var queues []string
 	for _, metric := range m.Spec.Metrics {
 		// A CPU-only HPA has no queue at all and is not bounded by partitions either.
 		if q := metric.External.Metric.Selector.MatchLabels["queue"]; q != "" {
-			queue = q
+			queues = []string{q}
 			break
 		}
 		for _, e := range metric.External.Metric.Selector.MatchExpressions {
 			// connector-pool-svc's RunBatch has no per-partition lanes, so the ADR-0014 ceiling does not apply.
-			if e.Key == "queue" && m.Metadata.Name != "connector-pool-svc" {
-				return fail("%s: HPA %q selects its queue through matchExpressions — this rule reads the "+
-					"partition count of a single matchLabels queue, so maxReplicas %d goes unbounded",
-					m.Source, m.Metadata.Name, m.Spec.MaxReplicas)
+			if e.Key != "queue" || m.Metadata.Name == "connector-pool-svc" {
+				continue
 			}
+			if e.Operator != "In" {
+				return fail("%s: HPA %q selects its queue through a %s expression — only In lists the topics "+
+					"it scales on, so maxReplicas %d goes unbounded",
+					m.Source, m.Metadata.Name, e.Operator, m.Spec.MaxReplicas)
+			}
+			queues = e.Values
 		}
 	}
-	if queue == "" {
+	if len(queues) == 0 {
 		return nil
 	}
 
@@ -489,16 +494,34 @@ func inspectHPA(m deploy.Manifest, env map[string]string, deployments map[string
 			"partition count leaves maxReplicas %d unbounded",
 			m.Source, m.Metadata.Name, target.Metadata.Name, raw, m.Spec.MaxReplicas)
 	}
+	overrides, err := config.Kafka{
+		TopicPartitionsOverrides: deployedEnv(target, env, configMaps, "KAFKA_TOPIC_PARTITIONS_OVERRIDES"),
+	}.PartitionOverrides()
+	if err != nil {
+		return fail("%s: HPA %q scales %q, whose KAFKA_TOPIC_PARTITIONS_OVERRIDES does not parse (%v) — "+
+			"maxReplicas %d goes unbounded", m.Source, m.Metadata.Name, target.Metadata.Name, err, m.Spec.MaxReplicas)
+	}
+	widths := map[string]int{}
+	widest := queues[0]
+	for _, q := range queues {
+		widths[q] = partitions
+		if n, ok := overrides[q]; ok {
+			widths[q] = int(n)
+		}
+		if widths[q] > widths[widest] {
+			widest = q
+		}
+	}
 	// The ceiling and the floor are independent defects of the same coupling, so they ACCUMULATE. An
 	// early return here would hide the pool violation behind the replica one and hand an operator half
 	// the story — then the other half on the next run, after they fixed the first.
 	var out []violation
-	if m.Spec.MaxReplicas >= partitions {
+	if m.Spec.MaxReplicas >= widths[widest] {
 		out = append(out, fail("%s: HPA %q scales to %d pods on a %d-partition topic (%s) — at one pod per "+
 			"partition each pod is down to a single lane and the fan-out is gone. Keep maxReplicas under the partition count",
-			m.Source, m.Metadata.Name, m.Spec.MaxReplicas, partitions, queue)...)
+			m.Source, m.Metadata.Name, m.Spec.MaxReplicas, widths[widest], widest)...)
 	}
-	return append(out, inspectPoolCoversLanes(m, target, env, configMaps, partitions, queue)...)
+	return append(out, inspectPoolCoversLanes(m, target, env, configMaps, widths)...)
 }
 
 // inspectPoolCoversLanes holds the OTHER half of the maxReplicas coupling: the floor.
@@ -510,7 +533,8 @@ func inspectHPA(m deploy.Manifest, env map[string]string, deployments map[string
 // CONCURRENT lane (handleBatch, internal/router/router.go), each lane processing sequentially and
 // therefore holding at most one pgx connection at a time. MaxConns under that count makes Acquire the
 // queue in front of the hot path: it waits, then returns a transient error, then the record is
-// redelivered and repeats the same lookup on a pool that is still full.
+// redelivered and repeats the same lookup on a pool that is still full. An HPA selecting several topics
+// scales a pod that joins one group per topic, so its lanes are the SUM over them, on the same pool.
 //
 // It is stated as ASSIGNMENT rather than as fan-out on purpose, and that is what lets it apply to every
 // HPA the rule above already covers. How many partitions a member is handed is true of any consumer;
@@ -520,7 +544,7 @@ func inspectHPA(m deploy.Manifest, env map[string]string, deployments map[string
 // RunBatch, which is exactly what this rule replaces: a paragraph in step-280 that named a ratio
 // (10/12) the manifests never produced.
 func inspectPoolCoversLanes(m, target deploy.Manifest, env map[string]string,
-	configMaps map[string]map[string]string, partitions int, queue string,
+	configMaps map[string]map[string]string, widths map[string]int,
 ) []violation {
 	fail := func(format string, args ...any) []violation {
 		return []violation{{rule: "pool-covers-lanes", msg: fmt.Sprintf(format, args...)}}
@@ -536,7 +560,12 @@ func inspectPoolCoversLanes(m, target deploy.Manifest, env map[string]string,
 		return fail("%s: HPA %q declares minReplicas %d — a floor below one pod leaves the lanes per pod "+
 			"unbounded, so nothing sizes the Postgres pool", m.Source, m.Metadata.Name, minReplicas)
 	}
-	lanes := lanesPerPod(partitions, minReplicas)
+	lanes := 0
+	var topics []string
+	for _, q := range slices.Sorted(maps.Keys(widths)) {
+		lanes += lanesPerPod(widths[q], minReplicas)
+		topics = append(topics, fmt.Sprintf("%s=%d", q, widths[q]))
+	}
 
 	// Read from what is DEPLOYED, never from config's envDefault: the two agree today at 10, and a
 	// ConfigMap lowered while Go still says 10 would leave this rule clearing a pool that cannot cover
@@ -548,12 +577,12 @@ func inspectPoolCoversLanes(m, target deploy.Manifest, env map[string]string,
 			"leaves the %d lanes a pod can own unbounded", m.Source, m.Metadata.Name, target.Metadata.Name, raw, lanes)
 	}
 	if maxConns < lanes {
-		return fail("%s: HPA %q floors at %d pods on a %d-partition topic (%s), so one pod can be assigned "+
+		return fail("%s: HPA %q floors at %d pods on %s partitions, so one pod can be assigned "+
 			"%d partitions against POSTGRES_MAX_CONNS %d. MaxConns bounds a CONCURRENCY, not a throughput: "+
 			"a pod that owns more lanes than connections makes Acquire the queue in front of the hot path, "+
 			"and its timeout turns into a redelivery that repeats the lookup on a pool still full. Raise "+
 			"MaxConns to at least %d, or raise minReplicas",
-			m.Source, m.Metadata.Name, minReplicas, partitions, queue, lanes, maxConns, lanes)
+			m.Source, m.Metadata.Name, minReplicas, strings.Join(topics, ", "), lanes, maxConns, lanes)
 	}
 	return nil
 }
@@ -878,8 +907,8 @@ func TestHPAWithNoResolvableTargetIsReported(t *testing.T) {
 		"an unreadable ceiling is a finding, not a pass")
 }
 
-// TestHPASelectingAQueueByExpressionIsReported: inspectHPA reads the queue from matchLabels only, so an
-// HPA selecting it through matchExpressions used to clear the ceiling without being weighed at all.
+// TestHPASelectingAQueueByExpressionIsReported: only an In expression lists the topics an HPA scales on.
+// Any other operator leaves the ceiling unreadable, and clearing it unweighed would be a blind spot.
 func TestHPASelectingAQueueByExpressionIsReported(t *testing.T) {
 	t.Parallel()
 
@@ -888,8 +917,44 @@ func TestHPASelectingAQueueByExpressionIsReported(t *testing.T) {
 			return
 		}
 	}
-	t.Error("HPA \"expr-hpa\" selects its queue through matchExpressions and nothing was reported — " +
+	t.Error("HPA \"expr-hpa\" selects its queue through a NotIn expression and nothing was reported — " +
 		"a ceiling the guard cannot read is a finding, not a pass")
+}
+
+// TestHPACeilingWeighsTheWidestSelectedTopic: a pod keeps more than one lane only while maxReplicas
+// stays under EVERY topic it consumes, so the bound is the widest of the selected ones (ADR-0014).
+func TestHPACeilingWeighsTheWidestSelectedTopic(t *testing.T) {
+	t.Parallel()
+
+	for _, v := range inspect(t, filepath.Join("testdata", "broken")) {
+		if v.rule == "hpa-max-replicas" && strings.Contains(v.msg, `"widest-hpa"`) {
+			if !strings.Contains(v.msg, "6-partition topic (mt.inbound.marketing)") {
+				t.Errorf("hpa-max-replicas reported %q — it must weigh maxReplicas 6 against the widest "+
+					"selected topic, mt.inbound.marketing at 6 partitions", v.msg)
+			}
+			return
+		}
+	}
+	t.Error("no hpa-max-replicas violation for widest-hpa: 6 pods on a 6-partition topic leaves each pod " +
+		"one lane of it, and the guard did not weigh the matchExpressions values")
+}
+
+// TestPoolCoversTheSumOfLanesAcrossTopics: router-svc runs one consumer per category, each with its own
+// lanes, all drawing on the same pgx pool — so the pool covers the SUM of the lanes, not the widest.
+func TestPoolCoversTheSumOfLanesAcrossTopics(t *testing.T) {
+	t.Parallel()
+
+	for _, v := range inspect(t, filepath.Join("testdata", "broken")) {
+		if v.rule == "pool-covers-lanes" && strings.Contains(v.msg, `"sum-hpa"`) {
+			if !strings.Contains(v.msg, "assigned 18 partitions") || !strings.Contains(v.msg, "POSTGRES_MAX_CONNS 10") {
+				t.Errorf("pool-covers-lanes reported %q — three 12-partition topics over 2 pods are 6+6+6 = 18 "+
+					"lanes on one pod, against the 10 connections not-a-service deploys", v.msg)
+			}
+			return
+		}
+	}
+	t.Error("no pool-covers-lanes violation for sum-hpa: 18 lanes over three topics against 10 connections, " +
+		"and the guard weighed each topic alone")
 }
 
 // TestGracePeriodCoversTheSlowestContainer: durationEnv let each container overwrite the last, so a

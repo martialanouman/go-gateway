@@ -1,4 +1,4 @@
-// Command router-svc runs the MT pipeline: it consumes mt.inbound, normalises and routes each
+// Command router-svc runs the MT pipeline: it consumes mt.inbound.<category>, normalises and routes each
 // message, and publishes mt.routed (M2). A message rejected by the pipeline gets a rejected CDR row
 // so get-message reflects it. The lifecycle — load and validate config, install telemetry, build the
 // service graph (wiring.go), serve the ops port, run the consumer, drain on SIGTERM — follows the

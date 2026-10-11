@@ -1,6 +1,6 @@
 // Command rest-api-svc serves the public REST API (plan §1.4, business port 8080; ops 9090). It
 // follows the canonical lifecycle of cmd/router-svc, adding a Postgres pool (API-key lookup), a
-// Kafka producer (mt.inbound), a ClickHouse connection (CDR reads for get-message) and a client-facing HTTP listener — each a supervised component.
+// Kafka producer (mt.inbound.<category>), a ClickHouse connection (CDR reads for get-message) and a client-facing HTTP listener — each a supervised component.
 package main
 
 import (
@@ -32,7 +32,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
 
-	// Postgres (API-key lookup), Kafka (produce mt.inbound), ClickHouse (CDR read/write), Redis
+	// Postgres (API-key lookup), Kafka (produce mt.inbound.<category>), ClickHouse (CDR read/write), Redis
 	// (Idempotency-Key window), HTTP (business listener). The deployment sets HTTP_PORT=8080
 	// (plan §1.4); the shared default is 8081.
 	cfg, err := config.Load(serviceName,

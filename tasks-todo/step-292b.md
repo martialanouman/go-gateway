@@ -14,7 +14,7 @@ priorité par bind.
 - [x] **PR3a** : les topics `mt.routed.<catégorie>` (routeur → pool). Un consommateur par topic et par connecteur
   au pool. Le drainer de parking et `mt-replay` republient selon la catégorie du record. Dans la même PR :
   les groupes du pool dans `deploy/k8s` et le lag par catégorie côté pool.
-- **PR3b** : les topics `mt.inbound.<catégorie>`. L'ingestion (REST, SMPP) lit la catégorie dans un
+- [x] **PR3b** : les topics `mt.inbound.<catégorie>`. L'ingestion (REST, SMPP) lit la catégorie dans un
   instantané de `sender_ids` (une lecture, pas une autorisation : ADR-0021 §2). Un consommateur par topic au
   routeur. `mt.inbound` et `mt.routed` sont retirés sans drain, avec les anciens groupes `connector-pool-svc-<CONNECTOR_ID>`
   (ADR-0021, *Conséquences*). Dans la même PR : HPA et groupes du routeur, alerte de lag OTP, guide

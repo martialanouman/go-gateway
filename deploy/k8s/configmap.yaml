@@ -44,7 +44,7 @@ data:
 
   KAFKA_BROKERS: kafka-0.kafka:9092,kafka-1.kafka:9092,kafka-2.kafka:9092
   KAFKA_TOPIC_PARTITIONS: "12"
-  KAFKA_TOPIC_PARTITIONS_OVERRIDES: "mt.routed.otp=4,mt.routed.transactional=4"
+  KAFKA_TOPIC_PARTITIONS_OVERRIDES: "mt.routed.otp=4,mt.routed.transactional=4,mt.inbound.otp=4,mt.inbound.transactional=4"
   # Replication 3 is the durability boundary of the whole pipeline (ADR-0001); production refuses
   # anything under 2.
   KAFKA_TOPIC_REPLICATION_FACTOR: "3"

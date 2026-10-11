@@ -147,9 +147,10 @@ Le clé de partition n'est pas cosmétique — elle garantit l'ordre et le paral
 submit_sm | POST /messages
    │  AUTH: credential → smpp_account → customer   (les 2 IDs → en-têtes Kafka)
    │  CHANNEL: smpp_enabled / rest_enabled ?
-   │  ADMISSION: débit du compte (§6.4) — au-delà → 429 / ESME_RTHROTTLED, rien n'est écrit
+   │  ADMISSION: débit du sender ID puis du compte (§6.4) — au-delà → 429 / ESME_RTHROTTLED, rien n'est écrit
+   │  TOPIC: catégorie du sender ID (lecture, pas une autorisation ; inconnu → marketing, ADR-0021)
    ▼
-   ACK CLIENT dès écriture durable dans mt.inbound          ← frontière de durabilité (§6.7)
+   ACK CLIENT dès écriture durable dans mt.inbound.<catégorie>   ← frontière de durabilité (§6.7)
 ======================= router-svc =======================
    1. E.164 NORMALIZE (dest + source)
    2. SENDER-ID AUTHORIZATION      — pas de correspondance → REJECT
@@ -159,7 +160,7 @@ submit_sm | POST /messages
         L0 numéro exact (MNP)  →  L1 script  →  L2 déclaratif
    6. ENCODING / UDH SEGMENTATION → segment_count
    7. MT CREDIT RESERVE (si facturation activée)
-   publish → mt.routed (key = ID logique)
+   publish → mt.routed.<catégorie> (key = ID logique)
 ================= connector-pool-svc =====================
    jeton du connecteur (plafond §6.4) — on attend, on ne rejette pas
    breaker fermé ? sinon → reroute via fallback_chain
@@ -379,6 +380,16 @@ max(queue_depth_records{queue="mt.outcome"}) / sum(rate(cdr_outcome_projected_to
 ```
 
 Le numérateur vient du broker par une boucle indépendante du projecteur, le dénominateur du projecteur lui-même — donc un projecteur **mort** donne `rate → 0` et fait partir l'alerte, là où une jauge d'âge qu'il poserait lui-même se figerait à sa dernière valeur saine. **Les deux côtés doivent être agrégés** (`max` sur une jauge de groupe, `sum` sur un compteur par pod) : sans cela l'expression apparie deux jeux de labels différents et ne rend jamais rien. Deux règles compagnes (`absent()`, et la croissance monotone du backlog seul) complètent le quotient. Détail et alternatives écartées : ADR-0012, « Surveiller le lag de statut ».
+
+**Lag de la voie OTP** (ADR-0021, step-292b). Un OTP en retard est un OTP perdu ; ses deux topics se surveillent à part :
+
+```promql
+max by (queue) (queue_depth_records{queue=~"mt\\.(inbound|routed)\\.otp"}) > 5000   # for: 2m
+absent(queue_depth_records{queue="mt.inbound.otp"})
+absent(queue_depth_records{queue="mt.routed.otp"})
+```
+
+Le seuil est en records, faute de compteur de débit par topic (un dénominateur toutes catégories rendrait l'alerte aveugle à un consommateur OTP mort) ; 5 000 est le seuil de l'HPA du pool, step-409 le recalibre. Au pool, `absent()` ne part que si tous les pods disparaissent.
 
 **Partitions du grand livre** (step-408). billing-svc crée les partitions journalières de `billing_ledger` d'avance (aujourd'hui à J+7, au démarrage puis chaque heure). Une écriture dont le jour n'a pas de partition tombe dans `DEFAULT` sans échouer, et y reste :
 

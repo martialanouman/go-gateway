@@ -133,9 +133,10 @@ Restent trois grandeurs à trancher là-bas, et qui ne sont pas devinables ici :
 - **`maxReplicas` de chaque HPA**, avec le nombre de partitions correspondant.
 
 Une métrique `External` suppose un `prometheus-adapter` ou KEDA dans le cluster : la jauge
-`queue_depth_records{queue=…}` est publiée par les services (`router-svc` pour `mt.inbound` et
+`queue_depth_records{queue=…}` est publiée par les services (`router-svc` pour `mt.inbound.otp`,
+`mt.inbound.transactional`, `mt.inbound.marketing` — lus par les groupes `router-svc-<catégorie>` — et
 `mt.outcome`, `connector-pool-svc` pour `mt.routed.otp`, `mt.routed.transactional` et `mt.routed.marketing`, une
-série par topic ; l'HPA de `connector-pool-svc` les sélectionne par `matchExpressions`), l'adaptateur qui l'expose à l'API HPA est de
+série par topic ; les HPA de `router-svc` et de `connector-pool-svc` les sélectionnent par `matchExpressions`), l'adaptateur qui l'expose à l'API HPA est de
 l'infrastructure.
 
 ## Les PDB, et pourquoi ils ne sont pas décoratifs
@@ -171,4 +172,9 @@ Le déploiement de PR3a abandonne déjà ce qui est en vol sur l'ancien `mt.rout
 lit, et les nouveaux groupes `connector-pool-svc-<CONNECTOR_ID>-<catégorie>`, en `FromLatest`, sautent
 aussi ce qui a été produit avant qu'ils rejoignent. L'ancien topic et les groupes
 `connector-pool-svc-<CONNECTOR_ID>` restent seulement sur le broker. Au déploiement de PR3b, avec
-`mt.inbound`, sans drain (ADR-0021) : supprimer ce topic et ces groupes.
+`mt.inbound`, sans drain (ADR-0021) : supprimer ce topic et ces groupes. Une fois PR3b déployée :
+
+```sh
+rpk topic delete mt.inbound mt.routed
+rpk group delete router-svc connector-pool-svc-<CONNECTOR_ID>
+```
