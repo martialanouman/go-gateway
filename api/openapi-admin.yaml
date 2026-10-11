@@ -1851,12 +1851,15 @@ paths:
       tags: [Metrics]
       summary: Traffic time series grouped by dimension
       description: >-
-        MT messages submitted within the window, bucketed every 10s (5m), 30s (15m) or minute (30m, 1h),
-        with the same cohort semantics and the same window end as get-metrics-summary. Only 5m, 15m, 30m and
-        1h are served; any other window is refused with 422. The 20 keys with the most submissions get their
-        own series, the rest is summed under the key `other`. By group, the membership is the CURRENT one and
-        customers outside any group, or deleted since, fall under `ungrouped`. By connector, a message never
-        dispatched has no connector and appears in no series.
+        Messages within the window, MT submitted and MO received, bucketed every 10s (5m), 30s (15m) or minute
+        (30m, 1h), with the same cohort semantics and the same window end as get-metrics-summary. Only 5m, 15m,
+        30m and 1h are served; any other window is refused with 422. The 20 keys with the most messages
+        (submitted plus mo_received) get their own series, the rest is summed under the key `other`. By group,
+        the membership is the CURRENT one and customers outside any group, or deleted since, fall under
+        `ungrouped`. By connector, an MT never dispatched has no connector and appears in no series; an MO
+        belongs to the connector that received it. By customer and by group, an MO belongs to the customer of
+        the account it was routed to. An unrouted MO has no account and appears in no series (see
+        list-unrouted-mo).
         503 when the window holds more rows than a read may return.
       operationId: get-traffic-metrics
       security: [ { OperatorBearer: [ admin:read ] } ]
@@ -3274,6 +3277,7 @@ components:
                     submitted: { type: integer }
                     delivered: { type: integer }
                     failed: { type: integer }
+                    mo_received: { type: integer, description: 'MO messages received in the bucket. 0 until the MO path writes its CDR rows: today it writes none.' }
                   required: [t]
             required: [key, points]
       required: [group_by, window, series]
