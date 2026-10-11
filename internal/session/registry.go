@@ -48,7 +48,8 @@ const DefaultSessionTTL = 60 * time.Second
 const idxKey = "sess:idx"
 
 // liveKey holds one member per bind id, scored by the same expiry as the account key: sess:idx, at score 0
-// for ZRANGE BYLEX, can only be paged, and paging it per metrics read is an admin DoS.
+// for ZRANGE BYLEX, can only be paged, and paging it per metrics read is an admin DoS. Only Count purges it:
+// with no reader, it grows by the binds whose unbind was lost.
 const liveKey = "sess:live"
 
 // idxSep sorts below every character a bind id holds, so the entries of one bind sit before those of
