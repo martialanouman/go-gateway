@@ -6,8 +6,9 @@
 # This file is an INSTANCE TEMPLATE. One connector per pod (cmd/connector-pool-svc/wiring.go), each
 # with its own three consumer groups `connector-pool-svc-<CONNECTOR_ID>-<category>`: copy it per connector, renaming the
 # Deployment `connector-pool-svc-<connector>` and setting CONNECTOR_ID and CONNECTOR_ADDR. Keep
-# replicas equal to the connector's bind_pool_size — each mt.routed.<category> topic is sharded one
-# partition per bind.
+# replicas equal to the connector's bind_pool_size. mt.routed.otp and mt.routed.transactional are 4 wide
+# (one partition per bind at maxReplicas 4), mt.routed.marketing takes the shared default (12);
+# maxReplicas stays at or below the narrowest.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -133,7 +134,7 @@ metadata:
   labels:
     app: connector-pool-svc
 spec:
-  # The mt.routed.<category> topics are partitioned per connector (KAFKA_TOPIC_PARTITIONS_OVERRIDES),
+  # mt.routed.otp and mt.routed.transactional are partitioned per connector (KAFKA_TOPIC_PARTITIONS_OVERRIDES),
   # not by the shared default, so keep maxReplicas at or below this connector's bind_pool_size: a pod without a bind of
   # its own is a pod that stays not-ready.
   scaleTargetRef:

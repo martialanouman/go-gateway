@@ -127,7 +127,7 @@ La persistance est polyglotte : chaque magasin est choisi pour son motif d'accè
 
 **Redis / Dragonfly (cluster) — état opérationnel à faible latence.** Sessions, compteurs token-bucket, dédup anti-spam, réputation, cache/réservations de solde, files de délai courtes, état agrégé de disjoncteur, filtres. **Jamais** le magasin durable des messages : une perte Redis dégrade des fonctionnalités selon leur politique de panne (§16), sans perdre un message en vol.
 
-**Kafka — plan de données (durabilité du pipeline).** Socle de durabilité : l'écriture dans `mt.inbound` est la frontière d'accusé de réception. Offre rejeu, dead-letter et parallélisme par partition. Topics : `mt.inbound`, `mt.routed`, `mo.inbound`, `dlr.events`, `mt.dead-letter`/`mo.dead-letter`, `mt.reroute-park`.
+**Kafka — plan de données (durabilité du pipeline).** Socle de durabilité : l'écriture dans `mt.inbound` est la frontière d'accusé de réception. Offre rejeu, dead-letter et parallélisme par partition. Topics : `mt.inbound`, `mt.routed.{otp,transactional,marketing}`, `mo.inbound`, `dlr.events`, `mt.dead-letter`/`mo.dead-letter`, `mt.reroute-park`.
 
 **ClickHouse (columnar) — CDR, analytique, recherche, traçage.** Un enregistrement par message, partitionné par jour, avec tiering TTL. Interrogé par le tableau de bord. Le DDL du CDR (dialecte ClickHouse) est en appendice du fichier `.sql`.
 

@@ -16,8 +16,10 @@ priorité par bind.
   les groupes du pool dans `deploy/k8s` et le lag par catégorie côté pool.
 - **PR3b** : les topics `mt.inbound.<catégorie>`. L'ingestion (REST, SMPP) lit la catégorie dans un
   instantané de `sender_ids` (une lecture, pas une autorisation : ADR-0021 §2). Un consommateur par topic au
-  routeur. `mt.inbound` et `mt.routed` sont retirés sans drain (ADR-0021, *Conséquences*). Dans la même PR :
-  HPA et groupes du routeur, alerte de lag OTP, spec §5.1, ligne « ordre du pipeline » de `CLAUDE.md`.
+  routeur. `mt.inbound` et `mt.routed` sont retirés sans drain, avec les anciens groupes `connector-pool-svc-<CONNECTOR_ID>`
+  (ADR-0021, *Conséquences*). Dans la même PR : HPA et groupes du routeur, alerte de lag OTP, guide
+  d'ingénierie §5.1 (MT, le chemin critique ; la spec §5.1 est « Interfaces SMPP »), ligne « ordre du
+  pipeline » de `CLAUDE.md`.
 - **PR4** : l'ordonnanceur par bind (OTP → transactionnel → marketing) et `CONNECTOR_MARKETING_MIN_SHARE`
   (défaut 0,4). Dans la même PR : spec §6.4 et guide §4.1. Paie la dette.
 

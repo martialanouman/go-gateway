@@ -772,7 +772,7 @@ du message est traité comme indisponible, aux trois niveaux :
 
 S'il ne reste rien, la réponse est `no_route`, sans code d'erreur nouveau. La garde s'applique après
 l'autorisation et ne court-circuite aucune étape de conformité. Un connecteur réservé n'a pas de backlog
-marketing devant lui : c'est ce qui donne à l'OTP une vraie priorité tant que `mt.routed` est une file unique.
+marketing devant lui : c'est ce qui donne à l'OTP une vraie priorité tant que le pool n'ordonne pas les catégories entre elles (step-292b PR4).
 
 Rechargement à chaud : `config-sync` pousse les diffs de routes/scripts vers `router-svc`, qui garde un instantané immuable échangé atomiquement. L'état volatil (disjoncteur agrégé, charge connecteur) vit dans une **surcouche mutable séparée** (mise à jour par pointeur atomique sur `breaker:events`), pour ne pas rebâtir l'instantané immuable à chaque transition.
 

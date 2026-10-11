@@ -102,8 +102,8 @@ func bindWithRetry(ctx context.Context, dial dialFunc, secret string, retry time
 }
 
 // submitUntilDLR resubmits after each dlrWait without a DLR, until ctx is done: connector-pool-svc,
-// restarted onto a new CONNECTOR_ID, consumes mt.routed through a fresh group that starts at the
-// topic's end and can miss the first message. Any submitted message's DLR ends the test.
+// restarted onto a new CONNECTOR_ID, consumes the mt.routed.* topics through three fresh FromLatest
+// groups that start at each topic's end and can miss the first message. Any submitted message's DLR ends the test.
 func submitUntilDLR(ctx context.Context, nc net.Conn, dlrWait time.Duration) error {
 	deadline, hasDeadline := ctx.Deadline()
 	submitted := map[string]bool{}

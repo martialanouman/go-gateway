@@ -31,7 +31,7 @@ func TestOpsExposesTheMetricsThisServiceFeeds(t *testing.T) {
 	// the same values the pool's own call sites use.
 	const connector = "00000000-0000-0000-0000-000000000001"
 	catalog.SetConnectorBreakerState(connector, metrics.BreakerStateClosed)
-	catalog.QueueDepth.WithLabelValues("mt.routed").Set(0)
+	catalog.QueueDepth.WithLabelValues("mt.routed.otp").Set(0)
 	catalog.SubmitsTotal.WithLabelValues(connector, "ok").Inc()
 	catalog.SubmitRejectedTotal.WithLabelValues(connector, "submit_failed").Inc()
 	catalog.MessageE2EDuration.WithLabelValues(connector, "ok").Observe(0.05)
