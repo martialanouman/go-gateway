@@ -41,7 +41,7 @@ type InboundMT struct {
 	TrafficCategory cp.TrafficCategory
 }
 
-// The ingress channels an InboundMT.Channel names.
+// The ingress channels of InboundMT.Channel.
 const (
 	ChannelHTTP = "http"
 	ChannelSMPP = "smpp"

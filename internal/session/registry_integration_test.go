@@ -124,7 +124,7 @@ func TestExpiryFreesSlot(t *testing.T) {
 }
 
 // The count is global and the Redis shared, so the clock sits far past every other test's binds, which are
-// therefore all expired to it, and at a random point so a repeated run starts past the previous one too.
+// therefore all expired to it. A passing run leaves nothing in sess:live for the next one to count.
 func TestCountSessionsCountsEveryLiveBindOnce(t *testing.T) {
 	rdb := redistest.Client(t)
 	clk := &clock{t: time.Unix(5_000_000_000+rand.Int64N(1_000_000_000), 0)}

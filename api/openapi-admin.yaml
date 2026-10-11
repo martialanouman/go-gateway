@@ -3260,7 +3260,7 @@ components:
         ingest_latency_ms_p99:
           type: [number, "null"]
           description: >-
-            Always null today, per channel too: the CDR cannot hold the acceptance latency (the accepted row is
+            Always null today: the CDR cannot hold the acceptance latency (the accepted row is
             projected from the mt.inbound record, written before the ACK it would time), and
             ingest_duration_seconds is observed nowhere yet.
         e2e_latency_ms_p50: { type: [number, "null"] }

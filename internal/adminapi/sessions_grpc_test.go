@@ -22,6 +22,10 @@ func (d downRegistry) ListSessions(context.Context, *registrypb.ListSessionsRequ
 	return nil, status.Error(d.code, "down")
 }
 
+func (d downRegistry) CountSessions(context.Context, *registrypb.CountSessionsRequest, ...grpc.CallOption) (*registrypb.CountSessionsResponse, error) {
+	return nil, status.Error(d.code, "down")
+}
+
 func (d downRegistry) Disconnect(context.Context, *registrypb.DisconnectRequest, ...grpc.CallOption) (*registrypb.DisconnectResponse, error) {
 	return nil, status.Error(d.code, "down")
 }
@@ -33,7 +37,8 @@ func TestARegistryOutageIsRetryable(t *testing.T) {
 		g := NewGRPCSessions(downRegistry{code: code})
 		_, _, listErr := g.ListSessions(context.Background(), "", 10)
 		discErr := g.DisconnectSession(context.Background(), "b", OperatorDisconnectReason)
-		for _, err := range []error{listErr, discErr} {
+		_, countErr := g.CountSessions(context.Background())
+		for _, err := range []error{listErr, discErr, countErr} {
 			if !errors.Is(err, errs.ErrServiceUnavailable) {
 				t.Errorf("%v: err = %v, want ErrServiceUnavailable", code, err)
 			}

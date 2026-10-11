@@ -47,9 +47,8 @@ const DefaultSessionTTL = 60 * time.Second
 // the dead ones.
 const idxKey = "sess:idx"
 
-// liveKey holds one member per bind id, scored by the same expiry as the account key, so the global count
-// is one ZCOUNT where sess:idx, at score 0, could only be paged (step-403). A pod that dies leaves members
-// that lapse with their score.
+// liveKey holds one member per bind id, scored by the same expiry as the account key: sess:idx, at score 0
+// for ZRANGE BYLEX, can only be paged, and paging it per metrics read is an admin DoS.
 const liveKey = "sess:live"
 
 // idxSep sorts below every character a bind id holds, so the entries of one bind sit before those of
@@ -272,9 +271,7 @@ func (r *Registry) Unindex(ctx context.Context, b Bind) error {
 	return nil
 }
 
-// Count returns the number of live binds, all accounts, having purged the lapsed ones. Like the account key
-// it may hold a bind up to a TTL past a lost unbind, and miss one whose index write failed until its
-// refresh lands it.
+// Count returns the number of live binds, all accounts, having purged the lapsed ones.
 func (r *Registry) Count(ctx context.Context) (int, error) {
 	pipe := r.rdb.Pipeline()
 	pipe.ZRemRangeByScore(ctx, liveKey, "-inf", strconv.FormatInt(r.now().Unix(), 10))

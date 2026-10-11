@@ -112,7 +112,8 @@ type TrafficPoint struct {
 
 // Traffic buckets the MT submitted and the MO received in [from, to) by step and dimension. An MT never
 // dispatched has no connector and appears in no connector series; an MO belongs to the connector that
-// received it. By channel only MT count, keyed "" when written before the CDR recorded the channel. More than maxRows points is refused as ErrServiceUnavailable rather than returned truncated.
+// received it. By channel only MT count, keyed "" when no client submitted them (a STOP auto-reply) or
+// when written before the CDR recorded the channel. More than maxRows points is refused as ErrServiceUnavailable rather than returned truncated.
 func (r *CDRReader) Traffic(ctx context.Context, from, to time.Time, step time.Duration, dim TrafficDimension, maxRows int) ([]TrafficPoint, error) {
 	key, where := `toString(customer_id)`, ``
 	switch dim {

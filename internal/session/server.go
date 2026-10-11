@@ -190,7 +190,7 @@ func (s *Server) ListSessions(ctx context.Context, req *pb.ListSessionsRequest) 
 	return &pb.ListSessionsResponse{Sessions: toPB(sessions), NextCursor: next}, nil
 }
 
-// CountSessions serves the operator's metrics (step-403): the live binds of every account.
+// CountSessions serves the operator's metrics.
 func (s *Server) CountSessions(ctx context.Context, _ *pb.CountSessionsRequest) (*pb.CountSessionsResponse, error) {
 	active, err := s.reg.Count(ctx)
 	if err != nil {
