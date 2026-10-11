@@ -68,6 +68,12 @@ func (f *fakeSessions) ListSessions(_ context.Context, after string, limit int) 
 	return out, "", nil
 }
 
+func (f *fakeSessions) CountSessions(context.Context) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.live), f.err
+}
+
 func (f *fakeSessions) DisconnectSession(_ context.Context, bindID, reason string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -3,6 +3,7 @@ package session_test
 import (
 	"context"
 	"errors"
+	"math/rand/v2"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -120,6 +121,49 @@ func TestExpiryFreesSlot(t *testing.T) {
 	if len(live) != 1 {
 		t.Fatalf("lookup after expiry: %d live sessions, want 1", len(live))
 	}
+}
+
+// The count is global and the Redis shared, so the clock sits far past every other test's binds, which are
+// therefore all expired to it, and at a random point so a repeated run starts past the previous one too.
+func TestCountSessionsCountsEveryLiveBindOnce(t *testing.T) {
+	rdb := redistest.Client(t)
+	clk := &clock{t: time.Unix(5_000_000_000+rand.Int64N(1_000_000_000), 0)}
+	reg := session.NewRegistry(rdb, session.WithSessionTTL(30*time.Second), session.WithClock(clk.now))
+	ctx := context.Background()
+	count := func(want int, when string) {
+		t.Helper()
+		if got, err := reg.Count(ctx); err != nil || got != want {
+			t.Fatalf("%s: count = %d err = %v, want %d", when, got, err, want)
+		}
+	}
+
+	count(0, "before any bind")
+	first, second := bindFor(uuid.NewString()), bindFor(uuid.NewString())
+	for _, b := range []session.Bind{first, second} {
+		if _, err := reg.Bind(ctx, b, 1); err != nil {
+			t.Fatalf("bind: %v", err)
+		}
+	}
+	if _, err := reg.Bind(ctx, bindFor(first.AccountID), 1); !errors.Is(err, errs.ErrMaxSessionsExceeded) {
+		t.Fatalf("bind over quota: err=%v, want ErrMaxSessionsExceeded", err)
+	}
+	count(2, "two binds, one refused")
+
+	clk.advance(20 * time.Second)
+	if _, err := reg.Bind(ctx, first, 1); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	count(2, "after a refresh")
+
+	if _, err := reg.Unbind(ctx, second); err != nil {
+		t.Fatalf("unbind: %v", err)
+	}
+	count(1, "after an unbind")
+
+	clk.advance(29 * time.Second)
+	count(1, "within the refreshed TTL")
+	clk.advance(2 * time.Second)
+	count(0, "past the refreshed TTL")
 }
 
 func TestRebindRefreshesTTL(t *testing.T) {

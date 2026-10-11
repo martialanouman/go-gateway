@@ -3,6 +3,7 @@ package adminapi
 import (
 	"cmp"
 	"context"
+	"log/slog"
 	"net/http"
 	"slices"
 	"time"
@@ -85,8 +86,8 @@ type trafficDTO struct {
 
 type trafficOutput struct{ Body trafficDTO }
 
-func registerMetrics(api huma.API, reader MetricsReader, customers CustomerStore) {
-	h := &metricsHandlers{reader: reader, customers: customers}
+func registerMetrics(api huma.API, reader MetricsReader, customers CustomerStore, sessions SessionDirectory, logger *slog.Logger) {
+	h := &metricsHandlers{reader: reader, customers: customers, sessions: sessions, logger: logger}
 	errors := []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusUnprocessableEntity, http.StatusServiceUnavailable}
 
 	register(api, huma.Operation{
@@ -105,6 +106,8 @@ func registerMetrics(api huma.API, reader MetricsReader, customers CustomerStore
 type metricsHandlers struct {
 	reader    MetricsReader
 	customers CustomerStore
+	sessions  SessionDirectory
+	logger    *slog.Logger
 }
 
 func windowOf(name string) (from, to time.Time, step time.Duration, err error) {
@@ -129,7 +132,21 @@ func (h *metricsHandlers) summary(ctx context.Context, in *metricsSummaryInput) 
 	return &metricsSummaryOutput{Body: metricsSummaryDTO{
 		Window: in.Window, Submitted: c.Submitted, Delivered: c.Delivered, Failed: c.Failed,
 		Rejected: c.Rejected, MOReceived: c.MOReceived, E2EP50: c.E2EP50, E2EP99: c.E2EP99,
+		ActiveSessions: h.activeSessions(ctx),
 	}}, nil
+}
+
+// activeSessions is nil when the registry cannot be read: a 0 would read "no client connected".
+func (h *metricsHandlers) activeSessions(ctx context.Context) *int {
+	if h.sessions == nil {
+		return nil
+	}
+	n, err := h.sessions.CountSessions(ctx)
+	if err != nil {
+		h.logger.WarnContext(ctx, "metrics summary: session registry unreadable, active_sessions omitted", "err", err)
+		return nil
+	}
+	return &n
 }
 
 func (h *metricsHandlers) traffic(ctx context.Context, in *trafficInput) (*trafficOutput, error) {

@@ -28,6 +28,8 @@ service SessionRegistry {
   // ListSessions pages through the live sessions, or returns every live session of one account, for the
   // operator (step-360). It is not on the return path: Lookup stays the hot read.
   rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
+  // CountSessions returns the live binds of every account, for the operator's metrics (step-403).
+  rpc CountSessions(CountSessionsRequest) returns (CountSessionsResponse);
 }
 
 // DisconnectScope names what a Disconnect targets. A customer-wide scope suspends every account of a
@@ -145,4 +147,12 @@ message ListSessionsResponse {
   repeated Session sessions = 1;
   string next_cursor = 2;
   int32 active = 3;
+}
+
+message CountSessionsRequest {}
+
+// CountSessionsResponse carries the live binds as the account keys see them: a bind refused by its quota
+// is never counted, one whose unbind was lost is counted until its TTL lapses.
+message CountSessionsResponse {
+  int64 active = 1;
 }

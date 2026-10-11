@@ -96,7 +96,7 @@ func New(deps Deps) (*chi.Mux, huma.API) {
 	registerStreams(api, deps.StreamHub, deps.Quit, deps.Logger)
 	registerMessageTrace(api, deps.Trace)
 	registerMessageSearch(api, deps.MessageSearch, deps.Customers)
-	registerMetrics(api, deps.Metrics, deps.Customers)
+	registerMetrics(api, deps.Metrics, deps.Customers, deps.Sessions, deps.Logger)
 	registerAuditLog(api, deps.AuditLog)
 	registerMessageExport(api, deps.ExportJobs, deps.MessageSearch, deps.ExportSink, deps.Customers, deps.GDPRRunner, deps.Logger)
 

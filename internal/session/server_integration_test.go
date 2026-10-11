@@ -218,6 +218,28 @@ func TestListSessionsDescribesEachBindAcrossGRPC(t *testing.T) {
 	}
 }
 
+// The count is global and other tests' binds lapse on the real clock, so only the drop an unbind causes is
+// asserted: a lapse in between can only deepen it.
+func TestCountSessionsAcrossGRPCDropsAnUnbind(t *testing.T) {
+	client := newTestClient(t)
+	ctx := context.Background()
+	sess := newSession(uuid.NewString())
+	if _, err := client.Bind(ctx, &pb.BindRequest{Session: sess, MaxSessions: 1}); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	bound, err := client.CountSessions(ctx, &pb.CountSessionsRequest{})
+	if err != nil || bound.GetActive() < 1 {
+		t.Fatalf("count after bind = %d err = %v, want at least the bind", bound.GetActive(), err)
+	}
+	if _, err := client.Unbind(ctx, &pb.UnbindRequest{AccountId: sess.GetAccountId(), BindId: sess.GetBindId()}); err != nil {
+		t.Fatalf("unbind: %v", err)
+	}
+	unbound, err := client.CountSessions(ctx, &pb.CountSessionsRequest{})
+	if err != nil || unbound.GetActive() >= bound.GetActive() {
+		t.Fatalf("count after unbind = %d err = %v, want below %d", unbound.GetActive(), err, bound.GetActive())
+	}
+}
+
 func TestListSessionsRefusesALimitOutsideTheContract(t *testing.T) {
 	client := newTestClient(t)
 	for _, limit := range []int32{0, 501} {

@@ -75,6 +75,30 @@ func TestMetricsSummaryReadsTheLastFiveMinutesByDefault(t *testing.T) {
 	}
 }
 
+func TestMetricsSummaryReadsActiveSessionsFromTheRegistry(t *testing.T) {
+	sessions := &fakeSessions{live: []adminapi.LiveSession{{BindID: "b-1"}, {BindID: "b-2"}, {BindID: "b-3"}}}
+	api := newTestAPIWith(t, adminapi.Deps{Metrics: &fakeMetrics{}, Sessions: sessions})
+
+	var body map[string]any
+	if code := getMetrics(t, api, "summary", &body); code != http.StatusOK || body["active_sessions"] != 3.0 {
+		t.Fatalf("status = %d active_sessions = %v, want 200 and the registry's 3", code, body["active_sessions"])
+	}
+}
+
+// Absent rather than 0: a dashboard reads 0 as "no client connected".
+func TestMetricsSummaryLeavesActiveSessionsAbsentWhenTheRegistryFails(t *testing.T) {
+	sessions := &fakeSessions{err: fmt.Errorf("registry: %w", errs.ErrServiceUnavailable)}
+	api := newTestAPIWith(t, adminapi.Deps{Metrics: &fakeMetrics{counts: clickhouse.MetricsCounts{Submitted: 4}}, Sessions: sessions})
+
+	var body map[string]any
+	if code := getMetrics(t, api, "summary", &body); code != http.StatusOK || body["submitted"] != 4.0 {
+		t.Fatalf("status = %d submitted = %v, want 200 with the counters still served", code, body["submitted"])
+	}
+	if v, ok := body["active_sessions"]; ok {
+		t.Errorf("active_sessions = %v, want absent while the registry cannot be read", v)
+	}
+}
+
 func TestMetricsRefuseAWindowTheyCannotAfford(t *testing.T) {
 	api := newTestAPIWith(t, adminapi.Deps{Metrics: &fakeMetrics{}})
 	for _, path := range []string{"summary?window=24h", "traffic?window=24h"} {

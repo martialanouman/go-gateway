@@ -186,6 +186,7 @@ type Disconnector interface {
 type SessionDirectory interface {
 	ListAccountSessions(ctx context.Context, accountID uuid.UUID) (sessions []LiveSession, active int, err error)
 	ListSessions(ctx context.Context, after string, limit int) (sessions []LiveSession, next string, err error)
+	CountSessions(ctx context.Context) (int, error)
 	DisconnectSession(ctx context.Context, bindID, reason string) error
 }
 
