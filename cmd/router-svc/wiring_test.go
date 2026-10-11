@@ -149,7 +149,7 @@ func TestNewRouterAppBuildsTheWholeGraph(t *testing.T) {
 
 	// The MO projection starts at the end of mo.routed, like the accepted one: replaying the retained topic
 	// would re-insert history and storm content-key-svc for data keys.
-	if app.moCDR == nil || !app.moCDRKafka.StartsFromEnd() {
+	if app.projections == nil || !app.projections.moKafka.StartsFromEnd() {
 		t.Error("the MO CDR projection is not wired to start at the end of mo.routed")
 	}
 

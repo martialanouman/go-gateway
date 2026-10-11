@@ -52,9 +52,10 @@ type routerApp struct {
 	router   *router.Router
 	accepted *ingest.AcceptedConsumer
 	// moCDR projects the CDR row of each routed MO. It lives here, not in mo-dlr-router-svc, because
-	// content-key-svc gives the content data key to router-svc only (step-295b, ADR-0016).
-	moCDR      *ingest.AcceptedConsumer
-	moCDRKafka *kafka.Consumer
+	// content-key-svc gives the content data key to router-svc only (step-295b, ADR-0016). projections
+	// keeps its wrapper, whose consumer start offset a test asserts.
+	moCDR       *ingest.AcceptedConsumer
+	projections *acceptedProjector
 	// Kept as the wrapper, not just the projector: it owns the consumer whose start offset is a
 	// durability property a test must be able to assert (step-201c D9).
 	outcome  *outcomeProjector
@@ -168,7 +169,7 @@ func newRouterApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 	}
 	a.onClose("accepted", proj.close)
 	a.accepted = proj.consumer
-	a.moCDR, a.moCDRKafka = proj.mo, proj.moKafka
+	a.moCDR, a.projections = proj.mo, proj
 
 	outc, err := newOutcomeProjector(cfg, st.ch, logger)
 	if err != nil {
