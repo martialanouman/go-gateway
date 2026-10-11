@@ -69,7 +69,7 @@ type Service struct {
 	priorityFlagDefault uint8
 	podID               string
 
-	// retryFirstFail records, per (partition, offset), when a message first hit a connector-health
+	// retryFirstFail records, per (topic, partition, offset), when a message first hit a connector-health
 	// failure, so the retry window can dead-letter a message that keeps failing past RetryWindow
 	// (step-129). Keyed by the immutable offset (stable across redeliveries). processOne clears the key
 	// on every committed outcome (its deferred cleanup), so it never outlives the record.
