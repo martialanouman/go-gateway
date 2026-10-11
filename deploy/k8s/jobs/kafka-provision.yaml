@@ -4,7 +4,8 @@
 # assigned to a pod), so they must DOMINATE the HPA ceiling rather than equal it (ADR-0014), and
 # mt.routed.otp and mt.routed.transactional need one partition per bind of each connector —
 # bind_pool_size, via KAFKA_TOPIC_PARTITIONS_OVERRIDES (mt.routed.otp=N,mt.routed.transactional=N);
-# mt.routed.marketing stays at the shared default. Run it before the first rollout and after adding
+# mt.routed.marketing stays at the shared default. mt.inbound.otp and mt.inbound.transactional are at 4
+# per ADR-0021 §1, independent of bind_pool_size. Run it before the first rollout and after adding
 # a connector.
 apiVersion: batch/v1
 kind: Job

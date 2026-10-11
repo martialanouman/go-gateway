@@ -127,7 +127,7 @@ La persistance est polyglotte : chaque magasin est choisi pour son motif d'accè
 
 **Redis / Dragonfly (cluster) — état opérationnel à faible latence.** Sessions, compteurs token-bucket, dédup anti-spam, réputation, cache/réservations de solde, files de délai courtes, état agrégé de disjoncteur, filtres. **Jamais** le magasin durable des messages : une perte Redis dégrade des fonctionnalités selon leur politique de panne (§16), sans perdre un message en vol.
 
-**Kafka — plan de données (durabilité du pipeline).** Socle de durabilité : l'écriture dans `mt.inbound` est la frontière d'accusé de réception. Offre rejeu, dead-letter et parallélisme par partition. Topics : `mt.inbound`, `mt.routed.{otp,transactional,marketing}`, `mo.inbound`, `dlr.events`, `mt.dead-letter`/`mo.dead-letter`, `mt.reroute-park`.
+**Kafka — plan de données (durabilité du pipeline).** Socle de durabilité : l'écriture dans `mt.inbound` est la frontière d'accusé de réception. Offre rejeu, dead-letter et parallélisme par partition. Topics : `mt.inbound.{otp,transactional,marketing}`, `mt.routed.{otp,transactional,marketing}`, `mo.inbound`, `dlr.events`, `mt.dead-letter`/`mo.dead-letter`, `mt.reroute-park`.
 
 **ClickHouse (columnar) — CDR, analytique, recherche, traçage.** Un enregistrement par message, partitionné par jour, avec tiering TTL. Interrogé par le tableau de bord. Le DDL du CDR (dialecte ClickHouse) est en appendice du fichier `.sql`.
 
@@ -389,7 +389,7 @@ absent(queue_depth_records{queue="mt.inbound.otp"})
 absent(queue_depth_records{queue="mt.routed.otp"})
 ```
 
-Le seuil est en records, faute de compteur de débit par topic (un dénominateur toutes catégories rendrait l'alerte aveugle à un consommateur OTP mort) ; 5 000 est le seuil de l'HPA du pool, step-409 le recalibre. Au pool, `absent()` ne part que si tous les pods disparaissent.
+Le seuil est en records, faute de compteur de débit par topic (un dénominateur toutes catégories rendrait l'alerte aveugle à un consommateur OTP mort) ; 5 000 est le seuil de l'HPA du pool, step-409 le recalibre. Au pool, `absent()` sur `mt.routed.otp` ne part que si les pods de **tous** les connecteurs disparaissent ; un connecteur dont tous les pods sont morts relève des alertes de disponibilité et de readiness des pods, pas de cette règle.
 
 **Partitions du grand livre** (step-408). billing-svc crée les partitions journalières de `billing_ledger` d'avance (aujourd'hui à J+7, au démarrage puis chaque heure). Une écriture dont le jour n'a pas de partition tombe dans `DEFAULT` sans échouer, et y reste :
 
