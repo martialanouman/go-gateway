@@ -69,3 +69,18 @@ Demandé par l'utilisateur : payer `debts/mo-jamais-ecrit-au-cdr.md` dans cette 
    service, qui n'a aucun watcher → `debts/politique-de-contenu-mo-rechargee-au-boot.md`.
 6. **Contrat.** La description de `mo_received` (Admin) et `MessageStatus` (public) changent, sans autre
    bump : 7.7.0 n'est pas encore publié. La fiche de dette passe à PAYÉE.
+
+### Corrections de la revue de l'écrivain (2026-10-11)
+- **Hôte : router-svc, pas mo-dlr-router-svc (bloquant).** content-key-svc refuse
+  `GetContentEncryptionKey` à mo-dlr-router-svc, et c'est voulu (step-295b, ADR-0016) : tout MO d'un client
+  `stored_encrypted` aurait perdu son corps. router-svc a ce droit, héberge déjà la projection `accepted`
+  et recharge la politique de contenu à chaque invalidation. Le projecteur MO y partage le sceller et la
+  politique, sur son propre groupe (`router-svc-mo-cdr`, depuis le LATEST). La fiche « politique relue au
+  démarrage » n'a plus d'objet.
+- **Lecture agrégée.** L'explorateur, l'export et l'API publique rattachent le MO à son connecteur et
+  lisent son `segment_count`, comme le font déjà les métriques.
+- **Arrêt en plein lot.** Une écriture annulée ne valide plus le lot : il est relu au redémarrage et
+  dédupliqué. Le défaut existait déjà dans les projections `accepted` et `outcome`.
+- **Hors périmètre, avec une fiche :** l'Admin rend le corps révélé en `string(bytes)`, quel que soit son
+  codage (`debts/corps-revele-sans-decodage.md`). C'était déjà le cas du MT soumis en SMPP UCS2 ; avec le
+  MO, ça devient le cas courant.
