@@ -463,7 +463,7 @@ func buildRefStack(
 	routerConsumer := newConsumer(t, kafkaCfg, "loadref-router", kafka.TopicMTInbound)
 	acceptedConsumer := newConsumer(t, kafkaCfg, "loadref-accepted", kafka.TopicMTInbound)
 	connConsumers := map[string]*kafka.Consumer{}
-	connFanIn := make(connectorpool.FanIn, 0, len(kafka.MTRoutedTopics()))
+	connFanIn := make(kafka.FanIn, 0, len(kafka.MTRoutedTopics()))
 	for _, topic := range kafka.MTRoutedTopics() {
 		c := newConsumer(t, kafkaCfg, "loadref-connector-"+topic, topic)
 		connConsumers[topic] = c

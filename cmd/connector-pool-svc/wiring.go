@@ -318,8 +318,8 @@ func openStores(ctx context.Context, cfg config.Config, connectorID uuid.UUID) (
 
 const routedTopicPrefix = "mt.routed."
 
-func fanIn(cs []*kafka.Consumer) connectorpool.FanIn {
-	out := make(connectorpool.FanIn, len(cs))
+func fanIn(cs []*kafka.Consumer) kafka.FanIn {
+	out := make(kafka.FanIn, len(cs))
 	for i, c := range cs {
 		out[i] = c
 	}

@@ -1,4 +1,4 @@
-package connectorpool_test
+package kafka_test
 
 import (
 	"context"
@@ -8,19 +8,39 @@ import (
 	"testing"
 	"time"
 
-	"github.com/martialanouman/go-gateway/internal/connectorpool"
 	"github.com/martialanouman/go-gateway/internal/storage/kafka"
 )
 
-func failing(err error) feederConsumer {
-	return feederConsumer{fn: func(context.Context, kafka.BatchHandler) error { return err }}
+type runnerFunc func(context.Context, kafka.BatchHandler) error
+
+func (f runnerFunc) RunBatch(ctx context.Context, handle kafka.BatchHandler) error {
+	return f(ctx, handle)
+}
+
+func failing(err error) runnerFunc {
+	return func(context.Context, kafka.BatchHandler) error { return err }
+}
+
+func blockingRunner() runnerFunc {
+	return func(ctx context.Context, _ kafka.BatchHandler) error {
+		<-ctx.Done()
+		return nil
+	}
+}
+
+func feedThenBlock(topic string) runnerFunc {
+	return func(ctx context.Context, handle kafka.BatchHandler) error {
+		handle(ctx, []kafka.Record{{Topic: topic}})
+		<-ctx.Done()
+		return nil
+	}
 }
 
 func TestFanInFeedsOneHandlerFromEveryConsumer(t *testing.T) {
 	var mu sync.Mutex
 	seen := map[string]bool{}
 	ctx, cancel := context.WithCancel(t.Context())
-	fan := connectorpool.FanIn{&feedThenBlock{records: []kafka.Record{{Topic: "a"}}}, &feedThenBlock{records: []kafka.Record{{Topic: "b"}}}}
+	fan := kafka.FanIn{feedThenBlock("a"), feedThenBlock("b")}
 	done := make(chan error, 1)
 	go func() {
 		done <- fan.RunBatch(ctx, func(_ context.Context, recs []kafka.Record) []error {
@@ -49,7 +69,7 @@ func TestFanInFeedsOneHandlerFromEveryConsumer(t *testing.T) {
 
 func TestFanInStopsEveryConsumerOnTheFirstError(t *testing.T) {
 	boom := errors.New("boom")
-	fan := connectorpool.FanIn{blockingConsumer{}, failing(boom), blockingConsumer{}}
+	fan := kafka.FanIn{blockingRunner(), failing(boom), blockingRunner()}
 	done := make(chan error, 1)
 	go func() {
 		done <- fan.RunBatch(t.Context(), func(context.Context, []kafka.Record) []error { return nil })
@@ -66,13 +86,13 @@ func TestFanInStopsEveryConsumerOnTheFirstError(t *testing.T) {
 
 func TestFanInWaitsForEveryConsumerBeforeReturning(t *testing.T) {
 	var slowStopped atomic.Bool
-	slow := feederConsumer{fn: func(ctx context.Context, _ kafka.BatchHandler) error {
+	slow := runnerFunc(func(ctx context.Context, _ kafka.BatchHandler) error {
 		<-ctx.Done()
 		time.Sleep(50 * time.Millisecond)
 		slowStopped.Store(true)
 		return nil
-	}}
-	fan := connectorpool.FanIn{failing(errors.New("boom")), slow}
+	})
+	fan := kafka.FanIn{failing(errors.New("boom")), slow}
 	_ = fan.RunBatch(t.Context(), func(context.Context, []kafka.Record) []error { return nil })
 	if !slowStopped.Load() {
 		t.Error("FanIn returned while a consumer was still running")
