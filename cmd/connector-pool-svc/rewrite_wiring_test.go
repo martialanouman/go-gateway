@@ -26,6 +26,7 @@ func TestNewPoolAppRewritesWithTheRulesAndFollowsAnInvalidation(t *testing.T) {
 	cfg := testConfig()
 	cfg.Postgres = pgtest.Config(t)
 	cfg.Redis = redistest.Config(t)
+	cfg.DLRRetention = 12 * time.Hour
 	pool, rdb := pgtest.Pool(t), redistest.Client(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
@@ -71,6 +72,10 @@ func TestNewPoolAppRewritesWithTheRulesAndFollowsAnInvalidation(t *testing.T) {
 	// Without the Redis pins a rerouted segment would go out under the fallback connector's rules.
 	if pins := deps.FieldByName("SenderPins"); !pins.IsValid() || pins.IsNil() || pins.Elem().Type().String() != "*dlrmap.SenderPins" {
 		t.Error("the pool does not pin multipart senders in Redis")
+	}
+	// A DLR correlation without a validity lives DLR_RETENTION, not a default of the store (step-287o).
+	if m := deps.FieldByName("DLRMap"); !m.IsValid() || m.IsNil() || m.Elem().Elem().FieldByName("retention").Int() != int64(cfg.DLRRetention) {
+		t.Error("the pool's DLR map does not keep its correlations for DLR_RETENTION")
 	}
 
 	// The boot load is the last successful build: a pod that has not reloaded yet must not read as never

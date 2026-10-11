@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -65,6 +66,10 @@ type Config struct {
 	// RouterLaneWindow is how many messages of one mt.inbound partition router-svc runs at once (step-287l):
 	// reserves in flight are KAFKA_TOPIC_PARTITIONS × this.
 	RouterLaneWindow int `env:"ROUTER_LANE_WINDOW" envDefault:"8"`
+
+	// DLRRetention is how long connector-pool-svc keeps a DLR correlation for a message that asked for no
+	// relative validity (step-287o): a receipt later than that is not returned. 12h, 24h or 48h.
+	DLRRetention time.Duration `env:"DLR_RETENTION" envDefault:"24h"`
 
 	// ShutdownTimeout bounds ONE component's own teardown: an HTTP or gRPC server's graceful stop, the
 	// ops server's, the span exporter's flush. It is not the budget of the drain as a whole — see
@@ -818,6 +823,9 @@ func (c Config) coreProblems() []string {
 	}
 	if c.RouterLaneWindow < 1 {
 		problems = append(problems, fmt.Sprintf("ROUTER_LANE_WINDOW %d must be at least 1: a lane would never run a message", c.RouterLaneWindow))
+	}
+	if !slices.Contains([]time.Duration{12 * time.Hour, 24 * time.Hour, 48 * time.Hour}, c.DLRRetention) {
+		problems = append(problems, fmt.Sprintf("DLR_RETENTION %s must be 12h, 24h or 48h", c.DLRRetention))
 	}
 	// Zero is legal and means "do not wait" — a service with no load balancer in front of it, or a
 	// test. Negative is a typo, and silently accepting it would make the drain skip the wait it was

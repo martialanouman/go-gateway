@@ -1,6 +1,6 @@
 # step-287o — La corrélation DLR se garde 24 h par défaut : `DLR_RETENTION` (12h, 24h, 48h)
 
-> **Jalon :** M12 · **Statut :** EN COURS
+> **Jalon :** M12 · **Statut :** LIVRÉE
 > **Dépend de :** step-044 (corrélation DLR), step-201f (`DLRMap` au banc)
 > Demande humaine du 11/10/2026, née du run 14 de step-287 (12,5 M clés `dlrmap:*` dans Redis).
 
@@ -25,6 +25,6 @@ presque tous dans l'heure. Un DLR dont la corrélation a expiré n'est ni livré
   `GET /messages/{id}`.
 
 ## Definition of Done
-- [ ] `ttlForValidity` : la table ci-dessus (unitaire, une mutation par branche)
-- [ ] config : défaut 24h, 12h et 48h acceptés, toute autre durée refusée
-- [ ] câblage : la rétention de la config atteint le `DLRMap` du pool (mutation sur le câblage)
+- [x] `ttlForValidity` : la table ci-dessus (unitaire, 5 mutations tuées)
+- [x] config : défaut 24h, 12h et 48h acceptés, toute autre durée refusée (2 mutations tuées)
+- [x] câblage : la rétention de la config atteint le `DLRMap` du pool (mutation sur le câblage tuée)

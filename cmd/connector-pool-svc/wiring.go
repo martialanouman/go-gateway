@@ -186,7 +186,7 @@ func newPoolApp(ctx context.Context, cfg config.Config, bindEnv connectorEnv, lo
 		Metrics:        a.catalog,
 		CDR:            clickhouse.NewCDRWriter(st.ch),
 		CancelFlags:    cancel.NewRedisFlags(st.rdb),
-		DLRMap:         dlrmap.NewRedisMap(st.rdb),
+		DLRMap:         dlrmap.NewRedisMap(st.rdb, cfg.DLRRetention),
 		Rewriter:       a.rewriter,
 		SenderPins:     dlrmap.NewSenderPins(st.rdb),
 		Producer:       st.producer,

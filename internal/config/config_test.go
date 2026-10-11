@@ -19,7 +19,7 @@ import (
 // knownVars is every variable Config reads. Tests clear them all so a developer's own shell
 // cannot leak into a result.
 var knownVars = []string{
-	"ENVIRONMENT", "LOG_LEVEL", "OPS_PORT", "OPS_PPROF", "ROUTER_LANE_WINDOW", "SHUTDOWN_TIMEOUT", "DRAIN_DELAY", "DRAIN_BUDGET",
+	"ENVIRONMENT", "LOG_LEVEL", "OPS_PORT", "OPS_PPROF", "ROUTER_LANE_WINDOW", "DLR_RETENTION", "SHUTDOWN_TIMEOUT", "DRAIN_DELAY", "DRAIN_BUDGET",
 	"CONFIG_RESYNC_INTERVAL",
 	"SERVICE_NAME",
 	"OTEL_SDK_DISABLED", "OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_INSECURE",
@@ -86,6 +86,9 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.RouterLaneWindow != 8 {
 		t.Errorf("RouterLaneWindow = %d, want 8 (step-285c)", cfg.RouterLaneWindow)
+	}
+	if cfg.DLRRetention != 24*time.Hour {
+		t.Errorf("DLRRetention = %s, want 24h (step-287o)", cfg.DLRRetention)
 	}
 	if cfg.LogLevel != "info" {
 		t.Errorf("LogLevel = %q, want info", cfg.LogLevel)
@@ -154,6 +157,7 @@ func TestLoadFromEnvironment(t *testing.T) {
 		"OPS_PORT":                    "9191",
 		"OPS_PPROF":                   "true",
 		"ROUTER_LANE_WINDOW":          "16",
+		"DLR_RETENTION":               "12h",
 		"SHUTDOWN_TIMEOUT":            "45s",
 		"OTEL_EXPORTER_OTLP_ENDPOINT": "collector:4317",
 		"OTEL_EXPORTER_OTLP_INSECURE": "false",
@@ -238,6 +242,9 @@ func TestLoadFromEnvironment(t *testing.T) {
 	if cfg.RouterLaneWindow != 16 {
 		t.Errorf("RouterLaneWindow = %d, want 16 from ROUTER_LANE_WINDOW", cfg.RouterLaneWindow)
 	}
+	if cfg.DLRRetention != 12*time.Hour {
+		t.Errorf("DLRRetention = %s, want 12h from DLR_RETENTION", cfg.DLRRetention)
+	}
 	if cfg.ShutdownTimeout != 45*time.Second {
 		t.Errorf("ShutdownTimeout = %s, want 45s", cfg.ShutdownTimeout)
 	}
@@ -313,6 +320,8 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		{"shutdown timeout negative", map[string]string{"SHUTDOWN_TIMEOUT": "-5s"}, "SHUTDOWN_TIMEOUT"},
 		{"drain delay negative", map[string]string{"DRAIN_DELAY": "-1s"}, "DRAIN_DELAY"},
 		{"config resync negative", map[string]string{"CONFIG_RESYNC_INTERVAL": "-1s"}, "CONFIG_RESYNC_INTERVAL"},
+		{"dlr retention between the choices", map[string]string{"DLR_RETENTION": "36h"}, "DLR_RETENTION"},
+		{"dlr retention past the choices", map[string]string{"DLR_RETENTION": "72h"}, "DLR_RETENTION"},
 		{"config resync under a minute", map[string]string{"CONFIG_RESYNC_INTERVAL": "30s"}, "CONFIG_RESYNC_INTERVAL"},
 		{"drain budget zero", map[string]string{"DRAIN_BUDGET": "0s"}, "DRAIN_BUDGET"},
 		{"drain budget negative", map[string]string{"DRAIN_BUDGET": "-1s"}, "DRAIN_BUDGET"},
@@ -1396,6 +1405,14 @@ func TestStoreTLSReachesItsSection(t *testing.T) {
 		!cfg.ClickHouse.TLSEnabled || cfg.ClickHouse.TLSCAFile != "/etc/ch/ca.crt" {
 		t.Errorf("kafka = %v %q, clickhouse = %v %q", cfg.Kafka.TLSEnabled, cfg.Kafka.TLSCAFile,
 			cfg.ClickHouse.TLSEnabled, cfg.ClickHouse.TLSCAFile)
+	}
+}
+
+// TestLoadAcceptsTheLongestDLRRetention: 48h is the last of the three choices, 12h and 24h being covered above.
+func TestLoadAcceptsTheLongestDLRRetention(t *testing.T) {
+	setEnv(t, map[string]string{"DLR_RETENTION": "48h"})
+	if _, err := config.Load("connector-pool-svc"); err != nil {
+		t.Fatalf("Load() with DLR_RETENTION=48h: %v", err)
 	}
 }
 

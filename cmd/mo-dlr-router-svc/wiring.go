@@ -111,7 +111,7 @@ func newReturnPathApp(ctx context.Context, cfg config.Config, logger *slog.Logge
 	}
 	a.onClose("stores", st.close)
 
-	dlr := newDLRLeg(st, logger)
+	dlr := newDLRLeg(cfg, st, logger)
 	a.dlr = dlr.router
 
 	mo, err := newMOLeg(ctx, cfg, st, logger)
@@ -207,7 +207,7 @@ type dlrLeg struct {
 	unmapped prometheus.Counter
 }
 
-func newDLRLeg(st *stores, logger *slog.Logger) *dlrLeg {
+func newDLRLeg(cfg config.Config, st *stores, logger *slog.Logger) *dlrLeg {
 	unmapped := prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "dlr_unmapped_total",
 		Help: "Delivery receipts received with no dlrmap entry (expired or unknown smsc_msg_id).",
@@ -216,7 +216,7 @@ func newDLRLeg(st *stores, logger *slog.Logger) *dlrLeg {
 		unmapped: unmapped,
 		router: modlrrouter.New(modlrrouter.Deps{
 			Consumer: st.consumer,
-			Resolver: dlrmap.NewRedisMap(st.rdb),
+			Resolver: dlrmap.NewRedisMap(st.rdb, cfg.DLRRetention),
 			CDR:      clickhouse.NewCDRWriter(st.ch),
 			Unmapped: unmapped,
 			Tracer:   observability.Tracer(nil, serviceName),
@@ -455,7 +455,7 @@ func newDeliveryLeg(cfg config.Config, st *stores, mo *moLeg, logger *slog.Logge
 	}
 	d.dlr = modlrrouter.NewDLRDeliveryRouter(modlrrouter.DLRDeliveryDeps{
 		Consumer:    d.dlrConsumer,
-		Resolver:    dlrmap.NewRedisMap(st.rdb),
+		Resolver:    dlrmap.NewRedisMap(st.rdb, cfg.DLRRetention),
 		Deliverer:   deliverer,
 		MappingMiss: d.mappingMiss,
 		Tracer:      observability.Tracer(nil, serviceName),

@@ -255,7 +255,7 @@ qu'on mesure un environnement représentatif.
       step-190, step-287b — née du diagnostic ClickHouse après le run 12 de step-287
 - [ ] step-287n — Lire un message dans un gros compte sans parcourir le compte : index bloom sur `message_id`
       ⛓ step-287m — née du run 13 de step-287
-- [ ] step-287o — La corrélation DLR se garde 24 h par défaut : `DLR_RETENTION` (12h, 24h, 48h) ⛓ step-044,
+- [x] step-287o — La corrélation DLR se garde 24 h par défaut : `DLR_RETENTION` (12h, 24h, 48h) ⛓ step-044,
       step-201f — demande humaine du 11/10/2026, née du run 14 de step-287
 - [x] step-288 — La catégorie de trafic se déclare par sender ID ; `sender_id_policy` disparaît (ADR-0020 §1,
       contrat 7.0.0) — décision humaine du 05/10/2026 ; unité faute de multiple de dix libre

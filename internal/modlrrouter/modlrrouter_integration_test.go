@@ -36,7 +36,7 @@ func TestDLRCorrelationUpdatesCDR(t *testing.T) {
 
 	writer := clickhouse.NewCDRWriter(chConn)
 	reader := clickhouse.NewCDRReader(chConn)
-	store := dlrmap.NewRedisMap(rdb)
+	store := dlrmap.NewRedisMap(rdb, 24*time.Hour)
 
 	// The submitted message: its enroute row and its dlrmap entry.
 	connectorID := uuid.New()

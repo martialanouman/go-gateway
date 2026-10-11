@@ -7,32 +7,35 @@ import (
 	"github.com/google/uuid"
 )
 
-// TestTTLForValidity covers the derivation rule: a parsable relative period yields validity+margin
-// clamped to [1h, 72h]; everything dubious falls back to the 72h cap (fail-long).
+// TestTTLForValidity covers the derivation rule (step-287o): no usable validity keeps the mapping for the
+// configured retention; a relative one the client asked for is honoured, validity+margin clamped to [1h, 72h],
+// even past the retention; an absolute one is not interpreted and keeps the 72h cap (fail-long).
 func TestTTLForValidity(t *testing.T) {
 	str := func(s string) *string { return &s }
+	const retention = 12 * time.Hour
 
 	cases := []struct {
 		name string
 		in   *string
 		want time.Duration
 	}{
-		{"nil falls back to max", nil, maxTTL},
-		{"empty falls back to max", str(""), maxTTL},
-		{"absolute (+ suffix, 16 chars) falls back to max", str("251023120000000+"), maxTTL},
-		{"garbage falls back to max", str("not-a-validity!"), maxTTL},
-		{"relative 1 day -> 1d + margin", str("000001000000000R"), 24*time.Hour + ttlMargin},
-		{"relative 2 hours -> 2h + margin", str("000000020000000R"), 2*time.Hour + ttlMargin},
+		{"nil keeps the retention", nil, retention},
+		{"empty keeps the retention", str(""), retention},
+		{"garbage keeps the retention", str("not-a-validity!"), retention},
+		{"relative zero keeps the retention", str("000000000000000R"), retention},
+		{"non-digit field keeps the retention", str("0000XX000000000R"), retention},
+		{"wrong length keeps the retention", str("000001R"), retention},
+		{"absolute (+ suffix) keeps the cap", str("251023120000000+"), maxTTL},
+		{"absolute (- suffix) keeps the cap", str("251023120000004-"), maxTTL},
+		{"relative 2 days -> past the retention", str("000002000000000R"), 48*time.Hour + ttlMargin},
+		{"relative 2 hours -> under the retention", str("000000020000000R"), 2*time.Hour + ttlMargin},
 		{"relative 5 minutes -> 5m + margin", str("000000000500000R"), 5*time.Minute + ttlMargin},
 		{"relative 10 days -> capped to max", str("000010000000000R"), maxTTL},
 		{"relative 1 year -> capped to max", str("010000000000000R"), maxTTL},
-		{"relative zero -> falls back to max", str("000000000000000R"), maxTTL},
-		{"non-digit field -> falls back to max", str("0000XX000000000R"), maxTTL},
-		{"wrong length -> falls back to max", str("000001R"), maxTTL},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := ttlForValidity(c.in); got != c.want {
+			if got := ttlForValidity(c.in, retention); got != c.want {
 				t.Errorf("ttlForValidity(%v) = %v, want %v", c.in, got, c.want)
 			}
 		})
@@ -48,7 +51,7 @@ func TestTTLNeverBelowMinOrAboveMax(t *testing.T) {
 	}
 	for _, in := range inputs {
 		in := in
-		got := ttlForValidity(&in)
+		got := ttlForValidity(&in, 24*time.Hour)
 		if got < minTTL || got > maxTTL {
 			t.Errorf("ttlForValidity(%q) = %v, out of [%v, %v]", in, got, minTTL, maxTTL)
 		}

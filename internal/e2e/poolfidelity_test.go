@@ -5,6 +5,7 @@ package e2e_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 
@@ -87,7 +88,7 @@ func TestPoolDLRMapFidelity(t *testing.T) {
 	// offset zero, so an identical fixture sits under both members of every pair — which is the whole
 	// point of pairing them.
 	bed := newPoolBed(t, brokers, records, binds)
-	store := dlrmap.NewRedisMap(rdb)
+	store := dlrmap.NewRedisMap(rdb, 24*time.Hour)
 
 	without := make([]float64, 0, pairs)
 	with := make([]float64, 0, pairs)
