@@ -168,15 +168,20 @@ func buildStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg config
 		Tracer: routerTracer,
 	})
 
-	connConsumer, err := kafka.NewConsumer(kafkaCfg, "e2e-connector", kafka.MTRoutedTopics()...)
-	if err != nil {
-		t.Fatalf("connector consumer: %v", err)
+	connConsumers := make(connectorpool.FanIn, 0, len(kafka.MTRoutedTopics()))
+	for _, topic := range kafka.MTRoutedTopics() {
+		c, err := kafka.NewConsumer(kafkaCfg, "e2e-connector-"+topic, topic)
+		if err != nil {
+			t.Fatalf("connector consumer %s: %v", topic, err)
+		}
+		t.Cleanup(c.Close)
+		connConsumers = append(connConsumers, c)
 	}
 	// The enroute row is no longer written by the pool: it publishes the outcome on mt.outcome and a
 	// dedicated group projects it (step-201c). The pool therefore NEEDS a producer — without one its
 	// outcomes are dropped on the floor and no message ever leaves "accepted".
 	conn := connectorpool.New(connectorpool.Deps{
-		Consumer: connConsumer,
+		Consumer: connConsumers,
 		Producer: producer,
 		CDR:      cdrWriter,
 		Bind: connectorpool.BindConfig{
@@ -210,7 +215,6 @@ func buildStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg config
 		restSrv.Close()
 		producer.Close()
 		routerConsumer.Close()
-		connConsumer.Close()
 		outcomeConsumer.Close()
 		_ = chConn.Close()
 	})

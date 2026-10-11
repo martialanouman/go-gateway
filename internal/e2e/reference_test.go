@@ -462,7 +462,13 @@ func buildRefStack(
 
 	routerConsumer := newConsumer(t, kafkaCfg, "loadref-router", kafka.TopicMTInbound)
 	acceptedConsumer := newConsumer(t, kafkaCfg, "loadref-accepted", kafka.TopicMTInbound)
-	connConsumer := newConsumer(t, kafkaCfg, "loadref-connector", kafka.MTRoutedTopics()...)
+	connConsumers := map[string]*kafka.Consumer{}
+	connFanIn := make(connectorpool.FanIn, 0, len(kafka.MTRoutedTopics()))
+	for _, topic := range kafka.MTRoutedTopics() {
+		c := newConsumer(t, kafkaCfg, "loadref-connector-"+topic, topic)
+		connConsumers[topic] = c
+		connFanIn = append(connFanIn, c)
+	}
 
 	acceptedProjector := ingest.NewAcceptedConsumer(acceptedConsumer, cdrWriter, nil, nil)
 
@@ -557,7 +563,7 @@ func buildRefStack(
 	})
 
 	conn := connectorpool.New(connectorpool.Deps{
-		Consumer: connConsumer,
+		Consumer: connFanIn,
 		CDR:      cdrWriter,
 		// The send outcome goes to mt.outcome and a projector writes the CDR (step-201c D1). Without
 		// this producer the pool's whole post-send path is a no-op, and the run would publish as its
@@ -600,7 +606,9 @@ func buildRefStack(
 		producer.Close()
 		routerConsumer.Close()
 		acceptedConsumer.Close()
-		connConsumer.Close()
+		for _, c := range connConsumers {
+			c.Close()
+		}
 		_ = chConn.Close()
 	})
 
@@ -611,9 +619,9 @@ func buildRefStack(
 		rest: restSrv, ops: ops, apiKeys: apiKeys, registry: registry, connector: connectorID, lookups: lookups,
 		consumers: map[string]*kafka.Consumer{
 			kafka.TopicMTInbound:             routerConsumer,
-			kafka.TopicMTRoutedOTP:           connConsumer,
-			kafka.TopicMTRoutedTransactional: connConsumer,
-			kafka.TopicMTRoutedMarketing:     connConsumer,
+			kafka.TopicMTRoutedOTP:           connConsumers[kafka.TopicMTRoutedOTP],
+			kafka.TopicMTRoutedTransactional: connConsumers[kafka.TopicMTRoutedTransactional],
+			kafka.TopicMTRoutedMarketing:     connConsumers[kafka.TopicMTRoutedMarketing],
 			// The projection lag is the backlog step-201c introduces: it is the only writer of the
 			// enroute row, so a flat mt.routed with a climbing mt.outcome is a pipeline that sends
 			// without recording. D2's steady-state clause has to see it.
