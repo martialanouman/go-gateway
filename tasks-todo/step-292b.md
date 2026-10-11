@@ -11,7 +11,7 @@ derrière le backlog marketing, au routeur comme au pool. ADR-0021 sépare les f
 priorité par bind.
 
 ## Découpage arrêté (step-292, design du 06/10/2026)
-- **PR3a** : les topics `mt.routed.<catégorie>` (routeur → pool). Un consommateur par topic et par connecteur
+- [x] **PR3a** : les topics `mt.routed.<catégorie>` (routeur → pool). Un consommateur par topic et par connecteur
   au pool. Le drainer de parking et `mt-replay` republient selon la catégorie du record. Dans la même PR :
   les groupes du pool dans `deploy/k8s` et le lag par catégorie côté pool.
 - **PR3b** : les topics `mt.inbound.<catégorie>`. L'ingestion (REST, SMPP) lit la catégorie dans un
