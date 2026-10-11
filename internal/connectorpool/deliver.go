@@ -30,7 +30,11 @@ func (s *Service) handleDeliver(ctx context.Context, ds *smpp.DeliverSM) error {
 	if err != nil {
 		return fmt.Errorf("connectorpool: encode mo.inbound: %w", err)
 	}
-	return s.deps.Producer.Produce(ctx, rec)
+	if err := s.deps.Producer.Produce(ctx, rec); err != nil {
+		return err
+	}
+	s.observeMO()
+	return nil
 }
 
 // buildMO projects a mobile-originated deliver_sm onto an MOInbound. The content travels in the masked
