@@ -181,7 +181,7 @@ func newPoolApp(ctx context.Context, cfg config.Config, bindEnv connectorEnv, lo
 	)
 
 	a.pool = connectorpool.New(connectorpool.Deps{
-		Consumer:       connectorpool.FanIn(consumerList(st.consumers)...),
+		Consumer:       fanIn(st.consumers),
 		Stream:         stream.emitter,
 		BreakerGauge:   a.catalog,
 		Metrics:        a.catalog,
@@ -283,11 +283,8 @@ func openStores(ctx context.Context, cfg config.Config, connectorID uuid.UUID) (
 	// so a brand-new per-connector group does not replay the whole retained topic (mass re-send); a
 	// restart still resumes from its committed offset.
 	//
-	// MIGRATION HAZARD: the group was renamed (per connector, then per category) and the topic itself
-	// changed: the old mt.routed is neither provisioned nor read. With FromLatest, anything produced
-	// but not yet consumed on the old group/topic at cutover is silently DROPPED. Accepted because
-	// ADR-0021 declares no production and the old topics are deleted without drain; a cutover with
-	// live traffic MUST first drain them or seed the new groups' offsets.
+	// MIGRATION HAZARD: the old mt.routed topic and per-connector groups are abandoned, not migrated, and
+	// FromLatest drops anything left there — safe only without live traffic (ADR-0021).
 	for _, topic := range kafka.MTRoutedTopics() {
 		group := serviceName + "-" + connectorID.String() + "-" + strings.TrimPrefix(topic, routedTopicPrefix)
 		c, err := kafka.NewConsumerFromLatest(cfg.Kafka, group, topic)
@@ -321,8 +318,8 @@ func openStores(ctx context.Context, cfg config.Config, connectorID uuid.UUID) (
 
 const routedTopicPrefix = "mt.routed."
 
-func consumerList(cs []*kafka.Consumer) []connectorpool.Consumer {
-	out := make([]connectorpool.Consumer, len(cs))
+func fanIn(cs []*kafka.Consumer) connectorpool.FanIn {
+	out := make(connectorpool.FanIn, len(cs))
 	for i, c := range cs {
 		out[i] = c
 	}
@@ -490,9 +487,10 @@ func newOpsServer(
 	billing *settler,
 	stream *metricStream,
 ) (*observability.OpsServer, error) {
-	checks := make([]observability.ReadinessCheck, 0, len(st.consumers)+3)
-	for i, topic := range kafka.MTRoutedTopics() {
-		checks = append(checks, st.consumers[i].ReadyCheck("kafka-"+strings.TrimPrefix(topic, routedTopicPrefix), cfg.Kafka.Timeout))
+	checks := make([]observability.ReadinessCheck, 0, len(st.consumers))
+	for _, c := range st.consumers {
+		category := c.Group()[strings.LastIndex(c.Group(), "-")+1:]
+		checks = append(checks, c.ReadyCheck("kafka-"+category, cfg.Kafka.Timeout))
 	}
 	ops, err := observability.NewOpsServer(cfg, logger, append(checks,
 		st.producer.ReadyCheck("kafka-producer", cfg.Kafka.Timeout),

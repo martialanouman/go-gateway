@@ -8,11 +8,10 @@ import (
 
 // FanIn runs every consumer with the same handler, so the pool reads one topic per traffic category
 // (ADR-0021 §4) through a single Consumer. The first consumer to return stops the others.
-func FanIn(consumers ...Consumer) Consumer { return fanIn(consumers) }
+type FanIn []Consumer
 
-type fanIn []Consumer
-
-func (f fanIn) RunBatch(ctx context.Context, handle kafka.BatchHandler) error {
+// RunBatch runs every consumer until the first returns, then waits for the rest.
+func (f FanIn) RunBatch(ctx context.Context, handle kafka.BatchHandler) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	errs := make(chan error, len(f))

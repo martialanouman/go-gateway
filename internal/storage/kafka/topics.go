@@ -4,9 +4,8 @@
 // (at-least-once). Callers get a Producer or a Consumer; the franz-go client stays encapsulated.
 package kafka
 
-// Topic names (plan §1.6). The MT walking skeleton (M2) uses only mt.inbound and the mt.routed.<category> topics; the
-// rest are declared here so every service names a topic through this one list, not a string
-// literal.
+// Topic names (plan §1.6), declared here so every service names a topic through this one list, not a
+// string literal.
 const (
 	// TopicMTInbound carries raw submissions (SMPP/REST), pre-routing. A REST 202 is earned by a
 	// durable write here (§6.7). Partition key = the message id.
