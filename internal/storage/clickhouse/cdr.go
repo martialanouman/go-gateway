@@ -332,9 +332,13 @@ const cdrAggInnerCols = `customer_id, account_id, direction, submitted_at, messa
 // under the new model, so the two agree for new data.
 const cdrDispatched = `status NOT IN ('accepted', 'rejected')`
 
+// cdrCarriesSegments is the row that holds a message's connector and segment count. An MO is never
+// dispatched: its single accepted row is that row.
+const cdrCarriesSegments = `(direction = 'mo' OR ` + cdrDispatched + `)`
+
 // cdrStatusCounts and cdrStatusPrecedence are the ONE definition of a message's aggregated status, shared
 // by the CDR explorer and the metrics so a message cannot read delivered in one and failed in the other.
-const cdrStatusCounts = `maxIf(segment_count, ` + cdrDispatched + `) AS dispatched_total,
+const cdrStatusCounts = `maxIf(segment_count, ` + cdrCarriesSegments + `) AS dispatched_total,
 	countIf(status = 'delivered') AS delivered_segs,
 	countIf(status = 'cancelled') AS cancelled_cnt,
 	countIf(status = 'failed') AS failed_cnt,
@@ -363,9 +367,9 @@ const cdrStatusPrecedence = `multiIf(
 // Canceller's cancelled row) are written without them, and an empty string is not NULL to anyIf.
 const cdrAggMessageCols = `message_id, submitted_at,
 	any(trace_id) AS trace_id, any(account_id) AS account_id, any(customer_id) AS customer_id,
-	any(direction) AS direction, argMax(source_addr, ` + cdrDispatched + `) AS source_addr, any(dest_addr) AS dest_addr,
+	direction, argMax(source_addr, ` + cdrDispatched + `) AS source_addr, any(dest_addr) AS dest_addr,
 	any(original_source_addr) AS original_source_addr,
-	anyIf(connector_id, ` + cdrDispatched + `) AS connector_id,
+	anyIf(connector_id, ` + cdrCarriesSegments + `) AS connector_id,
 	anyIf(route_id, ` + cdrDispatched + `) AS route_id,
 	anyIf(routing_script_id, ` + cdrDispatched + `) AS routing_script_id,
 	any(encoding) AS encoding, any(content_ciphertext) AS content_ciphertext,
@@ -401,7 +405,7 @@ func cdrAggregate(innerWhereTail string) string {
 			SELECT ` + cdrAggInnerCols + ` FROM cdr
 			WHERE customer_id = ? AND account_id = ?` + innerWhereTail + `
 			GROUP BY customer_id, account_id, direction, submitted_at, message_id, segment_seq
-		) GROUP BY submitted_at, message_id
+		) GROUP BY submitted_at, message_id, direction
 	)`
 }
 
@@ -414,7 +418,7 @@ func cdrAggregateByMessage() string {
 			SELECT ` + cdrAggInnerCols + ` FROM cdr
 			WHERE message_id = ?
 			GROUP BY customer_id, account_id, direction, submitted_at, message_id, segment_seq
-		) GROUP BY submitted_at, message_id
+		) GROUP BY submitted_at, message_id, direction
 	)`
 }
 
@@ -429,7 +433,7 @@ func cdrAggregateSearch(innerWhereTail string) string {
 			SELECT ` + cdrAggInnerCols + ` FROM cdr
 			WHERE submitted_at >= ? AND submitted_at < ?` + innerWhereTail + `
 			GROUP BY customer_id, account_id, direction, submitted_at, message_id, segment_seq
-		) GROUP BY submitted_at, message_id
+		) GROUP BY submitted_at, message_id, direction
 	)`
 }
 

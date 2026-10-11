@@ -289,7 +289,7 @@ func TestMORouterRoutesReassembledMessage(t *testing.T) {
 
 	_, err := runMO(t, modlrrouter.MODeps{Snapshot: snap, Producer: prod, Unrouted: &fakeUnrouted{}, Reassembler: reasm},
 		moConcatRecord(t, connector, "22507000001", "36000",
-			smpp.Concat{Reference: 9, Total: 2, Sequence: 2, Ref16: true}, "last part"))
+			smpp.Concat{Reference: 9, Total: 2, Sequence: 1, Ref16: true}, "first part, arriving last"))
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}

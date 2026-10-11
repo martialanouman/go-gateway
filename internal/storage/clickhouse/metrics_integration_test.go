@@ -221,3 +221,30 @@ func TestTrafficRefusesMoreRowsThanItMayReturn(t *testing.T) {
 		t.Fatalf("err = %v, want ErrServiceUnavailable rather than a silently truncated series", err)
 	}
 }
+
+// TestTheExplorerReadsAnMOWithItsConnectorAndSegments: an MO has no dispatch, so its single accepted row is
+// the one that carries its connector and segment count; the explorer reads them as the metrics do.
+func TestTheExplorerReadsAnMOWithItsConnectorAndSegments(t *testing.T) {
+	writer, reader := searchReader(t)
+	ctx := context.Background()
+	connector := uuid.New()
+	mo := clickhouse.CDRRow{
+		MessageID: uuid.New(), TraceID: uuid.New(), AccountID: uuid.New(), CustomerID: uuid.New(),
+		Direction: clickhouse.DirectionMO, SourceAddr: searchMSISDN(), DestAddr: "36000", ConnectorID: &connector,
+		SubmittedAt: time.Now().UTC().Truncate(time.Millisecond), Status: clickhouse.StatusAccepted,
+		SegmentCount: 3, SegmentSeq: 1, Encoding: clickhouse.EncodingUCS2,
+	}
+	if err := writer.InsertBatch(ctx, []clickhouse.CDRRow{mo}); err != nil {
+		t.Fatalf("InsertBatch: %v", err)
+	}
+
+	got, found, err := reader.Current(ctx, mo.CustomerID, mo.AccountID, mo.MessageID)
+	if err != nil || !found {
+		t.Fatalf("Current: found=%v err=%v", found, err)
+	}
+	if got.ConnectorID == nil || *got.ConnectorID != connector || got.SegmentCount != 3 ||
+		got.Status != clickhouse.StatusAccepted || got.Direction != clickhouse.DirectionMO {
+		t.Fatalf("explorer row = connector %v, %d segments, %s %s; want %s, 3, accepted mo",
+			got.ConnectorID, got.SegmentCount, got.Status, got.Direction, connector)
+	}
+}

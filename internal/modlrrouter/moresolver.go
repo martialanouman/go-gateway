@@ -96,8 +96,7 @@ func (r *MORouter) Run(ctx context.Context) error {
 // reassemble buffers one segment of a concatenated MO and, once every segment has arrived, returns the
 // single logical MO with its body assembled and the UDH indicator cleared. An MO whose UDH is not a
 // concatenation (a malformed or non-concat header) is passed through unchanged as a complete message.
-// The body is revealed for header parsing only and never logged (invariant a). segments is how many
-// deliver_sm the returned MO arrived in.
+// The body is revealed for header parsing only and never logged (invariant a).
 func (r *MORouter) reassemble(ctx context.Context, mo pipeline.MOInbound) (_ pipeline.MOInbound, segments uint16, complete bool, err error) {
 	concat, content, hasConcat, err := smpp.ParseUDH(mo.Body.Reveal())
 	if err != nil || !hasConcat {

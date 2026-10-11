@@ -114,7 +114,7 @@ func TestMOCDRConsumerProjectsTheRoutedMO(t *testing.T) {
 		t.Fatalf("encode: %v", err)
 	}
 	cdr := &fakeCDR{}
-	sealer := ingest.NewContentSealer(fakePolicy{cp.ContentStoredPlaintext}, fakeKeys{}, nil, nil)
+	sealer := ingest.NewContentSealer(policyOf{mo.CustomerID: cp.ContentStoredPlaintext}, fakeKeys{}, nil, nil)
 	cons := &capturingConsumer{recs: []kafka.Record{{Value: []byte("not json")}, rec}}
 
 	if err := ingest.NewMOCDRConsumer(cons, cdr, sealer, nil).Run(context.Background()); err != nil {
@@ -139,4 +139,28 @@ func TestMOCDRConsumerProjectsTheRoutedMO(t *testing.T) {
 			t.Errorf("record %d result = %v, want nil (committable)", i, r)
 		}
 	}
+}
+
+// TestAcceptedConsumerKeepsTheBatchWhenStoppedMidWrite: a write cut short by shutdown may never have reached
+// ClickHouse, so the batch stays uncommitted and is read again on restart, where the rows dedup.
+func TestAcceptedConsumerKeepsTheBatchWhenStoppedMidWrite(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cons := &capturingConsumer{recs: []kafka.Record{inboundRec(t, uuid.New())}}
+	if err := ingest.NewAcceptedConsumer(cons, errCDR{err: context.Canceled}, nil, nil).Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if cons.results[0] == nil {
+		t.Error("the record committed although its write was cancelled: its row may be lost")
+	}
+}
+
+// policyOf stores content for the customers it names only, so a body sealed under the wrong customer reads off.
+type policyOf map[uuid.UUID]cp.ContentStorage
+
+func (p policyOf) For(id uuid.UUID) cp.ContentStorage {
+	if s, ok := p[id]; ok {
+		return s
+	}
+	return cp.ContentOff
 }

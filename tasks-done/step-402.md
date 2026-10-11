@@ -23,16 +23,14 @@ compteur MO.
 4. **MO non routés : dans aucune série.** Ils n'ont ni client ni ligne CDR. Ils sont déjà comptés par
    `UnroutedMetric` et listés par `list-unrouted-mo`. `other` et `ungrouped` gardent leur sens.
 5. **Classement du top 20 : `submitted + mo_received`.** Une clé qui ne reçoit que du MO garde sa
-   série. Tant que le CDR n'a pas de MO, l'ordre ne change pas.
+   série.
 6. **`maxRows` inchangé.** La requête reste groupée par (tranche, clé).
 7. **Temps réel.** `mo_received_total{connector_id}` est ajouté au catalogue. Il est incrémenté dans
    `connectorpool.handleDeliver`, sur la branche MO, après la publication réussie sur `mo.inbound`. Il
    est émis sur le flux et sur Prometheus, sur le modèle de `observeSubmit`. L'unité est le
    `deliver_sm` : un MO en plusieurs morceaux compte une fois par morceau, comme `submits_total` côté MT.
    Aucune adresse ni aucun corps ne figure dans les labels.
-8. **Hors périmètre, avec une fiche dans `debts/` :** l'écrivain CDR MO (spec §554, « → CDR écrit »).
-   Aucune ligne MO n'atteint le CDR aujourd'hui : `mo_received` vaut 0 côté REST, comme le
-   `mo_received` du résumé avant cette step. Le contrat le dit.
+8. **L'écrivain CDR MO** : d'abord différé, puis payé dans la même PR (§ suivant).
 
 ## Tests
 - ClickHouse : une fenêtre qui mêle MT et MO, avec des MO dans des tranches sans MT, compte chaque
@@ -40,7 +38,11 @@ compteur MO.
 - Handler : `mo_received` est sérialisé ; une clé qui ne reçoit que du MO entre dans le top 20.
 - connector-pool : un MO accepté incrémente `mo_received_total` ; une DLR ne l'incrémente pas, et une
   publication en échec non plus.
-- Mutations : le filtre de direction retiré ou inversé fait échouer un test nommé.
+- Écrivain : la projection de `mo.routed` (champs, corps scellé sous le bon client, enregistrement
+  corrompu sauté), `segment_count` de bout en bout, l'explorateur qui relit connecteur et segments, le
+  lot gardé sur un arrêt en pleine écriture, le câblage de router-svc (depuis le LATEST).
+- Mutations : le filtre de direction retiré ou inversé fait échouer un test nommé, comme chaque
+  mutation de l'écrivain.
 
 ## Design arrêté — l'écrivain CDR MO, dette payée dans la même PR (arbitrage Fable, 2026-10-11)
 Demandé par l'utilisateur : payer `debts/mo-jamais-ecrit-au-cdr.md` dans cette PR.

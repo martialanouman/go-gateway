@@ -27,9 +27,6 @@ routé n'a pas de client et reste hors du CDR.
 **À quoi on reconnaîtra qu'il faut la payer.** Au premier écran Trafic du tableau de bord
 (go-gateway-bo step-081) qui trace le MO sur une plage passée. Au plus tard au go-live (step-410).
 
-**Comment elle a été payée.** `ingest.NewMOCDRConsumer` projette une ligne `accepted` par MO routé depuis
-`mo.routed` (groupe `mo-dlr-router-svc-mo-cdr`, `cmd/mo-dlr-router-svc/wiring.go`), corps scellé selon la
-politique du client, `segment_count` porté par `MORouted` depuis le réassemblage. Écrite au routage et non
-après la remise, contrairement à l'ordre de §554 : sur le chemin de remise, une panne ClickHouse rejouerait
-la remise. Deux dettes en sont nées : `issue-de-remise-mo-non-projetee.md`,
-`politique-de-contenu-mo-rechargee-au-boot.md`.
+**Comment elle a été payée.** Par step-402 (§ « l'écrivain CDR MO » et ses corrections) : une ligne
+`accepted` par MO routé, projetée depuis `mo.routed` par router-svc. Dettes nées :
+`issue-de-remise-mo-non-projetee.md`, `corps-revele-sans-decodage.md`.

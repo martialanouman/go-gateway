@@ -40,29 +40,28 @@ type AcceptedConsumer struct {
 	cdr      CDRWriter
 	sealer   *ContentSealer
 	logger   *slog.Logger
-	topic    string
 	project  func(kafka.Record) (clickhouse.CDRRow, msg.Body, error)
 }
 
 // NewAcceptedConsumer wires the consumer. sealer may be nil: content storage is then disabled (no body is
 // ever written), the row is still projected durably.
 func NewAcceptedConsumer(consumer BatchConsumer, cdr CDRWriter, sealer *ContentSealer, logger *slog.Logger) *AcceptedConsumer {
-	return newAcceptedConsumer(consumer, cdr, sealer, logger, "mt.inbound", projectInbound)
+	return newAcceptedConsumer(consumer, cdr, sealer, logger, projectInbound)
 }
 
 // NewMOCDRConsumer projects the CDR row of each routed MO off mo.routed, with the same durability as the
 // MT accepted row. It is written there and not after delivery: a ClickHouse fault on the delivery path
 // would replay the delivery, and hand the MO to the account twice.
 func NewMOCDRConsumer(consumer BatchConsumer, cdr CDRWriter, sealer *ContentSealer, logger *slog.Logger) *AcceptedConsumer {
-	return newAcceptedConsumer(consumer, cdr, sealer, logger, "mo.routed", projectMORouted)
+	return newAcceptedConsumer(consumer, cdr, sealer, logger, projectMORouted)
 }
 
 func newAcceptedConsumer(consumer BatchConsumer, cdr CDRWriter, sealer *ContentSealer, logger *slog.Logger,
-	topic string, project func(kafka.Record) (clickhouse.CDRRow, msg.Body, error)) *AcceptedConsumer {
+	project func(kafka.Record) (clickhouse.CDRRow, msg.Body, error)) *AcceptedConsumer {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &AcceptedConsumer{consumer: consumer, cdr: cdr, sealer: sealer, logger: logger, topic: topic, project: project}
+	return &AcceptedConsumer{consumer: consumer, cdr: cdr, sealer: sealer, logger: logger, project: project}
 }
 
 func projectInbound(rec kafka.Record) (clickhouse.CDRRow, msg.Body, error) {
@@ -80,9 +79,7 @@ func projectInbound(rec kafka.Record) (clickhouse.CDRRow, msg.Body, error) {
 	return row, env.Body, nil
 }
 
-// projectMORouted writes the MO as accepted: received and routed to its account. Its delivery to the
-// account is not projected (debts/issue-de-remise-mo-non-projetee.md), and delivered would be a lie for
-// an MO that ends on the dead-letter.
+// projectMORouted writes the MO as accepted (debts/issue-de-remise-mo-non-projetee.md).
 func projectMORouted(rec kafka.Record) (clickhouse.CDRRow, msg.Body, error) {
 	mo, err := pipeline.DecodeMORouted(rec)
 	if err != nil {
@@ -106,7 +103,7 @@ func projectMORouted(rec kafka.Record) (clickhouse.CDRRow, msg.Body, error) {
 	}, mo.Body, nil
 }
 
-// Run consumes mt.inbound and writes accepted rows until ctx is cancelled. It is one supervised goroutine.
+// Run consumes its topic and writes accepted rows until ctx is cancelled. It is one supervised goroutine.
 func (c *AcceptedConsumer) Run(ctx context.Context) error {
 	return c.consumer.RunBatch(ctx, c.handleBatch)
 }
@@ -128,7 +125,7 @@ func (c *AcceptedConsumer) handleBatch(ctx context.Context, recs []kafka.Record)
 		row, body, err := c.project(rec)
 		if err != nil {
 			// A corrupt record can never become valid; skip it rather than stall the stream forever.
-			c.logger.ErrorContext(ctx, "decode record for accepted CDR: skipping corrupt record", "topic", c.topic, "err", err)
+			c.logger.ErrorContext(ctx, "decode record for accepted CDR: skipping corrupt record", "err", err)
 			continue
 		}
 		if c.sealer != nil {
@@ -140,10 +137,11 @@ func (c *AcceptedConsumer) handleBatch(ctx context.Context, recs []kafka.Record)
 		return results // nothing decodable in this batch; all offsets committable
 	}
 	if err := c.cdr.InsertBatch(ctx, rows); err != nil {
-		if ctx.Err() != nil {
-			return results // graceful shutdown mid-batch: let the supervisor stop cleanly
+		// A write cut short by shutdown may not have landed either: the batch stays uncommitted and the
+		// consumer stops without replaying it.
+		if ctx.Err() == nil {
+			c.logger.ErrorContext(ctx, "accepted-row batch write failed; will reprocess", "rows", len(rows), "err", err)
 		}
-		c.logger.ErrorContext(ctx, "accepted-row batch write failed; will reprocess", "rows", len(rows), "err", err)
 		for i := range results {
 			results[i] = err // fail the whole poll batch → nothing commits → reprocess
 		}

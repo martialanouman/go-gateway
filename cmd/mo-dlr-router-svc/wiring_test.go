@@ -70,7 +70,7 @@ func TestNewReturnPathAppReleasesInDependencyOrder(t *testing.T) {
 		t.Fatalf("newReturnPathApp: %v", err)
 	}
 
-	want := []string{"retry", "mo-cdr", "delivery", "mo", "stores"}
+	want := []string{"retry", "delivery", "mo", "stores"}
 	if got := releaseOrder(app); !slices.Equal(got, want) {
 		t.Errorf("release order is %v, want %v", got, want)
 	}

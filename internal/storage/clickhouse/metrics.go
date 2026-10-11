@@ -34,7 +34,7 @@ func metricsMessages(innerFilter string) string {
 	` + cdrStatusPrecedence + ` AS status
 FROM (
 	SELECT submitted_at, message_id, any(customer_id) AS customer_id, direction,
-		anyIf(connector_id, direction = 'mo' OR ` + cdrDispatched + `) AS connector_id,
+		anyIf(connector_id, ` + cdrCarriesSegments + `) AS connector_id,
 		maxIf(latency_ms, ` + cdrDispatched + `) AS latency_ms,
 		` + cdrStatusCounts + `
 	FROM (
