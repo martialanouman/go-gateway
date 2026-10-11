@@ -121,6 +121,26 @@ func TestMORoutedRoundTrip(t *testing.T) {
 	}
 }
 
+// TestMORoutedCarriesItsSegmentCount: the count is written on the wire, and a record produced before the
+// field existed reads as one segment, never zero.
+func TestMORoutedCarriesItsSegmentCount(t *testing.T) {
+	rec, err := pipeline.EncodeMORouted(pipeline.MORouted{AccountID: uuid.New(), Body: msg.NewBodyString("x"), SegmentCount: 3})
+	if err != nil {
+		t.Fatalf("EncodeMORouted: %v", err)
+	}
+	if !strings.Contains(string(rec.Value), `"segment_count":3`) {
+		t.Errorf("value = %s, want segment_count on the wire", rec.Value)
+	}
+	legacy := kafka.Record{Value: []byte(`{"message_id":"` + uuid.NewString() + `","body":"eA=="}`)}
+	got, err := pipeline.DecodeMORouted(legacy)
+	if err != nil {
+		t.Fatalf("DecodeMORouted: %v", err)
+	}
+	if got.SegmentCount != 1 {
+		t.Errorf("legacy record segment count = %d, want 1", got.SegmentCount)
+	}
+}
+
 // TestDLRRoundTrip: a DLREvent survives Encode -> Decode, keyed by the SMSC message id for dlr.events.
 func TestDLRRoundTrip(t *testing.T) {
 	env := pipeline.DLREvent{

@@ -3277,7 +3277,7 @@ components:
                     submitted: { type: integer }
                     delivered: { type: integer }
                     failed: { type: integer }
-                    mo_received: { type: integer, description: 'MO messages received in the bucket. 0 until the MO path writes its CDR rows.' }
+                    mo_received: { type: integer, description: 'MO messages received and routed to an account in the bucket.' }
                   required: [t]
             required: [key, points]
       required: [group_by, window, series]

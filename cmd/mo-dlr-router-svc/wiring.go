@@ -14,8 +14,11 @@ import (
 
 	"github.com/martialanouman/go-gateway/internal/config"
 	configsecretspb "github.com/martialanouman/go-gateway/internal/configsecrets/pb"
+	"github.com/martialanouman/go-gateway/internal/content"
+	contentkeypb "github.com/martialanouman/go-gateway/internal/contentkeys/pb"
 	"github.com/martialanouman/go-gateway/internal/dlrmap"
 	"github.com/martialanouman/go-gateway/internal/grpctls"
+	"github.com/martialanouman/go-gateway/internal/ingest"
 	"github.com/martialanouman/go-gateway/internal/modlrrouter"
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/pipeline/antispam"
@@ -58,6 +61,7 @@ type returnPathApp struct {
 	mo          *modlrrouter.MORouter
 	moDelivery  *modlrrouter.MODeliveryRouter
 	dlrDelivery *modlrrouter.DLRDeliveryRouter
+	moCDR       *ingest.AcceptedConsumer
 
 	// retry is the webhook retry drain: its own consumer group and goroutine (step-192).
 	retryConsumer *kafka.Consumer
@@ -130,6 +134,13 @@ func newReturnPathApp(ctx context.Context, cfg config.Config, logger *slog.Logge
 	a.moDelivery = delivery.mo
 	a.dlrDelivery = delivery.dlr
 
+	moCDR, err := newMOCDRProjector(ctx, cfg, st, mo, delivery, logger)
+	if err != nil {
+		return nil, err
+	}
+	a.onClose("mo-cdr", moCDR.close)
+	a.moCDR = moCDR.consumer
+
 	retry, err := newWebhookRetry(cfg, mo.pg, delivery.sender, logger)
 	if err != nil {
 		return nil, err
@@ -138,7 +149,7 @@ func newReturnPathApp(ctx context.Context, cfg config.Config, logger *slog.Logge
 	a.retryConsumer = retry.consumer
 	a.retryRunner = retry.runner
 
-	a.ops, err = newOpsServer(cfg, logger, st, mo, dlr, delivery, retry)
+	a.ops, err = newOpsServer(cfg, logger, st, mo, dlr, delivery, retry, moCDR)
 	if err != nil {
 		return nil, err
 	}
@@ -526,6 +537,7 @@ func newOpsServer(
 	dlr *dlrLeg,
 	delivery *deliveryLeg,
 	retry *webhookRetry,
+	moCDR *moCDRProjector,
 ) (*observability.OpsServer, error) {
 	ops, err := observability.NewOpsServer(cfg, logger,
 		st.consumer.ReadyCheck("kafka", cfg.Kafka.Timeout),
@@ -537,8 +549,55 @@ func newOpsServer(
 		return nil, fmt.Errorf("init ops server: %w", err)
 	}
 	ops.Registry().MustRegister(dlr.unmapped, mo.unrouted, delivery.undelivered, delivery.mappingMiss,
-		retry.handled, retry.age)
+		retry.handled, retry.age, moCDR.dropped)
 	return ops, nil
+}
+
+// moCDRProjector writes the CDR row of each routed MO off mo.routed, on its own consumer group so that
+// neither it nor delivery can stall the other. It borrows the delivery leg's content-key connection, so
+// it closes first.
+type moCDRProjector struct {
+	kafka    *kafka.Consumer
+	consumer *ingest.AcceptedConsumer
+	dropped  prometheus.Counter
+}
+
+func (p *moCDRProjector) close() {
+	if p.kafka != nil {
+		p.kafka.Close()
+	}
+}
+
+// newMOCDRProjector starts a fresh group at the LATEST offset, like router-svc's accepted projection:
+// replaying the retained topic would re-insert history and storm content-key-svc for data keys.
+func newMOCDRProjector(ctx context.Context, cfg config.Config, st *stores, mo *moLeg, delivery *deliveryLeg, logger *slog.Logger) (_ *moCDRProjector, err error) {
+	p := &moCDRProjector{}
+	defer func() {
+		if err != nil {
+			p.close()
+		}
+	}()
+
+	// Cold-loaded like the routing table (debts/politique-de-contenu-mo-rechargee-au-boot.md).
+	policy, err := content.LoadPolicySnapshot(ctx, postgres.NewCustomerRepo(mo.pg))
+	if err != nil {
+		return nil, fmt.Errorf("load content-storage policy: %w", err)
+	}
+	holder := &content.PolicyHolder{}
+	holder.Store(policy)
+	dekCache := content.NewDataKeyCache(content.NewGRPCDataKeyFetcher(contentkeypb.NewContentKeysClient(delivery.contentKey)))
+	p.dropped = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "mo_content_dropped_total",
+		Help: "MO bodies dropped from the CDR row because the content data key was unavailable.",
+	})
+
+	p.kafka, err = kafka.NewConsumerFromLatest(cfg.Kafka, serviceName+"-mo-cdr", kafka.TopicMORouted)
+	if err != nil {
+		return nil, fmt.Errorf("kafka mo-cdr consumer: %w", err)
+	}
+	p.consumer = ingest.NewMOCDRConsumer(p.kafka, clickhouse.NewCDRWriter(st.ch),
+		ingest.NewContentSealer(holder, dekCache, p.dropped, logger), logger)
+	return p, nil
 }
 
 // webhookRetryMetric adapts the drain counters to modlrrouter.RetryMetric.

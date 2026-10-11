@@ -189,6 +189,9 @@ type MORouted struct {
 	Encoding        string
 	ESMClass        uint8
 	ReceivedAt      time.Time
+	// SegmentCount is how many deliver_sm the MO arrived in: the concatenation total once reassembled, 1
+	// otherwise. The body cannot tell it: it is in its data_coding, not UTF-8.
+	SegmentCount uint16
 }
 
 // DLREvent is a delivery receipt a SMSC returned for a message we submitted, carried on dlr.events.

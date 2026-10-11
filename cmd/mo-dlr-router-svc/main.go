@@ -66,6 +66,7 @@ func run() error {
 	g.Add("dlr router", app.dlr.Run)
 	g.Add("mo router", app.mo.Run)
 	g.Add("mo delivery", app.moDelivery.Run)
+	g.Add("mo cdr", app.moCDR.Run)
 	g.Add("dlr delivery", app.dlrDelivery.Run)
 	g.Add("webhook retry", func(c context.Context) error { return app.retryConsumer.Run(c, app.retryRunner.Handle) })
 	if err := g.Run(ctx, logger, cfg.DrainBudget); err != nil {
