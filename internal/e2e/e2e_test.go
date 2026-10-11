@@ -113,20 +113,20 @@ func buildStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg config
 
 	mux, _ := restapi.New(restapi.Deps{
 		Principals: postgres.NewAPIKeyRepo(pool),
-		Ingestor:   ingest.NewIngestor(producer, nil, nil),
+		Ingestor:   ingest.NewIngestor(producer, nil, nil, nil),
 		CDRReader:  cdrReader,
 		Tracer:     observability.Tracer(rec.Provider(), "rest-api"),
 		Version:    "e2e",
 	})
 	restSrv := httptest.NewServer(mux)
 
-	routerConsumer, err := kafka.NewConsumer(kafkaCfg, "e2e-router", kafka.TopicMTInbound)
+	routerConsumer, err := kafka.NewConsumer(kafkaCfg, "e2e-router", kafka.MTInboundTopics()...)
 	if err != nil {
 		t.Fatalf("router consumer: %v", err)
 	}
 	// The accepted CDR row is now projected durably off mt.inbound by a dedicated consumer group (step-101),
 	// independent of routing.
-	acceptedConsumer, err := kafka.NewConsumer(kafkaCfg, "e2e-accepted", kafka.TopicMTInbound)
+	acceptedConsumer, err := kafka.NewConsumer(kafkaCfg, "e2e-accepted", kafka.MTInboundTopics()...)
 	if err != nil {
 		t.Fatalf("accepted consumer: %v", err)
 	}
@@ -168,7 +168,7 @@ func buildStack(t *testing.T, pool *pgxpool.Pool, brokers []string, chCfg config
 		Tracer: routerTracer,
 	})
 
-	connConsumers := make(connectorpool.FanIn, 0, len(kafka.MTRoutedTopics()))
+	connConsumers := make(kafka.FanIn, 0, len(kafka.MTRoutedTopics()))
 	for _, topic := range kafka.MTRoutedTopics() {
 		c, err := kafka.NewConsumer(kafkaCfg, "e2e-connector-"+topic, topic)
 		if err != nil {

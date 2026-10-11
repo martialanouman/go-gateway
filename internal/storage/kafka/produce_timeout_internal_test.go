@@ -45,7 +45,7 @@ func TestProduceFailsWithinTheProduceTimeoutWhenTheBrokerIsUnreachable(t *testin
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	start := time.Now()
-	err = p.Produce(ctx, Record{Topic: TopicMTInbound, Key: []byte("k"), Value: []byte("v")})
+	err = p.Produce(ctx, Record{Topic: TopicMTInboundMarketing, Key: []byte("k"), Value: []byte("v")})
 	elapsed := time.Since(start)
 
 	if err == nil {

@@ -75,6 +75,19 @@ type Holder struct {
 // Store swaps in a freshly loaded snapshot.
 func (h *Holder) Store(a *Authorizer) { h.snap.Store(a) }
 
+// Reload returns the rebuild that loads and swaps in a fresh snapshot; on a load failure the current one
+// keeps serving.
+func (h *Holder) Reload(ids ActiveSenderIDLister) func(ctx context.Context) error {
+	return func(ctx context.Context) error {
+		snap, err := LoadSnapshot(ctx, ids)
+		if err != nil {
+			return err
+		}
+		h.Store(snap)
+		return nil
+	}
+}
+
 // Authorize checks against the current snapshot.
 func (h *Holder) Authorize(ctx context.Context, customerID uuid.UUID, from string) (cp.TrafficCategory, error) {
 	return h.snap.Load().Authorize(ctx, customerID, from)

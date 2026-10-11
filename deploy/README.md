@@ -101,7 +101,8 @@ readiness inclut `smsc-bind`, donc il reste *not ready* tant que le bind SMSC n'
 
 ## Le plafond des HPA
 
-`maxReplicas` doit rester **strictement sous** le nombre de partitions du topic consommé. Depuis
+`maxReplicas` doit rester **strictement sous** le plus large des topics consommés ; le pool Postgres
+couvre la somme des voies par pod. Depuis
 step-201d le routeur ouvre une goroutine par partition **assignée à son pod** : à un pod par
 partition, chaque pod retombe à une seule lane, le fan-out disparaît à l'instant précis où la charge
 le réclame, et l'HPA continue de croître sans rien acheter (ADR-0014).
@@ -133,9 +134,10 @@ Restent trois grandeurs à trancher là-bas, et qui ne sont pas devinables ici :
 - **`maxReplicas` de chaque HPA**, avec le nombre de partitions correspondant.
 
 Une métrique `External` suppose un `prometheus-adapter` ou KEDA dans le cluster : la jauge
-`queue_depth_records{queue=…}` est publiée par les services (`router-svc` pour `mt.inbound` et
+`queue_depth_records{queue=…}` est publiée par les services (`router-svc` pour `mt.inbound.otp`,
+`mt.inbound.transactional`, `mt.inbound.marketing` — lus par les groupes `router-svc-<catégorie>` — et
 `mt.outcome`, `connector-pool-svc` pour `mt.routed.otp`, `mt.routed.transactional` et `mt.routed.marketing`, une
-série par topic ; l'HPA de `connector-pool-svc` les sélectionne par `matchExpressions`), l'adaptateur qui l'expose à l'API HPA est de
+série par topic ; les HPA de `router-svc` et de `connector-pool-svc` les sélectionnent par `matchExpressions`), l'adaptateur qui l'expose à l'API HPA est de
 l'infrastructure.
 
 ## Les PDB, et pourquoi ils ne sont pas décoratifs
@@ -170,5 +172,16 @@ La première est une **absence** : elle dit ce qui ne passe par aucun `Service`,
 Le déploiement de PR3a abandonne déjà ce qui est en vol sur l'ancien `mt.routed` : plus rien ne le
 lit, et les nouveaux groupes `connector-pool-svc-<CONNECTOR_ID>-<catégorie>`, en `FromLatest`, sautent
 aussi ce qui a été produit avant qu'ils rejoignent. L'ancien topic et les groupes
-`connector-pool-svc-<CONNECTOR_ID>` restent seulement sur le broker. Au déploiement de PR3b, avec
-`mt.inbound`, sans drain (ADR-0021) : supprimer ce topic et ces groupes.
+`connector-pool-svc-<CONNECTOR_ID>` restent seulement sur le broker. Une fois PR3b déployée, sans
+drain (ADR-0021), supprimer avec eux `mt.inbound` et l'ancien groupe unique `router-svc`. Sur
+l'environnement de test (namespace `gateway`), `CONNECTOR_ID` se lit dans la ConfigMap `test-seed` :
+
+```sh
+kubectl -n gateway get cm test-seed -o jsonpath='{.data.CONNECTOR_ID}'
+kubectl -n gateway exec statefulset/redpanda -- rpk topic delete mt.inbound mt.routed
+kubectl -n gateway exec statefulset/redpanda -- rpk group delete router-svc connector-pool-svc-<CONNECTOR_ID>
+```
+
+Le groupe `router-svc-accepted-cdr` démarre au début (`AtStart`) : si ses offsets expirent après une
+longue panne, il rejoue les `mt.inbound.*` retenus — lignes `accepted` en double et rafale de demandes
+de clés de données. Même exposition que `router-svc-outcome-cdr`.

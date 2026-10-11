@@ -48,7 +48,7 @@ func TestRedisOutageAccountsForEverySubmission(t *testing.T) {
 	frozen := time.Now()
 	enforcer := ratelimit.NewEnforcer(snap, ratelimit.NewLimiter(rdb, ratelimit.WithClock(func() time.Time { return frozen })))
 	producer := &countingProducer{}
-	ingestor := ingest.NewIngestor(producer, enforcer, nil)
+	ingestor := ingest.NewIngestor(producer, enforcer, nil, nil)
 
 	const batch = 12
 	outcome := make(map[uuid.UUID]string, 2*batch)

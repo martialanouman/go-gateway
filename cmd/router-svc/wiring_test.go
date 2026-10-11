@@ -147,10 +147,41 @@ func TestNewRouterAppBuildsTheWholeGraph(t *testing.T) {
 			"first joined stays deletable")
 	}
 
-	// The MO projection starts at the end of mo.routed, like the accepted one: replaying the retained topic
-	// would re-insert history and storm content-key-svc for data keys.
+	// The accepted projection joins topics the provisioning job creates at the same rollout (ADR-0021): a group
+	// starting at the end would skip every submission accepted before it first joined.
+	if app.projections == nil || app.projections.kafka.StartsFromEnd() {
+		t.Error("the accepted CDR projection starts at the end of mt.inbound.*: a submission accepted before " +
+			"this group first joined never gets its accepted row")
+	}
+
+	// The MO projection starts at the end of mo.routed: replaying the retained topic would re-insert history
+	// and storm content-key-svc for data keys.
 	if app.projections == nil || !app.projections.moKafka.StartsFromEnd() {
 		t.Error("the MO CDR projection is not wired to start at the end of mo.routed")
+	}
+
+	wantTopics := map[string][]string{
+		"router-svc-otp":           {"mt.inbound.otp"},
+		"router-svc-transactional": {"mt.inbound.transactional"},
+		"router-svc-marketing":     {"mt.inbound.marketing"},
+	}
+	gotTopics := map[string][]string{}
+	for _, c := range app.consumers {
+		gotTopics[c.Group()] = c.Topics()
+	}
+	if len(app.consumers) != len(wantTopics) || !reflect.DeepEqual(gotTopics, wantTopics) {
+		t.Errorf("consumer group → topics = %v (%d consumers), want each category group on its own topic %v", gotTopics, len(app.consumers), wantTopics)
+	}
+
+	readers := queueDepthReaders(app)
+	if len(readers) != 1+len(kafka.MTInboundTopics()) {
+		t.Errorf("queue depth polls %d groups, want the outcome group plus one per category topic", len(readers))
+	}
+	wantReaders := append([]*kafka.Consumer{app.outcome.kafka}, app.consumers...)
+	for _, want := range wantReaders {
+		if !slices.Contains(readers, lagReader(want)) {
+			t.Errorf("queue depth does not poll group %q", want.Group())
+		}
 	}
 
 	for name, component := range map[string]any{
@@ -161,7 +192,6 @@ func TestNewRouterAppBuildsTheWholeGraph(t *testing.T) {
 		"outcome":  app.outcome,
 		"watcher":  app.watcher,
 		"emitter":  app.emitter,
-		"consumer": app.consumer,
 		"catalog":  app.catalog,
 	} {
 		if component == nil || reflect.ValueOf(component).IsNil() {

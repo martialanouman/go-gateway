@@ -30,7 +30,7 @@ func TestSnapshotLandsOnMetricsStream(t *testing.T) {
 		t.Fatalf("New emitter: %v", err)
 	}
 	emitter.Add("messages_total", metricstream.Labels{"status": "routed"}, 3)
-	emitter.Set("queue_depth_records", metricstream.Labels{"queue": kafka.TopicMTInbound}, 7)
+	emitter.Set("queue_depth_records", metricstream.Labels{"queue": kafka.TopicMTInboundMarketing}, 7)
 	emitter.PublishNow()
 
 	consumer, err := kafka.NewConsumer(cfg, "metrics-stream-test", kafka.TopicMetricsStream)

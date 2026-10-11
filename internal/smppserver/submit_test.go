@@ -285,7 +285,7 @@ func submitViaREST(t *testing.T, acc, cust uuid.UUID) kafka.Record {
 			AccountID: acc, CustomerID: cust,
 			AccountStatus: cp.AccountActive, CustomerStatus: cp.CustomerActive, RESTEnabled: true,
 		}, found: true},
-		Ingestor:  ingest.NewIngestor(producer, nil, nil),
+		Ingestor:  ingest.NewIngestor(producer, nil, nil, nil),
 		CDRReader: fakeReader{},
 		Tracer:    noop.NewTracerProvider().Tracer(""),
 		Version:   "test",
@@ -319,7 +319,7 @@ func submitViaSMPP(t *testing.T, acc, cust uuid.UUID) kafka.Record {
 	t.Helper()
 	producer := &fakeProducer{}
 
-	l := New(nil, nil, ingest.NewIngestor(producer, nil, nil), Options{}, discardLog())
+	l := New(nil, nil, ingest.NewIngestor(producer, nil, nil, nil), Options{}, discardLog())
 	res := l.onSubmit(context.Background(), &connState{accountID: acc, customerID: cust})(
 		context.Background(), submitReq())
 	if res.Status != smpp.StatusOK {

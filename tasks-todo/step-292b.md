@@ -14,7 +14,7 @@ priorité par bind.
 - [x] **PR3a** : les topics `mt.routed.<catégorie>` (routeur → pool). Un consommateur par topic et par connecteur
   au pool. Le drainer de parking et `mt-replay` republient selon la catégorie du record. Dans la même PR :
   les groupes du pool dans `deploy/k8s` et le lag par catégorie côté pool.
-- **PR3b** : les topics `mt.inbound.<catégorie>`. L'ingestion (REST, SMPP) lit la catégorie dans un
+- [x] **PR3b** : les topics `mt.inbound.<catégorie>`. L'ingestion (REST, SMPP) lit la catégorie dans un
   instantané de `sender_ids` (une lecture, pas une autorisation : ADR-0021 §2). Un consommateur par topic au
   routeur. `mt.inbound` et `mt.routed` sont retirés sans drain, avec les anciens groupes `connector-pool-svc-<CONNECTOR_ID>`
   (ADR-0021, *Conséquences*). Dans la même PR : HPA et groupes du routeur, alerte de lag OTP, guide
@@ -60,6 +60,38 @@ du SMSC.
   `connector-pool-svc.yaml` et `jobs/kafka-provision.yaml`, cases d'ADR-0021.
 - **Hors PR3a** : `mt.inbound.*` et le routeur multi-consommateurs (PR3b) ; l'ordonnanceur et
   `CONNECTOR_MARKETING_MIN_SHARE` (PR4).
+
+## Design arrêté — PR3b (11/10/2026)
+- **Choix du topic à l'ingestion, une lecture (ADR-0021 §2).** `EncodeInbound` reste le seul producteur : il
+  reçoit la catégorie et choisit `mt.inbound.<catégorie>`, clé `message_id` inchangée. `rest-api-svc` et
+  `smpp-server-svc` chargent `senderid.Holder` (celui du routeur), rechargé par leur watcher d'invalidation.
+  Expéditeur inconnu ou instantané en retard → `marketing` ; l'autorisation reste au routeur, qui recalcule la
+  catégorie sur son propre instantané.
+- **Routeur : trois consommateurs**, groupes `router-svc-<catégorie>`. `FanIn` passe de `internal/connectorpool`
+  à `internal/storage/kafka`, partagé par le routeur et le pool. Voies, commit par préfixe et halte de voie
+  inchangés (voies indexées par `PartitionKey`). Une sonde de readiness et un lag publié par topic. Aucune clé
+  `(partition, offset)` sans topic (piège de PR3a).
+- **Projecteur du CDR accepted (arbitrage Fable du 11/10/2026)** : un seul consommateur, groupe
+  `router-svc-accepted-cdr` inchangé, abonné aux trois topics — hors chemin de remise, l'ADR §4 vise le lot qui
+  retient un OTP. Il passe de `FromLatest` à `AtStart` : topics neufs, rien à rejouer, et un record publié avant
+  le join du nouveau routeur ne perd plus sa ligne accepted (raisonnement du projecteur outcome).
+- **Retrait** : `TopicMTInbound` quitte le code, le provisionnement et `kafkatest`. Sur le broker de test, la
+  suppression de `mt.inbound`, `mt.routed` et des groupes `router-svc` et `connector-pool-svc-<CONNECTOR_ID>`
+  est manuelle et sans drain (ADR-0021, *Conséquences*) : commande dans `deploy/README.md` et la PR.
+- **HPA du routeur** : `queue In [mt.inbound.*]`. `inspectHPA` lit `matchExpressions` : `maxReplicas` strictement
+  sous la largeur du topic le plus large ; `pool-covers-lanes` compte la somme des voies par pod sur les trois
+  topics (⌈4/4⌉ + ⌈4/4⌉ + ⌈12/4⌉ = 5 au plancher de 4). L'exemption nominative du pool reste. Largeurs :
+  `mt.inbound.otp=4,mt.inbound.transactional=4` s'ajoutent à l'override.
+- **Alerte de lag OTP (arbitrage Fable)**, guide §13, sans code :
+  `max by (queue) (queue_depth_records{queue=~"mt\\.(inbound|routed)\\.otp"}) > 5000` (`for: 2m`), plus
+  `absent()` sur `mt.inbound.otp` et sur `mt.routed.otp`. En records et non en quotient : aucun compteur de
+  débit par topic, et un dénominateur toutes catégories rend l'alerte aveugle à un consommateur OTP mort.
+  5 000 = seuil de l'HPA du pool ; step-409 recalibre. Limite dite : au pool, `absent()` ne part que si tous
+  les pods disparaissent.
+- **Documents, même PR** : ligne « ordre du pipeline » de `CLAUDE.md` (débit sender ID puis compte, choix du
+  topic par lecture de catégorie, puis ACK) ; guide §5.1 ; commentaire de `ROUTER_LANE_WINDOW` (réserves en vol
+  = somme des voies des trois topics, 20 au lieu de 12).
+- **Conséquence mesurée par step-409** : 12 → 20 voies au routeur, autant de réserves de facturation en vol.
 
 ## Hors périmètre
 Tout ce que step-292 livre (priorité effective, `priority_flag`, CDR, `priority_tier`).

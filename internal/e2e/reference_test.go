@@ -453,17 +453,17 @@ func buildRefStack(
 
 	mux, _ := restapi.New(restapi.Deps{
 		Principals: postgres.NewAPIKeyRepo(pool),
-		Ingestor:   ingest.NewIngestor(producer, nil, nil),
+		Ingestor:   ingest.NewIngestor(producer, nil, nil, nil),
 		CDRReader:  cdrReader,
 		Tracer:     tracer,
 		Version:    "loadref",
 	})
 	restSrv := httptest.NewServer(mux)
 
-	routerConsumer := newConsumer(t, kafkaCfg, "loadref-router", kafka.TopicMTInbound)
-	acceptedConsumer := newConsumer(t, kafkaCfg, "loadref-accepted", kafka.TopicMTInbound)
+	routerConsumer := newConsumer(t, kafkaCfg, "loadref-router", kafka.MTInboundTopics()...)
+	acceptedConsumer := newConsumer(t, kafkaCfg, "loadref-accepted", kafka.MTInboundTopics()...)
 	connConsumers := map[string]*kafka.Consumer{}
-	connFanIn := make(connectorpool.FanIn, 0, len(kafka.MTRoutedTopics()))
+	connFanIn := make(kafka.FanIn, 0, len(kafka.MTRoutedTopics()))
 	for _, topic := range kafka.MTRoutedTopics() {
 		c := newConsumer(t, kafkaCfg, "loadref-connector-"+topic, topic)
 		connConsumers[topic] = c
@@ -618,7 +618,7 @@ func buildRefStack(
 	return &refStack{
 		rest: restSrv, ops: ops, apiKeys: apiKeys, registry: registry, connector: connectorID, lookups: lookups,
 		consumers: map[string]*kafka.Consumer{
-			kafka.TopicMTInbound:             routerConsumer,
+			kafka.TopicMTInboundMarketing:    routerConsumer,
 			kafka.TopicMTRoutedOTP:           connConsumers[kafka.TopicMTRoutedOTP],
 			kafka.TopicMTRoutedTransactional: connConsumers[kafka.TopicMTRoutedTransactional],
 			kafka.TopicMTRoutedMarketing:     connConsumers[kafka.TopicMTRoutedMarketing],
@@ -701,7 +701,7 @@ func (l *lagTrace) breakdown(from, to time.Time) string {
 		return "no reading inside the window"
 	}
 	out := ""
-	for _, topic := range append(append([]string{kafka.TopicMTInbound}, kafka.MTRoutedTopics()...), kafka.TopicMTOutcome) {
+	for _, topic := range append(append([]string{kafka.TopicMTInboundMarketing}, kafka.MTRoutedTopics()...), kafka.TopicMTOutcome) {
 		if out != "" {
 			out += " · "
 		}
@@ -731,7 +731,7 @@ func (l *lagTrace) partitions(from, to time.Time) string {
 	if last == nil {
 		return "no reading inside the window"
 	}
-	byPartition := last[kafka.TopicMTInbound]
+	byPartition := last[kafka.TopicMTInboundMarketing]
 	ids := make([]int, 0, len(byPartition))
 	for p := range byPartition {
 		ids = append(ids, int(p))

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -25,6 +26,7 @@ import (
 	"github.com/martialanouman/go-gateway/internal/observability"
 	"github.com/martialanouman/go-gateway/internal/observability/metrics"
 	"github.com/martialanouman/go-gateway/internal/pipeline/ratelimit"
+	"github.com/martialanouman/go-gateway/internal/pipeline/senderid"
 	"github.com/martialanouman/go-gateway/internal/platform/tlsconf"
 	registrypb "github.com/martialanouman/go-gateway/internal/session/pb"
 	"github.com/martialanouman/go-gateway/internal/smppserver"
@@ -102,15 +104,21 @@ func newSMPPApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (_ 
 		return nil, fmt.Errorf("load rate-limit snapshot: %w", err)
 	}
 	admission := ratelimit.NewEnforcer(rateSnap, ratelimit.NewLimiter(st.rdb))
+	senderIDs := &senderid.Holder{}
+	reloadSenderIDs := senderIDs.Reload(postgres.NewSenderIDRepo(st.pg))
+	if err := reloadSenderIDs(ctx); err != nil {
+		return nil, fmt.Errorf("load sender-id snapshot: %w", err)
+	}
+	reloadLimits := admission.Reload(postgres.NewRateLimitRepo(st.pg), nil)
 	a.watcher = config.NewWatcher(
 		func(ctx context.Context) (config.Stream, error) {
 			return redisstore.Subscribe(ctx, st.rdb, config.ChannelSnapshotInvalidation), nil
 		},
-		admission.Reload(postgres.NewRateLimitRepo(st.pg), nil),
+		func(ctx context.Context) error { return errors.Join(reloadLimits(ctx), reloadSenderIDs(ctx)) },
 		config.WithResync(cfg.ConfigResyncInterval), config.WithLogger(logger),
 	)
 
-	stack, err := newListener(cfg, st, admission, logger)
+	stack, err := newListener(cfg, st, admission, senderIDs, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -135,7 +143,7 @@ func newSMPPApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (_ 
 }
 
 // stores are the external connections smpp-server-svc opens at boot and holds for its whole
-// lifetime: PostgreSQL (bind auth), Kafka (produce mt.inbound), ClickHouse (cancel_sm reads and
+// lifetime: PostgreSQL (bind auth), Kafka (produce mt.inbound.<category>), ClickHouse (cancel_sm reads and
 // writes the CDR), gRPC to session-manager (max_sessions) and Redis (bind throttle).
 type stores struct {
 	pg       *pgxpool.Pool
@@ -230,7 +238,7 @@ func (l *listenerStack) close() {
 	}
 }
 
-func newListener(cfg config.Config, st *stores, admission ingest.Admission, logger *slog.Logger) (_ *listenerStack, err error) {
+func newListener(cfg config.Config, st *stores, admission ingest.Admission, categories ingest.Categories, logger *slog.Logger) (_ *listenerStack, err error) {
 	l := &listenerStack{}
 	defer func() {
 		if err != nil {
@@ -250,7 +258,7 @@ func newListener(cfg config.Config, st *stores, admission ingest.Admission, logg
 		}
 	}
 
-	l.ingestor = ingest.NewIngestor(st.producer, admission, logger)
+	l.ingestor = ingest.NewIngestor(st.producer, admission, categories, logger)
 
 	throttle := bindthrottle.New(st.rdb, bindthrottle.Config{
 		MaxFailures: cfg.SMPP.BindMaxFailures,

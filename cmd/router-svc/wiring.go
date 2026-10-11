@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -58,13 +59,13 @@ type routerApp struct {
 	projections *acceptedProjector
 	// Kept as the wrapper, not just the projector: it owns the consumer whose start offset is a
 	// durability property a test must be able to assert (step-201c D9).
-	outcome  *outcomeProjector
-	firstUse *firstUseMark
-	watcher  *config.Watcher
-	emitter  *metricstream.Emitter
-	consumer *kafka.Consumer
-	catalog  *metrics.Catalog
-	producer *kafka.Producer
+	outcome   *outcomeProjector
+	firstUse  *firstUseMark
+	watcher   *config.Watcher
+	emitter   *metricstream.Emitter
+	consumers []*kafka.Consumer
+	catalog   *metrics.Catalog
+	producer  *kafka.Producer
 	// routes is the graph's route resolver, kept so a wiring test can resolve through the overlays the
 	// graph actually installs (the least_loaded gauge reader, step-260d) rather than through a stand-in.
 	routes *routing.SnapshotResolver
@@ -123,7 +124,7 @@ func newRouterApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 		return nil, err
 	}
 	a.onClose("stores", st.close)
-	a.consumer = st.consumer
+	a.consumers = st.consumers
 	a.producer = st.producer
 
 	boot, err := loadBootSnapshots(ctx, st.pg, logger)
@@ -193,7 +194,7 @@ func newRouterApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 	a.emitter = stream.emitter
 
 	a.router = router.New(router.Deps{
-		Consumer:   st.consumer,
+		Consumer:   kafka.FanInOf(st.consumers),
 		Producer:   st.producer,
 		Pipeline:   stack.pipeline,
 		CDR:        clickhouse.NewCDRWriter(st.ch),
@@ -205,7 +206,7 @@ func newRouterApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 		LaneWindow: cfg.RouterLaneWindow,
 	})
 
-	ops, blooms, err := newOpsServer(cfg, logger, st.consumer, a.catalog, stack, proj, outc, stream, boot)
+	ops, blooms, err := newOpsServer(cfg, logger, st.consumers, a.catalog, stack, proj, outc, stream, boot)
 	if err != nil {
 		return nil, err
 	}
@@ -223,7 +224,8 @@ type stores struct {
 	pg       *pgxpool.Pool
 	ch       *clickhouse.Conn
 	producer *kafka.Producer
-	consumer *kafka.Consumer
+	// consumers are one per mt.inbound category topic (ADR-0021 §4), each in its own group.
+	consumers []*kafka.Consumer
 }
 
 // openStores opens them in dependency-free order, releasing what it already holds if a later one
@@ -251,9 +253,13 @@ func openStores(ctx context.Context, cfg config.Config) (_ *stores, err error) {
 		return nil, fmt.Errorf("kafka producer: %w", err)
 	}
 
-	s.consumer, err = kafka.NewConsumer(cfg.Kafka, serviceName, kafka.TopicMTInbound)
-	if err != nil {
-		return nil, fmt.Errorf("kafka consumer: %w", err)
+	for _, topic := range kafka.MTInboundTopics() {
+		category := strings.TrimPrefix(topic, "mt.inbound.")
+		c, err := kafka.NewConsumer(cfg.Kafka, serviceName+"-"+category, topic)
+		if err != nil {
+			return nil, fmt.Errorf("kafka consumer %s: %w", topic, err)
+		}
+		s.consumers = append(s.consumers, c)
 	}
 	return s, nil
 }
@@ -261,8 +267,8 @@ func openStores(ctx context.Context, cfg config.Config) (_ *stores, err error) {
 // close releases the connections in reverse order of opening; a nil field is one that was never
 // opened.
 func (s *stores) close() {
-	if s.consumer != nil {
-		s.consumer.Close()
+	for _, c := range s.consumers {
+		c.Close()
 	}
 	if s.producer != nil {
 		s.producer.Close()
@@ -507,9 +513,9 @@ func (p *acceptedProjector) close() {
 	}
 }
 
-// newAcceptedProjector wires the projection. A fresh group starts at the LATEST offset — replaying
-// the whole retained topic would re-insert every historical accepted row and storm billing for DEKs —
-// so the deploy pins the start offset (runbook).
+// newAcceptedProjector wires the projection. A fresh group starts at the START of mt.inbound.*: the topics
+// are born with this rollout (ADR-0021), so there is no history to replay, and a record produced before the
+// group first joins still gets its accepted row.
 func newAcceptedProjector(ctx context.Context, cfg config.Config, pool *pgxpool.Pool, ch *clickhouse.Conn, logger *slog.Logger, dial grpctls.Dial) (_ *acceptedProjector, err error) {
 	p := &acceptedProjector{}
 	defer func() {
@@ -540,7 +546,7 @@ func newAcceptedProjector(ctx context.Context, cfg config.Config, pool *pgxpool.
 	})
 	p.sealer = ingest.NewContentSealer(p.policy, dekCache, p.dropped, logger)
 
-	p.kafka, err = kafka.NewConsumerFromLatest(cfg.Kafka, serviceName+"-accepted-cdr", kafka.TopicMTInbound)
+	p.kafka, err = kafka.NewConsumer(cfg.Kafka, serviceName+"-accepted-cdr", kafka.MTInboundTopics()...)
 	if err != nil {
 		return nil, fmt.Errorf("kafka accepted-cdr consumer: %w", err)
 	}
@@ -699,14 +705,14 @@ func (g bloomGauges) set(filter string, capacityBits uint) {
 // newOpsServer builds the ops listener (not yet bound) and registers exactly the metrics this
 // service feeds.
 //
-// Vital dependency (plan §1.5): Kafka alone. The router's core job — consume mt.inbound, normalise,
+// Vital dependency (plan §1.5): Kafka alone. The router's core job — consume mt.inbound.<category>, normalise,
 // route, publish mt.routed — needs only Kafka and the in-memory snapshot. ClickHouse is touched only
 // to write a rejected CDR row, and Postgres is startup-only (immutable snapshot); gating readiness on
 // either would drain healthy pods over a store the happy path does not use.
 func newOpsServer(
 	cfg config.Config,
 	logger *slog.Logger,
-	consumer *kafka.Consumer,
+	consumers []*kafka.Consumer,
 	catalog *metrics.Catalog,
 	stack *pipelineStack,
 	proj *acceptedProjector,
@@ -714,9 +720,12 @@ func newOpsServer(
 	stream *metricStream,
 	boot *bootSnapshots,
 ) (*observability.OpsServer, bloomGauges, error) {
-	ops, err := observability.NewOpsServer(cfg, logger,
-		consumer.ReadyCheck("kafka", cfg.Kafka.Timeout),
-	)
+	checks := make([]observability.ReadinessCheck, 0, len(consumers))
+	for _, c := range consumers {
+		category := strings.TrimPrefix(c.Topics()[0], "mt.inbound.")
+		checks = append(checks, c.ReadyCheck("kafka-"+category, cfg.Kafka.Timeout))
+	}
+	ops, err := observability.NewOpsServer(cfg, logger, checks...)
 	if err != nil {
 		return nil, bloomGauges{}, fmt.Errorf("init ops server: %w", err)
 	}
@@ -804,11 +813,9 @@ func newSnapshotWatcher(
 			}
 			blooms.set("optout", boot.optOut.CapacityBits())
 
-			senderSnap, err := senderid.LoadSnapshot(ctx, postgres.NewSenderIDRepo(pool))
-			if err != nil {
+			if err := boot.senderIDs.Reload(postgres.NewSenderIDRepo(pool))(ctx); err != nil {
 				return err
 			}
-			boot.senderIDs.Store(senderSnap)
 
 			// Rebuild the routing-script snapshot (recompiles the active scripts) and swap it in.
 			scriptSnap, err := routing.BuildScriptSnapshot(ctx, stack.scriptRepo, logger)

@@ -86,8 +86,8 @@ func fullState(n int32, rf int16) map[string]kafkaprovision.TopicState {
 
 func TestProvisionCreatesAbsentAndExpandsShort(t *testing.T) {
 	adm := &fakeAdmin{state: map[string]kafkaprovision.TopicState{
-		kafka.TopicMTInbound:         {Partitions: 12, ReplicationFactor: 1},
-		kafka.TopicMTRoutedMarketing: {Partitions: 4, ReplicationFactor: 1},
+		kafka.TopicMTInboundMarketing: {Partitions: 12, ReplicationFactor: 1},
+		kafka.TopicMTRoutedMarketing:  {Partitions: 4, ReplicationFactor: 1},
 	}}
 
 	plan, err := kafkaprovision.Provision(context.Background(), adm,
@@ -109,7 +109,7 @@ func TestProvisionCreatesAbsentAndExpandsShort(t *testing.T) {
 	if len(created) != len(kafkaprovision.Topics())-2 {
 		t.Errorf("created %d topics (%v), want %d", len(created), created, len(kafkaprovision.Topics())-2)
 	}
-	if slices.Contains(created, kafka.TopicMTInbound) || slices.Contains(created, kafka.TopicMTRoutedMarketing) {
+	if slices.Contains(created, kafka.TopicMTInboundMarketing) || slices.Contains(created, kafka.TopicMTRoutedMarketing) {
 		t.Errorf("created = %v, want it to skip the topics that already exist", created)
 	}
 
@@ -183,7 +183,7 @@ func TestProvisionRefusesUnknownOverrideBeforeTouchingTheCluster(t *testing.T) {
 func TestProvisionToleratesConcurrentCreate(t *testing.T) {
 	adm := &fakeAdmin{
 		state:     map[string]kafkaprovision.TopicState{},
-		createErr: map[string]error{kafka.TopicMTInbound: kerr.TopicAlreadyExists},
+		createErr: map[string]error{kafka.TopicMTInboundMarketing: kerr.TopicAlreadyExists},
 	}
 
 	if _, err := kafkaprovision.Provision(context.Background(), adm,
@@ -195,7 +195,7 @@ func TestProvisionToleratesConcurrentCreate(t *testing.T) {
 func TestProvisionSurfacesCreateFailure(t *testing.T) {
 	adm := &fakeAdmin{
 		state:     map[string]kafkaprovision.TopicState{},
-		createErr: map[string]error{kafka.TopicMTInbound: kerr.InvalidReplicationFactor},
+		createErr: map[string]error{kafka.TopicMTInboundMarketing: kerr.InvalidReplicationFactor},
 	}
 
 	_, err := kafkaprovision.Provision(context.Background(), adm,
@@ -203,7 +203,7 @@ func TestProvisionSurfacesCreateFailure(t *testing.T) {
 	if err == nil {
 		t.Fatalf("Provision() error = nil, want the broker's INVALID_REPLICATION_FACTOR")
 	}
-	if !strings.Contains(err.Error(), kafka.TopicMTInbound) {
+	if !strings.Contains(err.Error(), kafka.TopicMTInboundMarketing) {
 		t.Errorf("Provision() error = %q, want it to name the topic that failed", err)
 	}
 }
@@ -264,7 +264,7 @@ func TestProvisionGroupsExpansionsByTargetWidth(t *testing.T) {
 	if got[kafka.TopicMTRoutedMarketing] != 48 {
 		t.Errorf("%s was set to %d partitions, want 48", kafka.TopicMTRoutedMarketing, got[kafka.TopicMTRoutedMarketing])
 	}
-	if got[kafka.TopicMTInbound] != 12 {
-		t.Errorf("%s was set to %d partitions, want 12", kafka.TopicMTInbound, got[kafka.TopicMTInbound])
+	if got[kafka.TopicMTInboundMarketing] != 12 {
+		t.Errorf("%s was set to %d partitions, want 12", kafka.TopicMTInboundMarketing, got[kafka.TopicMTInboundMarketing])
 	}
 }

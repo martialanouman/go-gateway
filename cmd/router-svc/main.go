@@ -1,4 +1,4 @@
-// Command router-svc runs the MT pipeline: it consumes mt.inbound, normalises and routes each
+// Command router-svc runs the MT pipeline: it consumes mt.inbound.<category>, normalises and routes each
 // message, and publishes mt.routed (M2). A message rejected by the pipeline gets a rejected CDR row
 // so get-message reflects it. The lifecycle — load and validate config, install telemetry, build the
 // service graph (wiring.go), serve the ops port, run the consumer, drain on SIGTERM — follows the
@@ -102,13 +102,13 @@ func run() error {
 		return nil
 	})
 	// Queue depth is polled, not counted: it is the broker's view of how far each group is behind. It runs on
-	// its own slower tick because it costs a broker round-trip, and router-svc is the ONE owner of both these
+	// its own slower tick because it costs a broker round-trip, and router-svc is the ONE owner of these
 	// topics' depth — two services reporting the same topic would double-count (step-180).
 	//
 	// mt.outcome joined mt.inbound here in step-201c: the outcome projection is what now decides how long a
 	// message reads "accepted" before it reads "enroute", so its backlog is the status lag itself (D13).
 	g.Add("queue depth", func(c context.Context) error {
-		pollQueueDepth(c, []lagReader{app.consumer, app.outcome.kafka}, app.emitter, app.catalog, logger)
+		pollQueueDepth(c, queueDepthReaders(app), app.emitter, app.catalog, logger)
 		return nil
 	})
 	if err := g.Run(ctx, logger, cfg.DrainBudget); err != nil {
@@ -151,6 +151,15 @@ const metricStreamInterval = time.Second
 // queueDepthInterval is slower than the snapshot tick because each poll is a broker round-trip. At 5 s the
 // depth is still fresh enough to read a backlog forming, and the cost stays negligible.
 const queueDepthInterval = 5 * time.Second
+
+func queueDepthReaders(app *routerApp) []lagReader {
+	readers := make([]lagReader, 0, 1+len(app.consumers))
+	readers = append(readers, app.outcome.kafka)
+	for _, c := range app.consumers {
+		readers = append(readers, c)
+	}
+	return readers
+}
 
 // lagReader is a consumer group whose backlog can be read from the broker. *kafka.Consumer satisfies it;
 // declared here, consumer-side, so the polling loop is testable without a broker.

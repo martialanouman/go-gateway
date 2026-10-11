@@ -181,7 +181,7 @@ func newPoolApp(ctx context.Context, cfg config.Config, bindEnv connectorEnv, lo
 	)
 
 	a.pool = connectorpool.New(connectorpool.Deps{
-		Consumer:       fanIn(st.consumers),
+		Consumer:       kafka.FanInOf(st.consumers),
 		Stream:         stream.emitter,
 		BreakerGauge:   a.catalog,
 		Metrics:        a.catalog,
@@ -317,14 +317,6 @@ func openStores(ctx context.Context, cfg config.Config, connectorID uuid.UUID) (
 }
 
 const routedTopicPrefix = "mt.routed."
-
-func fanIn(cs []*kafka.Consumer) connectorpool.FanIn {
-	out := make(connectorpool.FanIn, len(cs))
-	for i, c := range cs {
-		out[i] = c
-	}
-	return out
-}
 
 // close releases the connections in reverse order of opening; a nil field is one that was never
 // opened.

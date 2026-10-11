@@ -209,7 +209,7 @@ func TestRouterConfigSnapshotsDegradeSilentlyWhenPostgresIsCut(t *testing.T) {
 		// testConfig, so the aggregate is 503 for a reason that has nothing to do with this outage.
 		// That Kafka DOES gate the router's readiness is pinned next door, in chaos_test.go.
 		_, body := readyz(t, app)
-		if _, named := body["kafka"]; !named {
+		if _, named := body["kafka-otp"]; !named {
 			// Without this, an empty body would satisfy the check below by saying nothing at all: the
 			// readyz response omits `checks` entirely while draining, and would omit it too if the last
 			// probe were ever removed.

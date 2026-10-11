@@ -32,7 +32,7 @@ func TestProduceConsumeRoundTrip(t *testing.T) {
 
 	ctx := context.Background()
 	want := kafka.Record{
-		Topic: kafka.TopicMTInbound,
+		Topic: kafka.TopicMTInboundMarketing,
 		Key:   []byte("acct-hash"),
 		Value: []byte("envelope-bytes"),
 		Headers: []kafka.Header{
@@ -44,7 +44,7 @@ func TestProduceConsumeRoundTrip(t *testing.T) {
 		t.Fatalf("produce: %v", err)
 	}
 
-	consumer, err := kafka.NewConsumer(cfg, "test-roundtrip", kafka.TopicMTInbound)
+	consumer, err := kafka.NewConsumer(cfg, "test-roundtrip", kafka.TopicMTInboundMarketing)
 	if err != nil {
 		t.Fatalf("new consumer: %v", err)
 	}

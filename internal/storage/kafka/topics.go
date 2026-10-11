@@ -7,9 +7,12 @@ package kafka
 // Topic names (plan §1.6), declared here so every service names a topic through this one list, not a
 // string literal.
 const (
-	// TopicMTInbound carries raw submissions (SMPP/REST), pre-routing. A REST 202 is earned by a
-	// durable write here (§6.7). Partition key = the message id.
-	TopicMTInbound = "mt.inbound"
+	// TopicMTInboundOTP, TopicMTInboundTransactional and TopicMTInboundMarketing carry raw submissions
+	// (SMPP/REST), pre-routing, one topic per traffic category read at ingestion (ADR-0021 §2). A REST 202
+	// is earned by a durable write here (§6.7). Partition key = the message id.
+	TopicMTInboundOTP           = "mt.inbound.otp"
+	TopicMTInboundTransactional = "mt.inbound.transactional"
+	TopicMTInboundMarketing     = "mt.inbound.marketing"
 	// TopicMTRoutedOTP, TopicMTRoutedTransactional and TopicMTRoutedMarketing carry routed messages, one
 	// topic per traffic category (ADR-0021), so a marketing backlog never sits in front of an OTP.
 	// Partition key = the logical message id, so every UDH segment of a message lands on the same
@@ -77,6 +80,11 @@ const (
 	// instantly re-expired on its immutable submitted_at.
 	HeaderReplayedAt = "replayed_at"
 )
+
+// MTInboundTopics lists the inbound topics, most urgent category first.
+func MTInboundTopics() []string {
+	return []string{TopicMTInboundOTP, TopicMTInboundTransactional, TopicMTInboundMarketing}
+}
 
 // MTRoutedTopics lists the routed topics, most urgent category first.
 func MTRoutedTopics() []string {

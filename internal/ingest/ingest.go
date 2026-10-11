@@ -1,6 +1,6 @@
 // Package ingest is the one MT ingestion path shared by every submission surface. A REST submit and
 // an SMPP submit_sm both build a pipeline.InboundMT and hand it to Ingestor.Accept, which encodes it,
-// writes it durably to mt.inbound (the durability boundary that earns the acknowledgement). The accepted
+// writes it durably to mt.inbound.<category> (the durability boundary that earns the acknowledgement). The accepted
 // CDR row is projected off that durable topic by AcceptedConsumer, not written on the caller's path. Both
 // protocols reaching the pipeline through this single helper is what makes REST/SMPP parity a property of
 // the code, not a coincidence.
@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 
+	cp "github.com/martialanouman/go-gateway/internal/controlplane"
 	"github.com/martialanouman/go-gateway/internal/pipeline"
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 	"github.com/martialanouman/go-gateway/internal/storage/clickhouse"
@@ -35,26 +36,34 @@ type Admission interface {
 	Admit(ctx context.Context, accountID, customerID uuid.UUID, from string, segments int) error
 }
 
-// Ingestor performs the shared ingestion sequence for one submission: it admits it against its sender
-// ID's and account's throughput, encodes the envelope and produces it durably to mt.inbound (the boundary
-// that earns the acknowledgement). The accepted CDR row is NOT written here — it is projected off the
-// durable mt.inbound topic by AcceptedConsumer (step-101), so it can never be lost on the request path.
-type Ingestor struct {
-	producer  Producer
-	admission Admission
-	logger    *slog.Logger
+// Categories reads the traffic category of a sender ID, which picks the mt.inbound topic.
+// *senderid.Holder satisfies it.
+type Categories interface {
+	Authorize(ctx context.Context, customerID uuid.UUID, from string) (cp.TrafficCategory, error)
 }
 
-// NewIngestor wires an Ingestor over the durable producer. A nil admission admits every submission.
-func NewIngestor(producer Producer, admission Admission, logger *slog.Logger) *Ingestor {
+// Ingestor performs the shared ingestion sequence for one submission: it admits it against its sender
+// ID's and account's throughput, encodes the envelope and produces it durably to mt.inbound.<category> (the boundary
+// that earns the acknowledgement). The accepted CDR row is NOT written here — it is projected off the
+// durable mt.inbound.<category> topics by AcceptedConsumer (step-101), so it can never be lost on the request path.
+type Ingestor struct {
+	producer   Producer
+	admission  Admission
+	categories Categories
+	logger     *slog.Logger
+}
+
+// NewIngestor wires an Ingestor over the durable producer. A nil admission admits every submission; nil
+// categories send every submission to the marketing topic.
+func NewIngestor(producer Producer, admission Admission, categories Categories, logger *slog.Logger) *Ingestor {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Ingestor{producer: producer, admission: admission, logger: logger}
+	return &Ingestor{producer: producer, admission: admission, categories: categories, logger: logger}
 }
 
 // Accept admits env against its sender ID's and account's throughput, encodes it, produces it to
-// mt.inbound (the durability boundary — §6.7/§7.3), and only then enqueues the accepted CDR row off the
+// mt.inbound.<category> (the durability boundary — §6.7/§7.3), and only then enqueues the accepted CDR row off the
 // caller's path. It returns a flat sentinel the caller maps to its own surface — errs.ErrRateLimited
 // beyond the sender ID's or account's throughput, errs.ErrInternal on an encode fault,
 // errs.ErrServiceUnavailable when the durable write fails — so a submission is never acknowledged before
@@ -64,6 +73,13 @@ func (i *Ingestor) Accept(ctx context.Context, env pipeline.InboundMT) error {
 	if i.admission != nil {
 		if err := i.admission.Admit(ctx, env.AccountID, env.CustomerID, env.From, pipeline.SegmentCount(env)); err != nil {
 			return err
+		}
+	}
+
+	env.TrafficCategory = cp.TrafficMarketing
+	if i.categories != nil {
+		if cat, err := i.categories.Authorize(ctx, env.CustomerID, env.From); err == nil {
+			env.TrafficCategory = cat
 		}
 	}
 

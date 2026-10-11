@@ -51,7 +51,7 @@ func TestRouterDrainsABacklogThroughReserveTimeouts(t *testing.T) {
 		want[in.MessageID] = true
 	}
 
-	consumer, err := kafka.NewConsumer(cfg, "router-backlog-"+uuid.NewString(), kafka.TopicMTInbound)
+	consumer, err := kafka.NewConsumer(cfg, "router-backlog-"+uuid.NewString(), kafka.TopicMTInboundMarketing)
 	if err != nil {
 		t.Fatalf("new consumer: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestRouterDrainsABacklogThroughReserveTimeouts(t *testing.T) {
 	}
 	for {
 		lag, err := consumer.Lag(t.Context())
-		if err == nil && lag[kafka.TopicMTInbound] == 0 {
+		if err == nil && lag[kafka.TopicMTInboundMarketing] == 0 {
 			break
 		}
 		select {

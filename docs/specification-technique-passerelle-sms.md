@@ -430,7 +430,9 @@ optout:changed                       -- pub/sub channel: a STOP received as an M
 ### 3.3 Plan de données (broker de messages — Kafka)
 
 ```
-mt.inbound        -- raw submissions (SMPP/REST), pre-routing. Partitioned by message_id.
+mt.inbound.otp / mt.inbound.transactional / mt.inbound.marketing
+                  -- raw submissions (SMPP/REST), pre-routing, one topic per traffic category read at ingestion
+                     (unknown -> marketing, ADR-0021). Partitioned by message_id.
 mt.routed.otp / mt.routed.transactional / mt.routed.marketing
                   -- post-routing, ready for dispatch, one topic per traffic category. Partitioned by message_id, the LOGICAL message id: all UDH
                      segments share it -> same partition. connector-pool-svc shards a batch by

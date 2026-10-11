@@ -63,8 +63,8 @@ type Config struct {
 	// OpsPprof mounts net/http/pprof under /debug/pprof/ on the ops port (step-287i). Off by default.
 	OpsPprof bool `env:"OPS_PPROF"`
 
-	// RouterLaneWindow is how many messages of one mt.inbound partition router-svc runs at once (step-287l):
-	// reserves in flight are KAFKA_TOPIC_PARTITIONS × this.
+	// RouterLaneWindow is how many messages of one mt.inbound.<category> partition router-svc runs at once (step-287l):
+	// reserves in flight are the lanes of the three mt.inbound.<category> topics summed, × this.
 	RouterLaneWindow int `env:"ROUTER_LANE_WINDOW" envDefault:"8"`
 
 	// DLRRetention is how long connector-pool-svc keeps a DLR correlation for a message that asked for no
