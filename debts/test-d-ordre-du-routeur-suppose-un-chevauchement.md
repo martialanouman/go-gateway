@@ -5,7 +5,7 @@
 
 **Ce qu'on a fait à la place.** `TestRouterKeepsAPartitionInOrderUnderLoad` a échoué une fois sous `-race`
 (`peak concurrent Produce = 1`), puis a passé au `gh run rerun --failed`. Le test exige que les deux lanes
-publient en même temps au moins une fois (`internal/router/lanes_test.go:270`). Les délais du producteur de
+publient en même temps au moins une fois (`internal/router/lanes_test.go:272`). Les délais du producteur de
 test (8 à 40 ms sur la partition 0, 1 ms sur la partition 1) rendent ce chevauchement probable, pas certain :
 sous la charge du runner, la partition 1 peut finir avant que la partition 0 ne commence. On a relancé.
 
