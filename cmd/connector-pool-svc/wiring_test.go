@@ -121,16 +121,19 @@ func TestNewPoolAppBuildsTheWholeGraph(t *testing.T) {
 	defer app.close()
 
 	for name, component := range map[string]any{
-		"ops":      app.ops,
-		"pool":     app.pool,
-		"drainer":  app.drainer,
-		"emitter":  app.emitter,
-		"consumer": app.consumer,
-		"catalog":  app.catalog,
+		"ops":     app.ops,
+		"pool":    app.pool,
+		"drainer": app.drainer,
+		"emitter": app.emitter,
+		"catalog": app.catalog,
 	} {
 		if component == nil || reflect.ValueOf(component).IsNil() {
 			t.Errorf("component %q was not wired", name)
 		}
+	}
+
+	if got, want := len(app.consumers), len(kafka.MTRoutedTopics()); got != want {
+		t.Errorf("consumers = %d, want one per category topic (%d)", got, want)
 	}
 
 	// Fail-closed producer (mt.outcome after submit_sm): the constant, never the env (step-260e).
@@ -384,5 +387,12 @@ func TestNewPoolAppRefusesTheOutboundTLSFlagWithoutThePodIdentity(t *testing.T) 
 	}
 	if !strings.Contains(err.Error(), "CONNECTOR_TLS_ENABLED") {
 		t.Fatalf("boot error = %v, want the guard's refusal, not a store failure", err)
+	}
+}
+
+func TestRoutedGroupIsPerConnectorAndCategory(t *testing.T) {
+	id := uuid.MustParse("00000000-0000-0000-0000-000000000001")
+	if got := routedGroup(id, kafka.TopicMTRoutedOTP); got != "connector-pool-svc-"+id.String()+"-otp" {
+		t.Errorf("group = %q", got)
 	}
 }

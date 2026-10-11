@@ -164,7 +164,7 @@ func run() error {
 	// the pool's own heartbeat, which runs inside the dial cycle — polling it from here would race the
 	// re-dial that reassigns the breakers.
 	g.Add("queue depth", func(c context.Context) error {
-		pollQueueDepth(c, app.consumer, app.emitter, app.catalog, logger)
+		pollQueueDepth(c, app.consumers, app.emitter, app.catalog, logger)
 		return nil
 	})
 	if err := g.Run(ctx, logger, cfg.DrainBudget); err != nil {
@@ -183,9 +183,9 @@ const metricStreamInterval = time.Second
 // round-trip; still fresh enough to watch a backlog form.
 const queueDepthInterval = 5 * time.Second
 
-// pollQueueDepth publishes the consumer group's backlog until ctx is cancelled. Every failure mode is a
+// pollQueueDepth publishes each consumer group's backlog until ctx is cancelled. Every failure mode is a
 // skipped tick: a broker hiccup must not disturb sending.
-func pollQueueDepth(ctx context.Context, c *kafka.Consumer, e *metricstream.Emitter, cat *metrics.Catalog, logger *slog.Logger) {
+func pollQueueDepth(ctx context.Context, cs []*kafka.Consumer, e *metricstream.Emitter, cat *metrics.Catalog, logger *slog.Logger) {
 	ticker := time.NewTicker(queueDepthInterval)
 	defer ticker.Stop()
 	for {
@@ -193,14 +193,16 @@ func pollQueueDepth(ctx context.Context, c *kafka.Consumer, e *metricstream.Emit
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			lags, err := c.Lag(ctx)
-			if err != nil {
-				logger.DebugContext(ctx, "queue depth unavailable this tick", "err", err)
-				continue
-			}
-			for topic, lag := range lags {
-				e.Set("queue_depth_records", metricstream.Labels{"queue": topic}, float64(lag))
-				cat.QueueDepth.WithLabelValues(topic).Set(float64(lag))
+			for _, c := range cs {
+				lags, err := c.Lag(ctx)
+				if err != nil {
+					logger.DebugContext(ctx, "queue depth unavailable this tick", "err", err)
+					continue
+				}
+				for topic, lag := range lags {
+					e.Set("queue_depth_records", metricstream.Labels{"queue": topic}, float64(lag))
+					cat.QueueDepth.WithLabelValues(topic).Set(float64(lag))
+				}
 			}
 		}
 	}
