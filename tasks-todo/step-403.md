@@ -19,15 +19,20 @@ Arbitré par Fable le 2026-10-11 (aucun point remonté à l'humain).
 (migration 0009 + appendice A du schéma). Seules les lignes de rang 0 la portent : `ingest.AcceptedRow`,
 `router.rejectedRow`, et le cancelled du Canceller, qui recopie l'instantané (`cdrAggregate` gagne la
 colonne). Un segment (rang ≥ 1) ne remplace jamais la ligne de rang 0 (clé de tri, 0002). Lecture :
-`max(ingress_channel)` aux deux niveaux de `metricsMessages`, exact puisqu'un message n'a qu'un canal, et
-qui ne laisse pas un rejet écrit par un routeur pas encore déployé effacer le canal de l'accepted. Un MO
+`max(ingress_channel)` aux deux niveaux de `metricsMessages`, exact puisqu'un message n'a qu'un canal. Un MO
 garde `''`.
+
+*Corrigé au rouge :* un rejet ou un cancelled de rang 0 partage la clé de tri de l'accepted, et
+ReplacingMergeTree le remplace physiquement : `max()` ne rattrape pas un rejet écrit sans canal. Chaque
+écrivain de rang 0 doit donc le porter ; pendant le déploiement, un rejet écrit par un ancien routeur tombe
+sous `unknown`.
 
 *Écart assumé :* le contrat Admin dit « rest » (`rest_enabled`), le ticket du tableau de bord impose
 `http` ; on suit le ticket.
 
 **B. `groupBy=channel`.** MT seulement : clés `http`, `smpp`, et `unknown` pour un MT sans canal (lignes
-antérieures à la migration), pour que la somme des séries égale `submitted`. Le MO n'est sous aucune clé :
+antérieures à la migration, et la réponse automatique au STOP, émise par la passerelle sans ligne de
+rang 0), pour que la somme des séries égale `submitted`. Le MO n'est sous aucune clé :
 il entre par un connecteur, pas par un client ; `mo_received` y vaut 0. Trois clés au plus, jamais
 `other`.
 

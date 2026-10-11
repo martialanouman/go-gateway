@@ -330,5 +330,6 @@ func rejectedRow(in pipeline.InboundMT, code errs.Code, routed pipeline.RoutedMT
 		Billed:          false,
 		TrafficCategory: string(routed.TrafficCategory),
 		Priority:        routed.Priority,
+		IngressChannel:  in.Channel,
 	}
 }

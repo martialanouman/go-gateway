@@ -144,7 +144,7 @@ func TestTrafficBucketsDispatchedMessagesByConnector(t *testing.T) {
 		t.Fatalf("points = %+v, want %d (the rejected MT in none)", points, len(want))
 	}
 	for _, p := range points {
-		w, ok := want[[2]string{p.Bucket.UTC().String(), p.Key.String()}]
+		w, ok := want[[2]string{p.Bucket.UTC().String(), p.Key}]
 		if !ok || p.Submitted != w.Submitted || p.Delivered != w.Delivered || p.Failed != w.Failed || p.MOReceived != w.MOReceived {
 			t.Errorf("point %s %s = %+v, want %+v (present=%v)", p.Bucket.UTC(), p.Key, p, w, ok)
 		}
@@ -183,10 +183,52 @@ func TestTrafficCountsEachDirectionInItsBucket(t *testing.T) {
 			t.Errorf("by %s: points = %+v, want %d", tc.dim, points, len(tc.want))
 		}
 		for _, p := range points {
-			w, ok := tc.want[[2]string{p.Bucket.UTC().String(), p.Key.String()}]
+			w, ok := tc.want[[2]string{p.Bucket.UTC().String(), p.Key}]
 			if !ok || p.Submitted != w.Submitted || p.Delivered != w.Delivered || p.Failed != w.Failed || p.MOReceived != w.MOReceived {
 				t.Errorf("by %s: point %s %s = %+v, want %+v (present=%v)", tc.dim, p.Bucket.UTC(), p.Key, p, w, ok)
 			}
+		}
+	}
+}
+
+// Only the message-level rows carry the channel, as in production: the segment rows never do.
+func TestTrafficByChannelCountsEachMTUnderItsChannelAndNoMO(t *testing.T) {
+	writer, reader := searchReader(t)
+	from, to := metricsWindow()
+	customer, connector := uuid.New(), uuid.New()
+	f := &metricsFixture{writer: writer}
+	acceptedVia := func(channel string, at time.Time, connectorID *uuid.UUID, statuses ...clickhouse.Status) {
+		first := len(f.rows)
+		f.message(customer, clickhouse.DirectionMT, at, connectorID, 10, statuses...)
+		for i := first; i < len(f.rows); i++ {
+			if f.rows[i].SegmentSeq == 0 {
+				f.rows[i].IngressChannel = channel
+			}
+		}
+	}
+	acceptedVia("http", from, &connector, clickhouse.StatusEnroute, clickhouse.StatusDelivered)
+	acceptedVia("smpp", from.Add(time.Second), &connector, clickhouse.StatusEnroute, clickhouse.StatusFailed)
+	acceptedVia("smpp", from.Add(2*time.Second), nil, clickhouse.StatusRejected)
+	acceptedVia("", from.Add(3*time.Second), &connector, clickhouse.StatusEnroute)
+	f.message(customer, clickhouse.DirectionMO, from.Add(4*time.Second), &connector, 0, clickhouse.StatusDelivered)
+	f.flush(t)
+
+	points, err := reader.Traffic(context.Background(), from, to, time.Minute, clickhouse.TrafficByChannel, 100)
+	if err != nil {
+		t.Fatalf("Traffic: %v", err)
+	}
+	want := map[string]clickhouse.TrafficPoint{
+		"http": {Submitted: 1, Delivered: 1},
+		"smpp": {Submitted: 2, Failed: 1},
+		"":     {Submitted: 1},
+	}
+	if len(points) != len(want) {
+		t.Fatalf("points = %+v, want %d (the MO under no channel)", points, len(want))
+	}
+	for _, p := range points {
+		w, ok := want[p.Key]
+		if !ok || !p.Bucket.Equal(from) || p.Submitted != w.Submitted || p.Delivered != w.Delivered || p.Failed != w.Failed || p.MOReceived != 0 {
+			t.Errorf("point %s %q = %+v, want %+v (present=%v)", p.Bucket.UTC(), p.Key, p, w, ok)
 		}
 	}
 }
@@ -204,7 +246,7 @@ func TestTrafficByCustomerKeepsTheRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Traffic: %v", err)
 	}
-	if len(points) != 1 || points[0].Key != customer || points[0].Submitted != 1 {
+	if len(points) != 1 || points[0].Key != customer.String() || points[0].Submitted != 1 {
 		t.Fatalf("points = %+v, want one submission for %s", points, customer)
 	}
 }

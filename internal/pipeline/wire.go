@@ -37,6 +37,7 @@ type inboundWire struct {
 	ClientRef          *string   `json:"client_ref,omitempty"`
 	DataCoding         *int      `json:"data_coding,omitempty"`
 	SubmittedAt        time.Time `json:"submitted_at"`
+	IngressChannel     string    `json:"ingress_channel,omitempty"`
 }
 
 // routedWire is the JSON body of an mt.routed record.
@@ -93,6 +94,7 @@ func EncodeInbound(env InboundMT) (kafka.Record, error) {
 		ClientRef:          env.ClientRef,
 		DataCoding:         env.DataCoding,
 		SubmittedAt:        env.SubmittedAt,
+		IngressChannel:     env.Channel,
 	})
 	if err != nil {
 		return kafka.Record{}, fmt.Errorf("pipeline: encode mt.inbound: %w", err)
@@ -129,6 +131,7 @@ func DecodeInbound(rec kafka.Record) (InboundMT, error) {
 		ClientRef:          w.ClientRef,
 		DataCoding:         w.DataCoding,
 		SubmittedAt:        w.SubmittedAt,
+		Channel:            w.IngressChannel,
 	}, nil
 }
 

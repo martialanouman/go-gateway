@@ -117,7 +117,8 @@ func AcceptedRow(env pipeline.InboundMT) clickhouse.CDRRow {
 		SegmentCount: 1,
 		// Encoding is authoritative in the envelope (REST resolves it from its enum, an SMPP submit from
 		// data_coding at ingestion), so the accepted row and the connector's enroute row agree.
-		Encoding: clickhouse.EncodingOf(env.Encoding),
-		Billed:   false,
+		Encoding:       clickhouse.EncodingOf(env.Encoding),
+		Billed:         false,
+		IngressChannel: env.Channel,
 	}
 }

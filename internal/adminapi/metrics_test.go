@@ -129,7 +129,7 @@ func TestTrafficBucketsAnHourByTheMinute(t *testing.T) {
 	bucket := time.Date(2026, 9, 26, 10, 0, 0, 0, time.UTC)
 	fake := &fakeMetrics{}
 	for _, m := range []int{4, 1, 3, 0, 2} {
-		fake.points = append(fake.points, clickhouse.TrafficPoint{Bucket: bucket.Add(time.Duration(m) * time.Minute), Key: connector, Submitted: int64(m + 1)})
+		fake.points = append(fake.points, clickhouse.TrafficPoint{Bucket: bucket.Add(time.Duration(m) * time.Minute), Key: connector.String(), Submitted: int64(m + 1)})
 	}
 	fake.points[3].Submitted, fake.points[3].Delivered, fake.points[3].Failed = 3, 2, 1
 	api := newTestAPIWithScopes(t, adminapi.Deps{Metrics: fake}, "admin:read")
@@ -161,7 +161,7 @@ func TestTrafficKeepsTheTopTwentyAndSumsTheRestUnderOther(t *testing.T) {
 	want := map[string]int{"other": 0}
 	for i := range 23 {
 		key := uuid.New()
-		fake.points = append(fake.points, clickhouse.TrafficPoint{Bucket: bucket, Key: key, Submitted: int64(100 - i)})
+		fake.points = append(fake.points, clickhouse.TrafficPoint{Bucket: bucket, Key: key.String(), Submitted: int64(100 - i)})
 		if i < 20 {
 			want[key.String()] = 100 - i
 		} else {
@@ -186,9 +186,9 @@ func TestTrafficKeepsTheTopTwentyAndSumsTheRestUnderOther(t *testing.T) {
 func TestTrafficRanksAKeyByItsMTAndMOTogether(t *testing.T) {
 	bucket := time.Date(2026, 9, 26, 10, 0, 0, 0, time.UTC)
 	moOnly := uuid.New()
-	fake := &fakeMetrics{points: []clickhouse.TrafficPoint{{Bucket: bucket, Key: moOnly, MOReceived: 500}}}
+	fake := &fakeMetrics{points: []clickhouse.TrafficPoint{{Bucket: bucket, Key: moOnly.String(), MOReceived: 500}}}
 	for i := range 21 {
-		fake.points = append(fake.points, clickhouse.TrafficPoint{Bucket: bucket, Key: uuid.New(), Submitted: int64(100 - i), MOReceived: 7})
+		fake.points = append(fake.points, clickhouse.TrafficPoint{Bucket: bucket, Key: uuid.NewString(), Submitted: int64(100 - i), MOReceived: 7})
 	}
 	api := newTestAPIWith(t, adminapi.Deps{Metrics: fake})
 
@@ -227,8 +227,8 @@ func TestTrafficByGroupFollowsTheCurrentMembership(t *testing.T) {
 	}
 	bucket := time.Date(2026, 9, 26, 10, 0, 0, 0, time.UTC)
 	fake := &fakeMetrics{points: []clickhouse.TrafficPoint{
-		{Bucket: bucket, Key: inFirst.ID, Submitted: 3},
-		{Bucket: bucket, Key: loner.ID, Submitted: 2},
+		{Bucket: bucket, Key: inFirst.ID.String(), Submitted: 3},
+		{Bucket: bucket, Key: loner.ID.String(), Submitted: 2},
 	}}
 	api := newTestAPIWith(t, adminapi.Deps{Metrics: fake, Customers: customers})
 
@@ -267,5 +267,27 @@ func TestTrafficBucketsEachServedWindowIntoThirtyOrSixtyPoints(t *testing.T) {
 		if fake.to.Sub(fake.from) != want.span || fake.step != want.step || !fake.to.Equal(fake.to.Truncate(want.step)) {
 			t.Errorf("%s: read [%v, %v) by %v, want %v by %v ending on a bucket boundary", window, fake.from, fake.to, fake.step, want.span, want.step)
 		}
+	}
+}
+
+func TestTrafficByChannelReadsTheChannelDimensionAndNamesTheUnknown(t *testing.T) {
+	bucket := time.Date(2026, 9, 26, 10, 0, 0, 0, time.UTC)
+	fake := &fakeMetrics{points: []clickhouse.TrafficPoint{
+		{Bucket: bucket, Key: "http", Submitted: 5},
+		{Bucket: bucket, Key: "smpp", Submitted: 3},
+		{Bucket: bucket, Key: "", Submitted: 1},
+	}}
+	api := newTestAPIWith(t, adminapi.Deps{Metrics: fake})
+
+	var body trafficBody
+	if code := getMetrics(t, api, "traffic?groupBy=channel", &body); code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", code)
+	}
+	if fake.dimension != clickhouse.TrafficByChannel || body.GroupBy != "channel" {
+		t.Fatalf("read by %q, answered group_by %q, want channel for both", fake.dimension, body.GroupBy)
+	}
+	want := map[string]int{"http": 5, "smpp": 3, "unknown": 1}
+	if got := body.submittedBy(); fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("submitted by key = %v, want %v", got, want)
 	}
 }

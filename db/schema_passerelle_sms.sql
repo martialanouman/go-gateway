@@ -900,6 +900,7 @@ CREATE TABLE cdr
     credits_charged       Nullable(Int32),
     traffic_category      LowCardinality(String) DEFAULT '',  -- sender ID category (ADR-0020); '' on the accepted placeholder
     priority              UInt8 DEFAULT 0,      -- effective priority (ADR-0020 §2), the SMPP priority_flag sent
+    ingress_channel       LowCardinality(String) DEFAULT '',  -- http|smpp on an MT's message-level rows; '' on segments, MO and older rows
     version               UInt64,               -- lifecycle rank; ReplacingMergeTree keeps the max
     INDEX message_id_bloom message_id TYPE bloom_filter(0.01) GRANULARITY 1  -- a lookup skips the rest of its account (step-287n)
 )

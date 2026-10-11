@@ -836,6 +836,9 @@ func TestCDRCarriesTheTrafficCategory(t *testing.T) {
 			if final == clickhouse.StatusCancelled {
 				messageLevel = append(messageLevel, row(clickhouse.StatusCancelled, 0, "", 0))
 			}
+			for i := range messageLevel {
+				messageLevel[i].IngressChannel = "smpp"
+			}
 			if err := writer.InsertBatch(ctx, messageLevel); err != nil {
 				t.Fatalf("insert message-level rows: %v", err)
 			}
@@ -851,6 +854,9 @@ func TestCDRCarriesTheTrafficCategory(t *testing.T) {
 			}
 			if got.TrafficCategory != "transactional" || got.Priority != 2 {
 				t.Errorf("%s message category/priority = %q/%d, want transactional/2", final, got.TrafficCategory, got.Priority)
+			}
+			if got.IngressChannel != "smpp" {
+				t.Errorf("%s message channel = %q, want smpp from its message-level rows", final, got.IngressChannel)
 			}
 		}
 	}

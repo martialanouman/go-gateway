@@ -60,6 +60,7 @@ func (l *Listener) onSubmit(_ context.Context, st *connState) session.SubmitHand
 			Priority:           int(req.PriorityFlag),
 			DataCoding:         &dataCoding,
 			SubmittedAt:        l.opts.Now(),
+			Channel:            pipeline.ChannelSMPP,
 		}
 
 		if err := l.ingestor.Accept(sctx, env); err != nil {
