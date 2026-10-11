@@ -28,8 +28,9 @@ type Handler func(ctx context.Context, rec Record) error
 // (at-least-once, §7.3). Autocommit is disabled so a crash between fetch and handling can never
 // silently advance past unprocessed work.
 type Consumer struct {
-	cl    *kgo.Client
-	group string
+	cl     *kgo.Client
+	group  string
+	topics []string
 
 	// commitTimeout bounds the ONE commit that matters most: the last one, issued while the pod is
 	// already draining and its own context is dead. config validates KAFKA_TIMEOUT as positive.
@@ -86,6 +87,7 @@ func newConsumer(cfg config.Kafka, group string, reset kgo.Offset, topics ...str
 	return &Consumer{
 		cl:            cl,
 		group:         group,
+		topics:        topics,
 		commitTimeout: cfg.Timeout,
 		fromEnd:       reset.EpochOffset().Offset == kgo.NewOffset().AtEnd().EpochOffset().Offset,
 	}, nil
@@ -363,6 +365,9 @@ func (c *Consumer) StartsFromEnd() bool { return c.fromEnd }
 
 // Group returns the consumer group the consumer joined.
 func (c *Consumer) Group() string { return c.group }
+
+// Topics returns the topics the consumer subscribed to.
+func (c *Consumer) Topics() []string { return c.topics }
 
 // Close leaves the group and releases the client. Because offsets are committed synchronously as
 // records are handled, there is nothing to flush.

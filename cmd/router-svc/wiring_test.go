@@ -160,21 +160,17 @@ func TestNewRouterAppBuildsTheWholeGraph(t *testing.T) {
 		t.Error("the MO CDR projection is not wired to start at the end of mo.routed")
 	}
 
-	wantGroups := map[string]bool{
-		"router-svc-otp":           true,
-		"router-svc-transactional": true,
-		"router-svc-marketing":     true,
+	wantTopics := map[string][]string{
+		"router-svc-otp":           {"mt.inbound.otp"},
+		"router-svc-transactional": {"mt.inbound.transactional"},
+		"router-svc-marketing":     {"mt.inbound.marketing"},
 	}
-	gotGroups := map[string]bool{}
+	gotTopics := map[string][]string{}
 	for _, c := range app.consumers {
-		gotGroups[c.Group()] = true
+		gotTopics[c.Group()] = c.Topics()
 	}
-	if len(app.consumers) != len(kafka.MTInboundTopics()) || !reflect.DeepEqual(gotGroups, wantGroups) {
-		t.Errorf("consumer groups = %v (%d consumers), want one per category topic %v", gotGroups, len(app.consumers), wantGroups)
-	}
-
-	if len(app.inbound) != len(kafka.MTInboundTopics()) {
-		t.Errorf("router.Deps.Consumer runs %d consumers, want one per category topic (%d)", len(app.inbound), len(kafka.MTInboundTopics()))
+	if len(app.consumers) != len(wantTopics) || !reflect.DeepEqual(gotTopics, wantTopics) {
+		t.Errorf("consumer group → topics = %v (%d consumers), want each category group on its own topic %v", gotTopics, len(app.consumers), wantTopics)
 	}
 
 	readers := queueDepthReaders(app)

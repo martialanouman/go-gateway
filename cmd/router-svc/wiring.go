@@ -64,7 +64,6 @@ type routerApp struct {
 	watcher   *config.Watcher
 	emitter   *metricstream.Emitter
 	consumers []*kafka.Consumer
-	inbound   kafka.FanIn
 	catalog   *metrics.Catalog
 	producer  *kafka.Producer
 	// routes is the graph's route resolver, kept so a wiring test can resolve through the overlays the
@@ -126,7 +125,6 @@ func newRouterApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 	}
 	a.onClose("stores", st.close)
 	a.consumers = st.consumers
-	a.inbound = kafka.FanInOf(st.consumers)
 	a.producer = st.producer
 
 	boot, err := loadBootSnapshots(ctx, st.pg, logger)
@@ -196,7 +194,7 @@ func newRouterApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 	a.emitter = stream.emitter
 
 	a.router = router.New(router.Deps{
-		Consumer:   a.inbound,
+		Consumer:   kafka.FanInOf(st.consumers),
 		Producer:   st.producer,
 		Pipeline:   stack.pipeline,
 		CDR:        clickhouse.NewCDRWriter(st.ch),
@@ -208,7 +206,7 @@ func newRouterApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 		LaneWindow: cfg.RouterLaneWindow,
 	})
 
-	ops, blooms, err := newOpsServer(cfg, logger, st.inboundChecks, a.catalog, stack, proj, outc, stream, boot)
+	ops, blooms, err := newOpsServer(cfg, logger, st.consumers, a.catalog, stack, proj, outc, stream, boot)
 	if err != nil {
 		return nil, err
 	}
@@ -227,8 +225,7 @@ type stores struct {
 	ch       *clickhouse.Conn
 	producer *kafka.Producer
 	// consumers are one per mt.inbound category topic (ADR-0021 §4), each in its own group.
-	consumers     []*kafka.Consumer
-	inboundChecks []observability.ReadinessCheck
+	consumers []*kafka.Consumer
 }
 
 // openStores opens them in dependency-free order, releasing what it already holds if a later one
@@ -263,7 +260,6 @@ func openStores(ctx context.Context, cfg config.Config) (_ *stores, err error) {
 			return nil, fmt.Errorf("kafka consumer %s: %w", topic, err)
 		}
 		s.consumers = append(s.consumers, c)
-		s.inboundChecks = append(s.inboundChecks, c.ReadyCheck("kafka-"+category, cfg.Kafka.Timeout))
 	}
 	return s, nil
 }
@@ -716,7 +712,7 @@ func (g bloomGauges) set(filter string, capacityBits uint) {
 func newOpsServer(
 	cfg config.Config,
 	logger *slog.Logger,
-	inboundChecks []observability.ReadinessCheck,
+	consumers []*kafka.Consumer,
 	catalog *metrics.Catalog,
 	stack *pipelineStack,
 	proj *acceptedProjector,
@@ -724,7 +720,12 @@ func newOpsServer(
 	stream *metricStream,
 	boot *bootSnapshots,
 ) (*observability.OpsServer, bloomGauges, error) {
-	ops, err := observability.NewOpsServer(cfg, logger, inboundChecks...)
+	checks := make([]observability.ReadinessCheck, 0, len(consumers))
+	for _, c := range consumers {
+		category := strings.TrimPrefix(c.Topics()[0], "mt.inbound.")
+		checks = append(checks, c.ReadyCheck("kafka-"+category, cfg.Kafka.Timeout))
+	}
+	ops, err := observability.NewOpsServer(cfg, logger, checks...)
 	if err != nil {
 		return nil, bloomGauges{}, fmt.Errorf("init ops server: %w", err)
 	}
@@ -812,11 +813,9 @@ func newSnapshotWatcher(
 			}
 			blooms.set("optout", boot.optOut.CapacityBits())
 
-			senderSnap, err := senderid.LoadSnapshot(ctx, postgres.NewSenderIDRepo(pool))
-			if err != nil {
+			if err := boot.senderIDs.Reload(postgres.NewSenderIDRepo(pool))(ctx); err != nil {
 				return err
 			}
-			boot.senderIDs.Store(senderSnap)
 
 			// Rebuild the routing-script snapshot (recompiles the active scripts) and swap it in.
 			scriptSnap, err := routing.BuildScriptSnapshot(ctx, stack.scriptRepo, logger)

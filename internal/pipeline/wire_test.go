@@ -349,3 +349,17 @@ func TestEncodeInboundRefusesAnUnknownCategory(t *testing.T) {
 		t.Fatal("an unknown category was encoded onto some topic")
 	}
 }
+
+func TestInboundDoesNotCarryTheCategory(t *testing.T) {
+	rec, err := pipeline.EncodeInbound(pipeline.InboundMT{MessageID: uuid.New(), TrafficCategory: cp.TrafficOTP, Body: msg.NewBodyString("x")})
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	got, err := pipeline.DecodeInbound(rec)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.TrafficCategory != "" {
+		t.Errorf("mt.inbound carried category %q: the router must recompute it, not trust the ingestion lane (ADR-0021 §2)", got.TrafficCategory)
+	}
+}

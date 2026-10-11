@@ -311,8 +311,8 @@ spec:
           averageValue: "10000"
 ---
 # Violates exactly one rule, hpa-max-replicas: maxReplicas 6 equals the WIDEST selected topic
-# (mt.inbound.marketing, 6) and clears the narrow one only if the guard weighs the first value. The
-# floor of 6 pods keeps the lanes at 1 + 1 against POSTGRES_MAX_CONNS 2, so pool-covers-lanes stays quiet.
+# (mt.inbound.marketing, 6); a guard weighing only the first value would report mt.inbound.otp at 2,
+# not the widest topic. The floor of 6 pods keeps the lanes at 1 + 1 against POSTGRES_MAX_CONNS 2, so pool-covers-lanes stays quiet.
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:

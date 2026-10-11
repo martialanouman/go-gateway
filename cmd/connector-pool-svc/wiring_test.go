@@ -133,16 +133,18 @@ func TestNewPoolAppBuildsTheWholeGraph(t *testing.T) {
 		}
 	}
 
-	wantGroups := map[string]bool{}
-	for _, topic := range kafka.MTRoutedTopics() {
-		wantGroups["connector-pool-svc-"+bind.ID.String()+"-"+strings.TrimPrefix(topic, "mt.routed.")] = true
+	group := "connector-pool-svc-" + bind.ID.String() + "-"
+	wantTopics := map[string][]string{
+		group + "otp":           {"mt.routed.otp"},
+		group + "transactional": {"mt.routed.transactional"},
+		group + "marketing":     {"mt.routed.marketing"},
 	}
-	gotGroups := map[string]bool{}
+	gotTopics := map[string][]string{}
 	for _, c := range app.consumers {
-		gotGroups[c.Group()] = true
+		gotTopics[c.Group()] = c.Topics()
 	}
-	if len(app.consumers) != len(wantGroups) || !reflect.DeepEqual(gotGroups, wantGroups) {
-		t.Errorf("consumer groups = %v (%d consumers), want one per category topic %v", gotGroups, len(app.consumers), wantGroups)
+	if len(app.consumers) != len(wantTopics) || !reflect.DeepEqual(gotTopics, wantTopics) {
+		t.Errorf("consumer group → topics = %v (%d consumers), want each category group on its own topic %v", gotTopics, len(app.consumers), wantTopics)
 	}
 
 	// Fail-closed producer (mt.outcome after submit_sm): the constant, never the env (step-260e).
