@@ -39,7 +39,7 @@ il entre par un connecteur, pas par un client ; `mo_received` y vaut 0. Trois cl
 **C. Latence d'admission : reste `null`.** La CDR ne peut pas la porter (la ligne accepted est projetée
 d'un enregistrement produit *avant* l'ACK qu'elle chronométrerait) et `ingest_duration_seconds` n'est
 observé nulle part (debts/budget-d-ingestion-non-mesurable.md, non payée ici). Pas d'objet `by_channel` :
-les comptes par canal sont dans `groupBy=channel`. Refus d'admission : comptés nulle part → fiche + issue.
+les comptes par canal sont dans `groupBy=channel`. Refus d'admission : comptés nulle part → fiche de dette.
 
 **D. `active_sessions`.** ZSET global `sess:live`, membre = bind_id, score = expiration (celle de la clé du
 compte), écrit dans le même pipeline que le ZADD de `sess:idx` (best-effort, rejoué à chaque
@@ -47,9 +47,9 @@ rafraîchissement), retiré par `Unindex`. RPC `CountSessions` : purge des expir
 par la TTL, comme la clé du compte. L'API Admin l'appelle par `SessionDirectory` ; une erreur laisse le
 champ absent, jamais 0. Pas de ventilation par type de bind : le registre ne l'agrège pas.
 
-**E. Temps réel.** session-manager n'a pas d'émetteur : `smpp_sessions_active` → fiche + issue.
+**E. Temps réel.** session-manager n'a pas d'émetteur : `smpp_sessions_active` → fiche de dette.
 `MetricSample` documente la forme d'un histogramme sur le flux (`<kind>_count`, `<kind>_sum`, deltas en
-secondes, moyenne seule). `ingest_duration_seconds` n'y est pas émis : dette existante + issue.
+secondes, moyenne seule). `ingest_duration_seconds` n'y est pas émis : dette existante (`budget-d-ingestion-non-mesurable`).
 
 ## Tests
 
