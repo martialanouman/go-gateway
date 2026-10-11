@@ -150,12 +150,14 @@ sender ID, un OTP frauduleux consomme toute la part prioritaire.
 
 ## Action Items
 
-1. [ ] Contrat Admin : `sender_id` dans l'enum `entity_type` des limites de débit (bump MINEUR), déclaré
+1. [x] Contrat Admin : `sender_id` dans l'enum `entity_type` des limites de débit (bump MINEUR), déclaré
    **avant** l'implémentation. Schéma et migration : la contrainte `CHECK` de `rate_limits.entity_type`.
+   Livré par step-289 (#269, contrat 7.1.0) sous la forme `PUT|DELETE …/sender-ids/{senderId}/rate-limit`.
 2. [ ] Kafka : les six topics dans `internal/storage/kafka` et `kafkaprovision`, largeurs par
    `KAFKA_TOPIC_PARTITIONS_OVERRIDES` ; retrait de `mt.inbound` et `mt.routed`.
 3. [ ] Ingestion (REST, SMPP) : instantané de `sender_ids` (catégorie), choix du topic, seau `sender_id`
-   avant l'ACK.
+   avant l'ACK. Le seau `sender_id` est livré par step-289 (#269) ; l'instantané et le choix du topic
+   restent à step-292b (PR3b).
 4. [ ] Routeur : un consommateur par topic ; publication sur `mt.routed.<catégorie>`.
 5. [ ] Pool : un consommateur par topic et par connecteur ; ordonnanceur par bind avec
    `CONNECTOR_MARKETING_MIN_SHARE` ; drainer et `mt-replay` republient selon la catégorie du record.
@@ -166,5 +168,5 @@ sender ID, un OTP frauduleux consomme toute la part prioritaire.
    latence d'attente par catégorie au trafic temps réel (§6.3) et par connecteur ; alerte de lag OTP dans
    `alert_rules` (métrique d'infrastructure, évaluée par Alertmanager) ; état « refusé à l'admission »
    (`rate_limited`, jamais un CDR) expliqué là où l'opérateur cherche un message manquant.
-10. [ ] Une fiche de step qui porte cet ADR, après step-283 et ADR-0020, et qui paie la dette de la file
+10. [x] Une fiche de step qui porte cet ADR, après step-283 et ADR-0020, et qui paie la dette de la file
    prioritaire.
