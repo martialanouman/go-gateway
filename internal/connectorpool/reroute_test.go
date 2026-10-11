@@ -83,7 +83,7 @@ func TestRerouteToNextConnector(t *testing.T) {
 		t.Errorf("advanced chain = %v, want empty (b was the last)", got.FallbackChain)
 	}
 	if recs[0].Topic != kafka.TopicMTRoutedMarketing {
-		t.Errorf("reroute topic = %s, want mt.routed", recs[0].Topic)
+		t.Errorf("reroute topic = %s, want mt.routed.marketing", recs[0].Topic)
 	}
 	if len(cdr.rows) != 1 || cdr.rows[0].Status != clickhouse.StatusRerouted {
 		t.Fatalf("cdr rows = %+v, want one rerouted", cdr.rows)
@@ -251,6 +251,6 @@ func TestRerouteToRoutedWhenTargetHasCapacity(t *testing.T) {
 
 	recs := prod.records()
 	if len(recs) != 1 || recs[0].Topic != kafka.TopicMTRoutedMarketing {
-		t.Fatalf("produced %+v, want one mt.routed reroute", recs)
+		t.Fatalf("produced %+v, want one mt.routed.marketing reroute", recs)
 	}
 }

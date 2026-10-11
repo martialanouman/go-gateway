@@ -1,10 +1,10 @@
-// Command mt-replay re-injects dead-lettered MT messages back onto mt.routed (step-129).
+// Command mt-replay re-injects dead-lettered MT messages back onto their category's mt.routed topic (step-129).
 //
 // It is a tool, not a deployable service: it has no ops port. It consumes mt.dead-letter from the
-// beginning and republishes records verbatim to mt.routed, stamped with a replayed_at header and
+// beginning and republishes records verbatim to the mt.routed topic of the record's category, stamped with a replayed_at header and
 // stripped of its dead_letter_reason — so the replay stays correlated (same message_id/trace_id,
 // billing idempotent) and the pool's max-age SLA does not instantly re-expire it. It runs until
-// interrupted (SIGTERM / Ctrl-C): a replay produces to mt.routed, never back to mt.dead-letter, so it
+// interrupted (SIGTERM / Ctrl-C): a replay produces to mt.routed.*, never back to mt.dead-letter, so it
 // cannot feed its own tail — the operator stops it once the parked backlog is drained.
 //
 // It does not replay everything it reads. A message the customer cancelled before it was parked must
@@ -17,13 +17,13 @@
 // A replay puts real SMS back on the wire, so it leaves a row in control_plane.audit_log before it
 // consumes anything, and cannot start without one (step-296). The operator is DECLARED, not
 // authenticated: the tool has no principal, and whoever holds the Kafka credentials can produce on
-// mt.routed without it. Real accountability needs per-operator credentials, which nothing plans yet
+// mt.routed.* without it. Real accountability needs per-operator credentials, which nothing plans yet
 // (debts/rejeu-impute-a-une-identite-declaree.md). The run id is logged at start too, so a row a kill -9
 // left without an outcome still finds its logs.
 //
 // Usage:
 //
-//	mt-replay -operator <name>   drain mt.dead-letter into mt.routed until interrupted
+//	mt-replay -operator <name>   drain mt.dead-letter into mt.routed.* until interrupted
 package main
 
 import (

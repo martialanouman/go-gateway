@@ -102,7 +102,7 @@ type Change struct {
 	Want   int32
 }
 
-// String renders one plan line, e.g. "EXPAND mt.routed 4 -> 12 partitions".
+// String renders one plan line, e.g. "EXPAND mt.routed.marketing 4 -> 12 partitions".
 func (c Change) String() string {
 	if c.Action == ActionCreate {
 		return fmt.Sprintf("%-6s %-20s -> %d partitions", c.Action, c.Topic, c.Want)

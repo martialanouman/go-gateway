@@ -431,7 +431,8 @@ optout:changed                       -- pub/sub channel: a STOP received as an M
 
 ```
 mt.inbound        -- raw submissions (SMPP/REST), pre-routing. Partitioned by message_id.
-mt.routed         -- post-routing, ready for dispatch. Partitioned by message_id, the LOGICAL message id: all UDH
+mt.routed.otp / mt.routed.transactional / mt.routed.marketing
+                  -- post-routing, ready for dispatch, one topic per traffic category. Partitioned by message_id, the LOGICAL message id: all UDH
                      segments share it -> same partition. connector-pool-svc shards a batch by
                      hash(message_id) % bind_pool_size (§6.8) -> same bind, in order (§6.1/C-segment note).
                      Each message carries a fallback_chain header for unilateral reroute by connector-pool-svc (§6.15).

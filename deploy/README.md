@@ -129,7 +129,9 @@ Restent trois grandeurs à trancher là-bas, et qui ne sont pas devinables ici :
 
 Une métrique `External` suppose un `prometheus-adapter` ou KEDA dans le cluster : la jauge
 `queue_depth_records{queue=…}` est publiée par les services (`router-svc` pour `mt.inbound` et
-`mt.outcome`, `connector-pool-svc` pour `mt.routed`), l'adaptateur qui l'expose à l'API HPA est de
+`mt.outcome`, `connector-pool-svc` pour `mt.routed.otp`, `mt.routed.transactional` et `mt.routed.marketing`, une
+série par topic ; l'HPA de `connector-pool-svc` les sélectionne par `matchExpressions` et Kubernetes
+additionne les séries retenues), l'adaptateur qui l'expose à l'API HPA est de
 l'infrastructure.
 
 ## Les PDB, et pourquoi ils ne sont pas décoratifs
@@ -141,7 +143,7 @@ l'infrastructure.
   double-compte pas » de `bind.lua` ne le couvre donc pas. Évincer tous les pods d'un coup laisse les
   ESME sans pod où se rebinder, refusés par leur propre quota.
 - **`connector-pool-svc`** : un connecteur par pod. Les évincer ensemble, c'est zéro bind vers ce
-  SMSC, `smsc-bind` not-ready partout, `mt.routed` qui s'accumule et le disjoncteur agrégé qui
+  SMSC, `smsc-bind` not-ready partout, les `mt.routed.*` qui s'accumulent et le disjoncteur agrégé qui
   bascule.
 
 ## Deux singularités de topologie
@@ -154,6 +156,14 @@ La première est une **absence** : elle dit ce qui ne passe par aucun `Service`,
   renommer. Un `Service` headless a occupé cette place jusqu'à step-302 et ne pouvait pas marcher :
   un `Deployment` ne donne pas d'enregistrement DNS par pod, `spec.hostname` étant une chaîne unique
   pour toutes ses répliques. La garde `downward-api-fields` (`internal/deploy`) tient le lien.
-- **`connector-pool-svc` est un gabarit d'instance** : un connecteur par pod, un groupe de
-  consommation `connector-pool-svc-<CONNECTOR_ID>` par connecteur. On copie le fichier par
-  connecteur, avec `replicas` = `bind_pool_size` — `mt.routed` est shardé une partition par bind.
+- **`connector-pool-svc` est un gabarit d'instance** : un connecteur par pod, trois groupes de
+  consommation `connector-pool-svc-<CONNECTOR_ID>-<catégorie>` par connecteur. On copie le fichier par
+  connecteur, avec `replicas` = `bind_pool_size` — chaque `mt.routed.<catégorie>` est shardé une
+  partition par bind.
+
+## Étape manuelle au déploiement de PR3b (step-292b)
+
+L'ancien topic `mt.routed` et les groupes `connector-pool-svc-<CONNECTOR_ID>` restent sur le broker
+après PR3a. Au déploiement de PR3b, avec `mt.inbound`, sans drain (ADR-0021) : supprimer le topic
+`mt.routed` et ces groupes. Les nouveaux groupes `connector-pool-svc-<CONNECTOR_ID>-<catégorie>`
+repartent de zéro.

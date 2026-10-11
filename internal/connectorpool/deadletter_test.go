@@ -201,7 +201,7 @@ func TestReplayReinjectsCorrelated(t *testing.T) {
 
 	recs := prod.records()
 	if len(recs) != 1 || recs[0].Topic != kafka.TopicMTRoutedMarketing {
-		t.Fatalf("produced %+v, want one mt.routed record", recs)
+		t.Fatalf("produced %+v, want one mt.routed.marketing record", recs)
 	}
 	if _, ok := recs[0].Header(kafka.HeaderDeadLetterReason); ok {
 		t.Errorf("dead_letter_reason header must be stripped on replay")
@@ -240,7 +240,7 @@ func TestReplaySkipsUndecodable(t *testing.T) {
 	}
 	recs := prod.records()
 	if len(recs) != 1 || recs[0].Topic != kafka.TopicMTRoutedMarketing {
-		t.Fatalf("produced %+v, want one mt.routed record", recs)
+		t.Fatalf("produced %+v, want one mt.routed.marketing record", recs)
 	}
 }
 

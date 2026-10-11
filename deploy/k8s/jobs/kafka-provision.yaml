@@ -2,8 +2,10 @@
 #
 # Partition counts are not cosmetic: they cap the router's fan-out (one goroutine per partition
 # assigned to a pod), so they must DOMINATE the HPA ceiling rather than equal it (ADR-0014), and
-# mt.routed needs one partition per bind of each connector — bind_pool_size, via
-# KAFKA_TOPIC_PARTITIONS_OVERRIDES. Run it before the first rollout and after adding a connector.
+# the mt.routed.<category> topics need one partition per bind of each connector — bind_pool_size, via
+# KAFKA_TOPIC_PARTITIONS_OVERRIDES (mt.routed.otp=N,mt.routed.transactional=N,mt.routed.marketing=N;
+# a bare mt.routed=N is refused as an unknown topic). Run it before the first rollout and after adding
+# a connector.
 apiVersion: batch/v1
 kind: Job
 metadata:

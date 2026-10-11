@@ -1,6 +1,7 @@
 package deploy_test
 
 import (
+	"cmp"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/martialanouman/go-gateway/internal/config"
 	"github.com/martialanouman/go-gateway/internal/deploy"
+	"github.com/martialanouman/go-gateway/internal/storage/kafka"
 )
 
 // The floors. A guard that reads an empty tree satisfies every assertion it makes, so each scan has a
@@ -450,10 +452,10 @@ func inspectHPA(m deploy.Manifest, env map[string]string, deployments map[string
 ) []violation {
 	var queue string
 	for _, metric := range m.Spec.Metrics {
-		// mt.routed is sized per connector by KAFKA_TOPIC_PARTITIONS_OVERRIDES, not by the shared
-		// default, so this rule cannot speak for connector-pool-svc. A CPU-only HPA has no queue at
-		// all and is not bounded by partitions either.
-		if q := metric.External.Metric.Selector.MatchLabels["queue"]; q != "" && q != "mt.routed" {
+		// connector-pool-svc selects its topics by matchExpressions and sizes them by
+		// KAFKA_TOPIC_PARTITIONS_OVERRIDES, which this rule does not cover. A CPU-only HPA has no
+		// queue at all and is not bounded by partitions either.
+		if q := metric.External.Metric.Selector.MatchLabels["queue"]; q != "" {
 			queue = q
 			break
 		}
@@ -928,6 +930,42 @@ func TestEveryDownwardAPIFieldIsPinnedByTheFixture(t *testing.T) {
 			t.Errorf("no downward-api-fields violation names smpp-server-svc/%s on testdata/broken — "+
 				"either the table stopped requiring it or the fixture stopped breaking it, and dropping "+
 				"it from the table would pass every other test", field)
+		}
+	}
+}
+
+func TestConnectorPoolScalesOnTheRoutedTopicsItPartitions(t *testing.T) {
+	t.Parallel()
+
+	manifests, err := deploy.Load(deploy.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var overrides string
+	var selected []string
+	for _, m := range manifests {
+		if m.Kind == "ConfigMap" {
+			overrides = cmp.Or(overrides, m.Data["KAFKA_TOPIC_PARTITIONS_OVERRIDES"])
+		}
+		if m.Kind != "HorizontalPodAutoscaler" || m.Spec.ScaleTargetRef.Name != "connector-pool-svc" {
+			continue
+		}
+		for _, metric := range m.Spec.Metrics {
+			for _, e := range metric.External.Metric.Selector.MatchExpressions {
+				if e.Key == "queue" && e.Operator == "In" {
+					selected = e.Values
+				}
+			}
+		}
+	}
+
+	if !reflect.DeepEqual(slices.Sorted(slices.Values(selected)), slices.Sorted(slices.Values(kafka.MTRoutedTopics()))) {
+		t.Errorf("connector-pool-svc HPA selects queues %v, want exactly %v — a topic left out of the sum "+
+			"is lag the autoscaler never sees", selected, kafka.MTRoutedTopics())
+	}
+	for _, want := range []string{"mt.routed.otp=4", "mt.routed.transactional=4"} {
+		if !slices.Contains(strings.Split(overrides, ","), want) {
+			t.Errorf("KAFKA_TOPIC_PARTITIONS_OVERRIDES = %q, want it to hold %s", overrides, want)
 		}
 	}
 }

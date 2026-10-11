@@ -4,7 +4,7 @@
 // (at-least-once). Callers get a Producer or a Consumer; the franz-go client stays encapsulated.
 package kafka
 
-// Topic names (plan §1.6). The MT walking skeleton (M2) uses only mt.inbound and mt.routed; the
+// Topic names (plan §1.6). The MT walking skeleton (M2) uses only mt.inbound and the mt.routed.<category> topics; the
 // rest are declared here so every service names a topic through this one list, not a string
 // literal.
 const (
