@@ -26,12 +26,13 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	SessionRegistry_Bind_FullMethodName         = "/session.SessionRegistry/Bind"
-	SessionRegistry_Unbind_FullMethodName       = "/session.SessionRegistry/Unbind"
-	SessionRegistry_Lookup_FullMethodName       = "/session.SessionRegistry/Lookup"
-	SessionRegistry_Deliver_FullMethodName      = "/session.SessionRegistry/Deliver"
-	SessionRegistry_Disconnect_FullMethodName   = "/session.SessionRegistry/Disconnect"
-	SessionRegistry_ListSessions_FullMethodName = "/session.SessionRegistry/ListSessions"
+	SessionRegistry_Bind_FullMethodName          = "/session.SessionRegistry/Bind"
+	SessionRegistry_Unbind_FullMethodName        = "/session.SessionRegistry/Unbind"
+	SessionRegistry_Lookup_FullMethodName        = "/session.SessionRegistry/Lookup"
+	SessionRegistry_Deliver_FullMethodName       = "/session.SessionRegistry/Deliver"
+	SessionRegistry_Disconnect_FullMethodName    = "/session.SessionRegistry/Disconnect"
+	SessionRegistry_ListSessions_FullMethodName  = "/session.SessionRegistry/ListSessions"
+	SessionRegistry_CountSessions_FullMethodName = "/session.SessionRegistry/CountSessions"
 )
 
 // SessionRegistryClient is the client API for SessionRegistry service.
@@ -56,6 +57,8 @@ type SessionRegistryClient interface {
 	// ListSessions pages through the live sessions, or returns every live session of one account, for the
 	// operator (step-360). It is not on the return path: Lookup stays the hot read.
 	ListSessions(ctx context.Context, in *ListSessionsRequest, opts ...grpc.CallOption) (*ListSessionsResponse, error)
+	// CountSessions returns the live binds of every account, for the operator's metrics (step-403).
+	CountSessions(ctx context.Context, in *CountSessionsRequest, opts ...grpc.CallOption) (*CountSessionsResponse, error)
 }
 
 type sessionRegistryClient struct {
@@ -126,6 +129,16 @@ func (c *sessionRegistryClient) ListSessions(ctx context.Context, in *ListSessio
 	return out, nil
 }
 
+func (c *sessionRegistryClient) CountSessions(ctx context.Context, in *CountSessionsRequest, opts ...grpc.CallOption) (*CountSessionsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CountSessionsResponse)
+	err := c.cc.Invoke(ctx, SessionRegistry_CountSessions_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SessionRegistryServer is the server API for SessionRegistry service.
 // All implementations must embed UnimplementedSessionRegistryServer
 // for forward compatibility.
@@ -148,6 +161,8 @@ type SessionRegistryServer interface {
 	// ListSessions pages through the live sessions, or returns every live session of one account, for the
 	// operator (step-360). It is not on the return path: Lookup stays the hot read.
 	ListSessions(context.Context, *ListSessionsRequest) (*ListSessionsResponse, error)
+	// CountSessions returns the live binds of every account, for the operator's metrics (step-403).
+	CountSessions(context.Context, *CountSessionsRequest) (*CountSessionsResponse, error)
 	mustEmbedUnimplementedSessionRegistryServer()
 }
 
@@ -175,6 +190,9 @@ func (UnimplementedSessionRegistryServer) Disconnect(context.Context, *Disconnec
 }
 func (UnimplementedSessionRegistryServer) ListSessions(context.Context, *ListSessionsRequest) (*ListSessionsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListSessions not implemented")
+}
+func (UnimplementedSessionRegistryServer) CountSessions(context.Context, *CountSessionsRequest) (*CountSessionsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CountSessions not implemented")
 }
 func (UnimplementedSessionRegistryServer) mustEmbedUnimplementedSessionRegistryServer() {}
 func (UnimplementedSessionRegistryServer) testEmbeddedByValue()                         {}
@@ -305,6 +323,24 @@ func _SessionRegistry_ListSessions_Handler(srv interface{}, ctx context.Context,
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SessionRegistry_CountSessions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CountSessionsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SessionRegistryServer).CountSessions(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SessionRegistry_CountSessions_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SessionRegistryServer).CountSessions(ctx, req.(*CountSessionsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // SessionRegistry_ServiceDesc is the grpc.ServiceDesc for SessionRegistry service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -335,6 +371,10 @@ var SessionRegistry_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListSessions",
 			Handler:    _SessionRegistry_ListSessions_Handler,
+		},
+		{
+			MethodName: "CountSessions",
+			Handler:    _SessionRegistry_CountSessions_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

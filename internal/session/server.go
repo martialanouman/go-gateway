@@ -190,6 +190,15 @@ func (s *Server) ListSessions(ctx context.Context, req *pb.ListSessionsRequest) 
 	return &pb.ListSessionsResponse{Sessions: toPB(sessions), NextCursor: next}, nil
 }
 
+// CountSessions serves the operator's metrics.
+func (s *Server) CountSessions(ctx context.Context, _ *pb.CountSessionsRequest) (*pb.CountSessionsResponse, error) {
+	active, err := s.reg.Count(ctx)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "count sessions: %v", err)
+	}
+	return &pb.CountSessionsResponse{Active: int64(active)}, nil
+}
+
 func toPB(sessions []Session) []*pb.Session {
 	out := make([]*pb.Session, len(sessions))
 	for i, s := range sessions {

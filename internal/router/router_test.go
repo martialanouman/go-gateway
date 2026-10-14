@@ -277,6 +277,7 @@ func TestRouterSealsContentOnRejectedRow(t *testing.T) {
 
 func TestRouterWritesRejectedCDROnPipelineRejection(t *testing.T) {
 	in := inbound("not-a-number") // fails E.164 normalization
+	in.Channel = pipeline.ChannelSMPP
 	inRec, err := pipeline.EncodeInbound(in)
 	if err != nil {
 		t.Fatalf("encode inbound: %v", err)
@@ -305,6 +306,9 @@ func TestRouterWritesRejectedCDROnPipelineRejection(t *testing.T) {
 	}
 	if row.ErrorCode == nil || *row.ErrorCode != "invalid_destination" {
 		t.Errorf("error_code: got %v want invalid_destination", row.ErrorCode)
+	}
+	if row.IngressChannel != pipeline.ChannelSMPP {
+		t.Errorf("ingress channel: got %q want smpp — the rejected row replaces the accepted one", row.IngressChannel)
 	}
 }
 

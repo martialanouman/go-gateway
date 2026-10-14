@@ -1859,12 +1859,18 @@ paths:
         `ungrouped`. By connector, an MT never dispatched has no connector and appears in no series; an MO
         belongs to the connector that received it. By customer and by group, an MO belongs to the customer of
         the account it was routed to. An unrouted MO has no account and appears in no series (see
-        list-unrouted-mo).
+        list-unrouted-mo). By channel, only MT appear, under the ingress channel they were submitted through,
+        `http` or `smpp`; an MT no client submitted (a STOP auto-reply the gateway sends itself) or written
+        before the CDR recorded the channel falls under the reserved key `unknown`, so the series still add
+        up to submitted. An MT whose accepted row is not yet written, or rewritten during a rollout, reads
+        `unknown` until a later read; an MO enters through a connector, not a client,
+        so it has no channel, appears in no series, and mo_received is 0 there. Channel series are never
+        folded into `other`.
         503 when the window holds more rows than a read may return.
       operationId: get-traffic-metrics
       security: [ { OperatorBearer: [ admin:read ] } ]
       parameters:
-        - { name: groupBy, in: query, schema: { type: string, enum: [connector, customer, group], default: connector } }
+        - { name: groupBy, in: query, schema: { type: string, enum: [connector, customer, group, channel], default: connector } }
         - { name: window, in: query, description: 'One of 5m, 15m, 30m, 1h.', schema: { type: string, default: 1h } }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/TrafficMetrics' } } } }
@@ -3252,22 +3258,33 @@ components:
         rejected: { type: integer }
         mo_received: { type: integer }
         ingest_latency_ms_p50: { type: [number, "null"] }
-        ingest_latency_ms_p99: { type: [number, "null"], description: Null while ingestion latency is measured nowhere. }
+        ingest_latency_ms_p99:
+          type: [number, "null"]
+          description: >-
+            Always null today: the CDR cannot hold the acceptance latency (the accepted row is
+            projected from the mt.inbound record, written before the ACK it would time), and
+            ingest_duration_seconds is observed nowhere yet.
         e2e_latency_ms_p50: { type: [number, "null"] }
         e2e_latency_ms_p99: { type: [number, "null"], description: 'Per message, from submission to its delivery receipt.' }
-        active_sessions: { type: integer, description: Absent while the session registry keeps no global count. }
+        active_sessions:
+          type: integer
+          description: >-
+            SMPP binds open at the time of the read, all accounts, as the session registry counts them. Absent,
+            never 0, when the registry cannot be read. A bind's slot outlives its connection by up to the
+            session TTL when the unbind is lost, and a bind whose registration write failed is missed until its
+            next refresh, half a TTL at most.
       required: [window]
     TrafficMetrics:
       type: object
       properties:
-        group_by: { type: string, enum: [connector, customer, group] }
+        group_by: { type: string, enum: [connector, customer, group, channel] }
         window: { type: string }
         series:
           type: array
           items:
             type: object
             properties:
-              key: { type: string, description: 'Dimension value (connector/customer/group id), or the reserved keys other and ungrouped.' }
+              key: { type: string, description: 'Dimension value (connector/customer/group id, or the channel http/smpp), or the reserved keys other, ungrouped and unknown.' }
               points:
                 type: array
                 items:
@@ -3298,7 +3315,9 @@ components:
           type: number
           description: >-
             A counter carries its DELTA over the interval, a gauge its current level: no state is needed to
-            render a rate, and a reconnecting client is never shown a total accumulated since boot.
+            render a rate, and a reconnecting client is never shown a total accumulated since boot. A histogram
+            travels as two counters, `<kind>_count` and `<kind>_sum` (seconds), so only its mean over the interval
+            can be derived, never a quantile. ingest_duration_seconds is not emitted yet.
       required: [kind, value]
     MetricSnapshot:
       type: object

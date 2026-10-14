@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
-	"github.com/google/uuid"
 
 	errs "github.com/martialanouman/go-gateway/internal/platform/errors"
 )
@@ -30,17 +29,18 @@ var metricsOverBudget = map[int32]bool{
 // but over the few columns a count needs: the explorer's inner level takes argMax of every column,
 // ciphertext included, which a window of millions of messages cannot afford.
 func metricsMessages(innerFilter string) string {
-	return `SELECT submitted_at, customer_id, direction, connector_id, latency_ms,
+	return `SELECT submitted_at, customer_id, direction, connector_id, latency_ms, ingress_channel,
 	` + cdrStatusPrecedence + ` AS status
 FROM (
 	SELECT submitted_at, message_id, any(customer_id) AS customer_id, direction,
 		anyIf(connector_id, ` + cdrCarriesSegments + `) AS connector_id,
-		maxIf(latency_ms, ` + cdrDispatched + `) AS latency_ms,
+		maxIf(latency_ms, ` + cdrDispatched + `) AS latency_ms, max(ingress_channel) AS ingress_channel,
 		` + cdrStatusCounts + `
 	FROM (
 		SELECT customer_id, direction, submitted_at, message_id, segment_seq,
 			argMax(status, version) AS status, argMax(segment_count, version) AS segment_count,
-			argMax(connector_id, version) AS connector_id, argMax(latency_ms, version) AS latency_ms
+			argMax(connector_id, version) AS connector_id, argMax(latency_ms, version) AS latency_ms,
+			max(ingress_channel) AS ingress_channel
 		FROM cdr
 		WHERE submitted_at >= ? AND submitted_at < ?` + innerFilter + `
 		GROUP BY customer_id, direction, submitted_at, message_id, segment_seq
@@ -97,12 +97,13 @@ type TrafficDimension string
 const (
 	TrafficByConnector TrafficDimension = "connector"
 	TrafficByCustomer  TrafficDimension = "customer"
+	TrafficByChannel   TrafficDimension = "channel"
 )
 
 // TrafficPoint is one bucket of one key's traffic: the MT submitted and their outcomes, and the MO received.
 type TrafficPoint struct {
 	Bucket     time.Time
-	Key        uuid.UUID
+	Key        string
 	Submitted  int64
 	Delivered  int64
 	Failed     int64
@@ -111,12 +112,17 @@ type TrafficPoint struct {
 
 // Traffic buckets the MT submitted and the MO received in [from, to) by step and dimension. An MT never
 // dispatched has no connector and appears in no connector series; an MO belongs to the connector that
-// received it. More than maxRows points is refused as ErrServiceUnavailable rather than returned truncated.
+// received it. By channel only MT count, keyed "" when no client submitted them (a STOP auto-reply) or
+// when written before the CDR recorded the channel. More than maxRows points is refused as ErrServiceUnavailable rather than returned truncated.
 func (r *CDRReader) Traffic(ctx context.Context, from, to time.Time, step time.Duration, dim TrafficDimension, maxRows int) ([]TrafficPoint, error) {
-	key, where := `customer_id`, ``
-	if dim == TrafficByConnector {
-		key, where = `assumeNotNull(connector_id)`, `
+	key, where := `toString(customer_id)`, ``
+	switch dim {
+	case TrafficByConnector:
+		key, where = `toString(assumeNotNull(connector_id))`, `
 	WHERE connector_id IS NOT NULL`
+	case TrafficByChannel:
+		key, where = `ingress_channel`, `
+	WHERE direction = 'mt'`
 	}
 	query := `SELECT toStartOfInterval(submitted_at, toIntervalSecond(?)) AS bucket, ` + key + ` AS key,
 		toInt64(countIf(direction = 'mt')), toInt64(countIf(direction = 'mt' AND status = 'delivered')),

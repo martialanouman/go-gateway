@@ -881,6 +881,88 @@ func (x *ListSessionsResponse) GetActive() int32 {
 	return 0
 }
 
+type CountSessionsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CountSessionsRequest) Reset() {
+	*x = CountSessionsRequest{}
+	mi := &file_session_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CountSessionsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CountSessionsRequest) ProtoMessage() {}
+
+func (x *CountSessionsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_session_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CountSessionsRequest.ProtoReflect.Descriptor instead.
+func (*CountSessionsRequest) Descriptor() ([]byte, []int) {
+	return file_session_proto_rawDescGZIP(), []int{13}
+}
+
+// CountSessionsResponse carries the live binds as the account keys see them: a bind refused by its quota
+// is never counted, one whose unbind was lost is counted until its TTL lapses.
+type CountSessionsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Active        int64                  `protobuf:"varint,1,opt,name=active,proto3" json:"active,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CountSessionsResponse) Reset() {
+	*x = CountSessionsResponse{}
+	mi := &file_session_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CountSessionsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CountSessionsResponse) ProtoMessage() {}
+
+func (x *CountSessionsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_session_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CountSessionsResponse.ProtoReflect.Descriptor instead.
+func (*CountSessionsResponse) Descriptor() ([]byte, []int) {
+	return file_session_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *CountSessionsResponse) GetActive() int64 {
+	if x != nil {
+		return x.Active
+	}
+	return 0
+}
+
 var File_session_proto protoreflect.FileDescriptor
 
 const file_session_proto_rawDesc = "" +
@@ -936,7 +1018,10 @@ const file_session_proto_rawDesc = "" +
 	"\bsessions\x18\x01 \x03(\v2\x10.session.SessionR\bsessions\x12\x1f\n" +
 	"\vnext_cursor\x18\x02 \x01(\tR\n" +
 	"nextCursor\x12\x16\n" +
-	"\x06active\x18\x03 \x01(\x05R\x06active*\x8e\x01\n" +
+	"\x06active\x18\x03 \x01(\x05R\x06active\"\x16\n" +
+	"\x14CountSessionsRequest\"/\n" +
+	"\x15CountSessionsResponse\x12\x16\n" +
+	"\x06active\x18\x01 \x01(\x03R\x06active*\x8e\x01\n" +
 	"\x0fDisconnectScope\x12 \n" +
 	"\x1cDISCONNECT_SCOPE_UNSPECIFIED\x10\x00\x12\x1c\n" +
 	"\x18DISCONNECT_SCOPE_ACCOUNT\x10\x01\x12\x1d\n" +
@@ -946,7 +1031,7 @@ const file_session_proto_rawDesc = "" +
 	"\x15BIND_TYPE_UNSPECIFIED\x10\x00\x12\x10\n" +
 	"\fBIND_TYPE_TX\x10\x01\x12\x10\n" +
 	"\fBIND_TYPE_RX\x10\x02\x12\x11\n" +
-	"\rBIND_TYPE_TRX\x10\x032\x8e\x03\n" +
+	"\rBIND_TYPE_TRX\x10\x032\xde\x03\n" +
 	"\x0fSessionRegistry\x123\n" +
 	"\x04Bind\x12\x14.session.BindRequest\x1a\x15.session.BindResponse\x129\n" +
 	"\x06Unbind\x12\x16.session.UnbindRequest\x1a\x17.session.UnbindResponse\x129\n" +
@@ -954,7 +1039,8 @@ const file_session_proto_rawDesc = "" +
 	"\aDeliver\x12\x17.session.DeliverRequest\x1a\x18.session.DeliverResponse\x12E\n" +
 	"\n" +
 	"Disconnect\x12\x1a.session.DisconnectRequest\x1a\x1b.session.DisconnectResponse\x12K\n" +
-	"\fListSessions\x12\x1c.session.ListSessionsRequest\x1a\x1d.session.ListSessionsResponseB=Z;github.com/martialanouman/go-gateway/internal/session/pb;pbb\x06proto3"
+	"\fListSessions\x12\x1c.session.ListSessionsRequest\x1a\x1d.session.ListSessionsResponse\x12N\n" +
+	"\rCountSessions\x12\x1d.session.CountSessionsRequest\x1a\x1e.session.CountSessionsResponseB=Z;github.com/martialanouman/go-gateway/internal/session/pb;pbb\x06proto3"
 
 var (
 	file_session_proto_rawDescOnce sync.Once
@@ -969,23 +1055,25 @@ func file_session_proto_rawDescGZIP() []byte {
 }
 
 var file_session_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_session_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_session_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_session_proto_goTypes = []any{
-	(DisconnectScope)(0),         // 0: session.DisconnectScope
-	(BindType)(0),                // 1: session.BindType
-	(*DisconnectRequest)(nil),    // 2: session.DisconnectRequest
-	(*DisconnectResponse)(nil),   // 3: session.DisconnectResponse
-	(*Session)(nil),              // 4: session.Session
-	(*BindRequest)(nil),          // 5: session.BindRequest
-	(*BindResponse)(nil),         // 6: session.BindResponse
-	(*UnbindRequest)(nil),        // 7: session.UnbindRequest
-	(*UnbindResponse)(nil),       // 8: session.UnbindResponse
-	(*LookupRequest)(nil),        // 9: session.LookupRequest
-	(*LookupResponse)(nil),       // 10: session.LookupResponse
-	(*DeliverRequest)(nil),       // 11: session.DeliverRequest
-	(*DeliverResponse)(nil),      // 12: session.DeliverResponse
-	(*ListSessionsRequest)(nil),  // 13: session.ListSessionsRequest
-	(*ListSessionsResponse)(nil), // 14: session.ListSessionsResponse
+	(DisconnectScope)(0),          // 0: session.DisconnectScope
+	(BindType)(0),                 // 1: session.BindType
+	(*DisconnectRequest)(nil),     // 2: session.DisconnectRequest
+	(*DisconnectResponse)(nil),    // 3: session.DisconnectResponse
+	(*Session)(nil),               // 4: session.Session
+	(*BindRequest)(nil),           // 5: session.BindRequest
+	(*BindResponse)(nil),          // 6: session.BindResponse
+	(*UnbindRequest)(nil),         // 7: session.UnbindRequest
+	(*UnbindResponse)(nil),        // 8: session.UnbindResponse
+	(*LookupRequest)(nil),         // 9: session.LookupRequest
+	(*LookupResponse)(nil),        // 10: session.LookupResponse
+	(*DeliverRequest)(nil),        // 11: session.DeliverRequest
+	(*DeliverResponse)(nil),       // 12: session.DeliverResponse
+	(*ListSessionsRequest)(nil),   // 13: session.ListSessionsRequest
+	(*ListSessionsResponse)(nil),  // 14: session.ListSessionsResponse
+	(*CountSessionsRequest)(nil),  // 15: session.CountSessionsRequest
+	(*CountSessionsResponse)(nil), // 16: session.CountSessionsResponse
 }
 var file_session_proto_depIdxs = []int32{
 	0,  // 0: session.DisconnectRequest.scope:type_name -> session.DisconnectScope
@@ -999,14 +1087,16 @@ var file_session_proto_depIdxs = []int32{
 	11, // 8: session.SessionRegistry.Deliver:input_type -> session.DeliverRequest
 	2,  // 9: session.SessionRegistry.Disconnect:input_type -> session.DisconnectRequest
 	13, // 10: session.SessionRegistry.ListSessions:input_type -> session.ListSessionsRequest
-	6,  // 11: session.SessionRegistry.Bind:output_type -> session.BindResponse
-	8,  // 12: session.SessionRegistry.Unbind:output_type -> session.UnbindResponse
-	10, // 13: session.SessionRegistry.Lookup:output_type -> session.LookupResponse
-	12, // 14: session.SessionRegistry.Deliver:output_type -> session.DeliverResponse
-	3,  // 15: session.SessionRegistry.Disconnect:output_type -> session.DisconnectResponse
-	14, // 16: session.SessionRegistry.ListSessions:output_type -> session.ListSessionsResponse
-	11, // [11:17] is the sub-list for method output_type
-	5,  // [5:11] is the sub-list for method input_type
+	15, // 11: session.SessionRegistry.CountSessions:input_type -> session.CountSessionsRequest
+	6,  // 12: session.SessionRegistry.Bind:output_type -> session.BindResponse
+	8,  // 13: session.SessionRegistry.Unbind:output_type -> session.UnbindResponse
+	10, // 14: session.SessionRegistry.Lookup:output_type -> session.LookupResponse
+	12, // 15: session.SessionRegistry.Deliver:output_type -> session.DeliverResponse
+	3,  // 16: session.SessionRegistry.Disconnect:output_type -> session.DisconnectResponse
+	14, // 17: session.SessionRegistry.ListSessions:output_type -> session.ListSessionsResponse
+	16, // 18: session.SessionRegistry.CountSessions:output_type -> session.CountSessionsResponse
+	12, // [12:19] is the sub-list for method output_type
+	5,  // [5:12] is the sub-list for method input_type
 	5,  // [5:5] is the sub-list for extension type_name
 	5,  // [5:5] is the sub-list for extension extendee
 	0,  // [0:5] is the sub-list for field type_name
@@ -1023,7 +1113,7 @@ func file_session_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_session_proto_rawDesc), len(file_session_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   13,
+			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

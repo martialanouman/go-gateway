@@ -107,6 +107,15 @@ func (g *GRPCSessions) ListSessions(ctx context.Context, after string, limit int
 	return sessions, resp.GetNextCursor(), err
 }
 
+// CountSessions returns the live binds of every account.
+func (g *GRPCSessions) CountSessions(ctx context.Context) (int, error) {
+	resp, err := g.client.CountSessions(ctx, &registrypb.CountSessionsRequest{})
+	if err != nil {
+		return 0, fmt.Errorf("count sessions: %w", mapRegistryErr(err))
+	}
+	return int(resp.GetActive()), nil
+}
+
 // DisconnectSession orders the pod holding the bind to close it.
 func (g *GRPCSessions) DisconnectSession(ctx context.Context, bindID, reason string) error {
 	_, err := g.client.Disconnect(ctx, &registrypb.DisconnectRequest{

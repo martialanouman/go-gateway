@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -45,6 +46,11 @@ const DefaultSessionTTL = 60 * time.Second
 // dies leaves its entries behind, and every reader checks them against the account key and purges
 // the dead ones.
 const idxKey = "sess:idx"
+
+// liveKey holds one member per bind id, scored by the same expiry as the account key: sess:idx, at score 0
+// for ZRANGE BYLEX, can only be paged, and paging it per metrics read is an admin DoS. Only Count purges it:
+// with no reader, it grows by the binds whose unbind was lost.
+const liveKey = "sess:live"
 
 // idxSep sorts below every character a bind id holds, so the entries of one bind sit before those of
 // any id it prefixes, and the cursor bound in List skips exactly one bind.
@@ -206,8 +212,11 @@ func (r *Registry) Bind(ctx context.Context, b Bind, maxSessions int) (int, erro
 	// After the admission, so a refused bind leaves no entry: a score-0 member never expires. Its failure
 	// is not the bind's: the slot is already taken, and refusing now would hold it a whole TTL for a
 	// caller told no. Every refresh replays the write.
-	if err := r.rdb.ZAdd(ctx, idxKey, redis.Z{Member: b.idxMember()}).Err(); err != nil {
-		slog.WarnContext(ctx, "session: index write failed; the bind is live but unlisted until a refresh lands it",
+	pipe := r.rdb.Pipeline()
+	pipe.ZAdd(ctx, idxKey, redis.Z{Member: b.idxMember()})
+	pipe.ZAdd(ctx, liveKey, redis.Z{Member: b.BindID, Score: float64(now.Add(r.ttl).Unix())})
+	if _, err := pipe.Exec(ctx); err != nil {
+		slog.WarnContext(ctx, "session: index write failed; the bind is live but unlisted and uncounted until a refresh lands it",
 			"bind_id", b.BindID, "err", err)
 	}
 	return active, nil
@@ -254,10 +263,24 @@ func (r *Registry) Unbind(ctx context.Context, b Bind) (bool, error) {
 // token already lapsed knows no pod, and has nothing else to remove.
 func (r *Registry) Unindex(ctx context.Context, b Bind) error {
 	prefix := b.BindID + idxSep + b.AccountID + idxSep
-	if err := r.rdb.ZRemRangeByLex(ctx, idxKey, "["+prefix, "("+prefix+"\xff").Err(); err != nil {
+	pipe := r.rdb.Pipeline()
+	pipe.ZRemRangeByLex(ctx, idxKey, "["+prefix, "("+prefix+"\xff")
+	pipe.ZRem(ctx, liveKey, b.BindID)
+	if _, err := pipe.Exec(ctx); err != nil {
 		return fmt.Errorf("session: unindex %s: %w", b.BindID, err)
 	}
 	return nil
+}
+
+// Count returns the number of live binds, all accounts, having purged the lapsed ones.
+func (r *Registry) Count(ctx context.Context) (int, error) {
+	pipe := r.rdb.Pipeline()
+	pipe.ZRemRangeByScore(ctx, liveKey, "-inf", strconv.FormatInt(r.now().Unix(), 10))
+	live := pipe.ZCard(ctx, liveKey)
+	if _, err := pipe.Exec(ctx); err != nil {
+		return 0, fmt.Errorf("session: count: %w", err)
+	}
+	return int(live.Val()), nil
 }
 
 // Lookup returns the account's live sessions, having swept any whose TTL has lapsed.

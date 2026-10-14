@@ -231,7 +231,7 @@ func TestOnSubmitNilIngestorRejects(t *testing.T) {
 // message submitted over REST and over SMPP produces an equivalent mt.inbound envelope and the same
 // accepted CDR path. Both surfaces share internal/ingest, so this guards that the two mappings feed it
 // identically. Ids and the accept timestamp are minted per submission and so are excluded from the
-// comparison.
+// comparison, and the channel is the one field that must differ.
 func TestRESTAndSMPPProduceEquivalentEnvelope(t *testing.T) {
 	acc, cust := uuid.New(), uuid.New()
 
@@ -248,6 +248,10 @@ func TestRESTAndSMPPProduceEquivalentEnvelope(t *testing.T) {
 	}
 	restRow := ingest.AcceptedRow(restEnv)
 	smppRow := ingest.AcceptedRow(smppEnv)
+	if restRow.IngressChannel != pipeline.ChannelHTTP || smppRow.IngressChannel != pipeline.ChannelSMPP {
+		t.Errorf("accepted rows' channel: REST=%q SMPP=%q, want %q and %q",
+			restRow.IngressChannel, smppRow.IngressChannel, pipeline.ChannelHTTP, pipeline.ChannelSMPP)
+	}
 
 	normalizeEnv(&restEnv)
 	normalizeEnv(&smppEnv)
@@ -272,6 +276,7 @@ func normalizeEnv(e *pipeline.InboundMT) {
 	e.MessageID = uuid.UUID{}
 	e.TraceID = uuid.UUID{}
 	e.SubmittedAt = time.Time{}
+	e.Channel = ""
 }
 
 // submitViaREST drives the real REST submit handler and returns the produced mt.inbound record and the

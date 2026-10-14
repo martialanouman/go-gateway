@@ -3,6 +3,7 @@ package adminapi
 import (
 	"cmp"
 	"context"
+	"log/slog"
 	"net/http"
 	"slices"
 	"time"
@@ -35,6 +36,8 @@ const (
 	trafficTopSeries = 20
 	trafficMaxRows   = 100_000
 	trafficOtherKey  = "other"
+	// trafficUnknownChannel names the MT no client submitted, or written before the CDR recorded the channel.
+	trafficUnknownChannel = "unknown"
 )
 
 type metricsSummaryInput struct {
@@ -58,7 +61,7 @@ type metricsSummaryDTO struct {
 type metricsSummaryOutput struct{ Body metricsSummaryDTO }
 
 type trafficInput struct {
-	GroupBy string `query:"groupBy" enum:"connector,customer,group" default:"connector"`
+	GroupBy string `query:"groupBy" enum:"connector,customer,group,channel" default:"connector"`
 	Window  string `query:"window" default:"1h" doc:"One of 5m, 15m, 30m, 1h."`
 }
 
@@ -76,15 +79,15 @@ type trafficSeriesDTO struct {
 }
 
 type trafficDTO struct {
-	GroupBy string             `json:"group_by" enum:"connector,customer,group"`
+	GroupBy string             `json:"group_by" enum:"connector,customer,group,channel"`
 	Window  string             `json:"window"`
 	Series  []trafficSeriesDTO `json:"series" nullable:"false"`
 }
 
 type trafficOutput struct{ Body trafficDTO }
 
-func registerMetrics(api huma.API, reader MetricsReader, customers CustomerStore) {
-	h := &metricsHandlers{reader: reader, customers: customers}
+func registerMetrics(api huma.API, reader MetricsReader, customers CustomerStore, sessions SessionDirectory, logger *slog.Logger) {
+	h := &metricsHandlers{reader: reader, customers: customers, sessions: sessions, logger: logger}
 	errors := []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusUnprocessableEntity, http.StatusServiceUnavailable}
 
 	register(api, huma.Operation{
@@ -103,6 +106,8 @@ func registerMetrics(api huma.API, reader MetricsReader, customers CustomerStore
 type metricsHandlers struct {
 	reader    MetricsReader
 	customers CustomerStore
+	sessions  SessionDirectory
+	logger    *slog.Logger
 }
 
 func windowOf(name string) (from, to time.Time, step time.Duration, err error) {
@@ -127,7 +132,21 @@ func (h *metricsHandlers) summary(ctx context.Context, in *metricsSummaryInput) 
 	return &metricsSummaryOutput{Body: metricsSummaryDTO{
 		Window: in.Window, Submitted: c.Submitted, Delivered: c.Delivered, Failed: c.Failed,
 		Rejected: c.Rejected, MOReceived: c.MOReceived, E2EP50: c.E2EP50, E2EP99: c.E2EP99,
+		ActiveSessions: h.activeSessions(ctx),
 	}}, nil
+}
+
+// activeSessions is nil when the registry cannot be read: a 0 would read "no client connected".
+func (h *metricsHandlers) activeSessions(ctx context.Context) *int {
+	if h.sessions == nil {
+		return nil
+	}
+	n, err := h.sessions.CountSessions(ctx)
+	if err != nil {
+		h.logger.WarnContext(ctx, "metrics summary: session registry unreadable, active_sessions omitted", "err", err)
+		return nil
+	}
+	return &n
 }
 
 func (h *metricsHandlers) traffic(ctx context.Context, in *trafficInput) (*trafficOutput, error) {
@@ -135,8 +154,8 @@ func (h *metricsHandlers) traffic(ctx context.Context, in *trafficInput) (*traff
 	if err != nil {
 		return nil, err
 	}
-	dim := clickhouse.TrafficByConnector
-	if in.GroupBy != string(clickhouse.TrafficByConnector) {
+	dim := clickhouse.TrafficDimension(in.GroupBy)
+	if in.GroupBy == "group" {
 		dim = clickhouse.TrafficByCustomer
 	}
 	points, err := h.reader.Traffic(ctx, from, to, step, dim, trafficMaxRows)
@@ -144,14 +163,17 @@ func (h *metricsHandlers) traffic(ctx context.Context, in *trafficInput) (*traff
 		return nil, humaerr.FromError(err)
 	}
 
-	keyOf := func(id uuid.UUID) string { return id.String() }
-	if in.GroupBy == "group" {
+	keyOf := func(key string) string { return key }
+	switch in.GroupBy {
+	case string(clickhouse.TrafficByChannel):
+		keyOf = func(channel string) string { return cmp.Or(channel, trafficUnknownChannel) }
+	case "group":
 		groups, err := h.groupOfEachCustomer(ctx)
 		if err != nil {
 			return nil, humaerr.FromError(err)
 		}
-		keyOf = func(id uuid.UUID) string {
-			if g, ok := groups[id]; ok {
+		keyOf = func(customer string) string {
+			if g, ok := groups[customer]; ok {
 				return g.String()
 			}
 			return "ungrouped"
@@ -162,8 +184,8 @@ func (h *metricsHandlers) traffic(ctx context.Context, in *trafficInput) (*traff
 
 // groupOfEachCustomer reads the membership as it is NOW: the CDR carries no group, so a customer moved to
 // another group takes its past traffic with it.
-func (h *metricsHandlers) groupOfEachCustomer(ctx context.Context) (map[uuid.UUID]uuid.UUID, error) {
-	out := map[uuid.UUID]uuid.UUID{}
+func (h *metricsHandlers) groupOfEachCustomer(ctx context.Context) (map[string]uuid.UUID, error) {
+	out := map[string]uuid.UUID{}
 	f := cp.CustomerFilter{Limit: 500}
 	for {
 		page, err := h.customers.List(ctx, f)
@@ -172,7 +194,7 @@ func (h *metricsHandlers) groupOfEachCustomer(ctx context.Context) (map[uuid.UUI
 		}
 		for _, c := range page.Items {
 			if c.GroupID != nil {
-				out[c.ID] = *c.GroupID
+				out[c.ID.String()] = *c.GroupID
 			}
 		}
 		if !page.HasMore {
@@ -184,7 +206,7 @@ func (h *metricsHandlers) groupOfEachCustomer(ctx context.Context) (map[uuid.UUI
 
 // foldSeries groups the points by key, keeps the trafficTopSeries keys with the most messages, MT and MO,
 // and sums the rest under trafficOtherKey, so the series still add up to the whole traffic.
-func foldSeries(points []clickhouse.TrafficPoint, keyOf func(uuid.UUID) string) []trafficSeriesDTO {
+func foldSeries(points []clickhouse.TrafficPoint, keyOf func(string) string) []trafficSeriesDTO {
 	byKey := map[string]map[time.Time]*trafficPointDTO{}
 	totals := map[string]int64{}
 	add := func(key string, p clickhouse.TrafficPoint) {

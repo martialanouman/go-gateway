@@ -36,9 +36,16 @@ type InboundMT struct {
 	ClientRef          *string
 	DataCoding         *int
 	SubmittedAt        time.Time
+	Channel            string
 	// TrafficCategory only picks the mt.inbound topic; it is not carried, the router recomputes it (ADR-0021 §2).
 	TrafficCategory cp.TrafficCategory
 }
+
+// The ingress channels of InboundMT.Channel.
+const (
+	ChannelHTTP = "http"
+	ChannelSMPP = "smpp"
+)
 
 // RoutedMT is ONE segment of a message after the router's pipeline: destination normalised to E.164,
 // encoding resolved, a connector chosen, and the body carrying the segment's wire short_message

@@ -97,6 +97,7 @@ func (s *server) submit(ctx context.Context, in *submitInput) (out *submitOutput
 		ClientRef:          in.Body.ClientRef,
 		DataCoding:         in.Body.DataCoding,
 		SubmittedAt:        now,
+		Channel:            pipeline.ChannelHTTP,
 	}
 
 	accepted := AcceptedMessage{

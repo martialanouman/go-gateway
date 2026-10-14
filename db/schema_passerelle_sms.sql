@@ -900,6 +900,7 @@ CREATE TABLE cdr
     credits_charged       Nullable(Int32),
     traffic_category      LowCardinality(String) DEFAULT '',  -- sender ID category (ADR-0020); '' on the accepted placeholder
     priority              UInt8 DEFAULT 0,      -- effective priority (ADR-0020 §2), the SMPP priority_flag sent
+    ingress_channel       LowCardinality(String) DEFAULT '',  -- http|smpp on an MT's message-level rows; '' on segments, MO and older rows
     version               UInt64,               -- lifecycle rank; ReplacingMergeTree keeps the max
     INDEX message_id_bloom message_id TYPE bloom_filter(0.01) GRANULARITY 1  -- a lookup skips the rest of its account (step-287n)
 )
@@ -916,6 +917,7 @@ TTL toDate(submitted_at) + INTERVAL 90 DAY;     -- CDR retention (configurable);
 /*
 -- Redis / Dragonfly (cluster mode):
 sess:{account_id}                                  -- sorted-set of "{pod_id}:{bind_id}" (score = expiry ts); atomic max_sessions quota at bind (Lua, §6.3, inv. d)
+sess:live                                          -- sorted-set of bind_id (score = expiry ts, as above); the global live count of get-metrics-summary (step-403)
 session:{bind_id}                                  -- session metadata + TTL heartbeat
 ratelimit:{entity_type}:{entity_id}:{window}       -- atomic token-bucket counters (Lua)
 dedupe:{account_id}:{content_hash}                  -- short-TTL set for duplicate-message anti-spam
