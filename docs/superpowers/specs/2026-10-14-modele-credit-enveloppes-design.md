@@ -3,6 +3,10 @@
 2026-10-14 · Décision 1 du monorepo (`docs/audit-architecture-2026-10-14.md` §2 F1, §6).
 Statut : design validé, à intégrer à la spec unique du monorepo.
 
+**Nommage.** Dans le code, l'enveloppe de crédit est un `CreditLease` (table `credit_leases`,
+`lease_id`) : `Envelope` désigne déjà l'enveloppe du message (`internal/pipeline/envelope.go`). La prose
+de ce document garde « enveloppe ».
+
 ## 1. Problème
 
 La réservation MT écrit en durable avant chaque envoi : un Lua Redis, puis une transaction Postgres
@@ -44,7 +48,7 @@ pour la réserve, puis une seconde pour le règlement. Cela pose quatre problèm
 
 ### 4.1 Objet
 
-La table `credit_envelopes` n'a qu'un écrivain, billing-svc. Ses colonnes :
+La table `credit_leases` n'a qu'un écrivain, billing-svc. Ses colonnes :
 
 | Colonne | Contenu |
 |---|---|
@@ -62,15 +66,15 @@ La table `credit_envelopes` n'a qu'un écrivain, billing-svc. Ses colonnes :
 
 1. **Octroi.** Un pod demande un octroi au premier message d'un propriétaire sans enveloppe, puis
    en avance, de façon asynchrone, dès qu'il passe sous le seuil θ.
-   - billing-svc l'inscrit en une transaction : la ligne `credit_envelopes` et une ligne
-     `envelope_grant` qui débite le grand livre.
+   - billing-svc l'inscrit en une transaction : la ligne `credit_leases` et une ligne
+     `lease_grant` qui débite le grand livre.
    - Les demandes sont groupées par commit de groupe, une transaction toutes les 10 à 20 ms.
    - L'octroi est idempotent par `request_key` : un RPC rejoué rend la même enveloppe.
    - Le bail est rendu comme une **durée**. Le pod la convertit avec son horloge monotone, en
      retranchant la durée du RPC.
 2. **Consommation.** À l'étape « réservation de crédit MT », dont la place dans le pipeline ne
    change pas, le routeur décrémente en mémoire `segment_count × credits_per_segment`.
-   - Chaque record `mt.routed` porte `envelope_id`, les crédits du segment, le mode `charge_on` et
+   - Chaque record `mt.routed` porte `lease_id`, les crédits du segment, le mode `charge_on` et
      la version du plan tarifaire.
    - Si l'enveloppe ne couvre pas le message et qu'un octroi refuse faute de crédit, le message est
      rejeté pour crédit insuffisant, comme aujourd'hui.
@@ -82,7 +86,7 @@ La table `credit_envelopes` n'a qu'un écrivain, billing-svc. Ses colonnes :
      dépassé ces offsets.
    - **Pod mort**, sans clôture : le pod s'interdit toute consommation après `expires_at − 5 s`.
      billing-svc règle après `expires_at + 30 s`, quand son consommateur a rattrapé ce point.
-4. **Règlement de l'enveloppe.** Une ligne `envelope_refund` restitue
+4. **Règlement de l'enveloppe.** Une ligne `lease_refund` restitue
    `granted − Σ crédits des segments consommés non libérés`, et l'enveloppe passe en `settled`.
 
 Une nouvelle epoch ne reprend jamais les enveloppes de l'epoch précédente.
@@ -117,7 +121,7 @@ en-têtes. Il écrit par lots dans `billing_settlements`, avec `INSERT … ON CO
 | Colonne | Contenu |
 |---|---|
 | `(message_id, segment_seq)` | Clé primaire |
-| `envelope_id` | Enveloppe débitée |
+| `lease_id` | Enveloppe débitée |
 | `credits` | Crédits du segment |
 | `charge_on`, `rate_plan_version` | Figés au moment de la réservation |
 | `state` | `consumed`, `captured` ou `released` |
@@ -150,8 +154,8 @@ appliqué est celui que le fait a figé, jamais le mode courant du client.
 ### 6.3 Grand livre
 
 Le grand livre ne contient que les mouvements du solde :
-- `envelope_grant`, au débit ;
-- `envelope_refund`, à la clôture : il absorbe les libérations arrivées avant le règlement de
+- `lease_grant`, au débit ;
+- `lease_refund`, à la clôture : il absorbe les libérations arrivées avant le règlement de
   l'enveloppe ;
 - `late_release`, une ligne par segment, pour toute libération arrivée après ce règlement
   (DLR tardif en mode `delivery`).
