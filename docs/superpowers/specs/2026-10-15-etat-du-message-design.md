@@ -126,8 +126,11 @@ ClickHouse reste la source de l'historique, de l'analytique et de la fiche d'un 
 
 ### 5.2 Corrélation
 
-1. **À chaque `submitted` portant un `smsc_msg_id`**, une ligne est ajoutée à `dlr_correlation` :
-   `(connector_id, smsc_msg_id) → (message_id, segment_seq, attempt, account_id, customer_id)`.
+1. **À chaque `submitted` portant un identifiant distant**, une ligne est ajoutée à `dlr_correlation` :
+   `(connector_account_id, remote_id) → (message_id, segment_seq, attempt, account_id, customer_id)`.
+   L'identifiant distant n'est unique qu'au sein d'un compte opérateur (décision 3). Un connecteur
+   HTTP qui rend un seul `remote_id` par message inscrit `segment_seq = 0`, et le repli applique le
+   DLR à chaque segment.
    La table est partitionnée par jour d'insertion et ses partitions sont supprimées au-delà de
    72 h.
 2. **Pour chaque lot de `dlr.events`**, le service fait une seule recherche groupée, sur au plus
