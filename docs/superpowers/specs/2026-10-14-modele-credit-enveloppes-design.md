@@ -236,9 +236,11 @@ traversants**.
 
 ## 11. Dépendances et hors périmètre
 
-- **Segment consommé sans issue au-delà de l'âge maximal.** Il relève du magasin d'état du message
-  (décision 2, F2). D'ici là : alerte, et aucune libération aveugle.
-- **DLR enrichi** (propriétaire, segment) : il dépend de la corrélation unique de la voie retour.
+- **Segment consommé sans issue au-delà de l'âge maximal.** `message-state-svc` publie
+  `outcome_missing` après 1 h : une alerte, jamais de libération automatique
+  (`2026-10-15-etat-du-message-design.md` §3.2).
+- **DLR enrichi** (propriétaire, segment) : billing-svc consomme `dlr.routed`, publié par la
+  corrélation unique de `message-state-svc` (même document, §5.2).
 - **Isolation du garage** : elle doit être cohérente avec le contrat par topic (décision 4, F6).
 - **Hors périmètre** : la facturation externe (§6.10) et le partitionnement physique de
   `billing_settlements` (rétention, décision T13).
