@@ -98,7 +98,7 @@ table non classée.
 
 | Classement | Tables | Raison |
 |---|---|---|
-| Auditée (diff) | `customers`, `customer_groups`, `rate_plans`, `external_billing_providers`, `smpp_accounts`, `credentials`, `sender_ids`, `connectors`, `connector_accounts` (décision 3), `routes`, `route_targets`, `routing_scripts`, `rate_limits`, `antispam_rules`, `webhooks`, `sender_id_rewrite_rules`, `inbound_numbers`, `inbound_keywords`, `opt_out_keywords`, `platform_content_policy`, `content_keys` | Configuration |
+| Auditée (diff) | `customers`, `customer_groups`, `rate_plans`, `smpp_accounts`, `credentials`, `sender_ids`, `connectors`, `connector_accounts` (décision 3), `routes`, `route_targets`, `routing_scripts`, `rate_limits`, `antispam_rules`, `webhooks`, `sender_id_rewrite_rules`, `inbound_numbers`, `inbound_keywords`, `opt_out_keywords`, `platform_policy` (décision 8), `content_keys` | Configuration |
 | Événement seul | `exact_routes` | Un import de masse fait des millions de lignes : une ligne d'`audit_log` avec le nombre de lignes et l'empreinte du fichier |
 | Événement seul | `suppressions`, `unrouted_mo` | MSISDN : les copier dans un journal irait contre T8 |
 | Exemptée | `balances`, `balance_deltas`, `billing_ledger*`, `billing_idempotency`, `billing_events_outbox`, `credit_leases` (décision 1) | Le grand livre est lui-même le journal de la facturation ; volume du chemin chaud |
