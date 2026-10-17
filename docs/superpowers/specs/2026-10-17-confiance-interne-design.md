@@ -30,7 +30,7 @@ La frontière de confiance interne est plate :
 | D4 | **Une identité par service sur chaque magasin** (rôle Postgres, principal Kafka, utilisateur Redis), droits **générés** depuis ce que le service déclare. |
 | D5 | **Un Secret par service** ; la KEK sort du cluster applicatif, dans **OpenBao Transit**, seule implémentation de l'interface `KMS` (ADR-0011). |
 | D6 | **JWKS interne** ; scope **`stream:read`** pour le hub ; **aucun compte de service** (ADR-0019). |
-| D7 | **Secours par SQL**, sous identifiants dynamiques d'une heure, audité par le trigger de la décision 5. Pas de second émetteur de jetons. |
+| D7 | **Secours par SQL**, sous identifiants dynamiques d'une heure, audité et propagé par le trigger des décisions 5 et 7. Pas de second émetteur de jetons. |
 
 ## 3. Briques
 
@@ -101,7 +101,7 @@ Quand le BFF est tombé ou sa clé révoquée :
    heure ; OpenBao audite l'émission.
 2. Il écrit sur `control_plane` en SQL, sous `SET LOCAL app.actor = 'breakglass:<nom>'` : le trigger
    de la décision 5 refuse toute écriture sans acteur.
-3. `make breakglass-reload` publie `config.changes` pour propager la modification.
+3. La propagation est automatique : le trigger notifie au commit (décision 7).
 
 Les validations de l'Admin API ne s'appliquent pas : c'est le prix d'un secours sans second émetteur
 de jetons, c'est-à-dire sans seconde clé capable de tout fabriquer. La procédure vit dans le runbook.
@@ -120,7 +120,7 @@ de jetons, c'est-à-dire sans seconde clé capable de tout fabriquer. La procéd
 | | |
 |---|---|
 | **Supprimé** | `gateway-secrets` ; la KEK dans un Secret Kubernetes ; le JWKS public ; `admin:read` du hub ; l'admission implicite de toute la CA ; le rôle Postgres unique |
-| **Neuf** | OpenBao (Transit, identifiants dynamiques `breakglass`) ; génération des ACL Kafka, des GRANT et des NetworkPolicy ; `make breakglass-reload` |
+| **Neuf** | OpenBao (Transit, identifiants dynamiques `breakglass`) ; génération des ACL Kafka, des GRANT et des NetworkPolicy |
 
 ## 11. Effets sur la spec et les contrats actuels
 

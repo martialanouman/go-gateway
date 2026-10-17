@@ -158,10 +158,10 @@ revient pas.
 | `mo.routed` | `account_id` | par clé | événement | router (MO) |
 | `message.state` | `message_id` | par clé | version de l'état → CDR | message-state |
 | `connector.account-status` | `connector_account_id`, compacté | par clé | dernier état | pool |
-| `config.changes` | entité | par clé | événement → rechargement idempotent | admin-api |
 | `<groupe>.dead-letter` | celle de la source | aucun | record | runtime |
 
-`webhook.retry` et `webhook.dead-letter` disparaissent : le garage par tenant les remplace.
+`webhook.retry` et `webhook.dead-letter` disparaissent : le garage par tenant les remplace. La
+configuration ne passe pas par Kafka (décision 7 : `LISTEN/NOTIFY` Postgres).
 
 ### 5.2 Lane du routeur (`mt.inbound.<cat>`)
 
@@ -170,7 +170,7 @@ revient pas.
 | Kafka | `blocking` |
 | Postgres de confirmation des opt-out | `blocking` : envoyer sans savoir si le destinataire s'est désinscrit enfreint la conformité, pour tout le monde |
 | Facturation, enveloppe vide | `park_global` (décision 1) |
-| Redis (cache des routes exactes) | `blocking`, en attendant la décision 7 |
+| `redis-cache` (routes exactes) | Aucun mode propre : en panne, lecture directe par clé primaire dans Postgres, déjà `blocking` (décision 7) |
 
 L'insertion synchrone du CDR disparaît : un rejet est publié sur `mt.outcome` (décision 2). **Il ne
 reste dans le routeur aucune dépendance propre à un tenant qui puisse bloquer une partition.**
